@@ -1,5 +1,6 @@
 // Stage 9: semantic checks that need no cryptography (README section 5, S3-S10, T3a.5).
 import { FrankCodecError } from './errors'
+import { utf8Encode } from './utf8'
 import type {
   AccountRef,
   DirectoryStatement,
@@ -261,6 +262,18 @@ export function checkSemantics(
           `${P}.7`,
           true,
         )
+      }
+      if (typed.profileEntries) {
+        typed.profileEntries.forEach((entry, i) => {
+          const headers = entry.headers.map(h => utf8Encode(h.name))
+          requireOrdered(
+            headers,
+            compareBytes,
+            'profile-entry headers',
+            `${P}.9[${i}].1`,
+            true,
+          )
+        })
       }
       return
     }

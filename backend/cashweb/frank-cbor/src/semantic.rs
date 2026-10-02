@@ -285,6 +285,7 @@ pub(crate) fn check_semantics(
             key_transitions,
             recovery,
             stamp_key,
+            profile_entries,
             ..
         } => {
             require_ordered(
@@ -346,6 +347,19 @@ pub(crate) fn check_semantics(
                     &format!("{path}.7"),
                     true,
                 )?;
+            }
+            if let Some(entries) = profile_entries {
+                for (i, entry) in entries.iter().enumerate() {
+                    let names: Vec<&[u8]> =
+                        entry.headers.iter().map(|h| h.name.as_bytes()).collect();
+                    require_ordered(
+                        &names,
+                        Ord::cmp,
+                        "profile-entry headers",
+                        &format!("{path}.9[{i}].1"),
+                        true,
+                    )?;
+                }
             }
             Ok(())
         }

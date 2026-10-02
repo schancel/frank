@@ -1,14 +1,16 @@
 // Destination versus encoding. A destination is chain-neutral and maps to one
-// locking script. The chain argument is required. XPI strings are not pinned
-// (issue 242): encode and decode return address-format-not-pinned and do not
-// build a string. Taproot output keys are encoded as given. This module does
-// not add the tweak on the curve; issue 249 owns that check.
+// locking script. The chain argument is required. XPI strings are Lotus
+// addresses: token lotus, network byte, then base58 of type 0, the full
+// script, and a 4-byte SHA-256 checksum. Taproot output keys are encoded as
+// given. This module does not add the tweak on the curve; issue 249 owns that
+// check.
 
 import { cryptoBackend } from './backend.js'
 import { decodeBech32, encodeBech32, type Bech32Spec } from './bech32.js'
 import { CASHADDR_CHARSET } from './base32.js'
+import { decodeBase58, encodeBase58 } from './base58.js'
 import { decodeBase58Check, encodeBase58Check } from './base58check.js'
-import { copyBytes } from './bytes.js'
+import { concatBytes, copyBytes } from './bytes.js'
 import { decodeCashaddr, encodeCashaddr } from './cashaddr.js'
 import { CHAINS } from './chain/index.js'
 import type {
@@ -52,7 +54,12 @@ export type Destination =
       readonly tweak: Uint8Array | null
     }
 
-export type AddressEncoding = 'base58check' | 'cashaddr' | 'bech32' | 'bech32m'
+export type AddressEncoding =
+  | 'base58check'
+  | 'cashaddr'
+  | 'bech32'
+  | 'bech32m'
+  | 'lotus'
 
 export interface AddressForm {
   readonly encoding: AddressEncoding
@@ -315,11 +322,138 @@ function representable(
   )
 }
 
+const LOTUS_TOKEN = 'lotus'
+const LOTUS_TOKEN_BYTES = Uint8Array.of(0x6c, 0x6f, 0x74, 0x75, 0x73)
+
+function lotusNetChar(network: NetworkKind): string {
+  if (network === 'mainnet') return '_'
+  if (network === 'testnet') return 'T'
+  return 'R'
+}
+
+function chainByLotus(net: string): ChainDescriptor | undefined {
+  const network =
+    net === '_'
+      ? 'mainnet'
+      : net === 'T'
+      ? 'testnet'
+      : net === 'R'
+      ? 'regtest'
+      : undefined
+  if (network === undefined) return undefined
+  return CHAINS.find(item => item.family === 'xpi' && item.network === network)
+}
+
+function lotusChecksum(net: string, payload: Uint8Array): Uint8Array {
+  const preimage = concatBytes([
+    LOTUS_TOKEN_BYTES,
+    Uint8Array.of(net.charCodeAt(0)),
+    payload,
+  ])
+  return new Uint8Array(cryptoBackend.sha256(preimage)).subarray(0, 4)
+}
+
+function encodeLotus(
+  chain: ChainDescriptor,
+  script: Uint8Array,
+): AddressResult<string> {
+  const net = lotusNetChar(chain.network)
+  const payload = concatBytes([Uint8Array.of(0), script])
+  const body = concatBytes([payload, lotusChecksum(net, payload)])
+  return { ok: true, value: `${LOTUS_TOKEN}${net}${encodeBase58(body)}` }
+}
+
+function destinationFromLotusScript(
+  script: Uint8Array,
+): AddressResult<Destination> {
+  const pubkeyHash = pubkeyHashFromOutputScript(script)
+  if (pubkeyHash.ok) {
+    return {
+      ok: true,
+      value: Object.freeze({ kind: 'p2pkh', hash: pubkeyHash.value }),
+    }
+  }
+  if (pubkeyHash.error.code !== 'output-script-unmatched') return pubkeyHash
+  if (
+    script.length === 23 &&
+    script[0] === OP_HASH160 &&
+    script[1] === PUSH_20 &&
+    script[22] === OP_EQUAL
+  ) {
+    const hash = asScriptHash(script.subarray(2, 22))
+    if (!hash.ok) return hash
+    return {
+      ok: true,
+      value: Object.freeze({ kind: 'p2sh', hash: hash.value }),
+    }
+  }
+  return fail({ code: 'output-script-unmatched' })
+}
+
+function lotusText(text: string): string | undefined {
+  let body = text
+  if (body.startsWith('payto:')) body = body.slice('payto:'.length)
+  const query = body.indexOf('?')
+  if (query >= 0) body = body.slice(0, query)
+  if (!body.startsWith(LOTUS_TOKEN)) return undefined
+  const net = body.charAt(LOTUS_TOKEN.length)
+  if (net !== '_' && net !== 'T' && net !== 'R') return undefined
+  return body
+}
+
+function decodeLotus(
+  text: string,
+  chain: ChainDescriptor | undefined,
+): AddressResult<DecodedAddress> {
+  const body = lotusText(text)
+  if (body === undefined) return fail({ code: 'wrong-prefix', prefix: '' })
+  const net = body.charAt(LOTUS_TOKEN.length)
+  const detected = chainByLotus(net)
+  if (detected === undefined) return fail({ code: 'wrong-prefix', prefix: net })
+  const agreed = agree(detected, chain)
+  if (!agreed.ok) return agreed
+  const decoded = decodeBase58(body.slice(LOTUS_TOKEN.length + 1))
+  if (!decoded.ok) return relay(decoded.error)
+  if (decoded.value.length < 5) {
+    return fail({
+      code: 'wrong-length',
+      min: 5,
+      max: 10000,
+      actual: decoded.value.length,
+    })
+  }
+  const payload = decoded.value.subarray(0, -4)
+  const checksum = decoded.value.subarray(-4)
+  const expected = lotusChecksum(net, payload)
+  for (let index = 0; index < 4; index += 1) {
+    if (checksum[index] !== expected[index]) {
+      return fail({ code: 'bad-checksum' })
+    }
+  }
+  const type = payload[0] ?? 0
+  if (type !== 0) return fail({ code: 'unknown-address-type', version: type })
+  const script = new Uint8Array(payload.subarray(1))
+  const destination = destinationFromLotusScript(script)
+  if (!destination.ok) return destination
+  return {
+    ok: true,
+    value: Object.freeze({
+      destination: destination.value,
+      chain: detected,
+      encoding: 'lotus' as const,
+      text: `${LOTUS_TOKEN}${net}${encodeBase58(decoded.value)}`,
+    }),
+  }
+}
+
 function encodingsFor(
   chain: ChainDescriptor,
   kind: Destination['kind'],
 ): AddressEncoding[] {
-  if (chain.family === 'xpi') return []
+  if (chain.family === 'xpi') {
+    if (kind === 'p2pkh' || kind === 'p2sh') return ['lotus']
+    return []
+  }
   if (kind === 'p2pkh' || kind === 'p2sh') {
     if (chain.cashaddrPrefix !== null) return ['cashaddr', 'base58check']
     return ['base58check']
@@ -413,12 +547,12 @@ export function encodeAddress(
       family: chain.family,
     })
   }
-  if (chain.family === 'xpi') return fail({ code: 'address-format-not-pinned' })
   if (!encodingsFor(chain, destination.kind).includes(encoding)) {
     return fail({ code: 'unknown-encoding', encoding })
   }
   const sized = scriptOf(destination)
   if (!sized.ok) return sized
+  if (encoding === 'lotus') return encodeLotus(chain, sized.value)
   switch (destination.kind) {
     case 'p2pkh':
       if (encoding === 'cashaddr') return encodeCash(chain, 0, destination.hash)
@@ -451,20 +585,6 @@ function listingFor(
       kind: destination.kind,
       family: chain.family,
     })
-  }
-  if (chain.family === 'xpi') {
-    return {
-      ok: true,
-      value: Object.freeze({
-        destination,
-        chain,
-        forms: Object.freeze([]),
-        stringEncoding: Object.freeze({
-          status: 'unpinned' as const,
-          code: 'address-format-not-pinned' as const,
-        }),
-      }),
-    }
   }
   const forms: AddressForm[] = []
   for (const encoding of encodingsFor(chain, destination.kind)) {
@@ -869,7 +989,7 @@ function decodeLegacy(
   chain: ChainDescriptor | undefined,
 ): AddressResult<DecodedAddress> {
   if (chain === undefined) return fail({ code: 'chain-required' })
-  if (chain.family === 'xpi') return fail({ code: 'address-format-not-pinned' })
+  if (chain.family === 'xpi') return fail({ code: 'wrong-prefix', prefix: '' })
   const decoded = decodeBase58Check(text)
   if (!decoded.ok) return decoded
   if (decoded.value.length !== HASH160_LENGTH + 1) {
@@ -929,6 +1049,7 @@ export function decodeAddress(
   chain?: ChainDescriptor,
 ): AddressResult<DecodedAddress> {
   if (typeof text !== 'string') return fail({ code: 'base32-invalid-type' })
+  if (lotusText(text) !== undefined) return decodeLotus(text, chain)
   if (text.includes(':')) return decodeCash(text, chain, undefined)
   const split = text.lastIndexOf('1')
   if (split > 0) {

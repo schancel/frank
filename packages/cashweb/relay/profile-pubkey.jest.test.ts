@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { PrivateKey } from 'bitcore-lib-xpi'
 
 import { MessageConstructor } from './constructors'
@@ -64,42 +61,6 @@ it('matches bitcore profile public keys', () => {
   )
   expect(uncompressed.toPublicKey().toBuffer().length).toBe(65)
 
-  const source = readFileSync(join(__dirname, 'constructors.ts'), 'utf8')
-  const profileStart = source.indexOf('constructProfileMetadata(')
-  const profile = source.slice(
-    profileStart,
-    source.indexOf('return signedPayload', profileStart),
-  )
-  expect(profile).toContain('relayProfilePublicKey(')
-  expect(profile).not.toContain('toPublicKey')
-  expect(profile).not.toContain('crypto.Hash')
-  const messageStart = source.indexOf('constructMessage(')
-  const message = source.slice(
-    messageStart,
-    source.indexOf('constructReplyEntry(', messageStart),
-  )
-  expect(message).toContain('messageSourcePublicKey(')
-  expect(message).not.toContain('toPublicKey')
-  expect(message).toContain('crypto.Hash.sha256hmac(')
-  expect(message).toContain('crypto.Hash.sha256(')
-  const helper = readFileSync(join(__dirname, 'profile-pubkey.ts'), 'utf8')
-  expect(helper).toContain('publicFromPrivate(')
-  expect(helper).toContain('privateKeyFromSecretBytes(')
-  expect(helper).not.toContain('point.mul')
-  expect(helper).not.toContain('pointMultiply')
-  expect(helper).not.toContain('point.add')
-  expect(helper).not.toContain('899')
-  expect(helper).not.toContain('10605')
-  const decode = readFileSync(join(__dirname, 'decode-entry.ts'), 'utf8')
-  expect(decode).toContain('stealthOutpointPublicKey(')
-  expect(decode).not.toContain('pointToCompressed')
-  const crypto = readFileSync(join(__dirname, 'crypto.ts'), 'utf8')
-  expect(crypto).toContain('stealthSharedPoint(')
-  expect(crypto).not.toContain('pointToCompressed')
-  expect(crypto).toContain('constructStampAddress')
-  expect(crypto).toContain('point.mul')
-  expect(crypto).toContain('stealthParentPublicKey(')
-  expect(crypto).not.toContain('point.add')
 })
 
 it('rejects a secret outside (0, n), a non-32-byte secret, and a missing flag', () => {

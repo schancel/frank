@@ -21,6 +21,7 @@ export {
   SUITES,
 } from './ids.js'
 export { isSuiteError } from './result.js'
+export { hmacSha256, randomBytes, sha256 } from './primitives.js'
 export { open, seal } from './seal.js'
 export type { OpenArgs, SealArgs } from './seal.js'
 export type { SuiteFailure, SuiteResult } from './result.js'

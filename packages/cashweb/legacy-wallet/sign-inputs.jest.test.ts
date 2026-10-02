@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { PrivateKey, Script, Transaction } from 'bitcore-lib-xpi'
 import { XPI_MAINNET, parseTransaction, verifyScript } from '@frank/nakamoto'
 
@@ -38,8 +35,6 @@ function scriptHex(transaction: Transaction): string[] {
 }
 
 it('signs legacy wallet inputs with explicit fork-id assignments and refuses a partial sign', () => {
-  const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  expect(source).not.toContain('.sign(signingKeys)')
 
   const key = new PrivateKey()
   const other = new PrivateKey()

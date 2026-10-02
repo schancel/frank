@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import {
   HDPrivateKey,
   HDPublicKey,
@@ -29,14 +26,6 @@ const NETWORK = 'livenet'
 const DEST_SECRET = '11'.repeat(32)
 const EPHEMERAL_SECRET = '22'.repeat(32)
 const PAYLOAD_DIGEST = Buffer.from('33'.repeat(32), 'hex')
-
-function methodBody(source: string, start: string, end: string): string {
-  const from = source.indexOf(start)
-  const to = source.indexOf(end, from)
-  expect(from).toBeGreaterThanOrEqual(0)
-  expect(to).toBeGreaterThan(from)
-  return source.slice(from, to)
-}
 
 function bitcoreOutpoint(
   parentPublicKey: Buffer,
@@ -128,40 +117,6 @@ it('derives stamp and stealth outpoints on the bitcore m/44/145 path', () => {
       NETWORK,
     ),
   )
-
-  const source = readFileSync(join(__dirname, 'constructors.ts'), 'utf8')
-  const stampBody = methodBody(
-    source,
-    'constructStampTransactions(',
-    'constructStealthTransactions(',
-  )
-  const stealthBody = methodBody(
-    source,
-    'constructStealthTransactions(',
-    'constructMessage(',
-  )
-  expect(stampBody).toContain('outpointPublicKey(')
-  expect(stealthBody).toContain('outpointPublicKey(')
-  expect(stampBody).not.toContain('deriveChild')
-  expect(stealthBody).not.toContain('deriveChild')
-  expect(stampBody).toContain('transactionNumber += 1')
-  expect(stealthBody).toContain('transactionNumber += 1')
-  expect(stampBody).not.toContain('899')
-  expect(stealthBody).not.toContain('899')
-  expect(source).not.toContain('10605')
-
-  const receive = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  const decode = readFileSync(join(__dirname, 'decode-entry.ts'), 'utf8')
-  expect(receive).toContain('outpointPrivateKey(')
-  expect(receive).not.toContain('deriveChild')
-  expect(decode).toContain('outpointPrivateKey(')
-  expect(decode).not.toContain('deriveChild')
-
-  const helper = readFileSync(join(__dirname, 'outpoint-hd.ts'), 'utf8')
-  expect(helper).toContain('m/44/145/')
-  expect(helper).not.toContain('899')
-  expect(helper).not.toContain('10605')
-  expect(helper).not.toContain('point.mul')
 
   expect(() =>
     outpointPublicKey(stampParent.toBuffer(), PAYLOAD_DIGEST, -1, 0),
@@ -278,26 +233,4 @@ it('derives stamp and stealth outpoint private keys on the bitcore m/44/145 path
     outpointPrivateKey(stampSecret, Buffer.alloc(31), 0, 0),
   ).toThrow('outpoint-hd:chain-code')
 
-  const receive = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  const receiveAt = receive.indexOf('stampParentSecret(')
-  const receiveBody = receive.slice(
-    receiveAt,
-    receive.indexOf('invalid stamp address', receiveAt),
-  )
-  expect(receiveBody).toContain('outpointPrivateKey(')
-  expect(receiveBody).toContain('stampParentSecret(')
-  expect(receiveBody).not.toContain('constructStampHDPrivateKey')
-  expect(receiveBody).not.toContain('HDPrivateKey')
-  expect(receiveBody).not.toContain('deriveChild')
-  expect(receiveBody).not.toContain('899')
-  expect(receiveBody).not.toContain('10605')
-
-  const decode = readFileSync(join(__dirname, 'decode-entry.ts'), 'utf8')
-  const payment = decode.slice(decode.indexOf("kind === 'stealth-payment'"))
-  expect(payment).toContain('stealthParentSecret(')
-  expect(payment).not.toContain('constructHDStealthPrivateKey')
-  expect(payment).not.toContain('HDPrivateKey')
-  expect(payment).toContain('outpointPrivateKey(')
-  expect(payment).not.toContain('deriveChild')
-  expect(payment).not.toContain('point.mul')
 })

@@ -7,15 +7,11 @@ import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
 const { SignedPayload, SignedPayloadSet, BurnOutputs } =
   __pb_signed_payload_payload_pb
 import pop from '../pop'
-import {
-  crypto,
-  Address,
-  Networks,
-  PrivateKey,
-  Transaction,
-  PublicKey,
-} from 'bitcore-lib-xpi'
-import { pondBurnOutputSatoshis, pondBurnScript } from './burn-script'
+import { PrivateKey, PublicKey } from 'bitcore-lib-xpi'
+import { pondBurnOutputSatoshis } from './burn-script'
+import { registryBroadcastDigest } from './broadcast-digest'
+import { registryWrapperDigest } from './wrapper-digest'
+import { registryBurnOutput } from './burn-output'
 import { registryIdentityPublicKey } from './identity-pubkey'
 import {
   cryptoBackend,
@@ -25,6 +21,11 @@ import {
 import { Wallet } from '../legacy-wallet'
 import { Utxo } from '../types/utxo'
 import { calcUtxoId } from '../legacy-wallet/helpers'
+import {
+  lotusFromAddress,
+  lotusFromPrivateKey,
+  lotusFromPublicKey,
+} from '../legacy-wallet/lotus-address'
 import __pb_broadcast_pb from './broadcast_pb'
 const { BroadcastEntry, BroadcastMessage, ForumPost } = __pb_broadcast_pb
 import { ForumMessage, ForumMessageEntry } from '../types/forum'
@@ -86,19 +87,18 @@ export function signRegistryDigest(hash: Buffer, privKey: PrivateKey): Buffer {
 
 /** One SHA-256 of AddressMetadata protobuf bytes. Matches `Sha256::digest`
  * in `SignedPayload::parse_proto` and the registry HTTP test that hashes
- * `AddressMetadata::encode_to_vec`. Not double-SHA256. Broadcast digests and
- * address strings in this file stay on bitcore (decision #507). The burn
- * script is decision #519. Burn output amounts are decision #521.
+ * `AddressMetadata::encode_to_vec`. Not double-SHA256. createBroadcast uses
+ * registryBroadcastDigest (decision #598). parseWrapper hashes with
+ * registryWrapperDigest and emits a Lotus address. The burn script is
+ * decision #519. Burn output
+ * amounts are decision #521.
  * cryptoBackend rejects Buffer. */
-export function registryAddressMetadataDigest(
-  payload: Uint8Array,
-): Uint8Array {
+export function registryAddressMetadataDigest(payload: Uint8Array): Uint8Array {
   return cryptoBackend.sha256(Uint8Array.from(payload))
 }
 
 /** SEC1 point of a registry identity key (decision #578). types.d.ts omits
- * the runtime compression flag; bitcore-lib-xpi stays until #259. Broadcast
- * digests and the burn Output wrap stay on bitcore. */
+ * the runtime compression flag; bitcore-lib-xpi stays until #259. */
 function registryIdentityPoint(privKey: PrivateKey): Buffer {
   const compressed = (privKey as unknown as { compressed?: boolean }).compressed
   if (compressed !== true && compressed !== false) {
@@ -151,10 +151,7 @@ export class RegistryHandler {
   }
 
   toAPIAddressString(address: string) {
-    return new Address(
-      new Address(address).hashBuffer,
-      Networks.get(this.networkName, undefined),
-    ).toCashAddress()
+    return lotusFromAddress(address, this.networkName)
   }
 
   constructRelayUrlMetadata(relayUrl: string, privKey: PrivateKey) {
@@ -268,7 +265,7 @@ export class RegistryHandler {
 
   async updateKeyMetadata(relayUrl: string, idPrivKey: PrivateKey) {
     assert(this.wallet, 'Missing wallet while running updateKeyMetadata')
-    const idAddress = idPrivKey.toAddress(this.networkName).toCashAddress()
+    const idAddress = lotusFromPrivateKey(idPrivKey, this.networkName)
     // Construct metadata
     const signedPayload = this.constructRelayUrlMetadata(relayUrl, idPrivKey)
 
@@ -312,17 +309,11 @@ export class RegistryHandler {
   }
 
   private constructBurnTransaction(wallet: Wallet, hash: Buffer, vote: number) {
-    const upvote = vote > 0
-    const satoshis = vote < 0 ? -vote : vote
-
-    // Create burn output. Bytes match bitcore Script.add (decision #519).
-    const script = Buffer.from(pondBurnScript(Uint8Array.from(hash), upvote))
-
-    const output = new Transaction.Output({
-      script,
-      satoshis,
+    // Script bytes stay pondBurnScript (decision #519). The record is
+    // paymentOutput (decision #596), not Transaction.Output.
+    return wallet.constructTransaction({
+      outputs: [registryBurnOutput(Uint8Array.from(hash), vote)],
     })
-    return wallet.constructTransaction({ outputs: [output] })
   }
 
   async createBroadcast(
@@ -358,7 +349,9 @@ export class RegistryHandler {
     broadcastMessage.setEntriesList(protoEntries)
 
     const serializedMessage = broadcastMessage.serializeBinary()
-    const payloadDigest = crypto.Hash.sha256(Buffer.from(serializedMessage))
+    const payloadDigest = Buffer.from(
+      registryBroadcastDigest(serializedMessage),
+    )
     const { transaction: burnTransaction, usedUtxos } =
       this.constructBurnTransaction(this.wallet, payloadDigest, vote)
 
@@ -449,14 +442,15 @@ export class RegistryHandler {
     assert(typeof payload !== 'string', 'payload type should not be a string')
     const message = BroadcastMessage.deserializeBinary(payload)
     const pubKey = Buffer.from(wrapper.getPublicKey())
-    const address = PublicKey.fromBuffer(pubKey)
-      .toAddress(this.networkName)
-      .toXAddress()
+    const address = lotusFromPublicKey(
+      PublicKey.fromBuffer(pubKey),
+      this.networkName,
+    )
     const entries = message.getEntriesList()
     const parsedEntries: ForumMessageEntry[] = []
     const satoshisBurned = calculateBurnAmount(wrapper.getTransactionsList())
     assert(satoshisBurned === wrapper.getBurnAmount())
-    const payloadDigest = crypto.Hash.sha256(Buffer.from(payload)).toString(
+    const payloadDigest = Buffer.from(registryWrapperDigest(payload)).toString(
       'hex',
     )
     const parentDigestBinary = message.getParentDigest()

@@ -22,14 +22,19 @@ const {
 import {
   MONAD_IDENTITY_DERIVATION_PATH,
   MonadIdentity,
+  buildSignedDirectoryStatement,
+  decodeProfileBytes,
   fetchCuratedDefaultContacts,
   fetchMonadIdentityPubKey,
   fetchMonadProfile,
   fetchMonadProfilesSince,
   isBotProfileSignedPayload,
+  isCborFrame,
   registerMonadIdentity,
+  registerMonadIdentityCbor,
   searchMonadProfiles,
 } from './monad-identity'
+import { defaultContext, validateFrame } from '@frank/codec'
 import { validateProfileDisplayName } from './profile-display-name'
 
 jest.mock('axios')
@@ -641,5 +646,281 @@ describe('fetchCuratedDefaultContacts', () => {
     })
 
     expect(contacts).toEqual([])
+  })
+})
+
+describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () => {
+  it('buildSignedDirectoryStatement produces a valid Stage 10.6 Type-2 attestation', () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const frame = buildSignedDirectoryStatement(identity, {
+      network: 'monad-testnet',
+      profile: {
+        name: 'Alice',
+        bio: 'Decentralized identity test',
+        bot: true,
+        avatar: 'data:image/png;base64,QUJDRA==',
+      },
+      timestampMs: 1_700_000_000_000,
+    })
+
+    expect(isCborFrame(frame)).toBe(true)
+    const validated = validateFrame(
+      frame,
+      defaultContext({ operation: 'full' }),
+    )
+    expect(validated.kind).toBe('parsed')
+    expect(validated.typed?.type).toBe(2)
+    if (validated.typed?.type === 2) {
+      const stmtFrame = validated.typed.statementFrame
+      expect(stmtFrame.kind).toBe('parsed')
+      expect(stmtFrame.typed?.type).toBe(4)
+      if (stmtFrame.typed?.type === 4) {
+        expect(stmtFrame.typed.network).toBe('monad-testnet')
+        expect(stmtFrame.typed.subject.keyBytes).toEqual(
+          new Uint8Array(identity.compressedPubKey),
+        )
+        expect(stmtFrame.typed.profileEntries?.map(e => e.kind)).toEqual([
+          'display_name',
+          'bio',
+          'bot',
+          'avatar',
+        ])
+      }
+    }
+  })
+
+  it('registerMonadIdentityCbor sends Content-Type application/cbor to PUT /metadata/:addr', async () => {
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: '',
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    })
+
+    const identity = MonadIdentity.fromSeed(SEED)
+    await registerMonadIdentityCbor({
+      relayBaseUrl: RELAY_BASE_URL,
+      identity,
+      profile: { name: 'Bob' },
+    })
+
+    expect(mockedAxios).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'put',
+        url: `${RELAY_BASE_URL}/metadata/${identity.address.raw}`,
+        headers: expect.objectContaining({
+          'Content-Type': 'application/cbor',
+          'Origin': 'http://frank.local',
+        }),
+      }),
+    )
+  })
+
+  it('fetchMonadIdentityPubKey and fetchMonadProfile decode CBOR frames correctly', async () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const cborFrame = buildSignedDirectoryStatement(identity, {
+      network: 'monad-testnet',
+      profile: {
+        name: 'Charlie',
+        bio: 'Frank tester',
+        bot: false,
+        avatar: 'data:image/jpeg;base64,MTIzNA==',
+      },
+    })
+
+    // Test fetchMonadIdentityPubKey
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(cborFrame),
+      statusText: 'OK',
+      headers: { 'content-type': 'application/cbor' },
+      config: {},
+    })
+    const pubKey = await fetchMonadIdentityPubKey({
+      relayBaseUrl: RELAY_BASE_URL,
+      address: identity.address.raw,
+    })
+    expect(pubKey).toEqual(identity.compressedPubKey)
+
+    // Test fetchMonadProfile
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(cborFrame),
+      statusText: 'OK',
+      headers: { 'content-type': 'application/cbor' },
+      config: {},
+    })
+    const profile = await fetchMonadProfile({
+      relayBaseUrl: RELAY_BASE_URL,
+      address: identity.address,
+    })
+    expect(profile).toBeDefined()
+    expect(profile?.name).toBe('Charlie')
+    expect(profile?.bio).toBe('Frank tester')
+    expect(profile?.avatar).toBe('data:image/jpeg;base64,MTIzNA==')
+    expect(profile?.bot).toBeUndefined()
+    expect(Buffer.from(profile!.pubKey)).toEqual(identity.compressedPubKey)
+  })
+
+  it('fetchMonadProfilesSince and searchMonadProfiles handle CBOR frames and populate rawBytes', async () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const cborFrame = buildSignedDirectoryStatement(identity, {
+      network: 'monad-testnet',
+      profile: { name: 'Dan', bot: true },
+    })
+
+    const entry = new ListMonadProfilesEntry()
+    entry.setAddress(identity.address.raw)
+    entry.setSignedPayload(cborFrame)
+
+    const response = new ListMonadProfilesResponse()
+    response.setEntriesList([entry])
+
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(response.serializeBinary()),
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    })
+
+    const sinceResults = await fetchMonadProfilesSince({
+      relayBaseUrl: RELAY_BASE_URL,
+      sinceMs: 0,
+    })
+
+    expect(sinceResults).toHaveLength(1)
+    expect(sinceResults[0].address).toBe(identity.address.raw)
+    expect(sinceResults[0].rawBytes).toEqual(cborFrame)
+    expect(isBotProfileSignedPayload(sinceResults[0].signedPayload)).toBe(true)
+    expect(
+      Buffer.from(sinceResults[0].signedPayload.getPublicKey_asU8()),
+    ).toEqual(identity.compressedPubKey)
+
+    // searchMonadProfiles
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(response.serializeBinary()),
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    })
+
+    const searchResults = await searchMonadProfiles({
+      relayBaseUrl: RELAY_BASE_URL,
+      prefix: 'dan',
+    })
+
+    expect(searchResults).toHaveLength(1)
+    expect(searchResults[0].address).toBe(identity.address.raw)
+    expect(searchResults[0].rawBytes).toEqual(cborFrame)
+  })
+
+  it('fails closed when CBOR frame has tampered signature', async () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const cborFrame = buildSignedDirectoryStatement(identity, {
+      network: 'monad-testnet',
+      profile: { name: 'Eve' },
+    })
+
+    // Tamper with the last byte (part of signature)
+    const tampered = new Uint8Array(cborFrame)
+    tampered[tampered.length - 1] ^= 0xff
+
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(tampered),
+      statusText: 'OK',
+      headers: { 'content-type': 'application/cbor' },
+      config: {},
+    })
+
+    await expect(
+      fetchMonadIdentityPubKey({
+        relayBaseUrl: RELAY_BASE_URL,
+        address: identity.address.raw,
+      }),
+    ).rejects.toThrow()
+  })
+
+  it('decodeProfileBytes verifies address derivation and network binding', () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const otherIdentity = MonadIdentity.fromSeed({
+      mnemonic:
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+    })
+    const cborFrame = buildSignedDirectoryStatement(identity, {
+      network: 'monad-testnet',
+      profile: { name: 'Alice' },
+    })
+
+    // Valid case
+    const decoded = decodeProfileBytes(cborFrame, {
+      expectedAddress: identity.address.raw,
+      expectedNetwork: 'monad-testnet',
+    })
+    expect(decoded.derivedAddress.toLowerCase()).toBe(
+      identity.address.raw.toLowerCase(),
+    )
+    expect(decoded.network).toBe('monad-testnet')
+
+    // Address mismatch in CBOR
+    expect(() =>
+      decodeProfileBytes(cborFrame, {
+        expectedAddress: otherIdentity.address.raw,
+      }),
+    ).toThrow(/address mismatch/)
+
+    // Network mismatch in CBOR
+    expect(() =>
+      decodeProfileBytes(cborFrame, {
+        expectedNetwork: 'monad-mainnet',
+      }),
+    ).toThrow(/network mismatch/)
+  })
+
+  it('fetchMonadIdentityPubKey and fetchMonadProfile reject spoofed profiles on address mismatch', async () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const otherIdentity = MonadIdentity.fromSeed({
+      mnemonic:
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+    })
+    const otherCborFrame = buildSignedDirectoryStatement(otherIdentity, {
+      network: 'monad-testnet',
+      profile: { name: 'Attacker' },
+    })
+
+    // Relay returns otherIdentity profile when querying identity.address.raw
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(otherCborFrame),
+      statusText: 'OK',
+      headers: { 'content-type': 'application/cbor' },
+      config: {},
+    })
+
+    await expect(
+      fetchMonadIdentityPubKey({
+        relayBaseUrl: RELAY_BASE_URL,
+        address: identity.address.raw,
+      }),
+    ).rejects.toThrow(/address mismatch/)
+
+    // fetchMonadProfile address mismatch
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(otherCborFrame),
+      statusText: 'OK',
+      headers: { 'content-type': 'application/cbor' },
+      config: {},
+    })
+
+    await expect(
+      fetchMonadProfile({
+        relayBaseUrl: RELAY_BASE_URL,
+        address: identity.address,
+      }),
+    ).rejects.toThrow(/address mismatch/)
   })
 })

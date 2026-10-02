@@ -17,12 +17,18 @@
     <q-scroll-area class="col">
       <q-list>
         <q-item-label header>{{ $t('walletPanel.title') }}</q-item-label>
-        <q-item data-test="wallet-chain-row">
+        <!-- One row per wallet (#570). The store is single-wallet today, so this list is derived
+        at the UI layer rather than stored; a wallet registry arrives with the multichain /
+        multi-account decisions (#385, #497). Clicking a row opens the wallet's detail view in the
+        main pane, where Send/Receive live. -->
+        <q-item data-test="wallet-row" clickable v-ripple @click="openWallet">
           <q-item-section avatar>
             <q-icon name="account_balance_wallet" />
           </q-item-section>
           <q-item-section>
-            <q-item-label>{{ $t('walletPanel.monad') }}</q-item-label>
+            <q-item-label data-test="wallet-name">{{
+              $t('walletPanel.mainWallet')
+            }}</q-item-label>
             <q-item-label
               caption
               role="status"
@@ -32,22 +38,11 @@
               {{ balanceText }}
             </q-item-label>
           </q-item-section>
-        </q-item>
-
-        <q-separator />
-
-        <q-item data-test="wallet-send" clickable v-ripple @click="openSend">
-          <q-item-section avatar><q-icon name="send" /></q-item-section>
-          <q-item-section>{{ $t('walletPanel.send') }}</q-item-section>
-        </q-item>
-        <q-item
-          data-test="wallet-receive"
-          clickable
-          v-ripple
-          @click="openReceive"
-        >
-          <q-item-section avatar><q-icon name="download" /></q-item-section>
-          <q-item-section>{{ $t('walletPanel.receive') }}</q-item-section>
+          <q-item-section side>
+            <q-item-label caption data-test="wallet-chain">{{
+              $t('walletPanel.monad')
+            }}</q-item-label>
+          </q-item-section>
         </q-item>
 
         <q-separator />
@@ -141,11 +136,8 @@ export default defineComponent({
     },
   },
   methods: {
-    openSend() {
-      openPage(this.$router, '/send')
-    },
-    openReceive() {
-      openPage(this.$router, '/receive')
+    openWallet() {
+      openPage(this.$router, '/wallet')
     },
   },
 })

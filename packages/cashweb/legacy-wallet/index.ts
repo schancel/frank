@@ -5,18 +5,24 @@ import { walletChangeP2pkhScript } from './change-pubkey'
 import { calcUtxoId } from './helpers'
 
 import {
-  Script,
   Transaction,
   PrivateKey,
   HDPrivateKey,
   PublicKey,
 } from 'bitcore-lib-xpi'
+import type { Script } from 'bitcore-lib-xpi'
 import { UtxoStore } from './storage/storage'
 
 import { Utxo } from '../types/utxo'
 import { ChronikClient, WsEndpoint } from 'chronik-client'
 import { AddressEvent, ChainAdapter } from './chain-adapter'
 import { LotusAdapter } from './lotus-adapter'
+import {
+  lotusFromPrivateKey,
+  p2pkhHashFromPublicKey,
+  p2pkhLockingScript,
+} from './lotus-address'
+import { lotusP2pkhFromHash } from './lotus-identity'
 import {
   BTC_MAINNET,
   BTC_TESTNET,
@@ -91,7 +97,6 @@ function scriptBytes(script: Script): Uint8Array {
 }
 
 // HASH160 of the serialized public key, then the 25-byte template (decision #495).
-// Address-string scripts stay on bitcore until issue #242.
 export function p2pkhScriptFromPublicKey(publicKey: PublicKey): Buffer {
   const serialized = Uint8Array.from(publicKey.toBuffer())
   const hash = pubkeyHashFromBytes(cryptoBackend.hash160(serialized))
@@ -133,6 +138,41 @@ export function walletChangePrivateKey(
   index: number,
 ): PrivateKey {
   return privateKeyFromHdPath(xPrivKey, `${WALLET_CHANGE_PREFIX}/${index}`)
+}
+
+// The UI stores the bitcore toObject() record (decision #592). Address
+// strings stay on this bitcore key until issue #242.
+type StoredHdPrivate = {
+  network: string
+  depth: number
+  parentFingerPrint: number
+  childIndex: number
+  chainCode: string
+  privateKey: string
+  xprivkey: string
+}
+
+export function hdPrivateKeyFromStored(
+  value: HDPrivateKey | StoredHdPrivate,
+): HDPrivateKey {
+  if (value instanceof HDPrivateKey) return value
+  return new HDPrivateKey(value)
+}
+
+// Build the locking script here. UnspentOutput also parses `address`, so the
+// Lotus string stays off that object.
+export function unspentOutputFromAddress(utxo: {
+  txId: string
+  outputIndex: number
+  satoshis: number
+  address: string
+}): Transaction.UnspentOutput {
+  return Transaction.UnspentOutput.fromObject({
+    txId: utxo.txId,
+    outputIndex: utxo.outputIndex,
+    satoshis: utxo.satoshis,
+    script: Buffer.from(p2pkhLockingScript(utxo.address)).toString('hex'),
+  })
 }
 
 // bitcore's Input type omits setScript; the runtime method writes _scriptBuffer.
@@ -313,12 +353,13 @@ export class Wallet {
     this.chainAdapter = new LotusAdapter({ chronikClient, chronikWs })
   }
 
-  setXPrivKey(xPrivKey: HDPrivateKey) {
-    this._xPrivKey = xPrivKey
+  setXPrivKey(xPrivKey: HDPrivateKey | StoredHdPrivate) {
+    const key = hdPrivateKeyFromStored(xPrivKey)
+    this._xPrivKey = key
     // TODO: we're just using the first key in the HD addresses for now
     // so that it'll be compatible (mostly) with other HD wallets.
     // We should do something to allow revocations in the future.
-    this._identityPrivKey = walletReceivePrivateKey(xPrivKey, 0)
+    this._identityPrivKey = walletReceivePrivateKey(key, 0)
 
     this.init()
   }
@@ -375,10 +416,10 @@ export class Wallet {
     privKey: PrivateKey
     change: boolean
   }) {
-    const address = privKey.toAddress(this.networkName)
-    const pkh = address.hashBuffer.toString('hex')
+    const hash = p2pkhHashFromPublicKey(privKey.toPublicKey().toBuffer())
+    const pkh = Buffer.from(hash).toString('hex')
     this.addressDataByPkh.set(pkh, {
-      address: address.toXAddress(),
+      address: lotusP2pkhFromHash(hash, this.networkName),
       change,
       privKey,
     })
@@ -517,7 +558,9 @@ export class Wallet {
       [...this.walletKeys, ...this.changeKeys],
       key =>
         chainAdapter.subscribeAddress(
-          key.privKey.toAddress().hashBuffer.toString('hex'),
+          Buffer.from(
+            p2pkhHashFromPublicKey(key.privKey.toPublicKey().toBuffer()),
+          ).toString('hex'),
         ),
       { concurrency: 5 },
     )
@@ -623,11 +666,8 @@ export class Wallet {
         continue
       }
       stagedUtxos.push(outpoint)
-      outpoint.script = Script.buildPublicKeyHashOut(outpoint.address).toHex()
       signingKeys.push(outpoint.privKey)
-      transaction = transaction.from([
-        Transaction.UnspentOutput.fromObject(outpoint),
-      ])
+      transaction = transaction.from([unspentOutputFromAddress(outpoint)])
       satoshis += outpoint.satoshis
     }
 
@@ -765,7 +805,9 @@ export class Wallet {
       const changeOutputAmount = delta - properFee
       if (changeOutputAmount >= minimumNewInputAmount) {
         const output = new Transaction.Output({
-          script: walletChangeP2pkhScript(changeKeys[0].privKey).toString('hex'),
+          script: walletChangeP2pkhScript(changeKeys[0].privKey).toString(
+            'hex',
+          ),
           satoshis: changeOutputAmount,
         })
         transaction = transaction.addOutput(output)
@@ -898,10 +940,7 @@ export class Wallet {
           1,
         )
         stagedUtxos.push(utxoToUse)
-        utxoToUse.script = Script.buildPublicKeyHashOut(
-          utxoToUse.address,
-        ).toHex()
-        transaction.from([Transaction.UnspentOutput.fromObject(utxoToUse)])
+        transaction.from([unspentOutputFromAddress(utxoToUse)])
         signingKeys.push(utxoToUse.privKey)
         const txnSize = this._estimateSize(transaction)
         satoshis += utxoToUse.satoshis
@@ -1033,7 +1072,11 @@ export class Wallet {
   constructTransaction({
     outputs,
   }: {
-    outputs: Utxo[] | Transaction.Output[]
+    // BIP70 records are { script, satoshis } (decision #594). Burn and
+    // P2PKH callers still pass Transaction.Output.
+    outputs: Array<
+      Utxo | Transaction.Output | { script: Buffer; satoshis: number }
+    >
   }) {
     let transaction = new Transaction()
 
@@ -1076,13 +1119,8 @@ export class Wallet {
       usedUtxos.push(utxo)
       console.log(utxo)
 
-      const address = utxo.address
-      utxo.script = Script.buildPublicKeyHashOut(address).toHex()
-      // Grab private key
       signingKeys.push(utxo.privKey)
-      transaction = transaction.from([
-        Transaction.UnspentOutput.fromObject(utxo),
-      ])
+      transaction = transaction.from([unspentOutputFromAddress(utxo)])
       satoshis += utxo.satoshis
     }
 
@@ -1129,9 +1167,9 @@ export class Wallet {
   }
 
   get displayAddress() {
-    // TODO: This should be in the relay client, not the wallet...
-    // TODO: Not just testnet
-    return this.identityPrivKey?.toAddress(this.networkName).toXAddress()
+    const key = this.identityPrivKey
+    if (!key) return undefined
+    return lotusFromPrivateKey(key, this.networkName)
   }
 
   freezeUtxo(utxo: Utxo) {

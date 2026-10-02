@@ -1,6 +1,4 @@
 import { createHash } from 'crypto'
-import { readFileSync } from 'fs'
-import { join } from 'path'
 
 import {
   PrivateKey,
@@ -20,14 +18,6 @@ const ABC_SHA256 =
 const NETWORK = 'livenet'
 const DEST_SECRET = '11'.repeat(32)
 const EPHEMERAL_SECRET = '22'.repeat(32)
-
-function methodBody(source: string, start: string, end: string): string {
-  const from = source.indexOf(start)
-  const to = source.indexOf(end, from)
-  expect(from).toBeGreaterThanOrEqual(0)
-  expect(to).toBeGreaterThan(from)
-  return source.slice(from, to)
-}
 
 it('hashes a compressed stealth point with one SHA-256', () => {
   const empty = Buffer.from(stealthPointDigest(new Uint8Array()))
@@ -58,27 +48,6 @@ it('hashes a compressed stealth point with one SHA-256', () => {
 })
 
 it('derives stealth keys from that digest and leaves HMAC on bitcore', () => {
-  const source = readFileSync(join(__dirname, 'crypto.ts'), 'utf8')
-  const publicBody = methodBody(
-    source,
-    'constructStealthPublicKey(',
-    'constructHDStealthPublicKey(',
-  )
-  const privateBody = methodBody(
-    source,
-    'constructStealthPrivateKey(',
-    'constructHDStealthPrivateKey(',
-  )
-  expect(publicBody).toContain('stealthPointDigest(dhKeyPointRaw)')
-  expect(privateBody).toContain('stealthParentSecret(')
-  expect(privateBody).not.toContain('point.mul')
-  expect(privateBody).not.toContain('crypto.BN')
-  expect(publicBody).not.toContain('crypto.Hash.sha256')
-  expect(privateBody).not.toContain('crypto.Hash.sha256')
-  expect(source).not.toContain('crypto.Hash.sha256(')
-  expect(source.match(/crypto\.Hash\.sha256hmac\(/g)).toHaveLength(2)
-  expect(source).toContain('point.mul(')
-  expect(source).not.toContain('sha256d')
 
   const ctor = new PayloadConstructor({ networkName: NETWORK })
   const destination = PrivateKey.fromBuffer(

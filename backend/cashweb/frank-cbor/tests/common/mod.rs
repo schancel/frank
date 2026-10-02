@@ -450,9 +450,20 @@ pub fn context_from_json(value: &serde_json::Value) -> ValidationContext {
         "frame" => Operation::Frame,
         "generic" => Operation::Generic,
         "typed" => Operation::Typed,
-        "full" => panic!("stage 10 (`full`) is outside this codec"),
+        "full" => Operation::Full,
         other => panic!("unknown operation {other}"),
     };
+    for key in [
+        "payment_policy",
+        "decrypted_frame_hex",
+        "recipient_directory_state",
+    ] {
+        if let Some(field) = value.get(key) {
+            if !field.is_null() {
+                panic!("stage 10.1-10.5 inputs ({key}) are outside this codec");
+            }
+        }
+    }
     let supported_schemas = value["supported_schemas"]
         .as_array()
         .expect("supported_schemas")

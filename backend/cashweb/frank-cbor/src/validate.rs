@@ -1,12 +1,15 @@
-//! Section 9 validation order, stages 1-9.
+//! Section 9 validation order, stages 1-9 plus stage 10.6.
 //!
-//! Stage 10 (cryptographic and external checks) is not implemented. There is no
-//! `full` operation.
+//! Stage 10.6 verifies every type-2 signature entry and key-transition authorization. Stages
+//! 10.1-10.5 (the type-1 stamp checks) are not implemented; a `full` type-1 root is a
+//! context error.
 
 use std::collections::HashMap;
 
 use crate::cbor::{decode_single_item, Counters};
+use crate::crypto;
 use crate::error::{CodecError, ContextError, Error, ErrorCategory, ErrorStage};
+use crate::hash::{directory_signature_digest, key_transition_signature_digest};
 use crate::limits::{
     is_known_type, FRAME_HEADER_BYTES, FRAME_MAGIC, FRAME_VERSION, KNOWN_TYPES, MAX_FRAME_BYTES,
     MAX_MESSAGE_ITEMS_TOTAL, TYPE_DIRECTORY_STATEMENT, TYPE_KEY_TRANSITION_STATEMENT,
@@ -14,8 +17,8 @@ use crate::limits::{
 };
 use crate::model::{
     ChildFrame, FrameOnly, JournalFact, KeyTransition, OpaqueSection, ParsedFrame, PaymentMember,
-    Projection, RelayBinding, RetainedFrame, RetentionReason, SignatureEntry, TypedPayload,
-    ValidationResult,
+    ProfileEntry, ProfileHeader, Projection, RelayBinding, RetainedFrame, RetentionReason,
+    SignatureEntry, TypedPayload, ValidationResult,
 };
 use crate::schema::{
     check_allocated, check_root_frame_limit, check_type_limits, parse_draft, Draft, SchemaVersions,
@@ -31,6 +34,8 @@ pub enum Operation {
     Generic,
     /// Stop after stage 9.
     Typed,
+    /// Run stage 10.6 (the type-2 signature verification) after stage 9.
+    Full,
 }
 
 /// One entry of the reader's supported-schema list.
@@ -66,7 +71,8 @@ pub struct ValidationContext {
     pub supported_schemas: Vec<SupportedSchema>,
     /// Governs the root frame only (V6.1).
     pub opaque_retention_allowed: bool,
-    /// Required for a type-2 root under [`Operation::Typed`]. Ignored otherwise.
+    /// Required for a type-2 root under [`Operation::Typed`] or [`Operation::Full`].
+    /// Ignored otherwise.
     pub prior: PriorStatement,
 }
 
@@ -75,8 +81,8 @@ pub fn default_context() -> ValidationContext {
     ValidationContext {
         operation: Operation::Typed,
         route_byte_limit: MAX_FRAME_BYTES as u64,
-        // Reader version 2 reads type 4 at schema 2 (the stamp key, README S10a.1); every other
-        // type stays at schema 1.
+        // Reader version 2 reads type 4 at schema 3 (the stamp key and profile entries, README
+        // S10a.1 and M4); every other type stays at schema 1.
         reader_version: 2,
         supported_schemas: KNOWN_TYPES
             .iter()
@@ -84,7 +90,7 @@ pub fn default_context() -> ValidationContext {
             .map(|type_id| SupportedSchema {
                 type_id,
                 schema_version: if type_id == TYPE_DIRECTORY_STATEMENT {
-                    2
+                    3
                 } else {
                     1
                 },
@@ -424,7 +430,176 @@ fn process_frame(
         check_semantics(&typed, prior_slot.as_ref().map(|slot| slot.as_ref())),
     )?;
     parsed.typed = Some(Box::new(typed));
+    if matches!(mode, Mode::Root) && stop_after == Operation::Full {
+        match run_stage_10(&parsed) {
+            Ok(()) => {}
+            Err(Error::Codec(codec)) => return Err(codec),
+            Err(Error::Context(context)) => {
+                shared.context_error = Some(context);
+                return Err(fail(
+                    ErrorCategory::Semantic,
+                    ErrorStage::S9,
+                    "stage 10 context",
+                    location,
+                ));
+            }
+        }
+    }
     Ok(ValidationResult::Parsed(parsed))
+}
+
+/// Stage 10 for a root frame. Only 10.6 exists in this slice; it applies to a type-2 root.
+fn run_stage_10(parsed: &ParsedFrame) -> Result<(), Error> {
+    let Some(typed) = parsed.typed.as_deref() else {
+        return Err(Error::Context(ContextError(
+            "internal: stage 10 needs the typed projection".to_string(),
+        )));
+    };
+    match typed {
+        TypedPayload::DirectoryAttestation {
+            statement,
+            signatures,
+            ..
+        } => {
+            verify_attestation(statement, signatures)?;
+            Ok(())
+        }
+        TypedPayload::DirectMessage { .. } => Err(Error::Context(ContextError(
+            "stages 10.1-10.5 (the type-1 stamp checks) are outside this slice; `full` runs \
+             only the type-2 signature verification of stage 10.6"
+                .to_string(),
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// Stage 10.6: first preflight all entries for allocated-but-unverifiable algorithms (M7), then
+/// verify signature entries followed by key-transition authorizations in document order.
+fn verify_attestation(
+    statement: &ParsedFrame,
+    signatures: &[SignatureEntry],
+) -> Result<(), CodecError> {
+    let Some(typed) = statement.typed.as_deref() else {
+        return Err(fail(
+            ErrorCategory::Cryptographic,
+            ErrorStage::S106,
+            "internal: statement not typed",
+            "root/payload.1",
+        ));
+    };
+    let TypedPayload::DirectoryStatement {
+        network,
+        key_transitions,
+        ..
+    } = typed
+    else {
+        return Err(fail(
+            ErrorCategory::Cryptographic,
+            ErrorStage::S106,
+            "internal: statement not a type-4 payload",
+            "root/payload.1",
+        ));
+    };
+    let digest = directory_signature_digest(network, &statement.frame).map_err(|err| {
+        fail(
+            ErrorCategory::Cryptographic,
+            ErrorStage::S106,
+            format!("invalid directory signature transcript: {}", err.0),
+            "root/payload.0",
+        )
+    })?;
+    let transitions = key_transitions.as_deref().unwrap_or(&[]);
+    // M7: an allocated algorithm this reader cannot verify makes the entire attestation
+    // unsupported. Discover that before running any algorithm-1 verification.
+    for (i, entry) in signatures.iter().enumerate() {
+        preflight_algorithm(entry.algorithm, &format!("root/payload.1[{i}]"))?;
+    }
+    for (i, transition) in transitions.iter().enumerate() {
+        preflight_algorithm(transition.algorithm, &format!("root/payload.0/5[{i}]"))?;
+    }
+    for (i, entry) in signatures.iter().enumerate() {
+        verify_entry(
+            entry.algorithm,
+            &entry.signer,
+            &entry.signature,
+            &digest,
+            &format!("root/payload.1[{i}]"),
+        )?;
+    }
+    for (i, transition) in transitions.iter().enumerate() {
+        let transition_typed = transition.statement.typed.as_deref();
+        let Some(TypedPayload::KeyTransitionStatement {
+            network: transition_network,
+            ..
+        }) = transition_typed
+        else {
+            return Err(fail(
+                ErrorCategory::Cryptographic,
+                ErrorStage::S106,
+                "internal: transition statement not typed",
+                &format!("root/payload.0/5[{i}]"),
+            ));
+        };
+        let digest =
+            key_transition_signature_digest(transition_network, &transition.statement.frame)
+                .map_err(|err| {
+                    fail(
+                        ErrorCategory::Cryptographic,
+                        ErrorStage::S106,
+                        format!("invalid key-transition signature transcript: {}", err.0),
+                        &format!("root/payload.0/5[{i}]"),
+                    )
+                })?;
+        verify_entry(
+            transition.algorithm,
+            &transition.signer,
+            &transition.signature,
+            &digest,
+            &format!("root/payload.0/5[{i}]"),
+        )?;
+    }
+    Ok(())
+}
+
+fn preflight_algorithm(algorithm: u32, location: &str) -> Result<(), CodecError> {
+    if matches!(algorithm, 2 | 3 | 16) {
+        return Err(fail(
+            ErrorCategory::Unsupported,
+            ErrorStage::S106,
+            format!("algorithm {algorithm} is allocated but not verifiable in this slice (M7)"),
+            location,
+        ));
+    }
+    Ok(())
+}
+
+/// One stage-10.6 entry: M7's `unsupported` for allocated-but-unverifiable algorithms, then
+/// the algorithm-1 verification. Unallocated algorithms cannot reach this point (stage 8.3).
+fn verify_entry(
+    algorithm: u32,
+    signer: &crate::model::AccountRef,
+    signature: &[u8],
+    digest: &[u8; 32],
+    location: &str,
+) -> Result<(), CodecError> {
+    preflight_algorithm(algorithm, location)?;
+    if algorithm != 1 {
+        return Err(fail(
+            ErrorCategory::Unsupported,
+            ErrorStage::S106,
+            format!("algorithm {algorithm} is not allocated to this reader (S2a)"),
+            location,
+        ));
+    }
+    if !crypto::verify_algorithm_1(digest, signature, &signer.key_bytes) {
+        return Err(fail(
+            ErrorCategory::Cryptographic,
+            ErrorStage::S106,
+            "the algorithm-1 signature does not verify over the transcript digest",
+            location,
+        ));
+    }
+    Ok(())
 }
 
 fn typed_is_type2(typed: &TypedPayload) -> bool {
@@ -618,6 +793,7 @@ fn open_children(
             recovery,
             schema_version,
             stamp_key,
+            profile_entries,
             unknown,
         } => {
             let key_transitions = match key_transitions {
@@ -662,6 +838,25 @@ fn open_children(
                 recovery,
                 schema_version,
                 stamp_key,
+                profile_entries: profile_entries.map(|entries| {
+                    entries
+                        .into_iter()
+                        .map(|entry| ProfileEntry {
+                            kind: entry.kind,
+                            headers: entry
+                                .headers
+                                .into_iter()
+                                .map(|header| ProfileHeader {
+                                    name: header.name,
+                                    value: header.value,
+                                    unknown: header.unknown,
+                                })
+                                .collect(),
+                            body: entry.body,
+                            unknown: entry.unknown,
+                        })
+                        .collect()
+                }),
                 unknown,
             })
         }

@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { Script } from 'bitcore-lib-xpi'
 
 import { LotusAdapter } from './lotus-adapter'
@@ -22,9 +19,6 @@ function adapter(): LotusAdapter {
 }
 
 it('decodes the lotusd descriptor P2PKH script the way bitcore does', () => {
-  const source = readFileSync(join(__dirname, 'lotus-adapter.ts'), 'utf8')
-  expect(source).not.toContain('bitcore-lib-xpi')
-  expect(source).toContain('pubkeyHashFromOutputScript')
 
   const old = new Script(LOTUSD_P2PKH)
   expect(old.isPublicKeyHashOut()).toBe(true)

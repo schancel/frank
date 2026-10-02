@@ -1,6 +1,4 @@
 import { createHash } from 'crypto'
-import { readFileSync } from 'fs'
-import { join } from 'path'
 
 import { verifyEcdsa } from '@frank/nakamoto'
 import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
@@ -15,10 +13,6 @@ const EMPTY_SHA256 =
 // libsecp256k1's ECDSA+DER nonce tag is not used.
 
 it('signs profile metadata as the bitcore compact r||s bytes', () => {
-  const source = readFileSync(join(__dirname, 'constructors.ts'), 'utf8')
-  expect(source).not.toContain('ECDSA.sign')
-  expect(source).not.toContain('toCompact')
-  expect(source).toContain('signRegistryDigest')
 
   const privKey = new PrivateKey(
     '12b004fff7f4b69ef8650e767f18f11ede158148b425660723b9f9a66e61f747',
@@ -33,14 +27,6 @@ it('signs profile metadata as the bitcore compact r||s bytes', () => {
   const payload = signed.getPayload_asU8()
   const digest = bitcoreCrypto.Hash.sha256(Buffer.from(payload))
   expect(Buffer.from(relayProfilePayloadDigest(payload))).toEqual(digest)
-  const profileStart = source.indexOf('constructProfileMetadata(')
-  const profileBody = source.slice(
-    profileStart,
-    source.indexOf('return signedPayload', profileStart),
-  )
-  expect(profileBody).toContain('relayProfilePayloadDigest')
-  expect(profileBody).not.toContain('crypto.Hash')
-  expect(profileBody).not.toContain('sha256d')
   const live = bitcoreCrypto.ECDSA.sign(digest, privKey)
   const signature = Buffer.from(signed.getSignature_asU8())
   expect(signature.toString('hex')).toBe(

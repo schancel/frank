@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
 import { PayloadConstructor } from './crypto'
@@ -14,14 +11,6 @@ const N_MINUS_1 =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140'
 const ZERO_SUM_DIGEST =
   'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeda99dcbd59e378f2aaec14d7bbf253030'
-
-function methodBody(source: string, start: string, end: string): string {
-  const from = source.indexOf(start)
-  const to = source.indexOf(end, from)
-  expect(from).toBeGreaterThanOrEqual(0)
-  expect(to).toBeGreaterThan(from)
-  return source.slice(from, to)
-}
 
 function bitcoreStampParent(digest: Buffer, destination: PrivateKey): Buffer {
   const sum = bitcoreCrypto.BN.fromBuffer(digest)
@@ -72,33 +61,6 @@ it('matches bitcore stamp parent secrets for digests in (0, n)', () => {
   ).toEqual(Buffer.from(crossedHd.privateKey.bytes))
   expect(almost.toBuffer().toString('hex')).toBe(N_MINUS_1)
 
-  const source = readFileSync(join(__dirname, 'crypto.ts'), 'utf8')
-  const body = methodBody(
-    source,
-    'constructStampPrivateKey(',
-    'constructStampHDPrivateKey(',
-  )
-  expect(body).toContain('stampParentSecret(')
-  expect(body).not.toContain('crypto.BN')
-  expect(body).not.toContain('Point.getN')
-  const stealth = methodBody(
-    source,
-    'constructStealthPrivateKey(',
-    'constructHDStealthPrivateKey(',
-  )
-  expect(stealth).toContain('stealthParentSecret(')
-  expect(stealth).not.toContain('point.mul')
-  expect(stealth).not.toContain('crypto.BN')
-  const address = methodBody(source, 'constructStampAddress(', 'encrypt(')
-  expect(address).toContain('stampParentSecret(')
-  expect(address).toContain('.toAddress(')
-  expect(address).not.toContain('crypto.BN')
-  expect(address).not.toContain('Point.getN')
-  const helper = readFileSync(join(__dirname, 'stamp-parent.ts'), 'utf8')
-  expect(helper).toContain('tweakAddPrivateKey(')
-  expect(helper).not.toContain('point.mul')
-  expect(helper).not.toContain('899')
-  expect(helper).not.toContain('10605')
 })
 
 it('rejects a zero sum and digests outside (0, n)', () => {

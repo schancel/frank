@@ -101,7 +101,7 @@ export default defineComponent({
       if (!sender) {
         return 'Message not found'
       }
-      if (sender === this.$wallet.myAddress?.toXAddress()) {
+      if (sender === this.$wallet.displayAddress) {
         return 'You'
       }
       const contact = this.getContact(sender)

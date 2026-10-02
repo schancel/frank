@@ -3,9 +3,19 @@
 // FrankCodec bundle. It executes the committed manifest and a few API checks and returns a
 // JSON-serializable summary.
 const frankBrowserCheckInstall = function () {
-  function check(codec, manifest, rustOrigin, interoperability) {
+  function check(
+    codec,
+    manifest,
+    rustOrigin,
+    interoperability,
+    registration,
+    registrationValues,
+  ) {
     rustOrigin = rustOrigin || globalThis.FRANK_RUST_ORIGIN
     interoperability = interoperability || globalThis.FRANK_INTEROPERABILITY
+    registration = registration || globalThis.FRANK_REGISTRATION
+    registrationValues =
+      registrationValues || globalThis.FRANK_REGISTRATION_VALUES
     const failures = []
     const fail = (id, msg) => failures.push(id + ': ' + msg)
 
@@ -304,7 +314,163 @@ const frankBrowserCheckInstall = function () {
     if (typeof big !== 'bigint' || big !== 18446744073709551615n)
       fail('decode', 'u64 max not a bigint')
 
-    // No Node globals leaked into this realm.
+    // Account-registration corpus (README section 11): every case, including the full
+    // operation's stage-10.6 signature verification, plus the pure-value M2/M3/M6 vectors.
+    const registrationIds = registration.cases.map(c => c.id)
+    if (
+      registrationIds.length !== 30 ||
+      registrationIds.join('\n') !==
+        registrationValues.manifest_case_ids.join('\n')
+    )
+      fail('registration', 'exact case inventory differs')
+    const registrationCounts = { total: 0, accepted: 0, rejected: 0 }
+    for (const c of registration.cases) {
+      registrationCounts.total++
+      let kind
+      let category
+      let stage
+      let r
+      try {
+        r = codec.validateFrame(codec.fromHex(c.frame_hex), ctxOf(c))
+        kind = r.kind === 'retained' ? 'retain' : 'accept'
+      } catch (e) {
+        if (!(e instanceof codec.FrankCodecError)) {
+          fail(c.id, 'unexpected exception ' + e)
+          continue
+        }
+        kind = 'reject'
+        category = e.category
+        stage = e.stage
+      }
+      if (kind !== c.expectation) {
+        fail(
+          c.id,
+          'expected ' +
+            c.expectation +
+            ', got ' +
+            kind +
+            ' ' +
+            (category || ''),
+        )
+        continue
+      }
+      if (kind === 'reject') {
+        registrationCounts.rejected++
+        if (category !== c.error_category) fail(c.id, 'category ' + category)
+        if (stage !== c.error_stage) fail(c.id, 'stage ' + stage)
+      } else {
+        registrationCounts.accepted++
+        if (codec.toHex(r.frame) !== c.frame_hex)
+          fail(c.id, 'complete frame bytes differ')
+        if (codec.toHex(codec.contentHash(r)) !== c.content_hash_hex)
+          fail(c.id, 'content hash differs')
+      }
+    }
+    if (
+      registrationCounts.accepted === 0 ||
+      registrationCounts.rejected === 0
+    ) {
+      fail('registration', 'implausible outcome split')
+    }
+    const t2a = registrationValues.key_transition_authorizations
+    if (t2a.length !== 1 || t2a[0].id !== 't2a-rust-secret-2') {
+      fail('T2a', 'exact known-answer inventory differs')
+    } else {
+      const v = t2a[0]
+      const digest = codec.keyTransitionSignatureDigest(
+        v.network,
+        codec.fromHex(v.transition_statement_frame_hex),
+      )
+      if (codec.toHex(digest) !== v.digest_hex) fail(v.id, 'T2a digest differs')
+      if (
+        !codec.verifyAlgorithm1(
+          digest,
+          codec.fromHex(v.signature_der_hex),
+          codec.fromHex(v.signer_public_key_hex),
+        )
+      )
+        fail(v.id, 'T2a signature does not verify')
+      const corpusCase = byId(registration, v.attestation_case_id)
+      if (!corpusCase) {
+        fail(v.id, 'linked attestation case is missing')
+      } else {
+        if (
+          corpusCase.validation_context.prior_directory_statement_frame_hex !==
+          v.prior_statement_frame_hex
+        )
+          fail(v.id, 'linked prior statement differs')
+        const attestationEnvelope = codec.decodeCanonical(
+          codec.fromHex(corpusCase.frame_hex).subarray(9),
+        )
+        const attestation = codec.decodeCanonical(attestationEnvelope.get(3n))
+        const statementFrame = attestation.get(0n)
+        const statementEnvelope = codec.decodeCanonical(
+          statementFrame.subarray(9),
+        )
+        const statement = codec.decodeCanonical(statementEnvelope.get(3n))
+        const transitions = statement.get(5n)
+        if (statement.get(0n) !== v.network)
+          fail(v.id, 'linked network differs')
+        if (!Array.isArray(transitions) || transitions.length !== 1) {
+          fail(v.id, 'linked transition inventory differs')
+        } else {
+          const entry = transitions[0]
+          const signer = entry.get(2n)
+          if (codec.toHex(entry.get(0n)) !== v.transition_statement_frame_hex)
+            fail(v.id, 'linked transition statement differs')
+          if (codec.toHex(signer.get(1n)) !== v.signer_public_key_hex)
+            fail(v.id, 'linked signer key differs')
+          if (codec.toHex(entry.get(3n)) !== v.signature_der_hex)
+            fail(v.id, 'linked signature differs')
+        }
+      }
+    }
+    for (const v of registrationValues.timestamp_mappings) {
+      const ms = BigInt(v.timestamp_ms)
+      const got = codec.splitMs(ms)
+      if (got.revision.toString() !== v.revision)
+        fail('M2 ' + v.timestamp_ms, 'revision differs')
+      if (got.seconds.toString() !== v.seconds)
+        fail('M2 ' + v.timestamp_ms, 'seconds differ')
+      if (String(got.nanoseconds) !== v.nanoseconds)
+        fail('M2 ' + v.timestamp_ms, 'nanoseconds differ')
+      if (codec.joinMs(got.seconds, got.nanoseconds) !== ms)
+        fail('M2 ' + v.timestamp_ms, 'round trip differs')
+    }
+    for (const v of registrationValues.timestamp_unencodable) {
+      let threw = false
+      try {
+        codec.splitMs(BigInt(v.timestamp_ms))
+      } catch (e) {
+        threw = true
+      }
+      if (!threw)
+        fail('M2 unencodable ' + v.timestamp_ms, 'accepted a negative ms')
+    }
+    for (const v of registrationValues.expiry_mappings) {
+      const got = codec.expiryTimestamp(
+        BigInt(v.timestamp_ms),
+        BigInt(v.ttl_ms),
+      )
+      if (got.seconds.toString() !== v.expiry_seconds)
+        fail('M3 ' + v.timestamp_ms + '+' + v.ttl_ms, 'seconds differ')
+      if (String(got.nanoseconds) !== v.expiry_nanoseconds)
+        fail('M3 ' + v.timestamp_ms + '+' + v.ttl_ms, 'nanoseconds differ')
+    }
+    for (const v of registrationValues.address_derivations) {
+      const compressed = codec.fromHex(v.compressed_pubkey_hex)
+      if (
+        codec.toHex(codec.addressFromCompressedPubkey(compressed)) !==
+        v.address_hex
+      )
+        fail('M6 ' + v.label, 'address differs')
+      if (
+        codec.toHex(codec.uncompressedPubkeyXy(compressed)) !==
+        v.uncompressed_x_y_hex
+      )
+        fail('M6 ' + v.label, 'uncompressed key differs')
+    }
+
     const g = globalThis
     const leaked = ['process', 'Buffer', 'require', 'module', 'global'].filter(
       n => typeof g[n] !== 'undefined',
@@ -312,6 +478,7 @@ const frankBrowserCheckInstall = function () {
     return {
       typescript: counts.typescript,
       rust: counts.rust,
+      registration: registrationCounts,
       interoperability: {
         hostileCases: hostile.case_count,
         mutationOffset: crypto.mutation_offset,

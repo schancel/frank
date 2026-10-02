@@ -103,10 +103,37 @@ describe('encryption suites', () => {
     expect(readme).toContain('no prekeys')
     expect(readme).toContain('no ratchet')
     expect(readme).toContain('0xFF00')
-    expect(readme).toContain('not a CBOR version-1')
+    expect(readme).toContain('0xFE01')
+    expect(readme).toContain('0xFE02')
+    expect(readme).toContain('0xFE03')
+    expect(readme).toContain('0xFE04')
+    expect(readme).toContain('does not read or write CashWeb CBOR')
+    expect(readme).toContain('@frank/codec')
+    expect(readme).toContain('frank-cbor')
     expect(readme).toContain('protobuf')
     expect(readme).toContain('AES-CBC is not used')
-    expect(readme).toContain('waiting')
+    expect(readme).not.toContain('CBOR v1')
+    expect(readme).not.toContain('encryption-suite field')
+    expect(readme).not.toContain('waiting')
+    const spec = readFileSync(
+      join(__dirname, '../../../docs/protocol/cbor/README.md'),
+      'utf8',
+    )
+    const codecReadme = readFileSync(
+      join(__dirname, '../../frank-codec/README.md'),
+      'utf8',
+    )
+    const rustReadme = readFileSync(
+      join(__dirname, '../../../backend/cashweb/frank-cbor/README.md'),
+      'utf8',
+    )
+    for (const boundary of [spec, codecReadme, rustReadme]) {
+      expect(boundary).toContain('0xFE01')
+      expect(boundary).toContain('65535')
+      expect(boundary).toContain(
+        'not version-1 encryption-suite allocations (decision 356)',
+      )
+    }
     const sources = readdirSync(join(__dirname, '../src')).filter(name =>
       name.endsWith('.ts'),
     )

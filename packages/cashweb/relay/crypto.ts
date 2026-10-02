@@ -1,10 +1,10 @@
 import assert from 'assert'
-import {
-  PrivateKey,
-  PublicKey,
-  crypto,
-} from 'bitcore-lib-xpi'
+import { hmacSha256 } from '@frank/crypto-box'
+import { privateKeyFromSecretBytes, publicFromPrivate } from '@frank/nakamoto'
+import { PrivateKey, PublicKey } from 'bitcore-lib-xpi'
 import * as forge from 'node-forge'
+import { p2pkhHashFromPublicKey } from '../legacy-wallet/lotus-address'
+import { lotusP2pkhFromHash } from '../legacy-wallet/lotus-identity'
 import { stampParentHdNode } from './stamp-hd'
 import { stampParentHdPublicNode } from './stamp-hd-public'
 import { stampParentSecret } from './stamp-parent'
@@ -28,7 +28,7 @@ export class PayloadConstructor {
   }
 
   constructPayloadHmac(sharedKey: Buffer, payloadDigest: Uint8Array) {
-    return crypto.Hash.sha256hmac(sharedKey, Buffer.from(payloadDigest))
+    return Buffer.from(hmacSha256(sharedKey, Buffer.from(payloadDigest)))
   }
 
   /**
@@ -82,7 +82,8 @@ export class PayloadConstructor {
     salt: Uint8Array,
   ) {
     return this.constructSharedPointEncodings(privateKey, publicKey).map(
-      (rawMergedKey) => crypto.Hash.sha256hmac(Buffer.from(salt), rawMergedKey),
+      (rawMergedKey) =>
+        Buffer.from(hmacSha256(Buffer.from(salt), rawMergedKey)),
     )
   }
 
@@ -239,18 +240,31 @@ export class PayloadConstructor {
   }
 
   // Same scalar as constructStampPrivateKey (decision #537). A digest
-  // outside (0, n) or a zero sum returns no address. The string is still
-  // bitcore toAddress(networkName) (issue #242).
-  constructStampAddress(outpointDigest: Uint8Array, privKey: PrivateKey) {
+  // outside (0, n) or a zero sum returns no address. The string is the
+  // Lotus P2PKH of the compressed public key. An uncompressed destination
+  // still hashes that compressed point.
+  constructStampAddress(
+    outpointDigest: Uint8Array,
+    privKey: PrivateKey,
+  ): string {
     const secret = stampParentSecret(
       Uint8Array.from(privKey.toBuffer()),
       outpointDigest,
     )
+    const parsed = privateKeyFromSecretBytes(secret, true)
+    if (!parsed.ok) {
+      secret.fill(0)
+      throw new Error(`stamp-address:${parsed.error.code}`)
+    }
     try {
-      return new PrivateKey(Buffer.from(secret).toString('hex')).toAddress(
+      const point = publicFromPrivate(parsed.value)
+      if (!point.ok) throw new Error(`stamp-address:${point.error.code}`)
+      return lotusP2pkhFromHash(
+        p2pkhHashFromPublicKey(point.value.compressed),
         this.networkName,
       )
     } finally {
+      parsed.value.bytes.fill(0)
       secret.fill(0)
     }
   }

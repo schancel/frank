@@ -31,11 +31,19 @@
  * Pubkey HASH160, the checksum, and the metadata payload digest use
  * `@frank/nakamoto` `cryptoBackend`.
  */
-import { PrivateKey } from 'bitcore-lib-xpi'
+import { randomBytes } from 'crypto'
+
 import {
   cryptoBackend,
+  encodeAddress,
+  privateKeyFromHex,
   privateKeyFromSecretBytes,
+  pubkeyHashFromBytes,
   signEcdsa,
+  XPI_MAINNET,
+  XPI_REGTEST,
+  XPI_TESTNET,
+  type ChainDescriptor,
 } from '@frank/nakamoto'
 import { lotusIdentityPublicKey } from './lotus-identity-pubkey'
 import axios from 'axios'
@@ -46,9 +54,7 @@ const { AddressMetadata } = __pb_registry_metadata_pb
 import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
 
-/** Arbitrary, non-empty network name passed to `bitcore-lib-xpi`'s `PrivateKey`/`PayloadConstructor`
- * constructors. Never used for address encoding (see this file's header) -- only for `PrivateKey`'s
- * own internal bookkeeping (e.g. WIF prefix), which this module never calls either. */
+/** Name the relay still passes to bitcore. This module does not construct a key from it. */
 export const IDENTITY_KEY_NETWORK_NAME = 'lotus-identity'
 
 /** `bitcoinsuite_core::Net` mirrored here -- selects the Lotus address's net character (`'_'` for
@@ -85,19 +91,6 @@ export function base58Encode(bytes: Uint8Array): string {
   return '1'.repeat(leadingZeros) + encoded
 }
 
-/** `bitcoinsuite_core::Script::p2pkh` -- standard `OP_DUP OP_HASH160 <push 20> <pkh>
- * OP_EQUALVERIFY OP_CHECKSIG` (25 bytes). */
-function p2pkhScript(pubKeyHash20: Buffer): Buffer {
-  if (pubKeyHash20.length !== 20) {
-    throw new Error(`pubKeyHash must be 20 bytes, got ${pubKeyHash20.length}`)
-  }
-  return Buffer.concat([
-    Buffer.from([0x76, 0xa9, 0x14]),
-    pubKeyHash20,
-    Buffer.from([0x88, 0xac]),
-  ])
-}
-
 function sha256(bytes: Uint8Array): Buffer {
   // cryptoBackend rejects Buffer, which is a Uint8Array subclass.
   return Buffer.from(cryptoBackend.sha256(Uint8Array.from(bytes)))
@@ -109,32 +102,51 @@ export function pubKeyHash160(pubKeyCompressed: Buffer): Buffer {
   return Buffer.from(cryptoBackend.hash160(Uint8Array.from(pubKeyCompressed)))
 }
 
+export function chainForNetworkName(networkName: string): ChainDescriptor {
+  if (networkName === 'testnet' || networkName === 'cash-testnet') {
+    return XPI_TESTNET
+  }
+  if (networkName === 'regtest') return XPI_REGTEST
+  if (
+    networkName === 'livenet' ||
+    networkName === 'mainnet' ||
+    networkName === 'cash-livenet' ||
+    networkName === 'cash-mainnet'
+  ) {
+    return XPI_MAINNET
+  }
+  throw new Error(`lotus-network:${networkName}`)
+}
+
+export function lotusP2pkhFromHash(
+  hash: Uint8Array,
+  networkName: string,
+): string {
+  const branded = pubkeyHashFromBytes(Uint8Array.from(hash))
+  if (!branded.ok) throw new Error('address-hash')
+  const encoded = encodeAddress(
+    { kind: 'p2pkh', hash: branded.value },
+    chainForNetworkName(networkName),
+    'lotus',
+  )
+  if (!encoded.ok) throw new Error(encoded.error.code)
+  return encoded.value
+}
+
 /**
- * `<prefix><net_char><base58(payload_type=0 || p2pkh_script || checksum)>`.
- * Checksum is SHA256(prefix || net_char || payload_type || p2pkh_script)[..4],
- * one SHA-256, matching `calc_checksum` in
- * `backend/bitcoinsuite/bitcoinsuite-core/src/address/lotusaddress.rs`.
- * A hash that is not 20 bytes throws and returns no address.
- *
- * `encode_lotus_address` in that file: pkh `b50b86a893d80c9e2ee72b199612374b7b4c1cd8`
- * is `lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi` (mainnet) and
- * `lotusR16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyVqAied` (regtest).
+ * P2PKH Lotus address. pkh `b50b86a893d80c9e2ee72b199612374b7b4c1cd8` is
+ * `lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi` on mainnet and
+ * `lotusR16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyVqAied` on regtest.
+ * A hash that is not 20 bytes throws.
  */
 export function lotusAddressFromPubKeyHash(
   pubKeyHash20: Buffer,
   net: LotusNet,
 ): string {
-  const netChar = net === 'mainnet' ? '_' : 'R'
-  const payloadType = 0
-  const script = p2pkhScript(pubKeyHash20)
-  const checksumPreimage = Buffer.concat([
-    Buffer.from(LOTUS_PREFIX, 'ascii'),
-    Buffer.from([netChar.charCodeAt(0), payloadType]),
-    script,
-  ])
-  const checksum = sha256(checksumPreimage).slice(0, 4)
-  const data = Buffer.concat([Buffer.from([payloadType]), script, checksum])
-  return `${LOTUS_PREFIX}${netChar}${base58Encode(data)}`
+  return lotusP2pkhFromHash(
+    pubKeyHash20,
+    net === 'mainnet' ? 'mainnet' : 'regtest',
+  )
 }
 
 /** HASH160 of `pubKeyCompressed`, then `lotusAddressFromPubKeyHash`. */
@@ -145,75 +157,84 @@ export function computeLotusAddress(
   return lotusAddressFromPubKeyHash(pubKeyHash160(pubKeyCompressed), net)
 }
 
-/** A Frank identity: a secp256k1 keypair plus its derived Lotus address (see
- * `computeLotusAddress`). The same keypair is reused both to sign `AddressMetadata` registrations
- * (this file) and for ECDH message encryption (`./monad-message-envelope.ts`) -- mirroring how
- * `wallet.identityPrivKey` is already a single, dual-purpose key elsewhere in this codebase
- * (`../registry/index.ts`'s `updateKeyMetadata`/`createBroadcast`). */
+/** Stop if every draw is 0 or >= n. A working RNG hits that with negligible probability. */
+const SECRET_DRAWS = 64
+
+/** A Frank identity: an owned 32-byte secp256k1 secret (decision #584), compressed, plus its
+ * derived Lotus address (see `computeLotusAddress`). Not a bitcore PrivateKey. */
 export class FrankIdentity {
-  readonly privateKey: PrivateKey
+  readonly #secret: Uint8Array
   readonly net: LotusNet
   readonly pubKey: Buffer
   readonly address: string
 
-  constructor(privateKey: PrivateKey, net: LotusNet) {
-    this.privateKey = privateKey
+  private constructor(secret: Uint8Array, net: LotusNet) {
+    const owned = Uint8Array.from(secret)
+    const key = privateKeyFromSecretBytes(owned, true)
+    if (!key.ok) {
+      owned.fill(0)
+      throw new Error(`lotus-identity:${key.error.code}`)
+    }
+    key.value.bytes.fill(0)
+    this.#secret = owned
     this.net = net
-    this.pubKey = Buffer.from(
-      lotusIdentityPublicKey(
-        Uint8Array.from(privateKey.toBuffer()),
-        privateKey.compressed,
-      ),
-    )
+    this.pubKey = Buffer.from(lotusIdentityPublicKey(this.#secret, true))
     this.address = computeLotusAddress(this.pubKey, net)
   }
 
   static generate(net: LotusNet): FrankIdentity {
-    // No args: `bitcore-lib-xpi`'s `PrivateKey` constructor random-generates a fresh secp256k1
-    // key and falls back to its own default network (`_classifyArguments`, `privatekey.js`) --
-    // fine here since this identity's network never goes through `bitcore-lib-xpi`'s own address
-    // encoding (see this file's header).
-    return new FrankIdentity(new PrivateKey(), net)
+    for (let draw = 0; draw < SECRET_DRAWS; draw += 1) {
+      const drawn = randomBytes(32)
+      const secret = Uint8Array.from(drawn)
+      drawn.fill(0)
+      try {
+        const key = privateKeyFromSecretBytes(secret, true)
+        if (!key.ok) continue
+        try {
+          return new FrankIdentity(key.value.bytes, net)
+        } finally {
+          key.value.bytes.fill(0)
+        }
+      } finally {
+        secret.fill(0)
+      }
+    }
+    throw new Error('lotus-identity:exhausted')
   }
 
-  /** Rebuilds a previously-generated identity from its raw 32-byte private key, hex-encoded
-   * (no `0x` prefix).
-   *
-   * **Deliberately does *not* use `PrivateKey.fromBuffer`**: `bitcore-lib-xpi`'s
-   * `PrivateKey._transformBNBuffer` (the path `fromBuffer` takes for a 32-byte buffer,
-   * `local_modules/bitcore-lib-xpi/lib/privatekey.js`) hardcodes `compressed: false`, unlike
-   * `_classifyArguments`'s hex-*string* path (used when the constructor's first argument is a
-   * string, not a `Buffer`), which leaves `compressed` at its default of `true` (set at the top of
-   * that same function). A 65-byte uncompressed pubkey from a reloaded identity would fail
-   * `PUT /metadata/:addr`'s live `invalid-pub-key-len` check (`Registry`/`PubKeyHash` require the
-   * 33-byte compressed form -- see `pubkeyhash.rs`'s `hash_pubkey(pubkey: [u8; 33])`) even though
-   * the very same private key, freshly generated (`FrankIdentity.generate`, which goes through
-   * `new PrivateKey()`'s no-args random-generation path -- compressed by default there too),
-   * produces a valid 33-byte one -- confirmed live while testing this ticket's second bot run
-   * (an identity reloaded from disk on restart hit exactly this `400 invalid-pub-key-len`, while
-   * the freshly-generated one from the first run hadn't). Passing the hex *string* straight to the
-   * constructor sidesteps `_transformBNBuffer` entirely. */
+  /** 64 hex characters, no `0x` prefix, compressed. Not 32 bytes, 0, or >= n throws. */
   static fromPrivateKeyHex(hex: string, net: LotusNet): FrankIdentity {
-    const privateKey = new PrivateKey(hex)
-    return new FrankIdentity(privateKey, net)
+    const key = privateKeyFromHex(hex, true)
+    if (!key.ok) throw new Error(`lotus-identity:${key.error.code}`)
+    try {
+      return new FrankIdentity(key.value.bytes, net)
+    } finally {
+      key.value.bytes.fill(0)
+    }
   }
 
-  /** Raw 32-byte private key, hex-encoded -- for persisting to disk between runs (see
-   * `qwen-bot.livecheck.ts`). */
+  /** Hex of the owned 32-byte secret. Copies only. Does not wipe a caller's buffer. */
   toPrivateKeyHex(): string {
-    return this.privateKey.toBuffer().toString('hex')
+    const copy = Buffer.from(this.#secret)
+    const hex = copy.toString('hex')
+    copy.fill(0)
+    return hex
   }
 
   /** DER-encoded ECDSA signature over a 32-byte `hash`. A bad digest throws. */
   signHash(hash: Buffer): Buffer {
     if (hash.length !== 32) throw new Error('sign-digest')
-    const secretBytes = Uint8Array.from(this.privateKey.toBuffer())
+    const secretBytes = Uint8Array.from(this.#secret)
     const key = privateKeyFromSecretBytes(secretBytes, true)
     secretBytes.fill(0)
     if (!key.ok) throw new Error(key.error.code)
-    const signed = signEcdsa(key.value, Uint8Array.from(hash))
-    if (!signed.ok) throw new Error(signed.error.code)
-    return Buffer.from(signed.value)
+    try {
+      const signed = signEcdsa(key.value, Uint8Array.from(hash))
+      if (!signed.ok) throw new Error(signed.error.code)
+      return Buffer.from(signed.value)
+    } finally {
+      key.value.bytes.fill(0)
+    }
   }
 }
 

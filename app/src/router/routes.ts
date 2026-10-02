@@ -53,6 +53,7 @@ export function createRoutes(): RouteRecordRaw[] {
         { path: 'profile', component: () => import('pages/Profile.vue') },
         { path: 'receive', component: () => import('pages/Receive.vue') },
         { path: 'send', component: () => import('pages/Send.vue') },
+        { path: 'wallet', component: () => import('pages/Wallet.vue') },
         {
           path: 'add-contact',
           component: () => import('pages/AddContact.vue'),

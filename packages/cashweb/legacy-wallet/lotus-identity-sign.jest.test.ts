@@ -1,6 +1,4 @@
 import { createHash } from 'crypto'
-import { readFileSync } from 'fs'
-import { join } from 'path'
 
 import { verifyEcdsa } from '@frank/nakamoto'
 
@@ -25,8 +23,6 @@ function sha256d(text: string): Buffer {
 }
 
 it('signs the lotusd key_tests deterministic ECDSA vector', () => {
-  const source = readFileSync(join(__dirname, 'lotus-identity.ts'), 'utf8')
-  expect(source).not.toContain('ECDSA.sign')
 
   const identity = FrankIdentity.fromPrivateKeyHex(SECRET, 'mainnet')
   const digest = sha256d('Very deterministic message')

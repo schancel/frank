@@ -4,13 +4,14 @@ import type { PayloadEntry } from './relay_pb'
 import { entryToImage } from './images'
 import stealth from './stealth_pb'
 import { TextItem, MessageItem } from '../types/messages'
-import {
-  Networks,
-  PrivateKey,
-  PublicKey,
-  Script,
-} from 'bitcore-lib-xpi'
+import { Networks, PrivateKey, PublicKey } from 'bitcore-lib-xpi'
 import { Wallet } from '../legacy-wallet'
+import {
+  p2pkhHashFromPublicKey,
+  p2pkhHashFromScript,
+  sameHash,
+} from '../legacy-wallet/lotus-address'
+import { lotusP2pkhFromHash } from '../legacy-wallet/lotus-identity'
 import { calcUtxoId } from '../legacy-wallet/helpers'
 import { Utxo } from '../types/utxo'
 import { outpointPrivateKey } from './outpoint-hd'
@@ -89,7 +90,7 @@ export async function decodeEntry(
     )
     // Parent is stealthParentSecret (decision #559). Chain code is the raw
     // SHA-256 digest, not the reduced scalar. The caller's PrivateKey is
-    // not wiped. Address strings stay on bitcore (issue #242).
+    // not wiped.
     const derived = stealthParentSecret(
       Uint8Array.from(destinationPrivateKey.toBuffer()),
       Uint8Array.from(ephemeralPubKey.toBuffer()),
@@ -132,19 +133,12 @@ export async function decodeEntry(
           Buffer.from(outpointSecret).toString('hex'),
           Networks.get(networkName),
         )
-        // Address strings stay on bitcore (issue #242).
-        const address = new Script(Buffer.from(output.script)).toAddress(
-          networkName,
+        const scriptHash = p2pkhHashFromScript(output.script)
+        // Compressed point of the outpoint secret (decision #555).
+        const computedHash = p2pkhHashFromPublicKey(
+          stealthOutpointPublicKey(outpointSecret),
         )
-        // Compressed point of the outpoint secret (decision #555). Address
-        // strings stay on bitcore (issue #242).
-        const computedAddress = new PublicKey(
-          Buffer.from(stealthOutpointPublicKey(outpointSecret)),
-        ).toAddress(networkName)
-        if (
-          !outbound &&
-          !address.toBuffer().equals(computedAddress.toBuffer())
-        ) {
+        if (!outbound && !sameHash(scriptHash, computedHash)) {
           console.error('invalid stealth address, ignoring')
           return null
         }
@@ -153,7 +147,7 @@ export async function decodeEntry(
 
         const stampOutput = {
           type: 'stealth',
-          address: address.toCashAddress(),
+          address: lotusP2pkhFromHash(scriptHash, networkName),
           satoshis,
           outputIndex,
           txId,

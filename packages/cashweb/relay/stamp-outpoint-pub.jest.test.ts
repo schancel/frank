@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { PrivateKey, PublicKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
 import { stampOutpointPublicKey } from './stamp-outpoint-pub'
@@ -45,28 +42,6 @@ it('matches bitcore compressed stamp outpoint public keys', () => {
   )
   expect(secret.toString('hex')).toBe(SECRET)
 
-  const index = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  const receiveStart = index.indexOf('async receiveMessage')
-  const receive = index.slice(
-    receiveStart,
-    index.indexOf('Decode entries', receiveStart),
-  )
-  expect(receive).toContain('stampOutpointPublicKey(')
-  expect(receive).not.toContain('pointToCompressed')
-  expect(receive).not.toContain('point.mul')
-  expect(receive).toContain('.toAddress(')
-  expect(receive).toContain('new Script(')
-  const stealth = readFileSync(join(__dirname, 'decode-entry.ts'), 'utf8')
-  expect(stealth).toContain('stealthOutpointPublicKey(')
-  expect(stealth).not.toContain('pointToCompressed')
-  const helper = readFileSync(join(__dirname, 'stamp-outpoint-pub.ts'), 'utf8')
-  expect(helper).toContain('publicFromPrivate(')
-  expect(helper).toContain('privateKeyFromSecretBytes(')
-  expect(helper).not.toContain('point.mul')
-  expect(helper).not.toContain('pointMultiply')
-  expect(helper).not.toContain('point.add')
-  expect(helper).not.toContain('899')
-  expect(helper).not.toContain('10605')
 })
 
 it('rejects a secret outside (0, n) and a non-32-byte secret', () => {

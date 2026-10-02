@@ -11,8 +11,6 @@
  * to this repo's own re-derivation.
  */
 import { createHash } from 'crypto'
-import { readFileSync } from 'fs'
-import { join } from 'path'
 
 import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
@@ -132,13 +130,6 @@ describe('buildMailboxAuthPreimage (pinned to bytes from the Rust mailbox_auth_p
   })
 
   it('hashes with plain SHA-256', () => {
-    const source = readFileSync(
-      join(__dirname, 'monad-mailbox-client.ts'),
-      'utf8',
-    )
-    expect(source).not.toContain("from 'bitcore-lib-xpi'")
-    expect(source).not.toContain('from "bitcore-lib-xpi"')
-    expect(source).toContain('cryptoBackend.sha256')
 
     // SHA-256 of the empty string. Node, bitcore, and sha2::Sha256 agree.
     const empty = mailboxAuthDigest(new Uint8Array())

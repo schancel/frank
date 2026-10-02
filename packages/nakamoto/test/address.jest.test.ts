@@ -1,6 +1,4 @@
 import { createRequire } from 'module'
-import { readFileSync } from 'fs'
-import { join } from 'path'
 
 import { Buffer } from 'buffer'
 
@@ -14,7 +12,10 @@ import {
   sameDestination,
   type AddressListing,
   type Destination,
+  type ScriptHash,
 } from '../src/address.js'
+import { cryptoBackend } from '../src/backend.js'
+import { encodeBase58 } from '../src/base58.js'
 import { decodeBech32, encodeBech32 } from '../src/bech32.js'
 import { decodeCashaddr } from '../src/cashaddr.js'
 import {
@@ -27,9 +28,12 @@ import {
   XEC_MAINNET,
   XEC_TESTNET,
   XPI_MAINNET,
+  XPI_REGTEST,
+  XPI_TESTNET,
 } from '../src/chain/index.js'
 import {
   compressedPublicKeyFromBytes,
+  pubkeyHashFromBytes,
   xOnlyPublicKeyFromBytes,
   type CompressedPublicKey,
   type XOnlyPublicKey,
@@ -114,12 +118,87 @@ function kind(
   return found
 }
 
+const LOTUS_PKH = 'b50b86a893d80c9e2ee72b199612374b7b4c1cd8'
+const LOTUS_MAINNET = 'lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi'
+const LOTUS_REGTEST = 'lotusR16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyVqAied'
+
+function lotusAddressWithType(type: number): string {
+  const script = fromHex(`76a914${LOTUS_PKH}88ac`)
+  const payload = new Uint8Array(1 + script.length)
+  payload[0] = type
+  payload.set(script, 1)
+  const prefix = Uint8Array.of(0x6c, 0x6f, 0x74, 0x75, 0x73)
+  const preimage = new Uint8Array(prefix.length + 1 + payload.length)
+  preimage.set(prefix)
+  preimage[prefix.length] = '_'.charCodeAt(0)
+  preimage.set(payload, prefix.length + 1)
+  const sum = new Uint8Array(cryptoBackend.sha256(preimage)).subarray(0, 4)
+  const body = new Uint8Array(payload.length + 4)
+  body.set(payload)
+  body.set(sum, payload.length)
+  return `lotus_${encodeBase58(body)}`
+}
+
 describe('address codecs', () => {
-  test('source does not build an XPI string prefix', () => {
-    for (const name of ['address.ts', 'bech32.ts', 'cashaddr.ts']) {
-      const source = readFileSync(join(__dirname, '../src', name), 'utf8')
-      expect(source.toLowerCase()).not.toContain('lotus')
+  test('Lotus address vectors for a pubkey hash', () => {
+    const hash = pubkeyHashFromBytes(fromHex(LOTUS_PKH))
+    if (!hash.ok) throw new Error('hash')
+    const destination: Destination = Object.freeze({
+      kind: 'p2pkh',
+      hash: hash.value,
+    })
+    expect(must(encodeAddress(destination, XPI_MAINNET, 'lotus'))).toBe(
+      LOTUS_MAINNET,
+    )
+    expect(must(encodeAddress(destination, XPI_REGTEST, 'lotus'))).toBe(
+      LOTUS_REGTEST,
+    )
+    const testnet = must(encodeAddress(destination, XPI_TESTNET, 'lotus'))
+    expect(testnet.startsWith('lotusT')).toBe(true)
+    for (const [text, chain] of [
+      [LOTUS_MAINNET, XPI_MAINNET],
+      [LOTUS_REGTEST, XPI_REGTEST],
+      [testnet, XPI_TESTNET],
+    ] as const) {
+      const decoded = must(decodeAddress(text, chain))
+      expect(decoded.encoding).toBe('lotus')
+      expect(decoded.text).toBe(text)
+      expect(decoded.chain).toBe(chain)
+      expect(sameDestination(decoded.destination, destination)).toBe(true)
     }
+    const paid = must(
+      decodeAddress(`payto:${LOTUS_MAINNET}?amount=10`, XPI_MAINNET),
+    )
+    expect(paid.text).toBe(LOTUS_MAINNET)
+    expect(paid.chain).toBe(XPI_MAINNET)
+    expect(decodeAddress(LOTUS_REGTEST, XPI_MAINNET)).toMatchObject({
+      ok: false,
+      error: { code: 'chain-mismatch' },
+    })
+    const detected = must(decodeAddress(LOTUS_MAINNET))
+    expect(detected.chain).toBe(XPI_MAINNET)
+    const sample = must(
+      decodeAddress(
+        'lotus_16PSJLjLt4f5tQW5t3E1FKrH6WK4uzQLVvnSsdkqd',
+        XPI_MAINNET,
+      ),
+    )
+    expect(sample.text).toBe('lotus_16PSJLjLt4f5tQW5t3E1FKrH6WK4uzQLVvnSsdkqd')
+    expect(sample.encoding).toBe('lotus')
+    expect(
+      decodeAddress(`${LOTUS_MAINNET.slice(0, -1)}j`, XPI_MAINNET).ok,
+    ).toBe(false)
+    const scriptHash = fromHex('11'.repeat(20)) as ScriptHash
+    const p2sh: Destination = Object.freeze({ kind: 'p2sh', hash: scriptHash })
+    const p2shText = must(encodeAddress(p2sh, XPI_MAINNET, 'lotus'))
+    const p2shBack = must(decodeAddress(p2shText, XPI_MAINNET))
+    expect(p2shBack.destination.kind).toBe('p2sh')
+    expect(sameDestination(p2shBack.destination, p2sh)).toBe(true)
+    const typed = lotusAddressWithType(1)
+    expect(decodeAddress(typed, XPI_MAINNET)).toMatchObject({
+      ok: false,
+      error: { code: 'unknown-address-type', version: 1 },
+    })
   })
 
   test('BIP173 bech32 strings and the segwit program for the example key', () => {
@@ -478,33 +557,35 @@ describe('address codecs', () => {
       form(must(convertAddress(legacy.destination, BCH_MAINNET)), 'cashaddr'),
     ).toBe('bitcoincash:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a')
     const xpi = must(convertAddress(legacy.destination, XPI_MAINNET))
-    expect(xpi.forms).toEqual([])
-    expect(xpi.stringEncoding).toEqual({
-      status: 'unpinned',
-      code: 'address-format-not-pinned',
-    })
-    expect(JSON.stringify(xpi.forms)).not.toContain('lotus')
+    expect(xpi.stringEncoding).toEqual({ status: 'pinned' })
+    const lotus = form(xpi, 'lotus')
+    expect(lotus.startsWith('lotus_')).toBe(true)
+    expect(
+      sameDestination(
+        must(decodeAddress(lotus, XPI_MAINNET)).destination,
+        legacy.destination,
+      ),
+    ).toBe(true)
     expect(
       encodeAddress(legacy.destination, XPI_MAINNET, 'base58check'),
     ).toMatchObject({
       ok: false,
-      error: { code: 'address-format-not-pinned' },
+      error: { code: 'unknown-encoding', encoding: 'base58check' },
     })
     expect(
       decodeAddress('1BpEi6DfDAUFd7GtittLSdBeYJvcoaVggu', XPI_MAINNET),
     ).toMatchObject({
       ok: false,
-      error: { code: 'address-format-not-pinned' },
+      error: { code: 'wrong-prefix' },
     })
     expect(
-      decodeAddress(
-        'lotus_16PSJLjLt4f5tQW5t3E1FKrH6WK4uzQLVvnSsdkqd',
-        XPI_MAINNET,
-      ),
-    ).toMatchObject({
-      ok: false,
-      error: { code: 'address-format-not-pinned' },
-    })
+      must(
+        decodeAddress(
+          'lotus_16PSJLjLt4f5tQW5t3E1FKrH6WK4uzQLVvnSsdkqd',
+          XPI_MAINNET,
+        ),
+      ).text,
+    ).toBe('lotus_16PSJLjLt4f5tQW5t3E1FKrH6WK4uzQLVvnSsdkqd')
     const regtest = must(convertAddress(legacy.destination, BCH_REGTEST))
     expect(form(regtest, 'cashaddr').startsWith('bchreg:')).toBe(true)
     for (const chain of [BCH_MAINNET, XEC_MAINNET, XPI_MAINNET]) {
@@ -564,16 +645,15 @@ describe('address codecs', () => {
       ok: false,
       error: { code: 'chain-required' },
     })
-    const unpinned = decodeAddress(
+    const notLotus = decodeAddress(
       '1KS9k1zvhZ13HGGGPRLPKS4kmHErj24GyK',
       XPI_MAINNET,
     )
-    expect(unpinned).toMatchObject({
+    expect(notLotus).toMatchObject({
       ok: false,
-      error: { code: 'address-format-not-pinned' },
+      error: { code: 'wrong-prefix' },
     })
-    expect(JSON.stringify(unpinned)).not.toContain('lotus')
-    expect(JSON.stringify(unpinned)).not.toContain('1KS9k1')
+    expect(JSON.stringify(notLotus)).not.toContain('1KS9k1')
 
     const scriptHash = must(
       decodeAddress('35zQLvu1gr5urq8Lj9LjMCRtD5cxqZDzX7', BTC_MAINNET),

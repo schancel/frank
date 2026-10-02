@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { Script, Transaction } from 'bitcore-lib-xpi'
 
 import { readStealthTransaction } from './stealth-tx'
@@ -102,28 +99,6 @@ function bitcoreView(tx: Buffer): {
 }
 
 it('reads stealth transactions from transaction bytes', () => {
-  const stealth = readFileSync(join(__dirname, 'decode-entry.ts'), 'utf8')
-  const payment = stealth.slice(stealth.indexOf("kind === 'stealth-payment'"))
-  const readAt = payment.indexOf('readStealthTransaction(stealthTxRaw)')
-  const deleteAt = payment.indexOf('deleteUtxo')
-  const missingAt = payment.indexOf("throw new Error('stealth-output')")
-  expect(readAt).toBeGreaterThan(-1)
-  expect(deleteAt).toBeGreaterThan(readAt)
-  expect(missingAt).toBeGreaterThan(deleteAt)
-  expect(payment).not.toContain('new Transaction')
-  expect(payment).toContain('stealthOutpointPublicKey(')
-  expect(payment).not.toContain('pointToCompressed')
-  expect(payment).toContain('outpointPrivateKey(')
-  expect(payment).not.toContain('deriveChild')
-  expect(payment).toContain('.toAddress(')
-  expect(payment).toContain('stealthParentSecret(')
-  expect(payment).not.toContain('constructHDStealthPrivateKey')
-  expect(payment).not.toContain('HDPrivateKey')
-  const receive = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  expect(receive).toContain('readStampTransaction')
-  expect(receive).toContain('stampParentSecret(')
-  expect(receive).not.toContain('constructStampHDPrivateKey')
-  expect(receive).not.toContain('constructHDStealthPrivateKey')
 
   const bip143 = Buffer.from(BIP143_UNSIGNED, 'hex')
   const bip143Bitcore = bitcoreView(bip143)

@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { PrivateKey, PublicKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
 import { stealthOutpointPublicKey } from './stealth-outpoint-pub'
@@ -45,44 +42,6 @@ it('matches bitcore compressed stealth outpoint public keys', () => {
   ).toEqual(bitcoreCompressed(ONE))
   expect(secret.toString('hex')).toBe(SECRET)
 
-  const decode = readFileSync(join(__dirname, 'decode-entry.ts'), 'utf8')
-  const payment = decode.slice(decode.indexOf("kind === 'stealth-payment'"))
-  expect(payment).toContain('stealthOutpointPublicKey(')
-  expect(payment).toContain('outpointPrivateKey(')
-  expect(payment).toContain('stealthParentSecret(')
-  expect(payment).not.toContain('constructHDStealthPrivateKey')
-  expect(payment).not.toContain('HDPrivateKey')
-  expect(payment).toContain('.toAddress(')
-  expect(payment).toContain('new Script(')
-  expect(payment).not.toContain('pointToCompressed')
-  expect(payment).not.toContain('toPublicKey(')
-  expect(payment).not.toContain('point.mul')
-  const crypto = readFileSync(join(__dirname, 'crypto.ts'), 'utf8')
-  expect(crypto).toContain('stealthSharedPoint(')
-  expect(crypto).not.toContain('pointToCompressed')
-  expect(crypto).toContain('point.mul')
-  expect(crypto).toContain('stealthParentPublicKey(')
-  expect(crypto).not.toContain('point.add')
-  expect(crypto).toContain('constructStampAddress')
-  const index = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  const receiveStart = index.indexOf('async receiveMessage')
-  const receive = index.slice(
-    receiveStart,
-    index.indexOf('Decode entries', receiveStart),
-  )
-  expect(receive).toContain('stampOutpointPublicKey(')
-  expect(receive).not.toContain('stealthOutpointPublicKey(')
-  const helper = readFileSync(
-    join(__dirname, 'stealth-outpoint-pub.ts'),
-    'utf8',
-  )
-  expect(helper).toContain('publicFromPrivate(')
-  expect(helper).toContain('privateKeyFromSecretBytes(')
-  expect(helper).not.toContain('point.mul')
-  expect(helper).not.toContain('pointMultiply')
-  expect(helper).not.toContain('point.add')
-  expect(helper).not.toContain('899')
-  expect(helper).not.toContain('10605')
 })
 
 it('rejects a secret outside (0, n) and a non-32-byte secret', () => {

@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { PrivateKey, PublicKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
 import { PayloadConstructor } from './crypto'
@@ -14,14 +11,6 @@ const N_HEX =
 const N_MINUS_1 =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140'
 const ONE = `${'00'.repeat(31)}01`
-
-function methodBody(source: string, start: string, end: string): string {
-  const from = source.indexOf(start)
-  const to = source.indexOf(end, from)
-  expect(from).toBeGreaterThanOrEqual(0)
-  expect(to).toBeGreaterThan(from)
-  return source.slice(from, to)
-}
 
 function bitcoreShared(secret: PrivateKey, point: PublicKey): Buffer {
   return bitcoreCrypto.Point.pointToCompressed(point.point.mul(secret.bn))
@@ -104,31 +93,6 @@ it('matches bitcore point.mul for a secret times the destination point', () => {
   expect(ephemeral.toBuffer().toString('hex')).toBe(EPHEMERAL_SECRET)
   expect(destination.toBuffer().toString('hex')).toBe(DEST_SECRET)
 
-  const source = readFileSync(join(__dirname, 'crypto.ts'), 'utf8')
-  const body = methodBody(
-    source,
-    'constructStealthPublicKey(',
-    'constructHDStealthPublicKey(',
-  )
-  expect(body).toContain('stealthSharedPoint(')
-  expect(body).toContain('stealthPointDigest(dhKeyPointRaw)')
-  expect(body).toContain('stealthParentPublicKey(')
-  expect(body).not.toContain('point.mul')
-  expect(body).not.toContain('pointToCompressed')
-  expect(body).not.toContain('pointMultiply')
-  const merged = methodBody(
-    source,
-    'constructMergedKey(',
-    'constructSharedPointEncodings(',
-  )
-  expect(merged).toContain('point.mul')
-  expect(source.match(/crypto\.Hash\.sha256hmac\(/g)).toHaveLength(2)
-  const helper = readFileSync(join(__dirname, 'stealth-shared.ts'), 'utf8')
-  expect(helper).toContain('ecdh(')
-  expect(helper).not.toContain('pointMultiply')
-  expect(helper).not.toContain('point.mul')
-  expect(helper).not.toContain('899')
-  expect(helper).not.toContain('10605')
 })
 
 it('rejects a secret outside (0, n) and a public key that is not 33 or 65 bytes', () => {

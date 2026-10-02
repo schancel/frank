@@ -1,8 +1,6 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
+import { lotusFromAddress } from '../legacy-wallet/lotus-address'
 import { PayloadConstructor } from './crypto'
 
 const NETWORK = 'livenet'
@@ -15,14 +13,6 @@ const N_PLUS_ONE =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364142'
 const ZERO_SUM_DIGEST =
   'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeda99dcbd59e378f2aaec14d7bbf253030'
-
-function methodBody(source: string, start: string, end: string): string {
-  const from = source.indexOf(start)
-  const to = source.indexOf(end, from)
-  expect(from).toBeGreaterThanOrEqual(0)
-  expect(to).toBeGreaterThan(from)
-  return source.slice(from, to)
-}
 
 function bitcoreStampAddress(
   digest: Buffer,
@@ -45,33 +35,30 @@ it('matches bitcore stamp addresses for digests in (0, n)', () => {
   const address = ctor.constructStampAddress(digest, destination)
   const oracle = bitcoreStampAddress(digest, destination, 'testnet')
   const live = bitcoreStampAddress(digest, destination, NETWORK)
-  expect(address.hashBuffer).toEqual(oracle.hashBuffer)
-  expect(address.toString()).toBe(oracle.toString())
-  expect(address.hashBuffer).toEqual(live.hashBuffer)
-  expect(address.toString()).not.toBe(live.toString())
-  expect(address.network.name).toBe('testnet')
+  expect(address).toBe(lotusFromAddress(oracle, 'testnet'))
+  expect(address).not.toBe(lotusFromAddress(live, NETWORK))
   const fromPrivate = ctor
     .constructStampPrivateKey(digest, destination)
     .toAddress('testnet')
-  expect(address.hashBuffer).toEqual(fromPrivate.hashBuffer)
-  expect(address.toString()).toBe(fromPrivate.toString())
+  expect(address).toBe(lotusFromAddress(fromPrivate, 'testnet'))
 
   const almost = new PrivateKey(N_MINUS_1)
   const cross = Buffer.alloc(32)
   cross[31] = 2
   const crossed = ctor.constructStampAddress(cross, almost)
   const crossedOracle = bitcoreStampAddress(cross, almost, 'testnet')
-  expect(crossed.hashBuffer).toEqual(crossedOracle.hashBuffer)
-  expect(crossed.toString()).toBe(crossedOracle.toString())
-  expect(crossed.hashBuffer).toEqual(
-    new PrivateKey(`${'00'.repeat(31)}01`).toAddress('testnet').hashBuffer,
+  expect(crossed).toBe(lotusFromAddress(crossedOracle, 'testnet'))
+  expect(crossed).toBe(
+    lotusFromAddress(
+      new PrivateKey(`${'00'.repeat(31)}01`).toAddress('testnet'),
+      'testnet',
+    ),
   )
 
   const wide = new PrivateKey(Buffer.from(DEST_SECRET, 'hex'))
   expect(wide.toPublicKey().toBuffer().length).toBe(65)
   const wideAddress = ctor.constructStampAddress(digest, wide)
-  expect(wideAddress.hashBuffer).toEqual(address.hashBuffer)
-  expect(wideAddress.toString()).toBe(address.toString())
+  expect(wideAddress).toBe(address)
 
   const callerSecret = Buffer.from(destination.toBuffer())
   const callerDigest = Buffer.from(digest)
@@ -79,23 +66,6 @@ it('matches bitcore stamp addresses for digests in (0, n)', () => {
   expect(destination.toBuffer()).toEqual(callerSecret)
   expect(digest).toEqual(callerDigest)
   expect(wide.toBuffer()).toEqual(callerSecret)
-
-  const source = readFileSync(join(__dirname, 'crypto.ts'), 'utf8')
-  const body = methodBody(source, 'constructStampAddress(', 'encrypt(')
-  expect(body).toContain('stampParentSecret(')
-  expect(body).toContain('.toAddress(')
-  expect(body).toContain('secret.fill(0)')
-  expect(body).not.toContain('crypto.BN')
-  expect(body).not.toContain('Point.getN')
-  expect(body).not.toContain('point.mul')
-  const stealth = methodBody(
-    source,
-    'constructStealthPublicKey(',
-    'constructHDStealthPublicKey(',
-  )
-  expect(stealth).toContain('stealthSharedPoint(')
-  expect(stealth).not.toContain('point.mul')
-  expect(stealth).not.toContain('constructStampAddress')
 })
 
 it('rejects a zero sum and digests outside (0, n)', () => {

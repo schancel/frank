@@ -1,4 +1,3 @@
-import { PublicKey } from 'bitcore-lib-xpi'
 import { defineStore } from 'pinia'
 
 import { useChatStore } from './chats'
@@ -13,6 +12,11 @@ import { activeChain } from '@frank/wallet/chain'
 import moment from 'moment'
 import { toChainDisplayAddress } from '../utils/chain-address'
 import { isOwnAddress } from '../utils/own-address'
+import {
+  isProfilePubKey,
+  profilePubKeyFromBytes,
+  type ProfilePubKey,
+} from '../utils/profile-pubkey'
 import { mapObjIndexed } from 'ramda'
 import assert from 'assert'
 import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
@@ -82,7 +86,7 @@ type Profile = {
   signedName?: string | null
   bio: string | null
   avatar: string | null
-  pubKey: PublicKey | null
+  pubKey: ProfilePubKey | null
   /** The signed profile carried the self-declared bot marker (#311). `undefined` = not looked up
    * yet; only an explicit `true` counts. The blackjack bet control also requires the curated
    * dealer name (#422). A copied name plus this flag is still not a verified dealer key (#217). */
@@ -184,7 +188,7 @@ export async function rehydrateContacts(
         profile: {
           ...profile,
           pubKey: profile?.pubKey
-            ? markRaw(PublicKey.fromBuffer(profile.pubKey))
+            ? markRaw(profilePubKeyFromBytes(profile.pubKey))
             : null,
         },
       }
@@ -272,20 +276,19 @@ export const useContactStore = defineStore('contacts', {
       if (!contact || !contact?.profile) {
         return undefined
       }
-      const pubKey = contact.profile.pubKey
-      if (!pubKey) {
+      const stored: unknown = contact.profile.pubKey
+      if (!stored) {
         return null
       }
-
-      if ('buffer' in pubKey) {
-        return markRaw(PublicKey.fromBuffer(pubKey as unknown as Buffer))
+      // Already accepted, or a legacy object that still has toBuffer().
+      if (isProfilePubKey(stored)) {
+        return markRaw(stored)
       }
-
-      if ('point' in pubKey) {
-        return markRaw(pubKey)
-      }
-
-      return markRaw(PublicKey.fromBuffer(Uint8Array.from(pubKey)))
+      const bytes =
+        stored instanceof Uint8Array
+          ? stored
+          : Uint8Array.from(stored as ArrayLike<number>)
+      return markRaw(profilePubKeyFromBytes(bytes))
     },
   },
   actions: {
@@ -347,7 +350,7 @@ export const useContactStore = defineStore('contacts', {
       pubKey,
     }: {
       address: string
-      pubKey: PublicKey
+      pubKey: ProfilePubKey
     }) {
       const contact = {
         ...pendingRelayData,
@@ -400,9 +403,7 @@ export const useContactStore = defineStore('contacts', {
               bio: profileInfo.bio ?? '',
               avatar: profileInfo.avatar ?? '',
               isBot: profileInfo.bot === true,
-              pubKey: markRaw(
-                PublicKey.fromBuffer(Buffer.from(profileInfo.pubKey)),
-              ),
+              pubKey: markRaw(profilePubKeyFromBytes(profileInfo.pubKey)),
             },
             inbox: defaultRelayData.inbox,
           },
@@ -529,9 +530,7 @@ export const useContactStore = defineStore('contacts', {
             bio: profileInfo.bio ?? oldContactInfo.profile.bio,
             avatar: profileInfo.avatar ?? oldContactInfo.profile.avatar,
             isBot: profileInfo.bot === true,
-            pubKey: markRaw(
-              PublicKey.fromBuffer(Buffer.from(profileInfo.pubKey)),
-            ),
+            pubKey: markRaw(profilePubKeyFromBytes(profileInfo.pubKey)),
           },
           inbox: oldContactInfo.inbox,
         })

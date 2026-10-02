@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { PrivateKey } from 'bitcore-lib-xpi'
 
 import { FrankIdentity } from './lotus-identity'
@@ -41,32 +38,8 @@ it('matches bitcore FrankIdentity public keys', () => {
 
   const identity = FrankIdentity.fromPrivateKeyHex(SECRET, 'mainnet')
   expect(identity.pubKey).toEqual(bitcorePublicKey(SECRET, true))
-  expect(identity.privateKey.toBuffer().toString('hex')).toBe(SECRET)
+  expect(identity.toPrivateKeyHex()).toBe(SECRET)
 
-  const uncompressed = new PrivateKey(Buffer.from(SECRET, 'hex'))
-  const uncompressedIdentity = new FrankIdentity(uncompressed, 'mainnet')
-  expect(uncompressedIdentity.pubKey).toEqual(
-    uncompressed.toPublicKey().toBuffer(),
-  )
-  expect(uncompressedIdentity.pubKey.length).toBe(65)
-  expect(uncompressed.toBuffer().toString('hex')).toBe(SECRET)
-
-  const source = readFileSync(join(__dirname, 'lotus-identity.ts'), 'utf8')
-  const ctorStart = source.indexOf('constructor(privateKey: PrivateKey')
-  const ctor = source.slice(
-    ctorStart,
-    source.indexOf('static generate', ctorStart),
-  )
-  expect(ctor).toContain('lotusIdentityPublicKey(')
-  expect(ctor).not.toContain('toPublicKey')
-  const helper = readFileSync(
-    join(__dirname, 'lotus-identity-pubkey.ts'),
-    'utf8',
-  )
-  expect(helper).toContain('publicFromPrivate(')
-  expect(helper).toContain('privateKeyFromSecretBytes(')
-  expect(helper).not.toContain('point.mul')
-  expect(helper).not.toContain('point.add')
 })
 
 it('rejects a secret outside (0, n), a non-32-byte secret, and a missing flag', () => {

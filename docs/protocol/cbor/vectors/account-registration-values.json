@@ -1,6 +1,6 @@
 {
   "format": "frank-cbor-v1-account-registration-values",
-  "description": "Pure-value vectors for the account/attestation registration record (README section 11): the lossless millisecond mappings (M2, M3) and the canonical address derivations (M6). Not frame vectors; both codecs recompute these values directly. Integers are decimal strings because 2^63-1 exceeds the safe JSON integer range; TypeScript reads them with BigInt, Rust with u64/i128. address_derivations carries the compressed key the record holds and the exact Keccak input (the uncompressed X||Y, no 04 prefix) so a verifier without curve code can still recompute the hash.",
+  "description": "Pure-value and corpus-integrity vectors for the account/attestation registration record (README section 11): the exact case inventory, a Rust-originated T2a known answer, the lossless millisecond mappings (M2, M3), and canonical address derivations (M6). Integers are decimal strings because 2^63-1 exceeds the safe JSON integer range; TypeScript reads them with BigInt, Rust with u64/i128. address_derivations carries the compressed key the record holds and the exact Keccak input (the uncompressed X||Y, no 04 prefix) so a verifier without curve code can still recompute the hash.",
   "timestamp_mappings": [
     {
       "timestamp_ms": "0",
@@ -87,6 +87,51 @@
       "ttl_ms": "-2000000000000",
       "expiry_seconds": "-235452800",
       "expiry_nanoseconds": "0"
+    }
+  ],
+  "manifest_case_ids": [
+    "reg-fixture-testnet-statement-typed",
+    "reg-fixture-mainnet-statement-typed",
+    "reg-fixture-testnet-update-typed",
+    "reg-fixture-v63-profile-retained",
+    "reg-alg16-recognized-typed",
+    "reg-t4-key-32-bytes",
+    "reg-t4-key-uncompressed-65",
+    "reg-t2-sig-7-bytes",
+    "reg-t2-algorithm-unallocated-99",
+    "reg-t2-alg1-keytype3",
+    "reg-t4-schema2-carries-profile",
+    "reg-t4-schema1-carries-profile",
+    "reg-t4-network-uppercase",
+    "reg-t4-noncanonical-statement",
+    "reg-s10a2-schema-downgrade",
+    "reg-t4-headers-unsorted",
+    "reg-t4-headers-duplicate",
+    "reg-fixture-testnet-full",
+    "reg-fixture-testnet-minimal-full",
+    "reg-fixture-mainnet-full",
+    "reg-fixture-testnet-update-full",
+    "reg-crypto-sig-mutation",
+    "reg-crypto-wrong-network",
+    "reg-crypto-wrong-domain",
+    "reg-crypto-malformed-der",
+    "reg-crypto-high-s",
+    "reg-crypto-subject-not-point",
+    "reg-unsupported-alg16-entry",
+    "reg-t2a-rust-known-answer-full",
+    "reg-m7-transition-precedes-corrupt-outer"
+  ],
+  "key_transition_authorizations": [
+    {
+      "id": "t2a-rust-secret-2",
+      "source": "rust",
+      "network": "monad-testnet",
+      "prior_statement_frame_hex": "46524e4b01000000d6a40004010202020358cca6006d6d6f6e61642d746573746e657401a20001015821024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766020903a2001a6553f10001000481a4005001010101010101010101010101010101017768747470733a2f2f72656c61792e6578616d706c652f7202a20001015821024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076603a2001a6b49d200010008a20001015821031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "transition_statement_frame_hex": "46524e4b0100000094a400070101020103588aa5006d6d6f6e61642d746573746e657401a20001015821024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602a20001015821024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766030a04a20001015821031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "digest_hex": "1bf005980b3a39eddb2968f27c16ca8179d8e12ace00f39a58ebaed36db94929",
+      "signer_public_key_hex": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+      "signature_der_hex": "304402206794859bfbd3d1fd17cae462193f47d5a0f280c3e8192d2150fad7600fd139bd022075ab1ecc14041f9139edcafb7d2001015bc063e5bf68dd69e38fd956454ef43c",
+      "attestation_case_id": "reg-t2a-rust-known-answer-full"
     }
   ],
   "address_derivations": [

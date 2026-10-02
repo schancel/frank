@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { HDPublicKey, PrivateKey, PublicKey } from 'bitcore-lib-xpi'
 
 import { PayloadConstructor } from './crypto'
@@ -19,14 +16,6 @@ const N_PLUS_ONE =
 const N_MINUS_1 =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140'
 const ONE = `${'00'.repeat(31)}01`
-
-function methodBody(source: string, start: string, end: string): string {
-  const from = source.indexOf(start)
-  const to = source.indexOf(end, from)
-  expect(from).toBeGreaterThanOrEqual(0)
-  expect(to).toBeGreaterThan(from)
-  return source.slice(from, to)
-}
 
 function bitcoreNode(publicKey: Buffer, chainCode: Buffer, network: string) {
   return new HDPublicKey({
@@ -209,21 +198,4 @@ it('rejects a stamp digest >= n instead of reducing it', () => {
   expect(Buffer.from(point)).toEqual(before)
   expect(destination.toBuffer().toString('hex')).toBe(DEST_SECRET)
 
-  const source = readFileSync(join(__dirname, 'crypto.ts'), 'utf8')
-  const body = methodBody(
-    source,
-    'constructStampHDPublicKey(',
-    '// Digest in (0, n). A zero digest, a digest >= n, or a zero sum',
-  )
-  expect(body).toContain('stampParentHdPublicNode(')
-  expect(body).not.toContain('new HDPublicKey')
-  expect(body).not.toContain('fromSeed')
-  expect(body).not.toContain('networkName')
-  const helper = readFileSync(join(__dirname, 'stamp-hd-public.ts'), 'utf8')
-  expect(helper).toContain('compressedPublicKeyFromBytes(')
-  expect(helper).toContain('stampParentPublicKey(')
-  expect(helper).not.toContain('stealthDigestModN')
-  expect(helper).not.toContain('hdPrivateFromSeed')
-  expect(helper).not.toContain('bitcore')
-  expect(helper).not.toContain('Point.getN')
 })

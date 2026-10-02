@@ -180,6 +180,7 @@ fn check_config_cli_rejects_crossed_network_tags_and_chain_ids() {
         .contains("MON1 identifies EVM chain 143"));
 
     let mainnet = include_str!("../../cashwebd.local.toml")
+        .replace("id = \"monad-testnet\"", "id = \"monad-mainnet\"")
         .replace("expected_chain_id = 10143", "expected_chain_id = 143");
     let mainnet_with_testnet_tag = check_stdin_with_env(
         mainnet.as_bytes(),

@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 bitcoinsuite-core = { path = "../../bitcoinsuite/bitcoinsuite-core" }
 bitcoinsuite-bitcoind = { path = "../../bitcoinsuite/bitcoinsuite-bitcoind" }
+bitcoinsuite-chronik-client = { path = "../../bitcoinsuite/bitcoinsuite-chronik-client" }
 bitcoinsuite-error = { path = "../../bitcoinsuite/bitcoinsuite-error" }
 bitcoinsuite-ecc-secp256k1 = { path = "../../bitcoinsuite/bitcoinsuite-ecc-secp256k1" }
 bitcoinsuite-test-utils = { path = "../../bitcoinsuite/bitcoinsuite-test-utils" }

@@ -206,6 +206,7 @@ mod tests {
             curated_defaults: Arc::new(curated_defaults),
             monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
             evm_rpc: None,
+            bitcoin_proxy: None,
         }
     }
 

@@ -6,8 +6,8 @@ use cashweb_config::{parse_conf, CashwebdConf, MonadMailboxMode};
 use cashweb_registry::{
     disabled_chain_adapter::DisabledChainAdapter,
     http::{
-        curated_defaults::build_curated_defaults, evm_rpc::EvmRpcRuntime, pop_protection::PopGate,
-        server::RegistryServer,
+        bitcoin_proxy::BitcoinProxyRuntime, curated_defaults::build_curated_defaults,
+        evm_rpc::EvmRpcRuntime, pop_protection::PopGate, server::RegistryServer,
     },
     lotus_adapter::LotusAdapter,
     monad_http::HttpTransport,
@@ -137,6 +137,10 @@ fn read_and_validate_conf_with_env(
         .evm_rpc
         .validate()
         .wrap_err("Invalid registry.evm_rpc configuration")?;
+    conf.registry
+        .bitcoin_proxy
+        .validate()
+        .wrap_err("Invalid registry.bitcoin_proxy configuration")?;
     // An enabled mailbox admits only envelopes carrying the relay's network tag; an unset tag would
     // silently reject every direct message, so refuse to start instead.
     let network_tag = env(NETWORK_TAG_ENV);
@@ -232,6 +236,7 @@ async fn main() -> Result<()> {
 
     let registry = Arc::new(Registry::new(db, chain_adapter, conf.registry.net));
     let evm_rpc_conf = conf.registry.evm_rpc.clone();
+    let bitcoin_proxy_conf = conf.registry.bitcoin_proxy.clone();
     let (monad_mailbox, outbox_worker): (MonadMailboxRuntime, Option<MonadOutboxWorker>) =
         match mailbox_mode {
             MonadMailboxMode::Disabled => {
@@ -334,6 +339,13 @@ async fn main() -> Result<()> {
     )
     .await
     .wrap_err("Starting customer-authenticated EVM RPC proxy")?;
+    let bitcoin_proxy = BitcoinProxyRuntime::from_conf_with_env(
+        &bitcoin_proxy_conf,
+        cashweb_registry::network_tag::frank_network_tag().to_vec(),
+        |name| std::env::var(name).ok(),
+    )
+    .await
+    .wrap_err("Starting Bitcoin-family RPC/indexer proxy")?;
 
     let server = RegistryServer {
         registry: Arc::clone(&registry),
@@ -342,11 +354,13 @@ async fn main() -> Result<()> {
         curated_defaults,
         monad_mailbox,
         evm_rpc,
+        bitcoin_proxy,
     };
 
     let router = server.into_router();
     info!("Listening on {}", conf.host);
-    let server = axum::Server::bind(&conf.host).serve(router.into_make_service());
+    let server = axum::Server::bind(&conf.host)
+        .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>());
     tokio::pin!(server);
     let server_result = tokio::select! {
         result = &mut server => Some(result),
@@ -519,7 +533,9 @@ mod tests {
             read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV))
                 .expect("MONT and chain 10143 start");
 
-            let mainnet = config.replace("expected_chain_id = 10143", "expected_chain_id = 143");
+            let mainnet = config
+                .replace("id = \"monad-testnet\"", "id = \"monad-mainnet\"")
+                .replace("expected_chain_id = 10143", "expected_chain_id = 143");
             let mainnet_vars = [
                 ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
                 ("FRANK_NETWORK_TAG", "MON1"),

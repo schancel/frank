@@ -90,6 +90,7 @@ impl RegistryTestInstance {
             curated_defaults: Arc::new(vec![]),
             monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
             evm_rpc: None,
+            bitcoin_proxy: None,
         };
 
         let router = server.into_router();

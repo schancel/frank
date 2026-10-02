@@ -35,6 +35,13 @@ impl Peers {
         }
     }
 
+    /// Public relay origins a client may independently try for reads or transaction broadcast.
+    pub fn public_origins(&self) -> Vec<String> {
+        std::iter::once(self.own_origin.clone())
+            .chain(self.peers.iter().map(|peer| peer.url().to_string()))
+            .collect()
+    }
+
     /// Relay the metadata to all the peers.
     /// It will not forward to peers that (probably) already know the payload.
     pub async fn relay_metadata(

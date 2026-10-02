@@ -7,12 +7,93 @@
     unreachable_pub
 )]
 
-use std::{collections::HashSet, error::Error, fmt, net::SocketAddr, path::PathBuf};
+use std::{
+    collections::HashSet, error::Error, fmt, net::SocketAddr, path::PathBuf, sync::OnceLock,
+};
 
 use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClientConf;
 use bitcoinsuite_core::Net;
 use bitcoinsuite_error::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+const PROTOCOL_CHAIN_REGISTRY_V1: &str = include_str!("../../../../docs/protocol/chains/v1.json");
+
+/// Versioned protocol registry used by clients and relay family dispatch.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ProtocolChainRegistry {
+    /// Registry schema version.
+    pub schema_version: u32,
+    /// Canonical chain rows.
+    pub chains: Vec<ProtocolChainDescriptor>,
+}
+
+/// One canonical protocol chain identifier and its permitted proxy surface.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ProtocolChainDescriptor {
+    /// Stable Frank identifier used in URLs and signed scopes.
+    pub id: String,
+    /// Handler family selected by the relay.
+    pub family: ProtocolChainFamily,
+    /// Human-readable network class.
+    pub network: String,
+    /// Optional CAIP-2 alias when it identifies this network without ambiguity.
+    pub caip2: Option<String>,
+    /// Optional native chain ID, represented as decimal text to avoid JSON integer limits.
+    pub native_chain_id: Option<String>,
+    /// Proxy capabilities this chain is permitted to expose.
+    pub allowed_proxy_capabilities: Vec<ProtocolProxyCapability>,
+}
+
+/// Relay proxy handler family.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProtocolChainFamily {
+    /// Ethereum-compatible JSON-RPC.
+    Evm,
+    /// Bitcoin-family node JSON-RPC and optional Chronik.
+    Bitcoin,
+}
+
+/// Capability names advertised by chain discovery.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProtocolProxyCapability {
+    /// Allowlisted JSON-RPC.
+    JsonRpc,
+    /// Bitcoin-family Chronik HTTP/Protobuf API.
+    Chronik,
+}
+
+/// Return the compiled protocol chain registry.
+pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
+    static REGISTRY: OnceLock<ProtocolChainRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let registry: ProtocolChainRegistry = serde_json::from_str(PROTOCOL_CHAIN_REGISTRY_V1)
+            .expect("checked-in protocol chain registry must be valid JSON");
+        assert_eq!(
+            registry.schema_version, 1,
+            "unsupported chain registry schema"
+        );
+        let mut ids = HashSet::new();
+        for chain in &registry.chains {
+            assert!(ids.insert(chain.id.as_str()), "duplicate protocol chain id");
+            assert!(!chain.allowed_proxy_capabilities.is_empty());
+            assert!(chain.allowed_proxy_capabilities.iter().all(|capability| {
+                *capability == ProtocolProxyCapability::JsonRpc
+                    || chain.family == ProtocolChainFamily::Bitcoin
+            }));
+        }
+        registry
+    })
+}
+
+/// Look up one stable protocol chain identifier.
+pub fn protocol_chain(id: &str) -> Option<&'static ProtocolChainDescriptor> {
+    protocol_chain_registry()
+        .chains
+        .iter()
+        .find(|chain| chain.id == id)
+}
 
 /// Configuration of a cashwebd instance
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -51,6 +132,9 @@ pub struct RegistryConf {
     /// operator configurations do not acquire a new network surface on upgrade.
     #[serde(default)]
     pub evm_rpc: EvmRpcConf,
+    /// Bitcoin-family JSON-RPC and Chronik proxy. Omitted means disabled.
+    #[serde(default)]
+    pub bitcoin_proxy: BitcoinProxyConf,
     /// Operator-curated default contacts advertised to fresh clients (ticket #49). Empty by
     /// default -- unlike `PopConf` this is display-only config with no security implications, so
     /// (unlike `pop`) it's safe to default to "none" rather than requiring an explicit value.
@@ -61,7 +145,7 @@ pub struct RegistryConf {
 /// Relay-owned EVM JSON-RPC proxy configuration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct EvmRpcConf {
-    /// Whether the relay installs any `/rpc/*` routes.
+    /// Whether the relay installs EVM `/chain-rpc/:chain/rpc` routes.
     #[serde(default)]
     pub enabled: bool,
     /// Chain rows served by the single EVM-family handler.
@@ -82,6 +166,13 @@ pub struct EvmRpcConf {
     /// Complete upstream request timeout.
     #[serde(default = "default_rpc_timeout_ms")]
     pub timeout_ms: u64,
+    /// Fixed-hour quota units for an authenticated customer. Expensive methods cost more than one
+    /// unit; this is deliberately a burstable quota rather than a rolling rate.
+    #[serde(default = "default_evm_customer_units_per_hour")]
+    pub customer_units_per_hour: u32,
+    /// Fixed-hour quota units for an anonymous source IP. Zero disables anonymous EVM access.
+    #[serde(default = "default_evm_anonymous_units_per_hour")]
+    pub anonymous_units_per_hour: u32,
 }
 
 impl Default for EvmRpcConf {
@@ -94,8 +185,18 @@ impl Default for EvmRpcConf {
             max_response_bytes: default_rpc_response_bytes(),
             max_concurrency: default_rpc_concurrency(),
             timeout_ms: default_rpc_timeout_ms(),
+            customer_units_per_hour: default_evm_customer_units_per_hour(),
+            anonymous_units_per_hour: default_evm_anonymous_units_per_hour(),
         }
     }
+}
+
+const fn default_evm_customer_units_per_hour() -> u32 {
+    10_000
+}
+
+const fn default_evm_anonymous_units_per_hour() -> u32 {
+    500
 }
 
 const fn default_rpc_request_bytes() -> usize {
@@ -128,6 +229,12 @@ pub struct EvmRpcChainConf {
     pub expected_chain_id: u64,
     /// Name of the server-only environment variable containing the upstream HTTP(S) URL.
     pub upstream_env: String,
+    /// Optional block number whose hash must match before readiness.
+    #[serde(default)]
+    pub checkpoint_block_number: Option<u64>,
+    /// Expected `0x`-prefixed 32-byte block hash for `checkpoint_block_number`.
+    #[serde(default)]
+    pub checkpoint_block_hash: Option<String>,
     /// Largest inclusive explicit block range accepted by `eth_getLogs`.
     #[serde(default = "default_rpc_log_range")]
     pub max_get_logs_range: u64,
@@ -144,6 +251,10 @@ pub enum EvmRpcConfigError {
     MissingChains,
     /// A chain id is empty, unsafe for a path segment, or duplicated.
     InvalidChainId(String),
+    /// The id is not registered as an EVM-family chain.
+    WrongChainFamily(String),
+    /// The configured native chain ID contradicts the protocol registry.
+    NativeChainIdMismatch(String),
     /// An upstream environment-variable name is empty or malformed.
     InvalidUpstreamEnv(String),
     /// A numeric protection limit is zero or exceeds its hard ceiling.
@@ -155,6 +266,13 @@ impl fmt::Display for EvmRpcConfigError {
         match self {
             Self::MissingChains => f.write_str("registry.evm_rpc.chains is required when enabled"),
             Self::InvalidChainId(id) => write!(f, "invalid or duplicate EVM RPC chain id {id:?}"),
+            Self::WrongChainFamily(id) => write!(f, "chain id {id:?} is not registered as EVM"),
+            Self::NativeChainIdMismatch(id) => {
+                write!(
+                    f,
+                    "EVM chain id for {id:?} contradicts the protocol registry"
+                )
+            }
             Self::InvalidUpstreamEnv(name) => {
                 write!(f, "invalid EVM RPC upstream environment name {name:?}")
             }
@@ -189,6 +307,9 @@ impl EvmRpcConf {
         if self.timeout_ms == 0 || self.timeout_ms > 120_000 {
             return Err(EvmRpcConfigError::InvalidLimit("timeout_ms"));
         }
+        if self.customer_units_per_hour == 0 {
+            return Err(EvmRpcConfigError::InvalidLimit("customer_units_per_hour"));
+        }
         let mut ids = HashSet::new();
         for chain in &self.chains {
             let valid_id = !chain.id.is_empty()
@@ -199,6 +320,17 @@ impl EvmRpcConf {
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
             if !valid_id || !ids.insert(chain.id.as_str()) {
                 return Err(EvmRpcConfigError::InvalidChainId(chain.id.clone()));
+            }
+            let protocol = protocol_chain(&chain.id)
+                .filter(|row| row.family == ProtocolChainFamily::Evm)
+                .ok_or_else(|| EvmRpcConfigError::WrongChainFamily(chain.id.clone()))?;
+            if protocol
+                .native_chain_id
+                .as_deref()
+                .and_then(|id| id.parse::<u64>().ok())
+                != Some(chain.expected_chain_id)
+            {
+                return Err(EvmRpcConfigError::NativeChainIdMismatch(chain.id.clone()));
             }
             let valid_env = !chain.upstream_env.is_empty()
                 && chain.upstream_env.len() <= 128
@@ -214,6 +346,180 @@ impl EvmRpcConf {
             }
             if chain.expected_chain_id == 0 || chain.max_get_logs_range == 0 {
                 return Err(EvmRpcConfigError::InvalidLimit("chain row"));
+            }
+            match (
+                chain.checkpoint_block_number,
+                chain.checkpoint_block_hash.as_deref(),
+            ) {
+                (None, None) => {}
+                (Some(_), Some(hash))
+                    if hash.len() == 66
+                        && hash.starts_with("0x")
+                        && hash[2..].bytes().all(|byte| byte.is_ascii_hexdigit()) => {}
+                _ => return Err(EvmRpcConfigError::InvalidLimit("checkpoint")),
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Bitcoin-family JSON-RPC and Chronik proxy configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct BitcoinProxyConf {
+    /// Whether any Bitcoin-family proxy route is installed.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Chain rows served by the shared handlers.
+    #[serde(default)]
+    pub chains: Vec<BitcoinProxyChainConf>,
+    /// Maximum request body accepted by JSON-RPC and Chronik POST endpoints.
+    #[serde(default = "default_bitcoin_request_bytes")]
+    pub max_request_bytes: usize,
+    /// Maximum upstream response body.
+    #[serde(default = "default_bitcoin_response_bytes")]
+    pub max_response_bytes: usize,
+    /// Maximum in-flight Bitcoin-family upstream requests.
+    #[serde(default = "default_rpc_concurrency")]
+    pub max_concurrency: usize,
+    /// Complete upstream request timeout.
+    #[serde(default = "default_rpc_timeout_ms")]
+    pub timeout_ms: u64,
+    /// High, burstable fixed-hour Chronik bootstrap allowance per source IP.
+    #[serde(default = "default_chronik_anonymous_requests_per_hour")]
+    pub anonymous_chronik_requests_per_hour: u32,
+    /// Small, burstable fixed-hour raw-transaction broadcast allowance per source IP.
+    #[serde(default = "default_anonymous_broadcasts_per_hour")]
+    pub anonymous_broadcasts_per_hour: u32,
+}
+
+impl Default for BitcoinProxyConf {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            chains: vec![],
+            max_request_bytes: default_bitcoin_request_bytes(),
+            max_response_bytes: default_bitcoin_response_bytes(),
+            max_concurrency: default_rpc_concurrency(),
+            timeout_ms: default_rpc_timeout_ms(),
+            anonymous_chronik_requests_per_hour: default_chronik_anonymous_requests_per_hour(),
+            anonymous_broadcasts_per_hour: default_anonymous_broadcasts_per_hour(),
+        }
+    }
+}
+
+const fn default_bitcoin_request_bytes() -> usize {
+    512 * 1024
+}
+const fn default_bitcoin_response_bytes() -> usize {
+    16 * 1024 * 1024
+}
+const fn default_chronik_anonymous_requests_per_hour() -> u32 {
+    20_000
+}
+const fn default_anonymous_broadcasts_per_hour() -> u32 {
+    20
+}
+
+/// One Bitcoin-family chain and its optional node/indexer upstreams.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct BitcoinProxyChainConf {
+    /// Stable public path id, e.g. `btc-mainnet`.
+    pub id: String,
+    /// Server-only environment variable containing a Bitcoin JSON-RPC URL.
+    pub rpc_upstream_env: Option<String>,
+    /// Server-only environment variable containing a Chronik base URL.
+    pub chronik_upstream_env: Option<String>,
+    /// Checkpoint height queried on every configured upstream before readiness.
+    pub checkpoint_height: u64,
+    /// Expected conventional big-endian block hash at the checkpoint.
+    pub checkpoint_hash: String,
+}
+
+/// Invalid Bitcoin-family proxy configuration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BitcoinProxyConfigError {
+    /// Enabled mode has no chain rows.
+    MissingChains,
+    /// Chain id is unsafe or duplicated.
+    InvalidChainId(String),
+    /// The id is not registered as a Bitcoin-family chain.
+    WrongChainFamily(String),
+    /// Neither node nor indexer upstream is configured.
+    MissingUpstream(String),
+    /// An environment variable name is malformed.
+    InvalidUpstreamEnv(String),
+    /// Checkpoint hash is not 32-byte lowercase/uppercase hex.
+    InvalidCheckpoint(String),
+    /// Protection limit is invalid.
+    InvalidLimit(&'static str),
+}
+
+impl fmt::Display for BitcoinProxyConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid registry.bitcoin_proxy configuration: {self:?}")
+    }
+}
+
+impl Error for BitcoinProxyConfigError {}
+
+impl BitcoinProxyConf {
+    /// Validate the bounded chain-as-data configuration without resolving secrets.
+    pub fn validate(&self) -> std::result::Result<(), BitcoinProxyConfigError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.chains.is_empty() {
+            return Err(BitcoinProxyConfigError::MissingChains);
+        }
+        if self.max_request_bytes == 0 || self.max_request_bytes > 512 * 1024 {
+            return Err(BitcoinProxyConfigError::InvalidLimit("max_request_bytes"));
+        }
+        if self.max_response_bytes == 0 || self.max_response_bytes > 32 * 1024 * 1024 {
+            return Err(BitcoinProxyConfigError::InvalidLimit("max_response_bytes"));
+        }
+        if self.max_concurrency == 0
+            || self.max_concurrency > 1024
+            || self.timeout_ms == 0
+            || self.timeout_ms > 120_000
+        {
+            return Err(BitcoinProxyConfigError::InvalidLimit("runtime limit"));
+        }
+        let mut ids = HashSet::new();
+        for chain in &self.chains {
+            let valid_id = !chain.id.is_empty()
+                && chain.id.len() <= 64
+                && chain
+                    .id
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            if !valid_id || !ids.insert(chain.id.as_str()) {
+                return Err(BitcoinProxyConfigError::InvalidChainId(chain.id.clone()));
+            }
+            if protocol_chain(&chain.id).map(|row| row.family) != Some(ProtocolChainFamily::Bitcoin)
+            {
+                return Err(BitcoinProxyConfigError::WrongChainFamily(chain.id.clone()));
+            }
+            if chain.rpc_upstream_env.is_none() && chain.chronik_upstream_env.is_none() {
+                return Err(BitcoinProxyConfigError::MissingUpstream(chain.id.clone()));
+            }
+            for name in chain
+                .rpc_upstream_env
+                .iter()
+                .chain(chain.chronik_upstream_env.iter())
+            {
+                let valid = !name.is_empty()
+                    && name.len() <= 128
+                    && name.bytes().enumerate().all(|(i, b)| {
+                        b.is_ascii_uppercase() || b == b'_' || (i > 0 && b.is_ascii_digit())
+                    });
+                if !valid {
+                    return Err(BitcoinProxyConfigError::InvalidUpstreamEnv(name.clone()));
+                }
+            }
+            if chain.checkpoint_hash.len() != 64
+                || !chain.checkpoint_hash.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Err(BitcoinProxyConfigError::InvalidCheckpoint(chain.id.clone()));
             }
         }
         Ok(())
@@ -437,9 +743,10 @@ mod tests {
     use bitcoinsuite_error::Result;
 
     use crate::{
-        parse_conf, CashwebdConf, CuratedContactConf, EvmRpcChainConf, EvmRpcConf,
-        EvmRpcConfigError, InitialMetadataDownloadConf, MonadMailboxConf, MonadMailboxConfigError,
-        MonadMailboxMode, PopConf, RegistryConf,
+        parse_conf, protocol_chain_registry, BitcoinProxyChainConf, BitcoinProxyConf, CashwebdConf,
+        CuratedContactConf, EvmRpcChainConf, EvmRpcConf, EvmRpcConfigError,
+        InitialMetadataDownloadConf, MonadMailboxConf, MonadMailboxConfigError, MonadMailboxMode,
+        PopConf, ProtocolChainFamily, ProtocolProxyCapability, RegistryConf,
     };
 
     #[test]
@@ -454,6 +761,8 @@ mod tests {
                 id: "monad-testnet".to_string(),
                 expected_chain_id: 10_143,
                 upstream_env: "MONAD_TESTNET_HTTP_RPC_URL".to_string(),
+                checkpoint_block_number: None,
+                checkpoint_block_hash: None,
                 max_get_logs_range: 10,
             }],
             ..base
@@ -466,6 +775,61 @@ mod tests {
             Err(EvmRpcConfigError::InvalidChainId(id)) if id == "monad-testnet"
         ));
         Ok(())
+    }
+
+    #[test]
+    fn protocol_registry_is_unique_and_family_validation_fails_closed() {
+        let registry = protocol_chain_registry();
+        assert_eq!(registry.schema_version, 1);
+        assert_eq!(registry.chains.len(), 14);
+        assert_eq!(
+            registry
+                .chains
+                .iter()
+                .find(|chain| chain.id == "monad-testnet")
+                .unwrap()
+                .allowed_proxy_capabilities,
+            vec![ProtocolProxyCapability::JsonRpc]
+        );
+
+        let wrong_evm = EvmRpcConf {
+            enabled: true,
+            chains: vec![EvmRpcChainConf {
+                id: "btc-mainnet".to_string(),
+                expected_chain_id: 10_143,
+                upstream_env: "BTC_RPC".to_string(),
+                checkpoint_block_number: None,
+                checkpoint_block_hash: None,
+                max_get_logs_range: 10,
+            }],
+            ..EvmRpcConf::default()
+        };
+        assert_eq!(
+            wrong_evm.validate(),
+            Err(EvmRpcConfigError::WrongChainFamily(
+                "btc-mainnet".to_string()
+            ))
+        );
+
+        let bitcoin = BitcoinProxyConf {
+            enabled: true,
+            chains: vec![BitcoinProxyChainConf {
+                id: "xec-mainnet".to_string(),
+                rpc_upstream_env: None,
+                chronik_upstream_env: Some("XEC_CHRONIK".to_string()),
+                checkpoint_height: 1,
+                checkpoint_hash: "00".repeat(32),
+            }],
+            ..BitcoinProxyConf::default()
+        };
+        assert_eq!(bitcoin.validate(), Ok(()));
+        assert!(registry
+            .chains
+            .iter()
+            .filter(|chain| chain.family == ProtocolChainFamily::Bitcoin)
+            .all(|chain| chain
+                .allowed_proxy_capabilities
+                .contains(&ProtocolProxyCapability::JsonRpc)));
     }
 
     #[test]
@@ -535,6 +899,7 @@ mod tests {
                         expected_chain_id: None,
                     },
                     evm_rpc: EvmRpcConf::default(),
+                    bitcoin_proxy: BitcoinProxyConf::default(),
                     curated_defaults: vec![],
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
@@ -609,6 +974,7 @@ mod tests {
                         expected_chain_id: None,
                     },
                     evm_rpc: EvmRpcConf::default(),
+                    bitcoin_proxy: BitcoinProxyConf::default(),
                     curated_defaults: vec![],
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {

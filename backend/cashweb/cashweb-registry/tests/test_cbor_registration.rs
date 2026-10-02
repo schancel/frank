@@ -92,6 +92,7 @@ fn make_server(registry: Registry) -> RegistryServer {
         curated_defaults: Arc::new(vec![]),
         monad_mailbox: cashweb_registry::monad_mailbox::MonadMailboxRuntime::Disabled,
         evm_rpc: None,
+        bitcoin_proxy: None,
     }
 }
 

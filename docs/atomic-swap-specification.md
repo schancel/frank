@@ -179,6 +179,29 @@ accepted by their chain; they are transaction
 authorization, not a substitute for protocol attestation. Any future primitive that adds associated
 context to NIZK challenges is a new version requiring encodings, vectors, and independent review.
 
+V1 uses one canonical evidence codec. `frame(tag, payload)` is
+`u16be(tagByteLength) || ASCII(tag) || u32be(payloadByteLength) || payload`; integers inside payloads
+are fixed-width unsigned big-endian values and byte strings are `u32be(length) || bytes`. No field
+may be omitted or defaulted. The IDs are:
+
+```text
+effectId = SHA256(frame("frank/swap-effect/v1",
+  swapId || laneId || legId || effectKindU8 || authorizedBodyHash))
+inclusionEvidenceId = SHA256(frame("frank/swap-inclusion/v1",
+  effectId || chainGenesisId || transactionIdentity || blockIdentity || blockHeightU64))
+```
+
+An invalidation targets one `inclusionEvidenceId`, never the stable `effectId`; canonical re-inclusion
+therefore receives a new inclusion ID. A status leaf contains, in this exact order, its type tag,
+effect ID, inclusion ID, chain genesis ID, transaction identity, block identity, height, status enum,
+accepted-tip identity, ancestry-proof digest, and adapter-policy version. Other rooted fact types have
+equally frozen versioned field tables before implementation. Each leaf hash is
+`SHA256(frame("frank/swap-state-leaf/v1", canonicalLeafBytes))`; the state root is
+`SHA256(frame("frank/swap-state-root/v1", authorizationRoot || u32be(count) ||
+lexicographicallySortedLeafHashes))`. Semantic slots, envelope event IDs, effect IDs, and inclusion
+IDs are distinct types and cannot be substituted. Frozen vectors define every enum and fixed field
+width before the codec is accepted.
+
 No JavaScript floating-point value may represent an amount, price, deadline, chain identifier, or
 nonce. Wire integers must have a canonical bounded representation. Raw transactions, public keys,
 signatures, and proofs are byte strings, not hex strings with ambiguous normalization.
@@ -235,13 +258,19 @@ Offer
   -> ReadyToFund
 ```
 
+`EncryptedSignatures` means the exact pair policy's pre-funding artifact. It may be a transcript-
+bound commitment rather than delivery of exercisable presignature bytes; the initial withheld-parent
+mode deliberately withholds A's adaptor presignature until the readiness join.
+
 Funding is not one overwriteable step. `FundingProgress` facts are keyed by
 `(laneId, legId, chainObjectId)` and advance monotonically through the pair policy's broadcast,
 observed, and final historical states; only `activeFinal` satisfies a live finality guard.
 `ArtifactReveal` is a distinct keyed fact that validates exact bytes
 against a committed opaque leaf. The readiness join enters `ReadyToSettle` only when every required
 funding and reveal predicate is satisfied in the pair-specific order. For the initial pair that order
-is: EVM funding final, exact withheld parent revealed and validated, then that eCash parent final.
+is: EVM funding final, exact withheld parent revealed and validated, that eCash parent actively
+final, then exact committed adaptor-presignature release and validation atomically with
+`ReadyToSettle`.
 
 After `ReadyToSettle`, the manifest selects exactly one versioned custody-mode branch:
 
@@ -304,9 +333,11 @@ never proves that the peer has not broadcast. At or after that conservative cuto
 offer an unqualified `Cancel`. It offers a phase-specific action such as “stop active participation
 and enter recovery,” states that funding, settlement, or refund may still broadcast, and identifies
 the assets, deadlines, reserves, and watcher authority that remain live. Watchers, signed artifacts,
-account nonces or durable nonces, fee reserves, and keys remain available until `complete`,
-`refunded`, a completed cooperative salvage, or an explicitly completed manual-recovery or
-irreversible-abandonment handoff. Returning to `failed-before-funding` later requires a specified
+account nonces or durable nonces, fee reserves, and keys remain available through
+`lifecycleTerminal`: an apparent `complete`, `refunded`, cooperative-salvage, or manual-recovery
+outcome has survived the negotiated reorg/recovery horizon and is cleanup-eligible. The only earlier
+endpoint is an explicitly completed irreversible-abandonment handoff. Returning to
+`failed-before-funding` later requires a specified
 bilateral revocation that makes every funding artifact unusable, reconciles all outboxes, and
 observes that invalidation through the finality/reorg model. A hostile peer cannot cancel the other
 party's recovery capability.
@@ -336,9 +367,21 @@ polynomial certificate/validator rather than silently raising these limits.
 Runtime evidence is bounded independently of the manifest. V1 permits at most 256 rooted semantic
 effect slots, 512 active-horizon chain-status records, 64 recognized predecessor roots, and 1 MiB
 of local raw-witness material per swap. Equivalent witnesses consume the already-materialized slot
-and cannot force a new root. Status history is checkpointed by the chain adapter into a canonical
-ancestry/finality summary before a bound is crossed; the checkpoint commits the pruned IDs and
-preserves every fact needed by `activeFinal`, recovery, and the negotiated reorg horizon. Only the
+and cannot force a new root. A replicated checkpoint is a noncommutative protocol transition, never
+an independently chosen local compaction. Its deterministic per-chain frontier is the greatest
+height no newer than `min(attested finalized tips) - negotiated reorg/recovery horizon`; it may prune
+only inclusion/status records strictly below that frontier whose effects are lifecycle-terminal.
+The versioned checkpoint contains the predecessor root, frontier for every chain, prior-checkpoint
+hash, sorted pruned inclusion IDs, their audit accumulator, and the complete canonical active-effect
+summary. Both peers verify it from retained facts and chain proofs and attest the same bytes before
+it replaces those leaves in the replicated root. Concurrent evidence is buffered against the
+predecessor and merged only after the checkpoint commits. An offline implementation may compact a
+separate local raw journal, but cannot advertise a new replicated root until this transition is
+attested; absence of the peer therefore fails closed rather than inventing competing checkpoint
+authority. Checkpoints form one hash-linked prefix, so overlapping or sibling summaries never merge:
+a peer resynchronizes to the latest common checkpoint, exchanges bounded later facts, and performs
+the single next checkpoint. The checkpoint preserves every fact needed by `activeFinal`, recovery,
+and the negotiated reorg horizon. Only the
 64 most recent roots are accepted as commuting predecessors; an older sender must resynchronize to
 the current root. Parsing rejects an over-limit peer message before allocation or signature work.
 Quota pressure never suppresses the first valid safety-critical reveal or invalidation: reserved
@@ -404,8 +447,10 @@ artifact may be released and no incoming exercise gate may open before the bundl
 `ReadyToSettle` after all four global conditions above and every deadline inequality below pass.
 A transcript-declared funding-artifact reveal needed to make a funding object observable—such as
 the initial withheld eCash parent—is permitted in its named pre-settlement state after its
-prerequisite funding leg is actively final. Such a reveal opens no claim or exercise gate; invalid
-bytes are rejected, and only active finality of the revealed object may complete the readiness join.
+prerequisite funding leg is actively final only when every indispensable settlement artifact remains
+cryptographically unavailable to the receiving party. Such a reveal opens no claim or exercise gate;
+invalid bytes are rejected, and the final indispensable artifact is released only atomically with
+the readiness join after active finality of the revealed object.
 
 At `ReadyToSettle`, deadline ordering must be acyclic. For every revelation leg `r` and remaining
 leg `j`, the manifest must establish, in a common conservative time model:
@@ -630,8 +675,12 @@ Every fee replacement is a distinct immutable action in a transcript-bound repla
 successor may be reserved only after authoritative reconciliation classifies its parent as
 `known-not-sent`, `known-pending/replacement-permitted`, or `confirmed-replaceable` under the chain
 policy. A parent with an unknown external outcome blocks a successor; that possible delay is part
-of the liveness and timeout calculation. Exactly one successor per parent/slot may win the durable
-operation-revision CAS. Known-pending replacement may coexist on chain only where the adapter proves
+of the liveness and timeout calculation. The initial action uses its semantic action slot; every
+candidate child of parent `p` uses the single canonical slot
+`SHA256(frame("frank/replacement-slot/v1", operationId || p.actionId))`. Reservation atomically
+requires `p.successorActionId` absent and sets it to the winning child, with a durable unique
+constraint on `(operationId, parentActionId)`. Sequential retries cannot create a sibling after the
+first child wins. Known-pending replacement may coexist on chain only where the adapter proves
 the same nonce/outpoint makes the lineage mutually exclusive. Restart and takeover reuse the same
 lineage and never invent a parallel action.
 
@@ -668,8 +717,11 @@ For this subsection, A offers XEC and receives MON; B offers MON and receives XE
    `ANYONECANPAY`, so it alone binds the complete canonical body. B may use any consensus-valid
    sighash type whose actual signature verifies for B over that unchanged body. Claim unlocking-script
    bytes, B's signature bytes and sighash byte, and claim txid are deliberately not authoritative.
-3. B produces an ordinary signature for the canonical eCash claim digest. A gives B an adaptor
-   signature for A's required success-branch signature under `T`. B verifies it. A valid
+3. B produces an ordinary signature for the canonical eCash claim digest. A creates the exact
+   adaptor signature for A's required success-branch signature under `T`, but gives B only a
+   domain-separated commitment to its canonical bytes before funding. A retains the presignature
+   bytes until the exact parent is actively final. B cannot verify the presignature before funding
+   and explicitly accepts invalid-presignature or non-release grief in this contractless mode. A valid
    success-branch spend matching the canonical body pays only B and is the sole first-reveal action.
    B's signature bytes and consensus-valid push encodings may vary. A holds its complete refund
    artifact.
@@ -681,18 +733,22 @@ For this subsection, A offers XEC and receives MON; B offers MON and receives XE
    transferred to A; it does not pretend residual change remains under B's control.
 5. Both identities sign the pre-funding authorization root containing the exact EVM funding bytes,
    the withheld-parent txid/output commitment, canonical eCash claim intent, exact refund artifact,
-   A's presignature and sighash type, the initially supplied B signature as readiness evidence, all
+   A's required sighash type, the initially supplied B signature as readiness evidence, all
    public points/proofs, amounts, the predicate permitting a later valid B witness, EVM success-policy
-   artifact, and conservative `lastSafeClaimBroadcast`.
+   artifact, the presignature commitment and release predicate (not its withheld bytes), and conservative `lastSafeClaimBroadcast`.
    They durably record both attestations. B cannot validate the hidden parent's signatures or output
-   before risking MON and explicitly accepts invalid-parent, double-spend, and non-reveal grief.
+   before risking MON and explicitly accepts invalid-parent, invalid-presignature, double-spend,
+   and non-reveal grief.
 6. B broadcasts EVM funding and waits for the manifest's threshold. Only then does A reveal and
    broadcast the exact raw eCash parent. B byte-checks its txid and promised output, fully validates
    it, retains the bytes for rebroadcast, and waits until that exact txid reaches the negotiated
-   eCash threshold. B never adapts the claim for a replacement outpoint. Re-signing, alternate
+   eCash threshold. Only after the parent is actively final does A reveal the exact committed
+   adaptor presignature. B validates it, and that validated release atomically enters
+   `ReadyToSettle` and opens the claim exercise gate. B never adapts the claim for a replacement outpoint. Re-signing, alternate
    encoding, malleation, non-reveal, or confirmation under another txid aborts settlement and leaves
-   the disclosed grief outcome. This order gives B no broadcastable claim on XEC before MON is
-   committed.
+   the disclosed grief outcome. The raw parent alone is not an exercisable claim because B lacks
+   A's indispensable presignature bytes; this order gives B no broadcastable claim on XEC before
+   both legs meet readiness.
 7. Honest B stops before `lastSafeClaimBroadcast` unless the exact claim can still reach negotiated
    finality plus reorganization margin strictly before `earliestRefundValidity`; this is advice, not
    a consensus expiry or revocation of A's rights. To claim, B completes A's adaptor signature with
@@ -1048,9 +1104,9 @@ The first implementation should provide:
     conflicting single-valued preparation fact does;
 22. initial-pair reducer tests in which EVM pending/final, exact or invalid parent reveal, and eCash
     pending/final facts arrive duplicated and reordered with restart after every step; only `EVM
-    final -> exact parent validated -> eCash final` enters `ReadyToSettle`; active EVM finality permits
-    the named parent reveal without opening the claim gate, while invalid or capability-expanding
-    artifacts remain rejected before readiness;
+    final -> exact parent validated -> eCash active-final -> exact presignature validated` enters
+    `ReadyToSettle`; active EVM finality permits the named parent reveal while B still lacks the
+    presignature needed to claim, and early, mismatched, or invalid presignature release is rejected;
 23. custody-mode transition tests proving adaptor mode requires scalar extraction and counter-leg
     evidence, hashlock/program mode requires a validated preimage rather than scalar extraction, and
     native-atomic mode completes from one action proving both transfers while rejecting the other
@@ -1069,7 +1125,10 @@ The first implementation should provide:
 27. evidence-resource tests submit more than every count/byte bound using valid signature and push
     variants plus reorg statuses; equivalent witnesses never change the root after the first effect,
     one-over input rejects before allocation or expensive validation, safety-critical invalidations
-    still fit reserved slots, and checkpoint/resynchronization preserves the correct reducer state;
+    still fit reserved slots, and checkpoint/resynchronization preserves the correct reducer state.
+    Two peers receiving different commuting facts near the cap cannot publish sibling checkpoints:
+    they converge on the deterministic frontier/root, buffer later facts, attest one checkpoint, and
+    resynchronize from its common hash-linked prefix;
 28. fee-lineage tests cover known-not-sent, known-pending, accepted with lost response, and unknown
     parent outcomes; only specified authoritative states allocate one CAS-winning successor, and
     restart/takeover never creates parallel replacements; and

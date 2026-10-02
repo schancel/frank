@@ -521,7 +521,17 @@ Each screen shows:
   storing shares together; and
 - a short warning that support will never request even one share and that
   separate disclosures can be accumulated; and
-- an acknowledgement that the share was recorded.
+- an acknowledgement that the share was recorded; and
+- a versioned destination attestation using the same provider/account/device/
+  sync/physical-domain vocabulary as descriptor storage.
+
+A share counts as stored for activation only after that local attestation is
+recorded. Frank compares every descriptor destination against every share
+destination and rejects any shared provider account, sync domain, physical
+device, removable volume, or declared physical domain. Advanced raw copy with an
+unknown eventual destination cannot satisfy this activation inventory until the
+user returns and declares the actual destination. These attestations are local
+ceremony safety data, not public account metadata.
 
 Copy is optional, deliberate, and reports both success and failure without
 including the share in diagnostics. A per-presentation operation token guards
@@ -599,12 +609,14 @@ Only after exact reconstruction succeeds may setup:
 
 1. extract `R` from the validated `M` and derive all initially approved domain
    roots according to the frozen registry;
-2. derive public recovery fingerprints and addresses needed for confirmation;
+2. derive the public recovery fingerprint, registry-independent master-retirement ID, and addresses
+   needed for confirmation, rejecting either identity against pending or completed deletion indices;
 3. present the versioned public recovery descriptor and require the user to
    retrieve, re-enter, or scan it from two declared storage destinations in
    distinct trust/failure domains independent from the threshold shares;
 4. byte-validate each copy's format, registry, and complete fingerprint against
-   the ceremony values and reject duplicate/same-destination attestations; an
+   the ceremony values and reject duplicate/same-destination attestations or any
+   descriptor destination correlated with a recorded share destination; an
    acknowledgement checkbox or redisplay of Frank's own in-memory value is
    insufficient;
 5. build one complete durable account record;
@@ -831,8 +843,10 @@ never entered through a deep link, QR code, message, or support instruction. It
 requires fresh local authentication; pins the exact account ID, recovery
 fingerprint, custody epoch, account revision, and frozen inventory; discloses
 that activation and recovery of this identity will be permanently rejected and
-that Frank cannot know whether physical shares still exist; and offers a verified
-descriptor/backup export before an accessible account-bound confirmation. The
+that Frank cannot know whether physical shares still exist; and offers re-export
+of the exact public recovery descriptor through the backup-status view while
+stating that it is not a master backup and cannot replace missing Codex32 shares,
+before an accessible account-bound confirmation. The
 confirmation text, consequences, and affected identity are programmatically
 associated, announced on dialog entry, and reachable in deterministic keyboard
 and screen-reader focus order. A stale or wrong-account confirmation fails.
@@ -841,7 +855,11 @@ Before any account-owned vault handle is destroyed, one atomic transaction
 commits a non-cancellable deletion tombstone under a stable deletion ID. It
 fences the inactive account, checks its expected custody epoch/revision, and
 freezes the exact inventory of account-owned handles and wrapping references
-after operation capabilities have been detached. Only then may idempotent,
+after operation capabilities have been detached. That same transaction copies
+the account's canonical `masterRetirementId` and `recoveryIdentityCommitment`
+into the permanent retirement index. Every create, import, restore, and activation
+path consults both pending tombstones and completed receipts, so cleanup creates
+no identity-reuse window. Only then may idempotent,
 queryable per-handle destruction begin. Completion is recorded per handle; the
 tombstone and cleanup authority survive crashes, ambiguous results, and
 `not found` until the backend proves no listed handle can remain. Startup resumes
@@ -851,7 +869,8 @@ operation. After every account-owned handle is durably confirmed destroyed, one
 final atomic transaction purges local wrapped/software secrets, wrapping
 references, backup metadata, and live indices, and converts the cleanup
 tombstone into a permanent minimal non-secret deletion receipt containing the
-account ID, canonical recovery-identity commitment, deletion ID, terminal custody
+account ID, canonical master-retirement ID and recovery-identity commitment,
+deletion ID, terminal custody
 epoch/revision, inventory digest, and exact retired handle identifiers (or
 references to a permanent non-reuse index).
 Only per-handle cleanup authority is retired. Account creation, import, restore,
@@ -1046,19 +1065,25 @@ increments the term and makes every prior shared token stale.
 Concurrent holders may protect disjoint operations, but they do not gain
 concurrent mutation authority over the same semantic action slot. Every operation
 has a monotonic `operationRevision`; every external effect has a canonical
-`actionSlot` and a uniqueness constraint on `(operationId, actionSlot)`. While
+`actionSlot`, its own monotonic `actionRevision`, and a uniqueness constraint on
+`(operationId, actionSlot)`. While
 holding a shared-holder row, an actor atomically writes an operation-scoped
 `reserved-to-sign` record before signing by comparing the expected operation
 revision, proving the slot absent or byte-identically reserved, binding that slot
 to the current holder, and incrementing the revision. It contains a stable
-action/idempotency ID, action slot, resulting operation revision, gate term,
+action/idempotency ID, action slot, initial action revision, resulting operation revision, gate term,
 holder ID/fencing revision, exact canonical
 unsigned signing payload and semantic fields, their hash, and a stable
 signer-request ID. After signing, Frank validates the result against that
 reservation and durably commits immutable exact signed wire bytes plus the
 derived transaction/signature/external identity as `ready-to-dispatch` before
-any enqueue or send. Sign-result, ready, enqueue, dispatch, and classification
-transitions CAS the exact reservation/action ID and operation revision. Only
+any enqueue or send. Allocation and operation-level state transitions use
+`operationRevision`; sign-result, ready, enqueue, dispatch, and classification
+transitions CAS the exact reservation/action ID and that row's `actionRevision`,
+then increment the action revision. They do not become stale merely because an
+independent slot advanced `operationRevision`. An operation-level transition that
+would close, detach, or invalidate actions inventories their rows and CASes both
+the operation revision and each affected action revision. Only
 those byte-identical bytes may be queried, dispatched,
 or replayed; an ambiguous action is never re-signed or repriced.
 
@@ -1073,9 +1098,10 @@ committed, the actor releases its shared-holder row unless other protected work
 remains. An unknown action—not the lifecycle gate—remains blocked from
 redispatch and transfers only through the detached-watcher protocol. Replacement
 atomically increments the custody epoch with the active-pointer switch.
-`custodyEpoch` is the single canonical custody fence in the lifecycle gate,
-account record, operation tokens, vault intents, abandonment records, deletion
-receipt, and every callback; there is no separate generation counter. Storage
+`custodyEpoch` is the single canonical account-custody fence in the lifecycle
+gate, account record, account-bound operation tokens, vault intents, abandonment
+records, deletion receipt, and account-bound callbacks; there is no differently
+named alias for that counter. Storage
 transactions also compare the epoch and expected revision.
 Checking only a late callback is insufficient because a remote chain or relay
 cannot enforce a browser-local epoch.
@@ -1099,11 +1125,14 @@ cannot fence it; takeover therefore treats that reservation as live and never
 issues a distinct replacement action.
 
 Detached safety-critical watchers are the narrow exception: before exclusive
-quiescence they receive an operation-scoped capability, separate generation and
-lease, and immutable outbox, and the old watcher is fenced. They cannot access
+quiescence, one atomic transfer retires the account-bound token and creates an
+operation-local capability with `watcherLeaseRevision`, lease, and immutable
+outbox, then fences the old watcher. Detached callbacks CAS the watcher lease and
+operation/action revisions and do not compare a later active account's custody
+epoch; reattachment performs the inverse atomic transfer. They cannot access
 candidate secrets or general account authority. If safe handoff cannot be
 proven, replacement remains blocked. Read-only polling may continue only when
-callbacks are generation-fenced and reveal no ceremony data. `BroadcastChannel`
+callbacks are watcher-lease-fenced and reveal no ceremony data. `BroadcastChannel`
 or Web Locks may coordinate but are not the durable fence.
 
 ### 10.6 Browser exposure
@@ -1180,6 +1209,7 @@ derivationRegistry: <single frozen registry identifier>
 domainPurposes: [<purpose identifiers from that registry>]
 backupVerification: <optional local timestamp and method version>
 publicRecoveryFingerprint: byte[32]
+masterRetirementId: byte[32]
 domainSecrets: <wrapped records or non-exportable key handles>
 custodyEpoch: <monotonic fencing value>
 setupState: "complete"
@@ -1195,6 +1225,18 @@ Section 7.2. The `frankrec` Bech32m string is its human-facing rendering and the
 is stored in this field. Reading either representation decodes to the same raw
 bytes before comparison.
 
+`masterRetirementId` is registry- and format-independent and is exactly:
+
+```text
+SHA-256(ASCII("frank/master-retirement/v1") || 0x00 || M)
+```
+
+It is non-secret public verifier material with the same offline-guessing caveat
+as the recovery fingerprint. It exists solely to reject a previously deleted
+master even if a later append-only registry or recovery-format version would
+produce a different public fingerprint. Every reconstruction computes and checks
+it against pending and completed retirement indices before account creation.
+
 The whole record becomes visible atomically after an in-transaction custody
 epoch and expected-revision check. A crash cannot leave “complete” without
 domain secrets, or domain secrets without matching format and derivation
@@ -1207,6 +1249,7 @@ not an absent row that can be recreated:
 
 ```text
 accountId: <retired stable identity>
+masterRetirementId: byte[32]
 recoveryIdentityCommitment: byte[32]
 deletionId: <stable unique identifier>
 terminalCustodyEpoch: <monotonic value>
@@ -1218,13 +1261,25 @@ status: "deleted"
 
 The receipt contains no private key, wrapped secret, vault handle, backup
 metadata, or live pointer. `recoveryIdentityCommitment` is the domain-separated
-SHA-256 commitment to the canonical recovery format, derivation registry, and raw
-32-byte public recovery fingerprint. It is indexed independently of `accountId`;
+commitment:
+
+```text
+SHA-256(
+  ASCII("frank/recovery-identity/v1") || 0x00 ||
+  u16be(recoveryFormatCode) || u16be(derivationRegistryCode) ||
+  publicRecoveryFingerprint
+)
+```
+
+The codes are exactly the descriptor registry codes and the fingerprint is the
+raw 32-byte value; no identifier string or encoded `frankrec`/`frankdesc` value
+is accepted in this preimage. This value is indexed independently of `accountId`;
 the same recovered master is rejected even if a caller proposes a fresh local ID.
 The destroyed-inventory digest is audit-only and never substitutes for exact
 retired-handle membership. Backends whose identifiers may be reused require a
-permanent bounded membership index; otherwise the adapter must guarantee IDs are
-globally non-reusable. The receipt and non-reuse index are consulted by every create, import, restore,
+permanent exact membership index whose storage grows with retired IDs while
+lookup work remains bounded; otherwise the adapter must guarantee IDs are globally
+non-reusable. The receipt and non-reuse index are consulted by every create, import, restore,
 activation, and identifier-allocation path. Whole-store rollback limitations
 below still apply; within a non-rolled-back store, deletion is permanent.
 
@@ -1456,7 +1511,8 @@ Two live holders then race reservations for the same operation/action slot from
 the same expected operation revision with distinct action IDs and payloads.
 Exactly one slot/revision CAS reaches the signer; the loser cannot commit a sign
 result, dispatch, or allocate a sibling action. Disjoint operation slots remain
-concurrent.
+concurrent through signing, readiness, enqueue, dispatch, and classification by
+advancing independent action revisions; operation closure CASes every affected row.
 
 Actual-browser tests freeze, BFCache, resume, and kill owners before `reserved-to-sign`, after that
 commit, after signer success or lost signer response but before signed-byte
@@ -1526,6 +1582,11 @@ account/handle identifier reuse across restart. Re-importing the same master and
 descriptor under a fresh requested account ID is rejected by the indexed recovery-
 identity commitment; every retired handle is rejected by exact membership after
 compaction, while a fresh identifier remains allocatable.
+The tombstone transaction reserves both identity indices before remote cleanup;
+a stalled deletion cannot race a fresh-ID import. Frozen known-answer vectors
+cover both commitment preimages. Re-import of the same `M` under a later append-
+only registry is rejected by `masterRetirementId` even when its descriptor and
+public recovery fingerprint differ.
 
 Usability testing MUST include nontechnical users, keyboard-only users, screen
 reader users, handwritten uppercase shares, camera scanning, one deliberately
@@ -1546,6 +1607,10 @@ confirmation. Destination-independence tests normalize aliases and cover the
 same provider account, same sync domain under different labels, same provider
 with different accounts, separate removable devices, print copies, and unknown
 correlation according to the frozen v1 table.
+They also place each share and descriptor in named domains and reject every
+descriptor-to-share collision, including advanced raw copy whose eventual
+destination was never attested; activation succeeds only with two descriptor
+domains distinct from one another and from every stored-share domain.
 
 ## 16. Implementation sequence and gates
 

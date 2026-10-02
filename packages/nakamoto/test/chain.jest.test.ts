@@ -1,3 +1,6 @@
+import { readFileSync } from 'fs'
+import { join } from 'path'
+
 import {
   BCH_MAINNET,
   BTC_MAINNET,
@@ -18,6 +21,30 @@ describe('chain descriptors', () => {
     const keys = CHAINS.map(chain => `${chain.family}:${chain.network}`)
     expect(new Set(keys).size).toBe(12)
     expect(getChain('btc', 'mainnet')).toBe(BTC_MAINNET)
+  })
+
+  test('Nakamoto descriptors conform to the shared protocol registry', () => {
+    const registry = JSON.parse(
+      readFileSync(
+        join(__dirname, '../../../docs/protocol/chains/v1.json'),
+        'utf8',
+      ),
+    ) as {
+      schema_version: number
+      chains: Array<{
+        id: string
+        family: string
+        allowed_proxy_capabilities: string[]
+      }>
+    }
+    expect(registry.schema_version).toBe(1)
+    const rows = new Map(registry.chains.map(row => [row.id, row]))
+    for (const descriptor of CHAINS) {
+      expect(rows.get(descriptor.protocolId)).toMatchObject({
+        family: descriptor.proxyFamily,
+        allowed_proxy_capabilities: descriptor.allowedProxyCapabilities,
+      })
+    }
   })
 
   test('BTC mainnet matches Bitcoin Core chainparams and the signed-message magic', () => {

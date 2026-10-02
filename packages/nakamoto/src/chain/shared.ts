@@ -35,9 +35,20 @@ const HD_MAIN_PRIV = 0x0488ade4
 const HD_TEST_PUB = 0x043587cf
 const HD_TEST_PRIV = 0x04358394
 
-export function chain(fields: ChainDescriptor): ChainDescriptor {
+export function chain(
+  fields: Omit<
+    ChainDescriptor,
+    'protocolId' | 'proxyFamily' | 'allowedProxyCapabilities'
+  >,
+): ChainDescriptor {
   return Object.freeze({
     ...fields,
+    protocolId: `${fields.family}-${fields.network}`,
+    proxyFamily: 'bitcoin' as const,
+    allowedProxyCapabilities: Object.freeze([
+      'json-rpc' as const,
+      'chronik' as const,
+    ]),
     alsoDocumentsSlip44: Object.freeze([...fields.alsoDocumentsSlip44]),
     sources: Object.freeze([...fields.sources]),
   })

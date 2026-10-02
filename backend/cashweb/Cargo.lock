@@ -172,6 +172,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitcoinsuite-chronik-client"
+version = "0.1.0"
+dependencies = [
+ "bitcoinsuite-core",
+ "bitcoinsuite-error",
+ "hex",
+ "prost",
+ "prost-build",
+ "reqwest",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "bitcoinsuite-core"
 version = "0.1.0"
 dependencies = [
@@ -322,6 +336,7 @@ dependencies = [
  "bitcoinsuite-core",
  "bitcoinsuite-error",
  "serde",
+ "serde_json",
  "toml",
  "url",
 ]
@@ -377,6 +392,7 @@ dependencies = [
  "async-trait",
  "axum",
  "bitcoinsuite-bitcoind",
+ "bitcoinsuite-chronik-client",
  "bitcoinsuite-core",
  "bitcoinsuite-ecc-secp256k1",
  "bitcoinsuite-error",

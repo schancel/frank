@@ -84,6 +84,12 @@ export interface ScriptRules {
 }
 
 export interface ChainDescriptor {
+  /** Stable Frank protocol identifier used in relay paths and signed scopes. */
+  readonly protocolId: string
+  /** Relay dispatch family. Nakamoto-style chains share the Bitcoin proxy family. */
+  readonly proxyFamily: 'bitcoin'
+  /** Capabilities the protocol permits; a relay may advertise only a configured subset. */
+  readonly allowedProxyCapabilities: readonly ('json-rpc' | 'chronik')[]
   readonly family: ChainFamily
   readonly network: NetworkKind
   readonly pubkeyHashVersion: number

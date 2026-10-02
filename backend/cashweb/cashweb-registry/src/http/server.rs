@@ -1,6 +1,9 @@
 //! Module containing [`RegistryServer`] to run the registry HTTP server.
 
 use crate::{
+    http::bitcoin_proxy::{
+        issue_chronik_challenge, proxy_chronik, BitcoinProxyRuntime, BITCOIN_PROXY_CORS_HEADERS,
+    },
     http::curated_defaults::{handle_get_curated_default_contacts, CuratedDefaultContact},
     http::error::HttpRegistryError,
     http::evm_rpc::{
@@ -43,6 +46,74 @@ use std::{collections::HashMap, str::FromStr, sync::Arc};
 use thiserror::Error;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::Level;
+
+#[derive(Serialize)]
+struct ChainDiscovery {
+    schema_version: u32,
+    chains: Vec<AdvertisedChain>,
+}
+
+#[derive(Serialize)]
+struct AdvertisedChain {
+    id: String,
+    family: cashweb_config::ProtocolChainFamily,
+    network: String,
+    caip2: Option<String>,
+    native_chain_id: Option<String>,
+    capabilities: Vec<cashweb_config::ProtocolProxyCapability>,
+}
+
+async fn handle_get_chains(Extension(server): Extension<RegistryServer>) -> Json<ChainDiscovery> {
+    use cashweb_config::{protocol_chain, ProtocolProxyCapability};
+
+    let mut configured = HashMap::<String, Vec<ProtocolProxyCapability>>::new();
+    if let Some(runtime) = &server.evm_rpc {
+        for id in runtime.chain_ids() {
+            configured.insert(id, vec![ProtocolProxyCapability::JsonRpc]);
+        }
+    }
+    if let Some(runtime) = &server.bitcoin_proxy {
+        for (id, json_rpc, chronik) in runtime.configured_capabilities() {
+            let capabilities = configured.entry(id).or_default();
+            if json_rpc {
+                capabilities.push(ProtocolProxyCapability::JsonRpc);
+            }
+            if chronik {
+                capabilities.push(ProtocolProxyCapability::Chronik);
+            }
+        }
+    }
+    let mut chains = configured
+        .into_iter()
+        .filter_map(|(id, capabilities)| {
+            let row = protocol_chain(&id)?;
+            Some(AdvertisedChain {
+                id,
+                family: row.family,
+                network: row.network.clone(),
+                caip2: row.caip2.clone(),
+                native_chain_id: row.native_chain_id.clone(),
+                capabilities,
+            })
+        })
+        .collect::<Vec<_>>();
+    chains.sort_by(|left, right| left.id.cmp(&right.id));
+    Json(ChainDiscovery {
+        schema_version: 1,
+        chains,
+    })
+}
+
+#[derive(Serialize)]
+struct PeerDiscovery {
+    relays: Vec<String>,
+}
+
+async fn handle_get_peers(Extension(server): Extension<RegistryServer>) -> Json<PeerDiscovery> {
+    Json(PeerDiscovery {
+        relays: server.peers.public_origins(),
+    })
+}
 
 #[derive(Deserialize)]
 struct MessagesQuery {
@@ -87,8 +158,10 @@ pub struct RegistryServer {
     pub curated_defaults: Arc<Vec<CuratedDefaultContact>>,
     /// Validated direct-message mailbox lifecycle. Disabled mode has no admission route.
     pub monad_mailbox: MonadMailboxRuntime,
-    /// Optional customer-authenticated EVM proxy runtime. `None` installs no `/rpc/*` routes.
+    /// Optional customer-authenticated EVM proxy runtime. `None` installs no EVM chain routes.
     pub evm_rpc: Option<Arc<EvmRpcRuntime>>,
+    /// Optional Bitcoin-family JSON-RPC and Chronik runtime.
+    pub bitcoin_proxy: Option<Arc<BitcoinProxyRuntime>>,
 }
 
 /// Relevant parts of an HTTP request to put new address metadata.
@@ -168,8 +241,11 @@ impl RegistryServer {
     /// Turn this registry server into a [`Router`].
     pub fn into_router(self) -> Router {
         let mailbox_enabled = self.monad_mailbox.as_enabled().is_some();
-        let evm_rpc_enabled = self.evm_rpc.is_some();
+        let rpc_enabled = self.evm_rpc.is_some() || self.bitcoin_proxy.is_some();
+        let bitcoin_proxy_enabled = self.bitcoin_proxy.is_some();
         let router = Router::new()
+            .route("/chains", routing::get(handle_get_chains))
+            .route("/peers", routing::get(handle_get_peers))
             .route("/metadata", routing::get(handle_get_metadata_range))
             .route(
                 "/metadata/:addr",
@@ -244,12 +320,25 @@ impl RegistryServer {
                 routing::any(|| async { StatusCode::NOT_FOUND }),
             )
         };
-        let router = if evm_rpc_enabled {
+        let router = if rpc_enabled {
             router
-                .route("/rpc/:chain", routing::post(handle_proxy_rpc))
+                .route("/chain-rpc/:chain/rpc", routing::post(handle_proxy_rpc))
                 .route(
-                    "/rpc/:chain/auth",
+                    "/chain-rpc/:chain/rpc/auth",
                     routing::post(handle_issue_rpc_challenge),
+                )
+        } else {
+            router
+        };
+        let router = if bitcoin_proxy_enabled {
+            router
+                .route(
+                    "/chain-rpc/:chain/chronik/*path",
+                    routing::any(proxy_chronik),
+                )
+                .route(
+                    "/chain-rpc/:chain/chronik-auth/*path",
+                    routing::post(issue_chronik_challenge),
                 )
         } else {
             router
@@ -309,6 +398,7 @@ impl RegistryServer {
                         header::HeaderName::from_static(RPC_CORS_HEADERS[3]),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[4]),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[5]),
+                        header::HeaderName::from_static(BITCOIN_PROXY_CORS_HEADERS[0]),
                     ])
                     .expose_headers([header::HeaderName::from_static(
                         "x-frank-mailbox-next-cursor",

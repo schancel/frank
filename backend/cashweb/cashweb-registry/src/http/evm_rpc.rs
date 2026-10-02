@@ -5,11 +5,17 @@
 //! chain id. Challenge issuance validates and hashes a bounded request but never contacts the
 //! provider.
 
-use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fmt,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
 
 use axum::{
     body::{Bytes, HttpBody},
-    extract::{Extension, Path},
+    extract::{connect_info::ConnectInfo, Extension, Path},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -24,18 +30,20 @@ use tokio::sync::Semaphore;
 use url::Url;
 
 use crate::{
-    http::server::RegistryServer, monad_http::Address, store::monad_messages::ChallengeConsumption,
+    http::{hourly_quota::FixedHourQuota, server::RegistryServer},
+    monad_http::Address,
+    store::monad_messages::ChallengeConsumption,
 };
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Hard unauthenticated request ceiling. Runtime config may lower it but never raise it.
-pub const MAX_RPC_REQUEST_BYTES: usize = 256 * 1024;
-const RPC_AUTH_DOMAIN: &str = "frank:rpc-http-auth:v1";
+/// Hard all-family extraction ceiling. Each runtime applies its lower configured limit afterward.
+pub const MAX_RPC_REQUEST_BYTES: usize = 512 * 1024;
+pub(crate) const RPC_AUTH_DOMAIN: &str = "frank:rpc-http-auth:v1";
 const RPC_CHALLENGE_MAC_DOMAIN: &[u8] = b"frank:rpc-challenge-mac:v1\0";
 const RPC_CHALLENGE_TTL_MS: i64 = 60_000;
 const MAX_USED_RPC_CHALLENGES_PER_CUSTOMER: usize = 30;
-const RPC_CUSTOMER_HEADER: &str = "x-frank-rpc-customer";
+pub(crate) const RPC_CUSTOMER_HEADER: &str = "x-frank-rpc-customer";
 const RPC_EPOCH_HEADER: &str = "x-frank-rpc-epoch";
 const RPC_NONCE_HEADER: &str = "x-frank-rpc-nonce";
 const RPC_EXPIRY_HEADER: &str = "x-frank-rpc-expires-at-ms";
@@ -46,7 +54,7 @@ const MAX_ECDSA_DER_SIGNATURE_BYTES: usize = 72;
 
 /// A request body bounded before allocation, including for chunked requests.
 #[derive(Debug)]
-pub(crate) struct BoundedRpcBody(Bytes);
+pub(crate) struct BoundedRpcBody(pub(crate) Bytes);
 
 #[async_trait::async_trait]
 impl axum::extract::FromRequest<axum::body::Body> for BoundedRpcBody {
@@ -79,6 +87,7 @@ struct EvmChainRuntime {
     id: String,
     expected_chain_id: u64,
     upstream_url: Url,
+    checkpoint: Option<(u64, String)>,
     max_get_logs_range: u64,
 }
 
@@ -88,6 +97,7 @@ impl fmt::Debug for EvmChainRuntime {
             .field("id", &self.id)
             .field("expected_chain_id", &self.expected_chain_id)
             .field("upstream_url", &"<redacted>")
+            .field("checkpoint", &self.checkpoint)
             .field("max_get_logs_range", &self.max_get_logs_range)
             .finish()
     }
@@ -153,31 +163,32 @@ impl EvmChainRuntime {
 }
 
 #[derive(Clone, Copy)]
-struct RpcChallenge {
-    epoch: [u8; 32],
-    nonce: [u8; 32],
-    expires_at_ms: i64,
-    token: [u8; 32],
+pub(crate) struct RpcChallenge {
+    pub(crate) epoch: [u8; 32],
+    pub(crate) nonce: [u8; 32],
+    pub(crate) expires_at_ms: i64,
+    pub(crate) token: [u8; 32],
 }
 
 #[derive(Clone)]
-struct RpcBinding {
-    customer: Address,
-    chain: String,
-    body_sha256: [u8; 32],
+pub(crate) struct RpcBinding {
+    pub(crate) customer: Address,
+    pub(crate) chain: String,
+    pub(crate) body_sha256: [u8; 32],
 }
 
 impl RpcBinding {
     fn append_canonical(&self, bytes: &mut Vec<u8>) {
-        bytes.extend_from_slice(b"POST\0/rpc/");
+        bytes.extend_from_slice(b"POST\0/chain-rpc/");
         bytes.extend_from_slice(&(self.chain.len() as u32).to_be_bytes());
         bytes.extend_from_slice(self.chain.as_bytes());
+        bytes.extend_from_slice(b"\0rpc");
         bytes.extend_from_slice(&self.customer.0);
         bytes.extend_from_slice(&self.body_sha256);
     }
 }
 
-struct RpcAuthState {
+pub(crate) struct RpcAuthState {
     epoch: [u8; 32],
     secret: [u8; 32],
 }
@@ -192,7 +203,7 @@ impl fmt::Debug for RpcAuthState {
 }
 
 impl RpcAuthState {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut epoch = [0; 32];
         let mut secret = [0; 32];
         rand::thread_rng().fill_bytes(&mut epoch);
@@ -210,7 +221,7 @@ impl RpcAuthState {
         bytes
     }
 
-    fn issue(&self, binding: &RpcBinding, now_ms: i64) -> RpcChallenge {
+    pub(crate) fn issue(&self, binding: &RpcBinding, now_ms: i64) -> RpcChallenge {
         let mut nonce = [0; 32];
         rand::thread_rng().fill_bytes(&mut nonce);
         let expires_at_ms = now_ms.saturating_add(RPC_CHALLENGE_TTL_MS);
@@ -247,6 +258,8 @@ pub struct EvmRpcRuntime {
     max_batch_len: usize,
     max_response_bytes: usize,
     timeout: Duration,
+    customer_quota: FixedHourQuota<Address>,
+    anonymous_quota: FixedHourQuota<IpAddr>,
 }
 
 impl fmt::Debug for EvmRpcRuntime {
@@ -288,9 +301,16 @@ pub enum EvmRpcStartError {
         /// Reported EIP-155 id.
         actual: u64,
     },
+    /// The upstream returned a different block at the configured checkpoint.
+    #[error("EVM RPC chain {0} failed startup checkpoint validation")]
+    CheckpointMismatch(String),
 }
 
 impl EvmRpcRuntime {
+    pub(crate) fn chain_ids(&self) -> Vec<String> {
+        self.chains.keys().cloned().collect()
+    }
+
     /// Resolve secret URLs from the environment and verify every upstream before readiness.
     pub async fn from_conf_with_env(
         conf: &EvmRpcConf,
@@ -318,6 +338,9 @@ impl EvmRpcRuntime {
                     id: chain.id.clone(),
                     expected_chain_id: chain.expected_chain_id,
                     upstream_url,
+                    checkpoint: chain
+                        .checkpoint_block_number
+                        .zip(chain.checkpoint_block_hash.clone()),
                     max_get_logs_range: chain.max_get_logs_range,
                 },
             );
@@ -336,6 +359,8 @@ impl EvmRpcRuntime {
             max_batch_len: conf.max_batch_len,
             max_response_bytes: conf.max_response_bytes,
             timeout: Duration::from_millis(conf.timeout_ms),
+            customer_quota: FixedHourQuota::new(conf.customer_units_per_hour),
+            anonymous_quota: FixedHourQuota::new(conf.anonymous_units_per_hour),
         });
         runtime.verify_chain_identities().await?;
         Ok(Some(runtime))
@@ -375,6 +400,41 @@ impl EvmRpcRuntime {
                     actual: result,
                 });
             }
+            if let Some((block_number, expected_hash)) = &chain.checkpoint {
+                let body = json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "eth_getBlockByNumber",
+                    "params": [format!("0x{block_number:x}"), false]
+                });
+                let response = tokio::time::timeout(
+                    self.timeout,
+                    self.client
+                        .post(chain.upstream_url.clone())
+                        .header(reqwest::header::CONTENT_TYPE, "application/json")
+                        .body(serde_json::to_vec(&body).expect("JSON value serializes"))
+                        .send(),
+                )
+                .await
+                .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?
+                .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
+                if !response.status().is_success() {
+                    return Err(EvmRpcStartError::UpstreamUnavailable(chain.id.clone()));
+                }
+                let bytes = tokio::time::timeout(
+                    self.timeout,
+                    read_startup_response(response, self.max_response_bytes, &chain.id),
+                )
+                .await
+                .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))??;
+                let actual = serde_json::from_slice::<Value>(&bytes)
+                    .ok()
+                    .and_then(|value| value.pointer("/result/hash")?.as_str().map(str::to_owned))
+                    .ok_or_else(|| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
+                if !actual.eq_ignore_ascii_case(expected_hash) {
+                    return Err(EvmRpcStartError::CheckpointMismatch(chain.id.clone()));
+                }
+            }
         }
         Ok(())
     }
@@ -401,18 +461,18 @@ async fn read_startup_response(
 
 #[derive(Serialize)]
 pub(crate) struct RpcChallengeBody {
-    epoch: String,
-    nonce: String,
-    expires_at_ms: i64,
-    token: String,
-    signing_domain: &'static str,
-    customer: String,
-    chain: String,
-    body_sha256: String,
-    network_tag: String,
+    pub(crate) epoch: String,
+    pub(crate) nonce: String,
+    pub(crate) expires_at_ms: i64,
+    pub(crate) token: String,
+    pub(crate) signing_domain: &'static str,
+    pub(crate) customer: String,
+    pub(crate) chain: String,
+    pub(crate) body_sha256: String,
+    pub(crate) network_tag: String,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -425,23 +485,42 @@ fn now_ms() -> i64 {
 pub(crate) struct RpcRejection {
     status: StatusCode,
     code: &'static str,
+    broadcast_state: Option<&'static str>,
 }
 
 impl IntoResponse for RpcRejection {
     fn into_response(self) -> Response {
-        (self.status, Json(json!({ "error": self.code }))).into_response()
+        let mut body = json!({ "error": self.code });
+        if let Some(state) = self.broadcast_state {
+            body["broadcast_state"] = Value::String(state.to_string());
+        }
+        (self.status, Json(body)).into_response()
     }
 }
 
-fn rpc_error(status: StatusCode, code: &'static str) -> RpcRejection {
-    RpcRejection { status, code }
+pub(crate) fn rpc_error(status: StatusCode, code: &'static str) -> RpcRejection {
+    RpcRejection {
+        status,
+        code,
+        broadcast_state: None,
+    }
 }
 
-fn chain<'a>(runtime: &'a EvmRpcRuntime, id: &str) -> Result<&'a EvmChainRuntime, RpcRejection> {
-    runtime
-        .chains
-        .get(id)
-        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))
+fn broadcast_error(
+    status: StatusCode,
+    code: &'static str,
+    broadcast: bool,
+    attempted: bool,
+) -> RpcRejection {
+    RpcRejection {
+        status,
+        code,
+        broadcast_state: broadcast.then_some(if attempted {
+            "unknown"
+        } else {
+            "not-attempted"
+        }),
+    }
 }
 
 fn parse_hex_quantity(value: &Value) -> Option<u64> {
@@ -451,7 +530,14 @@ fn parse_hex_quantity(value: &Value) -> Option<u64> {
         .flatten()
 }
 
-fn validate_call(call: &Value, chain: &EvmChainRuntime) -> Result<(), RpcRejection> {
+#[derive(Clone, Copy)]
+struct CallCost {
+    units: u32,
+    anonymous: bool,
+    broadcast: bool,
+}
+
+fn validate_call(call: &Value, chain: &EvmChainRuntime) -> Result<CallCost, RpcRejection> {
     let object = call
         .as_object()
         .ok_or_else(|| rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"))?;
@@ -510,14 +596,67 @@ fn validate_call(call: &Value, chain: &EvmChainRuntime) -> Result<(), RpcRejecti
             return Err(rpc_error(StatusCode::FORBIDDEN, "rpc_log_range_denied"));
         }
     }
-    Ok(())
+    if method == "eth_feeHistory" {
+        let count = params
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(parse_hex_quantity)
+            .ok_or_else(|| rpc_error(StatusCode::BAD_REQUEST, "bounded_fee_history_required"))?;
+        if count == 0 || count > 20 {
+            return Err(rpc_error(StatusCode::FORBIDDEN, "rpc_fee_history_denied"));
+        }
+    }
+    let cost = match method {
+        "eth_chainId" | "eth_blockNumber" | "eth_gasPrice" | "eth_maxPriorityFeePerGas" => {
+            CallCost {
+                units: 1,
+                anonymous: true,
+                broadcast: false,
+            }
+        }
+        "eth_getBalance"
+        | "eth_getTransactionCount"
+        | "eth_getTransactionByHash"
+        | "eth_getTransactionReceipt" => CallCost {
+            units: 2,
+            anonymous: true,
+            broadcast: false,
+        },
+        "eth_feeHistory" => CallCost {
+            units: 5,
+            anonymous: true,
+            broadcast: false,
+        },
+        "eth_sendRawTransaction" => CallCost {
+            units: 20,
+            anonymous: true,
+            broadcast: true,
+        },
+        "eth_getBlockByNumber" => CallCost {
+            units: 5,
+            anonymous: false,
+            broadcast: false,
+        },
+        "eth_estimateGas" | "eth_call" => CallCost {
+            units: 20,
+            anonymous: false,
+            broadcast: false,
+        },
+        "eth_getLogs" => CallCost {
+            units: 25,
+            anonymous: false,
+            broadcast: false,
+        },
+        _ => unreachable!("allowlist checked above"),
+    };
+    Ok(cost)
 }
 
 fn validate_body(
     runtime: &EvmRpcRuntime,
     chain: &EvmChainRuntime,
     body: &[u8],
-) -> Result<(), RpcRejection> {
+) -> Result<CallCost, RpcRejection> {
     if body.is_empty() || body.len() > runtime.max_request_bytes {
         return Err(rpc_error(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -531,16 +670,40 @@ fn validate_body(
             if calls.is_empty() || calls.len() > runtime.max_batch_len {
                 return Err(rpc_error(StatusCode::BAD_REQUEST, "rpc_batch_limit"));
             }
+            let mut units = 0u32;
+            let mut anonymous = true;
+            let mut broadcast = false;
             for call in &calls {
-                validate_call(call, chain)?;
+                let cost = validate_call(call, chain)?;
+                units = units.saturating_add(cost.units);
+                anonymous &= cost.anonymous;
+                broadcast |= cost.broadcast;
             }
+            Ok(CallCost {
+                units,
+                anonymous,
+                broadcast,
+            })
         }
-        value => validate_call(&value, chain)?,
+        value => validate_call(&value, chain),
     }
-    Ok(())
 }
 
-fn body_hash(body: &[u8]) -> [u8; 32] {
+fn quota_ip(address: SocketAddr) -> IpAddr {
+    match address.ip() {
+        IpAddr::V4(ip) => IpAddr::V4(ip),
+        IpAddr::V6(ip) => IpAddr::V6(std::net::Ipv6Addr::from(u128::from(ip) & (!0u128 << 64))),
+    }
+}
+
+fn now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+pub(crate) fn body_hash(body: &[u8]) -> [u8; 32] {
     Sha256::digest(body).into()
 }
 
@@ -572,10 +735,11 @@ fn parse_hex_header(headers: &HeaderMap, name: &'static str) -> Result<[u8; 32],
     Ok(decoded)
 }
 
-fn authenticate(
+pub(crate) fn authenticate(
     headers: &HeaderMap,
     server: &RegistryServer,
-    runtime: &EvmRpcRuntime,
+    auth: &RpcAuthState,
+    network_tag: &[u8],
     binding: &RpcBinding,
 ) -> Result<(), RpcRejection> {
     let challenge = RpcChallenge {
@@ -595,14 +759,13 @@ fn authenticate(
     if signature.len() % 2 != 0
         || signature.len() < MIN_ECDSA_DER_SIGNATURE_BYTES * 2
         || signature.len() > MAX_ECDSA_DER_SIGNATURE_BYTES * 2
-        || !runtime.auth.verify(binding, challenge, now_ms())
+        || !auth.verify(binding, challenge, now_ms())
     {
         return Err(rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"));
     }
     let signature = hex::decode(signature)
         .map_err(|_| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
-    let digest: [u8; 32] =
-        Sha256::digest(auth_preimage(challenge, binding, &runtime.network_tag)).into();
+    let digest: [u8; 32] = Sha256::digest(auth_preimage(challenge, binding, network_tag)).into();
     let valid = server
         .registry
         .verify_monad_recipient_signature(binding.customer, digest, &signature)
@@ -640,11 +803,14 @@ pub(crate) async fn handle_issue_rpc_challenge(
     Extension(server): Extension<RegistryServer>,
     BoundedRpcBody(body): BoundedRpcBody,
 ) -> Result<Json<RpcChallengeBody>, RpcRejection> {
-    let runtime = server
-        .evm_rpc
-        .as_deref()
-        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "rpc_disabled"))?;
-    let chain = chain(runtime, &chain_id)?;
+    let Some(runtime) = server.evm_rpc.as_deref() else {
+        return crate::http::bitcoin_proxy::issue_rpc_challenge(chain_id, headers, server, body)
+            .await;
+    };
+    let Some(chain) = runtime.chains.get(&chain_id) else {
+        return crate::http::bitcoin_proxy::issue_rpc_challenge(chain_id, headers, server, body)
+            .await;
+    };
     validate_body(runtime, chain, &body)?;
     let customer = headers
         .get(RPC_CUSTOMER_HEADER)
@@ -695,30 +861,76 @@ async fn read_bounded_response(
 /// Authenticate and forward an exact allowlisted JSON-RPC request.
 pub(crate) async fn handle_proxy_rpc(
     Path(chain_id): Path<String>,
+    peer: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
     Extension(server): Extension<RegistryServer>,
     BoundedRpcBody(body): BoundedRpcBody,
 ) -> Result<Response, RpcRejection> {
-    let runtime = server
-        .evm_rpc
-        .as_deref()
-        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "rpc_disabled"))?;
-    let chain = chain(runtime, &chain_id)?;
-    validate_body(runtime, chain, &body)?;
+    let Some(runtime) = server.evm_rpc.as_deref() else {
+        return crate::http::bitcoin_proxy::proxy_rpc(chain_id, peer, headers, server, body).await;
+    };
+    let Some(chain) = runtime.chains.get(&chain_id) else {
+        return crate::http::bitcoin_proxy::proxy_rpc(chain_id, peer, headers, server, body).await;
+    };
+    let cost = validate_body(runtime, chain, &body)?;
     let customer = headers
         .get(RPC_CUSTOMER_HEADER)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| Address::from_hex(value).ok())
-        .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
-    let binding = RpcBinding {
-        customer,
-        chain: chain_id,
-        body_sha256: body_hash(&body),
-    };
-    authenticate(&headers, &server, runtime, &binding)?;
+        .map(Address::from_hex)
+        .transpose()
+        .map_err(|_| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
     let _permit = Arc::clone(&runtime.permits)
         .try_acquire_owned()
-        .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_busy"))?;
+        .map_err(|_| {
+            broadcast_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "rpc_busy",
+                cost.broadcast,
+                false,
+            )
+        })?;
+    if let Some(customer) = customer {
+        let binding = RpcBinding {
+            customer,
+            chain: chain_id,
+            body_sha256: body_hash(&body),
+        };
+        authenticate(
+            &headers,
+            &server,
+            &runtime.auth,
+            &runtime.network_tag,
+            &binding,
+        )?;
+        runtime
+            .customer_quota
+            .charge(customer, cost.units, now_seconds())
+            .ok_or_else(|| {
+                broadcast_error(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rpc_hourly_quota",
+                    cost.broadcast,
+                    false,
+                )
+            })?;
+    } else {
+        if !cost.anonymous {
+            return Err(rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_required"));
+        }
+        let peer =
+            peer.ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_source_required"))?;
+        runtime
+            .anonymous_quota
+            .charge(quota_ip(peer.0), cost.units, now_seconds())
+            .ok_or_else(|| {
+                broadcast_error(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rpc_hourly_quota",
+                    cost.broadcast,
+                    false,
+                )
+            })?;
+    }
     let upstream = async {
         let response = runtime
             .client
@@ -727,23 +939,59 @@ pub(crate) async fn handle_proxy_rpc(
             .body(body.clone())
             .send()
             .await
-            .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable"))?;
+            .map_err(|_| {
+                broadcast_error(
+                    StatusCode::BAD_GATEWAY,
+                    "rpc_upstream_unavailable",
+                    cost.broadcast,
+                    true,
+                )
+            })?;
         if !response.status().is_success() {
-            return Err(rpc_error(
+            return Err(broadcast_error(
                 StatusCode::BAD_GATEWAY,
                 "rpc_upstream_unavailable",
+                cost.broadcast,
+                true,
             ));
         }
-        read_bounded_response(response, runtime.max_response_bytes).await
+        read_bounded_response(response, runtime.max_response_bytes)
+            .await
+            .map_err(|error| {
+                if cost.broadcast {
+                    broadcast_error(error.status, error.code, true, true)
+                } else {
+                    error
+                }
+            })
     };
     let body = tokio::time::timeout(runtime.timeout, upstream)
         .await
-        .map_err(|_| rpc_error(StatusCode::GATEWAY_TIMEOUT, "rpc_upstream_timeout"))??;
-    let mut value = serde_json::from_slice::<Value>(&body)
-        .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
+        .map_err(|_| {
+            broadcast_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "rpc_upstream_timeout",
+                cost.broadcast,
+                true,
+            )
+        })??;
+    let mut value = serde_json::from_slice::<Value>(&body).map_err(|_| {
+        broadcast_error(
+            StatusCode::BAD_GATEWAY,
+            "invalid_rpc_upstream_response",
+            cost.broadcast,
+            true,
+        )
+    })?;
     chain.redact_response_value(&mut value);
-    let body = serde_json::to_vec(&value)
-        .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
+    let body = serde_json::to_vec(&value).map_err(|_| {
+        broadcast_error(
+            StatusCode::BAD_GATEWAY,
+            "invalid_rpc_upstream_response",
+            cost.broadcast,
+            true,
+        )
+    })?;
     Ok((
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         body,
@@ -788,6 +1036,7 @@ mod tests {
             id: "monad-testnet".to_string(),
             expected_chain_id: 10_143,
             upstream_url: "http://127.0.0.1:1/provider-secret".parse().unwrap(),
+            checkpoint: None,
             max_get_logs_range: 10,
         }
     }
@@ -804,6 +1053,8 @@ mod tests {
             max_batch_len: 2,
             max_response_bytes: 1024,
             timeout: Duration::from_secs(1),
+            customer_quota: FixedHourQuota::new(10_000),
+            anonymous_quota: FixedHourQuota::new(500),
         }
     }
 
@@ -986,6 +1237,7 @@ mod tests {
                 curated_defaults: Arc::new(vec![]),
                 monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
                 evm_rpc: Some(runtime),
+                bitcoin_proxy: None,
             },
         )
     }
@@ -998,10 +1250,11 @@ mod tests {
         preimage.extend_from_slice(&hex::decode(challenge["nonce"].as_str().unwrap()).unwrap());
         preimage.extend_from_slice(&challenge["expires_at_ms"].as_i64().unwrap().to_be_bytes());
         preimage.extend_from_slice(&hex::decode(challenge["token"].as_str().unwrap()).unwrap());
-        preimage.extend_from_slice(b"POST\0/rpc/");
+        preimage.extend_from_slice(b"POST\0/chain-rpc/");
         let chain = challenge["chain"].as_str().unwrap();
         preimage.extend_from_slice(&(chain.len() as u32).to_be_bytes());
         preimage.extend_from_slice(chain.as_bytes());
+        preimage.extend_from_slice(b"\0rpc");
         preimage.extend_from_slice(&customer.0);
         preimage
             .extend_from_slice(&hex::decode(challenge["body_sha256"].as_str().unwrap()).unwrap());
@@ -1041,6 +1294,76 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    #[tokio::test]
+    async fn public_discovery_reports_configured_family_capabilities_and_relays() {
+        let (_tempdir, server) = registered_server(Arc::new(runtime()));
+        let router = server.into_router();
+
+        let response = router
+            .clone()
+            .oneshot(Request::get("/chains").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await,
+            json!({
+                "schema_version": 1,
+                "chains": [{
+                    "id": "monad-testnet",
+                    "family": "evm",
+                    "network": "testnet",
+                    "caip2": "eip155:10143",
+                    "native_chain_id": "10143",
+                    "capabilities": ["json-rpc"]
+                }]
+            })
+        );
+
+        let response = router
+            .oneshot(Request::get("/peers").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await,
+            json!({"relays": ["http://127.0.0.1:1"]})
+        );
+    }
+
+    #[tokio::test]
+    async fn broadcast_failures_distinguish_preflight_rejection_from_unknown_delivery() {
+        let not_attempted = broadcast_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rpc_hourly_quota",
+            true,
+            false,
+        )
+        .into_response();
+        assert_eq!(
+            response_json(not_attempted).await,
+            json!({
+                "error": "rpc_hourly_quota",
+                "broadcast_state": "not-attempted"
+            })
+        );
+
+        let unknown = broadcast_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "rpc_upstream_timeout",
+            true,
+            true,
+        )
+        .into_response();
+        assert_eq!(
+            response_json(unknown).await,
+            json!({
+                "error": "rpc_upstream_timeout",
+                "broadcast_state": "unknown"
+            })
+        );
+    }
+
     async fn request_with_proof(
         router: &Router,
         body: &'static [u8],
@@ -1049,7 +1372,7 @@ mod tests {
         let challenge = router
             .clone()
             .oneshot(
-                Request::post("/rpc/monad-testnet/auth")
+                Request::post("/chain-rpc/monad-testnet/rpc/auth")
                     .header("content-type", "application/json")
                     .header(RPC_CUSTOMER_HEADER, customer.to_hex())
                     .body(Body::from(body))
@@ -1059,7 +1382,7 @@ mod tests {
             .unwrap();
         assert_eq!(challenge.status(), StatusCode::OK);
         let challenge = response_json(challenge).await;
-        let mut request = Request::post("/rpc/monad-testnet")
+        let mut request = Request::post("/chain-rpc/monad-testnet/rpc")
             .header("content-type", "application/json")
             .body(Body::from(body))
             .unwrap();
@@ -1100,6 +1423,8 @@ mod tests {
                 id: "monad-testnet".to_string(),
                 expected_chain_id: 10_143,
                 upstream_env: "TEST_UPSTREAM".to_string(),
+                checkpoint_block_number: None,
+                checkpoint_block_hash: None,
                 max_get_logs_range: 10,
             }],
             max_request_bytes: 1024,
@@ -1107,6 +1432,8 @@ mod tests {
             max_response_bytes: 1024,
             max_concurrency: 1,
             timeout_ms: 1_000,
+            customer_units_per_hour: 10_000,
+            anonymous_units_per_hour: 500,
         };
         let upstream_url = format!("http://{address}/provider-secret");
         let runtime = EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |name| {
@@ -1125,7 +1452,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("OPTIONS")
-                    .uri("/rpc/monad-testnet")
+                    .uri("/chain-rpc/monad-testnet/rpc")
                     .header("origin", "https://app.example")
                     .header("access-control-request-method", "POST")
                     .header("access-control-request-headers", RPC_CORS_HEADERS.join(","))
@@ -1150,7 +1477,7 @@ mod tests {
         let unauthorized = router
             .clone()
             .oneshot(
-                Request::post("/rpc/monad-testnet")
+                Request::post("/chain-rpc/monad-testnet/rpc")
                     .header("content-type", "application/json")
                     .body(Body::from(body.as_slice()))
                     .unwrap(),
@@ -1164,7 +1491,7 @@ mod tests {
         let unregistered_challenge = router
             .clone()
             .oneshot(
-                Request::post("/rpc/monad-testnet/auth")
+                Request::post("/chain-rpc/monad-testnet/rpc/auth")
                     .header("content-type", "application/json")
                     .header(RPC_CUSTOMER_HEADER, unregistered.to_hex())
                     .body(Body::from(body.as_slice()))
@@ -1174,7 +1501,7 @@ mod tests {
             .unwrap();
         let unregistered_challenge = response_json(unregistered_challenge).await;
         let unregistered_headers = signed_headers(&unregistered_challenge, unregistered);
-        let mut unregistered_request = Request::post("/rpc/monad-testnet")
+        let mut unregistered_request = Request::post("/chain-rpc/monad-testnet/rpc")
             .body(Body::from(body.as_slice()))
             .unwrap();
         *unregistered_request.headers_mut() = unregistered_headers;
@@ -1185,7 +1512,7 @@ mod tests {
         let challenge_response = router
             .clone()
             .oneshot(
-                Request::post("/rpc/monad-testnet/auth")
+                Request::post("/chain-rpc/monad-testnet/rpc/auth")
                     .header("content-type", "application/json")
                     .header(RPC_CUSTOMER_HEADER, customer_address().to_hex())
                     .body(Body::from(body.as_slice()))
@@ -1199,7 +1526,7 @@ mod tests {
         let headers = signed_headers(&challenge, customer_address());
 
         let request = || {
-            let mut request = Request::post("/rpc/monad-testnet")
+            let mut request = Request::post("/chain-rpc/monad-testnet/rpc")
                 .header("content-type", "application/json")
                 .body(Body::from(body.as_slice()))
                 .unwrap();
@@ -1218,7 +1545,7 @@ mod tests {
         assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(upstream_calls.load(Ordering::SeqCst), 2);
 
-        let mut tampered = Request::post("/rpc/monad-testnet")
+        let mut tampered = Request::post("/chain-rpc/monad-testnet/rpc")
             .body(Body::from(
                 br#"{"jsonrpc":"2.0","id":"changed","method":"eth_blockNumber","params":[]}"#
                     .as_slice(),
@@ -1250,6 +1577,8 @@ mod tests {
                 id: "monad-testnet".to_string(),
                 expected_chain_id: 10_143,
                 upstream_env: "TEST_UPSTREAM".to_string(),
+                checkpoint_block_number: None,
+                checkpoint_block_hash: None,
                 max_get_logs_range: 10,
             }],
             ..EvmRpcConf::default()
@@ -1303,6 +1632,8 @@ mod tests {
                 id: "monad-testnet".to_string(),
                 expected_chain_id: 10_143,
                 upstream_env: "TEST_UPSTREAM".to_string(),
+                checkpoint_block_number: None,
+                checkpoint_block_hash: None,
                 max_get_logs_range: 10,
             }],
             max_request_bytes: 1024,
@@ -1310,6 +1641,8 @@ mod tests {
             max_response_bytes: 128,
             max_concurrency: 1,
             timeout_ms: 25,
+            customer_units_per_hour: 10_000,
+            anonymous_units_per_hour: 500,
         };
         let upstream_url = format!("http://{address}/");
         let runtime = EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |_| {

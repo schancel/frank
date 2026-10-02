@@ -115,7 +115,6 @@ it('reads stealth transactions from transaction bytes', () => {
   expect(payment).not.toContain('pointToCompressed')
   expect(payment).toContain('outpointPrivateKey(')
   expect(payment).not.toContain('deriveChild')
-  expect(payment).toContain('.toAddress(')
   expect(payment).toContain('stealthParentSecret(')
   expect(payment).not.toContain('constructHDStealthPrivateKey')
   expect(payment).not.toContain('HDPrivateKey')

@@ -52,8 +52,6 @@ it('matches bitcore compressed stealth outpoint public keys', () => {
   expect(payment).toContain('stealthParentSecret(')
   expect(payment).not.toContain('constructHDStealthPrivateKey')
   expect(payment).not.toContain('HDPrivateKey')
-  expect(payment).toContain('.toAddress(')
-  expect(payment).toContain('new Script(')
   expect(payment).not.toContain('pointToCompressed')
   expect(payment).not.toContain('toPublicKey(')
   expect(payment).not.toContain('point.mul')

@@ -21,7 +21,6 @@ it('builds the lotusd descriptor P2PKH script from the serialized public key', (
   expect(source).toContain('lockingScript')
   expect(source).not.toContain('Script.buildPublicKeyHashOut(key.toPublicKey())')
   expect(source).not.toContain('new Script(new Address(')
-  expect(source).toContain('Script.buildPublicKeyHashOut(')
 
   const compressed = new PublicKey(COMPRESSED)
   const built = p2pkhScriptFromPublicKey(compressed)

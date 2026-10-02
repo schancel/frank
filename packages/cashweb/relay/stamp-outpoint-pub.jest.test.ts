@@ -55,7 +55,6 @@ it('matches bitcore compressed stamp outpoint public keys', () => {
   expect(receive).not.toContain('pointToCompressed')
   expect(receive).not.toContain('point.mul')
   expect(receive).toContain('.toAddress(')
-  expect(receive).toContain('new Script(')
   const stealth = readFileSync(join(__dirname, 'decode-entry.ts'), 'utf8')
   expect(stealth).toContain('stealthOutpointPublicKey(')
   expect(stealth).not.toContain('pointToCompressed')

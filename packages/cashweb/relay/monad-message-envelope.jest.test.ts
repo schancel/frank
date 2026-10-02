@@ -1,4 +1,5 @@
 import * as cryptoBox from "@frank/crypto-box";
+import { privateKeyFromHex } from "@frank/nakamoto";
 import { PrivateKey, crypto as bitcoreCrypto } from "bitcore-lib-xpi";
 
 import { IDENTITY_KEY_NETWORK_NAME } from "../legacy-wallet/lotus-identity";
@@ -17,20 +18,25 @@ import {
 } from "./monad-message-envelope";
 import { MonadStampedMessage, MonadStampPayment } from "./monad_message_pb";
 
-const alicePrivateKey = PrivateKey.fromBuffer(
+function envelopeKey(hex: string) {
+  const key = privateKeyFromHex(hex, true);
+  if (!key.ok) throw new Error(key.error.code);
+  return key.value;
+}
+
+const aliceBitcoreKey = PrivateKey.fromBuffer(
   Buffer.from("11".repeat(32), "hex"),
   IDENTITY_KEY_NETWORK_NAME
 );
-const bobPrivateKey = PrivateKey.fromBuffer(
+const bobBitcoreKey = PrivateKey.fromBuffer(
   Buffer.from("22".repeat(32), "hex"),
   IDENTITY_KEY_NETWORK_NAME
 );
-const wrongPrivateKey = PrivateKey.fromBuffer(
-  Buffer.from("33".repeat(32), "hex"),
-  IDENTITY_KEY_NETWORK_NAME
-);
-const alicePubKey = alicePrivateKey.toPublicKey().toBuffer();
-const bobPubKey = bobPrivateKey.toPublicKey().toBuffer();
+const alicePrivateKey = envelopeKey("11".repeat(32));
+const bobPrivateKey = envelopeKey("22".repeat(32));
+const wrongPrivateKey = envelopeKey("33".repeat(32));
+const alicePubKey = aliceBitcoreKey.toPublicKey().toBuffer();
+const bobPubKey = bobBitcoreKey.toPublicKey().toBuffer();
 const aliceAddress = "0x1111111111111111111111111111111111111111";
 const bobAddress = "0x2222222222222222222222222222222222222222";
 const fixedSalt = Buffer.from(
@@ -488,8 +494,8 @@ describe("legacy v1 read compatibility", () => {
       networkName: IDENTITY_KEY_NETWORK_NAME,
     });
     const sharedKey = legacyCrypto.constructSharedKey(
-      alicePrivateKey,
-      bobPrivateKey.toPublicKey(),
+      aliceBitcoreKey,
+      bobBitcoreKey.toPublicKey(),
       salt
     );
     // PKCS#7 adds one byte to this 15-mod-16 plaintext, producing the historical ciphertext size.

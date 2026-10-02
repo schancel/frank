@@ -16,6 +16,7 @@ it('builds the lotusd descriptor P2PKH script from the serialized public key', (
 
   const compressed = new PublicKey(COMPRESSED)
   const built = p2pkhScriptFromPublicKey(compressed)
+  expect(p2pkhScriptFromPublicKey(compressed.toBuffer())).toEqual(built)
   expect(built.toString('hex')).toBe(LOTUSD_P2PKH)
   expect(bitcoreScript(compressed).equals(built)).toBe(true)
   expect(built.length).toBe(25)

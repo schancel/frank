@@ -20,6 +20,12 @@ import {
 } from './sub-account-pool-storage'
 import { validateMonadWalletState } from './monad-wallet-state-validator'
 import { durableBatch, openDurableLevel } from './level-durability'
+import {
+  InMemoryTopicOperationJournal,
+  LevelTopicOperationJournal,
+  TOPIC_OPERATION_KEY_PREFIX,
+  type TopicOperationJournal,
+} from './topic-operation-journal'
 
 const MANIFEST_KEY = 'manifest'
 const SEED_KEY = 'seed'
@@ -79,6 +85,7 @@ export interface MonadWalletPersistenceBundle {
   readonly pool: MonadSubAccountPool
   readonly leaseManager: SubAccountLeaseManager
   readonly changePool: MonadChangePool
+  readonly topicOperationJournal: TopicOperationJournal
   assertOpen(): void
   /** Admits one complete stateful wallet operation. Close stops admission immediately and waits
    * for every admitted operation before closing stores or releasing root ownership. */
@@ -167,6 +174,7 @@ function makeBundle(params: {
   bindingId: string
   pool: MonadSubAccountPool
   changePool: MonadChangePool
+  topicJournal: TopicOperationJournal
   subKeyring: MonadHdKeyring
   changeKeyring: MonadChangeKeyring
   close: () => Promise<void>
@@ -216,9 +224,14 @@ function makeBundle(params: {
   const leaseManager = new SubAccountLeaseManager(params.pool)
 
   const assertNoOrphanedLeases = (): void => {
+    const referenced = new Set(
+      params.topicJournal.getAll().map(operation => operation.leaseIndex),
+    )
     const orphaned = params.pool
       .records()
-      .filter(record => record.status === 'in-use')
+      .filter(
+        record => record.status === 'in-use' && !referenced.has(record.index),
+      )
       .map(record => record.index)
     if (orphaned.length > 0) throw new MonadWalletOrphanedAccountError(orphaned)
   }
@@ -232,6 +245,7 @@ function makeBundle(params: {
     pool: params.pool,
     leaseManager,
     changePool: params.changePool,
+    topicOperationJournal: params.topicJournal,
     assertOpen(): void {
       if (lifecycle !== 'open') {
         throw new Error('Monad wallet bundle is closing or closed')
@@ -254,7 +268,9 @@ function makeBundle(params: {
         const pendingChange = params.changePool.pendingSourceBurnIndex()
         return params.pool.compactTerminalAccounts({
           limit,
-          isReferenced: index => index === pendingChange,
+          isReferenced: index =>
+            index === pendingChange ||
+            params.topicJournal.referencesLeaseIndex(index),
         })
       }, admission)
     },
@@ -307,6 +323,7 @@ export function createInMemoryMonadWalletBundle(params: {
     bindingId: newBindingId(),
     pool,
     changePool,
+    topicJournal: new InMemoryTopicOperationJournal(),
     subKeyring,
     changeKeyring,
     close: async () => {},
@@ -348,6 +365,15 @@ export async function openMonadWalletBundle(
     throw new Error('Invalid Monad wallet creation/restore mode')
   }
 
+  // Ensure location directory exists on Node
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require('fs') as typeof import('fs')
+    fs.mkdirSync(params.location, { recursive: true })
+  } catch {
+    // ignore in browser or if fs is unavailable
+  }
+
   const manifestDbLocation = join(params.location, 'wallet-manifest')
   const manifestDb: LevelDB = level(manifestDbLocation)
   await openDurableLevel(manifestDb, params.location, 'wallet-manifest')
@@ -356,6 +382,12 @@ export async function openMonadWalletBundle(
   try {
     const entries = new Map<string, string>()
     for await (const [key, value] of manifestDb.iterator({}) as any) {
+      if (
+        ![MANIFEST_KEY, SEED_KEY].includes(key) &&
+        !key.startsWith(TOPIC_OPERATION_KEY_PREFIX)
+      ) {
+        throw new Error(`Invalid wallet manifest key ${key}`)
+      }
       entries.set(key, value)
     }
 
@@ -478,11 +510,18 @@ export async function openMonadWalletBundle(
       store: changePoolStore,
     })
 
+    const topicJournal = new LevelTopicOperationJournal(
+      manifestDb,
+      () => undefined,
+    )
+    await topicJournal.Open()
+
     const bundle = makeBundle({
       durability: 'persistent',
       bindingId,
       pool,
       changePool,
+      topicJournal,
       subKeyring,
       changeKeyring,
       close: async () => {

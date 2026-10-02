@@ -1,4 +1,3 @@
-import { PrivateKey } from 'bitcore-lib-xpi'
 import {
   cryptoBackend,
   lockingScript,
@@ -41,9 +40,14 @@ export function walletChangePublicKey(
 }
 
 /** 25-byte P2PKH change script. HASH160 of the change public key, then
- * the template from decision #495 (decision #580). */
-export function walletChangeP2pkhScript(privKey: PrivateKey): Buffer {
-  const compressed = (privKey as unknown as { compressed?: boolean }).compressed
+ * the template from decision #495 (decision #580). Any key with
+ * `toBuffer` and a boolean `compressed` flag matches, including a
+ * bitcore PrivateKey. */
+export function walletChangeP2pkhScript(privKey: {
+  toBuffer(): Uint8Array
+  compressed?: boolean
+}): Buffer {
+  const compressed = privKey.compressed
   if (compressed !== true && compressed !== false) {
     throw new Error('wallet-change-pubkey:compressed')
   }

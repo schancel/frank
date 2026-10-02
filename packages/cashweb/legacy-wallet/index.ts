@@ -4,16 +4,11 @@ import assert from 'assert'
 import { walletChangeP2pkhScript } from './change-pubkey'
 import { calcUtxoId } from './helpers'
 
-import {
-  Transaction,
-  PrivateKey,
-  HDPrivateKey,
-  PublicKey,
-} from 'bitcore-lib-xpi'
+import { Transaction, PrivateKey, HDPrivateKey } from 'bitcore-lib-xpi'
 import type { Script } from 'bitcore-lib-xpi'
 import { UtxoStore } from './storage/storage'
 
-import { Utxo } from '../types/utxo'
+import { Utxo, type UtxoPrivateKey } from '../types/utxo'
 import { ChronikClient, WsEndpoint } from 'chronik-client'
 import { AddressEvent, ChainAdapter } from './chain-adapter'
 import { LotusAdapter } from './lotus-adapter'
@@ -73,7 +68,11 @@ function shuffleArray(arr: unknown[]) {
 
 type PrivateKeyData = { privKey: PrivateKey }
 type AddressData = { address: string; change: boolean } & PrivateKeyData
-type AddressGenerator = (txnNumber: number) => (output: number) => PublicKey
+type SerializedPublicKey = Uint8Array | { toBuffer(): Uint8Array }
+
+type AddressGenerator = (
+  txnNumber: number,
+) => (output: number) => SerializedPublicKey
 // UnspendOutpout.fromObject can work with this
 type BuildableUtxo = Utxo & { script?: string }
 type SignableTransaction = Transaction & {
@@ -97,8 +96,13 @@ function scriptBytes(script: Script): Uint8Array {
 }
 
 // HASH160 of the serialized public key, then the 25-byte template (decision #495).
-export function p2pkhScriptFromPublicKey(publicKey: PublicKey): Buffer {
-  const serialized = Uint8Array.from(publicKey.toBuffer())
+export function p2pkhScriptFromPublicKey(
+  publicKey: SerializedPublicKey,
+): Buffer {
+  const serialized =
+    publicKey instanceof Uint8Array
+      ? Uint8Array.from(publicKey)
+      : Uint8Array.from(publicKey.toBuffer())
   const hash = pubkeyHashFromBytes(cryptoBackend.hash160(serialized))
   if (!hash.ok) throw new Error('p2pkh-hash')
   return Buffer.from(lockingScript({ kind: 'p2pkh', hash: hash.value }))
@@ -190,7 +194,7 @@ function xpiChain(networkName: string): ChainDescriptor {
   throw new Error('sign-chain')
 }
 
-function signerFromPrivateKey(key: PrivateKey): InputSigner {
+function signerFromPrivateKey(key: UtxoPrivateKey): InputSigner {
   const publicKey = Uint8Array.from(key.toPublicKey().toBuffer())
   const secretBytes = Uint8Array.from(key.toBuffer())
   const parsed = privateKeyFromSecretBytes(secretBytes, publicKey.length === 33)
@@ -209,7 +213,7 @@ function signerFromPrivateKey(key: PrivateKey): InputSigner {
 
 function explicitAssignments(
   transaction: Transaction,
-  signingKeys: readonly PrivateKey[],
+  signingKeys: readonly UtxoPrivateKey[],
 ): { inputIndex: number; signer: InputSigner }[] {
   const assignments: { inputIndex: number; signer: InputSigner }[] = []
   for (let index = 0; index < transaction.inputs.length; index += 1) {
@@ -269,7 +273,7 @@ function nakamotoTransaction(transaction: SignableTransaction): {
 // A partial assignment throws and leaves every input script untouched.
 export function signTransactionInputs(
   transaction: Transaction,
-  signingKeys: readonly PrivateKey[],
+  signingKeys: readonly UtxoPrivateKey[],
   networkName: string,
 ): Transaction {
   const chain = xpiChain(networkName)
@@ -650,7 +654,7 @@ export class Wallet {
     pubkey,
   }: {
     utxos: Utxo[]
-    pubkey: PublicKey
+    pubkey: SerializedPublicKey
   }) {
     let transaction = new Transaction()
 
@@ -736,7 +740,7 @@ export class Wallet {
     shuffleChange = true,
   }: {
     transaction: Transaction
-    signingKeys: PrivateKey[]
+    signingKeys: UtxoPrivateKey[]
     shuffleChange?: boolean
   }) {
     // Add change outputs using our HD wallet.  We want multiple outputs following a
@@ -1160,16 +1164,14 @@ export class Wallet {
     return 2
   }
 
-  get myAddress() {
-    // TODO: This should be in the relay client, not the wallet...
-    // TODO: Not just testnet
-    return this.identityPrivKey?.toAddress(this.networkName)
-  }
-
-  get displayAddress() {
+  get myAddress(): string | undefined {
     const key = this.identityPrivKey
     if (!key) return undefined
     return lotusFromPrivateKey(key, this.networkName)
+  }
+
+  get displayAddress(): string | undefined {
+    return this.myAddress
   }
 
   freezeUtxo(utxo: Utxo) {

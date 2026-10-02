@@ -27,22 +27,19 @@
  * `registerMonadIdentity`/`fetchMonadIdentityPubKey` need no changes here; they were always correct
  * client-side, just blocked on the server catching up.
  *
- * ## Reusing `bitcore-lib-xpi`'s ECDH/AES/ECDSA code without any Lotus addressing
+ * ## Envelope ECDH without Lotus addressing
  *
  * `../cashweb/relay/monad-message-envelope.ts` implements the current deniable v2 envelope:
  * secp256k1 ECDH, HKDF-SHA256, and AES-256-GCM with the network and routing tuple authenticated as
- * associated data. It retains AES-CBC v1 only as a read path for already-stored records. Both use
- * `bitcore-lib-xpi`'s `PrivateKey`/`PublicKey` purely as a secp256k1
- * elliptic-curve-math + symmetric-crypto vehicle already in this codebase's dependency tree, not
- * because Lotus addressing is fundamentally involved (that module never calls
- * `computeLotusAddress`, and its envelope's `from`/`to` fields are plain, format-agnostic
- * strings). Routing and durable consumer keys treat valid 20-byte EVM addresses case-independently
- * even though this identity presents its preferred EIP-55 spelling. secp256k1 is the same curve
- * Monad/Ethereum accounts use, so the *same raw 32-byte
- * private key* this module derives via `ethers` HD derivation can be wrapped in a
- * `bitcore-lib-xpi` `PrivateKey` purely to reuse that existing ECDH code (`toBitcorePrivateKey`
- * below). `signHash` calls `@frank/nakamoto` `signEcdsa` (DER, bitcore RFC6979 nonce) for
- * `AddressMetadata` registration signatures. The payload digest is one
+ * associated data. It retains AES-CBC v1 only as a read path for already-stored records. ECDH is
+ * `@frank/nakamoto` `ecdh` of this identity's secret and the peer point. Lotus addressing is not
+ * involved (that module never calls `computeLotusAddress`, and its envelope's `from`/`to` fields
+ * are plain, format-agnostic strings). Routing and durable consumer keys treat valid 20-byte EVM
+ * addresses case-independently even though this identity presents its preferred EIP-55 spelling.
+ * secp256k1 is the same curve Monad/Ethereum accounts use, so the same raw 32-byte private key
+ * this module derives via `ethers` is exposed as a compressed `@frank/nakamoto` private key
+ * (`toNakamotoPrivateKey` below). `signHash` calls `@frank/nakamoto` `signEcdsa` (DER, bitcore
+ * RFC6979 nonce) for `AddressMetadata` registration signatures. The payload digest is one
  * `cryptoBackend.sha256`, matching `Sha256::digest` in `verify_monad_profile`.
  * The *address* itself is always computed the
  * plain EVM way, never through any Lotus/base58/cashaddr path.
@@ -88,8 +85,12 @@ import {
   hexlify,
   randomBytes,
 } from 'ethers'
-import { PrivateKey } from 'bitcore-lib-xpi'
-import { cryptoBackend, privateKeyFromHex, signEcdsa } from '@frank/nakamoto'
+import {
+  cryptoBackend,
+  privateKeyFromHex,
+  signEcdsa,
+  type PrivateKey,
+} from '@frank/nakamoto'
 import axios from 'axios'
 
 import type { MailboxAuthParams } from '@frank/cashweb/relay/monad-mailbox-client'
@@ -127,7 +128,7 @@ export const MONAD_IDENTITY_DERIVATION_PATH = "m/44'/60'/1'/0/0"
 /** A Monad-native Frank identity: a secp256k1 keypair plus its EIP-55 checksummed address (see
  * this file's header). Implements `FrankIdentityHandle` (`../chain/active-chain.ts`) so it can be
  * used directly as `WalletHandle.identity`, while exposing the extra private-key-backed methods
- * (`signHash`/`toBitcorePrivateKey`) `../chain/monad-chain.ts` needs internally. */
+ * (`signHash`/`toNakamotoPrivateKey`) `../chain/monad-chain.ts` needs internally. */
 export class MonadIdentity implements FrankIdentityHandle {
   readonly address: ChainAddress
   readonly displayAddress: string
@@ -189,11 +190,12 @@ export class MonadIdentity implements FrankIdentityHandle {
     return Buffer.from(signed.value)
   }
 
-  /** Wraps this identity's raw private key in a `bitcore-lib-xpi` `PrivateKey`, purely to reuse
-   * the Monad envelope's ECDH implementation (see this file's header) -- never
-   * used for Lotus address derivation. */
-  toBitcorePrivateKey(): PrivateKey {
-    return new PrivateKey(this.wallet.privateKey.slice(2))
+  /** Compressed `@frank/nakamoto` private key for Monad envelope ECDH. Not a Lotus address key.
+   * Copies this wallet's 32-byte secret. The wallet key is not wiped. */
+  toNakamotoPrivateKey(): PrivateKey {
+    const key = privateKeyFromHex(this.wallet.privateKey.slice(2), true)
+    if (!key.ok) throw new Error(key.error.code)
+    return key.value
   }
 }
 

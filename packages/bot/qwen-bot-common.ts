@@ -483,7 +483,7 @@ export async function sendDirectMessageItems(params: {
 
   const envelope = buildEnvelope({
     fromAddress: params.fromIdentity.displayAddress,
-    fromPrivateKey: params.fromIdentity.toBitcorePrivateKey(),
+    fromPrivateKey: params.fromIdentity.toNakamotoPrivateKey(),
     toAddress: params.toAddress,
     toPubKey: params.toPubKey,
     plaintext: serializeMessageItems(params.items),

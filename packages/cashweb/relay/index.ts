@@ -465,7 +465,7 @@ export class RelayClient extends ReadOnlyRelayClient {
       (wallet.myAddress
         ? lotusFromAddress(wallet.myAddress, this.displayNetwork)
         : undefined)
-        ? wallet?.identityPrivKey?.publicKey
+        ? wallet?.identityPrivKey?.toPublicKey()
         : this.getPubKey(address)
     assert(destinationPublicKey, 'Unable to set destination public key')
     const senderAddress = wallet.myAddress

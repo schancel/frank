@@ -4,8 +4,6 @@ import type { PayloadEntry } from './relay_pb'
 import { entryToImage } from './images'
 import stealth from './stealth_pb'
 import { TextItem, MessageItem } from '../types/messages'
-import { PublicKey } from 'bitcore-lib-xpi'
-import type { PrivateKey } from 'bitcore-lib-xpi'
 import { Wallet } from '../legacy-wallet'
 import {
   p2pkhHashFromPublicKey,
@@ -30,7 +28,7 @@ export async function decodeEntry(
   }: {
     networkName: string
     wallet: Wallet
-    destinationPrivateKey: PrivateKey
+    destinationPrivateKey: { toBuffer(): Uint8Array }
   },
 ): Promise<[MessageItem, Utxo[]] | null> {
   // If address data doesn't exist then add it
@@ -86,15 +84,12 @@ export async function decodeEntry(
     // Add stealth outputs
     const outpointsList = stealthMessage.getOutpointsList()
     const ephemeralPubKeyRaw = stealthMessage.getEphemeralPubKey()
-    const ephemeralPubKey = PublicKey.fromBuffer(
-      Buffer.from(ephemeralPubKeyRaw),
-    )
-    // Parent is stealthParentSecret (decision #559). Chain code is the raw
-    // SHA-256 digest, not the reduced scalar. The caller's PrivateKey is
-    // not wiped.
+    // Parent is stealthParentSecret (decision #559). ecdh accepts the
+    // 33-byte or 65-byte SEC1 point. Chain code is the raw SHA-256
+    // digest, not the reduced scalar. The caller's key is not wiped.
     const derived = stealthParentSecret(
       Uint8Array.from(destinationPrivateKey.toBuffer()),
-      Uint8Array.from(ephemeralPubKey.toBuffer()),
+      Uint8Array.from(Buffer.from(ephemeralPubKeyRaw)),
     )
     const stealthSecret = derived.secret
     const stealthChain = derived.digest

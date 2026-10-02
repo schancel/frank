@@ -1,4 +1,5 @@
 import { PrivateKey } from 'bitcore-lib-xpi'
+import * as cryptoBox from '@frank/crypto-box'
 
 import { MessageConstructor } from './constructors'
 import { stealthEphemeralPublicKey } from './stealth-ephemeral-pubkey'
@@ -46,15 +47,10 @@ it('matches bitcore stealth ephemeral public keys', () => {
 
 it('sets ephemeral_pub_key from the generated private key', () => {
   const dest = new PrivateKey(ONE).toPublicKey()
-  const created: PrivateKey[] = []
-  const proto = PrivateKey.prototype as unknown as {
-    _classifyArguments: (this: PrivateKey, ...args: unknown[]) => unknown
-  }
-  const original = proto._classifyArguments
-  proto._classifyArguments = function (this: PrivateKey, ...args: unknown[]) {
-    created.push(this)
-    return original.apply(this, args)
-  }
+  const drawn = Buffer.alloc(32, 0x22)
+  const spy = jest
+    .spyOn(cryptoBox, 'randomBytes')
+    .mockImplementation((length: number) => Buffer.alloc(length, 0x22))
   try {
     const ctor = new MessageConstructor({ networkName: 'livenet' })
     ctor.payloadConstructor.constructStealthPublicKey = () => ({
@@ -66,21 +62,17 @@ it('sets ephemeral_pub_key from the generated private key', () => {
       amount: 1,
       destPubKey: dest,
     })
-    expect(created).toHaveLength(1)
     const raw = stealth.StealthPaymentEntry.deserializeBinary(
       built.paymentEntry.getBody_asU8(),
     )
     const point = Buffer.from(raw.getEphemeralPubKey_asU8())
-    expect(point).toEqual(created[0].publicKey.toBuffer())
-    expect(point).toEqual(created[0].toPublicKey().toBuffer())
+    expect(point).toEqual(
+      Buffer.from(stealthEphemeralPublicKey(Uint8Array.from(drawn), true)),
+    )
     expect(point.length).toBe(33)
-    expect(created[0].toBuffer().length).toBe(32)
-    const secret = created[0].toBuffer()
-    expect(secret.length).toBe(32)
-    expect(created[0].publicKey.toBuffer()).toEqual(point)
-    expect(secret.toString('hex')).toBe(created[0].toBuffer().toString('hex'))
+    expect(spy).toHaveBeenCalledWith(32)
   } finally {
-    proto._classifyArguments = original
+    spy.mockRestore()
   }
 })
 

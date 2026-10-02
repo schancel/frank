@@ -768,15 +768,30 @@ Frank exposes two distinct ceremonies:
 An import never destroys the former account as part of activation. Frank keeps
 it as a rollback target until a later, separately confirmed deletion.
 
-That later deletion first takes the exclusive account-lifecycle permit, closes
-operation admission, drains shared holders, and then performs its final
-inventory while holding the permit through the deletion tombstone and custody
-generation/revision increment. It is blocked unless each detached or
-nonterminal operation's required journal and non-derivable
-capability—including a vault-held cooperative-salvage lane share—has been
+That later deletion may target only an inactive account. It first takes the
+exclusive account-lifecycle permit, closes operation admission, drains shared
+holders, and then performs its final inventory while holding the permit through
+the deletion tombstone and custody generation/revision increment. It is blocked
+unless each detached or nonterminal operation's required journal and
+non-derivable capability—including a vault-held cooperative-salvage lane share—has been
 preserved independently of the account record, or the user completes an
 explicit operation-specific irreversible abandonment flow. Deleting an account
 must never implicitly destroy the only copy of such a capability.
+
+Before any account-owned vault handle is destroyed, one atomic transaction
+commits a non-cancellable deletion tombstone under a stable deletion ID. It
+fences the inactive account, checks its expected custody epoch/revision, and
+freezes the exact inventory of account-owned handles and wrapping references
+after operation capabilities have been detached. Only then may idempotent,
+queryable per-handle destruction begin. Completion is recorded per handle; the
+tombstone and cleanup authority survive crashes, ambiguous results, and
+`not found` until the backend proves no listed handle can remain. Startup resumes
+every tombstone. Account IDs and handle identifiers cannot be reused, and stale
+cleanup must not touch a handle referenced by a live account or detached
+operation. The tombstone is retired only after every account-owned handle is
+durably confirmed destroyed. Before the tombstone, deletion can roll back to a
+wholly intact inactive account; after it, deletion must run to completion and
+the account can never become active again.
 
 Before switching accounts, Frank takes that same exclusive permit before its
 final inventory and holds it continuously through atomic disposition of every
@@ -930,13 +945,23 @@ and account revision. Recovery, replacement, and deletion take the exclusive
 permit before their final inventory, prevent new admission or cutoff crossing,
 drain shared holders, and retain exclusivity through atomic handoff plus pointer
 switch or deletion. While holding a permit, an actor rereads an origin-global
-generation and atomically writes an operation-scoped dispatch reservation
-before signing, enqueueing, or sending.
-The reservation contains a stable action/idempotency ID, exact payload or
-committed payload hash, fencing term, and `dispatching` state; dispatch begins
-only after durable acknowledgement. The same row records success, failure, or
-unknown outcome, and the permit remains held until classification. Replacement
-atomically increments the generation with the active-pointer switch. Storage
+generation and atomically writes an operation-scoped `reserved-to-sign` record
+before signing. It contains a stable action/idempotency ID, fencing term, exact
+canonical unsigned signing payload and semantic fields, their hash, and a
+stable signer-request ID. After signing, Frank validates the result against
+that reservation and durably commits immutable exact signed wire bytes plus the
+derived transaction/signature/external identity as `ready-to-dispatch` before
+any enqueue or send. Only those byte-identical bytes may be queried, dispatched,
+or replayed; an ambiguous action is never re-signed or repriced.
+
+An external or threshold signer must make its request/result idempotent and
+queryable by the signer-request ID. If its successful result is lost before the
+`ready-to-dispatch` commit and identical bytes cannot be recovered, the action
+remains blocked for manual reconciliation. A remote API that natively
+deduplicates the stable action ID may use an equivalent record containing its
+exact request bytes and remote identity. The same outbox row records success,
+failure, or unknown outcome, and the permit remains held until classification.
+Replacement atomically increments the generation with the active-pointer switch. Storage
 transactions also compare the generation and expected revision. Checking only a
 late callback is insufficient because a remote chain or relay cannot enforce a
 browser-local epoch.
@@ -955,8 +980,8 @@ only that no future old send can begin; it does not classify whether a past send
 was accepted. An already-dispatched ambiguous action requires an authoritative
 receipt, query, or proof of absence. Without one of those outcome mechanisms,
 the action remains blocked for manual reconciliation. It never allocates a
-second action ID or changes the payload for an ambiguous effect. A
-resumed old owner carrying a stale term cannot reserve or authorize a new
+second action ID or changes the payload for an ambiguous effect. A resumed old
+owner carrying a stale term cannot reserve or authorize a new
 action, commit, release a watcher, or restore ordinary dispatch. It may still
 physically complete an exact action already reserved before suspension when the
 external boundary cannot fence it; takeover safety therefore treats that
@@ -1275,19 +1300,28 @@ to their specified inactive/active state.
 Actual multi-tab tests hold shared remote-effect permits across replacement,
 pause immediately before dispatch, and inject unknown outcomes. Exclusive
 replacement drains or reconciles them before switching. Actual-browser tests
-freeze, BFCache, resume, and kill owners before reservation, after durable
-reservation, after remote acceptance but before response, and before outcome
-classification. A takeover CAS advances the durable fencing term, cannot rely
-on heartbeat expiry, and treats every old nonterminal reservation as possibly
-dispatchable. It queries or replays only the same stable action ID when the
-external boundary deduplicates it. Process death or external term fencing alone
-never classifies a past send; an authoritative receipt, query, or proof of
-absence is required, otherwise redispatch remains blocked for manual
-reconciliation. A resumed stale owner cannot create a new reservation or
-release authority, and an already-reserved stale send cannot cause the takeover
-owner to allocate a second action. Detached operation watchers continue through
-ceremony start, cancel, crash, and imminent deadlines under their separate
-narrow authority; stale ordinary actors cannot authorize a new broadcast.
+freeze, BFCache, resume, and kill owners before `reserved-to-sign`, after that
+commit, after signer success or lost signer response but before signed-byte
+persistence, after `ready-to-dispatch`, after remote acceptance but before
+response, and before outcome classification. An external signer must return the
+identical result by stable request ID or the lost-result case remains blocked.
+For eCash, EVM, and Solana fixtures, the same unsigned semantics can have
+different signature-dependent external identities, so an unsigned payload hash
+alone never authorizes replay. Restarts after `ready-to-dispatch` query or replay
+only the persisted byte-identical artifact and never create a second signature,
+transaction identity, action ID, or payload.
+
+A takeover CAS advances the durable fencing term, cannot rely on heartbeat
+expiry, and treats every old nonterminal reservation as possibly dispatchable.
+It queries or replays only the same stable action ID when the external boundary
+deduplicates it. Process death or external term fencing alone never classifies a
+past send; an authoritative receipt, query, or proof of absence is required,
+otherwise redispatch remains blocked for manual reconciliation. A resumed stale
+owner cannot create a new reservation or release authority, and an
+already-reserved stale send cannot cause the takeover owner to allocate a
+second action. Detached operation watchers continue through ceremony start,
+cancel, crash, and imminent deadlines under their separate narrow authority;
+stale ordinary actors cannot authorize a new broadcast.
 
 Account-lifecycle race tests attempt operation admission, cutoff crossing,
 unilateral-authorization release, and account-bound capability attachment
@@ -1313,6 +1347,15 @@ Backup-status tests deterministically re-export the exact descriptor from
 persisted versions and raw fingerprint, round-trip it independently, and reject
 stale, malformed, or mismatched persisted fields without changing the
 fingerprint or claiming successful verification.
+
+Account-deletion tests prohibit an active target and crash before its tombstone,
+after the tombstone but before destruction, between handles, after remote
+destroy with a lost response, and after final destroy before tombstone
+retirement. Competing pointer/revision changes fail the tombstone CAS. Every
+outcome is either a wholly intact inactive account or a permanently fenced
+deletion that resumes to verified cleanup—never an active account missing a
+key, an orphan handle, identifier reuse, or loss of a detached operation or
+salvage capability.
 
 Usability testing MUST include nontechnical users, keyboard-only users, screen
 reader users, handwritten uppercase shares, camera scanning, one deliberately

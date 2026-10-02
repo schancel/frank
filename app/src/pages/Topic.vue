@@ -168,8 +168,12 @@ export default defineComponent({
   },
   methods: {
     async refreshContent() {
-      const wallet = await useActiveWallet()
-      this.refreshMessages({ wallet, topic: this.topic })
+      try {
+        const wallet = await useActiveWallet()
+        await this.refreshMessages({ wallet, topic: this.topic })
+      } catch (error) {
+        // Handled: no unhandled browser exception during topic polling
+      }
     },
   },
 })

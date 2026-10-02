@@ -4,6 +4,14 @@
 export default {
   forum: {
     noPosts: 'Aucun message pour le moment.',
+    outageTitle: 'Forum indisponible',
+    outageDescription:
+      'Impossible de se connecter au relais du forum. Veuillez vérifier votre connexion ou réessayer.',
+    outageBanner:
+      'Le relais du forum est actuellement inaccessible. Affichage des messages enregistrés.',
+    degradedTitle: 'Connexion dégradée',
+    degradedBanner: 'Certains sujets du forum n’ont pas pu être mis à jour.',
+    retry: 'Réessayer',
   },
   agree: "D'accord",
   chat: {

@@ -290,8 +290,12 @@ export default defineComponent({
       if (!route.path.startsWith('/forum')) {
         await router.push('/forum')
       }
-      const wallet = await useActiveWallet()
-      await forum.refreshMessages({ wallet, topic: name })
+      try {
+        const wallet = await useActiveWallet()
+        await forum.refreshMessages({ wallet, topic: name })
+      } catch (error) {
+        // Handled: forumStore records outageStatus; no unhandled browser exception
+      }
     }
 
     const { formattedBalance, loaded, hasError } = useBalance()

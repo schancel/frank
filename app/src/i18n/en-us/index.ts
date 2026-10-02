@@ -27,6 +27,13 @@ export default {
   },
   forum: {
     noPosts: 'No posts yet.',
+    outageTitle: 'Forum unavailable',
+    outageDescription:
+      'Could not connect to the forum relay. Please check your connection or try again.',
+    outageBanner: 'Forum relay is currently unreachable. Showing saved posts.',
+    degradedTitle: 'Connection degraded',
+    degradedBanner: 'Some forum topics could not be updated.',
+    retry: 'Retry',
   },
   chatLayout: {
     info: 'Info',

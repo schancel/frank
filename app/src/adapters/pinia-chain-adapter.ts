@@ -17,22 +17,21 @@
  * `activeChain.directMessages.fetchSince` returns `DirectMessageReceived[]`
  * (`@frank/wallet/chain/active-chain.ts`) -- a deliberately Monad-shaped type (see that file's header,
  * deviation 2). `chats.ts`'s `receiveMessages` action takes `ReceivedMessageWrapper[]`
- * (`@frank/cashweb/types/user-interface.ts`), a Lotus-shaped type (`copartyPubKey: PublicKey` from
- * `bitcore-lib-xpi`, `outpoints: Utxo[]`). `toReceivedMessageWrapper` below adapts one into the
- * other:
+ * (`@frank/cashweb/types/user-interface.ts`), a Lotus-shaped type (`copartyPubKey` is still
+ * declared as the legacy public-key class, `outpoints: Utxo[]`). `toReceivedMessageWrapper`
+ * below adapts one into the other:
  * - `outpoints: []` / `stampValueWei: record.stampValueWei` -- see `stores/chats.ts`'s header for the
  *   #42 decision to add `stampValueWei` additively rather than replace `outpoints`.
- * - `copartyPubKey` needs an actual `PublicKey` (not optional on `ReceivedMessageWrapper`), only
- *   used by `receiveMessages` as a placeholder for `contacts.addLoadingContact` when the sender
- *   isn't already a known contact -- `contacts.refresh` (rewritten by this ticket) immediately
+ * - `copartyPubKey` needs a profile key with `toBuffer()` (not optional on
+ *   `ReceivedMessageWrapper`), only used by `receiveMessages` as a placeholder for
+ *   `contacts.addLoadingContact` when the sender isn't already a known contact --
+ *   `contacts.refresh` (rewritten by this ticket) immediately
  *   re-fetches and overwrites it with the real profile right after. This calls
  *   `activeChain.fetchProfile` a second time per unique sender (once inside `MonadChain.fetchSince`
  *   itself, to decrypt; once here, to get bytes to wrap as a placeholder) -- a known small
  *   inefficiency, not fixed here since `ActiveChain`'s interface (owned by #41, off-limits to this
  *   ticket) has no cheaper way to ask "what pubkey did you just use to decrypt this."
  */
-import { PublicKey } from 'bitcore-lib-xpi'
-
 import { activeChain } from '@frank/wallet/chain'
 import type { DirectMessageReceived, WalletHandle } from '@frank/wallet/chain'
 import {
@@ -41,6 +40,7 @@ import {
   MonadMailboxUnavailableError,
 } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
+import { profilePubKeyFromBytes } from '../utils/profile-pubkey'
 import { useChatStore } from '../stores/chats'
 import { useMailboxStatusStore } from '../stores/mailbox-status'
 
@@ -74,7 +74,9 @@ export async function toReceivedMessageWrapper(
     outbound: false,
     senderAddress: copartyAddress,
     copartyAddress,
-    copartyPubKey: PublicKey.fromBuffer(Buffer.from(senderProfile.pubKey)),
+    copartyPubKey: profilePubKeyFromBytes(
+      senderProfile.pubKey,
+    ) as ReceivedMessageWrapper['copartyPubKey'],
     index: record.payloadDigest,
     stampValue,
     message: {

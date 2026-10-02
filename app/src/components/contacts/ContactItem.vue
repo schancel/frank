@@ -59,7 +59,7 @@
 <script lang="ts">
 import { useContactStore } from 'src/stores/contacts'
 import { defineComponent } from 'vue'
-import { PublicKey } from 'bitcore-lib-xpi'
+import type { ProfilePubKey } from 'src/utils/profile-pubkey'
 import { pubKeyToColor } from 'src/utils/formatting'
 import { profileAvatar } from 'src/utils/avatar'
 
@@ -96,7 +96,7 @@ export default defineComponent({
     // file's own comment for the full rationale.
     contactColorStyle() {
       const pubKey = (
-        this.contact as { profile?: { pubKey?: PublicKey | null } }
+        this.contact as { profile?: { pubKey?: ProfilePubKey | null } }
       )?.profile?.pubKey
       if (!pubKey) {
         return {}

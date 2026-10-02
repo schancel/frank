@@ -3,11 +3,11 @@ import { markRaw, toRaw } from 'vue'
 
 import { calcUtxoId } from '@frank/cashweb/legacy-wallet/helpers'
 import { store as levelOutpointStore } from '../adapters/level-utxo-store'
-import { HDPrivateKey } from 'bitcore-lib-xpi'
 import { Utxo } from '@frank/cashweb/types/utxo'
+import { assertStoredXpriv, type StoredXpriv } from '../utils/wallet-xpriv'
 
 export interface State {
-  xPrivKey: HDPrivateKey | null
+  xPrivKey: StoredXpriv | null
   utxos: Record<string, number | undefined>
   seedPhrase: string | null
   /**
@@ -63,7 +63,7 @@ export async function rehydrateWallet(wallet: RestorableState): Promise<State> {
     utxos,
     seedPhrase: wallet.seedPhrase,
     seedConfirmedAt: wallet.seedConfirmedAt ?? null,
-    xPrivKey: markRaw(HDPrivateKey.fromObject(wallet.xPrivKey)),
+    xPrivKey: markRaw(assertStoredXpriv(wallet.xPrivKey)),
   }
 }
 
@@ -72,7 +72,7 @@ export function saveWallet(
   state: State,
 ): Promise<void> {
   const wallet = {
-    xPrivKey: state.xPrivKey ? toRaw(state.xPrivKey).toObject() : null,
+    xPrivKey: state.xPrivKey ? { ...toRaw(state.xPrivKey) } : null,
     seedPhrase: state.seedPhrase,
     seedConfirmedAt: state.seedConfirmedAt,
     utxos: {},
@@ -105,8 +105,8 @@ export const useWalletStore = defineStore('wallet', {
       this.utxos = {}
       this.balance = 0
     },
-    setXPrivKey(xPrivKey: HDPrivateKey) {
-      this.xPrivKey = markRaw(xPrivKey)
+    setXPrivKey(xPrivKey: StoredXpriv) {
+      this.xPrivKey = markRaw(assertStoredXpriv(xPrivKey))
     },
     /**
      * Store the seed and its confirmation marker in ONE state write (one persisted snapshot).

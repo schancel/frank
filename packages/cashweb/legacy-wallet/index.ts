@@ -135,6 +135,25 @@ export function walletChangePrivateKey(
   return privateKeyFromHdPath(xPrivKey, `${WALLET_CHANGE_PREFIX}/${index}`)
 }
 
+// The UI stores the bitcore toObject() record (decision #592). Address
+// strings stay on this bitcore key until issue #242.
+type StoredHdPrivate = {
+  network: string
+  depth: number
+  parentFingerPrint: number
+  childIndex: number
+  chainCode: string
+  privateKey: string
+  xprivkey: string
+}
+
+export function hdPrivateKeyFromStored(
+  value: HDPrivateKey | StoredHdPrivate,
+): HDPrivateKey {
+  if (value instanceof HDPrivateKey) return value
+  return new HDPrivateKey(value)
+}
+
 // bitcore's Input type omits setScript; the runtime method writes _scriptBuffer.
 function setInputScript(input: Transaction.Input, script: Buffer): void {
   const writable = input as Transaction.Input & {
@@ -313,12 +332,13 @@ export class Wallet {
     this.chainAdapter = new LotusAdapter({ chronikClient, chronikWs })
   }
 
-  setXPrivKey(xPrivKey: HDPrivateKey) {
-    this._xPrivKey = xPrivKey
+  setXPrivKey(xPrivKey: HDPrivateKey | StoredHdPrivate) {
+    const key = hdPrivateKeyFromStored(xPrivKey)
+    this._xPrivKey = key
     // TODO: we're just using the first key in the HD addresses for now
     // so that it'll be compatible (mostly) with other HD wallets.
     // We should do something to allow revocations in the future.
-    this._identityPrivKey = walletReceivePrivateKey(xPrivKey, 0)
+    this._identityPrivKey = walletReceivePrivateKey(key, 0)
 
     this.init()
   }

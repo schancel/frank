@@ -534,8 +534,20 @@ export default {
     spinnerText: 'Deleting messages…',
   },
   seedPhraseDialog: {
-    seedPhrase: 'Seed Phrase',
+    seedPhrase: 'Recovery Phrase',
     close: 'Close',
+    cancel: 'Cancel',
+    warningTitle: 'Security Warning',
+    warningBody:
+      'Make sure no one is watching your screen. Beware of screen-sharing, shoulder-surfing, screenshots, and clipboard history.',
+    disclosureText:
+      'Anyone who gets your recovery phrase can access and steal all your funds and messages permanently.',
+    revealButton: 'Reveal Recovery Phrase',
+    hideButton: 'Hide',
+    copyButton: 'Copy',
+    copied: 'Copied!',
+    copiedToast: 'Recovery phrase copied to clipboard',
+    keepPrivateNotice: 'Keep this private. Do not share or screenshot.',
   },
   transactionDialog: {
     backingTransactions: 'Backing Transactions',

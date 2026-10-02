@@ -22,6 +22,7 @@ const {
 import {
   MONAD_IDENTITY_DERIVATION_PATH,
   MonadIdentity,
+  assertMonadCborProfileRouteSize,
   buildSignedDirectoryStatement,
   decodeProfileBytes,
   fetchCuratedDefaultContacts,
@@ -806,6 +807,49 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
         ])
       }
     }
+  })
+
+  it('enforces the 256 KiB route limit on the completed signed frame before HTTP', async () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const descriptor = relayDescriptor()
+    const buildWithAvatarBytes = (length: number, timestampOffset = 0) =>
+      buildSignedDirectoryStatement(identity, {
+        timestampMs: 1_700_000_000_000n + BigInt(timestampOffset),
+        ttlMs: 0n,
+        relayDescriptor: descriptor,
+        profile: {
+          avatar: `data:image/png;base64,${Buffer.alloc(length).toString(
+            'base64',
+          )}`,
+        },
+      })
+
+    const probeLength = 250_000
+    const probe = buildWithAvatarBytes(probeLength)
+    const estimate = probeLength + (256 * 1024 - probe.length)
+    expect(() =>
+      assertMonadCborProfileRouteSize(new Uint8Array(256 * 1024)),
+    ).not.toThrow()
+    expect(() =>
+      assertMonadCborProfileRouteSize(new Uint8Array(256 * 1024 + 1)),
+    ).toThrow(/262145.*262144/)
+
+    const callsBefore = mockedAxios.mock.calls.length
+    await expect(
+      registerMonadIdentityCbor({
+        relayBaseUrl: RELAY_BASE_URL,
+        identity,
+        timestampMs: 1_700_000_000_000n,
+        ttlMs: 0n,
+        relayDescriptor: descriptor,
+        profile: {
+          avatar: `data:image/png;base64,${Buffer.alloc(estimate + 32).toString(
+            'base64',
+          )}`,
+        },
+      }),
+    ).rejects.toThrow(/route byte limit|route limit|262144/)
+    expect(mockedAxios).toHaveBeenCalledTimes(callsBefore)
   })
 
   it('registerMonadIdentityCbor sends Content-Type application/cbor to PUT /metadata/:addr', async () => {

@@ -20,15 +20,53 @@ use crate::{
     monad_http::Address,
     monad_profile_verify::{
         validate_cbor_account_registration_envelope, verify_cbor_account_registration,
-        verify_monad_profile,
+        verify_monad_profile, VerifiedCborRegistration,
     },
     proto::{self, BroadcastMessage},
-    store::{db::Db, pubkeyhash::PubKeyHash},
+    store::{db::Db, monad_profiles::DbMonadProfilesError, pubkeyhash::PubKeyHash},
 };
 
 #[cfg(test)]
 thread_local! {
     static RECIPIENT_SIGNATURE_WORK: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestProfileWorkerGate {
+    released: std::sync::Mutex<bool>,
+    wake: std::sync::Condvar,
+    started: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+#[cfg(test)]
+impl TestProfileWorkerGate {
+    fn new() -> (Arc<Self>, tokio::sync::oneshot::Receiver<()>) {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        (
+            Arc::new(Self {
+                released: std::sync::Mutex::new(false),
+                wake: std::sync::Condvar::new(),
+                started: std::sync::Mutex::new(Some(started_tx)),
+            }),
+            started_rx,
+        )
+    }
+
+    fn wait(&self) {
+        if let Some(started) = self.started.lock().unwrap().take() {
+            let _ = started.send(());
+        }
+        let mut released = self.released.lock().unwrap();
+        while !*released {
+            released = self.wake.wait(released).unwrap();
+        }
+    }
+
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.wake.notify_all();
+    }
 }
 
 #[cfg(test)]
@@ -91,6 +129,8 @@ pub struct Registry {
     profile_write_locks: Vec<Arc<tokio::sync::Mutex<()>>>,
     /// Global no-queue admission bound for CPU/RocksDB profile registration work.
     profile_registration_admission: Arc<tokio::sync::Semaphore>,
+    #[cfg(test)]
+    profile_worker_gate: Option<Arc<TestProfileWorkerGate>>,
 }
 
 /// Result of putting metadata into the registry.
@@ -225,10 +265,42 @@ const PROFILE_WRITE_STRIPES: usize = 64;
 /// Maximum profile registrations concurrently admitted to verification/storage.
 pub const PROFILE_REGISTRATION_CONCURRENCY: usize = 32;
 
+/// A no-wait profile registration could not enter its address stripe or the global worker pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileRegistrationAdmissionError {
+    /// Another registration already owns this address stripe.
+    StripeBusy,
+    /// All global verification/storage worker slots are occupied.
+    GlobalBusy,
+}
+
+/// Owns both admission layers for one registration. Both guards deliberately move into blocking
+/// workers, so dropping/cancelling the request future cannot release capacity while detached work
+/// is still running.
+#[derive(Debug)]
+pub struct ProfileRegistrationAdmission {
+    _stripe: tokio::sync::OwnedMutexGuard<()>,
+    _global: tokio::sync::OwnedSemaphorePermit,
+}
+
 fn profile_write_locks() -> Vec<Arc<tokio::sync::Mutex<()>>> {
     (0..PROFILE_WRITE_STRIPES)
         .map(|_| Arc::new(tokio::sync::Mutex::new(())))
         .collect()
+}
+
+async fn spawn_profile_worker<T, F>(
+    admission: ProfileRegistrationAdmission,
+    work: F,
+) -> Result<(T, ProfileRegistrationAdmission)>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    let (result, admission) = tokio::task::spawn_blocking(move || (work(), admission))
+        .await
+        .map_err(|err| MonadProfileWorkerFailed(err.to_string()))?;
+    Ok((result?, admission))
 }
 
 impl Registry {
@@ -243,7 +315,30 @@ impl Registry {
             profile_registration_admission: Arc::new(tokio::sync::Semaphore::new(
                 PROFILE_REGISTRATION_CONCURRENCY,
             )),
+            #[cfg(test)]
+            profile_worker_gate: None,
         }
+    }
+
+    async fn run_profile_worker<T, F>(
+        &self,
+        admission: ProfileRegistrationAdmission,
+        work: F,
+    ) -> Result<(T, ProfileRegistrationAdmission)>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T> + Send + 'static,
+    {
+        #[cfg(test)]
+        let gate = self.profile_worker_gate.clone();
+        spawn_profile_worker(admission, move || {
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                gate.wait();
+            }
+            work()
+        })
+        .await
     }
 
     /// Read a signed [`proto::AddressMetadata`] entry from the database.
@@ -1069,33 +1164,33 @@ impl Registry {
         self: &Arc<Self>,
         address: Address,
         signed_profile: cashweb_payload::proto::SignedPayload,
-        admission: tokio::sync::OwnedSemaphorePermit,
+        admission: ProfileRegistrationAdmission,
     ) -> Result<()> {
         let registry = Arc::clone(self);
         let verify_signed = signed_profile.clone();
-        let verified = tokio::task::spawn_blocking(move || {
-            verify_monad_profile(&registry.ecc, address, &verify_signed)
-        })
-        .await
-        .map_err(|err| MonadProfileWorkerFailed(err.to_string()))??;
-        let guard = Arc::clone(&self.profile_write_locks[self.profile_write_stripe(address)])
-            .lock_owned()
-            .await;
+        let (verified, admission) = self
+            .run_profile_worker(admission, move || {
+                verify_monad_profile(&registry.ecc, address, &verify_signed)
+            })
+            .await?;
         let registry = Arc::clone(self);
-        tokio::task::spawn_blocking(move || {
-            let _guard = guard;
-            let _admission = admission;
-            registry.put_verified_monad_profile(address, signed_profile, verified.profile.timestamp)
-        })
-        .await
-        .map_err(|err| MonadProfileWorkerFailed(err.to_string()))?
+        let _ = self
+            .run_profile_worker(admission, move || {
+                registry.put_verified_monad_profile(
+                    address,
+                    signed_profile,
+                    verified.profile.timestamp,
+                )
+            })
+            .await?;
+        Ok(())
     }
 
     /// Fully verify and write a Frank-CBOR type-2 account registration attestation (ticket #605).
     /// Enforces stage 10.6 signature verification and monotonic revision/timestamp invariants.
     fn put_monad_profile_cbor(&self, address: Address, frame_bytes: &[u8]) -> Result<()> {
         let expected_net = self.expected_cbor_network();
-        let prior_info = self.db.monad_profiles().get_cbor_statement_info(&address)?;
+        let prior_info = self.validated_cbor_predecessor(address, expected_net)?;
         let prior_statement = prior_info
             .as_ref()
             .map(|info| frank_cbor::PriorStatement::Frame(info.type_4_frame.clone()))
@@ -1118,6 +1213,25 @@ impl Registry {
         Ok(())
     }
 
+    fn validated_cbor_predecessor(
+        &self,
+        address: Address,
+        expected_network: &str,
+    ) -> Result<Option<VerifiedCborRegistration>> {
+        let raw = match self.db.monad_profiles().get_cbor(&address)? {
+            Some(raw) => raw,
+            None => return Ok(None),
+        };
+        verify_cbor_account_registration(
+            address,
+            expected_network,
+            &raw,
+            frank_cbor::PriorStatement::None,
+        )
+        .map(Some)
+        .map_err(|err| DbMonadProfilesError::InvalidStoredCborRegistration(err.to_string()).into())
+    }
+
     /// Async request-boundary wrapper for candidate CBOR writes. The bootstrap verification is
     /// predecessor-independent; after waiting for the address stripe, the blocking worker parses
     /// the stored predecessor exactly once, validates the dependent transition, and writes.
@@ -1125,25 +1239,21 @@ impl Registry {
         self: &Arc<Self>,
         address: Address,
         frame_bytes: Vec<u8>,
-        admission: tokio::sync::OwnedSemaphorePermit,
+        admission: ProfileRegistrationAdmission,
     ) -> Result<()> {
         let verify_bytes = frame_bytes.clone();
-        tokio::task::spawn_blocking(move || {
-            validate_cbor_account_registration_envelope(&verify_bytes)
-        })
-        .await
-        .map_err(|err| MonadProfileWorkerFailed(err.to_string()))??;
-        let guard = Arc::clone(&self.profile_write_locks[self.profile_write_stripe(address)])
-            .lock_owned()
-            .await;
+        let (_, admission) = self
+            .run_profile_worker(admission, move || {
+                validate_cbor_account_registration_envelope(&verify_bytes)
+            })
+            .await?;
         let registry = Arc::clone(self);
-        tokio::task::spawn_blocking(move || {
-            let _guard = guard;
-            let _admission = admission;
-            registry.put_monad_profile_cbor(address, &frame_bytes)
-        })
-        .await
-        .map_err(|err| MonadProfileWorkerFailed(err.to_string()))?
+        let _ = self
+            .run_profile_worker(admission, move || {
+                registry.put_monad_profile_cbor(address, &frame_bytes)
+            })
+            .await?;
+        Ok(())
     }
 
     fn profile_write_stripe(&self, address: Address) -> usize {
@@ -1156,8 +1266,18 @@ impl Registry {
     /// retryable HTTP response before starting signature verification or RocksDB work.
     pub fn try_acquire_profile_registration(
         &self,
-    ) -> std::result::Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::TryAcquireError> {
-        Arc::clone(&self.profile_registration_admission).try_acquire_owned()
+        address: Address,
+    ) -> std::result::Result<ProfileRegistrationAdmission, ProfileRegistrationAdmissionError> {
+        let stripe = Arc::clone(&self.profile_write_locks[self.profile_write_stripe(address)])
+            .try_lock_owned()
+            .map_err(|_| ProfileRegistrationAdmissionError::StripeBusy)?;
+        let global = Arc::clone(&self.profile_registration_admission)
+            .try_acquire_owned()
+            .map_err(|_| ProfileRegistrationAdmissionError::GlobalBusy)?;
+        Ok(ProfileRegistrationAdmission {
+            _stripe: stripe,
+            _global: global,
+        })
     }
 
     /// Read a previously-registered Monad profile's `cashweb_payload::proto::SignedPayload`
@@ -1435,10 +1555,12 @@ mod tests {
 
     use crate::{
         lotus_adapter::LotusAdapter,
+        monad_http::Address,
         proto,
         registry::{
-            profile_write_locks, GetMetadataRangeResult, PutBlockchainAction, PutMessageResult,
-            PutMetadataResult, Registry, RegistryError, PROFILE_REGISTRATION_CONCURRENCY,
+            profile_write_locks, GetMetadataRangeResult, ProfileRegistrationAdmissionError,
+            PutBlockchainAction, PutMessageResult, PutMetadataResult, Registry, RegistryError,
+            TestProfileWorkerGate, PROFILE_REGISTRATION_CONCURRENCY,
         },
         store::{
             db::{Db, CF_PKH_BY_TIME},
@@ -1474,6 +1596,7 @@ mod tests {
             profile_registration_admission: Arc::new(tokio::sync::Semaphore::new(
                 PROFILE_REGISTRATION_CONCURRENCY,
             )),
+            profile_worker_gate: None,
         };
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
@@ -1873,6 +1996,7 @@ mod tests {
             profile_registration_admission: Arc::new(tokio::sync::Semaphore::new(
                 PROFILE_REGISTRATION_CONCURRENCY,
             )),
+            profile_worker_gate: None,
         };
 
         // Generate a few anyone can spend coins
@@ -2032,6 +2156,7 @@ mod tests {
             profile_registration_admission: Arc::new(tokio::sync::Semaphore::new(
                 PROFILE_REGISTRATION_CONCURRENCY,
             )),
+            profile_worker_gate: None,
         };
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
@@ -2360,6 +2485,7 @@ mod tests {
             profile_registration_admission: Arc::new(tokio::sync::Semaphore::new(
                 PROFILE_REGISTRATION_CONCURRENCY,
             )),
+            profile_worker_gate: None,
         };
         (tempdir, registry)
     }
@@ -2554,8 +2680,7 @@ mod tests {
             test_monad_profile_registry("cashweb-registry--registry-profile-async-stripes");
         let registry = Arc::new(registry);
         let key_a = registry.ecc.seckey_from_array([21; 32])?;
-        let (signed_a, address_a) = sign_monad_profile(&key_a, &sample_monad_profile(100));
-        let (newer_signed_a, _) = sign_monad_profile(&key_a, &sample_monad_profile(200));
+        let (_, address_a) = sign_monad_profile(&key_a, &sample_monad_profile(100));
         let stripe_a = registry.profile_write_stripe(address_a);
         let (signed_b, address_b) = (22u8..=255)
             .find_map(|byte| {
@@ -2565,34 +2690,13 @@ mod tests {
             })
             .expect("test keys must cover a second profile stripe");
 
-        let held_guard = Arc::clone(&registry.profile_write_locks[stripe_a])
-            .lock_owned()
-            .await;
-        let blocked_registry = Arc::clone(&registry);
-        let blocked_low = tokio::spawn(async move {
-            blocked_registry
-                .put_monad_profile_async(
-                    address_a,
-                    signed_a,
-                    blocked_registry.try_acquire_profile_registration().unwrap(),
-                )
-                .await
-        });
-        let blocked_registry = Arc::clone(&registry);
-        let blocked_high = tokio::spawn(async move {
-            blocked_registry
-                .put_monad_profile_async(
-                    address_a,
-                    newer_signed_a,
-                    blocked_registry.try_acquire_profile_registration().unwrap(),
-                )
-                .await
-        });
-        for _ in 0..10 {
-            tokio::task::yield_now().await;
-        }
-        assert!(!blocked_low.is_finished());
-        assert!(!blocked_high.is_finished());
+        let held_admission = registry
+            .try_acquire_profile_registration(address_a)
+            .unwrap();
+        assert!(matches!(
+            registry.try_acquire_profile_registration(address_a),
+            Err(ProfileRegistrationAdmissionError::StripeBusy)
+        ));
 
         tokio::time::timeout(Duration::from_secs(1), async {
             tokio::task::yield_now().await;
@@ -2600,25 +2704,110 @@ mod tests {
                 .put_monad_profile_async(
                     address_b,
                     signed_b,
-                    registry.try_acquire_profile_registration().unwrap(),
+                    registry
+                        .try_acquire_profile_registration(address_b)
+                        .unwrap(),
                 )
                 .await
         })
         .await
         .expect("held address A must not stall address B or the runtime")?;
 
-        drop(held_guard);
-        let low = blocked_low
+        drop(held_admission);
+        assert_eq!(registry.get_monad_profile(address_a)?, None);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_profile_future_keeps_admission_until_blocking_worker_exits() -> Result<()> {
+        use std::time::Duration;
+
+        for format in ["protobuf", "cbor"] {
+            let (_tempdir, mut registry) = test_monad_profile_registry(&format!(
+                "cashweb-registry--cancelled-profile-worker-{format}"
+            ));
+            let (gate, started_rx) = TestProfileWorkerGate::new();
+            registry.profile_worker_gate = Some(Arc::clone(&gate));
+            let seckey = registry.ecc.seckey_from_array([31; 32])?;
+            let (signed, protobuf_address) =
+                sign_monad_profile(&seckey, &sample_monad_profile(100));
+            let worker_address = if format == "protobuf" {
+                protobuf_address
+            } else {
+                Address([0; 20])
+            };
+            let registry = Arc::new(registry);
+            let admission = registry
+                .try_acquire_profile_registration(worker_address)
+                .unwrap();
+            let worker_registry = Arc::clone(&registry);
+            let request = tokio::spawn(async move {
+                if format == "protobuf" {
+                    worker_registry
+                        .put_monad_profile_async(worker_address, signed, admission)
+                        .await
+                } else {
+                    worker_registry
+                        .put_monad_profile_cbor_async(worker_address, vec![0x80], admission)
+                        .await
+                }
+            });
+            started_rx.await.unwrap();
+
+            let mut other_admissions = Vec::new();
+            for candidate in 0..=u8::MAX {
+                let mut bytes = [0; 20];
+                bytes[19] = candidate;
+                match registry.try_acquire_profile_registration(Address(bytes)) {
+                    Ok(admission) => other_admissions.push(admission),
+                    Err(ProfileRegistrationAdmissionError::StripeBusy) => continue,
+                    Err(ProfileRegistrationAdmissionError::GlobalBusy) => break,
+                }
+                if other_admissions.len() == PROFILE_REGISTRATION_CONCURRENCY - 1 {
+                    break;
+                }
+            }
+            assert_eq!(other_admissions.len(), PROFILE_REGISTRATION_CONCURRENCY - 1);
+            let extra_address = (0..=u8::MAX)
+                .find_map(|candidate| {
+                    let mut bytes = [0; 20];
+                    bytes[19] = candidate;
+                    let address = Address(bytes);
+                    matches!(
+                        registry.try_acquire_profile_registration(address),
+                        Err(ProfileRegistrationAdmissionError::GlobalBusy)
+                    )
+                    .then_some(address)
+                })
+                .expect("64 stripes include one idle stripe beyond the 32 global slots");
+
+            request.abort();
+            assert!(matches!(
+                registry.try_acquire_profile_registration(worker_address),
+                Err(ProfileRegistrationAdmissionError::StripeBusy)
+            ));
+            assert!(matches!(
+                registry.try_acquire_profile_registration(extra_address),
+                Err(ProfileRegistrationAdmissionError::GlobalBusy)
+            ));
+
+            gate.release();
+            let recovered = tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    match registry.try_acquire_profile_registration(extra_address) {
+                        Ok(admission) => break admission,
+                        Err(ProfileRegistrationAdmissionError::GlobalBusy) => {
+                            tokio::task::yield_now().await
+                        }
+                        Err(err) => panic!("unexpected admission error: {err:?}"),
+                    }
+                }
+            })
             .await
-            .map_err(|err| RegistryError::MonadProfileWorkerFailed(err.to_string()))?;
-        let high = blocked_high
-            .await
-            .map_err(|err| RegistryError::MonadProfileWorkerFailed(err.to_string()))?;
-        assert!(low.is_ok() || high.is_ok());
-        assert_eq!(
-            registry.get_monad_profile(address_a)?,
-            Some(sign_monad_profile(&key_a, &sample_monad_profile(200)).0)
-        );
+            .expect("blocking worker released admission after exiting");
+            drop(recovered);
+            drop(other_admissions);
+        }
         Ok(())
     }
 

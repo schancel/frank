@@ -330,6 +330,16 @@ export function isCborFrame(bytes: Uint8Array): boolean {
   )
 }
 
+/** Enforces the candidate registration route's exact byte boundary before transport. */
+export function assertMonadCborProfileRouteSize(bytes: Uint8Array): void {
+  const limit = 256 * 1024
+  if (bytes.length > limit) {
+    throw new Error(
+      `CBOR registration frame length ${bytes.length} exceeds route byte limit ${limit}`,
+    )
+  }
+}
+
 export interface MonadCborRelayBinding {
   id: Uint8Array
   endpoint: string
@@ -719,6 +729,23 @@ export function buildSignedDirectoryStatement(
       [1, [sigEntry]],
     ]),
   )
+
+  assertMonadCborProfileRouteSize(type2Frame)
+
+  const checkedAttestation = validateFrame(
+    type2Frame,
+    defaultContext({
+      operation: 'full',
+      routeByteLimit: 256 * 1024,
+      priorDirectoryStatementFrame: null,
+    }),
+  )
+  if (
+    checkedAttestation.kind !== 'parsed' ||
+    checkedAttestation.typed?.type !== 2
+  ) {
+    throw new Error('constructed an invalid CBOR directory attestation')
+  }
 
   return type2Frame
 }

@@ -60,7 +60,7 @@ use axum::{
     Extension,
 };
 use bitcoinsuite_error::{ErrorMeta, Report, Result};
-use cashweb_http_utils::protobuf::Protobuf;
+use cashweb_http_utils::protobuf::{CashwebProtobufError, Protobuf};
 use prost::Message;
 use serde::Deserialize;
 use thiserror::Error;
@@ -123,12 +123,11 @@ pub(crate) const CBOR_PROFILE_BODY_LIMIT: usize = 256 * 1024;
 pub(crate) fn check_monad_profile_body_size(
     media_type: MonadProfileMediaType,
     body_len: usize,
-) -> Result<()> {
+) -> std::result::Result<(), MonadProfileRouteError> {
     if media_type == MonadProfileMediaType::Cbor && body_len > CBOR_PROFILE_BODY_LIMIT {
         return Err(BodyTooLarge {
             limit: CBOR_PROFILE_BODY_LIMIT,
-        }
-        .into());
+        });
     }
     Ok(())
 }
@@ -154,6 +153,11 @@ pub enum PutMonadProfileError {
     Registry(HttpRegistryError),
     /// The global non-waiting admission pool is exhausted; the caller should retry later.
     Overloaded,
+    /// The candidate body exceeded its route limit.
+    BodyTooLarge {
+        /// Exact maximum accepted bytes for candidate CBOR.
+        limit: usize,
+    },
 }
 
 impl From<Report> for PutMonadProfileError {
@@ -176,11 +180,21 @@ pub(crate) fn profile_overloaded_response() -> Response {
     response
 }
 
+pub(crate) fn profile_body_too_large_response(limit: usize) -> Response {
+    let body = Protobuf(cashweb_http_utils::proto::Error {
+        error_code: "body-too-large".to_string(),
+        msg: format!("Monad profile body exceeds the {limit}-byte limit"),
+        is_user_error: false,
+    });
+    (StatusCode::PAYLOAD_TOO_LARGE, body).into_response()
+}
+
 impl IntoResponse for PutMonadProfileError {
     fn into_response(self) -> Response {
         match self {
             Self::Registry(err) => err.into_response(),
             Self::Overloaded => profile_overloaded_response(),
+            Self::BodyTooLarge { limit } => profile_body_too_large_response(limit),
         }
     }
 }
@@ -199,10 +213,13 @@ pub async fn handle_put_monad_profile(
 ) -> std::result::Result<Protobuf<proto::PutSignedPayloadResponse>, PutMonadProfileError> {
     let address = parse_addr(&address)?;
     let media_type = parse_monad_profile_content_type(&headers)?;
-    check_monad_profile_body_size(media_type, body_bytes.len())?;
+    check_monad_profile_body_size(media_type, body_bytes.len()).map_err(|err| match err {
+        BodyTooLarge { limit } => PutMonadProfileError::BodyTooLarge { limit },
+        _ => unreachable!("body-size validation returns only BodyTooLarge"),
+    })?;
     let admission = server
         .registry
-        .try_acquire_profile_registration()
+        .try_acquire_profile_registration(address)
         .map_err(|_| PutMonadProfileError::Overloaded)?;
     match media_type {
         MonadProfileMediaType::Cbor => {
@@ -215,13 +232,7 @@ pub async fn handle_put_monad_profile(
             let signed_metadata = cashweb_payload::proto::SignedPayload::decode(
                 body_bytes.as_ref(),
             )
-            .map_err(|err| {
-                HttpRegistryError(Report::from(
-                    crate::monad_profile_verify::MonadProfileVerifyError::InvalidProfilePayload(
-                        err.to_string(),
-                    ),
-                ))
-            })?;
+            .map_err(|err| Report::from(CashwebProtobufError::BadProtobuf(err.to_string())))?;
             server
                 .registry
                 .put_monad_profile_async(address, signed_metadata, admission)

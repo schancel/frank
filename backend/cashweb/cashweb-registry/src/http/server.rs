@@ -12,7 +12,7 @@ use crate::{
         check_monad_profile_body_size, fetch_profile_cbor_or_not_found, fetch_profile_or_not_found,
         handle_get_monad_profile, handle_list_monad_profiles, handle_put_monad_profile,
         handle_search_monad_profiles, parse_monad_profile_content_type,
-        profile_overloaded_response, MonadProfileMediaType,
+        profile_body_too_large_response, profile_overloaded_response, MonadProfileMediaType,
     },
     http::monad_topics::{
         handle_get_monad_topic_post, handle_list_monad_topic_posts, handle_list_topics,
@@ -372,6 +372,8 @@ enum PutRegistryError {
     PaymentRequired(PopChallenge),
     /// Profile verification/storage has reached its bounded global admission limit.
     ProfileOverloaded,
+    /// The candidate CBOR body exceeded its explicit route cap.
+    ProfileBodyTooLarge { limit: usize },
 }
 
 impl From<Report> for PutRegistryError {
@@ -410,6 +412,9 @@ impl IntoResponse for PutRegistryError {
             )
                 .into_response(),
             PutRegistryError::ProfileOverloaded => profile_overloaded_response(),
+            PutRegistryError::ProfileBodyTooLarge { limit } => {
+                profile_body_too_large_response(limit)
+            }
         }
     }
 }
@@ -452,11 +457,15 @@ async fn handle_put_registry(
     if let Ok(monad_address) = MonadAddress::from_str(&address) {
         let media_type =
             parse_monad_profile_content_type(&header_map).map_err(PutRegistryError::from)?;
-        check_monad_profile_body_size(media_type, body_bytes.len())
-            .map_err(PutRegistryError::from)?;
+        check_monad_profile_body_size(media_type, body_bytes.len()).map_err(|err| match err {
+            crate::http::monad_profile::MonadProfileRouteError::BodyTooLarge { limit } => {
+                PutRegistryError::ProfileBodyTooLarge { limit }
+            }
+            _ => unreachable!("body-size validation returns only BodyTooLarge"),
+        })?;
         let admission = server
             .registry
-            .try_acquire_profile_registration()
+            .try_acquire_profile_registration(monad_address)
             .map_err(|_| PutRegistryError::ProfileOverloaded)?;
         match media_type {
             MonadProfileMediaType::Cbor => {

@@ -24,7 +24,7 @@ use cashweb_registry::{
     monad_http::Address,
     p2p::peers::Peers,
     proto,
-    registry::{Registry, PROFILE_REGISTRATION_CONCURRENCY},
+    registry::{ProfileRegistrationAdmissionError, Registry, PROFILE_REGISTRATION_CONCURRENCY},
     store::db::Db,
     test_instance::placeholder_pop_conf,
 };
@@ -267,6 +267,42 @@ fn build_cbor_attestation(
     .unwrap();
 
     (attestation_frame, address, pubkey_bytes)
+}
+
+fn wrap_statement_with_signature_over(
+    seckey: &SecKey,
+    network: &str,
+    statement_frame: Vec<u8>,
+    signed_statement_frame: &[u8],
+) -> Vec<u8> {
+    let ecc = EccSecp256k1::default();
+    let pubkey = ecc.derive_pubkey(seckey);
+    let pubkey_bytes = pubkey.as_slice().to_vec();
+    let digest = directory_signature_digest(network, signed_statement_frame).unwrap();
+    let sig = ecc.sign(seckey, ByteArray::new(digest));
+    let sig_entry = cbor_map(vec![
+        (0, CborValue::Int(1)),
+        (
+            1,
+            cbor_map(vec![
+                (0, CborValue::Int(1)),
+                (1, CborValue::Bytes(pubkey_bytes)),
+            ]),
+        ),
+        (2, CborValue::Bytes(sig.to_vec())),
+    ]);
+    encode_frame(
+        EnvelopeFields {
+            type_id: 2,
+            schema_version: 1,
+            min_reader_version: 1,
+        },
+        FramePayload::Value(&cbor_map(vec![
+            (0, CborValue::Bytes(statement_frame)),
+            (1, CborValue::Array(vec![sig_entry])),
+        ])),
+    )
+    .unwrap()
 }
 
 fn build_legacy_signed_payload(
@@ -1026,14 +1062,36 @@ async fn test_concurrent_lower_revision_cannot_overwrite_higher_revision() {
     };
 
     let (lower_response, higher_response) = tokio::join!(
-        router.clone().oneshot(put(lower)),
+        router.clone().oneshot(put(lower.clone())),
         router.clone().oneshot(put(higher.clone())),
     );
+    let lower_status = lower_response.unwrap().status();
+    let higher_status = higher_response.unwrap().status();
     assert!(matches!(
-        lower_response.unwrap().status(),
-        StatusCode::OK | StatusCode::BAD_REQUEST
+        lower_status,
+        StatusCode::OK | StatusCode::BAD_REQUEST | StatusCode::SERVICE_UNAVAILABLE
     ));
-    assert_eq!(higher_response.unwrap().status(), StatusCode::OK);
+    assert!(matches!(
+        higher_status,
+        StatusCode::OK | StatusCode::SERVICE_UNAVAILABLE
+    ));
+    if higher_status == StatusCode::SERVICE_UNAVAILABLE {
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(put(higher.clone()))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+    }
+    if lower_status == StatusCode::SERVICE_UNAVAILABLE {
+        assert_eq!(
+            router.clone().oneshot(put(lower)).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
 
     let response = router
         .oneshot(
@@ -1067,14 +1125,36 @@ async fn test_concurrent_legacy_write_keeps_highest_timestamp_and_clean_indexes(
     };
 
     let (lower_response, higher_response) = tokio::join!(
-        router.clone().oneshot(put(lower)),
+        router.clone().oneshot(put(lower.clone())),
         router.clone().oneshot(put(higher.clone())),
     );
+    let lower_status = lower_response.unwrap().status();
+    let higher_status = higher_response.unwrap().status();
     assert!(matches!(
-        lower_response.unwrap().status(),
-        StatusCode::OK | StatusCode::BAD_REQUEST
+        lower_status,
+        StatusCode::OK | StatusCode::BAD_REQUEST | StatusCode::SERVICE_UNAVAILABLE
     ));
-    assert_eq!(higher_response.unwrap().status(), StatusCode::OK);
+    assert!(matches!(
+        higher_status,
+        StatusCode::OK | StatusCode::SERVICE_UNAVAILABLE
+    ));
+    if higher_status == StatusCode::SERVICE_UNAVAILABLE {
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(put(higher.clone()))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+    }
+    if lower_status == StatusCode::SERVICE_UNAVAILABLE {
+        assert_eq!(
+            router.clone().oneshot(put(lower)).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
 
     let response = router
         .clone()
@@ -1187,16 +1267,54 @@ async fn lotus_put_requires_exact_protobuf_content_type() {
     assert!(error_message(response).await.starts_with("Bad protobuf:"));
 }
 
+#[tokio::test]
+async fn monad_protobuf_aliases_share_bad_protobuf_contract() {
+    let tempdir = tempdir::TempDir::new("cashweb-registry--monad-bad-protobuf").unwrap();
+    let address = Address([0x44; 20]);
+    let router = make_server(open_registry(tempdir.path(), Net::Regtest)).into_router();
+    let mut messages = Vec::new();
+    for uri in [
+        format!("/metadata/{}", address.to_hex()),
+        format!("/metadata/monad/{}", address.to_hex()),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(uri)
+                    .header(CONTENT_TYPE, "application/x-protobuf")
+                    .body(Body::from(vec![0x80]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        messages.push(error_message(response).await);
+    }
+    assert_eq!(messages[0], messages[1]);
+    assert!(messages[0].starts_with("Bad protobuf:"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exhausted_profile_admission_rejects_before_verification_and_stays_responsive() {
     let tempdir = tempdir::TempDir::new("cashweb-registry--profile-admission").unwrap();
-    let key = seckey(31);
-    let (_, address, _) =
-        build_cbor_attestation(&key, "monad-testnet", 100, 100, 1000, None, None, 1);
+    let address = Address([63; 20]);
     let server = make_server(open_registry(tempdir.path(), Net::Regtest));
-    let permits: Vec<_> = (0..PROFILE_REGISTRATION_CONCURRENCY)
-        .map(|_| server.registry.try_acquire_profile_registration().unwrap())
+    let permits: Vec<_> = (0..PROFILE_REGISTRATION_CONCURRENCY as u8)
+        .map(|stripe| {
+            let mut bytes = [0; 20];
+            bytes[19] = stripe;
+            server
+                .registry
+                .try_acquire_profile_registration(Address(bytes))
+                .unwrap()
+        })
         .collect();
+    assert!(matches!(
+        server.registry.try_acquire_profile_registration(address),
+        Err(ProfileRegistrationAdmissionError::GlobalBusy)
+    ));
     let registry = Arc::clone(&server.registry);
     let router = server.into_router();
 
@@ -1232,6 +1350,53 @@ async fn exhausted_profile_admission_rejects_before_verification_and_stays_respo
 }
 
 #[tokio::test]
+async fn busy_profile_stripe_rejects_without_consuming_other_stripes() {
+    let tempdir = tempdir::TempDir::new("cashweb-registry--profile-stripe-admission").unwrap();
+    let address_a = Address([0; 20]);
+    let mut address_b_bytes = [0; 20];
+    address_b_bytes[19] = 1;
+    let address_b = Address(address_b_bytes);
+    let server = make_server(open_registry(tempdir.path(), Net::Regtest));
+    let held = server
+        .registry
+        .try_acquire_profile_registration(address_a)
+        .unwrap();
+    let router = server.into_router();
+
+    let same_stripe = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/metadata/{}", address_a.to_hex()))
+                .header(CONTENT_TYPE, "application/x-protobuf")
+                .body(Body::from(vec![0x80]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(same_stripe.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(same_stripe.headers().get(RETRY_AFTER).unwrap(), "1");
+
+    let other_stripe = router
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/metadata/{}", address_b.to_hex()))
+                .header(CONTENT_TYPE, "application/x-protobuf")
+                .body(Body::from(vec![0x80]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(other_stripe.status(), StatusCode::BAD_REQUEST);
+    assert!(error_message(other_stripe)
+        .await
+        .starts_with("Bad protobuf:"));
+    drop(held);
+}
+
+#[tokio::test]
 async fn cbor_route_rejects_above_256_kib_before_registration_work() {
     let tempdir = tempdir::TempDir::new("cashweb-registry--profile-body-cap").unwrap();
     let key = seckey(30);
@@ -1255,7 +1420,8 @@ async fn cbor_route_rejects_above_256_kib_before_registration_work() {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_vary_accept(&response);
         assert_eq!(
             error_message(response).await,
             "Monad profile body exceeds the 262144-byte limit"
@@ -1373,8 +1539,10 @@ async fn negotiated_profile_responses_always_vary_on_accept() {
 #[tokio::test]
 async fn malformed_stored_cbor_fails_update_without_rewriting_bytes() {
     let key = seckey(30);
-    let (frame, address, statement_frame) =
+    let (_, address, statement_frame) =
         build_cbor_attestation(&key, "monad-testnet", 100, 100, 1000, None, None, 1);
+    let (frame, _, _) =
+        build_cbor_attestation(&key, "monad-testnet", 200, 200, 1000, None, None, 1);
     let unsupported = encode_frame(
         EnvelopeFields {
             type_id: 2,
@@ -1384,11 +1552,34 @@ async fn malformed_stored_cbor_fails_update_without_rewriting_bytes() {
         FramePayload::Value(&cbor_map(vec![])),
     )
     .unwrap();
+    let (mut corrupted_signature, _, _) =
+        build_cbor_attestation(&key, "monad-testnet", 100, 100, 1000, None, None, 1);
+    *corrupted_signature.last_mut().unwrap() ^= 0x01;
+    let (_, _, tampered_statement) =
+        build_cbor_attestation(&key, "monad-testnet", 101, 101, 1000, None, None, 1);
+    let stale_signature_replay = wrap_statement_with_signature_over(
+        &key,
+        "monad-testnet",
+        tampered_statement,
+        &statement_frame,
+    );
+    let other_key = seckey(29);
+    let (wrong_subject, _, _) =
+        build_cbor_attestation(&other_key, "monad-testnet", 100, 100, 1000, None, None, 1);
+    let (wrong_network, _, _) =
+        build_cbor_attestation(&key, "monad-mainnet", 100, 100, 1000, None, None, 1);
+    let (m2_mismatch, _, _) =
+        build_cbor_attestation(&key, "monad-testnet", 101, 100, 1000, None, None, 1);
 
     for (case, stored) in [
         ("malformed", b"stored-but-malformed".to_vec()),
-        ("wrong-type", statement_frame),
+        ("type4-root", statement_frame),
         ("unsupported", unsupported),
+        ("corrupted-outer-signature", corrupted_signature),
+        ("tampered-statement-stale-signature", stale_signature_replay),
+        ("wrong-subject", wrong_subject),
+        ("wrong-network", wrong_network),
+        ("m2-mismatch", m2_mismatch),
     ] {
         let tempdir =
             tempdir::TempDir::new(&format!("cashweb-registry--{case}-stored-cbor")).unwrap();

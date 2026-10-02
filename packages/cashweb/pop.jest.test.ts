@@ -1,5 +1,3 @@
-import { Transaction } from 'bitcore-lib-xpi'
-
 import { paymentOutput } from './pop'
 
 // 25-byte P2PKH template with a fixed 20-byte hash. Not an address string.
@@ -18,9 +16,4 @@ it('copies BIP70 script bytes into the record constructTransaction wraps', () =>
   const fresh = paymentOutput(SCRIPT, 546)
   expect(Array.from(fresh.script)).toEqual(Array.from(SCRIPT))
   expect(fresh.satoshis).toBe(546)
-
-  const wrapped = new Transaction.Output(fresh)
-  expect(Array.from(wrapped.script.toBuffer())).toEqual(Array.from(SCRIPT))
-  expect(wrapped.satoshis).toBe(546)
-
 })

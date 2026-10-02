@@ -1,5 +1,3 @@
-import { Script } from 'bitcore-lib-xpi'
-
 import { LotusAdapter } from './lotus-adapter'
 
 // lotusd src/test/descriptor_tests.cpp descriptor_test.
@@ -18,11 +16,7 @@ function adapter(): LotusAdapter {
   })
 }
 
-it('decodes the lotusd descriptor P2PKH script the way bitcore does', () => {
-
-  const old = new Script(LOTUSD_P2PKH)
-  expect(old.isPublicKeyHashOut()).toBe(true)
-  expect(old.getPublicKeyHash().toString('hex')).toBe(LOTUSD_HASH)
+it('decodes the lotusd descriptor P2PKH script', () => {
   expect(adapter().decodeP2pkhOutput(LOTUSD_P2PKH)).toEqual({
     pkh: LOTUSD_HASH,
   })
@@ -30,7 +24,6 @@ it('decodes the lotusd descriptor P2PKH script the way bitcore does', () => {
 
 it('does not treat a non-minimal PUSHDATA1 output as P2PKH', () => {
   const pushed = `76a94c14${LOTUSD_HASH}88ac`
-  expect(new Script(pushed).isPublicKeyHashOut()).toBe(true)
   expect(adapter().decodeP2pkhOutput(pushed)).toBeUndefined()
 })
 

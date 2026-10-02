@@ -28,6 +28,7 @@ import {
   MonadTopicVoteProto,
   MonadTopicVoteRejectedError,
   StoredMonadTopicVoteEntryProto,
+  buildCborMonadTopicVoteCalldata,
   buildMonadTopicVoteCalldata,
   decodeMonadTopicVote,
   decodeStoredMonadTopicVoteEntry,
@@ -139,7 +140,7 @@ function decodeCborVote(bytes: Uint8Array) {
 }
 
 describe('calldata construction', () => {
-  it('builds calldata as <TPIC><0x02><direction><32-byte commitment>, 38 bytes total (up)', () => {
+  it('preserves legacy v1 calldata by default', () => {
     const commitment = new Uint8Array(32).fill(0xab)
     const calldata = buildMonadTopicVoteCalldata('up', commitment)
     const bytes = getBytes(calldata)
@@ -149,7 +150,7 @@ describe('calldata construction', () => {
     // "TPIC" == 0x54504943 -- TOPIC_VOTE_LOKAD_ID (monad_topic_verify.rs line 94).
     expect(Array.from(bytes.slice(0, 4))).toEqual([0x54, 0x50, 0x49, 0x43])
     // TOPIC_COMMITMENT_VERSION_TAG (monad_topic_verify.rs line 99).
-    expect(bytes[4]).toBe(0x02)
+    expect(bytes[4]).toBe(0x01)
     // VoteDirection::UP_BYTE (monad_topic_verify.rs line 118).
     expect(bytes[5]).toBe(0x01)
     expect(Array.from(bytes.slice(6))).toEqual(Array.from(commitment))
@@ -180,6 +181,15 @@ describe('calldata construction', () => {
     const calldata = buildMonadTopicVoteCalldata('up', targetPayloadHash)
     expect(Array.from(getBytes(calldata).slice(6))).toEqual(
       Array.from(targetPayloadHash),
+    )
+  })
+
+  it('builds the explicit deterministic-CBOR v2 fixture', () => {
+    const commitment = Uint8Array.from({ length: 32 }, (_, index) => index)
+    expect(
+      getBytes(buildCborMonadTopicVoteCalldata('down', commitment)),
+    ).toEqual(
+      new Uint8Array([0x54, 0x50, 0x49, 0x43, 0x02, 0x00, ...commitment]),
     )
   })
 })

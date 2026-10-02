@@ -35,6 +35,7 @@ import {
   MonadTopicPostProto,
   MonadTopicPostRejectedError,
   buildTopicPostPayload,
+  buildCborTopicVoteCalldata,
   buildTopicVoteCalldata,
   computeTopicPostCommitment,
   decodeMonadTopicPost,
@@ -212,7 +213,7 @@ describe('calldata / commitment construction', () => {
     expect(a).toEqual(b)
   })
 
-  it('builds up-vote calldata as <TPIC><0x02><0x01><32-byte commitment>, 38 bytes total', () => {
+  it('preserves legacy v1 up-vote calldata by default', () => {
     const commitment = new Uint8Array(32).fill(0xab)
     const calldata = buildTopicVoteCalldata('up', commitment)
     const bytes = getBytes(calldata)
@@ -222,7 +223,7 @@ describe('calldata / commitment construction', () => {
     // "TPIC" == 0x54504943 -- TOPIC_VOTE_LOKAD_ID (monad_topic_verify.rs:94).
     expect(Array.from(bytes.slice(0, 4))).toEqual([0x54, 0x50, 0x49, 0x43])
     // TOPIC_COMMITMENT_VERSION_TAG (monad_topic_verify.rs:99).
-    expect(bytes[4]).toBe(0x02)
+    expect(bytes[4]).toBe(0x01)
     // VoteDirection::UP_BYTE (monad_topic_verify.rs:118).
     expect(bytes[5]).toBe(0x01)
     expect(Array.from(bytes.slice(6))).toEqual(Array.from(commitment))
@@ -235,7 +236,7 @@ describe('calldata / commitment construction', () => {
 
     expect(bytes).toHaveLength(38)
     expect(Array.from(bytes.slice(0, 4))).toEqual([0x54, 0x50, 0x49, 0x43])
-    expect(bytes[4]).toBe(0x02)
+    expect(bytes[4]).toBe(0x01)
     // VoteDirection::DOWN_BYTE (monad_topic_verify.rs:119).
     expect(bytes[5]).toBe(0x00)
     expect(Array.from(bytes.slice(6))).toEqual(Array.from(commitment))
@@ -256,11 +257,18 @@ describe('calldata / commitment construction', () => {
       0x50,
       0x49,
       0x43, // "TPIC"
-      0x02, // deterministic-CBOR topic calldata version
+      0x01, // legacy protobuf topic calldata version
       0x01, // up
       ...commitment,
     ])
     expect(calldata).toEqual(expected)
+  })
+
+  it('builds the explicit deterministic-CBOR v2 fixture', () => {
+    const commitment = Uint8Array.from({ length: 32 }, (_, index) => index)
+    expect(getBytes(buildCborTopicVoteCalldata('up', commitment))).toEqual(
+      new Uint8Array([0x54, 0x50, 0x49, 0x43, 0x02, 0x01, ...commitment]),
+    )
   })
 })
 
@@ -531,9 +539,13 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
 
     let putCalls = 0
     let getCalls = 0
+    let submittedFrame: Uint8Array | undefined
     mockedAxios.mockImplementation(async config => {
       if (config.method === 'put') {
         putCalls++
+        submittedFrame = decodeCborSubmission(
+          new Uint8Array(config.data as Buffer),
+        ).postFrame
         const networkErr = Object.assign(new Error('socket hang up'), {
           isAxiosError: true,
           response: undefined,
@@ -543,15 +555,9 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
       // GET /message/monad/topics/:payload_hash
       getCalls++
       expect(config.url).toContain('/message/monad/topics/')
-      const sentPost: MonadTopicPostProto = {
-        topic: 'general',
-        parentPostHash: new Uint8Array(0),
-        rawBurnTx: new Uint8Array([1]),
-        encryptedPayload: new Uint8Array([2]),
-        payloadHash: new Uint8Array(32).fill(0x9),
-      }
+      expect(config.headers).toEqual({ Accept: 'application/cbor' })
       return {
-        data: topicPostViewBytes(sentPost, 5_000),
+        data: submittedFrame,
         status: 200,
         statusText: 'OK',
         headers: {},
@@ -575,7 +581,80 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
 
     expect(putCalls).toBe(1)
     expect(getCalls).toBe(1)
-    expect(result.stored.post?.topic).toBe('general')
+    expect(result.stored).toBeUndefined()
+    expect(pool.getRecord(result.leaseIndex)?.status).toBe('spent')
+  })
+
+  it('rejects a different CBOR frame returned by the recovery GET', async () => {
+    const { client, pool } = makeClient()
+    mockedAxios.mockImplementation(async config => {
+      if (config.method === 'put') {
+        throw Object.assign(new Error('socket hang up'), {
+          isAxiosError: true,
+          response: undefined,
+        })
+      }
+      expect(config.headers).toEqual({ Accept: 'application/cbor' })
+      return {
+        data: encodeTopicPost({
+          network: 'monad-testnet',
+          topic: 'different',
+          body: new Uint8Array([9]),
+        }),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+
+    await expect(
+      client.submitTopicPost({
+        topic: 'general',
+        entries: ENTRIES,
+        direction: 'up',
+        burnAddress: BURN_ADDRESS,
+        voteWeightWei: 5_000n,
+        overrides: FEE_OVERRIDES,
+        abandonPoll: { maxAttempts: 1, intervalMs: 0 },
+      }),
+    ).rejects.toThrow(MonadTopicPostAbandonedError)
+    expect(
+      pool.records().filter(record => record.status === 'retired'),
+    ).toHaveLength(1)
+  })
+
+  it('preserves protobuf recovery through the protobuf post view', async () => {
+    const { client, pool } = makeClient({ omitTopicWriteFormat: true })
+    let sentPost: MonadTopicPostProto | undefined
+    mockedAxios.mockImplementation(async config => {
+      if (config.method === 'put') {
+        sentPost = decodeMonadTopicPost(new Uint8Array(config.data as Buffer))
+        throw Object.assign(new Error('socket hang up'), {
+          isAxiosError: true,
+          response: undefined,
+        })
+      }
+      expect(config.headers).toEqual({ Accept: 'application/x-protobuf' })
+      return {
+        data: topicPostViewBytes(sentPost!, 5_000),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+
+    const result = await client.submitTopicPost({
+      topic: 'general',
+      entries: ENTRIES,
+      direction: 'up',
+      burnAddress: BURN_ADDRESS,
+      voteWeightWei: 5_000n,
+      overrides: FEE_OVERRIDES,
+      abandonPoll: { maxAttempts: 1, intervalMs: 0 },
+    })
+    expect(result.stored?.post).toEqual(sentPost)
     expect(pool.getRecord(result.leaseIndex)?.status).toBe('spent')
   })
 

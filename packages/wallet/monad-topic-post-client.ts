@@ -314,11 +314,31 @@ export function computeTopicPostCommitment(payload: Uint8Array): Uint8Array {
   return getBytes(sha256(payload))
 }
 
-/** Build the exact `<lokad_id: TOPIC_VOTE_LOKAD_ID><version:
- * TOPIC_COMMITMENT_VERSION_TAG><direction: 1 byte><commitment: 32 bytes>` calldata layout
+/** Build the legacy `<lokad_id: TOPIC_VOTE_LOKAD_ID><version: 0x01><direction: 1
+ * byte><commitment: 32 bytes>` calldata layout
  * `monad_topic_verify::parse_topic_calldata` decodes (see this file's header), as a `0x`-prefixed
  * hex string ready to pass straight into `MonadAccountTxSigner.buildAndSignCall`. */
 export function buildTopicVoteCalldata(
+  direction: TopicVoteDirection,
+  commitment: Uint8Array,
+): string {
+  if (commitment.length !== 32) {
+    throw new Error(
+      `Topic vote commitment must be exactly 32 bytes, got ${commitment.length}`,
+    )
+  }
+  return hexlify(
+    concat([
+      TOPIC_VOTE_LOKAD_ID,
+      new Uint8Array([0x01]),
+      new Uint8Array([direction === 'up' ? 0x01 : 0x00]),
+      commitment,
+    ]),
+  )
+}
+
+/** Build deterministic-CBOR/T7 topic calldata (version 0x02). */
+export function buildCborTopicVoteCalldata(
   direction: TopicVoteDirection,
   commitment: Uint8Array,
 ): string {
@@ -523,8 +543,9 @@ export class MonadTopicPostClient {
 
   private async pollForStoredPost(
     payloadHashHex: string,
+    expectedCborFrame: Uint8Array | undefined,
     options?: AbandonPollOptions,
-  ): Promise<StoredMonadTopicPostProto | undefined> {
+  ): Promise<StoredMonadTopicPostProto | true | undefined> {
     const intervalMs = options?.intervalMs ?? 2000
     const maxAttempts = options?.maxAttempts ?? 5
     const sleep = options?.sleep ?? defaultSleep
@@ -533,12 +554,44 @@ export class MonadTopicPostClient {
       // A single poll attempt failing is not itself proof of abandonment -- only exhausting the
       // whole poll budget without ever finding the post is. See `monad-stamp-client.ts`'s
       // identically-shaped `pollForStoredMessage` for the same reasoning.
+      if (expectedCborFrame !== undefined) {
+        const confirmed = await this.fetchExactCborTopicPost(
+          payloadHashHex,
+          expectedCborFrame,
+        ).catch(() => false)
+        if (confirmed) return true
+        continue
+      }
       const view = await this.fetchStoredTopicPostView(payloadHashHex).catch(
         () => undefined,
       )
       if (view?.post !== undefined) return view.post
     }
     return undefined
+  }
+
+  private async fetchExactCborTopicPost(
+    payloadHashHex: string,
+    expectedFrame: Uint8Array,
+  ): Promise<boolean> {
+    try {
+      const response = await axios({
+        method: 'get',
+        url: `${this.relayBaseUrl}/message/monad/topics/${payloadHashHex}`,
+        headers: { Accept: 'application/cbor' },
+        responseType: 'arraybuffer',
+      })
+      const returned = new Uint8Array(response.data)
+      const returnedHash = toBareHex(topicBurnCommitment(returned).hash)
+      return (
+        returnedHash === payloadHashHex &&
+        returned.length === expectedFrame.length &&
+        returned.every((byte, index) => byte === expectedFrame[index])
+      )
+    } catch (err) {
+      if (axios.isAxiosError(err) && err.response?.status === 404) return false
+      throw err
+    }
   }
 
   private async putTopicPost(
@@ -618,12 +671,7 @@ export class MonadTopicPostClient {
     const calldata =
       this.topicWriteFormat === 'cbor'
         ? hexlify(topicPostBurnCalldata(commitment))
-        : concat([
-            TOPIC_VOTE_LOKAD_ID,
-            new Uint8Array([0x01]),
-            new Uint8Array([params.direction === 'up' ? 0x01 : 0x00]),
-            commitment,
-          ])
+        : buildTopicVoteCalldata(params.direction, commitment)
     const payloadHashHex = toBareHex(payloadHash)
 
     const handle: AccountLeaseHandle =
@@ -704,12 +752,13 @@ export class MonadTopicPostClient {
       // post before the connection dropped. Fall back to polling the read side before giving up.
       const stored = await this.pollForStoredPost(
         payloadHashHex,
+        this.topicWriteFormat === 'cbor' ? postFrame : undefined,
         params.abandonPoll,
       )
       if (stored !== undefined) {
         this.leaseManager.releaseLease(handle, 'confirmed')
         return {
-          stored,
+          stored: stored === true ? undefined : stored,
           postFrame,
           payloadHashHex,
           txHash: signedTx.txHash,

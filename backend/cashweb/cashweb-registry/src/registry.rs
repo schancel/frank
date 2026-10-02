@@ -1304,6 +1304,11 @@ impl Registry {
         self.db.monad_topic_votes().add_vote(entry)
     }
 
+    #[cfg(test)]
+    pub(crate) fn monad_topic_vote_tally(&self, payload_hash: &[u8]) -> Result<i64> {
+        self.db.monad_topic_votes().tally(payload_hash)
+    }
+
     /// Atomically admit a CBOR post and its mandatory initial vote, selecting the immutable
     /// author by confirmed chain order.
     pub(crate) fn admit_cbor_topic_post(
@@ -1334,7 +1339,7 @@ impl Registry {
         })
     }
 
-    fn is_legacy_topic_post(post: &proto::StoredMonadTopicPost) -> bool {
+    pub(crate) fn is_legacy_topic_post(post: &proto::StoredMonadTopicPost) -> bool {
         if !post.cbor_post_frame.is_empty() {
             return false;
         }

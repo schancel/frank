@@ -15,6 +15,11 @@ through another decoder. `Accept` must admit the corresponding response. The fro
 applies to CBOR bodies only. The protobuf extractor retains its existing behavior for this
 compatibility release.
 
+For an exact-post GET, the stored row's origin selects its only semantically valid representation.
+An absent or wildcard `Accept` therefore returns exact CBOR for a CBOR-origin row and protobuf for
+a legacy row. A request that explicitly accepts only the other format receives `404`; one that
+accepts neither supported format receives `406`.
+
 CBOR is enabled in wallet clients only with `topicWriteFormat: 'cbor'`. Omitting the option uses
 protobuf. A CBOR vote may target only an authoritative stored canonical type-9 frame whose T1 hash
 and network equal the type-11 target and network. This check happens before broadcasting.
@@ -34,10 +39,13 @@ semantically false legacy response while no CBOR list/read-view schema exists.
 
 ## Outcome recovery
 
-An already-known transaction is hashed locally, then receipt and transaction verification
-continue idempotently. A timeout or non-definitive infrastructure failure after broadcast returns
-`503` with machine-readable error `topic_burn_outcome_unknown`. Wallet clients retire the leased
-account as `stuck`; they do not report a definitive failed burn.
+An already-known, nonce-too-low, or otherwise ambiguous send is hashed locally, then receipt and
+transaction verification continue against that exact hash. A timeout or non-definitive
+infrastructure failure after broadcast returns `503` with machine-readable error
+`topic_burn_outcome_unknown`. Wallet clients retire the leased account as `stuck`; they do not
+report a definitive failed burn. After a CBOR post connection loss, the wallet requests
+`application/cbor` and confirms only an exact byte-for-byte type-9/T1 match; legacy recovery keeps
+using the protobuf post view.
 
 ## Removal trigger
 

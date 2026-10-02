@@ -270,10 +270,13 @@ pub async fn process_monad_topic_vote<T: JsonRpcTransport + Clone>(
         )
     })?;
 
-    registry
+    let target = registry
         .get_monad_topic_post(target_hash.as_slice())
         .map_err(ProcessMonadTopicVoteError::Infrastructure)?
         .ok_or(ProcessMonadTopicVoteError::UnknownTargetPost)?;
+    if !Registry::is_legacy_topic_post(&target) {
+        return Err(ProcessMonadTopicVoteError::UnknownTargetPost);
+    }
 
     let sender = recover_sender(&request.raw_burn_tx)
         .map_err(ProcessMonadTopicVoteError::SenderRecoveryFailed)?;
@@ -595,9 +598,9 @@ fn topic_request_format(headers: &HeaderMap) -> Option<TopicRequestFormat> {
     }
 }
 
-/// Topic read models do not yet have frozen CBOR schemas. Missing or wildcard `Accept` preserves
-/// legacy compatibility; an explicit CBOR-only request fails instead of returning mislabeled or
-/// heuristically converted protobuf bytes.
+/// Test whether an `Accept` header permits one exact topic representation. GET handlers inspect
+/// row origin first: wildcard requests receive that row's sole semantically valid representation,
+/// never a projection into the other format.
 fn topic_accepts(headers: &HeaderMap, expected: &str) -> bool {
     let Some(value) = headers.get(ACCEPT) else {
         return true;
@@ -672,12 +675,6 @@ impl IntoResponse for PutMonadTopicPostError {
             }
             PutMonadTopicPostError::Cbor(ProcessCborTopicEventError::Infrastructure(err)) => {
                 tracing::event!(Level::ERROR, error = %err, "infrastructure failure processing CBOR topic post");
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            }
-            PutMonadTopicPostError::Cbor(ProcessCborTopicEventError::Burn(
-                TopicBurnError::Infrastructure(err),
-            )) => {
-                tracing::event!(Level::ERROR, error = %err, "infrastructure failure verifying CBOR topic burn");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
             PutMonadTopicPostError::UnsupportedMediaType => {
@@ -829,12 +826,6 @@ impl IntoResponse for PutMonadTopicVoteError {
                 tracing::event!(Level::ERROR, error = %err, "infrastructure failure processing CBOR topic vote");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
-            PutMonadTopicVoteError::Cbor(ProcessCborTopicEventError::Burn(
-                TopicBurnError::Infrastructure(err),
-            )) => {
-                tracing::event!(Level::ERROR, error = %err, "infrastructure failure verifying CBOR topic burn");
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            }
             PutMonadTopicVoteError::UnsupportedMediaType => {
                 StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response()
             }
@@ -974,19 +965,19 @@ pub async fn handle_get_monad_topic_post(
     if !accepts_cbor && !accepts_protobuf {
         return Err(GetMonadTopicPostError::NotAcceptable);
     }
-    if accepts_cbor && !accepts_protobuf {
+    let stored = server
+        .registry
+        .get_monad_topic_post(&payload_hash)
+        .map_err(GetMonadTopicPostError::Infrastructure)?
+        .ok_or(GetMonadTopicPostError::NotFound)?;
+    if !stored.cbor_post_frame.is_empty() {
+        if !accepts_cbor {
+            return Err(GetMonadTopicPostError::NotFound);
+        }
         let expected_hash: [u8; 32] = payload_hash
             .as_slice()
             .try_into()
             .map_err(|_| GetMonadTopicPostError::NotFound)?;
-        let stored = server
-            .registry
-            .get_monad_topic_post(&payload_hash)
-            .map_err(GetMonadTopicPostError::Infrastructure)?
-            .ok_or(GetMonadTopicPostError::NotFound)?;
-        if stored.cbor_post_frame.is_empty() {
-            return Err(GetMonadTopicPostError::NotFound);
-        }
         validate_topic_post_target(
             &stored.cbor_post_frame,
             server.registry.expected_cbor_network(),
@@ -994,6 +985,9 @@ pub async fn handle_get_monad_topic_post(
         )
         .map_err(|err| GetMonadTopicPostError::Infrastructure(Report::msg(err.to_string())))?;
         return Ok(([(CONTENT_TYPE, "application/cbor")], stored.cbor_post_frame).into_response());
+    }
+    if !accepts_protobuf || !Registry::is_legacy_topic_post(&stored) {
+        return Err(GetMonadTopicPostError::NotFound);
     }
     let view = server
         .registry
@@ -1281,6 +1275,7 @@ mod tests {
     struct MockTransport {
         responses: Arc<Mutex<HashMap<String, Value>>>,
         send_raw_transaction_already_known: Arc<Mutex<bool>>,
+        call_count: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl MockTransport {
@@ -1295,6 +1290,10 @@ mod tests {
         fn set_already_known(&self) {
             *self.send_raw_transaction_already_known.lock().unwrap() = true;
         }
+
+        fn call_count(&self) -> usize {
+            self.call_count.load(std::sync::atomic::Ordering::SeqCst)
+        }
     }
 
     impl fmt::Debug for MockTransport {
@@ -1306,6 +1305,8 @@ mod tests {
     #[async_trait]
     impl JsonRpcTransport for MockTransport {
         async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
+            self.call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if method == "eth_sendRawTransaction" {
                 if *self.send_raw_transaction_already_known.lock().unwrap() {
                     return Err(MonadRpcError::AlreadyKnown {
@@ -1489,20 +1490,52 @@ mod tests {
             .unwrap()
             .is_none());
 
-        let mut headers = HeaderMap::new();
-        headers.insert(ACCEPT, "application/cbor".parse().unwrap());
-        let response = handle_get_monad_topic_post(
-            Path(hex::encode(&inner.payload_hash)),
-            Extension(test_server(registry)),
-            headers,
-        )
-        .await
-        .unwrap();
-        assert_eq!(response.headers()[CONTENT_TYPE], "application/cbor");
-        assert_eq!(
-            hyper::body::to_bytes(response.into_body()).await.unwrap(),
-            post_frame.as_slice()
-        );
+        let server = test_server(registry);
+        for accept in [
+            None,
+            Some("*/*"),
+            Some("application/*"),
+            Some("application/cbor, application/x-protobuf"),
+        ] {
+            let mut headers = HeaderMap::new();
+            if let Some(accept) = accept {
+                headers.insert(ACCEPT, accept.parse().unwrap());
+            }
+            let response = handle_get_monad_topic_post(
+                Path(hex::encode(&inner.payload_hash)),
+                Extension(server.clone()),
+                headers,
+            )
+            .await
+            .unwrap();
+            assert_eq!(response.headers()[CONTENT_TYPE], "application/cbor");
+            assert_eq!(
+                hyper::body::to_bytes(response.into_body()).await.unwrap(),
+                post_frame.as_slice()
+            );
+        }
+        let mut protobuf_only = HeaderMap::new();
+        protobuf_only.insert(ACCEPT, "application/x-protobuf".parse().unwrap());
+        assert!(matches!(
+            handle_get_monad_topic_post(
+                Path(hex::encode(&inner.payload_hash)),
+                Extension(server.clone()),
+                protobuf_only,
+            )
+            .await,
+            Err(GetMonadTopicPostError::NotFound)
+        ));
+        let mut neither = HeaderMap::new();
+        neither.insert(ACCEPT, "text/plain".parse().unwrap());
+        assert!(matches!(
+            handle_get_monad_topic_post(
+                Path(hex::encode(&inner.payload_hash)),
+                Extension(server),
+                neither,
+            )
+            .await,
+            Err(GetMonadTopicPostError::NotAcceptable)
+        ));
     }
 
     #[tokio::test]
@@ -1570,6 +1603,49 @@ mod tests {
         )
         .await
         .expect("an already-known retry must still verify and store idempotently");
+    }
+
+    #[tokio::test]
+    async fn legacy_post_get_negotiation_serves_only_its_protobuf_representation() {
+        let (_tempdir, registry) = test_registry();
+        let hash = store_monad_topic_post_at(&registry, b"legacy-body".to_vec(), "legacy", 1);
+        let server = test_server(registry);
+        for accept in [
+            None,
+            Some("*/*"),
+            Some("application/*"),
+            Some("application/cbor, application/x-protobuf"),
+        ] {
+            let mut headers = HeaderMap::new();
+            if let Some(accept) = accept {
+                headers.insert(ACCEPT, accept.parse().unwrap());
+            }
+            let response = handle_get_monad_topic_post(
+                Path(hex::encode(&hash)),
+                Extension(server.clone()),
+                headers,
+            )
+            .await
+            .unwrap();
+            assert_eq!(response.headers()[CONTENT_TYPE], "application/x-protobuf");
+        }
+        let mut cbor_only = HeaderMap::new();
+        cbor_only.insert(ACCEPT, "application/cbor".parse().unwrap());
+        assert!(matches!(
+            handle_get_monad_topic_post(
+                Path(hex::encode(&hash)),
+                Extension(server.clone()),
+                cbor_only,
+            )
+            .await,
+            Err(GetMonadTopicPostError::NotFound)
+        ));
+        let mut neither = HeaderMap::new();
+        neither.insert(ACCEPT, "text/plain".parse().unwrap());
+        assert!(matches!(
+            handle_get_monad_topic_post(Path(hex::encode(hash)), Extension(server), neither).await,
+            Err(GetMonadTopicPostError::NotAcceptable)
+        ));
     }
 
     fn make_post(raw_burn_tx: Vec<u8>, encrypted_payload: Vec<u8>) -> proto::MonadTopicPost {
@@ -1844,6 +1920,65 @@ mod tests {
         .expect_err("a type-11 vote must not target a legacy protobuf row");
 
         assert!(matches!(err, ProcessCborTopicEventError::UnknownTargetPost));
+    }
+
+    #[tokio::test]
+    async fn legacy_vote_on_cbor_post_is_rejected_before_rpc_and_does_not_change_tally() {
+        let (_tempdir, registry) = test_registry();
+        let frame = cbor_post_frame();
+        let event = parse_topic_event(&cbor_submission(&frame, &[1]), "monad-testnet").unwrap();
+        let TopicEvent::Post(post) = event else {
+            panic!("expected post")
+        };
+        let stored = proto::StoredMonadTopicPost {
+            post: Some(proto::MonadTopicPost {
+                topic: post.topic,
+                parent_post_hash: vec![],
+                raw_burn_tx: vec![1],
+                encrypted_payload: post.body,
+                payload_hash: post.post_hash.to_vec(),
+            }),
+            sender_address: vec![2; 20],
+            tx_hash: vec![3; 32],
+            timestamp: 1,
+            network_tag: crate::network_tag::frank_network_tag().to_vec(),
+            cbor_post_frame: frame,
+            confirmed_block_number: 1,
+            confirmed_transaction_index: 0,
+        };
+        let initial_vote = proto::StoredMonadTopicVoteEntry {
+            target_payload_hash: post.post_hash.to_vec(),
+            sender_address: vec![2; 20],
+            tx_hash: vec![3; 32],
+            timestamp: 1,
+            weight: 7,
+        };
+        registry
+            .admit_cbor_topic_post(&post.post_hash, stored, &initial_vote)
+            .unwrap();
+        let before = registry.monad_topic_vote_tally(&post.post_hash).unwrap();
+        let transport = MockTransport::default();
+        let error = process_monad_topic_vote(
+            &transport,
+            &registry,
+            burn_address(),
+            fast_poll(),
+            proto::MonadTopicVote {
+                target_payload_hash: post.post_hash.to_vec(),
+                raw_burn_tx: vec![0xc0],
+            },
+        )
+        .await
+        .expect_err("legacy votes must not target a CBOR-origin row");
+        assert!(matches!(
+            error,
+            ProcessMonadTopicVoteError::UnknownTargetPost
+        ));
+        assert_eq!(transport.call_count(), 0);
+        assert_eq!(
+            registry.monad_topic_vote_tally(&post.post_hash).unwrap(),
+            before
+        );
     }
 
     #[tokio::test]

@@ -151,7 +151,7 @@ export const MONAD_TOPIC_VOTE_CALLDATA_LENGTH =
  * `monad_topic_verify::parse_topic_vote_calldata` decodes (see this file's header), as a `0x`-
  * prefixed hex string ready to pass straight into `MonadAccountTxSigner.buildAndSignCall`.
  *
- * `commitment` must be the already-derived T7 value. This low-level helper never hashes it. */
+ * `commitment` is the legacy target payload hash. This low-level helper never hashes it. */
 export function buildMonadTopicVoteCalldata(
   direction: TopicVoteDirection,
   commitment: Uint8Array,
@@ -159,6 +159,26 @@ export function buildMonadTopicVoteCalldata(
   if (commitment.length !== 32) {
     throw new Error(
       `Monad topic vote commitment (target payload_hash) must be exactly 32 bytes, got ${commitment.length}`,
+    )
+  }
+  return hexlify(
+    concat([
+      TOPIC_VOTE_LOKAD_ID,
+      new Uint8Array([0x01]),
+      new Uint8Array([direction === 'up' ? 0x01 : 0x00]),
+      commitment,
+    ]),
+  )
+}
+
+/** Build deterministic-CBOR/T7 topic calldata (version 0x02). */
+export function buildCborMonadTopicVoteCalldata(
+  direction: TopicVoteDirection,
+  commitment: Uint8Array,
+): string {
+  if (commitment.length !== 32) {
+    throw new Error(
+      `Monad topic vote commitment (T7) must be exactly 32 bytes, got ${commitment.length}`,
     )
   }
   return hexlify(topicBurnCalldata(direction, commitment))
@@ -396,13 +416,8 @@ export class MonadTopicVoteClient {
         : params.targetPayloadHash
     const calldata =
       this.topicWriteFormat === 'cbor'
-        ? buildMonadTopicVoteCalldata(params.direction, commitment)
-        : concat([
-            TOPIC_VOTE_LOKAD_ID,
-            new Uint8Array([0x01]),
-            new Uint8Array([params.direction === 'up' ? 0x01 : 0x00]),
-            commitment,
-          ])
+        ? buildCborMonadTopicVoteCalldata(params.direction, commitment)
+        : buildMonadTopicVoteCalldata(params.direction, commitment)
     const targetPayloadHashHex = toBareHex(params.targetPayloadHash)
 
     const handle: AccountLeaseHandle =

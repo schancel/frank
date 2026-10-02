@@ -23,6 +23,7 @@ import { arrayBufferToBase64 } from './images'
 import { PayloadConstructor } from './crypto'
 import { messageMixin } from './extension'
 import { calcUtxoId } from '../legacy-wallet/helpers'
+import { lotusFromAddress } from '../legacy-wallet/lotus-address'
 import assert from 'assert'
 // See cashweb/pop.ts's identical import for why this is a default-import + destructure rather
 // than a combined default+named import (ticket #51, Vite migration -- CJS interop only
@@ -78,17 +79,11 @@ export class ReadOnlyRelayClient {
   }
 
   toAPIAddress(address: string | Address): string {
-    return new Address(
-      new Address(address).hashBuffer,
-      Networks.get(this.networkName, undefined),
-    ).toCashAddress()
+    return lotusFromAddress(address, this.networkName)
   }
 
   toXAddress(address: string | Address): string {
-    return new Address(
-      new Address(address).hashBuffer,
-      Networks.get(this.displayNetwork, undefined),
-    ).toXAddress()
+    return lotusFromAddress(address, this.displayNetwork)
   }
 
   async getRelayData(address: string | Address) {
@@ -468,11 +463,16 @@ export class RelayClient extends ReadOnlyRelayClient {
     const sourcePrivateKey = wallet?.identityPrivKey
     assert(sourcePrivateKey, 'Missing identityPrivateKey')
     const destinationPublicKey =
-      address === wallet?.myAddress?.toXAddress()
+      address ===
+      (wallet.myAddress
+        ? lotusFromAddress(wallet.myAddress, this.displayNetwork)
+        : undefined)
         ? wallet?.identityPrivKey?.publicKey
         : this.getPubKey(address)
     assert(destinationPublicKey, 'Unable to set destination public key')
-    const senderAddress = this.wallet?.myAddress?.toXAddress()
+    const senderAddress = wallet.myAddress
+      ? lotusFromAddress(wallet.myAddress, this.displayNetwork)
+      : undefined
     assert(senderAddress, 'Unable to set senderAddress')
 
     const stagedUtxos: Utxo[] = []
@@ -544,9 +544,10 @@ export class RelayClient extends ReadOnlyRelayClient {
       const messageSet = new MessageSet()
       messageSet.addMessages(message)
 
-      const destinationAddress = destinationPublicKey
-        .toAddress(this.networkName)
-        .toCashAddress()
+      const destinationAddress = lotusFromAddress(
+        destinationPublicKey.toAddress(this.networkName),
+        this.networkName,
+      )
       const chronikClient = this.wallet?.chronikClient
       assert(chronikClient, 'Unable to get chronikClient')
       // Ensure all outpoints are on-chain before trying to send message. Don't
@@ -756,7 +757,9 @@ export class RelayClient extends ReadOnlyRelayClient {
       } as P2PKHSendItem,
     ]
     console.log(items)
-    const myAddressStr = this.wallet?.myAddress?.toXAddress()
+    const myAddressStr = this.wallet?.myAddress
+      ? lotusFromAddress(this.wallet.myAddress, this.displayNetwork)
+      : undefined
     assert(myAddressStr, 'Unable to get myAddressString in sendToPubKeyHash')
     return this.sendMessageImpl({
       address: myAddressStr,
@@ -800,12 +803,15 @@ export class RelayClient extends ReadOnlyRelayClient {
     // Parse message
     const message = messageMixin(this.displayNetwork, rawMessage)
     const preParsedMessage = message.parse()
-    const senderAddress = preParsedMessage.sourcePublicKey
-      .toAddress(this.displayNetwork)
-      .toXAddress() // TODO: Make generic
+    const senderAddress = lotusFromAddress(
+      preParsedMessage.sourcePublicKey.toAddress(this.displayNetwork),
+      this.displayNetwork,
+    )
     const wallet = this.wallet
     assert(wallet, 'Wallet not available when trying to receive message')
-    const myAddress = wallet.myAddress?.toXAddress()
+    const myAddress = wallet.myAddress
+      ? lotusFromAddress(wallet.myAddress, this.displayNetwork)
+      : undefined
     assert(myAddress, 'Address or wallet not set')
     const outbound = senderAddress === myAddress
     const serverTime = preParsedMessage.receivedTime
@@ -869,9 +875,10 @@ export class RelayClient extends ReadOnlyRelayClient {
       return null
     }
 
-    const destinationAddress = parsedMessage.destinationPublicKey
-      .toAddress(this.displayNetwork)
-      .toXAddress()
+    const destinationAddress = lotusFromAddress(
+      parsedMessage.destinationPublicKey.toAddress(this.displayNetwork),
+      this.displayNetwork,
+    )
 
     // Add UTXO
     const stampOutpoints = parsedMessage.stamp.getStampOutpointsList()
@@ -909,22 +916,18 @@ export class RelayClient extends ReadOnlyRelayClient {
         const output = stampTx.outputs[outputIndex]
         if (output === undefined) throw new Error('stamp-output')
         const satoshis = output.satoshis
-        // Address strings stay on bitcore (issue #242).
         const address = new Script(Buffer.from(output.script)).toAddress(
           this.networkName,
         )
         stampValue += satoshis
 
-        // Non-hardened m/44/145 private child (decision #531). Address strings
-        // stay on bitcore (issue #242).
+        // Non-hardened m/44/145 private child (decision #531).
         const outputSecret = outpointPrivateKey(stampSecret, stampChain, i, j)
         const outputPrivKey = new PrivateKey(
           Buffer.from(outputSecret).toString('hex'),
           Networks.get(this.networkName),
         )
 
-        // Compressed point of the outpoint secret (decision #541). Address
-        // strings stay on bitcore (issue #242).
         const computedAddress = new PublicKey(
           Buffer.from(stampOutpointPublicKey(outputSecret)),
         ).toAddress(this.networkName)
@@ -940,7 +943,7 @@ export class RelayClient extends ReadOnlyRelayClient {
 
         const stampOutput = {
           type: 'stamp',
-          address: address.toCashAddress(),
+          address: lotusFromAddress(address, this.networkName),
           satoshis,
           txId,
           outputIndex,
@@ -998,9 +1001,10 @@ export class RelayClient extends ReadOnlyRelayClient {
     const copartyPubKey = outbound
       ? parsedMessage.destinationPublicKey
       : parsedMessage.sourcePublicKey
-    const copartyAddress = copartyPubKey
-      .toAddress(this.displayNetwork)
-      .toXAddress() // TODO: Make generic
+    const copartyAddress = lotusFromAddress(
+      copartyPubKey.toAddress(this.displayNetwork),
+      this.displayNetwork,
+    )
     const payloadDigestHex = payloadDigest.toString('hex')
     const finalizedMessage = {
       outbound,
@@ -1072,7 +1076,7 @@ export class RelayClient extends ReadOnlyRelayClient {
       idPrivKey,
     )
     await this.putProfile(
-      idPrivKey.toAddress(this.networkName).toCashAddress().toString(),
+      lotusFromAddress(idPrivKey.toAddress(this.networkName), this.networkName),
       metadata,
     )
   }

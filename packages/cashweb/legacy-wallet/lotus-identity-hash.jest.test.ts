@@ -93,5 +93,5 @@ it('hashes a pubkey and encodes the bitcoinsuite Lotus address vectors', () => {
 
   expect(() =>
     lotusAddressFromPubKeyHash(SUITE_PKH.subarray(0, 19), 'mainnet'),
-  ).toThrow('pubKeyHash must be 20 bytes')
+  ).toThrow('address-hash')
 })

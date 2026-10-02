@@ -201,7 +201,7 @@ export default defineComponent({
       assert(wallet.myAddress, 'Address not yet defined?')
 
       // Update registry data if it doesn't exist.
-      handler.getRelayUrl(wallet.myAddress?.toXAddress()).catch(() => {
+      handler.getRelayUrl(wallet.displayAddress).catch(() => {
         if (!wallet.identityPrivKey) {
           return
         }

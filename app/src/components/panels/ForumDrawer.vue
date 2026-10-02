@@ -145,12 +145,16 @@ export default defineComponent({
   },
   methods: {
     async refreshContent() {
-      const wallet = await useActiveWallet()
-      this.refreshMessages({ wallet, topic: this.selectedTopic })
+      try {
+        const wallet = await useActiveWallet()
+        await this.refreshMessages({ wallet, topic: this.selectedTopic })
+      } catch (error) {
+        // Handled: forumStore records outageStatus; no unhandled browser exception
+      }
     },
     setTopic(text: string) {
       this.selectedTopic = text
-      this.refreshContent()
+      void this.refreshContent()
     },
   },
   computed: {

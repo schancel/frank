@@ -26,6 +26,7 @@
           :aria-label="$t('a11y.forumRefresh')"
           flat
           class="q-mx-none q-pa-sm"
+          :loading="isRefreshing"
           @click="refreshContent"
         />
         <q-btn
@@ -82,7 +83,7 @@ export default defineComponent({
   setup() {
     const forumStore = useForumStore()
     const topicStore = useTopicStore()
-    const { topics, selectedTopic } = storeToRefs(forumStore)
+    const { topics, selectedTopic, isRefreshing } = storeToRefs(forumStore)
 
     return {
       myDrawerOpen: useMyDrawerOpen(),
@@ -99,12 +100,13 @@ export default defineComponent({
       refreshDiscoveredTopics: topicStore.refreshDiscoveredTopics,
       topics,
       storeSelectedTopic: selectedTopic,
+      isRefreshing,
     }
   },
   components: { ForumDrawer },
   emits: ['toggleMyDrawerOpen'],
   mounted() {
-    this.refreshContent()
+    void this.refreshContent()
     // Fire-and-forget: `refreshDiscoveredTopics` already fails soft (never throws, see
     // `stores/topics.ts`), so there's nothing meaningful to await or catch here -- matches
     // `refreshContent`'s own un-awaited call just above.
@@ -115,12 +117,16 @@ export default defineComponent({
       this.$emit('toggleMyDrawerOpen')
     },
     async refreshContent() {
-      const wallet = await useActiveWallet()
-      this.refreshMessages({ wallet, topic: this.selectedTopic })
+      try {
+        const wallet = await useActiveWallet()
+        await this.refreshMessages({ wallet, topic: this.selectedTopic })
+      } catch (error) {
+        // Handled: forumStore records outageStatus; no unhandled browser exception
+      }
     },
     setTopic(text: string) {
       this.selectedTopic = text
-      this.refreshContent()
+      void this.refreshContent()
     },
   },
   computed: {
@@ -129,7 +135,7 @@ export default defineComponent({
         this.setSelectedTopic(newVal ?? '')
         // If the contents were cleared then we should refresh.
         if (!newVal) {
-          this.refreshContent()
+          void this.refreshContent()
         }
       },
       get(): string {

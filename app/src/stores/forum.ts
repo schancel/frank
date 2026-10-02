@@ -18,6 +18,8 @@ export type MessageWithReplies = ForumMessage & {
   timestamp: Date | string
 }
 
+export type ForumOutageStatus = 'ok' | 'degraded' | 'outage'
+
 export interface State {
   messages: MessageWithReplies[]
   index: Record<string, MessageWithReplies | undefined>
@@ -29,6 +31,8 @@ export interface State {
   /** Ticket #61: distinguishes "still fetching" from "fetched, genuinely no posts" -- Forum.vue's
    * own perpetual loading spinner (found live) couldn't tell the two apart before this existed. */
   hasFetchedOnce: boolean
+  outageStatus: ForumOutageStatus
+  isRefreshing: boolean
 }
 
 export type ForumPostReservationStatus = 'in-flight' | 'outcome-unknown'
@@ -63,6 +67,8 @@ export const useForumStore = defineStore('forum', {
     duration: 1000 * 60 * 60 * 24 * 7,
     voteThreshold: 0,
     hasFetchedOnce: false,
+    outageStatus: 'ok',
+    isRefreshing: false,
   }),
   getters: {
     getMessage(state) {
@@ -285,34 +291,45 @@ export const useForumStore = defineStore('forum', {
       wallet: WalletHandle
     }) {
       console.log('fetching messages')
-      const from = Date.now() - this.duration
-      const names = await this.topicsToFetch(topic)
-      const results = await Promise.allSettled(
-        names.map(name =>
-          activeChain.topics.fetchByTopic({
-            wallet,
-            topic: name,
-            sinceMs: from,
-          }),
-        ),
-      )
-      const failures = results.filter(
-        (result): result is PromiseRejectedResult =>
-          result.status === 'rejected',
-      )
-      // One bad topic must not hide the others, but if nothing could be read the caller should see
-      // the failure exactly as before.
-      if (failures.length === results.length) {
-        throw failures[0].reason
+      this.isRefreshing = true
+      try {
+        const from = Date.now() - this.duration
+        const names = await this.topicsToFetch(topic)
+        const results = await Promise.allSettled(
+          names.map(name =>
+            activeChain.topics.fetchByTopic({
+              wallet,
+              topic: name,
+              sinceMs: from,
+            }),
+          ),
+        )
+        const failures = results.filter(
+          (result): result is PromiseRejectedResult =>
+            result.status === 'rejected',
+        )
+        for (const failure of failures) {
+          console.error('forum: topic fetch failed', failure.reason)
+        }
+        this.hasFetchedOnce = true
+        // If every topic fetch failed, record the outage state and exit loading before re-throwing
+        // so callers can handle the rejection and the UI can show an accessible outage/retry view.
+        if (results.length > 0 && failures.length === results.length) {
+          this.outageStatus = 'outage'
+          throw failures[0].reason
+        }
+        if (failures.length > 0) {
+          this.outageStatus = 'degraded'
+        } else {
+          this.outageStatus = 'ok'
+        }
+        const entries = results.flatMap(result =>
+          result.status === 'fulfilled' ? result.value ?? [] : [],
+        )
+        this.setEntries(entries)
+      } finally {
+        this.isRefreshing = false
       }
-      for (const failure of failures) {
-        console.error('forum: topic fetch failed', failure.reason)
-      }
-      this.hasFetchedOnce = true
-      const entries = results.flatMap(result =>
-        result.status === 'fulfilled' ? result.value ?? [] : [],
-      )
-      this.setEntries(entries)
     },
     async putMessage({
       wallet,
@@ -391,7 +408,10 @@ export const useForumStore = defineStore('forum', {
         //
       }
       const deserializedForum = JSON.parse(forum) as State
-      return deserializedForum
+      return {
+        ...deserializedForum,
+        isRefreshing: false,
+      }
     },
   },
 })

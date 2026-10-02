@@ -357,6 +357,21 @@ Candidate search has explicit time, memory, and result-count bounds. Exhausting
 a bound returns a distinct error and never weakens validation, chooses a partial
 candidate, or reports the expected account as recovered.
 
+### 5.7 Share-entry progress
+
+Share entry reports only nonsensitive progress. Before the first valid recovery
+share, the threshold is unknown. Once a valid family is selected, after every
+entry attempt the UI shows `a` accepted distinct shares, `k` required, and
+`k-a` remaining, for example: “2 valid shares accepted; 3 required; 1
+remaining.” Accepted indices may be shown, but no share text or payload may be
+echoed.
+
+Malformed, inconsistent, rejected, or declined-correction inputs leave all
+counts unchanged. A duplicate reports that its index was already accepted and
+does not increment the count. A correction candidate counts only after explicit
+confirmation or re-entry and successful strict validation. Reaching `a = k`
+starts exactly one guarded reconstruction attempt.
+
 ## 6. New-account signup
 
 ### 6.1 State machine
@@ -587,12 +602,22 @@ the secret text.
 At exactly `k` accepted shares, the library reconstructs a candidate `M`.
 Additional shares are not opportunistically mixed into interpolation. The app
 first validates the candidate's embedded `V`. Failure reports that the shares do
-not reconstruct a valid Frank master, without blaming a particular share. Only
-then does the app extract `R`, derive the versioned public recovery fingerprint
-and available domain public identifiers, and ask the user to confirm them
-against a trusted prior record. The UI distinguishes “valid Codex32 shares,”
-“valid Frank master,” and “authenticated expected account.” It never reports
-the old account as recovered until the fingerprint comparison succeeds.
+not reconstruct a valid Frank master, without blaming a particular share. It
+then increments the attempt generation to fence stale work; clears candidate
+`M`, accepted shares and strings, and all derived intermediates; retains only
+the independently authenticated descriptor format and registry; unlocks family
+identifier, threshold, and length; and returns to empty share collection. The
+user may retry the same family or select another, but Frank never searches
+subsets automatically. Derivation, persistence, networking, and account
+activation remain disabled.
+
+Only after internal validation does the app extract `R`, derive the versioned
+public recovery fingerprint and available domain public identifiers, and ask
+the user to confirm them against a trusted prior record. The UI distinguishes
+“valid Codex32 shares,” “valid Frank master,” and “authenticated expected
+account.” It never reports the old account as recovered until the fingerprint
+comparison succeeds. A valid-`V` fingerprint mismatch remains terminal with no
+override in `restore-known-account`; it does not fall back to share retry.
 
 A valid, internally consistent, adversarially generated share set can recover a
 different master with a valid `V`. Checksums, identifiers, and internal
@@ -628,11 +653,13 @@ targeted preimage security under SHA-256, not merely a low accidental-collision
 rate. Known-answer vectors freeze field lengths, tag, conversion, round-trip,
 and version separation. A four-character Codex32 identifier is not sufficient.
 The fingerprint is deterministic public metadata and therefore an offline
-verifier for guesses of `R`, as is the embedded `V`. Neither reduces the entropy
-of a uniformly random 256-bit `R` in practice under SHA-256, but the recovery
-claim is computational once either validation value is available.
-Implementations and UI MUST not describe the descriptor as secret or the
-complete system as providing unqualified information-theoretic secrecy.
+verifier for guesses of `R`. Embedded `V` would also verify guesses if separately
+exposed, but it is part of threshold-shared `M`, is not public metadata, and
+fewer than `k` shares reveal neither it nor a guessing oracle. `M` has 256 bits
+of entropy despite its 512-bit encoding; `V` is redundancy, not new entropy.
+These facts do not materially weaken a uniformly random `R` under SHA-256, but
+the public descriptor makes the end-to-end recovery claim computational rather
+than unqualified information-theoretic secrecy.
 
 ### 7.3 Restore, import, and commit
 
@@ -966,6 +993,9 @@ the repository's current localization boundary.
   reconstructed, derived, persisted, and activated identities agree.
 - Wrong, duplicate, stale, mixed-set, and corrected-but-unconfirmed shares
   cannot advance.
+- Progress tests cover valid, malformed, inconsistent, duplicate, proposed,
+  declined, and confirmed-correction entries; only distinct strictly accepted
+  shares change `a / k / remaining`, and `a = k` reconstructs exactly once.
 - A reconstructed payload with invalid `V` reports “not a valid Frank master”
   without blaming a share, derives no domain, performs no network activity, and
   remains distinct from a valid master whose descriptor identifies the wrong
@@ -989,9 +1019,11 @@ the repository's current localization boundary.
 - Separate families of the same `M` recover identically and no durable account
   record needs either family's `n`; extension without a complete issued-index
   inventory cannot claim to create an unused index.
-- Metadata-inconsistent mixes reject before interpolation. Compatible families
-  with an identifier collision produce a candidate that then fails exact-`M`
-  comparison.
+- Metadata-inconsistent mixes reject before interpolation. A frozen ordinary
+  mixed-family collision fixture reconstructs invalid `V` and never reaches
+  exact-`M`, persistence, or networking. A separately constructed coherent
+  alternate `R_alt || V_alt` passes internal validation but fails exact-`M`
+  during signup and still creates no account.
 
 ### 15.3 Recovery integration
 
@@ -999,6 +1031,10 @@ the repository's current localization boundary.
 - Fewer than `k` shares never derive or persist a domain key.
 - A coherent wrong set with an absent or mismatched independent descriptor
   cannot commit or start networking.
+- An invalid-`V` threshold attempt clears all candidate/share material, fences
+  stale callbacks, unlocks family metadata, and permits a later valid-family
+  retry to succeed without any intervening remote effect. A valid-`V` expected
+  fingerprint mismatch remains terminal for known-account restore.
 - Loss of all trusted descriptor copies blocks authenticated recovery but still
   permits only the quarantined no-network public-identity preview.
 - Fingerprint known-answer, full-byte comparison, Bech32m padding, and targeted

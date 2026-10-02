@@ -81,8 +81,8 @@ pub fn default_context() -> ValidationContext {
     ValidationContext {
         operation: Operation::Typed,
         route_byte_limit: MAX_FRAME_BYTES as u64,
-        // Reader version 2 reads type 4 at schema 2 (the stamp key, README S10a.1); every other
-        // type stays at schema 1.
+        // Reader version 2 reads type 4 at schema 3 (the stamp key and profile entries, README
+        // S10a.1 and M4); every other type stays at schema 1.
         reader_version: 2,
         supported_schemas: KNOWN_TYPES
             .iter()
@@ -90,7 +90,7 @@ pub fn default_context() -> ValidationContext {
             .map(|type_id| SupportedSchema {
                 type_id,
                 schema_version: if type_id == TYPE_DIRECTORY_STATEMENT {
-                    2
+                    3
                 } else {
                     1
                 },
@@ -473,9 +473,8 @@ fn run_stage_10(parsed: &ParsedFrame) -> Result<(), Error> {
     }
 }
 
-/// Stage 10.6: the signature entries in document order, then the statement's key-transition
-/// authorizations in document order. The first failure wins. An entry whose algorithm is
-/// allocated but not verifiable here (2, 3, 16) is `unsupported` before any verification (M7).
+/// Stage 10.6: first preflight all entries for allocated-but-unverifiable algorithms (M7), then
+/// verify signature entries followed by key-transition authorizations in document order.
 fn verify_attestation(
     statement: &ParsedFrame,
     signatures: &[SignatureEntry],
@@ -502,6 +501,15 @@ fn verify_attestation(
         ));
     };
     let digest = directory_signature_digest(network, &statement.frame);
+    let transitions = key_transitions.as_deref().unwrap_or(&[]);
+    // M7: an allocated algorithm this reader cannot verify makes the entire attestation
+    // unsupported. Discover that before running any algorithm-1 verification.
+    for (i, entry) in signatures.iter().enumerate() {
+        preflight_algorithm(entry.algorithm, &format!("root/payload.1[{i}]"))?;
+    }
+    for (i, transition) in transitions.iter().enumerate() {
+        preflight_algorithm(transition.algorithm, &format!("root/payload.0/5[{i}]"))?;
+    }
     for (i, entry) in signatures.iter().enumerate() {
         verify_entry(
             entry.algorithm,
@@ -511,7 +519,6 @@ fn verify_attestation(
             &format!("root/payload.1[{i}]"),
         )?;
     }
-    let transitions = key_transitions.as_deref().unwrap_or(&[]);
     for (i, transition) in transitions.iter().enumerate() {
         let transition_typed = transition.statement.typed.as_deref();
         let Some(TypedPayload::KeyTransitionStatement {
@@ -539,6 +546,18 @@ fn verify_attestation(
     Ok(())
 }
 
+fn preflight_algorithm(algorithm: u32, location: &str) -> Result<(), CodecError> {
+    if matches!(algorithm, 2 | 3 | 16) {
+        return Err(fail(
+            ErrorCategory::Unsupported,
+            ErrorStage::S106,
+            format!("algorithm {algorithm} is allocated but not verifiable in this slice (M7)"),
+            location,
+        ));
+    }
+    Ok(())
+}
+
 /// One stage-10.6 entry: M7's `unsupported` for allocated-but-unverifiable algorithms, then
 /// the algorithm-1 verification. Unallocated algorithms cannot reach this point (stage 8.3).
 fn verify_entry(
@@ -548,14 +567,7 @@ fn verify_entry(
     digest: &[u8; 32],
     location: &str,
 ) -> Result<(), CodecError> {
-    if matches!(algorithm, 2 | 3 | 16) {
-        return Err(fail(
-            ErrorCategory::Unsupported,
-            ErrorStage::S106,
-            format!("algorithm {algorithm} is allocated but not verifiable in this slice (M7)"),
-            location,
-        ));
-    }
+    preflight_algorithm(algorithm, location)?;
     if algorithm != 1 {
         return Err(fail(
             ErrorCategory::Unsupported,

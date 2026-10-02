@@ -5,11 +5,12 @@
 mod common;
 
 use frank_cbor::{
-    address_from_compressed_pubkey, address_from_uncompressed_pubkey, content_hash,
-    directory_signature_digest, expiry_timestamp, has_low_s, join_ms, keccak256,
-    key_transition_signature_digest, parse_strict_der, registration_from_ms, split_timestamp_ms,
-    uncompressed_pubkey_xy, validate_frame, verify_algorithm_1, Error, ErrorCategory, ErrorStage,
-    Operation, ParsedFrame, PriorStatement, SupportedSchema, ValidationContext, ValidationResult,
+    address_from_compressed_pubkey, address_from_uncompressed_pubkey, cbor_map, content_hash,
+    decode_canonical, directory_signature_digest, encode_frame, expiry_timestamp, has_low_s,
+    join_ms, keccak256, key_transition_signature_digest, parse_strict_der, registration_from_ms,
+    split_timestamp_ms, uncompressed_pubkey_xy, validate_frame, verify_algorithm_1, CborValue,
+    EnvelopeFields, Error, ErrorCategory, ErrorStage, FramePayload, Operation, ParsedFrame,
+    PriorStatement, Projection, SupportedSchema, TypedPayload, ValidationContext, ValidationResult,
     KNOWN_TYPES, MAX_FRAME_BYTES,
 };
 
@@ -145,6 +146,42 @@ fn every_registration_case_matches_its_recorded_outcome() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+#[test]
+fn default_context_types_schema_3_profile_entries() {
+    let manifest = registration_manifest();
+    let case = manifest["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|case| case_id(case) == "reg-fixture-testnet-statement-typed")
+        .expect("schema-3 fixture");
+    let result = validate_frame(&case_frame(case), &frank_cbor::default_context())
+        .expect("default reader accepts schema 3");
+    let ValidationResult::Parsed(ParsedFrame {
+        typed: Some(typed), ..
+    }) = result
+    else {
+        panic!("not a typed frame");
+    };
+    let TypedPayload::DirectoryAttestation { statement, .. } = *typed else {
+        panic!("not an attestation");
+    };
+    assert_eq!(statement.projection, Projection::Exact);
+    let Some(statement_typed) = statement.typed else {
+        panic!("statement not typed");
+    };
+    let TypedPayload::DirectoryStatement {
+        profile_entries,
+        unknown,
+        ..
+    } = *statement_typed
+    else {
+        panic!("not a directory statement");
+    };
+    assert_eq!(profile_entries.expect("profile entries").len(), 2);
+    assert!(unknown.is_empty());
 }
 
 /// One observed outcome of a corpus case.
@@ -317,6 +354,18 @@ fn strict_der_rejects_malformed_and_high_s() {
     let high_s = entry_signature(&case_frame(&find("reg-crypto-high-s")));
     let (_, s) = parse_strict_der(&high_s).expect("well-formed DER with high S");
     assert!(!has_low_s(&s), "s above n/2 must be flagged");
+    assert!(
+        parse_strict_der(&hex("3006020100020101")).is_err(),
+        "zero r must reject"
+    );
+    assert!(
+        parse_strict_der(&hex("3006020101020100")).is_err(),
+        "zero s must reject"
+    );
+    assert!(
+        parse_strict_der(&hex("3006020101020101")).is_ok(),
+        "r=1, s=1 is structurally valid DER"
+    );
     void(&values);
 }
 
@@ -417,6 +466,91 @@ fn full_type1_root_is_a_context_error() {
     )
     .expect_err("type-1 full is outside the slice");
     assert!(matches!(error, Error::Context(_)));
+}
+
+#[test]
+fn unsupported_algorithm_precedes_any_signature_verification() {
+    let manifest = registration_manifest();
+    let case = manifest["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|case| case_id(case) == "reg-fixture-testnet-minimal-full")
+        .expect("minimal fixture");
+    let frame = case_frame(case);
+    let CborValue::Map(envelope) = decode_canonical(&frame[9..]).expect("envelope") else {
+        panic!("envelope not a map");
+    };
+    let payload_bytes = envelope
+        .iter()
+        .find(|(key, _)| *key == 3)
+        .and_then(|(_, value)| match value {
+            CborValue::Bytes(bytes) => Some(bytes),
+            _ => None,
+        })
+        .expect("payload bytes");
+    let CborValue::Map(payload) = decode_canonical(payload_bytes).expect("payload") else {
+        panic!("payload not a map");
+    };
+    let statement = payload
+        .iter()
+        .find(|(key, _)| *key == 0)
+        .map(|(_, value)| value.clone())
+        .expect("statement");
+    let entries = payload
+        .iter()
+        .find(|(key, _)| *key == 1)
+        .and_then(|(_, value)| match value {
+            CborValue::Array(entries) => Some(entries),
+            _ => None,
+        })
+        .expect("signature entries");
+    let CborValue::Map(mut corrupted) = entries[0].clone() else {
+        panic!("signature entry not a map");
+    };
+    let signature = corrupted
+        .iter_mut()
+        .find(|(key, _)| *key == 2)
+        .and_then(|(_, value)| match value {
+            CborValue::Bytes(bytes) => Some(bytes),
+            _ => None,
+        })
+        .expect("signature bytes");
+    *signature.last_mut().expect("non-empty signature") ^= 1;
+    let unsupported = cbor_map(vec![
+        (0, CborValue::Int(16)),
+        (
+            1,
+            cbor_map(vec![
+                (0, CborValue::Int(2)),
+                (1, CborValue::Bytes(vec![7; 32])),
+            ]),
+        ),
+        (2, CborValue::Bytes(vec![3; 64])),
+    ]);
+    let payload = cbor_map(vec![
+        (0, statement),
+        (
+            1,
+            CborValue::Array(vec![CborValue::Map(corrupted), unsupported]),
+        ),
+    ]);
+    let mixed = encode_frame(
+        EnvelopeFields {
+            type_id: 2,
+            schema_version: 1,
+            min_reader_version: 1,
+        },
+        FramePayload::Value(&payload),
+    )
+    .expect("mixed attestation");
+    let error = validate_frame(&mixed, &context_from_json(&case["validation_context"]))
+        .expect_err("unsupported algorithm rejects before corrupt signature");
+    let Error::Codec(codec) = error else {
+        panic!("expected codec error");
+    };
+    assert_eq!(codec.category, ErrorCategory::Unsupported);
+    assert_eq!(codec.stage, ErrorStage::S106);
 }
 
 #[test]

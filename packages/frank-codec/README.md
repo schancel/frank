@@ -13,12 +13,17 @@ Implemented (against the spec as merged on main):
 - Restricted canonical-CBOR encoder (independent of Map insertion order, `bigint` for
   u64/i64) and the two-pass strict validator/decoder (pass A syntax and resources, pass B
   canonicality and profile class).
-- FRNK frame encode/parse and section 9 **stages 1-9**: root limits, header, version, length,
-  envelope and payload CBOR, envelope checks, the V6 decision, typed structure 8.1-8.4
+- FRNK frame encode/parse and section 9 **stages 1-9**, plus stage 10.6 for type-2 roots:
+  root limits, header, version, length, envelope and payload CBOR, envelope checks, the V6
+  decision, typed structure 8.1-8.4
   (recursive child opening with shared R1 counters, required-type and open-field children),
   and the stage 9 semantic checks that need no cryptography (S3-S10 ordering, uniqueness,
   linkage, contiguity).
 - T1 content hash, T1a digest, and the pure hashes T3, T4, and T7 (`topicVoteCommitment`).
+- Account-registration statements at type-4 schema 3, with the M2/M3/M6 timestamp, expiry, and
+  Keccak-256 address utilities. The `full` operation verifies every type-2 signature entry and
+  key-transition authorization for algorithm 1 as strict-DER low-S secp256k1 ECDSA over the
+  frozen T2/T2a digests. Allocated algorithms 2/3/16 fail as `unsupported` before verification.
 - Topic events: type 9 (post), type 10 (post plus its burn transaction), and type 11 (vote),
   with the R6 limits and the S11 network equality. The burn transaction is opaque bytes here;
   verifying it against the chain (T8) belongs to the relay, not to this codec.
@@ -27,7 +32,7 @@ Implemented (against the spec as merged on main):
   scalars `c` and `s` each in `1..n-1`), the type-4 schema-2 stamp key (field 8, required from
   schema 2, undefined in schema 1, key type 1, S10a.1), the same-subject schema order (S10a.2),
   and the S8/S9 rule that the delivery destination is the stamp key `P'` and is not compared with
-  the type-5 recipient. `defaultContext()` is reader version 2 with type 4 at schema 2.
+  the type-5 recipient. `defaultContext()` is reader version 2 with type 4 at schema 3.
 - Retention: exact original frame bytes at every level, unknown types/frame versions/fields.
 - Reciprocal check of Rust-originated proof fixtures in
   `docs/protocol/cbor/vectors/rust-origin.json` (`test/rust-origin.jest.test.ts`).
@@ -35,12 +40,13 @@ Implemented (against the spec as merged on main):
 
 Not implemented:
 
-- Stage 10 (`full` operation): no signature or payment verification, no decrypted-frame
-  opening, no `cryptographic` category.
-- T3a stamp destination derivation and the T3b DLEQ proof (verify or prove), keccak, the S10a.4
-  binding of `P'` to a directory state, and every other `cryptographic` check. Type-5 fields 6-8
+- Stage 10.1-10.5 for type-1 roots: no payment verification or decrypted-frame opening. Calling
+  `full` for type 1 fails with a context error; stage 10.6 is implemented only for type 2.
+- T3a stamp destination derivation and the T3b DLEQ proof (verify or prove), the S10a.4 binding
+  of `P'` to a directory state, and the remaining type-1 `cryptographic` checks. Type-5 fields 6-8
   are checked for encoding only; a well-formed but wrong proof is accepted at `typed`.
-- The stage-10 vectors of the #198 list (README section 10). The typed ones are in the manifest.
+- The stage-10 vectors of the #198 type-1 list (README section 10). The typed ones are in the
+  manifest. The separate account-registration corpus covers type-2 stage 10.6.
 
 ## API
 
@@ -49,12 +55,15 @@ Entry point `src/index.ts`.
 - `encodeCanonical(value)`, `decodeCanonical(bytes)`, `isValidCanonical(bytes)`, `cborMap`.
 - `encodeFrame({typeId, schemaVersion, minReaderVersion}, payload | {bytes})`, `wrapFrame`.
 - `validateFrame(bytes, context)` (alias `parseFrame`) with `defaultContext()`. Operations:
-  `frame` (stages 1-4), `generic` (1-7), `typed` (1-9). Returns a `FrameOnly`, a
+  `frame` (stages 1-4), `generic` (1-7), `typed` (1-9), and `full` (type-2 stage 10.6).
+  Returns a `FrameOnly`, a
   `ParsedFrame` (exact `frame` bytes, generic `payload`, `typed` projection, `projection`
   `exact` or `newer-schema`) or a `RetainedFrame`. Failures throw `FrankCodecError` with
   `category`, `stage`, `pass`, `location`. A bad context throws `FrankContextError`.
-- `contentHash`, `messageContentDigest`, `recipientPayloadDigest`, `paymentCommitment`,
-  `topicVoteCommitment`, `commonTranscript`, `toHex`, `fromHex`.
+- `contentHash`, `messageContentDigest`, `directorySignatureDigest`,
+  `keyTransitionSignatureDigest`, `recipientPayloadDigest`, `paymentCommitment`,
+  `topicVoteCommitment`, `commonTranscript`, `toHex`, `fromHex`; plus the exported registration
+  timestamp/address utilities and strict-DER/signature-verification helpers.
 - Topic-event writers (README T7, T8): `encodeTopicPost`, `topicPostHash`, `topicBurnCommitment`,
   `topicBurnCalldata` (`"TPIC" || 02 || direction || commitment`), `topicPostBurnCalldata` (fixed to
   `up`: a post's own burn MUST be an up-vote, T8), `encodeTopicPostSubmission`,
@@ -86,7 +95,9 @@ TypeScript-aware bundler or transformer. `yarn build:browser` produces an IIFE b
 - `yarn crosscheck` runs `scripts/crosscheck.py`, an independent Python implementation of
   stages 1-7 of the root frame and T1 over the manifest, and T1/T7 over
   `vectors/topic-commitments.json`. It needs Python 3 with `jsonschema`.
-  It reports how many cases it evaluates (root-frame stages 1-7 category, retention, or a
+  It also evaluates the account-registration corpus through stage 10.6 and independently
+  recomputes its value vectors (including ECDSA and Keccak-256). It reports how many main-manifest
+  cases it evaluates (root-frame stages 1-7 category, retention, or a
   typed accept's T1 hash) and how many it does NOT evaluate (typed cases rejected at stages
   8-9 or inside an opened child, which it does not implement).
 
@@ -138,8 +149,9 @@ fixtures) the v1 reader accepted the v2 bytes.
   256 KiB type-2 frames, 4,096 facts, MAX_FRAME_BYTES) run in Jest only, not in the manifest.
 - The direct-message fixture is a `typed` case with placeholder payment addresses; directory
   signature bytes are structurally valid filler.
-- No `full`, `cryptographic` or `cross_language_roundtrip` vectors; the `opaque_retention`
-  pair relation is unused.
+- The main manifest has no `full`, `cryptographic` or `cross_language_roundtrip` vectors; the
+  separate account-registration corpus has the type-2 `full` and `cryptographic` cases. The
+  `opaque_retention` pair relation is unused.
 
 ## Spec ambiguities
 

@@ -114,15 +114,13 @@ export function verifyAlgorithm1(
   }
 }
 
-function verifyEntry(
-  entry: {
-    algorithm: number
-    signer: { keyType: number; keyBytes: Uint8Array }
-    signature: Uint8Array
-  },
-  digest: Uint8Array,
-  location: string,
-): void {
+type VerifiableEntry = {
+  algorithm: number
+  signer: { keyType: number; keyBytes: Uint8Array }
+  signature: Uint8Array
+}
+
+function preflightAlgorithm(entry: VerifiableEntry, location: string): void {
   if (UNVERIFIABLE_ALGORITHMS.has(entry.algorithm)) {
     throw fail(
       'unsupported',
@@ -130,6 +128,14 @@ function verifyEntry(
       location,
     )
   }
+}
+
+function verifyEntry(
+  entry: VerifiableEntry,
+  digest: Uint8Array,
+  location: string,
+): void {
+  preflightAlgorithm(entry, location)
   if (entry.algorithm === 1) {
     if (entry.signer.keyType !== 1) {
       throw fail(
@@ -169,19 +175,28 @@ function transitionOf(f: ParsedFrame): KeyTransitionStatement {
 }
 
 /**
- * Stage 10.6 for a type-2 root: the signature entries, in document order, then the opened
- * statement's key-transition authorizations, in document order. The first failure wins.
+ * Stage 10.6 for a type-2 root: first preflight all entries for allocated-but-unverifiable
+ * algorithms (M7), then verify signature entries followed by key-transition authorizations in
+ * document order.
  */
 export function verifyDirectoryAttestation(
   attestation: DirectoryAttestation<ParsedFrame>,
 ): void {
   const statement = statementOf(attestation.statementFrame)
+  const transitions = statement.keyTransitions ?? []
+  // M7 applies to the whole attestation: discover every allocated-but-unverifiable algorithm
+  // before running any algorithm-1 verification.
+  attestation.signatures.forEach((entry, i) =>
+    preflightAlgorithm(entry, `root/payload.1[${i}]`),
+  )
+  transitions.forEach((entry, i) =>
+    preflightAlgorithm(entry, `root/payload.0/5[${i}]`),
+  )
   const frameBytes = attestation.statementFrame.frame
   const digest = directorySignatureDigest(statement.network, frameBytes)
   attestation.signatures.forEach((entry, i) =>
     verifyEntry(entry, digest, `root/payload.1[${i}]`),
   )
-  const transitions = statement.keyTransitions ?? []
   transitions.forEach((t, i) => {
     const ts = transitionOf(t.statementFrame)
     const tDigest = keyTransitionSignatureDigest(

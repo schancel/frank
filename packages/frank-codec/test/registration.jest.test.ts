@@ -338,10 +338,10 @@ describe('stage 10.6 (full)', () => {
     ).toThrow(FrankContextError)
   })
 
-  it('the first failing entry in document order decides the 10.6 category', () => {
+  it('reports allocated-but-unverifiable algorithms before any verification runs (M7)', () => {
     // Take the minimal record, append a second, allocated-but-unverifiable algorithm-16
-    // entry after the (corrupted) algorithm-1 entry: sorted, and the algorithm-1 failure
-    // comes first, so the outcome is cryptographic, not the later unsupported.
+    // entry after the (corrupted) algorithm-1 entry. M7 requires the whole attestation to be
+    // unsupported before any signature verification runs.
     const base = frameOf('reg-fixture-testnet-minimal-full')
     const body = decodeEnvelope(base)
     const statements = body.payload.get(0n) as Uint8Array
@@ -370,10 +370,10 @@ describe('stage 10.6 (full)', () => {
     const ctx = contextOf('reg-fixture-testnet-minimal-full')
     expect(observe(attestation, ctx)).toEqual({
       kind: 'reject',
-      category: 'cryptographic',
+      category: 'unsupported',
       stage: '10.6',
     })
-    // With the first entry left valid, the same second entry is the first failure: unsupported.
+    // With the first entry left valid, the same second entry is still unsupported.
     const withValidFirst = encodeFrame(
       { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
       M([

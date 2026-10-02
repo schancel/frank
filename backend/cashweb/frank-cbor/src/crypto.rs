@@ -36,7 +36,7 @@ fn scalar_be(bytes: &[u8]) -> Result<[u8; 32], UsageError> {
     } else {
         out[32 - bytes.len()..].copy_from_slice(bytes);
     }
-    if out.as_slice() >= SECP256K1_ORDER.as_slice() {
+    if out == [0; 32] || out.as_slice() >= SECP256K1_ORDER.as_slice() {
         return Err(usage("scalar outside 1..n-1"));
     }
     Ok(out)

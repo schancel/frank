@@ -69,6 +69,7 @@ pub struct BitcoinProxyRuntime {
     auth: RpcAuthState,
     network_tag: Vec<u8>,
     permits: Arc<Semaphore>,
+    ingress_permits: Arc<Semaphore>,
     max_request_bytes: usize,
     max_response_bytes: usize,
     timeout: Duration,
@@ -111,6 +112,21 @@ pub enum BitcoinProxyStartError {
 }
 
 impl BitcoinProxyRuntime {
+    pub(crate) fn has_chronik_chain(&self, id: &str) -> bool {
+        self.chains
+            .get(id)
+            .and_then(|chain| chain.chronik.as_ref())
+            .is_some()
+    }
+
+    pub(crate) fn body_admission(&self) -> (Arc<Semaphore>, usize, Duration) {
+        (
+            Arc::clone(&self.ingress_permits),
+            self.max_request_bytes,
+            self.timeout,
+        )
+    }
+
     pub(crate) fn configured_capabilities(&self) -> Vec<(String, bool, bool)> {
         self.chains
             .values()
@@ -171,6 +187,7 @@ impl BitcoinProxyRuntime {
             auth: RpcAuthState::new(),
             network_tag,
             permits: Arc::new(Semaphore::new(conf.max_concurrency)),
+            ingress_permits: Arc::new(Semaphore::new(conf.max_concurrency)),
             max_request_bytes: conf.max_request_bytes,
             max_response_bytes: conf.max_response_bytes,
             timeout: Duration::from_millis(conf.timeout_ms),
@@ -595,7 +612,10 @@ pub(crate) async fn issue_chronik_challenge(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Extension(server): Extension<RegistryServer>,
-    BoundedRpcBody(body): BoundedRpcBody,
+    BoundedRpcBody {
+        bytes: body,
+        _permit: _ingress_permit,
+    }: BoundedRpcBody,
 ) -> Result<Json<RpcChallengeBody>, RpcRejection> {
     let runtime = server
         .bitcoin_proxy
@@ -642,7 +662,10 @@ pub(crate) async fn proxy_chronik(
     peer: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
     Extension(server): Extension<RegistryServer>,
-    BoundedRpcBody(body): BoundedRpcBody,
+    BoundedRpcBody {
+        bytes: body,
+        _permit: _ingress_permit,
+    }: BoundedRpcBody,
 ) -> Result<Response, RpcRejection> {
     let runtime = server
         .bitcoin_proxy
@@ -855,6 +878,7 @@ mod tests {
             auth: RpcAuthState::new(),
             network_tag: vec![],
             permits: Arc::new(Semaphore::new(1)),
+            ingress_permits: Arc::new(Semaphore::new(1)),
             max_request_bytes: 1024,
             max_response_bytes: 1024,
             timeout: Duration::from_secs(1),

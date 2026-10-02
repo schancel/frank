@@ -1,5 +1,5 @@
-import assert from 'assert'
 import { defineStore } from 'pinia'
+import { reactive } from 'vue'
 import { indexBy, uniq } from 'ramda'
 
 import {
@@ -31,6 +31,27 @@ export interface State {
   hasFetchedOnce: boolean
 }
 
+export type ForumPostReservationStatus = 'in-flight' | 'outcome-unknown'
+
+type ForumPostReservation = {
+  id: number
+  status: ForumPostReservationStatus
+}
+
+// Session-only economic ownership for paid forum submissions. This deliberately lives outside
+// Pinia's persisted State: it must survive page unmount/remount, but a process restart must not
+// manufacture a crash-retry policy or a durable operation journal. The public chain identity is
+// stable across independently-created handles for the same account and contains no seed material.
+const forumPostReservations = reactive(new Map<string, ForumPostReservation>())
+let nextForumPostReservationId = 0
+
+function forumPostReservationKey(
+  wallet: WalletHandle,
+  destination: string,
+): string {
+  return `${wallet.identity.address.raw.toLowerCase()}\u0000${destination}`
+}
+
 export const useForumStore = defineStore('forum', {
   state: (): State => ({
     messages: [],
@@ -47,14 +68,94 @@ export const useForumStore = defineStore('forum', {
     getMessage(state) {
       return (messageDigest?: string) => {
         console.log('messageDigest', messageDigest)
-        if (!messageDigest) {
+        if (
+          !messageDigest ||
+          !Object.prototype.hasOwnProperty.call(state.index, messageDigest)
+        ) {
           return null
         }
-        return state.index[messageDigest]
+        const message = state.index[messageDigest]
+        if (
+          !message ||
+          message.payloadDigest !== messageDigest ||
+          typeof message.topic !== 'string' ||
+          !Array.isArray(message.entries)
+        ) {
+          return null
+        }
+        return message
       }
     },
   },
   actions: {
+    getPostReservationId({
+      wallet,
+      destination,
+    }: {
+      wallet: WalletHandle
+      destination: string
+    }): number | undefined {
+      return forumPostReservations.get(
+        forumPostReservationKey(wallet, destination),
+      )?.id
+    },
+    reservePostSubmission({
+      wallet,
+      destination,
+    }: {
+      wallet: WalletHandle
+      destination: string
+    }): number | undefined {
+      const reservationKey = forumPostReservationKey(wallet, destination)
+      if (forumPostReservations.has(reservationKey)) return undefined
+      const id = ++nextForumPostReservationId
+      forumPostReservations.set(reservationKey, { id, status: 'in-flight' })
+      return id
+    },
+    releasePostSubmission({
+      wallet,
+      destination,
+      reservationId,
+    }: {
+      wallet: WalletHandle
+      destination: string
+      reservationId: number
+    }): boolean {
+      const reservationKey = forumPostReservationKey(wallet, destination)
+      const reservation = forumPostReservations.get(reservationKey)
+      if (reservation?.id !== reservationId) {
+        return false
+      }
+      return forumPostReservations.delete(reservationKey)
+    },
+    markPostSubmissionOutcomeUnknown({
+      wallet,
+      destination,
+      reservationId,
+    }: {
+      wallet: WalletHandle
+      destination: string
+      reservationId: number
+    }): boolean {
+      const reservationKey = forumPostReservationKey(wallet, destination)
+      const reservation = forumPostReservations.get(reservationKey)
+      if (reservation?.id !== reservationId) {
+        return false
+      }
+      reservation.status = 'outcome-unknown'
+      return true
+    },
+    getPostReservationStatus({
+      wallet,
+      destination,
+    }: {
+      wallet: WalletHandle
+      destination: string
+    }): ForumPostReservationStatus | undefined {
+      return forumPostReservations.get(
+        forumPostReservationKey(wallet, destination),
+      )?.status
+    },
     setSortMode(sortMode: SortMode) {
       this.sortMode = sortMode
     },
@@ -99,7 +200,7 @@ export const useForumStore = defineStore('forum', {
         if (!message.parentDigest) {
           continue
         }
-        const parent = this.index[message.parentDigest]
+        const parent = this.getMessage(message.parentDigest)
         if (!parent) {
           continue
         }
@@ -113,7 +214,7 @@ export const useForumStore = defineStore('forum', {
           }
           visitedDigests.add(ancestor.payloadDigest)
           ancestor = ancestor.parentDigest
-            ? this.index[ancestor.parentDigest]
+            ? this.getMessage(ancestor.parentDigest) ?? undefined
             : undefined
         }
         if (cyclic) {
@@ -123,9 +224,8 @@ export const useForumStore = defineStore('forum', {
       }
     },
     setMessage(message: ForumMessage) {
-      if (message.payloadDigest in this.index) {
-        const oldMessage = this.index[message.payloadDigest]
-        assert(oldMessage, 'Not possible, typescript hole')
+      const oldMessage = this.getMessage(message.payloadDigest)
+      if (oldMessage) {
         oldMessage.satoshis = message.satoshis
         return
       }
@@ -142,19 +242,16 @@ export const useForumStore = defineStore('forum', {
       if (!mesageWithReplies.parentDigest) {
         return
       }
-      if (!(mesageWithReplies.parentDigest in this.index)) {
-        return
-      }
-      const replies = this.index[mesageWithReplies.parentDigest]?.replies
+      const parent = this.getMessage(mesageWithReplies.parentDigest)
+      if (!parent) return
+      const replies = parent.replies
       const found = replies?.some(
         reply => reply.payloadDigest === mesageWithReplies.payloadDigest,
       )
       if (found) {
         return
       }
-      this.index[mesageWithReplies.parentDigest]?.replies.push(
-        mesageWithReplies,
-      )
+      parent.replies.push(mesageWithReplies)
     },
     setSelectedTopic(topic: string) {
       this.selectedTopic = topic

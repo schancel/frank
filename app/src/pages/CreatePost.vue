@@ -10,6 +10,31 @@
   layout) wrap themselves this way -- this page was the only one that did, confirmed by checking
   both siblings before making this change. -->
   <q-card class="q-ma-none q-pa-sm">
+    <div
+      v-if="parentDigest && !parentMessage"
+      class="q-pa-md"
+      role="status"
+      aria-live="polite"
+      data-test="parent-resolution-status"
+    >
+      <span v-if="parentLoading">
+        {{ $t('stampPreparation.replyParentLoading') }}
+      </span>
+      <span v-else>
+        {{ $t('stampPreparation.replyParentUnavailable') }}
+      </span>
+      <q-btn
+        ref="retryParentButton"
+        class="q-ml-sm"
+        flat
+        dense
+        :label="$t('stampPreparation.retryReplyParent')"
+        :disable="parentLoading"
+        :loading="parentLoading"
+        @click="loadParent"
+        data-test="retry-parent"
+      />
+    </div>
     <q-form @submit="post">
       <q-card-section>
         <q-input
@@ -21,8 +46,10 @@
         />
         <q-select
           label="Topic"
-          :disable="!!getMessage(parentDigest)"
-          v-model="topic"
+          :disable="!!parentDigest"
+          :model-value="topic"
+          @update:model-value="setTopic"
+          @input-value="markTopicEdited"
           :options="topics"
           @filter="filterTopics"
           use-input
@@ -76,39 +103,55 @@
         >
           {{ preparationStatus }}
         </div>
-        <q-btn @click="back" label="back" color="negative" class="q-ma-sm" />
+        <div
+          v-if="outcomeUnknown"
+          class="text-caption q-mr-sm"
+          role="status"
+          data-test="post-outcome-unknown"
+        >
+          {{ $t('stampPreparation.postOutcomeUnknown') }}
+        </div>
+        <q-btn
+          ref="composeFocusTarget"
+          @click="back"
+          label="back"
+          color="negative"
+          class="q-ma-sm"
+          data-test="compose-focus-target"
+        />
         <q-btn
           type="submit"
           label="Post"
           color="primary"
           class="q-ma-sm"
-          :disable="posting"
+          :disable="
+            posting || outcomeUnknown || (!!parentDigest && !parentMessage)
+          "
           :loading="posting"
         />
       </q-card-actions>
     </q-form>
   </q-card>
 
-  <q-card class="q-ma-sm" v-if="getMessage(parentDigest)">
+  <q-card class="q-ma-sm" v-if="parentMessage">
     <q-card-section>Replying to:</q-card-section>
-    <a-message
-      :message="getMessage(parentDigest)"
-      :show-replies="false"
-      :compact="true"
-    />
+    <a-message :message="parentMessage" :show-replies="false" :compact="true" />
   </q-card>
 </template>
 
 <script lang="ts">
 import { navigateBack } from 'src/utils/navigate-back'
-import { defineComponent } from 'vue'
+import { defineComponent, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { renderMarkdown } from '../utils/markdown'
 import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { activeChain } from '@frank/wallet/chain'
+import type { WalletHandle } from '@frank/wallet/chain'
 import { displayToSafeRawAmount } from 'src/utils/chain-amount'
+import { useWalletStore } from 'src/stores/wallet'
+import type { ForumPostReservationStatus } from 'src/stores/forum'
 
 import { useTopicStore } from 'src/stores/topics'
 import { topicOptions } from 'src/utils/topic-options'
@@ -120,13 +163,29 @@ import { stampPreparationStatus } from 'src/utils/stamp-preparation-status'
 export default defineComponent({
   setup() {
     const forum = useForumStore()
-    const { topics, getMessage } = storeToRefs(forum)
+    const walletStore = useWalletStore()
+    const walletRevision = ref(0)
+    watch(
+      () => walletStore.seedPhrase,
+      () => {
+        walletRevision.value += 1
+      },
+    )
+    const { topics, getMessage, selectedTopic } = storeToRefs(forum)
     return {
       topicStore: useTopicStore(),
       getMessage: getMessage,
       availableTopics: topics,
+      selectedTopic,
+      walletRevision,
       pushNewTopic: forum.pushNewTopic,
       postMessage: forum.putMessage,
+      fetchMessage: forum.fetchMessage,
+      getPostReservationId: forum.getPostReservationId,
+      reservePostSubmission: forum.reservePostSubmission,
+      releasePostSubmission: forum.releasePostSubmission,
+      markPostSubmissionOutcomeUnknown: forum.markPostSubmissionOutcomeUnknown,
+      getPostReservationStatus: forum.getPostReservationStatus,
     }
   },
   components: {
@@ -137,9 +196,14 @@ export default defineComponent({
   data() {
     const forum = useForumStore()
     const parentDigest = this.$route.params.parentDigest as string
+    const topLevelTopic = forum.selectedTopic
     return {
       offering: activeChain.toDisplayAmount(activeChain.defaultTopicVoteValue),
-      topic: forum.index[parentDigest]?.topic ?? '',
+      topic: parentDigest
+        ? forum.getMessage(parentDigest)?.topic ?? ''
+        : topLevelTopic,
+      topLevelTopic,
+      topLevelTopicWasEdited: false,
       topics: [] as string[],
       title: '',
       url: null,
@@ -147,14 +211,43 @@ export default defineComponent({
       parentDigest,
       chainUnit: activeChain.unit,
       posting: false,
+      outcomeUnknown: false,
       preparationStatus: null as string | null,
+      activeSubmissionId: null as number | null,
+      componentMounted: false,
+      routeEpoch: 0,
+      parentRouteEpoch: 0,
+      parentLoading: false,
+      nextParentRequestId: 0,
+      activeParentRequestId: null as number | null,
+      nextParentFocusHandoffId: 0,
+      parentFocusHandoffId: null as number | null,
+      activeWallet: null as WalletHandle | null,
     }
   },
-  beforeRouteUpdate(to, from, next) {
-    this.parentDigest = to.params.parentDigest as string
-    next()
+  mounted() {
+    this.componentMounted = true
+    if (this.parentDigest && !this.parentMessage) {
+      void this.loadParent()
+    } else {
+      void this.syncSubmissionUi(this.parentDigest)
+    }
+  },
+  beforeUnmount() {
+    this.componentMounted = false
+    this.routeEpoch += 1
+    this.parentRouteEpoch += 1
+    this.activeSubmissionId = null
+    this.parentFocusHandoffId = null
   },
   computed: {
+    currentReservationStatus(): ForumPostReservationStatus | undefined {
+      if (!this.activeWallet) return undefined
+      return this.getPostReservationStatus({
+        wallet: this.activeWallet,
+        destination: this.submissionDestination(this.parentDigest),
+      })
+    },
     // Topics seen in posts, plus the default and relay-discovered ones the topic store tracks.
     knownTopics(): string[] {
       return [...this.availableTopics, ...this.topicStore.getTopics]
@@ -163,8 +256,262 @@ export default defineComponent({
       const text: string = this.message
       return renderMarkdown(text, this.$q.dark.isActive)
     },
+    parentMessage() {
+      return this.parentDigest ? this.getMessage(this.parentDigest) : undefined
+    },
+    currentReservationId() {
+      if (!this.activeWallet) return undefined
+      return this.getPostReservationId({
+        wallet: this.activeWallet,
+        destination: this.submissionDestination(this.parentDigest),
+      })
+    },
+  },
+  watch: {
+    '$route.params.parentDigest'(nextParentDigest: unknown) {
+      this.syncParentDigest(
+        typeof nextParentDigest === 'string' ? nextParentDigest : undefined,
+      )
+    },
+    'parentMessage'(nextParent: { topic: string } | undefined) {
+      if (this.parentDigest && nextParent) {
+        const retryButton = this.$refs.retryParentButton as
+          | { $el?: HTMLElement }
+          | HTMLElement
+          | undefined
+        const retryElement =
+          retryButton instanceof HTMLElement ? retryButton : retryButton?.$el
+        const retryOwnedFocus = retryElement?.contains(document.activeElement)
+        const handoffId = retryOwnedFocus
+          ? ++this.nextParentFocusHandoffId
+          : null
+        const handoff =
+          handoffId !== null
+            ? {
+                parentDigest: this.parentDigest,
+                parentRouteEpoch: this.parentRouteEpoch,
+                handoffId,
+              }
+            : null
+        // A valid parent makes every in-flight request for this route redundant. Revoke its
+        // completion authority before either the request that populated the shared store or a
+        // newer retry can settle and interfere with the resolved-parent UI.
+        this.activeParentRequestId = null
+        this.parentFocusHandoffId = handoff?.handoffId ?? null
+        this.parentLoading = false
+        this.topic = nextParent.topic
+        void this.syncSubmissionUi(this.parentDigest)
+        if (handoff) void this.handoffResolvedParentFocus(handoff)
+      }
+    },
+    'currentReservationId'(nextReservationId: number | undefined) {
+      if (nextReservationId === undefined) {
+        this.posting = false
+        this.outcomeUnknown = false
+        this.preparationStatus = null
+      } else if (this.activeSubmissionId !== nextReservationId) {
+        // A reservation this instance does not own is live for this destination
+        // (remount, duplicate attempt, or a sibling instance). Render its state.
+        this.syncCurrentReservationUi()
+      }
+    },
+    'currentReservationStatus'(nextStatus) {
+      // A reservation this instance does not own can flip from in-flight to
+      // outcome-unknown while this page is mounted (the owner instance settles
+      // elsewhere). Re-render the destination's truthful state.
+      if (
+        nextStatus !== undefined &&
+        this.activeSubmissionId !== this.currentReservationId
+      ) {
+        this.syncCurrentReservationUi()
+      }
+    },
+    'selectedTopic'(nextTopic: string) {
+      if (!this.parentDigest && !this.topLevelTopicWasEdited) {
+        this.topLevelTopic = nextTopic
+        this.topic = nextTopic
+      }
+    },
+    'walletRevision'() {
+      this.routeEpoch += 1
+      this.activeSubmissionId = null
+      this.activeWallet = null
+      this.posting = false
+      this.outcomeUnknown = false
+      this.preparationStatus = null
+      if (!this.parentDigest || this.parentMessage) {
+        void this.syncSubmissionUi(this.parentDigest)
+      }
+    },
   },
   methods: {
+    submissionDestination(parentDigest: string | undefined) {
+      return parentDigest ? `reply:${parentDigest}` : 'top-level'
+    },
+    syncCurrentReservationUi() {
+      const reservationId = this.currentReservationId
+      const outcomeUnknown =
+        reservationId !== undefined &&
+        this.currentReservationStatus === 'outcome-unknown'
+      this.posting = reservationId !== undefined && !outcomeUnknown
+      this.outcomeUnknown = outcomeUnknown
+      this.preparationStatus = this.posting
+        ? this.$t('stampPreparation.posting')
+        : null
+    },
+    async syncSubmissionUi(parentDigest: string | undefined) {
+      const requestedDestination = this.submissionDestination(parentDigest)
+      const requestedEpoch = this.routeEpoch
+      const requestedWalletRevision = this.walletRevision
+      let walletPromise: ReturnType<typeof useActiveWallet>
+      try {
+        walletPromise = useActiveWallet()
+        const wallet = await walletPromise
+        if (
+          !this.componentMounted ||
+          this.routeEpoch !== requestedEpoch ||
+          this.walletRevision !== requestedWalletRevision ||
+          this.submissionDestination(this.parentDigest) !== requestedDestination
+        ) {
+          return
+        }
+        this.activeWallet = wallet
+        this.syncCurrentReservationUi()
+      } catch {
+        if (
+          this.componentMounted &&
+          this.routeEpoch === requestedEpoch &&
+          this.walletRevision === requestedWalletRevision &&
+          this.submissionDestination(this.parentDigest) === requestedDestination
+        ) {
+          this.activeWallet = null
+          this.syncCurrentReservationUi()
+        }
+      }
+    },
+    syncParentDigest(parentDigest: string | undefined) {
+      this.routeEpoch += 1
+      this.parentRouteEpoch += 1
+      this.parentFocusHandoffId = null
+      this.parentDigest = parentDigest
+      if (parentDigest) {
+        this.topic = this.getMessage(parentDigest)?.topic ?? ''
+      } else {
+        if (!this.topLevelTopicWasEdited) {
+          this.topLevelTopic = this.selectedTopic
+        }
+        this.topic = this.topLevelTopic
+      }
+      if (parentDigest && !this.parentMessage) {
+        this.activeWallet = null
+        this.posting = false
+        this.outcomeUnknown = false
+        this.preparationStatus = null
+        void this.loadParent()
+      } else {
+        this.parentLoading = false
+        void this.syncSubmissionUi(parentDigest)
+      }
+    },
+    async loadParent() {
+      const requestedParent = this.parentDigest
+      if (!requestedParent || this.getMessage(requestedParent)) return
+      const requestedParentRouteEpoch = this.parentRouteEpoch
+      const requestId = ++this.nextParentRequestId
+      this.parentFocusHandoffId = null
+      this.activeParentRequestId = requestId
+      const retryButton = this.$refs.retryParentButton as
+        | { $el?: HTMLElement }
+        | HTMLElement
+        | undefined
+      const retryElement =
+        retryButton instanceof HTMLElement ? retryButton : retryButton?.$el
+      const retryOwnedFocus = retryElement?.contains(document.activeElement)
+      this.parentLoading = true
+      try {
+        await this.fetchMessage({ payloadDigest: requestedParent })
+      } catch {
+        // The visible terminal state supplies the retry path.
+      } finally {
+        const ownsParentRequest = () =>
+          this.componentMounted &&
+          this.parentRouteEpoch === requestedParentRouteEpoch &&
+          this.parentDigest === requestedParent &&
+          this.activeParentRequestId === requestId
+        if (ownsParentRequest()) {
+          this.parentLoading = false
+          if (retryOwnedFocus) {
+            await this.$nextTick()
+            if (ownsParentRequest()) {
+              const activeElement = document.activeElement
+              const hasConnectedFocus =
+                activeElement instanceof Element &&
+                activeElement !== document.body &&
+                activeElement.isConnected
+              if (!hasConnectedFocus) {
+                const focusTarget = this.parentMessage
+                  ? this.$refs.composeFocusTarget
+                  : this.$refs.retryParentButton
+                const targetElement =
+                  focusTarget instanceof HTMLElement
+                    ? focusTarget
+                    : (focusTarget as { $el?: HTMLElement } | undefined)?.$el
+                targetElement?.focus()
+              }
+            }
+          }
+          if (ownsParentRequest()) this.activeParentRequestId = null
+        }
+      }
+    },
+    async handoffResolvedParentFocus(handoff: {
+      parentDigest: string
+      parentRouteEpoch: number
+      handoffId: number
+    }) {
+      await this.$nextTick()
+      if (this.parentFocusHandoffId !== handoff.handoffId) return
+      this.parentFocusHandoffId = null
+      if (
+        !this.componentMounted ||
+        this.parentRouteEpoch !== handoff.parentRouteEpoch ||
+        this.parentDigest !== handoff.parentDigest ||
+        !this.parentMessage
+      ) {
+        return
+      }
+      const activeElement = document.activeElement
+      const hasConnectedFocus =
+        activeElement instanceof Element &&
+        activeElement !== document.body &&
+        activeElement.isConnected
+      if (!hasConnectedFocus) {
+        const focusTarget = this.$refs.composeFocusTarget as
+          | { $el?: HTMLElement }
+          | HTMLElement
+          | undefined
+        const targetElement =
+          focusTarget instanceof HTMLElement ? focusTarget : focusTarget?.$el
+        targetElement?.focus()
+      }
+    },
+    setTopic(topic: string | null) {
+      if (this.parentDigest) return
+      this.topLevelTopicWasEdited = true
+      this.topLevelTopic = topic ?? ''
+      this.topic = this.topLevelTopic
+    },
+    markTopicEdited() {
+      if (!this.parentDigest) {
+        this.topLevelTopicWasEdited = true
+      }
+    },
+    sameWalletIdentity(left: WalletHandle | null, right: WalletHandle) {
+      return (
+        left?.identity.address.raw.toLowerCase() ===
+        right.identity.address.raw.toLowerCase()
+      )
+    },
     filterTopics(inputTopic: string, update: (arg: () => void) => void) {
       update(() => {
         this.topics = topicOptions(inputTopic, this.knownTopics)
@@ -186,57 +533,148 @@ export default defineComponent({
       }
     },
     async post() {
+      if (this.parentDigest && !this.parentMessage) return
+
+      const submittedTopic = this.topic
+      const submittedParentDigest = this.parentDigest
+      let submittedOffering: number
+      try {
+        submittedOffering = displayToSafeRawAmount(
+          activeChain,
+          this.offering.toString(),
+        )
+      } catch (err) {
+        errorNotify(err as Error)
+        return
+      }
+      const submittedDestination = this.submissionDestination(
+        submittedParentDigest,
+      )
+      const submissionEpoch = this.routeEpoch
+      const submissionWalletRevision = this.walletRevision
       const entry = {
         kind: 'post' as const,
         title: this.title,
         url: this.url ? this.url : undefined,
         message: this.message,
       }
-      console.log('posting message', entry)
-      if (!entry) {
-        console.error('entry is null in CreatePost.vue post handler')
+      let walletPromise: ReturnType<typeof useActiveWallet>
+      let wallet: WalletHandle
+      try {
+        walletPromise = useActiveWallet()
+        wallet = await walletPromise
+      } catch (err) {
+        errorNotify(err as Error)
         return
       }
-      // A second submit while the first is still preparing/funding would queue a second burn.
-      if (this.posting) return
-      this.posting = true
-      this.preparationStatus = this.$t('stampPreparation.posting')
-
-      await submitPost({
-        submit: async () => {
-          const wallet = await useActiveWallet()
-          await this.postMessage({
-            wallet,
-            entry,
-            satoshis: displayToSafeRawAmount(
-              activeChain,
-              this.offering.toString(),
-            ),
-            topic: this.topic,
-            parentDigest: this.parentDigest,
-            onPreparationProgress: progress => {
-              this.preparationStatus = stampPreparationStatus(
-                progress,
-                (key, params) => this.$t(key, params ?? {}),
-                {
-                  format: raw => activeChain.toDisplayAmount(raw),
-                  unit: activeChain.unit,
-                },
-              )
-            },
-          })
-        },
-        errorNotify,
-        infoNotify,
-        navigateBack: this.back,
-        messages: {
-          created: this.$t('stampPreparation.postCreated'),
-          refreshFailed: this.$t('stampPreparation.postedRefreshFailed'),
-        },
-      }).finally(() => {
-        this.posting = false
-        this.preparationStatus = null
+      const ownsCurrentUi = () => {
+        return (
+          this.componentMounted &&
+          this.routeEpoch === submissionEpoch &&
+          this.walletRevision === submissionWalletRevision &&
+          this.submissionDestination(this.parentDigest) === submittedDestination
+        )
+      }
+      if (ownsCurrentUi()) {
+        this.activeWallet = wallet
+      }
+      const submissionId = this.reservePostSubmission({
+        wallet,
+        destination: submittedDestination,
       })
+      if (submissionId === undefined) {
+        if (ownsCurrentUi()) this.syncCurrentReservationUi()
+        return
+      }
+      const postingStatus = this.$t('stampPreparation.posting')
+      if (ownsCurrentUi()) {
+        this.activeSubmissionId = submissionId
+        this.posting = true
+        this.preparationStatus = postingStatus
+      }
+      console.log('posting message', entry)
+      let retainReservation = false
+      try {
+        const outcome = await submitPost({
+          submit: async () => {
+            await this.postMessage({
+              wallet,
+              entry,
+              satoshis: submittedOffering,
+              topic: submittedTopic,
+              parentDigest: submittedParentDigest,
+              onPreparationProgress: progress => {
+                if (
+                  !this.componentMounted ||
+                  this.activeSubmissionId !== submissionId ||
+                  this.routeEpoch !== submissionEpoch
+                ) {
+                  return
+                }
+                const status = stampPreparationStatus(
+                  progress,
+                  (key, params) => this.$t(key, params ?? {}),
+                  {
+                    format: raw => activeChain.toDisplayAmount(raw),
+                    unit: activeChain.unit,
+                  },
+                )
+                this.preparationStatus = status
+              },
+            })
+          },
+          errorNotify,
+          infoNotify,
+          onOutcome: outcome => {
+            retainReservation = outcome === 'unknown-outcome'
+            if (outcome === 'unknown-outcome') {
+              // The paid call may have landed: keep the reservation but mark it
+              // so every mounted instance of this destination renders the
+              // terminal unknown state instead of a false ongoing post.
+              this.markPostSubmissionOutcomeUnknown({
+                wallet,
+                destination: submittedDestination,
+                reservationId: submissionId,
+              })
+            }
+          },
+          navigateBack: () => {
+            if (
+              this.componentMounted &&
+              this.activeSubmissionId === submissionId &&
+              this.routeEpoch === submissionEpoch &&
+              this.sameWalletIdentity(this.activeWallet, wallet) &&
+              this.submissionDestination(this.parentDigest) ===
+                submittedDestination
+            ) {
+              this.back()
+            }
+          },
+          messages: {
+            created: this.$t('stampPreparation.postCreated', {
+              topic: submittedTopic,
+            }),
+            refreshFailed: this.$t('stampPreparation.postedRefreshFailed'),
+          },
+        })
+        retainReservation = outcome === 'unknown-outcome'
+      } finally {
+        if (!retainReservation) {
+          this.releasePostSubmission({
+            wallet,
+            destination: submittedDestination,
+            reservationId: submissionId,
+          })
+        }
+        if (
+          ownsCurrentUi() &&
+          this.activeSubmissionId === submissionId &&
+          this.sameWalletIdentity(this.activeWallet, wallet)
+        ) {
+          this.activeSubmissionId = null
+          this.syncCurrentReservationUi()
+        }
+      }
     },
     back() {
       navigateBack(this.$router)

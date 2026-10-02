@@ -8,6 +8,8 @@
           dense
           @click="toggleSettingsDrawerOpen"
           icon="menu"
+          :aria-label="$t('a11y.openNavigation')"
+          :aria-expanded="myDrawerOpen"
         />
         <q-toolbar-title class="h6">Changelog</q-toolbar-title>
       </q-toolbar>
@@ -321,6 +323,7 @@
             size="md"
             icon="keyboard_arrow_down"
             color="accent"
+            :aria-label="$t('a11y.scrollToLatest')"
             @click="scrollBottom"
           />
         </q-page-sticky>
@@ -331,6 +334,8 @@
 
 <script lang="ts">
 import { defineComponent, nextTick, ref } from 'vue'
+
+import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { QScrollArea } from 'quasar'
 
 const scrollDuration = 0
@@ -344,6 +349,7 @@ export default defineComponent({
     const chatScroll = ref<QScrollArea | null>(null)
 
     return {
+      myDrawerOpen: useMyDrawerOpen(),
       bottom,
       chatScroll,
       scrollBottom() {

@@ -151,12 +151,46 @@ fn check_config_cli_accepts_an_enabled_monad_mailbox_without_starting_it() {
         "[registry.monad_mailbox]\nenabled = true\nmin_value_wei = \"1000000000000\"\nexpected_chain_id = 10143",
         "[registry.monad_mailbox]\nenabled = true\nrpc_url = \"https://rpc.invalid\"\nmin_value_wei = \"1\"\nexpected_chain_id = 143",
     );
-    let output = check_stdin(enabled.as_bytes());
+    let output = check_stdin_with_env(
+        enabled.as_bytes(),
+        &[
+            ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
+            ("FRANK_NETWORK_TAG", "MON1"),
+        ],
+    );
     assert!(
         output.status.success(),
         "checker failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn check_config_cli_rejects_crossed_network_tags_and_chain_ids() {
+    let testnet = include_bytes!("../../cashwebd.local.toml");
+    let testnet_with_mainnet_tag = check_stdin_with_env(
+        testnet,
+        &[
+            ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
+            ("FRANK_NETWORK_TAG", "MON1"),
+        ],
+    );
+    assert!(!testnet_with_mainnet_tag.status.success());
+    assert!(String::from_utf8_lossy(&testnet_with_mainnet_tag.stderr)
+        .contains("MON1 identifies EVM chain 143"));
+
+    let mainnet = include_str!("../../cashwebd.local.toml")
+        .replace("expected_chain_id = 10143", "expected_chain_id = 143");
+    let mainnet_with_testnet_tag = check_stdin_with_env(
+        mainnet.as_bytes(),
+        &[
+            ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
+            ("FRANK_NETWORK_TAG", "MONT"),
+        ],
+    );
+    assert!(!mainnet_with_testnet_tag.status.success());
+    assert!(String::from_utf8_lossy(&mainnet_with_testnet_tag.stderr)
+        .contains("MONT identifies EVM chain 10143"));
 }
 
 #[test]

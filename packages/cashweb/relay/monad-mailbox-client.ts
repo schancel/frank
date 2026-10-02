@@ -48,7 +48,7 @@
  * for 100 rows per page (the maximum) and a caller that gets a truncated result simply polls again.
  */
 import axios from 'axios'
-import { crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
+import { cryptoBackend } from '@frank/nakamoto'
 
 import __pb_monad_message_pb from './monad_message_pb'
 const { StoredMonadMessages, MonadStampedMessage } = __pb_monad_message_pb
@@ -293,8 +293,11 @@ export function buildMailboxAuthPreimage(
   return concatBytes(parts)
 }
 
+/** One SHA-256 of the mailbox auth preimage. Matches `Sha256::digest` in
+ * `authenticate_private_recipient` (decision #501). Not double-SHA256. */
 export function mailboxAuthDigest(preimage: Uint8Array): Uint8Array {
-  return new Uint8Array(bitcoreCrypto.Hash.sha256(Buffer.from(preimage)))
+  // cryptoBackend rejects Buffer, which is a Uint8Array subclass.
+  return cryptoBackend.sha256(Uint8Array.from(preimage))
 }
 
 // --- transport with retries -----------------------------------------------------------------

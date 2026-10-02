@@ -24,6 +24,8 @@ describe('@frank/crypto-box scaffold', () => {
     expect(producedSuiteIds).not.toContain(65535)
     expect(isProducedSuite(65535)).toBe(false)
     expect(isProducedSuite(1)).toBe(false)
+    expect(isProducedSuite(0xfe01)).toBe(true)
+    expect(producedSuiteIds).toEqual([0xfe01, 0xfe02, 0xfe03, 0xfe04])
     expect(() => refuseReservedSuite(1)).not.toThrow()
     try {
       refuseReservedSuite(65535)

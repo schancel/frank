@@ -1,14 +1,15 @@
 <template>
-  <q-card
-    class="q-pa-none max-w-720"
-    :class="{ 'q-ma-sm': !compact }"
-    flat
-    bordered
-  >
+  <q-card class="q-pa-none" :class="{ 'q-ma-sm': !compact }" flat bordered>
     <q-card-section class="row" horizontal>
       <q-card-section class="col-shrink q-pa-sm bg-on-secondary">
         <q-card-section class="q-pa-none text-center">
-          <q-btn flat icon="arrow_drop_up" padding="0" @click="addVotes(1)" />
+          <q-btn
+            flat
+            icon="arrow_drop_up"
+            padding="0"
+            :aria-label="$t('a11y.voteUp')"
+            @click="addVotes(1)"
+          />
         </q-card-section>
         <q-card-section class="q-pa-none q-mt-xs text-center">{{
           formatVoteWeight(message.satoshis)
@@ -18,6 +19,7 @@
             flat
             icon="arrow_drop_down"
             padding="0"
+            :aria-label="$t('a11y.voteDown')"
             @click="addVotes(-1)"
           />
         </q-card-section>
@@ -284,10 +286,6 @@ h4 {
   font-size: 120%;
   font-weight: bold;
   line-height: inherit;
-}
-
-.max-w-720 {
-  width: min(100% - 32px, 720px);
 }
 
 .post-title {

@@ -27,6 +27,7 @@ import { TextDecoder } from 'util'
 
 const PENDING_SEED_KEY = '__pending_server_seed__'
 const PENDING_SEED_HASH_KEY = '__pending_server_seed_hash__'
+const SINCE_KEY = '__poll_since_ms__'
 const GAME_PREFIX = 'game:'
 const PROCESSED_PREFIX = 'processed:'
 const WAGER_CLAIM_PREFIX = 'wager-claim:'
@@ -58,6 +59,45 @@ export interface RefundRecord {
   amountWei: bigint
   refundTxHash?: string
 }
+
+/** The payout a resolved game owes its player, persisted INSIDE the game record so it is written in
+ * the same atomic put that marks the game revealed (see `resolveGameWithPayout`).
+ *
+ * - `owed`: nothing signed yet; safe to (re)build and sign.
+ * - `submitting`: a signed transaction (`rawTx`/`txHash`, journaled BEFORE it was broadcast) may or
+ *   may not have reached the network. It is only ever re-broadcast as the same bytes, never
+ *   re-signed, so at most one transfer can ever mine for this game.
+ * - `submitted`: the node accepted the broadcast; still not paid until a receipt shows success.
+ * - `confirmed`: a receipt shows success. Terminal.
+ * - `failed`: the transaction mined but reverted (value not moved). Terminal for the bot, left for
+ *   an operator (a re-sign would be sound here, but is deliberately not automated).
+ * A payout that cannot be built (RPC outage, estimateGas error, underfunded payer) simply stays
+ * `owed` and is retried forever; it alerts but never changes state. `failed` still counts as owed
+ * in `openExposureWei` (the debt is real); the operator tool's `requeue` is the way out. */
+export interface PayoutRecord {
+  status: PayoutStatus
+  amountWei: bigint
+  /** Epoch ms when the payout became owed; used only for stuck-payout alerting. */
+  owedAt: number
+  /** The payer nonce the journaled transaction was signed with (operator diagnostics). */
+  nonce?: number
+  rawTx?: string
+  txHash?: string
+}
+
+export type PayoutStatus =
+  | 'owed'
+  | 'submitting'
+  | 'submitted'
+  | 'confirmed'
+  | 'failed'
+const PAYOUT_STATUSES: readonly PayoutStatus[] = [
+  'owed',
+  'submitting',
+  'submitted',
+  'confirmed',
+  'failed',
+]
 
 export interface ServerSeedCommitment {
   serverSeed: string
@@ -167,6 +207,9 @@ export interface BlackjackGameRecord {
    * same trust rule as `wagerWei`. Only ever set together with `doubled: true`, in the same
    * `setGame` transition. */
   doubleWagerWei?: bigint
+  /** Set (atomically with `revealed: true`) when the resolved hand owes the player money. Absent
+   * on a loss and on every row written before payouts were journaled. */
+  payout?: PayoutRecord
 }
 
 export class BlackjackBotStateStore {
@@ -178,6 +221,7 @@ export class BlackjackBotStateStore {
   private wagerClaims = new Map<string, string | null>()
   private refunds = new Map<string, RefundRecord>()
   private processedPayloadHashes = new Set<string>()
+  private sinceMs?: number
   private pendingWrites: Promise<unknown>[] = []
   private mutationQueue: Promise<void> = Promise.resolve()
 
@@ -243,6 +287,22 @@ export class BlackjackBotStateStore {
             throw new Error('pending server seed hash must be a string')
           }
           this.pendingServerSeedHash = parsed
+        } else if (key === SINCE_KEY) {
+          // A corrupt cursor must not brick the bot: ignore it (the loop then starts at "now" and
+          // overwrites it) and say so loudly. Handled messages are still deduped by their markers.
+          try {
+            const parsed = JSON.parse(decodeUtf8Strict(valueBytes, 'poll cursor'))
+            if (!Number.isSafeInteger(parsed) || parsed < 0) {
+              throw new Error('poll cursor must be a non-negative integer')
+            }
+            this.sinceMs = parsed
+          } catch (err) {
+            console.error(
+              '[blackjack-bot] CURSOR CORRUPT: ignoring the persisted poll cursor and starting at now; messages sent while the bot was down may need manual review:',
+              err,
+            )
+            this.sinceMs = undefined
+          }
         } else if (key.startsWith(GAME_PREFIX)) {
           const gameIdRaw = key.slice(GAME_PREFIX.length)
           let wagerTxHash: string | undefined
@@ -459,6 +519,7 @@ export class BlackjackBotStateStore {
   private resetLoadedState(): void {
     this.pendingServerSeed = undefined
     this.pendingServerSeedHash = undefined
+    this.sinceMs = undefined
     this.games.clear()
     this.wagerClaims.clear()
     this.refunds.clear()
@@ -484,6 +545,27 @@ export class BlackjackBotStateStore {
     )
     this.pendingWrites.push(result)
     return result
+  }
+
+  /** Durable poll cursor: the relay timestamp from which messages must still be fetched. Only ever
+   * advanced past messages that were fully handled (or marked processed), so a restart resumes
+   * from it instead of from `Date.now()`. Undefined on a fresh database. */
+  getSince(): number | undefined {
+    return this.sinceMs
+  }
+
+  async setSince(sinceMs: number): Promise<void> {
+    if (!Number.isSafeInteger(sinceMs) || sinceMs < 0) {
+      throw new Error('poll cursor must be a non-negative integer')
+    }
+    await this.serializeMutation(async () => {
+      if (this.sinceMs !== undefined && sinceMs <= this.sinceMs) return
+      await this.db.put(
+        encodeUtf8(SINCE_KEY) as never,
+        encodeUtf8(JSON.stringify(sinceMs)) as never,
+      )
+      this.sinceMs = sinceMs
+    })
   }
 
   getPendingCommitment(): ServerSeedCommitment | undefined {
@@ -539,6 +621,9 @@ export class BlackjackBotStateStore {
       ) {
         throw new Error('cannot change immutable blackjack game authority')
       }
+      if (!samePayout(existing.payout, record.payout)) {
+        throw new Error('setGame cannot change a game payout')
+      }
       if (
         record.dealtCount < existing.dealtCount ||
         (existing.revealed && !record.revealed) ||
@@ -553,6 +638,165 @@ export class BlackjackBotStateStore {
         encodeUtf8(serializeGameRecord(record)) as never,
       )
       this.games.set(normalizedGameId, freezeGameRecord(record))
+    })
+  }
+
+  /**
+   * Marks a game revealed and, when it owes the player, records the payout as `owed` in the SAME
+   * atomic put. There is no durable state in which a hand is resolved but its payout is unrecorded.
+   * Idempotent: an already-revealed game is left untouched (returns `already_revealed`).
+   */
+  async resolveGameWithPayout(params: {
+    gameId: string
+    dealtCount: number
+    payoutWei: bigint
+    now?: number
+  }): Promise<{ ok: true } | { ok: false; reason: 'already_revealed' | 'no_game' }> {
+    const gameId = normalizeBlackjackGameId(params.gameId)
+    if (params.payoutWei < 0n || params.payoutWei > MAX_WAGER_WEI) {
+      throw new Error('payout amount is out of range')
+    }
+    return this.serializeMutation(async () => {
+      const existing = this.games.get(gameId)
+      if (!existing || existing.authority !== 'verified-wager-sender') {
+        return { ok: false as const, reason: 'no_game' as const }
+      }
+      if (existing.revealed) {
+        return { ok: false as const, reason: 'already_revealed' as const }
+      }
+      if (params.dealtCount < existing.dealtCount) {
+        throw new Error('cannot move blackjack game state backwards')
+      }
+      const record: BlackjackGameRecord = {
+        ...existing,
+        dealtCount: params.dealtCount,
+        revealed: true,
+        payout:
+          params.payoutWei > 0n
+            ? { status: 'owed', amountWei: params.payoutWei, owedAt: params.now ?? Date.now() }
+            : undefined,
+      }
+      validateRuntimeGameRecord(record, gameId)
+      await (this.db as any).batch([
+        rawPut(GAME_PREFIX + gameId, serializeGameRecord(record)),
+      ])
+      this.games.set(gameId, freezeGameRecord(record))
+      return { ok: true as const }
+    })
+  }
+
+  getPayout(gameId: string): PayoutRecord | undefined {
+    return this.games.get(normalizeBlackjackGameId(gameId))?.payout
+  }
+
+  /** Every payout that is not `confirmed` (includes `failed`, which needs an operator). */
+  getUnconfirmedPayouts(): Array<[string, PayoutRecord]> {
+    const rows: Array<[string, PayoutRecord]> = []
+    for (const [gameId, game] of this.games) {
+      if (game.payout && game.payout.status !== 'confirmed') rows.push([gameId, game.payout])
+    }
+    return rows
+  }
+
+  /** Payouts the bot itself still drives (`owed`/`submitting`/`submitted`). */
+  getOpenPayouts(): Array<[string, PayoutRecord]> {
+    const open: Array<[string, PayoutRecord]> = []
+    for (const [gameId, game] of this.games) {
+      const p = game.payout
+      if (p && (p.status === 'owed' || p.status === 'submitting' || p.status === 'submitted')) {
+        open.push([gameId, p])
+      }
+    }
+    return open
+  }
+
+  /** True while a signed payout transaction exists that is not yet confirmed. While true, nothing
+   * else may sign on the payer account: an unbroadcast signed payout still owns its nonce, and any
+   * other transaction built from the chain's pending count could take it. */
+  hasSignedUnconfirmedPayout(): boolean {
+    for (const game of this.games.values()) {
+      const s = game.payout?.status
+      if (s === 'submitting' || s === 'submitted') return true
+    }
+    return false
+  }
+
+  /** Advances a payout along `owed -> submitting -> submitted -> confirmed` (or `failed`). The
+   * signed bytes are journaled by the `submitting` transition and never change afterwards. */
+  async setPayoutState(
+    gameId: string,
+    next: { status: PayoutStatus; rawTx?: string; txHash?: string; nonce?: number },
+  ): Promise<void> {
+    const id = normalizeBlackjackGameId(gameId)
+    await this.serializeMutation(async () => {
+      const existing = this.games.get(id)
+      const current = existing?.payout
+      if (!existing || !current) throw new Error('no payout is owed for this game')
+      const allowed: Record<PayoutStatus, PayoutStatus[]> = {
+        owed: ['submitting'],
+        submitting: ['submitted', 'confirmed', 'failed'],
+        submitted: ['confirmed', 'failed'],
+        confirmed: [],
+        failed: [],
+      }
+      if (!allowed[current.status].includes(next.status)) {
+        throw new Error(`illegal payout transition ${current.status} -> ${next.status}`)
+      }
+      let payout: PayoutRecord
+      if (next.status === 'submitting') {
+        if (!next.rawTx || !next.txHash) {
+          throw new Error('the signed payout must be journaled with its raw tx and hash')
+        }
+        payout = {
+          ...current,
+          status: 'submitting',
+          rawTx: next.rawTx,
+          txHash: next.txHash,
+          ...(next.nonce !== undefined ? { nonce: next.nonce } : {}),
+        }
+      } else {
+        payout = { ...current, status: next.status }
+      }
+      const record: BlackjackGameRecord = { ...existing, payout }
+      await this.db.put(
+        encodeUtf8(GAME_PREFIX + id) as never,
+        encodeUtf8(serializeGameRecord(record)) as never,
+      )
+      this.games.set(id, freezeGameRecord(record))
+    })
+  }
+
+  /** Operator escape hatch: moves a payout whose status is in `from` back to `owed`, dropping the
+   * journaled transaction so it is signed afresh. Refuses any other status. The caller (the admin
+   * tool) is responsible for the evidence: `failed` (mined, reverted) needs none beyond that
+   * receipt; `submitting`/`submitted` need proof the old tx can never mine (its nonce was consumed
+   * by another confirmed tx). */
+  async requeuePayout(gameId: string, from: readonly PayoutStatus[]): Promise<void> {
+    const id = normalizeBlackjackGameId(gameId)
+    const check = (status: PayoutStatus | undefined) => {
+      if (!status) throw new Error('no payout is owed for this game')
+      if (!from.includes(status)) {
+        throw new Error(`this requeue mode only accepts ${from.join('/')} payouts (this one is ${status})`)
+      }
+    }
+    // Refuse up front, outside the mutation queue: a rejected queued mutation would otherwise
+    // resurface as an error from the next unrelated `flush()`.
+    check(this.games.get(id)?.payout?.status)
+    await this.serializeMutation(async () => {
+      const existing = this.games.get(id)
+      const current = existing?.payout
+      check(current?.status)
+      const payout: PayoutRecord = {
+        status: 'owed',
+        amountWei: current!.amountWei,
+        owedAt: current!.owedAt,
+      }
+      const record: BlackjackGameRecord = { ...existing!, payout }
+      await this.db.put(
+        encodeUtf8(GAME_PREFIX + id) as never,
+        encodeUtf8(serializeGameRecord(record)) as never,
+      )
+      this.games.set(id, freezeGameRecord(record))
     })
   }
 
@@ -699,11 +943,20 @@ export class BlackjackBotStateStore {
   }
 
   /** Sum of the worst-case payouts owed on unresolved games (2.5x an undoubled stake, 2x a
-   * doubled one), optionally excluding one game, plus pending refunds. Used for the bankroll check. */
+   * doubled one), optionally excluding one game, plus resolved-but-unconfirmed payouts and pending refunds. Used for the bankroll check. */
   openExposureWei(excludeGameId?: string): bigint {
     let total = 0n
     for (const [gameId, game] of this.games) {
       if (gameId === excludeGameId) continue
+      // A resolved game still owes its winner until a receipt shows the payout succeeded.
+      if (
+        game.authority === 'verified-wager-sender' &&
+        game.payout &&
+        game.payout.status !== 'confirmed'
+      ) {
+        total += game.payout.amountWei
+        continue
+      }
       if (game.authority !== 'verified-wager-sender' || game.revealed) continue
       total += game.doubled
         ? 2n * (game.wagerWei + (game.doubleWagerWei ?? 0n))
@@ -794,6 +1047,7 @@ const CURRENT_GAME_KEYS = [
   'dealtCount',
   'doubled',
   'doubleWagerWei',
+  'payout',
   'playerAddress',
   'revealed',
   'serverSeed',
@@ -802,11 +1056,15 @@ const CURRENT_GAME_KEYS = [
   'wagerWei',
 ] as const
 
+// Rows written before payouts were journaled (but after double-down) have no `payout` key. They
+// load unchanged with no payout recorded; the next write upgrades them to the current shape.
+const PRE_PAYOUT_GAME_KEYS = CURRENT_GAME_KEYS.filter((key) => key !== 'payout')
+
 // Rows written before double-down existed have every current key except the two new ones. Kept as
 // its own named variant (rather than folded into "invalid") so those rows keep loading as
 // `doubled: false` instead of getting quarantined the first time this ships.
 const PRE_DOUBLE_GAME_KEYS = CURRENT_GAME_KEYS.filter(
-  (key) => key !== 'doubled' && key !== 'doubleWagerWei',
+  (key) => key !== 'doubled' && key !== 'doubleWagerWei' && key !== 'payout',
 )
 const LEGACY_GAME_KEYS = PRE_DOUBLE_GAME_KEYS.filter((key) => key !== 'authority')
 
@@ -814,7 +1072,8 @@ function hydratePersistedGameRecord(
   parsed: Record<string, unknown>,
   gameId: string,
 ): BlackjackGameRecord {
-  const isCurrent = hasExactKeys(parsed, CURRENT_GAME_KEYS)
+  const hasPayoutKey = hasExactKeys(parsed, CURRENT_GAME_KEYS)
+  const isCurrent = hasPayoutKey || hasExactKeys(parsed, PRE_PAYOUT_GAME_KEYS)
   const isPreDouble = hasExactKeys(parsed, PRE_DOUBLE_GAME_KEYS)
   const isLegacy = hasExactKeys(parsed, LEGACY_GAME_KEYS)
   if (!isCurrent && !isPreDouble && !isLegacy) {
@@ -866,6 +1125,7 @@ function hydratePersistedGameRecord(
       throw new Error(`game ${gameId} has a double wager without being doubled`)
     }
   }
+  const payout = hasPayoutKey ? parsePersistedPayout(parsed.payout, gameId) : undefined
   const record: BlackjackGameRecord = {
     authority,
     serverSeed: parsed.serverSeed,
@@ -877,6 +1137,7 @@ function hydratePersistedGameRecord(
     revealed: authority === 'legacy-unverified' ? true : parsed.revealed,
     doubled,
     doubleWagerWei,
+    ...(payout ? { payout } : {}),
   }
   validateRuntimeGameRecord(record, gameId)
   return record
@@ -886,7 +1147,13 @@ function validateRuntimeGameRecord(
   record: BlackjackGameRecord,
   gameId: string,
 ): void {
-  if (!isPlainObject(record) || !hasExactKeys(record, CURRENT_GAME_KEYS)) {
+  if (
+    !isPlainObject(record) ||
+    !(
+      hasExactKeys(record, CURRENT_GAME_KEYS) ||
+      hasExactKeys(record, PRE_PAYOUT_GAME_KEYS)
+    )
+  ) {
     throw new Error(`game ${gameId} has an invalid schema`)
   }
   if (
@@ -930,6 +1197,28 @@ function validateRuntimeGameRecord(
   if (typeof record.doubled !== 'boolean') {
     throw new Error(`game ${gameId} has invalid doubled flag`)
   }
+  if (record.payout !== undefined) {
+    const p = record.payout
+    if (
+      !isPlainObject(p as never) ||
+      typeof p.amountWei !== 'bigint' ||
+      p.amountWei <= 0n ||
+      p.amountWei > MAX_WAGER_WEI ||
+      !PAYOUT_STATUSES.includes(p.status) ||
+      !Number.isSafeInteger(p.owedAt) ||
+      p.owedAt < 0 ||
+      (p.nonce !== undefined && (!Number.isSafeInteger(p.nonce) || p.nonce < 0))
+    ) {
+      throw new Error(`game ${gameId} has an invalid payout`)
+    }
+    if (record.authority !== 'verified-wager-sender' || !record.revealed) {
+      throw new Error(`game ${gameId} has a payout without being a resolved verified game`)
+    }
+    const signed = p.status !== 'owed'
+    if (signed !== (typeof p.rawTx === 'string' && typeof p.txHash === 'string')) {
+      throw new Error(`game ${gameId} payout journal does not match its status`)
+    }
+  }
   if (record.doubleWagerWei !== undefined) {
     if (
       typeof record.doubleWagerWei !== 'bigint' ||
@@ -941,6 +1230,48 @@ function validateRuntimeGameRecord(
     if (!record.doubled) {
       throw new Error(`game ${gameId} has a double wager without being doubled`)
     }
+  }
+}
+
+function samePayout(a?: PayoutRecord, b?: PayoutRecord): boolean {
+  return JSON.stringify(serializePayout(a)) === JSON.stringify(serializePayout(b))
+}
+
+function serializePayout(p?: PayoutRecord): unknown {
+  if (!p) return null
+  return {
+    status: p.status,
+    amountWei: p.amountWei.toString(),
+    owedAt: p.owedAt,
+    nonce: p.nonce ?? null,
+    rawTx: p.rawTx ?? null,
+    txHash: p.txHash ?? null,
+  }
+}
+
+function parsePersistedPayout(value: unknown, gameId: string): PayoutRecord | undefined {
+  if (value === null) return undefined
+  if (
+    !isPlainObject(value) ||
+    !hasExactKeys(value, ['status', 'amountWei', 'owedAt', 'nonce', 'rawTx', 'txHash']) ||
+    !PAYOUT_STATUSES.includes(value.status as PayoutStatus) ||
+    typeof value.owedAt !== 'number' ||
+    (value.nonce !== null && typeof value.nonce !== 'number') ||
+    typeof value.amountWei !== 'string' ||
+    !/^[1-9][0-9]*$/.test(value.amountWei) ||
+    value.amountWei.length > MAX_WAGER_WEI.toString().length ||
+    (value.rawTx !== null && typeof value.rawTx !== 'string') ||
+    (value.txHash !== null && typeof value.txHash !== 'string')
+  ) {
+    throw new Error(`game ${gameId} has an invalid persisted payout`)
+  }
+  return {
+    status: value.status as PayoutStatus,
+    amountWei: BigInt(value.amountWei),
+    owedAt: value.owedAt,
+    ...(value.nonce !== null ? { nonce: value.nonce as number } : {}),
+    ...(value.rawTx !== null ? { rawTx: value.rawTx as string } : {}),
+    ...(value.txHash !== null ? { txHash: value.txHash as string } : {}),
   }
 }
 
@@ -1095,10 +1426,15 @@ function serializeGameRecord(record: BlackjackGameRecord): string {
   // explicitly rather than letting it throw (and let JSON.stringify drop an `undefined` property,
   // which JSON has no representation for -- but `null` is deliberately kept, not dropped, so a
   // round trip through `hydratePersistedGameRecord`'s `isCurrent` branch always sees the key).
+  // The `payout` key is written ONLY when a payout exists, so every row without one is
+  // byte-identical to the shape the pre-#215 store writes and reads (rollback safe for those rows;
+  // a row that owes a payout is unreadable by the older store, which quarantines it).
+  const { payout, ...rest } = record
   return JSON.stringify({
-    ...record,
+    ...rest,
     wagerWei: record.wagerWei.toString(),
     doubleWagerWei: record.doubleWagerWei !== undefined ? record.doubleWagerWei.toString() : null,
+    ...(payout ? { payout: serializePayout(payout) } : {}),
   })
 }
 

@@ -17,7 +17,10 @@ import { crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
 import { MonadIdentity } from '../monad-identity'
 import { StoredMonadMessageProto } from '../monad-stamp-client'
-import { MonadTopicPostProto } from '../monad-topic-post-client'
+import {
+  MonadTopicPostAbandonedError,
+  MonadTopicPostProto,
+} from '../monad-topic-post-client'
 import { buildTopicPostPayload } from '../monad-topic-post-client'
 import { MessageItem, TextItem } from '@frank/cashweb/types/messages'
 import {
@@ -35,7 +38,7 @@ import {
   serializeMessageItems,
   viewToForumMessage,
 } from './monad-chain'
-import { WalletHandle } from './active-chain'
+import { TopicPostOutcomeUnknownError, WalletHandle } from './active-chain'
 import { deriveMonadStampChildPublic } from '../monad-stamp-stealth'
 import { InMemoryStampPaymentJournal } from '../storage/stamp-payment-journal'
 
@@ -1200,6 +1203,33 @@ describe('createMonadChain: topics.post', () => {
       expect.objectContaining({ burnValueWei: 5_000n, gasReserveWei: 100n }),
     )
     expect(call.leaseIndex).toBe(4)
+  })
+
+  it('preserves an abandoned Monad post as a typed chain-neutral unknown outcome', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const wallet = makeWallet(
+      MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX),
+    )
+    const abandoned = new MonadTopicPostAbandonedError(
+      'The paid post outcome is unknown',
+      'feedface',
+    )
+    ;(MonadTopicPostClient as jest.Mock).mockImplementation(() => ({
+      submitTopicPost: jest.fn().mockRejectedValue(abandoned),
+    }))
+
+    const failure = await chain.topics
+      .post({
+        wallet,
+        topic: 'general',
+        entries: [{ kind: 'post', message: 'hello world' }],
+        direction: 'up',
+        voteWeightWei: 5_000n,
+      })
+      .catch((err: unknown) => err)
+
+    expect(failure).toBeInstanceOf(TopicPostOutcomeUnknownError)
+    expect(failure).toMatchObject({ cause: abandoned })
   })
 })
 

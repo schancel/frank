@@ -11,6 +11,8 @@ import { ActiveChain } from './active-chain'
 
 export const activeChain: ActiveChain = MonadChain
 
+export { TopicPostOutcomeUnknownError } from './active-chain'
+
 export type {
   ActiveChain,
   ChainAddress,

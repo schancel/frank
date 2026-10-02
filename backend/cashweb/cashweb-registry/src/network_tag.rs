@@ -68,21 +68,47 @@ pub fn is_valid_network_tag(tag: &str) -> bool {
     !tag.is_empty() && tag.len() <= MAX_NETWORK_TAG_BYTES && tag.trim() == tag
 }
 
-/// The one place that maps the relay's `FRANK_NETWORK_TAG` wire values to the lowercase network
-/// identifier Frank-CBOR frames carry (`docs/protocol/cbor`, README S1: `[a-z0-9][a-z0-9._-]{0,63}`).
-/// Adding a network is adding a row here; the tag bytes themselves never change.
-pub const CBOR_NETWORK_IDENTIFIERS: &[(&[u8], &str)] = &[
-    (MONAD_TESTNET_NETWORK_TAG, "monad-testnet"),
-    (MONAD_MAINNET_NETWORK_TAG, "monad-mainnet"),
+/// One deployable Monad network's identities at the relay boundary.
+///
+/// Keeping the wire tag, Frank-CBOR identifier, and EVM chain ID in one row prevents a relay from
+/// validating a frame for one network while broadcasting its burn on another (ticket #327).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MonadNetworkDescriptor {
+    /// Four-byte Frank network tag stamped on stored records.
+    pub network_tag: &'static [u8; 4],
+    /// Lowercase identifier carried by Frank-CBOR frames.
+    pub cbor_identifier: &'static str,
+    /// EIP-155/EIP-1559 chain ID signed by every transaction on this network.
+    pub evm_chain_id: u64,
+}
+
+/// The authoritative deployment mapping. Adding a Monad network is adding one complete row here;
+/// the existing tag bytes and CBOR identifiers never change.
+pub const MONAD_NETWORKS: &[MonadNetworkDescriptor] = &[
+    MonadNetworkDescriptor {
+        network_tag: MONAD_TESTNET_NETWORK_TAG,
+        cbor_identifier: "monad-testnet",
+        evm_chain_id: 10_143,
+    },
+    MonadNetworkDescriptor {
+        network_tag: MONAD_MAINNET_NETWORK_TAG,
+        cbor_identifier: "monad-mainnet",
+        evm_chain_id: 143,
+    },
 ];
+
+/// Resolve all of the relay identities for `tag`, or `None` when the tag is not a configured
+/// Monad deployment (which startup and `--check-config` refuse).
+pub fn monad_network(tag: &[u8]) -> Option<&'static MonadNetworkDescriptor> {
+    MONAD_NETWORKS
+        .iter()
+        .find(|network| network.network_tag.as_slice() == tag)
+}
 
 /// The Frank-CBOR network identifier for a relay network tag, or `None` for a tag with no mapping
 /// (which startup and `--check-config` refuse).
 pub fn cbor_network_identifier(tag: &[u8]) -> Option<&'static str> {
-    CBOR_NETWORK_IDENTIFIERS
-        .iter()
-        .find(|(known, _)| *known == tag)
-        .map(|(_, identifier)| *identifier)
+    monad_network(tag).map(|network| network.cbor_identifier)
 }
 
 /// Parse a raw `FRANK_NETWORK_TAG` env var value into the bytes stamped onto stored records: its
@@ -138,11 +164,13 @@ mod tests {
     }
 
     #[test]
-    fn maps_known_tags_to_valid_lowercase_cbor_identifiers() {
+    fn maps_known_tags_to_cbor_identifiers_and_their_evm_chains() {
         assert_eq!(cbor_network_identifier(b"MONT"), Some("monad-testnet"));
         assert_eq!(cbor_network_identifier(b"MON1"), Some("monad-mainnet"));
-        for (_, identifier) in CBOR_NETWORK_IDENTIFIERS {
-            let bytes = identifier.as_bytes();
+        assert_eq!(monad_network(b"MONT").unwrap().evm_chain_id, 10_143);
+        assert_eq!(monad_network(b"MON1").unwrap().evm_chain_id, 143);
+        for network in MONAD_NETWORKS {
+            let bytes = network.cbor_identifier.as_bytes();
             assert!(bytes.len() <= 64 && bytes[0].is_ascii_alphanumeric());
             assert!(bytes.iter().all(|c| c.is_ascii_lowercase()
                 || c.is_ascii_digit()
@@ -154,6 +182,7 @@ mod tests {
     fn unknown_or_differently_cased_tags_have_no_identifier() {
         for tag in [&b""[..], b"mont", b"MONX", b"MONT ", b"LTUS"] {
             assert_eq!(cbor_network_identifier(tag), None);
+            assert_eq!(monad_network(tag), None);
         }
     }
 }

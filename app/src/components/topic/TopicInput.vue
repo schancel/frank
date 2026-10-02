@@ -18,6 +18,7 @@
       dense
       flat
       icon="send"
+      :aria-label="$t('a11y.sendMessage')"
       :disable="disable"
       @mousedown.prevent
       @click="sendMessage"

@@ -1,0 +1,136 @@
+{
+  "format": "frank-cbor-v1-account-registration-values",
+  "description": "Pure-value vectors for the account/attestation registration record (README section 11): the lossless millisecond mappings (M2, M3) and the canonical address derivations (M6). Not frame vectors; both codecs recompute these values directly. Integers are decimal strings because 2^63-1 exceeds the safe JSON integer range; TypeScript reads them with BigInt, Rust with u64/i128. address_derivations carries the compressed key the record holds and the exact Keccak input (the uncompressed X||Y, no 04 prefix) so a verifier without curve code can still recompute the hash.",
+  "timestamp_mappings": [
+    {
+      "timestamp_ms": "0",
+      "revision": "0",
+      "seconds": "0",
+      "nanoseconds": "0"
+    },
+    {
+      "timestamp_ms": "1",
+      "revision": "1",
+      "seconds": "0",
+      "nanoseconds": "1000000"
+    },
+    {
+      "timestamp_ms": "999",
+      "revision": "999",
+      "seconds": "0",
+      "nanoseconds": "999000000"
+    },
+    {
+      "timestamp_ms": "1000",
+      "revision": "1000",
+      "seconds": "1",
+      "nanoseconds": "0"
+    },
+    {
+      "timestamp_ms": "1764547200000",
+      "revision": "1764547200000",
+      "seconds": "1764547200",
+      "nanoseconds": "0"
+    },
+    {
+      "timestamp_ms": "1764547281234",
+      "revision": "1764547281234",
+      "seconds": "1764547281",
+      "nanoseconds": "234000000"
+    },
+    {
+      "timestamp_ms": "9223372036854775807",
+      "revision": "9223372036854775807",
+      "seconds": "9223372036854775",
+      "nanoseconds": "807000000"
+    }
+  ],
+  "timestamp_unencodable": [
+    {
+      "timestamp_ms": "-1",
+      "reason": "a negative millisecond value has no unsigned revision (M2): the record is unencodable and fails closed"
+    }
+  ],
+  "expiry_mappings": [
+    {
+      "timestamp_ms": "1764547200000",
+      "ttl_ms": "86400000",
+      "expiry_seconds": "1764633600",
+      "expiry_nanoseconds": "0"
+    },
+    {
+      "timestamp_ms": "1764547281234",
+      "ttl_ms": "31536000000",
+      "expiry_seconds": "1796083281",
+      "expiry_nanoseconds": "234000000"
+    },
+    {
+      "timestamp_ms": "9223372036854775807",
+      "ttl_ms": "0",
+      "expiry_seconds": "9223372036854775",
+      "expiry_nanoseconds": "807000000"
+    },
+    {
+      "timestamp_ms": "1764547200000",
+      "ttl_ms": "0",
+      "expiry_seconds": "1764547200",
+      "expiry_nanoseconds": "0"
+    },
+    {
+      "timestamp_ms": "1000",
+      "ttl_ms": "-2500",
+      "expiry_seconds": "-2",
+      "expiry_nanoseconds": "500000000"
+    },
+    {
+      "timestamp_ms": "1764547200000",
+      "ttl_ms": "-2000000000000",
+      "expiry_seconds": "-235452800",
+      "expiry_nanoseconds": "0"
+    }
+  ],
+  "address_derivations": [
+    {
+      "label": "monad-testnet registration subject (used by the reg-* frames)",
+      "compressed_pubkey_hex": "03a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65",
+      "uncompressed_x_y_hex": "a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65ee80cc5bd8c324f79cdb53bdfbe0fbdbd1addfc65b712f81e95164c3ff489897",
+      "address_hex": "7dfe972a1fe596e6e7212a85fce03480d4e89f2b"
+    },
+    {
+      "label": "monad-mainnet registration subject",
+      "compressed_pubkey_hex": "02ac3d02eaddcd36e47b5ca63cbe76b443f58f234781f4ee0318a1ca0212e1cf33",
+      "uncompressed_x_y_hex": "ac3d02eaddcd36e47b5ca63cbe76b443f58f234781f4ee0318a1ca0212e1cf33a122718adde4c402b34e184ca9a36a4807c5e97244973bd5604fc09a50c89ea2",
+      "address_hex": "2c60ac4576ec02175e139c0ae2944e9c7baac6c2"
+    },
+    {
+      "label": "monad-testnet stamp key (statement field 8)",
+      "compressed_pubkey_hex": "03fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a",
+      "uncompressed_x_y_hex": "fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a917cb63534a34abf04db597c77b9e0e9d755b8458c843ec15cc998ab5b16d925",
+      "address_hex": "eb8cb09b38b5f7ac9bfcf2ccbe6991a15b5b6379"
+    },
+    {
+      "label": "monad-testnet relay identity (relay-binding field 2)",
+      "compressed_pubkey_hex": "024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d929",
+      "uncompressed_x_y_hex": "4c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d929a726352237179a656b741cb35dcb0051e3e7275b0591c93048a5a11c3dfadb0a",
+      "address_hex": "d0b421e0d633f8d04dfcc515c0eaf57048d101d5"
+    },
+    {
+      "label": "x-coordinate with leading zero bytes (33-byte encoding keeps them)",
+      "compressed_pubkey_hex": "0300a07ab0624d800493858e89bb81f2cc82a553977d7e36d206defd384e7b81a7",
+      "uncompressed_x_y_hex": "00a07ab0624d800493858e89bb81f2cc82a553977d7e36d206defd384e7b81a73cf2a0173d156b82d0d4df3069992eaef8ba6390b1a1a6385bb49bfce33c30b9",
+      "address_hex": "cc4f586a3018d44bab38559160169a9cb5dee8ed"
+    },
+    {
+      "label": "classic private key 1 (independent cross-check)",
+      "compressed_pubkey_hex": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "uncompressed_x_y_hex": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
+      "address_hex": "7e5f4552091a69125d5dfcb7b8c2659029395bdf"
+    },
+    {
+      "label": "README T3c child_0 (independent cross-check of the same rule)",
+      "compressed_pubkey_hex": "026d5b5608b352c2eeb78127d118e3ed07f0616e4d69f03e2265ed68f14d44d756",
+      "uncompressed_x_y_hex": "6d5b5608b352c2eeb78127d118e3ed07f0616e4d69f03e2265ed68f14d44d756103151869938fe408c57a945967b3aec973316d0dc3a1b01af792d0a34747d24",
+      "address_hex": "7484023b108dbd1620c7dd17b7ce6d5789d519a9"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 <template>
-  <!-- In-flow (not absolute) so the banners stack above the message list instead of covering it
-  or each other; it takes no height when neither banner is showing. -->
+  <!-- In-flow inside Chat.vue's overlay so stacked banners do not cover each other.
+  Takes no height when neither banner is showing. -->
   <div class="column no-wrap full-width" data-testid="chat-banner-stack">
     <mailbox-status-banner />
     <div

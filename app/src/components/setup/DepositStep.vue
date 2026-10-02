@@ -16,6 +16,7 @@
           color="primary"
           flat
           icon="swap_vert"
+          :aria-label="$t('a11y.switchAddressFormat')"
           @click="toggleLegacy"
         />
         <q-btn
@@ -23,6 +24,7 @@
           color="primary"
           flat
           icon="content_copy"
+          :aria-label="$t('a11y.copyAddress')"
           @click="copyAddress"
         />
       </template>

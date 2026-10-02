@@ -30,7 +30,10 @@
             {{ $t('chatRightDrawer.notifications') }}
           </q-item-section>
           <q-item-section side>
-            <q-toggle v-model="notifications" />
+            <q-toggle
+              v-model="notifications"
+              :aria-label="$t('chatRightDrawer.notifications')"
+            />
           </q-item-section>
         </q-item>
 

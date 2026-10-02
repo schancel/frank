@@ -13,10 +13,15 @@ import {
   Networks,
   PrivateKey,
   Transaction,
-  Script,
   PublicKey,
-  Opcode,
 } from 'bitcore-lib-xpi'
+import { pondBurnOutputSatoshis, pondBurnScript } from './burn-script'
+import { registryIdentityPublicKey } from './identity-pubkey'
+import {
+  cryptoBackend,
+  privateKeyFromSecretBytes,
+  signEcdsa,
+} from '@frank/nakamoto'
 import { Wallet } from '../legacy-wallet'
 import { Utxo } from '../types/utxo'
 import { calcUtxoId } from '../legacy-wallet/helpers'
@@ -24,25 +29,96 @@ import __pb_broadcast_pb from './broadcast_pb'
 const { BroadcastEntry, BroadcastMessage, ForumPost } = __pb_broadcast_pb
 import { ForumMessage, ForumMessageEntry } from '../types/forum'
 
+/** Canonical DER integer as a minimal big-endian magnitude. */
+function readDerInt(
+  der: Uint8Array,
+  offset: number,
+): { value: Buffer; next: number } {
+  if (der[offset] !== 0x02) throw new Error('signature-invalid')
+  const length = der[offset + 1]
+  if (length === undefined || length < 1 || offset + 2 + length > der.length) {
+    throw new Error('signature-invalid')
+  }
+  let magnitude = der.subarray(offset + 2, offset + 2 + length)
+  if (magnitude[0] === 0x00) {
+    if (magnitude.length === 1 || (magnitude[1] & 0x80) === 0) {
+      throw new Error('signature-invalid')
+    }
+    magnitude = magnitude.subarray(1)
+  } else if ((magnitude[0] & 0x80) !== 0) {
+    throw new Error('signature-invalid')
+  }
+  if (magnitude.length < 1 || magnitude.length > 32) {
+    throw new Error('signature-invalid')
+  }
+  return { value: Buffer.from(magnitude), next: offset + 2 + length }
+}
+
+/**
+ * r||s with the compact header removed. r is minimal. s is 32 bytes.
+ * `fromDER` returns a string when the DER is 64 bytes and starts with 0x30,
+ * so r and s are read here. The replaced compact slice calls `toBuffer({size:32})`:
+ * r is an elliptic BN and ignores size, s is a bitcore BN and left-pads.
+ */
+export function compactRsFromDer(der: Uint8Array): Buffer {
+  if (der.length < 8 || der[0] !== 0x30 || der[1] !== der.length - 2) {
+    throw new Error('signature-invalid')
+  }
+  const r = readDerInt(der, 2)
+  const s = readDerInt(der, r.next)
+  if (s.next !== der.length) throw new Error('signature-invalid')
+  const sFixed = Buffer.alloc(32)
+  s.value.copy(sFixed, 32 - s.value.length)
+  return Buffer.concat([r.value, sFixed])
+}
+
+/** Compact r||s over a 32-byte digest. A bad digest throws and returns nothing. */
+export function signRegistryDigest(hash: Buffer, privKey: PrivateKey): Buffer {
+  if (hash.length !== 32) throw new Error('sign-digest')
+  const secretBytes = Uint8Array.from(privKey.toBuffer())
+  const key = privateKeyFromSecretBytes(secretBytes, true)
+  secretBytes.fill(0)
+  if (!key.ok) throw new Error(key.error.code)
+  const signed = signEcdsa(key.value, Uint8Array.from(hash))
+  if (!signed.ok) throw new Error(signed.error.code)
+  return compactRsFromDer(signed.value)
+}
+
+/** One SHA-256 of AddressMetadata protobuf bytes. Matches `Sha256::digest`
+ * in `SignedPayload::parse_proto` and the registry HTTP test that hashes
+ * `AddressMetadata::encode_to_vec`. Not double-SHA256. Broadcast digests and
+ * address strings in this file stay on bitcore (decision #507). The burn
+ * script is decision #519. Burn output amounts are decision #521.
+ * cryptoBackend rejects Buffer. */
+export function registryAddressMetadataDigest(
+  payload: Uint8Array,
+): Uint8Array {
+  return cryptoBackend.sha256(Uint8Array.from(payload))
+}
+
+/** SEC1 point of a registry identity key (decision #578). types.d.ts omits
+ * the runtime compression flag; bitcore-lib-xpi stays until #259. Broadcast
+ * digests and the burn Output wrap stay on bitcore. */
+function registryIdentityPoint(privKey: PrivateKey): Buffer {
+  const compressed = (privKey as unknown as { compressed?: boolean }).compressed
+  if (compressed !== true && compressed !== false) {
+    throw new Error('registry-identity-pubkey:compressed')
+  }
+  return Buffer.from(
+    registryIdentityPublicKey(Uint8Array.from(privKey.toBuffer()), compressed),
+  )
+}
+
 function calculateBurnAmount(burnOutputs: BurnOutputs[]) {
   return burnOutputs.reduce((total, burn) => {
-    // TODO: Validate format
     const index = burn.getIndex()
     const tx = burn.getTx()
     assert(
       typeof tx !== 'string',
       'Tx returned as string from protobuf library',
     )
-    const parsedTx = new Transaction(Buffer.from(tx))
-    const output = parsedTx.outputs[index]
-    const script = new Uint8Array(output.script.toBuffer())
-    const isDownVote = script[6] === Opcode.map.OP_0
-    return (
-      total +
-      (isDownVote
-        ? -parsedTx.outputs[index].satoshis
-        : parsedTx.outputs[index].satoshis)
-    )
+    // Value and script bytes, not a bitcore Transaction (decision #521).
+    return total + pondBurnOutputSatoshis(Uint8Array.from(tx), index)
   }, 0)
 }
 
@@ -94,12 +170,13 @@ export class RegistryHandler {
     metadata.addEntries(relayUrlEntry)
 
     const serializedPayload = metadata.serializeBinary()
-    const hashbuf = crypto.Hash.sha256(Buffer.from(serializedPayload))
-    const signature = crypto.ECDSA.sign(hashbuf, privKey)
+    const hashbuf = Buffer.from(
+      registryAddressMetadataDigest(serializedPayload),
+    )
+    const sig = signRegistryDigest(hashbuf, privKey)
 
     const signedPayload = new SignedPayload()
-    const sig = signature.toCompact(1, true).slice(1)
-    signedPayload.setPublicKey(privKey.toPublicKey().toBuffer())
+    signedPayload.setPublicKey(registryIdentityPoint(privKey))
     signedPayload.setSignature(sig)
     signedPayload.setScheme(1)
     signedPayload.setPayload(serializedPayload)
@@ -197,16 +274,16 @@ export class RegistryHandler {
 
     const serverUrl = this.chooseServer()
     const payloadRaw = signedPayload.getPayload()
-    assert(typeof payloadRaw !== 'string', 'payloadRaw is a string?')
-    const payload = Buffer.from(payloadRaw)
-    const payloadDigest = crypto.Hash.sha256(payload)
+    if (typeof payloadRaw === 'string') {
+      throw new Error('payloadRaw is a string?')
+    }
+    const payloadDigest = registryAddressMetadataDigest(payloadRaw)
     const truncatedSignedPayload = new SignedPayload()
     const publicKey = signedPayload.getPublicKey()
     assert(typeof publicKey !== 'string', 'publicKey is a string?')
 
     truncatedSignedPayload.setPublicKey(publicKey)
-    const payloadBuf = payloadDigest.buffer
-    truncatedSignedPayload.setPayloadDigest(new Uint8Array(payloadBuf))
+    truncatedSignedPayload.setPayloadDigest(payloadDigest)
 
     const { paymentDetails } = (await this.paymentRequest(
       serverUrl,
@@ -238,12 +315,8 @@ export class RegistryHandler {
     const upvote = vote > 0
     const satoshis = vote < 0 ? -vote : vote
 
-    // Create burn output
-    const script = new Script(undefined)
-      .add(Opcode.map.OP_RETURN)
-      .add(Buffer.from([80, 79, 78, 68])) // POND
-      .add(upvote ? Opcode.map.OP_1 : Opcode.map.OP_0)
-      .add(hash)
+    // Create burn output. Bytes match bitcore Script.add (decision #519).
+    const script = Buffer.from(pondBurnScript(Uint8Array.from(hash), upvote))
 
     const output = new Transaction.Output({
       script,
@@ -295,10 +368,9 @@ export class RegistryHandler {
 
     const idPrivKey = this.wallet?.identityPrivKey
     assert(idPrivKey, 'Missing private key in createBroadcast')
-    const idPubKey = idPrivKey.toPublicKey().toBuffer()
+    const idPubKey = registryIdentityPoint(idPrivKey)
 
-    const signature = crypto.ECDSA.sign(payloadDigest, idPrivKey)
-    const sig = signature.toCompact(1, true).slice(1)
+    const sig = signRegistryDigest(payloadDigest, idPrivKey)
 
     const signedPayload = new SignedPayload()
     signedPayload.setPublicKey(idPubKey)
@@ -345,10 +417,9 @@ export class RegistryHandler {
 
     const idPrivKey = this.wallet?.identityPrivKey
     assert(idPrivKey, 'Missing private key in createBroadcast')
-    const idPubKey = idPrivKey.toPublicKey().toBuffer()
+    const idPubKey = registryIdentityPoint(idPrivKey)
 
-    const signature = crypto.ECDSA.sign(payloadDigestBinary, idPrivKey)
-    const sig = signature.toCompact(1, true).slice(1)
+    const sig = signRegistryDigest(payloadDigestBinary, idPrivKey)
 
     const signedPayload = new SignedPayload()
     signedPayload.setPublicKey(idPubKey)

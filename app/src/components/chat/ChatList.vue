@@ -12,6 +12,7 @@
             dense
             flat
             icon="add"
+            :aria-label="$t('a11y.addContact')"
             @click="() => openPage($router, '/add-contact')"
           />
         </q-item>

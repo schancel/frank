@@ -84,12 +84,12 @@ export function createStoragePlugin(
       { flush: 'sync' },
     )
 
-    // A rejected write permanently rejects this store's barrier for the current
-    // application lifetime. Continuing after an unacknowledged local write would
-    // let a caller cross a reload/external-effect boundary with unknown durable
-    // state. Every write is still started immediately; the chain only aggregates
-    // completion and failure.
-    let persistence = Promise.resolve()
+    // Keep physical completion separate from the sticky first error. A rejected write still
+    // poisons this store's barrier for the application lifetime, but later writes must drain
+    // before flushPersistence() surfaces that retained error.
+    let writeDrain = Promise.resolve()
+    let hasPersistenceError = false
+    let persistenceError: unknown
     store.$subscribe((mutation, state) => {
       processedMutation = issuedMutation
       let write: Promise<void>
@@ -98,11 +98,15 @@ export function createStoragePlugin(
       } catch (err) {
         write = Promise.reject(err)
       }
-      persistence = Promise.all([persistence, write]).then(() => undefined)
-      // Retain the rejection for flushPersistence(), while attaching a handler
-      // immediately so a caller that has not reached its barrier yet does not
-      // trigger an unhandled-rejection event.
-      void persistence.catch(() => undefined)
+      const observedWrite = write.catch(error => {
+        if (!hasPersistenceError) {
+          hasPersistenceError = true
+          persistenceError = error
+        }
+      })
+      writeDrain = Promise.all([writeDrain, observedWrite]).then(
+        () => undefined,
+      )
     })
 
     return {
@@ -112,7 +116,8 @@ export function createStoragePlugin(
         if (processedMutation < targetMutation) {
           await nextTick()
         }
-        await persistence
+        await writeDrain
+        if (hasPersistenceError) throw persistenceError
       },
     }
   }

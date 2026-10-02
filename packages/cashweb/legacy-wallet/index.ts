@@ -1,10 +1,10 @@
 import P from 'bluebird'
 import assert from 'assert'
 
+import { walletChangeP2pkhScript } from './change-pubkey'
 import { calcUtxoId } from './helpers'
 
 import {
-  Address,
   Script,
   Transaction,
   PrivateKey,
@@ -17,6 +17,29 @@ import { Utxo } from '../types/utxo'
 import { ChronikClient, WsEndpoint } from 'chronik-client'
 import { AddressEvent, ChainAdapter } from './chain-adapter'
 import { LotusAdapter } from './lotus-adapter'
+import {
+  BTC_MAINNET,
+  BTC_TESTNET,
+  SIGHASH_ALL,
+  SIGHASH_FORKID,
+  XPI_MAINNET,
+  XPI_REGTEST,
+  XPI_TESTNET,
+  cryptoBackend,
+  deriveHdPath,
+  internalHashFromBytes,
+  lockingScript,
+  parseHdPrivate,
+  privateKeyFromSecretBytes,
+  pubkeyHashFromBytes,
+  signAll,
+  signEcdsa,
+  type ChainDescriptor,
+  type InputSigner,
+  type InternalHash,
+  type SpentOutput,
+  type Transaction as NakamotoTransaction,
+} from '@frank/nakamoto'
 
 const standardUtxoSize = 34
 const standardInputSize = 175 // A few extra bytes
@@ -47,6 +70,203 @@ type AddressData = { address: string; change: boolean } & PrivateKeyData
 type AddressGenerator = (txnNumber: number) => (output: number) => PublicKey
 // UnspendOutpout.fromObject can work with this
 type BuildableUtxo = Utxo & { script?: string }
+type SignableTransaction = Transaction & {
+  version: number
+  nLockTime: number
+}
+
+// bitcore stores the display txid. Nakamoto outpoints use the internal hash.
+function internalTxid(display: Buffer): InternalHash {
+  const internal = new Uint8Array(display.length)
+  for (let index = 0; index < display.length; index += 1) {
+    internal[index] = display[display.length - 1 - index]
+  }
+  const branded = internalHashFromBytes(internal)
+  if (!branded.ok) throw new Error('sign-bytes')
+  return branded.value
+}
+
+function scriptBytes(script: Script): Uint8Array {
+  return Uint8Array.from(script.toBuffer())
+}
+
+// HASH160 of the serialized public key, then the 25-byte template (decision #495).
+// Address-string scripts stay on bitcore until issue #242.
+export function p2pkhScriptFromPublicKey(publicKey: PublicKey): Buffer {
+  const serialized = Uint8Array.from(publicKey.toBuffer())
+  const hash = pubkeyHashFromBytes(cryptoBackend.hash160(serialized))
+  if (!hash.ok) throw new Error('p2pkh-hash')
+  return Buffer.from(lockingScript({ kind: 'p2pkh', hash: hash.value }))
+}
+
+// Existing tree, not XPI slip44 10605 (decision #497, issue #241).
+const WALLET_RECEIVE_PREFIX = "m/44'/899'/0'/0"
+const WALLET_CHANGE_PREFIX = "m/44'/899'/0'/1"
+
+// BIP32 child of a bitcore xprv. The returned key stays a bitcore PrivateKey so
+// address strings stay on bitcore until issue #242. Version bytes are the
+// xprv/tprv pair bitcore already writes (decision #497).
+export function privateKeyFromHdPath(
+  xPrivKey: HDPrivateKey,
+  path: string,
+): PrivateKey {
+  const serialized = xPrivKey.toString()
+  const mainnet = parseHdPrivate(serialized, BTC_MAINNET)
+  const parsed = mainnet.ok ? mainnet : parseHdPrivate(serialized, BTC_TESTNET)
+  if (!parsed.ok) throw new Error(`hd-parse:${parsed.error.code}`)
+  const child = deriveHdPath(parsed.value, path)
+  if (!child.ok) throw new Error(`hd-derive:${child.error.code}`)
+  const secret = Buffer.from(child.value.privateKey.bytes).toString('hex')
+  const network = (xPrivKey as { network?: PrivateKey['network'] }).network
+  return new PrivateKey(secret, network)
+}
+
+export function walletReceivePrivateKey(
+  xPrivKey: HDPrivateKey,
+  index: number,
+): PrivateKey {
+  return privateKeyFromHdPath(xPrivKey, `${WALLET_RECEIVE_PREFIX}/${index}`)
+}
+
+export function walletChangePrivateKey(
+  xPrivKey: HDPrivateKey,
+  index: number,
+): PrivateKey {
+  return privateKeyFromHdPath(xPrivKey, `${WALLET_CHANGE_PREFIX}/${index}`)
+}
+
+// bitcore's Input type omits setScript; the runtime method writes _scriptBuffer.
+function setInputScript(input: Transaction.Input, script: Buffer): void {
+  const writable = input as Transaction.Input & {
+    setScript(next: Buffer): void
+  }
+  writable.setScript(script)
+}
+
+function xpiChain(networkName: string): ChainDescriptor {
+  if (networkName === 'testnet') return XPI_TESTNET
+  if (networkName === 'regtest') return XPI_REGTEST
+  if (networkName === 'livenet' || networkName === 'mainnet') return XPI_MAINNET
+  throw new Error('sign-chain')
+}
+
+function signerFromPrivateKey(key: PrivateKey): InputSigner {
+  const publicKey = Uint8Array.from(key.toPublicKey().toBuffer())
+  const secretBytes = Uint8Array.from(key.toBuffer())
+  const parsed = privateKeyFromSecretBytes(secretBytes, publicKey.length === 33)
+  secretBytes.fill(0)
+  if (!parsed.ok) throw new Error('sign-bytes')
+  const secret = parsed.value
+  return {
+    publicKey,
+    sign(digest: Uint8Array): Uint8Array {
+      const signed = signEcdsa(secret, digest)
+      if (!signed.ok) throw new Error('sign-signature')
+      return signed.value
+    },
+  }
+}
+
+function explicitAssignments(
+  transaction: Transaction,
+  signingKeys: readonly PrivateKey[],
+): { inputIndex: number; signer: InputSigner }[] {
+  const assignments: { inputIndex: number; signer: InputSigner }[] = []
+  for (let index = 0; index < transaction.inputs.length; index += 1) {
+    const output = transaction.inputs[index].output
+    if (!output) throw new Error('sign-spent')
+    const locking = output.script.toBuffer()
+    let signer: InputSigner | undefined
+    for (const key of signingKeys) {
+      const built = p2pkhScriptFromPublicKey(key.toPublicKey())
+      if (!built.equals(locking)) continue
+      signer = signerFromPrivateKey(key)
+      break
+    }
+    if (!signer) continue
+    assignments.push({ inputIndex: index, signer })
+  }
+  return assignments
+}
+
+function nakamotoTransaction(transaction: SignableTransaction): {
+  tx: NakamotoTransaction
+  spent: SpentOutput[]
+} {
+  const spent: SpentOutput[] = []
+  const inputs = transaction.inputs.map(input => {
+    const output = input.output
+    if (!output) throw new Error('sign-spent')
+    const scriptPubKey = scriptBytes(output.script)
+    spent.push({ value: BigInt(output.satoshis), scriptPubKey })
+    return {
+      prevout: {
+        txid: internalTxid(input.prevTxId),
+        vout: input.outputIndex,
+      },
+      scriptSig: new Uint8Array(),
+      sequence: input.sequenceNumber >>> 0,
+    }
+  })
+  return {
+    tx: {
+      version: transaction.version,
+      inputs,
+      outputs: transaction.outputs.map(output => ({
+        value: BigInt(output.satoshis),
+        scriptPubKey: scriptBytes(output.script),
+      })),
+      locktime: transaction.nLockTime >>> 0,
+    },
+    spent,
+  }
+}
+
+// Post-Numbers XPI rejects SIGHASH_LOTUS. The signature byte is ALL|FORKID.
+// Ruth rewrites the BIP143 preimage fork value; the byte stays 0x41.
+// Activation height is not modeled, so replay is always on. A regtest whose
+// median time is still before Ruth will reject the spend.
+// A partial assignment throws and leaves every input script untouched.
+export function signTransactionInputs(
+  transaction: Transaction,
+  signingKeys: readonly PrivateKey[],
+  networkName: string,
+): Transaction {
+  const chain = xpiChain(networkName)
+  const { tx, spent } = nakamotoTransaction(transaction as SignableTransaction)
+  const assignments = explicitAssignments(transaction, signingKeys)
+  const signed = signAll(tx, assignments, {
+    chain,
+    algorithm: 'forkid',
+    sighashType: SIGHASH_FORKID | SIGHASH_ALL,
+    spent,
+    replayProtection: true,
+  })
+  if (!signed.ok) throw new Error(signed.error.code)
+  const next: Array<Buffer | undefined> = new Array(transaction.inputs.length)
+  for (const input of signed.value.inputs) {
+    if (input.scriptSig.length === 0) throw new Error('sign-partial')
+    if (next[input.index] !== undefined) throw new Error('sign-assignment')
+    next[input.index] = Buffer.from(input.scriptSig)
+  }
+  if (next.some(script => script === undefined)) throw new Error('sign-partial')
+  const previous = transaction.inputs.map(input =>
+    Buffer.from(input.script.toBuffer()),
+  )
+  try {
+    for (let index = 0; index < next.length; index += 1) {
+      const script = next[index]
+      if (!script) throw new Error('sign-partial')
+      setInputScript(transaction.inputs[index], script)
+    }
+  } catch (error) {
+    for (let index = 0; index < previous.length; index += 1) {
+      setInputScript(transaction.inputs[index], previous[index])
+    }
+    throw error
+  }
+  return transaction
+}
 
 export class Wallet {
   storage: UtxoStore
@@ -98,12 +318,7 @@ export class Wallet {
     // TODO: we're just using the first key in the HD addresses for now
     // so that it'll be compatible (mostly) with other HD wallets.
     // We should do something to allow revocations in the future.
-    this._identityPrivKey = xPrivKey
-      .deriveChild(44, true)
-      .deriveChild(899, true)
-      .deriveChild(0, true)
-      .deriveChild(0)
-      .deriveChild(0).privateKey
+    this._identityPrivKey = walletReceivePrivateKey(xPrivKey, 0)
 
     this.init()
   }
@@ -142,22 +357,12 @@ export class Wallet {
     this.changeKeys = []
     this.addressDataByPkh = new Map()
     for (let i = 0; i < this.numAddresses; i++) {
-      const privKey = xPrivKey
-        .deriveChild(44, true)
-        .deriveChild(899, true)
-        .deriveChild(0, true)
-        .deriveChild(0)
-        .deriveChild(i).privateKey
+      const privKey = walletReceivePrivateKey(xPrivKey, i)
       this.walletKeys.push({ privKey })
       this.addAddressData({ privKey, change: false })
     }
     for (let j = 0; j < this.numChangeAddresses; j++) {
-      const privKey = xPrivKey
-        .deriveChild(44, true)
-        .deriveChild(899, true)
-        .deriveChild(0, true)
-        .deriveChild(1)
-        .deriveChild(j).privateKey
+      const privKey = walletChangePrivateKey(xPrivKey, j)
       this.changeKeys.push({ privKey })
       this.addAddressData({ privKey, change: true })
     }
@@ -437,11 +642,15 @@ export class Wallet {
     transaction.addOutput(
       new Transaction.Output({
         satoshis: satoshis - fees,
-        script: Script.buildPublicKeyHashOut(pubkey),
+        script: p2pkhScriptFromPublicKey(pubkey),
       }),
     )
     // Sign transaction
-    transaction = transaction.sign(signingKeys)
+    transaction = signTransactionInputs(
+      transaction,
+      signingKeys,
+      this.networkName,
+    )
 
     console.log('Broadcasting forwarding txn', transaction)
     const txHex = transaction.toString()
@@ -539,9 +748,7 @@ export class Wallet {
       console.log('Generating a change UTXO for amount:', changeOutputAmount)
       // Create the output
       const output = new Transaction.Output({
-        script: Script.buildPublicKeyHashOut(
-          changeKey.privKey.toPublicKey(),
-        ).toHex(),
+        script: walletChangeP2pkhScript(changeKey.privKey).toString('hex'),
         satoshis: changeOutputAmount,
       })
       transaction = transaction.addOutput(output)
@@ -558,9 +765,7 @@ export class Wallet {
       const changeOutputAmount = delta - properFee
       if (changeOutputAmount >= minimumNewInputAmount) {
         const output = new Transaction.Output({
-          script: Script.buildPublicKeyHashOut(
-            changeKeys[0].privKey.toPublicKey(),
-          ).toHex(),
+          script: walletChangeP2pkhScript(changeKeys[0].privKey).toString('hex'),
           satoshis: changeOutputAmount,
         })
         transaction = transaction.addOutput(output)
@@ -601,7 +806,11 @@ export class Wallet {
       ? shuffleArray(transaction.outputs).findIndex(v => v === 0)
       : 0
     // Sign transaction
-    transaction = transaction.sign(signingKeys)
+    transaction = signTransactionInputs(
+      transaction,
+      signingKeys,
+      this.networkName,
+    )
     const finalTxnSize = this._estimateSize(transaction)
     // Sweep change into a randomly provided output.  Helps provide noise and obsfuscation
     console.log(
@@ -767,7 +976,7 @@ export class Wallet {
       const amountToUse = Math.min(amountLeft, availableAmount)
       transaction.addOutput(
         new Transaction.Output({
-          script: new Script(new Address(address)),
+          script: p2pkhScriptFromPublicKey(address),
           satoshis: amountToUse,
         }),
       )

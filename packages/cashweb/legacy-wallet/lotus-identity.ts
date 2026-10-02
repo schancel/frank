@@ -1,7 +1,7 @@
 /**
  * A "Frank identity" for a headless client (ticket #9): a secp256k1 keypair, a Lotus-style
  * address derived from it (matching `bitcoinsuite_core::LotusAddress` byte-for-byte -- see
- * `computeLotusAddress`'s doc comment for the verified test vectors), and the two HTTP calls
+ * `lotusAddressFromPubKeyHash`'s doc comment for the verified test vectors), and the two HTTP calls
  * needed to register/look up that identity against a live `cashweb-registry` server: `PUT`/`GET
  * /metadata/:addr` (the same route ticket #8's `e2e_demo_register_identity.rs` example exercises,
  * here reimplemented client-side in TS since no TS client for this route existed yet -- checked:
@@ -26,12 +26,18 @@
  * bitcoinsuite-ecc-secp256k1/src/lib.rs`) does `Signature::from_der(sig)` -- a *DER*-encoded
  * signature, not the 65-byte recoverable "compact" form `../registry/index.ts`'s (legacy, `/keys/
  * :address`-targeting) `constructRelayUrlMetadata` builds via `signature.toCompact(1,
- * true).slice(1)`. `bitcore-lib-xpi`'s `crypto.Signature` supports both (`.toDER()`/`.toBuffer()`
- * are aliases; its own `.d.ts` shim only declares `.toCompact()`/`.toString()`, hence the narrow
- * `as unknown as { toDER(): Buffer }` cast below rather than editing that shared, merged .d.ts for
- * one extra method signature).
+ * true).slice(1)`. `signHash` calls `@frank/nakamoto` `signEcdsa`, which returns
+ * that DER encoding. Address layout in this file is unchanged (decision #499).
+ * Pubkey HASH160, the checksum, and the metadata payload digest use
+ * `@frank/nakamoto` `cryptoBackend`.
  */
-import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
+import { PrivateKey } from 'bitcore-lib-xpi'
+import {
+  cryptoBackend,
+  privateKeyFromSecretBytes,
+  signEcdsa,
+} from '@frank/nakamoto'
+import { lotusIdentityPublicKey } from './lotus-identity-pubkey'
 import axios from 'axios'
 import { relayOriginHeader } from '../relay/origin-header'
 
@@ -92,39 +98,51 @@ function p2pkhScript(pubKeyHash20: Buffer): Buffer {
   ])
 }
 
-/** Hash160 (`RIPEMD160(SHA256(x))`) of a compressed (33-byte) pubkey -- `PkhAlgorithm::
- * Sha256Ripemd160::hash_pubkey` (`backend/cashweb/cashweb-registry/src/store/pubkeyhash.rs`). */
+function sha256(bytes: Uint8Array): Buffer {
+  // cryptoBackend rejects Buffer, which is a Uint8Array subclass.
+  return Buffer.from(cryptoBackend.sha256(Uint8Array.from(bytes)))
+}
+
+/** HASH160 of the key bytes passed in. Matches bitcore `sha256ripemd160` and
+ * `Sha256Ripemd160::hash_pubkey`. */
 export function pubKeyHash160(pubKeyCompressed: Buffer): Buffer {
-  return bitcoreCrypto.Hash.sha256ripemd160(pubKeyCompressed)
+  return Buffer.from(cryptoBackend.hash160(Uint8Array.from(pubKeyCompressed)))
 }
 
 /**
- * Reimplements `bitcoinsuite_core::LotusAddress::new` byte-for-byte: `<prefix><net_char>
- * <base58(payload_type=0 || p2pkh_script || checksum)>`, where `checksum =
- * SHA256(prefix || net_char || payload_type || p2pkh_script)[..4]`.
+ * `<prefix><net_char><base58(payload_type=0 || p2pkh_script || checksum)>`.
+ * Checksum is SHA256(prefix || net_char || payload_type || p2pkh_script)[..4],
+ * one SHA-256, matching `calc_checksum` in
+ * `backend/bitcoinsuite/bitcoinsuite-core/src/address/lotusaddress.rs`.
+ * A hash that is not 20 bytes throws and returns no address.
  *
- * Verified against that file's own test vectors (`#[test] fn decode_lotus_address`,
- * `backend/bitcoinsuite/bitcoinsuite-core/src/address/lotusaddress.rs`): for pkh
- * `b50b86a893d80c9e2ee72b199612374b7b4c1cd8`, this produces exactly
- * `lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi` (mainnet) and
- * `lotusR16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyVqAied` (regtest) -- checked by hand (a Python
- * reimplementation of this exact algorithm) while writing this function, not merely assumed.
+ * `encode_lotus_address` in that file: pkh `b50b86a893d80c9e2ee72b199612374b7b4c1cd8`
+ * is `lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi` (mainnet) and
+ * `lotusR16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyVqAied` (regtest).
  */
-export function computeLotusAddress(
-  pubKeyCompressed: Buffer,
+export function lotusAddressFromPubKeyHash(
+  pubKeyHash20: Buffer,
   net: LotusNet,
 ): string {
   const netChar = net === 'mainnet' ? '_' : 'R'
   const payloadType = 0
-  const script = p2pkhScript(pubKeyHash160(pubKeyCompressed))
+  const script = p2pkhScript(pubKeyHash20)
   const checksumPreimage = Buffer.concat([
     Buffer.from(LOTUS_PREFIX, 'ascii'),
     Buffer.from([netChar.charCodeAt(0), payloadType]),
     script,
   ])
-  const checksum = bitcoreCrypto.Hash.sha256(checksumPreimage).slice(0, 4)
+  const checksum = sha256(checksumPreimage).slice(0, 4)
   const data = Buffer.concat([Buffer.from([payloadType]), script, checksum])
   return `${LOTUS_PREFIX}${netChar}${base58Encode(data)}`
+}
+
+/** HASH160 of `pubKeyCompressed`, then `lotusAddressFromPubKeyHash`. */
+export function computeLotusAddress(
+  pubKeyCompressed: Buffer,
+  net: LotusNet,
+): string {
+  return lotusAddressFromPubKeyHash(pubKeyHash160(pubKeyCompressed), net)
 }
 
 /** A Frank identity: a secp256k1 keypair plus its derived Lotus address (see
@@ -141,7 +159,12 @@ export class FrankIdentity {
   constructor(privateKey: PrivateKey, net: LotusNet) {
     this.privateKey = privateKey
     this.net = net
-    this.pubKey = privateKey.toPublicKey().toBuffer()
+    this.pubKey = Buffer.from(
+      lotusIdentityPublicKey(
+        Uint8Array.from(privateKey.toBuffer()),
+        privateKey.compressed,
+      ),
+    )
     this.address = computeLotusAddress(this.pubKey, net)
   }
 
@@ -181,11 +204,16 @@ export class FrankIdentity {
     return this.privateKey.toBuffer().toString('hex')
   }
 
-  /** DER-encoded ECDSA signature over `hash` (see this file's header for why DER, not bitcore's
-   * compact form). */
+  /** DER-encoded ECDSA signature over a 32-byte `hash`. A bad digest throws. */
   signHash(hash: Buffer): Buffer {
-    const signature = bitcoreCrypto.ECDSA.sign(hash, this.privateKey)
-    return (signature as unknown as { toDER(): Buffer }).toDER()
+    if (hash.length !== 32) throw new Error('sign-digest')
+    const secretBytes = Uint8Array.from(this.privateKey.toBuffer())
+    const key = privateKeyFromSecretBytes(secretBytes, true)
+    secretBytes.fill(0)
+    if (!key.ok) throw new Error(key.error.code)
+    const signed = signEcdsa(key.value, Uint8Array.from(hash))
+    if (!signed.ok) throw new Error(signed.error.code)
+    return Buffer.from(signed.value)
   }
 }
 
@@ -205,7 +233,7 @@ function buildSignedAddressMetadata(identity: FrankIdentity): Buffer {
   metadata.setTtl(1000 * 60 * 60 * 24 * 365) // 1 year, in milliseconds
   metadata.setEntriesList([])
   const serializedPayload = Buffer.from(metadata.serializeBinary())
-  const payloadHash = bitcoreCrypto.Hash.sha256(serializedPayload)
+  const payloadHash = sha256(serializedPayload)
 
   const signedPayload = new SignedPayload()
   signedPayload.setPublicKey(identity.pubKey)

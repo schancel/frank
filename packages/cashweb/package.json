@@ -8,6 +8,7 @@
     "test": "jest --passWithNoTests"
   },
   "dependencies": {
+    "@frank/nakamoto": "*",
     "atob": "^2.1.2",
     "axios": "^0.24.0",
     "bitcore-lib-xpi": "*",

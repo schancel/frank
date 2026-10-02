@@ -22,7 +22,7 @@ const UNPINNED_XPI_UNIT = Object.freeze({
 const XPI_SIGHASH = Object.freeze({
   kind: 'lotus' as const,
   source:
-    'LotusiaStewardship/lotusd src/script/interpreter.cpp SignatureHashLotus (master, read 2026-09-30). SignatureHash dispatches here when hasLotus(), which is (sigHash & 0x60) == 0x60. The BIP143 fork-id path is hasForkId() and is not used for XPI.',
+    'LotusiaStewardship/lotusd src/script/interpreter.cpp SignatureHashLotus (master, read 2026-09-30). SignatureHashLotus runs when hasLotus(), (sigHash & 0x60) == 0x60. Numbers sets SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS, so that path is rejected on current mainnet. Post-Numbers spends use hasForkId BIP143. Ruth sets SCRIPT_ENABLE_REPLAY_PROTECTION.',
 })
 
 const XPI_HEADER = Object.freeze({

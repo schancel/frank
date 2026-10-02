@@ -249,6 +249,20 @@ export interface NativeTransferClient {
   }): Promise<'confirmed' | 'failed' | 'pending' | 'unknown'>
 }
 
+/** A paid topic post may have reached the relay, but the chain adapter could not prove whether
+ * it landed. Callers must not treat this as a definitive failure or offer an automatic retry:
+ * doing so could pay for the same logical submission twice. The chain-specific error is retained
+ * as `cause` for diagnostics without leaking that implementation into app-level policy. */
+export class TopicPostOutcomeUnknownError extends Error {
+  readonly cause: unknown
+
+  constructor(message: string, cause: unknown) {
+    super(message)
+    this.name = 'TopicPostOutcomeUnknownError'
+    this.cause = cause
+  }
+}
+
 export interface TopicBroadcastClient {
   post(params: {
     wallet: WalletHandle

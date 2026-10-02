@@ -7,10 +7,7 @@ const esbuild = require('esbuild')
 
 const root = path.resolve(__dirname, '..')
 const dist = path.join(root, 'dist')
-const manifestPath = path.resolve(
-  root,
-  '../../docs/protocol/cbor/vectors/manifest.json',
-)
+const vectors = path.resolve(root, '../../docs/protocol/cbor/vectors')
 
 async function main() {
   fs.mkdirSync(dist, { recursive: true })
@@ -37,10 +34,20 @@ async function main() {
     path.join(__dirname, 'runner.js'),
     path.join(dist, 'runner.js'),
   )
-  fs.writeFileSync(
-    path.join(dist, 'manifest.js'),
-    `globalThis.FRANK_MANIFEST = ${fs.readFileSync(manifestPath, 'utf8')}\n`,
-  )
+  const browserData = [
+    ['FRANK_MANIFEST', 'manifest.json'],
+    ['FRANK_RUST_ORIGIN', 'rust-origin.json'],
+    ['FRANK_INTEROPERABILITY', 'interoperability.json'],
+  ]
+    .map(
+      ([globalName, file]) =>
+        `globalThis.${globalName} = ${fs.readFileSync(
+          path.join(vectors, file),
+          'utf8',
+        )}`,
+    )
+    .join('\n')
+  fs.writeFileSync(path.join(dist, 'manifest.js'), browserData + '\n')
   fs.writeFileSync(
     path.join(dist, 'browsercheck.html'),
     `<!doctype html>
@@ -52,7 +59,12 @@ async function main() {
 <script src="runner.js"></script>
 <script>
   document.getElementById('result').textContent = JSON.stringify(
-    globalThis.frankBrowserCheck(globalThis.FrankCodec, globalThis.FRANK_MANIFEST),
+    globalThis.frankBrowserCheck(
+      globalThis.FrankCodec,
+      globalThis.FRANK_MANIFEST,
+      globalThis.FRANK_RUST_ORIGIN,
+      globalThis.FRANK_INTEROPERABILITY,
+    ),
   )
 </script>
 </body></html>

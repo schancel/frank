@@ -6,7 +6,7 @@
       flat
       padding="xs"
       class="q-btn"
-      :aria-label="$t('outgoing.retry')"
+      :aria-label="$t('a11y.resendMessage')"
       data-testid="outgoing-retry"
       @click="$emit('resendClick')"
     />
@@ -33,7 +33,7 @@
       padding="xs"
       class="q-btn"
       color="negative"
-      :aria-label="$t('chatMessage.deleteMessage')"
+      :aria-label="$t('a11y.deleteMessage')"
       @click.stop="buttonClicked('delete')"
     />
   </div>
@@ -48,7 +48,7 @@
       icon="more_vert"
       class="q-btn"
       padding="xs"
-      :aria-label="$t('chatMessage.showActions')"
+      :aria-label="$t('a11y.messageActions')"
       @click.stop="menuClicked"
       v-show="!showMenu && !mouseOver"
     />
@@ -59,7 +59,7 @@
         flat
         padding="xs"
         class="q-btn"
-        :aria-label="$t(`chatMessage.${button}Message`)"
+        :aria-label="$t(buttonLabelKeys[button])"
         @click.stop="buttonClicked(button)"
         v-show="mouseOver || showMenu"
       />
@@ -77,6 +77,11 @@ import { useQuasar } from 'quasar'
 // overflow menu -- see that file) -- everyday hover only ever offers reply/forward/info, and
 // delete only ever appears once the user has explicitly opted into a delete-focused view.
 const ButtonNames = ['reply', 'forward', 'info'] as const
+const ButtonLabelKeys = {
+  reply: 'a11y.replyToMessage',
+  forward: 'a11y.forwardMessage',
+  info: 'a11y.messageInfo',
+} as const
 const AllButtonEvents = ['delete', 'reply', 'forward', 'info'].map(
   buttonName => `${buttonName}Click` as const,
 )
@@ -103,6 +108,7 @@ export default defineComponent({
       showMenu,
       selectMode,
       buttonNames: ButtonNames,
+      buttonLabelKeys: ButtonLabelKeys,
       mouseoverCheckMobile() {
         // only set mouseover if not on mobile
         mouseOver.value = !$q.platform.is.mobile

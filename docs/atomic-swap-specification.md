@@ -200,9 +200,9 @@ result.
 V1 assigns each of at most eight participants a disjoint 32-event sender budget: 24 ordinary slots
 whose complete message plan is proven by the manifest and eight reserved safety/recovery slots whose
 message types are enumerated there. A semantic-key duplicate with identical canonical payload is an
-idempotent retransmission only when it is the byte-identical original event. A new sequence targeting
-an already materialized semantic key is rejected without advancing the accepted sender head; a
-nonidentical second value is conflict or equivocation, not a fresh slot. One sender cannot consume another's budget, and ordinary events
+idempotent state no-op. A byte-identical retransmission consumes nothing; a structurally valid new
+sequence repeating that value advances the sender head and consumes one ordinary sender slot so its
+descendants remain reachable. A nonidentical second value is conflict/equivocation. One sender cannot consume another's budget, and ordinary events
 cannot consume its reserved safety slots.
 
 Chain observations are not coordination events and never become authoritative merely because a
@@ -273,8 +273,15 @@ Offer
   -> TransactionCommitments
   -> EncryptedSignatures
   -> PrefundingAuthorizationAttestations
+  -> PairSpecificFundingConsent
   -> ReadyToFund
 ```
+
+`PairSpecificFundingConsent` is a durable local prerequisite for each party whose
+mode exposes a named grief or custody risk. It is bound to the exact authorization
+root, operation revision, withheld artifacts, amounts, and risk text. Decline,
+cancel, stale revision, or crash before its commit cannot release that party's
+`ReadyToFund` or any broadcast-capable funding authorization.
 
 `EncryptedSignatures` means the exact pair policy's pre-funding artifact. It may be a transcript-
 bound commitment rather than delivery of exercisable presignature bytes; the initial withheld-parent
@@ -404,7 +411,12 @@ Before crossing the segment cap, the adapter atomically persists a versioned aut
 `{swapId, adapterId, policyVersion, snapshotRevision, previousSnapshotHash, chainGenesisId,
 acceptedTipId, acceptedTipHeight, sorted[<=256] object projections, retiredSegmentAuditHash}`. Each
 object projection binds its authorized-body hash, chain identity, inclusion block/height, observed
-depth/status, and `activeFinal` value. The snapshot is MACed or AEAD-authenticated by the local vault,
+depth/status, and `activeFinal` value. The snapshot also contains sorted monotone sticky effects,
+including every accepted reveal/trigger identity, the journal revision that first accepted it,
+`salvageForbidden`, and the exact durable counter-action/outbox ID. Eviction, reorg, or current-tip
+absence never clears a sticky effect. Raw evidence for a trigger cannot be retired until the trigger,
+extracted capability if any, and required counter-action/outbox are atomically durable and referenced
+by the snapshot. The snapshot is MACed or AEAD-authenticated by the local vault,
 written to a fresh record, independently read back and verified, and only then replaces the prior
 snapshot and permits raw-segment deletion. This
 local snapshot is not signed by the peer and is never used as peer authority. Current safety-critical
@@ -775,7 +787,10 @@ For this subsection, A offers XEC and receives MON; B offers MON and receives XE
    disappearance can strand MON permanently. Both artifact identities, that dependency warning,
    the permanent-lock consequence, and the authorization control are programmatically associated,
    announced on dialog entry, and encountered in deterministic keyboard and screen-reader order
-   before authorization can activate.
+   before authorization can activate. The dialog also names active invalid-parent, double-spend,
+   invalid-presignature, and deliberate non-release attacks—not only disappearance. Its successful
+   exact-root/revision-bound commit is B's `PairSpecificFundingConsent`; only then may B release
+   `ReadyToFund`.
 6. Only after that consent is durably bound to the exact authorization root and artifacts does B
    sign and broadcast the exact EVM funding transaction. B waits for the manifest's threshold. Only then does A reveal and
    broadcast the exact raw eCash parent. B byte-checks its txid and promised output, fully validates
@@ -1141,7 +1156,9 @@ The first implementation should provide:
     protocol state and accept the same next event, while a broken sender chain or conflicting
     single-valued slot enters the violation path. Distinct signed same-sequence/same-predecessor
     siblings and descendants arrive in opposite orders; both replicas retain prior durable effects,
-    authorize no branch descendant, and enter the same recovery state. Given the same canonical chain tip, byte-distinct
+    authorize no branch descendant, and enter the same recovery state. A fresh-sequence semantic
+    duplicate advances the sender head as a no-op, after which a reserved recovery event succeeds.
+    Given the same canonical chain tip, byte-distinct
     valid witnesses produce the same local semantic effect without becoming protocol authority;
 22. initial-pair reducer tests in which EVM pending/final, exact or invalid parent reveal, and eCash
     pending/final facts arrive duplicated and reordered with restart after every step; only `EVM
@@ -1171,7 +1188,9 @@ The first implementation should provide:
     retry consumes no slot. Per-sender ordinary and safety budgets prevent one peer exhausting
     another; one-over record, ancestry-path, streamed RPC, payload, and prerequisite limits reject
     before full allocation or cryptography. Crash before/after snapshot write/readback/delete plus an
-    offline reorg never lets cached finality authorize an action before mandatory refresh;
+    offline reorg never lets cached finality authorize an action before mandatory refresh. A valid
+    reveal followed by eviction/reorg, compaction, and restart retains its sticky trigger,
+    counter-action ID, and permanent salvage prohibition;
 28. fee-lineage tests cover known-not-sent, known-pending, accepted with lost response, and unknown
     parent outcomes; only specified authoritative states allocate one CAS-winning successor, and
     restart/takeover never creates parallel replacements; and
@@ -1185,7 +1204,9 @@ The first implementation should provide:
     in a griefable mode. Before EVM funding, B must identify both unverified withheld artifacts and
     encounter their programmatically associated dependency warning before the authorization control.
     Declining consent leaves no signed or otherwise broadcast-capable EVM funding bytes outside B;
-    stale consent cannot authorize signing after any root/artifact mutation.
+    stale consent cannot authorize signing after any root/artifact mutation. Decline/crash/restart
+    before consent never reaches B's `ReadyToFund`; the dialog covers both disappearance and active
+    invalidation/double-spend/non-release attacks.
     After recovery-package export, abandonment copy changes only after exact-byte durable write and
     independent read-back/import verification; failed, lost-response, cancelled, and mismatched
     exports retain sole-authority copy and a fresh inventory distinguishes observation from recovery

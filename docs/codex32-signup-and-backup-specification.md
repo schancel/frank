@@ -275,55 +275,61 @@ The descriptor is public but indispensable. V1 signup MUST verify at least two
 retrieved copies stored in distinct trust and failure domains independent from
 the threshold shares; activation is blocked with zero or one. A duplicate
 retrieval from the same declared destination does not increment the count.
-Each destination produces a one-use versioned attestation
-`{version, ceremonyId, ceremonyRevision, presentationOperationId, candidateAccountId,
-artifactRole, artifactCommitment, shareIdentifier?, shareIndex?, class, providerId?,
-accountIdCommitment?, deviceId?, syncDomainId?, removableVolumeId?, physicalDomainId?,
-userAssertions}`. `artifactCommitment` is
+Each destination produces a one-use local destination-evidence record. This is a
+fenced ceremony record, not a claim that the storage provider cryptographically
+attested anything. `artifactCommitment` is
 `SHA-256(ASCII("frank/backup-artifact/v1") || 0x00 || u8(artifactRole) ||
 u32be(byteLength) || exactCanonicalArtifactBytes)`.
 V1 artifact-role octets are `{masterShare=0, recoveryDescriptor=1}`; all other
-values are reserved and rejected. Frozen known-answer vectors cover both roles
-and prove that swapping only the role changes the commitment.
-Frank machine-verifies available stable provider/account/device/sync identifiers,
-normalizes aliases, and rejects two destinations sharing any policy-disallowed
-provider account, synchronized storage domain, or physical device. Properties a
-platform cannot verify—such as physical separation or control by a different
-person—remain explicit user assertions and are labelled as such, never inferred
-from two display names. V1 applies this frozen table: cloud/password-manager
-copies must have different provider IDs, account commitments, and sync-domain
-IDs; two files must have different device or removable-volume IDs and no common
-sync domain; a cloud copy and its synced local mirror are one domain; print copies
-require separately confirmed physical-domain labels and are explicitly
-user-asserted rather than machine-verified. Same-provider/different-account is
-one domain in v1. An online destination with an unknown provider, account, or
-sync correlation fails closed for activation.
+values are reserved and rejected. V1 class octets are `{cloud=0,
+passwordManager=1, localFile=2, removableMedia=3, print=4}`; user-assertion bits
+are `{physicalSeparationConfirmed=0, separateControllerConfirmed=1}` and every
+other bit is rejected.
 
-All identifier fields are canonical UTF-8 NFC strings with leading/trailing
-whitespace forbidden and provider-issued opaque identifiers preferred; equality
-is byte equality after class-specific alias normalization frozen by the
-attestation version. `physicalDomainId` is a locally generated stable opaque ID
-selected from the user's existing named-location inventory, not free-form display
-text. V1 class octets are `{cloud=0, passwordManager=1, localFile=2,
-removableMedia=3, print=4}`. Cloud/password-manager records require provider,
-account commitment, and sync-domain ID (including a canonical provider-issued
-“not synced” ID); local files require device and sync-domain IDs; removable media
-requires volume ID; print requires physical-domain ID. `accountIdCommitment` is
-`SHA-256(ASCII("frank/destination-account/v1") || 0x00 ||
-u16be(providerIdByteLength) || providerId || u16be(accountIdByteLength) ||
-providerOpaqueAccountId)`. The complete equivalence table applies uniformly to descriptor↔descriptor
-and descriptor↔share comparisons: for online classes, equal `providerId` alone is
-one domain even when account and sync IDs differ; across all classes, equality of
-any device, sync-domain, volume, or physical-domain ID is one domain. No other
-cross-class equivalence is accepted in v1; missing a class-required ID fails
-closed. The alias-normalization table is part of attestation version 1 and cannot
-change without a version bump.
+The complete binary record is exactly:
 
-Acceptance atomically verifies the exact current artifact bytes and all ceremony,
-revision, role, family/index, candidate-account, and presentation-operation fields,
-then marks that operation ID consumed. Evidence from another ceremony, role,
-account, family, index, revision, or prior presentation cannot be replayed or
-substituted.
+```text
+u16be(version=1) || ceremonyId[32] || ceremonyRevisionU64 ||
+presentationOperationId[32] || candidateAccountId[32] || artifactRoleU8 ||
+artifactCommitment[32] || shareIdentifierPresentU8 || [ASCII shareIdentifier[4]] ||
+shareIndexPresentU8 || [shareIndexU8] || classU8 ||
+providerPresentU8 || [providerCodeU16] ||
+accountPresentU8 || [accountIdCommitment[32]] ||
+devicePresentU8 || [deviceId[32]] || syncPresentU8 || [syncDomainId[32]] ||
+volumePresentU8 || [removableVolumeId[32]] ||
+physicalPresentU8 || [physicalDomainId[32]] || userAssertionBitsU16
+```
+
+Presence octets are only `0` or `1`. Master-share records require both share
+fields; descriptor records forbid both. Cloud/password-manager records require
+provider, account, and sync and forbid device/volume/physical; local-file records
+require device and sync and forbid provider/account/volume/physical; removable
+media requires only volume; print requires only physical. Missing, extra, unknown,
+or reserved values fail closed.
+
+`providerCode` comes from Frank's immutable v1 provider registry; UI aliases map
+to that code and are never compared as strings. All remaining IDs are raw
+provider/platform-issued 32-byte opaque IDs or locally generated 32-byte IDs from
+the existing named physical-location inventory. `accountIdCommitment` is
+`SHA-256(ASCII("frank/destination-account/v1") || 0x00 || u16be(providerCode) ||
+u16be(accountIdByteLength) || providerOpaqueAccountId)`. Thus v1 has no open-ended
+alias-normalization table.
+
+The equivalence rule applies uniformly to descriptor↔descriptor and
+descriptor↔share comparisons: equal online provider code is one domain even when
+accounts differ; equality of any account commitment, device, sync, volume, or
+physical ID is one domain across all classes. No other equivalence is inferred.
+Properties the platform cannot verify remain labelled assertion bits, never
+machine-derived facts. An online destination with unavailable canonical IDs fails
+closed.
+
+Acceptance atomically verifies the exact binary record, current artifact bytes,
+and all ceremony/revision/role/family/index/account/operation fields under the
+ceremony owner's fencing token, stores its SHA-256 digest, and marks the operation
+ID consumed. Evidence from another ceremony, role, account, family, index,
+revision, or presentation cannot be replayed. Known-answer vectors freeze both
+roles, every class/presence combination, whole-record bytes, commitments, record
+digest, substitutions, and provider-code collisions.
 Losing every trusted descriptor blocks authenticated blank-install recovery
 even when `k` shares survive. In v1 there is no descriptorless preview: a
 missing descriptor stops the normal recovery route before share entry. A future
@@ -956,7 +962,16 @@ normal inactive-account deletion. Because the committed record owns adopted
 handles, it is never silently or automatically cleaned up and its identity rows
 never return to absent. A user who declines resume must use the full deletion
 ceremony and durable tombstone/handle-destruction machine, including its permanent
-retirement consequence. After the pointer switch, startup resumes the new identity.
+retirement consequence. Before presenting that choice, a crash-resumable
+post-commit reconciliation transaction proves the active pointer still names the
+former account, the candidate admitted no operation/outbox, reattaches or verifies
+every former-account watcher, advances the gate term, and transitions the import
+owner's `exclusive -> open`. Only after old-account dispatch is durably restored
+may a later deletion ceremony acquire `open -> closing` normally. A freshly
+authenticated deletion ceremony may instead atomically take ownership directly
+from the import owner, but only after recording the same former-account watcher/
+dispatch restoration and exact candidate inventory. After the pointer switch,
+startup resumes the new identity.
 Secret cleanup precedes normal networking in either case.
 
 ## 8. Backup management after signup
@@ -1630,7 +1645,10 @@ A lost commit acknowledgement retries the same `creationId` and byte-identical
 record successfully rather than colliding with its own identity rows. A competing
 creation fails. A two-phase post-record/pre-switch failure persists the complete
 inactive account and adopted intents across restart; it can only resume or enter
-the ordinary inactive-account deletion ceremony, never automatic cleanup.
+the ordinary inactive-account deletion ceremony, never automatic cleanup. Crash
+at every post-commit reconciliation step proves the import owner restores the old
+account and `open` gate without a watcher/dispatch gap before deletion reacquires,
+or atomically hands exclusivity to the freshly authenticated deletion owner.
 
 Backup-status tests deterministically re-export the exact descriptor from
 persisted versions and raw fingerprint, round-trip it independently, and reject

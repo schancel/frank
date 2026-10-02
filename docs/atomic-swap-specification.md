@@ -135,6 +135,12 @@ artifact bytes. Both Frank identity keys sign the same root, exchange and verify
 and durably record them before either party releases funding authorization. A change to any context,
 artifact, or digest invalidates these attestations.
 
+The root binds exact bytes only for immutable preparation artifacts. Where the pair-specific policy
+intentionally permits a later witness to vary, the root instead binds the canonical witness predicate,
+authorized keys and sighash constraints. An observed witness is appended as settlement evidence and
+must satisfy that predicate; it need not byte-match an illustrative preparation witness. Variable
+witnesses never overwrite or reinterpret the originally attested preparation transcript.
+
 Later chain evidence is appended to an audit transcript and does not require renewed peer
 cooperation. Native chain signatures continue to sign only the exact digest accepted by their chain;
 they are transaction authorization, not a substitute for protocol attestation. Any future primitive
@@ -288,12 +294,26 @@ secret is exposed:
 3. account nonces, balances, and durable nonces must remain reserved; and
 4. watchers must be able to submit all remaining legs with adequate fees.
 
+“Exposed” includes knowledge held by the party that generated a capability. For every initial
+capability holder, the manifest defines a funding partial order under which all of that holder's
+offered legs become final and non-invalidatable before any incoming leg becomes claimable by that
+holder. The honest counterparty withholds its funding object, parent transaction, signature, account
+authorization, or another indispensable spend artifact until that condition holds. A cyclic order
+with no such cryptographic or consensus gate is invalid and cannot enter `ReadyToFund`.
+
 At `ReadyToSettle`, deadline ordering must be acyclic. For every revelation leg `r` and remaining
 leg `j`, the manifest must establish, in a common conservative time model:
 
 ```text
 latestExposure(r) + outage + detection + broadcastAndFeeBump
   + inclusionAndFinality(j) + reorgMargin(j) < earliestRefund(j)
+```
+
+The revelation leg must also be safe against its own refund race:
+
+```text
+latestExposure(r) + relayAndFeeBump(r)
+  + inclusionAndFinality(r) + reorgMargin(r) < earliestRefund(r)
 ```
 
 The protocol rejects a bundle if this inequality fails for any pair. A committed multi-lane order
@@ -525,10 +545,12 @@ For this subsection, A offers XEC and receives MON; B offers MON and receives XE
    the committed txid, output index, amount, redeem script, and child-building data—not the raw signed
    parent, input signatures, scriptSigs, or anything from which B can reconstruct and broadcast it.
    From that commitment, both construct the canonical claim body and exact refund. The adapter
-   freezes the redeem script, mandatory `SIGHASH_ALL | SIGHASH_FORKID` without `ANYONECANPAY`, input
-   set and sequences, funding outpoint, version, locktime, success recipient B, outputs and amounts,
-   refund recipient A, fees, and refund height/time in test vectors. Claim unlocking-script bytes and
-   claim txid are deliberately not authoritative.
+   freezes the redeem script, input set and sequences, funding outpoint, version, locktime, success
+   recipient B, outputs and amounts, refund recipient A, fees, and refund height/time in test vectors.
+   A's extractable adaptor/completed signature MUST use `SIGHASH_ALL | SIGHASH_FORKID` without
+   `ANYONECANPAY`, so it alone binds the complete canonical body. B may use any consensus-valid
+   sighash type whose actual signature verifies for B over that unchanged body. Claim unlocking-script
+   bytes, B's signature bytes and sighash byte, and claim txid are deliberately not authoritative.
 3. B produces an ordinary signature for the canonical eCash claim digest. A gives B an adaptor
    signature for A's required success-branch signature under `T`. B verifies it. A valid
    success-branch spend matching the canonical body pays only B and is the sole first-reveal action.
@@ -542,8 +564,9 @@ For this subsection, A offers XEC and receives MON; B offers MON and receives XE
    transferred to A; it does not pretend residual change remains under B's control.
 5. Both identities sign the pre-funding authorization root containing the exact EVM funding bytes,
    the withheld-parent txid/output commitment, canonical eCash claim intent, exact refund artifact,
-   A's presignature, all public points/proofs/signatures, amounts, EVM success-policy artifact, and
-   conservative `lastSafeClaimBroadcast`.
+   A's presignature and sighash type, the initially supplied B signature as readiness evidence, all
+   public points/proofs, amounts, the predicate permitting a later valid B witness, EVM success-policy
+   artifact, and conservative `lastSafeClaimBroadcast`.
    They durably record both attestations. B cannot validate the hidden parent's signatures or output
    before risking MON and explicitly accepts invalid-parent, double-spend, and non-reveal grief.
 6. B broadcasts EVM funding and waits for the manifest's threshold. Only then does A reveal and
@@ -559,11 +582,11 @@ For this subsection, A offers XEC and receives MON; B offers MON and receives XE
    `t`, supplies any consensus-valid B signature and success-branch encoding, and broadcasts. On
    observation in the mempool, a block, or a reorg branch, A parses the actual spend and verifies the
    exact funding outpoint, canonical sighash-covered body, redeem script and success branch, both
-   signatures, and mandatory sighash flags. A extracts from the observed A signature and stored
-   presignature, accepts only `t` or `-t` matching `T`, durably records the trigger and counter-action,
-   computes `x = a + t mod n`, and signs a fresh EVM principal payment to A under the canonical
-   success policy. A trusted local signer may reprice this payment and later sweep the residual
-   reserve because it now holds the complete one-use key.
+   signatures, A's mandatory sighash type, and B's actual consensus-valid sighash. A extracts from the
+   observed A signature and stored presignature, accepts only `t` or `-t` matching `T`, durably records
+   the trigger and counter-action, computes `x = a + t mod n`, and signs a fresh EVM principal payment
+   to A under the canonical success policy. A trusted local signer may reprice this payment and later
+   sweep the residual reserve because it now holds the complete one-use key.
 8. If B does not reveal in time, A broadcasts the eCash refund. B's EVM principal has no contractless
    unilateral refund and enters `cooperative-recovery-required` only when that refund is final under
    the rule below. A never publishes or authorizes an EVM payment to itself before observing a valid
@@ -850,9 +873,12 @@ The first implementation should provide:
 8. chain reorganization simulations before and after counter-leg finality, including rollback beyond
    the declared assumption;
 9. multi-lane tests over every reachable success/refund subset using net values and worst-case fees,
-   plus late revelation against the slowest coupled leg;
-10. account-replacement tests proving every funded old-account swap retains the mode-specific claim,
-    refund, monitoring, and cooperative-salvage capabilities after restart, or replacement is blocked;
+   plus late revelation against the slowest coupled leg; for every partial-funding prefix, give each
+   initial capability holder every exchanged completion artifact and prove it cannot claim incoming
+   value until all of its outgoing obligations are final;
+10. account-replacement tests proving every old-account swap at or beyond its conservative
+    authorization cutoff—including unknown funding outcomes—retains the mode-specific claim, refund,
+    monitoring, and cooperative-salvage capabilities after restart, or replacement is blocked;
 11. fee-ceiling tests proving unilateral success coverage in every mode and refund coverage across
     the recoverable envelope, including peer claim, fee spike, and disappearance;
 12. canonical EVM policy tests in which two differently priced in-range type-2 transactions pass,
@@ -862,15 +888,17 @@ The first implementation should provide:
 13. withheld-parent tests proving B cannot reconstruct or broadcast the eCash parent from disclosed
     preparation data, and that alternate parent encodings, signatures, or txids never retarget the
     claim outpoint;
-14. claim-malleability tests proving a fresh valid B signature and every accepted push encoding still
-    trigger extraction from the observed A signature, while any mutation of a sighash-covered body
-    field fails;
+14. claim-malleability tests proving a fresh valid B signature, every accepted push encoding, and B
+    sighash variants including `ALL | FORKID | ANYONECANPAY` still trigger extraction from A's fixed
+    `ALL | FORKID` signature, while any body mutation or A-sighash mutation fails; the original
+    authorization root remains unchanged;
 15. post-refund salvage tests proving `a` is never released before refund finality, is retained across
     restart while MON remains, verifies against `A_evm`, and recovers only the one-use EOA for B;
 16. cutoff-race tests in which a claim first appears after `lastSafeClaimBroadcast`, a claim and
     refund race in either order, a shallow refund reorganizes to a claim, and a restart crosses the
-    cutoff; every winning valid claim remains authorized, while final refund without an accepted
-    trigger retires signing and enables salvage;
+    cutoff; every externally observed valid reveal—winning, losing, evicted, or reorged—remains
+    authorized and permanently excludes salvage, while final refund with no observed trigger retires
+    signing and enables salvage; cutoff rejection applies only to B's local broadcast decision;
 17. deadline-boundary tests proving a claim broadcast at the cutoff reaches negotiated finality and
     reorg margin strictly before refund validity under worst-case declared delays, one unit later is
     rejected, and a pre-finality claim reorg followed by refund is never classified safe;
@@ -878,7 +906,10 @@ The first implementation should provide:
     closed without signing; malicious-watcher capability tests; and
 19. a live testnet griefable-mode completion/lockout demonstration or recoverable-mode
     completion/refund demonstration, using disposable keys and negligible value and labelled
-    accordingly.
+    accordingly; and
+20. generic bundle boundary tests that reject `ReadyToSettle` when the remaining-leg inequality passes
+    but the revelation leg cannot itself reach finality and reorg margin before its refund, including
+    equality and one-unit failures.
 
 Passing functional tests is not a substitute for cryptographic review. Threshold ECDSA,
 cross-curve proofs, adaptor-point reuse, and the final settlement state machine require independent

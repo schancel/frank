@@ -23,7 +23,7 @@
         {{ $t('replaceGuard.cancel') }}
       </button>
       <button
-        v-if="!confirmed"
+        v-if="!confirmed && hasSeed"
         type="button"
         data-test="confirm-current"
         @click="confirmOpen = true"
@@ -87,7 +87,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, nextTick, ref } from 'vue'
+import { defineComponent, nextTick, ref, watch } from 'vue'
 import SeedConfirmDialog from '../dialogs/SeedConfirmDialog.vue'
 
 let counter = 0
@@ -102,6 +102,8 @@ export default defineComponent({
   props: {
     /** The stored phrase is already confirmed. */
     confirmed: { type: Boolean, default: false },
+    /** A stored seed exists on this device (#308). */
+    hasSeed: { type: Boolean, default: true },
   },
   emits: ['cancel', 'acknowledge'],
   setup(_props, { emit }) {
@@ -113,6 +115,10 @@ export default defineComponent({
     const heading = ref<HTMLElement | null>(null)
     const input = ref<HTMLInputElement | null>(null)
     void nextTick(() => heading.value?.focus())
+
+    watch(typed, () => {
+      mismatch.value = false
+    })
     return {
       typed,
       mismatch,

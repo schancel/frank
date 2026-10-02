@@ -24,6 +24,7 @@
         <replace-account-guard
           v-if="guardActive"
           :confirmed="existingConfirmed"
+          :has-seed="hasStoredSeed"
           @cancel="$router.push('/')"
           @acknowledge="acknowledgeReplace"
         />
@@ -146,7 +147,11 @@ import {
   setupFinishReloads,
 } from '../utils/monad-identity-session'
 import { finishSetupAndEnter } from '../utils/setup-persistence'
-import { classifyAccount } from '../utils/account-state'
+import {
+  classifyAccount,
+  type AccountState,
+  type StoredAccountFacts,
+} from '../utils/account-state'
 import { requestPersistentStorageWithin } from '../utils/persistent-storage'
 import {
   commitValidatedSetupName,
@@ -237,16 +242,21 @@ export default defineComponent({
       seedConfirmedAt: wallet.seedConfirmedAt,
     })
     const resume = accountState === 'needs-recovery'
-    // #304: a finished account (seed and name) already lives on this device. Replacing it
-    // needs an explicit, typed acknowledgement; until then the onboarding steps are not shown
-    // and nothing can be committed.
+    // #304: a finished account (seed and name) already lives on this device.
+    // #308: a legacy profile (name-only) is also an existing account.
+    // Replacing it needs an explicit, typed acknowledgement; until then the onboarding steps
+    // are not shown and nothing can be committed.
     const existingAccount =
-      accountState === 'completed-unconfirmed' || accountState === 'confirmed'
+      accountState === 'completed-unconfirmed' ||
+      accountState === 'confirmed' ||
+      accountState === 'name-only'
+    const hasStoredSeed = accountState !== 'name-only'
 
     return {
       resume,
       existingAccount,
       existingConfirmed: accountState === 'confirmed',
+      hasStoredSeed,
       replaceAcknowledged: false,
       resumeReplaceAcknowledged: false,
       completionPending: false,
@@ -363,7 +373,43 @@ export default defineComponent({
     setupFinishLocation() {
       return window.location
     },
-    captureAccountSubmission(confirmedAt: number): Readonly<AccountSubmission> {
+    async rehydrateStores(): Promise<void> {
+      await Promise.all([
+        useWalletStore().rehydrate?.(),
+        useProfileStore().rehydrate?.(),
+      ])
+    },
+    async syncPersistedAccountState(): Promise<AccountState> {
+      await this.rehydrateStores()
+      const wallet = useWalletStore()
+      const profile = useProfileStore()
+      const facts: StoredAccountFacts = {
+        seedPhrase: wallet.seedPhrase,
+        name: profile.profile?.name,
+        seedConfirmedAt: wallet.seedConfirmedAt,
+      }
+      const accountState = classifyAccount(facts)
+      if (
+        accountState === 'completed-unconfirmed' ||
+        accountState === 'confirmed' ||
+        accountState === 'name-only'
+      ) {
+        this.existingAccount = true
+        this.existingConfirmed = accountState === 'confirmed'
+        this.hasStoredSeed = accountState !== 'name-only'
+        this.storedSeed = wallet.seedPhrase
+      }
+      if (accountState === 'needs-recovery') {
+        this.resume = true
+        this.storedSeed = wallet.seedPhrase
+      }
+      return accountState
+    },
+    async captureAccountSubmission(
+      confirmedAt: number,
+    ): Promise<Readonly<AccountSubmission>> {
+      await this.syncPersistedAccountState()
+
       if (this.existingAccount && !this.replaceAcknowledged) {
         // Independent of the UI: an existing account is never replaced, and its profile never
         // overwritten, without the typed acknowledgement.
@@ -381,15 +427,16 @@ export default defineComponent({
 
       // Validate and canonicalize the whole identity synchronously, before avatar loading or any
       // persistence await opens a window for the editable draft to diverge from durable state.
-      const seed = commitValidatedSetupSeed(
-        this.accountData.seed,
-        () => undefined,
-        confirmedAt,
-      )
+      // Validate name before seed (#308).
       const name = commitValidatedSetupName(
         this.accountData.name,
         this.accountData.nameRequired,
         () => undefined,
+      )
+      const seed = commitValidatedSetupSeed(
+        this.accountData.seed,
+        () => undefined,
+        confirmedAt,
       )
       const submission = Object.freeze({
         seed,
@@ -439,7 +486,9 @@ export default defineComponent({
       this.completionPending = true
       try {
         if (!this.accountSubmission) {
-          this.accountSubmission = this.captureAccountSubmission(confirmedAt)
+          this.accountSubmission = await this.captureAccountSubmission(
+            confirmedAt,
+          )
         }
         await this.completeAccountStep(this.accountSubmission)
       } catch (error) {

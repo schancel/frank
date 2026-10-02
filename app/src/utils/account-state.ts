@@ -10,8 +10,10 @@
  *     #267, which persisted a generated seed on open). Not treated as set up: the user is routed
  *     to /setup in resume mode, which shows the STORED phrase (never regenerates it), asks them to
  *     confirm it and choose a name.
- *   - FRESH = no stored seed (never started, or a reload mid-setup: nothing is persisted until
- *     the final step). A name without a seed is left to the existing router rules.
+ *   - FRESH = no stored seed and no stored name (never started, or a reload mid-setup: nothing
+ *     is persisted until the final step).
+ *   - NAME_ONLY = a stored display name and NO seed (legacy profile-only account, #308). Passes the
+ *     router gate but requires replace acknowledgement to overwrite in /setup.
  *   - A completed account with no marker is offered a dismissible backup reminder
  *     (needsBackupConfirmation); it is never blocked.
  */
@@ -20,6 +22,7 @@ export type AccountState =
   | 'needs-recovery'
   | 'completed-unconfirmed'
   | 'confirmed'
+  | 'name-only'
 
 export interface StoredAccountFacts {
   seedPhrase: string | null | undefined
@@ -28,7 +31,7 @@ export interface StoredAccountFacts {
 }
 
 export function classifyAccount(facts: StoredAccountFacts): AccountState {
-  if (!facts.seedPhrase) return 'fresh'
+  if (!facts.seedPhrase) return facts.name ? 'name-only' : 'fresh'
   if (!facts.name) return 'needs-recovery'
   return facts.seedConfirmedAt != null ? 'confirmed' : 'completed-unconfirmed'
 }

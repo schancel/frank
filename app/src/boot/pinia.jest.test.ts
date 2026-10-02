@@ -290,5 +290,37 @@ describe('Pinia persistence barrier', () => {
 
     await expect(store.restored).resolves.toBe(true)
     await expect(store.flushPersistence()).resolves.toBeUndefined()
+    await expect(store.rehydrate()).resolves.toBeUndefined()
+  })
+
+  it('rehydrates persisted state from storage and patches store (#308)', async () => {
+    let persistedValue = 10
+    const storage = {
+      get: jest
+        .fn()
+        .mockImplementation(() =>
+          Promise.resolve(JSON.stringify({ value: persistedValue })),
+        ),
+      put: jest.fn().mockResolvedValue(undefined),
+    } as unknown as LevelDB
+    const { pinia } = installPinia(storage)
+    const useTestStore = defineStore(`rehydrate-test-${nextStoreId++}`, {
+      state: () => ({ value: 0 }),
+      storage: {
+        save: async () => undefined,
+        restore: async (s: any) => {
+          const raw = await s.get('test')
+          return JSON.parse(raw)
+        },
+      },
+    })
+    const store = useTestStore(pinia)
+    await store.restored
+    expect(store.value).toBe(10)
+
+    // Simulating external write (e.g. another tab)
+    persistedValue = 99
+    await store.rehydrate()
+    expect(store.value).toBe(99)
   })
 })

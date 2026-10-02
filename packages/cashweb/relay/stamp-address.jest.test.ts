@@ -1,12 +1,14 @@
 import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
-import { lotusFromAddress } from '../legacy-wallet/lotus-address'
+import {
+  lotusFromAddress,
+  lotusFromPrivateKey,
+} from '../legacy-wallet/lotus-address'
 import { PayloadConstructor } from './crypto'
 
 const NETWORK = 'livenet'
 const DEST_SECRET = '11'.repeat(32)
-const N_HEX =
-  'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
+const N_HEX = 'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
 const N_MINUS_1 =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140'
 const N_PLUS_ONE =
@@ -37,10 +39,17 @@ it('matches bitcore stamp addresses for digests in (0, n)', () => {
   const live = bitcoreStampAddress(digest, destination, NETWORK)
   expect(address).toBe(lotusFromAddress(oracle, 'testnet'))
   expect(address).not.toBe(lotusFromAddress(live, NETWORK))
-  const fromPrivate = ctor
-    .constructStampPrivateKey(digest, destination)
-    .toAddress('testnet')
-  expect(address).toBe(lotusFromAddress(fromPrivate, 'testnet'))
+  const fromPrivate = ctor.constructStampPrivateKey(digest, destination)
+  const fromPrivateOracle = new PrivateKey(
+    bitcoreCrypto.BN.fromBuffer(digest)
+      .add(destination.toBigNumber())
+      .mod(bitcoreCrypto.Point.getN()),
+  )
+  expect(fromPrivate.toBuffer()).toEqual(fromPrivateOracle.toBuffer())
+  expect(fromPrivate.toPublicKey().toBuffer()).toEqual(
+    fromPrivateOracle.toPublicKey().toBuffer(),
+  )
+  expect(address).toBe(lotusFromPrivateKey(fromPrivate, 'testnet'))
 
   const almost = new PrivateKey(N_MINUS_1)
   const cross = Buffer.alloc(32)
@@ -78,12 +87,13 @@ it('rejects a zero sum and digests outside (0, n)', () => {
   expect(() => ctor.constructStampAddress(zeroSum, destination)).toThrow(
     'stamp-parent:scalar-out-of-range',
   )
-  expect(() =>
-    new PrivateKey(
-      bitcoreCrypto.BN.fromBuffer(zeroSum)
-        .add(destination.toBigNumber())
-        .mod(bitcoreCrypto.Point.getN()),
-    ),
+  expect(
+    () =>
+      new PrivateKey(
+        bitcoreCrypto.BN.fromBuffer(zeroSum)
+          .add(destination.toBigNumber())
+          .mod(bitcoreCrypto.Point.getN()),
+      ),
   ).toThrow('Number can not be equal to zero')
   expect(() =>
     ctor.constructStampAddress(Buffer.alloc(32), destination),

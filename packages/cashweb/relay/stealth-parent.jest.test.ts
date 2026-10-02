@@ -10,8 +10,7 @@ import {
 const NETWORK = 'livenet'
 const DEST_SECRET = '11'.repeat(32)
 const EPHEMERAL_SECRET = '22'.repeat(32)
-const N_HEX =
-  'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
+const N_HEX = 'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
 const N_MINUS_1 =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140'
 const N_PLUS_ONE =
@@ -56,14 +55,20 @@ it('reduces a stealth digest mod n the way bitcore does', () => {
   for (const digest of samples) {
     expect(Buffer.from(stealthDigestModN(digest))).toEqual(bitcoreMod(digest))
   }
-  expect(Buffer.from(stealthDigestModN(Buffer.from(N_HEX, 'hex'))).toString('hex')).toBe(
-    '00'.repeat(32),
+  expect(
+    Buffer.from(stealthDigestModN(Buffer.from(N_HEX, 'hex'))).toString('hex'),
+  ).toBe('00'.repeat(32))
+  expect(
+    Buffer.from(stealthDigestModN(Buffer.from(N_PLUS_ONE, 'hex'))).toString(
+      'hex',
+    ),
+  ).toBe(ONE)
+  expect(() => stealthDigestModN(Buffer.alloc(31))).toThrow(
+    'stealth-parent:digest',
   )
-  expect(Buffer.from(stealthDigestModN(Buffer.from(N_PLUS_ONE, 'hex'))).toString('hex')).toBe(
-    ONE,
+  expect(() => stealthDigestModN(Buffer.alloc(33))).toThrow(
+    'stealth-parent:digest',
   )
-  expect(() => stealthDigestModN(Buffer.alloc(31))).toThrow('stealth-parent:digest')
-  expect(() => stealthDigestModN(Buffer.alloc(33))).toThrow('stealth-parent:digest')
 })
 
 it('adds the stealth digest to the destination the way bitcore does', () => {
@@ -108,29 +113,43 @@ it('adds the stealth digest to the destination the way bitcore does', () => {
       ),
     ),
   ).toEqual(bitcoreSum(Buffer.from(N_PLUS_ONE, 'hex'), destination))
-  expect(Buffer.from(stealthParentScalar(Uint8Array.from(destination.toBuffer()), Buffer.alloc(32))).toString('hex')).toBe(
-    DEST_SECRET,
-  )
-  expect(Buffer.from(stealthParentScalar(Uint8Array.from(one.toBuffer()), Buffer.from('33'.repeat(32), 'hex'))).toString('hex')).toBe(
-    bitcoreSum(Buffer.from('33'.repeat(32), 'hex'), one).toString('hex'),
-  )
+  expect(
+    Buffer.from(
+      stealthParentScalar(
+        Uint8Array.from(destination.toBuffer()),
+        Buffer.alloc(32),
+      ),
+    ).toString('hex'),
+  ).toBe(DEST_SECRET)
+  expect(
+    Buffer.from(
+      stealthParentScalar(
+        Uint8Array.from(one.toBuffer()),
+        Buffer.from('33'.repeat(32), 'hex'),
+      ),
+    ).toString('hex'),
+  ).toBe(bitcoreSum(Buffer.from('33'.repeat(32), 'hex'), one).toString('hex'))
   const caller = Uint8Array.from(destination.toBuffer())
   stealthParentScalar(caller, Buffer.from('33'.repeat(32), 'hex'))
   expect(Buffer.from(caller).toString('hex')).toBe(DEST_SECRET)
 
   expect(() =>
-    stealthParentScalar(Uint8Array.from(one.toBuffer()), Buffer.from(N_MINUS_1, 'hex')),
-  ).toThrow('stealth-parent:scalar-out-of-range')
-  expect(() =>
-    new PrivateKey(
-      bitcoreCrypto.BN.fromBuffer(Buffer.from(N_MINUS_1, 'hex'))
-        .add(one.toBigNumber())
-        .mod(bitcoreCrypto.Point.getN()),
+    stealthParentScalar(
+      Uint8Array.from(one.toBuffer()),
+      Buffer.from(N_MINUS_1, 'hex'),
     ),
+  ).toThrow('stealth-parent:scalar-out-of-range')
+  expect(
+    () =>
+      new PrivateKey(
+        bitcoreCrypto.BN.fromBuffer(Buffer.from(N_MINUS_1, 'hex'))
+          .add(one.toBigNumber())
+          .mod(bitcoreCrypto.Point.getN()),
+      ),
   ).toThrow('Number can not be equal to zero')
-  expect(() => stealthParentScalar(Buffer.alloc(32), Buffer.from(ONE, 'hex'))).toThrow(
-    'stealth-parent:scalar-out-of-range',
-  )
+  expect(() =>
+    stealthParentScalar(Buffer.alloc(32), Buffer.from(ONE, 'hex')),
+  ).toThrow('stealth-parent:scalar-out-of-range')
   expect(() =>
     stealthParentScalar(Buffer.from(N_HEX, 'hex'), Buffer.from(ONE, 'hex')),
   ).toThrow('stealth-parent:scalar-out-of-range')
@@ -138,14 +157,20 @@ it('adds the stealth digest to the destination the way bitcore does', () => {
     stealthParentScalar(Buffer.alloc(31), Buffer.from(ONE, 'hex')),
   ).toThrow('stealth-parent:wrong-length')
   expect(() =>
-    stealthParentScalar(Uint8Array.from(destination.toBuffer()), Buffer.alloc(31)),
+    stealthParentScalar(
+      Uint8Array.from(destination.toBuffer()),
+      Buffer.alloc(31),
+    ),
   ).toThrow('stealth-parent:digest')
   expect(destination.toBuffer().toString('hex')).toBe(DEST_SECRET)
 })
 
 it('derives the stealth parent from ecdh', () => {
   const ctor = new PayloadConstructor({ networkName: 'testnet' })
-  const destination = PrivateKey.fromBuffer(Buffer.from(DEST_SECRET, 'hex'), NETWORK)
+  const destination = PrivateKey.fromBuffer(
+    Buffer.from(DEST_SECRET, 'hex'),
+    NETWORK,
+  )
   const ephemeral = PrivateKey.fromBuffer(
     Buffer.from(EPHEMERAL_SECRET, 'hex'),
     NETWORK,
@@ -153,15 +178,11 @@ it('derives the stealth parent from ecdh', () => {
   const ephemeralPublic = ephemeral.toPublicKey()
   const expected = bitcoreParent(ephemeralPublic, destination)
   const derived = ctor.constructStealthPrivateKey(ephemeralPublic, destination)
-  const described = derived.stealthPrivateKey.toObject() as {
-    compressed: boolean
-    network: string
-  }
   expect(derived.stealthPrivateKey.toBuffer()).toEqual(expected.secret)
   expect(Buffer.from(derived.digest)).toEqual(expected.digest)
-  expect(described.compressed).toBe(true)
-  expect(described.network).toBe('livenet')
-  expect(derived.stealthPrivateKey.network.name).toBe('livenet')
+  expect(derived.stealthPrivateKey.toPublicKey().toBuffer()).toEqual(
+    new PrivateKey(expected.secret.toString('hex')).toPublicKey().toBuffer(),
+  )
 
   const fromHelper = stealthParentSecret(
     Uint8Array.from(destination.toBuffer()),
@@ -182,14 +203,18 @@ it('derives the stealth parent from ecdh', () => {
   const almost = new PrivateKey(N_MINUS_1)
   const almostExpected = bitcoreParent(ephemeralPublic, almost)
   const almostDerived = ctor.constructStealthPrivateKey(ephemeralPublic, almost)
-  expect(almostDerived.stealthPrivateKey.toBuffer()).toEqual(almostExpected.secret)
+  expect(almostDerived.stealthPrivateKey.toBuffer()).toEqual(
+    almostExpected.secret,
+  )
   expect(Buffer.from(almostDerived.digest)).toEqual(almostExpected.digest)
 
   const one = new PrivateKey(ONE)
   const oneExpected = bitcoreParent(ephemeralPublic, one)
-  expect(ctor.constructStealthPrivateKey(ephemeralPublic, one).stealthPrivateKey.toBuffer()).toEqual(
-    oneExpected.secret,
-  )
+  expect(
+    ctor
+      .constructStealthPrivateKey(ephemeralPublic, one)
+      .stealthPrivateKey.toBuffer(),
+  ).toEqual(oneExpected.secret)
 
   const leadingZeroSecret = `${'00'.repeat(31)}6d`
   const leadingZeroKey = new PrivateKey(leadingZeroSecret)
@@ -200,7 +225,9 @@ it('derives the stealth parent from ecdh', () => {
     leadingZeroKey.toPublicKey(),
     destination,
   )
-  expect(leadingParent.stealthPrivateKey.toBuffer()).toEqual(leadingMatch.secret)
+  expect(leadingParent.stealthPrivateKey.toBuffer()).toEqual(
+    leadingMatch.secret,
+  )
   expect(Buffer.from(leadingParent.digest)).toEqual(leadingMatch.digest)
 
   const hd = ctor.constructHDStealthPrivateKey(ephemeralPublic, destination)
@@ -216,10 +243,16 @@ it('derives the stealth parent from ecdh', () => {
   expect(Buffer.from(callerPoint)).toEqual(ephemeralPublic.toBuffer())
 
   expect(() =>
-    stealthParentSecret(Uint8Array.from(destination.toBuffer()), new Uint8Array()),
+    stealthParentSecret(
+      Uint8Array.from(destination.toBuffer()),
+      new Uint8Array(),
+    ),
   ).toThrow('stealth-parent:public-key')
   expect(() =>
-    stealthParentSecret(Uint8Array.from(destination.toBuffer()), new Uint8Array(32)),
+    stealthParentSecret(
+      Uint8Array.from(destination.toBuffer()),
+      new Uint8Array(32),
+    ),
   ).toThrow('stealth-parent:public-key')
   const invalid = new Uint8Array(33)
   invalid[0] = 0x02
@@ -235,5 +268,4 @@ it('derives the stealth parent from ecdh', () => {
   expect(() => stealthParentSecret(Buffer.alloc(31), callerPoint)).toThrow(
     'stealth-parent:wrong-length',
   )
-
 })

@@ -396,6 +396,11 @@ export default {
     confirmStoredFirst: 'Confirm or copy your stored recovery phrase first.',
     importDifferentPhrase: 'I already have a different recovery phrase',
     importDifferentContinue: 'Continue to import',
+    invalidWordCount:
+      'A recovery phrase must contain 12, 15, 18, 21, or 24 words.',
+    unrecognizedWords: 'One or more words are not recognized. Check for typos.',
+    invalidChecksum:
+      'The recovery phrase checksum is invalid. Check the order and spelling of your words.',
   },
   seedConfirm: {
     unavailable:

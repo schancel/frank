@@ -1,9 +1,63 @@
-import { validateMnemonic } from 'bip39'
+import { validateMnemonic, wordlists } from 'bip39'
 import { requireValidProfileDisplayName } from '@frank/wallet/profile-display-name'
 
 /** Canonical form accepted by Frank's current English BIP-39 setup UI. */
 export function normalizeSetupMnemonic(seed: string): string {
-  return seed.toLowerCase().trim()
+  return seed.toLowerCase().trim().replace(/\s+/g, ' ')
+}
+
+export type MnemonicValidationReason =
+  | 'word-count'
+  | 'unrecognized-words'
+  | 'invalid-checksum'
+  | 'invalid'
+
+const englishBip39Words: Set<string> | null =
+  wordlists && wordlists.english ? new Set(wordlists.english) : null
+
+/**
+ * Identify why a recovery phrase candidate fails BIP-39 validation,
+ * or return null if it is valid or empty.
+ * Never throws, logs, or returns secret words.
+ */
+export function getMnemonicValidationReason(
+  seed: string,
+): MnemonicValidationReason | null {
+  const normalized = normalizeSetupMnemonic(seed)
+  if (!normalized) return null
+  const words = normalized.split(' ').filter(Boolean)
+  if (![12, 15, 18, 21, 24].includes(words.length)) {
+    return 'word-count'
+  }
+  if (englishBip39Words) {
+    if (words.some(word => !englishBip39Words.has(word))) {
+      return 'unrecognized-words'
+    }
+  }
+  if (!validateMnemonic(normalized)) {
+    return 'invalid-checksum'
+  }
+  return null
+}
+
+/**
+ * Return the translation key describing why the seed is invalid,
+ * or null if the seed is empty or valid.
+ */
+export function getMnemonicValidationKey(seed: string): string | null {
+  const reason = getMnemonicValidationReason(seed)
+  switch (reason) {
+    case 'word-count':
+      return 'accountStep.invalidWordCount'
+    case 'unrecognized-words':
+      return 'accountStep.unrecognizedWords'
+    case 'invalid-checksum':
+      return 'accountStep.invalidChecksum'
+    case 'invalid':
+      return 'profile.invalidSeed'
+    default:
+      return null
+  }
 }
 
 /**

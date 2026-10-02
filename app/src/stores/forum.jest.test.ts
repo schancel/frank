@@ -620,7 +620,7 @@ describe('useForumStore: refreshMessages', () => {
     expect(requestedTopics()).toEqual(['brand-new'])
   })
 
-  it('one failing topic does not hide posts from the others', async () => {
+  it('one failing topic does not hide posts from the others and records degraded state', async () => {
     const store = useForumStore()
     const consoleError = jest.spyOn(console, 'error').mockImplementation()
     mockedFetchByTopic.mockImplementation(async ({ topic }) => {
@@ -632,17 +632,68 @@ describe('useForumStore: refreshMessages', () => {
 
     expect(store.getMessage('deadbeef')).toBeTruthy()
     expect(store.hasFetchedOnce).toBe(true)
+    expect(store.outageStatus).toBe('degraded')
+    expect(store.isRefreshing).toBe(false)
     consoleError.mockRestore()
   })
 
-  it('rejects when every topic fetch fails, without marking the feed as loaded', async () => {
+  it('rejects when every topic fetch fails, exiting initial load and recording outage state', async () => {
     const store = useForumStore()
+    const consoleError = jest.spyOn(console, 'error').mockImplementation()
     mockedFetchByTopic.mockRejectedValue(new Error('relay down'))
 
     await expect(
       store.refreshMessages({ wallet: testWallet, topic: '' }),
     ).rejects.toThrow('relay down')
-    expect(store.hasFetchedOnce).toBe(false)
+    expect(store.hasFetchedOnce).toBe(true)
+    expect(store.outageStatus).toBe('outage')
+    expect(store.isRefreshing).toBe(false)
+    consoleError.mockRestore()
+  })
+
+  it('preserves previously loaded posts during a later outage', async () => {
+    const store = useForumStore()
+    const initial = makeMessage({ satoshis: 10 })
+    mockedFetchByTopic.mockImplementation(async ({ topic }) =>
+      topic === 'stamp' ? [initial] : [],
+    )
+
+    await store.refreshMessages({ wallet: testWallet, topic: '' })
+    expect(store.messages).toHaveLength(1)
+    expect(store.outageStatus).toBe('ok')
+
+    const consoleError = jest.spyOn(console, 'error').mockImplementation()
+    mockedFetchByTopic.mockRejectedValue(new Error('relay 503'))
+
+    await expect(
+      store.refreshMessages({ wallet: testWallet, topic: '' }),
+    ).rejects.toThrow('relay 503')
+
+    expect(store.messages).toHaveLength(1)
+    expect(store.getMessage('deadbeef')).toBeTruthy()
+    expect(store.outageStatus).toBe('outage')
+    consoleError.mockRestore()
+  })
+
+  it('recovers from outage to ok on a successful refresh', async () => {
+    const store = useForumStore()
+    const consoleError = jest.spyOn(console, 'error').mockImplementation()
+    mockedFetchByTopic.mockRejectedValue(new Error('relay 503'))
+
+    await expect(
+      store.refreshMessages({ wallet: testWallet, topic: '' }),
+    ).rejects.toThrow('relay 503')
+    expect(store.outageStatus).toBe('outage')
+
+    const msg = makeMessage()
+    mockedFetchByTopic.mockImplementation(async ({ topic }) =>
+      topic === 'stamp' ? [msg] : [],
+    )
+    await store.refreshMessages({ wallet: testWallet, topic: '' })
+
+    expect(store.outageStatus).toBe('ok')
+    expect(store.messages).toHaveLength(1)
+    consoleError.mockRestore()
   })
 
   it('does nothing if fetchByTopic returns no entries', async () => {

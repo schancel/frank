@@ -1,4 +1,14 @@
 import { activeChain } from '@frank/wallet/chain'
+import {
+  effectScope,
+  getCurrentScope,
+  onScopeDispose,
+  readonly,
+  ref,
+  watch,
+  type DeepReadonly,
+  type Ref,
+} from 'vue'
 
 export type OwnAddressResult =
   | { address: string; error?: undefined }
@@ -34,16 +44,63 @@ export async function getOwnCanonicalAddress(): Promise<string | null> {
   return (await resolveOwnAddress()).address
 }
 
-/** True when `address` (any form the chain parses) is the current identity's own address. */
-export async function isOwnAddress(address: string): Promise<boolean> {
-  const own = await getOwnCanonicalAddress()
-  if (own === null) {
-    return false
+/** Reactive presentation identity for long-lived layout/list components. A seed change clears the
+ * old address synchronously, then publishes only the newest async resolution. The seed remains in
+ * the wallet store and is never exposed as a component key or returned from this helper. */
+export function useReactiveOwnCanonicalAddress(): DeepReadonly<
+  Ref<string | null>
+> {
+  const address = ref<string | null>(null)
+  let request = 0
+  const scope = effectScope()
+  let disposed = false
+  if (getCurrentScope()) {
+    onScopeDispose(() => {
+      disposed = true
+      scope.stop()
+    })
   }
+  void import('src/stores/wallet').then(({ useWalletStore }) => {
+    if (disposed) return
+    const wallet = useWalletStore()
+    scope.run(() =>
+      watch(
+        () => wallet.seedPhrase,
+        async () => {
+          const currentRequest = ++request
+          address.value = null
+          const resolved = await getOwnCanonicalAddress()
+          if (currentRequest === request) address.value = resolved
+        },
+        { immediate: true, flush: 'sync' },
+      ),
+    )
+  })
+  return readonly(address)
+}
+
+/** Compares any two accepted spellings at the presentation/storage edge. */
+export function sameCanonicalAddress(
+  first: string | null | undefined,
+  second: string | null | undefined,
+): boolean {
+  if (!first || !second) return false
   try {
-    const parsed = activeChain.parseAddress(address.trim())
-    return parsed !== null && activeChain.formatAddress(parsed) === own
+    const firstParsed = activeChain.parseAddress(first)
+    const secondParsed = activeChain.parseAddress(second)
+    return (
+      firstParsed !== null &&
+      secondParsed !== null &&
+      activeChain.formatAddress(firstParsed) ===
+        activeChain.formatAddress(secondParsed)
+    )
   } catch {
     return false
   }
+}
+
+/** True when `address` (any form the chain parses) is the current identity's own address. */
+export async function isOwnAddress(address: string): Promise<boolean> {
+  const own = await getOwnCanonicalAddress()
+  return sameCanonicalAddress(address.trim(), own)
 }

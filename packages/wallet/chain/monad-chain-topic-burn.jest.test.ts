@@ -9,8 +9,13 @@
  * and pin the money-safety properties of the fix: one funding transaction per burn account, no
  * spend when the RPC is down, and no second funding when a failed attempt left a usable account.
  */
-import { JsonRpcProvider, Transaction, getBytes, sha256 } from 'ethers'
+import { JsonRpcProvider, Transaction, getBytes } from 'ethers'
 import axios from 'axios'
+import {
+  defaultContext,
+  topicBurnCommitment,
+  validateFrame,
+} from '@frank/codec'
 
 import { MonadIdentity } from '../monad-identity'
 import { MonadHdKeyring } from '../monad-hd-keyring'
@@ -30,6 +35,8 @@ import {
   createMonadChain,
 } from './monad-chain'
 import { DirectMessagePreparationProgress } from './active-chain'
+import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journal'
+import type { MonadWalletPersistenceBundle } from '../storage/monad-wallet-bundle'
 
 jest.mock('axios')
 const mockedAxios = axios as unknown as jest.Mock
@@ -133,13 +140,25 @@ function makeFakeChain(mainBalance = 10n ** 18n): FakeChain {
   })
   // Exactly what a fresh production wallet has after `createWallet`: derived, never funded.
   pool.ensureUnfundedSize(CONFIG.subAccountPoolSize)
+  const leaseManager = new SubAccountLeaseManager(pool)
+  const topicOperationJournal = new InMemoryTopicOperationJournal()
+  const walletState = {
+    pool,
+    leaseManager,
+    topicOperationJournal,
+    runOperation: async (operation: (admission: never) => Promise<unknown>) =>
+      operation(undefined as never),
+  } as unknown as MonadWalletPersistenceBundle
   const wallet: MonadChainWalletHandle = {
     identity,
     pool,
-    leaseManager: new SubAccountLeaseManager(pool),
+    leaseManager,
     provider,
     httpClient,
     relayBaseUrl: CONFIG.relayBaseUrl,
+    topicWriteFormat: 'cbor',
+    topicOperationJournal,
+    walletState,
   }
   return {
     wallet,
@@ -156,20 +175,26 @@ function makeFakeChain(mainBalance = 10n ** 18n): FakeChain {
   }
 }
 
-function storedPostBytes(putBody: Uint8Array): Uint8Array {
-  const sent = MonadTopicPost.deserializeBinary(putBody)
-  const stored = new StoredMonadTopicPost()
-  stored.setPost(sent)
-  stored.setSenderAddress(getBytes('0x' + '11'.repeat(20)))
-  stored.setTxHash(getBytes('0x' + '22'.repeat(32)))
-  stored.setTimestamp(1_700_000_000_000)
-  stored.setNetworkTag(new TextEncoder().encode('MONT'))
-  return stored.serializeBinary()
+function decodePostSubmission(putBody: Uint8Array) {
+  const decoded = validateFrame(putBody, defaultContext({ operation: 'typed' }))
+  if (decoded.kind !== 'parsed' || decoded.typed?.type !== 10) {
+    throw new Error('expected a type-10 CBOR submission')
+  }
+  const post = decoded.typed.postFrame.typed
+  if (post?.type !== 9) throw new Error('expected an embedded type-9 post')
+  return { submission: decoded.typed, post }
 }
 
-function storedVoteBytes(): Uint8Array {
+function storedPostBytes(putBody: Uint8Array): Uint8Array {
+  const { submission, post } = decodePostSubmission(putBody)
+  const postFrame = submission.postFrame
+  void post
+  return postFrame.frame
+}
+
+function storedVoteBytes(target: Uint8Array): Uint8Array {
   const stored = new StoredMonadTopicVoteEntry()
-  stored.setTargetPayloadHash(getBytes('0x' + 'ab'.repeat(32)))
+  stored.setTargetPayloadHash(target)
   stored.setSenderAddress(getBytes('0x' + '11'.repeat(20)))
   stored.setTxHash(getBytes('0x' + '22'.repeat(32)))
   stored.setTimestamp(1_700_000_000_000)
@@ -190,9 +215,17 @@ function fakeRelay(behaviour: 'ok' | 'reject-500' = 'ok') {
       })
     }
     const isVote = String(req.url).endsWith('/vote')
-    return {
-      data: isVote ? storedVoteBytes() : storedPostBytes(body),
+    if (isVote) {
+      const decoded = validateFrame(
+        body,
+        defaultContext({ operation: 'typed' }),
+      )
+      if (decoded.kind !== 'parsed' || decoded.typed?.type !== 11) {
+        throw new Error('expected a type-11 CBOR vote')
+      }
+      return { data: storedVoteBytes(decoded.typed.targetHash) }
     }
+    return { data: storedPostBytes(body) }
   })
   ;(axios as unknown as { isAxiosError: unknown }).isAxiosError = (
     e: unknown,
@@ -235,15 +268,17 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
 
     // The relay got the burn, signed by the funded account, for exactly the vote weight.
     expect(puts).toHaveLength(1)
-    const sent = MonadTopicPost.deserializeBinary(puts[0].body)
+    const submitted = decodePostSubmission(puts[0].body)
     const burn = Transaction.from(
-      '0x' + Buffer.from(sent.getRawBurnTx_asU8()).toString('hex'),
+      '0x' + Buffer.from(submitted.submission.burnTx).toString('hex'),
     )
     expect(burn.to).toBe(BURN_ADDRESS)
     expect(burn.value).toBe(WEIGHT)
     expect(burn.from!.toLowerCase()).toBe(funding.to!.toLowerCase())
     expect(result.payloadDigest).toBe(
-      sha256(sent.getEncryptedPayload_asU8()).slice(2),
+      Buffer.from(
+        topicBurnCommitment(submitted.submission.postFrame.frame).hash,
+      ).toString('hex'),
     )
 
     // The funded account is consumed exactly once; nothing else was touched.
@@ -433,7 +468,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
         Transaction.from(
           '0x' +
             Buffer.from(
-              MonadTopicPost.deserializeBinary(put.body).getRawBurnTx_asU8(),
+              decodePostSubmission(put.body).submission.burnTx,
             ).toString('hex'),
         ).from,
     )

@@ -13,9 +13,9 @@ import {
   equalBytes,
   i2osp,
   isPlainBytes,
-  readU16,
   readU32,
 } from './bytes.js'
+import { decodeEnvelope, encodeEnvelope } from './envelope.js'
 import {
   ENC_LENGTH,
   ENVELOPE_VERSION,
@@ -36,8 +36,6 @@ const GENERATOR = Uint8Array.from([
   0xce, 0x87, 0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59,
   0xf2, 0x81, 0x5b, 0x16, 0xf8, 0x17, 0x98,
 ])
-
-const HEADER = 1 + 2 + 2 + SALT_LENGTH + ENC_LENGTH
 
 export interface SealArgs {
   readonly suiteId: number
@@ -181,22 +179,6 @@ function selectSuite(suiteId: number): SuiteResult<SuiteSpec> {
   return { ok: true, value: spec }
 }
 
-function encodeEnvelope(
-  suiteId: number,
-  salt: Uint8Array,
-  enc: Uint8Array,
-  ciphertext: Uint8Array,
-): Uint8Array {
-  return concatBytes([
-    Uint8Array.of(ENVELOPE_VERSION),
-    i2osp(suiteId, 2),
-    i2osp(KEM_SECP256K1, 2),
-    salt,
-    enc,
-    ciphertext,
-  ])
-}
-
 function finish(
   spec: SuiteSpec,
   sender: Uint8Array,
@@ -218,11 +200,20 @@ function finish(
     salt,
     nonceLength: spec.nonceLength,
   })
-  const aad = associatedData(spec.id, sender, recipient, context)
+  const aad = associatedData(
+    ENVELOPE_VERSION,
+    spec.id,
+    sender,
+    recipient,
+    context,
+  )
   const inner = concatBytes([i2osp(plaintext.length, 4), plaintext, padding])
   try {
     const ciphertext = aeadEncrypt(spec.aead, keys.key, keys.nonce, aad, inner)
-    return { ok: true, value: encodeEnvelope(spec.id, salt, enc, ciphertext) }
+    return {
+      ok: true,
+      value: encodeEnvelope(spec.id, KEM_SECP256K1, salt, enc, ciphertext),
+    }
   } catch {
     return fail({ code: 'aead' })
   } finally {
@@ -413,18 +404,12 @@ export function open(args: OpenArgs): SuiteResult<Uint8Array> {
   if (!context.ok) return context
   const sender = requirePoint(args.senderPublicKey)
   if (!sender.ok) return sender
-  if (args.envelope.length < HEADER + 16) return fail({ code: 'envelope' })
-  if (args.envelope[0] !== ENVELOPE_VERSION) return fail({ code: 'envelope' })
-  const suiteId = readU16(args.envelope, 1)
-  const kem = readU16(args.envelope, 3)
-  if (kem !== KEM_SECP256K1) return fail({ code: 'envelope' })
-  const spec = selectSuite(suiteId)
+  const envelope = decodeEnvelope(args.envelope)
+  if (envelope === null) return fail({ code: 'envelope' })
+  if (envelope.kemId !== KEM_SECP256K1) return fail({ code: 'envelope' })
+  const spec = selectSuite(envelope.suiteId)
   if (!spec.ok) return spec
-  const salt = new Uint8Array(args.envelope.subarray(5, 5 + SALT_LENGTH))
-  const enc = new Uint8Array(
-    args.envelope.subarray(5 + SALT_LENGTH, 5 + SALT_LENGTH + ENC_LENGTH),
-  )
-  const ciphertext = new Uint8Array(args.envelope.subarray(HEADER))
+  const { salt, enc, ciphertext } = envelope
   const recipientSecret = loadScalar(args.recipientPrivateKey)
   if (!recipientSecret.ok) return recipientSecret
   const toRecipient = dh(recipientSecret.value.key, enc)
@@ -467,6 +452,7 @@ export function open(args: OpenArgs): SuiteResult<Uint8Array> {
   })
   shared.fill(0)
   const aad = associatedData(
+    envelope.version,
     spec.value.id,
     sender.value,
     recipientPublic,

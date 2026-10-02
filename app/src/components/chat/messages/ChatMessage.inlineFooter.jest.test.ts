@@ -91,10 +91,6 @@ function mountBubble(options: {
     QIcon: { template: '<i />' },
     QBtn: { template: '<button><slot /></button>' },
     ChatMessageReply: { template: '<i />' },
-    ChatMessageText: {
-      props: ['text'],
-      template: '<span data-testid="bubble-text">{{ text }}</span>',
-    },
     ChatMessageImage: { template: '<i />' },
     ChatMessageStealth: { template: '<i />' },
     ChatMessageBlackjack: { template: '<i />' },
@@ -128,7 +124,10 @@ function mountBubble(options: {
     },
     global: {
       plugins: options.realQChatMessage ? [loadQuasar()] : [],
-      mocks: { $t: translate(enUS) },
+      mocks: {
+        $t: translate(enUS),
+        $q: { dark: { isActive: false } },
+      },
       directives: options.realQChatMessage ? {} : { 'touch-swipe': {} },
       stubs,
     },
@@ -166,7 +165,9 @@ describe('inline bubble footer (#391)', () => {
     })
     await wrapper.vm.$nextTick()
     const body = wrapper.get('[data-testid="chat-message-body"]')
-    const text = body.get('[data-testid="bubble-text"]')
+    const text = body.get('.chat-message-text')
+    expect(text.find('p').exists()).toBe(true)
+    expect(text.text()).toContain('Send me another message')
     const meta = body.get('[data-testid="outgoing-meta"]')
     expect(
       text.element.compareDocumentPosition(meta.element) &

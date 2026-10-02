@@ -1,3 +1,4 @@
+import { getActivePinia } from 'pinia'
 import enUS from './en-us'
 import frFR from './fr-fr'
 import quasarEnUS from 'quasar/lang/en-US'
@@ -30,6 +31,33 @@ const quasarLangPackForLocale = (locale: string) =>
   Object.prototype.hasOwnProperty.call(quasarLangPackByLocale, locale)
     ? quasarLangPackByLocale[locale as SupportedLocale]
     : quasarLangPackByLocale[defaultLocale]
+
+export function translateMessage(key: string, locale?: string): string {
+  let targetLocale = locale
+  if (!targetLocale) {
+    try {
+      const pinia = getActivePinia()
+      if (pinia?.state?.value?.appearance?.locale) {
+        targetLocale = pinia.state.value.appearance.locale as string
+      }
+    } catch {
+      targetLocale = defaultLocale
+    }
+  }
+  const normalized =
+    targetLocale && targetLocale.toLowerCase().startsWith('fr')
+      ? 'fr-fr'
+      : 'en-us'
+  const dict =
+    (messages as Record<string, unknown>)[normalized] || messages[defaultLocale]
+  const val = key
+    .split('.')
+    .reduce<unknown>(
+      (acc, part) => (acc as Record<string, unknown>)?.[part],
+      dict,
+    )
+  return typeof val === 'string' ? val : key
+}
 
 export {
   messages,

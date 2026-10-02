@@ -51,6 +51,13 @@ describe('ReplaceAccountGuard (#304)', () => {
     expect(w.find('[data-test="confirmed"]').exists()).toBe(true)
   })
 
+  it('hides confirm-current when there is no stored seed (#308)', () => {
+    const w = mountGuard({ hasSeed: false })
+    expect(w.find('[data-test="confirm-current"]').exists()).toBe(false)
+    expect(w.find('[data-test="cancel"]').exists()).toBe(true)
+    expect(w.find('[data-test="replace-toggle"]').exists()).toBe(true)
+  })
+
   it('cancel emits cancel only', async () => {
     const w = mountGuard()
     await w.get('[data-test="cancel"]').trigger('click')
@@ -93,12 +100,54 @@ describe('ReplaceAccountGuard (#304)', () => {
     expect(w.emitted('acknowledge')).toHaveLength(1)
   })
 
-  it('collapsing the form clears what was typed', async () => {
+  it('clears mismatch and aria-invalid as soon as the user starts retyping (#308)', async () => {
     const w = mountGuard()
     await w.get('[data-test="replace-toggle"]').trigger('click')
-    await w.get('input').setValue('REPLACE')
+    await nextTick()
+    const input = w.get('input')
+    await input.setValue('wrong')
+    await w.get('form').trigger('submit')
+    await nextTick()
+    expect(w.get('[role="status"]').text()).toBe('replaceGuard.mismatch')
+    expect(input.attributes('aria-invalid')).toBe('true')
+
+    await input.setValue('wron')
+    await nextTick()
+    expect(w.get('[role="status"]').text()).toBe('')
+    expect(input.attributes('aria-invalid')).toBe('false')
+    w.unmount()
+  })
+
+  it('exercises the French word REMPLACER and rejects REPLACE (#308)', async () => {
+    const frMessages: Record<string, string> = {
+      'replaceGuard.word': 'REMPLACER',
+    }
+    const w = mount(ReplaceAccountGuard, {
+      attachTo: document.body,
+      global: {
+        mocks: {
+          $t: (k: string, p?: { word?: string }) =>
+            frMessages[k] ?? (p ? `${k}:${p.word}` : k),
+        },
+        stubs: { QDialog: QDialogStub },
+      },
+    })
     await w.get('[data-test="replace-toggle"]').trigger('click')
-    await w.get('[data-test="replace-toggle"]').trigger('click')
-    expect((w.get('input').element as HTMLInputElement).value).toBe('')
+    await nextTick()
+    const input = w.get('input')
+
+    // English word must fail
+    await input.setValue('REPLACE')
+    await w.get('form').trigger('submit')
+    await nextTick()
+    expect(w.emitted('acknowledge')).toBeUndefined()
+    expect(w.get('[role="status"]').text()).toBe('replaceGuard.mismatch')
+
+    // French word must succeed
+    await input.setValue('  REMPLACER  ')
+    await w.get('form').trigger('submit')
+    await nextTick()
+    expect(w.emitted('acknowledge')).toHaveLength(1)
+    w.unmount()
   })
 })

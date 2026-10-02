@@ -171,18 +171,34 @@ describe('stores/contacts.ts (ticket #42)', () => {
     })
 
     it.each([ADDRESS, ADDRESS_LOWERCASE])(
-      'refuses to add the current identity as its own contact (%s)',
+      'adds the current identity through the ordinary contact path (%s)',
       async spelling => {
         const contacts = useContactStore()
         mockUseActiveWallet.mockResolvedValue({
           identity: { address: { raw: ADDRESS } },
         })
-        const fetchProfileSpy = jest.spyOn(activeChain, 'fetchProfile')
+        const fetchProfileSpy = jest
+          .spyOn(activeChain, 'fetchProfile')
+          .mockResolvedValue({
+            address: { raw: ADDRESS },
+            name: 'Alice',
+            avatar: 'data:image/png;base64,alice',
+            pubKey: PUB_KEY_BYTES,
+          })
 
-        await contacts.fetchAndAddContact({ address: spelling, contact: {} })
+        await contacts.fetchAndAddContact({
+          address: spelling,
+          contact: undefined as unknown as Partial<ContactState>,
+        })
 
-        expect(contacts.isContact(ADDRESS)).toBe(false)
-        expect(fetchProfileSpy).not.toHaveBeenCalled()
+        expect(fetchProfileSpy).toHaveBeenCalledWith({ raw: ADDRESS })
+        expect(contacts.isContact(ADDRESS)).toBe(true)
+        expect(contacts.getContact(ADDRESS).profile).toEqual(
+          expect.objectContaining({
+            name: 'Alice',
+            avatar: 'data:image/png;base64,alice',
+          }),
+        )
       },
     )
 
@@ -601,6 +617,64 @@ describe('stores/contacts.ts (ticket #42)', () => {
         isBot: true,
       })
       expect(restored.curatedDefaults).toEqual([])
+    })
+
+    it('restores legacy v4 contact without signed-name provenance and verifies refresh (#431)', async () => {
+      const v4RawBlob = {
+        contacts: {
+          [ADDRESS]: {
+            lastUpdateTime: Date.now(),
+            notify: true,
+            relayURL: null,
+            profile: {
+              name: 'Blackjack Dealer',
+              bio: '',
+              avatar: 'data:image/png;base64,avatar',
+              pubKey: PUB_KEY_BYTES,
+              isBot: true,
+            },
+            inbox: {},
+          },
+        },
+        updateInterval: 3600000,
+      }
+
+      const restored = await rehydrateContacts(v4RawBlob as any)
+      expect(restored.contacts[ADDRESS]?.profile).toBeDefined()
+      expect(restored.contacts[ADDRESS]?.profile.name).toBe('Blackjack Dealer')
+      expect(restored.contacts[ADDRESS]?.profile.signedName).toBeUndefined()
+
+      setActivePinia(createPinia())
+      const contacts = useContactStore()
+      contacts.$patch({ contacts: restored.contacts })
+      contacts.replaceCuratedDefaults([
+        { address: ADDRESS, name: 'Blackjack Dealer' },
+      ])
+
+      const fetchSpy = jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockResolvedValue({
+          address: activeChain.parseAddress(ADDRESS),
+          name: '',
+          bio: '',
+          avatar: 'data:image/png;base64,avatar',
+          bot: true,
+          pubKey: PUB_KEY_BYTES,
+        })
+
+      await contacts.refresh(ADDRESS)
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      const refreshedProfile = contacts.getContactProfile(ADDRESS)
+      expect(refreshedProfile.name).toBe('Blackjack Dealer')
+      expect(isBlankName(refreshedProfile.signedName)).toBe(true)
+      expect(
+        peerOffersDealerTable(
+          refreshedProfile,
+          ADDRESS,
+          contacts.curatedDefaults,
+        ),
+      ).toBe(false)
     })
 
     it('rehydrates an old persisted state that has no dismissed list', async () => {

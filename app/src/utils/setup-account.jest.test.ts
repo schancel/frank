@@ -7,7 +7,10 @@ import {
   commitValidatedSetupSeed,
   cryptoRandomInt,
   ensureConfirmationChallenge,
+  getMnemonicValidationKey,
+  getMnemonicValidationReason,
   initialSetupSeed,
+  normalizeSetupMnemonic,
   pickConfirmationPositions,
 } from './setup-account'
 
@@ -227,5 +230,81 @@ describe('wrongConfirmationIndexes', () => {
     ).toEqual([1])
     expect(wrongConfirmationIndexes(seed, positions, [])).toEqual([0, 1, 2])
     expect(wrongConfirmationIndexes(seed, [99], ['test'])).toEqual([0])
+  })
+})
+
+describe('normalizeSetupMnemonic', () => {
+  it('collapses multiple whitespace, tabs, and newlines', () => {
+    expect(normalizeSetupMnemonic('  word1 \t word2\n\nword3   word4  ')).toBe(
+      'word1 word2 word3 word4',
+    )
+  })
+
+  it('handles empty and whitespace-only strings', () => {
+    expect(normalizeSetupMnemonic('')).toBe('')
+    expect(normalizeSetupMnemonic('   \n\t  ')).toBe('')
+  })
+})
+
+describe('mnemonic validation explanation (#515)', () => {
+  const VALID_12 =
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+  const CHECKSUM_INVALID_12 =
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon'
+  const TYPO_12 =
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon zzzzz'
+
+  it('returns null for empty or whitespace-only seed', () => {
+    expect(getMnemonicValidationReason('')).toBeNull()
+    expect(getMnemonicValidationReason('   \n  ')).toBeNull()
+    expect(getMnemonicValidationKey('')).toBeNull()
+  })
+
+  it('returns null for a valid recovery phrase', () => {
+    expect(getMnemonicValidationReason(VALID_12)).toBeNull()
+    expect(getMnemonicValidationKey(VALID_12)).toBeNull()
+    expect(getMnemonicValidationReason(VALID_MNEMONIC)).toBeNull()
+    expect(getMnemonicValidationKey(VALID_MNEMONIC)).toBeNull()
+  })
+
+  it('identifies invalid word count for phrases not having 12/15/18/21/24 words', () => {
+    expect(getMnemonicValidationReason('not a recovery phrase')).toBe(
+      'word-count',
+    )
+    expect(getMnemonicValidationKey('not a recovery phrase')).toBe(
+      'accountStep.invalidWordCount',
+    )
+    expect(getMnemonicValidationReason('one two three')).toBe('word-count')
+    expect(getMnemonicValidationReason('word '.repeat(11).trim())).toBe(
+      'word-count',
+    )
+    expect(getMnemonicValidationReason('word '.repeat(13).trim())).toBe(
+      'word-count',
+    )
+  })
+
+  it('identifies unrecognized words when word count is valid but words are not in dictionary', () => {
+    expect(getMnemonicValidationReason(TYPO_12)).toBe('unrecognized-words')
+    expect(getMnemonicValidationKey(TYPO_12)).toBe(
+      'accountStep.unrecognizedWords',
+    )
+  })
+
+  it('identifies checksum error when word count is valid and all words are known', () => {
+    expect(getMnemonicValidationReason(CHECKSUM_INVALID_12)).toBe(
+      'invalid-checksum',
+    )
+    expect(getMnemonicValidationKey(CHECKSUM_INVALID_12)).toBe(
+      'accountStep.invalidChecksum',
+    )
+  })
+
+  it('never leaks entered words in the returned reason or key', () => {
+    const sensitiveTypo =
+      'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon secretword'
+    const key = getMnemonicValidationKey(sensitiveTypo)
+    expect(key).toBe('accountStep.unrecognizedWords')
+    expect(key).not.toContain('secretword')
+    expect(JSON.stringify(key)).not.toContain('secretword')
   })
 })

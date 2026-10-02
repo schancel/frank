@@ -21,7 +21,7 @@ Relay encryption has not moved to `@frank/crypto-box` (issue #258).
 ## Public entry points
 
 - `monad-hd-keyring.ts`, `monad-identity.ts`, `monad-wallet-handle.ts`
-- `monad-stamp-client.ts`, `monad-stamp-stealth.ts`, `monad-pop-client.ts`
+- `monad-stamp-client.ts`, `monad-stamp-stealth.ts`
 - `monad-topic-post-client.ts`, `monad-topic-vote-client.ts`, `monad-topic-tally-client.ts`
 - `chain/active-chain.ts`
 - `message-item-plugins/` for blackjack and raffle

@@ -58,7 +58,8 @@ function mountPanel() {
         QScrollArea: { template: '<div><slot /></div>' },
         QList: { template: '<div><slot /></div>' },
         QItem: {
-          template: '<button><slot /></button>',
+          inheritAttrs: false,
+          template: '<button v-bind="$attrs"><slot /></button>',
         },
         QItemLabel: { template: '<span><slot /></span>' },
         QItemSection: { template: '<span><slot /></span>' },
@@ -165,5 +166,20 @@ describe('WalletPanel (#399, #570)', () => {
 
     expect(document.activeElement).toBe(caller)
     caller.remove()
+  })
+
+  it('returns focus to show-seed item when seed phrase dialog is closed', async () => {
+    const wrapper = mountPanel()
+    const vm = wrapper.vm as unknown as { seedPhraseOpen: boolean }
+
+    vm.seedPhraseOpen = true
+    await nextTick()
+    vm.seedPhraseOpen = false
+    await nextTick()
+    await nextTick()
+
+    expect(document.activeElement).toBe(
+      wrapper.get('[data-test="show-seed-item"]').element,
+    )
   })
 })

@@ -83,7 +83,7 @@ import {
   getBytes,
   hexlify,
   parseEther,
-} from 'ethers'
+} from "ethers";
 
 import {
   ActiveChain,
@@ -96,92 +96,98 @@ import {
   TopicBroadcastClient,
   TopicPostOutcomeUnknownError,
   WalletHandle,
-} from './active-chain'
-import { MessageItem } from '@frank/cashweb/types/messages'
-import { ForumMessage, ForumMessageEntry } from '@frank/cashweb/types/forum'
+} from "./active-chain";
+import { MessageItem } from "@frank/cashweb/types/messages";
+import { ForumMessage, ForumMessageEntry } from "@frank/cashweb/types/forum";
 // See cashweb/wallet/monad-topic-post-client.ts's identical comment (ticket #51, Vite migration).
-import __pb_broadcast_pb from '@frank/cashweb/registry/broadcast_pb'
+import __pb_broadcast_pb from "@frank/cashweb/registry/broadcast_pb";
 const { BroadcastMessage, ForumPost: BroadcastForumPostPayload } =
-  __pb_broadcast_pb
+  __pb_broadcast_pb;
 
-import { MonadHdKeyring } from '../monad-hd-keyring'
-import { MonadChangeKeyring } from '../monad-change-keyring'
-import { MonadChangePool } from '../monad-change-pool'
-import { MonadSubAccountPool } from '../monad-account-pool'
+import { MonadHdKeyring } from "../monad-hd-keyring";
+import { MonadChangeKeyring } from "../monad-change-keyring";
+import { MonadChangePool } from "../monad-change-pool";
+import { MonadSubAccountPool } from "../monad-account-pool";
 import {
   BurnNotSentError,
   SubAccountLeaseManager,
-} from '../monad-account-lease'
-import { MonadHttpClient } from '../monad-http'
-import { MonadAccountTxSigner } from '../monad-account-tx'
-import { MonadWalletHandle } from '../monad-wallet-handle'
+} from "../monad-account-lease";
+import { MonadHttpClient } from "../monad-http";
+import {
+  createMonadJsonRpcProvider,
+  DEFAULT_MONAD_CHAIN_ID,
+} from "../monad-provider";
+import { MonadAccountTxSigner } from "../monad-account-tx";
+import { MonadWalletHandle } from "../monad-wallet-handle";
 import {
   MonadIdentity,
   fetchMonadProfile,
   mailboxAuthFor,
-} from '../monad-identity'
+} from "../monad-identity";
 import {
   MonadStampClient,
   quoteMonadStampPaymentGasReserve,
   recoverMonadStampPayments,
   sweepRecoveredMonadStampPayment,
-} from '../monad-stamp-client'
-import { deriveMonadStampChildPrivate } from '../monad-stamp-stealth'
-import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
+} from "../monad-stamp-client";
+import { deriveMonadStampChildPrivate } from "../monad-stamp-stealth";
+import { fetchMonadMessagesSince } from "@frank/cashweb/relay/monad-message-feed";
 import {
   MailboxAuthParams,
   ackMonadMailboxRecovery,
   fetchMonadMailboxRecoveries,
-} from '@frank/cashweb/relay/monad-mailbox-client'
+} from "@frank/cashweb/relay/monad-mailbox-client";
 import {
   buildEnvelope,
   decryptEnvelope,
   parseEnvelope,
-} from '@frank/cashweb/relay/monad-message-envelope'
+} from "@frank/cashweb/relay/monad-message-envelope";
 import {
   MonadTopicPostClient,
   MonadTopicPostAbandonedError,
   MonadTopicPostViewProto,
   quoteMonadTopicBurnGasReserve,
-} from '../monad-topic-post-client'
-import { MonadTopicVoteClient } from '../monad-topic-vote-client'
+} from "../monad-topic-post-client";
+import { MonadTopicVoteClient } from "../monad-topic-vote-client";
 import {
   fetchDiscoveredTopics,
   fetchMonadTopicPostView,
   fetchMonadTopicPostsSince,
-} from '../monad-topic-tally-client'
-import { readViteEnv } from './vite-env'
-import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-store'
-import { LevelChangePoolStore } from '../storage/level-change-pool-store'
+} from "../monad-topic-tally-client";
+import { readViteEnv } from "./vite-env";
+import { LevelSubAccountPoolStore } from "../storage/level-sub-account-pool-store";
+import { LevelChangePoolStore } from "../storage/level-change-pool-store";
 import {
   InMemoryStampPaymentJournal,
   LevelStampPaymentJournal,
-} from '../storage/stamp-payment-journal'
+} from "../storage/stamp-payment-journal";
 import {
   InMemoryStampAttemptJournal,
   LevelStampAttemptJournal,
-} from '../storage/stamp-attempt-journal'
+} from "../storage/stamp-attempt-journal";
 
 export interface MonadChainConfig {
   /** Monad JSON-RPC HTTP endpoint, e.g. `MONAD_TESTNET_HTTP_RPC_URL`. */
-  rpcUrl: string
+  rpcUrl: string;
+  /** Expected EVM chain ID, e.g. 10143 for Monad testnet. */
+  chainId?: number | bigint;
   /** Base URL of the `cashweb-registry` relay. */
-  relayBaseUrl: string
+  relayBaseUrl: string;
   /** Frank network tag included in every DM envelope before hashing. */
-  networkTag: string
+  networkTag: string;
   /** `0x`-prefixed Monad burn address Stamp/topic-vote burns are sent to (see
    * `frank/.env.example`'s `MONAD_STAMP_BURN_ADDRESS`). */
-  stampBurnAddress: string
+  stampBurnAddress: string;
   /** Default aggregate value, in wei, `directMessages.send` pays per Stamp message. */
-  defaultStampValueWei: bigint
+  defaultStampValueWei: bigint;
   /** Default value, in wei, burned for a topic post or vote. */
-  defaultTopicVoteValueWei: bigint
+  defaultTopicVoteValueWei: bigint;
   /** How many single-use funding sub-accounts `createWallet` pre-derives into the pool. */
-  subAccountPoolSize: number
+  subAccountPoolSize: number;
   /** Parent LevelDB location for durable sender-account and change state. `false` is reserved for
    * isolated tests; production must persist these records so recreating a wallet cannot reuse a
    * sender account or rewind the change derivation path. */
-  walletStorageLocation: string | false
+  walletStorageLocation: string | false;
 }
 
 // Ticket #54 (found live doing real end-to-end GUI testing against a real relay + real Alchemy
@@ -194,7 +200,7 @@ export interface MonadChainConfig {
 // live) -- see `./vite-env.ts` for why that logic isn't written directly in this file, and
 // `jest.config.js`'s `moduleNameMapper` for how this package's own tests avoid it entirely.
 function readEnv(key: string): string | undefined {
-  return readViteEnv(`QCLI_${key}`) ?? process.env[key]
+  return readViteEnv(`QCLI_${key}`) ?? process.env[key];
 }
 
 /** Reads `MonadChainConfig` from the environment (see `readEnv` just above for exactly where
@@ -202,28 +208,39 @@ function readEnv(key: string): string | undefined {
  * "Configuration", for why this (unlike the wallet client modules it configures) reads env
  * directly, and why it never throws on a missing var. */
 export function loadMonadChainConfigFromEnv(): MonadChainConfig {
+  const rawChainId = readEnv("MONAD_CHAIN_ID");
+  let chainId: bigint | undefined;
+  if (rawChainId) {
+    try {
+      chainId = BigInt(rawChainId);
+    } catch {
+      // ignore invalid env var and fallback
+    }
+  }
+
   return {
-    rpcUrl: readEnv('MONAD_TESTNET_HTTP_RPC_URL') ?? 'http://127.0.0.1:8545',
+    rpcUrl: readEnv("MONAD_TESTNET_HTTP_RPC_URL") ?? "http://127.0.0.1:8545",
+    chainId: chainId ?? DEFAULT_MONAD_CHAIN_ID,
     relayBaseUrl:
-      readEnv('MONAD_RELAY_BASE_URL') ??
-      readEnv('E2E_DEMO_RELAY_URL') ??
-      'http://127.0.0.1:8098',
-    networkTag: readEnv('FRANK_NETWORK_TAG') ?? 'MONT',
+      readEnv("MONAD_RELAY_BASE_URL") ??
+      readEnv("E2E_DEMO_RELAY_URL") ??
+      "http://127.0.0.1:8098",
+    networkTag: readEnv("FRANK_NETWORK_TAG") ?? "MONT",
     stampBurnAddress:
-      readEnv('MONAD_STAMP_BURN_ADDRESS') ??
-      '0x000000000000000000000000000000000000dEaD',
+      readEnv("MONAD_STAMP_BURN_ADDRESS") ??
+      "0x000000000000000000000000000000000000dEaD",
     defaultStampValueWei: BigInt(
-      readEnv('FRANK_DM_DEFAULT_STAMP_VALUE_WEI') ?? '10000000000000000',
+      readEnv("FRANK_DM_DEFAULT_STAMP_VALUE_WEI") ?? "10000000000000000"
     ),
     defaultTopicVoteValueWei: BigInt(
-      readEnv('FRANK_TOPIC_DEFAULT_VOTE_VALUE_WEI') ??
-        readEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI') ??
-        '1000000000000',
+      readEnv("FRANK_TOPIC_DEFAULT_VOTE_VALUE_WEI") ??
+        readEnv("CASHWEB_STAMP_MIN_BURN_VALUE_WEI") ??
+        "1000000000000"
     ),
-    subAccountPoolSize: Number(readEnv('MONAD_SUB_ACCOUNT_POOL_SIZE') ?? '8'),
+    subAccountPoolSize: Number(readEnv("MONAD_SUB_ACCOUNT_POOL_SIZE") ?? "8"),
     walletStorageLocation:
-      readEnv('MONAD_WALLET_STORAGE_LOCATION') ?? 'frank-monad-wallet-state',
-  }
+      readEnv("MONAD_WALLET_STORAGE_LOCATION") ?? "frank-monad-wallet-state",
+  };
 }
 
 /** Concrete Monad `WalletHandle`: the formalized wallet-client bundle (`MonadWalletHandle`,
@@ -233,7 +250,7 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
 export interface MonadChainWalletHandle
   extends MonadWalletHandle,
     WalletHandle {
-  readonly identity: MonadIdentity
+  readonly identity: MonadIdentity;
 }
 
 /** Narrows a generic `WalletHandle` to `MonadChainWalletHandle`. Safe under this ticket's
@@ -242,7 +259,7 @@ export interface MonadChainWalletHandle
  * `MonadChain`'s other methods already is one; this throws instead of silently misbehaving if that
  * invariant is ever broken. */
 function asMonadWallet(wallet: WalletHandle): MonadChainWalletHandle {
-  const candidate = wallet as Partial<MonadChainWalletHandle>
+  const candidate = wallet as Partial<MonadChainWalletHandle>;
   if (
     candidate.pool === undefined ||
     candidate.leaseManager === undefined ||
@@ -251,19 +268,19 @@ function asMonadWallet(wallet: WalletHandle): MonadChainWalletHandle {
     candidate.relayBaseUrl === undefined
   ) {
     throw new Error(
-      'Expected a MonadChainWalletHandle (produced by MonadChain.createWallet), got a ' +
-        'WalletHandle missing the Monad wallet-client bundle',
-    )
+      "Expected a MonadChainWalletHandle (produced by MonadChain.createWallet), got a " +
+        "WalletHandle missing the Monad wallet-client bundle"
+    );
   }
-  return candidate as MonadChainWalletHandle
+  return candidate as MonadChainWalletHandle;
 }
 
 function toChainAddress(raw: string): ChainAddress {
-  return { raw: getAddress(raw) }
+  return { raw: getAddress(raw) };
 }
 
 function bareHex(bytes: Uint8Array): string {
-  return hexlify(bytes).slice(2)
+  return hexlify(bytes).slice(2);
 }
 
 /**
@@ -288,87 +305,87 @@ function bareHex(bytes: Uint8Array): string {
  * failure here is retried on the next poll rather than failing message delivery.
  */
 /** Longest `fetchSince` waits for the recovery sync before returning the messages. */
-export const MAILBOX_RECOVERY_SYNC_WAIT_MS = 5_000
+export const MAILBOX_RECOVERY_SYNC_WAIT_MS = 5_000;
 
 async function boundedSync(sync: Promise<void>): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
       sync,
-      new Promise<void>(resolve => {
-        timer = setTimeout(resolve, MAILBOX_RECOVERY_SYNC_WAIT_MS)
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, MAILBOX_RECOVERY_SYNC_WAIT_MS);
       }),
-    ])
+    ]);
   } finally {
-    if (timer !== undefined) clearTimeout(timer)
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
 /** Recovery obligations change rarely, but each read spends one of the relay's per-recipient
  * authenticated-request slots (a challenge is consumed per signed read). Polling inbox + recovery
  * every few seconds exhausts that budget, so recovery is synced at most this often per wallet. */
-export const MAILBOX_RECOVERY_SYNC_INTERVAL_MS = 60_000
-const lastRecoverySync = new WeakMap<object, number>()
+export const MAILBOX_RECOVERY_SYNC_INTERVAL_MS = 60_000;
+const lastRecoverySync = new WeakMap<object, number>();
 
 async function syncMailboxRecoveries(
   wallet: MonadChainWalletHandle,
-  mailbox: MailboxAuthParams,
+  mailbox: MailboxAuthParams
 ): Promise<void> {
-  const journal = wallet.stampPaymentJournal
-  if (journal === undefined) return
-  const now = Date.now()
-  const last = lastRecoverySync.get(wallet)
+  const journal = wallet.stampPaymentJournal;
+  if (journal === undefined) return;
+  const now = Date.now();
+  const last = lastRecoverySync.get(wallet);
   if (last !== undefined && now - last < MAILBOX_RECOVERY_SYNC_INTERVAL_MS)
-    return
+    return;
   // Stamp the attempt (not just success): a failing relay must not be re-asked every poll.
-  lastRecoverySync.set(wallet, now)
-  let records
+  lastRecoverySync.set(wallet, now);
+  let records;
   try {
-    records = (await fetchMonadMailboxRecoveries(mailbox)).records
+    records = (await fetchMonadMailboxRecoveries(mailbox)).records;
   } catch {
-    return
+    return;
   }
-  const recipientPrivateKey = getBytes(wallet.identity.toPrivateKeyHex())
+  const recipientPrivateKey = getBytes(wallet.identity.toPrivateKeyHex());
   for (const record of records) {
     try {
-      const terminal = record.lifecycle.startsWith('terminal:')
-      const confirmed = new Set(record.confirmedChildren)
+      const terminal = record.lifecycle.startsWith("terminal:");
+      const confirmed = new Set(record.confirmedChildren);
       const wanted = record.canonicalMessage.stampPayments.filter(
-        payment => terminal || confirmed.has(payment.childIndex),
-      )
+        (payment) => terminal || confirmed.has(payment.childIndex)
+      );
       for (const payment of wanted) {
         // One child at a time: an unrecoverable unconfirmed child must not block the confirmed
         // ones, while an unrecoverable confirmed child is caught by the check below.
-        let recovered
+        let recovered;
         try {
           recovered = recoverMonadStampPayments({
             message: { ...record.canonicalMessage, stampPayments: [payment] },
             recipientPrivateKey,
-          })
+          });
         } catch {
-          continue
+          continue;
         }
         for (const child of recovered) {
-          if (journal.get(record.payloadHashHex, child.childIndex)) continue
+          if (journal.get(record.payloadHashHex, child.childIndex)) continue;
           await journal.put({
             payloadHashHex: record.payloadHashHex,
             childIndex: child.childIndex,
             txHash: child.txHash,
             address: child.address,
             valueWei: child.valueWei.toString(),
-            status: 'discovered',
-          })
+            status: "discovered",
+          });
         }
       }
       const confirmedJournalled = record.confirmedChildren.every(
-        index => journal.get(record.payloadHashHex, index) !== undefined,
-      )
+        (index) => journal.get(record.payloadHashHex, index) !== undefined
+      );
       if (terminal && journal.durable && confirmedJournalled) {
         await ackMonadMailboxRecovery({
           ...mailbox,
           payloadHashHex: record.payloadHashHex,
           obligationIdHex: record.obligationIdHex,
-        })
+        });
       }
     } catch {
       // Leave the obligation unacknowledged; the next poll retries it.
@@ -382,24 +399,24 @@ async function syncMailboxRecoveries(
  * `PLAN.md`'s M9 notes). */
 export function serializeMessageItems(items: MessageItem[]): string {
   for (const item of items) {
-    if (item.type === 'stealth' || item.type === 'p2pkh') {
+    if (item.type === "stealth" || item.type === "p2pkh") {
       throw new Error(
         `MonadChain direct messages don't support '${item.type}' items: on-chain-payment-` +
-          "embedded-in-message has no Monad equivalent (see PLAN.md's M9 notes)",
-      )
+          "embedded-in-message has no Monad equivalent (see PLAN.md's M9 notes)"
+      );
     }
   }
-  return JSON.stringify(items)
+  return JSON.stringify(items);
 }
 
 /** Inverse of {@link serializeMessageItems}. Throws if `plaintext` doesn't decode to a JSON
  * array. */
 export function deserializeMessageItems(plaintext: string): MessageItem[] {
-  const parsed: unknown = JSON.parse(plaintext)
+  const parsed: unknown = JSON.parse(plaintext);
   if (!Array.isArray(parsed)) {
-    throw new Error('Decrypted direct-message plaintext was not a JSON array')
+    throw new Error("Decrypted direct-message plaintext was not a JSON array");
   }
-  return parsed as MessageItem[]
+  return parsed as MessageItem[];
 }
 
 /** Adapts a `MonadTopicPostViewProto` (`../wallet/monad-topic-tally-client.ts`) into the
@@ -408,35 +425,35 @@ export function deserializeMessageItems(plaintext: string): MessageItem[] {
  * `undefined` if `view` doesn't carry a stored post (shouldn't happen for a view actually returned
  * by the relay, but keeps this function total). */
 export function viewToForumMessage(
-  view: MonadTopicPostViewProto,
+  view: MonadTopicPostViewProto
 ): ForumMessage | undefined {
-  const stored = view.post
-  const post = stored?.post
-  if (stored === undefined || post === undefined) return undefined
+  const stored = view.post;
+  const post = stored?.post;
+  if (stored === undefined || post === undefined) return undefined;
 
-  const entries: ForumMessageEntry[] = []
+  const entries: ForumMessageEntry[] = [];
   const broadcastMessage = BroadcastMessage.deserializeBinary(
-    post.encryptedPayload,
-  )
+    post.encryptedPayload
+  );
   for (const entry of broadcastMessage.getEntriesList()) {
-    const kind = entry.getKind()
-    const payload = entry.getPayload()
-    if (typeof payload === 'string') continue
-    if (kind === 'post') {
-      const forumPost = BroadcastForumPostPayload.deserializeBinary(payload)
+    const kind = entry.getKind();
+    const payload = entry.getPayload();
+    if (typeof payload === "string") continue;
+    if (kind === "post") {
+      const forumPost = BroadcastForumPostPayload.deserializeBinary(payload);
       entries.push({
-        kind: 'post',
+        kind: "post",
         title: forumPost.getTitle(),
         url: forumPost.getUrl(),
         message: forumPost.getMessage(),
-      })
+      });
     }
   }
 
   const senderAddress =
     stored.senderAddress.length === 20
       ? getAddress(hexlify(stored.senderAddress))
-      : hexlify(stored.senderAddress)
+      : hexlify(stored.senderAddress);
 
   return {
     poster: senderAddress,
@@ -447,7 +464,7 @@ export function viewToForumMessage(
     parentDigest:
       post.parentPostHash.length > 0 ? bareHex(post.parentPostHash) : undefined,
     timestamp: new Date(stored.timestamp),
-  }
+  };
 }
 
 /** Preparing the account that will burn a topic post/vote failed before anything was posted. The
@@ -456,18 +473,18 @@ export function viewToForumMessage(
 export class TopicBurnPreparationError extends Error {
   constructor(
     reason: string,
-    options?: { cause?: unknown; stage?: 'preparing' | 'signing' },
+    options?: { cause?: unknown; stage?: "preparing" | "signing" }
   ) {
     super(
-      options?.stage === 'signing'
+      options?.stage === "signing"
         ? `Could not build the burn (${reason}). Nothing was sent, and the funded account is kept. ` +
-            'It is safe to try again.'
+            "It is safe to try again."
         : `Could not prepare an account to burn from (${reason}). Nothing was sent. ` +
-            'It is safe to try again: a funding transaction that was already sent is reused, not repeated.',
-    )
-    this.name = 'TopicBurnPreparationError'
+            "It is safe to try again: a funding transaction that was already sent is reused, not repeated."
+    );
+    this.name = "TopicBurnPreparationError";
     if (options?.cause !== undefined) {
-      ;(this as { cause?: unknown }).cause = options.cause
+      (this as { cause?: unknown }).cause = options.cause;
     }
   }
 }
@@ -479,35 +496,35 @@ function asNothingSent(err: unknown): never {
   if (err instanceof BurnNotSentError) {
     throw new TopicBurnPreparationError(err.message, {
       cause: err,
-      stage: 'signing',
-    })
+      stage: "signing",
+    });
   }
-  throw err
+  throw err;
 }
 
 /** Pure factory: builds an `ActiveChain` from an explicit `MonadChainConfig`. See this file's
  * header, "Configuration", for why config is a param here (unlike the `MonadChain` singleton
  * below, which reads it from env). */
 export function createMonadChain(config: MonadChainConfig): ActiveChain {
-  const walletsByIdentity = new Map<string, Promise<MonadChainWalletHandle>>()
+  const walletsByIdentity = new Map<string, Promise<MonadChainWalletHandle>>();
   // One queue per wallet for everything that prepares and spends sub-accounts (direct messages,
   // topic posts, votes): a burn account prepared for a topic post must not be picked up by a
   // concurrent stamp selection between preparation and lease.
-  const walletSendQueues = new WeakMap<MonadChainWalletHandle, Promise<void>>()
+  const walletSendQueues = new WeakMap<MonadChainWalletHandle, Promise<void>>();
   const runWalletExclusive = <T>(
     wallet: MonadChainWalletHandle,
-    task: () => Promise<T>,
+    task: () => Promise<T>
   ): Promise<T> => {
-    const run = (walletSendQueues.get(wallet) ?? Promise.resolve()).then(task)
+    const run = (walletSendQueues.get(wallet) ?? Promise.resolve()).then(task);
     walletSendQueues.set(
       wallet,
       run.then(
         () => undefined,
-        () => undefined,
-      ),
-    )
-    return run
-  }
+        () => undefined
+      )
+    );
+    return run;
+  };
   /** Funds (or reuses) one sub-account able to burn `voteWeightWei` in a single transaction and
    * returns its pool index for the caller to lease. See `MonadSubAccountPool.prepareBurnAccount`. */
   const prepareTopicBurnAccount = async (
@@ -515,51 +532,51 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     voteWeightWei: bigint,
     onProgress:
       | ((progress: DirectMessagePreparationProgress) => void)
-      | undefined,
+      | undefined
   ): Promise<number> => {
     const mainAccountSigner = new MonadAccountTxSigner({
       privateKey: wallet.identity.toPrivateKeyHex(),
       provider: wallet.provider,
       httpClient: wallet.httpClient,
-    })
+    });
     try {
-      onProgress?.({ stage: 'checking' })
+      onProgress?.({ stage: "checking" });
       const gasReserveWei = await quoteMonadTopicBurnGasReserve({
         signer: mainAccountSigner,
         burnAddress: config.stampBurnAddress,
-      })
+      });
       const preparation = await wallet.pool.prepareBurnAccount({
         mainAccountSigner,
         provider: wallet.provider,
         burnValueWei: voteWeightWei,
         gasReserveWei,
         onProgress,
-      })
-      return preparation.index
+      });
+      return preparation.index;
     } catch (err) {
       const reason =
-        typeof (err as { shortMessage?: unknown })?.shortMessage === 'string'
+        typeof (err as { shortMessage?: unknown })?.shortMessage === "string"
           ? (err as { shortMessage: string }).shortMessage
           : err instanceof Error
           ? err.message
-          : String(err)
-      throw new TopicBurnPreparationError(reason, { cause: err })
+          : String(err);
+      throw new TopicBurnPreparationError(reason, { cause: err });
     }
-  }
+  };
   const sendDirectMessageExclusive = async (
-    params: Parameters<DirectMessageClient['send']>[0],
-    wallet: MonadChainWalletHandle,
+    params: Parameters<DirectMessageClient["send"]>[0],
+    wallet: MonadChainWalletHandle
   ): Promise<DirectMessageSendResult> => {
-    const plaintext = serializeMessageItems(params.items)
+    const plaintext = serializeMessageItems(params.items);
 
     const recipientProfile = await fetchMonadProfile({
       relayBaseUrl: wallet.relayBaseUrl,
       address: params.recipient,
-    })
+    });
     if (recipientProfile === undefined) {
       throw new Error(
-        `No registered profile/pubkey found for ${params.recipient.raw}`,
-      )
+        `No registered profile/pubkey found for ${params.recipient.raw}`
+      );
     }
 
     const envelopeBytes = buildEnvelope({
@@ -569,26 +586,26 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       toPubKey: Buffer.from(recipientProfile.pubKey),
       plaintext,
       networkTag: config.networkTag,
-    })
+    });
 
     const mainAccountSigner = new MonadAccountTxSigner({
       privateKey: wallet.identity.toPrivateKeyHex(),
       provider: wallet.provider,
       httpClient: wallet.httpClient,
-    })
+    });
     const gasReserveWei = await quoteMonadStampPaymentGasReserve({
       signer: mainAccountSigner,
       recipientPublicKey: recipientProfile.pubKey,
-    })
+    });
     const preparation = await wallet.pool.prepareStampInventory({
       mainAccountSigner,
       provider: wallet.provider,
       stampValueWei: params.stampValue ?? config.defaultStampValueWei,
       gasReserveWei,
       onProgress: params.onPreparationProgress,
-    })
+    });
 
-    const stampClient = new MonadStampClient(wallet)
+    const stampClient = new MonadStampClient(wallet);
     const result = await stampClient.submitStampedMessage({
       encryptedPayload: envelopeBytes,
       // Ticket #57: a DM's stamp is a real payment to the recipient (mirroring Lotus's
@@ -598,11 +615,11 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       recipientPublicKey: recipientProfile.pubKey,
       stampValueWei: params.stampValue ?? config.defaultStampValueWei,
       onAttemptJournaled: params.onAttemptCreated,
-    })
+    });
 
     const stampPayments =
-      result.stored?.message?.stampPayments.flatMap(payment => {
-        const tx = Transaction.from(hexlify(payment.rawTx))
+      result.stored?.message?.stampPayments.flatMap((payment) => {
+        const tx = Transaction.from(hexlify(payment.rawTx));
         return tx.hash === null || tx.to === null
           ? []
           : [
@@ -611,132 +628,143 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                 destinationAddress: tx.to,
                 valueWei: tx.value,
               },
-            ]
-      }) ?? []
+            ];
+      }) ?? [];
     return {
       payloadDigest: result.payloadHashHex,
       stampValueWei: params.stampValue ?? config.defaultStampValueWei,
       stampPayments,
       preparationTxHashes: preparation.fundingTxHashes,
-    }
-  }
+    };
+  };
 
   const directMessages: DirectMessageClient = {
     async send(params): Promise<DirectMessageSendResult> {
-      const wallet = asMonadWallet(params.wallet)
+      const wallet = asMonadWallet(params.wallet);
       return runWalletExclusive(wallet, () =>
-        sendDirectMessageExclusive(params, wallet),
-      )
+        sendDirectMessageExclusive(params, wallet)
+      );
     },
 
     async unattributedAttempts(params) {
-      const wallet = asMonadWallet(params.wallet)
+      const wallet = asMonadWallet(params.wallet);
       return runWalletExclusive(wallet, async () => {
-        const client = new MonadStampClient(wallet)
-        await client.resumePendingAttempts({ maxAttempts: 1 })
-        const known = new Set(params.knownDigests)
+        const client = new MonadStampClient(wallet);
+        await client.resumePendingAttempts({ maxAttempts: 1 });
+        const known = new Set(params.knownDigests);
         return client
           .recordedAttempts()
-          .map(attempt => attempt.payloadHashHex)
-          .filter(hash => !known.has(hash))
-      })
+          .map((attempt) => attempt.payloadHashHex)
+          .filter((hash) => !known.has(hash));
+      });
     },
 
     async reconcileAttempts(params) {
-      const wallet = asMonadWallet(params.wallet)
+      const wallet = asMonadWallet(params.wallet);
       return runWalletExclusive(wallet, async () => {
-        const client = new MonadStampClient(wallet)
+        const client = new MonadStampClient(wallet);
         // Replays every journaled set byte for byte; this never signs or funds anything.
         await client.resumePendingAttempts({
           maxAttempts: params.maxPutAttempts ?? 1,
-        })
+        });
         return Object.fromEntries(
-          params.payloadDigests.map(digest => [
+          params.payloadDigests.map((digest) => [
             digest,
             client.attemptStatus(digest),
-          ]),
-        )
-      })
+          ])
+        );
+      });
     },
 
     async fetchSince(params): Promise<DirectMessageReceived[]> {
-      const wallet = asMonadWallet(params.wallet)
-      const mailbox = mailboxAuthFor(wallet.identity, wallet.relayBaseUrl)
+      const wallet = asMonadWallet(params.wallet);
+      const mailbox = mailboxAuthFor(wallet.identity, wallet.relayBaseUrl);
       const stored = await fetchMonadMessagesSince({
         ...mailbox,
         sinceMs: params.sinceMs,
         onTruncated: params.onTruncated,
-      })
-      const myAddress = wallet.identity.address.raw.toLowerCase()
-      const received: DirectMessageReceived[] = []
+      });
+      const myAddress = wallet.identity.address.raw.toLowerCase();
+      const received: DirectMessageReceived[] = [];
 
       for (const record of stored) {
-        if (record.message === undefined) continue
-        const envelope = parseEnvelope(record.message.encryptedPayload)
-        if (envelope === undefined) continue
-        if (envelope.to.toLowerCase() !== myAddress) continue
+        if (record.message === undefined) continue;
+        const envelope = parseEnvelope(record.message.encryptedPayload);
+        if (envelope === undefined) continue;
+        if (envelope.to.toLowerCase() !== myAddress) continue;
 
-        const payloadHashHex = bareHex(record.message.payloadHash)
+        const payloadHashHex = bareHex(record.message.payloadHash);
         if (wallet.stampPaymentJournal !== undefined) {
           const recovered = recoverMonadStampPayments({
             message: record.message,
             recipientPrivateKey: getBytes(wallet.identity.toPrivateKeyHex()),
-          })
+          });
           for (const payment of recovered) {
             const existing = wallet.stampPaymentJournal.get(
               payloadHashHex,
-              payment.childIndex,
-            )
-            if (existing !== undefined) continue
+              payment.childIndex
+            );
+            if (existing !== undefined) continue;
             await wallet.stampPaymentJournal.put({
               payloadHashHex,
               childIndex: payment.childIndex,
               txHash: payment.txHash,
               address: payment.address,
               valueWei: payment.valueWei.toString(),
-              status: 'discovered',
-            })
+              status: "discovered",
+            });
           }
         }
 
         const senderProfile = await fetchMonadProfile({
           relayBaseUrl: wallet.relayBaseUrl,
           address: toChainAddress(envelope.from),
-        })
-        if (senderProfile === undefined) continue
+        });
+        if (senderProfile === undefined) {
+          // `fetchMonadProfile` returns undefined only for an authoritative HTTP 404: the
+          // registry has no account for this sender at all, so no retry can ever translate the
+          // row. That is terminal, unlike the transport failures below which throw and grant no
+          // cursor authority. Report the row for durable quarantine so a paid envelope from a
+          // permanently unregistered sender cannot pin this recipient's bounded mailbox scan;
+          // a successfully decoded sibling with the same timestamp still dedupes safely.
+          params.onQuarantinedTimestamp?.(record.timestamp, payloadHashHex);
+          continue;
+        }
 
-        let items: MessageItem[]
+        let items: MessageItem[];
         try {
           items = deserializeMessageItems(
             decryptEnvelope({
               envelope,
               myPrivateKey: wallet.identity.toNakamotoPrivateKey(),
               senderPubKey: Buffer.from(senderProfile.pubKey),
-            }),
-          )
+            })
+          );
         } catch {
           // Wrong/stale key, corrupted ciphertext, or authenticated but malformed plaintext: one
           // poison record must not reject the rest of this mailbox page.
-          continue
+          continue;
         }
 
         const stampValueWei = record.message.stampPayments.reduce(
           (sum, payment) =>
             sum + Transaction.from(hexlify(payment.rawTx)).value,
-          BigInt(0),
-        )
-        const stampPayments = record.message.stampPayments.flatMap(payment => {
-          const tx = Transaction.from(hexlify(payment.rawTx))
-          return tx.hash === null || tx.to === null
-            ? []
-            : [
-                {
-                  txHash: tx.hash,
-                  destinationAddress: tx.to,
-                  valueWei: tx.value,
-                },
-              ]
-        })
+          BigInt(0)
+        );
+        const stampPayments = record.message.stampPayments.flatMap(
+          (payment) => {
+            const tx = Transaction.from(hexlify(payment.rawTx));
+            return tx.hash === null || tx.to === null
+              ? []
+              : [
+                  {
+                    txHash: tx.hash,
+                    destinationAddress: tx.to,
+                    valueWei: tx.value,
+                  },
+                ];
+          }
+        );
 
         received.push({
           senderAddress: toChainAddress(envelope.from),
@@ -746,25 +774,27 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           stampValueWei,
           stampPayments,
           receivedTime: record.timestamp,
-        })
+        });
       }
       // Recovery is housekeeping: run it only after the messages are ready and never let a slow
       // recovery read/ack delay their delivery (the sync keeps running in the background).
-      await boundedSync(syncMailboxRecoveries(wallet, mailbox))
-      return received
+      await boundedSync(syncMailboxRecoveries(wallet, mailbox));
+      return received;
     },
 
     async listRecoveredStampPayments({ wallet }) {
-      const monadWallet = asMonadWallet(wallet)
-      return (monadWallet.stampPaymentJournal?.getAll() ?? []).map(record => ({
-        payloadDigest: record.payloadHashHex,
-        childIndex: record.childIndex,
-        txHash: record.txHash,
-        address: toChainAddress(record.address),
-        valueWei: BigInt(record.valueWei),
-        status: record.status,
-        sweepTxHash: record.sweepTxHash,
-      }))
+      const monadWallet = asMonadWallet(wallet);
+      return (monadWallet.stampPaymentJournal?.getAll() ?? []).map(
+        (record) => ({
+          payloadDigest: record.payloadHashHex,
+          childIndex: record.childIndex,
+          txHash: record.txHash,
+          address: toChainAddress(record.address),
+          valueWei: BigInt(record.valueWei),
+          status: record.status,
+          sweepTxHash: record.sweepTxHash,
+        })
+      );
     },
 
     async sweepRecoveredStampPayment({
@@ -773,76 +803,76 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       childIndex,
       destination,
     }) {
-      const monadWallet = asMonadWallet(wallet)
-      const journal = monadWallet.stampPaymentJournal
+      const monadWallet = asMonadWallet(wallet);
+      const journal = monadWallet.stampPaymentJournal;
       if (journal === undefined) {
-        throw new Error('Stamp-payment recovery journal is not configured')
+        throw new Error("Stamp-payment recovery journal is not configured");
       }
-      const record = journal.get(payloadDigest, childIndex)
+      const record = journal.get(payloadDigest, childIndex);
       if (record === undefined) {
         throw new Error(
-          `No recovered stamp payment ${payloadDigest}:${childIndex}`,
-        )
+          `No recovered stamp payment ${payloadDigest}:${childIndex}`
+        );
       }
-      if (record.status === 'swept') {
+      if (record.status === "swept") {
         throw new Error(
-          `Stamp payment ${payloadDigest}:${childIndex} was already swept`,
-        )
+          `Stamp payment ${payloadDigest}:${childIndex} was already swept`
+        );
       }
       const child = deriveMonadStampChildPrivate({
         payloadHash: getBytes(`0x${payloadDigest}`),
         recipientPrivateKey: getBytes(monadWallet.identity.toPrivateKeyHex()),
         paymentIndex: childIndex,
-      })
+      });
       if (child.address.toLowerCase() !== record.address.toLowerCase()) {
         throw new Error(
-          `Recovered stamp-payment address ${record.address} does not match derived child ${child.address}`,
-        )
+          `Recovered stamp-payment address ${record.address} does not match derived child ${child.address}`
+        );
       }
       const childSigner = new MonadAccountTxSigner({
         privateKey: hexlify(child.privateKey),
         provider: monadWallet.provider,
         httpClient: monadWallet.httpClient,
-      })
-      if (record.status === 'sweep-pending') {
+      });
+      if (record.status === "sweep-pending") {
         if (
           record.sweepTxHash === undefined ||
           record.sweepRawTx === undefined ||
           record.sweepValueWei === undefined
         ) {
           throw new Error(
-            `Pending stamp-payment sweep ${payloadDigest}:${childIndex} is missing its signed intent`,
-          )
+            `Pending stamp-payment sweep ${payloadDigest}:${childIndex} is missing its signed intent`
+          );
         }
-        const status = await childSigner.getStatus(record.sweepTxHash)
-        if (status === 'confirmed') {
+        const status = await childSigner.getStatus(record.sweepTxHash);
+        if (status === "confirmed") {
           await journal.put({
             ...record,
-            status: 'swept',
+            status: "swept",
             sweepRawTx: undefined,
-          })
+          });
           return {
             swept: true,
             txHash: record.sweepTxHash,
             valueWei: BigInt(record.sweepValueWei),
-          }
+          };
         }
-        if (status === 'pending') {
-          await childSigner.submitRaw(record.sweepRawTx, record.sweepTxHash)
+        if (status === "pending") {
+          await childSigner.submitRaw(record.sweepRawTx, record.sweepTxHash);
           return {
             swept: false,
-            reason: 'pending',
+            reason: "pending",
             txHash: record.sweepTxHash,
-          }
+          };
         }
         await journal.put({
           ...record,
-          status: 'discovered',
+          status: "discovered",
           sweepTxHash: undefined,
           sweepRawTx: undefined,
           sweepValueWei: undefined,
           sweepDestinationAddress: undefined,
-        })
+        });
       }
       const outcome = await sweepRecoveredMonadStampPayment({
         payment: {
@@ -856,40 +886,40 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         provider: monadWallet.provider,
         httpClient: monadWallet.httpClient,
         signer: childSigner,
-        onSigned: async signedTx => {
+        onSigned: async (signedTx) => {
           await journal.put({
             ...record,
-            status: 'sweep-pending',
+            status: "sweep-pending",
             sweepTxHash: signedTx.txHash,
             sweepRawTx: signedTx.rawTx,
             sweepValueWei: signedTx.value.toString(),
             sweepDestinationAddress: signedTx.to,
-          })
+          });
         },
-      })
+      });
       if (outcome.swept) {
         await journal.put({
           ...record,
-          status: 'swept',
+          status: "swept",
           sweepTxHash: outcome.txHash,
           sweepRawTx: undefined,
           sweepValueWei: outcome.valueWei.toString(),
           sweepDestinationAddress: outcome.destinationAddress,
-        })
+        });
         return {
           swept: true,
           txHash: outcome.txHash,
           valueWei: outcome.valueWei,
-        }
+        };
       }
-      return outcome
+      return outcome;
     },
-  }
+  };
 
-  const nativeTransfers: ActiveChain['nativeTransfers'] = {
+  const nativeTransfers: ActiveChain["nativeTransfers"] = {
     async getBalance({ wallet }): Promise<bigint> {
-      const monadWallet = asMonadWallet(wallet)
-      return monadWallet.provider.getBalance(monadWallet.identity.address.raw)
+      const monadWallet = asMonadWallet(wallet);
+      return monadWallet.provider.getBalance(monadWallet.identity.address.raw);
     },
 
     async send({
@@ -899,39 +929,39 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       onSigned,
     }): Promise<{ txHash: string }> {
       if (value <= 0n) {
-        throw new Error('Transfer value must be greater than zero')
+        throw new Error("Transfer value must be greater than zero");
       }
-      const monadWallet = asMonadWallet(wallet)
+      const monadWallet = asMonadWallet(wallet);
       const signer = new MonadAccountTxSigner({
         privateKey: monadWallet.identity.toPrivateKeyHex(),
         provider: monadWallet.provider,
         httpClient: monadWallet.httpClient,
-      })
-      const signed = await signer.buildAndSignTransfer(recipient.raw, value)
+      });
+      const signed = await signer.buildAndSignTransfer(recipient.raw, value);
       // Awaited before any broadcast: a failure here aborts with nothing sent.
-      await onSigned?.({ txHash: signed.txHash })
-      return { txHash: await signer.submit(signed) }
+      await onSigned?.({ txHash: signed.txHash });
+      return { txHash: await signer.submit(signed) };
     },
 
     async getTransactionStatus({ wallet, txHash }) {
-      const monadWallet = asMonadWallet(wallet)
-      const receipt = await monadWallet.provider.getTransactionReceipt(txHash)
-      if (receipt) return receipt.status === 0 ? 'failed' : 'confirmed'
-      const known = await monadWallet.provider.getTransaction(txHash)
-      return known ? 'pending' : 'unknown'
+      const monadWallet = asMonadWallet(wallet);
+      const receipt = await monadWallet.provider.getTransactionReceipt(txHash);
+      if (receipt) return receipt.status === 0 ? "failed" : "confirmed";
+      const known = await monadWallet.provider.getTransaction(txHash);
+      return known ? "pending" : "unknown";
     },
-  }
+  };
 
   const topics: TopicBroadcastClient = {
     async post(params): Promise<{ payloadDigest: string }> {
-      const wallet = asMonadWallet(params.wallet)
-      const client = new MonadTopicPostClient(wallet)
+      const wallet = asMonadWallet(params.wallet);
+      const client = new MonadTopicPostClient(wallet);
       return runWalletExclusive(wallet, async () => {
         const leaseIndex = await prepareTopicBurnAccount(
           wallet,
           params.voteWeightWei,
-          params.onPreparationProgress,
-        )
+          params.onPreparationProgress
+        );
         const result = await client
           .submitTopicPost({
             topic: params.topic,
@@ -946,23 +976,23 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           })
           .catch((err: unknown) => {
             if (err instanceof MonadTopicPostAbandonedError) {
-              throw new TopicPostOutcomeUnknownError(err.message, err)
+              throw new TopicPostOutcomeUnknownError(err.message, err);
             }
-            return asNothingSent(err)
-          })
-        return { payloadDigest: result.payloadHashHex }
-      })
+            return asNothingSent(err);
+          });
+        return { payloadDigest: result.payloadHashHex };
+      });
     },
 
     async vote(params): Promise<void> {
-      const wallet = asMonadWallet(params.wallet)
-      const client = new MonadTopicVoteClient(wallet)
+      const wallet = asMonadWallet(params.wallet);
+      const client = new MonadTopicVoteClient(wallet);
       await runWalletExclusive(wallet, async () => {
         const leaseIndex = await prepareTopicBurnAccount(
           wallet,
           params.voteWeightWei,
-          params.onPreparationProgress,
-        )
+          params.onPreparationProgress
+        );
         await client
           .castVote({
             targetPayloadHash: getBytes(`0x${params.payloadDigest}`),
@@ -971,98 +1001,98 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             voteWeightWei: params.voteWeightWei,
             leaseIndex,
           })
-          .catch(asNothingSent)
-      })
+          .catch(asNothingSent);
+      });
     },
 
     async fetchByTopic(params): Promise<ForumMessage[]> {
-      const wallet = asMonadWallet(params.wallet)
+      const wallet = asMonadWallet(params.wallet);
       const views = await fetchMonadTopicPostsSince({
         relayBaseUrl: wallet.relayBaseUrl,
         topic: params.topic,
         sinceMs: params.sinceMs,
-      })
-      const messages: ForumMessage[] = []
+      });
+      const messages: ForumMessage[] = [];
       for (const view of views) {
-        const message = viewToForumMessage(view)
-        if (message !== undefined) messages.push(message)
+        const message = viewToForumMessage(view);
+        if (message !== undefined) messages.push(message);
       }
-      return messages
+      return messages;
     },
 
     async fetchOne(payloadDigest): Promise<ForumMessage | undefined> {
       const view = await fetchMonadTopicPostView({
         relayBaseUrl: config.relayBaseUrl,
         payloadHashHex: payloadDigest,
-      })
-      return view ? viewToForumMessage(view) : undefined
+      });
+      return view ? viewToForumMessage(view) : undefined;
     },
 
     async discoverTopics() {
       // No wallet needed -- same "read via the chain's own configured relayBaseUrl" shape as
       // `fetchOne` above. `fetchDiscoveredTopics` itself already fails soft (`[]`), so there's
       // nothing further to catch here.
-      return fetchDiscoveredTopics({ relayBaseUrl: config.relayBaseUrl })
+      return fetchDiscoveredTopics({ relayBaseUrl: config.relayBaseUrl });
     },
-  }
+  };
 
   return {
-    name: 'monad',
-    unit: 'MON',
+    name: "monad",
+    unit: "MON",
     defaultStampValue: config.defaultStampValueWei,
     defaultTopicVoteValue: config.defaultTopicVoteValueWei,
 
     toDisplayAmount(raw: bigint): string {
-      return formatEther(raw)
+      return formatEther(raw);
     },
 
     fromDisplayAmount(display: string): bigint {
-      return parseEther(display)
+      return parseEther(display);
     },
 
     formatAddress(addr: ChainAddress): string {
-      return addr.raw
+      return addr.raw;
     },
 
     parseAddress(input: string): ChainAddress | undefined {
       try {
-        return { raw: getAddress(input) }
+        return { raw: getAddress(input) };
       } catch {
-        return undefined
+        return undefined;
       }
     },
 
     async createWallet(seed): Promise<WalletHandle> {
-      const identity = MonadIdentity.fromSeed(seed)
-      const identityKey = identity.address.raw.toLowerCase()
-      const existing = walletsByIdentity.get(identityKey)
-      if (existing !== undefined) return existing
+      const identity = MonadIdentity.fromSeed(seed);
+      const identityKey = identity.address.raw.toLowerCase();
+      const existing = walletsByIdentity.get(identityKey);
+      if (existing !== undefined) return existing;
 
       const pending = (async (): Promise<MonadChainWalletHandle> => {
         const keyring = MonadHdKeyring.fromMnemonic(
           seed.mnemonic,
-          seed.passphrase,
-        )
+          seed.passphrase
+        );
         const storageLocation =
           config.walletStorageLocation === false
             ? undefined
-            : `${config.walletStorageLocation}-${identityKey}`
+            : `${config.walletStorageLocation}-${identityKey}`;
         const subAccountStore =
           storageLocation === undefined
             ? undefined
-            : new LevelSubAccountPoolStore(storageLocation)
+            : new LevelSubAccountPoolStore(storageLocation);
         const changeStore =
           storageLocation === undefined
             ? undefined
-            : new LevelChangePoolStore(storageLocation)
+            : new LevelChangePoolStore(storageLocation);
         const stampPaymentJournal =
           storageLocation === undefined
             ? new InMemoryStampPaymentJournal()
-            : new LevelStampPaymentJournal(storageLocation)
+            : new LevelStampPaymentJournal(storageLocation);
         const stampAttemptJournal =
           storageLocation === undefined
             ? new InMemoryStampAttemptJournal()
-            : new LevelStampAttemptJournal(storageLocation)
+            : new LevelStampAttemptJournal(storageLocation);
         await Promise.all([
           subAccountStore?.Open(),
           changeStore?.Open(),
@@ -1072,38 +1102,46 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           stampAttemptJournal instanceof LevelStampAttemptJournal
             ? stampAttemptJournal.Open()
             : undefined,
-        ])
+        ]);
 
         const pool = new MonadSubAccountPool({
           keyring,
           store: subAccountStore,
-        })
-        pool.ensureUnfundedSize(config.subAccountPoolSize)
+        });
+        pool.ensureUnfundedSize(config.subAccountPoolSize);
         const pendingLeaseIndices = new Set(
-          stampAttemptJournal.getAll().flatMap(attempt => attempt.leaseIndices),
-        )
+          stampAttemptJournal
+            .getAll()
+            .flatMap((attempt) => attempt.leaseIndices)
+        );
         for (const record of pool.records()) {
           if (
-            record.status === 'in-use' &&
+            record.status === "in-use" &&
             !pendingLeaseIndices.has(record.index)
           ) {
             // A crash during signing can persist the lease before the exact raw set exists. No
             // relay broadcast is possible in that window, but the account is conservatively
             // retired rather than silently reused with an uncertain locally-signed nonce.
-            pool.setStatus(record.index, 'retired')
+            pool.setStatus(record.index, "retired");
           }
         }
-        await pool.flush()
+        await pool.flush();
         const changePool = new MonadChangePool({
           keyring: MonadChangeKeyring.fromMnemonic(
             seed.mnemonic,
-            seed.passphrase,
+            seed.passphrase
           ),
           store: changeStore,
-        })
-        const leaseManager = new SubAccountLeaseManager(pool)
-        const provider = new JsonRpcProvider(config.rpcUrl)
-        const httpClient = new MonadHttpClient({ rpcUrl: config.rpcUrl })
+        });
+        const leaseManager = new SubAccountLeaseManager(pool);
+        const provider = createMonadJsonRpcProvider({
+          rpcUrl: config.rpcUrl,
+          chainId: config.chainId,
+        });
+        const httpClient = new MonadHttpClient({
+          rpcUrl: config.rpcUrl,
+          chainId: config.chainId,
+        });
         const wallet: MonadChainWalletHandle = {
           identity,
           pool,
@@ -1114,16 +1152,18 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           stampPaymentJournal,
           stampAttemptJournal,
           relayBaseUrl: config.relayBaseUrl,
-        }
-        await new MonadStampClient(wallet).resumePendingAttempts()
-        return wallet
-      })()
-      walletsByIdentity.set(identityKey, pending)
+          cborNetwork:
+            config.networkTag === "MON1" ? "monad-mainnet" : "monad-testnet",
+        };
+        await new MonadStampClient(wallet).resumePendingAttempts();
+        return wallet;
+      })();
+      walletsByIdentity.set(identityKey, pending);
       try {
-        return await pending
+        return await pending;
       } catch (err) {
-        walletsByIdentity.delete(identityKey)
-        throw err
+        walletsByIdentity.delete(identityKey);
+        throw err;
       }
     },
 
@@ -1131,22 +1171,22 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     async fetchProfile(
       addr: ChainAddress,
-      opts?: { relayBaseUrl?: string },
+      opts?: { relayBaseUrl?: string }
     ): Promise<ProfileInfo | undefined> {
       return fetchMonadProfile({
         relayBaseUrl: opts?.relayBaseUrl ?? config.relayBaseUrl,
         address: addr,
-      })
+      });
     },
 
     directMessages,
     topics,
-  }
+  };
 }
 
 /** The default, env-configured `MonadChain` singleton -- `./index.ts`'s `activeChain` is exactly
  * this. See this file's header, "Configuration", for why reading env here (rather than in every
  * wallet client) is the right composition point. */
 export const MonadChain: ActiveChain = createMonadChain(
-  loadMonadChainConfigFromEnv(),
-)
+  loadMonadChainConfigFromEnv()
+);

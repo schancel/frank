@@ -4,6 +4,14 @@
 export default {
   forum: {
     noPosts: 'Aucun message pour le moment.',
+    outageTitle: 'Forum indisponible',
+    outageDescription:
+      'Impossible de se connecter au relais du forum. Veuillez vérifier votre connexion ou réessayer.',
+    outageBanner:
+      'Le relais du forum est actuellement inaccessible. Affichage des messages enregistrés.',
+    degradedTitle: 'Connexion dégradée',
+    degradedBanner: 'Certains sujets du forum n’ont pas pu être mis à jour.',
+    retry: 'Réessayer',
   },
   agree: "D'accord",
   chat: {
@@ -243,6 +251,8 @@ export default {
     balanceLoading: 'Chargement du solde…',
     balanceUnavailable: 'Solde indisponible. Nouvelle tentative.',
     balanceStale: '{balance} (dernière valeur connue)',
+    failedLoadAddress: 'Échec du chargement de l’adresse du portefeuille Monad',
+    unableCopyAddress: 'Impossible de copier l’adresse Monad',
   },
   chatList: {
     noContactMessage: 'Ajoutez des contacts depuis le tiroir ci-dessus...',
@@ -251,6 +261,9 @@ export default {
     balance: 'Solde',
     balanceStale: '(dernière valeur connue)',
     directMessages: 'Messages privés',
+  },
+  selfChat: {
+    you: 'Vous',
   },
   outgoing: {
     sending: 'Envoi…',
@@ -265,7 +278,9 @@ export default {
     reasonInterrupted: "L'envoi a été interrompu avant son terme.",
     reasonUnverified: "La remise n'a pas pu être confirmée.",
     reasonRecovered: 'Un message précédent a été remis entre-temps.',
-    reasonError: "Une erreur s'est produite.",
+    reasonInsufficientFunds:
+      'Les fonds sont insuffisants pour envoyer ce message.',
+    reasonError: 'Le message n’a pas pu être envoyé.',
     retry: 'Réessayer',
     retryHint:
       "Réessayer renvoie le même paiement tant qu'il est valide. Un nouveau paiement n'est fait que s'il ne l'est plus.",
@@ -299,6 +314,18 @@ export default {
     infoMessage: 'Informations sur le message',
     deleteMessage: 'Supprimer le message',
   },
+  chatMessageMenu: {
+    messageCopied: 'Message copié dans le presse-papier',
+  },
+  notifications: {
+    addressCopied: 'Adresse copiée dans le presse-papier.',
+    insufficientStamp:
+      'Le timbre est trop petit, le destinataire ne sera pas notifié.',
+    seedCopied:
+      'Votre phrase de récupération a été copiée dans votre presse-papier.',
+    sentTransaction: 'Transaction envoyée',
+    viewAction: 'Voir',
+  },
   chatRightDrawer: {
     stampPrice: 'Prix du timbre',
     sendLotus: 'Envoyer des Lotus',
@@ -331,6 +358,21 @@ export default {
     loginOrSignUp: 'Connexion/Inscription',
     welcome: 'Bienvenue',
     welcomeToStampChat: 'Bienvenue sur Frank !',
+    networkTitle: 'Testnet Monad',
+    testnetDisclaimer:
+      "Frank fonctionne sur le testnet Monad. Toutes les transactions utilisent des MON de testnet, qui n'ont aucune valeur monétaire réelle. N'envoyez jamais de fonds réels.",
+    economicModelTitle: 'Actions payantes et coûts',
+    costsDisclaimer:
+      "Des coûts de réseau et de timbre s'appliquent aux actions sortantes. Le montant exact des frais ou du timbre est toujours affiché avant de confirmer une action.",
+    directMessagesTitle: 'Messages directs',
+    directMessagesDesc:
+      "Payés directement au destinataire sous forme de timbre de boîte de réception, afin d'éviter le spam et d'indemniser la distribution.",
+    topicActionsTitle: 'Publications et votes de forum',
+    topicActionsDesc:
+      'Détruits de manière permanente sur la blockchain (burn) pour publier des messages ou enregistrer des votes sur les sujets publics.',
+    fundingTitle: 'Financement de testnet',
+    fundingDesc:
+      "Les nouveaux comptes reçoivent automatiquement des MON de testnet via le faucet de démonstration. Vous pouvez également consulter votre adresse et obtenir des fonds de testnet depuis l'écran Recevoir après la configuration.",
     eulaDisclaimer:
       'Frank est un logiciel expérimental. Il peut contenir des erreurs susceptibles de retarder des messages ou d’entraîner une perte de fonds. N’utilisez que des montants que vous pouvez vous permettre de perdre.',
     eulaYouUnderstand:
@@ -377,6 +419,12 @@ export default {
       'Confirmez ou copiez d’abord votre phrase de récupération enregistrée.',
     importDifferentPhrase: 'J’ai déjà une autre phrase de récupération',
     importDifferentContinue: 'Continuer vers l’importation',
+    invalidWordCount:
+      'Une phrase de récupération doit contenir 12, 15, 18, 21 ou 24 mots.',
+    unrecognizedWords:
+      'Un ou plusieurs mots ne sont pas reconnus. Vérifiez l’orthographe.',
+    invalidChecksum:
+      'La somme de contrôle de la phrase de récupération est invalide. Vérifiez l’ordre et l’orthographe de vos mots.',
   },
   seedConfirm: {
     unavailable:
@@ -457,6 +505,8 @@ export default {
     noFundsHint:
       "Votre solde est de 0. Cette application utilise des MON de testnet, sans valeur réelle. Le faucet de démonstration alimente automatiquement les nouveaux profils ; si rien n'arrive après une minute, demandez à l'opérateur de la démo d'envoyer des MON de testnet à l'adresse ci-dessous.",
     addressCopied: 'Adresse copiée dans le presse papier',
+    failedLoadBalance: 'Échec du chargement du solde du portefeuille Monad',
+    unableCopyAddress: 'Impossible de copier l’adresse Monad',
   },
   sendAddressDialog: {
     sendToAddress: "Envoyer vers l'adresse",
@@ -464,6 +514,26 @@ export default {
     enterAmount: 'Saisissez le montant (MON)',
     cancel: 'Annuler',
     send: 'Envoyer',
+    review: 'Vérifier',
+    reviewTitle: 'Vérifier le transfert',
+    network: 'Réseau',
+    recipient: 'Destinataire',
+    amount: 'Montant',
+    estimatedFee: 'Frais estimés',
+    feeUnavailable: 'Indisponible',
+    maxTotal: 'Total maximal',
+    maxTotalWithFee: '{amount} {unit} (+ frais de réseau)',
+    irreversibleWarning:
+      'Les transactions sur la blockchain sont irréversibles. Vérifiez le destinataire et le réseau avant de confirmer.',
+    editTransfer: 'Modifier',
+    confirmAndSend: 'Confirmer et envoyer',
+    definitelyNotBroadcast:
+      "La transaction n'a pas été diffusée. Aucun fond n'a été transféré.",
+    potentiallyBroadcast:
+      'La transaction a été signée ({txHash}) et a peut-être été diffusée. Vérifiez votre solde ou le statut de la transaction avant de réessayer.',
+    invalidTransfer:
+      'Saisissez une adresse Monad et un montant de MON valides.',
+    failedSendTransaction: 'Échec de l’envoi de la transaction Monad',
   },
   contactBookDialog: {
     close: 'Fermer',
@@ -549,7 +619,20 @@ export default {
   },
   seedPhraseDialog: {
     close: 'Fermer',
-    seedPhrase: 'Phrase de passe',
+    cancel: 'Annuler',
+    seedPhrase: 'Phrase de récupération',
+    warningTitle: 'Avertissement de sécurité',
+    warningBody:
+      'Assurez-vous que personne ne regarde votre écran. Méfiez-vous du partage d’écran, des regards indiscrets, des captures d’écran et de l’historique du presse-papiers.',
+    disclosureText:
+      'Quiconque obtient votre phrase de récupération peut accéder à tous vos fonds et messages et les dérober définitivement.',
+    revealButton: 'Révéler la phrase de récupération',
+    hideButton: 'Masquer',
+    copyButton: 'Copier',
+    copied: 'Copié !',
+    copiedToast: 'Phrase de récupération copiée dans le presse-papiers',
+    keepPrivateNotice:
+      'Gardez ceci secret. Ne partagez pas et ne faites pas de capture d’écran.',
   },
   transactionDialog: {
     backingTransactions: 'Transactions',

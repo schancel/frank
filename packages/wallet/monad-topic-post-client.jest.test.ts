@@ -9,7 +9,10 @@
  * `JsonRpcProvider._perform`, so the signed raw tx and its calldata are real, decodable bytes --
  * same technique `monad-stamp-client.jest.test.ts` uses.
  */
-import { JsonRpcProvider, Transaction, getBytes, sha256 } from 'ethers'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { JsonRpcProvider, Transaction, Wallet, getBytes, sha256 } from 'ethers'
 import axios from 'axios'
 
 import { MonadHdKeyring } from './monad-hd-keyring'
@@ -23,17 +26,32 @@ import {
 } from './topic_message_pb'
 import { ForumMessageEntry } from '@frank/cashweb/types/forum'
 import {
+  defaultContext,
+  encodeTopicPost,
+  topicBurnCommitment,
+  validateFrame,
+} from '@frank/codec'
+import {
   MONAD_TOPIC_VOTE_CALLDATA_LENGTH,
   MonadTopicPostAbandonedError,
   MonadTopicPostClient,
   MonadTopicPostProto,
   MonadTopicPostRejectedError,
   buildTopicPostPayload,
+  buildCborTopicVoteCalldata,
   buildTopicVoteCalldata,
   computeTopicPostCommitment,
   decodeMonadTopicPost,
   decodeStoredMonadTopicPost,
 } from './monad-topic-post-client'
+import {
+  openMonadWalletBundle,
+  type MonadWalletPersistenceBundle,
+} from './storage/monad-wallet-bundle'
+import {
+  InMemoryTopicOperationJournal,
+  type TopicOperationJournal,
+} from './storage/topic-operation-journal'
 
 jest.mock('axios')
 const mockedAxios = axios as jest.Mocked<typeof axios>
@@ -92,19 +110,84 @@ function makeChainProvider() {
   })
 }
 
-function makeClient(overrides?: { pool?: MonadSubAccountPool }) {
+function makeClient(overrides?: {
+  pool?: MonadSubAccountPool
+  topicWriteFormat?: 'protobuf' | 'cbor'
+  omitTopicWriteFormat?: boolean
+  topicOperationJournal?: TopicOperationJournal
+  withoutPersistence?: boolean
+}) {
   const pool = overrides?.pool ?? makePool()
   const leaseManager = new SubAccountLeaseManager(pool)
   const provider = makeChainProvider()
   const httpClient = makeMockHttpClient()
-  const client = new MonadTopicPostClient({
+  const topicOperationJournal =
+    overrides?.topicOperationJournal ?? new InMemoryTopicOperationJournal()
+  const usesCbor =
+    !overrides?.omitTopicWriteFormat &&
+    (overrides?.topicWriteFormat ?? 'cbor') === 'cbor'
+  const walletState = {
+    pool,
+    leaseManager,
+    topicOperationJournal,
+    runOperation: async (operation: (admission: never) => Promise<unknown>) =>
+      operation(undefined as never),
+  } as unknown as MonadWalletPersistenceBundle
+  const handle = {
     pool,
     leaseManager,
     provider,
     httpClient,
     relayBaseUrl: 'https://relay.example.com/',
-  })
+    ...(!usesCbor || overrides?.withoutPersistence
+      ? {}
+      : { topicOperationJournal, walletState }),
+    ...(overrides?.omitTopicWriteFormat
+      ? {}
+      : { topicWriteFormat: overrides?.topicWriteFormat ?? ('cbor' as const) }),
+  }
+  const client = new MonadTopicPostClient(handle)
   return { client, pool, leaseManager, provider, httpClient }
+}
+
+async function fundPersistentPool(pool: MonadSubAccountPool): Promise<void> {
+  const fundingWallet = new Wallet(`0x${'66'.repeat(32)}`)
+  const signer = {
+    address: fundingWallet.address,
+    buildAndSignTransfer: async (to: string, value: bigint) => {
+      const rawTx = await fundingWallet.signTransaction({
+        to,
+        value,
+        nonce: 0,
+        gasLimit: 21_000n,
+        gasPrice: 1n,
+        chainId: CHAIN_ID,
+      })
+      const parsed = Transaction.from(rawTx)
+      return {
+        rawTx,
+        txHash: parsed.hash as string,
+        from: fundingWallet.address,
+        to,
+        value,
+        data: '0x',
+        nonce: 0,
+        gasLimit: 21_000n,
+        maxFeePerGas: undefined,
+        maxPriorityFeePerGas: undefined,
+        gasPrice: 1n,
+        chainId: BigInt(CHAIN_ID),
+      }
+    },
+    submit: async (signed: { txHash: string }) => signed.txHash,
+    getStatus: async () => 'confirmed' as const,
+  }
+  await pool.topUpPool({
+    mainAccountSigner: signer as never,
+    burnValue: 100_000n,
+    gasReserve: 0n,
+    bufferSize: 1,
+  })
 }
 
 /** Encode a `MonadTopicPostProto` via the real generated `MonadTopicPost` binding -- used both to
@@ -122,11 +205,26 @@ function encodeTopicPostPb(post: MonadTopicPostProto): MonadTopicPost {
 
 /** Builds the wire bytes a `PUT /message/monad/topics` (or `GET .../topics/:hash`'s nested `post`)
  * response would carry, via the real generated `StoredMonadTopicPost` binding. */
-function storedTopicPostBytes(post: MonadTopicPostProto): Uint8Array {
+function storedTopicPostBytes(
+  post: MonadTopicPostProto,
+  cborPostFrame?: Uint8Array,
+): Uint8Array {
   const pb = new StoredMonadTopicPost()
   pb.setPost(encodeTopicPostPb(post))
   pb.setSenderAddress(getBytes('0x' + '11'.repeat(20)))
   pb.setTxHash(getBytes('0x' + '22'.repeat(32)))
+  pb.setTimestamp(1_700_000_000_000)
+  pb.setNetworkTag(new TextEncoder().encode('MONT'))
+  if (cborPostFrame !== undefined) pb.setCborPostFrame(cborPostFrame)
+  return pb.serializeBinary()
+}
+
+function matchingStoredTopicPostBytes(post: MonadTopicPostProto): Uint8Array {
+  const transaction = Transaction.from(hexOf(post.rawBurnTx))
+  const pb = new StoredMonadTopicPost()
+  pb.setPost(encodeTopicPostPb(post))
+  pb.setSenderAddress(getBytes(transaction.from as string))
+  pb.setTxHash(getBytes(transaction.hash as string))
   pb.setTimestamp(1_700_000_000_000)
   pb.setNetworkTag(new TextEncoder().encode('MONT'))
   return pb.serializeBinary()
@@ -136,7 +234,7 @@ function storedTopicPostBytes(post: MonadTopicPostProto): Uint8Array {
 function topicPostViewBytes(post: MonadTopicPostProto, voteWeight: number) {
   const view = new MonadTopicPostView()
   view.setPost(
-    StoredMonadTopicPost.deserializeBinary(storedTopicPostBytes(post)),
+    StoredMonadTopicPost.deserializeBinary(matchingStoredTopicPostBytes(post)),
   )
   view.setVoteWeight(voteWeight)
   return view.serializeBinary()
@@ -144,6 +242,28 @@ function topicPostViewBytes(post: MonadTopicPostProto, voteWeight: number) {
 
 function hexOf(bytes: Uint8Array): string {
   return '0x' + Buffer.from(bytes).toString('hex')
+}
+
+function decodeCborSubmission(bytes: Uint8Array) {
+  const result = validateFrame(bytes, defaultContext({ operation: 'typed' }))
+  if (
+    result.kind !== 'parsed' ||
+    result.typed?.type !== 10 ||
+    result.typed.postFrame.typed?.type !== 9
+  ) {
+    throw new Error('expected a typed type-10 topic submission')
+  }
+  const post = result.typed.postFrame.typed
+  const identity = topicBurnCommitment(result.typed.postFrame.frame)
+  return {
+    topic: post.topic,
+    parentPostHash: post.parentHash ?? new Uint8Array(0),
+    rawBurnTx: result.typed.burnTx,
+    encryptedPayload: post.body,
+    payloadHash: identity.hash,
+    commitment: identity.commitment,
+    postFrame: result.typed.postFrame.frame,
+  }
 }
 
 describe('calldata / commitment construction', () => {
@@ -172,7 +292,7 @@ describe('calldata / commitment construction', () => {
     expect(a).toEqual(b)
   })
 
-  it('builds up-vote calldata as <TPIC><0x01><0x01><32-byte commitment>, 38 bytes total', () => {
+  it('preserves legacy v1 up-vote calldata by default', () => {
     const commitment = new Uint8Array(32).fill(0xab)
     const calldata = buildTopicVoteCalldata('up', commitment)
     const bytes = getBytes(calldata)
@@ -216,11 +336,18 @@ describe('calldata / commitment construction', () => {
       0x50,
       0x49,
       0x43, // "TPIC"
-      0x01, // version
+      0x01, // legacy protobuf topic calldata version
       0x01, // up
       ...commitment,
     ])
     expect(calldata).toEqual(expected)
+  })
+
+  it('builds the explicit deterministic-CBOR v2 fixture', () => {
+    const commitment = Uint8Array.from({ length: 32 }, (_, index) => index)
+    expect(getBytes(buildCborTopicVoteCalldata('up', commitment))).toEqual(
+      new Uint8Array([0x54, 0x50, 0x49, 0x43, 0x02, 0x01, ...commitment]),
+    )
   })
 })
 
@@ -267,6 +394,282 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
     )
   })
 
+  it.each(['direct', 'fallback'] as const)(
+    'persists exact spend authority across reopen for a %s confirmation',
+    async confirmation => {
+      const parent = mkdtempSync(join(tmpdir(), 'monad-topic-post-durable-'))
+      const location = join(parent, 'wallet')
+      try {
+        const bundle = await openMonadWalletBundle({
+          location,
+          seed: { mnemonic: TEST_MNEMONIC },
+          mode: 'create',
+        })
+        await fundPersistentPool(bundle.pool)
+        const row = bundle.pool.getRecord(0)
+        if (row === undefined) throw new Error('missing funded topic row')
+        const client = new MonadTopicPostClient({
+          pool: bundle.pool,
+          leaseManager: bundle.leaseManager,
+          provider: makeChainProvider(),
+          httpClient: makeMockHttpClient(),
+          relayBaseUrl: 'https://relay.example.com/',
+        })
+        let exactRawTx = ''
+        let calls = 0
+        ;(mockedAxios as unknown as jest.Mock).mockImplementation(
+          async (config: any) => {
+            calls++
+            if (config.method === 'put') {
+              const sent = decodeMonadTopicPost(
+                new Uint8Array(config.data as Buffer),
+              )
+              exactRawTx = hexOf(sent.rawBurnTx)
+              expect(
+                bundle.pool.getRecord(row.index)?.lifecycle?.spend?.rawTx,
+              ).toBe(exactRawTx)
+              if (confirmation === 'fallback' && calls === 1) {
+                throw Object.assign(new Error('socket hang up'), {
+                  isAxiosError: true,
+                  response: undefined,
+                })
+              }
+              return {
+                data: storedTopicPostBytes(sent),
+                status: 200,
+                statusText: 'OK',
+                headers: {},
+                config,
+              }
+            }
+            const checkpoint = bundle.pool.getRecord(row.index)?.lifecycle
+              ?.spend
+            if (checkpoint === undefined) {
+              throw new Error('missing spend checkpoint')
+            }
+            exactRawTx = checkpoint.rawTx
+            const payload = buildTopicPostPayload({
+              topic: 'durable',
+              entries: ENTRIES,
+              parentPostHash: new Uint8Array(0),
+              timestampMs: 1_700_000_000_000,
+            })
+            const sent: MonadTopicPostProto = {
+              topic: 'durable',
+              parentPostHash: new Uint8Array(0),
+              rawBurnTx: getBytes(exactRawTx),
+              encryptedPayload: payload,
+              payloadHash: computeTopicPostCommitment(payload),
+            }
+            return {
+              data: topicPostViewBytes(sent, 5_000),
+              status: 200,
+              statusText: 'OK',
+              headers: {},
+              config,
+            }
+          },
+        )
+
+        const result = await client.submitTopicPost({
+          topic: 'durable',
+          entries: ENTRIES,
+          direction: 'up',
+          burnAddress: BURN_ADDRESS,
+          voteWeightWei: 5_000n,
+          overrides: FEE_OVERRIDES,
+          timestampMs: 1_700_000_000_000,
+          abandonPoll: {
+            intervalMs: 0,
+            maxAttempts: 1,
+            sleep: async () => undefined,
+          },
+        })
+        const expectedHash = Transaction.from(exactRawTx).hash
+        expect(result.txHash).toBe(expectedHash)
+        await bundle.close()
+
+        const reopened = await openMonadWalletBundle({
+          location,
+          seed: { mnemonic: TEST_MNEMONIC },
+        })
+        expect(reopened.pool.getRecord(row.index)).toMatchObject({
+          status: 'spent',
+          lifecycle: {
+            spend: {
+              rawTx: exactRawTx,
+              txHash: expectedHash,
+              valueWei: '5000',
+            },
+          },
+        })
+        await reopened.close()
+      } finally {
+        rmSync(parent, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it.each(['protobuf', 'cbor'] as const)(
+    'replays the exact durable %s post after a lost response',
+    async writeFormat => {
+      const parent = mkdtempSync(join(tmpdir(), 'monad-topic-post-replay-'))
+      const location = join(parent, 'wallet')
+      let first: Awaited<ReturnType<typeof openMonadWalletBundle>> | undefined
+      let reopened:
+        | Awaited<ReturnType<typeof openMonadWalletBundle>>
+        | undefined
+      try {
+        first = await openMonadWalletBundle({
+          location,
+          seed: { mnemonic: TEST_MNEMONIC },
+          mode: 'create',
+        })
+        await fundPersistentPool(first.pool)
+        const provider = makeChainProvider()
+        const httpClient = makeMockHttpClient()
+        const handle = {
+          pool: first.pool,
+          leaseManager: first.leaseManager,
+          provider,
+          httpClient,
+          changePool: first.changePool,
+          stampPaymentJournal: first.stampPaymentJournal,
+          stampAttemptJournal: first.stampAttemptJournal,
+          topicOperationJournal: first.topicOperationJournal,
+          walletState: first,
+          relayBaseUrl: 'https://relay.example.com/',
+          topicWriteFormat: writeFormat,
+        }
+        let exactRequest: Uint8Array | undefined
+        mockedAxios.mockImplementation(async config => {
+          if (config.method === 'put') {
+            expect(first?.topicOperationJournal.getAll()).toHaveLength(1)
+            exactRequest = new Uint8Array(config.data as Buffer)
+            throw Object.assign(new Error('lost response'), {
+              isAxiosError: true,
+              response: undefined,
+            })
+          }
+          throw new Error('unexpected topic readback')
+        })
+        await expect(
+          new MonadTopicPostClient(handle).submitTopicPost({
+            topic: 'replay',
+            entries: ENTRIES,
+            direction: 'up',
+            burnAddress: BURN_ADDRESS,
+            voteWeightWei: 5_000n,
+            overrides: FEE_OVERRIDES,
+            timestampMs: 1_700_000_000_000,
+            abandonPoll: { maxAttempts: 0, intervalMs: 0 },
+          }),
+        ).rejects.toThrow(MonadTopicPostAbandonedError)
+        expect(first.topicOperationJournal.getAll()).toHaveLength(1)
+        expect(first.pool.getRecord(0)?.status).toBe('in-use')
+        const staged = first.pool.getRecord(0)!
+        const { spend: _spend, ...retainedLifecycle } = staged.lifecycle ?? {}
+        first.pool.applyPrevalidatedRecoveryRecords([
+          { ...staged, lifecycle: retainedLifecycle },
+        ])
+        await first.pool.flush()
+        expect(first.pool.getRecord(0)?.lifecycle?.spend).toBeUndefined()
+        await first.close()
+        first = undefined
+
+        reopened = await openMonadWalletBundle({
+          location,
+          seed: { mnemonic: TEST_MNEMONIC },
+        })
+        const replayed: Uint8Array[] = []
+        mockedAxios.mockImplementation(async config => {
+          expect(reopened?.pool.getRecord(0)?.lifecycle?.spend).toBeDefined()
+          const bytes = new Uint8Array(config.data as Buffer)
+          replayed.push(bytes)
+          return {
+            data:
+              writeFormat === 'cbor'
+                ? decodeCborSubmission(bytes).postFrame
+                : matchingStoredTopicPostBytes(decodeMonadTopicPost(bytes)),
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            config,
+          }
+        })
+        await new MonadTopicPostClient({
+          ...handle,
+          pool: reopened.pool,
+          leaseManager: reopened.leaseManager,
+          changePool: reopened.changePool,
+          stampPaymentJournal: reopened.stampPaymentJournal,
+          stampAttemptJournal: reopened.stampAttemptJournal,
+          topicOperationJournal: reopened.topicOperationJournal,
+          walletState: reopened,
+        }).resumePendingOperations()
+        expect(replayed).toHaveLength(1)
+        expect(replayed[0]).toEqual(exactRequest)
+        expect(reopened.topicOperationJournal.getAll()).toEqual([])
+        expect(reopened.pool.getRecord(0)?.status).toBe('spent')
+      } finally {
+        await first?.close().catch(() => undefined)
+        await reopened?.close().catch(() => undefined)
+        rmSync(parent, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it('retains durable authority when a valid 2xx post response is mismatched', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'monad-topic-post-mismatch-'))
+    const location = join(parent, 'wallet')
+    const bundle = await openMonadWalletBundle({
+      location,
+      seed: { mnemonic: TEST_MNEMONIC },
+      mode: 'create',
+    })
+    try {
+      await fundPersistentPool(bundle.pool)
+      const provider = makeChainProvider()
+      const httpClient = makeMockHttpClient()
+      mockedAxios.mockImplementationOnce(async config => {
+        const post = decodeMonadTopicPost(new Uint8Array(config.data as Buffer))
+        return {
+          data: storedTopicPostBytes(post),
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config,
+        }
+      })
+      await expect(
+        new MonadTopicPostClient({
+          pool: bundle.pool,
+          leaseManager: bundle.leaseManager,
+          provider,
+          httpClient,
+          changePool: bundle.changePool,
+          stampPaymentJournal: bundle.stampPaymentJournal,
+          stampAttemptJournal: bundle.stampAttemptJournal,
+          topicOperationJournal: bundle.topicOperationJournal,
+          walletState: bundle,
+          relayBaseUrl: 'https://relay.example.com/',
+        }).submitTopicPost({
+          topic: 'mismatch',
+          entries: ENTRIES,
+          direction: 'up',
+          burnAddress: BURN_ADDRESS,
+          voteWeightWei: 5_000n,
+          overrides: FEE_OVERRIDES,
+        }),
+      ).rejects.toThrow(MonadTopicPostAbandonedError)
+      expect(bundle.topicOperationJournal.getAll()).toHaveLength(1)
+      expect(bundle.pool.getRecord(0)?.status).toBe('in-use')
+    } finally {
+      await bundle.close()
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
   it('PUTs the assembled MonadTopicPost and releases the lease as confirmed on 2xx', async () => {
     const { client, pool } = makeClient()
 
@@ -275,19 +678,25 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
       entries: ENTRIES,
       timestampMs: 1_700_000_000_000,
     })
-    const expectedCommitment = computeTopicPostCommitment(expectedPayload)
+    const expectedPostFrame = encodeTopicPost({
+      network: 'monad-testnet',
+      topic: 'general',
+      body: expectedPayload,
+    })
+    const expectedIdentity = topicBurnCommitment(expectedPostFrame)
 
     mockedAxios.mockImplementationOnce(async config => {
       expect(config.method).toBe('put')
       expect(config.url).toBe('https://relay.example.com/message/monad/topics')
       expect(config.headers).toEqual({
-        'Content-Type': 'application/x-protobuf',
+        'Content-Type': 'application/cbor',
+        'Accept': 'application/cbor',
       })
-      const sentPost = decodeMonadTopicPost(
+      const sentPost = decodeCborSubmission(
         new Uint8Array(config.data as Buffer),
       )
       expect(sentPost.topic).toBe('general')
-      expect(sentPost.payloadHash).toEqual(expectedCommitment)
+      expect(sentPost.payloadHash).toEqual(expectedIdentity.hash)
       expect(sentPost.encryptedPayload).toEqual(expectedPayload)
 
       // The raw burn tx must be a validly-decodable, real signed transaction whose calldata
@@ -297,13 +706,13 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
       expect(calldataBytes.slice(0, 4)).toEqual(
         new Uint8Array([0x54, 0x50, 0x49, 0x43]),
       )
-      expect(calldataBytes[4]).toBe(0x01)
+      expect(calldataBytes[4]).toBe(0x02)
       expect(calldataBytes[5]).toBe(0x01) // up
-      expect(calldataBytes.slice(6)).toEqual(expectedCommitment)
+      expect(calldataBytes.slice(6)).toEqual(expectedIdentity.commitment)
       expect(parsed.value).toBe(5_000n)
 
       return {
-        data: storedTopicPostBytes(sentPost),
+        data: expectedPostFrame,
         status: 200,
         statusText: 'OK',
         headers: {},
@@ -321,12 +730,45 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
       timestampMs: 1_700_000_000_000,
     })
 
-    expect(result.stored.post?.topic).toBe('general')
+    expect(result.stored).toBeUndefined()
+    expect(result.postFrame).toEqual(expectedPostFrame)
     expect(result.payloadHashHex).toBe(
-      Buffer.from(expectedCommitment).toString('hex'),
+      Buffer.from(expectedIdentity.hash).toString('hex'),
     )
     // Ticket #34: a confirmed release retires the account as 'spent' -- never back to 'available'.
     expect(pool.getRecord(result.leaseIndex)?.status).toBe('spent')
+  })
+
+  it('keeps protobuf as the default write format until CBOR read views are frozen', async () => {
+    const { client } = makeClient({ omitTopicWriteFormat: true })
+    mockedAxios.mockImplementationOnce(async config => {
+      expect(config.headers).toEqual({
+        'Content-Type': 'application/x-protobuf',
+        'Accept': 'application/x-protobuf',
+      })
+      const sent = decodeMonadTopicPost(new Uint8Array(config.data as Buffer))
+      expect(sent.payloadHash).toEqual(getBytes(sha256(sent.encryptedPayload)))
+      expect(getBytes(Transaction.from(hexOf(sent.rawBurnTx)).data)[4]).toBe(
+        0x01,
+      )
+      return {
+        data: storedTopicPostBytes(sent),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+
+    const result = await client.submitTopicPost({
+      topic: 'general',
+      entries: ENTRIES,
+      direction: 'up',
+      burnAddress: BURN_ADDRESS,
+      voteWeightWei: 5_000n,
+      overrides: FEE_OVERRIDES,
+    })
+    expect(result.stored?.post?.topic).toBe('general')
   })
 
   it("leases exactly the requested funded account instead of the pool's next one (ticket #273)", async () => {
@@ -335,9 +777,8 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
     pool.setStatus(2, 'available')
     const { client } = makeClient({ pool })
     mockedAxios.mockImplementationOnce(async config => ({
-      data: storedTopicPostBytes(
-        decodeMonadTopicPost(new Uint8Array(config.data as Buffer)),
-      ),
+      data: decodeCborSubmission(new Uint8Array(config.data as Buffer))
+        .postFrame,
       status: 200,
       statusText: 'OK',
       headers: {},
@@ -378,32 +819,22 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
     expect(pool.records().filter(r => r.status === 'in-use')).toHaveLength(0)
   })
 
-  it('builds down-vote calldata for an initial down-vote post', async () => {
-    const { client } = makeClient()
-    mockedAxios.mockImplementationOnce(async config => {
-      const sentPost = decodeMonadTopicPost(
-        new Uint8Array(config.data as Buffer),
-      )
-      const parsed = Transaction.from(hexOf(sentPost.rawBurnTx))
-      const calldataBytes = getBytes(parsed.data)
-      expect(calldataBytes[5]).toBe(0x00) // down
-      return {
-        data: storedTopicPostBytes(sentPost),
-        status: 200,
-        statusText: 'OK',
-        headers: {},
-        config,
-      }
-    })
-
-    await client.submitTopicPost({
-      topic: 'general',
-      entries: ENTRIES,
-      direction: 'down',
-      burnAddress: BURN_ADDRESS,
-      voteWeightWei: 1_000n,
-      overrides: FEE_OVERRIDES,
-    })
+  it('rejects a down-vote initial post before leasing or sending', async () => {
+    const { client, pool } = makeClient()
+    await expect(
+      client.submitTopicPost({
+        topic: 'general',
+        entries: ENTRIES,
+        direction: 'down',
+        burnAddress: BURN_ADDRESS,
+        voteWeightWei: 1_000n,
+        overrides: FEE_OVERRIDES,
+      }),
+    ).rejects.toThrow(/initial vote must be up/)
+    expect(mockedAxios).not.toHaveBeenCalled()
+    expect(pool.records().every(record => record.status === 'available')).toBe(
+      true,
+    )
   })
 
   it('retires the sub-account and throws MonadTopicPostRejectedError on an HTTP error response', async () => {
@@ -431,32 +862,133 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
     expect(retired).toHaveLength(1)
   })
 
-  it('falls back to polling GET and confirms when a network failure is followed by a found post', async () => {
-    const { client, pool } = makeClient()
+  it('retires as stuck on a machine-readable post-broadcast unknown outcome', async () => {
+    const { client, pool } = makeClient({ omitTopicWriteFormat: true })
+    mockedAxios.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('Service Unavailable'), {
+        isAxiosError: true,
+        response: {
+          status: 503,
+          data: { error: 'topic_burn_outcome_unknown' },
+        },
+      })
+    })
 
-    let putCalls = 0
+    await expect(
+      client.submitTopicPost({
+        topic: 'general',
+        entries: ENTRIES,
+        direction: 'up',
+        burnAddress: BURN_ADDRESS,
+        voteWeightWei: 5_000n,
+        overrides: FEE_OVERRIDES,
+      }),
+    ).rejects.toThrow(MonadTopicPostAbandonedError)
+    expect(
+      pool.records().filter(record => record.status === 'retired'),
+    ).toHaveLength(1)
+  })
+
+  it('does not attribute a pre-existing CBOR frame from transaction A to a lost distinct transaction B', async () => {
+    const topicOperationJournal = new InMemoryTopicOperationJournal()
+    const { client, pool } = makeClient({ topicOperationJournal })
+    const transactionA = await new Wallet(`0x${'55'.repeat(32)}`).signTransaction(
+      {
+        to: BURN_ADDRESS,
+        value: 5_000n,
+        nonce: 0,
+        gasLimit: 60_000n,
+        gasPrice: 1n,
+        chainId: CHAIN_ID,
+      },
+    )
     let getCalls = 0
+    let submittedOperationB: ReturnType<typeof decodeCborSubmission> | undefined
     mockedAxios.mockImplementation(async config => {
       if (config.method === 'put') {
-        putCalls++
-        const networkErr = Object.assign(new Error('socket hang up'), {
+        submittedOperationB = decodeCborSubmission(
+          new Uint8Array(config.data as Buffer),
+        )
+        throw Object.assign(new Error('socket hang up'), {
           isAxiosError: true,
           response: undefined,
         })
-        throw networkErr
       }
-      // GET /message/monad/topics/:payload_hash
+      // The relay already has the same immutable frame F from transaction A. Returning F cannot
+      // attest that the distinct signed transaction B in the journal was ever accepted.
       getCalls++
-      expect(config.url).toContain('/message/monad/topics/')
-      const sentPost: MonadTopicPostProto = {
-        topic: 'general',
-        parentPostHash: new Uint8Array(0),
-        rawBurnTx: new Uint8Array([1]),
-        encryptedPayload: new Uint8Array([2]),
-        payloadHash: new Uint8Array(32).fill(0x9),
-      }
       return {
-        data: topicPostViewBytes(sentPost, 5_000),
+        data: submittedOperationB?.postFrame,
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+
+    await expect(
+      client.submitTopicPost({
+        topic: 'general',
+        entries: ENTRIES,
+        direction: 'up',
+        burnAddress: BURN_ADDRESS,
+        voteWeightWei: 5_000n,
+        overrides: FEE_OVERRIDES,
+        timestampMs: 1_700_000_000_000,
+        abandonPoll: { maxAttempts: 1, intervalMs: 0 },
+      }),
+    ).rejects.toThrow(MonadTopicPostAbandonedError)
+
+    expect(getCalls).toBe(0)
+    const [operationB] = topicOperationJournal.getAll()
+    expect(operationB).toMatchObject({ kind: 'post', writeFormat: 'cbor' })
+    expect(operationB.rawTx).not.toBe(transactionA)
+    expect(Transaction.from(operationB.rawTx).hash).not.toBe(
+      Transaction.from(transactionA).hash,
+    )
+    expect(decodeCborSubmission(Uint8Array.from(operationB.requestBytes)).rawBurnTx).toEqual(
+      getBytes(operationB.rawTx),
+    )
+    expect(pool.getRecord(operationB.leaseIndex)?.status).toBe('in-use')
+  })
+
+  it('rejects a CBOR post without coherent persistence before leasing, signing, or dispatch', async () => {
+    const { client, pool, httpClient } = makeClient({ withoutPersistence: true })
+
+    await expect(
+      client.submitTopicPost({
+        topic: 'general',
+        entries: ENTRIES,
+        direction: 'up',
+        burnAddress: BURN_ADDRESS,
+        voteWeightWei: 5_000n,
+        overrides: FEE_OVERRIDES,
+        abandonPoll: { maxAttempts: 1, intervalMs: 0 },
+      }),
+    ).rejects.toThrow(
+      'CBOR topic writes require one coherent walletState and topicOperationJournal',
+    )
+    expect(pool.records().every(record => record.status === 'available')).toBe(
+      true,
+    )
+    expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
+    expect(mockedAxios).not.toHaveBeenCalled()
+  })
+
+  it('preserves protobuf recovery through the protobuf post view', async () => {
+    const { client, pool } = makeClient({ omitTopicWriteFormat: true })
+    let sentPost: MonadTopicPostProto | undefined
+    mockedAxios.mockImplementation(async config => {
+      if (config.method === 'put') {
+        sentPost = decodeMonadTopicPost(new Uint8Array(config.data as Buffer))
+        throw Object.assign(new Error('socket hang up'), {
+          isAxiosError: true,
+          response: undefined,
+        })
+      }
+      expect(config.headers).toEqual({ Accept: 'application/x-protobuf' })
+      return {
+        data: topicPostViewBytes(sentPost!, 5_000),
         status: 200,
         statusText: 'OK',
         headers: {},
@@ -471,21 +1003,14 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
       burnAddress: BURN_ADDRESS,
       voteWeightWei: 5_000n,
       overrides: FEE_OVERRIDES,
-      abandonPoll: {
-        maxAttempts: 2,
-        intervalMs: 0,
-        sleep: async () => undefined,
-      },
+      abandonPoll: { maxAttempts: 1, intervalMs: 0 },
     })
-
-    expect(putCalls).toBe(1)
-    expect(getCalls).toBe(1)
-    expect(result.stored.post?.topic).toBe('general')
+    expect(result.stored?.post).toEqual(sentPost)
     expect(pool.getRecord(result.leaseIndex)?.status).toBe('spent')
   })
 
   it('retires as stuck and throws MonadTopicPostAbandonedError when the fallback poll never finds it', async () => {
-    const { client, pool } = makeClient()
+    const { client, pool } = makeClient({ omitTopicWriteFormat: true })
     mockedAxios.mockImplementation(async () => {
       const networkErr = Object.assign(new Error('timeout'), {
         isAxiosError: true,

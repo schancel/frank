@@ -18,8 +18,9 @@ not version-1 encryption-suite allocations (decision 356). A crypto-box envelope
 is not a frame. This codec marshals and unmarshals frames. A digest or
 ciphertext is a byte array passed into `@frank/nakamoto` or `@frank/crypto-box`.
 Nakamoto still owns the HD nodes, keys, and transactions that do the signing.
-Neither package parses CBOR. Callers do not write crypto-box registry ids into
-a version-1 encryption-suite field.
+Nakamoto does not parse CBOR. Crypto-box does not parse Frank/CashWeb CBOR; it
+privately parses only its fixed-schema envelope CBOR. Callers do not write
+crypto-box registry ids into a version-1 encryption-suite field.
 
 ## Scope
 

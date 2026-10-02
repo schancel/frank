@@ -32,8 +32,12 @@ jest.mock('src/stores/appearance', () => ({
 }))
 
 const mockFlushProfile = jest.fn(() => Promise.resolve())
-const mockSetRelayData = jest.fn()
-const mockProfile = { name: 'Alice' as string | undefined }
+const mockSetRelayData = jest.fn(
+  (relayData: { profile?: { name?: string } }) => {
+    mockProfile.name = relayData?.profile?.name
+  },
+)
+const mockProfile = { name: undefined as string | undefined }
 jest.mock('src/stores/my-profile', () => ({
   useProfileStore: () => ({
     profile: mockProfile,
@@ -159,7 +163,7 @@ describe('Setup finish lifecycle (#389)', () => {
     ;(setupFinishReloads as jest.Mock).mockReturnValue(false)
     routerPush.mockResolvedValue(undefined)
     mockFlushProfile.mockImplementation(() => Promise.resolve())
-    mockProfile.name = 'Alice'
+    mockProfile.name = undefined
     Object.defineProperty(window, 'Image', {
       configurable: true,
       value: class {
@@ -694,6 +698,7 @@ describe('Setup finish lifecycle (#389)', () => {
   })
 
   it('replace finish tears down by initializing the new seed in place', async () => {
+    mockProfile.name = 'Alice'
     useWalletStore().seedPhrase = STORED
     useWalletStore().seedConfirmedAt = 5
     const { wallet, vm } = await mountFinish()

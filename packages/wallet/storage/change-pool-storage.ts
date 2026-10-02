@@ -37,6 +37,8 @@ export interface ChangeAccountRecord {
   sweptValueWei: string
   /** Hash of the sweep transaction that funded this change output. */
   txHash: string
+  /** Canonical signed transaction bytes. The hash alone is insufficient recovery authority. */
+  rawTx: string
   /** `Date.now()` at the time this record was persisted (informational only). */
   createdAt: number
 }
@@ -55,6 +57,15 @@ export interface ChangeSweepIntent {
   createdAt: number
 }
 
+/** Chain-authenticated seed-restore evidence. It deliberately contains no fabricated funding
+ * transaction; the derived key remains available for a later user-directed sweep. */
+export interface RecoveredChangeAccount {
+  index: number
+  address: string
+  nonce: number
+  balanceWei: string
+}
+
 /**
  * Persistence boundary for `MonadChangePool`'s state: the "next unused change index" pointer
  * (ticket #36 acceptance criterion 2) plus the audit trail of change outputs actually swept into
@@ -70,11 +81,20 @@ export interface ChangePoolStore {
   setNextIndex(index: number): void
   putRecord(record: ChangeAccountRecord): void
   getRecord(index: number): ChangeAccountRecord | undefined
+  getBySourceBurnIndex(index: number): ChangeAccountRecord | undefined
   /** Every persisted change record, sorted by index. */
   getAll(): ChangeAccountRecord[]
+  putRecoveredAccounts(records: readonly RecoveredChangeAccount[]): void
+  getRecoveredAccounts(): RecoveredChangeAccount[]
   getPendingIntent(): ChangeSweepIntent | undefined
   setPendingIntent(intent: ChangeSweepIntent): void
   clearPendingIntent(): void
+  /** Atomically publishes a confirmed record, advances the high-water mark, updates its source
+   * index, and removes the matching pending intent. Idempotent for the exact same record. */
+  finalizePendingIntent(
+    intent: ChangeSweepIntent,
+    record: ChangeAccountRecord,
+  ): void
   /** Wait until every preceding mutation is durable. */
   flush(): Promise<void>
   clear(): Promise<void>
@@ -91,7 +111,9 @@ function assertValidIndex(index: number, label: string): void {
 export class InMemoryChangePoolStore implements ChangePoolStore {
   private nextIndex = 0
   private recordsByIndex = new Map<number, ChangeAccountRecord>()
+  private recordsBySourceBurnIndex = new Map<number, ChangeAccountRecord>()
   private pendingIntent?: ChangeSweepIntent
+  private recoveredAccountsByIndex = new Map<number, RecoveredChangeAccount>()
 
   getNextIndex(): number {
     return this.nextIndex
@@ -103,17 +125,45 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
   }
 
   putRecord(record: ChangeAccountRecord): void {
+    const priorSource = this.recordsBySourceBurnIndex.get(
+      record.sourceBurnIndex,
+    )
+    if (priorSource !== undefined && priorSource.index !== record.index) {
+      throw new Error(
+        `Source sub-account ${record.sourceBurnIndex} already has change index ${priorSource.index}`,
+      )
+    }
     this.recordsByIndex.set(record.index, { ...record })
+    this.recordsBySourceBurnIndex.set(record.sourceBurnIndex, { ...record })
   }
 
   getRecord(index: number): ChangeAccountRecord | undefined {
-    return this.recordsByIndex.get(index)
+    const record = this.recordsByIndex.get(index)
+    return record === undefined ? undefined : { ...record }
+  }
+
+  getBySourceBurnIndex(index: number): ChangeAccountRecord | undefined {
+    const record = this.recordsBySourceBurnIndex.get(index)
+    return record === undefined ? undefined : { ...record }
   }
 
   getAll(): ChangeAccountRecord[] {
-    return Array.from(this.recordsByIndex.values()).sort(
-      (a, b) => a.index - b.index,
-    )
+    return Array.from(this.recordsByIndex.values())
+      .sort((a, b) => a.index - b.index)
+      .map(record => ({ ...record }))
+  }
+
+  putRecoveredAccounts(records: readonly RecoveredChangeAccount[]): void {
+    for (const record of records) {
+      this.recoveredAccountsByIndex.set(record.index, { ...record })
+      this.nextIndex = Math.max(this.nextIndex, record.index + 1)
+    }
+  }
+
+  getRecoveredAccounts(): RecoveredChangeAccount[] {
+    return Array.from(this.recoveredAccountsByIndex.values())
+      .sort((left, right) => left.index - right.index)
+      .map(record => ({ ...record }))
   }
 
   getPendingIntent(): ChangeSweepIntent | undefined {
@@ -123,10 +173,24 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
   }
 
   setPendingIntent(intent: ChangeSweepIntent): void {
+    if (this.pendingIntent !== undefined) {
+      if (JSON.stringify(this.pendingIntent) === JSON.stringify(intent)) return
+      throw new Error('Cannot replace an active change sweep intent')
+    }
     this.pendingIntent = { ...intent }
   }
 
   clearPendingIntent(): void {
+    this.pendingIntent = undefined
+  }
+
+  finalizePendingIntent(
+    intent: ChangeSweepIntent,
+    record: ChangeAccountRecord,
+  ): void {
+    assertFinalizedIntent(this, intent, record)
+    this.putRecord(record)
+    this.nextIndex = Math.max(this.nextIndex, intent.index + 1)
     this.pendingIntent = undefined
   }
 
@@ -135,6 +199,55 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
   async clear(): Promise<void> {
     this.nextIndex = 0
     this.recordsByIndex.clear()
+    this.recordsBySourceBurnIndex.clear()
     this.pendingIntent = undefined
+    this.recoveredAccountsByIndex.clear()
+  }
+}
+
+export function assertFinalizedIntent(
+  store: Pick<
+    ChangePoolStore,
+    'getNextIndex' | 'getRecord' | 'getBySourceBurnIndex' | 'getPendingIntent'
+  >,
+  intent: ChangeSweepIntent,
+  record: ChangeAccountRecord,
+): void {
+  const pending = store.getPendingIntent()
+  const existing = store.getRecord(intent.index)
+  const bySource = store.getBySourceBurnIndex(intent.sourceBurnIndex)
+  const expected: ChangeAccountRecord = {
+    index: intent.index,
+    address: intent.address,
+    sourceBurnIndex: intent.sourceBurnIndex,
+    sourceBurnAddress: intent.sourceBurnAddress,
+    sweptValueWei: intent.sweptValueWei,
+    txHash: intent.txHash,
+    rawTx: intent.rawTx,
+    createdAt: intent.createdAt,
+  }
+  if (JSON.stringify(record) !== JSON.stringify(expected)) {
+    throw new Error('Change finalization record does not match pending intent')
+  }
+  const alreadyFinalized =
+    existing !== undefined &&
+    bySource !== undefined &&
+    JSON.stringify(existing) === JSON.stringify(record) &&
+    JSON.stringify(bySource) === JSON.stringify(record)
+  if (!alreadyFinalized) {
+    if (
+      pending === undefined ||
+      JSON.stringify(pending) !== JSON.stringify(intent)
+    ) {
+      throw new Error('Change finalization requires the exact pending intent')
+    }
+    if (intent.index !== store.getNextIndex()) {
+      throw new Error('Pending change index must equal the next unused index')
+    }
+    if (existing !== undefined || bySource !== undefined) {
+      throw new Error(
+        'Pending change destination or source is already allocated',
+      )
+    }
   }
 }

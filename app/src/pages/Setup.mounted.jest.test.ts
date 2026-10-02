@@ -215,6 +215,7 @@ describe('Setup page mounted (#267)', () => {
   })
 
   beforeEach(() => {
+    mockProfileName = undefined
     setActivePinia(createPinia())
     jest.clearAllMocks()
     Object.defineProperty(window, 'Image', {
@@ -578,10 +579,35 @@ describe('Setup page mounted (#267)', () => {
       return { ...ctx, vm }
     }
 
-    async function resumeImportContext() {
+    async function resumeImportContext(
+      options: { locale?: 'en-us' | 'fr-fr' } = {},
+    ) {
       setActivePinia(createPinia())
       useWalletStore().seedPhrase = STORED
+      const catalogue = options.locale === 'fr-fr' ? frFr : undefined
       const translate: Translate = (key, params) => {
+        if (catalogue) {
+          const parts = key.split('.')
+          let current: unknown = catalogue
+          for (const part of parts) {
+            if (current && typeof current === 'object' && part in current) {
+              current = (current as Record<string, unknown>)[part]
+            } else {
+              current = undefined
+              break
+            }
+          }
+          if (typeof current === 'string') {
+            if (params) {
+              let res = current
+              for (const [k, v] of Object.entries(params)) {
+                res = res.replaceAll(`{${k}}`, String(v))
+              }
+              return res
+            }
+            return current
+          }
+        }
         if (key === 'replaceGuard.word') return 'REPLACE'
         if (key === 'replaceGuard.typeLabel') {
           return `Type ${params?.word ?? ''} to continue`
@@ -695,6 +721,9 @@ describe('Setup page mounted (#267)', () => {
           .find('[aria-label="accountStep.refreshRecoveryPhrase"]')
           .exists(),
       ).toBe(false)
+      expect(
+        wrapper.find('[aria-label="accountStep.copyRecoveryPhrase"]').exists(),
+      ).toBe(true)
       expect(setSeed).not.toHaveBeenCalled()
       expect(commitValidatedSetupSeed).not.toHaveBeenCalled()
       expect(wallet.seedPhrase).toBe(STORED)
@@ -744,11 +773,65 @@ describe('Setup page mounted (#267)', () => {
 
       await importBox.setValue(OTHER)
       await nextTick()
+
+      expect(commitValidatedSetupSeed).not.toHaveBeenCalled()
+      expect(setSeed).not.toHaveBeenCalled()
+      expect(mockSetRelayData).not.toHaveBeenCalled()
+      expect(mockFlushProfile).not.toHaveBeenCalled()
+      expect(wallet.flushPersistence).not.toHaveBeenCalled()
+      expect(wallet.seedPhrase).toBe(STORED)
+      expect(wallet.seedConfirmedAt).toBeNull()
+
       await vm.next()
 
       expect(commitValidatedSetupSeed).toHaveBeenCalledTimes(1)
       expect(setSeed).toHaveBeenCalledTimes(1)
+      expect(mockSetRelayData).toHaveBeenCalledTimes(1)
+      expect(mockFlushProfile).toHaveBeenCalledTimes(1)
+      expect(wallet.flushPersistence).toHaveBeenCalledTimes(1)
       expect(wallet.seedPhrase).toBe(OTHER)
+      expect(wallet.seedConfirmedAt).toEqual(expect.any(Number))
+    })
+
+    it('requires the localized confirmation token in French (REPLACE rejected, REMPLACER unlocks import) (#479)', async () => {
+      const { wrapper } = await resumeImportContext({ locale: 'fr-fr' })
+
+      const secondary = wrapper.get('[data-test="import-different-phrase"]')
+      await secondary.trigger('click')
+      await nextTick()
+
+      const input = wrapper.get('[data-test="import-different-input"]')
+      const form = wrapper.get('[data-test="import-different-form"]')
+      const status = wrapper.get('[role="status"]')
+      const importBox = wrapper.get(
+        `textarea[aria-label="${frFr.profile.seedEntry}"]`,
+      )
+
+      expect(importBox.attributes('readonly')).toBeDefined()
+
+      // In French, typing the English token "REPLACE" is rejected
+      await input.setValue('REPLACE')
+      await form.trigger('submit')
+      await nextTick()
+
+      expect(status.text()).toBe(frFr.replaceGuard.mismatch)
+      expect(importBox.attributes('readonly')).toBeDefined()
+
+      // Whitespace and case variants of English token are also rejected
+      await input.setValue('  replace  ')
+      await form.trigger('submit')
+      await nextTick()
+
+      expect(status.text()).toBe(frFr.replaceGuard.mismatch)
+      expect(importBox.attributes('readonly')).toBeDefined()
+
+      // Typing the French token "REMPLACER" unlocks the editable Import field
+      await input.setValue('  REMPLACER ')
+      await form.trigger('submit')
+      await nextTick()
+
+      expect(importBox.attributes('readonly')).toBeUndefined()
+      expect((importBox.element as HTMLTextAreaElement).value).toBe('')
     })
 
     it('describes the acknowledgement field with the destructive-loss warning', async () => {
@@ -1027,6 +1110,7 @@ describe('Setup page mounted (#267)', () => {
       ['resume (seed, no name)', undefined, STORED, null, false],
       ['completed, unconfirmed', 'Alice', STORED, null, true],
       ['confirmed', 'Alice', STORED, 5, true],
+      ['name without seed (profile only, #308)', 'Alice', null, null, true],
     ])('guard for %s: %s', async (_l, name, seed, at, expected) => {
       mockProfileName = name
       setActivePinia(createPinia())
@@ -1036,6 +1120,61 @@ describe('Setup page mounted (#267)', () => {
       const { wrapper } = await mountSetup()
       expect((wrapper.vm as unknown as GuardVm).guardActive).toBe(expected)
       expect(wrapper.findComponent(ReplaceAccountGuard).exists()).toBe(expected)
+    })
+
+    it('a name-only profile cannot be overwritten without acknowledgement (#308)', async () => {
+      mockProfileName = 'Alice'
+      setActivePinia(createPinia())
+      const w = useWalletStore()
+      w.seedPhrase = null
+      const ctx = await mountSetup()
+      const vm = ctx.wrapper.vm as unknown as GuardVm
+      vm.finishSetup = jest.fn(() => Promise.resolve())
+      vm.avatar = 'data:avatar'
+
+      vm.step = 2
+      vm.accountData.name = 'Bob'
+      vm.accountData.nameRequired = true
+      ;(vm.accountData as { valid?: boolean }).valid = true
+      await vm.next()
+      await nextTick()
+      vm.onSeedConfirmed()
+      await expect(vm.next()).rejects.toThrow()
+      expect(ctx.setSeed).not.toHaveBeenCalled()
+      expect(mockSetRelayData).not.toHaveBeenCalled()
+      expect(w.seedPhrase).toBeNull()
+    })
+
+    it('acknowledging replace on a name-only profile unlocks setup and overwrites name (#308)', async () => {
+      mockProfileName = 'Alice'
+      setActivePinia(createPinia())
+      const w = useWalletStore()
+      w.seedPhrase = null
+      const ctx = await mountSetup()
+      const vm = ctx.wrapper.vm as unknown as GuardVm
+      vm.finishSetup = jest.fn(() => Promise.resolve())
+      vm.avatar = 'data:avatar'
+
+      vm.acknowledgeReplace()
+      await nextTick()
+      expect(vm.guardActive).toBe(false)
+      expect(vm.accountData.seed.split(' ')).toHaveLength(12)
+
+      vm.step = 2
+      vm.accountData.name = 'Bob'
+      vm.accountData.nameRequired = true
+      ;(vm.accountData as { valid?: boolean }).valid = true
+      await vm.next()
+      await nextTick()
+      vm.onSeedConfirmed()
+      await vm.next()
+
+      expect(ctx.setSeed).toHaveBeenCalled()
+      expect(mockSetRelayData).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profile: expect.objectContaining({ name: 'Bob' }),
+        }),
+      )
     })
 
     it('an existing account cannot be replaced by an import without acknowledgement', async () => {
@@ -1103,6 +1242,183 @@ describe('Setup page mounted (#267)', () => {
       expect(mockRouterPush).toHaveBeenCalledWith('/')
       expect(setSeed).not.toHaveBeenCalled()
       expect(wallet.seedPhrase).toBe(STORED)
+    })
+  })
+
+  describe('multi-tab setup race condition (#308)', () => {
+    it('Tab A opened on fresh device is blocked from committing if Tab B creates an account', async () => {
+      let persistedSeed: string | null = null
+      let persistedName: string | undefined = undefined
+      let persistedConfirmedAt: number | null = null
+
+      mockProfileName = undefined
+      setActivePinia(createPinia())
+      const walletA = useWalletStore()
+      walletA.seedPhrase = null
+      walletA.seedConfirmedAt = null
+
+      const { wrapper: wrapperA, setSeed: setSeedA } = await mountSetup()
+      const vmA = wrapperA.vm as unknown as GuardVm & {
+        step: number
+        next: () => Promise<void>
+        onSeedConfirmed: () => void
+        rehydrateStores: () => Promise<void>
+        accountData: {
+          seed: string
+          name: string
+          nameRequired: boolean
+          valid: boolean
+        }
+      }
+
+      vmA.rehydrateStores = jest.fn(async () => {
+        walletA.seedPhrase = persistedSeed
+        walletA.seedConfirmedAt = persistedConfirmedAt
+        mockProfileName = persistedName
+      })
+
+      expect(vmA.guardActive).toBe(false)
+
+      vmA.step = 2
+      vmA.accountData.name = 'TabA User'
+      vmA.accountData.nameRequired = true
+      ;(vmA.accountData as { valid?: boolean }).valid = true
+      await vmA.next()
+      await nextTick()
+      expect(vmA.step).toBe(3)
+      vmA.onSeedConfirmed()
+
+      // Tab B completes setup in the background
+      persistedSeed =
+        'test test test test test test test test test test test junk'
+      persistedName = 'TabB User'
+      persistedConfirmedAt = 12345
+
+      // Tab A attempts to commit
+      await expect(vmA.next()).rejects.toThrow('setup.replaceNotAcknowledged')
+
+      expect(setSeedA).not.toHaveBeenCalled()
+      expect(mockSetRelayData).not.toHaveBeenCalled()
+      expect(vmA.guardActive).toBe(true)
+    })
+
+    it('Tab A opened in resume mode is blocked if Tab B changes the stored seed', async () => {
+      let persistedSeed = STORED
+      let persistedName: string | undefined = undefined
+
+      mockProfileName = undefined
+      setActivePinia(createPinia())
+      const walletA = useWalletStore()
+      walletA.seedPhrase = persistedSeed
+      walletA.seedConfirmedAt = null
+
+      const { wrapper: wrapperA, setSeed: setSeedA } = await mountSetup()
+      const vmA = wrapperA.vm as unknown as GuardVm & {
+        step: number
+        next: () => Promise<void>
+        onSeedConfirmed: () => void
+        rehydrateStores: () => Promise<void>
+        accountData: {
+          seed: string
+          name: string
+          nameRequired: boolean
+          valid: boolean
+        }
+      }
+
+      vmA.rehydrateStores = jest.fn(async () => {
+        walletA.seedPhrase = persistedSeed
+        mockProfileName = persistedName
+      })
+
+      expect(vmA.guardActive).toBe(false)
+
+      // Tab B in background replaces or completes with OTHER seed
+      persistedSeed = OTHER
+      persistedName = 'TabB User'
+
+      vmA.step = 2
+      vmA.accountData.name = 'TabA User'
+      vmA.accountData.nameRequired = true
+      ;(vmA.accountData as { valid?: boolean }).valid = true
+      await vmA.next()
+      await nextTick()
+      vmA.onSeedConfirmed()
+
+      await expect(vmA.next()).rejects.toThrow()
+      expect(setSeedA).not.toHaveBeenCalled()
+      expect(mockSetRelayData).not.toHaveBeenCalled()
+      expect(vmA.guardActive).toBe(true)
+    })
+  })
+
+  describe('real-Quasar guard-then-stepper integration (#308)', () => {
+    it('mounts real ReplaceAccountGuard with real QStepper and transitions after typing confirmation word', async () => {
+      mockProfileName = 'Alice'
+      setActivePinia(createPinia())
+      const wallet = useWalletStore()
+      wallet.seedPhrase = STORED
+      wallet.seedConfirmedAt = null
+
+      const translate: Translate = (key, params) => {
+        if (key === 'replaceGuard.word') return 'REPLACE'
+        if (key === 'replaceGuard.typeLabel') {
+          return `Type ${params?.word} to continue`
+        }
+        return key
+      }
+
+      const wrapper = mount(Setup, {
+        attachTo: document.body,
+        global: {
+          components: {
+            QStep,
+            QStepper,
+            QStepperNavigation,
+            ReplaceAccountGuard,
+          },
+          plugins: [quasarStepperTestPlugin],
+          stubs: {
+            QPageContainer: SlotStub,
+            QPage: SlotStub,
+            QHeader: SlotStub,
+            QToolbar: SlotStub,
+            QToolbarTitle: SlotStub,
+            QBanner: true,
+            QBtn: QBtnStub,
+            QInput: QInputStub,
+            QSpace: true,
+            EulaStep: true,
+            DepositStep: true,
+            SeedConfirmStep: true,
+          },
+          mocks: {
+            $t: translate,
+            $router: { push: mockRouterPush },
+          },
+        },
+      })
+      attachedResumePages.push(wrapper)
+      await nextTick()
+
+      // Replace guard is visible initially; QStepper is not rendered
+      expect(wrapper.find('[data-test="replace-guard"]').exists()).toBe(true)
+      expect(wrapper.findComponent(QStepper).exists()).toBe(false)
+
+      // User opens the replace form in ReplaceAccountGuard
+      await wrapper.get('[data-test="replace-toggle"]').trigger('click')
+      await nextTick()
+      expect(wrapper.find('[data-test="replace-form"]').exists()).toBe(true)
+
+      // User types the confirmation word and submits
+      await wrapper.get('input').setValue('REPLACE')
+      await wrapper.get('[data-test="replace-form"]').trigger('submit')
+      await nextTick()
+
+      // Guard is gone, real QStepper is rendered!
+      expect(wrapper.find('[data-test="replace-guard"]').exists()).toBe(false)
+      expect(wrapper.findComponent(QStepper).exists()).toBe(true)
+      expect((wrapper.vm as unknown as { step: number }).step).toBe(1)
     })
   })
 

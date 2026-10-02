@@ -11,6 +11,20 @@ const balance = {
   hasError: ref(false),
 }
 
+const mockWalletStore = {
+  seedPhrase:
+    'apple banana cherry dinosaur elephant fox grape hat ice joke kite lemon' as
+      | string
+      | null,
+  seedConfirmedAt: 123456789 as number | null,
+}
+const mockProfileStore = {
+  profile: {
+    name: 'Alice',
+  },
+}
+const mockRefreshDiscoveredTopics = jest.fn()
+
 jest.mock('vue-router', () => ({
   useRoute: () => mockRoute,
   useRouter: () => ({ push: jest.fn() }),
@@ -18,8 +32,17 @@ jest.mock('vue-router', () => ({
 jest.mock('src/stores/chats', () => ({
   useChatStore: () => ({ totalUnread: 0, getSortedChatOrder: [] }),
 }))
+jest.mock('src/stores/wallet', () => ({
+  useWalletStore: () => mockWalletStore,
+}))
+jest.mock('src/stores/my-profile', () => ({
+  useProfileStore: () => mockProfileStore,
+}))
 jest.mock('src/stores/topics', () => ({
-  useTopicStore: () => ({ topics: {}, refreshDiscoveredTopics: jest.fn() }),
+  useTopicStore: () => ({
+    topics: {},
+    refreshDiscoveredTopics: mockRefreshDiscoveredTopics,
+  }),
 }))
 jest.mock('src/stores/forum', () => ({
   useForumStore: () => ({ selectedTopic: '' }),
@@ -161,5 +184,29 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     balance.hasError.value = false
     await nextTick()
     expect(value().text()).toBe('5 MON')
+  })
+
+  describe('topic discovery privacy (#545)', () => {
+    beforeEach(() => {
+      mockRefreshDiscoveredTopics.mockClear()
+    })
+
+    it('defers topic discovery when account setup is not complete', () => {
+      mockWalletStore.seedPhrase = null
+      mockProfileStore.profile.name = ''
+
+      mountDrawer(false, false)
+
+      expect(mockRefreshDiscoveredTopics).not.toHaveBeenCalled()
+    })
+
+    it('triggers topic discovery when account setup is complete', () => {
+      mockWalletStore.seedPhrase = 'word '.repeat(12).trim()
+      mockProfileStore.profile.name = 'Alice'
+
+      mountDrawer(true, true)
+
+      expect(mockRefreshDiscoveredTopics).toHaveBeenCalledTimes(1)
+    })
   })
 })

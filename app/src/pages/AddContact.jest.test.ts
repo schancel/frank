@@ -243,6 +243,48 @@ describe('AddContact latest lookup', () => {
     ).toBe(true)
   })
 
+  it('exercises an already-canonical address input and validates dealer eligibility (#434)', async () => {
+    chain.fetchProfile.mockResolvedValue({
+      ...profile(ADDRESS_A, 'Blackjack Dealer'),
+      bot: true,
+    })
+
+    await typeAndFire(wrapper, `  ${ADDRESS_A}  `)
+
+    expect(chain.parseAddress).toHaveBeenCalledWith(ADDRESS_A)
+    expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
+    expect(chain.fetchProfile).toHaveBeenCalledWith(parsedAddresses[ADDRESS_A])
+    expect(status(wrapper)).toContain('Blackjack Dealer')
+    expect(addButton(wrapper).attributes('disabled')).toBeUndefined()
+
+    await addButton(wrapper).trigger('click')
+
+    expect(mockAddContactToStore).toHaveBeenCalledTimes(1)
+    expect(mockAddContactToStore).toHaveBeenCalledWith({
+      address: ADDRESS_A,
+      contact: {
+        profile: expect.objectContaining({
+          name: 'Blackjack Dealer',
+          signedName: 'Blackjack Dealer',
+        }),
+      },
+    })
+    const storedProfile = mockAddContactToStore.mock.calls[0][0].contact.profile
+    expect(storedProfile.signedName).toBe('Blackjack Dealer')
+    expect(
+      peerOffersDealerTable(storedProfile, ADDRESS_A, [
+        { address: ADDRESS_A, name: 'Blackjack Dealer' },
+      ]),
+    ).toBe(true)
+    expect(
+      peerOffersDealerTable(storedProfile, ADDRESS_B, [
+        { address: ADDRESS_B, name: 'Blackjack Dealer' },
+      ]),
+    ).toBe(false)
+    expect(mockOpenChat).toHaveBeenCalledTimes(1)
+    expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+  })
+
   it.each([
     ['blank', ''],
     ['missing', undefined],
@@ -384,94 +426,28 @@ describe('AddContact latest lookup', () => {
     })
   })
 
-  describe('own address (#276)', () => {
-    const ownMessage = translate('newContactDialog.ownAddress')
-    const ownFr = frFR.newContactDialog.ownAddress
-
+  describe('own address (#420)', () => {
     it.each(['OWN', 'own', '  own  '])(
-      'blocks Add and explains for the own-address spelling %j',
+      'accepts the own address through the ordinary profile path for spelling %j',
       async spelling => {
         chain.fetchProfile.mockResolvedValue(profile(ADDRESS_OWN, 'Alice'))
 
         await typeAndFire(wrapper, spelling)
 
-        expect(addButton(wrapper).attributes('disabled')).toBeDefined()
-        expect(status(wrapper)).toBe(ownMessage)
-        expect(wrapper.text()).toContain(ownMessage)
+        expect(addButton(wrapper).attributes('disabled')).toBeUndefined()
+        expect(status(wrapper)).toContain('Alice')
         expect(isBusy(wrapper)).toBe('false')
-        // Own address is never looked up.
-        expect(chain.fetchProfile).not.toHaveBeenCalled()
-        await wrapper.find('input').trigger('keydown.enter')
+        expect(chain.fetchProfile).toHaveBeenCalledWith(parsedAddresses.own)
         await addButton(wrapper).trigger('click')
-        expect(mockAddContactToStore).not.toHaveBeenCalled()
-        expect(mockOpenChat).not.toHaveBeenCalled()
+        expect(mockAddContactToStore).toHaveBeenCalledWith({
+          address: ADDRESS_OWN,
+          contact: expect.objectContaining({
+            profile: expect.objectContaining({ name: 'Alice' }),
+          }),
+        })
+        expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_OWN)
       },
     )
-
-    it('has the message in both locales', () => {
-      expect(ownMessage).not.toBe('newContactDialog.ownAddress')
-      expect(ownFr).toBeTruthy()
-      expect(ownFr).not.toBe(ownMessage)
-    })
-
-    it("leaves someone else's address unaffected", async () => {
-      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_B, 'Bob'))
-
-      await typeAndFire(wrapper, 'b')
-
-      expect(addButton(wrapper).attributes('disabled')).toBeUndefined()
-      expect(status(wrapper)).toContain('Bob')
-      expect(wrapper.text()).not.toContain(ownMessage)
-    })
-
-    it('clears the message when the address changes', async () => {
-      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_B, 'Bob'))
-      await typeAndFire(wrapper, 'own')
-      expect(wrapper.text()).toContain(ownMessage)
-
-      await typeAndFire(wrapper, 'b')
-      expect(wrapper.text()).not.toContain(ownMessage)
-      expect(status(wrapper)).toContain('Bob')
-
-      await typeAndFire(wrapper, 'own')
-      await type(wrapper, '')
-      expect(wrapper.text()).not.toContain(ownMessage)
-    })
-
-    it('never enables Add for own after a rapid retype between own and another', async () => {
-      const lookupB = deferred<ProfileInfo | undefined>()
-      const ownOwner = deferred<string | null>()
-      chain.fetchProfile.mockImplementation(() => lookupB.promise)
-      // The own-address lookup is slow: B is typed, then own, and B resolves last.
-      mockOwnAddress.mockImplementation(() => ownOwner.promise)
-
-      await typeAndFire(wrapper, 'b')
-      await typeAndFire(wrapper, 'own')
-      ownOwner.resolve(ADDRESS_OWN)
-      await settle()
-      lookupB.resolve(profile(ADDRESS_B, 'Bob'))
-      await settle()
-
-      expect(wrapper.text()).toContain(ownMessage)
-      expect(addButton(wrapper).attributes('disabled')).toBeDefined()
-    })
-
-    it('does not let a stale own-address verdict override a newer address', async () => {
-      const ownOwner = deferred<string | null>()
-      mockOwnAddress
-        .mockImplementationOnce(() => ownOwner.promise)
-        .mockResolvedValue(ADDRESS_OWN)
-      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_B, 'Bob'))
-
-      await typeAndFire(wrapper, 'own')
-      await typeAndFire(wrapper, 'b')
-      ownOwner.resolve(ADDRESS_OWN)
-      await settle()
-
-      expect(wrapper.text()).not.toContain(ownMessage)
-      expect(status(wrapper)).toContain('Bob')
-      expect(addButton(wrapper).attributes('disabled')).toBeUndefined()
-    })
   })
 
   it('keeps B when B resolves before an older A lookup', async () => {

@@ -218,6 +218,9 @@ import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
 import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
+import { useWalletStore } from 'src/stores/wallet'
+import { useProfileStore } from 'src/stores/my-profile'
+import { isSetupComplete } from 'src/utils/account-state'
 
 const compactCutoff = 325
 
@@ -243,6 +246,7 @@ export default defineComponent({
     )
     function openForumTab() {
       markRailNavigation()
+      maybeRefreshTopics()
       return router.push('/forum')
     }
     function openActiveOrRecentChat() {
@@ -261,6 +265,22 @@ export default defineComponent({
     // near-identical `setTopic` for the precedent this mirrors).
     const topicStore = useTopicStore()
     const forum = useForumStore()
+    const walletStore = useWalletStore()
+    const profileStore = useProfileStore()
+
+    function maybeRefreshTopics() {
+      if (
+        !isSetupComplete({
+          seedPhrase: walletStore.seedPhrase,
+          name: profileStore.profile.name,
+          seedConfirmedAt: walletStore.seedConfirmedAt,
+        })
+      ) {
+        return
+      }
+      topicStore.refreshDiscoveredTopics()
+    }
+
     const discoveredTopicNames = computed(() =>
       Object.keys(topicStore.topics).sort(),
     )
@@ -270,8 +290,12 @@ export default defineComponent({
       if (!route.path.startsWith('/forum')) {
         await router.push('/forum')
       }
-      const wallet = await useActiveWallet()
-      await forum.refreshMessages({ wallet, topic: name })
+      try {
+        const wallet = await useActiveWallet()
+        await forum.refreshMessages({ wallet, topic: name })
+      } catch (error) {
+        // Handled: forumStore records outageStatus; no unhandled browser exception
+      }
     }
 
     const { formattedBalance, loaded, hasError } = useBalance()
@@ -283,11 +307,23 @@ export default defineComponent({
     onMounted(() => {
       // Fire-and-forget, same convention as `ForumLayout.vue`'s own identical call --
       // `refreshDiscoveredTopics` already fails soft and never throws (`stores/topics.ts`).
-      // Called here too (not just there) so this list is populated even if the user never opens
-      // the Forum page itself first -- the whole point is to make forums discoverable *before*
-      // you already know one exists.
-      topicStore.refreshDiscoveredTopics()
+      // Defers discovery until account setup is complete to preserve privacy on initial launch (#545).
+      maybeRefreshTopics()
     })
+
+    watch(
+      () =>
+        isSetupComplete({
+          seedPhrase: walletStore.seedPhrase,
+          name: profileStore.profile.name,
+          seedConfirmedAt: walletStore.seedConfirmedAt,
+        }),
+      complete => {
+        if (complete) {
+          maybeRefreshTopics()
+        }
+      },
+    )
 
     // Drives the left rail's active-tab highlight (`q-tabs v-model="tab"`). A plain, freely
     // settable ref -- NOT a computed getter/setter (an earlier version of this fix tried that,
@@ -302,6 +338,14 @@ export default defineComponent({
     // real session).
     const tab = ref<'contacts' | 'wallet' | 'settings' | 'forum'>('contacts')
     watch(
+      () => tab.value,
+      newTab => {
+        if (newTab === 'forum') {
+          maybeRefreshTopics()
+        }
+      },
+    )
+    watch(
       () => route.path,
       path => {
         // `/new-post` (not `/forum/new-post`) is intentionally a top-level path -- see
@@ -312,6 +356,7 @@ export default defineComponent({
         // highlight back on its own rail tab.
         if (path.startsWith('/forum') || path.startsWith('/new-post')) {
           tab.value = 'forum'
+          maybeRefreshTopics()
         } else if (path.startsWith('/wallet')) {
           tab.value = 'wallet'
         }

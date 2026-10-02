@@ -81,9 +81,11 @@ import { copyToClipboard } from 'quasar'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
+import { useTranslate } from 'src/composables/useTranslate'
 
 export default defineComponent({
   setup() {
+    const $t = useTranslate()
     const router = useRouter()
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
     const { formattedBalance, loaded, isEmpty, hasError } = useBalance()
@@ -102,7 +104,7 @@ export default defineComponent({
         errorNotify(
           err instanceof Error
             ? err
-            : new Error('Failed to load Monad wallet balance'),
+            : new Error($t('receiveBitcoinDialog.failedLoadBalance')),
         )
       }
     })
@@ -121,7 +123,7 @@ export default defineComponent({
           await copyToClipboard(displayAddress.value)
           addressCopiedNotify()
         } catch {
-          errorNotify(new Error('Unable to copy the Monad address'))
+          errorNotify(new Error($t('receiveBitcoinDialog.unableCopyAddress')))
         }
       },
     }

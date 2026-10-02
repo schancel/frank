@@ -51,8 +51,15 @@
         filled
         rows="2"
         lazy-rules
-        :rules="[val => !val || isSeedValid || $t('profile.invalidSeed')]"
+        :error="isSeedInvalid"
+        :error-message="seedValidationKey ? $t(seedValidationKey) : ''"
+        :rules="[
+          () =>
+            !isSeedInvalid || (seedValidationKey ? $t(seedValidationKey) : ''),
+        ]"
+        :aria-invalid="isSeedInvalid ? 'true' : 'false'"
         :placeholder="$t('profile.enterSeed')"
+        @blur="onSeedBlur"
       />
       <q-btn
         v-if="action === 'new'"
@@ -153,7 +160,10 @@ import { copyToClipboard } from 'quasar'
 
 import { generateMnemonic, validateMnemonic } from 'bip39'
 import { seedCopiedNotify } from '../../utils/notifications'
-import { normalizeSetupMnemonic } from '../../utils/setup-account'
+import {
+  getMnemonicValidationKey,
+  normalizeSetupMnemonic,
+} from '../../utils/setup-account'
 import { validateProfileDisplayName } from '@frank/wallet/profile-display-name'
 import { profileNameRule } from 'src/utils/profile-name'
 
@@ -214,9 +224,22 @@ export default defineComponent({
     const differentMismatch = ref(false)
     const differentInput = ref<HTMLInputElement | null>(null)
     const seedInput = ref<FocusableInput | null>(null)
+    const seedBlurred = ref(false)
     const isSeedValid = computed(() => {
-      return validateMnemonic(normalizeSetupMnemonic(rawSeed.value))
+      const normalized = normalizeSetupMnemonic(rawSeed.value)
+      return Boolean(normalized && validateMnemonic(normalized))
     })
+    const seedValidationKey = computed(() => {
+      if (action.value !== 'import') return null
+      if (!seedBlurred.value) return null
+      if (!rawSeed.value.trim()) return null
+      if (isSeedValid.value) return null
+      return getMnemonicValidationKey(rawSeed.value)
+    })
+    const isSeedInvalid = computed(() => seedValidationKey.value !== null)
+    const onSeedBlur = () => {
+      seedBlurred.value = true
+    }
     const displayName = computed(() =>
       validateProfileDisplayName(rawName.value),
     )
@@ -279,6 +302,10 @@ export default defineComponent({
       rawName,
       rawSeed,
       isSeedValid,
+      seedBlurred,
+      seedValidationKey,
+      isSeedInvalid,
+      onSeedBlur,
       isValid,
       profileNameRule,
       seed,
@@ -312,6 +339,7 @@ export default defineComponent({
         differentOpen.value = false
         differentMismatch.value = false
         differentTyped.value = ''
+        seedBlurred.value = false
         action.value = 'import'
         rawName.value = ''
         rawSeed.value = ''
@@ -339,6 +367,7 @@ export default defineComponent({
       },
       newAccount() {
         if (props.locked) return
+        seedBlurred.value = false
         action.value = 'new'
         rawName.value = ''
         if (!props.resume) {
@@ -348,6 +377,7 @@ export default defineComponent({
       },
       importAccount() {
         if (props.locked || props.resume) return
+        seedBlurred.value = false
         action.value = 'import'
         rawSeed.value = ''
         emitAccountData()

@@ -510,22 +510,14 @@ export function verifyRevealedHand(
     expectedPlayerCards.push(deck[next])
     next += 1
   }
-  const playerBust = handValue(expectedPlayerCards).bust
-  const { dealerCards: expectedDealerCards } = playOutDealer(
-    deck,
-    expectedPlayerCards,
-    next,
-  )
+  const { dealerCards: expectedDealerCards, outcome: expectedOutcome } =
+    playOutDealer(deck, expectedPlayerCards, next)
   if (JSON.stringify(expectedPlayerCards) !== JSON.stringify(state.playerCards)) {
     return { valid: false, reason: 'recorded player cards do not match the committed shuffle' }
   }
-  if (
-    !playerBust &&
-    JSON.stringify(expectedDealerCards) !== JSON.stringify(state.dealerCards)
-  ) {
+  if (JSON.stringify(expectedDealerCards) !== JSON.stringify(state.dealerCards)) {
     return { valid: false, reason: 'recorded dealer cards do not match the committed shuffle' }
   }
-  const expectedOutcome = playOutDealer(deck, expectedPlayerCards, next).outcome
   if (expectedOutcome !== state.outcome) {
     return { valid: false, reason: 'recorded outcome does not match the committed shuffle' }
   }

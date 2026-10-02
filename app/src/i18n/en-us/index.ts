@@ -27,6 +27,13 @@ export default {
   },
   forum: {
     noPosts: 'No posts yet.',
+    outageTitle: 'Forum unavailable',
+    outageDescription:
+      'Could not connect to the forum relay. Please check your connection or try again.',
+    outageBanner: 'Forum relay is currently unreachable. Showing saved posts.',
+    degradedTitle: 'Connection degraded',
+    degradedBanner: 'Some forum topics could not be updated.',
+    retry: 'Retry',
   },
   chatLayout: {
     info: 'Info',
@@ -239,6 +246,8 @@ export default {
     balanceLoading: 'Loading balance…',
     balanceUnavailable: 'Balance unavailable. Retrying.',
     balanceStale: '{balance} (last known)',
+    failedLoadAddress: 'Failed to load the Monad wallet address',
+    unableCopyAddress: 'Unable to copy the Monad address',
   },
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...',
@@ -247,6 +256,9 @@ export default {
     balance: 'Balance',
     balanceStale: '(last known)',
     directMessages: 'Direct Messages',
+  },
+  selfChat: {
+    you: 'You',
   },
   outgoing: {
     sending: 'Sending…',
@@ -261,7 +273,8 @@ export default {
     reasonInterrupted: 'It was interrupted before it was sent.',
     reasonUnverified: 'Delivery could not be confirmed.',
     reasonRecovered: 'An earlier message was delivered meanwhile.',
-    reasonError: 'Something went wrong.',
+    reasonInsufficientFunds: 'There are not enough funds to send this message.',
+    reasonError: 'The message could not be sent.',
     retry: 'Retry',
     retryHint:
       'Retry re-sends the same payment while it is still valid. A new payment is made only if it is not.',
@@ -293,6 +306,16 @@ export default {
     infoMessage: 'Message info',
     deleteMessage: 'Delete message',
   },
+  chatMessageMenu: {
+    messageCopied: 'Message copied to clipboard',
+  },
+  notifications: {
+    addressCopied: 'Address copied to clipboard.',
+    insufficientStamp: 'Stamp is too small, receiver will not be notified.',
+    seedCopied: 'Your recovery phrase has been copied to your clipboard.',
+    sentTransaction: 'Sent transaction',
+    viewAction: 'View',
+  },
   chatRightDrawer: {
     stampPrice: 'Stamp Price',
     sendLotus: 'Send Lotus',
@@ -321,6 +344,21 @@ export default {
     loginOrSignUp: 'Login/Sign Up',
     welcome: 'Welcome',
     welcomeToStampChat: 'Welcome to Frank!',
+    networkTitle: 'Monad Testnet',
+    testnetDisclaimer:
+      'Frank runs on the Monad testnet. All transactions use testnet MON, which has no real-world monetary value. Never send real funds or mainnet assets.',
+    economicModelTitle: 'Paid Actions & Costs',
+    costsDisclaimer:
+      'Network and stamp costs apply to outgoing actions. The actual fee or stamp amount is always shown before you confirm an action.',
+    directMessagesTitle: 'Direct Messages',
+    directMessagesDesc:
+      'Paid directly to the recipient as an inbox stamp, preventing spam and compensating delivery.',
+    topicActionsTitle: 'Forum Posts & Votes',
+    topicActionsDesc:
+      'Burned (permanently destroyed on-chain) to publish public topic posts or record votes.',
+    fundingTitle: 'Testnet Funding',
+    fundingDesc:
+      'New accounts receive testnet MON automatically from the demo faucet. You can also view your address and obtain testnet funds from the Receive screen after setup.',
     eulaDisclaimer:
       'Frank is experimental software. It may contain bugs that delay messages or cause a loss of funds. Only use amounts you can afford to lose.',
     eulaYouUnderstand:
@@ -365,6 +403,11 @@ export default {
     confirmStoredFirst: 'Confirm or copy your stored recovery phrase first.',
     importDifferentPhrase: 'I already have a different recovery phrase',
     importDifferentContinue: 'Continue to import',
+    invalidWordCount:
+      'A recovery phrase must contain 12, 15, 18, 21, or 24 words.',
+    unrecognizedWords: 'One or more words are not recognized. Check for typos.',
+    invalidChecksum:
+      'The recovery phrase checksum is invalid. Check the order and spelling of your words.',
   },
   seedConfirm: {
     unavailable:
@@ -446,6 +489,8 @@ export default {
       'Your balance is 0. This app uses testnet MON, which has no real value. The demo faucet funds new profiles automatically; if nothing arrives after a minute, ask the demo operator to send testnet MON to the address below.',
     close: 'Close',
     addressCopied: 'Address copied to clipboard',
+    failedLoadBalance: 'Failed to load Monad wallet balance',
+    unableCopyAddress: 'Unable to copy the Monad address',
   },
   sendAddressDialog: {
     sendToAddress: 'Send to Address',
@@ -453,6 +498,25 @@ export default {
     enterAmount: 'Enter Amount (MON)',
     cancel: 'Cancel',
     send: 'Send',
+    review: 'Review',
+    reviewTitle: 'Review Transfer',
+    network: 'Network',
+    recipient: 'Recipient',
+    amount: 'Amount',
+    estimatedFee: 'Estimated Fee',
+    feeUnavailable: 'Unavailable',
+    maxTotal: 'Maximum Total',
+    maxTotalWithFee: '{amount} {unit} (+ network fee)',
+    irreversibleWarning:
+      'Blockchain transactions are irreversible. Verify recipient and network before confirming.',
+    editTransfer: 'Edit',
+    confirmAndSend: 'Confirm & Send',
+    definitelyNotBroadcast:
+      'Transaction was not broadcast. No funds were transferred.',
+    potentiallyBroadcast:
+      'Transaction was signed ({txHash}) and may have been broadcast. Check your balance or transaction status before retrying.',
+    invalidTransfer: 'Enter a valid Monad address and MON amount.',
+    failedSendTransaction: 'Failed to send Monad transaction',
   },
   contactBookDialog: {
     contacts: 'Contacts',
@@ -530,8 +594,20 @@ export default {
     spinnerText: 'Deleting messages…',
   },
   seedPhraseDialog: {
-    seedPhrase: 'Seed Phrase',
+    seedPhrase: 'Recovery Phrase',
     close: 'Close',
+    cancel: 'Cancel',
+    warningTitle: 'Security Warning',
+    warningBody:
+      'Make sure no one is watching your screen. Beware of screen-sharing, shoulder-surfing, screenshots, and clipboard history.',
+    disclosureText:
+      'Anyone who gets your recovery phrase can access and steal all your funds and messages permanently.',
+    revealButton: 'Reveal Recovery Phrase',
+    hideButton: 'Hide',
+    copyButton: 'Copy',
+    copied: 'Copied!',
+    copiedToast: 'Recovery phrase copied to clipboard',
+    keepPrivateNotice: 'Keep this private. Do not share or screenshot.',
   },
   transactionDialog: {
     backingTransactions: 'Backing Transactions',

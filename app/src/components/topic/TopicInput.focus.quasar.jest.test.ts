@@ -61,15 +61,26 @@ function mountInput(disabled = false) {
 }
 
 function activateButtonFromKeyboard(button: HTMLButtonElement, key: string) {
+  const keyCode = key === 'Enter' ? 13 : 32
   button.focus()
   button.dispatchEvent(
-    new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }),
+    new KeyboardEvent('keydown', {
+      key,
+      keyCode,
+      which: keyCode,
+      bubbles: true,
+      cancelable: true,
+    }),
   )
-  if (key === 'Enter') button.click()
   button.dispatchEvent(
-    new KeyboardEvent('keyup', { key, bubbles: true, cancelable: true }),
+    new KeyboardEvent('keyup', {
+      key,
+      keyCode,
+      which: keyCode,
+      bubbles: true,
+      cancelable: true,
+    }),
   )
-  if (key === ' ') button.click()
 }
 
 describe('TopicInput focus and in-flight guards (#408)', () => {

@@ -15,6 +15,49 @@ pub(crate) fn parse_without_duplicate_keys(bytes: &[u8]) -> serde_json::Result<V
     Ok(value)
 }
 
+/// Replace provider-controlled JSON-RPC error details with a stable envelope.
+///
+/// Success results and envelope keys are deliberately untouched: they are
+/// protocol data and may legitimately contain short substrings that also occur
+/// in an upstream credential.
+pub(crate) fn sanitize_response_errors(value: &mut Value) {
+    match value {
+        Value::Array(responses) => {
+            for response in responses {
+                sanitize_response_error(response);
+            }
+        }
+        response => sanitize_response_error(response),
+    }
+}
+
+fn sanitize_response_error(value: &mut Value) {
+    let Some(response) = value.as_object_mut() else {
+        return;
+    };
+    let Some(error) = response.get("error") else {
+        return;
+    };
+    if error.is_null() {
+        return;
+    }
+
+    let code = error
+        .as_object()
+        .and_then(|error| error.get("code"))
+        .filter(|code| code.is_number())
+        .cloned();
+    let mut sanitized = Map::new();
+    if let Some(code) = code {
+        sanitized.insert("code".to_string(), code);
+    }
+    sanitized.insert(
+        "message".to_string(),
+        Value::String("upstream RPC error".to_string()),
+    );
+    response.insert("error".to_string(), Value::Object(sanitized));
+}
+
 struct UniqueValue(Value);
 
 impl<'de> Deserialize<'de> for UniqueValue {
@@ -119,5 +162,33 @@ mod tests {
             parse_without_duplicate_keys(bytes).unwrap(),
             serde_json::from_slice::<Value>(bytes).unwrap()
         );
+    }
+
+    #[test]
+    fn sanitizes_errors_without_touching_success_data() {
+        let mut success = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "1",
+            "result": "0x1",
+        });
+        let original = success.clone();
+        sanitize_response_errors(&mut success);
+        assert_eq!(success, original);
+
+        let mut error = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "error": {
+                "code": -32000,
+                "message": "provider secret",
+                "data": {"credential": "secret"},
+            },
+        });
+        sanitize_response_errors(&mut error);
+        assert_eq!(error["id"], 7);
+        assert_eq!(error["error"]["code"], -32000);
+        assert_eq!(error["error"]["message"], "upstream RPC error");
+        assert!(error["error"].get("data").is_none());
+        assert!(!error.to_string().contains("secret"));
     }
 }

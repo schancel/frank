@@ -106,65 +106,6 @@ impl fmt::Debug for EvmChainRuntime {
     }
 }
 
-impl EvmChainRuntime {
-    fn redact_text(&self, text: &str) -> String {
-        let mut secrets = vec![self.upstream_url.as_str().to_string()];
-        if let Some(host) = self.upstream_url.host_str() {
-            secrets.push(host.to_string());
-            secrets.push(format!("{}://{host}", self.upstream_url.scheme()));
-        }
-        if !self.upstream_url.username().is_empty() {
-            secrets.push(self.upstream_url.username().to_string());
-        }
-        if let Some(password) = self.upstream_url.password() {
-            secrets.push(password.to_string());
-        }
-        secrets.extend(
-            self.upstream_url
-                .path_segments()
-                .into_iter()
-                .flatten()
-                .filter(|segment| segment.len() >= 8)
-                .map(str::to_owned),
-        );
-        secrets.extend(
-            self.upstream_url
-                .query_pairs()
-                .filter(|(_, value)| value.len() >= 8)
-                .map(|(_, value)| value.into_owned()),
-        );
-        secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
-        secrets.dedup();
-        secrets
-            .into_iter()
-            .filter(|secret| !secret.is_empty())
-            .fold(text.to_string(), |redacted, secret| {
-                redacted.replace(&secret, "[redacted]")
-            })
-    }
-
-    fn redact_response_value(&self, value: &mut Value) {
-        match value {
-            Value::String(text) => {
-                *text = self.redact_text(text);
-            }
-            Value::Array(values) => {
-                for value in values {
-                    self.redact_response_value(value);
-                }
-            }
-            Value::Object(values) => {
-                let original = std::mem::take(values);
-                for (key, mut value) in original {
-                    self.redact_response_value(&mut value);
-                    values.insert(self.redact_text(&key), value);
-                }
-            }
-            Value::Null | Value::Bool(_) | Value::Number(_) => {}
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(crate) struct RpcChallenge {
     pub(crate) epoch: [u8; 32],
@@ -986,7 +927,7 @@ pub(crate) async fn handle_proxy_rpc(
             true,
         )
     })?;
-    chain.redact_response_value(&mut value);
+    crate::http::json_rpc::sanitize_response_errors(&mut value);
     let body = serde_json::to_vec(&value).map_err(|_| {
         broadcast_error(
             StatusCode::BAD_GATEWAY,
@@ -1138,7 +1079,6 @@ mod tests {
 
     #[test]
     fn upstream_errors_keep_codes_but_scrub_provider_secrets() {
-        let chain = chain();
         let mut response = json!({
             "jsonrpc": "2.0",
             "id": 7,
@@ -1147,13 +1087,13 @@ mod tests {
                 "message": "provider http://127.0.0.1:1/provider-secret rejected provider-secret"
             }
         });
-        chain.redact_response_value(&mut response);
+        crate::http::json_rpc::sanitize_response_errors(&mut response);
         assert_eq!(response["id"], 7);
         assert_eq!(response["error"]["code"], -32000);
         let rendered = response.to_string();
         assert!(!rendered.contains("provider-secret"));
         assert!(!rendered.contains("http://127.0.0.1:1"));
-        assert!(rendered.contains("[redacted]"));
+        assert!(rendered.contains("upstream RPC error"));
     }
 
     #[derive(Debug)]

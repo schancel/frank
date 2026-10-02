@@ -57,64 +57,6 @@ impl fmt::Debug for Chain {
     }
 }
 
-impl Chain {
-    fn redact_text(&self, text: &str) -> String {
-        let mut secrets = Vec::new();
-        for url in self.rpc.iter().chain(self.chronik.iter()) {
-            secrets.push(url.as_str().to_string());
-            if let Some(host) = url.host_str() {
-                secrets.push(host.to_string());
-                secrets.push(format!("{}://{host}", url.scheme()));
-            }
-            if !url.username().is_empty() {
-                secrets.push(url.username().to_string());
-            }
-            if let Some(password) = url.password() {
-                secrets.push(password.to_string());
-            }
-            secrets.extend(
-                url.path_segments()
-                    .into_iter()
-                    .flatten()
-                    .filter(|segment| segment.len() >= 8)
-                    .map(str::to_owned),
-            );
-            secrets.extend(
-                url.query_pairs()
-                    .filter(|(_, value)| value.len() >= 8)
-                    .map(|(_, value)| value.into_owned()),
-            );
-        }
-        secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
-        secrets.dedup();
-        secrets
-            .into_iter()
-            .filter(|secret| !secret.is_empty())
-            .fold(text.to_string(), |redacted, secret| {
-                redacted.replace(&secret, "[redacted]")
-            })
-    }
-
-    fn redact_response_value(&self, value: &mut Value) {
-        match value {
-            Value::String(text) => *text = self.redact_text(text),
-            Value::Array(values) => {
-                for value in values {
-                    self.redact_response_value(value);
-                }
-            }
-            Value::Object(values) => {
-                let original = std::mem::take(values);
-                for (key, mut value) in original {
-                    self.redact_response_value(&mut value);
-                    values.insert(self.redact_text(&key), value);
-                }
-            }
-            Value::Null | Value::Bool(_) | Value::Number(_) => {}
-        }
-    }
-}
-
 /// Validated Bitcoin proxy state.
 pub struct BitcoinProxyRuntime {
     chains: HashMap<String, Chain>,
@@ -504,7 +446,7 @@ pub(crate) async fn proxy_rpc(
         .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable"))?;
     let mut value = serde_json::from_slice::<Value>(&bytes)
         .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
-    chain.redact_response_value(&mut value);
+    crate::http::json_rpc::sanitize_response_errors(&mut value);
     let bytes = serde_json::to_vec(&value)
         .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
     Ok((
@@ -824,7 +766,7 @@ mod tests {
         let mut response = json!({
             "error": "https://user:secret@rpc.example/key rejected secret"
         });
-        chain.redact_response_value(&mut response);
+        crate::http::json_rpc::sanitize_response_errors(&mut response);
         let response = response.to_string();
         assert!(!response.contains("secret"));
         assert!(!response.contains("rpc.example"));

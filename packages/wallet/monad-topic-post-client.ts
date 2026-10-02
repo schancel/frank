@@ -32,10 +32,9 @@
  *    there is deliberately no separate topic burn-address env var).
  * 5. Submits protobuf by default; the opt-in predecessor uses a type-10 CBOR submission.
  * 6. Releases the lease per the same three-way outcome mapping `monad-stamp-client.ts`
- *    documents in its own "Lease release policy" section (2xx → `'confirmed'`; HTTP error response
- *    → `'failed'`; network/transport failure → fall back to polling `GET
- *    /message/monad/topics/:payload_hash` before deciding `'confirmed'`/`'stuck'`) — see that
- *    section below for why this file repeats rather than imports that logic.
+ *    documents in its own "Lease release policy" section. Legacy protobuf transport loss may use
+ *    its transaction-bearing GET view; CBOR transport loss remains journaled because its
+ *    frame-only GET cannot attribute the current burn transaction — see that section below.
  *
  * ## Payload encoding, and why there's no encryption here
  *
@@ -448,8 +447,8 @@ function isRelayOutcomeUnknown(error: unknown): boolean {
   )
 }
 
-/** Options for the `GET /message/monad/topics/:payload_hash` fallback poll used when a `PUT`
- * attempt fails with no HTTP response at all (see this file's header, "Lease release policy"). */
+/** Options for the legacy protobuf `GET /message/monad/topics/:payload_hash` fallback poll used
+ * when a `PUT` attempt fails with no HTTP response (see "Lease release policy"). */
 export interface AbandonPollOptions {
   /** Delay between poll attempts, in ms. Default 2000. */
   intervalMs?: number
@@ -643,6 +642,18 @@ export class MonadTopicPostClient {
     params: SubmitTopicPostParams,
     admission?: MonadWalletOperationAdmission,
   ): Promise<SubmitTopicPostResult> {
+    if (
+      this.topicWriteFormat === 'cbor' &&
+      (this.topicJournal === undefined ||
+        this.walletState === undefined ||
+        this.walletState.topicOperationJournal !== this.topicJournal ||
+        this.walletState.pool !== this.pool ||
+        this.walletState.leaseManager !== this.leaseManager)
+    ) {
+      throw new Error(
+        'CBOR topic writes require one coherent walletState and topicOperationJournal',
+      )
+    }
     if (this.walletState !== undefined) {
       return this.walletState.runOperation(
         admitted => this.submitTopicPostAdmitted(params, admitted),

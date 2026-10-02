@@ -44,8 +44,8 @@ use axum::{
     body::Bytes,
     extract::{Path, Query},
     http::{
-        header::{ACCEPT, CONTENT_TYPE},
-        HeaderMap, StatusCode,
+        header::{ACCEPT, CONTENT_TYPE, VARY},
+        HeaderMap, HeaderValue, StatusCode,
     },
     response::{IntoResponse, Response},
     Extension, Json,
@@ -132,7 +132,7 @@ impl fmt::Display for ProcessMonadTopicPostError {
 /// together with its initial vote entry.
 ///
 /// `network_tag` (ticket #39, see `crate::network_tag`'s module docs) is stamped onto the stored
-/// post by [`Registry::put_monad_topic_post`] itself, mirroring `crate::http::monad_message::
+/// post by [`Registry::admit_legacy_monad_topic_post`] itself, mirroring `crate::http::monad_message::
 /// process_monad_message`'s own `network_tag` parameter exactly -- resolved by the caller (from
 /// [`crate::network_tag::frank_network_tag`]) and threaded through as an explicit argument rather
 /// than read from the environment in here, keeping this function directly unit-testable.
@@ -193,10 +193,6 @@ pub async fn process_monad_topic_post<T: JsonRpcTransport + Clone>(
         confirmed_transaction_index: 0,
     };
 
-    let stored = registry
-        .put_monad_topic_post(declared_hash.as_slice(), stored, network_tag)
-        .map_err(ProcessMonadTopicPostError::Infrastructure)?;
-
     let vote_entry = proto::StoredMonadTopicVoteEntry {
         target_payload_hash: declared_hash.as_slice().to_vec(),
         sender_address: sender.0.to_vec(),
@@ -204,8 +200,8 @@ pub async fn process_monad_topic_post<T: JsonRpcTransport + Clone>(
         timestamp,
         weight: saturate_weight(direction.signed_weight(value_wei)),
     };
-    registry
-        .add_monad_topic_vote(&vote_entry)
+    let stored = registry
+        .admit_legacy_monad_topic_post(declared_hash.as_slice(), stored, network_tag, &vote_entry)
         .map_err(ProcessMonadTopicPostError::Infrastructure)?;
 
     Ok(stored)
@@ -580,22 +576,25 @@ enum TopicRequestFormat {
     Protobuf,
 }
 
-/// Select the write decoder solely from the declared media type. Parameters are accepted for
-/// protobuf compatibility, but bytes are never sniffed or retried through another decoder.
+/// Select the write decoder solely from the declared media type. Parameters are accepted only for
+/// protobuf compatibility; deterministic CBOR requires the exact bare media type.
 fn topic_request_format(headers: &HeaderMap) -> Option<TopicRequestFormat> {
-    let media_type = headers
-        .get(CONTENT_TYPE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .next()?
-        .trim()
-        .to_ascii_lowercase();
+    let declared = headers.get(CONTENT_TYPE)?.to_str().ok()?.trim();
+    if declared.eq_ignore_ascii_case("application/cbor") {
+        return Some(TopicRequestFormat::Cbor);
+    }
+    let media_type = declared.split(';').next()?.trim().to_ascii_lowercase();
     match media_type.as_str() {
-        "application/cbor" => Some(TopicRequestFormat::Cbor),
         "application/x-protobuf" => Some(TopicRequestFormat::Protobuf),
         _ => None,
     }
+}
+
+fn vary_accept(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(VARY, HeaderValue::from_static("Accept"));
+    response
 }
 
 /// Split one HTTP list or parameter list without treating delimiters inside quoted strings as
@@ -1082,6 +1081,8 @@ pub struct ListMonadTopicPostsQuery {
 /// Error type for [`handle_list_monad_topic_posts`].
 #[derive(Debug)]
 pub enum ListMonadTopicPostsError {
+    /// The caller excluded the only allocated list representation.
+    NotAcceptable,
     /// A storage-level error.
     Infrastructure(Report),
 }
@@ -1089,6 +1090,9 @@ pub enum ListMonadTopicPostsError {
 impl IntoResponse for ListMonadTopicPostsError {
     fn into_response(self) -> Response {
         match self {
+            ListMonadTopicPostsError::NotAcceptable => {
+                vary_accept(StatusCode::NOT_ACCEPTABLE.into_response())
+            }
             ListMonadTopicPostsError::Infrastructure(err) => {
                 tracing::event!(Level::ERROR, error = %err, "infrastructure failure listing topic posts");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -1107,18 +1111,26 @@ impl IntoResponse for ListMonadTopicPostsError {
 pub async fn handle_list_monad_topic_posts(
     Query(params): Query<ListMonadTopicPostsQuery>,
     Extension(server): Extension<RegistryServer>,
-) -> Result<Protobuf<proto::MonadTopicPostViews>, ListMonadTopicPostsError> {
+    headers: HeaderMap,
+) -> Result<Response, ListMonadTopicPostsError> {
+    if !topic_accepts(&headers, "application/x-protobuf") {
+        return Err(ListMonadTopicPostsError::NotAcceptable);
+    }
     let since = params.since.unwrap_or(0);
     let views = server
         .registry
         .list_monad_topic_posts_by_topic(&params.topic, since)
         .map_err(ListMonadTopicPostsError::Infrastructure)?;
-    Ok(Protobuf(proto::MonadTopicPostViews { views }))
+    Ok(vary_accept(
+        Protobuf(proto::MonadTopicPostViews { views }).into_response(),
+    ))
 }
 
 /// Error type for [`handle_list_topics`].
 #[derive(Debug)]
 pub enum ListTopicsError {
+    /// The caller excluded the only allocated discovery representation.
+    NotAcceptable,
     /// A storage-level error.
     Infrastructure(Report),
 }
@@ -1126,6 +1138,9 @@ pub enum ListTopicsError {
 impl IntoResponse for ListTopicsError {
     fn into_response(self) -> Response {
         match self {
+            ListTopicsError::NotAcceptable => {
+                vary_accept(StatusCode::NOT_ACCEPTABLE.into_response())
+            }
             ListTopicsError::Infrastructure(err) => {
                 tracing::event!(Level::ERROR, error = %err, "infrastructure failure listing discovered topics");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -1151,7 +1166,11 @@ impl IntoResponse for ListTopicsError {
 /// the client/route can add pagination later if that ever changes).
 pub async fn handle_list_topics(
     Extension(server): Extension<RegistryServer>,
-) -> Result<Protobuf<proto::ListTopicsResponse>, ListTopicsError> {
+    headers: HeaderMap,
+) -> Result<Response, ListTopicsError> {
+    if !topic_accepts(&headers, "application/x-protobuf") {
+        return Err(ListTopicsError::NotAcceptable);
+    }
     let entries = server
         .registry
         .list_topics()
@@ -1163,7 +1182,9 @@ pub async fn handle_list_topics(
             last_activity_ms: stats.last_activity_ms,
         })
         .collect();
-    Ok(Protobuf(proto::ListTopicsResponse { entries }))
+    Ok(vary_accept(
+        Protobuf(proto::ListTopicsResponse { entries }).into_response(),
+    ))
 }
 
 #[cfg(test)]
@@ -2394,9 +2415,17 @@ mod tests {
         store_monad_topic_post_at(&registry, vec![0x03; 32], "topic.oldest", 150);
 
         let server = test_server(registry);
-        let Protobuf(response) = handle_list_topics(Extension(server))
+        let response = handle_list_topics(Extension(server), HeaderMap::new())
             .await
             .expect("listing discovered topics should succeed");
+        assert_eq!(response.headers()[VARY], "Accept");
+        let response = proto::ListTopicsResponse::decode(
+            hyper::body::to_bytes(response.into_body())
+                .await
+                .unwrap()
+                .as_ref(),
+        )
+        .unwrap();
 
         let entries: Vec<(String, u64, i64)> = response
             .entries
@@ -2469,6 +2498,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn protobuf_only_topic_lists_honor_specific_accept_refusals_and_vary() {
+        use tower::ServiceExt;
+
+        let (_tempdir, registry) = test_registry();
+        store_monad_topic_post_at(&registry, vec![0xab; 32], "topic.accept", 500);
+        let router = test_server(registry).into_router();
+
+        for uri in [
+            "/message/monad/topics?topic=topic.accept",
+            "/message/monad/topics/discover",
+        ] {
+            for accept in ["application/cbor", "application/x-protobuf;q=0, */*;q=1"] {
+                let request = axum::http::Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .header(ACCEPT, accept)
+                    .body(hyper::Body::empty())
+                    .unwrap();
+                let response = router.clone().oneshot(request).await.unwrap();
+                assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+                assert!(response
+                    .headers()
+                    .get_all(VARY)
+                    .iter()
+                    .any(|value| value.as_bytes().eq_ignore_ascii_case(b"accept")));
+            }
+            for accept in [None, Some("*/*"), Some("application/x-protobuf")] {
+                let mut request = axum::http::Request::builder().method("GET").uri(uri);
+                if let Some(accept) = accept {
+                    request = request.header(ACCEPT, accept);
+                }
+                let response = router
+                    .clone()
+                    .oneshot(request.body(hyper::Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                assert!(response
+                    .headers()
+                    .get_all(VARY)
+                    .iter()
+                    .any(|value| value.as_bytes().eq_ignore_ascii_case(b"accept")));
+                assert_eq!(response.headers()[CONTENT_TYPE], "application/x-protobuf");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn monad_topic_write_routes_enforce_declared_request_and_response_media_types() {
         use tower::ServiceExt;
 
@@ -2486,6 +2563,25 @@ mod tests {
             router.clone().oneshot(unsupported).await.unwrap().status(),
             StatusCode::UNSUPPORTED_MEDIA_TYPE
         );
+
+        for uri in ["/message/monad/topics", "/message/monad/topics/vote"] {
+            let parameterized_cbor = axum::http::Request::builder()
+                .method("PUT")
+                .uri(uri)
+                .header(CONTENT_TYPE, "application/cbor; charset=binary")
+                .header(ACCEPT, "application/cbor")
+                .body(hyper::Body::from(vec![0xff]))
+                .unwrap();
+            assert_eq!(
+                router
+                    .clone()
+                    .oneshot(parameterized_cbor)
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE
+            );
+        }
 
         for (uri, content_type, accept) in [
             (

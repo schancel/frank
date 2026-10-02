@@ -160,8 +160,17 @@ static ATOMIC_CBOR_POST_FAILPOINT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
+static ATOMIC_LEGACY_POST_FAILPOINT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
 fn arm_atomic_cbor_post_failpoint() {
     ATOMIC_CBOR_POST_FAILPOINT.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn arm_atomic_legacy_post_failpoint() {
+    ATOMIC_LEGACY_POST_FAILPOINT.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 impl<'a> DbMonadTopicPosts<'a> {
@@ -249,6 +258,32 @@ impl<'a> DbMonadTopicPosts<'a> {
         })
     }
 
+    /// Atomically store one legacy protobuf post, all of its list/discovery indexes, and its
+    /// mandatory initial vote. Verification happens before this boundary; once admission starts,
+    /// readers can observe either the complete unit or none of it.
+    pub fn admit_legacy_post(
+        &self,
+        payload_hash: &[u8],
+        post: &proto::StoredMonadTopicPost,
+        initial_vote: &proto::StoredMonadTopicVoteEntry,
+    ) -> Result<()> {
+        let _guard = self.db.lock_monad_topics();
+        let mut batch = rocksdb::WriteBatch::default();
+        self.append_legacy_post(&mut batch, payload_hash, post)?;
+        batch.put_cf(
+            self.cf_monad_topic_votes,
+            vote_key(&initial_vote.target_payload_hash, &initial_vote.tx_hash),
+            initial_vote.encode_to_vec(),
+        );
+        #[cfg(test)]
+        if ATOMIC_LEGACY_POST_FAILPOINT.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(bitcoinsuite_error::Report::msg(
+                "test failpoint before atomic legacy post batch",
+            ));
+        }
+        self.db.write_batch(batch)
+    }
+
     /// Store a [`proto::StoredMonadTopicPost`], keyed by its inner post's `payload_hash`, and
     /// index it by `(post.post.topic, post.timestamp)` (ticket #40's `list_by_topic`).
     ///
@@ -260,6 +295,16 @@ impl<'a> DbMonadTopicPosts<'a> {
     /// `topic`) doesn't leave a stale, orphaned index row behind.
     pub fn put(&self, payload_hash: &[u8], post: &proto::StoredMonadTopicPost) -> Result<()> {
         let mut batch = rocksdb::WriteBatch::default();
+        self.append_legacy_post(&mut batch, payload_hash, post)?;
+        self.db.write_batch(batch)
+    }
+
+    fn append_legacy_post(
+        &self,
+        batch: &mut rocksdb::WriteBatch,
+        payload_hash: &[u8],
+        post: &proto::StoredMonadTopicPost,
+    ) -> Result<()> {
         let existing = self.get(payload_hash)?;
         // Ticket #72: whether this call is storing a genuinely new post (vs. a client retrying a
         // request whose response it never saw) -- only a genuinely new post bumps
@@ -310,7 +355,6 @@ impl<'a> DbMonadTopicPosts<'a> {
                 stats.encode_to_vec(),
             );
         }
-        self.db.write_batch(batch)?;
         Ok(())
     }
 
@@ -534,7 +578,7 @@ mod tests {
 
     use crate::{proto, store::db::Db};
 
-    use super::arm_atomic_cbor_post_failpoint;
+    use super::{arm_atomic_cbor_post_failpoint, arm_atomic_legacy_post_failpoint};
 
     fn post(payload_hash: &[u8]) -> proto::StoredMonadTopicPost {
         proto::StoredMonadTopicPost {
@@ -683,6 +727,31 @@ mod tests {
         assert_eq!(db.monad_topic_votes().tally(&target)?, 1000);
         assert_eq!(db.monad_topic_votes().votes_for(&target)?.len(), 1);
 
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_post_and_initial_vote_fail_as_one_atomic_unit() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--legacy-post-atomic")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let target = vec![0x61; 32];
+        let stored = post(&target);
+        let initial_vote = vote(&target, 0x62, 500);
+
+        arm_atomic_legacy_post_failpoint();
+        assert!(db
+            .monad_topic_posts()
+            .admit_legacy_post(&target, &stored, &initial_vote)
+            .is_err());
+
+        assert_eq!(db.monad_topic_posts().get(&target)?, None);
+        assert!(db
+            .monad_topic_posts()
+            .list_by_topic("test.topic", 0)?
+            .is_empty());
+        assert!(db.monad_topic_posts().list_topics()?.is_empty());
+        assert!(db.monad_topic_votes().votes_for(&target)?.is_empty());
         Ok(())
     }
 

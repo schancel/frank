@@ -381,6 +381,14 @@ where
         None => return Ok(TopicVoteBurnVerification::TxNotConfirmed),
     };
 
+    if receipt.transaction_hash != tx_hash {
+        bail!(
+            "receipt returned hash {} for requested exact hash {}",
+            receipt.transaction_hash,
+            tx_hash
+        );
+    }
+
     if receipt.succeeded() != Some(true) {
         return Ok(TopicVoteBurnVerification::TxFailed);
     }
@@ -405,6 +413,14 @@ where
              (node inconsistency)"
         ),
     };
+
+    if tx.hash != tx_hash {
+        bail!(
+            "transaction lookup returned hash {} for requested exact hash {}",
+            tx.hash,
+            tx_hash
+        );
+    }
 
     let (direction, commitment) = match parse_topic_calldata_versioned(&tx.input, version) {
         Ok(decoded) => decoded,
@@ -697,6 +713,54 @@ mod tests {
                 transaction_index: 0,
             },
         );
+    }
+
+    #[tokio::test]
+    async fn verify_topic_vote_burn_rejects_a_receipt_for_another_transaction() {
+        let commitment = Sha256::new([0x31; 32]);
+        let to = hex_addr(0x44);
+        let transport = MockTransport::default();
+        let mut receipt = receipt_json(&to, "0x1");
+        receipt["transactionHash"] = Value::String(hex_hash(0x12));
+        transport.set("eth_getTransactionReceipt", receipt);
+
+        let error = verify_topic_vote_burn(
+            &transport,
+            Hash32::from_hex(&hex_hash(0x11)).unwrap(),
+            &expected_stamp_transaction(commitment),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("receipt returned hash"));
+        assert_eq!(transport.calls(), vec!["eth_getTransactionReceipt"]);
+    }
+
+    #[tokio::test]
+    async fn verify_topic_vote_burn_rejects_a_transaction_body_for_another_hash() {
+        let commitment = Sha256::new([0x32; 32]);
+        let to = hex_addr(0x44);
+        let transport = MockTransport::default();
+        transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
+        let mut tx = tx_json(
+            &to,
+            500,
+            &valid_calldata(VoteDirection::UP_BYTE, &commitment),
+        );
+        tx["hash"] = Value::String(hex_hash(0x12));
+        transport.set("eth_getTransactionByHash", tx);
+
+        let error = verify_topic_vote_burn(
+            &transport,
+            Hash32::from_hex(&hex_hash(0x11)).unwrap(),
+            &expected_stamp_transaction(commitment),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("transaction lookup returned hash"));
     }
 
     #[tokio::test]

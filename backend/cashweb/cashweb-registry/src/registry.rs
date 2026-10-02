@@ -1278,6 +1278,7 @@ impl Registry {
     /// Stamps `network_tag` (ticket #39, mirroring [`Registry::put_monad_message`] exactly -- see
     /// `crate::network_tag`'s module docs) onto `post` here and returns the tagged record actually
     /// persisted.
+    #[cfg(test)]
     pub(crate) fn put_monad_topic_post(
         &self,
         payload_hash: &[u8],
@@ -1289,6 +1290,24 @@ impl Registry {
             ..post
         };
         self.db.monad_topic_posts().put(payload_hash, &post)?;
+        Ok(post)
+    }
+
+    /// Atomically persist a verified legacy post, its indexes, and its mandatory initial vote.
+    pub(crate) fn admit_legacy_monad_topic_post(
+        &self,
+        payload_hash: &[u8],
+        post: proto::StoredMonadTopicPost,
+        network_tag: &[u8],
+        initial_vote: &proto::StoredMonadTopicVoteEntry,
+    ) -> Result<proto::StoredMonadTopicPost> {
+        let post = proto::StoredMonadTopicPost {
+            network_tag: network_tag.to_vec(),
+            ..post
+        };
+        self.db
+            .monad_topic_posts()
+            .admit_legacy_post(payload_hash, &post, initial_vote)?;
         Ok(post)
     }
 

@@ -35,6 +35,8 @@ import {
   createMonadChain,
 } from './monad-chain'
 import { DirectMessagePreparationProgress } from './active-chain'
+import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journal'
+import type { MonadWalletPersistenceBundle } from '../storage/monad-wallet-bundle'
 
 jest.mock('axios')
 const mockedAxios = axios as unknown as jest.Mock
@@ -138,14 +140,25 @@ function makeFakeChain(mainBalance = 10n ** 18n): FakeChain {
   })
   // Exactly what a fresh production wallet has after `createWallet`: derived, never funded.
   pool.ensureUnfundedSize(CONFIG.subAccountPoolSize)
+  const leaseManager = new SubAccountLeaseManager(pool)
+  const topicOperationJournal = new InMemoryTopicOperationJournal()
+  const walletState = {
+    pool,
+    leaseManager,
+    topicOperationJournal,
+    runOperation: async (operation: (admission: never) => Promise<unknown>) =>
+      operation(undefined as never),
+  } as unknown as MonadWalletPersistenceBundle
   const wallet: MonadChainWalletHandle = {
     identity,
     pool,
-    leaseManager: new SubAccountLeaseManager(pool),
+    leaseManager,
     provider,
     httpClient,
     relayBaseUrl: CONFIG.relayBaseUrl,
     topicWriteFormat: 'cbor',
+    topicOperationJournal,
+    walletState,
   }
   return {
     wallet,

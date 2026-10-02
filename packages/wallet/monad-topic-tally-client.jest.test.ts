@@ -57,6 +57,8 @@ import {
   MonadTopicPostProto,
 } from './monad-topic-post-client'
 import { MonadTopicVoteClient } from './monad-topic-vote-client'
+import { InMemoryTopicOperationJournal } from './storage/topic-operation-journal'
+import type { MonadWalletPersistenceBundle } from './storage/monad-wallet-bundle'
 import {
   fetchDiscoveredTopics,
   fetchMonadTopicPostView,
@@ -516,6 +518,14 @@ describe('post -> vote -> tally, chained through the real #31/#32/#33 clients', 
     const leaseManager = new SubAccountLeaseManager(pool)
     const provider = makeStubProvider()
     const httpClient = makeMockHttpClient()
+    const topicOperationJournal = new InMemoryTopicOperationJournal()
+    const walletState = {
+      pool,
+      leaseManager,
+      topicOperationJournal,
+      runOperation: async (operation: (admission: never) => Promise<unknown>) =>
+        operation(undefined as never),
+    } as unknown as MonadWalletPersistenceBundle
 
     const postClient = new MonadTopicPostClient({
       pool,
@@ -524,6 +534,8 @@ describe('post -> vote -> tally, chained through the real #31/#32/#33 clients', 
       httpClient,
       relayBaseUrl: RELAY_BASE_URL,
       topicWriteFormat: 'cbor',
+      topicOperationJournal,
+      walletState,
     })
     const voteClient = new MonadTopicVoteClient({
       pool,
@@ -532,6 +544,8 @@ describe('post -> vote -> tally, chained through the real #31/#32/#33 clients', 
       httpClient,
       relayBaseUrl: RELAY_BASE_URL,
       topicWriteFormat: 'cbor',
+      topicOperationJournal,
+      walletState,
     })
 
     mockedAxios.mockImplementation(async config => {

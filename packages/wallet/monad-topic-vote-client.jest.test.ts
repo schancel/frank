@@ -37,7 +37,11 @@ import {
   decodeStoredMonadTopicVoteEntry,
   encodeMonadTopicVote,
 } from './monad-topic-vote-client'
-import { openMonadWalletBundle } from './storage/monad-wallet-bundle'
+import {
+  openMonadWalletBundle,
+  type MonadWalletPersistenceBundle,
+} from './storage/monad-wallet-bundle'
+import { InMemoryTopicOperationJournal } from './storage/topic-operation-journal'
 
 jest.mock('axios')
 const mockedAxios = axios as jest.Mocked<typeof axios>
@@ -129,17 +133,32 @@ function makeClient(overrides?: {
   pool?: MonadSubAccountPool
   topicWriteFormat?: 'protobuf' | 'cbor'
   omitTopicWriteFormat?: boolean
+  withoutPersistence?: boolean
 }) {
   const pool = overrides?.pool ?? makePool()
   const leaseManager = new SubAccountLeaseManager(pool)
   const provider = makeChainProvider()
   const httpClient = makeMockHttpClient()
+  const topicOperationJournal = new InMemoryTopicOperationJournal()
+  const usesCbor =
+    !overrides?.omitTopicWriteFormat &&
+    (overrides?.topicWriteFormat ?? 'cbor') === 'cbor'
+  const walletState = {
+    pool,
+    leaseManager,
+    topicOperationJournal,
+    runOperation: async (operation: (admission: never) => Promise<unknown>) =>
+      operation(undefined as never),
+  } as unknown as MonadWalletPersistenceBundle
   const handle = {
     pool,
     leaseManager,
     provider,
     httpClient,
     relayBaseUrl: 'https://relay.example.com/',
+    ...(!usesCbor || overrides?.withoutPersistence
+      ? {}
+      : { topicOperationJournal, walletState }),
     ...(overrides?.omitTopicWriteFormat
       ? {}
       : { topicWriteFormat: overrides?.topicWriteFormat ?? ('cbor' as const) }),
@@ -299,6 +318,29 @@ describe('MonadTopicVoteClient.castVote', () => {
     mockedAxios.isAxiosError.mockImplementation(
       (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true,
     )
+  })
+
+  it('rejects a CBOR vote without coherent persistence before leasing, signing, or dispatch', async () => {
+    const { client, pool, httpClient } = makeClient({
+      withoutPersistence: true,
+    })
+
+    await expect(
+      client.castVote({
+        targetPayloadHash: TARGET_PAYLOAD_HASH,
+        direction: 'up',
+        burnAddress: BURN_ADDRESS,
+        voteWeightWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+      }),
+    ).rejects.toThrow(
+      'CBOR topic writes require one coherent walletState and topicOperationJournal',
+    )
+    expect(pool.records().every(record => record.status === 'available')).toBe(
+      true,
+    )
+    expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
+    expect(mockedAxios).not.toHaveBeenCalled()
   })
 
   it('persists exact confirmed spend authority across a real bundle reopen', async () => {
@@ -739,7 +781,7 @@ describe('MonadTopicVoteClient.castVote', () => {
   })
 
   it('retires as stuck on a machine-readable post-broadcast unknown outcome', async () => {
-    const { client, pool } = makeClient()
+    const { client, pool } = makeClient({ omitTopicWriteFormat: true })
     mockedAxios.mockImplementationOnce(async () => {
       throw Object.assign(new Error('Service Unavailable'), {
         isAxiosError: true,
@@ -765,7 +807,7 @@ describe('MonadTopicVoteClient.castVote', () => {
   })
 
   it('retires as stuck and throws MonadTopicVoteAbandonedError on a network-level failure -- no read-back fallback in this ticket scope', async () => {
-    const { client, pool } = makeClient()
+    const { client, pool } = makeClient({ omitTopicWriteFormat: true })
     mockedAxios.mockImplementationOnce(async () => {
       const networkErr = Object.assign(new Error('socket hang up'), {
         isAxiosError: true,

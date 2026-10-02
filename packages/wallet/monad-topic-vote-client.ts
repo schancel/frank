@@ -445,6 +445,18 @@ export class MonadTopicVoteClient {
     params: CastTopicVoteParams,
     admission?: MonadWalletOperationAdmission,
   ): Promise<CastTopicVoteResult> {
+    if (
+      this.topicWriteFormat === 'cbor' &&
+      (this.topicJournal === undefined ||
+        this.walletState === undefined ||
+        this.walletState.topicOperationJournal !== this.topicJournal ||
+        this.walletState.pool !== this.pool ||
+        this.walletState.leaseManager !== this.leaseManager)
+    ) {
+      throw new Error(
+        'CBOR topic writes require one coherent walletState and topicOperationJournal',
+      )
+    }
     if (this.walletState !== undefined) {
       return this.walletState.runOperation(
         admitted => this.castVoteAdmitted(params, admitted),

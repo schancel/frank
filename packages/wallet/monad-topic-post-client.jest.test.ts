@@ -44,7 +44,10 @@ import {
   decodeMonadTopicPost,
   decodeStoredMonadTopicPost,
 } from './monad-topic-post-client'
-import { openMonadWalletBundle } from './storage/monad-wallet-bundle'
+import {
+  openMonadWalletBundle,
+  type MonadWalletPersistenceBundle,
+} from './storage/monad-wallet-bundle'
 import {
   InMemoryTopicOperationJournal,
   type TopicOperationJournal,
@@ -112,18 +115,33 @@ function makeClient(overrides?: {
   topicWriteFormat?: 'protobuf' | 'cbor'
   omitTopicWriteFormat?: boolean
   topicOperationJournal?: TopicOperationJournal
+  withoutPersistence?: boolean
 }) {
   const pool = overrides?.pool ?? makePool()
   const leaseManager = new SubAccountLeaseManager(pool)
   const provider = makeChainProvider()
   const httpClient = makeMockHttpClient()
+  const topicOperationJournal =
+    overrides?.topicOperationJournal ?? new InMemoryTopicOperationJournal()
+  const usesCbor =
+    !overrides?.omitTopicWriteFormat &&
+    (overrides?.topicWriteFormat ?? 'cbor') === 'cbor'
+  const walletState = {
+    pool,
+    leaseManager,
+    topicOperationJournal,
+    runOperation: async (operation: (admission: never) => Promise<unknown>) =>
+      operation(undefined as never),
+  } as unknown as MonadWalletPersistenceBundle
   const handle = {
     pool,
     leaseManager,
     provider,
     httpClient,
     relayBaseUrl: 'https://relay.example.com/',
-    topicOperationJournal: overrides?.topicOperationJournal,
+    ...(!usesCbor || overrides?.withoutPersistence
+      ? {}
+      : { topicOperationJournal, walletState }),
     ...(overrides?.omitTopicWriteFormat
       ? {}
       : { topicWriteFormat: overrides?.topicWriteFormat ?? ('cbor' as const) }),
@@ -845,7 +863,7 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
   })
 
   it('retires as stuck on a machine-readable post-broadcast unknown outcome', async () => {
-    const { client, pool } = makeClient()
+    const { client, pool } = makeClient({ omitTopicWriteFormat: true })
     mockedAxios.mockImplementationOnce(async () => {
       throw Object.assign(new Error('Service Unavailable'), {
         isAxiosError: true,
@@ -934,29 +952,8 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
     expect(pool.getRecord(operationB.leaseIndex)?.status).toBe('in-use')
   })
 
-  it('retires a CBOR operation without a journal instead of consulting frame-only GET recovery', async () => {
-    const { client, pool } = makeClient()
-    let getCalls = 0
-    mockedAxios.mockImplementation(async config => {
-      if (config.method === 'put') {
-        throw Object.assign(new Error('socket hang up'), {
-          isAxiosError: true,
-          response: undefined,
-        })
-      }
-      getCalls++
-      return {
-        data: encodeTopicPost({
-          network: 'monad-testnet',
-          topic: 'different',
-          body: new Uint8Array([9]),
-        }),
-        status: 200,
-        statusText: 'OK',
-        headers: {},
-        config,
-      }
-    })
+  it('rejects a CBOR post without coherent persistence before leasing, signing, or dispatch', async () => {
+    const { client, pool, httpClient } = makeClient({ withoutPersistence: true })
 
     await expect(
       client.submitTopicPost({
@@ -968,11 +965,14 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
         overrides: FEE_OVERRIDES,
         abandonPoll: { maxAttempts: 1, intervalMs: 0 },
       }),
-    ).rejects.toThrow(MonadTopicPostAbandonedError)
-    expect(
-      pool.records().filter(record => record.status === 'retired'),
-    ).toHaveLength(1)
-    expect(getCalls).toBe(0)
+    ).rejects.toThrow(
+      'CBOR topic writes require one coherent walletState and topicOperationJournal',
+    )
+    expect(pool.records().every(record => record.status === 'available')).toBe(
+      true,
+    )
+    expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
+    expect(mockedAxios).not.toHaveBeenCalled()
   })
 
   it('preserves protobuf recovery through the protobuf post view', async () => {
@@ -1010,7 +1010,7 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
   })
 
   it('retires as stuck and throws MonadTopicPostAbandonedError when the fallback poll never finds it', async () => {
-    const { client, pool } = makeClient()
+    const { client, pool } = makeClient({ omitTopicWriteFormat: true })
     mockedAxios.mockImplementation(async () => {
       const networkErr = Object.assign(new Error('timeout'), {
         isAxiosError: true,

@@ -36,6 +36,8 @@ import { openChat } from 'src/utils/routes'
 import ContactBookDialog from 'src/components/dialogs/ContactBookDialog.vue'
 import { useWallet } from './utils/clients'
 import { monadModeEnabled } from './utils/runtime-mode'
+import { isSetupComplete } from 'src/utils/account-state'
+import { useWalletStore } from 'src/stores/wallet'
 
 export default defineComponent({
   components: {
@@ -143,6 +145,18 @@ export default defineComponent({
     },
     setupConnections() {
       if (monadModeEnabled()) {
+        const walletStore = useWalletStore()
+        const profileStore = useProfileStore()
+        if (
+          !isSetupComplete({
+            seedPhrase: walletStore.seedPhrase,
+            name: profileStore.profile.name,
+            seedConfirmedAt: walletStore.seedConfirmedAt,
+          })
+        ) {
+          return
+        }
+        this.$status.setup = true
         this.loadCuratedDefaults()
         return
       }

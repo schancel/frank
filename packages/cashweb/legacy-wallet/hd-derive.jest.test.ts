@@ -1,5 +1,6 @@
-import { HDPrivateKey, Networks, PrivateKey } from 'bitcore-lib-xpi'
+import { HDPrivateKey, Networks } from 'bitcore-lib-xpi'
 
+import { lotusFromPublicKey } from './lotus-address'
 import {
   privateKeyFromHdPath,
   walletChangePrivateKey,
@@ -14,8 +15,8 @@ const VECTOR_1_CHILD =
   'xprvA2JDeKCSNNZky6uBCviVfJSKyQ1mDYahRjijr5idH2WwLsEd4Hsb2Tyh8RfQMuPh7f7RtyzTtdrbdqqsunu5Mm3wDvUAKRHSC34sJ7in334'
 const VECTOR_1_SEED = '000102030405060708090a0b0c0d0e0f'
 
-function secretHex(key: PrivateKey): string {
-  return key.toBuffer().toString('hex')
+function secretHex(key: { toBuffer(): Uint8Array }): string {
+  return Buffer.from(key.toBuffer()).toString('hex')
 }
 
 it('derives the published BIP32 child and the existing coin-type 899 paths', () => {
@@ -26,7 +27,7 @@ it('derives the published BIP32 child and the existing coin-type 899 paths', () 
   const derived = privateKeyFromHdPath(master, "m/0'/1/2'/2")
   expect(secretHex(derived)).toBe(secretHex(published.privateKey))
   expect(derived.toPublicKey().toBuffer().length).toBe(33)
-  expect(derived.toAddress().toXAddress()).toBe(
+  expect(lotusFromPublicKey(derived.toPublicKey(), 'livenet')).toBe(
     published.privateKey.toAddress().toXAddress(),
   )
 
@@ -38,10 +39,10 @@ it('derives the published BIP32 child and the existing coin-type 899 paths', () 
     .deriveChild(0)
     .deriveChild(0).privateKey
   expect(secretHex(receive0)).toBe(secretHex(bitcoreReceive0))
-  expect(receive0.toPublicKey().toBuffer().toString('hex')).toBe(
+  expect(Buffer.from(receive0.toPublicKey().toBuffer()).toString('hex')).toBe(
     bitcoreReceive0.toPublicKey().toBuffer().toString('hex'),
   )
-  expect(receive0.toAddress().toXAddress()).toBe(
+  expect(lotusFromPublicKey(receive0.toPublicKey(), 'livenet')).toBe(
     bitcoreReceive0.toAddress().toXAddress(),
   )
 
@@ -66,7 +67,7 @@ it('derives the published BIP32 child and the existing coin-type 899 paths', () 
   const bitcoreTestChild = testnet.deriveChild("m/0'/1").privateKey
   expect(testnet.toString().startsWith('tprv')).toBe(true)
   expect(secretHex(testChild)).toBe(secretHex(bitcoreTestChild))
-  expect(testChild.toAddress().toXAddress()).toBe(
+  expect(lotusFromPublicKey(testChild.toPublicKey(), 'testnet')).toBe(
     bitcoreTestChild.toAddress().toXAddress(),
   )
 

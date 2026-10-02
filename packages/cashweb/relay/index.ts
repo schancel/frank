@@ -41,10 +41,10 @@ import type { Payment } from '../bip70/paymentrequest_pb'
 
 import WebSocket from 'isomorphic-ws'
 import { Transaction, Networks, Address } from 'bitcore-lib-xpi'
-import type { PrivateKey, PublicKey } from 'bitcore-lib-xpi'
+import type { PublicKey } from 'bitcore-lib-xpi'
 import { MessageStore } from './storage/storage'
 import { Wallet } from '../legacy-wallet'
-import { Utxo, utxoPrivateKeyFromSecret } from '../types/utxo'
+import { Utxo, utxoPrivateKeyFromSecret, type UtxoPrivateKey } from '../types/utxo'
 import { pAll } from './pAll'
 
 // Ticket #53 (package split): was `import { defaultAcceptancePrice } from 'src/utils/constants'`,
@@ -1046,7 +1046,7 @@ export class RelayClient extends ReadOnlyRelayClient {
   }
 
   async updateProfile(
-    idPrivKey: PrivateKey,
+    idPrivKey: UtxoPrivateKey,
     profile: {
       name?: string
       bio?: string

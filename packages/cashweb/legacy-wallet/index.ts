@@ -4,11 +4,11 @@ import assert from 'assert'
 import { walletChangeP2pkhScript } from './change-pubkey'
 import { calcUtxoId } from './helpers'
 
-import { Transaction, PrivateKey, HDPrivateKey } from 'bitcore-lib-xpi'
+import { Transaction, HDPrivateKey } from 'bitcore-lib-xpi'
 import type { Script } from 'bitcore-lib-xpi'
 import { UtxoStore } from './storage/storage'
 
-import { Utxo, type UtxoPrivateKey } from '../types/utxo'
+import { Utxo, utxoPrivateKeyFromSecret, type UtxoPrivateKey } from '../types/utxo'
 import { ChronikClient, WsEndpoint } from 'chronik-client'
 import { AddressEvent, ChainAdapter } from './chain-adapter'
 import { LotusAdapter } from './lotus-adapter'
@@ -65,7 +65,7 @@ function shuffleArray(arr: unknown[]) {
   return swaps
 }
 
-type PrivateKeyData = { privKey: PrivateKey }
+type PrivateKeyData = { privKey: UtxoPrivateKey }
 type AddressData = { address: string; change: boolean } & PrivateKeyData
 type SerializedPublicKey = Uint8Array | { toBuffer(): Uint8Array }
 
@@ -111,40 +111,37 @@ export function p2pkhScriptFromPublicKey(
 const WALLET_RECEIVE_PREFIX = "m/44'/899'/0'/0"
 const WALLET_CHANGE_PREFIX = "m/44'/899'/0'/1"
 
-// BIP32 child of a bitcore xprv. The returned key stays a bitcore PrivateKey so
-// address strings stay on bitcore until issue #242. Version bytes are the
-// xprv/tprv pair bitcore already writes (decision #497).
+// BIP32 child of the stored xprv. Coin type stays 899 (decision #497, issue #241).
+// The child is the 32-byte secret and its compressed point. The xprv record
+// stays the bitcore toObject() shape (decision #592).
 export function privateKeyFromHdPath(
   xPrivKey: HDPrivateKey,
   path: string,
-): PrivateKey {
+): UtxoPrivateKey {
   const serialized = xPrivKey.toString()
   const mainnet = parseHdPrivate(serialized, BTC_MAINNET)
   const parsed = mainnet.ok ? mainnet : parseHdPrivate(serialized, BTC_TESTNET)
   if (!parsed.ok) throw new Error(`hd-parse:${parsed.error.code}`)
   const child = deriveHdPath(parsed.value, path)
   if (!child.ok) throw new Error(`hd-derive:${child.error.code}`)
-  const secret = Buffer.from(child.value.privateKey.bytes).toString('hex')
-  const network = (xPrivKey as { network?: PrivateKey['network'] }).network
-  return new PrivateKey(secret, network)
+  return utxoPrivateKeyFromSecret(child.value.privateKey.bytes)
 }
 
 export function walletReceivePrivateKey(
   xPrivKey: HDPrivateKey,
   index: number,
-): PrivateKey {
+): UtxoPrivateKey {
   return privateKeyFromHdPath(xPrivKey, `${WALLET_RECEIVE_PREFIX}/${index}`)
 }
 
 export function walletChangePrivateKey(
   xPrivKey: HDPrivateKey,
   index: number,
-): PrivateKey {
+): UtxoPrivateKey {
   return privateKeyFromHdPath(xPrivKey, `${WALLET_CHANGE_PREFIX}/${index}`)
 }
 
-// The UI stores the bitcore toObject() record (decision #592). Address
-// strings stay on this bitcore key until issue #242.
+// The UI stores the bitcore toObject() record (decision #592).
 type StoredHdPrivate = {
   network: string
   depth: number
@@ -323,7 +320,7 @@ export class Wallet {
   // (e.g. src/cashweb/relay/index.ts) that still reach into them directly.
   chainAdapter: ChainAdapter | undefined
   _xPrivKey: HDPrivateKey | undefined
-  _identityPrivKey: PrivateKey | undefined
+  _identityPrivKey: UtxoPrivateKey | undefined
   walletKeys: PrivateKeyData[] = []
   changeKeys: PrivateKeyData[] = []
   addressDataByPkh: Map<string, AddressData> = new Map()
@@ -415,7 +412,7 @@ export class Wallet {
     privKey,
     change,
   }: {
-    privKey: PrivateKey
+    privKey: UtxoPrivateKey
     change: boolean
   }) {
     const hash = p2pkhHashFromPublicKey(privKey.toPublicKey().toBuffer())

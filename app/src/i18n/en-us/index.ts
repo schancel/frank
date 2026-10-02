@@ -498,6 +498,23 @@ export default {
     enterAmount: 'Enter Amount (MON)',
     cancel: 'Cancel',
     send: 'Send',
+    review: 'Review',
+    reviewTitle: 'Review Transfer',
+    network: 'Network',
+    recipient: 'Recipient',
+    amount: 'Amount',
+    estimatedFee: 'Estimated Fee',
+    feeUnavailable: 'Unavailable',
+    maxTotal: 'Maximum Total',
+    maxTotalWithFee: '{amount} {unit} (+ network fee)',
+    irreversibleWarning:
+      'Blockchain transactions are irreversible. Verify recipient and network before confirming.',
+    editTransfer: 'Edit',
+    confirmAndSend: 'Confirm & Send',
+    definitelyNotBroadcast:
+      'Transaction was not broadcast. No funds were transferred.',
+    potentiallyBroadcast:
+      'Transaction was signed ({txHash}) and may have been broadcast. Check your balance or transaction status before retrying.',
     invalidTransfer: 'Enter a valid Monad address and MON amount.',
     failedSendTransaction: 'Failed to send Monad transaction',
   },

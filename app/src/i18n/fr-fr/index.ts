@@ -514,6 +514,23 @@ export default {
     enterAmount: 'Saisissez le montant (MON)',
     cancel: 'Annuler',
     send: 'Envoyer',
+    review: 'Vérifier',
+    reviewTitle: 'Vérifier le transfert',
+    network: 'Réseau',
+    recipient: 'Destinataire',
+    amount: 'Montant',
+    estimatedFee: 'Frais estimés',
+    feeUnavailable: 'Indisponible',
+    maxTotal: 'Total maximal',
+    maxTotalWithFee: '{amount} {unit} (+ frais de réseau)',
+    irreversibleWarning:
+      'Les transactions sur la blockchain sont irréversibles. Vérifiez le destinataire et le réseau avant de confirmer.',
+    editTransfer: 'Modifier',
+    confirmAndSend: 'Confirmer et envoyer',
+    definitelyNotBroadcast:
+      "La transaction n'a pas été diffusée. Aucun fond n'a été transféré.",
+    potentiallyBroadcast:
+      'La transaction a été signée ({txHash}) et a peut-être été diffusée. Vérifiez votre solde ou le statut de la transaction avant de réessayer.',
     invalidTransfer:
       'Saisissez une adresse Monad et un montant de MON valides.',
     failedSendTransaction: 'Échec de l’envoi de la transaction Monad',

@@ -1,5 +1,6 @@
 import { createServer, Server } from "http";
 import { AddressInfo } from "net";
+import { createHash } from "crypto";
 import {
   DEFAULT_MONAD_CHAIN_ID,
   MonadJsonRpcProvider,
@@ -136,6 +137,86 @@ describe("MonadJsonRpcProvider (#534)", () => {
         (m) => m === "eth_chainId"
       );
       expect(chainIdQueriesAfter.length).toBe(1);
+    } finally {
+      provider.destroy();
+    }
+  });
+
+  it("signs a request-bound relay challenge for customer-only RPC methods", async () => {
+    const customer = `0x${"12".repeat(20)}`;
+    const signedDigests: Uint8Array[] = [];
+    let challengeBody = "";
+    let authenticatedBody = "";
+    let authenticatedHeaders: typeof import("http").IncomingHttpHeaders = {};
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        if (req.url?.endsWith("/auth")) {
+          challengeBody = body;
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              epoch: "11".repeat(32),
+              nonce: "22".repeat(32),
+              expires_at_ms: Date.now() + 60_000,
+              token: "33".repeat(32),
+              signing_domain: "frank:rpc-http-auth:v1",
+              customer,
+              chain: "monad-testnet",
+              body_sha256: createHash("sha256").update(body).digest("hex"),
+              network_tag: Buffer.from("MONT").toString("hex"),
+            })
+          );
+          return;
+        }
+        authenticatedBody = body;
+        authenticatedHeaders = req.headers;
+        const payload = JSON.parse(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({ jsonrpc: "2.0", id: payload.id, result: "0x" })
+        );
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        rpcUrl = `http://127.0.0.1:${
+          (server.address() as AddressInfo).port
+        }/chain-rpc/monad-testnet/rpc`;
+        resolve();
+      });
+    });
+
+    const provider = createMonadJsonRpcProvider({
+      rpcUrl,
+      relayAuth: {
+        chain: "monad-testnet",
+        customer,
+        networkTag: "MONT",
+        signDigest: (digest) => {
+          signedDigests.push(digest);
+          return Uint8Array.from([
+            0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01,
+          ]);
+        },
+      },
+    });
+    try {
+      await provider.send("eth_call", [
+        { to: `0x${"34".repeat(20)}`, data: "0x" },
+        "latest",
+      ]);
+      expect(challengeBody).toBe(authenticatedBody);
+      expect(signedDigests).toHaveLength(1);
+      expect(signedDigests[0]).toHaveLength(32);
+      expect(authenticatedHeaders["x-frank-rpc-customer"]).toBe(customer);
+      expect(authenticatedHeaders["x-frank-rpc-epoch"]).toBe("11".repeat(32));
+      expect(authenticatedHeaders["x-frank-rpc-signature"]).toBe(
+        "3006020101020101"
+      );
     } finally {
       provider.destroy();
     }

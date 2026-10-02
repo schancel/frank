@@ -4,8 +4,14 @@ import {
   JsonRpcProvider,
   Network,
   Networkish,
+  concat,
   getBigInt,
+  getBytes,
+  hexlify,
   makeError,
+  sha256,
+  toBeHex,
+  toUtf8Bytes,
 } from "ethers";
 
 export const DEFAULT_MONAD_CHAIN_ID = 10143n;
@@ -13,6 +19,169 @@ export const DEFAULT_MONAD_CHAIN_ID = 10143n;
 export interface MonadJsonRpcProviderOptions extends JsonRpcApiProviderOptions {
   rpcUrl: string;
   chainId?: number | bigint | Networkish;
+  relayAuth?: MonadRelayRpcAuth;
+}
+
+export interface MonadRelayRpcAuth {
+  chain: string;
+  customer: string;
+  networkTag: string;
+  signDigest: (digest: Uint8Array) => Uint8Array | Promise<Uint8Array>;
+}
+
+interface RelayRpcChallenge {
+  epoch: string;
+  nonce: string;
+  expires_at_ms: number;
+  token: string;
+  signing_domain: string;
+  customer: string;
+  chain: string;
+  body_sha256: string;
+  network_tag: string;
+}
+
+const RELAY_RPC_AUTH_DOMAIN = "frank:rpc-http-auth:v1";
+const ANONYMOUS_RPC_METHODS = new Set([
+  "eth_chainId",
+  "eth_blockNumber",
+  "eth_getBalance",
+  "eth_getTransactionCount",
+  "eth_gasPrice",
+  "eth_feeHistory",
+  "eth_maxPriorityFeePerGas",
+  "eth_getTransactionByHash",
+  "eth_getTransactionReceipt",
+  "eth_sendRawTransaction",
+]);
+
+function u32be(value: number): Uint8Array {
+  const bytes = new Uint8Array(4);
+  new DataView(bytes.buffer).setUint32(0, value, false);
+  return bytes;
+}
+
+function bareHex(bytes: Uint8Array): string {
+  return hexlify(bytes).slice(2);
+}
+
+function rpcMethods(body: Uint8Array): string[] | undefined {
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(body));
+    const calls = Array.isArray(parsed) ? parsed : [parsed];
+    if (calls.length === 0) return undefined;
+    const methods = calls.map((call) =>
+      call !== null && typeof call === "object" && "method" in call
+        ? (call as { method?: unknown }).method
+        : undefined
+    );
+    return methods.every(
+      (method): method is string => typeof method === "string"
+    )
+      ? methods
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function needsCustomerAuth(body: Uint8Array): boolean {
+  const methods = rpcMethods(body);
+  return (
+    methods !== undefined &&
+    methods.some((method) => !ANONYMOUS_RPC_METHODS.has(method))
+  );
+}
+
+function validateChallenge(
+  challenge: RelayRpcChallenge,
+  auth: MonadRelayRpcAuth,
+  bodyHash: string
+): void {
+  const expectedNetworkTag = bareHex(toUtf8Bytes(auth.networkTag));
+  const hex32 = /^[0-9a-f]{64}$/;
+  if (
+    challenge.signing_domain !== RELAY_RPC_AUTH_DOMAIN ||
+    challenge.customer.toLowerCase() !== auth.customer.toLowerCase() ||
+    challenge.chain !== auth.chain ||
+    challenge.body_sha256 !== bodyHash ||
+    challenge.network_tag !== expectedNetworkTag ||
+    !hex32.test(challenge.epoch) ||
+    !hex32.test(challenge.nonce) ||
+    !hex32.test(challenge.token) ||
+    !Number.isSafeInteger(challenge.expires_at_ms) ||
+    challenge.expires_at_ms <= Date.now()
+  ) {
+    throw new Error("relay returned a malformed or mismatched RPC challenge");
+  }
+}
+
+function rpcAuthDigest(
+  challenge: RelayRpcChallenge,
+  auth: MonadRelayRpcAuth,
+  bodyHash: string
+): Uint8Array {
+  const chain = toUtf8Bytes(auth.chain);
+  const customer = getBytes(auth.customer);
+  const networkTag = toUtf8Bytes(auth.networkTag);
+  if (customer.length !== 20)
+    throw new Error("relay RPC customer must be a 20-byte address");
+  return getBytes(
+    sha256(
+      concat([
+        toUtf8Bytes(RELAY_RPC_AUTH_DOMAIN),
+        new Uint8Array([0]),
+        getBytes(`0x${challenge.epoch}`),
+        getBytes(`0x${challenge.nonce}`),
+        getBytes(toBeHex(BigInt(challenge.expires_at_ms), 8)),
+        getBytes(`0x${challenge.token}`),
+        toUtf8Bytes("POST\0/chain-rpc/"),
+        u32be(chain.length),
+        chain,
+        toUtf8Bytes("\0rpc"),
+        customer,
+        getBytes(`0x${bodyHash}`),
+        u32be(networkTag.length),
+        networkTag,
+      ])
+    )
+  );
+}
+
+/** Builds an ethers connection to a relay family route. Public bootstrap calls are sent directly;
+ * customer-only calls first obtain a body-bound challenge and sign it with the registered profile
+ * identity. The upstream provider URL never reaches this process or the browser bundle. */
+export function createMonadRelayRpcConnection(
+  rpcUrl: string,
+  auth: MonadRelayRpcAuth
+): FetchRequest {
+  const connection = new FetchRequest(rpcUrl);
+  connection.preflightFunc = async (request) => {
+    const body = request.body;
+    if (body === null || !needsCustomerAuth(body)) return request;
+
+    const bodyHash = bareHex(getBytes(sha256(body)));
+    const challengeRequest = new FetchRequest(`${rpcUrl}/auth`);
+    challengeRequest.body = body;
+    challengeRequest.setHeader("content-type", "application/json");
+    challengeRequest.setHeader("x-frank-rpc-customer", auth.customer);
+    const response = await challengeRequest.send();
+    response.assertOk();
+    const challenge = response.bodyJson as RelayRpcChallenge;
+    validateChallenge(challenge, auth, bodyHash);
+    const signature = await auth.signDigest(
+      rpcAuthDigest(challenge, auth, bodyHash)
+    );
+
+    request.setHeader("x-frank-rpc-customer", auth.customer);
+    request.setHeader("x-frank-rpc-epoch", challenge.epoch);
+    request.setHeader("x-frank-rpc-nonce", challenge.nonce);
+    request.setHeader("x-frank-rpc-expires-at-ms", challenge.expires_at_ms);
+    request.setHeader("x-frank-rpc-token", challenge.token);
+    request.setHeader("x-frank-rpc-signature", bareHex(signature));
+    return request;
+  };
+  return connection;
 }
 
 /**
@@ -41,7 +210,7 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
   constructor(
     url: string | FetchRequest,
     expectedChainId?: number | bigint | Networkish,
-    options?: JsonRpcApiProviderOptions
+    options?: JsonRpcApiProviderOptions & { relayAuth?: MonadRelayRpcAuth }
   ) {
     const chainId =
       expectedChainId !== undefined && typeof expectedChainId !== "object"
@@ -50,8 +219,13 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
 
     // Pass staticNetwork: true so ethers initializes its internal #network and does NOT
     // enter the unbounded _start() loop that retries network detection every 1s indefinitely on 503.
-    super(url, chainId, {
-      ...options,
+    const { relayAuth, ...providerOptions } = options ?? {};
+    const connection =
+      typeof url === "string" && relayAuth
+        ? createMonadRelayRpcConnection(url, relayAuth)
+        : url;
+    super(connection, chainId, {
+      ...providerOptions,
       staticNetwork: true,
     });
 

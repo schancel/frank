@@ -144,7 +144,7 @@ const mockedFetchMonadProfile = fetchMonadProfile as jest.MockedFunction<
 >;
 
 const TEST_CONFIG: MonadChainConfig = {
-  rpcUrl: "http://127.0.0.1:1",
+  rpcChain: "monad-testnet",
   relayBaseUrl: "http://relay.test",
   networkTag: "MONT",
   stampBurnAddress: "0x000000000000000000000000000000000000dEaD",

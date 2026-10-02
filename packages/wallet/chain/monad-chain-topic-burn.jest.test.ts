@@ -50,7 +50,7 @@ const GAS_PRICE = 2_000_000_000n
 const GAS_LIMIT = 60_000n
 
 const CONFIG: MonadChainConfig = {
-  rpcUrl: 'http://127.0.0.1:1',
+  rpcChain: 'monad-testnet',
   relayBaseUrl: 'http://relay.test',
   networkTag: 'MONT',
   stampBurnAddress: BURN_ADDRESS,

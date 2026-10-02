@@ -42,7 +42,10 @@ pub const MAX_RPC_REQUEST_BYTES: usize = 512 * 1024;
 pub(crate) const RPC_AUTH_DOMAIN: &str = "frank:rpc-http-auth:v1";
 const RPC_CHALLENGE_MAC_DOMAIN: &[u8] = b"frank:rpc-challenge-mac:v1\0";
 const RPC_CHALLENGE_TTL_MS: i64 = 60_000;
-const MAX_USED_RPC_CHALLENGES_PER_CUSTOMER: usize = 30;
+// EVM clients batch when they can, but boot-time log scans and multi-account sweeps can still
+// legitimately exceed the mailbox's much smaller read cadence. This is replay-retention capacity,
+// not the usage limit; weighted fixed-hour quotas remain the resource-control boundary.
+const MAX_USED_RPC_CHALLENGES_PER_CUSTOMER: usize = 2_048;
 pub(crate) const RPC_CUSTOMER_HEADER: &str = "x-frank-rpc-customer";
 const RPC_EPOCH_HEADER: &str = "x-frank-rpc-epoch";
 const RPC_NONCE_HEADER: &str = "x-frank-rpc-nonce";

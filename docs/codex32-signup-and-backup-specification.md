@@ -275,9 +275,13 @@ The descriptor is public but indispensable. V1 signup MUST verify at least two
 retrieved copies stored in distinct trust and failure domains independent from
 the threshold shares; activation is blocked with zero or one. A duplicate
 retrieval from the same declared destination does not increment the count.
-Each destination produces a versioned attestation
-`{version, class, providerId?, accountIdCommitment?, deviceId?, syncDomainId?,
-removableVolumeId?, physicalDomainId?, userAssertions}`.
+Each destination produces a one-use versioned attestation
+`{version, ceremonyId, ceremonyRevision, presentationOperationId, candidateAccountId,
+artifactRole, artifactCommitment, shareIdentifier?, shareIndex?, class, providerId?,
+accountIdCommitment?, deviceId?, syncDomainId?, removableVolumeId?, physicalDomainId?,
+userAssertions}`. `artifactCommitment` is
+`SHA-256(ASCII("frank/backup-artifact/v1") || 0x00 || u8(artifactRole) ||
+u32be(byteLength) || exactCanonicalArtifactBytes)`.
 Frank machine-verifies available stable provider/account/device/sync identifiers,
 normalizes aliases, and rejects two destinations sharing any policy-disallowed
 provider account, synchronized storage domain, or physical device. Properties a
@@ -297,9 +301,26 @@ whitespace forbidden and provider-issued opaque identifiers preferred; equality
 is byte equality after class-specific alias normalization frozen by the
 attestation version. `physicalDomainId` is a locally generated stable opaque ID
 selected from the user's existing named-location inventory, not free-form display
-text. The complete equivalence table applies uniformly to descriptor↔descriptor
+text. V1 class octets are `{cloud=0, passwordManager=1, localFile=2,
+removableMedia=3, print=4}`. Cloud/password-manager records require provider,
+account commitment, and sync-domain ID (including a canonical provider-issued
+“not synced” ID); local files require device and sync-domain IDs; removable media
+requires volume ID; print requires physical-domain ID. `accountIdCommitment` is
+`SHA-256(ASCII("frank/destination-account/v1") || 0x00 ||
+u16be(providerIdByteLength) || providerId || u16be(accountIdByteLength) ||
+providerOpaqueAccountId)`. The complete equivalence table applies uniformly to descriptor↔descriptor
 and descriptor↔share comparisons: for online classes, equal `providerId` alone is
-one domain even when account and sync IDs differ.
+one domain even when account and sync IDs differ; across all classes, equality of
+any device, sync-domain, volume, or physical-domain ID is one domain. No other
+cross-class equivalence is accepted in v1; missing a class-required ID fails
+closed. The alias-normalization table is part of attestation version 1 and cannot
+change without a version bump.
+
+Acceptance atomically verifies the exact current artifact bytes and all ceremony,
+revision, role, family/index, candidate-account, and presentation-operation fields,
+then marks that operation ID consumed. Evidence from another ceremony, role,
+account, family, index, revision, or prior presentation cannot be replayed or
+substituted.
 Losing every trusted descriptor blocks authenticated blank-install recovery
 even when `k` shares survive. In v1 there is no descriptorless preview: a
 missing descriptor stops the normal recovery route before share entry. A future
@@ -631,8 +652,9 @@ Only after exact reconstruction succeeds may setup:
    insufficient;
 5. build one complete durable account record;
 6. through one awaitable transaction, conditionally insert both identity claims
-   into the shared unique identity index as `active {accountId}`—failing if either
-   key is active, deleting, or deleted—and write the record, setup-complete marker,
+   into the shared unique identity index as `active {accountId, creationId}`—failing
+   if either key belongs to another creation or is deleting/deleted, but treating
+   byte-identical replay by the same stable creation ID as success—and write the record, setup-complete marker,
    and every vault-intent ownership transfer;
 7. read it back or otherwise obtain durable-store acknowledgement;
 8. clear `R`, `M`, `M_verify`, shares, share strings, KDF intermediates, and
@@ -871,7 +893,7 @@ fences the inactive account, checks its expected custody epoch/revision, and
 freezes the exact inventory of account-owned handles and wrapping references
 after operation capabilities have been detached. That same transaction CASes
 the account's canonical `masterRetirementId` and `recoveryIdentityCommitment`
-rows in the shared unique identity index from `active {accountId}` to
+rows in the shared unique identity index from `active {accountId, creationId}` to
 `deleting {accountId, deletionId}`. Finalization changes them to `deleted`; they
 are never removed. Every create, import, restore, and activation
 path consults both pending tombstones and completed receipts, so cleanup creates
@@ -927,7 +949,12 @@ acknowledgement or runtime activation error is not reported as rollback.
 Account creation and active-pointer switch are either one atomic linearization
 or two named phases. In a two-phase import, post-record/pre-switch failure leaves
 the new record inactive and the former account active until explicit resume or
-bounded cleanup. After the pointer switch, startup resumes the new identity.
+bounded cleanup. Cleanup may return the two identity rows to absent only in the
+same transaction that proves the candidate was never active, has the matching
+creation ID, has no detached operation or adopted handle, and destroys the whole
+inactive candidate record; this is cancellation of an unactivated creation, not
+identity deletion or retirement. After the pointer switch, that transition is
+forever forbidden and startup resumes the new identity.
 Secret cleanup precedes normal networking in either case.
 
 ## 8. Backup management after signup
@@ -1224,6 +1251,7 @@ A Codex32-backed account record needs an explicit schema version and at least:
 
 ```text
 recoveryFormat: "codex32-master-v1"
+creationId: <stable ceremony/commit identifier>
 derivationRegistry: <single frozen registry identifier>
 domainPurposes: [<purpose identifiers from that registry>]
 backupVerification: <optional local timestamp and method version>
@@ -1241,11 +1269,16 @@ record, never public recovery authority.
 The identity index is authoritative, not a preflight cache. It has unique rows
 keyed independently by `(kind: root-retirement, masterRetirementId)` and
 `(kind: recovery-identity, recoveryIdentityCommitment)`, each with state
-`active {accountId} | deleting {accountId, deletionId} | deleted {accountId,
+`active {accountId, creationId} | deleting {accountId, deletionId} | deleted {accountId,
 deletionId}`. Account creation and deletion mutate these rows in the same storage
 transaction as their account/tombstone linearization. A read-before-build may
 improve UX but never authorizes commit; the conditional insert/CAS is the check
 that closes create-versus-delete races.
+
+`creationId` is allocated and persisted before any vault creation or account
+commit and is reused after lost acknowledgement. A retry succeeds only when both
+identity rows and the complete account record already contain that same creation
+ID and byte-identical committed data. Any mismatch fails closed.
 
 The persisted fingerprint field is exactly the raw 32-byte SHA-256 result from
 Section 7.2. The `frankrec` Bech32m string is its human-facing rendering and the
@@ -1591,6 +1624,11 @@ the account transaction, and after intent compaction. The commit snapshot
 contains either cancel-owned cleanup with no account or the complete account
 plus terminal `adopted` intents for every exact handle—never both or neither;
 startup does not block on adopted intents and cleanup cannot destroy them.
+A lost commit acknowledgement retries the same `creationId` and byte-identical
+record successfully rather than colliding with its own identity rows. A competing
+creation fails. Two-phase inactive-candidate cleanup removes active identity rows
+only in the same transaction that proves the matching creation never activated
+and has no adopted handle or detached operation; after pointer switch it cannot.
 
 Backup-status tests deterministically re-export the exact descriptor from
 persisted versions and raw fingerprint, round-trip it independently, and reject
@@ -1647,6 +1685,10 @@ domains distinct from one another and from every stored-share domain. A share at
 provider `P`/account `A`/sync `S1` and descriptor at provider `P`/account `B`/sync
 `S2` fail because equal provider ID alone is one v1 domain; removable-volume and
 physical-domain aliases exercise their typed canonical fields.
+Destination evidence is then replayed across ceremony IDs, revisions, candidate
+accounts, descriptor/share roles, exact artifact bytes, share identifiers/indices,
+and presentation-operation IDs; every substitution fails and each accepted
+operation ID is consumed exactly once.
 
 ## 16. Implementation sequence and gates
 

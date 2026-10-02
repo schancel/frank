@@ -21,6 +21,9 @@ a legacy row. A request that explicitly accepts only the other format receives `
 accepts neither supported format receives `406`.
 Media-range quality follows specificity precedence: an exact range overrides `application/*`,
 which overrides `*/*`, so an exact `q=0` cannot be bypassed by a positive wildcard.
+Because the offered representations are bare media types, media parameters before the first `q`
+constrain a range and do not match. Parameters after `q` are treated as RFC 7231 accept extensions
+and do not constrain the representation.
 
 CBOR is enabled in wallet clients only with `topicWriteFormat: 'cbor'`. Omitting the option uses
 protobuf. A CBOR vote may target only an authoritative stored canonical type-9 frame whose T1 hash

@@ -598,6 +598,34 @@ fn topic_request_format(headers: &HeaderMap) -> Option<TopicRequestFormat> {
     }
 }
 
+/// Split one HTTP list or parameter list without treating delimiters inside quoted strings as
+/// syntax. Reject unbalanced quotes and dangling quoted-pair escapes.
+fn split_quoted(value: &str, delimiter: char) -> Option<Vec<&str>> {
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, ch) in value.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if quoted && ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            quoted = !quoted;
+        } else if !quoted && ch == delimiter {
+            pieces.push(&value[start..index]);
+            start = index + ch.len_utf8();
+        }
+    }
+    if quoted || escaped {
+        return None;
+    }
+    pieces.push(&value[start..]);
+    Some(pieces)
+}
+
 /// Test whether an `Accept` header permits one exact topic representation. GET handlers inspect
 /// row origin first: wildcard requests receive that row's sole semantically valid representation,
 /// never a projection into the other format.
@@ -616,9 +644,14 @@ fn topic_accepts(headers: &HeaderMap, expected: &str) -> bool {
         let Ok(value) = value.to_str() else {
             return false;
         };
-        for range in value.split(',') {
-            let mut parts = range.split(';');
-            let media_type = parts.next().unwrap_or_default().trim().to_ascii_lowercase();
+        let Some(ranges) = split_quoted(value, ',') else {
+            return false;
+        };
+        for range in ranges {
+            let Some(mut parts) = split_quoted(range, ';') else {
+                return false;
+            };
+            let media_type = parts.remove(0).trim().to_ascii_lowercase();
             let specificity = if media_type == expected {
                 2
             } else if media_type == type_wildcard {
@@ -629,18 +662,27 @@ fn topic_accepts(headers: &HeaderMap, expected: &str) -> bool {
                 continue;
             };
             let mut quality = 1.0;
+            let mut before_quality = true;
+            let mut matches_offered_parameters = true;
             for parameter in parts {
                 let mut pair = parameter.trim().splitn(2, '=');
-                if pair
-                    .next()
-                    .is_some_and(|name| name.eq_ignore_ascii_case("q"))
-                {
-                    quality = pair
-                        .next()
+                let name = pair.next().unwrap_or_default().trim();
+                let value = pair.next().map(str::trim);
+                if before_quality && name.eq_ignore_ascii_case("q") {
+                    quality = value
                         .and_then(|quality| quality.trim().parse::<f32>().ok())
                         .filter(|quality| quality.is_finite() && (0.0..=1.0).contains(quality))
                         .unwrap_or(0.0);
+                    before_quality = false;
+                } else if before_quality {
+                    // The server offers bare application/cbor and application/x-protobuf. A
+                    // media parameter before q constrains the representation and therefore does
+                    // not match either offer. Parameters after q are RFC 7231 accept extensions.
+                    matches_offered_parameters = false;
                 }
+            }
+            if !matches_offered_parameters {
+                continue;
             }
             match selected {
                 Some((selected_specificity, selected_quality))
@@ -1421,6 +1463,42 @@ mod tests {
                 topic_accepts(&headers, expected),
                 "a positive exact range must override a refused wildcard for {expected}"
             );
+            headers.insert(ACCEPT, format!("{expected};profile=next").parse().unwrap());
+            assert!(
+                !topic_accepts(&headers, expected),
+                "a parameter-constrained range must not match a bare offer for {expected}"
+            );
+            headers.insert(
+                ACCEPT,
+                format!(r#"{expected};profile="comma,semicolon;safe""#)
+                    .parse()
+                    .unwrap(),
+            );
+            assert!(!topic_accepts(&headers, expected));
+            headers.insert(
+                ACCEPT,
+                format!("{expected};profile=next;q=1, {expected};q=0")
+                    .parse()
+                    .unwrap(),
+            );
+            assert!(!topic_accepts(&headers, expected));
+            headers.insert(
+                ACCEPT,
+                format!("{expected};profile=next;q=0, {expected};q=1")
+                    .parse()
+                    .unwrap(),
+            );
+            assert!(topic_accepts(&headers, expected));
+            headers.insert(
+                ACCEPT,
+                format!(r#"{expected};q=1;ext="comma,semicolon;safe""#)
+                    .parse()
+                    .unwrap(),
+            );
+            assert!(
+                topic_accepts(&headers, expected),
+                "post-q accept extensions remain non-constraining for {expected}"
+            );
         }
     }
 
@@ -1583,6 +1661,22 @@ mod tests {
             .await,
             Err(GetMonadTopicPostError::NotFound)
         ));
+        let mut constrained_cbor = HeaderMap::new();
+        constrained_cbor.insert(
+            ACCEPT,
+            "application/cbor;profile=next, application/x-protobuf"
+                .parse()
+                .unwrap(),
+        );
+        assert!(matches!(
+            handle_get_monad_topic_post(
+                Path(hex::encode(&inner.payload_hash)),
+                Extension(server.clone()),
+                constrained_cbor,
+            )
+            .await,
+            Err(GetMonadTopicPostError::NotFound)
+        ));
         let mut neither = HeaderMap::new();
         neither.insert(ACCEPT, "text/plain".parse().unwrap());
         assert!(matches!(
@@ -1699,6 +1793,22 @@ mod tests {
                 Path(hex::encode(&hash)),
                 Extension(server.clone()),
                 cbor_only,
+            )
+            .await,
+            Err(GetMonadTopicPostError::NotFound)
+        ));
+        let mut constrained_protobuf = HeaderMap::new();
+        constrained_protobuf.insert(
+            ACCEPT,
+            "application/x-protobuf;profile=next, application/cbor"
+                .parse()
+                .unwrap(),
+        );
+        assert!(matches!(
+            handle_get_monad_topic_post(
+                Path(hex::encode(&hash)),
+                Extension(server.clone()),
+                constrained_protobuf,
             )
             .await,
             Err(GetMonadTopicPostError::NotFound)
@@ -2387,6 +2497,16 @@ mod tests {
                 "/message/monad/topics/vote",
                 "application/x-protobuf",
                 "application/x-protobuf;q=0, application/*;q=1, */*;q=1",
+            ),
+            (
+                "/message/monad/topics",
+                "application/cbor",
+                "application/cbor;profile=next",
+            ),
+            (
+                "/message/monad/topics/vote",
+                "application/x-protobuf",
+                "application/x-protobuf;profile=next",
             ),
         ] {
             let explicitly_refused = axum::http::Request::builder()

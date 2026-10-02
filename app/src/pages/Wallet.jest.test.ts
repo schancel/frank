@@ -34,7 +34,7 @@ jest.mock('src/composables/useActiveWallet', () => ({
 }))
 
 import Wallet from './Wallet.vue'
-import { addressCopiedNotify } from 'src/utils/notifications'
+import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 
 const mockWallet = { identity: { displayAddress: '0xabc' } }
 
@@ -81,6 +81,8 @@ describe('Wallet detail page (#570)', () => {
     mockCopyToClipboard.mockResolvedValue(undefined)
     mockUseActiveWallet.mockReset()
     mockUseActiveWallet.mockResolvedValue(mockWallet)
+    jest.mocked(addressCopiedNotify).mockClear()
+    jest.mocked(errorNotify).mockClear()
   })
 
   it('shows the wallet, its chain, balance and address', async () => {
@@ -127,7 +129,9 @@ describe('Wallet detail page (#570)', () => {
     const wrapper = mountWallet()
     await flush()
 
-    await wrapper.get('[data-testid="wallet-copy-address"]').trigger('click')
+    const copyButton = wrapper.get('[data-testid="wallet-copy-address"]')
+    expect(copyButton.attributes('aria-label')).toBe('a11y.copyAddress')
+    await copyButton.trigger('click')
     await flush()
     expect(mockCopyToClipboard).toHaveBeenCalledWith('0xabc')
     expect(addressCopiedNotify).toHaveBeenCalledTimes(1)
@@ -136,6 +140,19 @@ describe('Wallet detail page (#570)', () => {
     await wrapper.get('[data-testid="wallet-receive-action"]').trigger('click')
     expect(openPage).toHaveBeenNthCalledWith(1, expect.anything(), '/send')
     expect(openPage).toHaveBeenNthCalledWith(2, expect.anything(), '/receive')
+    wrapper.unmount()
+  })
+
+  it('reports a clipboard failure instead of claiming success', async () => {
+    mockCopyToClipboard.mockRejectedValueOnce(new Error('denied'))
+    const wrapper = mountWallet()
+    await flush()
+
+    await wrapper.get('[data-testid="wallet-copy-address"]').trigger('click')
+    await flush()
+    expect(mockCopyToClipboard).toHaveBeenCalledWith('0xabc')
+    expect(errorNotify).toHaveBeenCalledTimes(1)
+    expect(addressCopiedNotify).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

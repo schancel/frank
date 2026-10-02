@@ -44,6 +44,7 @@
                   color="primary"
                   flat
                   icon="content_copy"
+                  :aria-label="$t('a11y.copyAddress')"
                   data-testid="wallet-copy-address"
                   @click="copyAddress"
                 />

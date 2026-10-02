@@ -1,12 +1,66 @@
-import type { Message, Stamp } from './relay_pb'
-import { PayloadConstructor } from './crypto'
-import { PrivateKey, PublicKey } from 'bitcore-lib-xpi'
 import assert from 'assert'
+import { hmacSha256 } from '@frank/crypto-box'
+import {
+  compressPoint,
+  pointFromPublicKey,
+  uncompressPoint,
+} from '../../nakamoto/src/secp256k1'
+
+import type { ReceivedMessageWrapper } from '../types/user-interface'
 import { relayCipherPayloadDigest } from './cipher-payload-digest'
+import { PayloadConstructor } from './crypto'
+import type { Message, Stamp } from './relay_pb'
+import { stealthSharedPoint } from './stealth-shared'
+
+/** Index assigns this to ReceivedMessageWrapper.copartyPubKey. */
+type StoredMessageKey = ReceivedMessageWrapper['copartyPubKey']
+
+type KeyBytes = { toBuffer(): Uint8Array }
+
+/** SEC1 message key. 33-byte inputs stay compressed and 65-byte inputs
+ * stay uncompressed. Other lengths, hybrid prefixes, and off-curve
+ * points throw. toBuffer returns a copy of the re-encoded point. */
+function messagePublicKey(bytes: Uint8Array): KeyBytes {
+  const copy = Uint8Array.from(bytes)
+  const point = pointFromPublicKey(copy)
+  if (point === null) {
+    throw new TypeError('Invalid DER format public key')
+  }
+  const encoded =
+    copy.length === 33 ? compressPoint(point) : uncompressPoint(point)
+  if (encoded === null) {
+    throw new TypeError('Invalid DER format public key')
+  }
+  const stored = Uint8Array.from(encoded)
+  return {
+    toBuffer() {
+      return Uint8Array.from(stored)
+    },
+  }
+}
+
+/** Same shared-key bytes as PayloadConstructor.constructSharedKey.
+ * The HMAC key is the compressed ECDH point. The caller's secret is not wiped. */
+function messageSharedKey(
+  privateKey: KeyBytes,
+  publicKey: KeyBytes,
+  salt: Uint8Array,
+): Buffer {
+  const secret = Uint8Array.from(privateKey.toBuffer())
+  try {
+    const point = stealthSharedPoint(
+      secret,
+      Uint8Array.from(publicKey.toBuffer()),
+    )
+    return Buffer.from(hmacSha256(Uint8Array.from(salt), point))
+  } finally {
+    secret.fill(0)
+  }
+}
 
 export class ParsedMessage {
-  sourcePublicKey: PublicKey
-  destinationPublicKey: PublicKey
+  sourcePublicKey: StoredMessageKey
+  destinationPublicKey: StoredMessageKey
   receivedTime: number
   salt: Uint8Array
   stamp: Stamp
@@ -18,8 +72,8 @@ export class ParsedMessage {
   payloadConstructor: PayloadConstructor
 
   constructor(
-    sourcePublicKey: PublicKey,
-    destinationPublicKey: PublicKey,
+    sourcePublicKey: KeyBytes,
+    destinationPublicKey: KeyBytes,
     receivedTime: number,
     salt: Uint8Array,
     stamp: Stamp,
@@ -30,8 +84,8 @@ export class ParsedMessage {
     payload: Uint8Array,
     networkName: string,
   ) {
-    this.sourcePublicKey = sourcePublicKey
-    this.destinationPublicKey = destinationPublicKey
+    this.sourcePublicKey = sourcePublicKey as StoredMessageKey
+    this.destinationPublicKey = destinationPublicKey as StoredMessageKey
     this.receivedTime = receivedTime
     this.salt = salt
     this.stamp = stamp
@@ -43,20 +97,12 @@ export class ParsedMessage {
     this.payloadConstructor = new PayloadConstructor({ networkName })
   }
 
-  constructSharedKey(privateKey: PrivateKey) {
-    return this.payloadConstructor.constructSharedKey(
-      privateKey,
-      this.sourcePublicKey,
-      this.salt,
-    )
+  constructSharedKey(privateKey: KeyBytes) {
+    return messageSharedKey(privateKey, this.sourcePublicKey, this.salt)
   }
 
-  constructSharedKeySelf(privateKey: PrivateKey) {
-    return this.payloadConstructor.constructSharedKey(
-      privateKey,
-      this.destinationPublicKey,
-      this.salt,
-    )
+  constructSharedKeySelf(privateKey: KeyBytes) {
+    return messageSharedKey(privateKey, this.destinationPublicKey, this.salt)
   }
 
   authenticate(sharedKey: Buffer) {
@@ -74,7 +120,7 @@ export class ParsedMessage {
     return this.payloadConstructor.decrypt(sharedKey, this.payload)
   }
 
-  open(privateKey: PrivateKey) {
+  open(privateKey: KeyBytes) {
     const sharedKey = this.constructSharedKey(privateKey)
     if (!this.authenticate(sharedKey)) {
       throw new Error('Failed to authenticate message')
@@ -83,7 +129,7 @@ export class ParsedMessage {
     return this.decrypt(sharedKey)
   }
 
-  openSelf(privateKey: PrivateKey) {
+  openSelf(privateKey: KeyBytes) {
     const sharedKey = this.constructSharedKeySelf(privateKey)
     if (!this.authenticate(sharedKey)) {
       throw new Error('Failed to authenticate message')
@@ -134,10 +180,10 @@ export function messageMixin(
       }
     },
     parse() {
-      const sourcePublicKey = new PublicKey(
+      const sourcePublicKey = messagePublicKey(
         Buffer.from(message.getSourcePublicKey()),
       )
-      const destinationPublicKey = new PublicKey(
+      const destinationPublicKey = messagePublicKey(
         Buffer.from(message.getDestinationPublicKey()),
       )
       const payloadDigest = this.digest()

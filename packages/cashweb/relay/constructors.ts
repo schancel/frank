@@ -35,7 +35,9 @@ import { Wallet } from '../legacy-wallet'
 import { signRegistryDigest } from '../registry'
 import { relayCipherPayloadDigest } from './cipher-payload-digest'
 import { outpointPublicKey } from './outpoint-hd'
+import { messageSourcePublicKey } from './message-source-pubkey'
 import { relayProfilePublicKey } from './profile-pubkey'
+import { stealthEphemeralPublicKey } from './stealth-ephemeral-pubkey'
 
 /** One SHA-256 of Profile protobuf bytes. Matches `Sha256::digest` in
  * `SignedPayload::parse_proto`, the message `SignedPayload::verify` checks.
@@ -189,9 +191,21 @@ export class MessageConstructor {
         stamp.addStampOutpoints(stampOutpoints)
       }
 
-      // Construct message
+      // Construct message. SEC1 point of the sender (decision #574).
+      // types.d.ts omits the runtime compression flag; bitcore-lib-xpi
+      // stays until #259. HMAC, salt, and envelope ECDH stay on bitcore.
       const message = new Message()
-      const rawSourcePublickey = sourcePrivateKey.toPublicKey().toBuffer()
+      const compressed = (sourcePrivateKey as unknown as { compressed?: boolean })
+        .compressed
+      if (compressed !== true && compressed !== false) {
+        throw new Error('message-source-pubkey:compressed')
+      }
+      const rawSourcePublickey = Buffer.from(
+        messageSourcePublicKey(
+          Uint8Array.from(sourcePrivateKey.toBuffer()),
+          compressed,
+        ),
+      )
       const rawDestinationPublicKey = destinationPublicKey.toBuffer()
       message.setScheme(1)
       message.setDestinationPublicKey(rawDestinationPublicKey)
@@ -254,9 +268,21 @@ export class MessageConstructor {
 
     // Sent to HASH160(ephemeralPrivKey * destPubKey)
     // Sent to HASH160(ephemeralPrivKey * destPubKey)
-
+    // Ephemeral SEC1 point (decision #576). types.d.ts omits the runtime
+    // compression flag; bitcore-lib-xpi stays until #259. HMAC, salt,
+    // the plaintext digest, and envelope ECDH stay on bitcore.
+    const compressed = (ephemeralPrivKey as unknown as { compressed?: boolean })
+      .compressed
+    if (compressed !== true && compressed !== false) {
+      throw new Error('stealth-ephemeral-pubkey:compressed')
+    }
     stealthPaymentEntry.setEphemeralPubKey(
-      ephemeralPrivKey.publicKey.toBuffer(),
+      Buffer.from(
+        stealthEphemeralPublicKey(
+          Uint8Array.from(ephemeralPrivKey.toBuffer()),
+          compressed,
+        ),
+      ),
     )
     for (const { transaction: stealthTx, vouts } of transactionBundle) {
       const rawStealthTx = stealthTx.toBuffer()

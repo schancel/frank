@@ -90,6 +90,17 @@ export interface AdaptorExtractInput {
 
 export type RandomBytes = (length: number) => Uint8Array
 
+const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype)
+const TYPED_ARRAY_LENGTH_GETTER = Object.getOwnPropertyDescriptor(
+  TYPED_ARRAY_PROTOTYPE,
+  'length',
+)?.get
+const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(
+  TYPED_ARRAY_PROTOTYPE,
+  Symbol.toStringTag,
+)?.get
+const UINT8_ARRAY_SET = Uint8Array.prototype.set
+
 function success<T>(value: T): AdaptorResult<T> {
   return { ok: true, value }
 }
@@ -103,8 +114,21 @@ function copyBrand<Name extends string>(bytes: Uint8Array): Brand<Name> {
 }
 
 function copyLength(bytes: Uint8Array, length: number): Uint8Array | null {
-  if (!(bytes instanceof Uint8Array) || bytes.length !== length) return null
-  return new Uint8Array(bytes)
+  try {
+    if (
+      typeof TYPED_ARRAY_LENGTH_GETTER !== 'function' ||
+      typeof TYPED_ARRAY_TAG_GETTER !== 'function' ||
+      Reflect.apply(TYPED_ARRAY_TAG_GETTER, bytes, []) !== 'Uint8Array' ||
+      Reflect.apply(TYPED_ARRAY_LENGTH_GETTER, bytes, []) !== length
+    ) {
+      return null
+    }
+    const copied = new Uint8Array(length)
+    Reflect.apply(UINT8_ARRAY_SET, copied, [bytes])
+    return copied
+  } catch {
+    return null
+  }
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -255,21 +279,25 @@ export function adaptorSign(
   let digest: Uint8Array | null = null
   try {
     privateKey = copyLength(input.privateKey, 32)
+    if (privateKey === null) return failure('bad-length')
     adaptorPoint = copyLength(input.adaptorPoint, 33)
+    if (adaptorPoint === null) {
+      privateKey.fill(0)
+      return failure('bad-length')
+    }
     adaptorProof = copyLength(input.adaptorProof, 65)
+    if (adaptorProof === null) {
+      privateKey.fill(0)
+      return failure('bad-length')
+    }
     digest = copyLength(input.digest, 32)
+    if (digest === null) {
+      privateKey.fill(0)
+      return failure('bad-length')
+    }
   } catch {
     privateKey?.fill(0)
     return failure('invalid-signature')
-  }
-  if (
-    privateKey === null ||
-    adaptorPoint === null ||
-    adaptorProof === null ||
-    digest === null
-  ) {
-    privateKey?.fill(0)
-    return failure('bad-length')
   }
   let key: ReturnType<typeof privateKeyFromSecretBytes>
   try {

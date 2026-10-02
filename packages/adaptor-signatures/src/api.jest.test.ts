@@ -9,6 +9,7 @@ import {
   adaptorSecretProofFromBytes,
   adaptorSign,
   adaptorSignatureFromBytes,
+  compactEcdsaSignatureFromBytes,
   completeAdaptorSignature,
   extractAdaptorSecret,
   generateAdaptorSecret,
@@ -253,6 +254,75 @@ describe('safe byte-oriented API', () => {
         digest: Buffer.from(bytes(11)),
       }),
     ).toEqual({ ok: false, error: { code: 'bad-length' } })
+  })
+
+  it('uses intrinsic Uint8Array size before copying parser inputs', () => {
+    const parsers: ReadonlyArray<
+      readonly [number, (value: Uint8Array) => { readonly ok: boolean }]
+    > = [
+      [32, adaptorSecretFromBytes],
+      [33, adaptorPointFromBytes],
+      [64, compactEcdsaSignatureFromBytes],
+      [65, adaptorSecretProofFromBytes],
+      [162, adaptorSignatureFromBytes],
+    ]
+    for (const [spoofedLength, parse] of parsers) {
+      const oversized = new Uint8Array(1024 * 1024)
+      Object.defineProperty(oversized, 'length', { value: spoofedLength })
+      expect(oversized.length).toBe(spoofedLength)
+      expect(parse(oversized)).toEqual({
+        ok: false,
+        error: { code: 'bad-length' },
+      })
+    }
+  })
+
+  it('rejects non-Uint8Array views and proxies without iterator access', () => {
+    expect(
+      adaptorSecretFromBytes(
+        new Uint8ClampedArray(32) as unknown as Uint8Array,
+      ),
+    ).toEqual({ ok: false, error: { code: 'bad-length' } })
+
+    let iteratorReads = 0
+    const proxied = new Proxy(bytes(3), {
+      get(target, property, receiver) {
+        if (property === Symbol.iterator) {
+          iteratorReads += 1
+          throw new Error('iterator must not be consulted')
+        }
+        return Reflect.get(target, property, receiver)
+      },
+    })
+    expect(adaptorSecretFromBytes(proxied)).toEqual({
+      ok: false,
+      error: { code: 'bad-length' },
+    })
+    expect(iteratorReads).toBe(0)
+  })
+
+  it('rejects oversized composite inputs before reading later fields', () => {
+    const material = generateAdaptorSecret(() => bytes(9))
+    if (!material.ok) return
+    const oversized = new Uint8Array(1024 * 1024)
+    Object.defineProperty(oversized, 'length', { value: 32 })
+    let adaptorPointReads = 0
+    expect(
+      adaptorSign({
+        privateKey: oversized,
+        get adaptorPoint() {
+          adaptorPointReads += 1
+          return material.value.point
+        },
+        adaptorProof: material.value.proof,
+        digest: bytes(11),
+      }),
+    ).toEqual({ ok: false, error: { code: 'bad-length' } })
+    expect(adaptorPointReads).toBe(0)
+    expect(generateAdaptorSecret(() => oversized)).toEqual({
+      ok: false,
+      error: { code: 'rng-failed' },
+    })
   })
 
   it('verifies the frozen Frank PoK v1 wire/transcript vector', () => {

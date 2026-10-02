@@ -72,15 +72,11 @@ export class MessageConstructor {
 
     const stampAddressGenerator =
       (transactionNumber: number) => (outputNumber: number) => {
-        const address = new PublicKey(
-          Buffer.from(
-            outpointPublicKey(
-              stampPublicKey.toBuffer(),
-              payloadDigest,
-              transactionNumber,
-              outputNumber,
-            ),
-          ),
+        const address = outpointPublicKey(
+          stampPublicKey.toBuffer(),
+          payloadDigest,
+          transactionNumber,
+          outputNumber,
         )
         transactionNumber += 1
         return address
@@ -113,15 +109,11 @@ export class MessageConstructor {
 
     const stealthPubKeyGenerator =
       (transactionNumber: number) => (outputNumber: number) => {
-        const stealthAddress = new PublicKey(
-          Buffer.from(
-            outpointPublicKey(
-              stealthPublicKey.toBuffer(),
-              digest,
-              transactionNumber,
-              outputNumber,
-            ),
-          ),
+        const stealthAddress = outpointPublicKey(
+          stealthPublicKey.toBuffer(),
+          digest,
+          transactionNumber,
+          outputNumber,
         )
 
         transactionNumber += 1

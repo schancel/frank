@@ -666,7 +666,7 @@ fn validate_body(
             "rpc_request_too_large",
         ));
     }
-    let value: Value = serde_json::from_slice(body)
+    let value = super::json_rpc::parse_without_duplicate_keys(body)
         .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"))?;
     match value {
         Value::Array(calls) => {
@@ -1118,6 +1118,14 @@ mod tests {
         assert!(Arc::clone(&runtime.permits).try_acquire_owned().is_err());
         drop(first);
         assert!(Arc::clone(&runtime.permits).try_acquire_owned().is_ok());
+    }
+
+    #[test]
+    fn request_rejects_duplicate_rpc_members() {
+        let runtime = runtime();
+        let chain = runtime.chains.get("monad-testnet").unwrap();
+        let ambiguous = br#"{"jsonrpc":"2.0","id":1,"method":"personal_sign","method":"eth_chainId","params":[]}"#;
+        assert!(validate_body(&runtime, chain, ambiguous).is_err());
     }
 
     #[test]

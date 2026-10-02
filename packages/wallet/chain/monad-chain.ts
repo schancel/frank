@@ -84,9 +84,12 @@ import {
 import {
   ActiveChain,
   ChainAddress,
+  ChainTransaction,
   DirectMessageClient,
   DirectMessageReceived,
   DirectMessageSendResult,
+  NativeWalletHandle,
+  NativeTransactionSubmissionError,
   ProfileInfo,
   TopicBroadcastClient,
   WalletHandle,
@@ -131,6 +134,11 @@ import {
   fetchMonadTopicPostsSince,
 } from '../monad-topic-tally-client'
 import { readViteEnv } from './vite-env'
+import {
+  defaultNativeTransactionAttemptStore,
+  nativeTransactionAttemptKey,
+  NativeTransactionAttemptStore,
+} from './chain-wallet'
 import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-store'
 import { LevelChangePoolStore } from '../storage/level-change-pool-store'
 import {
@@ -143,6 +151,8 @@ import {
 } from '../storage/stamp-attempt-journal'
 
 export interface MonadChainConfig {
+  /** Stable chain/deployment identifier used to namespace durable transaction attempts. */
+  networkId: string
   /** Monad JSON-RPC HTTP endpoint, e.g. `MONAD_TESTNET_HTTP_RPC_URL`. */
   rpcUrl: string
   /** Base URL of the `cashweb-registry` relay. */
@@ -162,6 +172,7 @@ export interface MonadChainConfig {
    * isolated tests; production must persist these records so recreating a wallet cannot reuse a
    * sender account or rewind the change derivation path. */
   walletStorageLocation: string | false
+  nativeAttemptStore?: NativeTransactionAttemptStore
 }
 
 // Ticket #54 (found live doing real end-to-end GUI testing against a real relay + real Alchemy
@@ -183,6 +194,7 @@ function readEnv(key: string): string | undefined {
  * directly, and why it never throws on a missing var. */
 export function loadMonadChainConfigFromEnv(): MonadChainConfig {
   return {
+    networkId: readEnv('MONAD_NETWORK_ID') ?? 'monad-testnet',
     rpcUrl: readEnv('MONAD_TESTNET_HTTP_RPC_URL') ?? 'http://127.0.0.1:8545',
     relayBaseUrl:
       readEnv('MONAD_RELAY_BASE_URL') ??
@@ -212,7 +224,9 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
  * `{ identity }`-only while this concrete type carries more. */
 export interface MonadChainWalletHandle
   extends MonadWalletHandle,
-    WalletHandle {
+    NativeWalletHandle {
+  readonly chainKind: 'monad'
+  readonly networkId: string
   readonly identity: MonadIdentity
 }
 
@@ -221,9 +235,13 @@ export interface MonadChainWalletHandle
  * is the only producer of `WalletHandle` values in a Monad-only build, so every handle reaching
  * `MonadChain`'s other methods already is one; this throws instead of silently misbehaving if that
  * invariant is ever broken. */
-function asMonadWallet(wallet: WalletHandle): MonadChainWalletHandle {
+function asMonadWallet(
+  wallet: WalletHandle,
+  expectedNetworkId: string,
+): MonadChainWalletHandle {
   const candidate = wallet as Partial<MonadChainWalletHandle>
   if (
+    candidate.chainKind !== 'monad' ||
     candidate.pool === undefined ||
     candidate.leaseManager === undefined ||
     candidate.provider === undefined ||
@@ -233,6 +251,11 @@ function asMonadWallet(wallet: WalletHandle): MonadChainWalletHandle {
     throw new Error(
       'Expected a MonadChainWalletHandle (produced by MonadChain.createWallet), got a ' +
         'WalletHandle missing the Monad wallet-client bundle',
+    )
+  }
+  if (candidate.networkId !== expectedNetworkId) {
+    throw new Error(
+      `Expected Monad network ${expectedNetworkId}, got ${candidate.networkId}`,
     )
   }
   return candidate as MonadChainWalletHandle
@@ -405,7 +428,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
   const directMessages: DirectMessageClient = {
     async send(params): Promise<DirectMessageSendResult> {
-      const wallet = asMonadWallet(params.wallet)
+      const wallet = asMonadWallet(params.wallet, config.networkId)
       const run = (
         directMessageSendQueues.get(wallet) ?? Promise.resolve()
       ).then(() => sendDirectMessageExclusive(params, wallet))
@@ -420,7 +443,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     },
 
     async fetchSince(params): Promise<DirectMessageReceived[]> {
-      const wallet = asMonadWallet(params.wallet)
+      const wallet = asMonadWallet(params.wallet, config.networkId)
       const stored = await fetchMonadMessagesSince({
         relayBaseUrl: wallet.relayBaseUrl,
         sinceMs: params.sinceMs,
@@ -511,7 +534,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     },
 
     async listRecoveredStampPayments({ wallet }) {
-      const monadWallet = asMonadWallet(wallet)
+      const monadWallet = asMonadWallet(wallet, config.networkId)
       return (monadWallet.stampPaymentJournal?.getAll() ?? []).map(record => ({
         payloadDigest: record.payloadHashHex,
         childIndex: record.childIndex,
@@ -529,7 +552,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       childIndex,
       destination,
     }) {
-      const monadWallet = asMonadWallet(wallet)
+      const monadWallet = asMonadWallet(wallet, config.networkId)
       const journal = monadWallet.stampPaymentJournal
       if (journal === undefined) {
         throw new Error('Stamp-payment recovery journal is not configured')
@@ -644,28 +667,20 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
   const nativeTransfers: ActiveChain['nativeTransfers'] = {
     async getBalance({ wallet }): Promise<bigint> {
-      const monadWallet = asMonadWallet(wallet)
-      return monadWallet.provider.getBalance(monadWallet.identity.address.raw)
+      return asMonadWallet(wallet, config.networkId).getBalance()
     },
 
-    async send({ wallet, recipient, value }): Promise<{ txHash: string }> {
-      if (value <= 0n) {
-        throw new Error('Transfer value must be greater than zero')
-      }
-      const monadWallet = asMonadWallet(wallet)
-      const signer = new MonadAccountTxSigner({
-        privateKey: monadWallet.identity.toPrivateKeyHex(),
-        provider: monadWallet.provider,
-        httpClient: monadWallet.httpClient,
+    async send({ wallet, recipient, value }) {
+      return asMonadWallet(wallet, config.networkId).sendNative({
+        recipient,
+        value,
       })
-      const signed = await signer.buildAndSignTransfer(recipient.raw, value)
-      return { txHash: await signer.submit(signed) }
     },
   }
 
   const topics: TopicBroadcastClient = {
     async post(params): Promise<{ payloadDigest: string }> {
-      const wallet = asMonadWallet(params.wallet)
+      const wallet = asMonadWallet(params.wallet, config.networkId)
       const client = new MonadTopicPostClient(wallet)
       const result = await client.submitTopicPost({
         topic: params.topic,
@@ -681,7 +696,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     },
 
     async vote(params): Promise<void> {
-      const wallet = asMonadWallet(params.wallet)
+      const wallet = asMonadWallet(params.wallet, config.networkId)
       const client = new MonadTopicVoteClient(wallet)
       await client.castVote({
         targetPayloadHash: getBytes(`0x${params.payloadDigest}`),
@@ -692,7 +707,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     },
 
     async fetchByTopic(params): Promise<ForumMessage[]> {
-      const wallet = asMonadWallet(params.wallet)
+      const wallet = asMonadWallet(params.wallet, config.networkId)
       const views = await fetchMonadTopicPostsSince({
         relayBaseUrl: wallet.relayBaseUrl,
         topic: params.topic,
@@ -723,8 +738,15 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
   }
 
   return {
+    kind: 'monad',
     name: 'monad',
     unit: 'MON',
+    capabilities: {
+      profiles: true,
+      directMessages: true,
+      topics: true,
+      stealthPayments: true,
+    },
     defaultStampValue: config.defaultStampValueWei,
     defaultTopicVoteValue: config.defaultTopicVoteValueWei,
 
@@ -734,6 +756,14 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     fromDisplayAmount(display: string): bigint {
       return parseEther(display)
+    },
+
+    addressToString(addr: ChainAddress): string {
+      return addr.raw
+    },
+
+    transactionToString(transaction): string {
+      return transaction.txHash
     },
 
     formatAddress(addr: ChainAddress): string {
@@ -748,7 +778,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       }
     },
 
-    async createWallet(seed): Promise<WalletHandle> {
+    async createWallet(seed): Promise<NativeWalletHandle> {
       const identity = MonadIdentity.fromSeed(seed)
       const identityKey = identity.address.raw.toLowerCase()
       const existing = walletsByIdentity.get(identityKey)
@@ -790,9 +820,38 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             : undefined,
         ])
 
+        const nativeAttemptStore =
+          config.nativeAttemptStore ?? defaultNativeTransactionAttemptStore
+        const nativeAttemptKey = nativeTransactionAttemptKey({
+          chainKind: 'monad',
+          networkId: config.networkId,
+          address: identityKey,
+        })
+        let unresolvedNative:
+          | {
+              signed?: Awaited<
+                ReturnType<MonadAccountTxSigner['buildAndSignTransfer']>
+              >
+              error: NativeTransactionSubmissionError
+            }
+          | undefined
+        const persistedNative = nativeAttemptStore.get(nativeAttemptKey)
+        if (persistedNative !== undefined) {
+          unresolvedNative = {
+            error: new NativeTransactionSubmissionError({
+              transaction: persistedNative,
+              reason: new Error('Recovered unresolved native transaction'),
+            }),
+          }
+        }
         const pool = new MonadSubAccountPool({
           keyring,
           store: subAccountStore,
+          beforeMainAccountTransaction() {
+            if (unresolvedNative !== undefined) {
+              throw unresolvedNative.error
+            }
+          },
         })
         pool.ensureUnfundedSize(config.subAccountPoolSize)
         const pendingLeaseIndices = new Set(
@@ -820,8 +879,101 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         const leaseManager = new SubAccountLeaseManager(pool)
         const provider = new JsonRpcProvider(config.rpcUrl)
         const httpClient = new MonadHttpClient({ rpcUrl: config.rpcUrl })
+        const submitNative = async (
+          signed: Awaited<
+            ReturnType<MonadAccountTxSigner['buildAndSignTransfer']>
+          >,
+        ) => {
+          const signer = new MonadAccountTxSigner({
+            privateKey: identity.toPrivateKeyHex(),
+            provider,
+            httpClient,
+          })
+          const pendingError = new NativeTransactionSubmissionError({
+            transaction: { txHash: signed.txHash },
+            reason: new Error('Native transaction submission is in progress'),
+          })
+          nativeAttemptStore.put(nativeAttemptKey, pendingError.transaction)
+          unresolvedNative = { signed, error: pendingError }
+          let transaction: ChainTransaction
+          try {
+            transaction = { txHash: await signer.submit(signed) }
+          } catch (reason) {
+            const error = new NativeTransactionSubmissionError({
+              transaction: { txHash: signed.txHash },
+              reason,
+            })
+            unresolvedNative = { signed, error }
+            throw error
+          }
+          nativeAttemptStore.delete(nativeAttemptKey)
+          unresolvedNative = undefined
+          return transaction
+        }
         const wallet: MonadChainWalletHandle = {
+          chainKind: 'monad',
+          networkId: config.networkId,
           identity,
+          async getReceiveAddress() {
+            return identity.address
+          },
+          async getBalance(): Promise<bigint> {
+            return provider.getBalance(identity.address.raw)
+          },
+          getUnresolvedNativeTransaction() {
+            return unresolvedNative?.error.transaction
+          },
+          async retryUnresolvedNativeTransaction() {
+            const unresolved = unresolvedNative
+            if (unresolved === undefined) {
+              throw new Error('No unresolved native transaction to retry')
+            }
+            const signed = unresolved.signed
+            if (signed === undefined) {
+              throw new Error(
+                'Recovered unresolved transaction must be reconciled by id before sending again',
+              )
+            }
+            return pool.runMainAccountRecovery(() => submitNative(signed))
+          },
+          resolveUnresolvedNativeTransaction({ transaction }) {
+            if (
+              unresolvedNative === undefined ||
+              unresolvedNative.error.transaction.txHash !== transaction.txHash
+            ) {
+              throw new Error(
+                'Transaction does not match the unresolved native attempt',
+              )
+            }
+            nativeAttemptStore.delete(nativeAttemptKey)
+            unresolvedNative = undefined
+          },
+          async sendNative({ recipient, value }) {
+            if (value <= 0n) {
+              throw new Error('Transfer value must be greater than zero')
+            }
+            return pool.runMainAccountTransaction(async () => {
+              if (
+                pool
+                  .records()
+                  .some(record => record.status.startsWith('funding'))
+              ) {
+                throw new Error(
+                  'Resolve pending Monad account funding before sending a native transfer',
+                )
+              }
+              const signer = new MonadAccountTxSigner({
+                privateKey: identity.toPrivateKeyHex(),
+                provider,
+                httpClient,
+              })
+              const signed = await signer.buildAndSignTransfer(
+                recipient.raw,
+                value,
+              )
+              return submitNative(signed)
+            })
+          },
           pool,
           leaseManager,
           provider,

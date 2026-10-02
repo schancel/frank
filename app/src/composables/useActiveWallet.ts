@@ -14,18 +14,18 @@
  * and leases against, `subAccountPoolSize` HD sub-accounts -- not free, and every vote/post call
  * site needs a wallet handle).
  */
-import { activeChain, WalletHandle } from '@frank/wallet/chain'
+import { activeChain, NativeWalletHandle } from '@frank/wallet/chain'
 import { useWalletStore } from 'src/stores/wallet'
 
 let cached:
-  | { seedPhrase: string; walletPromise: Promise<WalletHandle> }
+  | { seedPhrase: string; walletPromise: Promise<NativeWalletHandle> }
   | undefined
 
 /** Resolves the current user's `ActiveChain` `WalletHandle`, deriving it from the wallet store's
  * seed phrase. Throws if the wallet hasn't been initialized yet (no seed phrase set) -- callers
  * are expected to only reach this after wallet setup, matching the old `this.$wallet` precedent's
  * own implicit assumption. */
-export function useActiveWallet(): Promise<WalletHandle> {
+export function useActiveWallet(): Promise<NativeWalletHandle> {
   const walletStore = useWalletStore()
   const seedPhrase = walletStore.seedPhrase
   if (!seedPhrase) {

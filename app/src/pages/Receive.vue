@@ -69,7 +69,9 @@ export default defineComponent({
     onMounted(async () => {
       try {
         const wallet = await useActiveWallet()
-        displayAddress.value = wallet.identity.displayAddress
+        displayAddress.value = activeChain.addressToString(
+          await wallet.getReceiveAddress(),
+        )
         balance.value = await activeChain.nativeTransfers.getBalance({ wallet })
       } catch (err) {
         errorNotify(

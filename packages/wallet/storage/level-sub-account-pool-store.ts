@@ -74,6 +74,20 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
     )
   }
 
+  async putBatch(records: SubAccountRecord[]): Promise<void> {
+    await this.flush()
+    await this.db.batch(
+      records.map(record => ({
+        type: 'put',
+        key: String(record.index),
+        value: JSON.stringify(record),
+      })),
+    )
+    for (const record of records) {
+      this.cache.set(record.index, { ...record })
+    }
+  }
+
   getAll(): SubAccountRecord[] {
     return Array.from(this.cache.values()).sort((a, b) => a.index - b.index)
   }

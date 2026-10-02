@@ -12,14 +12,23 @@ import { install as installEd25519Polyfill } from '@solana/webcrypto-ed25519-pol
 
 import {
   SubmittedWalletTransaction,
-  StealthTransactionBundleWallet,
+  StealthTransactionBundleCapability,
   SubmitTransactionBundleOptions,
   TransactionBundleSubmissionError,
-  TransactionBundleWallet,
+  TransactionBundleCapability,
   WalletBundleSubmission,
   WalletTransaction,
   WalletTransactionBundle,
 } from './transaction-bundle-wallet'
+import {
+  ChainAddress,
+  ChainTransaction,
+  defaultNativeTransactionAttemptStore,
+  nativeTransactionAttemptKey,
+  NativeTransactionAttemptStore,
+  NativeTransactionSubmissionError,
+  NativeWalletHandle,
+} from './chain/chain-wallet'
 
 // Capacitor still targets pre-iOS-17 WebViews, which lack native WebCrypto Ed25519. Probe once so
 // modern runtimes stay entirely native and older secure WebViews receive the upstream polyfill.
@@ -221,9 +230,27 @@ async function paymentPlanCommitment(
     encoded.set(transfer.destination.toBytes(), offset)
     view.setBigUint64(offset + 32, transfer.lamports, false)
   })
-  return new Uint8Array(
-    await globalThis.crypto.subtle.digest('SHA-256', encoded),
-  )
+  const runtimeCrypto = (
+    globalThis as unknown as {
+      crypto?: {
+        subtle: {
+          digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer>
+        }
+      }
+    }
+  ).crypto
+  if (runtimeCrypto === undefined) throw new Error('WebCrypto unavailable')
+  return new Uint8Array(await runtimeCrypto.subtle.digest('SHA-256', encoded))
+}
+
+function randomIntentId(): Uint8Array {
+  const runtimeCrypto = (
+    globalThis as unknown as {
+      crypto?: { getRandomValues<T extends Uint8Array>(bytes: T): T }
+    }
+  ).crypto
+  if (runtimeCrypto === undefined) throw new Error('WebCrypto unavailable')
+  return runtimeCrypto.getRandomValues(new Uint8Array(PAYMENT_INTENT_ID_LENGTH))
 }
 
 /**
@@ -235,23 +262,59 @@ async function paymentPlanCommitment(
  */
 export class SolanaWallet
   implements
-    TransactionBundleWallet<
+    NativeWalletHandle,
+    TransactionBundleCapability<
       string,
       Uint8Array,
       BuildSolanaTransactionBundleParams,
       never
     >
 {
+  readonly chainKind = 'solana' as const
+  readonly networkId: string
+  private nativeOperationQueue: Promise<void> = Promise.resolve()
+  private unresolvedNative:
+    | {
+        bundle?: SolanaTransactionBundle
+        error: NativeTransactionSubmissionError
+      }
+    | undefined
   protected readonly connection: SolanaWalletConnection
   protected readonly signer: Keypair
+  private readonly nativeAttemptStore: NativeTransactionAttemptStore
+  private readonly nativeAttemptKey: string
 
-  constructor(params: { connection: SolanaWalletConnection; signer: Keypair }) {
+  constructor(params: {
+    connection: SolanaWalletConnection
+    signer: Keypair
+    networkId: string
+    nativeAttemptStore?: NativeTransactionAttemptStore
+  }) {
     this.connection = params.connection
     this.signer = params.signer
+    this.networkId = params.networkId
+    this.nativeAttemptStore =
+      params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore
+    this.nativeAttemptKey = nativeTransactionAttemptKey({
+      chainKind: 'solana',
+      networkId: params.networkId,
+      address: this.address,
+    })
+    const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey)
+    if (persisted !== undefined) {
+      this.unresolvedNative = {
+        error: new NativeTransactionSubmissionError({
+          transaction: persisted,
+          reason: new Error('Recovered unresolved native transaction'),
+        }),
+      }
+    }
   }
 
   static async generate(params: {
     connection: SolanaWalletConnection
+    networkId: string
+    nativeAttemptStore?: NativeTransactionAttemptStore
   }): Promise<SolanaWallet> {
     await ensureEd25519Support()
     return new SolanaWallet({
@@ -262,13 +325,17 @@ export class SolanaWallet
 
   static async fromSeed(params: {
     connection: SolanaWalletConnection
+    networkId: string
     seed: Uint8Array
+    nativeAttemptStore?: NativeTransactionAttemptStore
   }): Promise<SolanaWallet> {
     const stableSeed = params.seed.slice()
     await ensureEd25519Support()
     return new SolanaWallet({
       connection: params.connection,
       signer: await Keypair.fromSeed(stableSeed),
+      networkId: params.networkId,
+      nativeAttemptStore: params.nativeAttemptStore,
     })
   }
 
@@ -276,8 +343,114 @@ export class SolanaWallet
     return this.signer.publicKey.toBase58()
   }
 
+  get identity(): NativeWalletHandle['identity'] {
+    return {
+      address: { raw: this.address },
+      displayAddress: this.address,
+    }
+  }
+
+  async getReceiveAddress(): Promise<ChainAddress> {
+    return this.identity.address
+  }
+
   async getBalance(): Promise<bigint> {
     return this.connection.getBalance(this.signer.publicKey)
+  }
+
+  getUnresolvedNativeTransaction(): ChainTransaction | undefined {
+    return this.unresolvedNative?.error.transaction
+  }
+
+  async retryUnresolvedNativeTransaction(): Promise<ChainTransaction> {
+    return this.runNativeExclusive(async () => {
+      const unresolved = this.unresolvedNative
+      if (unresolved === undefined) {
+        throw new Error('No unresolved native transaction to retry')
+      }
+      if (unresolved.bundle === undefined) {
+        throw new Error(
+          'Recovered unresolved transaction must be reconciled by id before sending again',
+        )
+      }
+      return this.submitNativeBundle(unresolved.bundle)
+    })
+  }
+
+  resolveUnresolvedNativeTransaction(params: {
+    transaction: ChainTransaction
+    outcome: 'submitted' | 'not-submitted'
+  }): void {
+    const unresolved = this.unresolvedNative
+    if (
+      unresolved === undefined ||
+      unresolved.error.transaction.txHash !== params.transaction.txHash
+    ) {
+      throw new Error(
+        'Transaction does not match the unresolved native attempt',
+      )
+    }
+    this.nativeAttemptStore.delete(this.nativeAttemptKey)
+    this.unresolvedNative = undefined
+  }
+
+  async sendNative(params: {
+    recipient: ChainAddress
+    value: bigint
+  }): Promise<ChainTransaction> {
+    return this.runNativeExclusive(async () => {
+      if (this.unresolvedNative !== undefined) {
+        throw this.unresolvedNative.error
+      }
+      const bundle = await this.buildTransactionBundle({
+        intentId: randomIntentId(),
+        transfers: [
+          { destination: params.recipient.raw, lamports: params.value },
+        ],
+      })
+      return this.submitNativeBundle(bundle)
+    })
+  }
+
+  private async runNativeExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.nativeOperationQueue.then(operation)
+    this.nativeOperationQueue = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private async submitNativeBundle(
+    bundle: SolanaTransactionBundle,
+  ): Promise<ChainTransaction> {
+    const validated = await this.validateBundle(bundle)
+    const txHash = validated.canonicalTransactions[0]?.txId
+    if (txHash === undefined) {
+      throw new Error('Native transaction bundle is empty')
+    }
+    const pendingError = new NativeTransactionSubmissionError({
+      transaction: { txHash },
+      reason: new Error('Native transaction submission is in progress'),
+    })
+    this.nativeAttemptStore.put(this.nativeAttemptKey, pendingError.transaction)
+    this.unresolvedNative = { bundle, error: pendingError }
+    try {
+      const result = await this.submitTransactionBundle(bundle)
+      this.nativeAttemptStore.delete(this.nativeAttemptKey)
+      this.unresolvedNative = undefined
+      return { txHash: result.submitted[0].txId }
+    } catch (reason) {
+      if (reason instanceof TransactionBundleSubmissionError) {
+        const error = new NativeTransactionSubmissionError({
+          transaction: { txHash: reason.attempted.txId },
+          reason,
+        })
+        this.unresolvedNative = { bundle, error }
+        throw error
+      }
+      throw reason
+    }
   }
 
   async buildTransactionBundle(
@@ -655,7 +828,7 @@ export class SolanaWallet
 export class SolanaStealthWallet<TStealthMetadata extends {}>
   extends SolanaWallet
   implements
-    StealthTransactionBundleWallet<
+    StealthTransactionBundleCapability<
       string,
       Uint8Array,
       BuildSolanaTransactionBundleParams,
@@ -668,6 +841,7 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
   constructor(params: {
     connection: SolanaWalletConnection
     signer: Keypair
+    networkId: string
     stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>
   }) {
     super(params)
@@ -677,6 +851,7 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
   /** Use generateStealth; the inherited base factory cannot supply a stealth strategy. */
   static override async generate(_params: {
     connection: SolanaWalletConnection
+    networkId: string
   }): Promise<never> {
     throw new Error('use SolanaStealthWallet.generateStealth with a strategy')
   }
@@ -684,6 +859,7 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
   /** Use fromSeedWithStealth; the inherited base factory cannot supply a stealth strategy. */
   static override async fromSeed(_params: {
     connection: SolanaWalletConnection
+    networkId: string
     seed: Uint8Array
   }): Promise<never> {
     throw new Error(
@@ -693,6 +869,7 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
 
   static async generateStealth<TStealthMetadata extends {}>(params: {
     connection: SolanaWalletConnection
+    networkId: string
     stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>
   }): Promise<SolanaStealthWallet<TStealthMetadata>> {
     await ensureEd25519Support()
@@ -704,6 +881,7 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
 
   static async fromSeedWithStealth<TStealthMetadata extends {}>(params: {
     connection: SolanaWalletConnection
+    networkId: string
     seed: Uint8Array
     stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>
   }): Promise<SolanaStealthWallet<TStealthMetadata>> {
@@ -712,6 +890,7 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
     return new SolanaStealthWallet({
       connection: params.connection,
       signer: await Keypair.fromSeed(stableSeed),
+      networkId: params.networkId,
       stealthStrategy: params.stealthStrategy,
     })
   }

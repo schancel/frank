@@ -14,9 +14,13 @@ import {
   SolanaWalletConnection,
 } from './solana-wallet'
 import {
-  StealthTransactionBundleWallet,
+  StealthTransactionBundleCapability,
   TransactionBundleSubmissionError,
 } from './transaction-bundle-wallet'
+import {
+  InMemoryNativeTransactionAttemptStore,
+  NativeTransactionSubmissionError,
+} from './chain/chain-wallet'
 
 const blockhash = new PublicKey(new Uint8Array(32).fill(9)).toBase58()
 const rotatedBlockhash = new PublicKey(new Uint8Array(32).fill(10)).toBase58()
@@ -34,6 +38,7 @@ class FakeConnection implements SolanaWalletConnection {
   failAt: number | undefined
   overrideTxId: string | undefined
   onSend: ((index: number) => void) | undefined
+  waitBeforeSend: Promise<void> | undefined
   blockhashes: string[] = [blockhash]
   blockhashRequests = 0
 
@@ -53,6 +58,7 @@ class FakeConnection implements SolanaWalletConnection {
   async sendRawTransaction(rawTransaction: Uint8Array): Promise<string> {
     const index = this.sent.length
     this.onSend?.(index)
+    await this.waitBeforeSend
     if (index === this.failAt) throw new Error('rpc refused transaction')
     this.sent.push(rawTransaction)
     return this.overrideTxId ?? transactionId(rawTransaction)
@@ -78,7 +84,12 @@ describe('SolanaWallet', () => {
     const connection = new FakeConnection()
     const signer = await makeKeypair(1)
     const destinations = [await makeKeypair(2), await makeKeypair(3)]
-    const wallet = new SolanaWallet({ connection, signer })
+    const wallet = new SolanaWallet({
+      connection,
+      signer,
+      networkId: 'solana-test',
+      nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+    })
 
     const bundle = await wallet.buildTransactionBundle({
       intentId: intentId(1),
@@ -122,6 +133,7 @@ describe('SolanaWallet', () => {
       },
     }
     const wallet = new SolanaStealthWallet({
+      networkId: 'solana-test',
       connection,
       signer: await makeKeypair(1),
       stealthStrategy: strategy,
@@ -151,6 +163,7 @@ describe('SolanaWallet', () => {
 
   it('does not advertise stealth support without a reviewed strategy', async () => {
     const wallet = new SolanaWallet({
+      networkId: 'solana-test',
       connection: new FakeConnection(),
       signer: await makeKeypair(1),
     })
@@ -161,6 +174,7 @@ describe('SolanaWallet', () => {
   it('rejects duplicate destinations returned by a stealth strategy', async () => {
     const destination = (await makeKeypair(7)).publicKey
     const wallet = new SolanaStealthWallet({
+      networkId: 'solana-test',
       connection: new FakeConnection(),
       signer: await makeKeypair(1),
       stealthStrategy: {
@@ -184,8 +198,10 @@ describe('SolanaWallet', () => {
     const connection = new FakeConnection()
     connection.failAt = 1
     const wallet = new SolanaWallet({
+      networkId: 'solana-test',
       connection,
       signer: await makeKeypair(1),
+      nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
     })
     const bundle = await wallet.buildTransactionBundle({
       intentId: intentId(4),
@@ -221,6 +237,7 @@ describe('SolanaWallet', () => {
 
   it('signs equal payments as distinct transactions using their payment indices', async () => {
     const wallet = new SolanaWallet({
+      networkId: 'solana-test',
       connection: new FakeConnection(),
       signer: await makeKeypair(1),
     })
@@ -246,6 +263,7 @@ describe('SolanaWallet', () => {
     const connection = new FakeConnection()
     connection.blockhashes = [blockhash, rotatedBlockhash, rotatedBlockhash]
     const wallet = new SolanaWallet({
+      networkId: 'solana-test',
       connection,
       signer: await makeKeypair(1),
     })
@@ -281,6 +299,7 @@ describe('SolanaWallet', () => {
   it('rejects transactions spliced from different intents before submission', async () => {
     const connection = new FakeConnection()
     const wallet = new SolanaWallet({
+      networkId: 'solana-test',
       connection,
       signer: await makeKeypair(1),
     })
@@ -310,6 +329,7 @@ describe('SolanaWallet', () => {
   it('rejects same-intent transactions spliced from different payment plans', async () => {
     const connection = new FakeConnection()
     const wallet = new SolanaWallet({
+      networkId: 'solana-test',
       connection,
       signer: await makeKeypair(1),
     })
@@ -342,6 +362,7 @@ describe('SolanaWallet', () => {
   it('resumes after a reconciled prefix without resending it', async () => {
     const connection = new FakeConnection()
     const wallet = new SolanaWallet({
+      networkId: 'solana-test',
       connection,
       signer: await makeKeypair(1),
     })
@@ -365,6 +386,7 @@ describe('SolanaWallet', () => {
   it('snapshots build inputs before asynchronous signing work', async () => {
     const connection = new FakeConnection()
     const wallet = new SolanaWallet({
+      networkId: 'solana-test',
       connection,
       signer: await makeKeypair(1),
     })
@@ -407,6 +429,7 @@ describe('SolanaWallet', () => {
         metadata: { ephemeral: 2 },
       })
     const wallet = new SolanaStealthWallet({
+      networkId: 'solana-test',
       connection,
       signer: await makeKeypair(1),
       stealthStrategy: { createDestination },
@@ -436,6 +459,7 @@ describe('SolanaWallet', () => {
   it('authenticates original signed bytes before refreshing a bundle', async () => {
     const connection = new FakeConnection()
     const wallet = new SolanaWallet({
+      networkId: 'solana-test',
       connection,
       signer: await makeKeypair(1),
     })
@@ -470,11 +494,15 @@ describe('SolanaWallet', () => {
 
   it('does not expose base factories that silently drop stealth capability', async () => {
     await expect(
-      SolanaStealthWallet.generate({ connection: new FakeConnection() }),
+      SolanaStealthWallet.generate({
+        connection: new FakeConnection(),
+        networkId: 'solana-test',
+      }),
     ).rejects.toThrow('generateStealth')
     await expect(
       SolanaStealthWallet.fromSeed({
         connection: new FakeConnection(),
+        networkId: 'solana-test',
         seed: new Uint8Array(32),
       }),
     ).rejects.toThrow('fromSeedWithStealth')
@@ -485,6 +513,7 @@ describe('SolanaWallet', () => {
     const expectedAddress = (await Keypair.fromSeed(seed)).publicKey.toBase58()
 
     const creating = SolanaWallet.fromSeed({
+      networkId: 'solana-test',
       connection: new FakeConnection(),
       seed,
     })
@@ -496,6 +525,7 @@ describe('SolanaWallet', () => {
   it('submits the snapshotted bytes even if the caller mutates its bundle', async () => {
     const connection = new FakeConnection()
     const wallet = new SolanaWallet({
+      networkId: 'solana-test',
       connection,
       signer: await makeKeypair(1),
     })
@@ -519,6 +549,7 @@ describe('SolanaWallet', () => {
   it('rejects a bundle description that disagrees with its signed bytes', async () => {
     const connection = new FakeConnection()
     const wallet = new SolanaWallet({
+      networkId: 'solana-test',
       connection,
       signer: await makeKeypair(1),
     })
@@ -551,6 +582,7 @@ describe('SolanaWallet', () => {
       new Uint8Array(32).fill(6),
     ).toBase58()
     const wallet = new SolanaWallet({
+      networkId: 'solana-test',
       connection,
       signer: await makeKeypair(1),
     })
@@ -570,6 +602,7 @@ describe('SolanaWallet', () => {
   it.each([0n, -1n])('rejects a nonpositive transfer of %s', async lamports => {
     const connection = new FakeConnection()
     const wallet = new SolanaWallet({
+      networkId: 'solana-test',
       connection,
       signer: await makeKeypair(1),
     })
@@ -589,6 +622,7 @@ describe('SolanaWallet', () => {
     async lamports => {
       const createDestination = jest.fn()
       const wallet = new SolanaStealthWallet({
+        networkId: 'solana-test',
         connection: new FakeConnection(),
         signer: await makeKeypair(1),
         stealthStrategy: { createDestination },
@@ -609,6 +643,7 @@ describe('SolanaWallet', () => {
   it('rejects oversized stealth transfers before deriving destinations', async () => {
     const createDestination = jest.fn()
     const wallet = new SolanaStealthWallet({
+      networkId: 'solana-test',
       connection: new FakeConnection(),
       signer: await makeKeypair(1),
       stealthStrategy: { createDestination },
@@ -628,8 +663,13 @@ describe('SolanaWallet', () => {
   it('rejects empty ordinary and stealth bundles', async () => {
     const connection = new FakeConnection()
     const signer = await makeKeypair(1)
-    const wallet = new SolanaWallet({ connection, signer })
+    const wallet = new SolanaWallet({
+      connection,
+      signer,
+      networkId: 'solana-test',
+    })
     const stealthWallet = new SolanaStealthWallet({
+      networkId: 'solana-test',
       connection,
       signer,
       stealthStrategy: {
@@ -654,15 +694,245 @@ describe('SolanaWallet', () => {
 
   it('returns balances as bigint', async () => {
     const wallet = new SolanaWallet({
+      networkId: 'solana-test',
       connection: new FakeConnection(),
       signer: await makeKeypair(1),
     })
     await expect(wallet.getBalance()).resolves.toBe(123n)
   })
+
+  it('exposes the common identity and native-transfer API', async () => {
+    const connection = new FakeConnection()
+    const signer = await makeKeypair(1)
+    const recipient = (await makeKeypair(2)).publicKey
+    const wallet = new SolanaWallet({
+      connection,
+      signer,
+      networkId: 'solana-test',
+      nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+    })
+
+    expect(wallet.identity).toEqual({
+      address: { raw: signer.publicKey.toBase58() },
+      displayAddress: signer.publicKey.toBase58(),
+    })
+    await expect(wallet.getReceiveAddress()).resolves.toEqual({
+      raw: signer.publicKey.toBase58(),
+    })
+    await expect(
+      wallet.sendNative({
+        recipient: { raw: recipient.toBase58() },
+        value: 42n,
+      }),
+    ).resolves.toEqual({ txHash: expect.any(String) })
+    expect(connection.sent).toHaveLength(1)
+  })
+
+  it('preserves the exact signed id when native submission outcome is unknown', async () => {
+    const connection = new FakeConnection()
+    connection.failAt = 0
+    const wallet = new SolanaWallet({
+      networkId: 'solana-test',
+      connection,
+      signer: await makeKeypair(1),
+      nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+    })
+
+    const first = wallet.sendNative({
+      recipient: { raw: (await makeKeypair(2)).publicKey.toBase58() },
+      value: 42n,
+    })
+    const concurrent = wallet.sendNative({
+      recipient: { raw: (await makeKeypair(3)).publicKey.toBase58() },
+      value: 99n,
+    })
+    const [firstResult, concurrentResult] = await Promise.allSettled([
+      first,
+      concurrent,
+    ])
+    const error =
+      firstResult.status === 'rejected' ? firstResult.reason : undefined
+
+    expect(error).toBeInstanceOf(NativeTransactionSubmissionError)
+    expect(
+      (error as NativeTransactionSubmissionError).transaction.txHash,
+    ).toMatch(/^[1-9A-HJ-NP-Za-km-z]+$/)
+    expect((error as NativeTransactionSubmissionError).reason).toBeInstanceOf(
+      TransactionBundleSubmissionError,
+    )
+    const attempted = (error as NativeTransactionSubmissionError).transaction
+    expect(wallet.getUnresolvedNativeTransaction()).toEqual(attempted)
+
+    expect(concurrentResult).toEqual({ status: 'rejected', reason: error })
+    expect(connection.blockhashRequests).toBe(1)
+
+    connection.failAt = undefined
+    await expect(wallet.retryUnresolvedNativeTransaction()).resolves.toEqual(
+      attempted,
+    )
+    expect(wallet.getUnresolvedNativeTransaction()).toBeUndefined()
+  })
+
+  it('restores the unresolved guard before allowing another transfer', async () => {
+    const nativeAttemptStore = new InMemoryNativeTransactionAttemptStore()
+    const signer = await makeKeypair(1)
+    const failedConnection = new FakeConnection()
+    failedConnection.failAt = 0
+    const firstWallet = new SolanaWallet({
+      networkId: 'solana-test',
+      connection: failedConnection,
+      signer,
+      nativeAttemptStore,
+    })
+    await expect(
+      firstWallet.sendNative({
+        recipient: { raw: (await makeKeypair(2)).publicKey.toBase58() },
+        value: 42n,
+      }),
+    ).rejects.toBeInstanceOf(NativeTransactionSubmissionError)
+
+    const restoredConnection = new FakeConnection()
+    const restoredWallet = new SolanaWallet({
+      networkId: 'solana-test',
+      connection: restoredConnection,
+      signer,
+      nativeAttemptStore,
+    })
+    const unresolved = restoredWallet.getUnresolvedNativeTransaction()!
+    await expect(
+      restoredWallet.sendNative({
+        recipient: { raw: (await makeKeypair(3)).publicKey.toBase58() },
+        value: 99n,
+      }),
+    ).rejects.toBeInstanceOf(NativeTransactionSubmissionError)
+    expect(restoredConnection.blockhashRequests).toBe(0)
+    await expect(
+      restoredWallet.retryUnresolvedNativeTransaction(),
+    ).rejects.toThrow('must be reconciled by id')
+
+    restoredWallet.resolveUnresolvedNativeTransaction({
+      transaction: unresolved,
+      outcome: 'not-submitted',
+    })
+    await expect(
+      restoredWallet.sendNative({
+        recipient: { raw: (await makeKeypair(3)).publicKey.toBase58() },
+        value: 99n,
+      }),
+    ).resolves.toEqual({ txHash: expect.any(String) })
+  })
+
+  it('isolates unresolved attempts by settlement network', async () => {
+    const nativeAttemptStore = new InMemoryNativeTransactionAttemptStore()
+    const signer = await makeKeypair(1)
+    const networkA = new FakeConnection()
+    networkA.failAt = 0
+    const walletA = new SolanaWallet({
+      connection: networkA,
+      signer,
+      networkId: 'cluster-a',
+      nativeAttemptStore,
+    })
+    await expect(
+      walletA.sendNative({
+        recipient: { raw: (await makeKeypair(2)).publicKey.toBase58() },
+        value: 1n,
+      }),
+    ).rejects.toBeInstanceOf(NativeTransactionSubmissionError)
+
+    const networkB = new FakeConnection()
+    const walletB = new SolanaWallet({
+      connection: networkB,
+      signer,
+      networkId: 'cluster-b',
+      nativeAttemptStore,
+    })
+    expect(walletB.getUnresolvedNativeTransaction()).toBeUndefined()
+    await expect(
+      walletB.sendNative({
+        recipient: { raw: (await makeKeypair(3)).publicKey.toBase58() },
+        value: 2n,
+      }),
+    ).resolves.toEqual({ txHash: expect.any(String) })
+
+    const restoredA = new SolanaWallet({
+      connection: new FakeConnection(),
+      signer,
+      networkId: 'cluster-a',
+      nativeAttemptStore,
+    })
+    expect(restoredA.getUnresolvedNativeTransaction()).toEqual(
+      walletA.getUnresolvedNativeTransaction(),
+    )
+  })
+
+  it('persists the guard before the network request can finish', async () => {
+    const nativeAttemptStore = new InMemoryNativeTransactionAttemptStore()
+    const signer = await makeKeypair(1)
+    const connection = new FakeConnection()
+    let releaseSend: (() => void) | undefined
+    connection.waitBeforeSend = new Promise(resolve => {
+      releaseSend = resolve
+    })
+    let requestStarted: (() => void) | undefined
+    const started = new Promise<void>(resolve => {
+      requestStarted = resolve
+    })
+    connection.onSend = () => requestStarted!()
+    const wallet = new SolanaWallet({
+      connection,
+      signer,
+      networkId: 'solana-test',
+      nativeAttemptStore,
+    })
+
+    const sending = wallet.sendNative({
+      recipient: { raw: (await makeKeypair(2)).publicKey.toBase58() },
+      value: 1n,
+    })
+    await started
+    const reconstructed = new SolanaWallet({
+      connection: new FakeConnection(),
+      signer,
+      networkId: 'solana-test',
+      nativeAttemptStore,
+    })
+    expect(reconstructed.getUnresolvedNativeTransaction()).toEqual(
+      wallet.getUnresolvedNativeTransaction(),
+    )
+
+    releaseSend!()
+    await expect(sending).resolves.toEqual({ txHash: expect.any(String) })
+  })
+
+  it('does not submit when the exact attempt cannot be persisted first', async () => {
+    const connection = new FakeConnection()
+    const persistenceError = new Error('durable store unavailable')
+    const wallet = new SolanaWallet({
+      networkId: 'solana-test',
+      connection,
+      signer: await makeKeypair(1),
+      nativeAttemptStore: {
+        get: () => undefined,
+        put: () => {
+          throw persistenceError
+        },
+        delete: jest.fn(),
+      },
+    })
+
+    await expect(
+      wallet.sendNative({
+        recipient: { raw: (await makeKeypair(2)).publicKey.toBase58() },
+        value: 42n,
+      }),
+    ).rejects.toBe(persistenceError)
+    expect(connection.sent).toHaveLength(0)
+  })
 })
 
 async function submitThroughStealthInterface<TMetadata extends {}>(
-  wallet: StealthTransactionBundleWallet<
+  wallet: StealthTransactionBundleCapability<
     string,
     Uint8Array,
     { transfers: readonly never[] },

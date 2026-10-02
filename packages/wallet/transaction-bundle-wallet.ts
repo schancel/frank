@@ -57,7 +57,7 @@ export interface SubmitTransactionBundleOptions {
  * Chain-specific build parameters and metadata remain generic rather than being flattened into a
  * misleading universal transaction format.
  */
-export interface TransactionBundleWallet<
+export interface TransactionBundleCapability<
   TAddress,
   TRawTransaction,
   TTransferParams,
@@ -77,19 +77,51 @@ export interface TransactionBundleWallet<
 }
 
 /** An explicit capability layered on a wallet only when a reviewed stealth scheme is present. */
-export interface StealthTransactionBundleWallet<
+export interface StealthTransactionBundleCapability<
   TAddress,
   TRawTransaction,
   TTransferParams,
   TStealthParams,
   TStealthMetadata,
-> extends TransactionBundleWallet<TAddress, TRawTransaction, TTransferParams> {
+> extends TransactionBundleCapability<
+    TAddress,
+    TRawTransaction,
+    TTransferParams
+  > {
   buildStealthTransactionBundle(
     params: TStealthParams,
   ): Promise<
     WalletTransactionBundle<TAddress, TRawTransaction, TStealthMetadata>
   >
 }
+
+/** @deprecated Prefer TransactionBundleCapability; this is a capability, not the bundle data. */
+export type TransactionBundleWallet<
+  TAddress,
+  TRawTransaction,
+  TTransferParams,
+  TTransferMetadata = never,
+> = TransactionBundleCapability<
+  TAddress,
+  TRawTransaction,
+  TTransferParams,
+  TTransferMetadata
+>
+
+/** @deprecated Prefer StealthTransactionBundleCapability. */
+export type StealthTransactionBundleWallet<
+  TAddress,
+  TRawTransaction,
+  TTransferParams,
+  TStealthParams,
+  TStealthMetadata,
+> = StealthTransactionBundleCapability<
+  TAddress,
+  TRawTransaction,
+  TTransferParams,
+  TStealthParams,
+  TStealthMetadata
+>
 
 /**
  * A non-atomic bundle stopped after zero or more earlier transactions were accepted by the RPC.

@@ -30,7 +30,10 @@ import {
 } from './monad-account-pool'
 import { MonadAccountTxSigner, MonadTxSubmitter } from './monad-account-tx'
 import { LevelSubAccountPoolStore } from './storage/level-sub-account-pool-store'
-import { InMemorySubAccountPoolStore } from './storage/sub-account-pool-storage'
+import {
+  InMemorySubAccountPoolStore,
+  SubAccountPoolStore,
+} from './storage/sub-account-pool-storage'
 
 const TEST_MNEMONIC =
   'test test test test test test test test test test test junk'
@@ -101,6 +104,33 @@ describe('MonadHdKeyring', () => {
 })
 
 describe('MonadSubAccountPool', () => {
+  it('serializes arbitrary identity-account work with inventory preparation work', async () => {
+    const pool = new MonadSubAccountPool({
+      keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
+    })
+    const events: string[] = []
+    let releaseFirst: (() => void) | undefined
+    const first = pool.runMainAccountTransaction(
+      () =>
+        new Promise<void>(resolve => {
+          events.push('first-start')
+          releaseFirst = () => {
+            events.push('first-end')
+            resolve()
+          }
+        }),
+    )
+    const second = pool.runMainAccountTransaction(async () => {
+      events.push('second')
+    })
+
+    await Promise.resolve()
+    expect(events).toEqual(['first-start'])
+    releaseFirst!()
+    await Promise.all([first, second])
+    expect(events).toEqual(['first-start', 'first-end', 'second'])
+  })
+
   describe('ensureSize', () => {
     it('derives and persists sub-accounts as "available" up to the requested size', () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
@@ -948,14 +978,23 @@ describe('fanOutFundSubAccounts', () => {
 })
 
 describe('MonadSubAccountPool.fundAll', () => {
-  it('funds only the "available" records by default, using fanOutFundSubAccounts under the hood', async () => {
+  it('durably funds only the "unfunded" records by default', async () => {
     const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
     const pool = new MonadSubAccountPool({ keyring })
-    pool.ensureSize(3)
+    pool.ensureUnfundedSize(3)
     pool.setStatus(1, 'in-use')
 
     let nonce = 0
     const httpClient = makeMockHttpClient()
+    httpClient.getTransactionReceipt.mockImplementation(async txHash => ({
+      txHash,
+      blockNumber: 1,
+      blockHash: '0x' + '00'.repeat(32),
+      status: 'success',
+      gasUsed: 21_000n,
+      effectiveGasPrice: 1n,
+      logs: [],
+    }))
     const provider = makeStubProvider(async req => {
       if (req.method === 'getTransactionCount')
         return `0x${(nonce++).toString(16)}`
@@ -977,6 +1016,288 @@ describe('MonadSubAccountPool.fundAll', () => {
 
     expect(results.map(r => r.index)).toEqual([0, 2]) // index 1 is in-use, skipped
     expect(results.every(r => r.fundedValue === 120n)).toBe(true)
+  })
+
+  it('retains the exact signed attempt when funding submission is ambiguous', async () => {
+    const pool = new MonadSubAccountPool({
+      keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
+    })
+    pool.ensureUnfundedSize(1)
+    const signedTx = { txHash: '0xfunding', rawTx: '0xsigned' }
+    const signer = {
+      buildAndSignTransfer: jest.fn().mockResolvedValue(signedTx),
+      submit: jest.fn().mockRejectedValue(new Error('response lost')),
+    }
+
+    await expect(
+      pool.fundAll({
+        mainAccountSigner: signer as never,
+        burnValue: 100n,
+        gasReserve: 20n,
+      }),
+    ).rejects.toThrow('response lost')
+    expect(pool.getRecord(0)).toMatchObject({
+      status: 'funding',
+      fundingAttempt: signedTx,
+    })
+  })
+
+  it('never implicitly re-funds a receipt-confirmed available account', async () => {
+    const pool = new MonadSubAccountPool({
+      keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
+    })
+    pool.ensureUnfundedSize(1)
+    const signedTx = { txHash: '0xfunding', rawTx: '0xsigned' }
+    const signer = {
+      buildAndSignTransfer: jest.fn().mockResolvedValue(signedTx),
+      submit: jest.fn().mockResolvedValue(signedTx.txHash),
+      getStatus: jest.fn().mockResolvedValue('success'),
+    }
+
+    await pool.fundAll({
+      mainAccountSigner: signer as never,
+      burnValue: 100n,
+      gasReserve: 20n,
+    })
+    await expect(
+      pool.fundAll({
+        mainAccountSigner: signer as never,
+        burnValue: 100n,
+        gasReserve: 20n,
+      }),
+    ).resolves.toEqual([])
+    await expect(
+      pool.fundAll({
+        mainAccountSigner: signer as never,
+        burnValue: 100n,
+        gasReserve: 20n,
+        statuses: ['available'],
+      }),
+    ).rejects.toThrow('fundAll cannot fund available accounts')
+    expect(signer.buildAndSignTransfer).toHaveBeenCalledTimes(1)
+    expect(signer.submit).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['the default unfunded selection', undefined],
+    ['an explicit funding selection', ['funding'] as const],
+  ])(
+    'recovers an ambiguous attempt before %s without signing a replacement',
+    async (_description, statuses) => {
+      const pool = new MonadSubAccountPool({
+        keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
+      })
+      pool.ensureUnfundedSize(1)
+      const signedTx = { txHash: '0xfunding', rawTx: '0xsigned' }
+      const signer = {
+        buildAndSignTransfer: jest.fn().mockResolvedValue(signedTx),
+        submit: jest.fn().mockRejectedValue(new Error('response lost')),
+        submitRaw: jest.fn().mockResolvedValue(signedTx.txHash),
+        getStatus: jest
+          .fn()
+          .mockResolvedValueOnce('pending')
+          .mockResolvedValueOnce('success'),
+      }
+
+      await expect(
+        pool.fundAll({
+          mainAccountSigner: signer as never,
+          burnValue: 100n,
+          gasReserve: 20n,
+        }),
+      ).rejects.toThrow('response lost')
+
+      await expect(
+        pool.fundAll({
+          mainAccountSigner: signer as never,
+          burnValue: 100n,
+          gasReserve: 20n,
+          statuses: statuses === undefined ? undefined : [...statuses],
+          receipt: { intervalMs: 0, sleep: async () => undefined },
+        }),
+      ).resolves.toEqual([])
+
+      expect(signer.buildAndSignTransfer).toHaveBeenCalledTimes(1)
+      expect(signer.submit).toHaveBeenCalledTimes(1)
+      expect(signer.submitRaw).toHaveBeenCalledWith(
+        signedTx.rawTx,
+        signedTx.txHash,
+      )
+      expect(pool.getRecord(0)).toMatchObject({ status: 'available' })
+      expect(pool.getRecord(0)?.fundingAttempt).toBeUndefined()
+    },
+  )
+
+  it('does not re-fund a confirmed prefix while recovering a later ambiguous member', async () => {
+    const pool = new MonadSubAccountPool({
+      keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
+    })
+    pool.ensureUnfundedSize(2)
+    const signed = [
+      { txHash: '0xfirst', rawTx: '0xsigned-first' },
+      { txHash: '0xsecond', rawTx: '0xsigned-second' },
+    ]
+    const signer = {
+      buildAndSignTransfer: jest
+        .fn()
+        .mockResolvedValueOnce(signed[0])
+        .mockResolvedValueOnce(signed[1]),
+      submit: jest
+        .fn()
+        .mockResolvedValueOnce(signed[0].txHash)
+        .mockRejectedValueOnce(new Error('response lost')),
+      submitRaw: jest.fn().mockResolvedValue(signed[1].txHash),
+      getStatus: jest
+        .fn()
+        .mockResolvedValueOnce('success')
+        .mockResolvedValueOnce('pending')
+        .mockResolvedValueOnce('success'),
+    }
+
+    await expect(
+      pool.fundAll({
+        mainAccountSigner: signer as never,
+        burnValue: 100n,
+        gasReserve: 20n,
+      }),
+    ).rejects.toThrow('response lost')
+    expect(pool.getRecord(0)?.status).toBe('funding-complete')
+    expect(pool.getRecord(1)).toMatchObject({
+      status: 'funding',
+      fundingAttempt: signed[1],
+    })
+
+    await expect(
+      pool.fundAll({
+        mainAccountSigner: signer as never,
+        burnValue: 100n,
+        gasReserve: 20n,
+        receipt: { intervalMs: 0, sleep: async () => undefined },
+      }),
+    ).resolves.toEqual([])
+
+    expect(signer.buildAndSignTransfer).toHaveBeenCalledTimes(2)
+    expect(signer.submit).toHaveBeenCalledTimes(2)
+    expect(signer.submitRaw).toHaveBeenCalledWith(
+      signed[1].rawTx,
+      signed[1].txHash,
+    )
+    expect(pool.records().map(record => record.status)).toEqual([
+      'available',
+      'available',
+    ])
+  })
+
+  it('resumes unstarted batch members with the original durable funding plan', async () => {
+    const pool = new MonadSubAccountPool({
+      keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
+    })
+    pool.ensureUnfundedSize(2)
+    const signed = [
+      { txHash: '0xfirst', rawTx: '0xsigned-first' },
+      { txHash: '0xsecond', rawTx: '0xsigned-second' },
+    ]
+    const signer = {
+      buildAndSignTransfer: jest
+        .fn()
+        .mockResolvedValueOnce(signed[0])
+        .mockResolvedValueOnce(signed[1]),
+      submit: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('response lost'))
+        .mockResolvedValueOnce(signed[1].txHash),
+      submitRaw: jest.fn().mockResolvedValue(signed[0].txHash),
+      getStatus: jest
+        .fn()
+        .mockResolvedValueOnce('pending')
+        .mockResolvedValueOnce('success')
+        .mockResolvedValueOnce('success'),
+    }
+    const originalOverrides = {
+      gasLimit: 21_000n,
+      maxFeePerGas: 3n,
+      maxPriorityFeePerGas: 1n,
+      chainId: 10143n,
+    }
+
+    await expect(
+      pool.fundAll({
+        mainAccountSigner: signer as never,
+        burnValue: 100n,
+        gasReserve: 20n,
+        overrides: originalOverrides,
+      }),
+    ).rejects.toThrow('response lost')
+    expect(pool.getRecord(1)?.status).toBe('funding-pending')
+
+    await pool.fundAll({
+      mainAccountSigner: signer as never,
+      burnValue: 999n,
+      gasReserve: 999n,
+      receipt: { intervalMs: 0, sleep: async () => undefined },
+    })
+
+    expect(signer.buildAndSignTransfer).toHaveBeenNthCalledWith(
+      2,
+      pool.getRecord(1)?.address,
+      120n,
+      originalOverrides,
+    )
+    expect(signer.submitRaw).toHaveBeenCalledWith(
+      signed[0].rawTx,
+      signed[0].txHash,
+    )
+    expect(pool.records().map(record => record.status)).toEqual([
+      'available',
+      'available',
+    ])
+  })
+
+  it('keeps a completed batch blocked when its final durable commit fails', async () => {
+    class FailOnceBatchStore extends InMemorySubAccountPoolStore {
+      private calls = 0
+
+      async putBatch(records: Parameters<SubAccountPoolStore['putBatch']>[0]) {
+        this.calls++
+        if (this.calls === 2) {
+          throw new Error('batch persistence failed')
+        }
+        return super.putBatch(records)
+      }
+    }
+
+    const store = new FailOnceBatchStore()
+    const pool = new MonadSubAccountPool({
+      keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
+      store,
+    })
+    pool.ensureUnfundedSize(1)
+    const signedTx = { txHash: '0xfunding', rawTx: '0xsigned' }
+    const signer = {
+      buildAndSignTransfer: jest.fn().mockResolvedValue(signedTx),
+      submit: jest.fn().mockResolvedValue(signedTx.txHash),
+      getStatus: jest.fn().mockResolvedValue('success'),
+    }
+
+    await expect(
+      pool.fundAll({
+        mainAccountSigner: signer as never,
+        burnValue: 100n,
+        gasReserve: 20n,
+      }),
+    ).rejects.toThrow('batch persistence failed')
+    expect(pool.getRecord(0)?.status).toBe('funding-complete')
+
+    await expect(
+      pool.fundAll({
+        mainAccountSigner: signer as never,
+        burnValue: 100n,
+        gasReserve: 20n,
+      }),
+    ).resolves.toEqual([])
+    expect(signer.buildAndSignTransfer).toHaveBeenCalledTimes(1)
+    expect(signer.submit).toHaveBeenCalledTimes(1)
+    expect(pool.getRecord(0)?.status).toBe('available')
   })
 })
 

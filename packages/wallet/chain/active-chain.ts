@@ -1,18 +1,13 @@
 /**
- * The compile-time chain-selection seam (ticket #41 -- see `PLAN.md`'s M9 section, "Design: a
- * compile-time `ActiveChain` seam"). One interface, `ActiveChain`, is satisfied by exactly one real
- * implementation (`./monad-chain.ts`'s `MonadChain`), selected once at compile time via
- * `./index.ts`'s `activeChain` constant. Every store/component that needs address formatting, a
- * unit/denomination, a wallet factory, or direct-message/topic-broadcast operations is meant to
- * import through `activeChain` in follow-on tickets (#42/#43) rather than reaching into
- * chain-specific modules (`../wallet/monad-*`, or the old Lotus `../registry`/`../relay`) directly.
+ * Chain boundaries used by both the application and explicitly configured native-asset wallets.
+ * `NativeAssetChain` is the portable identity/balance/send/codec surface implemented by Monad,
+ * Solana, and eCash. `ActiveChain` adds Frank's profile, direct-message, and topic capabilities;
+ * `./index.ts` deliberately keeps that application-wide selection hardcoded to Monad.
  *
- * Deliberately a compile-time constant, not a runtime multi-chain dispatch -- matches M8's own
- * deferred-cross-chain-schema reasoning (`PLAN.md`): only one chain (Monad) is real right now, and
- * a generic multi-chain abstraction designed from a single example risks guessing its shape wrong
- * and needing a rewrite anyway once a second chain actually exists. `LotusChain` is explicitly not
- * built here (see issue #41's "Non-goals") -- this interface is only proven against Monad's real
- * client signatures.
+ * The smaller native surface is intentionally high-level. Solana's ordered signed bundles and
+ * eCash's stateful UTXO selection/chained broadcasts do not share a safe build protocol, so those
+ * details remain optional chain capabilities below this boundary rather than being flattened into
+ * a misleading universal transaction type.
  *
  * ## Deviations from issue #41's own interface sketch, and why
  *
@@ -53,16 +48,30 @@
  */
 import { ForumMessage, ForumMessageEntry } from '@frank/cashweb/types/forum'
 import { MessageItem } from '@frank/cashweb/types/messages'
+import {
+  ChainAddress,
+  ChainKind,
+  ChainTransaction,
+  FrankIdentityHandle,
+  NativeWalletHandle,
+  WalletHandle,
+} from './chain-wallet'
+
+export type {
+  ChainAddress,
+  ChainKind,
+  ChainTransaction,
+  FrankIdentityHandle,
+  NativeWalletHandle,
+  WalletHandle,
+} from './chain-wallet'
+export { NativeTransactionSubmissionError } from './chain-wallet'
 
 /** Canonical string form of an on-chain address, for storage keys, API calls, and equality checks.
  * For `MonadChain`, this is an EIP-55 checksummed `0x...` string (`../wallet/monad-identity.ts`) --
  * there is deliberately no separate "API" vs. "display" encoding the way Lotus's
  * `toAPIAddress`/`toDisplayAddress` (`../../utils/address.ts`) need, since EVM has exactly one
  * canonical address representation. */
-export interface ChainAddress {
-  readonly raw: string
-}
-
 /** A chain-agnostic HD seed. Mirrors the only real seed-consuming primitive in this codebase today
  * (`../wallet/monad-hd-keyring.ts`'s `MonadHdKeyring.fromMnemonic(mnemonic, passphrase)`) rather
  * than inventing an abstract seed format with no real consumer yet. */
@@ -73,19 +82,10 @@ export interface HDSeed {
   passphrase?: string
 }
 
-export interface FrankIdentityHandle {
-  address: ChainAddress
-  displayAddress: string
-}
-
 /** The generic per-user wallet handle every `ActiveChain` method that needs a sender identity
  * takes. See this file's header, deviation 1: concrete chain implementations (`MonadChain`) attach
  * more than `identity` to the object they actually hand back from `createWallet`; this interface
  * only promises what every chain implementation must have. */
-export interface WalletHandle {
-  readonly identity: FrankIdentityHandle
-}
-
 /** A looked-up identity's registered profile/pubkey -- `contacts.ts` (#42) needs this to resolve a
  * coparty's encryption key; the Lotus-side equivalent is `../wallet/lotus-identity.ts`'s
  * `fetchIdentityPubKey`, which Monad had no analog of before this ticket
@@ -188,12 +188,12 @@ export interface DirectMessageClient {
 
 /** Standard native-asset wallet operations, independent of Frank's mandatory message stamps. */
 export interface NativeTransferClient {
-  getBalance(params: { wallet: WalletHandle }): Promise<bigint>
+  getBalance(params: { wallet: NativeWalletHandle }): Promise<bigint>
   send(params: {
-    wallet: WalletHandle
+    wallet: NativeWalletHandle
     recipient: ChainAddress
     value: bigint
-  }): Promise<{ txHash: string }>
+  }): Promise<ChainTransaction>
 }
 
 export interface TopicBroadcastClient {
@@ -230,20 +230,42 @@ export interface TopicBroadcastClient {
   >
 }
 
-export interface ActiveChain {
+export interface ChainCapabilities {
+  readonly profiles: boolean
+  readonly directMessages: boolean
+  readonly topics: boolean
+  readonly stealthPayments: boolean
+}
+
+/** Native-asset surface available for every chain returned by the chain factory. */
+export interface NativeAssetChain {
+  readonly kind: ChainKind
   readonly name: string
   /** Display denomination, e.g. `'MON'`. */
   readonly unit: string
+  readonly capabilities: ChainCapabilities
+  toDisplayAmount(raw: bigint): string
+  fromDisplayAmount(display: string): bigint
+  addressToString(addr: ChainAddress): string
+  transactionToString(transaction: ChainTransaction): string
+  /** @deprecated Use addressToString. */
+  formatAddress(addr: ChainAddress): string
+  parseAddress(input: string): ChainAddress | undefined
+  createWallet(seed: HDSeed): Promise<NativeWalletHandle>
+  nativeTransfers: NativeTransferClient
+}
+
+/** Full Frank application capability set. Monad remains the selected implementation. */
+export interface ActiveChain extends NativeAssetChain {
+  readonly capabilities: ChainCapabilities & {
+    readonly profiles: true
+    readonly directMessages: true
+    readonly topics: true
+  }
   /** Default raw native-chain value for a direct-message stamp payment. */
   readonly defaultStampValue: bigint
   /** Default raw native-chain value burned for a topic post or vote. */
   readonly defaultTopicVoteValue: bigint
-  toDisplayAmount(raw: bigint): string
-  fromDisplayAmount(display: string): bigint
-  formatAddress(addr: ChainAddress): string
-  parseAddress(input: string): ChainAddress | undefined
-  createWallet(seed: HDSeed): Promise<WalletHandle>
-  nativeTransfers: NativeTransferClient
   /** Look up an identity's registered profile/pubkey. Returns `undefined` if nothing is
    * registered under `addr` yet. `opts.relayBaseUrl`, when given, looks the address up against
    * that relay instead of this chain's own configured default (ticket #78 -- a client-initiated,

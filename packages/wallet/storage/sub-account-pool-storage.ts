@@ -20,6 +20,9 @@
  *   - `'unfunded'`: derived and persisted, but not yet funded or eligible for selection.
  *   - `'funding'`: an exact main-account funding transaction is durably recorded and awaiting a
  *     successful receipt. `fundingAttempt` is required in this state.
+ *   - `'funding-pending'` / `'funding-complete'`: internal durable `fundAll()` batch states. They
+ *     keep not-yet-started and already-confirmed members out of selection until the whole batch
+ *     finishes, so recovery cannot fund a successful prefix twice.
  *   - `'available'`: idle, receipt-confirmed, never-before-used, and eligible for a new stamp
  *     payment or broadcast transaction.
  *   - `'in-use'`: currently leased for an in-flight (unconfirmed) transaction. This ticket never
@@ -43,7 +46,9 @@
  */
 export type SubAccountStatus =
   | 'unfunded'
+  | 'funding-pending'
   | 'funding'
+  | 'funding-complete'
   | 'available'
   | 'in-use'
   | 'spent'
@@ -53,6 +58,19 @@ export interface SubAccountFundingAttempt {
   /** Exact signed transaction retained so a restart retries the same nonce and transfer. */
   rawTx: string
   txHash: string
+}
+
+export interface SubAccountFundingPlan {
+  paymentCapacityWei: string
+  gasReserveWei: string
+  overrides?: {
+    nonce?: number
+    gasLimit?: string
+    maxFeePerGas?: string
+    maxPriorityFeePerGas?: string
+    gasPrice?: string
+    chainId?: string
+  }
 }
 
 /** Persisted state for one HD-derived sub-account. Never carries a private key — see file header.
@@ -67,10 +85,20 @@ interface SubAccountRecordBase {
  * state with no exact transaction to resume. The additive fields keep existing Level rows valid. */
 export type SubAccountRecord = SubAccountRecordBase &
   (
-    | { status: 'funding'; fundingAttempt: SubAccountFundingAttempt }
     | {
-        status: Exclude<SubAccountStatus, 'funding'>
+        status: 'funding-pending'
+        fundingPlan: SubAccountFundingPlan
         fundingAttempt?: undefined
+      }
+    | {
+        status: 'funding'
+        fundingAttempt: SubAccountFundingAttempt
+        fundingPlan?: undefined
+      }
+    | {
+        status: Exclude<SubAccountStatus, 'funding' | 'funding-pending'>
+        fundingAttempt?: undefined
+        fundingPlan?: undefined
       }
   )
 
@@ -83,6 +111,8 @@ export type SubAccountRecord = SubAccountRecordBase &
 export interface SubAccountPoolStore {
   getByIndex(index: number): SubAccountRecord | undefined
   put(record: SubAccountRecord): void
+  /** Durably commits a related record set before exposing it through the in-memory view. */
+  putBatch(records: SubAccountRecord[]): Promise<void>
   getAll(): SubAccountRecord[]
   /** Waits until every preceding mutation is durable. In-memory stores resolve immediately. */
   flush(): Promise<void>
@@ -100,6 +130,12 @@ export class InMemorySubAccountPoolStore implements SubAccountPoolStore {
 
   put(record: SubAccountRecord): void {
     this.recordsByIndex.set(record.index, { ...record })
+  }
+
+  async putBatch(records: SubAccountRecord[]): Promise<void> {
+    for (const record of records) {
+      this.recordsByIndex.set(record.index, { ...record })
+    }
   }
 
   getAll(): SubAccountRecord[] {

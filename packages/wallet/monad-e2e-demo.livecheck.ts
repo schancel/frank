@@ -157,7 +157,7 @@ async function main() {
   const changePool = new MonadChangePool({
     keyring: MonadChangeKeyring.fromMnemonic(mnemonic),
   })
-  pool.ensureSize(1)
+  pool.ensureUnfundedSize(1)
 
   const gasReserve = BigInt('20000000000000000') // 0.02 MON headroom for gas fees
   console.log('\n== Funding sub-account 0 from the main account ==')

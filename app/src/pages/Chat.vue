@@ -54,6 +54,7 @@
             round
             size="md"
             icon="arrow_downward"
+            :aria-label="$t('a11y.scrollToLatest')"
             @mousedown.prevent="buttonScrollBottom"
             color="accent"
           />
@@ -76,6 +77,7 @@
               flat
               color="accent"
               icon="close"
+              :aria-label="$t('a11y.cancelReply')"
               @click="setReply(null)"
             />
           </div>

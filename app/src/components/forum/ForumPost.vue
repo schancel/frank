@@ -3,13 +3,20 @@
     <q-card-section class="row" horizontal>
       <q-card-section class="col-shrink q-pa-none q-ma-none bg-on-secondary">
         <q-card-section class="q-pa-none q-ma-none text-center">
-          <q-btn flat icon="arrow_drop_up" padding="0" @click="addVotes(1)" />
+          <q-btn
+            flat
+            icon="arrow_drop_up"
+            padding="0"
+            :aria-label="$t('a11y.voteUp')"
+            @click="addVotes(1)"
+          />
         </q-card-section>
         <q-card-section class="q-pa-none q-ma-none text-center">
           <q-btn
             flat
             icon="arrow_drop_down"
             padding="0"
+            :aria-label="$t('a11y.voteDown')"
             @click="addVotes(-1)"
           />
         </q-card-section>

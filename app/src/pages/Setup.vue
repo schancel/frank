@@ -10,6 +10,8 @@
           :disable="completionLocked"
           @click="$emit('toggleMyDrawerOpen')"
           icon="menu"
+          :aria-label="$t('a11y.openNavigation')"
+          :aria-expanded="myDrawerOpen"
         />
         <q-toolbar-title class="h6">
           {{ $t('setup.welcome') }}
@@ -122,6 +124,8 @@
 import assert from 'assert'
 
 import { defineComponent } from 'vue'
+
+import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { QStepper } from 'quasar'
 
 import { HDPrivateKey } from 'bitcore-lib-xpi'
@@ -195,6 +199,7 @@ export default defineComponent({
     ReplaceAccountGuard,
   },
   setup() {
+    const myDrawerOpen = useMyDrawerOpen()
     const relayClient = useRelayClientStore()
     const chats = useChatStore()
     const wallet = useWalletStore()
@@ -205,6 +210,7 @@ export default defineComponent({
     const { updateInterval } = storeToRefs(contacts)
 
     return {
+      myDrawerOpen,
       setRelayToken: relayClient.setToken,
       resetChats: chats.reset,
       darkMode: appearance.setDarkMode,

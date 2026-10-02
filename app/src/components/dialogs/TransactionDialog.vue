@@ -40,6 +40,7 @@
               flat
               round
               icon="open_in_new"
+              :aria-label="$t('a11y.openInExplorer')"
               :href="transactionExplorerUrl(payment.txHash)"
               target="_blank"
             />

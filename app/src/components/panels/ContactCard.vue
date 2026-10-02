@@ -29,6 +29,7 @@
             dense
             color="white"
             icon="file_copy"
+            :aria-label="$t('a11y.copyAddress')"
             size="sm"
             @click="copyAddress()"
           />

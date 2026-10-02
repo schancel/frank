@@ -78,7 +78,9 @@ function breakpointOf(layout: object): string | undefined {
         QFooter: Passthrough,
       },
       stubs: { RouterView: true },
-      mocks: { $status: { setup: true } },
+      // #187 adds aria-labels ($t(...)) to the layouts' toolbar controls; give the harness a
+      // translator so the render path under these stubs does not blow up on them.
+      mocks: { $status: { setup: true }, $t: (key: string) => key },
     },
   })
   const value = wrapper

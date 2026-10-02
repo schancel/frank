@@ -7,6 +7,7 @@
         flat
         round
         icon="add"
+        :aria-label="$t('a11y.addContact')"
         color="primary"
         @click="newContactOpen = true"
       />

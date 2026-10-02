@@ -38,15 +38,8 @@
     />
     <link rel="icon" type="image/ico" href="favicon.ico" />
 
-    <!-- Visual redesign (2026-09-28): default Quasar build only ever shipped with the stock
-    Roboto stack -- swapping in Inter for a more deliberate, modern feel. Preconnect first so the
-    actual stylesheet fetch doesn't pay a fresh DNS+TLS handshake on top of the font request. -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
-      rel="stylesheet"
-    />
+    <!-- Privacy protection (#486): UI fonts use local/system fallbacks without contacting
+    third-party font CDNs (e.g. Google Fonts) on initial page load. -->
   </head>
   <body>
     <!-- quasar:entry-point -->

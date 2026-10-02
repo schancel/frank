@@ -337,6 +337,21 @@ export default {
     loginOrSignUp: 'Login/Sign Up',
     welcome: 'Welcome',
     welcomeToStampChat: 'Welcome to Frank!',
+    networkTitle: 'Monad Testnet',
+    testnetDisclaimer:
+      'Frank runs on the Monad testnet. All transactions use testnet MON, which has no real-world monetary value. Never send real funds or mainnet assets.',
+    economicModelTitle: 'Paid Actions & Costs',
+    costsDisclaimer:
+      'Network and stamp costs apply to outgoing actions. The actual fee or stamp amount is always shown before you confirm an action.',
+    directMessagesTitle: 'Direct Messages',
+    directMessagesDesc:
+      'Paid directly to the recipient as an inbox stamp, preventing spam and compensating delivery.',
+    topicActionsTitle: 'Forum Posts & Votes',
+    topicActionsDesc:
+      'Burned (permanently destroyed on-chain) to publish public topic posts or record votes.',
+    fundingTitle: 'Testnet Funding',
+    fundingDesc:
+      'New accounts receive testnet MON automatically from the demo faucet. You can also view your address and obtain testnet funds from the Receive screen after setup.',
     eulaDisclaimer:
       'Frank is experimental software. It may contain bugs that delay messages or cause a loss of funds. Only use amounts you can afford to lose.',
     eulaYouUnderstand:

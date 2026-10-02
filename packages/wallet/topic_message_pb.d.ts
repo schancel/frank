@@ -99,6 +99,11 @@ export class StoredMonadTopicPost extends jspb.Message {
   getNetworkTag_asB64(): string;
   setNetworkTag(value: Uint8Array | string): void;
 
+  getCborPostFrame(): Uint8Array | string;
+  getCborPostFrame_asU8(): Uint8Array;
+  getCborPostFrame_asB64(): string;
+  setCborPostFrame(value: Uint8Array | string): void;
+
   serializeBinary(): Uint8Array;
   toObject(includeInstance?: boolean): StoredMonadTopicPost.AsObject;
   static toObject(includeInstance: boolean, msg: StoredMonadTopicPost): StoredMonadTopicPost.AsObject;
@@ -116,6 +121,7 @@ export namespace StoredMonadTopicPost {
     txHash: Uint8Array | string,
     timestamp: number,
     networkTag: Uint8Array | string,
+    cborPostFrame: Uint8Array | string,
   }
 }
 

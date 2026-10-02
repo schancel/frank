@@ -76,6 +76,10 @@ message StoredMonadTopicPost {
   // so `5` is the actual next-free number here, verified by reading this file rather than assumed
   // from the ticket's issue text (which suggested `6`, off by one for this particular message).
   bytes network_tag = 5;
+  // Exact deterministic Frank-CBOR type-9 frame for posts admitted through the CBOR route.
+  // Empty for legacy protobuf posts. Keeping the authoritative bytes beside the legacy storage
+  // projection preserves the post's T1 identity without rewriting the existing RocksDB layout.
+  bytes cbor_post_frame = 6;
 }
 
 // A single tallied vote (a post's initial vote, or a later [`MonadTopicVote`]) as stored by the

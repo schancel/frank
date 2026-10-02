@@ -991,6 +991,19 @@ impl Registry {
         }
     }
 
+    /// Return the EVM chain ID paired with [`Self::expected_cbor_network`].
+    pub fn expected_monad_chain_id(&self) -> u64 {
+        if let Some(network) =
+            crate::network_tag::monad_network(crate::network_tag::frank_network_tag())
+        {
+            return network.evm_chain_id;
+        }
+        match self.net {
+            Net::Mainnet => 143,
+            _ => 10_143,
+        }
+    }
+
     /// Fully verify and write a Monad-native profile registration (ticket #45) -- the Monad
     /// equivalent of [`Registry::put_metadata`]. See `crate::monad_profile_verify`'s module docs
     /// for why this uses an explicit pubkey+signature check (mirroring Lotus's own solution to

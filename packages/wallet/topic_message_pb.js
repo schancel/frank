@@ -803,7 +803,8 @@ post: (f = msg.getPost()) && proto.cashweb.registry.MonadTopicPost.toObject(incl
 senderAddress: msg.getSenderAddress_asB64(),
 txHash: msg.getTxHash_asB64(),
 timestamp: jspb.Message.getFieldWithDefault(msg, 4, 0),
-networkTag: msg.getNetworkTag_asB64()
+networkTag: msg.getNetworkTag_asB64(),
+cborPostFrame: msg.getCborPostFrame_asB64()
   };
 
   if (includeInstance) {
@@ -860,6 +861,10 @@ proto.cashweb.registry.StoredMonadTopicPost.deserializeBinaryFromReader = functi
     case 5:
       var value = /** @type {!Uint8Array} */ (reader.readBytes());
       msg.setNetworkTag(value);
+      break;
+    case 6:
+      var value = /** @type {!Uint8Array} */ (reader.readBytes());
+      msg.setCborPostFrame(value);
       break;
     default:
       reader.skipField();
@@ -923,6 +928,13 @@ proto.cashweb.registry.StoredMonadTopicPost.serializeBinaryToWriter = function(m
   if (f.length > 0) {
     writer.writeBytes(
       5,
+      f
+    );
+  }
+  f = message.getCborPostFrame_asU8();
+  if (f.length > 0) {
+    writer.writeBytes(
+      6,
       f
     );
   }
@@ -1107,6 +1119,48 @@ proto.cashweb.registry.StoredMonadTopicPost.prototype.getNetworkTag_asU8 = funct
  */
 proto.cashweb.registry.StoredMonadTopicPost.prototype.setNetworkTag = function(value) {
   return jspb.Message.setProto3BytesField(this, 5, value);
+};
+
+
+/**
+ * optional bytes cbor_post_frame = 6;
+ * @return {!(string|Uint8Array)}
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.getCborPostFrame = function() {
+  return /** @type {!(string|Uint8Array)} */ (jspb.Message.getFieldWithDefault(this, 6, ""));
+};
+
+
+/**
+ * optional bytes cbor_post_frame = 6;
+ * This is a type-conversion wrapper around `getCborPostFrame()`
+ * @return {string}
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.getCborPostFrame_asB64 = function() {
+  return /** @type {string} */ (jspb.Message.bytesAsB64(
+      this.getCborPostFrame()));
+};
+
+
+/**
+ * optional bytes cbor_post_frame = 6;
+ * Note that Uint8Array is not supported on all browsers.
+ * @see http://caniuse.com/Uint8Array
+ * This is a type-conversion wrapper around `getCborPostFrame()`
+ * @return {!Uint8Array}
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.getCborPostFrame_asU8 = function() {
+  return /** @type {!Uint8Array} */ (jspb.Message.bytesAsU8(
+      this.getCborPostFrame()));
+};
+
+
+/**
+ * @param {!(string|Uint8Array)} value
+ * @return {!proto.cashweb.registry.StoredMonadTopicPost} returns this
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.setCborPostFrame = function(value) {
+  return jspb.Message.setProto3BytesField(this, 6, value);
 };
 
 

@@ -14,6 +14,11 @@
 //!   also creates its own initial vote entry), so [`Registry::get_monad_topic_post_view`]'s tally is
 //!   simply the sum of every recorded entry for a `payload_hash`.
 //!
+//! Updated clients declare `application/cbor` and submit the frozen type-10/type-11 frames. The
+//! legacy protobuf decoder remains behind its own explicit content type for the bounded window in
+//! `docs/protocol/cbor/topic-http-coexistence.md`; bytes are never sniffed or retried. Read models
+//! and success responses stay explicitly protobuf until deterministic-CBOR schemas are allocated.
+//!
 //! ## Configuration
 //!
 //! Reads two canonical env vars (`MONAD_TESTNET_HTTP_RPC_URL`, `MONAD_STAMP_BURN_ADDRESS` -- see
@@ -34,14 +39,19 @@
 use std::{fmt, sync::OnceLock};
 
 use axum::{
+    body::Bytes,
     extract::{Path, Query},
-    http::StatusCode,
+    http::{
+        header::{ACCEPT, CONTENT_TYPE},
+        HeaderMap, StatusCode,
+    },
     response::{IntoResponse, Response},
     Extension, Json,
 };
 use bitcoinsuite_core::{Hashed, Sha256};
 use bitcoinsuite_error::Report;
 use cashweb_http_utils::protobuf::Protobuf;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use tracing::Level;
 
@@ -50,6 +60,10 @@ use crate::{
     monad_evm_tx::{recover_sender, EvmTxError},
     monad_http::{Address, HttpTransport, JsonRpcTransport},
     monad_stamp_relay::PollConfig,
+    monad_topic_cbor::{
+        broadcast_and_verify_topic_event, parse_topic_event, TopicBurnError, TopicBurnPolicy,
+        TopicEvent, TopicEventError, MAX_TOPIC_EVENT_FRAME_BYTES,
+    },
     monad_topic_relay::{broadcast_and_verify_topic_vote, TopicVoteRelayOutcome},
     monad_topic_verify::ExpectedTopicBurn,
     proto,
@@ -171,6 +185,7 @@ pub async fn process_monad_topic_post<T: JsonRpcTransport + Clone>(
         tx_hash: tx_hash.0.to_vec(),
         timestamp,
         network_tag: Vec::new(),
+        cbor_post_frame: Vec::new(),
     };
 
     let stored = registry
@@ -291,6 +306,149 @@ pub async fn process_monad_topic_vote<T: JsonRpcTransport + Clone>(
     Ok(vote_entry)
 }
 
+/// Stored projection produced after a deterministic-CBOR topic event is verified.
+#[derive(Debug)]
+pub enum StoredCborTopicEvent {
+    /// A type-10 submission stored as the legacy-at-rest post projection.
+    Post(proto::StoredMonadTopicPost),
+    /// A type-11 submission stored as the legacy-at-rest vote projection.
+    Vote(proto::StoredMonadTopicVoteEntry),
+}
+
+/// Root event accepted by a specific HTTP write route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CborTopicEventKind {
+    /// Type 10 only.
+    Post,
+    /// Type 11 only.
+    Vote,
+}
+
+/// Failure while admitting a deterministic-CBOR topic event.
+#[derive(Debug)]
+pub enum ProcessCborTopicEventError {
+    /// The frame failed strict deterministic-CBOR or network validation.
+    Event(TopicEventError),
+    /// A vote named a post that is not stored locally.
+    UnknownTargetPost,
+    /// The signed burn transaction failed before or after broadcast.
+    Burn(TopicBurnError),
+    /// Durable storage failed after the burn verified.
+    Infrastructure(Report),
+}
+
+impl fmt::Display for ProcessCborTopicEventError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Event(err) => write!(f, "{err}"),
+            Self::UnknownTargetPost => write!(f, "no topic post found for the target hash"),
+            Self::Burn(err) => write!(f, "{err}"),
+            Self::Infrastructure(err) => write!(f, "infrastructure failure: {err}"),
+        }
+    }
+}
+
+/// Strictly validate, verify, and persist one type-10 or type-11 deterministic-CBOR event.
+/// RocksDB remains protobuf-at-rest during coexistence; the exact type-9 frame is retained in the
+/// additive `cbor_post_frame` field so its T1 identity is never reconstructed or transcoded.
+pub async fn process_cbor_topic_event<T: JsonRpcTransport + Clone>(
+    transport: &T,
+    registry: &Registry,
+    burn_address: Address,
+    poll: PollConfig,
+    frame: &[u8],
+    expected_kind: CborTopicEventKind,
+) -> Result<StoredCborTopicEvent, ProcessCborTopicEventError> {
+    let network = registry.expected_cbor_network();
+    let event = parse_topic_event(frame, network).map_err(ProcessCborTopicEventError::Event)?;
+    match (&event, expected_kind) {
+        (TopicEvent::Post(_), CborTopicEventKind::Post)
+        | (TopicEvent::Vote(_), CborTopicEventKind::Vote) => {}
+        (TopicEvent::Post(_), CborTopicEventKind::Vote) => {
+            return Err(ProcessCborTopicEventError::Event(
+                TopicEventError::UnexpectedRoot(10),
+            ))
+        }
+        (TopicEvent::Vote(_), CborTopicEventKind::Post) => {
+            return Err(ProcessCborTopicEventError::Event(
+                TopicEventError::UnexpectedRoot(11),
+            ))
+        }
+    }
+    if let TopicEvent::Vote(vote) = &event {
+        registry
+            .get_monad_topic_post(&vote.target_hash)
+            .map_err(ProcessCborTopicEventError::Infrastructure)?
+            .ok_or(ProcessCborTopicEventError::UnknownTargetPost)?;
+    }
+    let verified = broadcast_and_verify_topic_event(
+        transport,
+        &event,
+        &TopicBurnPolicy {
+            burn_address,
+            expected_chain_id: registry.expected_monad_chain_id(),
+        },
+        poll,
+    )
+    .await
+    .map_err(ProcessCborTopicEventError::Burn)?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let weight = saturate_weight(verified.direction.signed_weight(verified.value_wei));
+
+    match event {
+        TopicEvent::Post(post) => {
+            let legacy_post = proto::MonadTopicPost {
+                topic: post.topic,
+                parent_post_hash: post.parent_hash.map_or_else(Vec::new, |hash| hash.to_vec()),
+                raw_burn_tx: post.burn_tx,
+                encrypted_payload: post.body,
+                payload_hash: post.post_hash.to_vec(),
+            };
+            let stored = proto::StoredMonadTopicPost {
+                post: Some(legacy_post),
+                sender_address: verified.sender.0.to_vec(),
+                tx_hash: verified.tx_hash.0.to_vec(),
+                timestamp,
+                network_tag: Vec::new(),
+                cbor_post_frame: post.post_frame,
+            };
+            let stored = registry
+                .put_monad_topic_post(
+                    &post.post_hash,
+                    stored,
+                    crate::network_tag::frank_network_tag(),
+                )
+                .map_err(ProcessCborTopicEventError::Infrastructure)?;
+            registry
+                .add_monad_topic_vote(&proto::StoredMonadTopicVoteEntry {
+                    target_payload_hash: post.post_hash.to_vec(),
+                    sender_address: verified.sender.0.to_vec(),
+                    tx_hash: verified.tx_hash.0.to_vec(),
+                    timestamp,
+                    weight,
+                })
+                .map_err(ProcessCborTopicEventError::Infrastructure)?;
+            Ok(StoredCborTopicEvent::Post(stored))
+        }
+        TopicEvent::Vote(vote) => {
+            let stored = proto::StoredMonadTopicVoteEntry {
+                target_payload_hash: vote.target_hash.to_vec(),
+                sender_address: verified.sender.0.to_vec(),
+                tx_hash: verified.tx_hash.0.to_vec(),
+                timestamp,
+                weight,
+            };
+            registry
+                .add_monad_topic_vote(&stored)
+                .map_err(ProcessCborTopicEventError::Infrastructure)?;
+            Ok(StoredCborTopicEvent::Vote(stored))
+        }
+    }
+}
+
 /// Errors reading required topic-vote gate configuration from the environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadTopicGateConfigError {
@@ -363,6 +521,62 @@ struct MonadTopicErrorBody {
     detail: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TopicRequestFormat {
+    Cbor,
+    Protobuf,
+}
+
+/// Select the write decoder solely from the declared media type. Parameters are accepted for
+/// protobuf compatibility, but bytes are never sniffed or retried through another decoder.
+fn topic_request_format(headers: &HeaderMap) -> Option<TopicRequestFormat> {
+    let media_type = headers
+        .get(CONTENT_TYPE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .next()?
+        .trim()
+        .to_ascii_lowercase();
+    match media_type.as_str() {
+        "application/cbor" => Some(TopicRequestFormat::Cbor),
+        "application/x-protobuf" => Some(TopicRequestFormat::Protobuf),
+        _ => None,
+    }
+}
+
+/// Topic read models do not yet have frozen CBOR schemas. Missing or wildcard `Accept` preserves
+/// legacy compatibility; an explicit CBOR-only request fails instead of returning mislabeled or
+/// heuristically converted protobuf bytes.
+fn topic_accepts_protobuf(headers: &HeaderMap) -> bool {
+    let Some(value) = headers.get(ACCEPT) else {
+        return true;
+    };
+    let Ok(value) = value.to_str() else {
+        return false;
+    };
+    value.split(',').any(|range| {
+        let mut parts = range.split(';');
+        let media_type = parts.next().unwrap_or_default().trim().to_ascii_lowercase();
+        let refused = parts.any(|parameter| {
+            let mut pair = parameter.trim().splitn(2, '=');
+            pair.next()
+                .is_some_and(|name| name.eq_ignore_ascii_case("q"))
+                && pair.next().is_some_and(|quality| {
+                    quality
+                        .trim()
+                        .parse::<f32>()
+                        .is_ok_and(|quality| quality == 0.0)
+                })
+        });
+        !refused
+            && matches!(
+                media_type.as_str(),
+                "*/*" | "application/*" | "application/x-protobuf"
+            )
+    })
+}
+
 /// Error type for [`handle_put_monad_topic_post`].
 #[derive(Debug)]
 pub enum PutMonadTopicPostError {
@@ -370,6 +584,16 @@ pub enum PutMonadTopicPostError {
     GateUnavailable(MonadTopicGateConfigError),
     /// [`process_monad_topic_post`] rejected (or failed to process) the post.
     Process(ProcessMonadTopicPostError),
+    /// Deterministic-CBOR decoding, verification, or storage failed.
+    Cbor(ProcessCborTopicEventError),
+    /// The request declared neither supported wire format.
+    UnsupportedMediaType,
+    /// A legacy protobuf request body was malformed.
+    InvalidProtobuf(String),
+    /// The caller requested a response representation not allocated by the frozen protocol.
+    NotAcceptable,
+    /// The request exceeded the frozen topic-event route limit.
+    PayloadTooLarge,
 }
 
 impl IntoResponse for PutMonadTopicPostError {
@@ -387,6 +611,39 @@ impl IntoResponse for PutMonadTopicPostError {
                 tracing::event!(Level::ERROR, error = %err, "infrastructure failure processing topic post");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
+            PutMonadTopicPostError::Cbor(ProcessCborTopicEventError::Infrastructure(err)) => {
+                tracing::event!(Level::ERROR, error = %err, "infrastructure failure processing CBOR topic post");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+            PutMonadTopicPostError::Cbor(ProcessCborTopicEventError::Burn(
+                TopicBurnError::Infrastructure(err),
+            )) => {
+                tracing::event!(Level::ERROR, error = %err, "infrastructure failure verifying CBOR topic burn");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+            PutMonadTopicPostError::UnsupportedMediaType => {
+                StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response()
+            }
+            PutMonadTopicPostError::NotAcceptable => StatusCode::NOT_ACCEPTABLE.into_response(),
+            PutMonadTopicPostError::PayloadTooLarge => {
+                StatusCode::PAYLOAD_TOO_LARGE.into_response()
+            }
+            PutMonadTopicPostError::InvalidProtobuf(detail) => (
+                StatusCode::BAD_REQUEST,
+                Json(MonadTopicErrorBody {
+                    error: "invalid_topic_post",
+                    detail,
+                }),
+            )
+                .into_response(),
+            PutMonadTopicPostError::Cbor(err) => (
+                StatusCode::BAD_REQUEST,
+                Json(MonadTopicErrorBody {
+                    error: "invalid_topic_post",
+                    detail: err.to_string(),
+                }),
+            )
+                .into_response(),
             PutMonadTopicPostError::Process(err) => (
                 StatusCode::BAD_REQUEST,
                 Json(MonadTopicErrorBody {
@@ -399,27 +656,57 @@ impl IntoResponse for PutMonadTopicPostError {
     }
 }
 
-/// `PUT /message/monad/topics`: decode a [`proto::MonadTopicPost`], recover its sender, verify its
-/// initial vote's burn (broadcasting it), and store the post plus its initial vote on success.
+/// `PUT /message/monad/topics`: dispatch from the declared content type, validate either a type-10
+/// CBOR submission or a legacy [`proto::MonadTopicPost`], verify its initial burn, and store the
+/// post plus its initial vote on success.
 pub async fn handle_put_monad_topic_post(
-    Protobuf(post): Protobuf<proto::MonadTopicPost>,
     Extension(server): Extension<RegistryServer>,
-) -> Result<Protobuf<proto::StoredMonadTopicPost>, PutMonadTopicPostError> {
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, PutMonadTopicPostError> {
+    if body.len() as u64 > MAX_TOPIC_EVENT_FRAME_BYTES {
+        return Err(PutMonadTopicPostError::PayloadTooLarge);
+    }
+    let request_format =
+        topic_request_format(&headers).ok_or(PutMonadTopicPostError::UnsupportedMediaType)?;
+    if !topic_accepts_protobuf(&headers) {
+        return Err(PutMonadTopicPostError::NotAcceptable);
+    }
     let config = monad_topic_gate()
         .as_ref()
         .map_err(|err| PutMonadTopicPostError::GateUnavailable(err.clone()))?;
     let transport = HttpTransport::new(config.rpc_url.clone());
-    let stored = process_monad_topic_post(
-        &transport,
-        &server.registry,
-        config.burn_address,
-        PollConfig::default(),
-        crate::network_tag::frank_network_tag(),
-        post,
-    )
-    .await
-    .map_err(PutMonadTopicPostError::Process)?;
-    Ok(Protobuf(stored))
+    match request_format {
+        TopicRequestFormat::Cbor => match process_cbor_topic_event(
+            &transport,
+            &server.registry,
+            config.burn_address,
+            PollConfig::default(),
+            &body,
+            CborTopicEventKind::Post,
+        )
+        .await
+        .map_err(PutMonadTopicPostError::Cbor)?
+        {
+            StoredCborTopicEvent::Post(stored) => Ok(Protobuf(stored).into_response()),
+            StoredCborTopicEvent::Vote(_) => unreachable!("event kind checked before broadcast"),
+        },
+        TopicRequestFormat::Protobuf => {
+            let post = proto::MonadTopicPost::decode(body.as_ref())
+                .map_err(|err| PutMonadTopicPostError::InvalidProtobuf(err.to_string()))?;
+            let stored = process_monad_topic_post(
+                &transport,
+                &server.registry,
+                config.burn_address,
+                PollConfig::default(),
+                crate::network_tag::frank_network_tag(),
+                post,
+            )
+            .await
+            .map_err(PutMonadTopicPostError::Process)?;
+            Ok(Protobuf(stored).into_response())
+        }
+    }
 }
 
 /// Error type for [`handle_put_monad_topic_vote`].
@@ -429,6 +716,16 @@ pub enum PutMonadTopicVoteError {
     GateUnavailable(MonadTopicGateConfigError),
     /// [`process_monad_topic_vote`] rejected (or failed to process) the vote.
     Process(ProcessMonadTopicVoteError),
+    /// Deterministic-CBOR decoding, verification, or storage failed.
+    Cbor(ProcessCborTopicEventError),
+    /// The request declared neither supported wire format.
+    UnsupportedMediaType,
+    /// A legacy protobuf request body was malformed.
+    InvalidProtobuf(String),
+    /// The caller requested a response representation not allocated by the frozen protocol.
+    NotAcceptable,
+    /// The request exceeded the frozen topic-event route limit.
+    PayloadTooLarge,
 }
 
 impl IntoResponse for PutMonadTopicVoteError {
@@ -446,6 +743,39 @@ impl IntoResponse for PutMonadTopicVoteError {
                 tracing::event!(Level::ERROR, error = %err, "infrastructure failure processing topic vote");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
+            PutMonadTopicVoteError::Cbor(ProcessCborTopicEventError::Infrastructure(err)) => {
+                tracing::event!(Level::ERROR, error = %err, "infrastructure failure processing CBOR topic vote");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+            PutMonadTopicVoteError::Cbor(ProcessCborTopicEventError::Burn(
+                TopicBurnError::Infrastructure(err),
+            )) => {
+                tracing::event!(Level::ERROR, error = %err, "infrastructure failure verifying CBOR topic burn");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+            PutMonadTopicVoteError::UnsupportedMediaType => {
+                StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response()
+            }
+            PutMonadTopicVoteError::NotAcceptable => StatusCode::NOT_ACCEPTABLE.into_response(),
+            PutMonadTopicVoteError::PayloadTooLarge => {
+                StatusCode::PAYLOAD_TOO_LARGE.into_response()
+            }
+            PutMonadTopicVoteError::InvalidProtobuf(detail) => (
+                StatusCode::BAD_REQUEST,
+                Json(MonadTopicErrorBody {
+                    error: "invalid_topic_vote",
+                    detail,
+                }),
+            )
+                .into_response(),
+            PutMonadTopicVoteError::Cbor(err) => (
+                StatusCode::BAD_REQUEST,
+                Json(MonadTopicErrorBody {
+                    error: "invalid_topic_vote",
+                    detail: err.to_string(),
+                }),
+            )
+                .into_response(),
             PutMonadTopicVoteError::Process(err) => (
                 StatusCode::BAD_REQUEST,
                 Json(MonadTopicErrorBody {
@@ -458,26 +788,56 @@ impl IntoResponse for PutMonadTopicVoteError {
     }
 }
 
-/// `PUT /message/monad/topics/vote`: decode a [`proto::MonadTopicVote`], recover its sender,
-/// verify its burn (broadcasting it), and record it against its `target_payload_hash` on success.
+/// `PUT /message/monad/topics/vote`: dispatch from the declared content type, validate either a
+/// type-11 CBOR submission or a legacy [`proto::MonadTopicVote`], verify its burn, and record it
+/// against its target post on success.
 pub async fn handle_put_monad_topic_vote(
-    Protobuf(vote): Protobuf<proto::MonadTopicVote>,
     Extension(server): Extension<RegistryServer>,
-) -> Result<Protobuf<proto::StoredMonadTopicVoteEntry>, PutMonadTopicVoteError> {
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, PutMonadTopicVoteError> {
+    if body.len() as u64 > MAX_TOPIC_EVENT_FRAME_BYTES {
+        return Err(PutMonadTopicVoteError::PayloadTooLarge);
+    }
+    let request_format =
+        topic_request_format(&headers).ok_or(PutMonadTopicVoteError::UnsupportedMediaType)?;
+    if !topic_accepts_protobuf(&headers) {
+        return Err(PutMonadTopicVoteError::NotAcceptable);
+    }
     let config = monad_topic_gate()
         .as_ref()
         .map_err(|err| PutMonadTopicVoteError::GateUnavailable(err.clone()))?;
     let transport = HttpTransport::new(config.rpc_url.clone());
-    let stored = process_monad_topic_vote(
-        &transport,
-        &server.registry,
-        config.burn_address,
-        PollConfig::default(),
-        vote,
-    )
-    .await
-    .map_err(PutMonadTopicVoteError::Process)?;
-    Ok(Protobuf(stored))
+    match request_format {
+        TopicRequestFormat::Cbor => match process_cbor_topic_event(
+            &transport,
+            &server.registry,
+            config.burn_address,
+            PollConfig::default(),
+            &body,
+            CborTopicEventKind::Vote,
+        )
+        .await
+        .map_err(PutMonadTopicVoteError::Cbor)?
+        {
+            StoredCborTopicEvent::Vote(stored) => Ok(Protobuf(stored).into_response()),
+            StoredCborTopicEvent::Post(_) => unreachable!("event kind checked before broadcast"),
+        },
+        TopicRequestFormat::Protobuf => {
+            let vote = proto::MonadTopicVote::decode(body.as_ref())
+                .map_err(|err| PutMonadTopicVoteError::InvalidProtobuf(err.to_string()))?;
+            let stored = process_monad_topic_vote(
+                &transport,
+                &server.registry,
+                config.burn_address,
+                PollConfig::default(),
+                vote,
+            )
+            .await
+            .map_err(PutMonadTopicVoteError::Process)?;
+            Ok(Protobuf(stored).into_response())
+        }
+    }
 }
 
 /// Error type for [`handle_get_monad_topic_post`].
@@ -637,12 +997,13 @@ mod tests {
     use async_trait::async_trait;
     use bitcoinsuite_core::{ecc::Ecc, Net};
     use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
+    use frank_cbor::{cbor_map, encode_frame, CborValue, EnvelopeFields, FramePayload};
     use serde_json::Value;
     use tempdir::TempDir;
 
     use super::*;
     use crate::{
-        monad_evm_tx::test_support::signed_eip1559_tx,
+        monad_evm_tx::{decode_signed_transaction, test_support::signed_eip1559_tx},
         monad_http::MonadRpcError,
         monad_topic_verify::{TOPIC_COMMITMENT_VERSION_TAG, TOPIC_VOTE_LOKAD_ID},
         store::db::Db,
@@ -721,6 +1082,59 @@ mod tests {
         calldata
     }
 
+    fn cbor_frame(type_id: u32, payload: CborValue) -> Vec<u8> {
+        encode_frame(
+            EnvelopeFields {
+                type_id,
+                schema_version: 1,
+                min_reader_version: 1,
+            },
+            FramePayload::Value(&payload),
+        )
+        .unwrap()
+    }
+
+    fn cbor_post_frame() -> Vec<u8> {
+        cbor_frame(
+            9,
+            cbor_map(vec![
+                (0, CborValue::Text("monad-testnet".to_string())),
+                (1, CborValue::Text("test.topic".to_string())),
+                (3, CborValue::Bytes(b"hello from CBOR".to_vec())),
+            ]),
+        )
+    }
+
+    fn cbor_submission(post_frame: &[u8], burn_tx: &[u8]) -> Vec<u8> {
+        cbor_frame(
+            10,
+            cbor_map(vec![
+                (0, CborValue::Text("monad-testnet".to_string())),
+                (1, CborValue::Bytes(post_frame.to_vec())),
+                (2, CborValue::Bytes(burn_tx.to_vec())),
+            ]),
+        )
+    }
+
+    fn cbor_vote_submission(target_hash: &[u8; 32], burn_tx: &[u8]) -> Vec<u8> {
+        cbor_frame(
+            11,
+            cbor_map(vec![
+                (0, CborValue::Text("monad-testnet".to_string())),
+                (1, CborValue::Bytes(target_hash.to_vec())),
+                (2, CborValue::Bytes(burn_tx.to_vec())),
+            ]),
+        )
+    }
+
+    fn cbor_topic_calldata(direction: u8, commitment: &[u8; 32]) -> Vec<u8> {
+        let mut calldata = TOPIC_VOTE_LOKAD_ID.to_vec();
+        calldata.push(0x02);
+        calldata.push(direction);
+        calldata.extend_from_slice(commitment);
+        calldata
+    }
+
     fn receipt_json(to: &str, status: &str) -> Value {
         serde_json::json!({
             "transactionHash": hex_hash(0x11),
@@ -792,6 +1206,111 @@ mod tests {
                     reason: "no mock response configured".to_string(),
                 })
         }
+    }
+
+    #[test]
+    fn write_format_is_selected_only_from_content_type() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(topic_request_format(&headers), None);
+        headers.insert(CONTENT_TYPE, "application/cbor".parse().unwrap());
+        assert_eq!(
+            topic_request_format(&headers),
+            Some(TopicRequestFormat::Cbor)
+        );
+        headers.insert(
+            CONTENT_TYPE,
+            "application/x-protobuf; charset=binary".parse().unwrap(),
+        );
+        assert_eq!(
+            topic_request_format(&headers),
+            Some(TopicRequestFormat::Protobuf)
+        );
+        headers.insert(CONTENT_TYPE, "application/octet-stream".parse().unwrap());
+        assert_eq!(topic_request_format(&headers), None);
+
+        headers.remove(CONTENT_TYPE);
+        assert!(topic_accepts_protobuf(&headers));
+        headers.insert(ACCEPT, "application/x-protobuf".parse().unwrap());
+        assert!(topic_accepts_protobuf(&headers));
+        headers.insert(
+            ACCEPT,
+            "application/cbor, application/x-protobuf".parse().unwrap(),
+        );
+        assert!(topic_accepts_protobuf(&headers));
+        headers.insert(ACCEPT, "application/cbor".parse().unwrap());
+        assert!(!topic_accepts_protobuf(&headers));
+    }
+
+    #[tokio::test]
+    async fn cbor_post_is_verified_and_keeps_its_exact_type_9_frame_at_rest() {
+        let (_tempdir, registry) = test_registry();
+        let post_frame = cbor_post_frame();
+        let preliminary =
+            parse_topic_event(&cbor_submission(&post_frame, &[1]), "monad-testnet").unwrap();
+        let commitment = *preliminary.commitment();
+        let seckey = EccSecp256k1::default()
+            .seckey_from_array([0x71; 32])
+            .unwrap();
+        let calldata = cbor_topic_calldata(0x01, &commitment);
+        let (raw_burn_tx, sender) =
+            signed_eip1559_tx(&seckey, 10_143, 0, burn_address(), 7_000, &calldata);
+        let decoded_tx = decode_signed_transaction(&raw_burn_tx).unwrap();
+        let tx_hash = format!("0x{}", hex::encode(decoded_tx.tx_hash.0));
+        let to = hex_addr(burn_address());
+        let transport = MockTransport::default();
+        transport.set("eth_sendRawTransaction", Value::String(tx_hash.clone()));
+        transport.set(
+            "eth_getTransactionReceipt",
+            serde_json::json!({
+                "transactionHash": tx_hash,
+                "blockHash": hex_hash(0x22),
+                "blockNumber": "0x2a",
+                "from": sender.to_hex(),
+                "to": to,
+                "contractAddress": null,
+                "gasUsed": "0x5208",
+                "status": "0x1",
+                "logs": [],
+            }),
+        );
+        transport.set(
+            "eth_getTransactionByHash",
+            serde_json::json!({
+                "hash": format!("0x{}", hex::encode(decoded_tx.tx_hash.0)),
+                "to": hex_addr(burn_address()),
+                "value": "0x1b58",
+                "input": format!("0x{}", hex::encode(&calldata)),
+                "from": sender.to_hex(),
+            }),
+        );
+
+        let submission = cbor_submission(&post_frame, &raw_burn_tx);
+        let stored = process_cbor_topic_event(
+            &transport,
+            &registry,
+            burn_address(),
+            fast_poll(),
+            &submission,
+            CborTopicEventKind::Post,
+        )
+        .await
+        .unwrap();
+        let StoredCborTopicEvent::Post(stored) = stored else {
+            panic!("expected post")
+        };
+        assert_eq!(stored.cbor_post_frame, post_frame);
+        assert_eq!(stored.sender_address, sender.0);
+        let inner = stored.post.unwrap();
+        assert_eq!(inner.topic, "test.topic");
+        assert_eq!(inner.encrypted_payload, b"hello from CBOR");
+        assert_eq!(
+            registry
+                .get_monad_topic_post_view(&inner.payload_hash)
+                .unwrap()
+                .unwrap()
+                .vote_weight,
+            7_000
+        );
     }
 
     fn make_post(raw_burn_tx: Vec<u8>, encrypted_payload: Vec<u8>) -> proto::MonadTopicPost {
@@ -1026,6 +1545,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cbor_vote_on_unknown_post_is_rejected_before_touching_the_network() {
+        let (_tempdir, registry) = test_registry();
+        let vote = cbor_vote_submission(&[0xaa; 32], &[0x01, 0xc0]);
+        let transport = MockTransport::default();
+
+        let err = process_cbor_topic_event(
+            &transport,
+            &registry,
+            burn_address(),
+            fast_poll(),
+            &vote,
+            CborTopicEventKind::Vote,
+        )
+        .await
+        .expect_err("voting on an unknown post should be rejected");
+
+        assert!(matches!(err, ProcessCborTopicEventError::UnknownTargetPost));
+    }
+
+    #[tokio::test]
     async fn mismatched_payload_hash_post_is_rejected_before_touching_the_network() {
         let (_tempdir, registry) = test_registry();
         let mut post = make_post(vec![0xc0], b"hello".to_vec());
@@ -1150,6 +1689,7 @@ mod tests {
             tx_hash: vec![8u8; 32],
             timestamp,
             network_tag: Vec::new(),
+            cbor_post_frame: Vec::new(),
         };
         registry
             .put_monad_topic_post(&payload_hash, stored, &[])
@@ -1336,5 +1876,56 @@ mod tests {
         assert_eq!(decoded.entries[0].topic, "topic.discoverable");
         assert_eq!(decoded.entries[0].post_count, 1);
         assert_eq!(decoded.entries[0].last_activity_ms, 500);
+    }
+
+    #[tokio::test]
+    async fn monad_topic_write_routes_enforce_declared_request_and_response_media_types() {
+        use tower::ServiceExt;
+
+        let (_tempdir, registry) = test_registry();
+        let router = test_server(registry).into_router();
+        let unsupported = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/message/monad/topics")
+            .header(CONTENT_TYPE, "application/octet-stream")
+            .body(hyper::Body::from(vec![0u8]))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(unsupported).await.unwrap().status(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+
+        let cbor_only_response = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/message/monad/topics/vote")
+            .header(CONTENT_TYPE, "application/cbor")
+            .header(ACCEPT, "application/cbor")
+            .body(hyper::Body::from(vec![0u8]))
+            .unwrap();
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(cbor_only_response)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_ACCEPTABLE
+        );
+
+        let oversized = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/message/monad/topics")
+            .header(CONTENT_TYPE, "application/cbor")
+            .header(ACCEPT, "application/x-protobuf")
+            .body(hyper::Body::from(vec![
+                0u8;
+                MAX_TOPIC_EVENT_FRAME_BYTES as usize
+                    + 1
+            ]))
+            .unwrap();
+        assert_eq!(
+            router.oneshot(oversized).await.unwrap().status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
     }
 }

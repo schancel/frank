@@ -17,6 +17,11 @@ import { MonadSubAccountPool } from './monad-account-pool'
 import { BurnNotSentError, SubAccountLeaseManager } from './monad-account-lease'
 import { MonadTxSubmitter } from './monad-account-tx'
 import {
+  defaultContext,
+  topicVoteCommitment,
+  validateFrame,
+} from '@frank/codec'
+import {
   MONAD_TOPIC_VOTE_CALLDATA_LENGTH,
   MonadTopicVoteAbandonedError,
   MonadTopicVoteClient,
@@ -113,8 +118,20 @@ function makeClient(overrides?: { pool?: MonadSubAccountPool }) {
   return { client, pool, leaseManager, provider, httpClient }
 }
 
+function decodeCborVote(bytes: Uint8Array) {
+  const result = validateFrame(bytes, defaultContext({ operation: 'typed' }))
+  if (result.kind !== 'parsed' || result.typed?.type !== 11) {
+    throw new Error('expected a typed type-11 topic vote')
+  }
+  return {
+    targetPayloadHash: result.typed.targetHash,
+    rawBurnTx: result.typed.burnTx,
+    network: result.typed.network,
+  }
+}
+
 describe('calldata construction', () => {
-  it('builds calldata as <TPIC><0x01><direction><32-byte commitment>, 38 bytes total (up)', () => {
+  it('builds calldata as <TPIC><0x02><direction><32-byte commitment>, 38 bytes total (up)', () => {
     const commitment = new Uint8Array(32).fill(0xab)
     const calldata = buildMonadTopicVoteCalldata('up', commitment)
     const bytes = getBytes(calldata)
@@ -124,7 +141,7 @@ describe('calldata construction', () => {
     // "TPIC" == 0x54504943 -- TOPIC_VOTE_LOKAD_ID (monad_topic_verify.rs line 94).
     expect(Array.from(bytes.slice(0, 4))).toEqual([0x54, 0x50, 0x49, 0x43])
     // TOPIC_COMMITMENT_VERSION_TAG (monad_topic_verify.rs line 99).
-    expect(bytes[4]).toBe(0x01)
+    expect(bytes[4]).toBe(0x02)
     // VoteDirection::UP_BYTE (monad_topic_verify.rs line 118).
     expect(bytes[5]).toBe(0x01)
     expect(Array.from(bytes.slice(6))).toEqual(Array.from(commitment))
@@ -213,9 +230,7 @@ describe('MonadTopicVoteClient.castVote', () => {
     const oddWeightWei = 123_456_789_012_345n
 
     mockedAxios.mockImplementationOnce(async config => {
-      const sentVote = decodeMonadTopicVote(
-        new Uint8Array(config.data as Buffer),
-      )
+      const sentVote = decodeCborVote(new Uint8Array(config.data as Buffer))
       const parsed = Transaction.from(hexOf(sentVote.rawBurnTx))
       // The exact wei value signed into the tx must equal the requested vote weight exactly.
       expect(parsed.value).toBe(oddWeightWei)
@@ -256,21 +271,23 @@ describe('MonadTopicVoteClient.castVote', () => {
         'https://relay.example.com/message/monad/topics/vote',
       )
       expect(config.headers).toEqual({
-        'Content-Type': 'application/x-protobuf',
+        'Content-Type': 'application/cbor',
+        'Accept': 'application/x-protobuf',
       })
-      const sentVote = decodeMonadTopicVote(
-        new Uint8Array(config.data as Buffer),
-      )
+      const sentVote = decodeCborVote(new Uint8Array(config.data as Buffer))
       expect(sentVote.targetPayloadHash).toEqual(TARGET_PAYLOAD_HASH)
 
       // The raw burn tx must be a validly-decodable, real signed transaction whose calldata
       // commits to the target payload_hash (not a new hash of anything).
       const parsed = Transaction.from(hexOf(sentVote.rawBurnTx))
-      expect(getBytes(parsed.data).slice(6)).toEqual(TARGET_PAYLOAD_HASH)
+      expect(getBytes(parsed.data).slice(6)).toEqual(
+        topicVoteCommitment('monad-testnet', TARGET_PAYLOAD_HASH),
+      )
       expect(getBytes(parsed.data).slice(0, 4)).toEqual(
         new Uint8Array([0x54, 0x50, 0x49, 0x43]),
       )
       expect(getBytes(parsed.data)[5]).toBe(0x01) // up-vote
+      expect(getBytes(parsed.data)[4]).toBe(0x02)
       expect(parsed.value).toBe(10_000n)
       expect(parsed.to?.toLowerCase()).toBe(BURN_ADDRESS.toLowerCase())
 
@@ -309,9 +326,7 @@ describe('MonadTopicVoteClient.castVote', () => {
     const { client } = makeClient()
 
     mockedAxios.mockImplementationOnce(async config => {
-      const sentVote = decodeMonadTopicVote(
-        new Uint8Array(config.data as Buffer),
-      )
+      const sentVote = decodeCborVote(new Uint8Array(config.data as Buffer))
       const parsed = Transaction.from(hexOf(sentVote.rawBurnTx))
       expect(getBytes(parsed.data)[5]).toBe(0x00) // down-vote
 

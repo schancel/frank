@@ -76,6 +76,8 @@ message StoredMonadTopicPost {
   // Frank-specific network tag (ticket #39, see PLAN.md constraint 9), mirroring
   // `StoredMonadMessage.network_tag` (`monad_message.proto`) exactly.
   bytes network_tag = 5;
+  // Exact deterministic Frank-CBOR type-9 frame for CBOR-origin posts; empty for legacy rows.
+  bytes cbor_post_frame = 6;
 }
 
 // A single tallied vote (a post's initial vote, or a later [`MonadTopicVote`]) as stored by the

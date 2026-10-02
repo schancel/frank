@@ -2,10 +2,10 @@
 //! burn verification for a type-10 topic post submission and a type-11 topic vote submission
 //! (`docs/protocol/cbor`, README section 6 "Topic events", T7, T8).
 //!
-//! Nothing in this module is reachable from an HTTP route yet, and it stores nothing. That is
-//! deliberate: a route that broadcasts a sender's burn transaction and then cannot record the
-//! event would take money and lose the post. The route and the storage of the exact frame are the
-//! next step and need an owner decision (see the pull request); this is the part that does not:
+//! The topic HTTP write routes use this module before mutating storage. During the bounded
+//! protobuf coexistence window, the route stores a protobuf projection plus the exact type-9 frame
+//! for posts; see `docs/protocol/cbor/topic-http-coexistence.md`. This module itself does not store
+//! anything, and its validation and burn checks run before the route mutates storage:
 //!
 //! - [`parse_topic_event`] validates a frame with the `frank-cbor` codec (typed stage 9, a 1 MiB
 //!   route limit, only types 9, 10, and 11 supported, no protobuf or JSON fallback, F5) and derives

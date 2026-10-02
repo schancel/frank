@@ -11,6 +11,8 @@ module.exports = {
   // resolve the real file normally, unaffected by this (Jest-only) config.
   moduleNameMapper: {
     '^@frank/nakamoto$': '<rootDir>/../nakamoto/src/index.ts',
+    '^@frank/nakamoto/(.*)$': '<rootDir>/../nakamoto/src/$1.ts',
+    '^@frank/crypto-box$': '<rootDir>/../crypto-box/src/index.ts',
     '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@frank/cashweb/(.*)$': '<rootDir>/../cashweb/$1',
     '^@frank/wallet/(.*)$': '<rootDir>/$1',

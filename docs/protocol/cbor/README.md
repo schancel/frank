@@ -1,8 +1,9 @@
 # Frank deterministic CBOR, version 1
 
 Status: normative for the codec proof in issues #131 and #182 and for the
-topic-event schemas of issue #136. Production protocols do not use this format
-until their separate migration tickets land.
+topic-event schemas of issue #136. The Monad topic write transport uses types
+9–11 as described in [topic HTTP coexistence](topic-http-coexistence.md); other
+production paths require their separate migration tickets.
 
 The words MUST, MUST NOT, SHOULD, and MAY are normative as described by RFC 2119. Numbered rules are stable references for implementations and test
 vectors.

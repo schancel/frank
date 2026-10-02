@@ -456,6 +456,7 @@ mod tests {
             tx_hash: vec![8u8; 32],
             timestamp: 1234,
             network_tag: Vec::new(),
+            cbor_post_frame: Vec::new(),
         }
     }
 
@@ -476,6 +477,7 @@ mod tests {
             tx_hash: vec![8u8; 32],
             timestamp,
             network_tag: Vec::new(),
+            cbor_post_frame: Vec::new(),
         }
     }
 

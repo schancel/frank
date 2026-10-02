@@ -53,7 +53,7 @@ use axum::body::Body;
 use axum::{
     extract::{Path, Query},
     http::{
-        header::{HeaderMap, HeaderValue, ACCEPT, CONTENT_TYPE},
+        header::{HeaderMap, HeaderValue, ACCEPT, CONTENT_TYPE, RETRY_AFTER},
         StatusCode,
     },
     response::{IntoResponse, Response},
@@ -93,10 +93,13 @@ pub enum MonadProfileRouteError {
     #[error("Unsupported Content-Type; expected application/cbor or application/x-protobuf")]
     UnsupportedContentType,
 
-    /// Legacy Lotus metadata accepts protobuf only and still requires an exact declaration.
+    /// Candidate CBOR frames have a smaller, protocol-defined route limit than legacy protobuf.
     #[invalid_client_input()]
-    #[error("Unsupported Content-Type; expected application/x-protobuf")]
-    UnsupportedProtobufContentType,
+    #[error("Monad profile body exceeds the {limit}-byte limit")]
+    BodyTooLarge {
+        /// Exact maximum accepted bytes for the selected wire format.
+        limit: usize,
+    },
 }
 
 use self::MonadProfileRouteError::*;
@@ -113,6 +116,23 @@ pub(crate) enum MonadProfileMediaType {
     Protobuf,
 }
 
+/// Candidate CBOR registration route cap. The legacy protobuf route retains Axum's existing
+/// 2 MiB default, so the opt-in predecessor does not silently tighten the old contract.
+pub(crate) const CBOR_PROFILE_BODY_LIMIT: usize = 256 * 1024;
+
+pub(crate) fn check_monad_profile_body_size(
+    media_type: MonadProfileMediaType,
+    body_len: usize,
+) -> Result<()> {
+    if media_type == MonadProfileMediaType::Cbor && body_len > CBOR_PROFILE_BODY_LIMIT {
+        return Err(BodyTooLarge {
+            limit: CBOR_PROFILE_BODY_LIMIT,
+        }
+        .into());
+    }
+    Ok(())
+}
+
 pub(crate) fn parse_monad_profile_content_type(
     headers: &HeaderMap,
 ) -> Result<MonadProfileMediaType> {
@@ -123,16 +143,46 @@ pub(crate) fn parse_monad_profile_content_type(
     }
 }
 
-pub(crate) fn require_protobuf_content_type(headers: &HeaderMap) -> Result<()> {
-    if headers.get(CONTENT_TYPE).map(HeaderValue::as_bytes) == Some(b"application/x-protobuf") {
-        Ok(())
-    } else {
-        Err(UnsupportedProtobufContentType.into())
+fn explicitly_accepts_cbor(headers: &HeaderMap) -> bool {
+    headers.get(ACCEPT).map(HeaderValue::as_bytes) == Some(b"application/cbor")
+}
+
+#[derive(Debug)]
+/// Failures returned by the bounded profile-registration request boundary.
+pub enum PutMonadProfileError {
+    /// A validation, verification, or persistence error with the existing protobuf error body.
+    Registry(HttpRegistryError),
+    /// The global non-waiting admission pool is exhausted; the caller should retry later.
+    Overloaded,
+}
+
+impl From<Report> for PutMonadProfileError {
+    fn from(err: Report) -> Self {
+        Self::Registry(err.into())
     }
 }
 
-fn explicitly_accepts_cbor(headers: &HeaderMap) -> bool {
-    headers.get(ACCEPT).map(HeaderValue::as_bytes) == Some(b"application/cbor")
+impl From<HttpRegistryError> for PutMonadProfileError {
+    fn from(err: HttpRegistryError) -> Self {
+        Self::Registry(err)
+    }
+}
+
+pub(crate) fn profile_overloaded_response() -> Response {
+    let mut response = StatusCode::SERVICE_UNAVAILABLE.into_response();
+    response
+        .headers_mut()
+        .insert(RETRY_AFTER, HeaderValue::from_static("1"));
+    response
+}
+
+impl IntoResponse for PutMonadProfileError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Registry(err) => err.into_response(),
+            Self::Overloaded => profile_overloaded_response(),
+        }
+    }
 }
 
 /// `PUT /metadata/monad/:addr`: verify and store a Monad-native profile registration (see this
@@ -146,13 +196,19 @@ pub async fn handle_put_monad_profile(
     Extension(server): Extension<RegistryServer>,
     headers: HeaderMap,
     body_bytes: axum::body::Bytes,
-) -> std::result::Result<Protobuf<proto::PutSignedPayloadResponse>, HttpRegistryError> {
+) -> std::result::Result<Protobuf<proto::PutSignedPayloadResponse>, PutMonadProfileError> {
     let address = parse_addr(&address)?;
-    match parse_monad_profile_content_type(&headers)? {
+    let media_type = parse_monad_profile_content_type(&headers)?;
+    check_monad_profile_body_size(media_type, body_bytes.len())?;
+    let admission = server
+        .registry
+        .try_acquire_profile_registration()
+        .map_err(|_| PutMonadProfileError::Overloaded)?;
+    match media_type {
         MonadProfileMediaType::Cbor => {
             server
                 .registry
-                .put_monad_profile_cbor_async(address, body_bytes.to_vec())
+                .put_monad_profile_cbor_async(address, body_bytes.to_vec(), admission)
                 .await?
         }
         MonadProfileMediaType::Protobuf => {
@@ -168,7 +224,7 @@ pub async fn handle_put_monad_profile(
             })?;
             server
                 .registry
-                .put_monad_profile_async(address, signed_metadata)
+                .put_monad_profile_async(address, signed_metadata, admission)
                 .await?;
         }
     }

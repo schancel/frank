@@ -35,7 +35,13 @@ import {
   searchMonadProfiles,
   trustedMonadCborRelayDescriptor,
 } from './monad-identity'
-import { defaultContext, validateFrame } from '@frank/codec'
+import {
+  cborMap,
+  defaultContext,
+  directorySignatureDigest,
+  encodeFrame,
+  validateFrame,
+} from '@frank/codec'
 import { validateProfileDisplayName } from './profile-display-name'
 
 jest.mock('axios')
@@ -59,6 +65,76 @@ function relayBinding() {
 function relayDescriptor(...bindings: ReturnType<typeof relayBinding>[]) {
   return trustedMonadCborRelayDescriptor(
     bindings.length === 0 ? [relayBinding()] : bindings,
+  )
+}
+
+function signedRegistrationFrame(
+  identity: MonadIdentity,
+  timestamp: { seconds: bigint; nanoseconds: number },
+  revision: bigint,
+): Uint8Array {
+  const relay = relayBinding()
+  const account = cborMap([
+    [0, 1],
+    [1, Uint8Array.from(identity.compressedPubKey)],
+  ])
+  const type4 = encodeFrame(
+    { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+    cborMap([
+      [0, 'monad-testnet'],
+      [1, account],
+      [2, revision],
+      [
+        3,
+        cborMap([
+          [0, timestamp.seconds],
+          [1, timestamp.nanoseconds],
+        ]),
+      ],
+      [
+        4,
+        [
+          cborMap([
+            [0, relay.id],
+            [1, relay.endpoint],
+            [
+              2,
+              cborMap([
+                [0, 1],
+                [1, relay.key],
+              ]),
+            ],
+            [
+              3,
+              cborMap([
+                [0, relay.validUntil.seconds],
+                [1, relay.validUntil.nanoseconds],
+              ]),
+            ],
+          ]),
+        ],
+      ],
+      [8, account],
+    ]),
+  )
+  const signature = identity.signHash(
+    Buffer.from(directorySignatureDigest('monad-testnet', type4)),
+  )
+  return encodeFrame(
+    { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+    cborMap([
+      [0, type4],
+      [
+        1,
+        [
+          cborMap([
+            [0, 1],
+            [1, account],
+            [2, Uint8Array.from(signature)],
+          ]),
+        ],
+      ],
+    ]),
   )
 }
 
@@ -755,7 +831,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
         url: `${RELAY_BASE_URL}/metadata/${identity.address.raw}`,
         headers: expect.objectContaining({
           'Content-Type': 'application/cbor',
-          'Origin': 'http://frank.local',
+          Origin: 'http://frank.local',
         }),
       }),
     )
@@ -890,6 +966,133 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
         }),
       }),
     ).toThrow(/duplicate relay id/)
+  })
+
+  it('preserves the exact validated ASCII relay endpoint in the signed statement', () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const binding = relayBinding()
+    binding.endpoint =
+      'https://relay.frank.network:443/mailbox/../mailbox/trailing/'
+    const frame = buildSignedDirectoryStatement(identity, {
+      timestampMs: 1_700_000_000_000n,
+      ttlMs: 0n,
+      relayDescriptor: relayDescriptor(binding),
+    })
+    const validated = validateFrame(
+      frame,
+      defaultContext({ operation: 'full' }),
+    )
+    expect(validated.kind).toBe('parsed')
+    if (validated.kind !== 'parsed' || validated.typed?.type !== 2) {
+      throw new Error('expected directory attestation')
+    }
+    const statement = validated.typed.statementFrame
+    if (statement.kind !== 'parsed' || statement.typed?.type !== 4) {
+      throw new Error('expected directory statement')
+    }
+    expect(statement.typed.relays[0].endpoint).toBe(binding.endpoint)
+  })
+
+  it('rejects malformed relay descriptors before signing', () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const signHash = jest.spyOn(identity, 'signHash')
+    for (const endpoint of [
+      'https://relay.frank.network/space here',
+      'https://relay.frank.network/trailing-newline\n',
+      'https://relay.frank.network/ümlaut',
+      `https://relay.frank.network/${'a'.repeat(2049)}`,
+    ]) {
+      const binding = relayBinding()
+      binding.endpoint = endpoint
+      expect(() =>
+        buildSignedDirectoryStatement(identity, {
+          relayDescriptor: relayDescriptor(binding),
+        }),
+      ).toThrow(/printable ASCII|1\.\.2048/)
+    }
+
+    const tooMany = Array.from({ length: 33 }, (_, index) => {
+      const binding = relayBinding()
+      binding.id = Uint8Array.from([
+        index + 1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+      ])
+      return binding
+    })
+    expect(() => trustedMonadCborRelayDescriptor(tooMany)).toThrow(/at most 32/)
+
+    for (const seconds of [
+      -9_223_372_036_854_775_809n,
+      9_223_372_036_854_775_808n,
+    ]) {
+      const binding = relayBinding()
+      binding.validUntil.seconds = seconds
+      expect(() =>
+        buildSignedDirectoryStatement(identity, {
+          timestampMs: 0n,
+          relayDescriptor: relayDescriptor(binding),
+        }),
+      ).toThrow(/signed 64-bit/)
+    }
+    expect(signHash).not.toHaveBeenCalled()
+  })
+
+  it('accepts signed i64 ttl values, including negative, and rejects outside i64', () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    expect(() =>
+      buildSignedDirectoryStatement(identity, {
+        timestampMs: 1_700_000_000_000n,
+        ttlMs: -1n,
+        relayDescriptor: relayDescriptor(),
+      }),
+    ).not.toThrow()
+    for (const ttlMs of [
+      -9_223_372_036_854_775_809n,
+      9_223_372_036_854_775_808n,
+    ]) {
+      expect(() =>
+        buildSignedDirectoryStatement(identity, {
+          ttlMs,
+          relayDescriptor: relayDescriptor(),
+        }),
+      ).toThrow(/ttlMs must fit a signed 64-bit integer/)
+    }
+  })
+
+  it('rejects signed registrations with non-millisecond timestamps or revision mismatch', () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    expect(() =>
+      decodeProfileBytes(
+        signedRegistrationFrame(
+          identity,
+          { seconds: 1_700_000_000n, nanoseconds: 1 },
+          1_700_000_000_000n,
+        ),
+      ),
+    ).toThrow(/millisecond multiple/)
+    expect(() =>
+      decodeProfileBytes(
+        signedRegistrationFrame(
+          identity,
+          { seconds: 1_700_000_000n, nanoseconds: 0 },
+          1_700_000_000_001n,
+        ),
+      ),
+    ).toThrow(/revision must equal timestampMs/)
   })
 
   it('validates relay points and compares expiry at nanosecond precision', () => {

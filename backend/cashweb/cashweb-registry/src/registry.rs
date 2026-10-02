@@ -89,6 +89,8 @@ pub struct Registry {
     /// Bounded striped async coordination for profile mutations. Requests for different stripes
     /// wait independently, and owned guards can move into the blocking RocksDB worker.
     profile_write_locks: Vec<Arc<tokio::sync::Mutex<()>>>,
+    /// Global no-queue admission bound for CPU/RocksDB profile registration work.
+    profile_registration_admission: Arc<tokio::sync::Semaphore>,
 }
 
 /// Result of putting metadata into the registry.
@@ -220,6 +222,8 @@ pub enum RegistryError {
 use self::RegistryError::*;
 
 const PROFILE_WRITE_STRIPES: usize = 64;
+/// Maximum profile registrations concurrently admitted to verification/storage.
+pub const PROFILE_REGISTRATION_CONCURRENCY: usize = 32;
 
 fn profile_write_locks() -> Vec<Arc<tokio::sync::Mutex<()>>> {
     (0..PROFILE_WRITE_STRIPES)
@@ -236,6 +240,9 @@ impl Registry {
             chain_adapter,
             net,
             profile_write_locks: profile_write_locks(),
+            profile_registration_admission: Arc::new(tokio::sync::Semaphore::new(
+                PROFILE_REGISTRATION_CONCURRENCY,
+            )),
         }
     }
 
@@ -1062,6 +1069,7 @@ impl Registry {
         self: &Arc<Self>,
         address: Address,
         signed_profile: cashweb_payload::proto::SignedPayload,
+        admission: tokio::sync::OwnedSemaphorePermit,
     ) -> Result<()> {
         let registry = Arc::clone(self);
         let verify_signed = signed_profile.clone();
@@ -1076,6 +1084,7 @@ impl Registry {
         let registry = Arc::clone(self);
         tokio::task::spawn_blocking(move || {
             let _guard = guard;
+            let _admission = admission;
             registry.put_verified_monad_profile(address, signed_profile, verified.profile.timestamp)
         })
         .await
@@ -1116,6 +1125,7 @@ impl Registry {
         self: &Arc<Self>,
         address: Address,
         frame_bytes: Vec<u8>,
+        admission: tokio::sync::OwnedSemaphorePermit,
     ) -> Result<()> {
         let verify_bytes = frame_bytes.clone();
         tokio::task::spawn_blocking(move || {
@@ -1129,6 +1139,7 @@ impl Registry {
         let registry = Arc::clone(self);
         tokio::task::spawn_blocking(move || {
             let _guard = guard;
+            let _admission = admission;
             registry.put_monad_profile_cbor(address, &frame_bytes)
         })
         .await
@@ -1139,6 +1150,14 @@ impl Registry {
         address.0.iter().fold(0usize, |hash, byte| {
             hash.wrapping_mul(31) ^ usize::from(*byte)
         }) % self.profile_write_locks.len()
+    }
+
+    /// Admit profile work without creating a waiter. Callers map exhaustion to an explicit
+    /// retryable HTTP response before starting signature verification or RocksDB work.
+    pub fn try_acquire_profile_registration(
+        &self,
+    ) -> std::result::Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::TryAcquireError> {
+        Arc::clone(&self.profile_registration_admission).try_acquire_owned()
     }
 
     /// Read a previously-registered Monad profile's `cashweb_payload::proto::SignedPayload`
@@ -1419,7 +1438,7 @@ mod tests {
         proto,
         registry::{
             profile_write_locks, GetMetadataRangeResult, PutBlockchainAction, PutMessageResult,
-            PutMetadataResult, Registry, RegistryError,
+            PutMetadataResult, Registry, RegistryError, PROFILE_REGISTRATION_CONCURRENCY,
         },
         store::{
             db::{Db, CF_PKH_BY_TIME},
@@ -1452,6 +1471,9 @@ mod tests {
             chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
             net: Net::Regtest,
             profile_write_locks: profile_write_locks(),
+            profile_registration_admission: Arc::new(tokio::sync::Semaphore::new(
+                PROFILE_REGISTRATION_CONCURRENCY,
+            )),
         };
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
@@ -1848,6 +1870,9 @@ mod tests {
             chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
             net: Net::Regtest,
             profile_write_locks: profile_write_locks(),
+            profile_registration_admission: Arc::new(tokio::sync::Semaphore::new(
+                PROFILE_REGISTRATION_CONCURRENCY,
+            )),
         };
 
         // Generate a few anyone can spend coins
@@ -2004,6 +2029,9 @@ mod tests {
             chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
             net: Net::Regtest,
             profile_write_locks: profile_write_locks(),
+            profile_registration_admission: Arc::new(tokio::sync::Semaphore::new(
+                PROFILE_REGISTRATION_CONCURRENCY,
+            )),
         };
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
@@ -2329,6 +2357,9 @@ mod tests {
             chain_adapter: Arc::new(NeverCalledChainAdapter),
             net: Net::Regtest,
             profile_write_locks: profile_write_locks(),
+            profile_registration_admission: Arc::new(tokio::sync::Semaphore::new(
+                PROFILE_REGISTRATION_CONCURRENCY,
+            )),
         };
         (tempdir, registry)
     }
@@ -2540,13 +2571,21 @@ mod tests {
         let blocked_registry = Arc::clone(&registry);
         let blocked_low = tokio::spawn(async move {
             blocked_registry
-                .put_monad_profile_async(address_a, signed_a)
+                .put_monad_profile_async(
+                    address_a,
+                    signed_a,
+                    blocked_registry.try_acquire_profile_registration().unwrap(),
+                )
                 .await
         });
         let blocked_registry = Arc::clone(&registry);
         let blocked_high = tokio::spawn(async move {
             blocked_registry
-                .put_monad_profile_async(address_a, newer_signed_a)
+                .put_monad_profile_async(
+                    address_a,
+                    newer_signed_a,
+                    blocked_registry.try_acquire_profile_registration().unwrap(),
+                )
                 .await
         });
         for _ in 0..10 {
@@ -2557,7 +2596,13 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), async {
             tokio::task::yield_now().await;
-            registry.put_monad_profile_async(address_b, signed_b).await
+            registry
+                .put_monad_profile_async(
+                    address_b,
+                    signed_b,
+                    registry.try_acquire_profile_registration().unwrap(),
+                )
+                .await
         })
         .await
         .expect("held address A must not stall address B or the runtime")?;

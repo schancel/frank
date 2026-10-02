@@ -54,6 +54,8 @@ pub fn report_to_error_meta(report: &Report) -> Option<&dyn ErrorMeta> {
         Some(err)
     } else if let Some(err) = cashweb_payload::error::report_to_error_meta(report) {
         Some(err)
+    } else if let Some(err) = cashweb_http_utils::error::report_to_error_meta(report) {
+        Some(err)
     } else {
         None
     }

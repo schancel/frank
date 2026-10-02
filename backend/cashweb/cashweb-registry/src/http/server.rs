@@ -9,9 +9,10 @@ use crate::{
         handle_put_monad_message,
     },
     http::monad_profile::{
-        fetch_profile_cbor_or_not_found, fetch_profile_or_not_found, handle_get_monad_profile,
-        handle_list_monad_profiles, handle_put_monad_profile, handle_search_monad_profiles,
-        parse_monad_profile_content_type, require_protobuf_content_type, MonadProfileMediaType,
+        check_monad_profile_body_size, fetch_profile_cbor_or_not_found, fetch_profile_or_not_found,
+        handle_get_monad_profile, handle_list_monad_profiles, handle_put_monad_profile,
+        handle_search_monad_profiles, parse_monad_profile_content_type,
+        profile_overloaded_response, MonadProfileMediaType,
     },
     http::monad_topics::{
         handle_get_monad_topic_post, handle_list_monad_topic_posts, handle_list_topics,
@@ -33,7 +34,10 @@ use axum::{
 };
 use bitcoinsuite_core::{Hashed, LotusAddress, LotusAddressError};
 use bitcoinsuite_error::{ErrorMeta, Report, Result};
-use cashweb_http_utils::protobuf::Protobuf;
+use cashweb_http_utils::{
+    protobuf::{CashwebProtobufError, Protobuf, CONTENT_TYPE_PROTOBUF},
+    validation::check_content_type,
+};
 use cashweb_payload::proto::SignedPayloadSet;
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -366,11 +370,19 @@ enum PutRegistryError {
     /// No valid bearer token or verifying payment proof was presented; challenge the client for
     /// payment.
     PaymentRequired(PopChallenge),
+    /// Profile verification/storage has reached its bounded global admission limit.
+    ProfileOverloaded,
 }
 
 impl From<Report> for PutRegistryError {
     fn from(err: Report) -> Self {
         PutRegistryError::Registry(err.into())
+    }
+}
+
+impl From<CashwebProtobufError> for PutRegistryError {
+    fn from(err: CashwebProtobufError) -> Self {
+        PutRegistryError::from(Report::from(err))
     }
 }
 
@@ -397,6 +409,7 @@ impl IntoResponse for PutRegistryError {
                 Json(PopChallengeBody::from(challenge)),
             )
                 .into_response(),
+            PutRegistryError::ProfileOverloaded => profile_overloaded_response(),
         }
     }
 }
@@ -437,27 +450,28 @@ async fn handle_put_registry(
     // branch: profile registration was never POP-gated to begin with, and this ticket's non-goals
     // explicitly exclude adding it.
     if let Ok(monad_address) = MonadAddress::from_str(&address) {
-        match parse_monad_profile_content_type(&header_map).map_err(PutRegistryError::from)? {
+        let media_type =
+            parse_monad_profile_content_type(&header_map).map_err(PutRegistryError::from)?;
+        check_monad_profile_body_size(media_type, body_bytes.len())
+            .map_err(PutRegistryError::from)?;
+        let admission = server
+            .registry
+            .try_acquire_profile_registration()
+            .map_err(|_| PutRegistryError::ProfileOverloaded)?;
+        match media_type {
             MonadProfileMediaType::Cbor => {
                 server
                     .registry
-                    .put_monad_profile_cbor_async(monad_address, body_bytes.to_vec())
+                    .put_monad_profile_cbor_async(monad_address, body_bytes.to_vec(), admission)
                     .await?
             }
             MonadProfileMediaType::Protobuf => {
-                let signed_metadata = cashweb_payload::proto::SignedPayload::decode(
-                    body_bytes.as_ref(),
-                )
-                .map_err(|err| {
-                    PutRegistryError::from(Report::from(
-                        crate::monad_profile_verify::MonadProfileVerifyError::InvalidProfilePayload(
-                            err.to_string(),
-                        ),
-                    ))
-                })?;
+                let signed_metadata =
+                    cashweb_payload::proto::SignedPayload::decode(body_bytes.as_ref())
+                        .map_err(|err| CashwebProtobufError::BadProtobuf(err.to_string()))?;
                 server
                     .registry
-                    .put_monad_profile_async(monad_address, signed_metadata)
+                    .put_monad_profile_async(monad_address, signed_metadata, admission)
                     .await?;
             }
         }
@@ -468,15 +482,9 @@ async fn handle_put_registry(
     }
 
     let address = address.parse::<LotusAddress>().map_err(InvalidAddress)?;
-    require_protobuf_content_type(&header_map).map_err(PutRegistryError::from)?;
+    check_content_type(&header_map, CONTENT_TYPE_PROTOBUF)?;
     let signed_metadata = cashweb_payload::proto::SignedPayload::decode(body_bytes.as_ref())
-        .map_err(|err| {
-            PutRegistryError::from(Report::from(
-                crate::monad_profile_verify::MonadProfileVerifyError::InvalidProfilePayload(
-                    err.to_string(),
-                ),
-            ))
-        })?;
+        .map_err(|err| CashwebProtobufError::BadProtobuf(err.to_string()))?;
 
     // --- POP protection (ticket #24, config-wired for real in ticket #4, made toggleable in #35)
     // ---

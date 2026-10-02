@@ -24,7 +24,7 @@ use cashweb_registry::{
     monad_http::Address,
     p2p::peers::Peers,
     proto,
-    registry::Registry,
+    registry::{Registry, PROFILE_REGISTRATION_CONCURRENCY},
     store::db::Db,
     test_instance::placeholder_pop_conf,
 };
@@ -34,7 +34,7 @@ use frank_cbor::{
     EnvelopeFields, FramePayload,
 };
 use hyper::{
-    header::{CONTENT_TYPE, VARY},
+    header::{HeaderValue, CONTENT_TYPE, RETRY_AFTER, VARY},
     Body, Request, Response, StatusCode,
 };
 use pretty_assertions::assert_eq;
@@ -121,6 +121,11 @@ fn assert_vary_accept(response: &Response<axum::body::BoxBody>) {
         .get_all(VARY)
         .iter()
         .any(|value| value.as_bytes() == b"Accept"));
+}
+
+async fn error_message(response: Response<axum::body::BoxBody>) -> String {
+    let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+    cashweb_http_utils::proto::Error::decode(body).unwrap().msg
 }
 
 fn seckey(byte: u8) -> SecKey {
@@ -1124,10 +1129,16 @@ async fn lotus_put_requires_exact_protobuf_content_type() {
     let router = make_server(open_registry(tempdir.path(), Net::Regtest)).into_router();
     let lotus = "lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi";
 
-    for content_type in [
-        None,
-        Some("application/cbor"),
-        Some("application/x-protobuf; v=1"),
+    for (content_type, expected) in [
+        (None, "No Content-Type set"),
+        (
+            Some("application/cbor"),
+            "Content-Type must be application/x-protobuf, got application/cbor",
+        ),
+        (
+            Some("application/x-protobuf; v=1"),
+            "Content-Type must be application/x-protobuf, got application/x-protobuf; v=1",
+        ),
     ] {
         let mut request = Request::builder()
             .method("PUT")
@@ -1141,9 +1152,25 @@ async fn lotus_put_requires_exact_protobuf_content_type() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
-        assert!(String::from_utf8_lossy(&body).contains("expected application/x-protobuf"));
+        assert_eq!(error_message(response).await, expected);
     }
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/metadata/{lotus}"))
+                .header(CONTENT_TYPE, HeaderValue::from_bytes(&[0xff]).unwrap())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(error_message(response)
+        .await
+        .starts_with("Content-Type bad encoding:"));
 
     let response = router
         .oneshot(
@@ -1151,14 +1178,113 @@ async fn lotus_put_requires_exact_protobuf_content_type() {
                 .method("PUT")
                 .uri(format!("/metadata/{lotus}"))
                 .header(CONTENT_TYPE, "application/x-protobuf")
-                .body(Body::empty())
+                .body(Body::from(vec![0x80]))
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
-    assert!(!String::from_utf8_lossy(&body).contains("Unsupported Content-Type"));
+    assert!(error_message(response).await.starts_with("Bad protobuf:"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exhausted_profile_admission_rejects_before_verification_and_stays_responsive() {
+    let tempdir = tempdir::TempDir::new("cashweb-registry--profile-admission").unwrap();
+    let key = seckey(31);
+    let (_, address, _) =
+        build_cbor_attestation(&key, "monad-testnet", 100, 100, 1000, None, None, 1);
+    let server = make_server(open_registry(tempdir.path(), Net::Regtest));
+    let permits: Vec<_> = (0..PROFILE_REGISTRATION_CONCURRENCY)
+        .map(|_| server.registry.try_acquire_profile_registration().unwrap())
+        .collect();
+    let registry = Arc::clone(&server.registry);
+    let router = server.into_router();
+
+    for path in [
+        format!("/metadata/{}", address.to_hex()),
+        format!("/metadata/monad/{}", address.to_hex()),
+    ] {
+        for content_type in [CONTENT_TYPE_CBOR, "application/x-protobuf"] {
+            let response = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                router.clone().oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri(&path)
+                        .header(CONTENT_TYPE, content_type)
+                        // Invalid in both formats: overload must win before verification starts.
+                        .body(Body::from(vec![0x80]))
+                        .unwrap(),
+                ),
+            )
+            .await
+            .expect("runtime remained responsive")
+            .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "1");
+        }
+    }
+
+    // No malformed request reached either verifier or storage path.
+    assert!(registry.get_monad_profile(address).unwrap().is_none());
+    assert!(registry.get_monad_profile_cbor(address).unwrap().is_none());
+    drop(permits);
+}
+
+#[tokio::test]
+async fn cbor_route_rejects_above_256_kib_before_registration_work() {
+    let tempdir = tempdir::TempDir::new("cashweb-registry--profile-body-cap").unwrap();
+    let key = seckey(30);
+    let (_, address, _) =
+        build_cbor_attestation(&key, "monad-testnet", 100, 100, 1000, None, None, 1);
+    let router = make_server(open_registry(tempdir.path(), Net::Regtest)).into_router();
+
+    for path in [
+        format!("/metadata/{}", address.to_hex()),
+        format!("/metadata/monad/{}", address.to_hex()),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(path)
+                    .header(CONTENT_TYPE, CONTENT_TYPE_CBOR)
+                    .body(Body::from(vec![0; 256 * 1024 + 1]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error_message(response).await,
+            "Monad profile body exceeds the 262144-byte limit"
+        );
+    }
+
+    // The exact candidate boundary is admitted to decoding, and the old protobuf format is not
+    // accidentally tightened to the candidate's smaller limit.
+    for (content_type, body) in [
+        (CONTENT_TYPE_CBOR, vec![0; 256 * 1024]),
+        ("application/x-protobuf", vec![0x80; 256 * 1024 + 1]),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/metadata/{}", address.to_hex()))
+                    .header(CONTENT_TYPE, content_type)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(!error_message(response)
+            .await
+            .contains("exceeds the 262144-byte limit"));
+    }
 }
 
 #[tokio::test]

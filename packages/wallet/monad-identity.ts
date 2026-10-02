@@ -102,6 +102,7 @@ import {
   directorySignatureDigest,
   encodeFrame,
   expiryTimestamp,
+  joinMs,
   splitMs,
   validateFrame,
 } from '@frank/codec'
@@ -358,6 +359,9 @@ export function trustedMonadCborRelayDescriptor(
   if (bindings.length === 0) {
     throw new Error('at least one trusted relay binding is required')
   }
+  if (bindings.length > 32) {
+    throw new Error('at most 32 trusted relay bindings are allowed')
+  }
   return {
     [trustedRelayDescriptorBrand]: true,
     bindings: bindings.map(binding => ({
@@ -401,6 +405,16 @@ function exactBigInt(value: bigint | number, field: string): bigint {
   return value
 }
 
+const I64_MIN = -9_223_372_036_854_775_808n
+const I64_MAX = 9_223_372_036_854_775_807n
+
+function requireI64(value: bigint, field: string): bigint {
+  if (value < I64_MIN || value > I64_MAX) {
+    throw new Error(`${field} must fit a signed 64-bit integer`)
+  }
+  return value
+}
+
 function compareBytes(left: Uint8Array, right: Uint8Array): number {
   for (let i = 0; i < Math.min(left.length, right.length); i += 1) {
     if (left[i] !== right[i]) return left[i] - right[i]
@@ -420,24 +434,39 @@ function requireRelayBindings(
   ) {
     throw new Error('a trusted caller-supplied relay descriptor is required')
   }
+  if (descriptor.bindings.length > 32) {
+    throw new Error('at most 32 trusted relay bindings are allowed')
+  }
   const statementSeconds = exactBigInt(statement.seconds, 'statement seconds')
   const canonical = descriptor.bindings.map(relay => {
     if (relay.id.length !== 16 || relay.id.every(byte => byte === 0)) {
       throw new Error('relay id must be a non-zero 16-byte identifier')
     }
-    let endpoint: URL
+    if (
+      relay.endpoint.length < 1 ||
+      relay.endpoint.length > 2048 ||
+      Array.from(relay.endpoint).some(character => {
+        const code = character.charCodeAt(0)
+        return code < 0x21 || code > 0x7e
+      })
+    ) {
+      throw new Error(
+        'relay endpoint must be 1..2048 printable ASCII bytes without spaces',
+      )
+    }
+    let parsedEndpoint: URL
     try {
-      endpoint = new URL(relay.endpoint)
+      parsedEndpoint = new URL(relay.endpoint)
     } catch {
       throw new Error('relay endpoint must be an absolute URL')
     }
     if (
-      endpoint.protocol !== 'https:' ||
-      endpoint.username !== '' ||
-      endpoint.password !== '' ||
-      endpoint.hash !== '' ||
-      endpoint.hostname === 'example' ||
-      endpoint.hostname.endsWith('.example')
+      parsedEndpoint.protocol !== 'https:' ||
+      parsedEndpoint.username !== '' ||
+      parsedEndpoint.password !== '' ||
+      parsedEndpoint.hash !== '' ||
+      parsedEndpoint.hostname === 'example' ||
+      parsedEndpoint.hostname.endsWith('.example')
     ) {
       throw new Error('relay endpoint must be a genuine HTTPS endpoint')
     }
@@ -456,8 +485,8 @@ function requireRelayBindings(
     ) {
       throw new Error('relay key must be a distinct compressed secp256k1 key')
     }
-    const validUntilSeconds = exactBigInt(
-      relay.validUntil.seconds,
+    const validUntilSeconds = requireI64(
+      exactBigInt(relay.validUntil.seconds, 'relay validUntil.seconds'),
       'relay validUntil.seconds',
     )
     const validUntilNanoseconds = relay.validUntil.nanoseconds
@@ -479,7 +508,10 @@ function requireRelayBindings(
     }
     return {
       id: Uint8Array.from(relay.id),
-      endpoint: endpoint.toString(),
+      // URL parsing above proves transport validity. Preserve the caller-authenticated ASCII
+      // spelling byte-for-byte for canonical sorting and signed encoding; URL normalization is
+      // not part of the descriptor protocol.
+      endpoint: relay.endpoint,
       key: Uint8Array.from(relay.key),
       validUntilSeconds,
       validUntilNanoseconds,
@@ -540,8 +572,12 @@ export function buildSignedDirectoryStatement(
   const network = options.network ?? 'monad-testnet'
   const ms = exactBigInt(options.timestampMs ?? Date.now(), 'timestampMs')
   const ttlMs = exactBigInt(options.ttlMs ?? 1000 * 60 * 60 * 24 * 365, 'ttlMs') // 1 year
-  if (ms < 0n) throw new Error('timestampMs must be nonnegative')
-  if (ttlMs < 0n) throw new Error('ttlMs must be nonnegative')
+  if (ms < 0n || ms > I64_MAX) {
+    throw new Error(
+      'timestampMs must be in the nonnegative signed 64-bit range',
+    )
+  }
+  requireI64(ttlMs, 'ttlMs')
   const ts = splitMs(ms)
   const exp = expiryTimestamp(ms, ttlMs)
   const stampKeyBytes = options.stampKey ?? identity.compressedPubKey
@@ -649,6 +685,17 @@ export function buildSignedDirectoryStatement(
     { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
     cborMap(type4MapEntries),
   )
+
+  const checkedStatement = validateFrame(
+    type4Frame,
+    defaultContext({ operation: 'typed' }),
+  )
+  if (
+    checkedStatement.kind !== 'parsed' ||
+    checkedStatement.typed?.type !== 4
+  ) {
+    throw new Error('constructed an invalid CBOR directory statement')
+  }
 
   const digest = directorySignatureDigest(network, type4Frame)
   const sig = identity.signHash(Buffer.from(digest))
@@ -814,9 +861,19 @@ export function decodeProfileBytes(raw: Uint8Array): DecodedProfileBytes {
     }
     const stmt = stmtFrame.typed
     const pubKey = stmt.subject.keyBytes
-    const sec = BigInt(stmt.timestamp.seconds)
-    const nanos = BigInt(stmt.timestamp.nanoseconds)
-    const timestampMs = sec * 1000n + nanos / 1_000_000n
+    const timestampMs = joinMs(
+      BigInt(stmt.timestamp.seconds),
+      BigInt(stmt.timestamp.nanoseconds),
+    )
+    const revision = exactBigInt(stmt.revision, 'registration revision')
+    if (timestampMs < 0n || timestampMs > I64_MAX) {
+      throw new Error(
+        'registration timestamp must be in the nonnegative signed 64-bit range',
+      )
+    }
+    if (revision !== timestampMs) {
+      throw new Error('registration revision must equal timestampMs')
+    }
 
     let name: string | undefined
     let bio: string | undefined

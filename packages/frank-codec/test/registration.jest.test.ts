@@ -248,6 +248,21 @@ describe('the M2/M3/M6 pure-value vectors', () => {
     expect(() => joinMs(0n, 4_000_000_000n)).toThrow(RangeError)
   })
 
+  it('enforces the signed-i64 timestamp seconds domain (M2)', () => {
+    const min = -9_223_372_036_854_775_808n
+    const max = 9_223_372_036_854_775_807n
+    expect(splitTimestampMs(joinMs(min, 0n))).toEqual({
+      seconds: min,
+      nanoseconds: 0,
+    })
+    expect(splitTimestampMs(joinMs(max, 999_000_000n))).toEqual({
+      seconds: max,
+      nanoseconds: 999_000_000,
+    })
+    expect(() => joinMs(min - 1n, 0n)).toThrow(RangeError)
+    expect(() => joinMs(max + 1n, 0n)).toThrow(RangeError)
+  })
+
   it('derives every address vector (M6)', () => {
     for (const v of VALUES.address_derivations) {
       const compressed = fromHex(v.compressed_pubkey_hex)

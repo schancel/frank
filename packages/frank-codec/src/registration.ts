@@ -29,6 +29,9 @@ export function splitTimestampMs(totalMs: bigint): Timestamp {
 
 /** Inverse of {@link splitTimestampMs}: `ms = seconds * 1000 + nanoseconds div 1000000`. */
 export function joinMs(seconds: bigint, nanoseconds: number | bigint): bigint {
+  if (seconds < I64_MIN || seconds > I64_MAX) {
+    throw new RangeError('seconds outside the timestamp i64 range')
+  }
   const nanos = BigInt(nanoseconds)
   if (nanos < 0n || nanos > 999_999_999n || nanos % NANOS_PER_MS !== 0n) {
     throw new RangeError(

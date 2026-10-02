@@ -1,7 +1,5 @@
 import { createHash } from 'crypto'
 
-import { crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
-
 import { registryWrapperDigest } from './wrapper-digest'
 
 const EMPTY_SHA256 =
@@ -16,7 +14,6 @@ it('hashes a wrapper payload with one SHA-256', () => {
   expect(empty.toString('hex')).toBe(
     createHash('sha256').update(Buffer.alloc(0)).digest('hex'),
   )
-  expect(empty).toEqual(bitcoreCrypto.Hash.sha256(Buffer.alloc(0)))
 
   const abc = Buffer.from('abc')
   const abcDigest = Buffer.from(registryWrapperDigest(abc))
@@ -24,14 +21,12 @@ it('hashes a wrapper payload with one SHA-256', () => {
   expect(abcDigest.toString('hex')).toBe(
     createHash('sha256').update(abc).digest('hex'),
   )
-  expect(abcDigest).toEqual(bitcoreCrypto.Hash.sha256(abc))
 
   const sample = Uint8Array.from([1, 2, 3, 4, 5])
   const digest = Buffer.from(registryWrapperDigest(sample))
   expect(digest.toString('hex')).toBe(
     createHash('sha256').update(sample).digest('hex'),
   )
-  expect(digest).toEqual(bitcoreCrypto.Hash.sha256(Buffer.from(sample)))
   const doubled = createHash('sha256').update(digest).digest('hex')
   expect(digest.toString('hex')).not.toBe(doubled)
 

@@ -1,4 +1,4 @@
-import { crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
+import { createHash } from 'crypto'
 
 import {
   FrankIdentity,
@@ -22,8 +22,14 @@ const SUITE_PKH = Buffer.from('b50b86a893d80c9e2ee72b199612374b7b4c1cd8', 'hex')
 const SUITE_MAINNET = 'lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi'
 const SUITE_REGTEST = 'lotusR16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyVqAied'
 
-// Same layout as lotus-identity, hashed with bitcore.
-function bitcoreLotusAddress(pubKeyHash20: Buffer, net: LotusNet): string {
+function hash160(data: Buffer): Buffer {
+  return createHash('ripemd160')
+    .update(createHash('sha256').update(data).digest())
+    .digest()
+}
+
+// Same layout as lotus-identity. The checksum is one SHA-256.
+function referenceLotusAddress(pubKeyHash20: Buffer, net: LotusNet): string {
   const script = Buffer.concat([
     Buffer.from([0x76, 0xa9, 0x14]),
     pubKeyHash20,
@@ -35,7 +41,7 @@ function bitcoreLotusAddress(pubKeyHash20: Buffer, net: LotusNet): string {
     Buffer.from([netChar.charCodeAt(0), 0]),
     script,
   ])
-  const checksum = bitcoreCrypto.Hash.sha256(preimage).slice(0, 4)
+  const checksum = createHash('sha256').update(preimage).digest().subarray(0, 4)
   const data = Buffer.concat([Buffer.from([0]), script, checksum])
   return `lotus${netChar}${base58Encode(data)}`
 }
@@ -44,26 +50,24 @@ it('hashes a pubkey and encodes the bitcoinsuite Lotus address vectors', () => {
 
   const hashed = pubKeyHash160(GENERATOR)
   expect(hashed.toString('hex')).toBe(GENERATOR_HASH160)
-  expect(hashed.toString('hex')).toBe(
-    bitcoreCrypto.Hash.sha256ripemd160(GENERATOR).toString('hex'),
-  )
+  expect(hashed.toString('hex')).toBe(hash160(GENERATOR).toString('hex'))
 
   expect(lotusAddressFromPubKeyHash(SUITE_PKH, 'mainnet')).toBe(SUITE_MAINNET)
   expect(lotusAddressFromPubKeyHash(SUITE_PKH, 'regtest')).toBe(SUITE_REGTEST)
   expect(lotusAddressFromPubKeyHash(SUITE_PKH, 'mainnet')).toBe(
-    bitcoreLotusAddress(SUITE_PKH, 'mainnet'),
+    referenceLotusAddress(SUITE_PKH, 'mainnet'),
   )
   expect(lotusAddressFromPubKeyHash(SUITE_PKH, 'regtest')).toBe(
-    bitcoreLotusAddress(SUITE_PKH, 'regtest'),
+    referenceLotusAddress(SUITE_PKH, 'regtest'),
   )
 
   const mainnet = computeLotusAddress(GENERATOR, 'mainnet')
   const regtest = computeLotusAddress(GENERATOR, 'regtest')
   expect(mainnet).toBe(
-    bitcoreLotusAddress(Buffer.from(GENERATOR_HASH160, 'hex'), 'mainnet'),
+    referenceLotusAddress(Buffer.from(GENERATOR_HASH160, 'hex'), 'mainnet'),
   )
   expect(regtest).toBe(
-    bitcoreLotusAddress(Buffer.from(GENERATOR_HASH160, 'hex'), 'regtest'),
+    referenceLotusAddress(Buffer.from(GENERATOR_HASH160, 'hex'), 'regtest'),
   )
   expect(mainnet).toBe('lotus_16PSJLhUGdrTnRU52YVxxTT6UBUNs5g4YkNdoSb6N')
   expect(regtest).toBe('lotusR16PSJLhUGdrTnRU52YVxxTT6UBUNs5g4YkNgr3wpN')
@@ -75,11 +79,11 @@ it('hashes a pubkey and encodes the bitcoinsuite Lotus address vectors', () => {
   )
   expect(identity.pubKey.length).toBe(33)
   expect(pubKeyHash160(identity.pubKey).toString('hex')).toBe(
-    bitcoreCrypto.Hash.sha256ripemd160(identity.pubKey).toString('hex'),
+    hash160(identity.pubKey).toString('hex'),
   )
   expect(identity.address).toBe(computeLotusAddress(identity.pubKey, 'mainnet'))
   expect(identity.address).toBe(
-    bitcoreLotusAddress(pubKeyHash160(identity.pubKey), 'mainnet'),
+    referenceLotusAddress(pubKeyHash160(identity.pubKey), 'mainnet'),
   )
 
   expect(() =>

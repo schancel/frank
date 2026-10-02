@@ -265,6 +265,18 @@ describe('the M2/M3/M6 pure-value vectors', () => {
     expect(
       corpusCase.validation_context.prior_directory_statement_frame_hex,
     ).toBe(v.prior_statement_frame_hex)
+    const attestation = decodeEnvelope(fromHex(corpusCase.frame_hex))
+    const statement = decodeEnvelope(attestation.statement)
+    expect(statement.payload.get(0n)).toBe(v.network)
+    const transitions = statement.payload.get(5n) as Map<bigint, unknown>[]
+    expect(transitions).toHaveLength(1)
+    const entry = transitions[0]
+    const signer = entry.get(2n) as Map<bigint, unknown>
+    expect(toHex(entry.get(0n) as Uint8Array)).toBe(
+      v.transition_statement_frame_hex,
+    )
+    expect(toHex(signer.get(1n) as Uint8Array)).toBe(v.signer_public_key_hex)
+    expect(toHex(entry.get(3n) as Uint8Array)).toBe(v.signature_der_hex)
   })
 
   it('maps every timestamp vector losslessly (M2)', () => {

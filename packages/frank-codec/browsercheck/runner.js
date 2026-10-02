@@ -390,6 +390,40 @@ const frankBrowserCheckInstall = function () {
         )
       )
         fail(v.id, 'T2a signature does not verify')
+      const corpusCase = byId(registration, v.attestation_case_id)
+      if (!corpusCase) {
+        fail(v.id, 'linked attestation case is missing')
+      } else {
+        if (
+          corpusCase.validation_context.prior_directory_statement_frame_hex !==
+          v.prior_statement_frame_hex
+        )
+          fail(v.id, 'linked prior statement differs')
+        const attestationEnvelope = codec.decodeCanonical(
+          codec.fromHex(corpusCase.frame_hex).subarray(9),
+        )
+        const attestation = codec.decodeCanonical(attestationEnvelope.get(3n))
+        const statementFrame = attestation.get(0n)
+        const statementEnvelope = codec.decodeCanonical(
+          statementFrame.subarray(9),
+        )
+        const statement = codec.decodeCanonical(statementEnvelope.get(3n))
+        const transitions = statement.get(5n)
+        if (statement.get(0n) !== v.network)
+          fail(v.id, 'linked network differs')
+        if (!Array.isArray(transitions) || transitions.length !== 1) {
+          fail(v.id, 'linked transition inventory differs')
+        } else {
+          const entry = transitions[0]
+          const signer = entry.get(2n)
+          if (codec.toHex(entry.get(0n)) !== v.transition_statement_frame_hex)
+            fail(v.id, 'linked transition statement differs')
+          if (codec.toHex(signer.get(1n)) !== v.signer_public_key_hex)
+            fail(v.id, 'linked signer key differs')
+          if (codec.toHex(entry.get(3n)) !== v.signature_der_hex)
+            fail(v.id, 'linked signature differs')
+        }
+      }
     }
     for (const v of registrationValues.timestamp_mappings) {
       const ms = BigInt(v.timestamp_ms)

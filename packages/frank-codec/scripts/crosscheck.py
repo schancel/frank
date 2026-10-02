@@ -974,16 +974,17 @@ def check_account_registration():
             problems.append('%s: content hash differs' % cid)
         n += 1
     print('account-registration.json: %d cases evaluated at stages 1-10.6, %d disagree' % (n, len(problems)))
-    values_problems = check_registration_values()
+    values_problems = check_registration_values(doc)
     return problems, values_problems
 
 
-def check_registration_values():
+def check_registration_values(registration):
     doc = json.load(open(os.path.join(ROOT, 'vectors', 'account-registration-values.json')))
     problems, n = [], 0
     vectors = doc.get('key_transition_authorizations', [])
     if [v.get('id') for v in vectors] != ['t2a-rust-secret-2']:
         problems.append('T2a: exact known-answer inventory differs')
+    cases = {c['id']: c for c in registration['cases']}
     for v in vectors:
         transition = bytes.fromhex(v['transition_statement_frame_hex'])
         digest = hashlib.sha256(reg_t2a_transcript(v['network'], transition)).digest()
@@ -992,6 +993,39 @@ def check_registration_values():
         r, s = strict_der_parse(bytes.fromhex(v['signature_der_hex']))
         if not ecdsa_verify(digest, r, s, bytes.fromhex(v['signer_public_key_hex'])):
             problems.append('T2a %s: signature does not verify' % v['id'])
+        case = cases.get(v['attestation_case_id'])
+        if case is None:
+            problems.append('T2a %s: linked attestation case is missing' % v['id'])
+        else:
+            prior = case['validation_context'].get(
+                'prior_directory_statement_frame_hex')
+            if prior != v['prior_statement_frame_hex']:
+                problems.append('T2a %s: linked prior statement differs' % v['id'])
+            attestation_frame = bytes.fromhex(case['frame_hex'])
+            attestation_envelope = item(
+                attestation_frame[9:], 0, Counters(), 5)
+            attestation = item(
+                attestation_envelope[3], 1, Counters(), 7)
+            statement_frame = attestation[0]
+            statement_envelope = item(
+                statement_frame[9:], 0, Counters(), 5)
+            statement = item(statement_envelope[3], 1, Counters(), 7)
+            transitions = statement.get(5)
+            if statement.get(0) != v['network']:
+                problems.append('T2a %s: linked network differs' % v['id'])
+            if not isinstance(transitions, list) or len(transitions) != 1:
+                problems.append(
+                    'T2a %s: linked transition inventory differs' % v['id'])
+            else:
+                entry = transitions[0]
+                signer = entry[2]
+                if entry[0] != transition:
+                    problems.append(
+                        'T2a %s: linked transition statement differs' % v['id'])
+                if signer[1].hex() != v['signer_public_key_hex']:
+                    problems.append('T2a %s: linked signer key differs' % v['id'])
+                if entry[3].hex() != v['signature_der_hex']:
+                    problems.append('T2a %s: linked signature differs' % v['id'])
         n += 1
     for v in doc['timestamp_mappings']:
         ms = int(v['timestamp_ms'])

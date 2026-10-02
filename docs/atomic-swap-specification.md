@@ -851,7 +851,8 @@ The first implementation should provide:
    the declared assumption;
 9. multi-lane tests over every reachable success/refund subset using net values and worst-case fees,
    plus late revelation against the slowest coupled leg;
-10. account-replacement tests proving a funded old-account swap remains recoverable after restart;
+10. account-replacement tests proving every funded old-account swap retains the mode-specific claim,
+    refund, monitoring, and cooperative-salvage capabilities after restart, or replacement is blocked;
 11. fee-ceiling tests proving unilateral success coverage in every mode and refund coverage across
     the recoverable envelope, including peer claim, fee spike, and disappearance;
 12. canonical EVM policy tests in which two differently priced in-range type-2 transactions pass,

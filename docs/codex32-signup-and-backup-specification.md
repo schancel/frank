@@ -616,9 +616,11 @@ it as a rollback target until a later, separately confirmed deletion.
 Before switching accounts, Frank inventories all nonterminal operations bound
 to the old account, including funded swaps. Replacement is blocked unless none
 exist or their non-derivable journals and settlement capabilities are atomically
-preserved in a detached watcher store with a durably verified resume path. The
-master secret does not regenerate negotiated transactions, signing sessions, or
-adaptor secrets.
+preserved in detached operation state with a durably verified resume path.
+Secret shares remain in their required trusted signer or vault boundary; an
+untrusted watcher receives only its narrow trigger/action capability. The master
+secret does not regenerate negotiated transactions, signing sessions, or adaptor
+secrets.
 
 Once the intended identity is authenticated, Frank derives the same approved
 domain material as signup and uses the same linearization and reconciliation
@@ -968,8 +970,12 @@ the repository's current localization boundary.
 - Cancel, route change, unmount, account change, BFCache traversal, second-tab
   contention, and stale worker/QR/clipboard/persistence/derivation completions
   receive the same lifecycle and secret-sink coverage as signup.
-- A funded swap under the old account remains settleable or refundable after an
-  allowed account switch and crash/restart; otherwise switching is blocked.
+- A funded swap under the old account remains settleable, refundable, or
+  cooperatively salvageable as required by its custody mode after an allowed
+  account switch and crash/restart; all non-derivable capabilities remain in
+  their required trust boundary, otherwise switching is blocked. One test
+  switches after final eCash refund but before salvage and proves `a` survives in
+  the trusted signer/vault and remains release-policy gated.
 - A valid wrong legacy mnemonic, wrong passphrase, or wrong frozen derivation
   profile cannot commit, network, or be labelled recovered. Exact legacy inputs
   plus an independently matching full identity succeed; missing expected

@@ -605,11 +605,15 @@ first validates the candidate's embedded `V`. Failure reports that the shares do
 not reconstruct a valid Frank master, without blaming a particular share. It
 then increments the attempt generation to fence stale work; clears candidate
 `M`, accepted shares and strings, and all derived intermediates; retains only
-the independently authenticated descriptor format and registry; unlocks family
-identifier, threshold, and length; and returns to empty share collection. The
-user may retry the same family or select another, but Frank never searches
-subsets automatically. Derivation, persistence, networking, and account
-activation remain disabled.
+the complete immutable independently authenticated descriptor, including
+format, registry, all 32 expected fingerprint bytes, and its ceremony/account
+binding; unlocks family identifier, threshold, and length; and returns to empty
+share collection. The pinned descriptor cannot be replaced during retry;
+selecting another descriptor or expected account starts a new fenced recovery
+or explicit import ceremony. The user may retry the same share family or select
+another family for that descriptor, but Frank never searches subsets
+automatically. Derivation, persistence, networking, and account activation
+remain disabled.
 
 Only after internal validation does the app extract `R`, derive the versioned
 public recovery fingerprint and available domain public identifiers, and ask
@@ -1033,8 +1037,10 @@ the repository's current localization boundary.
   cannot commit or start networking.
 - An invalid-`V` threshold attempt clears all candidate/share material, fences
   stale callbacks, unlocks family metadata, and permits a later valid-family
-  retry to succeed without any intervening remote effect. A valid-`V` expected
-  fingerprint mismatch remains terminal for known-account restore.
+  retry to succeed without any intervening remote effect. The complete expected
+  descriptor and fingerprint remain byte-identical and pinned; attempted
+  replacement or a stale descriptor callback cannot advance. A valid-`V`
+  expected fingerprint mismatch remains terminal for known-account restore.
 - Loss of all trusted descriptor copies blocks authenticated recovery but still
   permits only the quarantined no-network public-identity preview.
 - Fingerprint known-answer, full-byte comparison, Bech32m padding, and targeted

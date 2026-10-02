@@ -7,7 +7,9 @@ use crate::{
     http::curated_defaults::{handle_get_curated_default_contacts, CuratedDefaultContact},
     http::error::HttpRegistryError,
     http::evm_rpc::{
-        handle_issue_rpc_challenge, handle_proxy_rpc, EvmRpcRuntime, RPC_CORS_HEADERS,
+        handle_issue_rpc_capability, handle_issue_rpc_capability_challenge,
+        handle_issue_rpc_challenge, handle_proxy_rpc, handle_proxy_rpc_capability, EvmRpcRuntime,
+        RPC_CORS_HEADERS,
     },
     http::monad_message::{
         handle_ack_private_monad_recovery, handle_get_private_monad_messages,
@@ -326,6 +328,18 @@ impl RegistryServer {
                 .route(
                     "/chain-rpc/:chain/rpc/auth",
                     routing::post(handle_issue_rpc_challenge),
+                )
+                .route(
+                    "/chain-rpc/:chain/capability/auth",
+                    routing::post(handle_issue_rpc_capability_challenge),
+                )
+                .route(
+                    "/chain-rpc/:chain/capability",
+                    routing::post(handle_issue_rpc_capability),
+                )
+                .route(
+                    "/chain-rpc/:chain/cap/:capability/rpc",
+                    routing::post(handle_proxy_rpc_capability),
                 )
         } else {
             router

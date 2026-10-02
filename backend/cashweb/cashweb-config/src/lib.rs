@@ -173,6 +173,10 @@ pub struct EvmRpcConf {
     /// Fixed-hour quota units for an anonymous source IP. Zero disables anonymous EVM access.
     #[serde(default = "default_evm_anonymous_units_per_hour")]
     pub anonymous_units_per_hour: u32,
+    /// Lifetime of an authenticated customer capability URL. Capability URLs are bearer
+    /// credentials and should be renewed rather than stored permanently.
+    #[serde(default = "default_evm_capability_ttl_ms")]
+    pub capability_ttl_ms: u64,
 }
 
 impl Default for EvmRpcConf {
@@ -187,6 +191,7 @@ impl Default for EvmRpcConf {
             timeout_ms: default_rpc_timeout_ms(),
             customer_units_per_hour: default_evm_customer_units_per_hour(),
             anonymous_units_per_hour: default_evm_anonymous_units_per_hour(),
+            capability_ttl_ms: default_evm_capability_ttl_ms(),
         }
     }
 }
@@ -197,6 +202,10 @@ const fn default_evm_customer_units_per_hour() -> u32 {
 
 const fn default_evm_anonymous_units_per_hour() -> u32 {
     500
+}
+
+const fn default_evm_capability_ttl_ms() -> u64 {
+    60 * 60 * 1000
 }
 
 const fn default_rpc_request_bytes() -> usize {
@@ -312,6 +321,9 @@ impl EvmRpcConf {
         }
         if self.customer_units_per_hour == 0 {
             return Err(EvmRpcConfigError::InvalidLimit("customer_units_per_hour"));
+        }
+        if self.capability_ttl_ms < 60_000 || self.capability_ttl_ms > 24 * 60 * 60 * 1000 {
+            return Err(EvmRpcConfigError::InvalidLimit("capability_ttl_ms"));
         }
         let mut ids = HashSet::new();
         for chain in &self.chains {
@@ -771,6 +783,18 @@ mod tests {
             ..base
         };
         assert_eq!(enabled.validate(), Ok(()));
+
+        enabled.capability_ttl_ms = 59_999;
+        assert_eq!(
+            enabled.validate(),
+            Err(EvmRpcConfigError::InvalidLimit("capability_ttl_ms"))
+        );
+        enabled.capability_ttl_ms = 24 * 60 * 60 * 1000 + 1;
+        assert_eq!(
+            enabled.validate(),
+            Err(EvmRpcConfigError::InvalidLimit("capability_ttl_ms"))
+        );
+        enabled.capability_ttl_ms = 60 * 60 * 1000;
 
         enabled.chains.push(enabled.chains[0].clone());
         assert!(matches!(

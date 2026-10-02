@@ -35,6 +35,7 @@ expected_chain_id = 10143
 
 [registry.evm_rpc]
 enabled = true
+capability_ttl_ms = 3600000
 
 [[registry.evm_rpc.chains]]
 id = "monad-testnet"

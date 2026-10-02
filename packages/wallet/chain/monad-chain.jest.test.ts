@@ -151,7 +151,7 @@ const TEST_CONFIG: MonadChainConfig = {
   networkId: "monad-test",
   chainId: 10143,
   nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
-  rpcUrl: "http://127.0.0.1:1",
+  rpcChain: "monad-testnet",
   relayBaseUrl: "http://relay.test",
   networkTag: "MONT",
   stampBurnAddress: "0x000000000000000000000000000000000000dEaD",

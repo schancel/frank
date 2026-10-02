@@ -187,8 +187,9 @@ export default configure(ctx => {
       // `QCLI_SOMETHING` is automatically exposed as `import.meta.env.QCLI_SOMETHING`, no config
       // needed here at all. Every `process.env.MONAD_*`/`CASHWEB_*` read in this app
       // (`@frank/wallet/chain/monad-chain.ts`, `boot/monad-direct-messages.ts`, `router/index.ts`)
-      // now checks `import.meta.env.QCLI_KEY` first -- set `QCLI_MONAD_TESTNET_HTTP_RPC_URL`, not
-      // `MONAD_TESTNET_HTTP_RPC_URL`, to actually override one of these at dev/build time.
+      // now checks `import.meta.env.QCLI_KEY` first. Only public client configuration belongs in
+      // `QCLI_` variables: the browser uses `QCLI_MONAD_RELAY_BASE_URL` and
+      // `QCLI_MONAD_RPC_CHAIN`; secret-bearing upstream RPC URLs stay in the relay process.
 
       // Vite/esbuild-native replacement for `node-polyfill-webpack-plugin` (ticket #51): shims
       // Node core modules (`Buffer`, `process`, `stream`, etc.) for the browser -- this app's

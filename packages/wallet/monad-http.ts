@@ -1,6 +1,7 @@
 /**
  * `MonadHttpClient` wraps the Monad (EVM) JSON-RPC operations needed to submit transactions and
- * read chain state over HTTPS, via `ethers.js` against an Alchemy-hosted endpoint.
+ * read chain state over HTTPS, via `ethers.js` against an injected endpoint. The browser
+ * composition root supplies the relay family route, never the provider's secret upstream URL.
  *
  * Scope (see ticket #17): only the HTTP JSON-RPC surface —
  *   - `eth_sendRawTransaction` (submit an already-signed raw tx)
@@ -23,16 +24,11 @@
  * working example.
  *
  * Env/config note: this module intentionally does NOT read `process.env`/`.env` itself — the
- * RPC URL is injected via the constructor. `frank/.env` (gitignored) holds
- * `MONAD_TESTNET_HTTP_RPC_URL`, but this app (browser + Electron + Capacitor) has no established
- * convention yet for getting a gitignored `.env` value into runtime config for any of those
- * targets. Whatever wires this client up for real (M5, or the ChainAdapter assembly in #2) will
- * need to solve that; a Node-only `.env`-reading helper for local scripts/tests is *not* a
- * solution for the browser/Electron/Capacitor builds, and is intentionally not attempted here
- * (see `monad-http.smoketest.ts` for the narrow, script-only version of that helper).
+ * RPC URL is injected via the constructor. Browser/Electron/Capacitor callers use the relay's
+ * `/chain-rpc/:chain/rpc` URL; Node-only smoke tests may still inject a provider URL directly.
  */
 import { JsonRpcProvider, Log as EthersLog, TransactionReceipt } from 'ethers'
-import { createMonadJsonRpcProvider } from './monad-provider'
+import { MonadRelayRpcAuth, createMonadJsonRpcProvider } from './monad-provider'
 
 /** A block range/topic filter for `eth_getLogs`, decoupled from ethers' own `Filter` type so
  * callers of this module don't need to depend on ethers types directly. */
@@ -172,6 +168,7 @@ function toMonadTxReceipt(receipt: TransactionReceipt): MonadTxReceipt {
 export interface MonadHttpClientOptions {
   rpcUrl: string
   chainId?: number | bigint
+  relayAuth?: MonadRelayRpcAuth
 }
 
 export class MonadHttpClient {
@@ -179,8 +176,8 @@ export class MonadHttpClient {
 
   /** @param options HTTPS JSON-RPC endpoint and optional expected chainId (defaults to Monad testnet 10143).
    * Read by the caller from env/config and passed in — this class never reads env itself. */
-  constructor({ rpcUrl, chainId }: MonadHttpClientOptions) {
-    this.provider = createMonadJsonRpcProvider({ rpcUrl, chainId })
+  constructor({ rpcUrl, chainId, relayAuth }: MonadHttpClientOptions) {
+    this.provider = createMonadJsonRpcProvider({ rpcUrl, chainId, relayAuth })
   }
 
   /** Releases resources and cancels pending requests on the underlying provider. */

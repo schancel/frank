@@ -19,23 +19,25 @@ import { stealthParentPublicKey } from './stealth-public'
 import { stealthPointDigest } from './stealth-point-digest'
 import { stealthSharedPoint } from './stealth-shared'
 
-type HasToBuffer = {
+/** 32-byte secret. `toBuffer()` is that secret. */
+type PrivateKey = {
   toBuffer(): Uint8Array
 }
 
-type Sec1PublicKey = {
+/** SEC1 point. `toBuffer()` is the 33-byte or 65-byte encoding. */
+type PublicKey = {
   toBuffer(): Uint8Array
 }
 
 type DerivedPrivateKey = {
   toBuffer(): Uint8Array
-  toPublicKey(): Sec1PublicKey
+  toPublicKey(): PublicKey
 }
 
 // Copy of SEC1 bytes. Each toBuffer call returns a new copy so a caller
 // cannot mutate the stored key. The bytes are the encoding
 // PublicKey(bytes).toBuffer() already produced.
-function sec1PublicKey(bytes: Uint8Array): Sec1PublicKey {
+function sec1PublicKey(bytes: Uint8Array): PublicKey {
   const copy = Uint8Array.from(bytes)
   return Object.freeze({
     toBuffer(): Uint8Array {
@@ -64,7 +66,7 @@ function derivedPrivateKey(
       toBuffer(): Uint8Array {
         return Buffer.from(copy)
       },
-      toPublicKey(): Sec1PublicKey {
+      toPublicKey(): PublicKey {
         return publicKey
       },
     })
@@ -94,7 +96,7 @@ export class PayloadConstructor {
    * compressed encoding (`02`/`03` || x), the same bytes as bitcore
    * `publicKey.point.mul(privateKey.toBigNumber()).toBuffer()`.
    */
-  constructMergedKey(privateKey: HasToBuffer, publicKey: HasToBuffer) {
+  constructMergedKey(privateKey: PrivateKey, publicKey: PublicKey) {
     const secret = Uint8Array.from(privateKey.toBuffer())
     const parsed = privateKeyFromSecretBytes(secret, true)
     secret.fill(0)
@@ -116,8 +118,8 @@ export class PayloadConstructor {
    * must use only the first entry; the rest exist for read-side compatibility.
    */
   constructSharedPointEncodings(
-    privateKey: HasToBuffer,
-    publicKey: HasToBuffer,
+    privateKey: PrivateKey,
+    publicKey: PublicKey,
   ): Buffer[] {
     const canonical = Buffer.from(
       this.constructMergedKey(privateKey, publicKey).toBuffer(),
@@ -138,8 +140,8 @@ export class PayloadConstructor {
   }
 
   constructSharedKey(
-    privateKey: HasToBuffer,
-    publicKey: HasToBuffer,
+    privateKey: PrivateKey,
+    publicKey: PublicKey,
     salt: Uint8Array,
   ) {
     return this.constructSharedKeys(privateKey, publicKey, salt)[0]
@@ -147,8 +149,8 @@ export class PayloadConstructor {
 
   /** {@link constructSharedKey} for every encoding of {@link constructSharedPointEncodings}. */
   constructSharedKeys(
-    privateKey: HasToBuffer,
-    publicKey: HasToBuffer,
+    privateKey: PrivateKey,
+    publicKey: PublicKey,
     salt: Uint8Array,
   ) {
     return this.constructSharedPointEncodings(privateKey, publicKey).map(
@@ -165,8 +167,8 @@ export class PayloadConstructor {
   // toBuffer is the compressed SEC1 encoding. The shared point is
   // nakamoto ecdh.
   constructStealthPublicKey(
-    emphemeralPrivKey: HasToBuffer,
-    destinationPublicKey: HasToBuffer,
+    emphemeralPrivKey: PrivateKey,
+    destinationPublicKey: PublicKey,
   ) {
     const dhKeyPointRaw = Buffer.from(
       stealthSharedPoint(
@@ -192,8 +194,8 @@ export class PayloadConstructor {
   // bytes, an invalid point, or a point at infinity is an error. The
   // caller's key is not wiped.
   constructHDStealthPublicKey(
-    emphemeralPrivKey: HasToBuffer,
-    destinationPublicKey: HasToBuffer,
+    emphemeralPrivKey: PrivateKey,
+    destinationPublicKey: PublicKey,
   ) {
     return stealthParentHdPublicNode(
       Uint8Array.from(emphemeralPrivKey.toBuffer()),
@@ -209,8 +211,8 @@ export class PayloadConstructor {
   // SHA-256 and is the HD chain code. Stealth public addition is
   // stealthParentPublicKey.
   constructStealthPrivateKey(
-    emphemeralPubKey: HasToBuffer,
-    destinationPrivateKey: HasToBuffer,
+    emphemeralPubKey: PublicKey,
+    destinationPrivateKey: PrivateKey,
   ) {
     const derived = stealthParentSecret(
       Uint8Array.from(destinationPrivateKey.toBuffer()),
@@ -228,8 +230,8 @@ export class PayloadConstructor {
   // bytes, an invalid point, or a zero sum is an error. The caller's
   // key is not wiped.
   constructHDStealthPrivateKey(
-    emphemeralPubKey: HasToBuffer,
-    destinationPrivateKey: HasToBuffer,
+    emphemeralPubKey: PublicKey,
+    destinationPrivateKey: PrivateKey,
   ) {
     return stealthParentHdNode(
       Uint8Array.from(destinationPrivateKey.toBuffer()),
@@ -244,7 +246,7 @@ export class PayloadConstructor {
   // reject-digest rule.
   constructStampPublicKey(
     payloadDigest: Uint8Array,
-    destinationPublicKey: HasToBuffer,
+    destinationPublicKey: PublicKey,
   ) {
     const bytes = stampParentPublicKey(
       Uint8Array.from(destinationPublicKey.toBuffer()),
@@ -261,7 +263,7 @@ export class PayloadConstructor {
   // wiped.
   constructStampHDPublicKey(
     payloadDigest: Uint8Array,
-    destinationPublicKey: HasToBuffer,
+    destinationPublicKey: PublicKey,
   ) {
     return stampParentHdPublicNode(
       Uint8Array.from(destinationPublicKey.toBuffer()),
@@ -275,7 +277,7 @@ export class PayloadConstructor {
   // (decision #559).
   constructStampPrivateKey(
     payloadDigest: Uint8Array,
-    destinationPrivateKey: HasToBuffer,
+    destinationPrivateKey: PrivateKey,
   ) {
     const secret = stampParentSecret(
       Uint8Array.from(destinationPrivateKey.toBuffer()),
@@ -291,7 +293,7 @@ export class PayloadConstructor {
   // error. The caller's key is not wiped.
   constructStampHDPrivateKey(
     payloadDigest: Uint8Array,
-    destinationPrivateKey: HasToBuffer,
+    destinationPrivateKey: PrivateKey,
   ) {
     return stampParentHdNode(
       Uint8Array.from(destinationPrivateKey.toBuffer()),
@@ -305,7 +307,7 @@ export class PayloadConstructor {
   // still hashes that compressed point.
   constructStampAddress(
     outpointDigest: Uint8Array,
-    privKey: HasToBuffer,
+    privKey: PrivateKey,
   ): string {
     const secret = stampParentSecret(
       Uint8Array.from(privKey.toBuffer()),

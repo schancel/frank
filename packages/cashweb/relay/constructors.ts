@@ -43,16 +43,22 @@ export function relayProfilePayloadDigest(payload: Uint8Array): Uint8Array {
   return cryptoBackend.sha256(Uint8Array.from(payload))
 }
 
-type HasToBuffer = {
+/** 32-byte secret. `compressed` selects the SEC1 form of its point. */
+type PrivateKey = {
   toBuffer(): Uint8Array
   compressed?: boolean
+}
+
+/** SEC1 point. `toBuffer()` is the 33-byte or 65-byte encoding. */
+type PublicKey = {
+  toBuffer(): Uint8Array
 }
 
 /** Stop if every draw is 0 or >= n. A working RNG hits that with negligible probability. */
 const EPHEMERAL_DRAWS = 64
 
 /** Compressed stealth ephemeral secret. `new PrivateKey()` defaulted compressed. */
-function ephemeralStealthKey(): HasToBuffer {
+function ephemeralStealthKey(): PrivateKey {
   for (let draw = 0; draw < EPHEMERAL_DRAWS; draw += 1) {
     const drawn = randomBytes(32)
     const secret = Uint8Array.from(drawn)
@@ -89,7 +95,7 @@ export class MessageConstructor {
   constructStampTransactions(
     wallet: Wallet,
     payloadDigest: Buffer,
-    destPubKey: HasToBuffer,
+    destPubKey: PublicKey,
     amount: number,
   ) {
     assert(payloadDigest instanceof Buffer, 'digestPayload is wrong type')
@@ -126,8 +132,8 @@ export class MessageConstructor {
 
   constructStealthTransactions(
     wallet: Wallet,
-    ephemeralPrivKey: HasToBuffer,
-    destPubKey: HasToBuffer,
+    ephemeralPrivKey: PrivateKey,
+    destPubKey: PublicKey,
     amount: number,
   ) {
     // Add ephemeral output
@@ -162,8 +168,8 @@ export class MessageConstructor {
   constructMessage(
     wallet: Wallet,
     plainTextPayload: Uint8Array,
-    sourcePrivateKey: HasToBuffer,
-    destinationPublicKey: HasToBuffer,
+    sourcePrivateKey: PrivateKey,
+    destinationPublicKey: PublicKey,
     stampAmount: number,
   ) {
     const plainPayloadDigest = Buffer.from(
@@ -275,7 +281,7 @@ export class MessageConstructor {
   }: {
     wallet: Wallet
     amount: number
-    destPubKey: HasToBuffer
+    destPubKey: PublicKey
   }) {
     // Construct payment entry
     const paymentEntry = new PayloadEntry()
@@ -397,7 +403,7 @@ export class MessageConstructor {
   constructProfileMetadata(
     profileObj: { name?: string; bio?: string; avatar?: string },
     priceFilter: PriceFilter,
-    privKey: HasToBuffer,
+    privKey: PrivateKey,
   ) {
     // Construct vCard
     const vCard = new VCard()

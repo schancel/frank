@@ -1,6 +1,7 @@
 import P from 'bluebird'
 import assert from 'assert'
 
+import { walletChangeP2pkhScript } from './change-pubkey'
 import { calcUtxoId } from './helpers'
 
 import {
@@ -747,9 +748,7 @@ export class Wallet {
       console.log('Generating a change UTXO for amount:', changeOutputAmount)
       // Create the output
       const output = new Transaction.Output({
-        script: p2pkhScriptFromPublicKey(
-          changeKey.privKey.toPublicKey(),
-        ).toString('hex'),
+        script: walletChangeP2pkhScript(changeKey.privKey).toString('hex'),
         satoshis: changeOutputAmount,
       })
       transaction = transaction.addOutput(output)
@@ -766,9 +765,7 @@ export class Wallet {
       const changeOutputAmount = delta - properFee
       if (changeOutputAmount >= minimumNewInputAmount) {
         const output = new Transaction.Output({
-          script: p2pkhScriptFromPublicKey(
-            changeKeys[0].privKey.toPublicKey(),
-          ).toString('hex'),
+          script: walletChangeP2pkhScript(changeKeys[0].privKey).toString('hex'),
           satoshis: changeOutputAmount,
         })
         transaction = transaction.addOutput(output)

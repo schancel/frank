@@ -63,9 +63,6 @@
         <span v-if="failureText" data-testid="outgoing-failure-reason">
           {{ failureText }}
         </span>
-        <div class="text-caption" data-testid="outgoing-retry-hint">
-          {{ $t('outgoing.retryHint') }}
-        </div>
       </div>
       <div v-if="!outbound" :class="buttonPlacement">
         <chat-message-suffix-buttons
@@ -247,6 +244,7 @@ export default defineComponent({
         recovered: 'outgoing.reasonRecovered',
         error: 'outgoing.reasonError',
       }
+      keys['insufficient-funds'] = 'outgoing.reasonInsufficientFunds'
       const key = keys[this.failureReason]
       return key === undefined ? '' : this.$t(key)
     },

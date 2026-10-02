@@ -33,7 +33,7 @@ function mountSuffix(props: Record<string, unknown>, messages: unknown = enUS) {
 }
 
 describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
-  it('a failed message says why, offers Retry and Discard, and says what Retry pays', async () => {
+  it('a failed message shows one localized failure line and offers Retry and Discard', async () => {
     const wrapper = mountSuffix({
       status: 'error',
       failureReason: 'unavailable',
@@ -42,8 +42,11 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     expect(wrapper.get('[data-testid="outgoing-failure-reason"]').text()).toBe(
       'This relay does not offer messaging.',
     )
-    expect(wrapper.get('[data-testid="outgoing-retry-hint"]').text()).toMatch(
-      /same payment while it is still valid.*new payment.*only if it is not/,
+    expect(wrapper.find('[data-testid="outgoing-retry-hint"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.get('[data-testid="outgoing-failed"]').text()).toBe(
+      'Failed to send This relay does not offer messaging.',
     )
 
     await wrapper.get('[data-testid="outgoing-retry"]').trigger('click')
@@ -147,5 +150,26 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       frFR,
     )
     expect(pending.text()).toContain('Paiement en attente')
+  })
+
+  it.each([
+    [enUS, 'There are not enough funds to send this message.'],
+    [frFR, 'Les fonds sont insuffisants pour envoyer ce message.'],
+  ])('localizes an insufficient-funds preparation failure', (locale, text) => {
+    const failed = mountSuffix(
+      { status: 'error', failureReason: 'insufficient-funds' },
+      locale,
+    )
+    expect(failed.get('[data-testid="outgoing-failure-reason"]').text()).toBe(
+      text,
+    )
+    expect(failed.text()).not.toContain('stamp-account')
+  })
+
+  it('keeps a localized generic fallback for unclassified failures', () => {
+    const failed = mountSuffix({ status: 'error', failureReason: 'error' })
+    expect(failed.get('[data-testid="outgoing-failure-reason"]').text()).toBe(
+      'The message could not be sent.',
+    )
   })
 })

@@ -171,18 +171,34 @@ describe('stores/contacts.ts (ticket #42)', () => {
     })
 
     it.each([ADDRESS, ADDRESS_LOWERCASE])(
-      'refuses to add the current identity as its own contact (%s)',
+      'adds the current identity through the ordinary contact path (%s)',
       async spelling => {
         const contacts = useContactStore()
         mockUseActiveWallet.mockResolvedValue({
           identity: { address: { raw: ADDRESS } },
         })
-        const fetchProfileSpy = jest.spyOn(activeChain, 'fetchProfile')
+        const fetchProfileSpy = jest
+          .spyOn(activeChain, 'fetchProfile')
+          .mockResolvedValue({
+            address: { raw: ADDRESS },
+            name: 'Alice',
+            avatar: 'data:image/png;base64,alice',
+            pubKey: PUB_KEY_BYTES,
+          })
 
-        await contacts.fetchAndAddContact({ address: spelling, contact: {} })
+        await contacts.fetchAndAddContact({
+          address: spelling,
+          contact: undefined as unknown as Partial<ContactState>,
+        })
 
-        expect(contacts.isContact(ADDRESS)).toBe(false)
-        expect(fetchProfileSpy).not.toHaveBeenCalled()
+        expect(fetchProfileSpy).toHaveBeenCalledWith({ raw: ADDRESS })
+        expect(contacts.isContact(ADDRESS)).toBe(true)
+        expect(contacts.getContact(ADDRESS).profile).toEqual(
+          expect.objectContaining({
+            name: 'Alice',
+            avatar: 'data:image/png;base64,alice',
+          }),
+        )
       },
     )
 

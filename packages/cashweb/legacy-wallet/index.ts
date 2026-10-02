@@ -4,9 +4,8 @@ import assert from 'assert'
 import { walletChangeP2pkhScript } from './change-pubkey'
 import { calcUtxoId } from './helpers'
 
-import { Transaction, HDPrivateKey } from 'bitcore-lib-xpi'
-import type { Script } from 'bitcore-lib-xpi'
 import { UtxoStore } from './storage/storage'
+import { WalletInput, WalletOutput, WalletTransaction } from './wallet-tx'
 
 import { Utxo, utxoPrivateKeyFromSecret, type UtxoPrivateKey } from '../types/utxo'
 import { ChronikClient, WsEndpoint } from 'chronik-client'
@@ -28,7 +27,6 @@ import {
   XPI_TESTNET,
   cryptoBackend,
   deriveHdPath,
-  internalHashFromBytes,
   lockingScript,
   parseHdPrivate,
   pubkeyHashFromBytes,
@@ -36,10 +34,9 @@ import {
   signingKey,
   type ChainDescriptor,
   type InputSigner,
-  type InternalHash,
-  type SpentOutput,
-  type Transaction as NakamotoTransaction,
 } from '@frank/nakamoto'
+
+export { WalletInput, WalletOutput, WalletTransaction } from './wallet-tx'
 
 const standardUtxoSize = 34
 const standardInputSize = 175 // A few extra bytes
@@ -72,27 +69,7 @@ type SerializedPublicKey = Uint8Array | { toBuffer(): Uint8Array }
 type AddressGenerator = (
   txnNumber: number,
 ) => (output: number) => SerializedPublicKey
-// UnspendOutpout.fromObject can work with this
 type BuildableUtxo = Utxo & { script?: string }
-type SignableTransaction = Transaction & {
-  version: number
-  nLockTime: number
-}
-
-// bitcore stores the display txid. Nakamoto outpoints use the internal hash.
-function internalTxid(display: Buffer): InternalHash {
-  const internal = new Uint8Array(display.length)
-  for (let index = 0; index < display.length; index += 1) {
-    internal[index] = display[display.length - 1 - index]
-  }
-  const branded = internalHashFromBytes(internal)
-  if (!branded.ok) throw new Error('sign-bytes')
-  return branded.value
-}
-
-function scriptBytes(script: Script): Uint8Array {
-  return Uint8Array.from(script.toBuffer())
-}
 
 // HASH160 of the serialized public key, then the 25-byte template (decision #495).
 export function p2pkhScriptFromPublicKey(
@@ -111,37 +88,8 @@ export function p2pkhScriptFromPublicKey(
 const WALLET_RECEIVE_PREFIX = "m/44'/899'/0'/0"
 const WALLET_CHANGE_PREFIX = "m/44'/899'/0'/1"
 
-// BIP32 child of the stored xprv. Coin type stays 899 (decision #497, issue #241).
-// The child is the 32-byte secret and its compressed point. The xprv record
-// stays the bitcore toObject() shape (decision #592).
-export function privateKeyFromHdPath(
-  xPrivKey: HDPrivateKey,
-  path: string,
-): UtxoPrivateKey {
-  const serialized = xPrivKey.toString()
-  const mainnet = parseHdPrivate(serialized, BTC_MAINNET)
-  const parsed = mainnet.ok ? mainnet : parseHdPrivate(serialized, BTC_TESTNET)
-  if (!parsed.ok) throw new Error(`hd-parse:${parsed.error.code}`)
-  const child = deriveHdPath(parsed.value, path)
-  if (!child.ok) throw new Error(`hd-derive:${child.error.code}`)
-  return utxoPrivateKeyFromSecret(child.value.privateKey.bytes)
-}
-
-export function walletReceivePrivateKey(
-  xPrivKey: HDPrivateKey,
-  index: number,
-): UtxoPrivateKey {
-  return privateKeyFromHdPath(xPrivKey, `${WALLET_RECEIVE_PREFIX}/${index}`)
-}
-
-export function walletChangePrivateKey(
-  xPrivKey: HDPrivateKey,
-  index: number,
-): UtxoPrivateKey {
-  return privateKeyFromHdPath(xPrivKey, `${WALLET_CHANGE_PREFIX}/${index}`)
-}
-
-// The UI stores the bitcore toObject() record (decision #592).
+// The UI stores the bitcore toObject() record (decision #592). Callers pass
+// that record or an xprv/tprv string. The wallet keeps the xprv string.
 type StoredHdPrivate = {
   network: string
   depth: number
@@ -152,35 +100,73 @@ type StoredHdPrivate = {
   xprivkey: string
 }
 
-export function hdPrivateKeyFromStored(
-  value: HDPrivateKey | StoredHdPrivate,
-): HDPrivateKey {
-  if (value instanceof HDPrivateKey) return value
-  return new HDPrivateKey(value)
+type HdPrivateSource = string | StoredHdPrivate | { toString(): string }
+
+function xprvString(value: HdPrivateSource): string {
+  if (typeof value === 'string') {
+    if (value.startsWith('xprv') || value.startsWith('tprv')) return value
+    throw new Error('hd-parse:xprv')
+  }
+  if ('xprivkey' in value && typeof value.xprivkey === 'string') {
+    const stored = value.xprivkey
+    if (stored.startsWith('xprv') || stored.startsWith('tprv')) return stored
+  }
+  const serialized = value.toString()
+  if (serialized.startsWith('xprv') || serialized.startsWith('tprv')) {
+    return serialized
+  }
+  throw new Error('hd-parse:xprv')
 }
 
-// Build the locking script here. UnspentOutput also parses `address`, so the
-// Lotus string stays off that object.
+// BIP32 child of the stored xprv. Coin type stays 899 (decision #497, issue #241).
+// The child is the 32-byte secret and its compressed point.
+export function privateKeyFromHdPath(
+  xPrivKey: HdPrivateSource,
+  path: string,
+): UtxoPrivateKey {
+  const serialized = xprvString(xPrivKey)
+  const mainnet = parseHdPrivate(serialized, BTC_MAINNET)
+  const parsed = mainnet.ok ? mainnet : parseHdPrivate(serialized, BTC_TESTNET)
+  if (!parsed.ok) throw new Error(`hd-parse:${parsed.error.code}`)
+  const child = deriveHdPath(parsed.value, path)
+  if (!child.ok) throw new Error(`hd-derive:${child.error.code}`)
+  return utxoPrivateKeyFromSecret(child.value.privateKey.bytes)
+}
+
+export function walletReceivePrivateKey(
+  xPrivKey: HdPrivateSource,
+  index: number,
+): UtxoPrivateKey {
+  return privateKeyFromHdPath(xPrivKey, `${WALLET_RECEIVE_PREFIX}/${index}`)
+}
+
+export function walletChangePrivateKey(
+  xPrivKey: HdPrivateSource,
+  index: number,
+): UtxoPrivateKey {
+  return privateKeyFromHdPath(xPrivKey, `${WALLET_CHANGE_PREFIX}/${index}`)
+}
+
+export function hdPrivateKeyFromStored(value: HdPrivateSource): string {
+  return xprvString(value)
+}
+
 export function unspentOutputFromAddress(utxo: {
   txId: string
   outputIndex: number
   satoshis: number
   address: string
-}): Transaction.UnspentOutput {
-  return Transaction.UnspentOutput.fromObject({
+}) {
+  return {
     txId: utxo.txId,
     outputIndex: utxo.outputIndex,
     satoshis: utxo.satoshis,
     script: Buffer.from(p2pkhLockingScript(utxo.address)).toString('hex'),
-  })
+  }
 }
 
-// bitcore's Input type omits setScript; the runtime method writes _scriptBuffer.
-function setInputScript(input: Transaction.Input, script: Buffer): void {
-  const writable = input as Transaction.Input & {
-    setScript(next: Buffer): void
-  }
-  writable.setScript(script)
+function setInputScript(input: WalletInput, script: Buffer): void {
+  input.setScript(script)
 }
 
 function xpiChain(networkName: string): ChainDescriptor {
@@ -207,14 +193,13 @@ function signerFromPrivateKey(key: UtxoPrivateKey): InputSigner {
 }
 
 function explicitAssignments(
-  transaction: Transaction,
+  transaction: WalletTransaction,
   signingKeys: readonly UtxoPrivateKey[],
 ): { inputIndex: number; signer: InputSigner }[] {
   const assignments: { inputIndex: number; signer: InputSigner }[] = []
   for (let index = 0; index < transaction.inputs.length; index += 1) {
     const output = transaction.inputs[index].output
-    if (!output) throw new Error('sign-spent')
-    const locking = output.script.toBuffer()
+    const locking = output.script
     let signer: InputSigner | undefined
     for (const key of signingKeys) {
       const built = p2pkhScriptFromPublicKey(key.toPublicKey())
@@ -228,57 +213,31 @@ function explicitAssignments(
   return assignments
 }
 
-function nakamotoTransaction(transaction: SignableTransaction): {
-  tx: NakamotoTransaction
-  spent: SpentOutput[]
-} {
-  const spent: SpentOutput[] = []
-  const inputs = transaction.inputs.map(input => {
-    const output = input.output
-    if (!output) throw new Error('sign-spent')
-    const scriptPubKey = scriptBytes(output.script)
-    spent.push({ value: BigInt(output.satoshis), scriptPubKey })
-    return {
-      prevout: {
-        txid: internalTxid(input.prevTxId),
-        vout: input.outputIndex,
-      },
-      scriptSig: new Uint8Array(),
-      sequence: input.sequenceNumber >>> 0,
-    }
-  })
-  return {
-    tx: {
-      version: transaction.version,
-      inputs,
-      outputs: transaction.outputs.map(output => ({
-        value: BigInt(output.satoshis),
-        scriptPubKey: scriptBytes(output.script),
-      })),
-      locktime: transaction.nLockTime >>> 0,
-    },
-    spent,
-  }
-}
-
 // Post-Numbers XPI rejects SIGHASH_LOTUS. The signature byte is ALL|FORKID.
 // Ruth rewrites the BIP143 preimage fork value; the byte stays 0x41.
 // Activation height is not modeled, so replay is always on. A regtest whose
 // median time is still before Ruth will reject the spend.
 // A partial assignment throws and leaves every input script untouched.
 export function signTransactionInputs(
-  transaction: Transaction,
+  transaction: WalletTransaction,
   signingKeys: readonly UtxoPrivateKey[],
   networkName: string,
-): Transaction {
+): WalletTransaction {
   const chain = xpiChain(networkName)
-  const { tx, spent } = nakamotoTransaction(transaction as SignableTransaction)
+  const mapped = transaction.toNakamoto()
+  const tx = {
+    ...mapped.tx,
+    inputs: mapped.tx.inputs.map(input => ({
+      ...input,
+      scriptSig: new Uint8Array(),
+    })),
+  }
   const assignments = explicitAssignments(transaction, signingKeys)
   const signed = signAll(tx, assignments, {
     chain,
     algorithm: 'forkid',
     sighashType: SIGHASH_FORKID | SIGHASH_ALL,
-    spent,
+    spent: mapped.spent,
     replayProtection: true,
   })
   if (!signed.ok) throw new Error(signed.error.code)
@@ -319,7 +278,7 @@ export class Wallet {
   // chronikClient/chronikWs above are kept as public fields for existing external callers
   // (e.g. src/cashweb/relay/index.ts) that still reach into them directly.
   chainAdapter: ChainAdapter | undefined
-  _xPrivKey: HDPrivateKey | undefined
+  _xPrivKey: string | undefined
   _identityPrivKey: UtxoPrivateKey | undefined
   walletKeys: PrivateKeyData[] = []
   changeKeys: PrivateKeyData[] = []
@@ -352,7 +311,7 @@ export class Wallet {
     this.chainAdapter = new LotusAdapter({ chronikClient, chronikWs })
   }
 
-  setXPrivKey(xPrivKey: HDPrivateKey | StoredHdPrivate) {
+  setXPrivKey(xPrivKey: HdPrivateSource) {
     const key = hdPrivateKeyFromStored(xPrivKey)
     this._xPrivKey = key
     // TODO: we're just using the first key in the HD addresses for now
@@ -651,7 +610,7 @@ export class Wallet {
     utxos: Utxo[]
     pubkey: SerializedPublicKey
   }) {
-    let transaction = new Transaction()
+    let transaction = new WalletTransaction()
 
     const signingKeys = []
     let satoshis = 0
@@ -679,7 +638,7 @@ export class Wallet {
     const fees = txnSize * minFeePerByte
 
     transaction.addOutput(
-      new Transaction.Output({
+      new WalletOutput({
         satoshis: satoshis - fees,
         script: p2pkhScriptFromPublicKey(pubkey),
       }),
@@ -712,7 +671,7 @@ export class Wallet {
   // Bitcore estimate size is horribly broken. This slightly overestimates the transaction size
   // based on the fact that there are varints in several places. This also ensure we don't underrun
   // fees.
-  _estimateSize(transaction: Transaction) {
+  _estimateSize(transaction: WalletTransaction) {
     const transactionOverHead = 4 + 9 + 9 + 4
     const maxScriptSize =
       32 /* txid */ +
@@ -734,7 +693,7 @@ export class Wallet {
     signingKeys,
     shuffleChange = true,
   }: {
-    transaction: Transaction
+    transaction: WalletTransaction
     signingKeys: UtxoPrivateKey[]
     shuffleChange?: boolean
   }) {
@@ -786,7 +745,7 @@ export class Wallet {
       // however, we will sweep it into the first output instead to generate some noise
       console.log('Generating a change UTXO for amount:', changeOutputAmount)
       // Create the output
-      const output = new Transaction.Output({
+      const output = new WalletOutput({
         script: walletChangeP2pkhScript(changeKey.privKey).toString('hex'),
         satoshis: changeOutputAmount,
       })
@@ -803,7 +762,7 @@ export class Wallet {
       const properFee = Math.ceil(finalSize * minFeePerByte)
       const changeOutputAmount = delta - properFee
       if (changeOutputAmount >= minimumNewInputAmount) {
-        const output = new Transaction.Output({
+        const output = new WalletOutput({
           script: walletChangeP2pkhScript(changeKeys[0].privKey).toString(
             'hex',
           ),
@@ -899,7 +858,7 @@ export class Wallet {
 
     while (amountLeft > 0) {
       const signingKeys = []
-      const transaction = new Transaction()
+      const transaction = new WalletTransaction()
 
       // Case 1: UTXO is bigger than amountLeft + fees.  Done.
       // Case 3: UTXO is bigger than amountLeft, but smaller than amountLeft + fees
@@ -1013,7 +972,7 @@ export class Wallet {
       const address = addressGenerator(transactionNumber)(0)
       const amountToUse = Math.min(amountLeft, availableAmount)
       transaction.addOutput(
-        new Transaction.Output({
+        new WalletOutput({
           script: p2pkhScriptFromPublicKey(address),
           satoshis: amountToUse,
         }),
@@ -1071,17 +1030,17 @@ export class Wallet {
   constructTransaction({
     outputs,
   }: {
-    // BIP70 records are { script, satoshis } (decision #594). Burn and
-    // P2PKH callers still pass Transaction.Output.
+    // BIP70 records are { script, satoshis } (decision #594).
     outputs: Array<
-      Utxo | Transaction.Output | { script: Buffer; satoshis: number }
+      | WalletOutput
+      | { satoshis: number; script?: Buffer | Uint8Array | string }
     >
   }) {
-    let transaction = new Transaction()
+    let transaction = new WalletTransaction()
 
     // Add outputs
     for (const i in outputs) {
-      const output = new Transaction.Output(outputs[i])
+      const output = new WalletOutput(outputs[i])
       transaction = transaction.addOutput(output)
     }
 
@@ -1136,7 +1095,7 @@ export class Wallet {
     // A good round number greater than the current dustLimit.
     // We may want to make it some computed value in the future.
     this.finalizeTransaction({ transaction, signingKeys, shuffleChange: false })
-    const finalTxnSize = transaction._estimateSize()
+    const finalTxnSize = this._estimateSize(transaction)
     // Sweep change into a randomly provided output.  Helps provide noise and obsfuscation
     console.log(
       'size',
@@ -1149,7 +1108,7 @@ export class Wallet {
       transaction.inputAmount - transaction.outputAmount,
       'feePerByte',
       (transaction.inputAmount - transaction.outputAmount) /
-        transaction._estimateSize(),
+        this._estimateSize(transaction),
     )
     console.log(transaction)
     return { transaction, usedUtxos }

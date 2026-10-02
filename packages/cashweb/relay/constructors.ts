@@ -1,4 +1,3 @@
-import { Transaction } from 'bitcore-lib-xpi'
 import { hmacSha256, randomBytes } from '@frank/crypto-box'
 import { cryptoBackend, privateKeyFromSecretBytes } from '@frank/nakamoto'
 import assert from 'assert'
@@ -25,7 +24,7 @@ import { PayloadConstructor } from './crypto'
 import VCard from 'vcf'
 import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
-import { Wallet } from '../legacy-wallet'
+import { Wallet, WalletOutput } from '../legacy-wallet'
 import { p2pkhLockingScript } from '../legacy-wallet/lotus-address'
 import { signRegistryDigest } from '../registry'
 import { relayCipherPayloadDigest } from './cipher-payload-digest'
@@ -38,7 +37,7 @@ import { stealthEphemeralPublicKey } from './stealth-ephemeral-pubkey'
 /** One SHA-256 of Profile protobuf bytes. Matches `Sha256::digest` in
  * `SignedPayload::parse_proto`, the message `SignedPayload::verify` checks.
  * Not double-SHA256. cryptoBackend rejects Buffer. AES-CBC stays
- * node-forge. Transaction building stays bitcore. */
+ * node-forge. Transaction bytes are nakamoto. */
 export function relayProfilePayloadDigest(payload: Uint8Array): Uint8Array {
   return cryptoBackend.sha256(Uint8Array.from(payload))
 }
@@ -366,7 +365,7 @@ export class MessageConstructor {
   }) {
     const p2pkhEntry = new p2pkh.P2PKHEntry()
 
-    const output = new Transaction.Output({
+    const output = new WalletOutput({
       script: Buffer.from(p2pkhLockingScript(address)),
       satoshis: amount,
     })

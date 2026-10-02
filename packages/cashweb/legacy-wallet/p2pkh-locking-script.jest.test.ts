@@ -53,8 +53,8 @@ it('builds the p2pkh script from a lotus string and omits that string from the u
     satoshis: 1000,
     address: LOTUS,
   })
-  expect(unspent.script.toBuffer().toString('hex')).toBe(SCRIPT)
-  expect(unspent.address).toBeUndefined()
+  expect(unspent.script).toBe(SCRIPT)
+  expect('address' in unspent).toBe(false)
 
   const scriptHash = new Address(
     Buffer.from(HASH, 'hex'),

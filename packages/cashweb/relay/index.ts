@@ -40,10 +40,8 @@ import paymentrequest from '../bip70/paymentrequest_pb'
 import type { Payment } from '../bip70/paymentrequest_pb'
 
 import WebSocket from 'isomorphic-ws'
-import { Transaction, Networks, Address } from 'bitcore-lib-xpi'
-import type { PublicKey } from 'bitcore-lib-xpi'
 import { MessageStore } from './storage/storage'
-import { Wallet } from '../legacy-wallet'
+import { Wallet, type WalletTransaction } from '../legacy-wallet'
 import { Utxo, utxoPrivateKeyFromSecret, type UtxoPrivateKey } from '../types/utxo'
 import { pAll } from './pAll'
 
@@ -71,24 +69,22 @@ export class ReadOnlyRelayClient {
   url: string
   networkName: string
   displayNetwork: string
-  networkPrefix: string
 
   constructor(url: string, networkName: string, displayNetwork: string) {
     this.url = url
     this.networkName = networkName
-    this.networkPrefix = Networks.get(networkName).prefix
     this.displayNetwork = displayNetwork
   }
 
-  toAPIAddress(address: string | Address): string {
+  toAPIAddress(address: string): string {
     return lotusFromAddress(address, this.networkName)
   }
 
-  toXAddress(address: string | Address): string {
+  toXAddress(address: string): string {
     return lotusFromAddress(address, this.displayNetwork)
   }
 
-  async getRelayData(address: string | Address) {
+  async getRelayData(address: string) {
     const addressLegacy = this.toAPIAddress(address)
 
     const url = `${this.url}/profiles/${addressLegacy}`
@@ -159,7 +155,7 @@ export class RelayClient extends ReadOnlyRelayClient {
   url: string
   events: EventEmitter
   wallet?: Wallet
-  getPubKey: (address: string) => PublicKey | null
+  getPubKey: (address: string) => { toBuffer(): Uint8Array } | null
   messageStore: MessageStore
   relayReconnectInterval: number
   payloadConstructor: PayloadConstructor
@@ -178,7 +174,7 @@ export class RelayClient extends ReadOnlyRelayClient {
       relayReconnectInterval?: number
       networkName?: string
       messageStore: MessageStore
-      getPubKey: (address: string) => PublicKey | null
+      getPubKey: (address: string) => { toBuffer(): Uint8Array } | null
     },
   ) {
     super(url, networkName, 'livenet')
@@ -213,7 +209,7 @@ export class RelayClient extends ReadOnlyRelayClient {
     return await pop.getPaymentRequest(url, 'put')
   }
 
-  setUpWebsocket(address: string | Address) {
+  setUpWebsocket(address: string) {
     assert(this.token, 'missing tokenw hile setting up websocket')
     const addressLegacy = this.toAPIAddress(address)
 
@@ -475,7 +471,7 @@ export class RelayClient extends ReadOnlyRelayClient {
 
     const stagedUtxos: Utxo[] = []
     const outpoints: UIOutput[] = []
-    const transactions: Transaction[] = []
+    const transactions: WalletTransaction[] = []
     const entries: PayloadEntry[] = []
 
     // Construct payload

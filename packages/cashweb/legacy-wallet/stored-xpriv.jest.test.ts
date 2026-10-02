@@ -25,12 +25,12 @@ it('builds the bitcore key from a toObject record that omits checksum', () => {
     xprivkey: full.xprivkey,
   }
 
-  expect(hdPrivateKeyFromStored(key).toString()).toBe(key.toString())
-  expect(hdPrivateKeyFromStored(slim).toString()).toBe(key.toString())
-  expect(hdPrivateKeyFromStored(full).toString()).toBe(full.xprivkey)
+  expect(hdPrivateKeyFromStored(key)).toBe(key.toString())
+  expect(hdPrivateKeyFromStored(slim)).toBe(key.toString())
+  expect(hdPrivateKeyFromStored(full)).toBe(full.xprivkey)
 
   const testnet = HDPrivateKey.fromSeed(VECTOR_1_SEED, Networks.testnet)
   const testRecord = testnet.toObject() as typeof full
-  expect(hdPrivateKeyFromStored(testRecord).toString()).toBe(testnet.toString())
+  expect(hdPrivateKeyFromStored(testRecord)).toBe(testnet.toString())
   expect(testnet.toString().startsWith('tprv')).toBe(true)
 })

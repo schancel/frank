@@ -16,6 +16,61 @@ import { stealthParentPublicKey } from './stealth-public'
 import { stealthPointDigest } from './stealth-point-digest'
 import { stealthSharedPoint } from './stealth-shared'
 
+type HasToBuffer = {
+  toBuffer(): Uint8Array
+}
+
+type Sec1PublicKey = {
+  toBuffer(): Uint8Array
+}
+
+type DerivedPrivateKey = {
+  toBuffer(): Uint8Array
+  toPublicKey(): Sec1PublicKey
+}
+
+// Copy of SEC1 bytes. Each toBuffer call returns a new copy so a caller
+// cannot mutate the stored key. The bytes are the encoding
+// PublicKey(bytes).toBuffer() already produced.
+function sec1PublicKey(bytes: Uint8Array): Sec1PublicKey {
+  const copy = Uint8Array.from(bytes)
+  return Object.freeze({
+    toBuffer(): Uint8Array {
+      return Buffer.from(copy)
+    },
+  })
+}
+
+// 32-byte secret and its compressed point. Copies both before the source
+// secret and the parsed key bytes are wiped.
+function derivedPrivateKey(
+  secret: Uint8Array,
+  label: string,
+): DerivedPrivateKey {
+  const parsed = privateKeyFromSecretBytes(secret, true)
+  if (!parsed.ok) {
+    secret.fill(0)
+    throw new Error(`${label}:${parsed.error.code}`)
+  }
+  try {
+    const point = publicFromPrivate(parsed.value)
+    if (!point.ok) throw new Error(`${label}:${point.error.code}`)
+    const publicKey = sec1PublicKey(point.value.compressed)
+    const copy = Uint8Array.from(secret)
+    return Object.freeze({
+      toBuffer(): Uint8Array {
+        return Buffer.from(copy)
+      },
+      toPublicKey(): Sec1PublicKey {
+        return publicKey
+      },
+    })
+  } finally {
+    parsed.value.bytes.fill(0)
+    secret.fill(0)
+  }
+}
+
 export class PayloadConstructor {
   networkName: string
 
@@ -91,12 +146,12 @@ export class PayloadConstructor {
   // (decision #559). The scalar is a secret. The parent public key is
   // destination + (H(ebG) mod n)·G.
   // A reduced hash of 0 yields the destination. A point at infinity is an
-  // error. The digest is the raw SHA-256 and is the HD chain code. Bytes
-  // match PublicKey.fromPoint: compressed, default network. Envelope ECDH
-  // stays on bitcore point.mul until #258.
+  // error. The digest is the raw SHA-256 and is the HD chain code.
+  // toBuffer is the compressed SEC1 encoding. Envelope ECDH stays on
+  // bitcore point.mul until #258.
   constructStealthPublicKey(
-    emphemeralPrivKey: PrivateKey,
-    destinationPublicKey: PublicKey,
+    emphemeralPrivKey: HasToBuffer,
+    destinationPublicKey: HasToBuffer,
   ) {
     const dhKeyPointRaw = Buffer.from(
       stealthSharedPoint(
@@ -111,7 +166,7 @@ export class PayloadConstructor {
       digest,
     )
     return {
-      stealthPublicKey: new PublicKey(Buffer.from(bytes)),
+      stealthPublicKey: sec1PublicKey(bytes),
       digest,
     }
   }
@@ -134,26 +189,21 @@ export class PayloadConstructor {
   // ebG is ecdh of the destination secret and the ephemeral point.
   // The parent is (H(ebG) + destination) mod n (decision #559). A secret
   // outside (0, n), a public key that is not 33 or 65 SEC1 bytes, an
-  // invalid point, or a zero sum is an error. Hex matches new PrivateKey(bn):
-  // compressed, default network. The digest is the raw SHA-256 and is the
-  // HD chain code. Stealth public addition is stealthParentPublicKey.
+  // invalid point, or a zero sum is an error. toBuffer is the 32-byte
+  // secret. toPublicKey is its compressed point. The digest is the raw
+  // SHA-256 and is the HD chain code. Stealth public addition is
+  // stealthParentPublicKey.
   constructStealthPrivateKey(
-    emphemeralPubKey: PublicKey,
-    destinationPrivateKey: PrivateKey,
+    emphemeralPubKey: HasToBuffer,
+    destinationPrivateKey: HasToBuffer,
   ) {
     const derived = stealthParentSecret(
       Uint8Array.from(destinationPrivateKey.toBuffer()),
       Uint8Array.from(emphemeralPubKey.toBuffer()),
     )
-    try {
-      return {
-        stealthPrivateKey: new PrivateKey(
-          Buffer.from(derived.secret).toString('hex'),
-        ),
-        digest: Buffer.from(derived.digest),
-      }
-    } finally {
-      derived.secret.fill(0)
+    return {
+      stealthPrivateKey: derivedPrivateKey(derived.secret, 'stealth-private'),
+      digest: Buffer.from(derived.digest),
     }
   }
 
@@ -174,18 +224,18 @@ export class PayloadConstructor {
 
   // Digest in (0, n). A zero digest, a digest >= n, a non-32-byte digest,
   // a destination that is not 33 or 65 SEC1 bytes, or a point at infinity
-  // is an error (decision #539). Bytes match PublicKey.fromPoint: compressed,
-  // default network. Stealth public addition reduces H mod n and does
-  // not use this reject-digest rule.
+  // is an error (decision #539). toBuffer is the compressed SEC1 encoding.
+  // Stealth public addition reduces H mod n and does not use this
+  // reject-digest rule.
   constructStampPublicKey(
     payloadDigest: Uint8Array,
-    destinationPublicKey: PublicKey,
+    destinationPublicKey: HasToBuffer,
   ) {
     const bytes = stampParentPublicKey(
       Uint8Array.from(destinationPublicKey.toBuffer()),
       payloadDigest,
     )
-    return new PublicKey(Buffer.from(bytes))
+    return sec1PublicKey(bytes)
   }
 
   // Depth-0 node. Chain code is the raw payload digest, not a reduced
@@ -205,22 +255,18 @@ export class PayloadConstructor {
   }
 
   // Digest in (0, n). A zero digest, a digest >= n, or a zero sum is an
-  // error (decision #537). Hex matches new PrivateKey(bn): compressed,
-  // default network. Stealth parent scalars use stealthParentSecret
+  // error (decision #537). toBuffer is the 32-byte secret. toPublicKey is
+  // its compressed point. Stealth parent scalars use stealthParentSecret
   // (decision #559).
   constructStampPrivateKey(
     payloadDigest: Uint8Array,
-    destinationPrivateKey: PrivateKey,
+    destinationPrivateKey: HasToBuffer,
   ) {
     const secret = stampParentSecret(
       Uint8Array.from(destinationPrivateKey.toBuffer()),
       payloadDigest,
     )
-    try {
-      return new PrivateKey(Buffer.from(secret).toString('hex'))
-    } finally {
-      secret.fill(0)
-    }
+    return derivedPrivateKey(secret, 'stamp-private')
   }
 
   // Depth-0 node. Chain code is the raw payload digest, not the tweaked

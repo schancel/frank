@@ -18,7 +18,7 @@ use thiserror::Error;
 
 use crate::{
     monad_http::Address,
-    monad_profile_verify::verify_monad_profile,
+    monad_profile_verify::{verify_cbor_account_registration, verify_monad_profile},
     proto::{self, BroadcastMessage},
     store::{db::Db, pubkeyhash::PubKeyHash},
 };
@@ -978,6 +978,29 @@ impl Registry {
     /// (`crate::http::monad_profile::handle_put_monad_profile`) and from the plain
     /// `PUT /metadata/:addr` route's Monad-address dispatch branch
     /// (`crate::http::server::handle_put_registry`) -- see that module's docs for why both exist.
+    /// Returns the expected Frank-CBOR network identifier based on configured network tag and Net.
+    pub fn expected_cbor_network(&self) -> &'static str {
+        if let Some(id) =
+            crate::network_tag::cbor_network_identifier(crate::network_tag::frank_network_tag())
+        {
+            return id;
+        }
+        match self.net {
+            Net::Mainnet => "monad-mainnet",
+            _ => "monad-testnet",
+        }
+    }
+
+    /// Fully verify and write a Monad-native profile registration (ticket #45) -- the Monad
+    /// equivalent of [`Registry::put_metadata`]. See `crate::monad_profile_verify`'s module docs
+    /// for why this uses an explicit pubkey+signature check (mirroring Lotus's own solution to
+    /// the identical problem) rather than `ecrecover`, which has nothing to recover a signature
+    /// from here (there's no burn transaction backing a profile registration).
+    ///
+    /// Reachable both from the dedicated `PUT /metadata/monad/:addr` route
+    /// (`crate::http::monad_profile::handle_put_monad_profile`) and from the plain
+    /// `PUT /metadata/:addr` route's Monad-address dispatch branch
+    /// (`crate::http::server::handle_put_registry`) -- see that module's docs for why both exist.
     pub fn put_monad_profile(
         &self,
         address: Address,
@@ -985,17 +1008,30 @@ impl Registry {
     ) -> Result<()> {
         let verified = verify_monad_profile(&self.ecc, address, &signed_profile)?;
 
-        if let Some(existing) = self.db.monad_profiles().get(&address)? {
-            // Best-effort decode: `verify_monad_profile` already required the *new* payload to
-            // decode as `proto::MonadProfile`; a previously-stored one that somehow doesn't
-            // shouldn't block the new, valid write over it.
-            if let Ok(existing_profile) = proto::MonadProfile::decode(existing.payload.as_slice()) {
-                if existing_profile.timestamp >= verified.profile.timestamp {
-                    return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
-                        previous: existing_profile.timestamp,
-                        next: verified.profile.timestamp,
+        if let Some(existing_bytes) = self.db.monad_profiles().get_raw(&address)? {
+            if crate::store::monad_profiles::is_cbor_frame(&existing_bytes) {
+                if let Some(info) = self.db.monad_profiles().get_cbor_statement_info(&address)? {
+                    if info.timestamp_ms >= verified.profile.timestamp {
+                        return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
+                            previous: info.timestamp_ms,
+                            next: verified.profile.timestamp,
+                        }
+                        .into());
                     }
-                    .into());
+                }
+            } else if let Ok(existing_signed) =
+                cashweb_payload::proto::SignedPayload::decode(existing_bytes.as_slice())
+            {
+                if let Ok(existing_profile) =
+                    proto::MonadProfile::decode(existing_signed.payload.as_slice())
+                {
+                    if existing_profile.timestamp >= verified.profile.timestamp {
+                        return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
+                            previous: existing_profile.timestamp,
+                            next: verified.profile.timestamp,
+                        }
+                        .into());
+                    }
                 }
             }
         }
@@ -1004,17 +1040,75 @@ impl Registry {
         Ok(())
     }
 
+    /// Fully verify and write a Frank-CBOR type-2 account registration attestation (ticket #605).
+    /// Enforces stage 10.6 signature verification and monotonic revision/timestamp invariants.
+    pub fn put_monad_profile_cbor(&self, address: Address, frame_bytes: &[u8]) -> Result<()> {
+        let expected_net = self.expected_cbor_network();
+        let prior_statement =
+            if let Some(info) = self.db.monad_profiles().get_cbor_statement_info(&address)? {
+                frank_cbor::PriorStatement::Frame(info.type_4_frame)
+            } else {
+                frank_cbor::PriorStatement::None
+            };
+
+        let verified =
+            verify_cbor_account_registration(address, expected_net, frame_bytes, prior_statement)?;
+
+        if let Some(existing_bytes) = self.db.monad_profiles().get_raw(&address)? {
+            if !crate::store::monad_profiles::is_cbor_frame(&existing_bytes) {
+                if let Ok(signed) =
+                    cashweb_payload::proto::SignedPayload::decode(existing_bytes.as_slice())
+                {
+                    if let Ok(existing_profile) =
+                        proto::MonadProfile::decode(signed.payload.as_slice())
+                    {
+                        if existing_profile.timestamp >= verified.timestamp_ms {
+                            return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
+                                previous: existing_profile.timestamp,
+                                next: verified.timestamp_ms,
+                            }
+                            .into());
+                        }
+                    }
+                }
+            } else if let Some(info) = self.db.monad_profiles().get_cbor_statement_info(&address)? {
+                if info.timestamp_ms > verified.timestamp_ms {
+                    return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
+                        previous: info.timestamp_ms,
+                        next: verified.timestamp_ms,
+                    }
+                    .into());
+                }
+            }
+        }
+
+        self.db.monad_profiles().put_cbor(
+            &address,
+            frame_bytes,
+            verified.timestamp_ms,
+            verified.display_name.as_deref(),
+        )?;
+        Ok(())
+    }
+
     /// Read a previously-registered Monad profile's `cashweb_payload::proto::SignedPayload`
-    /// envelope. [`None`] if nothing is registered under `address`.
-    ///
-    /// Returns the raw envelope as stored (not re-verified) -- mirrors
-    /// [`Registry::get_metadata`]'s Lotus-side "trust what already verified on the way in"
-    /// behavior.
+    /// envelope. Returns [`None`] if nothing is registered under `address` or if stored as CBOR.
     pub fn get_monad_profile(
         &self,
         address: Address,
     ) -> Result<Option<cashweb_payload::proto::SignedPayload>> {
         self.db.monad_profiles().get(&address)
+    }
+
+    /// Read raw profile bytes (legacy protobuf or Frank-CBOR) as stored.
+    pub fn get_monad_profile_raw(&self, address: Address) -> Result<Option<Vec<u8>>> {
+        self.db.monad_profiles().get_raw(&address)
+    }
+
+    /// Read registered public key (33-byte compressed secp256k1) for address, whether
+    /// stored as protobuf or CBOR.
+    pub fn get_monad_profile_pubkey(&self, address: Address) -> Result<Option<Vec<u8>>> {
+        self.db.monad_profiles().get_pubkey(&address)
     }
 
     /// Verify a mailbox request digest with the recipient's already-registered profile key.
@@ -1060,9 +1154,9 @@ impl Registry {
     {
         #[cfg(test)]
         RECIPIENT_SIGNATURE_WORK.set(RECIPIENT_SIGNATURE_WORK.get() + 1);
-        let profile = self.db.monad_profiles().get(&recipient)?;
-        let registered = profile.is_some();
-        let candidate = profile.map(|profile| profile.pubkey).unwrap_or_else(|| {
+        let pubkey = self.db.monad_profiles().get_pubkey(&recipient)?;
+        let registered = pubkey.is_some();
+        let candidate = pubkey.unwrap_or_else(|| {
             let secret = self
                 .ecc
                 .seckey_from_array([1; 32])
@@ -1083,11 +1177,7 @@ impl Registry {
         Ok(registered & verified)
     }
 
-    /// List every `(address, SignedPayload)` registered with the profile's own `timestamp >=
-    /// since` (ticket #75), ordered by `timestamp` ascending -- see
-    /// `crate::store::monad_profiles`'s module docs for the by-time index this reads, and
-    /// `crate::http::monad_profile`'s module docs for how a bot uses this to auto-greet/auto-fund
-    /// new signups.
+    #[cfg(test)]
     pub(crate) fn list_monad_profiles_since(
         &self,
         since: i64,
@@ -1095,17 +1185,32 @@ impl Registry {
         self.db.monad_profiles().list_since(since)
     }
 
-    /// Prefix-search registered Monad profiles by their normalized `display_name` (ticket #48),
-    /// ordered by normalized name ascending, capped at `limit` (clamped to
-    /// `store::monad_profiles::MAX_SEARCH_RESULTS` regardless of what the caller requests) -- see
-    /// `crate::store::monad_profiles`'s module docs for the `CF_MONAD_PROFILES_BY_NAME` index this
-    /// reads, and `crate::http::monad_profile`'s module docs for the route this backs.
+    /// List every `(address, raw_bytes)` registered with timestamp >= since, ordered by
+    /// timestamp ascending.
+    pub(crate) fn list_monad_profiles_since_raw(
+        &self,
+        since: i64,
+    ) -> Result<Vec<(Address, Vec<u8>)>> {
+        self.db.monad_profiles().list_since_raw(since)
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn search_monad_profiles_by_name(
         &self,
         prefix: &str,
         limit: usize,
     ) -> Result<Vec<(Address, cashweb_payload::proto::SignedPayload)>> {
         self.db.monad_profiles().search_by_name(prefix, limit)
+    }
+
+    /// Prefix-search registered Monad profiles by their normalized `display_name` returning raw
+    /// bytes.
+    pub(crate) fn search_monad_profiles_by_name_raw(
+        &self,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<(Address, Vec<u8>)>> {
+        self.db.monad_profiles().search_by_name_raw(prefix, limit)
     }
 
     /// List every [`proto::StoredMonadMessage`] stored with `timestamp >= since` (ticket #37),

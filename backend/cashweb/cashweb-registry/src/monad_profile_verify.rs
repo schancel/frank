@@ -142,6 +142,26 @@ pub enum MonadProfileVerifyError {
     #[invalid_client_input()]
     #[error("Invalid profile display_name: {0}")]
     InvalidDisplayName(String),
+
+    /// The Frank-CBOR frame failed section 9 validation or stage 10.6 signature checks.
+    #[invalid_client_input()]
+    #[error("Invalid Frank-CBOR frame: {0}")]
+    InvalidCborFrame(String),
+
+    /// Frank-CBOR statement network does not match the relay's expected network.
+    #[invalid_client_input()]
+    #[error("Statement network mismatch: expected {expected}, got {actual}")]
+    NetworkMismatch {
+        /// Expected network identifier.
+        expected: String,
+        /// Actual network in statement.
+        actual: String,
+    },
+
+    /// Frank-CBOR attestation has no signature by the statement's subject key.
+    #[invalid_client_input()]
+    #[error("Missing signature from subject account in attestation")]
+    MissingSubjectSignature,
 }
 
 use self::MonadProfileVerifyError::*;
@@ -149,38 +169,44 @@ use self::MonadProfileVerifyError::*;
 const DISPLAY_NAME_MAX_SCALARS: usize = 128;
 const DISPLAY_NAME_MAX_UTF8_BYTES: usize = 512;
 
+/// Validates raw display-name bytes according to Decision #189's canonical rules.
+pub fn validate_display_name_bytes(body: &[u8]) -> Result<()> {
+    let name = std::str::from_utf8(body)
+        .map_err(|_| InvalidDisplayName("value is not valid UTF-8".to_string()))?;
+    let normalized = name.trim_matches(char::is_whitespace);
+    if normalized != name {
+        return Err(InvalidDisplayName("value has edge whitespace".to_string()).into());
+    }
+    if name.is_empty() {
+        return Err(InvalidDisplayName("value is empty".to_string()).into());
+    }
+    if name.chars().any(|character| {
+        matches!(character, '\u{0000}'..='\u{001f}' | '\u{007f}'..='\u{009f}' | '\u{2028}' | '\u{2029}')
+    }) {
+        return Err(InvalidDisplayName("value contains a forbidden character".to_string()).into());
+    }
+    if name.chars().count() > DISPLAY_NAME_MAX_SCALARS {
+        return Err(InvalidDisplayName(format!(
+            "value exceeds {DISPLAY_NAME_MAX_SCALARS} Unicode scalars"
+        ))
+        .into());
+    }
+    if name.len() > DISPLAY_NAME_MAX_UTF8_BYTES {
+        return Err(InvalidDisplayName(format!(
+            "value exceeds {DISPLAY_NAME_MAX_UTF8_BYTES} UTF-8 bytes"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
 fn validate_display_names(profile: &proto::MonadProfile) -> Result<()> {
     for entry in profile
         .entries
         .iter()
         .filter(|entry| entry.kind == "display_name")
     {
-        let name = std::str::from_utf8(&entry.body)
-            .map_err(|_| InvalidDisplayName("value is not valid UTF-8".to_string()))?;
-        let normalized = name.trim_matches(char::is_whitespace);
-        if normalized != name {
-            return Err(InvalidDisplayName("value has edge whitespace".to_string()).into());
-        }
-        if name.is_empty() {
-            return Err(InvalidDisplayName("value is empty".to_string()).into());
-        }
-        if name.chars().any(|character| {
-            matches!(character, '\u{0000}'..='\u{001f}' | '\u{007f}'..='\u{009f}' | '\u{2028}' | '\u{2029}')
-        }) {
-            return Err(InvalidDisplayName("value contains a forbidden character".to_string()).into());
-        }
-        if name.chars().count() > DISPLAY_NAME_MAX_SCALARS {
-            return Err(InvalidDisplayName(format!(
-                "value exceeds {DISPLAY_NAME_MAX_SCALARS} Unicode scalars"
-            ))
-            .into());
-        }
-        if name.len() > DISPLAY_NAME_MAX_UTF8_BYTES {
-            return Err(InvalidDisplayName(format!(
-                "value exceeds {DISPLAY_NAME_MAX_UTF8_BYTES} UTF-8 bytes"
-            ))
-            .into());
-        }
+        validate_display_name_bytes(&entry.body)?;
     }
     Ok(())
 }
@@ -260,6 +286,165 @@ pub fn verify_monad_profile(
     Ok(VerifiedMonadProfile {
         payload_hash,
         profile,
+    })
+}
+
+/// A successfully-verified Frank-CBOR directory registration statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VerifiedCborRegistration {
+    /// Public key (33-byte compressed secp256k1).
+    pub pubkey: Vec<u8>,
+    /// Derived 20-byte Monad address.
+    pub address: Address,
+    /// Statement revision (field 2).
+    pub revision: u64,
+    /// Statement timestamp in milliseconds (join_ms).
+    pub timestamp_ms: i64,
+    /// First normalized display name, if any.
+    pub display_name: Option<String>,
+    /// Exact type-4 directory statement frame bytes (can be used as prior).
+    pub type_4_frame: Vec<u8>,
+}
+
+/// Verify that `frame_bytes` is a valid Frank-CBOR type-2 account registration attestation for
+/// `claimed_address` on `expected_network`. Stage 10.6 signature verification is performed over
+/// the type-4 directory statement with `Operation::Full`.
+pub fn verify_cbor_account_registration(
+    claimed_address: Address,
+    expected_network: &str,
+    frame_bytes: &[u8],
+    prior: frank_cbor::PriorStatement,
+) -> Result<VerifiedCborRegistration> {
+    let ctx = frank_cbor::ValidationContext {
+        operation: frank_cbor::Operation::Full,
+        route_byte_limit: 262_144, // 256 KiB
+        reader_version: 2,
+        supported_schemas: frank_cbor::default_context().supported_schemas,
+        opaque_retention_allowed: false,
+        prior,
+    };
+
+    let parsed = match frank_cbor::validate_frame(frame_bytes, &ctx) {
+        Ok(frank_cbor::ValidationResult::Parsed(parsed)) => parsed,
+        Ok(frank_cbor::ValidationResult::Retained(_)) => {
+            return Err(InvalidCborFrame("root frame was retained".to_string()).into());
+        }
+        Ok(frank_cbor::ValidationResult::Frame(_)) => {
+            return Err(InvalidCborFrame("unexpected frame-only result".to_string()).into());
+        }
+        Err(err) => return Err(InvalidCborFrame(err.to_string()).into()),
+    };
+
+    if parsed.type_id != 2 {
+        return Err(InvalidCborFrame(format!(
+            "expected type 2 (DirectoryAttestation), got type {}",
+            parsed.type_id
+        ))
+        .into());
+    }
+
+    let (statement, signatures) = match parsed.typed.as_deref() {
+        Some(frank_cbor::TypedPayload::DirectoryAttestation {
+            statement,
+            signatures,
+            ..
+        }) => (statement, signatures),
+        _ => {
+            return Err(
+                InvalidCborFrame("missing DirectoryAttestation typed payload".to_string()).into(),
+            )
+        }
+    };
+
+    let (network, subject, revision, timestamp, profile_entries) = match statement.typed.as_deref()
+    {
+        Some(frank_cbor::TypedPayload::DirectoryStatement {
+            network,
+            subject,
+            revision,
+            timestamp,
+            profile_entries,
+            ..
+        }) => (network, subject, *revision, timestamp, profile_entries),
+        _ => {
+            return Err(
+                InvalidCborFrame("missing DirectoryStatement typed payload".to_string()).into(),
+            )
+        }
+    };
+
+    if network != expected_network {
+        return Err(NetworkMismatch {
+            expected: expected_network.to_string(),
+            actual: network.clone(),
+        }
+        .into());
+    }
+
+    if subject.key_type != 1 {
+        return Err(InvalidPubKey(format!(
+            "expected key_type 1 (secp256k1), got {}",
+            subject.key_type
+        ))
+        .into());
+    }
+    if subject.key_bytes.len() != PUBKEY_LENGTH {
+        return Err(InvalidPubKeyLen(subject.key_bytes.len()).into());
+    }
+
+    let derived_address_bytes = frank_cbor::address_from_compressed_pubkey(&subject.key_bytes)
+        .map_err(|err| InvalidPubKey(err.to_string()))?;
+    let derived_address = Address(derived_address_bytes);
+    if derived_address != claimed_address {
+        return Err(AddressMismatch {
+            expected: claimed_address,
+            actual: derived_address,
+        }
+        .into());
+    }
+
+    // Verify self-signed: at least one signature must be signed by the subject account
+    let has_subject_sig = signatures.iter().any(|sig| {
+        sig.signer.key_type == subject.key_type && sig.signer.key_bytes == subject.key_bytes
+    });
+    if !has_subject_sig {
+        return Err(MissingSubjectSignature.into());
+    }
+
+    // Validate display names in profile entries if present
+    if let Some(entries) = profile_entries {
+        for entry in entries.iter().filter(|e| e.kind == "display_name") {
+            validate_display_name_bytes(&entry.body)?;
+        }
+    }
+
+    let timestamp_ms: i64 = frank_cbor::join_ms(timestamp.seconds, timestamp.nanoseconds)
+        .map_err(|err| InvalidCborFrame(err.to_string()))?
+        .try_into()
+        .map_err(|_| InvalidCborFrame("timestamp out of range for i64 milliseconds".to_string()))?;
+
+    let display_name = profile_entries.as_ref().and_then(|entries| {
+        entries
+            .iter()
+            .find(|e| e.kind == "display_name")
+            .and_then(|e| {
+                let raw = std::str::from_utf8(&e.body).ok()?;
+                let norm = raw.trim().to_lowercase();
+                if norm.is_empty() {
+                    None
+                } else {
+                    Some(norm)
+                }
+            })
+    });
+
+    Ok(VerifiedCborRegistration {
+        pubkey: subject.key_bytes.clone(),
+        address: derived_address,
+        revision,
+        timestamp_ms,
+        display_name,
+        type_4_frame: statement.frame.clone(),
     })
 }
 

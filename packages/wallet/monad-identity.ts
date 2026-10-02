@@ -94,6 +94,17 @@ import axios from 'axios'
 import type { MailboxAuthParams } from '@frank/cashweb/relay/monad-mailbox-client'
 import { relayOriginHeader } from '@frank/cashweb/relay/origin-header'
 
+import {
+  Encodable,
+  cborMap,
+  defaultContext,
+  directorySignatureDigest,
+  encodeFrame,
+  expiryTimestamp,
+  splitMs,
+  validateFrame,
+} from '@frank/codec'
+
 import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
 const { AddressMetadata, Entry, Header, ListMonadProfilesResponse } =
   __pb_registry_metadata_pb
@@ -303,12 +314,262 @@ function buildSignedAddressMetadata(
   return Buffer.from(signedPayload.serializeBinary())
 }
 
+/**
+ * Detects whether a byte buffer is a Frank CBOR frame starting with `FRNK\x01`.
+ */
+export function isCborFrame(bytes: Uint8Array): boolean {
+  return (
+    bytes.length >= 5 &&
+    bytes[0] === 0x46 &&
+    bytes[1] === 0x52 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x4b &&
+    bytes[4] === 0x01
+  )
+}
+
+/**
+ * Builds a canonical Deterministic-CBOR signed account registration frame
+ * (Type 2 DirectoryAttestation wrapping a Type 4 DirectoryStatement with schema 3).
+ * Stage 10.6 signature is created using Algorithm 1 (secp256k1 ECDSA over SHA-256).
+ */
+export function buildSignedDirectoryStatement(
+  identity: MonadIdentity,
+  options: {
+    network?: string
+    profile?: MonadProfileFields
+    timestampMs?: number
+    ttlMs?: number
+    stampKey?: Uint8Array
+    relays?: Array<{
+      id?: Uint8Array
+      endpoint: string
+      key?: Uint8Array
+      validUntilSeconds?: bigint | number
+    }>
+  } = {},
+): Uint8Array {
+  const network = options.network ?? 'monad-testnet'
+  const ms = BigInt(options.timestampMs ?? Date.now())
+  const ttlMs = BigInt(options.ttlMs ?? 1000 * 60 * 60 * 24 * 365) // 1 year
+  const ts = splitMs(ms)
+  const exp = expiryTimestamp(ms, ttlMs)
+  const stampKeyBytes = options.stampKey ?? identity.compressedPubKey
+
+  const relayBindings: Encodable[] = []
+  if (options.relays && options.relays.length > 0) {
+    for (const r of options.relays) {
+      const id = r.id ?? new Uint8Array(16)
+      const keyBytes = r.key ?? identity.compressedPubKey
+      const validUntil = BigInt(r.validUntilSeconds ?? 2_000_000_000n)
+      relayBindings.push(
+        cborMap([
+          [0, id],
+          [1, r.endpoint],
+          [
+            2,
+            cborMap([
+              [0, 1],
+              [1, Uint8Array.from(keyBytes)],
+            ]),
+          ],
+          [
+            3,
+            cborMap([
+              [0, validUntil],
+              [1, 0],
+            ]),
+          ],
+        ]),
+      )
+    }
+  } else {
+    // Default relay binding: required by Type 4 schema (min 1 relay)
+    relayBindings.push(
+      cborMap([
+        [0, new Uint8Array(16)],
+        [1, 'https://relay1.frank.example/monad-testnet'],
+        [
+          2,
+          cborMap([
+            [0, 1],
+            [1, Uint8Array.from(identity.compressedPubKey)],
+          ]),
+        ],
+        [
+          3,
+          cborMap([
+            [0, 2_000_000_000n],
+            [1, 0],
+          ]),
+        ],
+      ]),
+    )
+  }
+
+  // Profile entries (field 9 in schema 3)
+  const entries: Encodable[] = []
+  const displayName =
+    options.profile?.name === undefined ||
+    !validateProfileDisplayName(options.profile.name).normalized
+      ? undefined
+      : requireValidProfileDisplayName(options.profile.name)
+  if (displayName !== undefined) {
+    entries.push(
+      cborMap([
+        [0, 'display_name'],
+        [1, []],
+        [2, new TextEncoder().encode(displayName)],
+      ]),
+    )
+  }
+  if (options.profile?.bio !== undefined && options.profile.bio.length > 0) {
+    entries.push(
+      cborMap([
+        [0, 'bio'],
+        [1, []],
+        [2, new TextEncoder().encode(options.profile.bio)],
+      ]),
+    )
+  }
+  if (options.profile?.bot) {
+    entries.push(
+      cborMap([
+        [0, MONAD_PROFILE_BOT_KIND],
+        [1, []],
+        [2, new TextEncoder().encode('1')],
+      ]),
+    )
+  }
+  if (options.profile?.avatar) {
+    const match = /^data:([^;,]+);base64,(.+)$/.exec(options.profile.avatar)
+    if (match) {
+      entries.push(
+        cborMap([
+          [0, 'avatar'],
+          [
+            1,
+            [
+              cborMap([
+                [0, 'content-type'],
+                [1, match[1]],
+              ]),
+            ],
+          ],
+          [2, Uint8Array.from(Buffer.from(match[2], 'base64'))],
+        ]),
+      )
+    }
+  }
+
+  const type4MapEntries: Array<[number, Encodable]> = [
+    [0, network],
+    [
+      1,
+      cborMap([
+        [0, 1],
+        [1, Uint8Array.from(identity.compressedPubKey)],
+      ]),
+    ],
+    [2, ts.revision],
+    [
+      3,
+      cborMap([
+        [0, ts.seconds],
+        [1, ts.nanoseconds],
+      ]),
+    ],
+    [4, relayBindings],
+    [
+      6,
+      cborMap([
+        [0, exp.seconds],
+        [1, exp.nanoseconds],
+      ]),
+    ],
+    [
+      8,
+      cborMap([
+        [0, 1],
+        [1, Uint8Array.from(stampKeyBytes)],
+      ]),
+    ],
+  ]
+  if (entries.length > 0) {
+    type4MapEntries.push([9, entries])
+  }
+
+  const type4Frame = encodeFrame(
+    { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+    cborMap(type4MapEntries),
+  )
+
+  const digest = directorySignatureDigest(network, type4Frame)
+  const sig = identity.signHash(Buffer.from(digest))
+
+  const sigEntry = cborMap([
+    [0, 1], // Algorithm 1: ECDSA secp256k1 over SHA-256
+    [
+      1,
+      cborMap([
+        [0, 1],
+        [1, Uint8Array.from(identity.compressedPubKey)],
+      ]),
+    ],
+    [2, Uint8Array.from(sig)],
+  ])
+
+  const type2Frame = encodeFrame(
+    { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+    cborMap([
+      [0, type4Frame],
+      [1, [sigEntry]],
+    ]),
+  )
+
+  return type2Frame
+}
+
+/** `PUT /metadata/:addr` with `Content-Type: application/cbor` (ticket #605).
+ * Sends a canonical Type-2 directory attestation signed by the identity key. */
+export async function registerMonadIdentityCbor(params: {
+  relayBaseUrl: string
+  identity: MonadIdentity
+  profile?: MonadProfileFields
+  network?: string
+  timestampMs?: number
+  ttlMs?: number
+  stampKey?: Uint8Array
+  relays?: Array<{
+    id?: Uint8Array
+    endpoint: string
+    key?: Uint8Array
+    validUntilSeconds?: bigint | number
+  }>
+}): Promise<void> {
+  const body = buildSignedDirectoryStatement(params.identity, {
+    network: params.network,
+    profile: params.profile,
+    timestampMs: params.timestampMs,
+    ttlMs: params.ttlMs,
+    stampKey: params.stampKey,
+    relays: params.relays,
+  })
+  await axios({
+    method: 'put',
+    url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/${
+      params.identity.address.raw
+    }`,
+    data: Buffer.from(body),
+    headers: {
+      'Content-Type': 'application/cbor',
+      ...relayOriginHeader('http://frank.local'),
+    },
+  })
+}
+
 /** `PUT /metadata/:addr` (no POP payment proof) -- mirrors `lotus-identity.ts`'s
- * `registerIdentity` exactly, just Monad-addressed. See this file's header for the live backend
- * gap (`LotusAddress`-only address parsing) this inherits until the server grows a Monad-native
- * path. Requires an `Origin` header -- `RelayInfo::parse_from_headers` fails the whole request
- * with `MissingOrigin` otherwise. A browser sends its own; only non-browser callers set one (see
- * `relayOriginHeader`). */
+ * `registerIdentity` exactly, just Monad-addressed. Uses legacy protobuf encoding. */
 export async function registerMonadIdentity(params: {
   relayBaseUrl: string
   identity: MonadIdentity
@@ -328,10 +589,133 @@ export async function registerMonadIdentity(params: {
   })
 }
 
-/** `GET /metadata/:addr`: fetches a previously-registered identity's `SignedPayload` (mainly for
- * its `pubkey`, needed to derive an ECDH shared key with that identity -- see
- * `./monad-message-envelope.ts`). Returns `undefined` on a `404`. Mirrors `lotus-identity.ts`'s
- * `fetchIdentityPubKey` exactly, just taking/returning a Monad `ChainAddress`. */
+/** Decodes either a CBOR directory statement or a legacy protobuf SignedPayload. */
+export function decodeProfileBytes(raw: Uint8Array): {
+  pubKey: Uint8Array
+  timestampMs: number
+  name?: string
+  bio?: string
+  bot?: boolean
+  avatar?: string
+  signedPayload: InstanceType<typeof SignedPayload>
+} {
+  if (isCborFrame(raw)) {
+    const validated = validateFrame(raw, defaultContext({ operation: 'full' }))
+    if (validated.kind !== 'parsed' || validated.typed?.type !== 2) {
+      throw new Error('invalid CBOR directory attestation frame')
+    }
+    const stmtFrame = validated.typed.statementFrame
+    if (stmtFrame.kind !== 'parsed' || stmtFrame.typed?.type !== 4) {
+      throw new Error('invalid CBOR directory statement frame')
+    }
+    const stmt = stmtFrame.typed
+    const pubKey = stmt.subject.keyBytes
+    const sec = BigInt(stmt.timestamp.seconds)
+    const nanos = BigInt(stmt.timestamp.nanoseconds)
+    const timestampMs = Number(sec * 1000n + nanos / 1_000_000n)
+
+    let name: string | undefined
+    let bio: string | undefined
+    let bot: boolean | undefined
+    let avatar: string | undefined
+
+    const metadata = new AddressMetadata()
+    metadata.setTimestamp(timestampMs)
+    metadata.setTtl(1000 * 60 * 60 * 24 * 365)
+    const protoEntries: InstanceType<typeof Entry>[] = []
+
+    if (stmt.profileEntries) {
+      for (const entry of stmt.profileEntries) {
+        const protoEntry = new Entry()
+        protoEntry.setKind(entry.kind)
+        protoEntry.setBody(Buffer.from(entry.body))
+        for (const h of entry.headers) {
+          const header = new Header()
+          header.setName(h.name)
+          header.setValue(h.value)
+          protoEntry.addHeaders(header)
+        }
+        protoEntries.push(protoEntry)
+
+        if (entry.kind === 'display_name') {
+          name = new TextDecoder().decode(entry.body)
+        } else if (entry.kind === 'bio') {
+          bio = new TextDecoder().decode(entry.body)
+        } else if (entry.kind === MONAD_PROFILE_BOT_KIND) {
+          bot = new TextDecoder().decode(entry.body) === '1'
+        } else if (entry.kind === 'avatar') {
+          const contentType =
+            entry.headers.find(h => h.name === 'content-type')?.value ??
+            'image/png'
+          avatar = `data:${contentType};base64,${Buffer.from(
+            entry.body,
+          ).toString('base64')}`
+        }
+      }
+    }
+    metadata.setEntriesList(protoEntries)
+
+    const signedPayload = new SignedPayload()
+    signedPayload.setPublicKey(pubKey)
+    signedPayload.setPayload(metadata.serializeBinary())
+    signedPayload.setScheme(SignedPayload.SignatureScheme.ECDSA)
+    if (validated.typed.signatures.length > 0) {
+      signedPayload.setSignature(validated.typed.signatures[0].signature)
+    }
+
+    return {
+      pubKey,
+      timestampMs,
+      name,
+      bio,
+      bot,
+      avatar,
+      signedPayload,
+    }
+  }
+
+  const signedPayload = SignedPayload.deserializeBinary(raw)
+  const metadata = AddressMetadata.deserializeBinary(
+    signedPayload.getPayload_asU8(),
+  )
+  let name: string | undefined
+  let bio: string | undefined
+  let bot: boolean | undefined
+  let avatar: string | undefined
+
+  for (const entry of metadata.getEntriesList()) {
+    const kind = entry.getKind()
+    if (kind === 'display_name') {
+      name = new TextDecoder().decode(entry.getBody_asU8())
+    } else if (kind === 'bio') {
+      bio = new TextDecoder().decode(entry.getBody_asU8())
+    } else if (kind === MONAD_PROFILE_BOT_KIND) {
+      bot = new TextDecoder().decode(entry.getBody_asU8()) === '1'
+    } else if (kind === 'avatar') {
+      const contentType =
+        entry
+          .getHeadersList()
+          .find(header => header.getName() === 'content-type')
+          ?.getValue() ?? 'image/png'
+      avatar = `data:${contentType};base64,${Buffer.from(
+        entry.getBody_asU8(),
+      ).toString('base64')}`
+    }
+  }
+
+  return {
+    pubKey: signedPayload.getPublicKey_asU8(),
+    timestampMs: metadata.getTimestamp(),
+    name,
+    bio,
+    bot,
+    avatar,
+    signedPayload,
+  }
+}
+
+/** `GET /metadata/:addr`: fetches a previously-registered identity's pubkey, supporting both
+ * deterministic CBOR and legacy protobuf representations. Returns `undefined` on a `404`. */
 export async function fetchMonadIdentityPubKey(params: {
   relayBaseUrl: string
   address: string
@@ -344,10 +728,9 @@ export async function fetchMonadIdentityPubKey(params: {
       }`,
       responseType: 'arraybuffer',
     })
-    const signedPayload = SignedPayload.deserializeBinary(
-      new Uint8Array(response.data),
-    )
-    return Buffer.from(signedPayload.getPublicKey_asU8())
+    const raw = new Uint8Array(response.data)
+    const decoded = decodeProfileBytes(raw)
+    return Buffer.from(decoded.pubKey)
   } catch (err) {
     if (axios.isAxiosError(err) && err.response?.status === 404) {
       return undefined
@@ -356,9 +739,9 @@ export async function fetchMonadIdentityPubKey(params: {
   }
 }
 
-/** `MonadChain.fetchProfile`'s real implementation: resolves `address`'s registered pubkey via
- * `fetchMonadIdentityPubKey` and wraps it as a `ProfileInfo` (`../chain/active-chain.ts`). Returns
- * `undefined` if nothing is registered under `address` yet. */
+/** `MonadChain.fetchProfile`'s real implementation: resolves `address`'s registered pubkey and
+ * profile fields supporting both deterministic CBOR and legacy protobuf. Returns `undefined` if
+ * nothing is registered under `address` yet. */
 export async function fetchMonadProfile(params: {
   relayBaseUrl: string
   address: ChainAddress
@@ -371,35 +754,16 @@ export async function fetchMonadProfile(params: {
       }`,
       responseType: 'arraybuffer',
     })
-    const signedPayload = SignedPayload.deserializeBinary(
-      new Uint8Array(response.data),
-    )
-    const metadata = AddressMetadata.deserializeBinary(
-      signedPayload.getPayload_asU8(),
-    )
+    const raw = new Uint8Array(response.data)
+    const decoded = decodeProfileBytes(raw)
     const result: ProfileInfo = {
       address: params.address,
-      pubKey: signedPayload.getPublicKey_asU8(),
+      pubKey: decoded.pubKey,
     }
-    for (const entry of metadata.getEntriesList()) {
-      const kind = entry.getKind()
-      if (kind === 'display_name') {
-        result.name = new TextDecoder().decode(entry.getBody_asU8())
-      } else if (kind === 'bio') {
-        result.bio = new TextDecoder().decode(entry.getBody_asU8())
-      } else if (kind === MONAD_PROFILE_BOT_KIND) {
-        result.bot = new TextDecoder().decode(entry.getBody_asU8()) === '1'
-      } else if (kind === 'avatar') {
-        const contentType =
-          entry
-            .getHeadersList()
-            .find(header => header.getName() === 'content-type')
-            ?.getValue() ?? 'image/png'
-        result.avatar = `data:${contentType};base64,${Buffer.from(
-          entry.getBody_asU8(),
-        ).toString('base64')}`
-      }
-    }
+    if (decoded.name !== undefined) result.name = decoded.name
+    if (decoded.bio !== undefined) result.bio = decoded.bio
+    if (decoded.bot !== undefined) result.bot = decoded.bot
+    if (decoded.avatar !== undefined) result.avatar = decoded.avatar
     return result
   } catch (err) {
     if (axios.isAxiosError(err) && err.response?.status === 404) {
@@ -410,32 +774,15 @@ export async function fetchMonadProfile(params: {
 }
 
 /** One entry of `fetchMonadProfilesSince`'s result: a registered Monad profile's address, paired
- * with its full `SignedPayload` envelope exactly as `fetchMonadIdentityPubKey`/`GET
- * /metadata/monad/:addr` would return for that address alone (ticket #77). */
+ * with its `SignedPayload` representation and `rawBytes`. */
 export interface MonadProfileListingEntry {
   address: string
-  // `InstanceType<typeof SignedPayload>`, not a bare `SignedPayload` type reference: the
-  // commonjs-default-import + destructure pattern this file uses for generated `_pb` bindings
-  // (see the `__pb_signed_payload_payload_pb` import above) only preserves `SignedPayload` as a
-  // value binding, not a type -- using it bare here would hit the same pre-existing `TS2749`
-  // ("refers to a value, but is being used as a type") already present elsewhere in this package
-  // for other generated proto classes (e.g. `monad-topic-post-client.ts`'s
-  // `StoredMonadTopicPost`/`BroadcastEntry`, `monad-topic-tally-client.ts`'s
-  // `MonadTopicPostView`) -- not introduced fresh here.
   signedPayload: InstanceType<typeof SignedPayload>
+  rawBytes: Uint8Array
 }
 
-/** `GET /metadata/monad?since=<sinceMs>` (ticket #75's endpoint, ticket #77's client): every
- * Monad profile registered at or after `sinceMs` (milliseconds since the Unix epoch), ordered by
- * registration timestamp ascending -- mirrors `fetchMonadMessagesSince`'s
- * (`../cashweb/relay/monad-message-feed.ts`, ticket #37) identical "since cursor" shape for
- * messages, letting a caller (e.g. the Qwen bot, ticket #77) discover newly-registered identities
- * by polling with an advancing cursor.
- *
- * `ListMonadProfilesEntry.signed_payload` (`@frank/cashweb/registry/metadata_pb`) is a raw
- * `bytes` field client-side, not a nested message type -- see `metadata.proto`'s doc comment on
- * that message for why (wire-identical to the backend's embedded-message field either way) -- so
- * it's decoded here via `SignedPayload.deserializeBinary` rather than a nested-message getter. */
+/** `GET /metadata/monad?since=<sinceMs>`: every Monad profile registered at or after `sinceMs`,
+ * ordered by registration timestamp ascending. Transparently supports CBOR and protobuf. */
 export async function fetchMonadProfilesSince(params: {
   relayBaseUrl: string
   sinceMs: number
@@ -449,35 +796,23 @@ export async function fetchMonadProfilesSince(params: {
   const decoded = ListMonadProfilesResponse.deserializeBinary(
     new Uint8Array(response.data),
   )
-  return decoded.getEntriesList().map(entry => ({
-    address: entry.getAddress(),
-    signedPayload: SignedPayload.deserializeBinary(
-      entry.getSignedPayload_asU8(),
-    ),
-  }))
+  return decoded.getEntriesList().map(entry => {
+    const rawBytes = entry.getSignedPayload_asU8()
+    const profile = decodeProfileBytes(rawBytes)
+    return {
+      address: entry.getAddress(),
+      signedPayload: profile.signedPayload,
+      rawBytes,
+    }
+  })
 }
 
 /** Server-side clamp on `searchMonadProfiles`'s `limit` -- mirrors
- * `cashweb-registry`'s `store::monad_profiles::MAX_SEARCH_RESULTS` (ticket #48). Not enforced
- * client-side (the relay clamps regardless of what's requested); kept here purely as a documented
- * reference for callers deciding what to ask for. */
+ * `cashweb-registry`'s `store::monad_profiles::MAX_SEARCH_RESULTS` (ticket #48). */
 export const MONAD_PROFILE_SEARCH_MAX_RESULTS = 100
 
-/** `GET /metadata/monad/search?prefix=<text>&limit=<n>` (ticket #48): prefix-search registered
- * Monad profiles by their normalized (lowercased) `display_name`, matching case-insensitively.
- * `limit` defaults to the relay's own default (currently 20) when omitted, and is clamped to
- * `MONAD_PROFILE_SEARCH_MAX_RESULTS` server-side regardless of what's requested.
- *
- * Reuses `ListMonadProfilesResponse`/`MonadProfileListingEntry` -- the exact same wire shape
- * `fetchMonadProfilesSince` already decodes -- since a search result is just a differently
- * filtered list of the same `{address, signedPayload}` pairs; only the query differs, so this
- * mirrors that function's decode step closely rather than inventing a new shape.
- *
- * Unlike `fetchCuratedDefaultContacts`, this does *not* fail soft: mirrors
- * `fetchMonadProfilesSince`'s own convention of letting a network/decode error propagate to the
- * caller, since (like that function) there's no natural "empty" fallback that wouldn't silently
- * mask a broken relay from a caller that actually needs search results (e.g. a UI search box
- * should be able to distinguish "no matches" from "the request failed"). */
+/** `GET /metadata/monad/search?prefix=<text>&limit=<n>`: prefix-search registered
+ * Monad profiles by their normalized `display_name`. Transparently supports CBOR and protobuf. */
 export async function searchMonadProfiles(params: {
   relayBaseUrl: string
   prefix: string
@@ -495,12 +830,15 @@ export async function searchMonadProfiles(params: {
   const decoded = ListMonadProfilesResponse.deserializeBinary(
     new Uint8Array(response.data),
   )
-  return decoded.getEntriesList().map(entry => ({
-    address: entry.getAddress(),
-    signedPayload: SignedPayload.deserializeBinary(
-      entry.getSignedPayload_asU8(),
-    ),
-  }))
+  return decoded.getEntriesList().map(entry => {
+    const rawBytes = entry.getSignedPayload_asU8()
+    const profile = decodeProfileBytes(rawBytes)
+    return {
+      address: entry.getAddress(),
+      signedPayload: profile.signedPayload,
+      rawBytes,
+    }
+  })
 }
 
 /** One entry in the relay's operator-curated default-contacts list -- see

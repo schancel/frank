@@ -130,7 +130,20 @@ export function associatedData(
   recipient: Uint8Array,
   context: Uint8Array,
 ): Uint8Array {
-  const legacy = concatBytes([
+  let prefix: readonly Uint8Array[]
+  if (envelopeVersion === LEGACY_ENVELOPE_VERSION) {
+    prefix = []
+  } else if (envelopeVersion === ENVELOPE_VERSION) {
+    prefix = [
+      i2osp(ENVELOPE_AAD_DOMAIN.length, 2),
+      ENVELOPE_AAD_DOMAIN,
+      i2osp(envelopeVersion, 2),
+    ]
+  } else {
+    throw new Error('unsupported envelope version')
+  }
+  return concatBytes([
+    ...prefix,
     i2osp(suiteId, 2),
     i2osp(sender.length, 2),
     sender,
@@ -139,14 +152,4 @@ export function associatedData(
     i2osp(context.length, 4),
     context,
   ])
-  if (envelopeVersion === LEGACY_ENVELOPE_VERSION) return legacy
-  if (envelopeVersion === ENVELOPE_VERSION) {
-    return concatBytes([
-      i2osp(ENVELOPE_AAD_DOMAIN.length, 2),
-      ENVELOPE_AAD_DOMAIN,
-      i2osp(envelopeVersion, 2),
-      legacy,
-    ])
-  }
-  throw new Error('unsupported envelope version')
 }

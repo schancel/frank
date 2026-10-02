@@ -19,7 +19,13 @@ import {
   seal,
 } from '../src'
 import { decodeEnvelope, encodeEnvelope } from '../src/envelope.js'
-import { MAX_MESSAGE, MAX_PADDING } from '../src/ids.js'
+import {
+  ENVELOPE_VERSION,
+  LEGACY_ENVELOPE_VERSION,
+  MAX_MESSAGE,
+  MAX_PADDING,
+} from '../src/ids.js'
+import { associatedData } from '../src/schedule.js'
 import { sealAuthAsRecipient } from '../src/seal.js'
 
 const GENERATOR = Uint8Array.from([
@@ -180,6 +186,10 @@ describe('encryption suites', () => {
       join(__dirname, '../../frank-codec/README.md'),
       'utf8',
     )
+    const nakamotoReadme = readFileSync(
+      join(__dirname, '../../nakamoto/README.md'),
+      'utf8',
+    )
     const rustReadme = readFileSync(
       join(__dirname, '../../../backend/cashweb/frank-cbor/README.md'),
       'utf8',
@@ -189,6 +199,13 @@ describe('encryption suites', () => {
       expect(boundary).toContain('65535')
       expect(boundary).toContain(
         'not version-1 encryption-suite allocations (decision 356)',
+      )
+    }
+    for (const boundary of [codecReadme, nakamotoReadme, rustReadme]) {
+      const prose = boundary.replace(/\s+/g, ' ')
+      expect(prose).toContain('does not parse Frank/CashWeb CBOR')
+      expect(prose).toContain(
+        'privately parses only its fixed-schema envelope CBOR',
       )
     }
     const sources = readdirSync(join(__dirname, '../src')).filter(name =>
@@ -256,6 +273,24 @@ describe('encryption suites', () => {
     })
     expect(missing.ok).toBe(false)
     if (!missing.ok) expect(missing.error.code).toBe('sender-key')
+  })
+
+  test('preserves the exact legacy and current associated-data bytes', () => {
+    const inputs = [
+      SUITE_AUTH_AES_GCM,
+      Uint8Array.of(1, 2),
+      Uint8Array.of(3),
+      Uint8Array.of(4, 5, 6),
+    ] as const
+    expect(toHex(associatedData(LEGACY_ENVELOPE_VERSION, ...inputs))).toBe(
+      'fe030002010200010300000003040506',
+    )
+    expect(toHex(associatedData(ENVELOPE_VERSION, ...inputs))).toBe(
+      '00196672616e6b2d63727970746f2d626f782f656e76656c6f70650002fe030002010200010300000003040506',
+    )
+    expect(() => associatedData(3, ...inputs)).toThrow(
+      'unsupported envelope version',
+    )
   })
 
   test('optional padding hides the plaintext length and still opens', () => {

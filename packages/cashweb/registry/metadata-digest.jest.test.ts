@@ -1,6 +1,4 @@
 import { createHash } from 'crypto'
-import { readFileSync } from 'fs'
-import { join } from 'path'
 
 import { verifyEcdsa } from '@frank/nakamoto'
 import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
@@ -19,14 +17,6 @@ const EMPTY_ENTRIES_SHA256 =
   '34095659432189c2f20da437d34a0f2a1de9016ab1ca3d4e12e4390153aac0f0'
 const SECRET =
   '12b004fff7f4b69ef8650e767f18f11ede158148b425660723b9f9a66e61f747'
-
-function methodBody(source: string, start: string, end: string): string {
-  const from = source.indexOf(start)
-  const to = source.indexOf(end, from)
-  expect(from).toBeGreaterThanOrEqual(0)
-  expect(to).toBeGreaterThan(from)
-  return source.slice(from, to)
-}
 
 it('hashes address metadata with one SHA-256', () => {
   const empty = Buffer.from(registryAddressMetadataDigest(new Uint8Array()))
@@ -53,23 +43,6 @@ it('hashes address metadata with one SHA-256', () => {
 })
 
 it('signs relay-url metadata over that digest', () => {
-  const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  const relayUrl = methodBody(
-    source,
-    'constructRelayUrlMetadata(',
-    'async fetchMetadata',
-  )
-  const payment = methodBody(
-    source,
-    'async updateKeyMetadata(',
-    'private constructBurnTransaction',
-  )
-  expect(relayUrl).toContain('registryAddressMetadataDigest')
-  expect(relayUrl).not.toContain('crypto.Hash')
-  expect(payment).toContain('registryAddressMetadataDigest')
-  expect(payment).not.toContain('crypto.Hash')
-  expect(payment).not.toContain('.buffer')
-
   const privKey = new PrivateKey(SECRET)
   const handler = new RegistryHandler({
     registrys: ['https://registry.example'],

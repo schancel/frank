@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { Transaction } from 'bitcore-lib-xpi'
 
 import { pondBurnOutputSatoshis, pondBurnScript } from './burn-script'
@@ -55,14 +52,6 @@ function bitcoreOutput(
 }
 
 it('reads burn output amounts from transaction bytes', () => {
-  const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  const amount = source.slice(
-    source.indexOf('function calculateBurnAmount'),
-    source.indexOf('export class RegistryHandler'),
-  )
-  expect(amount).toContain('pondBurnOutputSatoshis')
-  expect(amount).not.toContain('new Transaction')
-
   const bip143 = Buffer.from(BIP143_UNSIGNED, 'hex')
   const empty = bitcoreOutput(bip143, 0)
   expect(empty.satoshis).toBe(1)

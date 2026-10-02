@@ -250,4 +250,129 @@ describe('initializeMonadIdentity (#389)', () => {
       { type: 'text', text: 'hello from the bot' },
     ])
   })
+
+  it('skips a stale session and does not register or poll when seed changes during wallet derivation (#477)', async () => {
+    let derivationStarted!: () => void
+    const derivationGate = new Promise<void>(resolve => {
+      derivationStarted = resolve
+    })
+    let releaseDerivation!: () => void
+    const releaseGate = new Promise<void>(resolve => {
+      releaseDerivation = resolve
+    })
+
+    const { deps, stops } = fakes()
+    deps.createWallet = jest.fn(async ({ mnemonic }) => {
+      if (mnemonic === SEED_A) {
+        derivationStarted()
+        await releaseGate
+      }
+      return walletFor(mnemonic)
+    })
+
+    useWalletStore().seedPhrase = SEED_A
+    useProfileStore().setRelayData({
+      profile: { name: 'Alice' },
+      inbox: {},
+    })
+
+    const first = initializeMonadIdentity(deps)
+    await derivationGate
+
+    // While SEED_A derivation is in flight, seed changes to SEED_B and a second init is triggered
+    useWalletStore().seedPhrase = SEED_B
+    useProfileStore().setRelayData({
+      profile: { name: 'Bob' },
+      inbox: {},
+    })
+    const second = initializeMonadIdentity(deps)
+
+    releaseDerivation()
+
+    await expect(first).resolves.toBe('skipped')
+    await expect(second).resolves.toBe('started')
+
+    // Stale wallet A is not left as useMonadWallet()
+    expect(useMonadWallet().identity.displayAddress).toBe('0xbbb')
+
+    // Stale wallet A is never registered with relay
+    expect(deps.register).toHaveBeenCalledTimes(1)
+    expect(deps.register).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profile: expect.objectContaining({ name: 'Bob' }),
+        identity: expect.objectContaining({ displayAddress: '0xbbb' }),
+      }),
+    )
+
+    // Only session B is started and polling
+    expect(deps.startPolling).toHaveBeenCalledTimes(1)
+    expect(deps.startPolling).toHaveBeenCalledWith(
+      expect.objectContaining({
+        wallet: expect.objectContaining({
+          identity: expect.objectContaining({ displayAddress: '0xbbb' }),
+        }),
+      }),
+    )
+    expect(stops.poll).toHaveLength(1)
+    expect(stops.poll[0]).not.toHaveBeenCalled()
+  })
+
+  it('skips a stale session and does not poll when seed changes during relay registration (#477)', async () => {
+    let registrationStarted!: () => void
+    const registrationGate = new Promise<void>(resolve => {
+      registrationStarted = resolve
+    })
+    let releaseRegistration!: () => void
+    const releaseGate = new Promise<void>(resolve => {
+      releaseRegistration = resolve
+    })
+
+    const { deps, stops } = fakes()
+    deps.register = jest.fn(async params => {
+      if (params.identity.displayAddress === '0xaaa') {
+        registrationStarted()
+        await releaseGate
+      }
+    })
+
+    useWalletStore().seedPhrase = SEED_A
+    useProfileStore().setRelayData({
+      profile: { name: 'Alice' },
+      inbox: {},
+    })
+
+    const first = initializeMonadIdentity(deps)
+    await registrationGate
+
+    // While SEED_A registration is in flight, seed changes to SEED_B and second init is triggered
+    useWalletStore().seedPhrase = SEED_B
+    useProfileStore().setRelayData({
+      profile: { name: 'Bob' },
+      inbox: {},
+    })
+    const second = initializeMonadIdentity(deps)
+
+    releaseRegistration()
+
+    await expect(first).resolves.toBe('skipped')
+    await expect(second).resolves.toBe('started')
+
+    // Stale wallet A is not left as useMonadWallet()
+    expect(useMonadWallet().identity.displayAddress).toBe('0xbbb')
+
+    // Both registrations occurred (Alice was in flight before cancellation), but only Bob is polling
+    expect(deps.register).toHaveBeenCalledTimes(2)
+
+    // Stale session A never started polling
+    expect(deps.startPolling).toHaveBeenCalledTimes(1)
+    expect(deps.startPolling).toHaveBeenCalledWith(
+      expect.objectContaining({
+        wallet: expect.objectContaining({
+          identity: expect.objectContaining({ displayAddress: '0xbbb' }),
+        }),
+      }),
+    )
+    expect(stops.poll).toHaveLength(1)
+    expect(stops.poll[0]).not.toHaveBeenCalled()
+  })
 })

@@ -289,23 +289,27 @@ other bit is rejected.
 The complete binary record is exactly:
 
 ```text
-u16be(version=1) || ceremonyId[32] || ceremonyRevisionU64 ||
+u16be(version=1) || ceremonyId[32] || u64be(ceremonyRevision) ||
 presentationOperationId[32] || candidateAccountId[32] || artifactRoleU8 ||
 artifactCommitment[32] || shareIdentifierPresentU8 || [ASCII shareIdentifier[4]] ||
 shareIndexPresentU8 || [shareIndexU8] || classU8 ||
-providerPresentU8 || [providerCodeU16] ||
+providerPresentU8 || [u16be(providerCode)] ||
 accountPresentU8 || [accountIdCommitment[32]] ||
 devicePresentU8 || [deviceId[32]] || syncPresentU8 || [syncDomainId[32]] ||
 volumePresentU8 || [removableVolumeId[32]] ||
-physicalPresentU8 || [physicalDomainId[32]] || userAssertionBitsU16
+physicalPresentU8 || [physicalDomainId[32]] || u16be(userAssertionBits)
 ```
 
-Presence octets are only `0` or `1`. Master-share records require both share
-fields; descriptor records forbid both. Cloud/password-manager records require
-provider, account, and sync and forbid device/volume/physical; local-file records
-require device and sync and forbid provider/account/volume/physical; removable
-media requires only volume; print requires only physical. Missing, extra, unknown,
-or reserved values fail closed.
+Every multibyte integer is unsigned and big-endian. Presence octets are only `0`
+or `1`. `shareIndexU8` is the numeric 0..31 value of the Codex32 charset symbol,
+not its ASCII byte. Master-share records require both share fields; descriptor
+records forbid both. Cloud/password-manager records require provider, account,
+and sync and forbid device/volume/physical; local-file records require device and
+sync and forbid provider/account/volume/physical; removable media requires only
+volume; print requires only physical. Removable-media and print records also
+require the `physicalSeparationConfirmed` assertion bit; a record with that bit
+clear cannot count toward independence. Missing, extra, unknown, or reserved
+values fail closed.
 
 `providerCode` comes from Frank's immutable v1 provider registry; UI aliases map
 to that code and are never compared as strings. All remaining IDs are raw
@@ -328,8 +332,10 @@ and all ceremony/revision/role/family/index/account/operation fields under the
 ceremony owner's fencing token, stores its SHA-256 digest, and marks the operation
 ID consumed. Evidence from another ceremony, role, account, family, index,
 revision, or presentation cannot be replayed. Known-answer vectors freeze both
-roles, every class/presence combination, whole-record bytes, commitments, record
-digest, substitutions, and provider-code collisions.
+roles, every class/presence combination, every multibyte integer's byte order,
+numeric rather than ASCII share-index encoding, whole-record bytes, commitments,
+record digest, substitutions, assertion-bit failures, and provider-code
+collisions.
 Losing every trusted descriptor blocks authenticated blank-install recovery
 even when `k` shares survive. In v1 there is no descriptorless preview: a
 missing descriptor stops the normal recovery route before share entry. A future
@@ -1694,7 +1700,8 @@ deletion itself is tested against fake-support/deep-link entry, wrong or stale
 account revisions, missing fresh authentication, and ambiguous “remove profile”
 copy. Keyboard and screen-reader users receive the exact identity, inventory,
 backup uncertainty, and permanent recovery consequence before the bound
-confirmation. Destination-independence tests normalize aliases and cover the
+confirmation. Destination-independence tests map UI aliases through the frozen
+provider registry and cover the
 same provider account, same sync domain under different labels, same provider
 with different accounts, separate removable devices, print copies, and unknown
 correlation according to the frozen v1 table.
@@ -1704,7 +1711,10 @@ destination was never attested; activation succeeds only with two descriptor
 domains distinct from one another and from every stored-share domain. A share at
 provider `P`/account `A`/sync `S1` and descriptor at provider `P`/account `B`/sync
 `S2` fail because equal provider ID alone is one v1 domain; removable-volume and
-physical-domain aliases exercise their typed canonical fields.
+physical-domain aliases exercise their typed canonical fields. Removable-media,
+print, and mixed removable/print pairs with the physical-separation assertion
+clear are rejected rather than counted as independent, even when their opaque
+IDs differ.
 Destination evidence is then replayed across ceremony IDs, revisions, candidate
 accounts, descriptor/share roles, exact artifact bytes, share identifiers/indices,
 and presentation-operation IDs; every substitution fails and each accepted

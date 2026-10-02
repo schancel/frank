@@ -201,8 +201,11 @@ V1 assigns each of at most eight participants a disjoint 32-event sender budget:
 whose complete message plan is proven by the manifest and eight reserved safety/recovery slots whose
 message types are enumerated there. A semantic-key duplicate with identical canonical payload is an
 idempotent state no-op. A byte-identical retransmission consumes nothing; a structurally valid new
-sequence repeating that value advances the sender head and consumes one ordinary sender slot so its
-descendants remain reachable. A nonidentical second value is conflict/equivocation. One sender cannot consume another's budget, and ordinary events
+sequence repeating that value advances the sender head and consumes a slot from its message type's
+ordinary or safety class so descendants remain reachable. Once that class is full, another event of
+that class—including a duplicate—is inadmissible, does not advance the head, and is ignored for fork
+detection; any later admissible safety event must reference the last accepted head. A nonidentical
+second value is conflict/equivocation. One sender cannot consume another's budget, and ordinary events
 cannot consume its reserved safety slots.
 
 Chain observations are not coordination events and never become authoritative merely because a
@@ -1158,6 +1161,9 @@ The first implementation should provide:
     siblings and descendants arrive in opposite orders; both replicas retain prior durable effects,
     authorize no branch descendant, and enter the same recovery state. A fresh-sequence semantic
     duplicate advances the sender head as a no-op, after which a reserved recovery event succeeds.
+    At the ordinary-slot boundary, one more ordinary duplicate is inadmissible, does not advance the
+    head or create a fork, and a safety event referencing the last accepted head succeeds; a
+    fresh-sequence safety duplicate consumes only its safety-class budget.
     Given the same canonical chain tip, byte-distinct
     valid witnesses produce the same local semantic effect without becoming protocol authority;
 22. initial-pair reducer tests in which EVM pending/final, exact or invalid parent reveal, and eCash

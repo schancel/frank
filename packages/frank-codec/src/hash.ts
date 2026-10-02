@@ -109,6 +109,30 @@ export function messageContentDigest(type8Frame: Uint8Array): Uint8Array {
   )
 }
 
+/**
+ * T2: the 32-byte SHA-256 digest algorithm 1 signs, over the complete type-4 statement frame.
+ * The network argument is the statement's own field 0 (T5), never ambient state; the context
+ * is empty.
+ */
+export function directorySignatureDigest(
+  network: string,
+  type4Frame: Uint8Array,
+): Uint8Array {
+  return sha256(
+    commonTranscript('frank/directory-signature/v1', network, type4Frame),
+  )
+}
+
+/** T2a: the digest of a key-transition authorization over the complete type-7 frame. */
+export function keyTransitionSignatureDigest(
+  network: string,
+  type7Frame: Uint8Array,
+): Uint8Array {
+  return sha256(
+    commonTranscript('frank/key-transition-signature/v1', network, type7Frame),
+  )
+}
+
 /** T3: recipient payload digest of a complete type-5 frame with its field-0 network. */
 export function recipientPayloadDigest(
   network: string,

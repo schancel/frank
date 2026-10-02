@@ -219,7 +219,14 @@ describe('type-specific limits (R2-R4)', () => {
     const att = (pad: number) => attestationFrame(stmt(pad), [sig(acct2(1))])
     let pad = 260_000
     pad += 262_144 - att(pad).length
-    const opts = { priorDirectoryStatementFrame: null }
+    // A reader whose highest type-4 schema is 2 keeps the byte-string pad as a retained
+    // V6.3 field-9 value; a schema-3 reader would type it and reject the shape.
+    const opts = {
+      priorDirectoryStatementFrame: null as Uint8Array | null,
+      supportedSchemas: defaultContext().supportedSchemas.map(s =>
+        s.typeId === 4 ? { ...s, schemaVersion: 2 } : s,
+      ),
+    }
     expect(att(pad).length).toBe(262_144)
     expect(outcome(att(pad), opts)).toBe('parsed')
     expect(att(pad + 1).length).toBe(262_145)

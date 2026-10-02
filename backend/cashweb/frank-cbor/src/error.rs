@@ -19,6 +19,8 @@ pub enum ErrorCategory {
     Schema,
     /// Ordering, uniqueness, linkage, or cross-field equality.
     Semantic,
+    /// A digest, signature, point, or observation check failed at stage 10.
+    Cryptographic,
 }
 
 impl ErrorCategory {
@@ -32,6 +34,7 @@ impl ErrorCategory {
             Self::Noncanonical => "noncanonical",
             Self::Schema => "schema",
             Self::Semantic => "semantic",
+            Self::Cryptographic => "cryptographic",
         }
     }
 }
@@ -69,6 +72,8 @@ pub enum ErrorStage {
     S84,
     /// Semantic checks.
     S9,
+    /// Stage-10.6 signature verification.
+    S106,
     /// Standalone restricted-CBOR API.
     Cbor,
 }
@@ -89,6 +94,7 @@ impl ErrorStage {
             Self::S83 => "8.3",
             Self::S84 => "8.4",
             Self::S9 => "9",
+            Self::S106 => "10.6",
             Self::Cbor => "cbor",
         }
     }

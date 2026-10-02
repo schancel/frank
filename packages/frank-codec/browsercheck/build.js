@@ -38,6 +38,8 @@ async function main() {
     ['FRANK_MANIFEST', 'manifest.json'],
     ['FRANK_RUST_ORIGIN', 'rust-origin.json'],
     ['FRANK_INTEROPERABILITY', 'interoperability.json'],
+    ['FRANK_REGISTRATION', 'account-registration.json'],
+    ['FRANK_REGISTRATION_VALUES', 'account-registration-values.json'],
   ]
     .map(
       ([globalName, file]) =>
@@ -64,6 +66,8 @@ async function main() {
       globalThis.FRANK_MANIFEST,
       globalThis.FRANK_RUST_ORIGIN,
       globalThis.FRANK_INTEROPERABILITY,
+      globalThis.FRANK_REGISTRATION,
+      globalThis.FRANK_REGISTRATION_VALUES,
     ),
   )
 </script>

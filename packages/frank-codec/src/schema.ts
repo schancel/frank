@@ -13,6 +13,7 @@ import {
   MAX_RELAY_BINDINGS,
   MAX_SIGNATURES,
   MAX_FRAME_BYTES,
+  MAX_TEXT_STRING_BYTES,
   MAX_TOPIC_BODY_BYTES,
   MAX_TOPIC_FRAME_BYTES,
   MAX_TOPIC_VOTE_FRAME_BYTES,
@@ -41,6 +42,8 @@ import type {
   KeyTransition,
   OpaqueSection,
   PaymentMember,
+  ProfileEntry,
+  ProfileHeader,
   RelayBinding,
   SignatureEntry,
   Timestamp,
@@ -389,6 +392,34 @@ function opaqueSection(v: FrankValue | undefined, path: string): OpaqueSection {
   }
 }
 
+function profileHeader(
+  v: FrankValue | undefined,
+  path: string,
+  allow: boolean,
+): ProfileHeader {
+  const m = fields(v, path, [0, 1], [], true, allow)
+  return {
+    name: tstr(m.get(0), `${path}.0`, 0, MAX_TEXT_STRING_BYTES),
+    value: tstr(m.get(1), `${path}.1`, 0, MAX_TEXT_STRING_BYTES),
+    unknownFields: m.unknown,
+  }
+}
+
+function profileEntry(
+  v: FrankValue | undefined,
+  path: string,
+  allow: boolean,
+): ProfileEntry {
+  const m = fields(v, path, [0, 1, 2], [], true, allow)
+  const headers = asList(m.get(1), `${path}.1`, 0, 64)
+  return {
+    kind: tstr(m.get(0), `${path}.0`, 0, MAX_TEXT_STRING_BYTES),
+    headers: headers.map((e, i) => profileHeader(e, `${path}.1[${i}]`, allow)),
+    body: bstr(m.get(2), `${path}.2`, 0, 8_388_608),
+    unknownFields: m.unknown,
+  }
+}
+
 /**
  * Stage 8.2: converts a generic payload to the typed draft of `typeId`, applying the CDDL
  * structure and range rules. Framed fields stay raw bytes until stage 8.4 opens them.
@@ -450,14 +481,17 @@ export function parseDraft(
       return cp
     }
     case TYPE_DIRECTORY_STATEMENT: {
-      // Field 8 (the stamp key) is required in schema 2 and undefined in schema 1, where C12
-      // makes it a schema error (S10a.1). `effective` is the exact version, or the reader's
-      // highest supported schema when a newer frame is read through V6.3.
+      // Fields 5-7 are optional at every schema; field 8 (the stamp key) is required from
+      // schema 2 and undefined in schema 1, where C12 makes it a schema error (S10a.1); field
+      // 9 (the profile entries, M4) is optional from schema 3, where a schema-2 reader reads
+      // the statement through V6.3 and retains it. `effective` is the exact version, or the
+      // reader's highest supported schema when a newer frame is read through V6.3.
+      const optional = schema.effective >= 3 ? [5, 6, 7, 9] : [5, 6, 7]
       const m = fields(
         payload,
         P,
         schema.effective >= 2 ? [0, 1, 2, 3, 4, 8] : [0, 1, 2, 3, 4],
-        [5, 6, 7],
+        optional,
         true,
         allow,
       )
@@ -474,6 +508,13 @@ export function parseDraft(
         unknownFields: m.unknown,
       }
       if (m.has(8)) st.stampKey = account(m.get(8), `${P}.8`)
+      // Field 9 is interpreted only by a reader whose highest type-4 schema is 3; a schema-2
+      // reader projects the statement through V6.3 and retains it as an unknown field.
+      if (m.has(9) && schema.effective >= 3) {
+        st.profileEntries = asList(m.get(9), `${P}.9`, 1, 64).map((e, i) =>
+          profileEntry(e, `${P}.9[${i}]`, allow),
+        )
+      }
       if (m.has(5)) {
         st.keyTransitions = asList(m.get(5), `${P}.5`, 1, 16).map((e, i) =>
           keyTransition(e, `${P}.5[${i}]`, allow),

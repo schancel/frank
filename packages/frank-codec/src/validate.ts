@@ -1,5 +1,6 @@
-// Section 9 validation order, stages 1-9. Stage 10 (cryptographic and external checks) is not
-// implemented; `operation: 'full'` does not exist in this API.
+// Section 9 validation order, stages 1-9 plus stage 10.6 (the signature verification of the
+// type-2 attestation). Stages 10.1-10.5 (the type-1 stamp checks: decrypted frame, T3, DLEQ,
+// payment observations) are not implemented; a `full` type-1 root is a context error.
 import { Counters, FrankValue, decodeSingleItem, newCounters } from './cbor'
 import {
   FRAME_HEADER_BYTES,
@@ -45,8 +46,9 @@ import type {
   RetentionReason,
   ValidationResult,
 } from './types'
+import { verifyDirectoryAttestation } from './verify'
 
-export type Operation = 'frame' | 'generic' | 'typed'
+export type Operation = 'frame' | 'generic' | 'typed' | 'full'
 
 export interface SupportedSchema {
   typeId: number
@@ -56,7 +58,11 @@ export interface SupportedSchema {
 
 /** The normative validation context of README section 10; no ambient state is consulted. */
 export interface ValidationContext {
-  /** `frame` stops after stage 4, `generic` after stage 7, `typed` after stage 9. */
+  /**
+   * `frame` stops after stage 4, `generic` after stage 7, `typed` after stage 9. `full`
+   * adds stage 10.6, the signature verification of a type-2 root; the type-1 stage-10
+   * checks (10.1-10.5) are outside this slice and make a type-1 `full` root a context error.
+   */
   operation: Operation
   /** Stage 1 caller limit, at most MAX_FRAME_BYTES. */
   routeByteLimit: number
@@ -65,8 +71,8 @@ export interface ValidationContext {
   /** Governs the root frame only (V6.1). */
   opaqueRetentionAllowed: boolean
   /**
-   * For a type-2 root under `typed`: the last accepted type-4 frame, or `null` for bootstrap.
-   * Required (not `undefined`) in that case; ignored for other roots.
+   * For a type-2 root under `typed` or `full`: the last accepted type-4 frame, or `null` for
+   * bootstrap. Required (not `undefined`) in that case; ignored for other roots.
    */
   priorDirectoryStatementFrame?: Uint8Array | null
 }
@@ -94,12 +100,12 @@ export function defaultContext(
   return {
     operation: 'typed',
     routeByteLimit: MAX_FRAME_BYTES,
-    // Reader version 2 reads type 4 at schema 2 (the stamp key, README S10a.1); every other
-    // type stays at schema 1.
+    // Reader version 2 reads type 4 at schema 3 (the stamp key from schema 2, the profile
+    // entries of section 11 from schema 3); every other type stays at schema 1.
     readerVersion: 2,
     supportedSchemas: KNOWN_TYPES.map(typeId => ({
       typeId,
-      schemaVersion: typeId === TYPE_DIRECTORY_STATEMENT ? 2 : 1,
+      schemaVersion: typeId === TYPE_DIRECTORY_STATEMENT ? 3 : 1,
     })),
     opaqueRetentionAllowed: false,
     priorDirectoryStatementFrame: null,
@@ -324,7 +330,22 @@ function processFrame(
     checkSemantics(typed, typed.type === 2 ? resolvePrior(sh.ctx) : undefined),
   )
   parsed.typed = typed
+  if (mode.kind === 'root' && stopAfter === 'full') runStage10(typed)
   return parsed
+}
+
+/** Stage 10 for a root frame. Only 10.6 exists in this slice; it applies to a type-2 root. */
+function runStage10(typed: FinalPayload): void {
+  switch (typed.type) {
+    case 2:
+      verifyDirectoryAttestation(typed)
+      return
+    case 1:
+      throw new FrankContextError(
+        'stages 10.1-10.5 (the type-1 stamp checks) are outside this slice; `full` runs only the type-2 signature verification of stage 10.6',
+      )
+    default:
+  }
 }
 
 /** Schema and semantic checks name paths relative to `root`; re-root them at this frame. */

@@ -119,12 +119,19 @@ that include at least:
 - deadlines and finality policy; and
 - a hash of the negotiated quote and bundle manifest.
 
-NIZK challenges and adaptor artifacts bind this context hash explicitly. The final transcript then
-contains the context plus resulting proofs, native transaction digests, signatures, and artifacts.
-Both Frank identity keys authenticate the final transcript hash. Native chain signatures continue to
-sign only the exact digest accepted by their chain; they are transaction authorization, not a
-substitute for protocol attestation. This ordering avoids a proof hashing a transcript that already
-contains that proof.
+The currently cited adaptor package does not accept associated protocol context in its Fiat–Shamir
+challenges. Its native proofs remain verified under their frozen formats. Once every immutable
+funding, claim, refund, public-point, proof, adaptor, and native-digest artifact exists, the protocol
+constructs a domain-separated **pre-funding authorization root** over the context hash and the exact
+artifact bytes. Both Frank identity keys sign the same root, exchange and verify both attestations,
+and durably record them before either party releases funding authorization. A change to any context,
+artifact, or digest invalidates these attestations.
+
+Later chain evidence is appended to an audit transcript and does not require renewed peer
+cooperation. Native chain signatures continue to sign only the exact digest accepted by their chain;
+they are transaction authorization, not a substitute for protocol attestation. Any future primitive
+that adds associated context to NIZK challenges is a new version requiring encodings, vectors, and
+independent review.
 
 No JavaScript floating-point value may represent an amount, price, deadline, chain identifier, or
 nonce. Wire integers must have a canonical bounded representation. Raw transactions, public keys,
@@ -170,9 +177,10 @@ The initial message flow is:
 ```text
 Offer
   -> Accept
-  -> KeyAndProofExchange
+  -> KeyExchange
   -> TransactionCommitments
   -> EncryptedSignatures
+  -> PrefundingAuthorizationAttestations
   -> ReadyToFund
   -> FundingEvidence
   -> ReadyToSettle
@@ -211,11 +219,15 @@ cleanup:
 The last state must not be softened into a generic failure message. A testnet demonstration needs
 to make protocol failures visible.
 
-Cancellation is terminal only before any funding commitment exists. Either authenticated party may
-request it before that cutoff, subject to the transition table. After funding, “cancel” means enter
-or remain in nonterminal recovery: watchers, signed artifacts, account nonces or durable nonces, fee
+Cancellation is terminal only before the local party durably releases `ReadyToFund` or any unilateral
+funding authorization, whichever comes first. The absence of a mempool or RPC observation never
+proves that the peer has not broadcast. After that conservative cutoff, “cancel” means enter or
+remain in nonterminal recovery: watchers, signed artifacts, account nonces or durable nonces, fee
 reserves, and keys remain available until `complete`, `refunded`, or an explicitly acknowledged
-manual-recovery handoff. A hostile peer cannot cancel the other party's recovery capability.
+manual-recovery handoff. Returning to `failed-before-funding` later requires a specified bilateral
+revocation that makes every funding artifact unusable, reconciles all outboxes, and observes that
+invalidation through the finality/reorg model. A hostile peer cannot cancel the other party's
+recovery capability.
 
 ## Amounts, multiple lanes, and multiple users
 
@@ -394,8 +406,9 @@ refund authorization, not merely convert `(r, s)` into Ethereum's `(yParity, r, 
    `crypto-primitives-foundation` branch under `packages/adaptor-signatures`.
 5. A custody protocol that prevents either participant from unilaterally invalidating the EVM leg
    after the eCash leg is funded.
-6. For recoverable mode only, unilateral success and refund procedures with an explicit safe-claim
-   window and unilateral recovery-time fee replacement.
+6. In every mode, a unilateral success procedure after the peer can obtain the counter-asset,
+   backed by a declared bounded inclusion/fee envelope or unilateral repricing. Recoverable mode
+   additionally needs a unilateral refund, safe-claim window, and recovery-time fee replacement.
 7. Durable secret extraction and watcher behavior. Extraction uses the exact stored presignature and
    observed chain signature, tests both `t` and `-t` against the committed adaptor point to account
    for low-`s` normalization, verifies recovery parity and the completed signature, and persists only
@@ -405,17 +418,26 @@ refund authorization, not merely convert `(r, s)` into Ethereum's `(yParity, r, 
 
 The implementation chooses and documents one of these distinct models:
 
-**Temporary jointly controlled EOA, griefable mode.** The parties create a one-use account whose
-public key is jointly controlled. They use two-party threshold ECDSA/adaptor signing, so neither
-participant can spend or invalidate the account alone. This is analogous in purpose to a Schnorr
-multisignature but is not MuSig2: MuSig2 is a Schnorr protocol, while ECDSA needs a reviewed MPC
-protocol for its nonlinear signing equation. The funded account contains only the lane amount plus
-its gas reserve.
+**Conditional EVM key-share transfer, griefable mode.** The parties create a one-use EOA with
+additive public key `P = A_evm + T`, where A knows scalar share `a`, B knows adaptor scalar `t`,
+`A_evm = aG`, and `T = tG`. Neither knows `a + t` before settlement. B's exact eCash claim completes
+one adaptor signature under `T`, revealing `t` to A. A then derives the one-use EVM scalar
+`x = a + t mod n` and can sign/reprice the payment to A without B. The full one-use EVM key exists
+after settlement and must be swept and destroyed; it is not a long-lived threshold custody design.
 
 This mode can demonstrate ordinary native EVM signatures and atomic theft-safety, but a bare EOA
-cannot enforce a delayed refund. A fully signed refund is valid immediately and can race the success
-transaction; an incomplete refund depends on later cooperation. If a signer disappears, funds may
-remain locked permanently. The UI must obtain explicit acceptance of that griefing risk.
+cannot enforce B's delayed refund. If B never reveals `t`, A refunds XEC after its chain timeout while
+B's EVM principal remains locked permanently. The UI must obtain explicit acceptance of that
+asymmetric griefing risk. A fixed-fee EVM success transaction is insufficient: after B can receive
+XEC, A must be able to sign a fresh transaction or otherwise cover the complete negotiated success
+fee envelope.
+
+**Two-party threshold ECDSA adaptor research.** A protocol that keeps the EVM private key shared even
+after settlement is desirable but is not supplied by ordinary threshold ECDSA or by the current
+single-key `@frank/adaptor-signatures` API. MuSig2 is not applicable because it is Schnorr. This mode
+remains an unimplemented research gate pending a named, malicious-secure two-party ECDSA adaptor
+protocol with dealerless key generation, distributed adaptor presigning/proofs, authenticated rounds,
+durable one-use preprocessing, abort security, and Ethereum low-`s`/recovery-parity vectors.
 
 **Smart-account or escrow, recoverable mode.** A minimal contract enforces claim and refund branches
 and permits recovery-time fee policy. This requires contract support that the present wallet does
@@ -426,10 +448,48 @@ path eligible for a recoverable-atomic claim.
 invalidate a pre-signed transaction. This may demonstrate encoding and secret extraction on
 testnet, but it is not an atomic swap and the UI and documentation must label it accordingly.
 
-The initial contractless research path is the temporary jointly controlled EOA in explicitly
-griefable mode. Two-party ECDSA that emits one ordinary EVM signature is threshold ECDSA even when
-the threshold is exactly two. It is materially more complex than Schnorr or Ed25519 threshold
-signing because ECDSA signing contains nonlinear inversion.
+The initial contractless research path is conditional one-use key-share transfer in explicitly
+griefable mode. Long-lived or institutional custody must instead use a separately reviewed threshold
+signing protocol or on-chain policy.
+
+### Initial griefable protocol
+
+For this subsection, A offers XEC and receives MON; B offers MON and receives XEC.
+
+1. A samples nonzero EVM share `a`; B samples nonzero `t`. They exchange `A_evm`, `T`, and proofs of
+   knowledge, reject invalid points and `P = A_evm + T` at infinity, and derive the one-use EVM
+   address from `P`.
+2. A constructs and signs, but does not broadcast, an eCash funding transaction to a P2SH output
+   whose success branch requires both A's and B's signatures and whose CLTV refund branch requires
+   A's signature. From that exact funding transaction, both construct the exact claim and refund.
+   The adapter freezes the redeem script, sighash flags, scriptSig stacks, funding outpoint, success
+   recipient B, refund recipient A, fees, and refund height/time in test vectors.
+3. B produces its ordinary signature for the exact eCash claim. A gives B an adaptor signature for
+   A's required success-branch signature under `T`. B verifies it. The claim pays only B and is the
+   sole first-reveal action. A holds its complete refund artifact.
+4. B constructs, but does not broadcast, exact EVM funding to `P` for the MON principal plus the
+   negotiated success-fee reserve. The settlement policy fixes A's recipient, principal, allowed
+   transaction type, nonce, gas limit, and maximum fee envelope while allowing A to choose a fresh
+   fee within that envelope after learning `t`.
+5. Both identities sign the pre-funding authorization root containing the exact EVM and eCash
+   funding commitments, eCash claim/refund artifacts, all public points/proofs/signatures, amounts,
+   fee envelope, and conservative last-claim cutoff. They durably record both attestations.
+6. B broadcasts EVM funding and waits for the manifest's threshold. Only then does A broadcast the
+   exact committed eCash funding transaction and wait for its threshold. This order deliberately
+   puts B at griefing risk but gives B no claim on XEC before its MON is committed. A transaction-ID
+   mismatch or malleation aborts settlement and leaves only the specified recovery/grief outcome.
+7. B either stops before the last-claim cutoff or completes A's adaptor signature with `t`, adds the
+   exact success witness, and broadcasts the eCash claim. A treats `t` as public on first mempool
+   observation, extracts and validates it against `T`, computes `x = a + t mod n`, and signs a fresh
+   EVM principal payment to A within the authorized fee envelope. The watcher may reprice this
+   payment and later sweep the residual reserve because A now holds the complete one-use key.
+8. If B does not reveal in time, A broadcasts the eCash refund. B's EVM principal has no contractless
+   refund and may remain locked forever. A never publishes or authorizes an EVM payment to itself
+   before observing B's exact claim reveal.
+
+Safety invariant: before B's reveal, B cannot spend XEC and A cannot spend MON; after B obtains XEC,
+A has the scalar and unilateral fee authority needed to obtain MON under the declared inclusion
+assumption. Finality failures remain bounded only by the negotiated reorg model.
 
 ### Implementation stages
 
@@ -446,10 +506,11 @@ signature encodings. No funds are broadcast.
 testnet keys. Demonstrate normal completion and every pre-funding abort. Label the EVM trust
 assumption if custody is still unilateral.
 
-**Stage 3: adversarial joint custody.** Replace unilateral EVM control with reviewed threshold ECDSA
-and exercise nonce invalidation, conflicting spends, stale fees, restart, mempool secret exposure,
-chain reorganization, and one party disappearing at every step. This remains griefable unless a
-separate recoverable EVM custody mode is implemented.
+**Stage 3: adversarial conditional custody.** Implement and attack the conditional key-share flow
+above. Exercise malformed shares, nonce invalidation, conflicting spends, stale fees, restart,
+mempool secret exposure, chain reorganization, and disappearance at every step. A no-reconstruction
+threshold-adaptor variant remains a separate research gate until its protocol is selected and
+reviewed. Both remain griefable unless a recoverable EVM custody mode is implemented.
 
 **Stage 4: independent lanes.** Add multiple separately funded, separately priced, separately
 controlled lanes. Each lane must pass the economic fairness invariant independently and inherit the
@@ -655,10 +716,23 @@ transactions, proofs, deadlines, and watcher instructions without exporting unre
 Journal and recovery-package schemas classify public transcript data separately from signing
 nonces, threshold shares, adaptor secrets, authorized transactions, and other spend capabilities.
 Sensitive fields use vault-backed authenticated encryption bound to account, swap, lane, transcript,
-and monotonic journal revision. Restore rejects rollback, reconciles against both chains, and never
-blindly resumes signing. Export requires an explicit disclosure boundary and contains only the
-minimum recovery capability. After the negotiated reorg/recovery horizon, compaction preserves audit
-hashes while destroying spend-capable material on a best-effort basis.
+and monotonic journal revision. AEAD and a counter stored in the same local database do not prove
+freshness against restoration of an older authentic snapshot. Until a non-rollbackable platform or
+external anchor is selected, whole-store malicious/backup rollback is outside the guarantee and an
+ambiguous restore fails closed into manual recovery without signing. Restore reconciles against both
+chains and relays but does not assume they reveal every previously exposed off-chain share. Export
+requires an explicit disclosure boundary and contains only the minimum recovery capability. After
+the negotiated reorg/recovery horizon, compaction preserves audit hashes while destroying
+spend-capable material on a best-effort basis.
+
+Each custody mode defines a watcher capability matrix naming the principal, exact permitted action,
+immutable transaction fields, fee range, trigger evidence, validity window, revocation rule, and
+compromise blast radius. A local watcher may use a completed one-use settlement key only within its
+bound lane and fee envelope. A delegated watcher receives preauthorized byte-exact transactions or
+the narrowest operation-scoped signing capability; it never receives unrelated wallet roots. If a
+mode requires arbitrary repricing but cannot delegate it without broad custody, that liveness claim
+remains unsatisfied. Tests assume a malicious watcher and prove it cannot redirect value, act before
+its trigger, exceed fees, or affect another lane.
 
 Changing the active Frank account does not delete or orphan funded swap state. Account replacement
 is blocked while nonterminal obligations exist unless their account-bound journal and capabilities
@@ -682,9 +756,11 @@ The first implementation should provide:
 9. multi-lane tests over every reachable success/refund subset using net values and worst-case fees,
    plus late revelation against the slowest coupled leg;
 10. account-replacement tests proving a funded old-account swap remains recoverable after restart;
-11. fee-ceiling tests proving the watcher has authorized replacements across the entire negotiated
-    recoverable envelope; and
-12. a live testnet griefable-mode completion/lockout demonstration or recoverable-mode
+11. fee-ceiling tests proving unilateral success coverage in every mode and refund coverage across
+    the recoverable envelope, including peer claim, fee spike, and disappearance;
+12. authentic old-snapshot restore tests that either verify an external freshness anchor or fail
+    closed without signing; malicious-watcher capability tests; and
+13. a live testnet griefable-mode completion/lockout demonstration or recoverable-mode
     completion/refund demonstration, using disposable keys and negligible value and labelled
     accordingly.
 
@@ -697,10 +773,11 @@ review before moving beyond a research demonstration.
 - Frank will specify the full chain-pair matrix but implement eCash testnet to Monad testnet first.
 - Native assets and one lane come before tokens, routing, bundles, or multiple users.
 - A plain pre-signed transaction from a counterparty-controlled EVM EOA is not atomic custody.
-- A jointly controlled bare EVM EOA can demonstrate theft-safety but not unilateral timed refund;
-  without another mechanism it is explicitly griefable.
+- The initial joint EVM EOA uses conditional one-use key-share transfer: B's eCash claim reveals its
+  EVM share to A. It can demonstrate theft-safety but not B's unilateral timed refund and is
+  explicitly griefable.
 - Two-party signing that emits one ordinary EVM signature is 2-of-2 threshold ECDSA, not an on-chain
-  2-of-2 contract and not MuSig2.
+  2-of-2 contract and not MuSig2; the current adaptor package is not a threshold-adaptor protocol.
 - FROST-Ed25519 is the preferred joint-signing direction for ordinary Solana accounts.
 - BLS aggregation is not a native settlement mechanism for these chains.
 - Same-curve pairs avoid cross-curve proofs but still require chain-specific transaction adapters.

@@ -58,7 +58,8 @@ choices.
 ### 3.1 Goals
 
 - Survive loss of up to `n-k` valid shares in a particular family without
-  weakening the entropy of `M`.
+  weakening the entropy of `M`, provided at least one independently trusted
+  recovery descriptor also survives.
 - Recover from any valid set of `k` shares from the same set.
 - Detect common transcription mistakes before account derivation.
 - Prevent signup from completing against an unverified or stale secret.
@@ -186,6 +187,13 @@ but that annotation is neither authoritative nor needed for interpolation. The
 descriptor is not embedded by BIP-93 and remains visibly distinct from the
 Codex32 string.
 
+The descriptor is public and SHOULD be copied redundantly into at least two
+failure domains independent from the threshold shares. Losing every trusted
+descriptor blocks authenticated blank-install recovery even when `k` shares
+survive. A quarantined tool MAY derive and display candidate public identities
+without a descriptor, but it cannot activate, publish, fund, overwrite, or use
+networking until identity is independently authenticated.
+
 ### 5.2 Canonicalization
 
 BIP-93 permits an entirely lowercase or entirely uppercase string and rejects
@@ -198,7 +206,8 @@ punctuation, reordered characters, and concatenated shares MUST NOT be silently
 removed or guessed. A normalized value is never written back as accepted
 without the user seeing which share was accepted.
 
-The current `@frank/codex32` implementation accepts canonical lowercase only.
+The `@frank/codex32` implementation currently lives on the
+`crypto-primitives-foundation` branch and accepts canonical lowercase only.
 Uniform uppercase support and official test coverage are therefore blocking
 integration work.
 
@@ -208,6 +217,13 @@ The four-character identifier MUST be generated with the same CSPRNG boundary
 as `M`. Collision avoidance against locally known backup sets is useful UX but
 is not a security property. The identifier MUST NOT be presented as proof of
 ownership.
+
+Frank rejects a newly generated identifier that collides with any locally known
+family and resamples, but a 20-bit identifier cannot globally identify a family.
+Two unknown families can collide in identifier, threshold, and length. If their
+selected indices are distinct, the library cannot recognize the mix before
+interpolation; exact-`M` comparison during setup or the authenticated recovery
+fingerprint must reject the resulting candidate.
 
 Share indices MUST be distinct Bech32 characters other than `s`. Their selection
 MUST be deterministic from the requested `n` or sampled without bias. The UI
@@ -227,11 +243,13 @@ recoverable family. Creating a stronger family does not strengthen or revoke an
 older weaker family.
 
 After `M` has been discarded, creating a family with a different threshold
-requires reconstructing `M` in a trusted ceremony. Exactly `k` shares from one
-existing family can instead interpolate a new unused index for that same family
-and threshold. The UI MUST distinguish “extend this family” from “create a new
-family,” because their identifiers, compromise boundaries, and revocation
-implications differ.
+requires reconstructing `M` in a trusted ceremony. BIP-93 can interpolate a new
+index from exactly `k` existing shares, but those shares do not reveal every
+index previously issued. Frank may call this “extend this family” only when the
+user supplies a complete, verified issued-index inventory or an authoritative
+inventory was deliberately retained. Otherwise Frank creates a fresh family
+with a fresh identifier; it does not guess an unused index or claim that
+regenerating an existing share increased redundancy.
 
 ### 5.5 Splitting and recovery
 
@@ -239,8 +257,9 @@ The cryptographic library MUST:
 
 - require an explicit caller-supplied CSPRNG for splitting;
 - snapshot caller inputs before validation;
-- reject unsupported lengths, bad checksums, mixed sets, duplicate indices,
-  invalid thresholds, invalid indices, and wrong share counts;
+- reject unsupported lengths, bad checksums, metadata-inconsistent sets,
+  duplicate indices, invalid thresholds, invalid indices, and wrong share
+  counts;
 - recover from exactly `k` valid non-`s` shares;
 - return structured error codes that reveal no secret material;
 - never log or stringify caller inputs on failure; and
@@ -308,6 +327,9 @@ Before generating anything, the UI explains:
 - making extra copies can improve availability while increasing theft risk;
 - old shares cannot be remotely revoked; and
 - a compromised setup device can capture the unsplit master and all shares.
+- master shares recover deterministic account domains, not live protocol
+  journals, adaptor secrets, presigned transactions, or watcher capabilities;
+  funded operations require their own durable recovery state.
 
 The user selects or explicitly accepts `k` and `n`. Constraints are checked at
 the UI boundary and again inside the package. The UI MUST NOT suggest that
@@ -411,6 +433,14 @@ revision before finalizing the staged record. Startup reconciles staged,
 cancelled, and committed records; ignoring a late callback is never treated as
 undoing a storage write.
 
+Every staged row and external vault handle is tagged with its ceremony ID and
+custody epoch. A pre-linearization terminal path immediately and idempotently
+deletes the stage and destroys its handles. Failed cleanup writes a bounded
+tombstone/retry job; the application caps outstanding stages/handles and blocks
+new ceremonies rather than leaking them without bound. Startup sweeping is a
+fallback, not the only cleanup opportunity. A stale cleanup job can never
+destroy material referenced by a committed record.
+
 Profile publication and chain writes occur after local durability. If a remote
 side effect is not idempotent, it needs its own resumable state rather than
 causing master regeneration.
@@ -444,12 +474,23 @@ the user not to reconstruct the master on a public or borrowed device. Temporary
 access on an untrusted device should use a disposable session or device key,
 which is outside this specification.
 
-The recovery route starts with no active wallet and no background network
-activity. Before accepting shares it locks the recovery-format and registry
-versions from the companion descriptor and rejects missing, inconsistent, or
-unsupported versions. It then accepts one share at a time and immediately
-validates framing, case, supported length, checksum, threshold, identifier, and
-index. Recovery never asks for `n`.
+The user starts recovery only from a pre-established trusted entry point such
+as the installed application, a saved verified bookmark, or an independently
+typed and verified canonical origin. Frank, support, messages, emails, and QR
+codes never supply recovery deep links. An in-page logo or badge cannot
+authenticate its own origin, and a lookalike or punycode origin is treated as
+hostile.
+
+The recovery route starts with no candidate-account wallet or ordinary
+background network activity. Before quiescing the old active account, Frank
+inventories nonterminal obligations and either blocks recovery or atomically
+hands each funded operation to a detached, narrowly authorized watcher. Those
+watchers continue deadline-critical work without access to the candidate master
+or active-account pointer. Before accepting shares the route locks the
+recovery-format and registry versions from the companion descriptor and rejects
+missing, inconsistent, or unsupported versions. It then accepts one share at a
+time and validates framing, case, supported length, checksum, threshold,
+identifier, and index. Recovery never asks for `n`.
 
 After the first valid share, expected threshold, identifier, and length are
 locked. Later inconsistent shares are rejected without replacing the active
@@ -462,6 +503,10 @@ At exactly `k` accepted shares, the library reconstructs a candidate `M`.
 Additional shares are not opportunistically mixed into interpolation. The app
 derives the versioned public recovery fingerprint and available domain public
 identifiers, then asks the user to confirm them against a trusted prior record.
+The UI distinguishes “valid Codex32 share set” from “authenticated expected
+account.” It never reports the old account as recovered until the fingerprint
+comparison succeeds; almost any 256-bit candidate can derive a mathematically
+valid but unrelated wallet.
 
 A valid, internally consistent, adversarially generated share set can recover a
 different master. Checksums and identifiers cannot distinguish it. Therefore:
@@ -475,10 +520,26 @@ different master. Checksums and identifiers cannot distinguish it. Therefore:
   already trusted independently; and
 - a mismatch stops recovery without partially importing any domain.
 
-The fingerprint format and derivation label are part of the frozen derivation
-registry. It MUST be visually separated into groups and include enough bits to
-make accidental collision negligible; a four-character Codex32 identifier is
-not sufficient.
+The v1 fingerprint preimage is byte-exact:
+
+```text
+SHA-256(
+  UTF8("frank/recovery-fingerprint/v1") || 0x00 ||
+  u16be(len(recoveryFormat)) || UTF8(recoveryFormat) ||
+  u16be(len(derivationRegistry)) || UTF8(derivationRegistry) ||
+  M
+)
+```
+
+Here `len` is the unsigned byte length. The frozen v1 format and registry
+identifiers are canonical ASCII strings. The
+complete 32-byte result uses Bech32 `convertbits(8, 5, pad=true)` and canonical
+lowercase Bech32m with HRP `frankrec`; decoding rejects nonzero or excessive
+padding. Recovery compares the complete decoded 32 bytes, so visual grouping or
+abbreviation never reduces the comparison. This provides at least 128 bits of
+targeted preimage security under SHA-256, not merely a low accidental-collision
+rate. Known-answer vectors freeze field lengths, tag, conversion, round-trip,
+and version separation. A four-character Codex32 identifier is not sufficient.
 
 ### 7.3 Restore, import, and commit
 
@@ -491,8 +552,7 @@ Frank exposes two distinct ceremonies:
   account record, and only then atomically switches the active-account pointer.
 
 An import never destroys the former account as part of activation. Frank keeps
-it as a rollback target until a later, separately confirmed deletion. Activation
-failure leaves the former account active.
+it as a rollback target until a later, separately confirmed deletion.
 
 Before switching accounts, Frank inventories all nonterminal operations bound
 to the old account, including funded swaps. Replacement is blocked unless none
@@ -502,11 +562,17 @@ master secret does not regenerate negotiated transactions, signing sessions, or
 adaptor secrets.
 
 Once the intended identity is authenticated, Frank derives the same approved
-domain material as signup and commits it atomically under the custody epoch.
+domain material as signup and uses the same linearization and reconciliation
+machine. A pre-linearization failure commits nothing and leaves the former
+account active. At or after the linearization point, the complete new record
+remains committed and the ceremony enters resumable cleanup/activation; a lost
+acknowledgement or runtime activation error is not reported as rollback.
 
-On success, the app discards the reconstructed master and entered shares before
-normal networking resumes. On any failure, it commits nothing and clears the
-ceremony.
+Account creation and active-pointer switch are either one atomic linearization
+or two named phases. In a two-phase import, post-record/pre-switch failure leaves
+the new record inactive and the former account active until explicit resume or
+bounded cleanup. After the pointer switch, startup resumes the new identity.
+Secret cleanup precedes normal networking in either case.
 
 ## 8. Backup management after signup
 
@@ -533,12 +599,14 @@ must not be described as a full-account master backup.
 
 ## 9. Legacy BIP-39 accounts
 
-BIP-39 generation is removed for new Frank accounts. If a legacy import path is
-kept during transition, it remains separate from Codex32 and is clearly marked
-deprecated. No migration/backfill of disposable pre-release records is required
-by this specification. Any retained legacy account record has explicit storage
-provenance or a recovery-format discriminator; format detection from key length
-is forbidden after import.
+BIP-39 generation is removed for new Frank accounts. The legacy restore/import
+path remains separate, clearly marked deprecated, and byte-for-byte compatible
+with every supported legacy derivation until each durable legacy identity has
+completed a crash-safe verified rotation/sweep and an explicit retirement gate
+is met. No migration/backfill of records explicitly classified as disposable
+and prevented from holding value is required. Retained legacy account records
+have explicit storage provenance or a recovery-format discriminator; format
+detection from key length is forbidden after import.
 
 Frank MUST NOT:
 
@@ -582,11 +650,13 @@ restore time only if the user has a trusted comparison.
 
 ### 10.4 Partial and mixed sets
 
-Shares from different identifiers, thresholds, payload lengths, or duplicate
-indices fail before interpolation. Identifier collisions are possible, so the
-recovered public fingerprint remains authoritative. No “best effort” subset
-search is performed across a bag of shares because it can hide mistakes and
-create denial-of-service complexity.
+Shares with different identifiers, thresholds, payload lengths, or duplicate
+indices fail before interpolation. Independently generated families with a
+colliding 20-bit identifier and otherwise compatible metadata cannot be
+distinguished by BIP-93; interpolation yields a candidate that must fail the
+exact-`M` or authenticated-fingerprint check. No “best effort” subset search is
+performed across a bag of shares because it can hide mistakes and create
+denial-of-service complexity.
 
 ### 10.5 UI races and stale secrets
 
@@ -596,14 +666,25 @@ operation carries an opaque ceremony ID checked before state mutation. Late QR,
 clipboard, worker, persistence, and derivation callbacks cannot repopulate a
 cleared component.
 
-Only one tab may own a setup or recovery ceremony. More importantly, recovery
-or account replacement acquires an origin-wide exclusive custody lease, not
-merely a ceremony lock. Every account-scoped writer and network actor in every
-tab or worker carries a monotonic durable fencing epoch; storage transactions
-compare it atomically, so a delayed stale holder cannot write after lease loss.
-Other contexts quiesce and reload without receiving secret material. A
-`BroadcastChannel` or Web Lock may notify participants but is not the durable
-fence. Crash and stale-owner recovery are explicit.
+Only one tab may own a setup or recovery ceremony. Ordinary account-scoped
+remote mutations take an origin-wide shared side-effect permit; recovery or
+replacement takes the exclusive permit, prevents new dispatch, and drains or
+durably reconciles all in-flight effects before advancing. While holding a
+permit, an actor rereads an origin-global generation immediately before
+irreversible dispatch and retains the permit until the outcome is classified in
+an idempotent outbox. Replacement atomically increments that generation with
+the active-pointer switch. Storage transactions also compare the generation and
+expected revision. Checking only a late callback is insufficient because a
+remote chain or relay cannot enforce a browser-local epoch.
+
+Detached safety-critical watchers are the narrow exception: before exclusive
+quiescence they receive an operation-scoped capability, separate generation and
+lease, and immutable outbox, and the old watcher is fenced. They cannot access
+candidate secrets or general account authority. If safe handoff cannot be
+proven, replacement remains blocked. Read-only polling may continue only when
+callbacks are generation-fenced and reveal no ceremony data. `BroadcastChannel`
+or Web Locks may coordinate but are not the durable fence. Crash and stale-owner
+recovery are explicit.
 
 ### 10.6 Browser exposure
 
@@ -679,6 +760,12 @@ domain secrets, or domain secrets without matching format and derivation
 provenance. Schema migration is copy-on-write and retains the old record until
 the new one is durably verified. Startup reconciles staged records before any
 network activity.
+
+The generation and account revision prevent stale concurrent writers; they do
+not detect restoration of an older authentic copy of the whole local store. A
+non-rollbackable platform or external anchor is required for that stronger
+claim. Without one, suspected snapshot rollback fails closed into manual
+recovery and no signing or account replacement occurs.
 
 ## 13. Threshold systems beyond backup
 
@@ -759,8 +846,12 @@ the repository's current localization boundary.
 - Success and failure clipboard feedback is deterministic and localized;
   deferred old writes and clear timers never overwrite newer clipboard content.
 - Every supported `k`/`n` policy is validated at both boundaries.
-- Separate families of the same `M` recover identically, while mixed families
-  reject and no durable record needs to know either family's `n`.
+- Separate families of the same `M` recover identically and no durable account
+  record needs either family's `n`; extension without a complete issued-index
+  inventory cannot claim to create an unused index.
+- Metadata-inconsistent mixes reject before interpolation. Compatible families
+  with an identifier collision produce a candidate that then fails exact-`M`
+  comparison.
 
 ### 15.3 Recovery integration
 
@@ -768,6 +859,10 @@ the repository's current localization boundary.
 - Fewer than `k` shares never derive or persist a domain key.
 - A coherent wrong set with an absent or mismatched independent descriptor
   cannot commit or start networking.
+- Loss of all trusted descriptor copies blocks authenticated recovery but still
+  permits only the quarantined no-network public-identity preview.
+- Fingerprint known-answer, full-byte comparison, Bech32m padding, and targeted
+  wrong-master cases pass for every released format/registry pair.
 - Known-account mismatch has no override; different-account import creates a
   rollback-safe separate record and cannot be entered through restore.
 - Mixed and duplicate shares do not alter locked recovery metadata.
@@ -785,8 +880,15 @@ Production-adapter tests in actual supported browsers MUST commit, close, and
 reopen; interrupt every staging/finalization/migration phase; and inject quota,
 transaction-abort, readback, version-change, and competing-tab failures. Every
 reopen yields exactly the intact old record or complete new record, never a
-mixture. Delayed stale writers and network callbacks from ordinary tabs and
-workers fail their custody-epoch check.
+mixture. Repeated cancellation without restart leaves no unbounded staged rows
+or orphan vault handles. Pre- and post-linearization recovery failures reconcile
+to their specified inactive/active state.
+
+Actual multi-tab tests hold shared remote-effect permits across replacement,
+pause immediately before dispatch, and inject unknown outcomes. Exclusive
+replacement drains or reconciles them before switching. Detached funded-swap
+watchers continue through ceremony start, cancel, crash, and imminent deadlines
+under their separate narrow authority; stale ordinary actors cannot broadcast.
 
 Storage-dump and locked-vault tests prove raw domain keys are absent from
 durable storage and unusable while locked. Migration durability is verified
@@ -797,7 +899,10 @@ reader users, handwritten uppercase shares, camera scanning, one deliberately
 damaged share, recovery after a long delay with no remembered terminology, and
 fake-support requests for one share at a time. Tests check whether users
 actually distribute shares and understand that disclosures aggregate, rather
-than merely clicking through warnings.
+than merely clicking through warnings. Browser exercises include support-supplied
+deep links, cloned UI, and lookalike/punycode origins. Legacy mnemonic vectors
+continue deriving identical public identities across upgrades until the
+retirement gate is exercised.
 
 ## 16. Implementation sequence and gates
 
@@ -830,7 +935,7 @@ and exact signup/recovery integration have all passed their gates.
 - Product default for `k` and `n`, and whether advanced choices ship initially.
 - The exact derivation KDF/registry and identity aggregate defined outside this
   document.
-- The recovery fingerprint encoding and trusted comparison channels.
+- Trusted distribution and redundancy policy for the public recovery descriptor.
 - Whether v1 verifies only a random threshold subset or requires every exported
   share to participate in a successful reconstruction.
 - Whether correction suggestions ship with initial recovery or later.
@@ -843,6 +948,7 @@ None of these may be silently decided by a UI component or chain adapter.
 ## 18. References
 
 - [BIP-93: Codex32](https://github.com/bitcoin/bips/blob/master/bip-0093.mediawiki)
+- [BIP-350: Bech32m](https://github.com/bitcoin/bips/blob/master/bip-0350.mediawiki)
 - Frank issue #289, root-secret and backup-format decision
 - Frank issue #288, mandatory signup recovery confirmation
 - Frank issues #536 and #655, disclosure and stale-secret boundaries

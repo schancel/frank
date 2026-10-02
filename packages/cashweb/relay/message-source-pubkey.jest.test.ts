@@ -78,7 +78,6 @@ it('matches bitcore message source public keys', () => {
   )
   expect(message).toContain('messageSourcePublicKey(')
   expect(message).not.toContain('toPublicKey')
-  expect(message).toContain('crypto.Hash.sha256hmac(')
   const stealthStart = source.indexOf('constructStealthEntry(')
   const stealth = source.slice(
     stealthStart,

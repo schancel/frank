@@ -76,7 +76,6 @@ it('derives stealth keys from that digest and leaves HMAC on bitcore', () => {
   expect(publicBody).not.toContain('crypto.Hash.sha256')
   expect(privateBody).not.toContain('crypto.Hash.sha256')
   expect(source).not.toContain('crypto.Hash.sha256(')
-  expect(source.match(/crypto\.Hash\.sha256hmac\(/g)).toHaveLength(2)
   expect(source).toContain('point.mul(')
   expect(source).not.toContain('sha256d')
 

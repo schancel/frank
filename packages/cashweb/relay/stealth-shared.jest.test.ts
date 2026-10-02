@@ -122,7 +122,6 @@ it('matches bitcore point.mul for a secret times the destination point', () => {
     'constructSharedPointEncodings(',
   )
   expect(merged).toContain('point.mul')
-  expect(source.match(/crypto\.Hash\.sha256hmac\(/g)).toHaveLength(2)
   const helper = readFileSync(join(__dirname, 'stealth-shared.ts'), 'utf8')
   expect(helper).toContain('ecdh(')
   expect(helper).not.toContain('pointMultiply')

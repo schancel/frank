@@ -14,11 +14,8 @@
  * Version 1 is retained only as an explicitly named read path for already-stored AES-CBC
  * envelopes. New builders never emit it, and the relay does not admit it on PUT.
  */
-import {
-  PrivateKey,
-  PublicKey,
-  crypto as bitcoreCrypto,
-} from "bitcore-lib-xpi";
+import { PrivateKey, PublicKey } from "bitcore-lib-xpi";
+import { hmacSha256, randomBytes } from "@frank/crypto-box";
 import * as forge from "node-forge";
 
 import {
@@ -306,13 +303,9 @@ function deriveV2Keys(params: {
     .map((ecdhPoint) => {
       // RFC 5869 extract + the first (and only) expand block. SHA-256 emits the requested 32
       // bytes in one block: PRK = HMAC(salt, IKM), OKM = HMAC(PRK, info || 0x01).
-      const pseudorandomKey = bitcoreCrypto.Hash.sha256hmac(
-        ecdhPoint,
-        params.salt
-      );
-      return bitcoreCrypto.Hash.sha256hmac(
-        Buffer.concat([HKDF_INFO, Buffer.from([1])]),
-        pseudorandomKey
+      const pseudorandomKey = hmacSha256(ecdhPoint, params.salt);
+      return Buffer.from(
+        hmacSha256(Buffer.concat([HKDF_INFO, Buffer.from([1])]), pseudorandomKey)
       );
     });
 }
@@ -340,8 +333,8 @@ export function buildEnvelope(params: {
     );
   }
 
-  const salt = bitcoreCrypto.Random.getRandomBuffer(HKDF_SALT_BYTES);
-  const nonce = bitcoreCrypto.Random.getRandomBuffer(GCM_NONCE_BYTES);
+  const salt = Buffer.from(randomBytes(HKDF_SALT_BYTES));
+  const nonce = Buffer.from(randomBytes(GCM_NONCE_BYTES));
   const core = {
     networkTag: params.networkTag,
     from: params.fromAddress,

@@ -500,7 +500,14 @@ fn verify_attestation(
             "root/payload.1",
         ));
     };
-    let digest = directory_signature_digest(network, &statement.frame);
+    let digest = directory_signature_digest(network, &statement.frame).map_err(|err| {
+        fail(
+            ErrorCategory::Cryptographic,
+            ErrorStage::S106,
+            format!("invalid directory signature transcript: {}", err.0),
+            "root/payload.0",
+        )
+    })?;
     let transitions = key_transitions.as_deref().unwrap_or(&[]);
     // M7: an allocated algorithm this reader cannot verify makes the entire attestation
     // unsupported. Discover that before running any algorithm-1 verification.
@@ -534,7 +541,15 @@ fn verify_attestation(
             ));
         };
         let digest =
-            key_transition_signature_digest(transition_network, &transition.statement.frame);
+            key_transition_signature_digest(transition_network, &transition.statement.frame)
+                .map_err(|err| {
+                    fail(
+                        ErrorCategory::Cryptographic,
+                        ErrorStage::S106,
+                        format!("invalid key-transition signature transcript: {}", err.0),
+                        &format!("root/payload.0/5[{i}]"),
+                    )
+                })?;
         verify_entry(
             transition.algorithm,
             &transition.signer,

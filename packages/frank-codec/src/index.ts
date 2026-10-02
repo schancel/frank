@@ -43,12 +43,7 @@ export {
   uncompressedPubkey,
   uncompressedPubkeyXy,
 } from './registration'
-export {
-  hasLowS,
-  parseStrictDer,
-  verifyAlgorithm1,
-  verifyDirectoryAttestation,
-} from './verify'
+export { hasLowS, parseStrictDer, verifyAlgorithm1 } from './verify'
 export { compareAccounts, compareBytes } from './semantic'
 export type { TopicPostFields, TopicVoteDirection } from './topic'
 export {

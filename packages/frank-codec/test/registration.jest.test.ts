@@ -4,6 +4,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
+import * as codec from '../src'
 import {
   FrankCodecError,
   FrankContextError,
@@ -241,8 +242,10 @@ describe('the M2/M3/M6 pure-value vectors', () => {
     expect(joinMs(negative.seconds, negative.nanoseconds)).toBe(-1500n)
   })
 
-  it('rejects a timestamp whose nanoseconds are not a ms multiple (M2)', () => {
+  it('rejects a timestamp whose nanoseconds could not come from an ms value (M2)', () => {
     expect(() => joinMs(0n, 1n)).toThrow(RangeError)
+    expect(() => joinMs(0n, 1_000_000_000n)).toThrow(RangeError)
+    expect(() => joinMs(0n, 4_000_000_000n)).toThrow(RangeError)
   })
 
   it('derives every address vector (M6)', () => {
@@ -269,6 +272,10 @@ describe('the M2/M3/M6 pure-value vectors', () => {
 })
 
 describe('stage 10.6 (full)', () => {
+  it('keeps the stage-9-dependent attestation verifier off the public surface', () => {
+    expect('verifyDirectoryAttestation' in codec).toBe(false)
+  })
+
   it('rejects a corrupted signature byte in a scratch copy of the minimal record', () => {
     const frame = frameOf('reg-fixture-testnet-minimal-full')
     const mutated = frame.slice()

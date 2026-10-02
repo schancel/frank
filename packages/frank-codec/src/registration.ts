@@ -30,9 +30,9 @@ export function splitTimestampMs(totalMs: bigint): Timestamp {
 /** Inverse of {@link splitTimestampMs}: `ms = seconds * 1000 + nanoseconds div 1000000`. */
 export function joinMs(seconds: bigint, nanoseconds: number | bigint): bigint {
   const nanos = BigInt(nanoseconds)
-  if (nanos < 0n || nanos % NANOS_PER_MS !== 0n) {
+  if (nanos < 0n || nanos > 999_999_999n || nanos % NANOS_PER_MS !== 0n) {
     throw new RangeError(
-      'nanoseconds is not a millisecond multiple: no ms value produced it (M2)',
+      'nanoseconds is outside the timestamp range or not a millisecond multiple: no ms value produced it (M2)',
     )
   }
   return seconds * MS + nanos / NANOS_PER_MS

@@ -258,6 +258,14 @@ fn m3_expires_with_floor_semantics() {
     assert_eq!(negative.seconds, -2);
     assert_eq!(negative.nanoseconds, 500_000_000);
     assert!(join_ms(0, 1).is_err(), "nanoseconds must be a ms multiple");
+    assert!(
+        join_ms(0, 1_000_000_000).is_err(),
+        "nanoseconds must be in the timestamp range"
+    );
+    assert!(
+        join_ms(0, 4_000_000_000).is_err(),
+        "large millisecond multiples must not normalize into seconds"
+    );
 }
 
 #[test]
@@ -433,12 +441,12 @@ fn wrong_network_signature_verifies_only_over_the_ambient_network() {
         _ => panic!("not parsed"),
     };
     assert!(verify_algorithm_1(
-        &directory_signature_digest("monad-testnet", &statement_frame),
+        &directory_signature_digest("monad-testnet", &statement_frame).expect("digest"),
         &signature,
         &subject.key_bytes,
     ));
     assert!(!verify_algorithm_1(
-        &directory_signature_digest(&network, &statement_frame),
+        &directory_signature_digest(&network, &statement_frame).expect("digest"),
         &signature,
         &subject.key_bytes,
     ));
@@ -452,6 +460,13 @@ fn wrong_network_signature_verifies_only_over_the_ambient_network() {
         }
         other => panic!("expected a codec error, got {other:?}"),
     }
+}
+
+#[test]
+fn transcript_digest_helpers_reject_oversized_networks_without_panicking() {
+    let oversized = "a".repeat(65_536);
+    assert!(directory_signature_digest(&oversized, &[]).is_err());
+    assert!(key_transition_signature_digest(&oversized, &[]).is_err());
 }
 
 #[test]
@@ -598,7 +613,7 @@ fn a_full_type2_transition_authorization_verifies() {
             (4, account(&subject_key)),
         ]),
     );
-    let digest = key_transition_signature_digest(NET, &transition_statement);
+    let digest = key_transition_signature_digest(NET, &transition_statement).expect("digest");
     let transition_signature = Secp256k1::signing_only()
         .sign(
             &secp256k1_abc::Message::from_slice(&digest).expect("32 bytes"),
@@ -635,7 +650,7 @@ fn a_full_type2_transition_authorization_verifies() {
             (8, account(&subject_key)),
         ]),
     );
-    let attestation_digest = directory_signature_digest(NET, &statement);
+    let attestation_digest = directory_signature_digest(NET, &statement).expect("digest");
     let attestation_signature = Secp256k1::signing_only()
         .sign(
             &secp256k1_abc::Message::from_slice(&attestation_digest).expect("32 bytes"),
@@ -699,7 +714,7 @@ fn a_full_type2_transition_authorization_verifies() {
             (8, account(&subject_key)),
         ]),
     );
-    let bad_digest = directory_signature_digest(NET, &bad_statement);
+    let bad_digest = directory_signature_digest(NET, &bad_statement).expect("digest");
     let bad_signature = Secp256k1::signing_only()
         .sign(
             &secp256k1_abc::Message::from_slice(&bad_digest).expect("32 bytes"),

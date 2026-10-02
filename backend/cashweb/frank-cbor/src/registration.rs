@@ -36,9 +36,9 @@ pub fn split_timestamp_ms(total_ms: i128) -> Result<Timestamp, UsageError> {
 /// Inverse of [`split_timestamp_ms`]: `ms = seconds * 1000 + nanoseconds div 1000000`.
 pub fn join_ms(seconds: i64, nanoseconds: u32) -> Result<i128, UsageError> {
     let nanos = i128::from(nanoseconds);
-    if nanos % NANOS_PER_MS != 0 {
+    if nanos > 999_999_999 || nanos % NANOS_PER_MS != 0 {
         return Err(usage(
-            "nanoseconds is not a millisecond multiple: no ms value produced it (M2)",
+            "nanoseconds is outside the timestamp range or not a millisecond multiple: no ms value produced it (M2)",
         ));
     }
     Ok(i128::from(seconds) * MS + nanos / NANOS_PER_MS)

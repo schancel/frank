@@ -342,7 +342,7 @@ fn validate_rpc(body: &[u8], max: usize) -> Result<(u32, bool), RpcRejection> {
             "rpc_request_too_large",
         ));
     }
-    let value: Value = serde_json::from_slice(body)
+    let value = super::json_rpc::parse_without_duplicate_keys(body)
         .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"))?;
     let calls: Vec<&Value> = match &value {
         Value::Array(v) if !v.is_empty() && v.len() <= 20 => v.iter().collect(),
@@ -757,6 +757,16 @@ mod tests {
             String::from_utf8_lossy(send)
         );
         assert!(!validate_rpc(anonymous_batch.as_bytes(), 1024).unwrap().1);
+    }
+
+    #[test]
+    fn node_rpc_rejects_duplicate_method_before_anonymous_authorization() {
+        // serde_json::Value resolves this to the final member while Bitcoin
+        // Core and Bitcoin ABC's UniValue lookup resolves the first member.
+        // The original bytes are forwarded, so accepting it would let an
+        // anonymous caller authorize a broadcast but execute another method.
+        let ambiguous = br#"{"jsonrpc":"1.0","id":1,"method":"dumpprivkey","method":"sendrawtransaction","params":["00"]}"#;
+        assert!(validate_rpc(ambiguous, 1024).is_err());
     }
 
     #[test]

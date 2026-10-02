@@ -291,6 +291,15 @@ impl RegistryServer {
                     .expose_headers([header::HeaderName::from_static(
                         "x-frank-mailbox-next-cursor",
                     )])
+                    // Topic list/discovery responses negotiate on Accept. tower-http replaces a
+                    // handler's Vary values with this CORS list, so retain its three defaults and
+                    // add Accept here rather than silently dropping the cache key.
+                    .vary([
+                        header::ORIGIN,
+                        header::ACCESS_CONTROL_REQUEST_METHOD,
+                        header::ACCESS_CONTROL_REQUEST_HEADERS,
+                        header::ACCEPT,
+                    ])
                     // allow requests from any origin
                     .allow_origin(Any),
             )

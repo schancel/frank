@@ -115,6 +115,16 @@ pub struct DbMonadTopicPosts<'a> {
     cf_monad_topic_posts: &'a CF,
     cf_monad_topic_posts_by_topic: &'a CF,
     cf_monad_topic_discovery: &'a CF,
+    cf_monad_topic_votes: &'a CF,
+}
+
+/// Result of atomically admitting a CBOR post burn and its mandatory initial vote.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CborPostAdmission {
+    /// The immutable-author row selected by confirmed chain order.
+    pub post: proto::StoredMonadTopicPost,
+    /// Whether this burn installed or replaced the immutable author.
+    pub author_changed: bool,
 }
 
 /// Errors indicating some topic-post store error.
@@ -145,18 +155,133 @@ pub enum DbMonadTopicPostsError {
 
 use self::DbMonadTopicPostsError::*;
 
+#[cfg(test)]
+static ATOMIC_CBOR_POST_FAILPOINT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+static ATOMIC_LEGACY_POST_FAILPOINT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+fn arm_atomic_cbor_post_failpoint() {
+    ATOMIC_CBOR_POST_FAILPOINT.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn arm_atomic_legacy_post_failpoint() {
+    ATOMIC_LEGACY_POST_FAILPOINT.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 impl<'a> DbMonadTopicPosts<'a> {
     /// Create a new [`DbMonadTopicPosts`] instance.
     pub fn new(db: &'a Db) -> Self {
         let cf_monad_topic_posts = db.cf(CF_MONAD_TOPIC_POSTS).unwrap();
         let cf_monad_topic_posts_by_topic = db.cf(CF_MONAD_TOPIC_POSTS_BY_TOPIC).unwrap();
         let cf_monad_topic_discovery = db.cf(CF_MONAD_TOPIC_DISCOVERY).unwrap();
+        let cf_monad_topic_votes = db.cf(CF_MONAD_TOPIC_VOTES).unwrap();
         DbMonadTopicPosts {
             db,
             cf_monad_topic_posts,
             cf_monad_topic_posts_by_topic,
             cf_monad_topic_discovery,
+            cf_monad_topic_votes,
         }
+    }
+
+    /// Atomically record one CBOR post burn as a vote and install its author projection only when
+    /// it is earlier in confirmed chain order than the currently selected CBOR author.
+    ///
+    /// CBOR rows deliberately do not enter legacy protobuf list/discovery indexes: their inner
+    /// `payload_hash` is T1(frame), not legacy SHA256(body), and therefore must never be served as
+    /// a `MonadTopicPost` read model during coexistence.
+    pub fn admit_cbor_post(
+        &self,
+        payload_hash: &[u8],
+        mut candidate: proto::StoredMonadTopicPost,
+        initial_vote: &proto::StoredMonadTopicVoteEntry,
+    ) -> Result<CborPostAdmission> {
+        let _guard = self.db.lock_monad_topics();
+        let existing = self.get(payload_hash)?;
+        let (selected, author_changed) = match existing {
+            Some(existing) if existing.cbor_post_frame.is_empty() => {
+                return Err(bitcoinsuite_error::Report::msg(
+                    "refusing to replace a legacy protobuf topic row with a CBOR identity",
+                ))
+            }
+            Some(existing) => {
+                let existing_order = (
+                    existing.confirmed_block_number,
+                    existing.confirmed_transaction_index,
+                    existing.tx_hash.as_slice(),
+                );
+                let candidate_order = (
+                    candidate.confirmed_block_number,
+                    candidate.confirmed_transaction_index,
+                    candidate.tx_hash.as_slice(),
+                );
+                if candidate_order < existing_order {
+                    // Storage time is a relay observation, not chain order. Keep the first
+                    // visible timestamp stable while replacing only chain-author facts.
+                    candidate.timestamp = existing.timestamp;
+                    (candidate, true)
+                } else {
+                    (existing, false)
+                }
+            }
+            None => (candidate, true),
+        };
+
+        let mut batch = rocksdb::WriteBatch::default();
+        if author_changed {
+            batch.put_cf(
+                self.cf_monad_topic_posts,
+                payload_hash,
+                selected.encode_to_vec(),
+            );
+        }
+        batch.put_cf(
+            self.cf_monad_topic_votes,
+            vote_key(&initial_vote.target_payload_hash, &initial_vote.tx_hash),
+            initial_vote.encode_to_vec(),
+        );
+        #[cfg(test)]
+        if ATOMIC_CBOR_POST_FAILPOINT.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(bitcoinsuite_error::Report::msg(
+                "test failpoint before atomic CBOR post batch",
+            ));
+        }
+        self.db.write_batch(batch)?;
+        Ok(CborPostAdmission {
+            post: selected,
+            author_changed,
+        })
+    }
+
+    /// Atomically store one legacy protobuf post, all of its list/discovery indexes, and its
+    /// mandatory initial vote. Verification happens before this boundary; once admission starts,
+    /// readers can observe either the complete unit or none of it.
+    pub fn admit_legacy_post(
+        &self,
+        payload_hash: &[u8],
+        post: &proto::StoredMonadTopicPost,
+        initial_vote: &proto::StoredMonadTopicVoteEntry,
+    ) -> Result<()> {
+        let _guard = self.db.lock_monad_topics();
+        let mut batch = rocksdb::WriteBatch::default();
+        self.append_legacy_post(&mut batch, payload_hash, post)?;
+        batch.put_cf(
+            self.cf_monad_topic_votes,
+            vote_key(&initial_vote.target_payload_hash, &initial_vote.tx_hash),
+            initial_vote.encode_to_vec(),
+        );
+        #[cfg(test)]
+        if ATOMIC_LEGACY_POST_FAILPOINT.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(bitcoinsuite_error::Report::msg(
+                "test failpoint before atomic legacy post batch",
+            ));
+        }
+        self.db.write_batch(batch)
     }
 
     /// Store a [`proto::StoredMonadTopicPost`], keyed by its inner post's `payload_hash`, and
@@ -170,6 +295,16 @@ impl<'a> DbMonadTopicPosts<'a> {
     /// `topic`) doesn't leave a stale, orphaned index row behind.
     pub fn put(&self, payload_hash: &[u8], post: &proto::StoredMonadTopicPost) -> Result<()> {
         let mut batch = rocksdb::WriteBatch::default();
+        self.append_legacy_post(&mut batch, payload_hash, post)?;
+        self.db.write_batch(batch)
+    }
+
+    fn append_legacy_post(
+        &self,
+        batch: &mut rocksdb::WriteBatch,
+        payload_hash: &[u8],
+        post: &proto::StoredMonadTopicPost,
+    ) -> Result<()> {
         let existing = self.get(payload_hash)?;
         // Ticket #72: whether this call is storing a genuinely new post (vs. a client retrying a
         // request whose response it never saw) -- only a genuinely new post bumps
@@ -220,7 +355,6 @@ impl<'a> DbMonadTopicPosts<'a> {
                 stats.encode_to_vec(),
             );
         }
-        self.db.write_batch(batch)?;
         Ok(())
     }
 
@@ -440,8 +574,11 @@ impl Debug for DbMonadTopicVotes<'_> {
 mod tests {
     use bitcoinsuite_error::Result;
     use pretty_assertions::assert_eq;
+    use prost::Message;
 
     use crate::{proto, store::db::Db};
+
+    use super::{arm_atomic_cbor_post_failpoint, arm_atomic_legacy_post_failpoint};
 
     fn post(payload_hash: &[u8]) -> proto::StoredMonadTopicPost {
         proto::StoredMonadTopicPost {
@@ -456,6 +593,9 @@ mod tests {
             tx_hash: vec![8u8; 32],
             timestamp: 1234,
             network_tag: Vec::new(),
+            cbor_post_frame: Vec::new(),
+            confirmed_block_number: 0,
+            confirmed_transaction_index: 0,
         }
     }
 
@@ -476,6 +616,9 @@ mod tests {
             tx_hash: vec![8u8; 32],
             timestamp,
             network_tag: Vec::new(),
+            cbor_post_frame: Vec::new(),
+            confirmed_block_number: 0,
+            confirmed_transaction_index: 0,
         }
     }
 
@@ -491,6 +634,22 @@ mod tests {
             timestamp: 1234,
             weight,
         }
+    }
+
+    fn cbor_post(
+        payload_hash: &[u8],
+        frame: &[u8],
+        author_byte: u8,
+        block: u64,
+        tx_index: u64,
+    ) -> proto::StoredMonadTopicPost {
+        let mut stored = post(payload_hash);
+        stored.sender_address = vec![author_byte; 20];
+        stored.tx_hash = vec![author_byte; 32];
+        stored.cbor_post_frame = frame.to_vec();
+        stored.confirmed_block_number = block;
+        stored.confirmed_transaction_index = tx_index;
+        stored
     }
 
     #[test]
@@ -568,6 +727,143 @@ mod tests {
         assert_eq!(db.monad_topic_votes().tally(&target)?, 1000);
         assert_eq!(db.monad_topic_votes().votes_for(&target)?.len(), 1);
 
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_post_and_initial_vote_fail_as_one_atomic_unit() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--legacy-post-atomic")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let target = vec![0x61; 32];
+        let stored = post(&target);
+        let initial_vote = vote(&target, 0x62, 500);
+
+        arm_atomic_legacy_post_failpoint();
+        assert!(db
+            .monad_topic_posts()
+            .admit_legacy_post(&target, &stored, &initial_vote)
+            .is_err());
+
+        assert_eq!(db.monad_topic_posts().get(&target)?, None);
+        assert!(db
+            .monad_topic_posts()
+            .list_by_topic("test.topic", 0)?
+            .is_empty());
+        assert!(db.monad_topic_posts().list_topics()?.is_empty());
+        assert!(db.monad_topic_votes().votes_for(&target)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn cbor_post_and_initial_vote_are_one_atomic_visibility_unit() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--topic-cbor-atomic")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let target = [0x31; 32];
+        let post = cbor_post(&target, b"authoritative-frame", 7, 10, 2);
+        let initial_vote = vote(&target, 7, 500);
+
+        arm_atomic_cbor_post_failpoint();
+        assert!(db
+            .monad_topic_posts()
+            .admit_cbor_post(&target, post.clone(), &initial_vote)
+            .is_err());
+        assert_eq!(db.monad_topic_posts().get(&target)?, None);
+        assert_eq!(db.monad_topic_votes().tally(&target)?, 0);
+
+        db.monad_topic_posts()
+            .admit_cbor_post(&target, post.clone(), &initial_vote)?;
+        assert_eq!(db.monad_topic_posts().get(&target)?, Some(post));
+        assert_eq!(db.monad_topic_votes().tally(&target)?, 500);
+        Ok(())
+    }
+
+    #[test]
+    fn cbor_author_is_earliest_confirmed_burn_sequentially_and_concurrently() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--topic-cbor-author")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let target = [0x32; 32];
+        let frame = b"same-authoritative-frame";
+
+        db.monad_topic_posts().admit_cbor_post(
+            &target,
+            cbor_post(&target, frame, 9, 20, 4),
+            &vote(&target, 9, 9),
+        )?;
+        db.monad_topic_posts().admit_cbor_post(
+            &target,
+            cbor_post(&target, frame, 3, 19, 8),
+            &vote(&target, 3, 3),
+        )?;
+        assert_eq!(
+            db.monad_topic_posts().get(&target)?.unwrap().sender_address,
+            vec![3; 20]
+        );
+
+        std::thread::scope(|scope| {
+            for (author, block, index) in [(8, 18, 2), (1, 18, 1), (7, 21, 0)] {
+                let db = &db;
+                scope.spawn(move || {
+                    db.monad_topic_posts()
+                        .admit_cbor_post(
+                            &target,
+                            cbor_post(&target, frame, author, block, index),
+                            &vote(&target, author, author as i64),
+                        )
+                        .unwrap();
+                });
+            }
+        });
+        let selected = db.monad_topic_posts().get(&target)?.unwrap();
+        assert_eq!(selected.confirmed_block_number, 18);
+        assert_eq!(selected.confirmed_transaction_index, 1);
+        assert_eq!(selected.sender_address, vec![1; 20]);
+        assert_eq!(db.monad_topic_votes().votes_for(&target)?.len(), 5);
+        Ok(())
+    }
+
+    #[test]
+    fn cbor_frame_and_vote_survive_reopen_without_entering_legacy_indexes() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--topic-cbor-reopen")?;
+        let path = tempdir.path().join("db.rocksdb");
+        let target = [0x33; 32];
+        let frame = b"exact-frame-kept-byte-for-byte";
+        {
+            let db = Db::open(&path)?;
+            db.monad_topic_posts().admit_cbor_post(
+                &target,
+                cbor_post(&target, frame, 4, 30, 5),
+                &vote(&target, 4, 400),
+            )?;
+        }
+        let reopened = Db::open(&path)?;
+        assert_eq!(
+            reopened
+                .monad_topic_posts()
+                .get(&target)?
+                .unwrap()
+                .cbor_post_frame,
+            frame
+        );
+        assert_eq!(reopened.monad_topic_votes().tally(&target)?, 400);
+        assert!(reopened
+            .monad_topic_posts()
+            .list_by_topic("test.topic", 0)?
+            .is_empty());
+        assert!(reopened.monad_topic_posts().list_topics()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn pre_field_legacy_fixture_still_decodes_with_empty_cbor_author_fields() -> Result<()> {
+        // Captured from the schema before fields 7/8 existed, rather than encoded by the current
+        // generated type, so this guards the actual deployed wire compatibility.
+        let bytes = hex::decode("0a380a0a746573742e746f7069631a0301020322030405062a203434343434343434343434343434343434343434343434343434343434343434121409090909090909090909090909090909090909091a20080808080808080808080808080808080808080808080808080808080808080820d209")?;
+        let decoded = proto::StoredMonadTopicPost::decode(bytes.as_slice())?;
+        assert_eq!(decoded.post.unwrap().payload_hash, vec![0x34; 32]);
+        assert!(decoded.cbor_post_frame.is_empty());
+        assert_eq!(decoded.confirmed_block_number, 0);
+        assert_eq!(decoded.confirmed_transaction_index, 0);
         Ok(())
     }
 

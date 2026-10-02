@@ -7,6 +7,8 @@ export const TOPIC_OPERATION_KEY_PREFIX = 'topic-operation:'
 interface OutgoingTopicOperationBase {
   version: 1
   requestBytes: number[]
+  /** Absent on deployed version-1 rows, which are legacy protobuf operations. */
+  writeFormat?: 'protobuf' | 'cbor'
   leaseIndex: number
   senderAddress: string
   rawTx: string
@@ -68,6 +70,7 @@ export function assertOutgoingTopicOperation(
           'version',
           'kind',
           'requestBytes',
+          'writeFormat',
           'leaseIndex',
           'senderAddress',
           'rawTx',
@@ -81,6 +84,7 @@ export function assertOutgoingTopicOperation(
           'version',
           'kind',
           'requestBytes',
+          'writeFormat',
           'leaseIndex',
           'senderAddress',
           'rawTx',
@@ -94,6 +98,9 @@ export function assertOutgoingTopicOperation(
     allowed.length === 0 ||
     Object.keys(value).some(key => !allowed.includes(key)) ||
     value.version !== 1 ||
+    (value.writeFormat !== undefined &&
+      value.writeFormat !== 'protobuf' &&
+      value.writeFormat !== 'cbor') ||
     !Array.isArray(value.requestBytes) ||
     value.requestBytes.length === 0 ||
     value.requestBytes.some(

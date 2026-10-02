@@ -14,9 +14,10 @@
  *    (`../registry/broadcast_pb`'s `BroadcastMessage`/`BroadcastEntry`/`TopicPost`, and
  *    `../types/forum`'s `ForumMessageEntry`) rather than inventing a new payload encoding — see
  *    "Payload encoding, and why there's no encryption here" below.
- * 2. Computes `payload_hash = SHA256(serialized payload)`.
+ * 2. Uses the legacy body hash/commitment by default. The explicit `topicWriteFormat: 'cbor'`
+ *    predecessor instead wraps the body in a type-9 post and derives its T1/T7 commitments.
  * 3. Builds the calldata commitment as `<lokad_id: TOPIC_VOTE_LOKAD_ID><version:
- *    TOPIC_COMMITMENT_VERSION_TAG><direction: 0x01 up / 0x00 down><commitment: 32 bytes>` (38
+ *    TOPIC_COMMITMENT_VERSION_TAG><direction: 0x01 up><commitment: 32 bytes>` (38
  *    bytes total) — the exact layout `cashweb_registry::monad_topic_verify::
  *    parse_topic_calldata` decodes (see `backend/cashweb/cashweb-registry/src/
  *    monad_topic_verify.rs` lines 26-38 for the field-by-field doc, and its `TOPIC_VOTE_LOKAD_ID`/
@@ -29,14 +30,11 @@
  *    `backend/cashweb/cashweb-registry/src/http/monad_topics.rs`'s module doc: a topic vote burns to the
  *    *same* configured Stamp burn address, just tagged with a different LOKAD ID in its calldata —
  *    there is deliberately no separate topic burn-address env var).
- * 5. Assembles a `MonadTopicPost { topic, parent_post_hash, raw_burn_tx, encrypted_payload,
- *    payload_hash }` and `PUT`s it to `/message/monad/topics`, expecting a `StoredMonadTopicPost`
- *    back.
- * 6. Releases the lease per the exact same three-way outcome mapping `monad-stamp-client.ts`
- *    documents in its own "Lease release policy" section (2xx → `'confirmed'`; HTTP error response
- *    → `'failed'`; network/transport failure → fall back to polling `GET
- *    /message/monad/topics/:payload_hash` before deciding `'confirmed'`/`'stuck'`) — see that
- *    section below for why this file repeats rather than imports that logic.
+ * 5. Submits protobuf by default; the opt-in predecessor uses a type-10 CBOR submission.
+ * 6. Releases the lease per the same three-way outcome mapping `monad-stamp-client.ts`
+ *    documents in its own "Lease release policy" section. Legacy protobuf transport loss may use
+ *    its transaction-bearing GET view; CBOR transport loss remains journaled because its
+ *    frame-only GET cannot attribute the current burn transaction — see that section below.
  *
  * ## Payload encoding, and why there's no encryption here
  *
@@ -56,9 +54,11 @@
  * ticket's own instructions: reuse an existing payload type if one exists (it does — this one),
  * don't invent a new encryption scheme for content that was never encrypted upstream either.
  *
- * ## Protobuf encoding
+ * ## Coexistence response
  *
- * Uses the real generated bindings already committed to `main` ahead of both #31 and #32:
+ * Writes remain protobuf by default until the protocol allocates relay-derived CBOR read views.
+ * The opt-in CBOR writer receives the exact type-9 frame on success. The generated bindings remain
+ * for the default compatibility path:
  * `./proto/topic_message.proto` → `./topic_message_pb.js`/`.d.ts` (ticket #30/#39's toolchain —
  * see `monad-stamp-client.ts`'s header for why hand-rolled `jspb.BinaryWriter`/`BinaryReader` was
  * rejected and replaced with a real `protoc`/`protoc-gen-js`/`protoc-gen-ts` toolchain). This file
@@ -78,22 +78,18 @@
  *   - **`PUT /message/monad/topics` returns 2xx**: `process_monad_topic_post` (`http/monad_topics.rs`) only
  *     reaches its success response after `TopicVoteRelayOutcome::Verified` — every other outcome
  *     is a rejection before any store happens. → `'confirmed'`.
- *   - **`PUT /message/monad/topics` returns an HTTP error response** (relay reached and
- *     definitively responded): per the same handler, a stored post only ever exists after
- *     `Verified`, so an HTTP-level error means the post was never accepted/stored. → `'failed'`
- *     (retiring rather than risking the rare "verified but the final store call itself 500'd"
- *     case — same conservative choice `monad-stamp-client.ts` documents for its own `PUT`, for the
- *     same reason: distinguishing that case would mean parsing `ProcessTopicPostError`'s variant
- *     out of the JSON error body, which is needlessly fragile).
+ *   - **`PUT /message/monad/topics` returns a definitive HTTP error response**: the post was not
+ *     accepted/stored. → `'failed'`
+ *   - **The relay returns `topic_burn_outcome_unknown`** after broadcast: confirmation is
+ *     ambiguous. → `'stuck'`
  *   - **No HTTP response at all** (network/transport failure, genuinely unknown whether the relay
- *     ever received/broadcast/stored the post before the connection dropped): falls back to
- *     polling `GET /message/monad/topics/:payload_hash` (`pollForStoredPost`) — that route already
- *     exists server-side (`handle_get_monad_topic_post`, `http/monad_topics.rs`) purely as an internal
- *     disambiguation mechanism here, the same way `monad-stamp-client.ts` uses its own `GET
- *     /message/monad/:payload_hash` fallback poll; this is *not* the "read back posts" feature
- *     (ticket #33's scope) — it never surfaces a general read API, only resolves this one
- *     ambiguous case. Found → `'confirmed'`. Still not found after the poll budget is exhausted →
- *     `'stuck'`, and `MonadTopicPostAbandonedError` is thrown.
+ *     ever received/broadcast/stored the post before the connection dropped): legacy protobuf
+ *     writes may poll `GET /message/monad/topics/:payload_hash` (`pollForStoredPost`) because that
+ *     response carries the sender and exact signed transaction needed to attribute confirmation.
+ *     A CBOR read returns only the immutable type-9 post frame, which another transaction could
+ *     already have stored, so frame equality cannot confirm the current burn transaction. The
+ *     exact signed CBOR submission remains in the durable journal for safe replay/reconciliation,
+ *     the lease remains `'in-use'`, and `MonadTopicPostAbandonedError` is thrown as `'stuck'`.
  */
 import {
   Provider,
@@ -105,6 +101,15 @@ import {
   sha256,
 } from 'ethers'
 import axios from 'axios'
+import {
+  defaultContext,
+  encodeTopicPost,
+  encodeTopicPostSubmission,
+  topicBurnCommitment,
+  topicBurnCalldata,
+  topicPostBurnCalldata,
+  validateFrame,
+} from '@frank/codec'
 
 // Ticket #51 (Vite migration): see cashweb/pop.ts's comment for why generated `*_pb.js` files
 // need a default import + destructure rather than direct named imports -- all six of these are
@@ -145,20 +150,13 @@ import type {
  * distinct from both `monad-stamp-client.ts`'s `"POND"` and Lotus's private-message LOKAD ID. */
 const TOPIC_VOTE_LOKAD_ID = new Uint8Array([0x54, 0x50, 0x49, 0x43]) // "TPIC"
 
-/** `cashweb_registry::monad_topic_verify::TOPIC_COMMITMENT_VERSION_TAG` (that file, line 99:
- * `0x01`). Independent of `monad-stamp-client.ts`'s own `COMMITMENT_VERSION_TAG` (both currently
- * `0x01`, but they version their own calldata layouts separately). */
-const TOPIC_COMMITMENT_VERSION_TAG = new Uint8Array([0x01])
+/** Version `0x02` selects the deterministic-CBOR topic commitment path. */
+const TOPIC_COMMITMENT_VERSION_TAG = new Uint8Array([0x02])
 
 /** `cashweb_registry::monad_topic_verify::VoteDirection::{UP_BYTE, DOWN_BYTE}` (that file, lines
  * 118-119). An up-vote burns with direction byte `0x01`; a down-vote with `0x00` — mirroring
  * Lotus's `OP_1`/`OP_0` vote-direction convention (see that file's own module doc). */
 export type TopicVoteDirection = 'up' | 'down'
-
-const TOPIC_VOTE_DIRECTION_BYTE: Record<TopicVoteDirection, number> = {
-  up: 0x01,
-  down: 0x00,
-}
 
 /** Total calldata length: `<lokad_id: 4><version: 1><direction: 1><commitment: 32>` = 38 bytes.
  * One byte longer than `monad-stamp-client.ts`'s `MONAD_STAMP_CALLDATA_LENGTH` (37) — the extra
@@ -199,6 +197,8 @@ export interface StoredMonadTopicPostProto {
    * `monad-stamp-client.ts`'s `StoredMonadMessageProto.networkTag` doc; the same "exists, decodes,
    * never asserted by the client" scope applies here. */
   networkTag: Uint8Array
+  /** Exact type-9 frame for CBOR-origin posts; empty for legacy protobuf posts. */
+  cborPostFrame?: Uint8Array
 }
 
 /** `MonadTopicPostView` from `topic_message.proto` — `GET /message/monad/topics/:payload_hash`'s
@@ -210,18 +210,8 @@ export interface MonadTopicPostViewProto {
   voteWeight: number
 }
 
-export function encodeMonadTopicPost(msg: MonadTopicPostProto): Uint8Array {
-  const pb = new MonadTopicPost()
-  pb.setTopic(msg.topic)
-  pb.setParentPostHash(msg.parentPostHash)
-  pb.setRawBurnTx(msg.rawBurnTx)
-  pb.setEncryptedPayload(msg.encryptedPayload)
-  pb.setPayloadHash(msg.payloadHash)
-  return pb.serializeBinary()
-}
-
 /** Decode protobuf wire-format bytes into a {@link MonadTopicPostProto}. Round-trips with
- * {@link encodeMonadTopicPost}. Exported for tests. */
+ * the legacy generated writer. Exported for compatibility tests and protobuf reads. */
 export function decodeMonadTopicPost(bytes: Uint8Array): MonadTopicPostProto {
   const pb = MonadTopicPost.deserializeBinary(bytes)
   return {
@@ -231,6 +221,16 @@ export function decodeMonadTopicPost(bytes: Uint8Array): MonadTopicPostProto {
     encryptedPayload: pb.getEncryptedPayload_asU8(),
     payloadHash: pb.getPayloadHash_asU8(),
   }
+}
+
+export function encodeMonadTopicPost(msg: MonadTopicPostProto): Uint8Array {
+  const pb = new MonadTopicPost()
+  pb.setTopic(msg.topic)
+  pb.setParentPostHash(msg.parentPostHash)
+  pb.setRawBurnTx(msg.rawBurnTx)
+  pb.setEncryptedPayload(msg.encryptedPayload)
+  pb.setPayloadHash(msg.payloadHash)
+  return pb.serializeBinary()
 }
 
 function decodeStoredMonadTopicPostPb(
@@ -251,6 +251,7 @@ function decodeStoredMonadTopicPostPb(
     txHash: pb.getTxHash_asU8(),
     timestamp: pb.getTimestamp(),
     networkTag: pb.getNetworkTag_asU8(),
+    cborPostFrame: pb.getCborPostFrame_asU8(),
   }
 }
 
@@ -320,15 +321,14 @@ export function buildTopicPostPayload(params: {
   return broadcastMessage.serializeBinary()
 }
 
-/** `payload_hash = SHA256(serialized payload)` — both `MonadTopicPost.payload_hash` and the
- * on-chain commitment the initial-vote burn tx's calldata must carry. Returns the raw 32-byte
- * hash, not hex. */
+/** Legacy body-only SHA-256 helper. New writes use the T1 hash of the complete type-9 frame and
+ * its separate T7 burn commitment. */
 export function computeTopicPostCommitment(payload: Uint8Array): Uint8Array {
   return getBytes(sha256(payload))
 }
 
-/** Build the exact `<lokad_id: TOPIC_VOTE_LOKAD_ID><version:
- * TOPIC_COMMITMENT_VERSION_TAG><direction: 1 byte><commitment: 32 bytes>` calldata layout
+/** Build the legacy `<lokad_id: TOPIC_VOTE_LOKAD_ID><version: 0x01><direction: 1
+ * byte><commitment: 32 bytes>` calldata layout
  * `monad_topic_verify::parse_topic_calldata` decodes (see this file's header), as a `0x`-prefixed
  * hex string ready to pass straight into `MonadAccountTxSigner.buildAndSignCall`. */
 export function buildTopicVoteCalldata(
@@ -340,12 +340,27 @@ export function buildTopicVoteCalldata(
       `Topic vote commitment must be exactly 32 bytes, got ${commitment.length}`,
     )
   }
-  return concat([
-    TOPIC_VOTE_LOKAD_ID,
-    TOPIC_COMMITMENT_VERSION_TAG,
-    new Uint8Array([TOPIC_VOTE_DIRECTION_BYTE[direction]]),
-    commitment,
-  ])
+  return hexlify(
+    concat([
+      TOPIC_VOTE_LOKAD_ID,
+      new Uint8Array([0x01]),
+      new Uint8Array([direction === 'up' ? 0x01 : 0x00]),
+      commitment,
+    ]),
+  )
+}
+
+/** Build deterministic-CBOR/T7 topic calldata (version 0x02). */
+export function buildCborTopicVoteCalldata(
+  direction: TopicVoteDirection,
+  commitment: Uint8Array,
+): string {
+  if (commitment.length !== 32) {
+    throw new Error(
+      `Topic vote commitment must be exactly 32 bytes, got ${commitment.length}`,
+    )
+  }
+  return hexlify(topicBurnCalldata(direction, commitment))
 }
 
 /** Hex-encode `bytes` with no `0x` prefix — the shape Rust's `hex::decode` (used by
@@ -412,8 +427,28 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-/** Options for the `GET /message/monad/topics/:payload_hash` fallback poll used when a `PUT`
- * attempt fails with no HTTP response at all (see this file's header, "Lease release policy"). */
+function isRelayOutcomeUnknown(error: unknown): boolean {
+  if (!axios.isAxiosError(error) || !error.response) return false
+  let data: unknown = error.response.data
+  try {
+    if (data instanceof ArrayBuffer) data = new TextDecoder().decode(data)
+    else if (ArrayBuffer.isView(data))
+      data = new TextDecoder().decode(
+        new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+      )
+    if (typeof data === 'string') data = JSON.parse(data)
+  } catch {
+    return false
+  }
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    (data as { error?: unknown }).error === 'topic_burn_outcome_unknown'
+  )
+}
+
+/** Options for the legacy protobuf `GET /message/monad/topics/:payload_hash` fallback poll used
+ * when a `PUT` attempt fails with no HTTP response (see "Lease release policy"). */
 export interface AbandonPollOptions {
   /** Delay between poll attempts, in ms. Default 2000. */
   intervalMs?: number
@@ -430,7 +465,7 @@ export interface SubmitTopicPostParams {
   /** SHA256 digest of the parent post this is replying to, if any. Omit (or pass an empty array)
    * for a top-level post. */
   parentPostHash?: Uint8Array
-  /** This post's initial vote direction — even a post's own first vote can be up or down. */
+  /** This post's initial vote direction. Deterministic-CBOR type-10 requires `up`. */
   direction: TopicVoteDirection
   /** `0x`-prefixed Monad burn address (see `frank/.env.example`'s `MONAD_STAMP_BURN_ADDRESS`,
    * reused as-is for topic votes per `http/monad_topics.rs`'s module doc — there is no separate topic
@@ -457,9 +492,11 @@ export interface SubmitTopicPostParams {
 
 /** Outcome of a successful `submitTopicPost` call. */
 export interface SubmitTopicPostResult {
-  stored: StoredMonadTopicPostProto
-  /** Bare (no `0x`) hex of `payload_hash` — also `GET /message/monad/topics/:payload_hash`'s path
-   * segment. */
+  /** Present on the legacy protobuf path. CBOR writes return the frozen type-9 frame instead. */
+  stored?: StoredMonadTopicPostProto
+  /** Exact authoritative type-9 frame on the CBOR path; empty on the legacy default path. */
+  postFrame: Uint8Array
+  /** Bare post identity: T1(type-9 frame) for CBOR or legacy SHA256(body); also the GET key. */
   payloadHashHex: string
   txHash: string
   leaseIndex: number
@@ -482,6 +519,8 @@ export class MonadTopicPostClient {
    * slash. `/message/monad/topics` (`PUT`) and `/message/monad/topics/:payload_hash` (`GET`) are
    * appended to it. */
   private readonly relayBaseUrl: string
+  private readonly cborNetwork: string
+  private readonly topicWriteFormat: 'protobuf' | 'cbor'
 
   constructor(params: MonadWalletHandle) {
     this.pool = params.pool
@@ -491,6 +530,8 @@ export class MonadTopicPostClient {
     this.walletState = params.walletState
     this.topicJournal = params.topicOperationJournal
     this.relayBaseUrl = params.relayBaseUrl.replace(/\/+$/, '')
+    this.cborNetwork = params.cborNetwork ?? 'monad-testnet'
+    this.topicWriteFormat = params.topicWriteFormat ?? 'protobuf'
   }
 
   /** Fetch a previously-stored post view by its bare-hex `payload_hash` via
@@ -505,6 +546,7 @@ export class MonadTopicPostClient {
       const response = await axios({
         method: 'get',
         url: `${this.relayBaseUrl}/message/monad/topics/${payloadHashHex}`,
+        headers: { Accept: 'application/x-protobuf' },
         responseType: 'arraybuffer',
       })
       return decodeMonadTopicPostView(new Uint8Array(response.data))
@@ -537,19 +579,32 @@ export class MonadTopicPostClient {
   }
 
   private async putTopicPost(
-    post: MonadTopicPostProto,
-  ): Promise<StoredMonadTopicPostProto> {
+    body: Uint8Array,
+    cborPostFrame?: Uint8Array,
+  ): Promise<StoredMonadTopicPostProto | undefined> {
+    const cbor = cborPostFrame !== undefined
     const response = await axios({
       method: 'put',
       url: `${this.relayBaseUrl}/message/monad/topics`,
-      data: encodeMonadTopicPost(post),
-      // Content-Type must be exactly `application/x-protobuf` -- `cashweb_http_utils::protobuf::
-      // Protobuf` (the extractor `handle_put_monad_topic_post` uses) rejects anything else with a 400,
-      // the same bug ticket #8's e2e demo found and fixed for `monad_message.rs`; see
-      // `monad-stamp-client.ts`'s header for the full story.
-      headers: { 'Content-Type': 'application/x-protobuf' },
+      data: body,
+      headers: {
+        'Content-Type': cbor ? 'application/cbor' : 'application/x-protobuf',
+        'Accept': cbor ? 'application/cbor' : 'application/x-protobuf',
+      },
       responseType: 'arraybuffer',
     })
+    if (cbor) {
+      const returned = new Uint8Array(response.data)
+      if (
+        returned.length !== cborPostFrame.length ||
+        returned.some((byte, index) => byte !== cborPostFrame[index])
+      ) {
+        throw new Error(
+          'relay did not return the exact authoritative type-9 frame',
+        )
+      }
+      return undefined
+    }
     return decodeStoredMonadTopicPost(new Uint8Array(response.data))
   }
 
@@ -587,6 +642,18 @@ export class MonadTopicPostClient {
     params: SubmitTopicPostParams,
     admission?: MonadWalletOperationAdmission,
   ): Promise<SubmitTopicPostResult> {
+    if (
+      this.topicWriteFormat === 'cbor' &&
+      (this.topicJournal === undefined ||
+        this.walletState === undefined ||
+        this.walletState.topicOperationJournal !== this.topicJournal ||
+        this.walletState.pool !== this.pool ||
+        this.walletState.leaseManager !== this.leaseManager)
+    ) {
+      throw new Error(
+        'CBOR topic writes require one coherent walletState and topicOperationJournal',
+      )
+    }
     if (this.walletState !== undefined) {
       return this.walletState.runOperation(
         admitted => this.submitTopicPostAdmitted(params, admitted),
@@ -603,6 +670,9 @@ export class MonadTopicPostClient {
     if (params.entries.length === 0) {
       throw new Error('entries must not be empty')
     }
+    if (this.topicWriteFormat === 'cbor' && params.direction !== 'up') {
+      throw new Error("a CBOR topic post's initial vote must be up")
+    }
 
     const parentPostHash = params.parentPostHash ?? new Uint8Array(0)
     const payload = buildTopicPostPayload({
@@ -611,8 +681,28 @@ export class MonadTopicPostClient {
       parentPostHash,
       timestampMs: params.timestampMs,
     })
-    const payloadHash = computeTopicPostCommitment(payload)
-    const calldata = buildTopicVoteCalldata(params.direction, payloadHash)
+    const postFrame =
+      this.topicWriteFormat === 'cbor'
+        ? encodeTopicPost({
+            network: this.cborNetwork,
+            topic: params.topic,
+            parentHash:
+              parentPostHash.length === 0 ? undefined : parentPostHash,
+            body: payload,
+          })
+        : new Uint8Array(0)
+    const payloadHash =
+      this.topicWriteFormat === 'cbor'
+        ? topicBurnCommitment(postFrame).hash
+        : computeTopicPostCommitment(payload)
+    const commitment =
+      this.topicWriteFormat === 'cbor'
+        ? topicBurnCommitment(postFrame).commitment
+        : payloadHash
+    const calldata =
+      this.topicWriteFormat === 'cbor'
+        ? hexlify(topicPostBurnCalldata(commitment))
+        : buildTopicVoteCalldata(params.direction, commitment)
     const payloadHashHex = toBareHex(payloadHash)
 
     const handle: AccountLeaseHandle =
@@ -649,18 +739,25 @@ export class MonadTopicPostClient {
       )
     }
 
-    const post: MonadTopicPostProto = {
-      topic: params.topic,
-      parentPostHash,
-      rawBurnTx: getBytes(signedTx.rawTx),
-      encryptedPayload: payload,
-      payloadHash,
-    }
+    const rawBurnTx = getBytes(signedTx.rawTx)
+    const submission =
+      this.topicWriteFormat === 'cbor'
+        ? encodeTopicPostSubmission(postFrame, rawBurnTx)
+        : encodeMonadTopicPost({
+            topic: params.topic,
+            parentPostHash,
+            rawBurnTx,
+            encryptedPayload: payload,
+            payloadHash,
+          })
 
     const operation: OutgoingTopicOperation = {
       version: 1,
       kind: 'post',
-      requestBytes: Array.from(encodeMonadTopicPost(post)),
+      requestBytes: Array.from(submission),
+      ...(this.topicWriteFormat === 'cbor'
+        ? { writeFormat: 'cbor' as const }
+        : {}),
       leaseIndex: handle.index,
       senderAddress: signedTx.from,
       rawTx: signedTx.rawTx,
@@ -681,8 +778,11 @@ export class MonadTopicPostClient {
     await this.pool.flush()
 
     try {
-      const stored = await this.putTopicPost(post)
-      if (this.topicJournal !== undefined) {
+      const stored = await this.putTopicPost(
+        submission,
+        this.topicWriteFormat === 'cbor' ? postFrame : undefined,
+      )
+      if (this.topicJournal !== undefined && stored !== undefined) {
         try {
           this.assertStoredMatches(stored, operation)
         } catch {
@@ -700,12 +800,23 @@ export class MonadTopicPostClient {
       }
       return {
         stored,
+        postFrame,
         payloadHashHex,
         txHash: signedTx.txHash,
         leaseIndex: handle.index,
       }
     } catch (err) {
       if (err instanceof MonadTopicPostAbandonedError) throw err
+      if (isRelayOutcomeUnknown(err)) {
+        if (this.topicJournal === undefined) {
+          this.leaseManager.releaseLease(handle, 'stuck')
+          await this.leaseManager.flush()
+        }
+        throw new MonadTopicPostAbandonedError(
+          `The relay broadcast outcome is unknown; retrying could burn twice (payload ${payloadHashHex})`,
+          payloadHashHex,
+        )
+      }
       if (axios.isAxiosError(err) && err.response) {
         this.leaseManager.releaseLease(handle, 'failed')
         await this.leaseManager.flush()
@@ -717,22 +828,22 @@ export class MonadTopicPostClient {
         )
       }
 
-      // No HTTP response at all: genuinely unknown whether the relay received/broadcast/stored the
-      // post before the connection dropped. Fall back to polling the read side before giving up.
-      const stored = await this.pollForStoredPost(
-        payloadHashHex,
-        params.abandonPoll,
-      )
+      // A protobuf read model includes the exact burn transaction identity, so it can attribute
+      // recovery to this operation. A CBOR GET returns only the immutable type-9 frame: the same
+      // frame may already have been admitted through transaction A and cannot prove that this
+      // operation's distinct transaction B landed.
+      const stored =
+        this.topicWriteFormat === 'protobuf'
+          ? await this.pollForStoredPost(payloadHashHex, params.abandonPoll)
+          : undefined
       if (stored !== undefined) {
-        if (this.topicJournal !== undefined) {
-          try {
-            this.assertStoredMatches(stored, operation)
-          } catch {
-            throw new MonadTopicPostAbandonedError(
-              'Monad topic post readback did not match the exact durable operation',
-              payloadHashHex,
-            )
-          }
+        try {
+          this.assertStoredMatches(stored, operation)
+        } catch {
+          throw new MonadTopicPostAbandonedError(
+            'Monad topic post readback did not match the exact durable operation',
+            payloadHashHex,
+          )
         }
         this.leaseManager.releaseLease(handle, 'confirmed')
         await this.leaseManager.flush()
@@ -742,6 +853,7 @@ export class MonadTopicPostClient {
         }
         return {
           stored,
+          postFrame,
           payloadHashHex,
           txHash: signedTx.txHash,
           leaseIndex: handle.index,
@@ -753,8 +865,11 @@ export class MonadTopicPostClient {
         await this.leaseManager.flush()
       }
       throw new MonadTopicPostAbandonedError(
-        'Monad topic post submission abandoned: no response from the relay, and ' +
-          `GET /message/monad/topics/${payloadHashHex} never found a stored post`,
+        this.topicWriteFormat === 'cbor'
+          ? 'Monad CBOR topic post submission abandoned: no response from the relay; the ' +
+              'type-9 read model cannot attest this operation\'s burn transaction'
+          : 'Monad topic post submission abandoned: no response from the relay, and ' +
+              `GET /message/monad/topics/${payloadHashHex} never found the exact operation`,
         payloadHashHex,
       )
     }
@@ -769,9 +884,34 @@ export class MonadTopicPostClient {
       for (const operation of this.topicJournal!.getAll()) {
         if (operation.kind !== 'post') continue
         const transaction = Transaction.from(operation.rawTx)
-        const post = decodeMonadTopicPost(
-          Uint8Array.from(operation.requestBytes),
-        )
+        const request = Uint8Array.from(operation.requestBytes)
+        const writeFormat = operation.writeFormat ?? 'protobuf'
+        let requestBurnTx: Uint8Array
+        let requestPayloadHashHex: string
+        let cborPostFrame: Uint8Array | undefined
+        let protobufPost: MonadTopicPostProto | undefined
+        if (writeFormat === 'cbor') {
+          const decoded = validateFrame(
+            request,
+            defaultContext({ operation: 'typed' }),
+          )
+          if (
+            decoded.kind !== 'parsed' ||
+            decoded.typed?.type !== 10 ||
+            decoded.typed.postFrame.typed?.type !== 9
+          ) {
+            throw new Error('Invalid durable topic-post operation authority')
+          }
+          requestBurnTx = decoded.typed.burnTx
+          cborPostFrame = decoded.typed.postFrame.frame
+          requestPayloadHashHex = toBareHex(
+            topicBurnCommitment(cborPostFrame).hash,
+          )
+        } else {
+          protobufPost = decodeMonadTopicPost(request)
+          requestBurnTx = protobufPost.rawBurnTx
+          requestPayloadHashHex = toBareHex(protobufPost.payloadHash)
+        }
         let authorityRecord = this.pool.getRecord(operation.leaseIndex)
         if (
           transaction.hash?.toLowerCase() !== operation.txHash.toLowerCase() ||
@@ -779,9 +919,10 @@ export class MonadTopicPostClient {
           getAddress(transaction.from) !==
             getAddress(operation.senderAddress) ||
           transaction.value.toString() !== operation.valueWei ||
-          hexlify(post.rawBurnTx).toLowerCase() !==
+          hexlify(requestBurnTx).toLowerCase() !==
             transaction.serialized.toLowerCase() ||
-          toBareHex(post.payloadHash) !== operation.payloadHashHex ||
+          requestPayloadHashHex !== operation.payloadHashHex ||
+          (writeFormat === 'cbor' && operation.direction !== 'up') ||
           authorityRecord === undefined ||
           getAddress(authorityRecord.address) !==
             getAddress(operation.senderAddress)
@@ -817,8 +958,13 @@ export class MonadTopicPostClient {
         if (authorityRecord.status !== 'in-use') {
           throw new Error('Invalid durable topic-post operation authority')
         }
-        const stored = await this.putTopicPost(post)
-        this.assertStoredMatches(stored, operation)
+        const stored = await this.putTopicPost(request, cborPostFrame)
+        if (protobufPost !== undefined) {
+          if (stored === undefined) {
+            throw new Error('Invalid durable topic-post replay response')
+          }
+          this.assertStoredMatches(stored, operation)
+        }
         this.pool.setStatus(operation.leaseIndex, 'spent')
         await this.pool.flush()
         await this.topicJournal!.delete(operation)

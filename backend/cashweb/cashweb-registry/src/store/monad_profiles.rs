@@ -142,6 +142,90 @@ pub enum DbMonadProfilesError {
 
 use self::DbMonadProfilesError::*;
 
+/// Check if a byte slice begins with Frank-CBOR magic (`FRAME_MAGIC`) and version 1.
+pub fn is_cbor_frame(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"FRNK\x01")
+}
+
+/// Key information extracted from an existing stored profile for index cleanup.
+#[derive(Debug, Clone)]
+pub struct StoredProfileIndexInfo {
+    /// Milliseconds since Unix epoch.
+    pub timestamp_ms: i64,
+    /// Normalized display name, if any.
+    pub normalized_name: Option<String>,
+}
+
+/// Metadata extracted from a stored Frank-CBOR directory attestation.
+#[derive(Debug, Clone)]
+pub struct CborStatementInfo {
+    /// Statement revision (field 2).
+    pub revision: u64,
+    /// Statement timestamp in milliseconds (join_ms).
+    pub timestamp_ms: i64,
+    /// Exact type-4 directory statement frame bytes, suitable as `PriorStatement::Frame`.
+    pub type_4_frame: Vec<u8>,
+}
+
+fn parse_index_info(raw_bytes: &[u8]) -> Option<StoredProfileIndexInfo> {
+    if is_cbor_frame(raw_bytes) {
+        let ctx = frank_cbor::ValidationContext {
+            operation: frank_cbor::Operation::Typed,
+            route_byte_limit: frank_cbor::MAX_FRAME_BYTES as u64,
+            reader_version: 2,
+            supported_schemas: frank_cbor::default_context().supported_schemas,
+            opaque_retention_allowed: false,
+            prior: frank_cbor::PriorStatement::None,
+        };
+        if let Ok(frank_cbor::ValidationResult::Parsed(parsed)) =
+            frank_cbor::validate_frame(raw_bytes, &ctx)
+        {
+            if let Some(frank_cbor::TypedPayload::DirectoryAttestation { statement, .. }) =
+                parsed.typed.as_deref()
+            {
+                if let Some(frank_cbor::TypedPayload::DirectoryStatement {
+                    timestamp,
+                    profile_entries,
+                    ..
+                }) = statement.typed.as_deref()
+                {
+                    let timestamp_ms: i64 =
+                        frank_cbor::join_ms(timestamp.seconds, timestamp.nanoseconds)
+                            .ok()?
+                            .try_into()
+                            .ok()?;
+                    let normalized_name = profile_entries.as_ref().and_then(|entries| {
+                        entries
+                            .iter()
+                            .find(|e| e.kind == "display_name")
+                            .and_then(|e| {
+                                let raw = std::str::from_utf8(&e.body).ok()?;
+                                let norm = normalize_name(raw);
+                                if norm.is_empty() {
+                                    None
+                                } else {
+                                    Some(norm)
+                                }
+                            })
+                    });
+                    return Some(StoredProfileIndexInfo {
+                        timestamp_ms,
+                        normalized_name,
+                    });
+                }
+            }
+        }
+        None
+    } else {
+        let signed = cashweb_payload::proto::SignedPayload::decode(raw_bytes).ok()?;
+        let profile = proto::MonadProfile::decode(signed.payload.as_slice()).ok()?;
+        Some(StoredProfileIndexInfo {
+            timestamp_ms: profile.timestamp,
+            normalized_name: normalized_display_name(&profile),
+        })
+    }
+}
+
 impl<'a> DbMonadProfiles<'a> {
     /// Create a new [`DbMonadProfiles`] instance.
     pub fn new(db: &'a Db) -> Self {
@@ -156,57 +240,42 @@ impl<'a> DbMonadProfiles<'a> {
         }
     }
 
-    /// Store a [`cashweb_payload::proto::SignedPayload`] under `address`, overwriting any
-    /// previous registration -- idempotent, mirroring `DbMonadMessages::put`'s "overwrite" model.
-    /// Monotonic-timestamp enforcement (rejecting a stale re-registration) is the caller's job
-    /// (see `Registry::put_monad_profile`), the same layering `Registry::put_metadata` uses for
-    /// the Lotus path.
-    ///
-    /// Also indexes `address` by the registration's own `timestamp` (ticket #75's `list_since`),
-    /// decoded from `signed.payload` as a [`proto::MonadProfile`]. If a profile already existed
-    /// under `address`, its old by-time index entry is removed first (in the same batch) so an
-    /// update with a new `timestamp` doesn't leave a stale, orphaned index row behind -- mirrors
-    /// `DbMonadMessages::put`'s identical "remove old index entry on overwrite" handling.
-    ///
-    /// Also maintains `CF_MONAD_PROFILES_BY_NAME` (ticket #48's `search_by_name`), keyed by the
-    /// profile's normalized `display_name` entry (see [`normalized_display_name`]). Same
-    /// overwrite-safety care as the by-time index: if a profile already existed under `address`,
-    /// its old by-name index entry (if any) is removed first, so a profile that changes its name
-    /// -- or removes it -- doesn't leave a stale name-index entry pointing at it. If the *new*
-    /// profile has no indexable name, only the removal happens; no new by-name entry is written.
-    pub fn put(
+    /// Store raw profile bytes (`SignedPayload` or Frank-CBOR frame) under `address`,
+    /// atomically updating primary storage and secondary indices (`CF_MONAD_PROFILES_BY_TIME`
+    /// and `CF_MONAD_PROFILES_BY_NAME`). Any stale secondary index entries from a previously
+    /// stored profile (whether protobuf or CBOR) are cleaned up in the same batch.
+    pub fn put_raw(
         &self,
         address: &Address,
-        signed: &cashweb_payload::proto::SignedPayload,
+        raw_bytes: &[u8],
+        timestamp_ms: i64,
+        normalized_name: Option<&str>,
     ) -> Result<()> {
-        let profile = proto::MonadProfile::decode(signed.payload.as_slice())
-            .wrap_err_with(|| CannotDecodeMonadProfile(hex::encode(&signed.payload)))?;
-
         let mut batch = rocksdb::WriteBatch::default();
-        if let Some(existing) = self.get(address)? {
-            if let Ok(existing_profile) = proto::MonadProfile::decode(existing.payload.as_slice()) {
+        if let Some(existing_bytes) = self.get_raw(address)? {
+            if let Some(info) = parse_index_info(&existing_bytes) {
                 batch.delete_cf(
                     self.cf_monad_profiles_by_time,
-                    by_time_key(existing_profile.timestamp, &address.0),
+                    by_time_key(info.timestamp_ms, &address.0),
                 );
-                if let Some(existing_name) = normalized_display_name(&existing_profile) {
+                if let Some(old_name) = info.normalized_name {
                     batch.delete_cf(
                         self.cf_monad_profiles_by_name,
-                        by_name_key(&existing_name, &address.0),
+                        by_name_key(&old_name, &address.0),
                     );
                 }
             }
         }
-        batch.put_cf(self.cf_monad_profiles, address.0, signed.encode_to_vec());
+        batch.put_cf(self.cf_monad_profiles, address.0, raw_bytes);
         batch.put_cf(
             self.cf_monad_profiles_by_time,
-            by_time_key(profile.timestamp, &address.0),
+            by_time_key(timestamp_ms, &address.0),
             address.0,
         );
-        if let Some(new_name) = normalized_display_name(&profile) {
+        if let Some(new_name) = normalized_name {
             batch.put_cf(
                 self.cf_monad_profiles_by_name,
-                by_name_key(&new_name, &address.0),
+                by_name_key(new_name, &address.0),
                 address.0,
             );
         }
@@ -214,27 +283,144 @@ impl<'a> DbMonadProfiles<'a> {
         Ok(())
     }
 
-    /// Retrieve a [`cashweb_payload::proto::SignedPayload`] previously registered under
-    /// `address`. [`None`] if nothing is registered there yet.
-    pub fn get(&self, address: &Address) -> Result<Option<cashweb_payload::proto::SignedPayload>> {
+    /// Store a [`cashweb_payload::proto::SignedPayload`] under `address`, overwriting any
+    /// previous registration -- idempotent, mirroring `DbMonadMessages::put`'s "overwrite" model.
+    pub fn put(
+        &self,
+        address: &Address,
+        signed: &cashweb_payload::proto::SignedPayload,
+    ) -> Result<()> {
+        let profile = proto::MonadProfile::decode(signed.payload.as_slice())
+            .wrap_err_with(|| CannotDecodeMonadProfile(hex::encode(&signed.payload)))?;
+        let name = normalized_display_name(&profile);
+        self.put_raw(
+            address,
+            &signed.encode_to_vec(),
+            profile.timestamp,
+            name.as_deref(),
+        )
+    }
+
+    /// Store a canonical Frank-CBOR type-2 account registration frame under `address`.
+    pub fn put_cbor(
+        &self,
+        address: &Address,
+        frame_bytes: &[u8],
+        timestamp_ms: i64,
+        normalized_name: Option<&str>,
+    ) -> Result<()> {
+        self.put_raw(address, frame_bytes, timestamp_ms, normalized_name)
+    }
+
+    /// Retrieve raw bytes previously registered under `address`, or [`None`] if not found.
+    pub fn get_raw(&self, address: &Address) -> Result<Option<Vec<u8>>> {
         let serialized = match self.db.get(self.cf_monad_profiles, address.0)? {
-            Some(serialized) => serialized,
+            Some(serialized) => serialized.as_ref().to_vec(),
             None => return Ok(None),
         };
-        let signed = cashweb_payload::proto::SignedPayload::decode(serialized.as_ref())
-            .wrap_err_with(|| CannotDecodeSignedPayload(hex::encode(&serialized)))?;
+        Ok(Some(serialized))
+    }
+
+    /// Retrieve a [`cashweb_payload::proto::SignedPayload`] previously registered under
+    /// `address`. Returns [`None`] if nothing is registered or if the record is a CBOR frame.
+    pub fn get(&self, address: &Address) -> Result<Option<cashweb_payload::proto::SignedPayload>> {
+        let raw = match self.get_raw(address)? {
+            Some(raw) => raw,
+            None => return Ok(None),
+        };
+        if is_cbor_frame(&raw) {
+            return Ok(None);
+        }
+        let signed = cashweb_payload::proto::SignedPayload::decode(raw.as_slice())
+            .wrap_err_with(|| CannotDecodeSignedPayload(hex::encode(&raw)))?;
         Ok(Some(signed))
     }
 
-    /// List every `(address, SignedPayload)` registered with the profile's own `timestamp >=
-    /// since` (milliseconds since the Unix epoch), ordered by `timestamp` ascending (ticket #75).
-    /// Lets a client (e.g. a bot auto-greeting/auto-funding new signups) discover newly-registered
-    /// profiles by polling with an advancing cursor, without already knowing their addresses out
-    /// of band -- mirrors `DbMonadMessages::list_since` exactly.
-    pub fn list_since(
-        &self,
-        since: i64,
-    ) -> Result<Vec<(Address, cashweb_payload::proto::SignedPayload)>> {
+    /// Retrieve the 33-byte compressed secp256k1 public key of the registered profile,
+    /// whether stored as legacy protobuf or canonical Frank-CBOR.
+    pub fn get_pubkey(&self, address: &Address) -> Result<Option<Vec<u8>>> {
+        let raw = match self.get_raw(address)? {
+            Some(raw) => raw,
+            None => return Ok(None),
+        };
+        if is_cbor_frame(&raw) {
+            let ctx = frank_cbor::ValidationContext {
+                operation: frank_cbor::Operation::Typed,
+                route_byte_limit: frank_cbor::MAX_FRAME_BYTES as u64,
+                reader_version: 2,
+                supported_schemas: frank_cbor::default_context().supported_schemas,
+                opaque_retention_allowed: false,
+                prior: frank_cbor::PriorStatement::None,
+            };
+            if let Ok(frank_cbor::ValidationResult::Parsed(parsed)) =
+                frank_cbor::validate_frame(&raw, &ctx)
+            {
+                if let Some(frank_cbor::TypedPayload::DirectoryAttestation { statement, .. }) =
+                    parsed.typed.as_deref()
+                {
+                    if let Some(frank_cbor::TypedPayload::DirectoryStatement { subject, .. }) =
+                        statement.typed.as_deref()
+                    {
+                        return Ok(Some(subject.key_bytes.clone()));
+                    }
+                }
+            }
+            return Ok(None);
+        }
+        let signed = cashweb_payload::proto::SignedPayload::decode(raw.as_slice())
+            .wrap_err_with(|| CannotDecodeSignedPayload(hex::encode(&raw)))?;
+        Ok(Some(signed.pubkey))
+    }
+
+    /// Extract statement metadata (revision, timestamp_ms, and type-4 statement frame bytes)
+    /// from a stored Frank-CBOR directory registration, for monotonic revision checks.
+    pub fn get_cbor_statement_info(&self, address: &Address) -> Result<Option<CborStatementInfo>> {
+        let raw = match self.get_raw(address)? {
+            Some(raw) => raw,
+            None => return Ok(None),
+        };
+        if !is_cbor_frame(&raw) {
+            return Ok(None);
+        }
+        let ctx = frank_cbor::ValidationContext {
+            operation: frank_cbor::Operation::Typed,
+            route_byte_limit: frank_cbor::MAX_FRAME_BYTES as u64,
+            reader_version: 2,
+            supported_schemas: frank_cbor::default_context().supported_schemas,
+            opaque_retention_allowed: false,
+            prior: frank_cbor::PriorStatement::None,
+        };
+        if let Ok(frank_cbor::ValidationResult::Parsed(parsed)) =
+            frank_cbor::validate_frame(&raw, &ctx)
+        {
+            if let Some(frank_cbor::TypedPayload::DirectoryAttestation { statement, .. }) =
+                parsed.typed.as_deref()
+            {
+                if let Some(frank_cbor::TypedPayload::DirectoryStatement {
+                    revision,
+                    timestamp,
+                    ..
+                }) = statement.typed.as_deref()
+                {
+                    let timestamp_ms =
+                        frank_cbor::join_ms(timestamp.seconds, timestamp.nanoseconds)
+                            .ok()
+                            .and_then(|ms| ms.try_into().ok())
+                            .unwrap_or(0);
+                    return Ok(Some(CborStatementInfo {
+                        revision: *revision,
+                        timestamp_ms,
+                        type_4_frame: statement.frame.clone(),
+                    }));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// List every `(address, raw_bytes)` registered with timestamp >= `since`, ordered by
+    /// timestamp ascending.
+    pub fn list_since_raw(&self, since: i64) -> Result<Vec<(Address, Vec<u8>)>> {
         let start_key = by_time_key(since, &[]);
         let iter = self.db.rocksdb().iterator_cf(
             self.cf_monad_profiles_by_time,
@@ -248,32 +434,43 @@ impl<'a> DbMonadProfiles<'a> {
                     .try_into()
                     .map_err(|_| InvalidIndexedAddress(hex::encode(&address_bytes)))?,
             );
-            let signed = self.get(&address)?.ok_or_else(|| {
+            let raw = self.get_raw(&address)?.ok_or_else(|| {
                 CannotDecodeSignedPayload(format!(
                     "indexed address {} has no primary record",
                     hex::encode(address.0)
                 ))
             })?;
-            Ok((address, signed))
+            Ok((address, raw))
         })
         .collect()
     }
 
+    /// List every `(address, SignedPayload)` registered with the profile's own `timestamp >=
+    /// since`. CBOR records are omitted from the protobuf-specific view.
+    pub fn list_since(
+        &self,
+        since: i64,
+    ) -> Result<Vec<(Address, cashweb_payload::proto::SignedPayload)>> {
+        let entries = self.list_since_raw(since)?;
+        let mut results = Vec::new();
+        for (address, raw) in entries {
+            if is_cbor_frame(&raw) {
+                continue;
+            }
+            let signed = cashweb_payload::proto::SignedPayload::decode(raw.as_slice())
+                .wrap_err_with(|| CannotDecodeSignedPayload(hex::encode(&raw)))?;
+            results.push((address, signed));
+        }
+        Ok(results)
+    }
+
     /// Prefix-search `CF_MONAD_PROFILES_BY_NAME` for every profile whose normalized `display_name`
-    /// starts with `prefix` (ticket #48), lowercase-normalizing `prefix` the same way indexing
-    /// does ([`normalize_name`]) so search stays case-insensitive. Results are ordered by
-    /// normalized name ascending (the index's own key order), capped at `limit`, clamped to
-    /// [`MAX_SEARCH_RESULTS`] regardless of what the caller requests. Each matched address is
-    /// resolved back to its full stored profile via [`DbMonadProfiles::get`].
-    ///
-    /// An empty/whitespace-only `prefix` normalizes to `""`, matching every indexed (i.e. named)
-    /// profile -- there's no special-casing needed since `CF_MONAD_PROFILES_BY_NAME` only ever
-    /// contains entries with a non-empty normalized name to begin with.
-    pub fn search_by_name(
+    /// starts with `prefix`, returning `(address, raw_bytes)` pairs.
+    pub fn search_by_name_raw(
         &self,
         prefix: &str,
         limit: usize,
-    ) -> Result<Vec<(Address, cashweb_payload::proto::SignedPayload)>> {
+    ) -> Result<Vec<(Address, Vec<u8>)>> {
         let limit = limit.min(MAX_SEARCH_RESULTS);
         let normalized_prefix = normalize_name(prefix);
         let prefix_bytes = normalized_prefix.as_bytes();
@@ -297,12 +494,32 @@ impl<'a> DbMonadProfiles<'a> {
                     .try_into()
                     .map_err(|_| InvalidIndexedAddress(hex::encode(&address_bytes)))?,
             );
-            let signed = self.get(&address)?.ok_or_else(|| {
+            let raw = self.get_raw(&address)?.ok_or_else(|| {
                 CannotDecodeSignedPayload(format!(
                     "indexed address {} has no primary record",
                     hex::encode(address.0)
                 ))
             })?;
+            results.push((address, raw));
+        }
+        Ok(results)
+    }
+
+    /// Prefix-search `CF_MONAD_PROFILES_BY_NAME` returning decoded protobuf `SignedPayload`s.
+    /// CBOR records are omitted from this legacy view.
+    pub fn search_by_name(
+        &self,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<(Address, cashweb_payload::proto::SignedPayload)>> {
+        let entries = self.search_by_name_raw(prefix, limit)?;
+        let mut results = Vec::new();
+        for (address, raw) in entries {
+            if is_cbor_frame(&raw) {
+                continue;
+            }
+            let signed = cashweb_payload::proto::SignedPayload::decode(raw.as_slice())
+                .wrap_err_with(|| CannotDecodeSignedPayload(hex::encode(&raw)))?;
             results.push((address, signed));
         }
         Ok(results)

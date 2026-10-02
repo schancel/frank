@@ -9,7 +9,7 @@ use crate::{
         handle_put_monad_message,
     },
     http::monad_profile::{
-        fetch_profile_or_not_found, handle_get_monad_profile, handle_list_monad_profiles,
+        fetch_profile_raw_or_not_found, handle_get_monad_profile, handle_list_monad_profiles,
         handle_put_monad_profile, handle_search_monad_profiles,
     },
     http::monad_topics::{
@@ -34,6 +34,7 @@ use bitcoinsuite_core::{Hashed, LotusAddress, LotusAddressError};
 use bitcoinsuite_error::{ErrorMeta, Report, Result};
 use cashweb_http_utils::protobuf::Protobuf;
 use cashweb_payload::proto::SignedPayloadSet;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use thiserror::Error;
@@ -406,9 +407,9 @@ impl IntoResponse for PutRegistrySuccess {
 async fn handle_put_registry(
     Path(address): Path<String>,
     Query(query): Query<HashMap<String, String>>,
-    Protobuf(signed_metadata): Protobuf<cashweb_payload::proto::SignedPayload>,
     Extension(server): Extension<RegistryServer>,
     header_map: HeaderMap,
+    body_bytes: axum::body::Bytes,
 ) -> Result<PutRegistrySuccess, PutRegistryError> {
     // Monad-native dispatch (ticket #45): see `crate::http::monad_profile`'s module docs for why
     // a Monad address reaching this historically Lotus-only route must be handled here too, not
@@ -418,9 +419,32 @@ async fn handle_put_registry(
     // branch: profile registration was never POP-gated to begin with, and this ticket's non-goals
     // explicitly exclude adding it.
     if let Ok(monad_address) = MonadAddress::from_str(&address) {
-        server
-            .registry
-            .put_monad_profile(monad_address, signed_metadata)?;
+        let is_cbor = header_map
+            .get(header::CONTENT_TYPE)
+            .and_then(|val| val.to_str().ok())
+            .map(|ct| ct.starts_with("application/cbor"))
+            .unwrap_or(false)
+            || crate::store::monad_profiles::is_cbor_frame(&body_bytes);
+
+        if is_cbor {
+            server
+                .registry
+                .put_monad_profile_cbor(monad_address, &body_bytes)?;
+        } else {
+            let signed_metadata = cashweb_payload::proto::SignedPayload::decode(
+                body_bytes.as_ref(),
+            )
+            .map_err(|err| {
+                PutRegistryError::from(Report::from(
+                    crate::monad_profile_verify::MonadProfileVerifyError::InvalidProfilePayload(
+                        err.to_string(),
+                    ),
+                ))
+            })?;
+            server
+                .registry
+                .put_monad_profile(monad_address, signed_metadata)?;
+        }
         return Ok(PutRegistrySuccess {
             body: proto::PutSignedPayloadResponse { txid: vec![] },
             issued_token: None,
@@ -428,6 +452,14 @@ async fn handle_put_registry(
     }
 
     let address = address.parse::<LotusAddress>().map_err(InvalidAddress)?;
+    let signed_metadata = cashweb_payload::proto::SignedPayload::decode(body_bytes.as_ref())
+        .map_err(|err| {
+            PutRegistryError::from(Report::from(
+                crate::monad_profile_verify::MonadProfileVerifyError::InvalidProfilePayload(
+                    err.to_string(),
+                ),
+            ))
+        })?;
 
     // --- POP protection (ticket #24, config-wired for real in ticket #4, made toggleable in #35)
     // ---
@@ -489,12 +521,24 @@ async fn handle_put_registry(
 async fn handle_get_registry(
     Path(address): Path<String>,
     Extension(server): Extension<RegistryServer>,
-) -> Result<Protobuf<cashweb_payload::proto::SignedPayload>, HttpRegistryError> {
+) -> Result<Response, HttpRegistryError> {
     // Monad-native dispatch (ticket #45) -- see `handle_put_registry`'s identical branch, and
     // `crate::http::monad_profile`'s module docs, for why.
     if let Ok(monad_address) = MonadAddress::from_str(&address) {
-        let signed_payload = fetch_profile_or_not_found(&server.registry, monad_address)?;
-        return Ok(Protobuf(signed_payload));
+        let raw = fetch_profile_raw_or_not_found(&server.registry, monad_address)?;
+        let content_type = if crate::store::monad_profiles::is_cbor_frame(&raw) {
+            "application/cbor"
+        } else {
+            "application/x-protobuf"
+        };
+        let mut response = Response::builder()
+            .status(StatusCode::OK)
+            .body(axum::body::boxed(axum::body::Body::from(raw)))
+            .unwrap();
+        response
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+        return Ok(response);
     }
 
     let address = address.parse::<LotusAddress>().map_err(InvalidAddress)?;
@@ -502,7 +546,7 @@ async fn handle_get_registry(
         .registry
         .get_metadata(&address)?
         .ok_or(AddressMetadataNotFound(address))?;
-    Ok(Protobuf(signed_payload.to_proto()))
+    Ok(Protobuf(signed_payload.to_proto()).into_response())
 }
 
 async fn handle_get_metadata_range(

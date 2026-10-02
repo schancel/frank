@@ -469,7 +469,9 @@ Before generating anything, the UI explains:
 The user selects or explicitly accepts `k` and `n`. Constraints are checked at
 the UI boundary and again inside the package. The UI MUST NOT suggest that
 putting several shares in the same password manager or physical location is
-independent redundancy.
+independent redundancy. Before generation it also explains that v1 setup will
+ask the user to re-enter all `n` exported shares across several threshold
+subsets so every physical backup is tested before activation.
 
 ### 6.3 Generation
 
@@ -548,10 +550,14 @@ correct when it cannot know that. It clears the collected inputs and lets the
 user retry or abandon the whole set. Repeated unexplained mismatch SHOULD offer
 regeneration, not silently create a new set under the same identifier.
 
-Verifying one threshold subset proves that subset, not every unused share. The
-UI MUST say so. A higher-assurance “verify every share” workflow MAY construct
-additional `k`-share subsets so each recorded share participates in a successful
-reconstruction, without displaying multiple shares simultaneously.
+Verifying one threshold subset proves that subset, not every unused share.
+Therefore v1 MUST continue with additional exact-`k` subsets until every
+exported share has participated in at least one reconstruction that validates
+`V_verify` and compares byte-for-byte equal to `M`. Each additional subset
+combines the not-yet-covered share with `k-1` already verified shares, without
+displaying multiple shares simultaneously. Activation remains disabled until
+all issued shares are covered; the UI reports coverage progress separately from
+threshold progress.
 
 ### 6.6 Derivation and commit
 
@@ -592,15 +598,22 @@ Before allocating an external vault handle, Frank durably writes a creation
 intent containing the ceremony ID, custody epoch, and a client-generated stable
 idempotency/correlation key. Vault create, query, and destroy operations MUST be
 idempotent and addressable by that key; a backend that cannot discover and
-destroy an ambiguous creation outcome is ineligible. The returned handle is
-linked to the same intent before use. A pre-linearization terminal path
-immediately and idempotently deletes the stage and destroys its handles. Failed
-cleanup retains a bounded tombstone/retry job; startup reconciles every
-nonterminal creation intent before permitting a new ceremony. The application
-caps outstanding stages/handles and blocks new ceremonies rather than leaking
-them without bound. Startup sweeping is a fallback, not the only cleanup
-opportunity. A stale cleanup job can never destroy material referenced by a
-committed record.
+destroy an ambiguous creation outcome is ineligible. Immediately before the
+remote call, the intent durably enters `create-dispatched`; the returned handle
+is linked to that same intent before use. Cancellation after dispatch changes
+the intent to a retained `cancel-pending` tombstone. A `not found` response is
+not terminal while an issued create may still succeed: the tombstone remains
+until the backend proves create can no longer take effect, or late success is
+observed and destruction is durably confirmed. Prefer a backend with a
+linearizable per-key lifecycle in which cancel tombstones the key and rejects or
+destroys an in-flight/later create. A pre-linearization terminal path
+immediately and idempotently cancels the stage and destroys its handles, but
+never deletes the last cleanup authority for an unsettled create. Startup
+reconciles every nonterminal creation intent before permitting a new ceremony.
+The application caps outstanding stages/handles and blocks new ceremonies
+rather than leaking them without bound. Startup sweeping is a fallback, not the
+only cleanup opportunity. A stale cleanup job can never destroy material
+referenced by a committed record.
 
 Profile publication and chain writes occur after local durability. If a remote
 side effect is not idempotent, it needs its own resumable state rather than
@@ -642,19 +655,22 @@ codes never supply recovery deep links. An in-page logo or badge cannot
 authenticate its own origin, and a lookalike or punycode origin is treated as
 hostile.
 
-The recovery route starts with no candidate-account wallet or ordinary
-background network activity. Before quiescing the old active account, Frank
-inventories every nonterminal operation at or beyond that protocol's
-conservative authorization cutoff, including an operation whose funding or
-dispatch outcome is still unknown. It either blocks recovery or atomically
-hands each such operation to a detached, narrowly authorized watcher. Merely
-not having observed funding is not evidence that an already authorized action
-did not occur. Those watchers continue deadline-critical work without access to
-the candidate master or active-account pointer. Before accepting shares the
-route locks the recovery-format and registry versions from the companion
-descriptor and rejects missing, inconsistent, or unsupported versions. It then
-accepts one share at a time and validates framing, case, supported length,
-checksum, threshold, identifier, and index. Recovery never asks for `n`.
+The recovery route starts no candidate-account wallet or candidate-account
+network activity. Entering it does not stop the old active account: its existing
+operation services continue until the account-lifecycle quiescence protocol has
+closed new admission, drained shared holders, performed a final authoritative
+inventory, and either blocked recovery or atomically handed each protected
+operation to a detached watcher. The inventory includes every operation at or
+beyond that protocol's conservative authorization cutoff and every unknown
+funding or dispatch outcome. Merely not having observed funding is not evidence
+that an already authorized action did not occur. Detached watchers continue
+deadline-critical work without access to the candidate master or active-account
+pointer. Only after that gap-free handoff may ordinary old-account dispatch be
+quiesced. Before accepting shares the route locks the recovery-format and
+registry versions from the companion descriptor and rejects missing,
+inconsistent, or unsupported versions. It then accepts one share at a time and
+validates framing, case, supported length, checksum, threshold, identifier, and
+index. Recovery never asks for `n`.
 
 After the first structurally valid candidate share, expected threshold,
 identifier, and length are locked. Later inconsistent shares are rejected
@@ -752,22 +768,27 @@ Frank exposes two distinct ceremonies:
 An import never destroys the former account as part of activation. Frank keeps
 it as a rollback target until a later, separately confirmed deletion.
 
-That later deletion inventories every detached or nonterminal operation. It is
-blocked unless each required journal and non-derivable capability—including a
-vault-held cooperative-salvage lane share—has been preserved independently of
-the account record, or the user completes an explicit operation-specific
-irreversible abandonment flow. Deleting an account must never implicitly
-destroy the only copy of such a capability.
+That later deletion first takes the exclusive account-lifecycle permit, closes
+operation admission, drains shared holders, and then performs its final
+inventory while holding the permit through the deletion tombstone and custody
+generation/revision increment. It is blocked unless each detached or
+nonterminal operation's required journal and non-derivable
+capability—including a vault-held cooperative-salvage lane share—has been
+preserved independently of the account record, or the user completes an
+explicit operation-specific irreversible abandonment flow. Deleting an account
+must never implicitly destroy the only copy of such a capability.
 
-Before switching accounts, Frank inventories all operations bound to the old
-account at or beyond their conservative authorization cutoff, including funded
-swaps and unknown funding outcomes. Replacement is blocked unless none exist or
-their non-derivable journals and settlement capabilities are atomically
-preserved in detached operation state with a durably verified resume path.
-Secret shares remain in their required trusted signer or vault boundary; an
-untrusted watcher receives only its narrow trigger/action capability. The
-master secret does not regenerate negotiated transactions, signing sessions,
-or adaptor secrets.
+Before switching accounts, Frank takes that same exclusive permit before its
+final inventory and holds it continuously through atomic disposition of every
+operation and the active-pointer compare-and-swap. The inventory covers all
+operations bound to the old account at or beyond their conservative
+authorization cutoff, including funded swaps and unknown funding outcomes.
+Replacement is blocked unless none exist or their non-derivable journals and
+settlement capabilities are atomically preserved in detached operation state
+with a durably verified resume path. Secret shares remain in their required
+trusted signer or vault boundary; an untrusted watcher receives only its narrow
+trigger/action capability. The master secret does not regenerate negotiated
+transactions, signing sessions, or adaptor secrets.
 
 Once the intended identity is authenticated, Frank derives the same approved
 domain material as signup and uses the same linearization and reconciliation
@@ -801,12 +822,25 @@ never mints or replaces a fingerprint. The view may also show nonsensitive
 metadata and verification history, but never claim to know whether physical
 shares still exist.
 
-To create an additional master share family, the user reconstructs `M` from an
-existing threshold in a trusted ceremony, generates a new family with its own
-threshold, count, identifier, and fresh sharing randomness, verifies it, and
-discards `M` again. The UI warns that any complete old or new family remains
-valid and that the weakest family bounds compromise resistance. Resharing the
-same `M` does not revoke old copies.
+Creating an additional master share family is a fenced
+`reconstruct-to-reshare` ceremony for the known active account. Before share
+entry it atomically pins the account record ID, custody epoch/revision, recovery
+format, registry, and raw 32-byte recovery fingerprint. It uses the common
+serialized share reducer, reconstructs `M`, validates `V`, recomputes the
+fingerprint under the pinned format/registry, and compares all 32 bytes before
+selecting policy, consuming new sharing randomness, or rendering/exporting a
+new share. Mismatch is terminal with no override or import fallback. Account,
+epoch, revision, or ceremony-owner change fences all pending work.
+
+Only after that comparison may Frank generate a new family with its own
+threshold, count, identifier, and fresh sharing randomness. The v1 every-share
+verification rule applies to the new family and every tested subset must
+reconstruct the exact pinned `M`. Cancellation or failure clears all secret
+sinks and leaves account and backup metadata unchanged. Success preserves the
+existing descriptor, fingerprint, and registry and then discards `M` again. The
+UI warns that any complete old or new family remains valid and that the weakest
+family bounds compromise resistance. Resharing the same `M` does not revoke old
+copies.
 
 True revocation requires generating a new master and rotating or sweeping every
 durable identity, wallet, and encrypted-data domain. That is a multi-domain
@@ -887,12 +921,17 @@ operation carries an opaque ceremony ID checked before state mutation. Late QR,
 clipboard, worker, persistence, and derivation callbacks cannot repopulate a
 cleared component.
 
-Only one tab may own a setup or recovery ceremony. Ordinary account-scoped
-remote mutations take an origin-wide shared side-effect permit; recovery or
-replacement takes the exclusive permit, prevents new dispatch, and drains or
-durably reconciles all in-flight effects before advancing. While holding a
-permit, an actor rereads an origin-global generation and atomically writes an
-operation-scoped dispatch reservation before signing, enqueueing, or sending.
+Only one tab may own a setup or recovery ceremony. Operation admission,
+transition across `ReadyToFund` or another conservative authorization cutoff,
+release of unilateral authorization, attachment of an account-bound journal or
+capability, and ordinary account-scoped remote mutation all take the same
+origin-wide shared account-lifecycle permit and compare its custody generation
+and account revision. Recovery, replacement, and deletion take the exclusive
+permit before their final inventory, prevent new admission or cutoff crossing,
+drain shared holders, and retain exclusivity through atomic handoff plus pointer
+switch or deletion. While holding a permit, an actor rereads an origin-global
+generation and atomically writes an operation-scoped dispatch reservation
+before signing, enqueueing, or sending.
 The reservation contains a stable action/idempotency ID, exact payload or
 committed payload hash, fencing term, and `dispatching` state; dispatch begins
 only after durable acknowledgement. The same row records success, failure, or
@@ -910,10 +949,13 @@ compare-and-swap that increments the term, but heartbeat expiry alone never
 proves an old external dispatch did not happen. Takeover may enable dispatch
 only after every nonterminal reservation from the old term is treated as a
 possibly future external effect and reconciled. It may query or replay only the
-same stable action ID when the external boundary deduplicates it, or proceed
-when the old execution is proven terminated or the external signer/dispatcher
-rejects the prior term. It never allocates a second action ID for an ambiguous
-effect. If none of those conditions holds, redispatch remains blocked. A
+same stable action ID when the external boundary guarantees idempotence or
+deduplication. Proving the old execution terminated or fencing its term proves
+only that no future old send can begin; it does not classify whether a past send
+was accepted. An already-dispatched ambiguous action requires an authoritative
+receipt, query, or proof of absence. Without one of those outcome mechanisms,
+the action remains blocked for manual reconciliation. It never allocates a
+second action ID or changes the payload for an ambiguous effect. A
 resumed old owner carrying a stale term cannot reserve or authorize a new
 action, commit, release a watcher, or restore ordinary dispatch. It may still
 physically complete an exact action already reserved before suspension when the
@@ -1133,6 +1175,9 @@ the repository's current localization boundary.
 - Concurrent valid signup-verification completions from `k-1` exercise the real
   atomic reducer: exactly one kth transition freezes one subset and starts one
   reconstruction, while losing revisions cannot mutate or derive.
+- After the initial random threshold succeeds, additional exact-`k` subsets
+  cover every exported share and each reconstructs exact `M`; activation is
+  blocked when any issued share remains uncovered or fails its subset.
 - A reconstructed payload with invalid `V` reports “not a valid Frank master”
   without blaming a share, derives no domain, performs no network activity, and
   remains distinct from a valid master whose descriptor identifies the wrong
@@ -1210,6 +1255,12 @@ the repository's current localization boundary.
   still depends on account-held authority. Preserving its capability separately
   or completing explicit operation-specific abandonment is required, and a
   vault-held salvage lane share survives ordinary account deletion.
+- A coherent wrong-account master with valid `V` cannot produce any output from
+  `reconstruct-to-reshare`: its full fingerprint mismatches the pinned active
+  record. Correct input produces a fresh every-share-verified family for exact
+  `M` without changing descriptor metadata; account, epoch, revision, owner,
+  cancel, and stale-callback races produce no output and leave existing backup
+  state unchanged.
 
 ### 15.4 Persistence, lifecycle, and human factors
 
@@ -1229,13 +1280,22 @@ reservation, after remote acceptance but before response, and before outcome
 classification. A takeover CAS advances the durable fencing term, cannot rely
 on heartbeat expiry, and treats every old nonterminal reservation as possibly
 dispatchable. It queries or replays only the same stable action ID when the
-external boundary deduplicates it; otherwise redispatch remains blocked until
-the old execution is proven terminated or the old term is externally fenced. A
-resumed stale owner cannot create a new reservation or release authority, and
-an already-reserved stale send cannot cause the takeover owner to allocate a
-second action. Detached operation watchers continue through ceremony start,
-cancel, crash, and imminent deadlines under their separate narrow authority;
-stale ordinary actors cannot authorize a new broadcast.
+external boundary deduplicates it. Process death or external term fencing alone
+never classifies a past send; an authoritative receipt, query, or proof of
+absence is required, otherwise redispatch remains blocked for manual
+reconciliation. A resumed stale owner cannot create a new reservation or
+release authority, and an already-reserved stale send cannot cause the takeover
+owner to allocate a second action. Detached operation watchers continue through
+ceremony start, cancel, crash, and imminent deadlines under their separate
+narrow authority; stale ordinary actors cannot authorize a new broadcast.
+
+Account-lifecycle race tests attempt operation admission, cutoff crossing,
+unilateral-authorization release, and account-bound capability attachment
+between inventory and both pointer switch and deletion. The shared/exclusive
+permit plus generation/revision checks yield either a fully admitted preserved
+operation or a rejected stale admission, never an orphan. An imminent-deadline
+operation continues under old services until its atomic watcher handoff, with
+no route-entry polling or broadcast gap.
 
 Storage-dump and locked-vault tests prove raw domain keys are absent from
 durable storage and unusable while locked. Migration durability is verified
@@ -1245,7 +1305,9 @@ Vault-adapter tests crash before create, after remote success with a lost
 response, and after success response before local handle linkage. Every case is
 recoverable through the durable stable-key intent; a backend unable to query and
 destroy that ambiguous outcome is rejected. Quota failure cannot erase the
-only cleanup authority.
+only cleanup authority. A create paused in flight, followed by cancellation and
+`not found`, then late success and restart, retains its cancel tombstone and
+destroys the handle; `not found` alone never retires cleanup authority.
 
 Backup-status tests deterministically re-export the exact descriptor from
 persisted versions and raw fingerprint, round-trip it independently, and reject
@@ -1295,8 +1357,6 @@ and exact signup/recovery integration have all passed their gates.
 - The exact derivation KDF/registry and identity aggregate defined outside this
   document.
 - Trusted distribution and redundancy policy for the public recovery descriptor.
-- Whether v1 verifies only a random threshold subset or requires every exported
-  share to participate in a successful reconstruction.
 - The platform-specific local vault and passkey wrapping policy.
 - Hardware or air-gapped ceremony support.
 - Domain-specific rotation and funded-account migration.

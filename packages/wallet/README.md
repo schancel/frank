@@ -8,10 +8,11 @@ has no Vue or Pinia dependency. The package is private. There is no barrel
 ## Ownership
 
 This package owns wallet workflows: identity, stamps, topic posts and votes,
-and payment-proof requests against the relay. It does not own CashWeb CBOR
-field layouts or encryption suites. Frank-CBOR frames are `@frank/codec` and
-`frank-cbor`. Deniable envelopes are `@frank/crypto-box`. Chain bytes are
-`@frank/nakamoto`.
+and payment-proof requests against the relay. Monad HD derivation and signing
+use ethers (`HDNodeWallet` and `Wallet`). It does not own CashWeb CBOR field
+layouts or encryption suites. Frank-CBOR frames are `@frank/codec` and
+`frank-cbor`. Deniable envelopes are `@frank/crypto-box`. Chain bytes and Lotus
+address primitives are `@frank/nakamoto`.
 
 The live relay path in this package is still protobuf (`application/x-protobuf`).
 Some key operations still use `bitcore-lib-xpi` while issue #257 is open.

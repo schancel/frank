@@ -16,9 +16,9 @@ marshal a frame and pass the digest bytes into a nakamoto sign or hash call.
 The key that signs is still a nakamoto key object. Encryption suites are
 `@frank/crypto-box`. That package seals byte arrays and does not parse CBOR.
 
-XPI address strings are not pinned (issue #242). `encodeAddress` and
-`decodeAddress` for the XPI family return `address-format-not-pinned` and do
-not invent a prefix.
+XPI address strings are pinned to the Lotus encoding (`lotus_` on mainnet,
+`lotusR` on regtest). `encodeAddress` and `decodeAddress` emit and parse those
+strings natively with checksum verification.
 
 ## Public entry points
 
@@ -29,10 +29,12 @@ entry (`./btc`, `./bch`, `./xec`, `./xpi`). Feature entries include `./keys`,
 
 ## Callers
 
-`@frank/cashweb` and `@frank/wallet` derive HD nodes, build keys, and sign
-with those objects. A digest that came from a CashWeb frame is a byte string
-argument to that call. Callers do not import `bitcore-lib-xpi` from this
-package. Attribution for the bitcore-derived parts is `ATTRIBUTION.md`.
+Monad wallet HD derivation and signing in `@frank/wallet` and `app/` use `ethers`
+(`HDNodeWallet` and `Wallet`). `@frank/nakamoto` owns UTXO/Lotus chain primitives,
+Lotus address codecs, and secp256k1 curve primitives (`ecdh`, `publicFromPrivate`).
+A digest that came from a CashWeb frame is a byte string argument to that call.
+Callers do not import `bitcore-lib-xpi` from this package. Attribution for the
+bitcore-derived parts is `ATTRIBUTION.md`.
 
 ## Tests
 

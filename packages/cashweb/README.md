@@ -33,4 +33,3 @@ imports are issue #257. Topic CBOR that the registry verifies is decoded with
 
 The license of this directory is NOT GPLv3. It is MIT, so you can use it in
 backend services on top of CashWeb. See `LICENSE`.
-

@@ -18,6 +18,8 @@ import {
   producedSuiteIds,
   seal,
 } from '../src'
+import { decodeEnvelope, encodeEnvelope } from '../src/envelope.js'
+import { MAX_MESSAGE, MAX_PADDING } from '../src/ids.js'
 import { sealAuthAsRecipient } from '../src/seal.js'
 
 const GENERATOR = Uint8Array.from([
@@ -71,7 +73,9 @@ const ephemeral = secret(3)
 const salt = new Uint8Array(32).fill(0x07)
 const senderPk = publicKey(senderSk)
 const recipientPk = publicKey(recipientSk)
+const ephemeralPk = publicKey(ephemeral)
 const context = text('ctx')
+const CIPHERTEXT_HEAD_OFFSET = 83
 
 function mustSeal(suiteId: number, plaintext: string, padding = 0): Uint8Array {
   const sealed = seal({
@@ -384,6 +388,7 @@ describe('encryption suites', () => {
     }
 
     const oversized = new Uint8Array(1_114_220)
+    expect(decodeEnvelope(oversized)).toBeNull()
     const overBound = open({
       envelope: oversized,
       recipientPrivateKey: recipientSk,
@@ -392,6 +397,117 @@ describe('encryption suites', () => {
     })
     expect(overBound.ok).toBe(false)
     if (!overBound.ok) expect(overBound.error.code).toBe('envelope')
+  })
+
+  test('rejects structurally impossible ciphertext lengths before opening', () => {
+    for (const length of [0, 15, 16, 19]) {
+      const envelope = encodeEnvelope(
+        SUITE_BASE_AES_GCM,
+        KEM_SECP256K1,
+        salt,
+        ephemeralPk,
+        new Uint8Array(length),
+      )
+      const result = open({
+        envelope,
+        recipientPrivateKey: recipientSk,
+        senderPublicKey: senderPk,
+        context,
+      })
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.error.code).toBe('envelope')
+    }
+
+    const minimum = encodeEnvelope(
+      SUITE_BASE_AES_GCM,
+      KEM_SECP256K1,
+      salt,
+      ephemeralPk,
+      new Uint8Array(20),
+    )
+    const minimumResult = open({
+      envelope: minimum,
+      recipientPrivateKey: recipientSk,
+      senderPublicKey: senderPk,
+      context,
+    })
+    expect(minimumResult.ok).toBe(false)
+    if (!minimumResult.ok) expect(minimumResult.error.code).toBe('open-failed')
+
+    const empty = mustSeal(SUITE_BASE_AES_GCM, '')
+    expect(empty.slice(CIPHERTEXT_HEAD_OFFSET, 84)).toEqual(Uint8Array.of(0x54))
+    const opened = open({
+      envelope: empty,
+      recipientPrivateKey: recipientSk,
+      senderPublicKey: senderPk,
+      context,
+    })
+    expect(opened.ok).toBe(true)
+    if (opened.ok) expect(opened.value).toHaveLength(0)
+  })
+
+  test.each([
+    [23, [0x57]],
+    [24, [0x58, 0x18]],
+    [255, [0x58, 0xff]],
+    [256, [0x59, 0x01, 0x00]],
+    [65535, [0x59, 0xff, 0xff]],
+    [65536, [0x5a, 0x00, 0x01, 0x00, 0x00]],
+  ] as const)(
+    'uses the canonical byte-string head at length %i',
+    (length, head) => {
+      const envelope = encodeEnvelope(
+        SUITE_BASE_AES_GCM,
+        KEM_SECP256K1,
+        salt,
+        ephemeralPk,
+        new Uint8Array(length),
+      )
+      expect(
+        envelope.slice(
+          CIPHERTEXT_HEAD_OFFSET,
+          CIPHERTEXT_HEAD_OFFSET + head.length,
+        ),
+      ).toEqual(Uint8Array.from(head))
+      expect(envelope).toHaveLength(
+        CIPHERTEXT_HEAD_OFFSET + head.length + length,
+      )
+      expect(decodeEnvelope(envelope)?.ciphertext).toHaveLength(length)
+    },
+  )
+
+  test('round-trips the maximum message and padding envelope', () => {
+    const plaintext = new Uint8Array(MAX_MESSAGE).fill(0x42)
+    const paddingBytes = new Uint8Array(MAX_PADDING).fill(0xa5)
+    const sealed = seal({
+      suiteId: SUITE_BASE_AES_GCM,
+      recipientPublicKey: recipientPk,
+      senderPublicKey: senderPk,
+      plaintext,
+      context,
+      paddingBytes,
+      ephemeralSecret: ephemeral,
+      salt,
+    })
+    expect(sealed.ok).toBe(true)
+    if (!sealed.ok) return
+    expect(sealed.value).toHaveLength(1_114_219)
+    expect(sealed.value.slice(CIPHERTEXT_HEAD_OFFSET, 88)).toEqual(
+      Uint8Array.of(0x5a, 0x00, 0x11, 0x00, 0x13),
+    )
+    const opened = open({
+      envelope: sealed.value,
+      recipientPrivateKey: recipientSk,
+      senderPublicKey: senderPk,
+      context,
+    })
+    expect(opened.ok).toBe(true)
+    if (opened.ok) {
+      expect(opened.value).toHaveLength(MAX_MESSAGE)
+      expect(
+        Buffer.compare(Buffer.from(opened.value), Buffer.from(plaintext)),
+      ).toBe(0)
+    }
   })
 
   test('encoded fields control dispatch and cryptographic inputs', () => {

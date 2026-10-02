@@ -12,6 +12,7 @@ import {
 const MAP_SIZE = 6
 const AEAD_TAG_LENGTH = 16
 const INNER_LENGTH_PREFIX = 4
+const MIN_CIPHERTEXT = INNER_LENGTH_PREFIX + AEAD_TAG_LENGTH
 const MAX_CIPHERTEXT =
   INNER_LENGTH_PREFIX + MAX_MESSAGE + MAX_PADDING + AEAD_TAG_LENGTH
 const MAX_ENVELOPE = 88 + MAX_CIPHERTEXT
@@ -183,6 +184,7 @@ export function decodeEnvelope(bytes: Uint8Array): DecodedEnvelope | null {
     salt === null ||
     enc === null ||
     ciphertext === null ||
+    ciphertext.length < MIN_CIPHERTEXT ||
     !reader.done
   ) {
     return null

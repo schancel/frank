@@ -35,6 +35,7 @@ export type AdaptorErrorCode =
   | 'invalid-point'
   | 'invalid-proof'
   | 'invalid-signature'
+  | 'secret-point-mismatch'
   | 'rng-failed'
   | 'mismatched-signature'
 
@@ -73,6 +74,10 @@ export interface AdaptorVerifyInput {
 }
 
 export interface AdaptorCompleteInput {
+  readonly publicKey: Uint8Array
+  readonly adaptorPoint: AdaptorPoint
+  readonly adaptorProof: AdaptorSecretProof
+  readonly digest: Uint8Array
   readonly signature: AdaptorSignatureBytes
   readonly secret: AdaptorSecret
 }
@@ -97,8 +102,18 @@ function copyBrand<Name extends string>(bytes: Uint8Array): Brand<Name> {
   return new Uint8Array(bytes) as Brand<Name>
 }
 
-function digest32(bytes: Uint8Array): boolean {
-  return bytes instanceof Uint8Array && bytes.length === 32
+function copyLength(bytes: Uint8Array, length: number): Uint8Array | null {
+  if (!(bytes instanceof Uint8Array) || bytes.length !== length) return null
+  return new Uint8Array(bytes)
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false
+  let different = 0
+  for (let index = 0; index < left.length; index += 1) {
+    different |= (left[index] ?? 0) ^ (right[index] ?? 0)
+  }
+  return different === 0
 }
 
 export function adaptorSecretFromBytes(
@@ -108,8 +123,9 @@ export function adaptorSecretFromBytes(
     return failure('bad-length')
   }
   try {
-    scalarFromBytesCanonical(bytes, false)
-    return success(copyBrand<'secret'>(bytes))
+    const canonical = new Uint8Array(bytes)
+    scalarFromBytesCanonical(canonical, false)
+    return success(copyBrand<'secret'>(canonical))
   } catch {
     return failure('invalid-scalar')
   }
@@ -122,7 +138,7 @@ export function adaptorPointFromBytes(
     return failure('bad-length')
   }
   try {
-    const point = pointFromBytes(bytes)
+    const point = pointFromBytes(new Uint8Array(bytes))
     return success(copyBrand<'point'>(pointBytes(point)))
   } catch {
     return failure('invalid-point')
@@ -136,9 +152,10 @@ export function adaptorSecretProofFromBytes(
     return failure('bad-length')
   }
   try {
-    pointFromBytes(bytes.subarray(0, 33))
-    scalarFromBytesCanonical(bytes.subarray(33), false)
-    return success(copyBrand<'secret-proof'>(bytes))
+    const canonical = new Uint8Array(bytes)
+    pointFromBytes(canonical.subarray(0, 33))
+    scalarFromBytesCanonical(canonical.subarray(33), false)
+    return success(copyBrand<'secret-proof'>(canonical))
   } catch {
     return failure('invalid-proof')
   }
@@ -151,7 +168,7 @@ export function adaptorSignatureFromBytes(
     return failure('bad-length')
   }
   try {
-    const parsed = decodeAdaptorSignature(bytes)
+    const parsed = decodeAdaptorSignature(new Uint8Array(bytes))
     return success(
       copyBrand<'adaptor-signature'>(encodeAdaptorSignature(parsed)),
     )
@@ -167,7 +184,7 @@ export function compactEcdsaSignatureFromBytes(
     return failure('bad-length')
   }
   try {
-    const parsed = decodeEcdsaSignature(bytes)
+    const parsed = decodeEcdsaSignature(new Uint8Array(bytes))
     return success(
       copyBrand<'compact-ecdsa-signature'>(encodeEcdsaSignature(parsed)),
     )
@@ -217,10 +234,13 @@ export function verifyAdaptorSecret(
   point: AdaptorPoint,
   proof: AdaptorSecretProof,
 ): AdaptorResult<boolean> {
+  const pointBytes = copyLength(point, 33)
+  const proofBytes = copyLength(proof, 65)
+  if (pointBytes === null || proofBytes === null) return failure('bad-length')
   try {
-    const parsedPoint = pointFromBytes(point)
-    const proofPoint = pointFromBytes(proof.subarray(0, 33))
-    const response = scalarFromBytesCanonical(proof.subarray(33), false)
+    const parsedPoint = pointFromBytes(pointBytes)
+    const proofPoint = pointFromBytes(proofBytes.subarray(0, 33))
+    const response = scalarFromBytesCanonical(proofBytes.subarray(33), false)
     return success(pokVerify(parsedPoint, { R: proofPoint, z: response }))
   } catch {
     return failure('invalid-proof')
@@ -230,39 +250,50 @@ export function verifyAdaptorSecret(
 export function adaptorSign(
   input: AdaptorSignInput,
 ): AdaptorResult<AdaptorSignatureBytes> {
-  if (!digest32(input.digest)) return failure('bad-length')
+  const digest = copyLength(input.digest, 32)
+  const privateKey = copyLength(input.privateKey, 32)
+  if (digest === null || privateKey === null) return failure('bad-length')
   const proof = verifyAdaptorSecret(input.adaptorPoint, input.adaptorProof)
   if (!proof.ok || !proof.value) return failure('invalid-proof')
-  const key = privateKeyFromSecretBytes(input.privateKey, true)
-  if (!key.ok) return failure('invalid-scalar')
   try {
+    const key = privateKeyFromSecretBytes(privateKey, true)
+    privateKey.fill(0)
+    if (!key.ok) return failure('invalid-scalar')
     const scalar = scalarFromBytesCanonical(key.value.bytes, false)
-    const point = pointFromBytes(input.adaptorPoint)
-    return success(
-      copyBrand<'adaptor-signature'>(
-        encodeAdaptorSignature(encryptedSign(scalar, point, input.digest)),
-      ),
-    )
+    try {
+      const point = pointFromBytes(new Uint8Array(input.adaptorPoint))
+      return success(
+        copyBrand<'adaptor-signature'>(
+          encodeAdaptorSignature(encryptedSign(scalar, point, digest)),
+        ),
+      )
+    } finally {
+      key.value.bytes.fill(0)
+    }
   } catch {
+    privateKey.fill(0)
     return failure('invalid-signature')
-  } finally {
-    key.value.bytes.fill(0)
   }
 }
 
 export function verifyAdaptorSignature(
   input: AdaptorVerifyInput,
 ): AdaptorResult<boolean> {
-  if (!digest32(input.digest)) return failure('bad-length')
+  const digest = copyLength(input.digest, 32)
+  const publicKey = copyLength(input.publicKey, 33)
+  const signature = copyLength(input.signature, 162)
+  if (digest === null || publicKey === null || signature === null) {
+    return failure('bad-length')
+  }
   const proof = verifyAdaptorSecret(input.adaptorPoint, input.adaptorProof)
   if (!proof.ok || !proof.value) return failure('invalid-proof')
   try {
     return success(
       verifyEncryptedSignature(
-        pointFromBytes(input.publicKey),
-        pointFromBytes(input.adaptorPoint),
-        input.digest,
-        decodeAdaptorSignature(input.signature),
+        pointFromBytes(publicKey),
+        pointFromBytes(new Uint8Array(input.adaptorPoint)),
+        digest,
+        decodeAdaptorSignature(signature),
       ),
     )
   } catch {
@@ -271,24 +302,40 @@ export function verifyAdaptorSignature(
 }
 
 /**
- * Perform the adaptor completion arithmetic after validating both encodings.
- * A different but structurally valid scalar still produces a structurally
- * valid compact signature. The true scalar, or downstream ECDSA verification
- * against the expected key and digest, determines whether it is valid.
+ * Validate the complete adaptor transcript and bind `secret·G` to its adaptor
+ * point before producing a compact signature.
  */
 export function completeAdaptorSignature(
   input: AdaptorCompleteInput,
 ): AdaptorResult<CompactEcdsaSignature> {
+  const verified = verifyAdaptorSignature({
+    publicKey: input.publicKey,
+    adaptorPoint: input.adaptorPoint,
+    adaptorProof: input.adaptorProof,
+    digest: input.digest,
+    signature: input.signature,
+  })
+  if (!verified.ok) return verified
+  if (!verified.value) return failure('invalid-signature')
+  const parsedSecret = adaptorSecretFromBytes(input.secret)
+  if (!parsedSecret.ok) return parsedSecret
   try {
+    const scalar = scalarFromBytesCanonical(parsedSecret.value, false)
+    const expectedPoint = pointBytes(G.multiply(scalar))
+    if (!equalBytes(expectedPoint, new Uint8Array(input.adaptorPoint))) {
+      return failure('secret-point-mismatch')
+    }
     const completed = decryptSignature(
-      decodeAdaptorSignature(input.signature),
-      scalarFromBytesCanonical(input.secret, false),
+      decodeAdaptorSignature(new Uint8Array(input.signature)),
+      scalar,
     )
     return success(
       copyBrand<'compact-ecdsa-signature'>(encodeEcdsaSignature(completed)),
     )
   } catch {
     return failure('invalid-signature')
+  } finally {
+    parsedSecret.value.fill(0)
   }
 }
 

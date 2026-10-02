@@ -104,6 +104,40 @@ describe('Codex32 standard-checksum core', () => {
     ).toEqual(encoded)
   })
 
+  it('never exposes raw seed bytes at a non-secret share index', () => {
+    expect(
+      encodeCodex32({
+        threshold: 2,
+        identifier: 'cash',
+        index: 'q',
+        secret: seed(),
+      }),
+    ).toEqual({ ok: false, error: { code: 'invalid-index' } })
+    expect(
+      encodeCodex32({
+        threshold: 2,
+        identifier: 'cash',
+        index: 's',
+        secret: seed(),
+      }).ok,
+    ).toBe(true)
+  })
+
+  it('enforces the expanded-HRP printable length boundary', () => {
+    const length91 =
+      'ms10testsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj73p44avakdp6'
+    const length92 =
+      'ms10testsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqv03l8asvlgsgr'
+    const length93 =
+      'ms10testsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfwat0yy6r5na0'
+    expect(length91).toHaveLength(91)
+    expect(length92).toHaveLength(92)
+    expect(length93).toHaveLength(93)
+    expect(validateCodex32Checksum(length91)).toBe(true)
+    expect(validateCodex32Checksum(length92)).toBe(false)
+    expect(validateCodex32Checksum(length93)).toBe(false)
+  })
+
   it('splits and recovers from every threshold-sized subset', () => {
     const split = splitCodex32({
       threshold: 3,

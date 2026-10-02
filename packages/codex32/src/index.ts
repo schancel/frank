@@ -3,7 +3,9 @@ const SECRET_INDEX = 's'
 const CHECKSUM_LENGTH = 13
 const REGULAR_SECRET_BYTES = new Set([16, 20, 24, 28, 32])
 const REGULAR_PAYLOAD_GROUPS = new Set([26, 32, 39, 45, 52])
-const MAX_STRING_LENGTH = 93
+// BIP-93 caps the five-symbol expanded HRP plus data at 93 symbols. For the
+// fixed `ms` HRP, the printable `ms1...` form is therefore at most 91 chars.
+const MAX_STRING_LENGTH = 91
 const POLYMOD_INITIAL = 0x23181b3n
 const POLYMOD_RESIDUE = 0x10ce0795c2fd1e62an
 const GENERATORS = [
@@ -48,6 +50,7 @@ export interface Codex32Share {
 export interface EncodeCodex32Input {
   readonly threshold: Codex32Share['threshold']
   readonly identifier: string
+  /** Raw seed bytes are only encodable at the secret index `s`. */
   readonly index: string
   readonly secret: Uint8Array
 }
@@ -177,9 +180,9 @@ export function encodeCodex32(
   }
   if (!validIdentifier(input.identifier)) return fail('invalid-identifier')
   if (!validIndex(input.index)) return fail('invalid-index')
-  if (input.threshold === 0 && input.index !== SECRET_INDEX) {
-    return fail('invalid-index')
-  }
+  // This public API encodes raw seed bytes, which are only meaningful at the
+  // secret index. Threshold shares use the internal symbol encoder in split().
+  if (input.index !== SECRET_INDEX) return fail('invalid-index')
   if (!(input.secret instanceof Uint8Array)) return fail('bad-format')
   if (!REGULAR_SECRET_BYTES.has(input.secret.length)) {
     return fail('unsupported-length')

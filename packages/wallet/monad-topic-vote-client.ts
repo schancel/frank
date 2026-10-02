@@ -62,16 +62,14 @@
  *
  * ## Wire submission: `PUT /message/monad/topics/vote`
  *
- * `handle_put_monad_topic_vote` decodes a deterministic-CBOR type-11 body and, during the bounded
- * read coexistence window, returns a protobuf `StoredMonadTopicVoteEntry
- * { target_payload_hash: 1, sender_address: 2, tx_hash: 3, timestamp: 4, weight: 5 }` protobuf
- * body — read directly from that handler and `proto/topic_message.proto`, not assumed. Uses the
- * real generated bindings (`./topic_message_pb.js`/`.d.ts`, already generated and committed ahead
+ * The client submits legacy protobuf by default. With explicit `topicWriteFormat: 'cbor'`,
+ * `handle_put_monad_topic_vote` decodes a deterministic-CBOR type-11 body and returns an empty
+ * success response. The default path uses the real generated protobuf bindings from
+ * `proto/topic_message.proto` (`./topic_message_pb.js`/`.d.ts`, generated and committed ahead
  * of this ticket — see `proto/topic_message.proto`'s own header), never hand-rolled
  * `jspb.BinaryWriter`/`BinaryReader` calls (see `monad-stamp-client.ts`'s header for why that
  * matters: an earlier ticket's hand-rolled encoding was rejected outright once a working `protoc`
- * toolchain was available). The request Content-Type is `application/cbor`; `Accept` names the
- * temporary protobuf response explicitly.
+ * toolchain was available).
  *
  * ## Lease acquisition and release policy
  *
@@ -90,13 +88,12 @@
  *     other outcome is a rejection *before* `add_monad_topic_vote` is ever called), i.e. the burn is
  *     already confirmed on-chain. → `'confirmed'` (`'in-use' -> 'spent'`, never `'available'`
  *     again per ticket #34's correction).
- *   - `PUT /message/monad/topics/vote` returns an HTTP error response (relay reached and responded,
- *     4xx/5xx): per that same handler, a vote entry is only ever recorded after `Verified`, so an
- *     HTTP-level error means the vote was never recorded. → `'failed'` (retire, for the same
+ *   - A definitive HTTP error means the vote was never recorded. → `'failed'` (retire, for the same
  *     conservative "never silently reuse" reason `monad-stamp-client.ts` documents — this module
  *     has no reliable way to distinguish "never touched the network" from "burn landed but the
  *     relay's own storage write failed after verifying it" without fragile JSON-error-body
- *     parsing).
+ *     parsing). A machine-readable `topic_burn_outcome_unknown` response is instead `'stuck'`
+ *     because the burn may have landed after broadcast.
  *   - No HTTP response at all (network/transport failure, relay never definitively reached): this
  *     is the case the ticket calls out as "likely different" from an HTTP error response — unlike
  *     `monad-stamp-client.ts`, there is no `GET /message/monad/topics/:payload_hash` read-back route
@@ -106,7 +103,7 @@
  *     `MonadTopicVoteAbandonedError` so the caller knows the outcome is genuinely unresolved —
  *     never silently assumed confirmed or failed.
  */
-import { Provider, getBytes, hexlify } from 'ethers'
+import { Provider, concat, getBytes, hexlify } from 'ethers'
 import axios from 'axios'
 import {
   encodeTopicVote,
@@ -237,6 +234,26 @@ function toBareHex(bytes: Uint8Array): string {
   return hexlify(bytes).slice(2)
 }
 
+function isRelayOutcomeUnknown(error: unknown): boolean {
+  if (!axios.isAxiosError(error) || !error.response) return false
+  let data: unknown = error.response.data
+  try {
+    if (data instanceof ArrayBuffer) data = new TextDecoder().decode(data)
+    else if (ArrayBuffer.isView(data))
+      data = new TextDecoder().decode(
+        new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+      )
+    if (typeof data === 'string') data = JSON.parse(data)
+  } catch {
+    return false
+  }
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    (data as { error?: unknown }).error === 'topic_burn_outcome_unknown'
+  )
+}
+
 /** Base class for every error this module throws. */
 export class MonadTopicVoteError extends Error {}
 
@@ -298,7 +315,8 @@ export interface CastTopicVoteParams {
  * this file's header: there is deliberately no network-failure fallback poll in this ticket's
  * scope). */
 export interface CastTopicVoteResult {
-  stored: StoredMonadTopicVoteEntryProto
+  /** Present on the legacy protobuf path; CBOR vote success is HTTP 204. */
+  stored?: StoredMonadTopicVoteEntryProto
   /** Bare (no `0x`) hex of the target post's `payload_hash`. */
   targetPayloadHashHex: string
   txHash: string
@@ -320,6 +338,7 @@ export class MonadTopicVoteClient {
    * slash. `/message/monad/topics/vote` (`PUT`) is appended to it. */
   private readonly relayBaseUrl: string
   private readonly cborNetwork: string
+  private readonly topicWriteFormat: 'protobuf' | 'cbor'
 
   constructor(params: MonadWalletHandle) {
     this.pool = params.pool
@@ -328,24 +347,26 @@ export class MonadTopicVoteClient {
     this.httpClient = params.httpClient
     this.relayBaseUrl = params.relayBaseUrl.replace(/\/+$/, '')
     this.cborNetwork = params.cborNetwork ?? 'monad-testnet'
+    this.topicWriteFormat = params.topicWriteFormat ?? 'protobuf'
   }
 
   private async putTopicVote(
-    frame: Uint8Array,
-  ): Promise<StoredMonadTopicVoteEntryProto> {
+    body: Uint8Array,
+  ): Promise<StoredMonadTopicVoteEntryProto | undefined> {
+    const cbor = this.topicWriteFormat === 'cbor'
     const response = await axios({
       method: 'put',
       url: `${this.relayBaseUrl}/message/monad/topics/vote`,
-      data: frame,
-      // The request has one declared decoder. The response stays protobuf only for the bounded
-      // read-model coexistence window documented in docs/protocol/cbor.
+      data: body,
       headers: {
-        'Content-Type': 'application/cbor',
-        'Accept': 'application/x-protobuf',
+        'Content-Type': cbor ? 'application/cbor' : 'application/x-protobuf',
+        'Accept': cbor ? 'application/cbor' : 'application/x-protobuf',
       },
       responseType: 'arraybuffer',
     })
-    return decodeStoredMonadTopicVoteEntry(new Uint8Array(response.data))
+    return cbor
+      ? undefined
+      : decodeStoredMonadTopicVoteEntry(new Uint8Array(response.data))
   }
 
   /**
@@ -369,11 +390,19 @@ export class MonadTopicVoteClient {
       )
     }
 
-    const commitment = topicVoteCommitment(
-      this.cborNetwork,
-      params.targetPayloadHash,
-    )
-    const calldata = buildMonadTopicVoteCalldata(params.direction, commitment)
+    const commitment =
+      this.topicWriteFormat === 'cbor'
+        ? topicVoteCommitment(this.cborNetwork, params.targetPayloadHash)
+        : params.targetPayloadHash
+    const calldata =
+      this.topicWriteFormat === 'cbor'
+        ? buildMonadTopicVoteCalldata(params.direction, commitment)
+        : concat([
+            TOPIC_VOTE_LOKAD_ID,
+            new Uint8Array([0x01]),
+            new Uint8Array([params.direction === 'up' ? 0x01 : 0x00]),
+            commitment,
+          ])
     const targetPayloadHashHex = toBareHex(params.targetPayloadHash)
 
     const handle: AccountLeaseHandle =
@@ -410,11 +439,14 @@ export class MonadTopicVoteClient {
       )
     }
 
-    const vote = encodeTopicVote(
-      this.cborNetwork,
-      params.targetPayloadHash,
-      getBytes(signedTx.rawTx),
-    )
+    const rawBurnTx = getBytes(signedTx.rawTx)
+    const vote =
+      this.topicWriteFormat === 'cbor'
+        ? encodeTopicVote(this.cborNetwork, params.targetPayloadHash, rawBurnTx)
+        : encodeMonadTopicVote({
+            targetPayloadHash: params.targetPayloadHash,
+            rawBurnTx,
+          })
 
     try {
       const stored = await this.putTopicVote(vote)
@@ -426,6 +458,13 @@ export class MonadTopicVoteClient {
         leaseIndex: handle.index,
       }
     } catch (err) {
+      if (isRelayOutcomeUnknown(err)) {
+        this.leaseManager.releaseLease(handle, 'stuck')
+        throw new MonadTopicVoteAbandonedError(
+          `The relay broadcast outcome is unknown; retrying could burn twice (target ${targetPayloadHashHex})`,
+          targetPayloadHashHex,
+        )
+      }
       if (axios.isAxiosError(err) && err.response) {
         this.leaseManager.releaseLease(handle, 'failed')
         throw new MonadTopicVoteRejectedError(

@@ -17,6 +17,7 @@
 //! broadcast+poll loop structure exactly, byte-for-byte, just calling a different verify function.
 
 use bitcoinsuite_error::{Result, WrapErr};
+use sha3::{Digest, Keccak256};
 
 use crate::{
     monad_http::{Hash32, JsonRpcTransport, MonadHttpClient, MonadRpcError},
@@ -45,6 +46,10 @@ pub enum TopicVoteRelayOutcome {
         value_wei: u128,
         /// This vote's direction.
         direction: VoteDirection,
+        /// Confirmed block number.
+        block_number: u64,
+        /// Transaction position within the confirmed block.
+        transaction_index: u64,
     },
     /// `eth_sendRawTransaction` itself failed.
     BroadcastFailed(MonadRpcError),
@@ -125,6 +130,7 @@ where
 
     let tx_hash = match client.send_raw_transaction(raw_tx).await {
         Ok(submitted) => submitted.tx_hash,
+        Err(MonadRpcError::AlreadyKnown { .. }) => Hash32(Keccak256::digest(raw_tx).into()),
         Err(err) => return Ok(TopicVoteRelayOutcome::BroadcastFailed(err)),
     };
 
@@ -156,11 +162,15 @@ where
             TopicVoteBurnVerification::Verified {
                 value_wei,
                 direction,
+                block_number,
+                transaction_index,
             } => {
                 return Ok(TopicVoteRelayOutcome::Verified {
                     tx_hash,
                     value_wei,
                     direction,
+                    block_number,
+                    transaction_index,
                 });
             }
             other => {
@@ -217,6 +227,7 @@ mod tests {
             "transactionHash": hex_hash(0x11),
             "blockHash": hex_hash(0x22),
             "blockNumber": "0x2a",
+            "transactionIndex": "0x0",
             "from": hex_addr(0x33),
             "to": to,
             "contractAddress": null,
@@ -254,6 +265,7 @@ mod tests {
     struct MockTransport {
         responses: Arc<Mutex<HashMap<String, Vec<Value>>>>,
         send_raw_transaction_error: Arc<Mutex<Option<String>>>,
+        send_raw_transaction_already_known: Arc<Mutex<bool>>,
         call_counts: Arc<Mutex<HashMap<String, usize>>>,
         receipt_poll_count: Arc<AtomicUsize>,
     }
@@ -273,6 +285,11 @@ mod tests {
 
         fn fail_send_raw_transaction(&self, message: &str) -> &Self {
             *self.send_raw_transaction_error.lock().unwrap() = Some(message.to_string());
+            self
+        }
+
+        fn already_known(&self) -> &Self {
+            *self.send_raw_transaction_already_known.lock().unwrap() = true;
             self
         }
 
@@ -298,6 +315,12 @@ mod tests {
                 .or_insert(0) += 1;
 
             if method == "eth_sendRawTransaction" {
+                if *self.send_raw_transaction_already_known.lock().unwrap() {
+                    return Err(MonadRpcError::AlreadyKnown {
+                        method: method.to_string(),
+                        message: "already known".to_string(),
+                    });
+                }
                 if let Some(message) = self.send_raw_transaction_error.lock().unwrap().clone() {
                     return Err(MonadRpcError::NonceTooLow {
                         method: method.to_string(),
@@ -370,6 +393,7 @@ mod tests {
                 tx_hash,
                 value_wei,
                 direction,
+                ..
             } => {
                 assert_eq!(tx_hash, Hash32::from_hex(&hex_hash(0x11)).unwrap());
                 assert_eq!(value_wei, 42_000);
@@ -379,6 +403,60 @@ mod tests {
         }
         assert_eq!(transport.call_count("eth_sendRawTransaction"), 1);
         assert_eq!(transport.call_count("eth_getTransactionReceipt"), 1);
+    }
+
+    #[tokio::test]
+    async fn already_known_retry_still_verifies_the_deterministic_transaction_hash() {
+        let commitment = make_commitment();
+        let to = hex_addr(0x44);
+        let raw_tx = [0xde, 0xad, 0xbe, 0xef];
+        let tx_hash = Hash32(Keccak256::digest(raw_tx).into());
+        let tx_hash_hex = tx_hash.to_hex();
+        let transport = MockTransport::default();
+        transport.already_known();
+        transport.set(
+            "eth_getTransactionReceipt",
+            serde_json::json!({
+                "transactionHash": tx_hash_hex,
+                "blockHash": hex_hash(0x22),
+                "blockNumber": "0x2a",
+                "transactionIndex": "0x3",
+                "from": hex_addr(0x33),
+                "to": to,
+                "contractAddress": null,
+                "gasUsed": "0x5208",
+                "status": "0x1",
+                "logs": [],
+            }),
+        );
+        transport.set(
+            "eth_getTransactionByHash",
+            serde_json::json!({
+                "hash": tx_hash.to_hex(),
+                "to": hex_addr(0x44),
+                "value": "0x2a",
+                "input": commitment_calldata(VoteDirection::UP_BYTE, &commitment),
+                "from": hex_addr(0x33),
+            }),
+        );
+
+        let outcome = broadcast_and_verify_topic_vote(
+            &transport,
+            &raw_tx,
+            &expected_stamp_transaction(commitment),
+            fast_poll(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            outcome,
+            TopicVoteRelayOutcome::Verified {
+                tx_hash: actual,
+                block_number: 42,
+                transaction_index: 3,
+                ..
+            } if actual == tx_hash
+        ));
     }
 
     #[tokio::test]

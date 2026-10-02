@@ -429,7 +429,7 @@ describe('post -> vote -> tally, chained through the real #31/#32/#33 clients', 
         payloadHashHex,
         this.deriveWeight(post.getRawBurnTx_asU8()),
       )
-      return stored.serializeBinary()
+      return decoded.typed.postFrame.frame
     }
 
     handlePutVote(
@@ -523,6 +523,7 @@ describe('post -> vote -> tally, chained through the real #31/#32/#33 clients', 
       provider,
       httpClient,
       relayBaseUrl: RELAY_BASE_URL,
+      topicWriteFormat: 'cbor',
     })
     const voteClient = new MonadTopicVoteClient({
       pool,
@@ -530,6 +531,7 @@ describe('post -> vote -> tally, chained through the real #31/#32/#33 clients', 
       provider,
       httpClient,
       relayBaseUrl: RELAY_BASE_URL,
+      topicWriteFormat: 'cbor',
     })
 
     mockedAxios.mockImplementation(async config => {

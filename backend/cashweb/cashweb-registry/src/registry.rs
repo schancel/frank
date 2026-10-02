@@ -5,7 +5,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::cell::Cell;
 
-use bitcoinsuite_core::{ecc::Ecc, lotus_txid, Bytes, Hashed, LotusAddress, Net, Sha256d};
+use bitcoinsuite_core::{ecc::Ecc, lotus_txid, Bytes, Hashed, LotusAddress, Net, Sha256, Sha256d};
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::{ErrorMeta, Result};
 use cashweb_payload::{
@@ -1304,6 +1304,19 @@ impl Registry {
         self.db.monad_topic_votes().add_vote(entry)
     }
 
+    /// Atomically admit a CBOR post and its mandatory initial vote, selecting the immutable
+    /// author by confirmed chain order.
+    pub(crate) fn admit_cbor_topic_post(
+        &self,
+        payload_hash: &[u8],
+        post: proto::StoredMonadTopicPost,
+        initial_vote: &proto::StoredMonadTopicVoteEntry,
+    ) -> Result<crate::store::monad_topics::CborPostAdmission> {
+        self.db
+            .monad_topic_posts()
+            .admit_cbor_post(payload_hash, post, initial_vote)
+    }
+
     /// Attach `post`'s current tallied vote weight (sum of every vote recorded against
     /// `payload_hash`, including its own initial vote), producing a [`proto::MonadTopicPostView`].
     /// Shared by [`Registry::get_monad_topic_post_view`] and [`Registry::list_monad_topic_posts_by_topic`]
@@ -1321,6 +1334,17 @@ impl Registry {
         })
     }
 
+    fn is_legacy_topic_post(post: &proto::StoredMonadTopicPost) -> bool {
+        if !post.cbor_post_frame.is_empty() {
+            return false;
+        }
+        let Some(inner) = post.post.as_ref() else {
+            return false;
+        };
+        Sha256::digest(inner.encrypted_payload.clone().into()).as_slice()
+            == inner.payload_hash.as_slice()
+    }
+
     /// Fetch a stored topic post together with its current tallied vote weight (sum of every
     /// vote recorded against its `payload_hash`, including its own initial vote). `None` if no
     /// post is stored for `payload_hash`.
@@ -1329,8 +1353,9 @@ impl Registry {
         payload_hash: &[u8],
     ) -> Result<Option<proto::MonadTopicPostView>> {
         let post = match self.get_monad_topic_post(payload_hash)? {
-            Some(post) => post,
+            Some(post) if Self::is_legacy_topic_post(&post) => post,
             None => return Ok(None),
+            Some(_) => return Ok(None),
         };
         Ok(Some(self.monad_topic_post_view(payload_hash, post)?))
     }
@@ -1349,6 +1374,7 @@ impl Registry {
             .monad_topic_posts()
             .list_by_topic(topic, since)?
             .into_iter()
+            .filter(Self::is_legacy_topic_post)
             .map(|post| {
                 let payload_hash = post
                     .post

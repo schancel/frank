@@ -103,18 +103,26 @@ function storedVoteEntryBytes(
   return writer.getResultBuffer()
 }
 
-function makeClient(overrides?: { pool?: MonadSubAccountPool }) {
+function makeClient(overrides?: {
+  pool?: MonadSubAccountPool
+  topicWriteFormat?: 'protobuf' | 'cbor'
+  omitTopicWriteFormat?: boolean
+}) {
   const pool = overrides?.pool ?? makePool()
   const leaseManager = new SubAccountLeaseManager(pool)
   const provider = makeChainProvider()
   const httpClient = makeMockHttpClient()
-  const client = new MonadTopicVoteClient({
+  const handle = {
     pool,
     leaseManager,
     provider,
     httpClient,
     relayBaseUrl: 'https://relay.example.com/',
-  })
+    ...(overrides?.omitTopicWriteFormat
+      ? {}
+      : { topicWriteFormat: overrides?.topicWriteFormat ?? ('cbor' as const) }),
+  }
+  const client = new MonadTopicVoteClient(handle)
   return { client, pool, leaseManager, provider, httpClient }
 }
 
@@ -259,7 +267,7 @@ describe('MonadTopicVoteClient.castVote', () => {
       overrides: FEE_OVERRIDES,
     })
 
-    expect(result.stored.weight).toBe(Number(oddWeightWei))
+    expect(result.stored).toBeUndefined()
   })
 
   it('PUTs the assembled MonadTopicVote referencing the target payload_hash and releases the lease as confirmed on 2xx', async () => {
@@ -272,7 +280,7 @@ describe('MonadTopicVoteClient.castVote', () => {
       )
       expect(config.headers).toEqual({
         'Content-Type': 'application/cbor',
-        'Accept': 'application/x-protobuf',
+        'Accept': 'application/cbor',
       })
       const sentVote = decodeCborVote(new Uint8Array(config.data as Buffer))
       expect(sentVote.targetPayloadHash).toEqual(TARGET_PAYLOAD_HASH)
@@ -316,7 +324,7 @@ describe('MonadTopicVoteClient.castVote', () => {
     })
 
     expect(result.targetPayloadHashHex).toBe(hexNoPrefix(TARGET_PAYLOAD_HASH))
-    expect(result.stored.weight).toBe(10_000)
+    expect(result.stored).toBeUndefined()
     // Ticket #34: a confirmed release retires the account as 'spent' -- permanently excluded from
     // future selection, never back to 'available' for reuse.
     expect(pool.getRecord(result.leaseIndex)?.status).toBe('spent')
@@ -354,7 +362,45 @@ describe('MonadTopicVoteClient.castVote', () => {
       overrides: FEE_OVERRIDES,
     })
 
-    expect(result.stored.weight).toBe(-5_000)
+    expect(result.stored).toBeUndefined()
+  })
+
+  it('keeps protobuf as the default write format until CBOR read views are frozen', async () => {
+    const { client } = makeClient({ omitTopicWriteFormat: true })
+    mockedAxios.mockImplementationOnce(async config => {
+      expect(config.headers).toEqual({
+        'Content-Type': 'application/x-protobuf',
+        'Accept': 'application/x-protobuf',
+      })
+      const sent = decodeMonadTopicVote(new Uint8Array(config.data as Buffer))
+      expect(sent.targetPayloadHash).toEqual(TARGET_PAYLOAD_HASH)
+      expect(getBytes(Transaction.from(hexOf(sent.rawBurnTx)).data)[4]).toBe(
+        0x01,
+      )
+      const stored: StoredMonadTopicVoteEntryProto = {
+        targetPayloadHash: sent.targetPayloadHash,
+        senderAddress: getBytes('0x' + '11'.repeat(20)),
+        txHash: getBytes('0x' + '22'.repeat(32)),
+        timestamp: 1_700_000_000_000,
+        weight: 5_000,
+      }
+      return {
+        data: storedVoteEntryBytes(stored),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+
+    const result = await client.castVote({
+      targetPayloadHash: TARGET_PAYLOAD_HASH,
+      direction: 'up',
+      burnAddress: BURN_ADDRESS,
+      voteWeightWei: 5_000n,
+      overrides: FEE_OVERRIDES,
+    })
+    expect(result.stored?.weight).toBe(5_000)
   })
 
   it('retires the sub-account and throws MonadTopicVoteRejectedError on an HTTP error response', async () => {
@@ -380,6 +426,32 @@ describe('MonadTopicVoteClient.castVote', () => {
     // Every sub-account in the pool must now be 'retired' (only one was leased; find it).
     const retired = pool.records().filter(r => r.status === 'retired')
     expect(retired).toHaveLength(1)
+  })
+
+  it('retires as stuck on a machine-readable post-broadcast unknown outcome', async () => {
+    const { client, pool } = makeClient()
+    mockedAxios.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('Service Unavailable'), {
+        isAxiosError: true,
+        response: {
+          status: 503,
+          data: { error: 'topic_burn_outcome_unknown' },
+        },
+      })
+    })
+
+    await expect(
+      client.castVote({
+        targetPayloadHash: TARGET_PAYLOAD_HASH,
+        direction: 'up',
+        burnAddress: BURN_ADDRESS,
+        voteWeightWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+      }),
+    ).rejects.toThrow(MonadTopicVoteAbandonedError)
+    expect(
+      pool.records().filter(record => record.status === 'retired'),
+    ).toHaveLength(1)
   })
 
   it('retires as stuck and throws MonadTopicVoteAbandonedError on a network-level failure -- no read-back fallback in this ticket scope', async () => {

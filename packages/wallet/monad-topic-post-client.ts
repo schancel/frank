@@ -14,8 +14,8 @@
  *    (`../registry/broadcast_pb`'s `BroadcastMessage`/`BroadcastEntry`/`TopicPost`, and
  *    `../types/forum`'s `ForumMessageEntry`) rather than inventing a new payload encoding — see
  *    "Payload encoding, and why there's no encryption here" below.
- * 2. Wraps those opaque body bytes in a deterministic-CBOR type-9 post and derives its T1 hash
- *    and T7 burn commitment.
+ * 2. Uses the legacy body hash/commitment by default. The explicit `topicWriteFormat: 'cbor'`
+ *    predecessor instead wraps the body in a type-9 post and derives its T1/T7 commitments.
  * 3. Builds the calldata commitment as `<lokad_id: TOPIC_VOTE_LOKAD_ID><version:
  *    TOPIC_COMMITMENT_VERSION_TAG><direction: 0x01 up><commitment: 32 bytes>` (38
  *    bytes total) — the exact layout `cashweb_registry::monad_topic_verify::
@@ -30,8 +30,8 @@
  *    `backend/cashweb/cashweb-registry/src/http/monad_topics.rs`'s module doc: a topic vote burns to the
  *    *same* configured Stamp burn address, just tagged with a different LOKAD ID in its calldata —
  *    there is deliberately no separate topic burn-address env var).
- * 5. Wraps the signed burn in a type-10 submission and `PUT`s it as `application/cbor`.
- * 6. Releases the lease per the exact same three-way outcome mapping `monad-stamp-client.ts`
+ * 5. Submits protobuf by default; the opt-in predecessor uses a type-10 CBOR submission.
+ * 6. Releases the lease per the same three-way outcome mapping `monad-stamp-client.ts`
  *    documents in its own "Lease release policy" section (2xx → `'confirmed'`; HTTP error response
  *    → `'failed'`; network/transport failure → fall back to polling `GET
  *    /message/monad/topics/:payload_hash` before deciding `'confirmed'`/`'stuck'`) — see that
@@ -57,8 +57,9 @@
  *
  * ## Coexistence response
  *
- * Writes use CBOR. Success responses and the GET fallback remain protobuf until the protocol
- * allocates relay-derived read views. The generated bindings remain for that compatibility path:
+ * Writes remain protobuf by default until the protocol allocates relay-derived CBOR read views.
+ * The opt-in CBOR writer receives the exact type-9 frame on success. The generated bindings remain
+ * for the default compatibility path:
  * `./proto/topic_message.proto` → `./topic_message_pb.js`/`.d.ts` (ticket #30/#39's toolchain —
  * see `monad-stamp-client.ts`'s header for why hand-rolled `jspb.BinaryWriter`/`BinaryReader` was
  * rejected and replaced with a real `protoc`/`protoc-gen-js`/`protoc-gen-ts` toolchain). This file
@@ -78,13 +79,10 @@
  *   - **`PUT /message/monad/topics` returns 2xx**: `process_monad_topic_post` (`http/monad_topics.rs`) only
  *     reaches its success response after `TopicVoteRelayOutcome::Verified` — every other outcome
  *     is a rejection before any store happens. → `'confirmed'`.
- *   - **`PUT /message/monad/topics` returns an HTTP error response** (relay reached and
- *     definitively responded): per the same handler, a stored post only ever exists after
- *     `Verified`, so an HTTP-level error means the post was never accepted/stored. → `'failed'`
- *     (retiring rather than risking the rare "verified but the final store call itself 500'd"
- *     case — same conservative choice `monad-stamp-client.ts` documents for its own `PUT`, for the
- *     same reason: distinguishing that case would mean parsing `ProcessTopicPostError`'s variant
- *     out of the JSON error body, which is needlessly fragile).
+ *   - **`PUT /message/monad/topics` returns a definitive HTTP error response**: the post was not
+ *     accepted/stored. → `'failed'`
+ *   - **The relay returns `topic_burn_outcome_unknown`** after broadcast: confirmation is
+ *     ambiguous. → `'stuck'`
  *   - **No HTTP response at all** (network/transport failure, genuinely unknown whether the relay
  *     ever received/broadcast/stored the post before the connection dropped): falls back to
  *     polling `GET /message/monad/topics/:payload_hash` (`pollForStoredPost`) — that route already
@@ -95,7 +93,7 @@
  *     ambiguous case. Found → `'confirmed'`. Still not found after the poll budget is exhausted →
  *     `'stuck'`, and `MonadTopicPostAbandonedError` is thrown.
  */
-import { Provider, getBytes, hexlify, sha256 } from 'ethers'
+import { Provider, concat, getBytes, hexlify, sha256 } from 'ethers'
 import axios from 'axios'
 import {
   encodeTopicPost,
@@ -210,6 +208,16 @@ export function decodeMonadTopicPost(bytes: Uint8Array): MonadTopicPostProto {
     encryptedPayload: pb.getEncryptedPayload_asU8(),
     payloadHash: pb.getPayloadHash_asU8(),
   }
+}
+
+function encodeMonadTopicPost(msg: MonadTopicPostProto): Uint8Array {
+  const pb = new MonadTopicPost()
+  pb.setTopic(msg.topic)
+  pb.setParentPostHash(msg.parentPostHash)
+  pb.setRawBurnTx(msg.rawBurnTx)
+  pb.setEncryptedPayload(msg.encryptedPayload)
+  pb.setPayloadHash(msg.payloadHash)
+  return pb.serializeBinary()
 }
 
 function decodeStoredMonadTopicPostPb(
@@ -386,6 +394,26 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+function isRelayOutcomeUnknown(error: unknown): boolean {
+  if (!axios.isAxiosError(error) || !error.response) return false
+  let data: unknown = error.response.data
+  try {
+    if (data instanceof ArrayBuffer) data = new TextDecoder().decode(data)
+    else if (ArrayBuffer.isView(data))
+      data = new TextDecoder().decode(
+        new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+      )
+    if (typeof data === 'string') data = JSON.parse(data)
+  } catch {
+    return false
+  }
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    (data as { error?: unknown }).error === 'topic_burn_outcome_unknown'
+  )
+}
+
 /** Options for the `GET /message/monad/topics/:payload_hash` fallback poll used when a `PUT`
  * attempt fails with no HTTP response at all (see this file's header, "Lease release policy"). */
 export interface AbandonPollOptions {
@@ -431,10 +459,11 @@ export interface SubmitTopicPostParams {
 
 /** Outcome of a successful `submitTopicPost` call. */
 export interface SubmitTopicPostResult {
-  stored: StoredMonadTopicPostProto
-  /** Exact authoritative type-9 frame. Its bytes define `payloadHashHex`; do not re-encode it. */
+  /** Present on the legacy protobuf path. CBOR writes return the frozen type-9 frame instead. */
+  stored?: StoredMonadTopicPostProto
+  /** Exact authoritative type-9 frame on the CBOR path; empty on the legacy default path. */
   postFrame: Uint8Array
-  /** Bare hex of the type-9 frame's T1 hash; also the GET path segment. */
+  /** Bare post identity: T1(type-9 frame) for CBOR or legacy SHA256(body); also the GET key. */
   payloadHashHex: string
   txHash: string
   leaseIndex: number
@@ -456,6 +485,7 @@ export class MonadTopicPostClient {
    * appended to it. */
   private readonly relayBaseUrl: string
   private readonly cborNetwork: string
+  private readonly topicWriteFormat: 'protobuf' | 'cbor'
 
   constructor(params: MonadWalletHandle) {
     this.pool = params.pool
@@ -464,6 +494,7 @@ export class MonadTopicPostClient {
     this.httpClient = params.httpClient
     this.relayBaseUrl = params.relayBaseUrl.replace(/\/+$/, '')
     this.cborNetwork = params.cborNetwork ?? 'monad-testnet'
+    this.topicWriteFormat = params.topicWriteFormat ?? 'protobuf'
   }
 
   /** Fetch a previously-stored post view by its bare-hex `payload_hash` via
@@ -511,21 +542,32 @@ export class MonadTopicPostClient {
   }
 
   private async putTopicPost(
-    frame: Uint8Array,
-  ): Promise<StoredMonadTopicPostProto> {
+    body: Uint8Array,
+    cborPostFrame?: Uint8Array,
+  ): Promise<StoredMonadTopicPostProto | undefined> {
+    const cbor = cborPostFrame !== undefined
     const response = await axios({
       method: 'put',
       url: `${this.relayBaseUrl}/message/monad/topics`,
-      data: frame,
-      // The request has one declared decoder. The response stays protobuf only for the bounded
-      // read-model coexistence window documented in docs/protocol/cbor.
+      data: body,
       headers: {
-        'Content-Type': 'application/cbor',
-        // Read responses remain protobuf until relay-derived topic view schemas are allocated.
-        'Accept': 'application/x-protobuf',
+        'Content-Type': cbor ? 'application/cbor' : 'application/x-protobuf',
+        'Accept': cbor ? 'application/cbor' : 'application/x-protobuf',
       },
       responseType: 'arraybuffer',
     })
+    if (cbor) {
+      const returned = new Uint8Array(response.data)
+      if (
+        returned.length !== cborPostFrame.length ||
+        returned.some((byte, index) => byte !== cborPostFrame[index])
+      ) {
+        throw new Error(
+          'relay did not return the exact authoritative type-9 frame',
+        )
+      }
+      return undefined
+    }
     return decodeStoredMonadTopicPost(new Uint8Array(response.data))
   }
 
@@ -544,7 +586,7 @@ export class MonadTopicPostClient {
     if (params.entries.length === 0) {
       throw new Error('entries must not be empty')
     }
-    if (params.direction !== 'up') {
+    if (this.topicWriteFormat === 'cbor' && params.direction !== 'up') {
       throw new Error("a CBOR topic post's initial vote must be up")
     }
 
@@ -555,14 +597,33 @@ export class MonadTopicPostClient {
       parentPostHash,
       timestampMs: params.timestampMs,
     })
-    const postFrame = encodeTopicPost({
-      network: this.cborNetwork,
-      topic: params.topic,
-      parentHash: parentPostHash.length === 0 ? undefined : parentPostHash,
-      body: payload,
-    })
-    const { hash: payloadHash, commitment } = topicBurnCommitment(postFrame)
-    const calldata = hexlify(topicPostBurnCalldata(commitment))
+    const postFrame =
+      this.topicWriteFormat === 'cbor'
+        ? encodeTopicPost({
+            network: this.cborNetwork,
+            topic: params.topic,
+            parentHash:
+              parentPostHash.length === 0 ? undefined : parentPostHash,
+            body: payload,
+          })
+        : new Uint8Array(0)
+    const payloadHash =
+      this.topicWriteFormat === 'cbor'
+        ? topicBurnCommitment(postFrame).hash
+        : computeTopicPostCommitment(payload)
+    const commitment =
+      this.topicWriteFormat === 'cbor'
+        ? topicBurnCommitment(postFrame).commitment
+        : payloadHash
+    const calldata =
+      this.topicWriteFormat === 'cbor'
+        ? hexlify(topicPostBurnCalldata(commitment))
+        : concat([
+            TOPIC_VOTE_LOKAD_ID,
+            new Uint8Array([0x01]),
+            new Uint8Array([params.direction === 'up' ? 0x01 : 0x00]),
+            commitment,
+          ])
     const payloadHashHex = toBareHex(payloadHash)
 
     const handle: AccountLeaseHandle =
@@ -597,13 +658,23 @@ export class MonadTopicPostClient {
       )
     }
 
-    const submission = encodeTopicPostSubmission(
-      postFrame,
-      getBytes(signedTx.rawTx),
-    )
+    const rawBurnTx = getBytes(signedTx.rawTx)
+    const submission =
+      this.topicWriteFormat === 'cbor'
+        ? encodeTopicPostSubmission(postFrame, rawBurnTx)
+        : encodeMonadTopicPost({
+            topic: params.topic,
+            parentPostHash,
+            rawBurnTx,
+            encryptedPayload: payload,
+            payloadHash,
+          })
 
     try {
-      const stored = await this.putTopicPost(submission)
+      const stored = await this.putTopicPost(
+        submission,
+        this.topicWriteFormat === 'cbor' ? postFrame : undefined,
+      )
       this.leaseManager.releaseLease(handle, 'confirmed')
       return {
         stored,
@@ -613,6 +684,13 @@ export class MonadTopicPostClient {
         leaseIndex: handle.index,
       }
     } catch (err) {
+      if (isRelayOutcomeUnknown(err)) {
+        this.leaseManager.releaseLease(handle, 'stuck')
+        throw new MonadTopicPostAbandonedError(
+          `The relay broadcast outcome is unknown; retrying could burn twice (payload ${payloadHashHex})`,
+          payloadHashHex,
+        )
+      }
       if (axios.isAxiosError(err) && err.response) {
         this.leaseManager.releaseLease(handle, 'failed')
         throw new MonadTopicPostRejectedError(

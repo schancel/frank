@@ -60,6 +60,8 @@ const TYPE_TOPIC_VOTE_SUBMISSION: u32 = 11;
 /// A validated type-10 post submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopicPostEvent {
+    /// Network identifier carried by the post and submission.
+    pub network: String,
     /// The exact submitted type-10 frame.
     pub frame: Vec<u8>,
     /// The exact embedded type-9 frame: what a reader hashes and what must be stored verbatim.
@@ -81,6 +83,8 @@ pub struct TopicPostEvent {
 /// A validated type-11 vote submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopicVoteEvent {
+    /// Network identifier carried by the vote submission.
+    pub network: String,
     /// The exact submitted type-11 frame.
     pub frame: Vec<u8>,
     /// The T1 hash of the post voted on.
@@ -152,6 +156,9 @@ pub enum TopicEventError {
         /// The frame's network tag.
         actual: String,
     },
+    /// Stored authoritative frame does not have the identity used as its storage/target key.
+    #[error("topic post frame identity does not match its target hash")]
+    IdentityMismatch,
     /// The codec returned a projection this module did not expect. Not reachable for a frame it
     /// accepted; reported rather than panicking on hostile input.
     #[error("internal: {0}")]
@@ -251,6 +258,7 @@ pub fn parse_topic_event(
                 .map(|parent| array32(parent, "the parent hash"))
                 .transpose()?;
             Ok(TopicEvent::Post(TopicPostEvent {
+                network: network.clone(),
                 frame: bytes.to_vec(),
                 post_frame: post_frame.frame.clone(),
                 post_hash,
@@ -272,6 +280,7 @@ pub fn parse_topic_event(
             let commitment = topic_vote_commitment(network, &target_hash)
                 .map_err(|error| internal(&format!("T7: {error}")))?;
             Ok(TopicEvent::Vote(TopicVoteEvent {
+                network: network.clone(),
                 frame: bytes.to_vec(),
                 target_hash,
                 burn_tx: burn_tx.clone(),
@@ -280,6 +289,44 @@ pub fn parse_topic_event(
         }
         _ => Err(TopicEventError::UnexpectedRoot(parsed.type_id)),
     }
+}
+
+/// Revalidate an authoritative stored type-9 frame before admitting a vote against it.
+///
+/// This prevents a type-11 event from attaching the CBOR T7 commitment semantics to a legacy
+/// protobuf row that happens to share the same 32-byte key.
+pub fn validate_topic_post_target(
+    bytes: &[u8],
+    expected_network: &str,
+    expected_hash: &[u8; 32],
+) -> Result<(), TopicEventError> {
+    let parsed = match validate_frame(bytes, &topic_context()) {
+        Ok(ValidationResult::Parsed(parsed)) => parsed,
+        Ok(_) => return Err(internal("typed validation did not return a parsed frame")),
+        Err(Error::Codec(error)) => {
+            return Err(TopicEventError::Codec {
+                category: error.category.to_string(),
+                stage: error.stage.to_string(),
+                detail: error.detail,
+            })
+        }
+        Err(Error::Context(error)) => return Err(internal(&error.to_string())),
+    };
+    let Some(TypedPayload::TopicPost { network, .. }) = parsed.typed.as_deref() else {
+        return Err(TopicEventError::UnexpectedRoot(parsed.type_id));
+    };
+    if network != expected_network {
+        return Err(TopicEventError::NetworkMismatch {
+            expected: expected_network.to_string(),
+            actual: network.clone(),
+        });
+    }
+    let actual = content_hash(&parsed)
+        .map_err(|error| internal(&format!("T1 of the stored post: {error}")))?;
+    if &actual != expected_hash {
+        return Err(TopicEventError::IdentityMismatch);
+    }
+    Ok(())
 }
 
 /// What the relay requires of the burn transaction's on-chain shape.
@@ -342,7 +389,8 @@ pub enum TopicBurnError {
         /// The hash the node reported.
         returned: Hash32,
     },
-    /// An RPC or transport failure. Retrying is safe: nothing was recorded.
+    /// An RPC, transport, or post-confirmation consistency failure. The HTTP boundary reports
+    /// this as outcome-unknown because broadcast may already have consumed the transaction.
     #[error("infrastructure failure: {0}")]
     Infrastructure(Report),
 }
@@ -407,6 +455,10 @@ pub struct VerifiedTopicBurn {
     pub value_wei: u128,
     /// The vote's direction.
     pub direction: VoteDirection,
+    /// Confirmed block number.
+    pub block_number: u64,
+    /// Transaction position in the confirmed block.
+    pub transaction_index: u64,
 }
 
 /// Check, broadcast, confirm, and verify the burn of `event`.
@@ -442,6 +494,8 @@ pub async fn broadcast_and_verify_topic_event<T: JsonRpcTransport + Clone>(
             tx_hash,
             value_wei,
             direction,
+            block_number,
+            transaction_index,
         } => {
             if tx_hash != checked.decoded.tx_hash {
                 return Err(TopicBurnError::TxHashMismatch {
@@ -459,6 +513,8 @@ pub async fn broadcast_and_verify_topic_event<T: JsonRpcTransport + Clone>(
                 tx_hash,
                 value_wei,
                 direction,
+                block_number,
+                transaction_index,
             })
         }
         TopicVoteRelayOutcome::NodeHashMismatch { signed, returned } => {
@@ -657,6 +713,27 @@ mod tests {
     fn a_bare_post_has_no_burn_and_is_not_an_event() {
         let error = parse_topic_event(&post_frame(NET, "t", None), NET).unwrap_err();
         assert_eq!(error, TopicEventError::UnexpectedRoot(9));
+    }
+
+    #[test]
+    fn stored_vote_target_must_be_the_exact_canonical_post_on_the_same_network() {
+        let post = post_frame(NET, "frank.demo", None);
+        let event = parse_topic_event(&submission_frame(NET, &post, &[1]), NET).unwrap();
+        let hash = event.target_hash();
+        validate_topic_post_target(&post, NET, hash).unwrap();
+
+        assert!(matches!(
+            validate_topic_post_target(&post, "other-net", hash),
+            Err(TopicEventError::NetworkMismatch { .. })
+        ));
+        let wrong_hash = [0x55; 32];
+        assert_eq!(
+            validate_topic_post_target(&post, NET, &wrong_hash),
+            Err(TopicEventError::IdentityMismatch)
+        );
+        let mut noncanonical = post;
+        noncanonical.push(0);
+        assert!(validate_topic_post_target(&noncanonical, NET, hash).is_err());
     }
 
     #[test]
@@ -1154,6 +1231,7 @@ mod tests {
                 "transactionHash": hex_hash(node_hash),
                 "blockHash": format!("0x{}", hex::encode([0x22u8; 32])),
                 "blockNumber": "0x2a",
+                "transactionIndex": "0x0",
                 "from": format!("0x{}", hex::encode([0x33u8; 20])),
                 "to": to,
                 "contractAddress": null,

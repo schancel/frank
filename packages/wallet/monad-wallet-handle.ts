@@ -37,4 +37,6 @@ export interface MonadWalletHandle {
   /** Frank-CBOR network identifier. Defaults to `monad-testnet` for compatibility with existing
    * test/demo handles; production composition should set it explicitly. */
   cborNetwork?: string
+  /** Topic write transport. CBOR remains explicit opt-in until frozen read schemas ship. */
+  topicWriteFormat?: 'protobuf' | 'cbor'
 }

@@ -804,7 +804,9 @@ senderAddress: msg.getSenderAddress_asB64(),
 txHash: msg.getTxHash_asB64(),
 timestamp: jspb.Message.getFieldWithDefault(msg, 4, 0),
 networkTag: msg.getNetworkTag_asB64(),
-cborPostFrame: msg.getCborPostFrame_asB64()
+cborPostFrame: msg.getCborPostFrame_asB64(),
+confirmedBlockNumber: jspb.Message.getFieldWithDefault(msg, 7, 0),
+confirmedTransactionIndex: jspb.Message.getFieldWithDefault(msg, 8, 0)
   };
 
   if (includeInstance) {
@@ -865,6 +867,14 @@ proto.cashweb.registry.StoredMonadTopicPost.deserializeBinaryFromReader = functi
     case 6:
       var value = /** @type {!Uint8Array} */ (reader.readBytes());
       msg.setCborPostFrame(value);
+      break;
+    case 7:
+      var value = /** @type {number} */ (reader.readUint64());
+      msg.setConfirmedBlockNumber(value);
+      break;
+    case 8:
+      var value = /** @type {number} */ (reader.readUint64());
+      msg.setConfirmedTransactionIndex(value);
       break;
     default:
       reader.skipField();
@@ -935,6 +945,20 @@ proto.cashweb.registry.StoredMonadTopicPost.serializeBinaryToWriter = function(m
   if (f.length > 0) {
     writer.writeBytes(
       6,
+      f
+    );
+  }
+  f = message.getConfirmedBlockNumber();
+  if (f !== 0) {
+    writer.writeUint64(
+      7,
+      f
+    );
+  }
+  f = message.getConfirmedTransactionIndex();
+  if (f !== 0) {
+    writer.writeUint64(
+      8,
       f
     );
   }
@@ -1161,6 +1185,42 @@ proto.cashweb.registry.StoredMonadTopicPost.prototype.getCborPostFrame_asU8 = fu
  */
 proto.cashweb.registry.StoredMonadTopicPost.prototype.setCborPostFrame = function(value) {
   return jspb.Message.setProto3BytesField(this, 6, value);
+};
+
+
+/**
+ * optional uint64 confirmed_block_number = 7;
+ * @return {number}
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.getConfirmedBlockNumber = function() {
+  return /** @type {number} */ (jspb.Message.getFieldWithDefault(this, 7, 0));
+};
+
+
+/**
+ * @param {number} value
+ * @return {!proto.cashweb.registry.StoredMonadTopicPost} returns this
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.setConfirmedBlockNumber = function(value) {
+  return jspb.Message.setProto3IntField(this, 7, value);
+};
+
+
+/**
+ * optional uint64 confirmed_transaction_index = 8;
+ * @return {number}
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.getConfirmedTransactionIndex = function() {
+  return /** @type {number} */ (jspb.Message.getFieldWithDefault(this, 8, 0));
+};
+
+
+/**
+ * @param {number} value
+ * @return {!proto.cashweb.registry.StoredMonadTopicPost} returns this
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.setConfirmedTransactionIndex = function(value) {
+  return jspb.Message.setProto3IntField(this, 8, value);
 };
 
 

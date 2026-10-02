@@ -14,10 +14,12 @@
 //!   also creates its own initial vote entry), so [`Registry::get_monad_topic_post_view`]'s tally is
 //!   simply the sum of every recorded entry for a `payload_hash`.
 //!
-//! Updated clients declare `application/cbor` and submit the frozen type-10/type-11 frames. The
-//! legacy protobuf decoder remains behind its own explicit content type for the bounded window in
-//! `docs/protocol/cbor/topic-http-coexistence.md`; bytes are never sniffed or retried. Read models
-//! and success responses stay explicitly protobuf until deterministic-CBOR schemas are allocated.
+//! The opt-in CBOR writer declares `application/cbor` and submits frozen type-10/type-11 frames;
+//! the normal wallet remains protobuf until CBOR read views are frozen. Each decoder remains
+//! behind its own explicit content type during the bounded window documented in
+//! `docs/protocol/cbor/topic-http-coexistence.md`; bytes are never sniffed or retried. CBOR post
+//! writes and exact GETs return only the already-frozen type-9 frame, while derived read models
+//! remain protobuf and exclude CBOR-origin rows.
 //!
 //! ## Configuration
 //!
@@ -61,8 +63,8 @@ use crate::{
     monad_http::{Address, HttpTransport, JsonRpcTransport},
     monad_stamp_relay::PollConfig,
     monad_topic_cbor::{
-        broadcast_and_verify_topic_event, parse_topic_event, TopicBurnError, TopicBurnPolicy,
-        TopicEvent, TopicEventError, MAX_TOPIC_EVENT_FRAME_BYTES,
+        broadcast_and_verify_topic_event, parse_topic_event, validate_topic_post_target,
+        TopicBurnError, TopicBurnPolicy, TopicEvent, TopicEventError, MAX_TOPIC_EVENT_FRAME_BYTES,
     },
     monad_topic_relay::{broadcast_and_verify_topic_vote, TopicVoteRelayOutcome},
     monad_topic_verify::ExpectedTopicBurn,
@@ -99,7 +101,7 @@ pub enum ProcessMonadTopicPostError {
     /// exactly why. Every non-[`TopicVoteRelayOutcome::Verified`] outcome is a rejection, never a
     /// silent store.
     Rejected(TopicVoteRelayOutcome),
-    /// An infrastructure-level failure (RPC/transport error, or a storage error).
+    /// An infrastructure-level failure after broadcast or during durable storage.
     Infrastructure(Report),
 }
 
@@ -170,6 +172,7 @@ pub async fn process_monad_topic_post<T: JsonRpcTransport + Clone>(
             tx_hash,
             value_wei,
             direction,
+            ..
         } => (tx_hash, value_wei, direction),
         other => return Err(ProcessMonadTopicPostError::Rejected(other)),
     };
@@ -186,6 +189,8 @@ pub async fn process_monad_topic_post<T: JsonRpcTransport + Clone>(
         timestamp,
         network_tag: Vec::new(),
         cbor_post_frame: Vec::new(),
+        confirmed_block_number: 0,
+        confirmed_transaction_index: 0,
     };
 
     let stored = registry
@@ -219,8 +224,10 @@ pub enum ProcessMonadTopicVoteError {
     /// The vote's burn didn't verify -- see the wrapped [`TopicVoteRelayOutcome`] for exactly
     /// why.
     Rejected(TopicVoteRelayOutcome),
-    /// An infrastructure-level failure (RPC/transport error, or a storage error).
+    /// Infrastructure failed before broadcast (currently only target lookup).
     Infrastructure(Report),
+    /// Infrastructure/storage failed after the transaction may have been broadcast.
+    OutcomeUnknown(Report),
 }
 
 impl fmt::Display for ProcessMonadTopicVoteError {
@@ -240,6 +247,9 @@ impl fmt::Display for ProcessMonadTopicVoteError {
             }
             ProcessMonadTopicVoteError::Infrastructure(err) => {
                 write!(f, "infrastructure failure: {err}")
+            }
+            ProcessMonadTopicVoteError::OutcomeUnknown(err) => {
+                write!(f, "post-broadcast outcome unknown: {err}")
             }
         }
     }
@@ -275,13 +285,14 @@ pub async fn process_monad_topic_vote<T: JsonRpcTransport + Clone>(
 
     let outcome = broadcast_and_verify_topic_vote(transport, &request.raw_burn_tx, &expected, poll)
         .await
-        .map_err(ProcessMonadTopicVoteError::Infrastructure)?;
+        .map_err(ProcessMonadTopicVoteError::OutcomeUnknown)?;
 
     let (tx_hash, value_wei, direction) = match outcome {
         TopicVoteRelayOutcome::Verified {
             tx_hash,
             value_wei,
             direction,
+            ..
         } => (tx_hash, value_wei, direction),
         other => return Err(ProcessMonadTopicVoteError::Rejected(other)),
     };
@@ -301,7 +312,7 @@ pub async fn process_monad_topic_vote<T: JsonRpcTransport + Clone>(
 
     registry
         .add_monad_topic_vote(&vote_entry)
-        .map_err(ProcessMonadTopicVoteError::Infrastructure)?;
+        .map_err(ProcessMonadTopicVoteError::OutcomeUnknown)?;
 
     Ok(vote_entry)
 }
@@ -333,8 +344,10 @@ pub enum ProcessCborTopicEventError {
     UnknownTargetPost,
     /// The signed burn transaction failed before or after broadcast.
     Burn(TopicBurnError),
-    /// Durable storage failed after the burn verified.
+    /// Infrastructure failed before broadcast (currently only target lookup).
     Infrastructure(Report),
+    /// Durable storage failed after the burn verified.
+    OutcomeUnknown(Report),
 }
 
 impl fmt::Display for ProcessCborTopicEventError {
@@ -344,6 +357,7 @@ impl fmt::Display for ProcessCborTopicEventError {
             Self::UnknownTargetPost => write!(f, "no topic post found for the target hash"),
             Self::Burn(err) => write!(f, "{err}"),
             Self::Infrastructure(err) => write!(f, "infrastructure failure: {err}"),
+            Self::OutcomeUnknown(err) => write!(f, "post-broadcast outcome unknown: {err}"),
         }
     }
 }
@@ -376,10 +390,15 @@ pub async fn process_cbor_topic_event<T: JsonRpcTransport + Clone>(
         }
     }
     if let TopicEvent::Vote(vote) = &event {
-        registry
+        let target = registry
             .get_monad_topic_post(&vote.target_hash)
             .map_err(ProcessCborTopicEventError::Infrastructure)?
             .ok_or(ProcessCborTopicEventError::UnknownTargetPost)?;
+        if target.cbor_post_frame.is_empty() {
+            return Err(ProcessCborTopicEventError::UnknownTargetPost);
+        }
+        validate_topic_post_target(&target.cbor_post_frame, &vote.network, &vote.target_hash)
+            .map_err(ProcessCborTopicEventError::Event)?;
     }
     let verified = broadcast_and_verify_topic_event(
         transport,
@@ -414,24 +433,24 @@ pub async fn process_cbor_topic_event<T: JsonRpcTransport + Clone>(
                 timestamp,
                 network_tag: Vec::new(),
                 cbor_post_frame: post.post_frame,
+                confirmed_block_number: verified.block_number,
+                confirmed_transaction_index: verified.transaction_index,
             };
-            let stored = registry
-                .put_monad_topic_post(
-                    &post.post_hash,
-                    stored,
-                    crate::network_tag::frank_network_tag(),
-                )
-                .map_err(ProcessCborTopicEventError::Infrastructure)?;
-            registry
-                .add_monad_topic_vote(&proto::StoredMonadTopicVoteEntry {
-                    target_payload_hash: post.post_hash.to_vec(),
-                    sender_address: verified.sender.0.to_vec(),
-                    tx_hash: verified.tx_hash.0.to_vec(),
-                    timestamp,
-                    weight,
-                })
-                .map_err(ProcessCborTopicEventError::Infrastructure)?;
-            Ok(StoredCborTopicEvent::Post(stored))
+            let initial_vote = proto::StoredMonadTopicVoteEntry {
+                target_payload_hash: post.post_hash.to_vec(),
+                sender_address: verified.sender.0.to_vec(),
+                tx_hash: verified.tx_hash.0.to_vec(),
+                timestamp,
+                weight,
+            };
+            let stored = proto::StoredMonadTopicPost {
+                network_tag: crate::network_tag::frank_network_tag().to_vec(),
+                ..stored
+            };
+            let admitted = registry
+                .admit_cbor_topic_post(&post.post_hash, stored, &initial_vote)
+                .map_err(ProcessCborTopicEventError::OutcomeUnknown)?;
+            Ok(StoredCborTopicEvent::Post(admitted.post))
         }
         TopicEvent::Vote(vote) => {
             let stored = proto::StoredMonadTopicVoteEntry {
@@ -443,7 +462,7 @@ pub async fn process_cbor_topic_event<T: JsonRpcTransport + Clone>(
             };
             registry
                 .add_monad_topic_vote(&stored)
-                .map_err(ProcessCborTopicEventError::Infrastructure)?;
+                .map_err(ProcessCborTopicEventError::OutcomeUnknown)?;
             Ok(StoredCborTopicEvent::Vote(stored))
         }
     }
@@ -521,6 +540,37 @@ struct MonadTopicErrorBody {
     detail: String,
 }
 
+fn cbor_burn_outcome_unknown(error: &TopicBurnError) -> bool {
+    match error {
+        TopicBurnError::Infrastructure(_) | TopicBurnError::TxHashMismatch { .. } => true,
+        TopicBurnError::Rejected(TopicVoteRelayOutcome::ConfirmationTimedOut { .. }) => true,
+        TopicBurnError::Rejected(TopicVoteRelayOutcome::BroadcastFailed(error)) => {
+            !error.definitively_rejected_send()
+        }
+        _ => false,
+    }
+}
+
+fn relay_burn_outcome_unknown(outcome: &TopicVoteRelayOutcome) -> bool {
+    match outcome {
+        TopicVoteRelayOutcome::ConfirmationTimedOut { .. }
+        | TopicVoteRelayOutcome::NodeHashMismatch { .. } => true,
+        TopicVoteRelayOutcome::BroadcastFailed(error) => !error.definitively_rejected_send(),
+        _ => false,
+    }
+}
+
+fn cbor_outcome_unknown_response(detail: String) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(MonadTopicErrorBody {
+            error: "topic_burn_outcome_unknown",
+            detail,
+        }),
+    )
+        .into_response()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TopicRequestFormat {
     Cbor,
@@ -548,7 +598,7 @@ fn topic_request_format(headers: &HeaderMap) -> Option<TopicRequestFormat> {
 /// Topic read models do not yet have frozen CBOR schemas. Missing or wildcard `Accept` preserves
 /// legacy compatibility; an explicit CBOR-only request fails instead of returning mislabeled or
 /// heuristically converted protobuf bytes.
-fn topic_accepts_protobuf(headers: &HeaderMap) -> bool {
+fn topic_accepts(headers: &HeaderMap, expected: &str) -> bool {
     let Some(value) = headers.get(ACCEPT) else {
         return true;
     };
@@ -569,11 +619,8 @@ fn topic_accepts_protobuf(headers: &HeaderMap) -> bool {
                         .is_ok_and(|quality| quality == 0.0)
                 })
         });
-        !refused
-            && matches!(
-                media_type.as_str(),
-                "*/*" | "application/*" | "application/x-protobuf"
-            )
+        !refused && matches!(media_type.as_str(), "*/*" | "application/*")
+            || (!refused && media_type.eq_ignore_ascii_case(expected))
     })
 }
 
@@ -599,16 +646,28 @@ pub enum PutMonadTopicPostError {
 impl IntoResponse for PutMonadTopicPostError {
     fn into_response(self) -> Response {
         match self {
+            PutMonadTopicPostError::Process(ProcessMonadTopicPostError::Infrastructure(err)) => {
+                cbor_outcome_unknown_response(err.to_string())
+            }
+            PutMonadTopicPostError::Process(ProcessMonadTopicPostError::Rejected(ref outcome))
+                if relay_burn_outcome_unknown(outcome) =>
+            {
+                cbor_outcome_unknown_response(format!("{outcome:?}"))
+            }
+            PutMonadTopicPostError::Cbor(ProcessCborTopicEventError::Burn(err))
+                if cbor_burn_outcome_unknown(&err) =>
+            {
+                cbor_outcome_unknown_response(err.to_string())
+            }
+            PutMonadTopicPostError::Cbor(ProcessCborTopicEventError::OutcomeUnknown(err)) => {
+                cbor_outcome_unknown_response(err.to_string())
+            }
             PutMonadTopicPostError::GateUnavailable(err) => {
                 tracing::event!(
                     Level::ERROR,
                     error = %err,
                     "topic-vote gate is misconfigured; rejecting topic post"
                 );
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            }
-            PutMonadTopicPostError::Process(ProcessMonadTopicPostError::Infrastructure(err)) => {
-                tracing::event!(Level::ERROR, error = %err, "infrastructure failure processing topic post");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
             PutMonadTopicPostError::Cbor(ProcessCborTopicEventError::Infrastructure(err)) => {
@@ -664,12 +723,17 @@ pub async fn handle_put_monad_topic_post(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, PutMonadTopicPostError> {
-    if body.len() as u64 > MAX_TOPIC_EVENT_FRAME_BYTES {
-        return Err(PutMonadTopicPostError::PayloadTooLarge);
-    }
     let request_format =
         topic_request_format(&headers).ok_or(PutMonadTopicPostError::UnsupportedMediaType)?;
-    if !topic_accepts_protobuf(&headers) {
+    if request_format == TopicRequestFormat::Cbor && body.len() as u64 > MAX_TOPIC_EVENT_FRAME_BYTES
+    {
+        return Err(PutMonadTopicPostError::PayloadTooLarge);
+    }
+    let expected_response = match request_format {
+        TopicRequestFormat::Cbor => "application/cbor",
+        TopicRequestFormat::Protobuf => "application/x-protobuf",
+    };
+    if !topic_accepts(&headers, expected_response) {
         return Err(PutMonadTopicPostError::NotAcceptable);
     }
     let config = monad_topic_gate()
@@ -688,7 +752,9 @@ pub async fn handle_put_monad_topic_post(
         .await
         .map_err(PutMonadTopicPostError::Cbor)?
         {
-            StoredCborTopicEvent::Post(stored) => Ok(Protobuf(stored).into_response()),
+            StoredCborTopicEvent::Post(stored) => {
+                Ok(([(CONTENT_TYPE, "application/cbor")], stored.cbor_post_frame).into_response())
+            }
             StoredCborTopicEvent::Vote(_) => unreachable!("event kind checked before broadcast"),
         },
         TopicRequestFormat::Protobuf => {
@@ -731,6 +797,22 @@ pub enum PutMonadTopicVoteError {
 impl IntoResponse for PutMonadTopicVoteError {
     fn into_response(self) -> Response {
         match self {
+            PutMonadTopicVoteError::Process(ProcessMonadTopicVoteError::OutcomeUnknown(err)) => {
+                cbor_outcome_unknown_response(err.to_string())
+            }
+            PutMonadTopicVoteError::Process(ProcessMonadTopicVoteError::Rejected(ref outcome))
+                if relay_burn_outcome_unknown(outcome) =>
+            {
+                cbor_outcome_unknown_response(format!("{outcome:?}"))
+            }
+            PutMonadTopicVoteError::Cbor(ProcessCborTopicEventError::Burn(err))
+                if cbor_burn_outcome_unknown(&err) =>
+            {
+                cbor_outcome_unknown_response(err.to_string())
+            }
+            PutMonadTopicVoteError::Cbor(ProcessCborTopicEventError::OutcomeUnknown(err)) => {
+                cbor_outcome_unknown_response(err.to_string())
+            }
             PutMonadTopicVoteError::GateUnavailable(err) => {
                 tracing::event!(
                     Level::ERROR,
@@ -740,7 +822,7 @@ impl IntoResponse for PutMonadTopicVoteError {
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
             PutMonadTopicVoteError::Process(ProcessMonadTopicVoteError::Infrastructure(err)) => {
-                tracing::event!(Level::ERROR, error = %err, "infrastructure failure processing topic vote");
+                tracing::event!(Level::ERROR, error = %err, "infrastructure failure before processing topic vote");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
             PutMonadTopicVoteError::Cbor(ProcessCborTopicEventError::Infrastructure(err)) => {
@@ -796,12 +878,17 @@ pub async fn handle_put_monad_topic_vote(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, PutMonadTopicVoteError> {
-    if body.len() as u64 > MAX_TOPIC_EVENT_FRAME_BYTES {
-        return Err(PutMonadTopicVoteError::PayloadTooLarge);
-    }
     let request_format =
         topic_request_format(&headers).ok_or(PutMonadTopicVoteError::UnsupportedMediaType)?;
-    if !topic_accepts_protobuf(&headers) {
+    if request_format == TopicRequestFormat::Cbor && body.len() as u64 > MAX_TOPIC_EVENT_FRAME_BYTES
+    {
+        return Err(PutMonadTopicVoteError::PayloadTooLarge);
+    }
+    let expected_response = match request_format {
+        TopicRequestFormat::Cbor => "application/cbor",
+        TopicRequestFormat::Protobuf => "application/x-protobuf",
+    };
+    if !topic_accepts(&headers, expected_response) {
         return Err(PutMonadTopicVoteError::NotAcceptable);
     }
     let config = monad_topic_gate()
@@ -820,7 +907,7 @@ pub async fn handle_put_monad_topic_vote(
         .await
         .map_err(PutMonadTopicVoteError::Cbor)?
         {
-            StoredCborTopicEvent::Vote(stored) => Ok(Protobuf(stored).into_response()),
+            StoredCborTopicEvent::Vote(_) => Ok(StatusCode::NO_CONTENT.into_response()),
             StoredCborTopicEvent::Post(_) => unreachable!("event kind checked before broadcast"),
         },
         TopicRequestFormat::Protobuf => {
@@ -847,6 +934,8 @@ pub enum GetMonadTopicPostError {
     InvalidHex(hex::FromHexError),
     /// No post stored for the given `payload_hash`.
     NotFound,
+    /// The caller accepts neither supported representation.
+    NotAcceptable,
     /// A storage-level error.
     Infrastructure(Report),
 }
@@ -863,6 +952,7 @@ impl IntoResponse for GetMonadTopicPostError {
             )
                 .into_response(),
             GetMonadTopicPostError::NotFound => StatusCode::NOT_FOUND.into_response(),
+            GetMonadTopicPostError::NotAcceptable => StatusCode::NOT_ACCEPTABLE.into_response(),
             GetMonadTopicPostError::Infrastructure(err) => {
                 tracing::event!(Level::ERROR, error = %err, "infrastructure failure fetching topic post");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -876,14 +966,41 @@ impl IntoResponse for GetMonadTopicPostError {
 pub async fn handle_get_monad_topic_post(
     Path(hex_hash): Path<String>,
     Extension(server): Extension<RegistryServer>,
-) -> Result<Protobuf<proto::MonadTopicPostView>, GetMonadTopicPostError> {
+    headers: HeaderMap,
+) -> Result<Response, GetMonadTopicPostError> {
     let payload_hash = hex::decode(&hex_hash).map_err(GetMonadTopicPostError::InvalidHex)?;
+    let accepts_cbor = topic_accepts(&headers, "application/cbor");
+    let accepts_protobuf = topic_accepts(&headers, "application/x-protobuf");
+    if !accepts_cbor && !accepts_protobuf {
+        return Err(GetMonadTopicPostError::NotAcceptable);
+    }
+    if accepts_cbor && !accepts_protobuf {
+        let expected_hash: [u8; 32] = payload_hash
+            .as_slice()
+            .try_into()
+            .map_err(|_| GetMonadTopicPostError::NotFound)?;
+        let stored = server
+            .registry
+            .get_monad_topic_post(&payload_hash)
+            .map_err(GetMonadTopicPostError::Infrastructure)?
+            .ok_or(GetMonadTopicPostError::NotFound)?;
+        if stored.cbor_post_frame.is_empty() {
+            return Err(GetMonadTopicPostError::NotFound);
+        }
+        validate_topic_post_target(
+            &stored.cbor_post_frame,
+            server.registry.expected_cbor_network(),
+            &expected_hash,
+        )
+        .map_err(|err| GetMonadTopicPostError::Infrastructure(Report::msg(err.to_string())))?;
+        return Ok(([(CONTENT_TYPE, "application/cbor")], stored.cbor_post_frame).into_response());
+    }
     let view = server
         .registry
         .get_monad_topic_post_view(&payload_hash)
         .map_err(GetMonadTopicPostError::Infrastructure)?
         .ok_or(GetMonadTopicPostError::NotFound)?;
-    Ok(Protobuf(view))
+    Ok(Protobuf(view).into_response())
 }
 
 /// Query parameters for [`handle_list_monad_topic_posts`].
@@ -1004,7 +1121,7 @@ mod tests {
     use super::*;
     use crate::{
         monad_evm_tx::{decode_signed_transaction, test_support::signed_eip1559_tx},
-        monad_http::MonadRpcError,
+        monad_http::{Hash32, MonadRpcError},
         monad_topic_verify::{TOPIC_COMMITMENT_VERSION_TAG, TOPIC_VOTE_LOKAD_ID},
         store::db::Db,
     };
@@ -1140,6 +1257,7 @@ mod tests {
             "transactionHash": hex_hash(0x11),
             "blockHash": hex_hash(0x22),
             "blockNumber": "0x2a",
+            "transactionIndex": "0x0",
             "from": "0x3333333333333333333333333333333333333333",
             "to": to,
             "contractAddress": null,
@@ -1162,6 +1280,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct MockTransport {
         responses: Arc<Mutex<HashMap<String, Value>>>,
+        send_raw_transaction_already_known: Arc<Mutex<bool>>,
     }
 
     impl MockTransport {
@@ -1171,6 +1290,10 @@ mod tests {
                 .unwrap()
                 .insert(method.to_string(), response);
             self
+        }
+
+        fn set_already_known(&self) {
+            *self.send_raw_transaction_already_known.lock().unwrap() = true;
         }
     }
 
@@ -1184,6 +1307,12 @@ mod tests {
     impl JsonRpcTransport for MockTransport {
         async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
             if method == "eth_sendRawTransaction" {
+                if *self.send_raw_transaction_already_known.lock().unwrap() {
+                    return Err(MonadRpcError::AlreadyKnown {
+                        method: method.to_string(),
+                        message: "already known".to_string(),
+                    });
+                }
                 // Defaults to hash 0x11 (matching the receipt/tx fixtures below), but tests that
                 // need a *distinct* broadcast tx hash (e.g. to prove multiple votes tally
                 // separately rather than colliding on `DbMonadTopicVotes`' tx_hash-keyed dedup) can
@@ -1229,16 +1358,59 @@ mod tests {
         assert_eq!(topic_request_format(&headers), None);
 
         headers.remove(CONTENT_TYPE);
-        assert!(topic_accepts_protobuf(&headers));
+        assert!(topic_accepts(&headers, "application/x-protobuf"));
         headers.insert(ACCEPT, "application/x-protobuf".parse().unwrap());
-        assert!(topic_accepts_protobuf(&headers));
+        assert!(topic_accepts(&headers, "application/x-protobuf"));
         headers.insert(
             ACCEPT,
             "application/cbor, application/x-protobuf".parse().unwrap(),
         );
-        assert!(topic_accepts_protobuf(&headers));
+        assert!(topic_accepts(&headers, "application/x-protobuf"));
         headers.insert(ACCEPT, "application/cbor".parse().unwrap());
-        assert!(!topic_accepts_protobuf(&headers));
+        assert!(!topic_accepts(&headers, "application/x-protobuf"));
+    }
+
+    #[tokio::test]
+    async fn post_broadcast_timeout_has_a_machine_readable_ambiguous_outcome() {
+        let timeout = ProcessCborTopicEventError::Burn(TopicBurnError::Rejected(
+            TopicVoteRelayOutcome::ConfirmationTimedOut {
+                tx_hash: Hash32([0x42; 32]),
+            },
+        ));
+        for response in [
+            PutMonadTopicPostError::Cbor(timeout).into_response(),
+            PutMonadTopicVoteError::Cbor(ProcessCborTopicEventError::Burn(
+                TopicBurnError::Rejected(TopicVoteRelayOutcome::ConfirmationTimedOut {
+                    tx_hash: Hash32([0x42; 32]),
+                }),
+            ))
+            .into_response(),
+            PutMonadTopicPostError::Process(ProcessMonadTopicPostError::Rejected(
+                TopicVoteRelayOutcome::ConfirmationTimedOut {
+                    tx_hash: Hash32([0x42; 32]),
+                },
+            ))
+            .into_response(),
+            PutMonadTopicVoteError::Process(ProcessMonadTopicVoteError::Rejected(
+                TopicVoteRelayOutcome::ConfirmationTimedOut {
+                    tx_hash: Hash32([0x42; 32]),
+                },
+            ))
+            .into_response(),
+            PutMonadTopicVoteError::Process(ProcessMonadTopicVoteError::OutcomeUnknown(
+                Report::msg("storage failed after confirmation"),
+            ))
+            .into_response(),
+            PutMonadTopicPostError::Cbor(ProcessCborTopicEventError::OutcomeUnknown(Report::msg(
+                "storage failed after confirmation",
+            )))
+            .into_response(),
+        ] {
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "topic_burn_outcome_unknown");
+        }
     }
 
     #[tokio::test]
@@ -1265,6 +1437,7 @@ mod tests {
                 "transactionHash": tx_hash,
                 "blockHash": hex_hash(0x22),
                 "blockNumber": "0x2a",
+                "transactionIndex": "0x0",
                 "from": sender.to_hex(),
                 "to": to,
                 "contractAddress": null,
@@ -1305,12 +1478,98 @@ mod tests {
         assert_eq!(inner.encrypted_payload, b"hello from CBOR");
         assert_eq!(
             registry
-                .get_monad_topic_post_view(&inner.payload_hash)
+                .get_monad_topic_post(&inner.payload_hash)
                 .unwrap()
                 .unwrap()
-                .vote_weight,
-            7_000
+                .cbor_post_frame,
+            post_frame
         );
+        assert!(registry
+            .get_monad_topic_post_view(&inner.payload_hash)
+            .unwrap()
+            .is_none());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT, "application/cbor".parse().unwrap());
+        let response = handle_get_monad_topic_post(
+            Path(hex::encode(&inner.payload_hash)),
+            Extension(test_server(registry)),
+            headers,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.headers()[CONTENT_TYPE], "application/cbor");
+        assert_eq!(
+            hyper::body::to_bytes(response.into_body()).await.unwrap(),
+            post_frame.as_slice()
+        );
+    }
+
+    #[tokio::test]
+    async fn cbor_post_http_processing_is_idempotent_after_already_known() {
+        let (_tempdir, registry) = test_registry();
+        let post_frame = cbor_post_frame();
+        let preliminary =
+            parse_topic_event(&cbor_submission(&post_frame, &[1]), "monad-testnet").unwrap();
+        let commitment = *preliminary.commitment();
+        let seckey = EccSecp256k1::default()
+            .seckey_from_array([0x72; 32])
+            .unwrap();
+        let calldata = cbor_topic_calldata(0x01, &commitment);
+        let (raw_burn_tx, sender) =
+            signed_eip1559_tx(&seckey, 10_143, 0, burn_address(), 7_000, &calldata);
+        let decoded_tx = decode_signed_transaction(&raw_burn_tx).unwrap();
+        let tx_hash = format!("0x{}", hex::encode(decoded_tx.tx_hash.0));
+        let transport = MockTransport::default();
+        transport.set("eth_sendRawTransaction", Value::String(tx_hash.clone()));
+        transport.set(
+            "eth_getTransactionReceipt",
+            serde_json::json!({
+                "transactionHash": tx_hash,
+                "blockHash": hex_hash(0x22),
+                "blockNumber": "0x2a",
+                "transactionIndex": "0x0",
+                "from": sender.to_hex(),
+                "to": hex_addr(burn_address()),
+                "contractAddress": null,
+                "gasUsed": "0x5208",
+                "status": "0x1",
+                "logs": [],
+            }),
+        );
+        transport.set(
+            "eth_getTransactionByHash",
+            serde_json::json!({
+                "hash": format!("0x{}", hex::encode(decoded_tx.tx_hash.0)),
+                "to": hex_addr(burn_address()),
+                "value": "0x1b58",
+                "input": format!("0x{}", hex::encode(&calldata)),
+                "from": sender.to_hex(),
+            }),
+        );
+        let submission = cbor_submission(&post_frame, &raw_burn_tx);
+
+        process_cbor_topic_event(
+            &transport,
+            &registry,
+            burn_address(),
+            fast_poll(),
+            &submission,
+            CborTopicEventKind::Post,
+        )
+        .await
+        .unwrap();
+        transport.set_already_known();
+        process_cbor_topic_event(
+            &transport,
+            &registry,
+            burn_address(),
+            fast_poll(),
+            &submission,
+            CborTopicEventKind::Post,
+        )
+        .await
+        .expect("an already-known retry must still verify and store idempotently");
     }
 
     fn make_post(raw_burn_tx: Vec<u8>, encrypted_payload: Vec<u8>) -> proto::MonadTopicPost {
@@ -1492,6 +1751,7 @@ mod tests {
                 "transactionHash": hex_hash(0x22),
                 "blockHash": hex_hash(0x23),
                 "blockNumber": "0x2b",
+                "transactionIndex": "0x0",
                 "from": "0x3333333333333333333333333333333333333333",
                 "to": to,
                 "contractAddress": null,
@@ -1560,6 +1820,28 @@ mod tests {
         )
         .await
         .expect_err("voting on an unknown post should be rejected");
+
+        assert!(matches!(err, ProcessCborTopicEventError::UnknownTargetPost));
+    }
+
+    #[tokio::test]
+    async fn cbor_vote_on_legacy_post_is_rejected_before_touching_the_network() {
+        let (_tempdir, registry) = test_registry();
+        let target = store_monad_topic_post_at(&registry, b"legacy-target".to_vec(), "legacy", 100);
+        let target: [u8; 32] = target.try_into().unwrap();
+        let vote = cbor_vote_submission(&target, &[0x01, 0xc0]);
+        let transport = MockTransport::default();
+
+        let err = process_cbor_topic_event(
+            &transport,
+            &registry,
+            burn_address(),
+            fast_poll(),
+            &vote,
+            CborTopicEventKind::Vote,
+        )
+        .await
+        .expect_err("a type-11 vote must not target a legacy protobuf row");
 
         assert!(matches!(err, ProcessCborTopicEventError::UnknownTargetPost));
     }
@@ -1673,16 +1955,20 @@ mod tests {
     /// side, not verification.
     fn store_monad_topic_post_at(
         registry: &Registry,
-        payload_hash: Vec<u8>,
+        payload_seed: Vec<u8>,
         topic: &str,
         timestamp: i64,
-    ) {
+    ) -> Vec<u8> {
+        let encrypted_payload = payload_seed;
+        let payload_hash = Sha256::digest(encrypted_payload.clone().into())
+            .as_slice()
+            .to_vec();
         let stored = proto::StoredMonadTopicPost {
             post: Some(proto::MonadTopicPost {
                 topic: topic.to_string(),
                 parent_post_hash: vec![],
                 raw_burn_tx: vec![1, 2, 3],
-                encrypted_payload: vec![4, 5, 6],
+                encrypted_payload,
                 payload_hash: payload_hash.clone(),
             }),
             sender_address: vec![9u8; 20],
@@ -1690,10 +1976,13 @@ mod tests {
             timestamp,
             network_tag: Vec::new(),
             cbor_post_frame: Vec::new(),
+            confirmed_block_number: 0,
+            confirmed_transaction_index: 0,
         };
         registry
             .put_monad_topic_post(&payload_hash, stored, &[])
             .unwrap();
+        payload_hash
     }
 
     fn payload_hash_of(view: &proto::MonadTopicPostView) -> Vec<u8> {
@@ -1713,15 +2002,11 @@ mod tests {
     #[test]
     fn list_monad_topic_posts_by_topic_excludes_other_topics_and_orders_by_timestamp() {
         let (_tempdir, registry) = test_registry();
-        let hash_a = vec![0xaa; 32];
-        let hash_b = vec![0xbb; 32];
-        let hash_other = vec![0xcc; 32];
-
         // Insert out of order, and interleaved with a different topic, to prove both the ordering
         // and the topic filter.
-        store_monad_topic_post_at(&registry, hash_b.clone(), "topic.one", 200);
-        store_monad_topic_post_at(&registry, hash_other.clone(), "topic.two", 150);
-        store_monad_topic_post_at(&registry, hash_a.clone(), "topic.one", 100);
+        let hash_b = store_monad_topic_post_at(&registry, vec![0xbb; 32], "topic.one", 200);
+        let hash_other = store_monad_topic_post_at(&registry, vec![0xcc; 32], "topic.two", 150);
+        let hash_a = store_monad_topic_post_at(&registry, vec![0xaa; 32], "topic.one", 100);
 
         let views = registry
             .list_monad_topic_posts_by_topic("topic.one", 0)
@@ -1741,10 +2026,8 @@ mod tests {
     #[test]
     fn list_monad_topic_posts_by_topic_respects_since_cursor() {
         let (_tempdir, registry) = test_registry();
-        let hash_old = vec![0x11; 32];
-        let hash_new = vec![0x22; 32];
-        store_monad_topic_post_at(&registry, hash_old, "topic.cursor", 100);
-        store_monad_topic_post_at(&registry, hash_new.clone(), "topic.cursor", 200);
+        store_monad_topic_post_at(&registry, vec![0x11; 32], "topic.cursor", 100);
+        let hash_new = store_monad_topic_post_at(&registry, vec![0x22; 32], "topic.cursor", 200);
 
         let views = registry
             .list_monad_topic_posts_by_topic("topic.cursor", 150)
@@ -1761,8 +2044,7 @@ mod tests {
     #[test]
     fn list_monad_topic_posts_by_topic_tally_matches_get_monad_topic_post_view() {
         let (_tempdir, registry) = test_registry();
-        let hash = vec![0x33; 32];
-        store_monad_topic_post_at(&registry, hash.clone(), "topic.tally", 100);
+        let hash = store_monad_topic_post_at(&registry, vec![0x33; 32], "topic.tally", 100);
 
         registry
             .add_monad_topic_vote(&proto::StoredMonadTopicVoteEntry {
@@ -1895,17 +2177,17 @@ mod tests {
             StatusCode::UNSUPPORTED_MEDIA_TYPE
         );
 
-        let cbor_only_response = axum::http::Request::builder()
+        let mismatched_response = axum::http::Request::builder()
             .method("PUT")
             .uri("/message/monad/topics/vote")
             .header(CONTENT_TYPE, "application/cbor")
-            .header(ACCEPT, "application/cbor")
+            .header(ACCEPT, "application/x-protobuf")
             .body(hyper::Body::from(vec![0u8]))
             .unwrap();
         assert_eq!(
             router
                 .clone()
-                .oneshot(cbor_only_response)
+                .oneshot(mismatched_response)
                 .await
                 .unwrap()
                 .status(),
@@ -1916,7 +2198,7 @@ mod tests {
             .method("PUT")
             .uri("/message/monad/topics")
             .header(CONTENT_TYPE, "application/cbor")
-            .header(ACCEPT, "application/x-protobuf")
+            .header(ACCEPT, "application/cbor")
             .body(hyper::Body::from(vec![
                 0u8;
                 MAX_TOPIC_EVENT_FRAME_BYTES as usize
@@ -1924,8 +2206,25 @@ mod tests {
             ]))
             .unwrap();
         assert_eq!(
-            router.oneshot(oversized).await.unwrap().status(),
+            router.clone().oneshot(oversized).await.unwrap().status(),
             StatusCode::PAYLOAD_TOO_LARGE
+        );
+
+        let legacy_over_cbor_cap = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/message/monad/topics")
+            .header(CONTENT_TYPE, "application/x-protobuf")
+            .header(ACCEPT, "application/x-protobuf")
+            .body(hyper::Body::from(vec![
+                0u8;
+                MAX_TOPIC_EVENT_FRAME_BYTES as usize
+                    + 1
+            ]))
+            .unwrap();
+        assert_ne!(
+            router.oneshot(legacy_over_cbor_cap).await.unwrap().status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "the CBOR R6 cap must not silently narrow the legacy protobuf collector"
         );
     }
 }

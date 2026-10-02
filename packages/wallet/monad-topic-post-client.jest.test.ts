@@ -98,18 +98,26 @@ function makeChainProvider() {
   })
 }
 
-function makeClient(overrides?: { pool?: MonadSubAccountPool }) {
+function makeClient(overrides?: {
+  pool?: MonadSubAccountPool
+  topicWriteFormat?: 'protobuf' | 'cbor'
+  omitTopicWriteFormat?: boolean
+}) {
   const pool = overrides?.pool ?? makePool()
   const leaseManager = new SubAccountLeaseManager(pool)
   const provider = makeChainProvider()
   const httpClient = makeMockHttpClient()
-  const client = new MonadTopicPostClient({
+  const handle = {
     pool,
     leaseManager,
     provider,
     httpClient,
     relayBaseUrl: 'https://relay.example.com/',
-  })
+    ...(overrides?.omitTopicWriteFormat
+      ? {}
+      : { topicWriteFormat: overrides?.topicWriteFormat ?? ('cbor' as const) }),
+  }
+  const client = new MonadTopicPostClient(handle)
   return { client, pool, leaseManager, provider, httpClient }
 }
 
@@ -174,6 +182,7 @@ function decodeCborSubmission(bytes: Uint8Array) {
     encryptedPayload: post.body,
     payloadHash: identity.hash,
     commitment: identity.commitment,
+    postFrame: result.typed.postFrame.frame,
   }
 }
 
@@ -318,7 +327,7 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
       expect(config.url).toBe('https://relay.example.com/message/monad/topics')
       expect(config.headers).toEqual({
         'Content-Type': 'application/cbor',
-        'Accept': 'application/x-protobuf',
+        'Accept': 'application/cbor',
       })
       const sentPost = decodeCborSubmission(
         new Uint8Array(config.data as Buffer),
@@ -340,7 +349,7 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
       expect(parsed.value).toBe(5_000n)
 
       return {
-        data: storedTopicPostBytes(sentPost, expectedPostFrame),
+        data: expectedPostFrame,
         status: 200,
         statusText: 'OK',
         headers: {},
@@ -358,8 +367,7 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
       timestampMs: 1_700_000_000_000,
     })
 
-    expect(result.stored.post?.topic).toBe('general')
-    expect(result.stored.cborPostFrame).toEqual(expectedPostFrame)
+    expect(result.stored).toBeUndefined()
     expect(result.postFrame).toEqual(expectedPostFrame)
     expect(result.payloadHashHex).toBe(
       Buffer.from(expectedIdentity.hash).toString('hex'),
@@ -368,15 +376,46 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
     expect(pool.getRecord(result.leaseIndex)?.status).toBe('spent')
   })
 
+  it('keeps protobuf as the default write format until CBOR read views are frozen', async () => {
+    const { client } = makeClient({ omitTopicWriteFormat: true })
+    mockedAxios.mockImplementationOnce(async config => {
+      expect(config.headers).toEqual({
+        'Content-Type': 'application/x-protobuf',
+        'Accept': 'application/x-protobuf',
+      })
+      const sent = decodeMonadTopicPost(new Uint8Array(config.data as Buffer))
+      expect(sent.payloadHash).toEqual(getBytes(sha256(sent.encryptedPayload)))
+      expect(getBytes(Transaction.from(hexOf(sent.rawBurnTx)).data)[4]).toBe(
+        0x01,
+      )
+      return {
+        data: storedTopicPostBytes(sent),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+
+    const result = await client.submitTopicPost({
+      topic: 'general',
+      entries: ENTRIES,
+      direction: 'up',
+      burnAddress: BURN_ADDRESS,
+      voteWeightWei: 5_000n,
+      overrides: FEE_OVERRIDES,
+    })
+    expect(result.stored?.post?.topic).toBe('general')
+  })
+
   it("leases exactly the requested funded account instead of the pool's next one (ticket #273)", async () => {
     const pool = makePool(3)
     pool.setStatus(0, 'available')
     pool.setStatus(2, 'available')
     const { client } = makeClient({ pool })
     mockedAxios.mockImplementationOnce(async config => ({
-      data: storedTopicPostBytes(
-        decodeCborSubmission(new Uint8Array(config.data as Buffer)),
-      ),
+      data: decodeCborSubmission(new Uint8Array(config.data as Buffer))
+        .postFrame,
       status: 200,
       statusText: 'OK',
       headers: {},
@@ -458,6 +497,33 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
 
     const retired = pool.records().filter(r => r.status === 'retired')
     expect(retired).toHaveLength(1)
+  })
+
+  it('retires as stuck on a machine-readable post-broadcast unknown outcome', async () => {
+    const { client, pool } = makeClient()
+    mockedAxios.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('Service Unavailable'), {
+        isAxiosError: true,
+        response: {
+          status: 503,
+          data: { error: 'topic_burn_outcome_unknown' },
+        },
+      })
+    })
+
+    await expect(
+      client.submitTopicPost({
+        topic: 'general',
+        entries: ENTRIES,
+        direction: 'up',
+        burnAddress: BURN_ADDRESS,
+        voteWeightWei: 5_000n,
+        overrides: FEE_OVERRIDES,
+      }),
+    ).rejects.toThrow(MonadTopicPostAbandonedError)
+    expect(
+      pool.records().filter(record => record.status === 'retired'),
+    ).toHaveLength(1)
   })
 
   it('falls back to polling GET and confirms when a network failure is followed by a found post', async () => {

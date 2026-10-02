@@ -145,6 +145,7 @@ function makeFakeChain(mainBalance = 10n ** 18n): FakeChain {
     provider,
     httpClient,
     relayBaseUrl: CONFIG.relayBaseUrl,
+    topicWriteFormat: 'cbor',
   }
   return {
     wallet,
@@ -174,21 +175,8 @@ function decodePostSubmission(putBody: Uint8Array) {
 function storedPostBytes(putBody: Uint8Array): Uint8Array {
   const { submission, post } = decodePostSubmission(putBody)
   const postFrame = submission.postFrame
-  const identity = topicBurnCommitment(postFrame.frame)
-  const sent = new MonadTopicPost()
-  sent.setTopic(post.topic)
-  sent.setParentPostHash(post.parentHash ?? new Uint8Array(0))
-  sent.setRawBurnTx(submission.burnTx)
-  sent.setEncryptedPayload(post.body)
-  sent.setPayloadHash(identity.hash)
-  const stored = new StoredMonadTopicPost()
-  stored.setPost(sent)
-  stored.setSenderAddress(getBytes('0x' + '11'.repeat(20)))
-  stored.setTxHash(getBytes('0x' + '22'.repeat(32)))
-  stored.setTimestamp(1_700_000_000_000)
-  stored.setNetworkTag(new TextEncoder().encode('MONT'))
-  stored.setCborPostFrame(postFrame.frame)
-  return stored.serializeBinary()
+  void post
+  return postFrame.frame
 }
 
 function storedVoteBytes(target: Uint8Array): Uint8Array {

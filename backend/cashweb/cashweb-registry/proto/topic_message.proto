@@ -60,13 +60,14 @@ message MonadTopicVote {
 // A [`MonadTopicPost`] as stored by the relay once its initial vote's burn verified, augmented
 // with facts the relay itself derived -- mirrors `StoredMonadMessage`.
 message StoredMonadTopicPost {
-  // The original post as submitted.
+  // Original legacy post, or an at-rest projection of a CBOR post. A CBOR projection's
+  // payload_hash is T1(frame), so it must not be served as a legacy MonadTopicPost read model.
   MonadTopicPost post = 1;
   // Sender's 20-byte Monad address, recovered via `ecrecover` from `post.raw_burn_tx`.
   bytes sender_address = 2;
   // 32-byte hash of the broadcast (and confirmed) initial-vote burn transaction.
   bytes tx_hash = 3;
-  // Milliseconds since the Unix epoch when the relay stored this post.
+  // Milliseconds since the Unix epoch when this post first became visible at this relay.
   int64 timestamp = 4;
   // Frank-specific network tag (ticket #39, see PLAN.md constraint 9), mirroring
   // `StoredMonadMessage.network_tag` (`monad_message.proto`) exactly -- see that field's doc for
@@ -80,6 +81,10 @@ message StoredMonadTopicPost {
   // Empty for legacy protobuf posts. Keeping the authoritative bytes beside the legacy storage
   // projection preserves the post's T1 identity without rewriting the existing RocksDB layout.
   bytes cbor_post_frame = 6;
+  // Confirmed chain order of the immutable CBOR author burn. Zero for legacy/pre-field rows.
+  uint64 confirmed_block_number = 7;
+  // Transaction position within confirmed_block_number. Zero for legacy/pre-field rows.
+  uint64 confirmed_transaction_index = 8;
 }
 
 // A single tallied vote (a post's initial vote, or a later [`MonadTopicVote`]) as stored by the

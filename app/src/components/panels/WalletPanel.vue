@@ -5,8 +5,8 @@
     tabindex="-1"
     data-test="wallet-panel"
   >
-    <q-dialog v-model="seedPhraseOpen">
-      <seed-phrase-dialog />
+    <q-dialog v-model="seedPhraseOpen" @hide="onSeedPhraseHide">
+      <seed-phrase-dialog ref="seedPhraseDialogRef" />
     </q-dialog>
     <q-dialog v-model="seedConfirmOpen" @hide="onSeedConfirmHide">
       <seed-confirm-dialog @confirmed="onSeedConfirmed" />
@@ -48,6 +48,7 @@
         <q-separator />
 
         <q-item
+          ref="showSeedItem"
           data-test="show-seed-item"
           clickable
           v-ripple
@@ -102,10 +103,15 @@ export default defineComponent({
       }),
     )
 
+    const showSeedItem = ref<{ $el?: HTMLElement } | null>(null)
+    const seedPhraseDialogRef = ref<{ reset?: () => void } | null>(null)
+
     return {
       seedPhraseOpen,
       seedConfirmOpen,
       panelRoot,
+      showSeedItem,
+      seedPhraseDialogRef,
       backupUnconfirmed,
       formattedBalance,
       loaded,
@@ -118,6 +124,19 @@ export default defineComponent({
         if (!justConfirmed) return
         justConfirmed = false
         void nextTick(() => panelRoot.value?.focus())
+      },
+      onSeedPhraseHide() {
+        seedPhraseDialogRef.value?.reset?.()
+        void nextTick(() => {
+          const el =
+            showSeedItem.value?.$el ??
+            (showSeedItem.value as unknown as HTMLElement | null)
+          if (el && typeof el.focus === 'function') {
+            el.focus()
+          } else {
+            panelRoot.value?.focus()
+          }
+        })
       },
     }
   },

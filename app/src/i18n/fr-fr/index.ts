@@ -554,7 +554,20 @@ export default {
   },
   seedPhraseDialog: {
     close: 'Fermer',
-    seedPhrase: 'Phrase de passe',
+    cancel: 'Annuler',
+    seedPhrase: 'Phrase de récupération',
+    warningTitle: 'Avertissement de sécurité',
+    warningBody:
+      'Assurez-vous que personne ne regarde votre écran. Méfiez-vous du partage d’écran, des regards indiscrets, des captures d’écran et de l’historique du presse-papiers.',
+    disclosureText:
+      'Quiconque obtient votre phrase de récupération peut accéder à tous vos fonds et messages et les dérober définitivement.',
+    revealButton: 'Révéler la phrase de récupération',
+    hideButton: 'Masquer',
+    copyButton: 'Copier',
+    copied: 'Copié !',
+    copiedToast: 'Phrase de récupération copiée dans le presse-papiers',
+    keepPrivateNotice:
+      'Gardez ceci secret. Ne partagez pas et ne faites pas de capture d’écran.',
   },
   transactionDialog: {
     backingTransactions: 'Transactions',

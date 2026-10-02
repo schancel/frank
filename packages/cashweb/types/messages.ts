@@ -189,6 +189,8 @@ export type OutgoingFailureReason =
   /** Another, earlier payment attempt completed while this one was being prepared, so this
    * draft may duplicate it. A retry needs the user's explicit confirmation. */
   | 'recovered'
+  /** The wallet could not prepare the message's stamp because the account lacks funds. */
+  | 'insufficient-funds'
   | 'error'
 
 /** Delivery bookkeeping for an outgoing (`outbound`) direct message that is not yet confirmed. */

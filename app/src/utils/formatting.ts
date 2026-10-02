@@ -1,12 +1,19 @@
-import { cryptoBackend } from '@frank/nakamoto'
-import { Address } from 'bitcore-lib-xpi'
+import {
+  BCH_MAINNET,
+  BCH_REGTEST,
+  BCH_TESTNET,
+  addressVersionBytes,
+  cryptoBackend,
+  decodeAddress,
+  type ChainDescriptor,
+  type DecodedAddress,
+} from '@frank/nakamoto'
 import { colorSalt } from './constants'
 
 /** One SHA-256 of `bytes || colorSalt` (ASCII `salt`). Hue is byte 0 and
  * saturation is byte 1 / 255, including a zero byte. Matches bitcore
  * `crypto.Hash.sha256` and Node `createHash('sha256')`. Not double-SHA256.
- * cryptoBackend rejects Buffer. Address strings stay on bitcore
- * (decision #517, issue #242). */
+ * cryptoBackend rejects Buffer. */
 function saltedColorDigest(bytes: Uint8Array): Uint8Array {
   const payload = Uint8Array.from(bytes)
   const salt = Uint8Array.from(colorSalt)
@@ -26,8 +33,93 @@ export function formatBalance(balance: number) {
   return isNegative + (sats / 1_000_000).toFixed(2) + ' Lotus'
 }
 
-export function addressColor(address: Address) {
-  const hashbuf = saltedColorDigest(address.toBuffer())
+/** `Address.toBuffer()` is one version byte plus hash160. Livenet pubkeyhash
+ * is 0 and scripthash is 5. Testnet and regtest are 0x6f and 0xc4. XPI
+ * `decodeAddress` rejects legacy base58, so cashaddr and base58 use the BCH
+ * descriptors, which carry those same version bytes. Lotus keeps the XPI
+ * chain `decodeAddress` returns; those version bytes match too. */
+const COLOR_CHAINS: readonly ChainDescriptor[] = [
+  BCH_MAINNET,
+  BCH_TESTNET,
+  BCH_REGTEST,
+]
+
+function colorable(decoded: DecodedAddress): boolean {
+  const kind = decoded.destination.kind
+  if (kind !== 'p2pkh' && kind !== 'p2sh') return false
+  if (decoded.encoding === 'lotus') return decoded.chain.family === 'xpi'
+  if (decoded.encoding === 'cashaddr') {
+    const prefix = decoded.chain.cashaddrPrefix
+    return (
+      prefix === 'bitcoincash' || prefix === 'bchtest' || prefix === 'bchreg'
+    )
+  }
+  if (decoded.encoding === 'base58check') return decoded.chain.family === 'bch'
+  return false
+}
+
+function invalidAddress(): never {
+  throw new TypeError('Invalid Address string provided')
+}
+
+function decodeForColor(addrStr: string): DecodedAddress {
+  if (addrStr.length < 34) invalidAddress()
+  if (addrStr.length > 100) {
+    throw new TypeError('address string is too long')
+  }
+  const text = addrStr.trim()
+  if (text.length > 35) {
+    const direct = decodeAddress(text)
+    if (
+      direct.ok &&
+      colorable(direct.value) &&
+      direct.value.encoding !== 'base58check'
+    ) {
+      return direct.value
+    }
+    for (const chain of COLOR_CHAINS) {
+      const decoded = decodeAddress(text, chain)
+      if (!decoded.ok || !colorable(decoded.value)) continue
+      if (
+        decoded.value.encoding === 'cashaddr' ||
+        decoded.value.encoding === 'lotus'
+      ) {
+        return decoded.value
+      }
+    }
+    return invalidAddress()
+  }
+  for (const chain of COLOR_CHAINS) {
+    const decoded = decodeAddress(text, chain)
+    if (
+      decoded.ok &&
+      colorable(decoded.value) &&
+      decoded.value.encoding === 'base58check'
+    ) {
+      return decoded.value
+    }
+  }
+  return invalidAddress()
+}
+
+/** Version byte || hash160. Same bytes bitcore `Address.toBuffer()` hashes. */
+function addressColorBytes(decoded: DecodedAddress): Uint8Array {
+  const destination = decoded.destination
+  if (destination.kind !== 'p2pkh' && destination.kind !== 'p2sh') {
+    return invalidAddress()
+  }
+  const version = addressVersionBytes(
+    decoded.chain,
+    destination.kind === 'p2pkh' ? 'pubkeyhash' : 'scripthash',
+  )
+  const image = new Uint8Array(destination.hash.length + 1)
+  image[0] = version
+  image.set(destination.hash, 1)
+  return image
+}
+
+export function addressColor(addressBytes: Uint8Array) {
+  const hashbuf = saltedColorDigest(addressBytes)
   const hue = hashbuf[0]
   const saturation = hashbuf[1] / 255
 
@@ -35,8 +127,9 @@ export function addressColor(address: Address) {
 }
 
 export function addressColorFromStr(addrStr: string) {
-  const addrObj = new Address(addrStr)
-  const { hue, saturation } = addressColor(addrObj)
+  const { hue, saturation } = addressColor(
+    addressColorBytes(decodeForColor(addrStr)),
+  )
   const color = `hsl(${hue}, ${saturation * 100}%, 60%)`
   return color
 }

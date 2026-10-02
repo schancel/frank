@@ -4,7 +4,8 @@ import type { PayloadEntry } from './relay_pb'
 import { entryToImage } from './images'
 import stealth from './stealth_pb'
 import { TextItem, MessageItem } from '../types/messages'
-import { Networks, PrivateKey, PublicKey } from 'bitcore-lib-xpi'
+import { PublicKey } from 'bitcore-lib-xpi'
+import type { PrivateKey } from 'bitcore-lib-xpi'
 import { Wallet } from '../legacy-wallet'
 import {
   p2pkhHashFromPublicKey,
@@ -13,7 +14,7 @@ import {
 } from '../legacy-wallet/lotus-address'
 import { lotusP2pkhFromHash } from '../legacy-wallet/lotus-identity'
 import { calcUtxoId } from '../legacy-wallet/helpers'
-import { Utxo } from '../types/utxo'
+import { Utxo, utxoPrivateKeyFromSecret } from '../types/utxo'
 import { outpointPrivateKey } from './outpoint-hd'
 import { stealthOutpointPublicKey } from './stealth-outpoint-pub'
 import { stealthParentSecret } from './stealth-parent'
@@ -129,10 +130,7 @@ export async function decodeEntry(
           i,
           j,
         )
-        const outpointPrivKey = new PrivateKey(
-          Buffer.from(outpointSecret).toString('hex'),
-          Networks.get(networkName),
-        )
+        const outpointPrivKey = utxoPrivateKeyFromSecret(outpointSecret)
         const scriptHash = p2pkhHashFromScript(output.script)
         // Compressed point of the outpoint secret (decision #555).
         const computedHash = p2pkhHashFromPublicKey(

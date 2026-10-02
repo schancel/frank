@@ -4,16 +4,11 @@ import assert from 'assert'
 import { walletChangeP2pkhScript } from './change-pubkey'
 import { calcUtxoId } from './helpers'
 
-import {
-  Transaction,
-  PrivateKey,
-  HDPrivateKey,
-  PublicKey,
-} from 'bitcore-lib-xpi'
+import { Transaction, PrivateKey, HDPrivateKey } from 'bitcore-lib-xpi'
 import type { Script } from 'bitcore-lib-xpi'
 import { UtxoStore } from './storage/storage'
 
-import { Utxo } from '../types/utxo'
+import { Utxo, type UtxoPrivateKey } from '../types/utxo'
 import { ChronikClient, WsEndpoint } from 'chronik-client'
 import { AddressEvent, ChainAdapter } from './chain-adapter'
 import { LotusAdapter } from './lotus-adapter'
@@ -199,7 +194,7 @@ function xpiChain(networkName: string): ChainDescriptor {
   throw new Error('sign-chain')
 }
 
-function signerFromPrivateKey(key: PrivateKey): InputSigner {
+function signerFromPrivateKey(key: UtxoPrivateKey): InputSigner {
   const publicKey = Uint8Array.from(key.toPublicKey().toBuffer())
   const secretBytes = Uint8Array.from(key.toBuffer())
   const parsed = privateKeyFromSecretBytes(secretBytes, publicKey.length === 33)
@@ -218,7 +213,7 @@ function signerFromPrivateKey(key: PrivateKey): InputSigner {
 
 function explicitAssignments(
   transaction: Transaction,
-  signingKeys: readonly PrivateKey[],
+  signingKeys: readonly UtxoPrivateKey[],
 ): { inputIndex: number; signer: InputSigner }[] {
   const assignments: { inputIndex: number; signer: InputSigner }[] = []
   for (let index = 0; index < transaction.inputs.length; index += 1) {
@@ -278,7 +273,7 @@ function nakamotoTransaction(transaction: SignableTransaction): {
 // A partial assignment throws and leaves every input script untouched.
 export function signTransactionInputs(
   transaction: Transaction,
-  signingKeys: readonly PrivateKey[],
+  signingKeys: readonly UtxoPrivateKey[],
   networkName: string,
 ): Transaction {
   const chain = xpiChain(networkName)
@@ -745,7 +740,7 @@ export class Wallet {
     shuffleChange = true,
   }: {
     transaction: Transaction
-    signingKeys: PrivateKey[]
+    signingKeys: UtxoPrivateKey[]
     shuffleChange?: boolean
   }) {
     // Add change outputs using our HD wallet.  We want multiple outputs following a

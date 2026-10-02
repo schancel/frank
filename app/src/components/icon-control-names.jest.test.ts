@@ -28,7 +28,13 @@ import ForumLayout from '../layouts/ForumLayout.vue'
 import TopicLayout from '../layouts/TopicLayout.vue'
 
 jest.mock('pinia', () => ({
+  ...jest.requireActual('pinia'),
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
+}))
+jest.mock('src/stores/my-profile', () => ({
+  useProfileStore: () => ({
+    profile: { name: 'Owner', avatar: '' },
+  }),
 }))
 jest.mock('vue-router', () => ({
   useRoute: () => ({ path: '/', params: {} }),

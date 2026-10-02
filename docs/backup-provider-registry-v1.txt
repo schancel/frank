@@ -1,0 +1,9 @@
+frank-backup-provider-registry-v1
+0001	apple	apple.icloud-drive,apple.passwords
+0002	google	google.drive,google.password-manager
+0003	microsoft	microsoft.onedrive,microsoft.edge-password-manager
+0004	dropbox	dropbox.files
+0005	onepassword	onepassword.vault
+0006	bitwarden	bitwarden.vault
+0007	proton	proton.drive,proton.pass
+0008	mozilla	mozilla.firefox-sync

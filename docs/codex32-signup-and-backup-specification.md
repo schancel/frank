@@ -280,6 +280,11 @@ fenced ceremony record, not a claim that the storage provider cryptographically
 attested anything. `artifactCommitment` is
 `SHA-256(ASCII("frank/backup-artifact/v1") || 0x00 || u8(artifactRole) ||
 u32be(byteLength) || exactCanonicalArtifactBytes)`.
+For `masterShare`, `exactCanonicalArtifactBytes` is the complete validated
+Codex32 string normalized to lowercase ASCII, with no surrounding whitespace;
+for `recoveryDescriptor`, it is the complete validated `frankdesc` Bech32m
+record in its canonical lowercase ASCII encoding. Display case, scanned input
+case, and transport wrappers never enter this commitment.
 V1 artifact-role octets are `{masterShare=0, recoveryDescriptor=1}`; all other
 values are reserved and rejected. V1 class octets are `{cloud=0,
 passwordManager=1, localFile=2, removableMedia=3, print=4}`; user-assertion bits
@@ -291,7 +296,7 @@ The complete binary record is exactly:
 ```text
 u16be(version=1) || ceremonyId[32] || u64be(ceremonyRevision) ||
 presentationOperationId[32] || candidateAccountId[32] || artifactRoleU8 ||
-artifactCommitment[32] || shareIdentifierPresentU8 || [ASCII shareIdentifier[4]] ||
+artifactCommitment[32] || shareIdentifierPresentU8 || [lowercaseASCII shareIdentifier[4]] ||
 shareIndexPresentU8 || [shareIndexU8] || classU8 ||
 providerPresentU8 || [u16be(providerCode)] ||
 accountPresentU8 || [accountIdCommitment[32]] ||
@@ -311,8 +316,19 @@ require the `physicalSeparationConfirmed` assertion bit; a record with that bit
 clear cannot count toward independence. Missing, extra, unknown, or reserved
 values fail closed.
 
-`providerCode` comes from Frank's immutable v1 provider registry; UI aliases map
-to that code and are never compared as strings. All remaining IDs are raw
+`providerCode` comes from Frank's immutable v1 provider registry in
+`docs/backup-provider-registry-v1.txt`; its exact bytes, including tabs, LF line
+endings, field order, and final LF, are normative. The first line is the registry
+version. Each remaining line is `four-digit-decimal-code TAB controller-id TAB
+comma-separated-adapter-ids`. Codes are unsigned decimal values serialized in
+the evidence record as `u16be`. Its required SHA-256 digest is
+`48e6749e376294515f76242a5fdff1bb64d21a26fd2cc4f615977093b55fcb3e`;
+code zero and unlisted codes are invalid. An
+authenticated integration adapter, not user-entered or localized display text,
+selects its listed adapter ID and controller code. UI aliases may display that
+selection but are never parsed to determine it. Adding or remapping a controller
+or adapter requires a new registry and destination-evidence version; v1 bytes
+and meanings never change. All remaining IDs are raw
 provider/platform-issued 32-byte opaque IDs or locally generated 32-byte IDs from
 the existing named physical-location inventory. `accountIdCommitment` is
 `SHA-256(ASCII("frank/destination-account/v1") || 0x00 || u16be(providerCode) ||
@@ -333,9 +349,10 @@ ceremony owner's fencing token, stores its SHA-256 digest, and marks the operati
 ID consumed. Evidence from another ceremony, role, account, family, index,
 revision, or presentation cannot be replayed. Known-answer vectors freeze both
 roles, every class/presence combination, every multibyte integer's byte order,
-numeric rather than ASCII share-index encoding, whole-record bytes, commitments,
-record digest, substitutions, assertion-bit failures, and provider-code
-collisions.
+numeric rather than ASCII share-index encoding, uppercase share/descriptor input
+normalizing to the same lowercase commitment and lowercase identifier bytes,
+whole-record bytes, commitments, record digest, substitutions, assertion-bit
+failures, and provider-code collisions.
 Losing every trusted descriptor blocks authenticated blank-install recovery
 even when `k` shares survive. In v1 there is no descriptorless preview: a
 missing descriptor stops the normal recovery route before share entry. A future
@@ -1700,8 +1717,8 @@ deletion itself is tested against fake-support/deep-link entry, wrong or stale
 account revisions, missing fresh authentication, and ambiguous “remove profile”
 copy. Keyboard and screen-reader users receive the exact identity, inventory,
 backup uncertainty, and permanent recovery consequence before the bound
-confirmation. Destination-independence tests map UI aliases through the frozen
-provider registry and cover the
+confirmation. Destination-independence tests select adapter IDs through the
+frozen provider registry and cover the
 same provider account, same sync domain under different labels, same provider
 with different accounts, separate removable devices, print copies, and unknown
 correlation according to the frozen v1 table.
@@ -1723,26 +1740,29 @@ operation ID is consumed exactly once.
 ## 16. Implementation sequence and gates
 
 1. Freeze the master derivation registry and publish deterministic vectors.
-2. Complete and independently review `@frank/codex32`, including uppercase
+2. Verify the exact v1 provider-registry artifact and its independent digest in
+   build and release tests; no production destination adapter may use an
+   unlisted ID or infer a controller from display text.
+3. Complete and independently review `@frank/codex32`, including uppercase
    input, production-bounded correction, canonical descriptor codecs, and
    cross-implementation tests.
-3. Migrate chain wallet boundaries from mnemonic-shaped inputs to registry-typed
+4. Migrate chain wallet boundaries from mnemonic-shaped inputs to registry-typed
    byte roots. If the disabled future legacy derivation leaf is retained, prove
    that production code has no caller and active constructors reject its type.
-4. Add versioned, fenced account storage and an awaitable atomic persistence
+5. Add versioned, fenced account storage and an awaitable atomic persistence
    boundary.
-5. Implement the ceremony service without UI or networking dependencies.
-6. Build new-account presentation and mandatory reconstruction.
-7. Build recovery into an empty profile, then guarded import/switch of an active
+6. Implement the ceremony service without UI or networking dependencies.
+7. Build new-account presentation and mandatory reconstruction.
+8. Build recovery into an empty profile, then guarded import/switch of an active
    profile.
-8. Replace master export for Codex32 accounts with backup status and a
+9. Replace master export for Codex32 accounts with backup status and a
    reconstruct-to-reshare ceremony.
-9. Implement and verify the platform vault/wrapping policy.
-10. Run unit, property, fuzz, integration, accessibility, persistence-failure,
+10. Implement and verify the platform vault/wrapping policy.
+11. Run unit, property, fuzz, integration, accessibility, persistence-failure,
     and actual-browser tests.
-11. Obtain independent cryptographic and application-security review at an exact
+12. Obtain independent cryptographic and application-security review at an exact
     commit.
-12. Enable only testnet accounts behind a format-version feature gate.
+13. Enable only testnet accounts behind a format-version feature gate.
 
 Production custody remains blocked until the derivation registry, package audit,
 implemented and verified vault, canonical recovery descriptor, bounded error

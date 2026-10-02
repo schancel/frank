@@ -350,6 +350,21 @@ export default {
     loginOrSignUp: 'Connexion/Inscription',
     welcome: 'Bienvenue',
     welcomeToStampChat: 'Bienvenue sur Frank !',
+    networkTitle: 'Testnet Monad',
+    testnetDisclaimer:
+      "Frank fonctionne sur le testnet Monad. Toutes les transactions utilisent des MON de testnet, qui n'ont aucune valeur monétaire réelle. N'envoyez jamais de fonds réels.",
+    economicModelTitle: 'Actions payantes et coûts',
+    costsDisclaimer:
+      "Des coûts de réseau et de timbre s'appliquent aux actions sortantes. Le montant exact des frais ou du timbre est toujours affiché avant de confirmer une action.",
+    directMessagesTitle: 'Messages directs',
+    directMessagesDesc:
+      "Payés directement au destinataire sous forme de timbre de boîte de réception, afin d'éviter le spam et d'indemniser la distribution.",
+    topicActionsTitle: 'Publications et votes de forum',
+    topicActionsDesc:
+      'Détruits de manière permanente sur la blockchain (burn) pour publier des messages ou enregistrer des votes sur les sujets publics.',
+    fundingTitle: 'Financement de testnet',
+    fundingDesc:
+      "Les nouveaux comptes reçoivent automatiquement des MON de testnet via le faucet de démonstration. Vous pouvez également consulter votre adresse et obtenir des fonds de testnet depuis l'écran Recevoir après la configuration.",
     eulaDisclaimer:
       'Frank est un logiciel expérimental. Il peut contenir des erreurs susceptibles de retarder des messages ou d’entraîner une perte de fonds. N’utilisez que des montants que vous pouvez vous permettre de perdre.',
     eulaYouUnderstand:

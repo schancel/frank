@@ -578,10 +578,35 @@ describe('Setup page mounted (#267)', () => {
       return { ...ctx, vm }
     }
 
-    async function resumeImportContext() {
+    async function resumeImportContext(
+      options: { locale?: 'en-us' | 'fr-fr' } = {},
+    ) {
       setActivePinia(createPinia())
       useWalletStore().seedPhrase = STORED
+      const catalogue = options.locale === 'fr-fr' ? frFr : undefined
       const translate: Translate = (key, params) => {
+        if (catalogue) {
+          const parts = key.split('.')
+          let current: unknown = catalogue
+          for (const part of parts) {
+            if (current && typeof current === 'object' && part in current) {
+              current = (current as Record<string, unknown>)[part]
+            } else {
+              current = undefined
+              break
+            }
+          }
+          if (typeof current === 'string') {
+            if (params) {
+              let res = current
+              for (const [k, v] of Object.entries(params)) {
+                res = res.replaceAll(`{${k}}`, String(v))
+              }
+              return res
+            }
+            return current
+          }
+        }
         if (key === 'replaceGuard.word') return 'REPLACE'
         if (key === 'replaceGuard.typeLabel') {
           return `Type ${params?.word ?? ''} to continue`
@@ -765,6 +790,47 @@ describe('Setup page mounted (#267)', () => {
       expect(wallet.flushPersistence).toHaveBeenCalledTimes(1)
       expect(wallet.seedPhrase).toBe(OTHER)
       expect(wallet.seedConfirmedAt).toEqual(expect.any(Number))
+    })
+
+    it('requires the localized confirmation token in French (REPLACE rejected, REMPLACER unlocks import) (#479)', async () => {
+      const { wrapper } = await resumeImportContext({ locale: 'fr-fr' })
+
+      const secondary = wrapper.get('[data-test="import-different-phrase"]')
+      await secondary.trigger('click')
+      await nextTick()
+
+      const input = wrapper.get('[data-test="import-different-input"]')
+      const form = wrapper.get('[data-test="import-different-form"]')
+      const status = wrapper.get('[role="status"]')
+      const importBox = wrapper.get(
+        `textarea[aria-label="${frFr.profile.seedEntry}"]`,
+      )
+
+      expect(importBox.attributes('readonly')).toBeDefined()
+
+      // In French, typing the English token "REPLACE" is rejected
+      await input.setValue('REPLACE')
+      await form.trigger('submit')
+      await nextTick()
+
+      expect(status.text()).toBe(frFr.replaceGuard.mismatch)
+      expect(importBox.attributes('readonly')).toBeDefined()
+
+      // Whitespace and case variants of English token are also rejected
+      await input.setValue('  replace  ')
+      await form.trigger('submit')
+      await nextTick()
+
+      expect(status.text()).toBe(frFr.replaceGuard.mismatch)
+      expect(importBox.attributes('readonly')).toBeDefined()
+
+      // Typing the French token "REMPLACER" unlocks the editable Import field
+      await input.setValue('  REMPLACER ')
+      await form.trigger('submit')
+      await nextTick()
+
+      expect(importBox.attributes('readonly')).toBeUndefined()
+      expect((importBox.element as HTMLTextAreaElement).value).toBe('')
     })
 
     it('describes the acknowledgement field with the destructive-loss warning', async () => {

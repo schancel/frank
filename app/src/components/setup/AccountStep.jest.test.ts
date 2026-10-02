@@ -556,14 +556,35 @@ describe('AccountStep recovery phrase controls', () => {
 })
 
 describe('AccountStep resume mode (#284)', () => {
-  function mountResume() {
+  function mountResume(locale?: Record<string, unknown>) {
     return shallowMount(AccountStep, {
       props: {
         resume: true,
         accountData: { name: '', seed: VALID_MNEMONIC, valid: false },
       },
       global: {
-        mocks: { $t: (key: string) => messages[key] ?? key },
+        mocks: {
+          $t: (key: string, params?: Record<string, unknown>) => {
+            if (locale) {
+              const parts = key.split('.')
+              let cur: unknown = locale
+              for (const part of parts) {
+                cur = (cur as Record<string, unknown>)?.[part]
+              }
+              if (typeof cur === 'string') {
+                if (params) {
+                  let res = cur
+                  for (const [k, v] of Object.entries(params)) {
+                    res = res.replaceAll(`{${k}}`, String(v))
+                  }
+                  return res
+                }
+                return cur
+              }
+            }
+            return messages[key] ?? key
+          },
+        },
         stubs: { QBtn: QBtnStub, QInput: QInputStub, QSpace: true },
       },
     })
@@ -617,6 +638,33 @@ describe('AccountStep resume mode (#284)', () => {
     expect(copy.exists()).toBe(true)
     await copy.trigger('click')
     expect(copyToClipboard).toHaveBeenCalledWith(VALID_MNEMONIC)
+  })
+
+  it('rejects English REPLACE and accepts French REMPLACER when French locale is active (#479)', async () => {
+    const wrapper = mountResume(frFr)
+    await nextTick()
+
+    const vm = wrapper.vm as unknown as {
+      openDifferentPhrase(): void
+      differentTyped: string
+      tryDifferentPhrase(): void
+      differentMismatch: boolean
+      action: string
+    }
+
+    vm.openDifferentPhrase()
+    expect(vm.differentMismatch).toBe(false)
+
+    vm.differentTyped = 'REPLACE'
+    vm.tryDifferentPhrase()
+    expect(vm.differentMismatch).toBe(true)
+    expect(vm.action).toBe('new')
+
+    vm.differentTyped = '  REMPLACER '
+    vm.tryDifferentPhrase()
+    expect(vm.differentMismatch).toBe(false)
+    expect(vm.action).toBe('import')
+    expect(wrapper.emitted('resume-import-acknowledged')).toHaveLength(1)
   })
 })
 

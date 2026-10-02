@@ -31,10 +31,9 @@ import {
   internalHashFromBytes,
   lockingScript,
   parseHdPrivate,
-  privateKeyFromSecretBytes,
   pubkeyHashFromBytes,
   signAll,
-  signEcdsa,
+  signingKey,
   type ChainDescriptor,
   type InputSigner,
   type InternalHash,
@@ -195,18 +194,17 @@ function xpiChain(networkName: string): ChainDescriptor {
 }
 
 function signerFromPrivateKey(key: UtxoPrivateKey): InputSigner {
-  const publicKey = Uint8Array.from(key.toPublicKey().toBuffer())
-  const secretBytes = Uint8Array.from(key.toBuffer())
-  const parsed = privateKeyFromSecretBytes(secretBytes, publicKey.length === 33)
-  secretBytes.fill(0)
-  if (!parsed.ok) throw new Error('sign-bytes')
-  const secret = parsed.value
+  const signing = signingKey('secret', key)
+  if (!signing.ok) throw new Error('sign-bytes')
+  const signer = signing.value
   return {
-    publicKey,
+    publicKey: signer.publicKey,
     sign(digest: Uint8Array): Uint8Array {
-      const signed = signEcdsa(secret, digest)
-      if (!signed.ok) throw new Error('sign-signature')
-      return signed.value
+      try {
+        return signer.sign(digest)
+      } catch {
+        throw new Error('sign-signature')
+      }
     },
   }
 }

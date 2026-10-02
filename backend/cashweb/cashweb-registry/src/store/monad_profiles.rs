@@ -167,52 +167,83 @@ pub struct CborStatementInfo {
     pub type_4_frame: Vec<u8>,
 }
 
+/// Extract the parsed inner Type-4 directory statement and its exact frame bytes from a
+/// stored Type-2 directory attestation without running Stage 10 key-transition semantic
+/// assertions that require a `prior` statement.
+fn extract_cbor_directory_statement(
+    raw_bytes: &[u8],
+) -> Option<(frank_cbor::ParsedFrame, Vec<u8>)> {
+    if !is_cbor_frame(raw_bytes) {
+        return None;
+    }
+    let ctx = frank_cbor::ValidationContext {
+        operation: frank_cbor::Operation::Generic,
+        route_byte_limit: frank_cbor::MAX_FRAME_BYTES as u64,
+        reader_version: 2,
+        supported_schemas: frank_cbor::default_context().supported_schemas,
+        opaque_retention_allowed: false,
+        prior: frank_cbor::PriorStatement::None,
+    };
+    if let Ok(frank_cbor::ValidationResult::Parsed(parsed)) =
+        frank_cbor::validate_frame(raw_bytes, &ctx)
+    {
+        if parsed.type_id == 2 {
+            if let frank_cbor::CborValue::Map(entries) = &parsed.payload {
+                if let Some((_, frank_cbor::CborValue::Bytes(stmt_bytes))) =
+                    entries.iter().find(|(k, _)| *k == 0)
+                {
+                    let stmt_ctx = frank_cbor::ValidationContext {
+                        operation: frank_cbor::Operation::Typed,
+                        route_byte_limit: frank_cbor::MAX_FRAME_BYTES as u64,
+                        reader_version: 2,
+                        supported_schemas: frank_cbor::default_context().supported_schemas,
+                        opaque_retention_allowed: false,
+                        prior: frank_cbor::PriorStatement::None,
+                    };
+                    if let Ok(frank_cbor::ValidationResult::Parsed(stmt_parsed)) =
+                        frank_cbor::validate_frame(stmt_bytes, &stmt_ctx)
+                    {
+                        return Some((stmt_parsed, stmt_bytes.clone()));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn parse_index_info(raw_bytes: &[u8]) -> Option<StoredProfileIndexInfo> {
     if is_cbor_frame(raw_bytes) {
-        let ctx = frank_cbor::ValidationContext {
-            operation: frank_cbor::Operation::Typed,
-            route_byte_limit: frank_cbor::MAX_FRAME_BYTES as u64,
-            reader_version: 2,
-            supported_schemas: frank_cbor::default_context().supported_schemas,
-            opaque_retention_allowed: false,
-            prior: frank_cbor::PriorStatement::None,
-        };
-        if let Ok(frank_cbor::ValidationResult::Parsed(parsed)) =
-            frank_cbor::validate_frame(raw_bytes, &ctx)
-        {
-            if let Some(frank_cbor::TypedPayload::DirectoryAttestation { statement, .. }) =
-                parsed.typed.as_deref()
+        if let Some((statement, _)) = extract_cbor_directory_statement(raw_bytes) {
+            if let Some(frank_cbor::TypedPayload::DirectoryStatement {
+                timestamp,
+                profile_entries,
+                ..
+            }) = statement.typed.as_deref()
             {
-                if let Some(frank_cbor::TypedPayload::DirectoryStatement {
-                    timestamp,
-                    profile_entries,
-                    ..
-                }) = statement.typed.as_deref()
-                {
-                    let timestamp_ms: i64 =
-                        frank_cbor::join_ms(timestamp.seconds, timestamp.nanoseconds)
-                            .ok()?
-                            .try_into()
-                            .ok()?;
-                    let normalized_name = profile_entries.as_ref().and_then(|entries| {
-                        entries
-                            .iter()
-                            .find(|e| e.kind == "display_name")
-                            .and_then(|e| {
-                                let raw = std::str::from_utf8(&e.body).ok()?;
-                                let norm = normalize_name(raw);
-                                if norm.is_empty() {
-                                    None
-                                } else {
-                                    Some(norm)
-                                }
-                            })
-                    });
-                    return Some(StoredProfileIndexInfo {
-                        timestamp_ms,
-                        normalized_name,
-                    });
-                }
+                let timestamp_ms: i64 =
+                    frank_cbor::join_ms(timestamp.seconds, timestamp.nanoseconds)
+                        .ok()?
+                        .try_into()
+                        .ok()?;
+                let normalized_name = profile_entries.as_ref().and_then(|entries| {
+                    entries
+                        .iter()
+                        .find(|e| e.kind == "display_name")
+                        .and_then(|e| {
+                            let raw = std::str::from_utf8(&e.body).ok()?;
+                            let norm = normalize_name(raw);
+                            if norm.is_empty() {
+                                None
+                            } else {
+                                Some(norm)
+                            }
+                        })
+                });
+                return Some(StoredProfileIndexInfo {
+                    timestamp_ms,
+                    normalized_name,
+                });
             }
         }
         None
@@ -344,25 +375,11 @@ impl<'a> DbMonadProfiles<'a> {
             None => return Ok(None),
         };
         if is_cbor_frame(&raw) {
-            let ctx = frank_cbor::ValidationContext {
-                operation: frank_cbor::Operation::Typed,
-                route_byte_limit: frank_cbor::MAX_FRAME_BYTES as u64,
-                reader_version: 2,
-                supported_schemas: frank_cbor::default_context().supported_schemas,
-                opaque_retention_allowed: false,
-                prior: frank_cbor::PriorStatement::None,
-            };
-            if let Ok(frank_cbor::ValidationResult::Parsed(parsed)) =
-                frank_cbor::validate_frame(&raw, &ctx)
-            {
-                if let Some(frank_cbor::TypedPayload::DirectoryAttestation { statement, .. }) =
-                    parsed.typed.as_deref()
+            if let Some((statement, _)) = extract_cbor_directory_statement(&raw) {
+                if let Some(frank_cbor::TypedPayload::DirectoryStatement { subject, .. }) =
+                    statement.typed.as_deref()
                 {
-                    if let Some(frank_cbor::TypedPayload::DirectoryStatement { subject, .. }) =
-                        statement.typed.as_deref()
-                    {
-                        return Ok(Some(subject.key_bytes.clone()));
-                    }
+                    return Ok(Some(subject.key_bytes.clone()));
                 }
             }
             return Ok(None);
@@ -382,37 +399,22 @@ impl<'a> DbMonadProfiles<'a> {
         if !is_cbor_frame(&raw) {
             return Ok(None);
         }
-        let ctx = frank_cbor::ValidationContext {
-            operation: frank_cbor::Operation::Typed,
-            route_byte_limit: frank_cbor::MAX_FRAME_BYTES as u64,
-            reader_version: 2,
-            supported_schemas: frank_cbor::default_context().supported_schemas,
-            opaque_retention_allowed: false,
-            prior: frank_cbor::PriorStatement::None,
-        };
-        if let Ok(frank_cbor::ValidationResult::Parsed(parsed)) =
-            frank_cbor::validate_frame(&raw, &ctx)
-        {
-            if let Some(frank_cbor::TypedPayload::DirectoryAttestation { statement, .. }) =
-                parsed.typed.as_deref()
+        if let Some((statement, type_4_frame)) = extract_cbor_directory_statement(&raw) {
+            if let Some(frank_cbor::TypedPayload::DirectoryStatement {
+                revision,
+                timestamp,
+                ..
+            }) = statement.typed.as_deref()
             {
-                if let Some(frank_cbor::TypedPayload::DirectoryStatement {
-                    revision,
-                    timestamp,
-                    ..
-                }) = statement.typed.as_deref()
-                {
-                    let timestamp_ms =
-                        frank_cbor::join_ms(timestamp.seconds, timestamp.nanoseconds)
-                            .ok()
-                            .and_then(|ms| ms.try_into().ok())
-                            .unwrap_or(0);
-                    return Ok(Some(CborStatementInfo {
-                        revision: *revision,
-                        timestamp_ms,
-                        type_4_frame: statement.frame.clone(),
-                    }));
-                }
+                let timestamp_ms = frank_cbor::join_ms(timestamp.seconds, timestamp.nanoseconds)
+                    .ok()
+                    .and_then(|ms| ms.try_into().ok())
+                    .unwrap_or(0);
+                return Ok(Some(CborStatementInfo {
+                    revision: *revision,
+                    timestamp_ms,
+                    type_4_frame,
+                }));
             }
         }
         Ok(None)

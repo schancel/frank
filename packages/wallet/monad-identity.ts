@@ -83,6 +83,7 @@ import {
   HDNodeWallet,
   Mnemonic,
   Wallet,
+  computeAddress,
   getBytes,
   hexlify,
   randomBytes,
@@ -341,12 +342,6 @@ export function buildSignedDirectoryStatement(
     timestampMs?: number
     ttlMs?: number
     stampKey?: Uint8Array
-    relays?: Array<{
-      id?: Uint8Array
-      endpoint: string
-      key?: Uint8Array
-      validUntilSeconds?: bigint | number
-    }>
   } = {},
 ): Uint8Array {
   const network = options.network ?? 'monad-testnet'
@@ -356,56 +351,29 @@ export function buildSignedDirectoryStatement(
   const exp = expiryTimestamp(ms, ttlMs)
   const stampKeyBytes = options.stampKey ?? identity.compressedPubKey
 
-  const relayBindings: Encodable[] = []
-  if (options.relays && options.relays.length > 0) {
-    for (const r of options.relays) {
-      const id = r.id ?? new Uint8Array(16)
-      const keyBytes = r.key ?? identity.compressedPubKey
-      const validUntil = BigInt(r.validUntilSeconds ?? 2_000_000_000n)
-      relayBindings.push(
+  // Default relay binding: required by Type 4 schema (min 1 relay).
+  // Kept internal to maintain clean separation between relay-local profiles
+  // and federation topology (#107, #108, #110).
+  const relayBindings: Encodable[] = [
+    cborMap([
+      [0, new Uint8Array(16)],
+      [1, 'https://relay1.frank.example/monad-testnet'],
+      [
+        2,
         cborMap([
-          [0, id],
-          [1, r.endpoint],
-          [
-            2,
-            cborMap([
-              [0, 1],
-              [1, Uint8Array.from(keyBytes)],
-            ]),
-          ],
-          [
-            3,
-            cborMap([
-              [0, validUntil],
-              [1, 0],
-            ]),
-          ],
+          [0, 1],
+          [1, Uint8Array.from(identity.compressedPubKey)],
         ]),
-      )
-    }
-  } else {
-    // Default relay binding: required by Type 4 schema (min 1 relay)
-    relayBindings.push(
-      cborMap([
-        [0, new Uint8Array(16)],
-        [1, 'https://relay1.frank.example/monad-testnet'],
-        [
-          2,
-          cborMap([
-            [0, 1],
-            [1, Uint8Array.from(identity.compressedPubKey)],
-          ]),
-        ],
-        [
-          3,
-          cborMap([
-            [0, 2_000_000_000n],
-            [1, 0],
-          ]),
-        ],
-      ]),
-    )
-  }
+      ],
+      [
+        3,
+        cborMap([
+          [0, 2_000_000_000n],
+          [1, 0],
+        ]),
+      ],
+    ]),
+  ]
 
   // Profile entries (field 9 in schema 3)
   const entries: Encodable[] = []
@@ -540,12 +508,6 @@ export async function registerMonadIdentityCbor(params: {
   timestampMs?: number
   ttlMs?: number
   stampKey?: Uint8Array
-  relays?: Array<{
-    id?: Uint8Array
-    endpoint: string
-    key?: Uint8Array
-    validUntilSeconds?: bigint | number
-  }>
 }): Promise<void> {
   const body = buildSignedDirectoryStatement(params.identity, {
     network: params.network,
@@ -553,7 +515,6 @@ export async function registerMonadIdentityCbor(params: {
     timestampMs: params.timestampMs,
     ttlMs: params.ttlMs,
     stampKey: params.stampKey,
-    relays: params.relays,
   })
   await axios({
     method: 'put',
@@ -589,10 +550,19 @@ export async function registerMonadIdentity(params: {
   })
 }
 
-/** Decodes either a CBOR directory statement or a legacy protobuf SignedPayload. */
-export function decodeProfileBytes(raw: Uint8Array): {
+/** Decodes either a CBOR directory statement or a legacy protobuf SignedPayload.
+ * Validates stage 10.6 signature, subject signature, and verifies address derivation and network binding. */
+export function decodeProfileBytes(
+  raw: Uint8Array,
+  options?: {
+    expectedAddress?: string
+    expectedNetwork?: string
+  },
+): {
   pubKey: Uint8Array
   timestampMs: number
+  derivedAddress: string
+  network?: string
   name?: string
   bio?: string
   bot?: boolean
@@ -610,9 +580,32 @@ export function decodeProfileBytes(raw: Uint8Array): {
     }
     const stmt = stmtFrame.typed
     const pubKey = stmt.subject.keyBytes
-    const sec = BigInt(stmt.timestamp.seconds)
-    const nanos = BigInt(stmt.timestamp.nanoseconds)
-    const timestampMs = Number(sec * 1000n + nanos / 1_000_000n)
+
+    if (options?.expectedNetwork && stmt.network !== options.expectedNetwork) {
+      throw new Error(
+        `network mismatch: expected ${options.expectedNetwork}, got ${stmt.network}`,
+      )
+    }
+
+    const hasSubjectSig = validated.typed.signatures.some(
+      sig =>
+        sig.signer.keyType === stmt.subject.keyType &&
+        sig.signer.keyBytes.length === pubKey.length &&
+        sig.signer.keyBytes.every((b, i) => b === pubKey[i]),
+    )
+    if (!hasSubjectSig) {
+      throw new Error('missing subject signature in directory attestation')
+    }
+
+    const derivedAddress = computeAddress(hexlify(pubKey))
+    if (
+      options?.expectedAddress &&
+      derivedAddress.toLowerCase() !== options.expectedAddress.toLowerCase()
+    ) {
+      throw new Error(
+        `address mismatch: expected ${options.expectedAddress}, derived ${derivedAddress}`,
+      )
+    }
 
     let name: string | undefined
     let bio: string | undefined
@@ -620,6 +613,9 @@ export function decodeProfileBytes(raw: Uint8Array): {
     let avatar: string | undefined
 
     const metadata = new AddressMetadata()
+    const sec = BigInt(stmt.timestamp.seconds)
+    const nanos = BigInt(stmt.timestamp.nanoseconds)
+    const timestampMs = Number(sec * 1000n + nanos / 1_000_000n)
     metadata.setTimestamp(timestampMs)
     metadata.setTtl(1000 * 60 * 60 * 24 * 365)
     const protoEntries: InstanceType<typeof Entry>[] = []
@@ -666,6 +662,8 @@ export function decodeProfileBytes(raw: Uint8Array): {
     return {
       pubKey,
       timestampMs,
+      derivedAddress,
+      network: stmt.network,
       name,
       bio,
       bot,
@@ -678,6 +676,17 @@ export function decodeProfileBytes(raw: Uint8Array): {
   const metadata = AddressMetadata.deserializeBinary(
     signedPayload.getPayload_asU8(),
   )
+  const pubKey = signedPayload.getPublicKey_asU8()
+  const derivedAddress = computeAddress(hexlify(pubKey))
+  if (
+    options?.expectedAddress &&
+    derivedAddress.toLowerCase() !== options.expectedAddress.toLowerCase()
+  ) {
+    throw new Error(
+      `address mismatch: expected ${options.expectedAddress}, derived ${derivedAddress}`,
+    )
+  }
+
   let name: string | undefined
   let bio: string | undefined
   let bot: boolean | undefined
@@ -704,8 +713,9 @@ export function decodeProfileBytes(raw: Uint8Array): {
   }
 
   return {
-    pubKey: signedPayload.getPublicKey_asU8(),
+    pubKey,
     timestampMs: metadata.getTimestamp(),
+    derivedAddress,
     name,
     bio,
     bot,
@@ -719,6 +729,7 @@ export function decodeProfileBytes(raw: Uint8Array): {
 export async function fetchMonadIdentityPubKey(params: {
   relayBaseUrl: string
   address: string
+  expectedNetwork?: string
 }): Promise<Buffer | undefined> {
   try {
     const response = await axios({
@@ -729,7 +740,10 @@ export async function fetchMonadIdentityPubKey(params: {
       responseType: 'arraybuffer',
     })
     const raw = new Uint8Array(response.data)
-    const decoded = decodeProfileBytes(raw)
+    const decoded = decodeProfileBytes(raw, {
+      expectedAddress: params.address,
+      expectedNetwork: params.expectedNetwork,
+    })
     return Buffer.from(decoded.pubKey)
   } catch (err) {
     if (axios.isAxiosError(err) && err.response?.status === 404) {
@@ -745,6 +759,7 @@ export async function fetchMonadIdentityPubKey(params: {
 export async function fetchMonadProfile(params: {
   relayBaseUrl: string
   address: ChainAddress
+  expectedNetwork?: string
 }): Promise<ProfileInfo | undefined> {
   try {
     const response = await axios({
@@ -755,7 +770,10 @@ export async function fetchMonadProfile(params: {
       responseType: 'arraybuffer',
     })
     const raw = new Uint8Array(response.data)
-    const decoded = decodeProfileBytes(raw)
+    const decoded = decodeProfileBytes(raw, {
+      expectedAddress: params.address.raw,
+      expectedNetwork: params.expectedNetwork,
+    })
     const result: ProfileInfo = {
       address: params.address,
       pubKey: decoded.pubKey,
@@ -781,8 +799,18 @@ export interface MonadProfileListingEntry {
   rawBytes: Uint8Array
 }
 
-/** `GET /metadata/monad?since=<sinceMs>`: every Monad profile registered at or after `sinceMs`,
- * ordered by registration timestamp ascending. Transparently supports CBOR and protobuf. */
+/** `GET /metadata/monad?since=<sinceMs>` (ticket #75's endpoint, ticket #77's client): every
+ * Monad profile registered at or after `sinceMs` (milliseconds since the Unix epoch), ordered by
+ * registration timestamp ascending -- mirrors `fetchMonadMessagesSince`'s
+ * (`../cashweb/relay/monad-message-feed.ts`, ticket #37) identical "since cursor" shape for
+ * messages, letting a caller (e.g. the Qwen bot, ticket #77) discover newly-registered identities
+ * by polling with an advancing cursor.
+ *
+ * `ListMonadProfilesEntry.signed_payload` (`@frank/cashweb/registry/metadata_pb`) is a raw
+ * `bytes` field client-side, not a nested message type -- see `metadata.proto`'s doc comment on
+ * that message for why (wire-identical to the backend's embedded-message field either way) -- so
+ * it's decoded here via `SignedPayload.deserializeBinary` rather than a nested-message getter.
+ * Transparently supports both CBOR and legacy protobuf representations. */
 export async function fetchMonadProfilesSince(params: {
   relayBaseUrl: string
   sinceMs: number
@@ -798,7 +826,9 @@ export async function fetchMonadProfilesSince(params: {
   )
   return decoded.getEntriesList().map(entry => {
     const rawBytes = entry.getSignedPayload_asU8()
-    const profile = decodeProfileBytes(rawBytes)
+    const profile = decodeProfileBytes(rawBytes, {
+      expectedAddress: entry.getAddress(),
+    })
     return {
       address: entry.getAddress(),
       signedPayload: profile.signedPayload,
@@ -808,11 +838,27 @@ export async function fetchMonadProfilesSince(params: {
 }
 
 /** Server-side clamp on `searchMonadProfiles`'s `limit` -- mirrors
- * `cashweb-registry`'s `store::monad_profiles::MAX_SEARCH_RESULTS` (ticket #48). */
+ * `cashweb-registry`'s `store::monad_profiles::MAX_SEARCH_RESULTS` (ticket #48). Not enforced
+ * client-side (the relay clamps regardless of what's requested); kept here purely as a documented
+ * reference for callers deciding what to ask for. */
 export const MONAD_PROFILE_SEARCH_MAX_RESULTS = 100
 
-/** `GET /metadata/monad/search?prefix=<text>&limit=<n>`: prefix-search registered
- * Monad profiles by their normalized `display_name`. Transparently supports CBOR and protobuf. */
+/** `GET /metadata/monad/search?prefix=<text>&limit=<n>` (ticket #48): prefix-search registered
+ * Monad profiles by their normalized (lowercased) `display_name`, matching case-insensitively.
+ * `limit` defaults to the relay's own default (currently 20) when omitted, and is clamped to
+ * `MONAD_PROFILE_SEARCH_MAX_RESULTS` server-side regardless of what's requested.
+ *
+ * Reuses `ListMonadProfilesResponse`/`MonadProfileListingEntry` -- the exact same wire shape
+ * `fetchMonadProfilesSince` already decodes -- since a search result is just a differently
+ * filtered list of the same `{address, signedPayload}` pairs; only the query differs, so this
+ * mirrors that function's decode step closely rather than inventing a new shape.
+ *
+ * Unlike `fetchCuratedDefaultContacts`, this does *not* fail soft: mirrors
+ * `fetchMonadProfilesSince`'s own convention of letting a network/decode error propagate to the
+ * caller, since (like that function) there's no natural "empty" fallback that wouldn't silently
+ * mask a broken relay from a caller that actually needs search results (e.g. a UI search box
+ * should be able to distinguish "no matches" from "the request failed").
+ * Transparently supports both CBOR and legacy protobuf representations. */
 export async function searchMonadProfiles(params: {
   relayBaseUrl: string
   prefix: string
@@ -832,7 +878,9 @@ export async function searchMonadProfiles(params: {
   )
   return decoded.getEntriesList().map(entry => {
     const rawBytes = entry.getSignedPayload_asU8()
-    const profile = decodeProfileBytes(rawBytes)
+    const profile = decodeProfileBytes(rawBytes, {
+      expectedAddress: entry.getAddress(),
+    })
     return {
       address: entry.getAddress(),
       signedPayload: profile.signedPayload,

@@ -23,6 +23,7 @@ import {
   MONAD_IDENTITY_DERIVATION_PATH,
   MonadIdentity,
   buildSignedDirectoryStatement,
+  decodeProfileBytes,
   fetchCuratedDefaultContacts,
   fetchMonadIdentityPubKey,
   fetchMonadProfile,
@@ -841,5 +842,85 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
         address: identity.address.raw,
       }),
     ).rejects.toThrow()
+  })
+
+  it('decodeProfileBytes verifies address derivation and network binding', () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const otherIdentity = MonadIdentity.fromSeed({
+      mnemonic:
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+    })
+    const cborFrame = buildSignedDirectoryStatement(identity, {
+      network: 'monad-testnet',
+      profile: { name: 'Alice' },
+    })
+
+    // Valid case
+    const decoded = decodeProfileBytes(cborFrame, {
+      expectedAddress: identity.address.raw,
+      expectedNetwork: 'monad-testnet',
+    })
+    expect(decoded.derivedAddress.toLowerCase()).toBe(
+      identity.address.raw.toLowerCase(),
+    )
+    expect(decoded.network).toBe('monad-testnet')
+
+    // Address mismatch in CBOR
+    expect(() =>
+      decodeProfileBytes(cborFrame, {
+        expectedAddress: otherIdentity.address.raw,
+      }),
+    ).toThrow(/address mismatch/)
+
+    // Network mismatch in CBOR
+    expect(() =>
+      decodeProfileBytes(cborFrame, {
+        expectedNetwork: 'monad-mainnet',
+      }),
+    ).toThrow(/network mismatch/)
+  })
+
+  it('fetchMonadIdentityPubKey and fetchMonadProfile reject spoofed profiles on address mismatch', async () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const otherIdentity = MonadIdentity.fromSeed({
+      mnemonic:
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+    })
+    const otherCborFrame = buildSignedDirectoryStatement(otherIdentity, {
+      network: 'monad-testnet',
+      profile: { name: 'Attacker' },
+    })
+
+    // Relay returns otherIdentity profile when querying identity.address.raw
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(otherCborFrame),
+      statusText: 'OK',
+      headers: { 'content-type': 'application/cbor' },
+      config: {},
+    })
+
+    await expect(
+      fetchMonadIdentityPubKey({
+        relayBaseUrl: RELAY_BASE_URL,
+        address: identity.address.raw,
+      }),
+    ).rejects.toThrow(/address mismatch/)
+
+    // fetchMonadProfile address mismatch
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(otherCborFrame),
+      statusText: 'OK',
+      headers: { 'content-type': 'application/cbor' },
+      config: {},
+    })
+
+    await expect(
+      fetchMonadProfile({
+        relayBaseUrl: RELAY_BASE_URL,
+        address: identity.address,
+      }),
+    ).rejects.toThrow(/address mismatch/)
   })
 })

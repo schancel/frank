@@ -10,7 +10,7 @@ use crate::{
     },
     http::monad_profile::{
         fetch_profile_raw_or_not_found, handle_get_monad_profile, handle_list_monad_profiles,
-        handle_put_monad_profile, handle_search_monad_profiles,
+        handle_put_monad_profile, handle_search_monad_profiles, BoundedProfileBody,
     },
     http::monad_topics::{
         handle_get_monad_topic_post, handle_list_monad_topic_posts, handle_list_topics,
@@ -409,7 +409,7 @@ async fn handle_put_registry(
     Query(query): Query<HashMap<String, String>>,
     Extension(server): Extension<RegistryServer>,
     header_map: HeaderMap,
-    body_bytes: axum::body::Bytes,
+    BoundedProfileBody(body_bytes): BoundedProfileBody,
 ) -> Result<PutRegistrySuccess, PutRegistryError> {
     // Monad-native dispatch (ticket #45): see `crate::http::monad_profile`'s module docs for why
     // a Monad address reaching this historically Lotus-only route must be handled here too, not

@@ -854,3 +854,98 @@ async fn test_max_integer_and_timestamp_boundaries() {
     let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
     assert_eq!(body.to_vec(), cbor_bytes);
 }
+
+#[tokio::test]
+async fn test_address_mismatch_rejection() {
+    let tempdir = tempdir::TempDir::new("cashweb-registry--mismatch").unwrap();
+    let key_a = seckey(21);
+    let key_b = seckey(22);
+
+    let (cbor_bytes_a, address_a, _) = build_cbor_attestation(
+        &key_a,
+        "monad-testnet",
+        1,
+        1_700_000_000_000,
+        1000 * 60 * 60 * 24 * 365,
+        Some("Alice"),
+        None,
+        1,
+    );
+    let (_, address_b, _) = build_cbor_attestation(
+        &key_b,
+        "monad-testnet",
+        1,
+        1_700_000_000_000,
+        1000 * 60 * 60 * 24 * 365,
+        Some("Bob"),
+        None,
+        1,
+    );
+
+    let registry = open_registry(tempdir.path(), Net::Regtest);
+    let server = make_server(registry);
+    let router = server.into_router();
+
+    // PUT attestation for Address A to Address B route
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/metadata/{}", address_b.to_hex()))
+        .header(CONTENT_TYPE, CONTENT_TYPE_CBOR)
+        .header("Origin", "http://frank.local")
+        .body(Body::from(cbor_bytes_a.clone()))
+        .unwrap();
+
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Verify Address B was never created
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/metadata/{}", address_b.to_hex()))
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // Verify Address A was never created either
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/metadata/{}", address_a.to_hex()))
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_oversized_payload_rejection_sec1() {
+    let tempdir = tempdir::TempDir::new("cashweb-registry--oversized").unwrap();
+    let key = seckey(23);
+    let (_, address, _) = build_cbor_attestation(
+        &key,
+        "monad-testnet",
+        1,
+        1_700_000_000_000,
+        1000 * 60 * 60 * 24 * 365,
+        Some("Oversized"),
+        None,
+        1,
+    );
+
+    let registry = open_registry(tempdir.path(), Net::Regtest);
+    let server = make_server(registry);
+    let router = server.into_router();
+
+    // Send payload of 262_145 bytes (1 byte over the 256 KiB limit)
+    let oversized = vec![0u8; 262_145];
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/metadata/{}", address.to_hex()))
+        .header(CONTENT_TYPE, CONTENT_TYPE_CBOR)
+        .header("Origin", "http://frank.local")
+        .body(Body::from(oversized))
+        .unwrap();
+
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}

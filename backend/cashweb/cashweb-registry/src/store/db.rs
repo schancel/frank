@@ -109,6 +109,8 @@ pub struct Db {
     /// Serializes read-check-batch outbox mutations inside this process. RocksDB batches are
     /// atomic, but the active-claim bound also needs its preceding count to be serialized.
     monad_outbox_lock: Mutex<()>,
+    /// Serializes profile writes and secondary index cleanups across formats.
+    monad_profile_lock: Mutex<()>,
 }
 
 /// Errors indicating something went wrong with the database itself.
@@ -203,6 +205,7 @@ impl Db {
         Ok(Db {
             db,
             monad_outbox_lock: Mutex::new(()),
+            monad_profile_lock: Mutex::new(()),
         })
     }
 
@@ -242,6 +245,12 @@ impl Db {
 
     pub(crate) fn lock_monad_outbox(&self) -> std::sync::MutexGuard<'_, ()> {
         self.monad_outbox_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn lock_monad_profiles(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.monad_profile_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }

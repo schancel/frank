@@ -73,6 +73,42 @@ use crate::{
     registry::Registry,
 };
 
+/// Maximum accepted payload size for Monad profile registration (256 KiB),
+/// matching the CBOR validation route byte limit.
+pub const MAX_PROFILE_PAYLOAD_BYTES: usize = 262_144;
+
+/// A raw request body bounded to [`MAX_PROFILE_PAYLOAD_BYTES`] before reading into memory,
+/// protecting against unauthenticated OOM without requiring a Content-Length header.
+#[derive(Debug)]
+pub struct BoundedProfileBody(pub axum::body::Bytes);
+
+#[async_trait::async_trait]
+impl axum::extract::FromRequest<axum::body::Body> for BoundedProfileBody {
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request(
+        req: &mut axum::extract::RequestParts<axum::body::Body>,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        use axum::body::HttpBody;
+        let mut body = req
+            .take_body()
+            .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "body already taken"))?;
+        let mut body_bytes = Vec::new();
+        while let Some(chunk_result) = body.data().await {
+            let chunk = chunk_result
+                .map_err(|_| (StatusCode::BAD_REQUEST, "failed to read request body"))?;
+            if body_bytes.len().saturating_add(chunk.len()) > MAX_PROFILE_PAYLOAD_BYTES {
+                return Err((
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "profile payload exceeds 256 KiB limit",
+                ));
+            }
+            body_bytes.extend_from_slice(&chunk);
+        }
+        Ok(BoundedProfileBody(body_bytes.into()))
+    }
+}
+
 /// Errors indicating an invalid request to the Monad profile routes, independent of the
 /// pre-existing Lotus [`crate::http::server::RegistryServerError`] (this route has its own address
 /// format entirely, so it doesn't share that enum).
@@ -107,7 +143,7 @@ pub async fn handle_put_monad_profile(
     Path(address): Path<String>,
     Extension(server): Extension<RegistryServer>,
     headers: HeaderMap,
-    body_bytes: axum::body::Bytes,
+    BoundedProfileBody(body_bytes): BoundedProfileBody,
 ) -> std::result::Result<Protobuf<proto::PutSignedPayloadResponse>, HttpRegistryError> {
     let address = parse_addr(&address)?;
     let is_cbor = headers

@@ -1006,6 +1006,7 @@ impl Registry {
         address: Address,
         signed_profile: cashweb_payload::proto::SignedPayload,
     ) -> Result<()> {
+        let _lock = self.db.lock_monad_profiles();
         let verified = verify_monad_profile(&self.ecc, address, &signed_profile)?;
 
         if let Some(existing_bytes) = self.db.monad_profiles().get_raw(&address)? {
@@ -1043,6 +1044,7 @@ impl Registry {
     /// Fully verify and write a Frank-CBOR type-2 account registration attestation (ticket #605).
     /// Enforces stage 10.6 signature verification and monotonic revision/timestamp invariants.
     pub fn put_monad_profile_cbor(&self, address: Address, frame_bytes: &[u8]) -> Result<()> {
+        let _lock = self.db.lock_monad_profiles();
         let expected_net = self.expected_cbor_network();
         let prior_statement =
             if let Some(info) = self.db.monad_profiles().get_cbor_statement_info(&address)? {
@@ -1072,7 +1074,10 @@ impl Registry {
                     }
                 }
             } else if let Some(info) = self.db.monad_profiles().get_cbor_statement_info(&address)? {
-                if info.timestamp_ms > verified.timestamp_ms {
+                if info.timestamp_ms > verified.timestamp_ms
+                    || (info.timestamp_ms == verified.timestamp_ms
+                        && info.revision >= verified.revision)
+                {
                     return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
                         previous: info.timestamp_ms,
                         next: verified.timestamp_ms,

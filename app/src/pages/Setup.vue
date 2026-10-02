@@ -128,7 +128,6 @@ import { defineComponent } from 'vue'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { QStepper } from 'quasar'
 
-import { HDPrivateKey } from 'bitcore-lib-xpi'
 import { generateMnemonic } from 'bip39'
 
 import { RegistryHandler } from '@frank/cashweb/registry'
@@ -504,8 +503,7 @@ export default defineComponent({
         worker.onmessage = async event => {
           try {
             // Prepare wallet
-            const xPrivKeyObj = event.data
-            const xPrivKey = HDPrivateKey.fromObject(xPrivKeyObj)
+            const xPrivKey = event.data
             // TODO: We should not have to update two places.
             this.setXPrivKey(xPrivKey)
             this.$wallet.setXPrivKey(xPrivKey)

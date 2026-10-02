@@ -1,7 +1,6 @@
 import assert from 'assert'
 import type { PayloadEntry } from './relay_pb'
 import { MessageItem } from '../types/messages'
-import { PublicKey } from 'bitcore-lib-xpi'
 import { Wallet } from '../legacy-wallet'
 import { MessageConstructor } from './constructors'
 import { Utxo } from '../types/utxo'
@@ -10,7 +9,7 @@ import { UIOutput } from '../types/user-interface'
 
 export function encodeEntry(
   item: MessageItem,
-  destinationPublicKey: PublicKey,
+  destinationPublicKey: { toBuffer(): Uint8Array },
   {
     wallet,
     messageConstructor,
@@ -22,7 +21,9 @@ export function encodeEntry(
       messageConstructor.constructStealthEntry({
         ...item,
         wallet: wallet,
-        destPubKey: destinationPublicKey,
+        destPubKey: destinationPublicKey as Parameters<
+          MessageConstructor['constructStealthEntry']
+        >[0]['destPubKey'],
       })
     const transactions: Transaction[] = []
     const stagedUtxos: Utxo[] = []

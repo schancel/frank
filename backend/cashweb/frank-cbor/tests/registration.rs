@@ -84,7 +84,50 @@ fn every_registration_case_matches_its_recorded_outcome() {
     let manifest = registration_manifest();
     assert_eq!(manifest["format"], "frank-cbor-v1-vectors");
     let cases = manifest["cases"].as_array().expect("cases");
-    assert_eq!(cases.len(), 28, "the corpus has 28 cases");
+    let ids: Vec<_> = cases.iter().map(case_id).collect();
+    assert_eq!(
+        ids,
+        [
+            "reg-fixture-testnet-statement-typed",
+            "reg-fixture-mainnet-statement-typed",
+            "reg-fixture-testnet-update-typed",
+            "reg-fixture-v63-profile-retained",
+            "reg-alg16-recognized-typed",
+            "reg-t4-key-32-bytes",
+            "reg-t4-key-uncompressed-65",
+            "reg-t2-sig-7-bytes",
+            "reg-t2-algorithm-unallocated-99",
+            "reg-t2-alg1-keytype3",
+            "reg-t4-schema2-carries-profile",
+            "reg-t4-schema1-carries-profile",
+            "reg-t4-network-uppercase",
+            "reg-t4-noncanonical-statement",
+            "reg-s10a2-schema-downgrade",
+            "reg-t4-headers-unsorted",
+            "reg-t4-headers-duplicate",
+            "reg-fixture-testnet-full",
+            "reg-fixture-testnet-minimal-full",
+            "reg-fixture-mainnet-full",
+            "reg-fixture-testnet-update-full",
+            "reg-crypto-sig-mutation",
+            "reg-crypto-wrong-network",
+            "reg-crypto-wrong-domain",
+            "reg-crypto-malformed-der",
+            "reg-crypto-high-s",
+            "reg-crypto-subject-not-point",
+            "reg-unsupported-alg16-entry",
+            "reg-t2a-rust-known-answer-full",
+            "reg-m7-transition-precedes-corrupt-outer",
+        ]
+    );
+    let values = registration_values();
+    let pinned_ids: Vec<_> = values["manifest_case_ids"]
+        .as_array()
+        .expect("manifest case ids")
+        .iter()
+        .map(|id| id.as_str().expect("case id"))
+        .collect();
+    assert_eq!(ids, pinned_ids);
     let mut failures = Vec::new();
     for case in cases {
         let id = case_id(case);
@@ -305,6 +348,78 @@ fn keccak256_matches_the_reference_hash() {
         hex::encode(keccak256(b"")),
         "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
     );
+}
+
+#[test]
+fn rust_originated_t2a_known_answer_is_pinned() {
+    let values = registration_values();
+    let vectors = values["key_transition_authorizations"]
+        .as_array()
+        .expect("T2a vectors");
+    assert_eq!(vectors.len(), 1);
+    let vector = &vectors[0];
+    assert_eq!(vector["id"], "t2a-rust-secret-2");
+    let transition = hex(vector["transition_statement_frame_hex"]
+        .as_str()
+        .expect("transition frame"));
+    let digest =
+        key_transition_signature_digest(vector["network"].as_str().expect("network"), &transition)
+            .expect("T2a digest");
+    assert_eq!(hex::encode(digest), vector["digest_hex"]);
+    assert!(verify_algorithm_1(
+        &digest,
+        &hex(vector["signature_der_hex"].as_str().expect("signature")),
+        &hex(vector["signer_public_key_hex"]
+            .as_str()
+            .expect("signer key")),
+    ));
+    let manifest = registration_manifest();
+    let case = manifest["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|case| case_id(case) == vector["attestation_case_id"])
+        .expect("linked attestation case");
+    assert_eq!(
+        case["validation_context"]["prior_directory_statement_frame_hex"],
+        vector["prior_statement_frame_hex"]
+    );
+    let ValidationResult::Parsed(parsed) = validate_frame(
+        &case_frame(case),
+        &context_from_json(&case["validation_context"]),
+    )
+    .expect("linked attestation validates") else {
+        panic!("linked attestation was not parsed");
+    };
+    let Some(typed) = parsed.typed else {
+        panic!("linked attestation was not typed");
+    };
+    let TypedPayload::DirectoryAttestation { statement, .. } = *typed else {
+        panic!("linked case was not an attestation");
+    };
+    let Some(statement_typed) = statement.typed else {
+        panic!("linked statement was not typed");
+    };
+    let TypedPayload::DirectoryStatement {
+        network,
+        key_transitions: Some(transitions),
+        ..
+    } = *statement_typed
+    else {
+        panic!("linked statement had no transitions");
+    };
+    assert_eq!(network, vector["network"]);
+    assert_eq!(transitions.len(), 1);
+    let entry = &transitions[0];
+    assert_eq!(
+        hex::encode(&entry.statement.frame),
+        vector["transition_statement_frame_hex"]
+    );
+    assert_eq!(
+        hex::encode(&entry.signer.key_bytes),
+        vector["signer_public_key_hex"]
+    );
+    assert_eq!(hex::encode(&entry.signature), vector["signature_der_hex"]);
 }
 
 #[test]

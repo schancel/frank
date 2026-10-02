@@ -28,6 +28,7 @@ import {
 } from '../src'
 import type { Encodable, Operation, Timestamp, ValidationContext } from '../src'
 import { M, deliveryFrame } from '../fixtures/builders'
+import { checkManifest } from '../fixtures/checker'
 import type { ManifestCase } from '../fixtures/manifest'
 
 const DOCS = path.resolve(__dirname, '../../../docs/protocol/cbor')
@@ -43,6 +44,40 @@ const VALUES = JSON.parse(
     'utf8',
   ),
 )
+const README = fs.readFileSync(path.join(DOCS, 'README.md'), 'utf8')
+
+const EXPECTED_CASE_IDS = [
+  'reg-fixture-testnet-statement-typed',
+  'reg-fixture-mainnet-statement-typed',
+  'reg-fixture-testnet-update-typed',
+  'reg-fixture-v63-profile-retained',
+  'reg-alg16-recognized-typed',
+  'reg-t4-key-32-bytes',
+  'reg-t4-key-uncompressed-65',
+  'reg-t2-sig-7-bytes',
+  'reg-t2-algorithm-unallocated-99',
+  'reg-t2-alg1-keytype3',
+  'reg-t4-schema2-carries-profile',
+  'reg-t4-schema1-carries-profile',
+  'reg-t4-network-uppercase',
+  'reg-t4-noncanonical-statement',
+  'reg-s10a2-schema-downgrade',
+  'reg-t4-headers-unsorted',
+  'reg-t4-headers-duplicate',
+  'reg-fixture-testnet-full',
+  'reg-fixture-testnet-minimal-full',
+  'reg-fixture-mainnet-full',
+  'reg-fixture-testnet-update-full',
+  'reg-crypto-sig-mutation',
+  'reg-crypto-wrong-network',
+  'reg-crypto-wrong-domain',
+  'reg-crypto-malformed-der',
+  'reg-crypto-high-s',
+  'reg-crypto-subject-not-point',
+  'reg-unsupported-alg16-entry',
+  'reg-t2a-rust-known-answer-full',
+  'reg-m7-transition-precedes-corrupt-outer',
+]
 
 interface Manifest {
   format: string
@@ -120,9 +155,11 @@ function observe(frame: Uint8Array, ctx: ValidationContext): Observed {
 }
 
 describe('the account-registration corpus (README section 11, M9)', () => {
-  it('has 28 cases in the standard manifest format', () => {
+  it('has the exact standard-manifest case inventory', () => {
     expect(CORPUS.format).toBe('frank-cbor-v1-vectors')
-    expect(CORPUS.cases.length).toBe(28)
+    expect(CORPUS.cases.map(c => c.id)).toEqual(EXPECTED_CASE_IDS)
+    expect(VALUES.manifest_case_ids).toEqual(EXPECTED_CASE_IDS)
+    expect(checkManifest(CORPUS, README)).toEqual([])
   })
 
   for (const c of CORPUS.cases) {
@@ -208,6 +245,40 @@ describe('schema-version dispatch of the type-4 statement (V1/V2, M4)', () => {
 })
 
 describe('the M2/M3/M6 pure-value vectors', () => {
+  it('pins one Rust-originated T2a known answer used by the shared corpus', () => {
+    expect(
+      VALUES.key_transition_authorizations.map((v: { id: string }) => v.id),
+    ).toEqual(['t2a-rust-secret-2'])
+    const v = VALUES.key_transition_authorizations[0]
+    const transition = fromHex(v.transition_statement_frame_hex)
+    expect(toHex(keyTransitionSignatureDigest(v.network, transition))).toBe(
+      v.digest_hex,
+    )
+    expect(
+      verifyAlgorithm1(
+        fromHex(v.digest_hex),
+        fromHex(v.signature_der_hex),
+        fromHex(v.signer_public_key_hex),
+      ),
+    ).toBe(true)
+    const corpusCase = mustGet(v.attestation_case_id)
+    expect(
+      corpusCase.validation_context.prior_directory_statement_frame_hex,
+    ).toBe(v.prior_statement_frame_hex)
+    const attestation = decodeEnvelope(fromHex(corpusCase.frame_hex))
+    const statement = decodeEnvelope(attestation.statement)
+    expect(statement.payload.get(0n)).toBe(v.network)
+    const transitions = statement.payload.get(5n) as Map<bigint, unknown>[]
+    expect(transitions).toHaveLength(1)
+    const entry = transitions[0]
+    const signer = entry.get(2n) as Map<bigint, unknown>
+    expect(toHex(entry.get(0n) as Uint8Array)).toBe(
+      v.transition_statement_frame_hex,
+    )
+    expect(toHex(signer.get(1n) as Uint8Array)).toBe(v.signer_public_key_hex)
+    expect(toHex(entry.get(3n) as Uint8Array)).toBe(v.signature_der_hex)
+  })
+
   it('maps every timestamp vector losslessly (M2)', () => {
     for (const v of VALUES.timestamp_mappings) {
       const ms = BigInt(v.timestamp_ms)

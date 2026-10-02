@@ -1605,7 +1605,9 @@ reach only until they fail on the C12 declaration of field 9 or at the not-yet-
 implemented stage 10.6; those record the normative outcomes child B must
 produce. The corpus checker of #185 (README section 10) applies to this file's
 cases as written, including its stage labels (`10.6` is within `full`'s last
-stage). `vectors/account-registration-values.json` carries the pure-value
-vectors (M2, M3, M6) in its own documented format, mirroring
-`vectors/topic-commitments.json`, which is not a frame manifest because no
-manifest field can carry a value that is not a content hash.
+stage). `vectors/account-registration-values.json` carries the exact manifest
+case inventory, a Rust-originated T2a digest/signature known answer, and the
+pure-value vectors (M2, M3, M6) in its own documented format. The TypeScript,
+Rust, Python, and browser runners consume the same T2a bytes and the manifest
+also pins M7 precedence when an unsupported transition authorization appears
+beside a corrupt outer signature.

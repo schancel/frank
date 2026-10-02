@@ -316,6 +316,13 @@ const frankBrowserCheckInstall = function () {
 
     // Account-registration corpus (README section 11): every case, including the full
     // operation's stage-10.6 signature verification, plus the pure-value M2/M3/M6 vectors.
+    const registrationIds = registration.cases.map(c => c.id)
+    if (
+      registrationIds.length !== 30 ||
+      registrationIds.join('\n') !==
+        registrationValues.manifest_case_ids.join('\n')
+    )
+      fail('registration', 'exact case inventory differs')
     const registrationCounts = { total: 0, accepted: 0, rejected: 0 }
     for (const c of registration.cases) {
       registrationCounts.total++
@@ -364,6 +371,59 @@ const frankBrowserCheckInstall = function () {
       registrationCounts.rejected === 0
     ) {
       fail('registration', 'implausible outcome split')
+    }
+    const t2a = registrationValues.key_transition_authorizations
+    if (t2a.length !== 1 || t2a[0].id !== 't2a-rust-secret-2') {
+      fail('T2a', 'exact known-answer inventory differs')
+    } else {
+      const v = t2a[0]
+      const digest = codec.keyTransitionSignatureDigest(
+        v.network,
+        codec.fromHex(v.transition_statement_frame_hex),
+      )
+      if (codec.toHex(digest) !== v.digest_hex) fail(v.id, 'T2a digest differs')
+      if (
+        !codec.verifyAlgorithm1(
+          digest,
+          codec.fromHex(v.signature_der_hex),
+          codec.fromHex(v.signer_public_key_hex),
+        )
+      )
+        fail(v.id, 'T2a signature does not verify')
+      const corpusCase = byId(registration, v.attestation_case_id)
+      if (!corpusCase) {
+        fail(v.id, 'linked attestation case is missing')
+      } else {
+        if (
+          corpusCase.validation_context.prior_directory_statement_frame_hex !==
+          v.prior_statement_frame_hex
+        )
+          fail(v.id, 'linked prior statement differs')
+        const attestationEnvelope = codec.decodeCanonical(
+          codec.fromHex(corpusCase.frame_hex).subarray(9),
+        )
+        const attestation = codec.decodeCanonical(attestationEnvelope.get(3n))
+        const statementFrame = attestation.get(0n)
+        const statementEnvelope = codec.decodeCanonical(
+          statementFrame.subarray(9),
+        )
+        const statement = codec.decodeCanonical(statementEnvelope.get(3n))
+        const transitions = statement.get(5n)
+        if (statement.get(0n) !== v.network)
+          fail(v.id, 'linked network differs')
+        if (!Array.isArray(transitions) || transitions.length !== 1) {
+          fail(v.id, 'linked transition inventory differs')
+        } else {
+          const entry = transitions[0]
+          const signer = entry.get(2n)
+          if (codec.toHex(entry.get(0n)) !== v.transition_statement_frame_hex)
+            fail(v.id, 'linked transition statement differs')
+          if (codec.toHex(signer.get(1n)) !== v.signer_public_key_hex)
+            fail(v.id, 'linked signer key differs')
+          if (codec.toHex(entry.get(3n)) !== v.signature_der_hex)
+            fail(v.id, 'linked signature differs')
+        }
+      }
     }
     for (const v of registrationValues.timestamp_mappings) {
       const ms = BigInt(v.timestamp_ms)

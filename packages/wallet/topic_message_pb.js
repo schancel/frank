@@ -803,7 +803,10 @@ post: (f = msg.getPost()) && proto.cashweb.registry.MonadTopicPost.toObject(incl
 senderAddress: msg.getSenderAddress_asB64(),
 txHash: msg.getTxHash_asB64(),
 timestamp: jspb.Message.getFieldWithDefault(msg, 4, 0),
-networkTag: msg.getNetworkTag_asB64()
+networkTag: msg.getNetworkTag_asB64(),
+cborPostFrame: msg.getCborPostFrame_asB64(),
+confirmedBlockNumber: jspb.Message.getFieldWithDefault(msg, 7, 0),
+confirmedTransactionIndex: jspb.Message.getFieldWithDefault(msg, 8, 0)
   };
 
   if (includeInstance) {
@@ -860,6 +863,18 @@ proto.cashweb.registry.StoredMonadTopicPost.deserializeBinaryFromReader = functi
     case 5:
       var value = /** @type {!Uint8Array} */ (reader.readBytes());
       msg.setNetworkTag(value);
+      break;
+    case 6:
+      var value = /** @type {!Uint8Array} */ (reader.readBytes());
+      msg.setCborPostFrame(value);
+      break;
+    case 7:
+      var value = /** @type {number} */ (reader.readUint64());
+      msg.setConfirmedBlockNumber(value);
+      break;
+    case 8:
+      var value = /** @type {number} */ (reader.readUint64());
+      msg.setConfirmedTransactionIndex(value);
       break;
     default:
       reader.skipField();
@@ -923,6 +938,27 @@ proto.cashweb.registry.StoredMonadTopicPost.serializeBinaryToWriter = function(m
   if (f.length > 0) {
     writer.writeBytes(
       5,
+      f
+    );
+  }
+  f = message.getCborPostFrame_asU8();
+  if (f.length > 0) {
+    writer.writeBytes(
+      6,
+      f
+    );
+  }
+  f = message.getConfirmedBlockNumber();
+  if (f !== 0) {
+    writer.writeUint64(
+      7,
+      f
+    );
+  }
+  f = message.getConfirmedTransactionIndex();
+  if (f !== 0) {
+    writer.writeUint64(
+      8,
       f
     );
   }
@@ -1107,6 +1143,84 @@ proto.cashweb.registry.StoredMonadTopicPost.prototype.getNetworkTag_asU8 = funct
  */
 proto.cashweb.registry.StoredMonadTopicPost.prototype.setNetworkTag = function(value) {
   return jspb.Message.setProto3BytesField(this, 5, value);
+};
+
+
+/**
+ * optional bytes cbor_post_frame = 6;
+ * @return {!(string|Uint8Array)}
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.getCborPostFrame = function() {
+  return /** @type {!(string|Uint8Array)} */ (jspb.Message.getFieldWithDefault(this, 6, ""));
+};
+
+
+/**
+ * optional bytes cbor_post_frame = 6;
+ * This is a type-conversion wrapper around `getCborPostFrame()`
+ * @return {string}
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.getCborPostFrame_asB64 = function() {
+  return /** @type {string} */ (jspb.Message.bytesAsB64(
+      this.getCborPostFrame()));
+};
+
+
+/**
+ * optional bytes cbor_post_frame = 6;
+ * Note that Uint8Array is not supported on all browsers.
+ * @see http://caniuse.com/Uint8Array
+ * This is a type-conversion wrapper around `getCborPostFrame()`
+ * @return {!Uint8Array}
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.getCborPostFrame_asU8 = function() {
+  return /** @type {!Uint8Array} */ (jspb.Message.bytesAsU8(
+      this.getCborPostFrame()));
+};
+
+
+/**
+ * @param {!(string|Uint8Array)} value
+ * @return {!proto.cashweb.registry.StoredMonadTopicPost} returns this
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.setCborPostFrame = function(value) {
+  return jspb.Message.setProto3BytesField(this, 6, value);
+};
+
+
+/**
+ * optional uint64 confirmed_block_number = 7;
+ * @return {number}
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.getConfirmedBlockNumber = function() {
+  return /** @type {number} */ (jspb.Message.getFieldWithDefault(this, 7, 0));
+};
+
+
+/**
+ * @param {number} value
+ * @return {!proto.cashweb.registry.StoredMonadTopicPost} returns this
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.setConfirmedBlockNumber = function(value) {
+  return jspb.Message.setProto3IntField(this, 7, value);
+};
+
+
+/**
+ * optional uint64 confirmed_transaction_index = 8;
+ * @return {number}
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.getConfirmedTransactionIndex = function() {
+  return /** @type {number} */ (jspb.Message.getFieldWithDefault(this, 8, 0));
+};
+
+
+/**
+ * @param {number} value
+ * @return {!proto.cashweb.registry.StoredMonadTopicPost} returns this
+ */
+proto.cashweb.registry.StoredMonadTopicPost.prototype.setConfirmedTransactionIndex = function(value) {
+  return jspb.Message.setProto3IntField(this, 8, value);
 };
 
 

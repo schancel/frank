@@ -43,7 +43,7 @@ export function relayProfilePayloadDigest(payload: Uint8Array): Uint8Array {
   return cryptoBackend.sha256(Uint8Array.from(payload))
 }
 
-type RelayKey = {
+type HasToBuffer = {
   toBuffer(): Uint8Array
   compressed?: boolean
 }
@@ -52,7 +52,7 @@ type RelayKey = {
 const EPHEMERAL_DRAWS = 64
 
 /** Compressed stealth ephemeral secret. `new PrivateKey()` defaulted compressed. */
-function ephemeralStealthKey(): RelayKey {
+function ephemeralStealthKey(): HasToBuffer {
   for (let draw = 0; draw < EPHEMERAL_DRAWS; draw += 1) {
     const drawn = randomBytes(32)
     const secret = Uint8Array.from(drawn)
@@ -89,7 +89,7 @@ export class MessageConstructor {
   constructStampTransactions(
     wallet: Wallet,
     payloadDigest: Buffer,
-    destPubKey: RelayKey,
+    destPubKey: HasToBuffer,
     amount: number,
   ) {
     assert(payloadDigest instanceof Buffer, 'digestPayload is wrong type')
@@ -126,8 +126,8 @@ export class MessageConstructor {
 
   constructStealthTransactions(
     wallet: Wallet,
-    ephemeralPrivKey: RelayKey,
-    destPubKey: RelayKey,
+    ephemeralPrivKey: HasToBuffer,
+    destPubKey: HasToBuffer,
     amount: number,
   ) {
     // Add ephemeral output
@@ -162,8 +162,8 @@ export class MessageConstructor {
   constructMessage(
     wallet: Wallet,
     plainTextPayload: Uint8Array,
-    sourcePrivateKey: RelayKey,
-    destinationPublicKey: RelayKey,
+    sourcePrivateKey: HasToBuffer,
+    destinationPublicKey: HasToBuffer,
     stampAmount: number,
   ) {
     const plainPayloadDigest = Buffer.from(
@@ -275,7 +275,7 @@ export class MessageConstructor {
   }: {
     wallet: Wallet
     amount: number
-    destPubKey: RelayKey
+    destPubKey: HasToBuffer
   }) {
     // Construct payment entry
     const paymentEntry = new PayloadEntry()
@@ -397,7 +397,7 @@ export class MessageConstructor {
   constructProfileMetadata(
     profileObj: { name?: string; bio?: string; avatar?: string },
     priceFilter: PriceFilter,
-    privKey: RelayKey,
+    privKey: HasToBuffer,
   ) {
     // Construct vCard
     const vCard = new VCard()

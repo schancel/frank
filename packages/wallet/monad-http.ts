@@ -32,6 +32,7 @@
  * (see `monad-http.smoketest.ts` for the narrow, script-only version of that helper).
  */
 import { JsonRpcProvider, Log as EthersLog, TransactionReceipt } from 'ethers'
+import { createMonadJsonRpcProvider } from './monad-provider'
 
 /** A block range/topic filter for `eth_getLogs`, decoupled from ethers' own `Filter` type so
  * callers of this module don't need to depend on ethers types directly. */
@@ -168,13 +169,23 @@ function toMonadTxReceipt(receipt: TransactionReceipt): MonadTxReceipt {
  * endpoints. Holds no chain-specific wallet/key state — it's a thin, typed wrapper around the
  * three JSON-RPC calls this ticket scopes, plus `eth_blockNumber` as a convenience.
  */
+export interface MonadHttpClientOptions {
+  rpcUrl: string
+  chainId?: number | bigint
+}
+
 export class MonadHttpClient {
   private provider: JsonRpcProvider
 
-  /** @param rpcUrl HTTPS JSON-RPC endpoint (e.g. `MONAD_TESTNET_HTTP_RPC_URL`). Read by the
-   * caller from env/config and passed in — this class never reads env itself. */
-  constructor({ rpcUrl }: { rpcUrl: string }) {
-    this.provider = new JsonRpcProvider(rpcUrl)
+  /** @param options HTTPS JSON-RPC endpoint and optional expected chainId (defaults to Monad testnet 10143).
+   * Read by the caller from env/config and passed in — this class never reads env itself. */
+  constructor({ rpcUrl, chainId }: MonadHttpClientOptions) {
+    this.provider = createMonadJsonRpcProvider({ rpcUrl, chainId })
+  }
+
+  /** Releases resources and cancels pending requests on the underlying provider. */
+  destroy(): void {
+    this.provider.destroy()
   }
 
   /** Submit an already-signed raw transaction (0x-prefixed hex) via `eth_sendRawTransaction`.

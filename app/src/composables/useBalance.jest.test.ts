@@ -483,4 +483,44 @@ describe('useBalance', () => {
     expect(mockGetBalance).toHaveBeenCalledTimes(4)
     wrapper.unmount()
   })
+
+  it('regression #534: 60-second persistent outage asserts bounded request count, cancellation, and recovery', async () => {
+    // Top of jitter window so delays are deterministic: failure 1 -> 30s, failure 2 -> 60s
+    jest.spyOn(Math, 'random').mockReturnValue(1)
+    mockGetBalance.mockRejectedValue(new Error('503 Service Unavailable'))
+    const wrapper = mount(Consumer)
+
+    // Initial mount at t=0s triggers fetch #1
+    await advance(0)
+    expect(mockGetBalance).toHaveBeenCalledTimes(1)
+    expect(errorNow()).toBe(true)
+
+    // Over 60 seconds of persistent outage:
+    // With 1st backoff = 30s, fetch #2 happens at t=30s
+    // With 2nd backoff = 60s, fetch #3 would not happen until t=90s
+    // So within 60s, total fetches is exactly 2 (strictly bounded vs ~60 from 1s loop)
+    await advance(30000)
+    expect(mockGetBalance).toHaveBeenCalledTimes(2)
+
+    await advance(29999)
+    expect(mockGetBalance).toHaveBeenCalledTimes(2)
+
+    // Unmounting the consumer at t=60s cancels polling
+    wrapper.unmount()
+    expect(jest.getTimerCount()).toBe(0)
+
+    // Advancing further produces zero requests (cancellation confirmed)
+    await advance(60000)
+    expect(mockGetBalance).toHaveBeenCalledTimes(2)
+
+    // When a consumer remounts after RPC recovers, balance refreshes promptly and resets backoff
+    mockGetBalance.mockResolvedValue(100n)
+    const newWrapper = mount(Consumer)
+    await advance(0)
+    expect(mockGetBalance).toHaveBeenCalledTimes(3)
+    expect(errorNow()).toBe(false)
+    expect(loadedNow()).toBe(true)
+    expect(newWrapper.text()).toBe('100 MON')
+    newWrapper.unmount()
+  })
 })

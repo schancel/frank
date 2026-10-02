@@ -123,6 +123,50 @@ describe('Codex32 standard-checksum core', () => {
     ).toBe(true)
   })
 
+  it('reads an alternating raw-secret index exactly once', () => {
+    let reads = 0
+    const encoded = encodeCodex32({
+      threshold: 2,
+      identifier: 'cash',
+      get index() {
+        reads += 1
+        return reads < 3 ? 's' : 'q'
+      },
+      secret: seed(),
+    })
+    expect(reads).toBe(1)
+    expect(encoded.ok).toBe(true)
+    if (encoded.ok) {
+      expect(decodeCodex32(encoded.value)).toMatchObject({
+        ok: true,
+        value: { index: 's', seed: seed() },
+      })
+    }
+  })
+
+  it('copies shared seed bytes before later getters can mutate them', () => {
+    const original = seed()
+    const shared = new Uint8Array(new SharedArrayBuffer(original.length))
+    shared.set(original)
+    const expected = encodeCodex32({
+      threshold: 0,
+      identifier: 'cash',
+      index: 's',
+      secret: original,
+    })
+    const actual = encodeCodex32({
+      secret: shared,
+      get threshold() {
+        shared.fill(0)
+        return 0 as const
+      },
+      identifier: 'cash',
+      index: 's',
+    })
+    expect(actual).toEqual(expected)
+    expect(shared.every(value => value === 0)).toBe(true)
+  })
+
   it('enforces the expanded-HRP printable length boundary', () => {
     const length91 =
       'ms10testsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj73p44avakdp6'
@@ -160,6 +204,86 @@ describe('Codex32 standard-checksum core', () => {
       )
       expect(recovered).toEqual({ ok: true, value: seed() })
     }
+  })
+
+  it('snapshots split buffers and recovery array elements once', () => {
+    const original = seed()
+    const mutable = new Uint8Array(original)
+    const split = splitCodex32({
+      secret: mutable,
+      get threshold() {
+        mutable.fill(0)
+        return 2 as const
+      },
+      identifier: 'cash',
+      indices: ['q', 'p', 'z'],
+      randomBytes: length => new Uint8Array(length).fill(13),
+    })
+    expect(split.ok).toBe(true)
+    if (!split.ok) return
+    const selected = [split.value[0] ?? '', split.value[1] ?? '']
+    const reads = [0, 0]
+    const alternating = new Array<string>(2)
+    Object.defineProperty(alternating, 0, {
+      get() {
+        reads[0] = (reads[0] ?? 0) + 1
+        return reads[0] === 1 ? selected[0] : split.value[2]
+      },
+    })
+    Object.defineProperty(alternating, 1, {
+      get() {
+        reads[1] = (reads[1] ?? 0) + 1
+        return reads[1] === 1 ? selected[1] : split.value[2]
+      },
+    })
+    expect(recoverCodex32(alternating)).toEqual({
+      ok: true,
+      value: original,
+    })
+    expect(reads).toEqual([1, 1])
+  })
+
+  it('rejects the secret index in recovery but accepts vector-3 shares', () => {
+    const secret = 'ms13cashsllhdmn9m42vcsamx24zrxgs3qqjzqud4m0d6nln'
+    const a = 'ms13casha320zyxwvutsrqpnmlkjhgfedca2a8d0zehn8a0t'
+    const c = 'ms13cashcacdefghjklmnpqrstuvwxyz023949xq35my48dr'
+    expect(recoverCodex32([secret, a, c])).toEqual({
+      ok: false,
+      error: { code: 'invalid-index' },
+    })
+    expect(
+      recoverCodex32([
+        'ms13cashd0wsedstcdcts64cd7wvy4m90lm28w4ffupqs7rm',
+        'ms13casheekgpemxzshcrmqhaydlp6yhms3ws7320xyxsar9',
+        'ms13cashf8jh6sdrkpyrsp5ut94pj8ktehhw2hfvyrj48704',
+      ]),
+    ).toEqual({
+      ok: true,
+      value: fromHex('ffeeddccbbaa99887766554433221100'),
+    })
+  })
+
+  it('contains throwing object getters inside typed failures', () => {
+    expect(() =>
+      encodeCodex32({
+        threshold: 0,
+        identifier: 'cash',
+        get index(): string {
+          throw new Error('hostile getter')
+        },
+        secret: seed(),
+      }),
+    ).not.toThrow()
+    expect(
+      encodeCodex32({
+        threshold: 0,
+        identifier: 'cash',
+        get index(): string {
+          throw new Error('hostile getter')
+        },
+        secret: seed(),
+      }),
+    ).toEqual({ ok: false, error: { code: 'bad-format' } })
   })
 
   it('rejects corruption, duplicates, inconsistent sets, and weak RNG shapes', () => {

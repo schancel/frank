@@ -10,7 +10,8 @@ wrapped in CBOR. A Frank protocol message may carry those bytes in a CBOR byte
 string later.
 
 The public API uses copied `Uint8Array` values, opaque TypeScript brands, and
-typed results. It supports:
+typed results. Object-input operations read each property once, immediately
+copy byte inputs, and use only those owned snapshots. It supports:
 
 - generating an adaptor secret from a caller-supplied CSPRNG;
 - proving and verifying knowledge of the secret behind an adaptor point;

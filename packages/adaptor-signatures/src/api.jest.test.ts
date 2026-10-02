@@ -229,6 +229,139 @@ describe('safe byte-oriented API', () => {
     })
   })
 
+  it('snapshots alternating adaptor-point getters once for sign and verify', () => {
+    const signer = privateKeyFromSecretBytes(bytes(7), true)
+    const first = generateAdaptorSecret(() => bytes(9))
+    const second = generateAdaptorSecret(() => bytes(10))
+    expect(signer.ok && first.ok && second.ok).toBe(true)
+    if (!signer.ok || !first.ok || !second.ok) return
+    const publicKey = publicFromPrivate(signer.value)
+    if (!publicKey.ok) return
+    let signReads = 0
+    const signed = adaptorSign({
+      privateKey: signer.value.bytes,
+      get adaptorPoint() {
+        signReads += 1
+        return signReads === 1 ? first.value.point : second.value.point
+      },
+      adaptorProof: first.value.proof,
+      digest: bytes(11),
+    })
+    expect(signReads).toBe(1)
+    expect(signed.ok).toBe(true)
+    if (!signed.ok) return
+
+    let verifyReads = 0
+    expect(
+      verifyAdaptorSignature({
+        publicKey: publicKey.value.compressed,
+        get adaptorPoint() {
+          verifyReads += 1
+          return verifyReads === 1 ? first.value.point : second.value.point
+        },
+        adaptorProof: first.value.proof,
+        digest: bytes(11),
+        signature: signed.value,
+      }),
+    ).toEqual({ ok: true, value: true })
+    expect(verifyReads).toBe(1)
+  })
+
+  it('snapshots completion and extraction signatures exactly once', () => {
+    const signer = privateKeyFromSecretBytes(bytes(7), true)
+    const material = generateAdaptorSecret(() => bytes(9))
+    expect(signer.ok && material.ok).toBe(true)
+    if (!signer.ok || !material.ok) return
+    const publicKey = publicFromPrivate(signer.value)
+    if (!publicKey.ok) return
+    const digest = bytes(11)
+    const signed = adaptorSign({
+      privateKey: signer.value.bytes,
+      adaptorPoint: material.value.point,
+      adaptorProof: material.value.proof,
+      digest,
+    })
+    if (!signed.ok) return
+    const forgedBytes = new Uint8Array(signed.value)
+    forgedBytes.fill(0, 98)
+    const forged = adaptorSignatureFromBytes(forgedBytes)
+    expect(forged.ok).toBe(true)
+    if (!forged.ok) return
+
+    let completionReads = 0
+    const completed = completeAdaptorSignature({
+      publicKey: publicKey.value.compressed,
+      adaptorPoint: material.value.point,
+      adaptorProof: material.value.proof,
+      digest,
+      get signature() {
+        completionReads += 1
+        return completionReads === 1 ? signed.value : forged.value
+      },
+      secret: material.value.secret,
+    })
+    expect(completionReads).toBe(1)
+    expect(completed.ok).toBe(true)
+    if (!completed.ok) return
+
+    let extractionReads = 0
+    expect(
+      extractAdaptorSecret({
+        adaptorPoint: material.value.point,
+        get signature() {
+          extractionReads += 1
+          return extractionReads === 1 ? signed.value : forged.value
+        },
+        completedSignature: completed.value,
+      }),
+    ).toEqual({ ok: true, value: material.value.secret })
+    expect(extractionReads).toBe(1)
+  })
+
+  it('copies earlier key buffers before later getters can mutate them', () => {
+    const signer = privateKeyFromSecretBytes(bytes(7), true)
+    const material = generateAdaptorSecret(() => bytes(9))
+    expect(signer.ok && material.ok).toBe(true)
+    if (!signer.ok || !material.ok) return
+    const keyBuffer = Buffer.from(signer.value.bytes)
+    const signed = adaptorSign({
+      privateKey: keyBuffer,
+      get adaptorPoint() {
+        keyBuffer.fill(0)
+        return material.value.point
+      },
+      adaptorProof: material.value.proof,
+      digest: bytes(11),
+    })
+    expect(signed.ok).toBe(true)
+    expect(keyBuffer.every(byte => byte === 0)).toBe(true)
+  })
+
+  it('contains throwing object getters inside typed failures', () => {
+    const material = generateAdaptorSecret(() => bytes(9))
+    if (!material.ok) return
+    expect(() =>
+      adaptorSign({
+        get privateKey(): Uint8Array {
+          throw new Error('hostile getter')
+        },
+        adaptorPoint: material.value.point,
+        adaptorProof: material.value.proof,
+        digest: bytes(11),
+      }),
+    ).not.toThrow()
+    expect(
+      adaptorSign({
+        get privateKey(): Uint8Array {
+          throw new Error('hostile getter')
+        },
+        adaptorPoint: material.value.point,
+        adaptorProof: material.value.proof,
+        digest: bytes(11),
+      }),
+    ).toEqual({ ok: false, error: { code: 'invalid-signature' } })
+  })
+
   it('rejects malformed and noncanonical inputs without throwing', () => {
     expect(adaptorSecretFromBytes(new Uint8Array(31))).toEqual({
       ok: false,

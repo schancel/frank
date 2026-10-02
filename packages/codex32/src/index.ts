@@ -83,6 +83,19 @@ function validIndex(index: string): boolean {
   return index.length === 1 && valueOf(index) >= 0
 }
 
+function copyStrings(values: readonly string[]): string[] | null {
+  if (!Array.isArray(values)) return null
+  const length = values.length
+  if (!Number.isInteger(length) || length < 0) return null
+  const copied = new Array<string>(length)
+  for (let index = 0; index < length; index += 1) {
+    const value = values[index]
+    if (typeof value !== 'string') return null
+    copied[index] = value
+  }
+  return copied
+}
+
 function polymod(values: readonly number[]): bigint {
   let checksum = POLYMOD_INITIAL
   for (const value of values) {
@@ -162,37 +175,66 @@ function encodeGroups(
 ): Codex32Result<string> {
   const prefix = `${threshold}${identifier}${index}`
   const values = [...prefix.split('').map(valueOf), ...payload]
-  const result = `ms1${values
-    .map(value => CHARSET[value] ?? '')
-    .join('')}${checksum(values)
-    .map(value => CHARSET[value] ?? '')
-    .join('')}`
-  if (result.length > MAX_STRING_LENGTH) return fail('unsupported-length')
-  return { ok: true, value: result }
+  let check: number[] | null = null
+  try {
+    check = checksum(values)
+    const result = `ms1${values
+      .map(value => CHARSET[value] ?? '')
+      .join('')}${check.map(value => CHARSET[value] ?? '').join('')}`
+    if (result.length > MAX_STRING_LENGTH) return fail('unsupported-length')
+    return { ok: true, value: result }
+  } finally {
+    values.fill(0)
+    check?.fill(0)
+  }
 }
 
 /** Encode the BIP-93 regular form (exactly 16, 20, 24, 28, or 32 bytes). */
 export function encodeCodex32(
   input: EncodeCodex32Input,
 ): Codex32Result<string> {
-  if (parseThreshold(String(input.threshold)) !== input.threshold) {
-    return fail('invalid-threshold')
+  let threshold: Codex32Share['threshold']
+  let identifier: string
+  let index: string
+  let secret: Uint8Array | null = null
+  try {
+    const suppliedSecret = input.secret
+    secret =
+      suppliedSecret instanceof Uint8Array
+        ? new Uint8Array(suppliedSecret)
+        : null
+    threshold = input.threshold
+    identifier = input.identifier
+    index = input.index
+  } catch {
+    secret?.fill(0)
+    return fail('bad-format')
   }
-  if (!validIdentifier(input.identifier)) return fail('invalid-identifier')
-  if (!validIndex(input.index)) return fail('invalid-index')
-  // This public API encodes raw seed bytes, which are only meaningful at the
-  // secret index. Threshold shares use the internal symbol encoder in split().
-  if (input.index !== SECRET_INDEX) return fail('invalid-index')
-  if (!(input.secret instanceof Uint8Array)) return fail('bad-format')
-  if (!REGULAR_SECRET_BYTES.has(input.secret.length)) {
-    return fail('unsupported-length')
+  if (secret === null) return fail('bad-format')
+  let groups: number[] | null = null
+  try {
+    if (
+      typeof threshold !== 'number' ||
+      parseThreshold(`${threshold}`) !== threshold
+    ) {
+      return fail('invalid-threshold')
+    }
+    if (typeof identifier !== 'string') return fail('invalid-identifier')
+    if (typeof index !== 'string') return fail('invalid-index')
+    if (!validIdentifier(identifier)) return fail('invalid-identifier')
+    if (!validIndex(index)) return fail('invalid-index')
+    // This public API encodes raw seed bytes, which are only meaningful at the
+    // secret index. Threshold shares use the internal symbol encoder in split().
+    if (index !== SECRET_INDEX) return fail('invalid-index')
+    if (!REGULAR_SECRET_BYTES.has(secret.length)) {
+      return fail('unsupported-length')
+    }
+    groups = bytesToGroups(secret)
+    return encodeGroups(threshold, identifier, index, groups)
+  } finally {
+    secret.fill(0)
+    groups?.fill(0)
   }
-  return encodeGroups(
-    input.threshold,
-    input.identifier,
-    input.index,
-    bytesToGroups(input.secret),
-  )
 }
 
 /** Strictly decode one canonical lowercase standard-checksum Codex32 string. */
@@ -324,119 +366,175 @@ function interpolateAt(
 export function splitCodex32(
   input: SplitCodex32Input,
 ): Codex32Result<readonly string[]> {
-  if (input.threshold < 2 || input.threshold > 9) {
-    return fail('invalid-threshold')
-  }
-  if (!validIdentifier(input.identifier)) return fail('invalid-identifier')
-  if (
-    !(input.secret instanceof Uint8Array) ||
-    !REGULAR_SECRET_BYTES.has(input.secret.length)
-  ) {
-    return fail('unsupported-length')
-  }
-  if (input.indices.length < input.threshold || input.indices.length > 31) {
-    return fail('insufficient-shares')
-  }
-  const seen = new Set<string>()
-  for (const index of input.indices) {
-    if (!validIndex(index) || index === SECRET_INDEX)
-      return fail('invalid-index')
-    if (seen.has(index)) return fail('duplicate-share')
-    seen.add(index)
-  }
-  const secretGroups = bytesToGroups(input.secret)
-  const randomLength = secretGroups.length * (input.threshold - 1)
-  let suppliedRandom: Uint8Array
+  let secret: Uint8Array | null = null
+  let threshold: SplitCodex32Input['threshold']
+  let identifier: string
+  let indices: string[] | null
+  let randomBytes: SplitCodex32Input['randomBytes']
   try {
-    suppliedRandom = input.randomBytes(randomLength)
+    const suppliedSecret = input.secret
+    secret =
+      suppliedSecret instanceof Uint8Array
+        ? new Uint8Array(suppliedSecret)
+        : null
+    threshold = input.threshold
+    identifier = input.identifier
+    indices = copyStrings(input.indices)
+    randomBytes = input.randomBytes
   } catch {
-    return fail('rng-failed')
+    secret?.fill(0)
+    return fail('bad-format')
   }
-  if (
-    !(suppliedRandom instanceof Uint8Array) ||
-    suppliedRandom.length !== randomLength
-  ) {
-    return fail('rng-failed')
+  if (secret === null || indices === null) {
+    secret?.fill(0)
+    return fail('bad-format')
   }
-  const random = new Uint8Array(suppliedRandom)
-  const secretX = valueOf(SECRET_INDEX)
-  const shareGroups = input.indices.map(
-    () => new Array<number>(secretGroups.length),
-  )
-  for (let column = 0; column < secretGroups.length; column += 1) {
-    const shiftedCoefficients = [secretGroups[column] ?? 0]
-    for (let degree = 1; degree < input.threshold; degree += 1) {
-      shiftedCoefficients.push(
-        (random[column * (input.threshold - 1) + degree - 1] ?? 0) & 31,
-      )
+  let random: Uint8Array | null = null
+  let secretGroups: number[] | null = null
+  let shareGroups: number[][] | null = null
+  try {
+    if (
+      typeof threshold !== 'number' ||
+      !Number.isInteger(threshold) ||
+      threshold < 2 ||
+      threshold > 9
+    ) {
+      return fail('invalid-threshold')
     }
-    for (let share = 0; share < input.indices.length; share += 1) {
-      const x = valueOf(input.indices[share] ?? '') ^ secretX
-      const columns = shareGroups[share]
-      if (columns !== undefined)
-        columns[column] = evaluate(shiftedCoefficients, x)
+    if (typeof identifier !== 'string') return fail('invalid-identifier')
+    if (!validIdentifier(identifier)) return fail('invalid-identifier')
+    if (!REGULAR_SECRET_BYTES.has(secret.length)) {
+      return fail('unsupported-length')
     }
-  }
-  random.fill(0)
-  const encoded: string[] = []
-  for (let share = 0; share < input.indices.length; share += 1) {
-    const groups = shareGroups[share]
-    if (groups === undefined) return fail('bad-format')
-    const item = encodeGroups(
-      input.threshold,
-      input.identifier,
-      input.indices[share] ?? '',
-      groups,
+    if (indices.length < threshold || indices.length > 31) {
+      return fail('insufficient-shares')
+    }
+    const seen = new Set<string>()
+    for (const index of indices) {
+      if (!validIndex(index) || index === SECRET_INDEX) {
+        return fail('invalid-index')
+      }
+      if (seen.has(index)) return fail('duplicate-share')
+      seen.add(index)
+    }
+    secretGroups = bytesToGroups(secret)
+    const randomLength = secretGroups.length * (threshold - 1)
+    if (typeof randomBytes !== 'function') return fail('rng-failed')
+    let suppliedRandom: Uint8Array
+    try {
+      suppliedRandom = randomBytes(randomLength)
+      if (
+        !(suppliedRandom instanceof Uint8Array) ||
+        suppliedRandom.length !== randomLength
+      ) {
+        return fail('rng-failed')
+      }
+      random = new Uint8Array(suppliedRandom)
+    } catch {
+      return fail('rng-failed')
+    }
+    const secretX = valueOf(SECRET_INDEX)
+    shareGroups = indices.map(
+      () => new Array<number>(secretGroups?.length ?? 0),
     )
-    if (!item.ok) return item
-    encoded.push(item.value)
+    for (let column = 0; column < secretGroups.length; column += 1) {
+      const shiftedCoefficients = [secretGroups[column] ?? 0]
+      for (let degree = 1; degree < threshold; degree += 1) {
+        shiftedCoefficients.push(
+          (random[column * (threshold - 1) + degree - 1] ?? 0) & 31,
+        )
+      }
+      for (let share = 0; share < indices.length; share += 1) {
+        const x = valueOf(indices[share] ?? '') ^ secretX
+        const columns = shareGroups[share]
+        if (columns !== undefined) {
+          columns[column] = evaluate(shiftedCoefficients, x)
+        }
+      }
+      shiftedCoefficients.fill(0)
+    }
+    const encoded: string[] = []
+    for (let share = 0; share < indices.length; share += 1) {
+      const groups = shareGroups[share]
+      if (groups === undefined) return fail('bad-format')
+      const item = encodeGroups(
+        threshold,
+        identifier,
+        indices[share] ?? '',
+        groups,
+      )
+      if (!item.ok) return item
+      encoded.push(item.value)
+    }
+    return { ok: true, value: encoded }
+  } finally {
+    secret.fill(0)
+    secretGroups?.fill(0)
+    random?.fill(0)
+    for (const groups of shareGroups ?? []) groups.fill(0)
   }
-  return { ok: true, value: encoded }
 }
 
 /** Recover seed bytes from exactly the threshold number of consistent shares. */
 export function recoverCodex32(
   encodedShares: readonly string[],
 ): Codex32Result<Uint8Array> {
-  if (encodedShares.length === 0 || encodedShares.length > 31) {
+  let snapshots: string[] | null
+  try {
+    snapshots = copyStrings(encodedShares)
+  } catch {
+    return fail('bad-format')
+  }
+  if (snapshots === null) return fail('bad-format')
+  if (snapshots.length === 0 || snapshots.length > 31) {
     return fail('insufficient-shares')
   }
   const parsed: Codex32Share[] = []
-  for (const encoded of encodedShares) {
-    const share = decodeCodex32(encoded)
-    if (!share.ok) return share
-    parsed.push(share.value)
-  }
-  const first = parsed[0]
-  if (first === undefined || first.threshold === 0) {
-    return fail('invalid-threshold')
-  }
-  if (parsed.length !== first.threshold) return fail('wrong-share-count')
-  const seen = new Set<string>()
-  for (const share of parsed) {
-    if (seen.has(share.index)) return fail('duplicate-share')
-    seen.add(share.index)
-    if (
-      share.threshold !== first.threshold ||
-      share.identifier !== first.identifier ||
-      share.payload.length !== first.payload.length
-    ) {
-      return fail('inconsistent-share')
+  let secretGroups: number[] | null = null
+  try {
+    for (const encoded of snapshots) {
+      const share = decodeCodex32(encoded)
+      if (!share.ok) return share
+      parsed.push(share.value)
+    }
+    const first = parsed[0]
+    if (first === undefined || first.threshold === 0) {
+      return fail('invalid-threshold')
+    }
+    if (parsed.length !== first.threshold) return fail('wrong-share-count')
+    const seen = new Set<string>()
+    for (const share of parsed) {
+      if (share.index === SECRET_INDEX) return fail('invalid-index')
+      if (seen.has(share.index)) return fail('duplicate-share')
+      seen.add(share.index)
+      if (
+        share.threshold !== first.threshold ||
+        share.identifier !== first.identifier ||
+        share.payload.length !== first.payload.length
+      ) {
+        return fail('inconsistent-share')
+      }
+    }
+    const groupRows = parsed.map(share => share.payload)
+    secretGroups = new Array<number>(groupRows[0]?.length ?? 0)
+    const target = valueOf(SECRET_INDEX)
+    for (let column = 0; column < secretGroups.length; column += 1) {
+      secretGroups[column] = interpolateAt(
+        parsed.map((share, row) => ({
+          x: valueOf(share.index),
+          y: groupRows[row]?.[column] ?? 0,
+        })),
+        target,
+      )
+    }
+    const recovered = groupsToBytes(secretGroups)
+    if (!recovered.ok) return recovered
+    return { ok: true, value: recovered.value }
+  } finally {
+    secretGroups?.fill(0)
+    for (const share of parsed) {
+      share.payload.fill(0)
+      share.seed?.fill(0)
     }
   }
-  const groupRows = parsed.map(share => share.payload)
-  const secretGroups = new Array<number>(groupRows[0]?.length ?? 0)
-  const target = valueOf(SECRET_INDEX)
-  for (let column = 0; column < secretGroups.length; column += 1) {
-    secretGroups[column] = interpolateAt(
-      parsed.map((share, row) => ({
-        x: valueOf(share.index),
-        y: groupRows[row]?.[column] ?? 0,
-      })),
-      target,
-    )
-  }
-  const recovered = groupsToBytes(secretGroups)
-  if (!recovered.ok) return recovered
-  return { ok: true, value: recovered.value }
 }

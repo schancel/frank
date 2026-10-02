@@ -13,6 +13,10 @@ Splitting requires an explicit caller-supplied CSPRNG. Decoding and recovery
 reject malformed checksums, unsupported lengths, duplicate shares,
 inconsistent metadata, and any recovery set that is not exactly the threshold
 size. BIP-93's residual 0-4 payload bits are discarded whether zero or nonzero.
+Object inputs and recovery arrays are snapshotted once before validation so
+getters or later caller mutation cannot change the checked material.
+Recovery accepts only non-`s` shares; the `s` index is the reconstructed raw
+secret, not one of the threshold shares supplied to interpolation.
 
 The checksum detects transcription errors; it does not authenticate shares
 against an adversary. Applications need an authenticated transcript or another

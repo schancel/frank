@@ -298,7 +298,10 @@ impl EvmRpcConf {
         if self.max_batch_len == 0 || self.max_batch_len > 100 {
             return Err(EvmRpcConfigError::InvalidLimit("max_batch_len"));
         }
-        if self.max_response_bytes == 0 || self.max_response_bytes > 16 * 1024 * 1024 {
+        // Responses are disk-spooled and inspected incrementally; permit a
+        // single legitimate 250 MiB `eth_getLogs` result while retaining a
+        // finite operator-controlled ceiling.
+        if self.max_response_bytes == 0 || self.max_response_bytes > 512 * 1024 * 1024 {
             return Err(EvmRpcConfigError::InvalidLimit("max_response_bytes"));
         }
         if self.max_concurrency == 0 || self.max_concurrency > 1024 {

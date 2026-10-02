@@ -48,7 +48,7 @@ prost = "0.11"
 rand = "0.8"
 
 # Simple HTTP client
-reqwest = "0.11"
+reqwest = { version = "0.11", features = ["gzip", "brotli", "deflate", "stream"] }
 
 # Fast embedded key-value database
 rocksdb = "0.19"
@@ -64,6 +64,10 @@ thiserror = "1.0"
 
 # Async runtime
 tokio = { version = "1.17", features = ["full"] }
+
+# Large JSON-RPC responses are inspected from an unlink-on-drop spool so
+# envelope validation does not materialize opaque result values in memory.
+tempfile = "3"
 
 # WS client, used by `monad_ws` to subscribe to Monad's `eth_subscribe("newHeads")` feed over
 # Alchemy. Already present in the workspace lockfile (pulled in transitively by axum's "ws"
@@ -110,6 +114,7 @@ prost-build = "0.11"
 
 [dev-dependencies]
 bitcoinsuite-ecc-secp256k1 = { path = "../../bitcoinsuite/bitcoinsuite-ecc-secp256k1" }
+flate2 = "1"
 hex-literal = "0.3"
 
 # assert_eq! and assert_ne! with colored diffs

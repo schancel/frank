@@ -14,7 +14,7 @@ use std::{
 };
 
 use axum::{
-    body::{Bytes, HttpBody},
+    body::{boxed, Bytes, HttpBody},
     extract::{connect_info::ConnectInfo, Extension, Path},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -857,28 +857,6 @@ pub(crate) async fn handle_issue_rpc_challenge(
     }))
 }
 
-async fn read_bounded_response(
-    response: reqwest::Response,
-    max_bytes: usize,
-) -> Result<Bytes, RpcRejection> {
-    let mut response = response;
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable"))?
-    {
-        if bytes.len().saturating_add(chunk.len()) > max_bytes {
-            return Err(rpc_error(
-                StatusCode::BAD_GATEWAY,
-                "rpc_upstream_response_too_large",
-            ));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes.into())
-}
-
 /// Authenticate and forward an exact allowlisted JSON-RPC request.
 pub(crate) async fn handle_proxy_rpc(
     Path(chain_id): Path<String>,
@@ -897,6 +875,8 @@ pub(crate) async fn handle_proxy_rpc(
         return crate::http::bitcoin_proxy::proxy_rpc(chain_id, peer, headers, server, body).await;
     };
     let cost = validate_body(runtime, chain, &body)?;
+    let expected_ids = super::json_rpc::request_ids(&body)
+        .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"))?;
     let customer = headers
         .get(RPC_CUSTOMER_HEADER)
         .and_then(|value| value.to_str().ok())
@@ -955,6 +935,7 @@ pub(crate) async fn handle_proxy_rpc(
                 )
             })?;
     }
+    let deadline = tokio::time::Instant::now() + runtime.timeout;
     let upstream = async {
         let response = runtime
             .client
@@ -979,17 +960,30 @@ pub(crate) async fn handle_proxy_rpc(
                 true,
             ));
         }
-        read_bounded_response(response, runtime.max_response_bytes)
+        super::json_rpc::spool_response(response, runtime.max_response_bytes, runtime.timeout)
             .await
-            .map_err(|error| {
-                if cost.broadcast {
-                    broadcast_error(error.status, error.code, true, true)
-                } else {
-                    error
-                }
+            .map_err(|error| match error {
+                super::json_rpc::SpoolError::TooLarge => broadcast_error(
+                    StatusCode::BAD_GATEWAY,
+                    "rpc_upstream_response_too_large",
+                    cost.broadcast,
+                    true,
+                ),
+                super::json_rpc::SpoolError::Timeout => broadcast_error(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "rpc_upstream_timeout",
+                    cost.broadcast,
+                    true,
+                ),
+                super::json_rpc::SpoolError::Io => broadcast_error(
+                    StatusCode::BAD_GATEWAY,
+                    "rpc_upstream_unavailable",
+                    cost.broadcast,
+                    true,
+                ),
             })
     };
-    let response_body = tokio::time::timeout(runtime.timeout, upstream)
+    let spool = tokio::time::timeout_at(deadline, upstream)
         .await
         .map_err(|_| {
             broadcast_error(
@@ -999,25 +993,20 @@ pub(crate) async fn handle_proxy_rpc(
                 true,
             )
         })??;
-    let mut value =
-        super::json_rpc::parse_without_duplicate_keys(&response_body).map_err(|_| {
-            broadcast_error(
-                StatusCode::BAD_GATEWAY,
-                "invalid_rpc_upstream_response",
-                cost.broadcast,
-                true,
-            )
-        })?;
-    if !super::json_rpc::response_matches_request(&body, &value) {
-        return Err(broadcast_error(
-            StatusCode::BAD_GATEWAY,
-            "invalid_rpc_upstream_response",
+    let inspected = tokio::time::timeout_at(
+        deadline,
+        spool.inspect(super::json_rpc::JsonRpcVersion::V2, expected_ids),
+    )
+    .await
+    .map_err(|_| {
+        broadcast_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "rpc_upstream_timeout",
             cost.broadcast,
             true,
-        ));
-    }
-    crate::http::json_rpc::sanitize_response_errors(&mut value);
-    let body = serde_json::to_vec(&value).map_err(|_| {
+        )
+    })?
+    .map_err(|_| {
         broadcast_error(
             StatusCode::BAD_GATEWAY,
             "invalid_rpc_upstream_response",
@@ -1025,11 +1014,22 @@ pub(crate) async fn handle_proxy_rpc(
             true,
         )
     })?;
-    let response = (
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        body,
-    )
-        .into_response();
+    let response_body = spool
+        .into_body(inspected.error_rewrites)
+        .await
+        .map_err(|_| {
+            broadcast_error(
+                StatusCode::BAD_GATEWAY,
+                "rpc_upstream_unavailable",
+                cost.broadcast,
+                true,
+            )
+        })?;
+    let mut response = Response::new(boxed(response_body));
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
     Ok(crate::http::json_rpc::hold_response_permit(
         response, permit,
     ))
@@ -1048,7 +1048,10 @@ pub const RPC_CORS_HEADERS: [&str; 6] = [
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::{
+        io::Write,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use axum::{body::Body, http::Request, routing, Router};
     use bitcoinsuite_core::{ecc::Ecc, Hashed, Net, Sha256 as BitcoinSha256};
@@ -1780,5 +1783,171 @@ mod tests {
                 "broadcast_state":"unknown"
             })
         );
+    }
+
+    #[tokio::test]
+    async fn production_pipeline_limits_and_inspects_decoded_gzip_bytes() {
+        let upstream = Router::new().route(
+            "/",
+            routing::post(|body: Bytes| async move {
+                let request: Value = serde_json::from_slice(&body).unwrap();
+                let response = if request["method"] == "eth_chainId" {
+                    json!({"jsonrpc":"2.0","id":request["id"],"result":"0x279f"})
+                } else {
+                    json!({"jsonrpc":"2.0","id":request["id"],"result":"0x2a"})
+                };
+                let mut encoder =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                encoder.write_all(response.to_string().as_bytes()).unwrap();
+                let mut response =
+                    axum::response::Response::new(boxed(Body::from(encoder.finish().unwrap())));
+                response.headers_mut().insert(
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("application/json"),
+                );
+                response.headers_mut().insert(
+                    axum::http::header::CONTENT_ENCODING,
+                    axum::http::HeaderValue::from_static("gzip"),
+                );
+                response
+            }),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(
+            axum::Server::from_tcp(listener)
+                .unwrap()
+                .serve(upstream.into_make_service()),
+        );
+        let conf = EvmRpcConf {
+            enabled: true,
+            chains: vec![cashweb_config::EvmRpcChainConf {
+                id: "monad-testnet".to_string(),
+                expected_chain_id: 10_143,
+                upstream_env: "TEST_UPSTREAM".to_string(),
+                checkpoint_block_number: None,
+                checkpoint_block_hash: None,
+                max_get_logs_range: 10,
+            }],
+            max_request_bytes: 1024,
+            max_batch_len: 2,
+            max_response_bytes: 1024,
+            max_concurrency: 1,
+            timeout_ms: 1_000,
+            customer_units_per_hour: 10_000,
+            anonymous_units_per_hour: 500,
+        };
+        let upstream_url = format!("http://{address}/");
+        let runtime = EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |_| {
+            Some(upstream_url.clone())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let (_tempdir, server) = registered_server(runtime);
+        let router = server.into_router();
+        let body = br#"{"jsonrpc":"2.0","id":8,"method":"eth_blockNumber","params":[]}"#;
+        let response = router
+            .clone()
+            .oneshot(request_with_proof(&router, body, customer_address()).await)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await,
+            json!({"jsonrpc":"2.0","id":8,"result":"0x2a"})
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "250 MiB production streaming proof"]
+    async fn production_pipeline_streams_250_mib_result_without_materializing_it() {
+        const RESULT_BYTES: usize = 250 * 1024 * 1024;
+        const CHUNK_BYTES: usize = 64 * 1024;
+        let upstream = Router::new().route(
+            "/",
+            routing::post(|body: Bytes| async move {
+                let request: Value = serde_json::from_slice(&body).unwrap();
+                if request["method"] == "eth_chainId" {
+                    return Json(json!({
+                        "jsonrpc":"2.0",
+                        "id":request["id"],
+                        "result":"0x279f"
+                    }))
+                    .into_response();
+                }
+                let prefix = Bytes::from(format!(
+                    "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":\"",
+                    request["id"]
+                ));
+                let chunk = Bytes::from(vec![b'x'; CHUNK_BYTES]);
+                let suffix = Bytes::from_static(br#""}"#);
+                let chunks = std::iter::once(Ok::<_, std::convert::Infallible>(prefix))
+                    .chain(
+                        std::iter::repeat(Ok::<_, std::convert::Infallible>(chunk))
+                            .take(RESULT_BYTES / CHUNK_BYTES),
+                    )
+                    .chain(std::iter::once(Ok::<_, std::convert::Infallible>(suffix)));
+                let mut response = axum::response::Response::new(boxed(Body::wrap_stream(
+                    futures::stream::iter(chunks),
+                )));
+                response.headers_mut().insert(
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("application/json"),
+                );
+                response
+            }),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(
+            axum::Server::from_tcp(listener)
+                .unwrap()
+                .serve(upstream.into_make_service()),
+        );
+        let conf = EvmRpcConf {
+            enabled: true,
+            chains: vec![cashweb_config::EvmRpcChainConf {
+                id: "monad-testnet".to_string(),
+                expected_chain_id: 10_143,
+                upstream_env: "TEST_UPSTREAM".to_string(),
+                checkpoint_block_number: None,
+                checkpoint_block_hash: None,
+                max_get_logs_range: 10,
+            }],
+            max_request_bytes: 1024,
+            max_batch_len: 2,
+            max_response_bytes: 300 * 1024 * 1024,
+            max_concurrency: 1,
+            timeout_ms: 120_000,
+            customer_units_per_hour: 10_000,
+            anonymous_units_per_hour: 500,
+        };
+        conf.validate().unwrap();
+        let upstream_url = format!("http://{address}/");
+        let runtime = EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |_| {
+            Some(upstream_url.clone())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let (_tempdir, server) = registered_server(runtime);
+        let router = server.into_router();
+        let request_body = br#"{"jsonrpc":"2.0","id":7,"method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x2"}]}"#;
+        let response = router
+            .clone()
+            .oneshot(request_with_proof(&router, request_body, customer_address()).await)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body();
+        let mut received = 0usize;
+        while let Some(chunk) = body.data().await {
+            received += chunk.unwrap().len();
+        }
+        let prefix_len = br#"{"jsonrpc":"2.0","id":7,"result":""#.len();
+        assert_eq!(received, prefix_len + RESULT_BYTES + 2);
     }
 }

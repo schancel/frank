@@ -1053,7 +1053,11 @@ export class Wallet {
   constructTransaction({
     outputs,
   }: {
-    outputs: Utxo[] | Transaction.Output[]
+    // BIP70 records are { script, satoshis } (decision #594). Burn and
+    // P2PKH callers still pass Transaction.Output.
+    outputs: Array<
+      Utxo | Transaction.Output | { script: Buffer; satoshis: number }
+    >
   }) {
     let transaction = new Transaction()
 

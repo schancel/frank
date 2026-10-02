@@ -17,6 +17,8 @@ import { MonadTxSubmitter } from './monad-account-tx'
 import { MonadChangePool } from './monad-change-pool'
 import type { StampPaymentJournal } from './storage/stamp-payment-journal'
 import type { StampAttemptJournal } from './storage/stamp-attempt-journal'
+import type { TopicOperationJournal } from './storage/topic-operation-journal'
+import type { MonadWalletPersistenceBundle } from './storage/monad-wallet-bundle'
 
 export interface MonadWalletHandle {
   pool: MonadSubAccountPool
@@ -31,6 +33,11 @@ export interface MonadWalletHandle {
   stampPaymentJournal?: StampPaymentJournal
   /** Durable exact raw payment sets awaiting a definitive relay success. */
   stampAttemptJournal?: StampAttemptJournal
+  /** Exact byte authority for crash-replayable topic posts and votes. */
+  topicOperationJournal?: TopicOperationJournal
+  /** Complete wallet-owned persistence authority. Production stamp composition supplies this so
+   * pools and journals cannot be assembled from unrelated roots. */
+  walletState?: MonadWalletPersistenceBundle
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` -- each client
    * trims its own trailing slash, so this may or may not have one. */
   relayBaseUrl: string

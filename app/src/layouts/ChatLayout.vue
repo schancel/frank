@@ -51,10 +51,10 @@
             :aria-expanded="myDrawerOpen"
           />
           <q-avatar rounded :style="contactColorStyle">
-            <img :src="profileAvatar(contactProfile?.avatar, address)" />
+            <img :src="profileAvatar(presentedAvatar, address)" />
           </q-avatar>
           <q-toolbar-title class="h6" :style="contactNameColorStyle">{{
-            contactProfile.name
+            contactName
           }}</q-toolbar-title>
           <q-space />
           <q-btn
@@ -169,8 +169,13 @@ import DeleteChatDialog from '../components/dialogs/DeleteChatDialog.vue'
 import SendFileDialog from '../components/dialogs/SendFileDialog.vue'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { useContactStore } from 'src/stores/contacts'
+import { useProfileStore } from 'src/stores/my-profile'
 import { pubKeyToColor } from 'src/utils/formatting'
 import { profileAvatar } from 'src/utils/avatar'
+import {
+  sameCanonicalAddress,
+  useReactiveOwnCanonicalAddress,
+} from 'src/utils/own-address'
 
 export default defineComponent({
   emits: ['toggleMyDrawerOpen'],
@@ -192,13 +197,16 @@ export default defineComponent({
   },
   setup() {
     const contactStore = useContactStore()
+    const myProfile = useProfileStore()
 
     return {
       myDrawerOpen: useMyDrawerOpen(),
       getContact: contactStore.getContact,
       setNotify: contactStore.setNotify,
       getNotify: contactStore.getNotify,
+      myProfile,
       profileAvatar,
+      ownAddress: useReactiveOwnCanonicalAddress(),
     }
   },
   data() {
@@ -246,6 +254,16 @@ export default defineComponent({
   computed: {
     contactProfile() {
       return this.getContact(this.address)?.profile
+    },
+    contactName(): string {
+      return sameCanonicalAddress(this.address, this.ownAddress)
+        ? this.$t('selfChat.you')
+        : this.contactProfile?.name ?? this.address
+    },
+    presentedAvatar(): string | undefined {
+      return sameCanonicalAddress(this.address, this.ownAddress)
+        ? this.myProfile.profile.avatar || this.contactProfile?.avatar
+        : this.contactProfile?.avatar
     },
     notifications: {
       get(): boolean {

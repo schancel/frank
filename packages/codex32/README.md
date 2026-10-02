@@ -6,13 +6,13 @@ generic Shamir implementation: the field, identifiers, indices, checksum, and
 recovery rules are part of Codex32.
 
 This first slice supports canonical lowercase standard-checksum strings with
-16 through 32 seed bytes, including the common 128- and 256-bit BIP32 seed
-sizes. The BIP-93 long-checksum variant required for larger seeds is rejected,
-not guessed or silently downgraded.
+exactly 16, 20, 24, 28, or 32 seed bytes. The BIP-93 long-checksum variant
+required for larger seeds is rejected, not guessed or silently downgraded.
 
 Splitting requires an explicit caller-supplied CSPRNG. Decoding and recovery
-reject malformed checksums, noncanonical padding, duplicate shares,
-inconsistent metadata, and insufficient thresholds.
+reject malformed checksums, unsupported lengths, duplicate shares,
+inconsistent metadata, and any recovery set that is not exactly the threshold
+size. BIP-93's residual 0-4 payload bits are discarded whether zero or nonzero.
 
 This implementation has not received an external cryptographic audit. Do not
 use it as the sole backup mechanism for real funds until it has independent

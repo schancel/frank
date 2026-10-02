@@ -1,8 +1,8 @@
 const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l'
 const SECRET_INDEX = 's'
 const CHECKSUM_LENGTH = 13
-const MIN_SECRET_BYTES = 16
-const MAX_STANDARD_SECRET_BYTES = 32
+const REGULAR_SECRET_BYTES = new Set([16, 20, 24, 28, 32])
+const REGULAR_PAYLOAD_GROUPS = new Set([26, 32, 39, 45, 52])
 const MAX_STRING_LENGTH = 93
 const POLYMOD_INITIAL = 0x23181b3n
 const POLYMOD_RESIDUE = 0x10ce0795c2fd1e62an
@@ -21,8 +21,8 @@ export type Codex32ErrorCode =
   | 'invalid-threshold'
   | 'invalid-identifier'
   | 'invalid-index'
-  | 'noncanonical-padding'
   | 'insufficient-shares'
+  | 'wrong-share-count'
   | 'duplicate-share'
   | 'inconsistent-share'
   | 'rng-failed'
@@ -136,11 +136,9 @@ function groupsToBytes(groups: readonly number[]): Codex32Result<Uint8Array> {
       accumulator &= (1 << bits) - 1
     }
   }
-  if (bits >= 5 || accumulator !== 0) return fail('noncanonical-padding')
-  if (
-    output.length < MIN_SECRET_BYTES ||
-    output.length > MAX_STANDARD_SECRET_BYTES
-  ) {
+  // BIP-93 regular strings deliberately discard the residual 0-4 bits. They
+  // are not padding and need not be zero (official vectors 6-8 exercise this).
+  if (!REGULAR_SECRET_BYTES.has(output.length)) {
     return fail('unsupported-length')
   }
   return { ok: true, value: new Uint8Array(output) }
@@ -170,7 +168,7 @@ function encodeGroups(
   return { ok: true, value: result }
 }
 
-/** Encode the BIP-93 standard-checksum form (16 through 32 secret bytes). */
+/** Encode the BIP-93 regular form (exactly 16, 20, 24, 28, or 32 bytes). */
 export function encodeCodex32(
   input: EncodeCodex32Input,
 ): Codex32Result<string> {
@@ -183,10 +181,7 @@ export function encodeCodex32(
     return fail('invalid-index')
   }
   if (!(input.secret instanceof Uint8Array)) return fail('bad-format')
-  if (
-    input.secret.length < MIN_SECRET_BYTES ||
-    input.secret.length > MAX_STANDARD_SECRET_BYTES
-  ) {
+  if (!REGULAR_SECRET_BYTES.has(input.secret.length)) {
     return fail('unsupported-length')
   }
   return encodeGroups(
@@ -225,7 +220,7 @@ export function decodeCodex32(text: string): Codex32Result<Codex32Share> {
     return fail('invalid-index')
   }
   const payload = values.slice(6, -CHECKSUM_LENGTH)
-  if (payload.length < 26 || payload.length > 52) {
+  if (!REGULAR_PAYLOAD_GROUPS.has(payload.length)) {
     return fail('unsupported-length')
   }
   let seed: Uint8Array | null = null
@@ -332,8 +327,7 @@ export function splitCodex32(
   if (!validIdentifier(input.identifier)) return fail('invalid-identifier')
   if (
     !(input.secret instanceof Uint8Array) ||
-    input.secret.length < MIN_SECRET_BYTES ||
-    input.secret.length > MAX_STANDARD_SECRET_BYTES
+    !REGULAR_SECRET_BYTES.has(input.secret.length)
   ) {
     return fail('unsupported-length')
   }
@@ -397,7 +391,7 @@ export function splitCodex32(
   return { ok: true, value: encoded }
 }
 
-/** Recover seed bytes from at least the threshold number of consistent shares. */
+/** Recover seed bytes from exactly the threshold number of consistent shares. */
 export function recoverCodex32(
   encodedShares: readonly string[],
 ): Codex32Result<Uint8Array> {
@@ -414,7 +408,7 @@ export function recoverCodex32(
   if (first === undefined || first.threshold === 0) {
     return fail('invalid-threshold')
   }
-  if (parsed.length < first.threshold) return fail('insufficient-shares')
+  if (parsed.length !== first.threshold) return fail('wrong-share-count')
   const seen = new Set<string>()
   for (const share of parsed) {
     if (seen.has(share.index)) return fail('duplicate-share')

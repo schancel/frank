@@ -57,6 +57,8 @@ export interface AdaptorSignInput {
   readonly privateKey: Uint8Array
   /** Public adaptor point `T = tG`. */
   readonly adaptorPoint: AdaptorPoint
+  /** Proof of knowledge bound to this exact adaptor point. */
+  readonly adaptorProof: AdaptorSecretProof
   /** Explicit 32-byte transaction sighash or other digest. */
   readonly digest: Uint8Array
 }
@@ -64,6 +66,8 @@ export interface AdaptorSignInput {
 export interface AdaptorVerifyInput {
   readonly publicKey: Uint8Array
   readonly adaptorPoint: AdaptorPoint
+  /** Proof of knowledge bound to this exact adaptor point. */
+  readonly adaptorProof: AdaptorSecretProof
   readonly digest: Uint8Array
   readonly signature: AdaptorSignatureBytes
 }
@@ -227,6 +231,8 @@ export function adaptorSign(
   input: AdaptorSignInput,
 ): AdaptorResult<AdaptorSignatureBytes> {
   if (!digest32(input.digest)) return failure('bad-length')
+  const proof = verifyAdaptorSecret(input.adaptorPoint, input.adaptorProof)
+  if (!proof.ok || !proof.value) return failure('invalid-proof')
   const key = privateKeyFromSecretBytes(input.privateKey, true)
   if (!key.ok) return failure('invalid-scalar')
   try {
@@ -248,6 +254,8 @@ export function verifyAdaptorSignature(
   input: AdaptorVerifyInput,
 ): AdaptorResult<boolean> {
   if (!digest32(input.digest)) return failure('bad-length')
+  const proof = verifyAdaptorSecret(input.adaptorPoint, input.adaptorProof)
+  if (!proof.ok || !proof.value) return failure('invalid-proof')
   try {
     return success(
       verifyEncryptedSignature(
@@ -262,6 +270,12 @@ export function verifyAdaptorSignature(
   }
 }
 
+/**
+ * Perform the adaptor completion arithmetic after validating both encodings.
+ * A different but structurally valid scalar still produces a structurally
+ * valid compact signature. The true scalar, or downstream ECDSA verification
+ * against the expected key and digest, determines whether it is valid.
+ */
 export function completeAdaptorSignature(
   input: AdaptorCompleteInput,
 ): AdaptorResult<CompactEcdsaSignature> {

@@ -44,19 +44,15 @@
  * trusting its own documented guarantees rather than silently assuming them:
  *
  *   - Scalar-point multiplication (`Point.multiply`, used everywhere in dleq.ts/tweak-pok.ts/
- *     ecdsa-adaptor.ts, including on secret scalars) is documented by @noble/curves as
- *     constant-time with scalar blinding (see `multiply()`'s doc comment in
- *     node_modules/@noble/curves/src/abstract/weierstrass.ts). This package always uses the plain
- *     `.multiply()`, never the explicitly-non-constant-time `.multiplyUnsafe()`, even in
- *     verification-only code paths that only ever see public data (where `multiplyUnsafe` would
- *     be safe and faster) -- simplicity and not having two code paths to keep straight won out
- *     over that performance gain.
- *   - `secp256k1.utils.randomSecretKey()` (used by `randomScalar`) for CSPRNG-backed, uniform,
+ *     ecdsa-adaptor.ts, including on secret scalars) uses Noble 1.9.1's fixed-window-count wNAF
+ *     path and fake accumulator, which are intended to keep its algorithmic operation shape
+ *     independent of the scalar. It does not use scalar blinding. This package never uses the
+ *     explicitly variable-shape `.multiplyUnsafe()` path. These algorithm-level measures do not
+ *     make JavaScript engines or bigint arithmetic constant-time.
+ *   - `secp256k1.utils.randomPrivateKey()` (used by `randomScalar`) for CSPRNG-backed, uniform,
  *     rejection-sampled secret generation.
- *   - SHA-256 (`@noble/hashes/sha2.js`) for fixed-time hashing of fixed-length inputs (every value
- *     hashed by `taggedHash` in this package -- points, scalars, message digests -- has a length
- *     that depends only on its *type*, never on a secret's value, so hash-input-length is not a
- *     side channel here).
+ *   - SHA-256 (`@noble/hashes/sha256.js`) over fixed-length protocol inputs. Their lengths depend
+ *     on public types rather than secret values, without making a runtime timing guarantee.
  *
  * Also out of scope, deliberately: the underlying JS bigint arithmetic itself (`+`, `-`, `*`,
  * `%`, `>>`, `&`) is provided by the JS engine (V8), and this package cannot make any binding

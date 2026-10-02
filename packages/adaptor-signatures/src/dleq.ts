@@ -57,10 +57,10 @@ function challenge(
  * Caller must ensure `X === x*G` and `Z === x*Y` -- this function does not check that itself.
  *
  * Side-channel note: `x` (the witness) and `a` (the proof nonce, from `sampleNonce`) are both
- * secret here. This function itself has no branches at all keyed on either. `G.multiply(a)` /
- * `Y.multiply(a)` rely on @noble/curves' `Point.multiply` being constant-time with scalar
- * blinding; `modAdd`/`modMul` rely on curve.ts's branchless `mod()`. See curve.ts's header comment
- * for the full reasoning and what's out of scope.
+ * secret here. This function itself has no branches keyed on either. `G.multiply(a)` /
+ * `Y.multiply(a)` use Noble's algorithmically constant-shape wNAF path without scalar blinding;
+ * `modAdd`/`modMul` rely on curve.ts's branchless `mod()`. See curve.ts for the JavaScript-runtime
+ * limitation.
  */
 export function dleqProve(x: bigint, X: Point, Y: Point, Z: Point): DleqProof {
   // Matches the spec's `sample_nonce(tag || X || Y || Z || x)`, folding the witness and

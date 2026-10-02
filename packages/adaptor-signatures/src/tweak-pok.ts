@@ -56,9 +56,9 @@ function challenge(T: Point, R: Point): bigint {
  * Prove knowledge of `t` such that `T = t*G`. Caller must ensure this holds.
  *
  * Side-channel note: `t` and the proof nonce `r` (from `sampleNonce`) are both secret here. This
- * function has no branches keyed on either; `G.multiply(r)` relies on @noble/curves' constant-time
- * `Point.multiply`, and `modAdd`/`modMul` rely on curve.ts's branchless `mod()`. See curve.ts's
- * header comment for the full reasoning.
+ * function has no branches keyed on either; `G.multiply(r)` uses Noble's algorithmically
+ * constant-shape wNAF path without scalar blinding, and `modAdd`/`modMul` use curve.ts's
+ * branchless arithmetic. See curve.ts for the JavaScript-runtime limitation.
  */
 export function pokProve(t: bigint, T: Point): PokProof {
   const r = sampleNonce(POK_TAG, pointBytes(T), scalarBytes(t))

@@ -11,7 +11,8 @@
  * builder is cross-checked (and both are pinned to vectors produced by the Rust function).
  */
 import { createHash, createHmac, randomBytes } from 'crypto'
-import { PublicKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
+
+import { verifyEcdsa } from '@frank/nakamoto'
 
 import __pb_monad_message_pb from './monad_message_pb'
 import type { MailboxHttp, MailboxHttpRequest } from './monad-mailbox-client'
@@ -452,13 +453,12 @@ export class MockMailboxRelay {
     const key = this.profiles.get('0x' + b.recipient.toString('hex'))
     let valid = false
     try {
-      const pub = new (PublicKey as unknown as new (b: Buffer) => PublicKey)(
-        key ?? Buffer.alloc(33, 2),
+      const result = verifyEcdsa(
+        Uint8Array.from(Buffer.from(signatureHex, 'hex')),
+        Uint8Array.from(digest),
+        Uint8Array.from(key ?? Buffer.alloc(33, 2)),
       )
-      const sig = bitcoreCrypto.Signature.fromDER(
-        Buffer.from(signatureHex, 'hex'),
-      )
-      valid = bitcoreCrypto.ECDSA.verify(digest, sig, pub)
+      valid = result.ok && result.value
     } catch {
       valid = false
     }

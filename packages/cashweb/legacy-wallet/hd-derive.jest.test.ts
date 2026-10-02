@@ -1,4 +1,16 @@
-import { HDPrivateKey, Networks } from 'bitcore-lib-xpi'
+import {
+  BTC_MAINNET,
+  BTC_TESTNET,
+  cryptoBackend,
+  deriveHdPath,
+  encodeAddress,
+  hdPrivateFromSeed,
+  parseHdPrivate,
+  pubkeyHashFromBytes,
+  serializeHdPrivate,
+  XPI_MAINNET,
+  XPI_TESTNET,
+} from '@frank/nakamoto'
 
 import { lotusFromPublicKey } from './lotus-address'
 import {
@@ -6,6 +18,7 @@ import {
   walletChangePrivateKey,
   walletReceivePrivateKey,
 } from './index'
+import { must, pointOf } from '../nakamoto-oracle'
 
 // BIP-0032 test vector 1. Bitcoin Core checks these xprv strings in
 // src/test/bip32_tests.cpp (master, then m/0'/1/2'/2).
@@ -19,62 +32,80 @@ function secretHex(key: { toBuffer(): Uint8Array }): string {
   return Buffer.from(key.toBuffer()).toString('hex')
 }
 
-it('derives the published BIP32 child and the existing coin-type 899 paths', () => {
+function lotusOf(pub: Uint8Array, networkName: 'livenet' | 'testnet'): string {
+  const hash = must(
+    pubkeyHashFromBytes(cryptoBackend.hash160(Uint8Array.from(pub))),
+  )
+  const chain = networkName === 'testnet' ? XPI_TESTNET : XPI_MAINNET
+  return must(encodeAddress({ kind: 'p2pkh', hash }, chain, 'lotus'))
+}
 
-  const master = new HDPrivateKey(VECTOR_1_MASTER)
-  const published = master.deriveChild("m/0'/1/2'/2")
-  expect(published.toString()).toBe(VECTOR_1_CHILD)
-  const derived = privateKeyFromHdPath(master, "m/0'/1/2'/2")
-  expect(secretHex(derived)).toBe(secretHex(published.privateKey))
-  expect(derived.toPublicKey().toBuffer().length).toBe(33)
+function childPoint(secret: Uint8Array): Buffer {
+  return pointOf(secret, true)
+}
+
+it('derives the published BIP32 child and the coin-type 899 paths', () => {
+  const seed = Uint8Array.from(Buffer.from(VECTOR_1_SEED, 'hex'))
+  const fromSeed = must(hdPrivateFromSeed(seed))
+  expect(must(serializeHdPrivate(fromSeed, BTC_MAINNET))).toBe(VECTOR_1_MASTER)
+
+  const master = must(parseHdPrivate(VECTOR_1_MASTER, BTC_MAINNET))
+  const published = must(deriveHdPath(master, "m/0'/1/2'/2"))
+  expect(must(serializeHdPrivate(published, BTC_MAINNET))).toBe(VECTOR_1_CHILD)
+  const derived = privateKeyFromHdPath(VECTOR_1_MASTER, "m/0'/1/2'/2")
+  const publishedSecret = Uint8Array.from(published.privateKey.bytes)
+  expect(secretHex(derived)).toBe(Buffer.from(publishedSecret).toString('hex'))
+  const publishedPoint = childPoint(publishedSecret)
+  expect(Buffer.from(derived.toPublicKey().toBuffer())).toEqual(publishedPoint)
   expect(lotusFromPublicKey(derived.toPublicKey(), 'livenet')).toBe(
-    published.privateKey.toAddress().toXAddress(),
+    lotusOf(publishedPoint, 'livenet'),
   )
 
-  const receive0 = walletReceivePrivateKey(master, 0)
-  const bitcoreReceive0 = master
-    .deriveChild(44, true)
-    .deriveChild(899, true)
-    .deriveChild(0, true)
-    .deriveChild(0)
-    .deriveChild(0).privateKey
-  expect(secretHex(receive0)).toBe(secretHex(bitcoreReceive0))
-  expect(Buffer.from(receive0.toPublicKey().toBuffer()).toString('hex')).toBe(
-    bitcoreReceive0.toPublicKey().toBuffer().toString('hex'),
-  )
+  const receive0 = walletReceivePrivateKey(VECTOR_1_MASTER, 0)
+  const nakamotoReceive0 = must(deriveHdPath(master, "m/44'/899'/0'/0/0"))
+  const receiveSecret = Uint8Array.from(nakamotoReceive0.privateKey.bytes)
+  expect(secretHex(receive0)).toBe(Buffer.from(receiveSecret).toString('hex'))
+  const receivePoint = childPoint(receiveSecret)
+  expect(Buffer.from(receive0.toPublicKey().toBuffer())).toEqual(receivePoint)
   expect(lotusFromPublicKey(receive0.toPublicKey(), 'livenet')).toBe(
-    bitcoreReceive0.toAddress().toXAddress(),
+    lotusOf(receivePoint, 'livenet'),
   )
 
-  const change0 = walletChangePrivateKey(master, 0)
-  const bitcoreChange0 = master
-    .deriveChild("m/44'/899'/0'/1/0").privateKey
-  expect(secretHex(change0)).toBe(secretHex(bitcoreChange0))
+  const change0 = walletChangePrivateKey(VECTOR_1_MASTER, 0)
+  const nakamotoChange0 = must(deriveHdPath(master, "m/44'/899'/0'/1/0"))
+  expect(secretHex(change0)).toBe(
+    Buffer.from(nakamotoChange0.privateKey.bytes).toString('hex'),
+  )
   expect(secretHex(change0)).not.toBe(secretHex(receive0))
 
-  const receive1 = walletReceivePrivateKey(master, 1)
-  const bitcoreReceive1 = master
-    .deriveChild("m/44'/899'/0'/0/1").privateKey
-  expect(secretHex(receive1)).toBe(secretHex(bitcoreReceive1))
+  const receive1 = walletReceivePrivateKey(VECTOR_1_MASTER, 1)
+  const nakamotoReceive1 = must(deriveHdPath(master, "m/44'/899'/0'/0/1"))
+  expect(secretHex(receive1)).toBe(
+    Buffer.from(nakamotoReceive1.privateKey.bytes).toString('hex'),
+  )
   expect(secretHex(receive1)).not.toBe(secretHex(receive0))
 
-  const fromSeed = HDPrivateKey.fromSeed as (
-    seed: string,
-    network: Networks.Network,
-  ) => HDPrivateKey
-  const testnet = fromSeed(VECTOR_1_SEED, Networks.testnet)
+  const testnet = must(serializeHdPrivate(fromSeed, BTC_TESTNET))
   const testChild = privateKeyFromHdPath(testnet, "m/0'/1")
-  const bitcoreTestChild = testnet.deriveChild("m/0'/1").privateKey
-  expect(testnet.toString().startsWith('tprv')).toBe(true)
-  expect(secretHex(testChild)).toBe(secretHex(bitcoreTestChild))
+  const nakamotoTestChild = must(
+    deriveHdPath(must(parseHdPrivate(testnet, BTC_TESTNET)), "m/0'/1"),
+  )
+  expect(testnet.startsWith('tprv')).toBe(true)
+  expect(secretHex(testChild)).toBe(
+    Buffer.from(nakamotoTestChild.privateKey.bytes).toString('hex'),
+  )
+  const testPoint = childPoint(
+    Uint8Array.from(nakamotoTestChild.privateKey.bytes),
+  )
+  expect(Buffer.from(testChild.toPublicKey().toBuffer())).toEqual(testPoint)
   expect(lotusFromPublicKey(testChild.toPublicKey(), 'testnet')).toBe(
-    bitcoreTestChild.toAddress().toXAddress(),
+    lotusOf(testPoint, 'testnet'),
   )
 
-  expect(() => privateKeyFromHdPath(master, 'm/00')).toThrow(
+  expect(() => privateKeyFromHdPath(VECTOR_1_MASTER, 'm/00')).toThrow(
     'hd-derive:hd-path',
   )
-  expect(() => walletReceivePrivateKey(master, -1)).toThrow(
+  expect(() => walletReceivePrivateKey(VECTOR_1_MASTER, -1)).toThrow(
     'hd-derive:hd-path',
   )
 })

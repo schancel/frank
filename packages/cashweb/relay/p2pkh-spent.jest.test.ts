@@ -1,4 +1,8 @@
-import { Transaction } from 'bitcore-lib-xpi'
+import {
+  XPI_MAINNET,
+  displayTxidFromInternal,
+  parseTransaction,
+} from '@frank/nakamoto'
 
 import { p2pkhSpentOutpoints } from './p2pkh-spent'
 
@@ -50,28 +54,24 @@ function displayHex(internal: Uint8Array): string {
   return hex
 }
 
-function bitcoreInputs(
-  tx: Buffer,
-): { txId: string; outputIndex: number }[] {
-  const parsed = new Transaction(tx)
-  const inputs = parsed.inputs
-  if (!inputs) throw new Error('test-inputs')
-  return inputs.map(
-    (input: { prevTxId: { toString(enc: string): string }; outputIndex: number }) => ({
-      txId: input.prevTxId.toString('hex'),
-      outputIndex: input.outputIndex,
-    }),
-  )
+function parsedInputs(tx: Buffer): { txId: string; outputIndex: number }[] {
+  const parsed = parseTransaction(Uint8Array.from(tx), XPI_MAINNET)
+  if (!parsed.ok) throw new Error(parsed.error.code)
+  return parsed.value.inputs.map(input => ({
+    txId: Buffer.from(displayTxidFromInternal(input.prevout.txid)).toString(
+      'hex',
+    ),
+    outputIndex: input.prevout.vout,
+  }))
 }
 
 it('reads p2pkh spent outpoints from transaction bytes', () => {
-
   const bip143 = Buffer.from(BIP143_UNSIGNED, 'hex')
   const bip143Spent = {
     txId: displayHex(BIP143_INTERNAL),
     outputIndex: 0x1d4c,
   }
-  expect(bitcoreInputs(bip143)).toEqual([bip143Spent])
+  expect(parsedInputs(bip143)).toEqual([bip143Spent])
   expect(p2pkhSpentOutpoints(bip143)).toEqual([bip143Spent])
   expect(bip143Spent.txId).toHaveLength(64)
   expect(bip143Spent.txId).not.toBe(BIP143_INTERNAL.toString('hex'))
@@ -88,7 +88,7 @@ it('reads p2pkh spent outpoints from transaction bytes', () => {
     { txId: displayHex(first), outputIndex: 0 },
     { txId: displayHex(second), outputIndex: 7 },
   ]
-  expect(bitcoreInputs(tx)).toEqual(expected)
+  expect(parsedInputs(tx)).toEqual(expected)
   expect(p2pkhSpentOutpoints(tx)).toEqual(expected)
   expect(expected[1].txId.startsWith('00')).toBe(false)
   expect(expected[1].txId.endsWith('00')).toBe(true)
@@ -105,11 +105,13 @@ it('reads p2pkh spent outpoints from transaction bytes', () => {
     txId: '00'.repeat(32),
     outputIndex: 0xffffffff,
   }
-  expect(bitcoreInputs(coinbase)).toEqual([coinbaseSpent])
+  expect(parsedInputs(coinbase)).toEqual([coinbaseSpent])
   expect(p2pkhSpentOutpoints(coinbase)).toEqual([coinbaseSpent])
 
   const trailing = Buffer.concat([bip143, Buffer.of(0)])
-  expect(bitcoreInputs(trailing)).toEqual([bip143Spent])
+  expect(parseTransaction(Uint8Array.from(trailing), XPI_MAINNET).ok).toBe(
+    false,
+  )
   expect(() => p2pkhSpentOutpoints(trailing)).toThrow('p2pkh-tx')
   expect(() => p2pkhSpentOutpoints(Uint8Array.of())).toThrow('p2pkh-tx')
 })

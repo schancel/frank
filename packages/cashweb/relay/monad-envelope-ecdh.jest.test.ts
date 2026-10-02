@@ -13,11 +13,8 @@ import * as fs from "fs";
 import * as path from "path";
 
 import { privateKeyFromHex } from "@frank/nakamoto";
-import {
-  PrivateKey,
-  PublicKey,
-  crypto as bitcoreCrypto,
-} from "bitcore-lib-xpi";
+import { hmacSha256, sha256 } from "@frank/crypto-box";
+import { privateKeyFromSecretBytes, publicFromPrivate } from "@frank/nakamoto";
 
 import { IDENTITY_KEY_NETWORK_NAME } from "../legacy-wallet/lotus-identity";
 import { PayloadConstructor } from "./crypto";
@@ -67,23 +64,36 @@ const fixture = JSON.parse(
 const constructor_ = new PayloadConstructor({
   networkName: IDENTITY_KEY_NETWORK_NAME,
 });
-const privateKey = (hex: string) =>
-  PrivateKey.fromBuffer(Buffer.from(hex, "hex"), IDENTITY_KEY_NETWORK_NAME);
+const privateKey = (hex: string) => {
+  const secret = Buffer.from(hex, "hex");
+  const parsed = privateKeyFromSecretBytes(Uint8Array.from(secret), false);
+  if (!parsed.ok) throw new Error(parsed.error.code);
+  const derived = publicFromPrivate(parsed.value);
+  parsed.value.bytes.fill(0);
+  if (!derived.ok) throw new Error(derived.error.code);
+  const point = Buffer.from(derived.value.uncompressed);
+  return {
+    toBuffer: () => Uint8Array.from(secret),
+    toPublicKey: () => ({ toBuffer: () => Uint8Array.from(point) }),
+  };
+};
 const envelopeKey = (hex: string) => {
   const key = privateKeyFromHex(hex, true);
   if (!key.ok) throw new Error(key.error.code);
   return key.value;
 };
-const publicKey = (hex: string) =>
-  PublicKey.fromBuffer(Buffer.from(hex, "hex"));
+const publicKey = (hex: string) => ({
+  toBuffer: () => Uint8Array.from(Buffer.from(hex, "hex")),
+});
 const addressA = "0x1111111111111111111111111111111111111111";
 const addressB = "0x2222222222222222222222222222222222222222";
 
 function shared(privHex: string, peerPubHex: string): string {
-  return constructor_
-    .constructMergedKey(privateKey(privHex), publicKey(peerPubHex))
-    .toBuffer()
-    .toString("hex");
+  return Buffer.from(
+    constructor_
+      .constructMergedKey(privateKey(privHex), publicKey(peerPubHex))
+      .toBuffer()
+  ).toString("hex");
 }
 
 function bytesOf(envelope: Record<string, unknown>): Buffer {
@@ -257,31 +267,37 @@ describe("ECDH shared point encoding (#309)", () => {
   const KEYS = Number(process.env.FRANK_ECDH_KEYS ?? 12);
   it(`agrees on the shared point for every pair of ${KEYS} seeded keys and matches OpenSSL's x`, () => {
     const secrets: Buffer[] = [];
-    const privates: PrivateKey[] = [];
+    const privates: ReturnType<typeof privateKey>[] = [];
     const rawPublics: Buffer[] = [];
-    const publics: PublicKey[] = [];
+    const publics: ReturnType<typeof publicKey>[] = [];
     for (let i = 0; i < KEYS; i++) {
       // Deterministic seed: SHA-256 of a counter, re-hashed until it is a valid scalar.
-      let secret = bitcoreCrypto.Hash.sha256(Buffer.from(`frank-309-key-${i}`));
-      while (!PrivateKey.isValid(secret.toString("hex"))) {
-        secret = bitcoreCrypto.Hash.sha256(secret);
+      let secret = sha256(Uint8Array.from(Buffer.from(`frank-309-key-${i}`)));
+      for (;;) {
+        const parsed = privateKeyFromSecretBytes(secret, false);
+        if (parsed.ok) {
+          parsed.value.bytes.fill(0);
+          break;
+        }
+        secret = sha256(secret);
       }
-      const key = privateKey(secret.toString("hex"));
-      secrets.push(secret);
+      const secretBuf = Buffer.from(secret);
+      const key = privateKey(secretBuf.toString("hex"));
+      secrets.push(secretBuf);
       privates.push(key);
-      rawPublics.push(key.toPublicKey().toBuffer());
+      rawPublics.push(Buffer.from(key.toPublicKey().toBuffer()));
       publics.push(publicKey(rawPublics[i].toString("hex")));
     }
     let pairs = 0;
     const leadingZeroPairs: [number, number][] = [];
     for (let i = 0; i < KEYS; i++) {
       for (let j = i + 1; j < KEYS; j++) {
-        const iSide = constructor_
-          .constructMergedKey(privates[i], publics[j])
-          .toBuffer();
-        const jSide = constructor_
-          .constructMergedKey(privates[j], publics[i])
-          .toBuffer();
+        const iSide = Buffer.from(
+          constructor_.constructMergedKey(privates[i], publics[j]).toBuffer()
+        );
+        const jSide = Buffer.from(
+          constructor_.constructMergedKey(privates[j], publics[i]).toBuffer()
+        );
         if (iSide.length !== 33 || !iSide.equals(jSide)) {
           throw new Error(
             `pair ${i},${j}: ${iSide.toString("hex")} != ${jSide.toString(
@@ -398,16 +414,11 @@ describe("pre-#309 envelopes stay readable", () => {
     if (!pair) throw new Error("fixture needs a TT pair");
     const salt = Buffer.from("00112233445566778899aabbccddeeff", "hex");
     for (const point of [pair.sharedPoint, pair.trimmedSharedPoint]) {
-      const key = bitcoreCrypto.Hash.sha256hmac(
-        Buffer.from(point, "hex"),
-        salt
-      );
-      // constructSharedKey is HMAC(salt, point) via bitcore's argument order (data, key); build
-      // the key exactly as PayloadConstructor does and encrypt with the shared AES-CBC helper.
-      const sharedKey = bitcoreCrypto.Hash.sha256hmac(
-        salt,
-        Buffer.from(point, "hex")
-      );
+      const pointBytes = Uint8Array.from(Buffer.from(point, "hex"));
+      const saltBytes = Uint8Array.from(salt);
+      const key = Buffer.from(hmacSha256(pointBytes, saltBytes));
+      // constructSharedKey is HMAC(salt, point): message first, key second.
+      const sharedKey = Buffer.from(hmacSha256(saltBytes, pointBytes));
       expect(key).not.toEqual(sharedKey);
       const ciphertext = Buffer.from(
         constructor_.encrypt(
@@ -445,7 +456,7 @@ describe("constructSharedPointEncodings", () => {
       super({ networkName: IDENTITY_KEY_NETWORK_NAME });
     }
     constructMergedKey() {
-      return { toBuffer: () => Buffer.from(this.point, "hex") } as PublicKey;
+      return { toBuffer: () => Buffer.from(this.point, "hex") };
     }
   }
   const encodings = (point: string) =>

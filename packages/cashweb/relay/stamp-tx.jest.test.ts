@@ -1,4 +1,11 @@
-import { Script, Transaction } from 'bitcore-lib-xpi'
+import {
+  XPI_MAINNET,
+  displayTxidFromInternal,
+  parseTransaction,
+  pubkeyHashFromOutputScript,
+  transactionHash,
+  transactionId,
+} from '@frank/nakamoto'
 
 import { readStampTransaction } from './stamp-tx'
 
@@ -28,7 +35,10 @@ function rawTx(parts: {
   }[]
   outputs: { value: bigint; script: Uint8Array }[]
 }): Buffer {
-  const chunks = [Buffer.from('01000000', 'hex'), Buffer.of(parts.inputs.length)]
+  const chunks = [
+    Buffer.from('01000000', 'hex'),
+    Buffer.of(parts.inputs.length),
+  ]
   for (const input of parts.inputs) {
     if (input.txidInternal.length !== 32) throw new Error('test-txid')
     if (input.script.length >= 0xfd) throw new Error('test-script')
@@ -67,41 +77,38 @@ function displayHex(internal: Uint8Array): string {
   return hex
 }
 
-function bitcoreView(tx: Buffer): {
+function hexForward(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('hex')
+}
+
+function parsedView(tx: Buffer): {
   txId: string
   hash: string
   inputs: { txId: string; outputIndex: number }[]
   outputs: { satoshis: number; script: Buffer }[]
 } {
-  const parsed = new Transaction(tx)
-  const inputs = parsed.inputs
-  const outputs = parsed.outputs
-  if (!inputs || !outputs) throw new Error('test-view')
+  const parsed = parseTransaction(Uint8Array.from(tx), XPI_MAINNET)
+  if (!parsed.ok) throw new Error(parsed.error.code)
+  const id = transactionId(parsed.value, XPI_MAINNET)
+  const hash = transactionHash(parsed.value, XPI_MAINNET)
+  if (!id.ok || !hash.ok) throw new Error('test-view')
   return {
-    txId: parsed.txid as string,
-    hash: parsed.hash as string,
-    inputs: inputs.map(
-      (input: {
-        prevTxId: { toString(enc: string): string }
-        outputIndex: number
-      }) => ({
-        txId: input.prevTxId.toString('hex'),
-        outputIndex: input.outputIndex,
-      }),
-    ),
-    outputs: outputs.map(
-      (output: { satoshis: number; script: { toBuffer(): Buffer } }) => ({
-        satoshis: output.satoshis,
-        script: Buffer.from(output.script.toBuffer()),
-      }),
-    ),
+    txId: hexForward(displayTxidFromInternal(id.value)),
+    hash: hexForward(displayTxidFromInternal(hash.value)),
+    inputs: parsed.value.inputs.map(input => ({
+      txId: hexForward(displayTxidFromInternal(input.prevout.txid)),
+      outputIndex: input.prevout.vout,
+    })),
+    outputs: parsed.value.outputs.map(output => ({
+      satoshis: Number(output.value),
+      script: Buffer.from(output.scriptPubKey),
+    })),
   }
 }
 
 it('reads stamp transactions from transaction bytes', () => {
-
   const bip143 = Buffer.from(BIP143_UNSIGNED, 'hex')
-  const bip143Bitcore = bitcoreView(bip143)
+  const bip143Bitcore = parsedView(bip143)
   const bip143Stamp = readStampTransaction(bip143)
   expect(bip143Stamp.txId).toBe(bip143Bitcore.txId)
   expect(bip143Stamp.txId).toHaveLength(64)
@@ -121,7 +128,12 @@ it('reads stamp transactions from transaction bytes', () => {
   second[0] = 0x00
   const paid = rawTx({
     inputs: [
-      { txidInternal: first, vout: 0, script: Uint8Array.of(0x51), sequence: 0xffffffff },
+      {
+        txidInternal: first,
+        vout: 0,
+        script: Uint8Array.of(0x51),
+        sequence: 0xffffffff,
+      },
       { txidInternal: second, vout: 7, script: Uint8Array.of(), sequence: 1 },
     ],
     outputs: [
@@ -129,7 +141,7 @@ it('reads stamp transactions from transaction bytes', () => {
       { value: 0n, script: Uint8Array.of(0x6a) },
     ],
   })
-  const paidBitcore = bitcoreView(paid)
+  const paidBitcore = parsedView(paid)
   const paidStamp = readStampTransaction(paid)
   expect(paidStamp.txId).toBe(paidBitcore.txId)
   expect(paidStamp.txId).not.toBe(paidBitcore.hash)
@@ -139,21 +151,22 @@ it('reads stamp transactions from transaction bytes', () => {
   expect(paidStamp.outputs[0].satoshis).toBe(1000)
   expect(Buffer.from(paidStamp.outputs[0].script)).toEqual(Buffer.from(P2PKH))
   expect(paidStamp.outputs[1].satoshis).toBe(0)
-  const address = new Script(Buffer.from(paidStamp.outputs[0].script)).toAddress()
-  const bitcoreAddress = new Script(paidBitcore.outputs[0].script).toAddress()
-  if (
-    !address ||
-    !bitcoreAddress ||
-    typeof address === 'boolean' ||
-    typeof bitcoreAddress === 'boolean'
-  ) {
-    throw new Error('test-address')
+  const paidHash = pubkeyHashFromOutputScript(
+    Uint8Array.from(paidStamp.outputs[0].script),
+  )
+  expect(paidHash.ok).toBe(true)
+  if (paidHash.ok) {
+    expect(Buffer.from(paidHash.value)).toEqual(Buffer.alloc(20, 0xab))
   }
-  expect(address.toBuffer().equals(bitcoreAddress.toBuffer())).toBe(true)
 
   const otherScript = rawTx({
     inputs: [
-      { txidInternal: first, vout: 0, script: Uint8Array.of(0x52), sequence: 0xffffffff },
+      {
+        txidInternal: first,
+        vout: 0,
+        script: Uint8Array.of(0x52),
+        sequence: 0xffffffff,
+      },
       { txidInternal: second, vout: 7, script: Uint8Array.of(), sequence: 1 },
     ],
     outputs: [
@@ -161,7 +174,7 @@ it('reads stamp transactions from transaction bytes', () => {
       { value: 0n, script: Uint8Array.of(0x6a) },
     ],
   })
-  const otherBitcore = bitcoreView(otherScript)
+  const otherBitcore = parsedView(otherScript)
   const otherStamp = readStampTransaction(otherScript)
   expect(otherStamp.txId).toBe(paidStamp.txId)
   expect(otherBitcore.txId).toBe(paidBitcore.txId)
@@ -178,7 +191,7 @@ it('reads stamp transactions from transaction bytes', () => {
     ],
     outputs: [{ value: 50n, script: P2PKH }],
   })
-  const coinbaseBitcore = bitcoreView(coinbase)
+  const coinbaseBitcore = parsedView(coinbase)
   const coinbaseStamp = readStampTransaction(coinbase)
   expect(coinbaseStamp.txId).toBe(coinbaseBitcore.txId)
   expect(coinbaseStamp.inputs).toEqual([
@@ -189,8 +202,11 @@ it('reads stamp transactions from transaction bytes', () => {
     inputs: [],
     outputs: [{ value: 1n, script: Uint8Array.of() }],
   })
+  expect(readStampTransaction(emptyInputs).txId).toBe(
+    parsedView(emptyInputs).txId,
+  )
   expect(readStampTransaction(emptyInputs).txId).not.toBe(
-    bitcoreView(emptyInputs).txId,
+    parsedView(emptyInputs).hash,
   )
 
   const huge = rawTx({
@@ -202,7 +218,9 @@ it('reads stamp transactions from transaction bytes', () => {
   expect(() => readStampTransaction(huge)).toThrow('stamp-value')
 
   const trailing = Buffer.concat([bip143, Buffer.of(0)])
-  expect(bitcoreView(trailing).txId).toBe(bip143Bitcore.txId)
+  expect(parseTransaction(Uint8Array.from(trailing), XPI_MAINNET).ok).toBe(
+    false,
+  )
   expect(() => readStampTransaction(trailing)).toThrow('stamp-tx')
   expect(() => readStampTransaction(Uint8Array.of())).toThrow('stamp-tx')
   expect(readStampTransaction(paid).outputs[9]).toBeUndefined()

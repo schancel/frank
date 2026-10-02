@@ -13,7 +13,7 @@
  * `directMessages.send`/`fetchSince` actually encrypt/decrypt, not merely pass a plaintext through.
  */
 import { Wallet, getBytes, hexlify } from "ethers";
-import { PublicKey, crypto as bitcoreCrypto } from "bitcore-lib-xpi";
+import { verifyEcdsa } from "@frank/nakamoto";
 
 import { MonadIdentity } from "../monad-identity";
 import { StoredMonadMessageProto } from "../monad-stamp-client";
@@ -995,12 +995,12 @@ describe("createMonadChain: directMessages.fetchSince", () => {
     const digest = new Uint8Array(32).fill(7);
     const der = Buffer.from(await signDigest(digest));
     expect(
-      bitcoreCrypto.ECDSA.verify(
-        Buffer.from(digest),
-        bitcoreCrypto.Signature.fromDER(der),
-        PublicKey.fromBuffer(bob.compressedPubKey)
+      verifyEcdsa(
+        Uint8Array.from(der),
+        digest,
+        Uint8Array.from(bob.compressedPubKey)
       )
-    ).toBe(true);
+    ).toEqual({ ok: true, value: true });
     expect(received).toHaveLength(1);
     expect(received[0].senderAddress.raw).toBe(alice.address.raw);
     expect(received[0].recipientAddress.raw).toBe(bob.address.raw);

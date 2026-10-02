@@ -12,7 +12,12 @@
  */
 import { createHash } from 'crypto'
 
-import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
+import { randomBytes, sha256 } from '@frank/crypto-box'
+import {
+  privateKeyFromSecretBytes,
+  publicFromPrivate,
+  signEcdsa,
+} from '@frank/nakamoto'
 
 import {
   MailboxChallenge,
@@ -130,14 +135,13 @@ describe('buildMailboxAuthPreimage (pinned to bytes from the Rust mailbox_auth_p
   })
 
   it('hashes with plain SHA-256', () => {
-
-    // SHA-256 of the empty string. Node, bitcore, and sha2::Sha256 agree.
+    // SHA-256 of the empty string. Node, crypto-box, and sha2::Sha256 agree.
     const empty = mailboxAuthDigest(new Uint8Array())
     expect(bytesToHex(empty)).toBe(
       'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     )
     expect(bytesToHex(empty)).toBe(
-      bitcoreCrypto.Hash.sha256(Buffer.alloc(0)).toString('hex'),
+      Buffer.from(sha256(new Uint8Array())).toString('hex'),
     )
 
     const preimage = buildMailboxAuthPreimage(
@@ -148,7 +152,7 @@ describe('buildMailboxAuthPreimage (pinned to bytes from the Rust mailbox_auth_p
     const digest = bytesToHex(mailboxAuthDigest(preimage))
     expect(digest).toBe(createHash('sha256').update(preimage).digest('hex'))
     expect(digest).toBe(
-      bitcoreCrypto.Hash.sha256(Buffer.from(preimage)).toString('hex'),
+      Buffer.from(sha256(Uint8Array.from(preimage))).toString('hex'),
     )
   })
 
@@ -170,13 +174,34 @@ describe('buildMailboxAuthPreimage (pinned to bytes from the Rust mailbox_auth_p
 
 // --- fixtures ---------------------------------------------------------------------------------
 
+interface MailboxKey {
+  toBuffer(): Uint8Array
+  toPublicKey(): { toBuffer(): Uint8Array }
+}
+
+function mailboxKey(): MailboxKey {
+  for (;;) {
+    const secret = Buffer.from(randomBytes(32))
+    const parsed = privateKeyFromSecretBytes(Uint8Array.from(secret), true)
+    if (!parsed.ok) continue
+    const derived = publicFromPrivate(parsed.value)
+    parsed.value.bytes.fill(0)
+    if (!derived.ok) continue
+    const point = Buffer.from(derived.value.compressed)
+    return {
+      toBuffer: () => Uint8Array.from(secret),
+      toPublicKey: () => ({ toBuffer: () => Uint8Array.from(point) }),
+    }
+  }
+}
+
 interface Fixture {
   relay: MockMailboxRelay
   auth: MailboxAuthParams
   sleeps: number[]
   signCalls: () => number
   address: string
-  privateKey: PrivateKey
+  privateKey: MailboxKey
 }
 
 function makeFixture(
@@ -184,10 +209,10 @@ function makeFixture(
     maxUsedChallenges?: number
     enabled?: boolean
     register?: boolean
-    signWith?: PrivateKey
+    signWith?: MailboxKey
   } = {},
 ): Fixture {
-  const privateKey = new PrivateKey()
+  const privateKey = mailboxKey()
   const address =
     '0x' +
     createHash('sha256')
@@ -221,8 +246,18 @@ function makeFixture(
       },
       signDigest: digest => {
         signs++
-        const signature = bitcoreCrypto.ECDSA.sign(Buffer.from(digest), signer)
-        return (signature as unknown as { toDER(): Buffer }).toDER()
+        const parsed = privateKeyFromSecretBytes(
+          Uint8Array.from(signer.toBuffer()),
+          true,
+        )
+        if (!parsed.ok) throw new Error(parsed.error.code)
+        try {
+          const signed = signEcdsa(parsed.value, Uint8Array.from(digest))
+          if (!signed.ok) throw new Error(signed.error.code)
+          return Buffer.from(signed.value)
+        } finally {
+          parsed.value.bytes.fill(0)
+        }
       },
     },
   }
@@ -603,7 +638,7 @@ describe('authentication failures', () => {
   })
 
   it('a signature from the wrong key is rejected', async () => {
-    const f = makeFixture({ signWith: new PrivateKey() })
+    const f = makeFixture({ signWith: mailboxKey() })
     await expect(
       fetchMonadMessagesSince({ ...f.auth, sinceMs: 0 }),
     ).rejects.toBeInstanceOf(MonadMailboxAuthError)

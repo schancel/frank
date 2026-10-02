@@ -1,6 +1,10 @@
 import * as cryptoBox from "@frank/crypto-box";
-import { privateKeyFromHex } from "@frank/nakamoto";
-import { PrivateKey, crypto as bitcoreCrypto } from "bitcore-lib-xpi";
+import { sha256 } from "@frank/crypto-box";
+import {
+  privateKeyFromHex,
+  privateKeyFromSecretBytes,
+  publicFromPrivate,
+} from "@frank/nakamoto";
 
 import { IDENTITY_KEY_NETWORK_NAME } from "../legacy-wallet/lotus-identity";
 import { PayloadConstructor } from "./crypto";
@@ -24,14 +28,21 @@ function envelopeKey(hex: string) {
   return key.value;
 }
 
-const aliceBitcoreKey = PrivateKey.fromBuffer(
-  Buffer.from("11".repeat(32), "hex"),
-  IDENTITY_KEY_NETWORK_NAME
-);
-const bobBitcoreKey = PrivateKey.fromBuffer(
-  Buffer.from("22".repeat(32), "hex"),
-  IDENTITY_KEY_NETWORK_NAME
-);
+function secretAndPoint(hex: string) {
+  const secret = Buffer.from(hex, "hex");
+  const parsed = privateKeyFromSecretBytes(Uint8Array.from(secret), true);
+  if (!parsed.ok) throw new Error(parsed.error.code);
+  const derived = publicFromPrivate(parsed.value);
+  parsed.value.bytes.fill(0);
+  if (!derived.ok) throw new Error(derived.error.code);
+  const point = Buffer.from(derived.value.compressed);
+  return {
+    toBuffer: () => Uint8Array.from(secret),
+    toPublicKey: () => ({ toBuffer: () => Uint8Array.from(point) }),
+  };
+}
+const aliceBitcoreKey = secretAndPoint("11".repeat(32));
+const bobBitcoreKey = secretAndPoint("22".repeat(32));
 const alicePrivateKey = envelopeKey("11".repeat(32));
 const bobPrivateKey = envelopeKey("22".repeat(32));
 const wrongPrivateKey = envelopeKey("33".repeat(32));
@@ -526,7 +537,7 @@ describe("legacy v1 read compatibility", () => {
     payment.setRawTx(rawSignedPayment);
     const request = new MonadStampedMessage();
     request.setEncryptedPayload(envelopeBytes);
-    request.setPayloadHash(bitcoreCrypto.Hash.sha256(envelopeBytes));
+    request.setPayloadHash(Buffer.from(sha256(Uint8Array.from(envelopeBytes))));
     request.addStampPayments(payment);
     expect(request.serializeBinary().length).toBeLessThan(2 * 1024 * 1024);
 

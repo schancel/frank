@@ -1,19 +1,33 @@
-import { Address, PrivateKey, Script } from 'bitcore-lib-xpi'
 import {
+  BCH_MAINNET,
+  BCH_REGTEST,
+  BCH_TESTNET,
+  XEC_MAINNET,
+  XPI_MAINNET,
+  XPI_REGTEST,
+  XPI_TESTNET,
   cryptoBackend,
   encodeAddress,
   encodeBase58,
   pubkeyHashFromBytes,
-  XEC_MAINNET,
+  type ChainDescriptor,
 } from '@frank/nakamoto'
 
 import { lotusFromAddress, p2pkhLockingScript } from './lotus-address'
+import { must } from '../nakamoto-oracle'
 
 const HASH = 'b50b86a893d80c9e2ee72b199612374b7b4c1cd8'
 const LOTUS = 'lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi'
 const SCRIPT = '76a914b50b86a893d80c9e2ee72b199612374b7b4c1cd888ac'
-const WIF = 'L4rK1yDtCWekvXuE6oXD9jCYfFNV2cWRpVuPLBcCU2z8TrisoyY1'
 const SHORT_LEGACY = '16HgC8KRBEhXYbF4riJyJFLSHt34Te5YA'
+const P2PKH = Uint8Array.from(Buffer.from(SCRIPT, 'hex'))
+const P2SH = Uint8Array.from(
+  Buffer.concat([
+    Buffer.from([0xa9, 0x14]),
+    Buffer.from(HASH, 'hex'),
+    Buffer.from([0x87]),
+  ]),
+)
 
 function concat(parts: Uint8Array[]): Uint8Array {
   let length = 0
@@ -79,99 +93,114 @@ function makeLegacy(
   )
 }
 
-function expectSame(address: string, networkName: string) {
-  const oracle = new Address(address)
-  expect(lotusFromAddress(address, networkName)).toBe(
-    lotusFromAddress(oracle, networkName),
+function chainFor(networkName: string): ChainDescriptor {
+  if (networkName === 'testnet') return XPI_TESTNET
+  if (networkName === 'regtest') return XPI_REGTEST
+  return XPI_MAINNET
+}
+
+function lotusOf(kind: 'p2pkh' | 'p2sh', hashHex: string, networkName: string) {
+  const hash = must(
+    pubkeyHashFromBytes(Uint8Array.from(Buffer.from(hashHex, 'hex'))),
   )
-  if (oracle.type === 'scripthash') {
+  return must(encodeAddress({ kind, hash }, chainFor(networkName), 'lotus'))
+}
+
+function expectLotus(
+  address: string,
+  kind: 'p2pkh' | 'p2sh',
+  hashHex: string,
+  networkName: string,
+) {
+  const expected = lotusOf(kind, hashHex, networkName)
+  const record = {
+    hashBuffer: Uint8Array.from(Buffer.from(hashHex, 'hex')),
+    type: kind === 'p2sh' ? 'scripthash' : 'pubkeyhash',
+  }
+  expect(lotusFromAddress(address, networkName)).toBe(expected)
+  expect(lotusFromAddress(record, networkName)).toBe(expected)
+  if (kind === 'p2sh') {
     expect(() => p2pkhLockingScript(address)).toThrow('address-kind')
+    expect(() => p2pkhLockingScript(record)).toThrow('address-kind')
     return
   }
-  expect(Buffer.from(p2pkhLockingScript(address))).toEqual(
-    Buffer.from(p2pkhLockingScript(oracle)),
+  expect(Buffer.from(p2pkhLockingScript(address)).toString('hex')).toBe(
+    `76a914${hashHex}88ac`,
+  )
+  expect(Buffer.from(p2pkhLockingScript(record)).toString('hex')).toBe(
+    `76a914${hashHex}88ac`,
   )
 }
 
-it('matches bitcore for cashaddr, legacy base58, and xaddress strings', () => {
-  const key = new PrivateKey(WIF)
-  const p2pkh = Script.buildPublicKeyHashOut(key.toPublicKey()).toBuffer()
-  const p2sh = Buffer.concat([
-    Buffer.from([0xa9, 0x14]),
-    Buffer.from(HASH, 'hex'),
-    Buffer.from([0x87]),
-  ])
-  const scriptHash = new Address(
-    Buffer.from(HASH, 'hex'),
-    'livenet',
-    'scripthash',
-  )
-
-  for (const net of ['livenet', 'testnet', 'regtest'] as const) {
-    const address = key.toAddress(net)
-    for (const form of [
-      address.toString(),
-      address.toCashAddress(),
-      address.toCashAddress(true),
-      address.toLegacyAddress(),
-      address.toCashAddress().toUpperCase(),
-      ` ${address.toString()} `,
-      `  ${address.toLegacyAddress()}  `,
-    ]) {
-      expectSame(form, 'livenet')
-      expectSame(form, 'testnet')
-      expectSame(form, 'regtest')
+it('reads cashaddr, legacy base58, and xaddress strings as Lotus', () => {
+  const networks = [
+    { name: 'livenet', chain: BCH_MAINNET },
+    { name: 'testnet', chain: BCH_TESTNET },
+    { name: 'regtest', chain: BCH_REGTEST },
+  ] as const
+  for (const network of networks) {
+    for (const kind of ['p2pkh', 'p2sh'] as const) {
+      const hash = must(
+        pubkeyHashFromBytes(Uint8Array.from(Buffer.from(HASH, 'hex'))),
+      )
+      const cashaddr = must(
+        encodeAddress({ kind, hash }, network.chain, 'cashaddr'),
+      )
+      const legacy = must(
+        encodeAddress({ kind, hash }, network.chain, 'base58check'),
+      )
+      for (const output of ['livenet', 'testnet', 'regtest'] as const) {
+        for (const form of [
+          cashaddr,
+          cashaddr.toUpperCase(),
+          ` ${legacy} `,
+          legacy,
+        ]) {
+          expectLotus(form, kind, HASH, output)
+        }
+      }
     }
   }
 
-  for (const form of [
-    scriptHash.toString(),
-    scriptHash.toCashAddress(),
-    scriptHash.toCashAddress(true),
-    scriptHash.toLegacyAddress(),
-    scriptHash.toCashAddress().toUpperCase(),
-  ]) {
-    expectSame(form, 'livenet')
-  }
-
-  expectSame(makeX('lotus', '_', 1, p2pkh), 'livenet')
-  expectSame(makeX('lotus', 'T', 2, p2sh), 'testnet')
-  expectSame(makeX('token', 'R', 0, p2pkh), 'regtest')
-  expectSame(makeX('', '_', 0, p2pkh), 'livenet')
-  expectSame(
+  expectLotus(makeX('lotus', '_', 1, P2PKH), 'p2pkh', HASH, 'livenet')
+  expectLotus(makeX('lotus', 'T', 2, P2SH), 'p2sh', HASH, 'testnet')
+  expectLotus(makeX('token', 'R', 0, P2PKH), 'p2pkh', HASH, 'regtest')
+  expectLotus(makeX('', '_', 0, P2PKH), 'p2pkh', HASH, 'livenet')
+  expectLotus(
     makeX(
       'lotus',
       '_',
       0,
-      Buffer.concat([
-        Buffer.from([0x76, 0xa9, 0x4c, 0x14]),
-        key.toAddress().hashBuffer,
-        Buffer.from([0x88, 0xac]),
-      ]),
+      Uint8Array.from(
+        Buffer.concat([
+          Buffer.from([0x76, 0xa9, 0x4c, 0x14]),
+          Buffer.from(HASH, 'hex'),
+          Buffer.from([0x88, 0xac]),
+        ]),
+      ),
     ),
+    'p2pkh',
+    HASH,
     'livenet',
   )
-  expectSame(makeLegacy('lotus', '_', 7, p2pkh), 'testnet')
-  expectSame(makeLegacy('abc', 'R', 3, p2sh), 'regtest')
+  expectLotus(makeLegacy('lotus', '_', 7, P2PKH), 'p2pkh', HASH, 'testnet')
+  expectLotus(makeLegacy('abc', 'R', 3, P2SH), 'p2sh', HASH, 'regtest')
 
-  const typedScript = makeX('lotus', '_', 4, p2sh)
-  expect(new Address(typedScript).type).toBe('scripthash')
-  expectSame(typedScript, 'livenet')
+  const typedScript = makeX('lotus', '_', 4, P2SH)
+  expectLotus(typedScript, 'p2sh', HASH, 'livenet')
   expect(lotusFromAddress(typedScript, 'livenet')).not.toBe(
-    lotusFromAddress(
-      new Address(Buffer.from(HASH, 'hex'), 'livenet', 'pubkeyhash'),
-      'livenet',
-    ),
+    lotusOf('p2pkh', HASH, 'livenet'),
   )
 
   const satoshi = '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'
-  expect(new Address(satoshi).hashBuffer.toString('hex')).toBe(
+  expectLotus(
+    satoshi,
+    'p2pkh',
     '62e907b15cbf27d5425399ebf6f0fb50ebb88f18',
+    'livenet',
   )
-  expectSame(satoshi, 'livenet')
 
   expect(SHORT_LEGACY).toHaveLength(33)
-  expect(() => new Address(SHORT_LEGACY)).toThrow()
   expect(() => lotusFromAddress(SHORT_LEGACY, 'livenet')).toThrow()
   expect(() => p2pkhLockingScript(SHORT_LEGACY)).toThrow()
 
@@ -181,27 +210,37 @@ it('matches bitcore for cashaddr, legacy base58, and xaddress strings', () => {
     0,
     Uint8Array.from(Buffer.from('hello world hello!!!!')),
   )
-  expect(() => new Address(junk)).toThrow()
   expect(() => lotusFromAddress(junk, 'livenet')).toThrow()
   expect(() => p2pkhLockingScript(junk)).toThrow()
 
-  const cash = key.toAddress().toCashAddress()
+  const cash = must(
+    encodeAddress(
+      {
+        kind: 'p2pkh',
+        hash: must(
+          pubkeyHashFromBytes(Uint8Array.from(Buffer.from(HASH, 'hex'))),
+        ),
+      },
+      BCH_MAINNET,
+      'cashaddr',
+    ),
+  )
   const mixed = cash.slice(0, 4).toUpperCase() + cash.slice(4)
-  expect(() => new Address(mixed)).toThrow()
   expect(() => lotusFromAddress(mixed, 'livenet')).toThrow()
   expect(() => p2pkhLockingScript(mixed)).toThrow()
 
-  const branded = pubkeyHashFromBytes(Uint8Array.from(Buffer.from(HASH, 'hex')))
-  if (!branded.ok) throw new Error('address-hash')
-  const ecash = encodeAddress(
-    { kind: 'p2pkh', hash: branded.value },
-    XEC_MAINNET,
-    'cashaddr',
+  const ecash = must(
+    encodeAddress(
+      {
+        kind: 'p2pkh',
+        hash: must(
+          pubkeyHashFromBytes(Uint8Array.from(Buffer.from(HASH, 'hex'))),
+        ),
+      },
+      XEC_MAINNET,
+      'cashaddr',
+    ),
   )
-  if (!ecash.ok) throw new Error(ecash.error.code)
-  expect(() => new Address(ecash.value)).toThrow()
-  expect(lotusFromAddress(ecash.value, 'livenet')).toBe(LOTUS)
-  expect(Buffer.from(p2pkhLockingScript(ecash.value)).toString('hex')).toBe(
-    SCRIPT,
-  )
+  expect(lotusFromAddress(ecash, 'livenet')).toBe(LOTUS)
+  expect(Buffer.from(p2pkhLockingScript(ecash)).toString('hex')).toBe(SCRIPT)
 })

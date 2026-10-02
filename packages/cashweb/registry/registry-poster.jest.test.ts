@@ -1,6 +1,7 @@
-import { PrivateKey, PublicKey } from 'bitcore-lib-xpi'
+import { pointFromPublicKey } from '../../nakamoto/src/secp256k1'
 
 import { lotusFromPublicKey } from '../legacy-wallet/lotus-address'
+import { pointKey, secretKey } from '../nakamoto-oracle'
 import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
 import __pb_broadcast_pb from './broadcast_pb'
 import { RegistryHandler } from './index'
@@ -15,7 +16,7 @@ function handler(networkName: string) {
   })
 }
 
-function wrapperFor(pubKey: Buffer) {
+function wrapperFor(pubKey: Uint8Array) {
   const message = new BroadcastMessage()
   message.setTopic('t')
   message.setTimestamp(1)
@@ -26,11 +27,11 @@ function wrapperFor(pubKey: Buffer) {
   return signed
 }
 
-function poster(networkName: string, pubKey: Buffer): string {
+function poster(networkName: string, pubKey: Uint8Array): string {
   return handler(networkName).parseWrapper(wrapperFor(pubKey)).poster
 }
 
-it('keeps the Lotus poster string bitcore derives from a canonical point', () => {
+it('keeps the Lotus poster string of a canonical point', () => {
   const secrets = [
     '12b004fff7f4b69ef8650e767f18f11ede158148b425660723b9f9a66e61f747',
     '22'.repeat(32),
@@ -40,35 +41,34 @@ it('keeps the Lotus poster string bitcore derives from a canonical point', () =>
   ]
   for (const secret of secrets) {
     for (const compressed of [true, false]) {
-      const key = compressed
-        ? new PrivateKey(secret)
-        : new PrivateKey(Buffer.from(secret, 'hex'))
+      const key = secretKey(secret, compressed)
       const pubKey = key.toPublicKey().toBuffer()
-      const parsed = PublicKey.fromBuffer(pubKey)
-      expect(parsed.toBuffer().equals(pubKey)).toBe(true)
+      expect(pointFromPublicKey(Uint8Array.from(pubKey))).not.toBeNull()
       for (const networkName of ['livenet', 'testnet', 'regtest']) {
         expect(poster(networkName, pubKey)).toBe(
-          lotusFromPublicKey(parsed, networkName),
+          lotusFromPublicKey(pointKey(pubKey), networkName),
         )
       }
     }
   }
 })
 
-it('throws on a point bitcore rejects before a Lotus string', () => {
+it('throws on a point the curve rejects before a Lotus string', () => {
   const bad = [
-    Buffer.alloc(0),
-    Buffer.alloc(32),
-    Buffer.concat([Buffer.from([0x02]), Buffer.alloc(32)]),
-    Buffer.concat([Buffer.from([0x04]), Buffer.alloc(64)]),
-    Buffer.concat([Buffer.from([0x06]), Buffer.alloc(64)]),
-    Buffer.from(
-      '041ff0fe0f7b15ffaa85ff9f4744d539139c252a49710fb053bb9f2b933173ff9a7baad41d04514751e6851f5304fd243751703bed21b914f6be218c0fa354a34112',
-      'hex',
+    new Uint8Array(),
+    new Uint8Array(32),
+    Uint8Array.from(Buffer.concat([Buffer.from([0x02]), Buffer.alloc(32)])),
+    Uint8Array.from(Buffer.concat([Buffer.from([0x04]), Buffer.alloc(64)])),
+    Uint8Array.from(Buffer.concat([Buffer.from([0x06]), Buffer.alloc(64)])),
+    Uint8Array.from(
+      Buffer.from(
+        '041ff0fe0f7b15ffaa85ff9f4744d539139c252a49710fb053bb9f2b933173ff9a7baad41d04514751e6851f5304fd243751703bed21b914f6be218c0fa354a34112',
+        'hex',
+      ),
     ),
   ]
   for (const pubKey of bad) {
-    expect(() => PublicKey.fromBuffer(pubKey)).toThrow()
+    expect(pointFromPublicKey(pubKey)).toBeNull()
     expect(() => poster('livenet', pubKey)).toThrow('registry-public-key')
   }
 })

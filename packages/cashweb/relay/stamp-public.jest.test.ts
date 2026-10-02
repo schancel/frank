@@ -1,55 +1,39 @@
-import { PrivateKey, PublicKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
-
+import { addedPoint, pointOf, secretKey } from '../nakamoto-oracle'
 import { PayloadConstructor } from './crypto'
 import { stampParentPublicKey } from './stamp-public'
 
-const NETWORK = 'livenet'
 const DEST_SECRET = '11'.repeat(32)
 const N_HEX = 'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
 const N_MINUS_1 =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140'
 const ONE = `${'00'.repeat(31)}01`
 
-function bitcoreStampPublic(digest: Buffer, destination: PublicKey): Buffer {
-  const digestPoint = PrivateKey.fromBuffer(digest).toPublicKey().point
-  return PublicKey.fromPoint(digestPoint.add(destination.point)).toBuffer()
-}
-
-it('matches bitcore stamp public keys for digests in (0, n)', () => {
+it('adds the stamp digest with tweakAddPublicKey', () => {
   const ctor = new PayloadConstructor({ networkName: 'testnet' })
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
+  const destination = secretKey(DEST_SECRET, false)
   const uncompressed = destination.toPublicKey()
-  const compressed = new PublicKey(
-    Buffer.from(bitcoreCrypto.Point.pointToCompressed(uncompressed.point)),
-  )
+  const compressed = secretKey(DEST_SECRET, true).toPublicKey()
   expect(uncompressed.toBuffer().length).toBe(65)
   expect(compressed.toBuffer().length).toBe(33)
   const digest = Buffer.from('33'.repeat(32), 'hex')
   const key = ctor.constructStampPublicKey(digest, uncompressed)
-  const expected = bitcoreStampPublic(digest, uncompressed)
+  const expected = addedPoint(uncompressed.toBuffer(), digest)
   expect(key.toBuffer()).toEqual(expected)
-  expect(key.toBuffer()).toEqual(bitcoreStampPublic(digest, compressed))
+  expect(key.toBuffer()).toEqual(addedPoint(compressed.toBuffer(), digest))
   expect(ctor.constructStampPublicKey(digest, compressed).toBuffer()).toEqual(
     expected,
   )
-  expect(key.toBuffer()).toEqual(
-    new PublicKey(Buffer.from(expected)).toBuffer(),
-  )
   expect(key.toBuffer().length).toBe(33)
+  expect(key.toBuffer()[0] === 0x02 || key.toBuffer()[0] === 0x03).toBe(true)
 
-  const almost = new PrivateKey(N_MINUS_1)
+  const almost = secretKey(N_MINUS_1, true)
   const cross = Buffer.alloc(32)
   cross[31] = 2
   const crossed = ctor.constructStampPublicKey(cross, almost.toPublicKey())
   expect(crossed.toBuffer()).toEqual(
-    bitcoreStampPublic(cross, almost.toPublicKey()),
+    addedPoint(almost.toPublicKey().toBuffer(), cross),
   )
-  expect(crossed.toBuffer()).toEqual(
-    new PrivateKey(ONE).toPublicKey().toBuffer(),
-  )
+  expect(crossed.toBuffer()).toEqual(pointOf(Buffer.from(ONE, 'hex'), true))
 
   const hd = ctor.constructStampHDPublicKey(digest, uncompressed)
   expect(Buffer.from(hd.publicKey)).toEqual(key.toBuffer())
@@ -57,10 +41,7 @@ it('matches bitcore stamp public keys for digests in (0, n)', () => {
 })
 
 it('rejects digests outside (0, n), a bad point, and infinity', () => {
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
+  const destination = secretKey(DEST_SECRET, false)
   const point = Uint8Array.from(destination.toPublicKey().toBuffer())
   const zero = Buffer.alloc(32)
   expect(() => stampParentPublicKey(point, zero)).toThrow(
@@ -92,11 +73,5 @@ it('rejects digests outside (0, n), a bad point, and infinity', () => {
   expect(() => stampParentPublicKey(point, inverse)).toThrow(
     'stamp-public:point-at-infinity',
   )
-  expect(() =>
-    PublicKey.fromPoint(
-      PrivateKey.fromBuffer(inverse)
-        .toPublicKey()
-        .point.add(destination.toPublicKey().point),
-    ),
-  ).toThrow()
+  expect(() => addedPoint(point, inverse)).toThrow()
 })

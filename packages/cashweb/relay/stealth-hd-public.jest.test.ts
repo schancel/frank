@@ -1,87 +1,70 @@
-import { HDPublicKey, PrivateKey, PublicKey } from 'bitcore-lib-xpi'
-
 import { PayloadConstructor } from './crypto'
 import {
   stealthDepthZeroPublicNode,
   stealthParentHdPublicNode,
 } from './stealth-hd-public'
 import { stealthParentPublicKey } from './stealth-public'
+import {
+  addedPoint,
+  digestSha256,
+  pointKey,
+  pointOf,
+  reduced32,
+  secretKey,
+  sharedPoint,
+} from '../nakamoto-oracle'
 
-const NETWORK = 'livenet'
 const DEST_SECRET = '11'.repeat(32)
 const EPHEMERAL_SECRET = '22'.repeat(32)
-const N_HEX =
-  'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
+const N_HEX = 'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
 const N_PLUS_ONE =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364142'
 
-function bitcoreNode(publicKey: Buffer, chainCode: Buffer, network: string) {
-  return new HDPublicKey({
-    publicKey,
-    depth: 0,
-    network,
-    childIndex: 0,
-    chainCode,
-    parentFingerPrint: 0,
-  })
+function reducedPoint(point: Uint8Array, digest: Uint8Array): Buffer {
+  const reduced = reduced32(digest)
+  if (reduced.equals(Buffer.alloc(32)))
+    return pointOf(Buffer.from(DEST_SECRET, 'hex'), true)
+  return addedPoint(point, reduced)
 }
 
 it('builds a depth-0 stealth public parent whose chain code is the raw digest', () => {
   const ctor = new PayloadConstructor({ networkName: 'testnet' })
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
-  const ephemeral = PrivateKey.fromBuffer(
-    Buffer.from(EPHEMERAL_SECRET, 'hex'),
-    NETWORK,
-  )
+  const destination = secretKey(DEST_SECRET, false)
+  const ephemeral = secretKey(EPHEMERAL_SECRET, false)
   const destinationPublic = destination.toPublicKey()
-  const point = stealthParentPublicKey(
-    Uint8Array.from(destinationPublic.toBuffer()),
-    Uint8Array.from(
+  const shared = sharedPoint(EPHEMERAL_SECRET, destinationPublic.toBuffer())
+  const digest = digestSha256(shared)
+  const publicKey = reducedPoint(destinationPublic.toBuffer(), digest)
+  expect(
+    Buffer.from(
+      stealthParentPublicKey(
+        Uint8Array.from(destinationPublic.toBuffer()),
+        digest,
+      ),
+    ),
+  ).toEqual(publicKey)
+  expect(
+    Buffer.from(
       ctor.constructStealthPublicKey(ephemeral, destinationPublic).digest,
     ),
-  )
-  const digest = ctor.constructStealthPublicKey(
-    ephemeral,
-    destinationPublic,
-  ).digest
-  const publicKey = Buffer.from(point)
+  ).toEqual(digest)
 
   const node = ctor.constructHDStealthPublicKey(ephemeral, destinationPublic)
-  const described = bitcoreNode(
-    publicKey,
-    Buffer.from(digest),
-    'testnet',
-  ).toObject() as {
-    chainCode: Buffer
-    parentFingerPrint: number
-    depth: number
-    childIndex: number
-  }
-  expect(Buffer.from(node.publicKey)).toEqual(
-    bitcoreNode(publicKey, Buffer.from(digest), 'testnet').publicKey.toBuffer(),
-  )
-  expect(Buffer.from(node.publicKey)).toEqual(
-    bitcoreNode(publicKey, Buffer.from(digest), NETWORK).publicKey.toBuffer(),
-  )
-  expect(Buffer.from(node.chainCode)).toEqual(Buffer.from(digest))
-  expect(Buffer.from(described.chainCode)).toEqual(Buffer.from(digest))
+  expect(Buffer.from(node.publicKey)).toEqual(publicKey)
+  expect(Buffer.from(node.chainCode)).toEqual(digest)
   expect(node.depth).toBe(0)
   expect(node.childIndex).toBe(0)
-  expect(described.depth).toBe(0)
-  expect(described.childIndex).toBe(0)
-  expect(described.parentFingerPrint).toBe(0)
   expect(Buffer.from(node.parentFingerprint)).toEqual(Buffer.alloc(4))
-  expect(destination.toBuffer().toString('hex')).toBe(DEST_SECRET)
-  expect(ephemeral.toBuffer().toString('hex')).toBe(EPHEMERAL_SECRET)
+  expect(Buffer.from(destination.toBuffer()).toString('hex')).toBe(DEST_SECRET)
+  expect(Buffer.from(ephemeral.toBuffer()).toString('hex')).toBe(
+    EPHEMERAL_SECRET,
+  )
 
-  const compressed = PublicKey.fromPoint(destinationPublic.point, true)
+  const compressed = pointKey(pointOf(Buffer.from(DEST_SECRET, 'hex'), true))
   expect(compressed.toBuffer().length).toBe(33)
   const compressedNode = ctor.constructHDStealthPublicKey(ephemeral, compressed)
   expect(Buffer.from(compressedNode.publicKey)).toEqual(publicKey)
-  expect(Buffer.from(compressedNode.chainCode)).toEqual(Buffer.from(digest))
+  expect(Buffer.from(compressedNode.chainCode)).toEqual(digest)
 
   const again = Buffer.from(node.publicKey)
   expect(again.equals(Buffer.alloc(33))).toBe(false)
@@ -95,21 +78,17 @@ it('builds a depth-0 stealth public parent whose chain code is the raw digest', 
   expect(Buffer.from(callerSecret).toString('hex')).toBe(EPHEMERAL_SECRET)
   expect(Buffer.from(callerPoint)).toEqual(destinationPublic.toBuffer())
   expect(Buffer.from(held.publicKey)).toEqual(publicKey)
-  expect(Buffer.from(held.chainCode)).toEqual(Buffer.from(digest))
+  expect(Buffer.from(held.chainCode)).toEqual(digest)
 
-  const uncompressed = PublicKey.fromPoint(destinationPublic.point, false)
-  expect(uncompressed.toBuffer().length).toBe(65)
-  const wide = ctor.constructHDStealthPublicKey(ephemeral, uncompressed)
-  expect(Buffer.from(wide.publicKey)).toEqual(publicKey)
-  expect(Buffer.from(wide.chainCode)).toEqual(Buffer.from(digest))
+  const wide = pointKey(pointOf(Buffer.from(DEST_SECRET, 'hex'), false))
+  expect(wide.toBuffer().length).toBe(65)
+  const wideNode = ctor.constructHDStealthPublicKey(ephemeral, wide)
+  expect(Buffer.from(wideNode.publicKey)).toEqual(publicKey)
+  expect(Buffer.from(wideNode.chainCode)).toEqual(digest)
 })
 
 it('stores a chain code >= n without reducing it', () => {
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
-  const compressed = PublicKey.fromPoint(destination.toPublicKey().point, true)
+  const compressed = pointKey(pointOf(Buffer.from(DEST_SECRET, 'hex'), true))
   expect(compressed.toBuffer().length).toBe(33)
   const point = Uint8Array.from(compressed.toBuffer())
   const order = Uint8Array.from(Buffer.from(N_HEX, 'hex'))
@@ -141,10 +120,7 @@ it('stores a chain code >= n without reducing it', () => {
 })
 
 it('rejects the same parent inputs as stealthSharedPoint', () => {
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
+  const destination = secretKey(DEST_SECRET, false)
   const point = Uint8Array.from(destination.toPublicKey().toBuffer())
   expect(() => stealthParentHdPublicNode(new Uint8Array(), point)).toThrow(
     'stealth-shared:wrong-length',
@@ -155,16 +131,18 @@ it('rejects the same parent inputs as stealthSharedPoint', () => {
   expect(() =>
     stealthParentHdPublicNode(Buffer.from(N_HEX, 'hex'), point),
   ).toThrow('stealth-shared:scalar-out-of-range')
-  expect(destination.toBuffer().toString('hex')).toBe(DEST_SECRET)
+  expect(Buffer.from(destination.toBuffer()).toString('hex')).toBe(DEST_SECRET)
   expect(() =>
-    stealthParentHdPublicNode(Uint8Array.from(destination.toBuffer()), new Uint8Array()),
+    stealthParentHdPublicNode(
+      Uint8Array.from(destination.toBuffer()),
+      new Uint8Array(),
+    ),
   ).toThrow('stealth-shared:public-key')
   const invalid = new Uint8Array(33)
   invalid[0] = 0x02
   expect(() =>
     stealthParentHdPublicNode(Uint8Array.from(destination.toBuffer()), invalid),
   ).toThrow('stealth-shared:point-invalid')
-  expect(destination.toBuffer().toString('hex')).toBe(DEST_SECRET)
+  expect(Buffer.from(destination.toBuffer()).toString('hex')).toBe(DEST_SECRET)
   expect(Buffer.from(point)).toEqual(destination.toPublicKey().toBuffer())
-
 })

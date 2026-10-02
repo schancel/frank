@@ -1,10 +1,16 @@
-import { PrivateKey, PublicKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
-
 import { PayloadConstructor } from './crypto'
 import { stealthParentScalar } from './stealth-parent'
 import { stealthParentPublicKey } from './stealth-public'
+import {
+  addedPoint,
+  addedSecretMod,
+  digestSha256,
+  pointOf,
+  reduced32,
+  secretKey,
+  sharedPoint,
+} from '../nakamoto-oracle'
 
-const NETWORK = 'livenet'
 const DEST_SECRET = '11'.repeat(32)
 const EPHEMERAL_SECRET = '22'.repeat(32)
 const N_HEX = 'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
@@ -14,39 +20,28 @@ const N_PLUS_ONE =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364142'
 const ONE = `${'00'.repeat(31)}01`
 
-function bitcoreReducedPublic(digest: Buffer, destination: PublicKey): Buffer {
-  const reduced = bitcoreCrypto.BN.fromBuffer(digest).mod(
-    bitcoreCrypto.Point.getN(),
-  )
-  if (reduced.cmp(new bitcoreCrypto.BN(0)) === 0) {
-    return PublicKey.fromPoint(destination.point).toBuffer()
+function reducedPublic(digest: Uint8Array, point: Uint8Array): Buffer {
+  const reduced = reduced32(digest)
+  if (reduced.equals(Buffer.alloc(32))) {
+    return pointOf(Buffer.from(DEST_SECRET, 'hex'), true)
   }
-  return PublicKey.fromPoint(
-    new PrivateKey(reduced).toPublicKey().point.add(destination.point),
-  ).toBuffer()
+  return addedPoint(point, reduced)
 }
 
-function publicOfPrivateScalar(secret: Buffer, digest: Buffer): Buffer {
+function publicOfScalar(secret: Uint8Array, digest: Uint8Array): Buffer {
   const scalar = stealthParentScalar(Uint8Array.from(secret), digest)
   try {
-    return new PrivateKey(Buffer.from(scalar).toString('hex'))
-      .toPublicKey()
-      .toBuffer()
+    return pointOf(scalar, true)
   } finally {
     scalar.fill(0)
   }
 }
 
-it('matches bitcore and the stealth parent scalar for the reduced digest', () => {
+it('matches the reduced digest for compressed and uncompressed points', () => {
   const ctor = new PayloadConstructor({ networkName: 'testnet' })
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
+  const destination = secretKey(DEST_SECRET, false)
   const uncompressed = destination.toPublicKey()
-  const compressed = new PublicKey(
-    Buffer.from(bitcoreCrypto.Point.pointToCompressed(uncompressed.point)),
-  )
+  const compressed = secretKey(DEST_SECRET, true).toPublicKey()
   expect(uncompressed.toBuffer().length).toBe(65)
   expect(compressed.toBuffer().length).toBe(33)
   const digests = [
@@ -67,16 +62,16 @@ it('matches bitcore and the stealth parent scalar for the reduced digest', () =>
       Uint8Array.from(compressed.toBuffer()),
       digest,
     )
-    const expected = bitcoreReducedPublic(digest, uncompressed)
+    const expected = reducedPublic(digest, uncompressed.toBuffer())
     expect(Buffer.from(fromUncompressed)).toEqual(expected)
     expect(Buffer.from(fromCompressed)).toEqual(expected)
     expect(Buffer.from(fromCompressed)).toEqual(
-      publicOfPrivateScalar(Buffer.from(destination.toBuffer()), digest),
+      publicOfScalar(Buffer.from(destination.toBuffer()), digest),
     )
     expect(fromCompressed.length).toBe(33)
   }
 
-  const almost = new PrivateKey(N_MINUS_1)
+  const almost = secretKey(N_MINUS_1, true)
   const two = Buffer.alloc(32)
   two[31] = 2
   const crossed = stealthParentPublicKey(
@@ -84,24 +79,23 @@ it('matches bitcore and the stealth parent scalar for the reduced digest', () =>
     two,
   )
   expect(Buffer.from(crossed)).toEqual(
-    bitcoreReducedPublic(two, almost.toPublicKey()),
+    reducedPublic(two, almost.toPublicKey().toBuffer()),
   )
+  expect(Buffer.from(crossed)).toEqual(pointOf(Buffer.from(ONE, 'hex'), true))
   expect(Buffer.from(crossed)).toEqual(
-    new PrivateKey(ONE).toPublicKey().toBuffer(),
+    publicOfScalar(Buffer.from(almost.toBuffer()), two),
   )
-  expect(Buffer.from(crossed)).toEqual(
-    publicOfPrivateScalar(Buffer.from(almost.toBuffer()), two),
-  )
+  expect(addedSecretMod(almost.toBuffer(), two).toString('hex')).toBe(ONE)
 
-  const zeroDigest = Buffer.alloc(32)
+  const compressedDest = pointOf(Buffer.from(DEST_SECRET, 'hex'), true)
   expect(
     Buffer.from(
       stealthParentPublicKey(
         Uint8Array.from(uncompressed.toBuffer()),
-        zeroDigest,
+        Buffer.alloc(32),
       ),
     ),
-  ).toEqual(PublicKey.fromPoint(uncompressed.point).toBuffer())
+  ).toEqual(compressedDest)
   expect(
     Buffer.from(
       stealthParentPublicKey(
@@ -111,21 +105,13 @@ it('matches bitcore and the stealth parent scalar for the reduced digest', () =>
     ),
   ).toEqual(compressed.toBuffer())
 
-  const ephemeral = PrivateKey.fromBuffer(
-    Buffer.from(EPHEMERAL_SECRET, 'hex'),
-    NETWORK,
-  )
+  const ephemeral = secretKey(EPHEMERAL_SECRET, false)
   const derived = ctor.constructStealthPublicKey(ephemeral, uncompressed)
-  const raw = bitcoreCrypto.Point.pointToCompressed(
-    uncompressed.point.mul(ephemeral.bn),
-  )
-  const expectedDigest = bitcoreCrypto.Hash.sha256(raw)
-  const expectedPublic = bitcoreReducedPublic(expectedDigest, uncompressed)
+  const raw = sharedPoint(EPHEMERAL_SECRET, uncompressed.toBuffer())
+  const expectedDigest = digestSha256(raw)
+  const expectedPublic = reducedPublic(expectedDigest, uncompressed.toBuffer())
   expect(Buffer.from(derived.digest)).toEqual(expectedDigest)
   expect(derived.stealthPublicKey.toBuffer()).toEqual(expectedPublic)
-  expect(derived.stealthPublicKey.toBuffer()).toEqual(
-    new PublicKey(Buffer.from(expectedPublic)).toBuffer(),
-  )
   expect(derived.stealthPublicKey.toBuffer()).toEqual(
     ctor
       .constructStealthPrivateKey(ephemeral.toPublicKey(), destination)
@@ -144,19 +130,15 @@ it('matches bitcore and the stealth parent scalar for the reduced digest', () =>
   expect(Buffer.from(hd.chainCode)).toEqual(Buffer.from(derived.digest))
 
   const leadingZeroSecret = `${'00'.repeat(31)}6d`
-  const leadingZeroKey = new PrivateKey(leadingZeroSecret)
+  const leadingZeroKey = secretKey(leadingZeroSecret, true)
   const leadingPublic = ctor.constructStealthPublicKey(
     leadingZeroKey,
     uncompressed,
   )
-  const leadingRaw = bitcoreCrypto.Point.pointToCompressed(
-    uncompressed.point.mul(leadingZeroKey.bn),
-  )
+  const leadingRaw = sharedPoint(leadingZeroSecret, uncompressed.toBuffer())
   expect(leadingRaw.length).toBe(33)
   expect(leadingRaw[1]).toBe(0)
-  expect(Buffer.from(leadingPublic.digest)).toEqual(
-    bitcoreCrypto.Hash.sha256(leadingRaw),
-  )
+  expect(Buffer.from(leadingPublic.digest)).toEqual(digestSha256(leadingRaw))
   expect(leadingPublic.stealthPublicKey.toBuffer()).toEqual(
     ctor
       .constructStealthPrivateKey(leadingZeroKey.toPublicKey(), destination)
@@ -172,10 +154,7 @@ it('matches bitcore and the stealth parent scalar for the reduced digest', () =>
 })
 
 it('rejects a bad point, a bad digest, and a point at infinity', () => {
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
+  const destination = secretKey(DEST_SECRET, false)
   const point = Uint8Array.from(destination.toPublicKey().toBuffer())
   const keptPoint = Uint8Array.from(point)
   const keptDigest = Uint8Array.from(Buffer.from(N_MINUS_1, 'hex'))
@@ -204,13 +183,7 @@ it('rejects a bad point, a bad digest, and a point at infinity', () => {
   expect(() => stealthParentPublicKey(point, inverse)).toThrow(
     'stealth-public:point-at-infinity',
   )
-  expect(() =>
-    PublicKey.fromPoint(
-      PrivateKey.fromBuffer(inverse)
-        .toPublicKey()
-        .point.add(destination.toPublicKey().point),
-    ),
-  ).toThrow()
+  expect(() => addedPoint(point, inverse)).toThrow('point-at-infinity')
   expect(() =>
     stealthParentScalar(Uint8Array.from(destination.toBuffer()), inverse),
   ).toThrow('stealth-parent:scalar-out-of-range')

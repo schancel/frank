@@ -1,17 +1,29 @@
-import { PrivateKey, Script, Transaction } from 'bitcore-lib-xpi'
 import { XPI_MAINNET, parseTransaction, verifyScript } from '@frank/nakamoto'
 
-import { signTransactionInputs } from './index'
+import { p2pkhScriptFromPublicKey, signTransactionInputs } from './index'
+import { utxoPrivateKeyFromSecret } from '../types/utxo'
 import { WalletOutput, WalletTransaction } from './wallet-tx'
 
 const TXID_A = '11'.repeat(32)
 const TXID_B = '22'.repeat(32)
+const SECRET_A = '11'.repeat(32)
+const SECRET_B = '22'.repeat(32)
 
-function lockingScript(key: PrivateKey): Buffer {
-  return Buffer.from(Script.buildPublicKeyHashOut(key.toPublicKey()).toBuffer())
+function keyFrom(hex: string) {
+  return utxoPrivateKeyFromSecret(Uint8Array.from(Buffer.from(hex, 'hex')))
 }
 
-function spendable(key: PrivateKey, txId: string, satoshis: number) {
+function lockingScript(key: {
+  toPublicKey(): { toBuffer(): Uint8Array }
+}): Buffer {
+  return Buffer.from(p2pkhScriptFromPublicKey(key.toPublicKey()))
+}
+
+function spendable(
+  key: { toPublicKey(): { toBuffer(): Uint8Array } },
+  txId: string,
+  satoshis: number,
+) {
   return {
     txId,
     outputIndex: 0,
@@ -20,24 +32,27 @@ function spendable(key: PrivateKey, txId: string, satoshis: number) {
   }
 }
 
-function oneInput(key: PrivateKey): WalletTransaction {
-  return new WalletTransaction().from([spendable(key, TXID_A, 50_000)]).addOutput(
-    new WalletOutput({
-      satoshis: 40_000,
-      script: lockingScript(key),
-    }),
-  )
-}
-
-function bitcoreUnsigned(key: PrivateKey): Transaction {
-  return new Transaction()
-    .from([spendable(key, TXID_A, 50_000)])
-    .addOutput(
-      new Transaction.Output({
-        satoshis: 40_000,
-        script: Script.buildPublicKeyHashOut(key.toPublicKey()),
-      }),
-    )
+function unsignedHex(
+  script: Uint8Array,
+  txidDisplay: string,
+  satoshis: number,
+): string {
+  const txid = Buffer.from(txidDisplay, 'hex').reverse()
+  const value = Buffer.alloc(8)
+  value.writeBigUInt64LE(BigInt(satoshis))
+  return Buffer.concat([
+    Buffer.from('02000000', 'hex'),
+    Buffer.of(1),
+    txid,
+    Buffer.alloc(4),
+    Buffer.of(0),
+    Buffer.from('ffffffff', 'hex'),
+    Buffer.of(1),
+    value,
+    Buffer.of(script.length),
+    Buffer.from(script),
+    Buffer.from('00000000', 'hex'),
+  ]).toString('hex')
 }
 
 function scriptHex(transaction: WalletTransaction): string[] {
@@ -47,12 +62,20 @@ function scriptHex(transaction: WalletTransaction): string[] {
 }
 
 it('signs legacy wallet inputs with explicit fork-id assignments and refuses a partial sign', () => {
-  const key = new PrivateKey()
-  const other = new PrivateKey()
-  const transaction = oneInput(key)
-  const oracle = bitcoreUnsigned(key)
-  expect(transaction.toBuffer().toString('hex')).toBe(oracle.toBuffer().toString('hex'))
-  expect(transaction.txid).toBe(oracle.txid)
+  const key = keyFrom(SECRET_A)
+  const other = keyFrom(SECRET_B)
+  const script = lockingScript(key)
+  const transaction = new WalletTransaction()
+    .from([spendable(key, TXID_A, 50_000)])
+    .addOutput(
+      new WalletOutput({
+        satoshis: 40_000,
+        script,
+      }),
+    )
+  expect(transaction.toBuffer().toString('hex')).toBe(
+    unsignedHex(script, TXID_A, 40_000),
+  )
   const before = scriptHex(transaction)
   expect(before).toEqual([''])
 
@@ -63,7 +86,6 @@ it('signs legacy wallet inputs with explicit fork-id assignments and refuses a p
   const signatureLength = unlocking[0]
   expect(signatureLength).toBeGreaterThan(8)
   expect(signatureLength).toBeLessThan(0x4c)
-  // First push is DER plus ALL|FORKID. SIGHASH_LOTUS|ALL would be 0x61.
   expect(unlocking[signatureLength]).toBe(0x41)
   expect(scriptHex(transaction)).not.toEqual(before)
 
@@ -93,7 +115,7 @@ it('signs legacy wallet inputs with explicit fork-id assignments and refuses a p
     .addOutput(
       new WalletOutput({
         satoshis: 80_000,
-        script: lockingScript(key),
+        script,
       }),
     )
   const unsigned = scriptHex(partial)

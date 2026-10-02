@@ -1,3 +1,5 @@
+import { XPI_MAINNET, parseTransaction } from '@frank/nakamoto'
+
 import { pondBurnOutputSatoshis, pondBurnScript } from './burn-script'
 
 // Bitcoin Core BIP143 unsigned transaction. Output 0 is value 1
@@ -47,6 +49,11 @@ it('reads burn output amounts from transaction bytes', () => {
     { value: 1000n, script: upvote },
     { value: 50n, script: downvote },
   ])
+  const parsed = parseTransaction(Uint8Array.from(tx), XPI_MAINNET)
+  expect(parsed.ok).toBe(true)
+  if (!parsed.ok) return
+  expect(parsed.value.outputs[0].value).toBe(1000n)
+  expect(parsed.value.outputs[1].value).toBe(50n)
   expect(pondBurnOutputSatoshis(tx, 0)).toBe(1000)
   expect(pondBurnOutputSatoshis(tx, 1)).toBe(-50)
 
@@ -64,6 +71,9 @@ it('reads burn output amounts from transaction bytes', () => {
   expect(() => pondBurnOutputSatoshis(huge, 0)).toThrow('burn-value')
 
   const trailing = Buffer.concat([bip143, Buffer.of(0)])
+  expect(parseTransaction(Uint8Array.from(trailing), XPI_MAINNET).ok).toBe(
+    false,
+  )
   expect(() => pondBurnOutputSatoshis(trailing, 0)).toThrow('burn-tx')
   expect(() => pondBurnOutputSatoshis(Uint8Array.of(), 0)).toThrow('burn-tx')
   expect(() => pondBurnOutputSatoshis(tx, 2)).toThrow('burn-output')

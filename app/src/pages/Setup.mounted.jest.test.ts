@@ -695,6 +695,9 @@ describe('Setup page mounted (#267)', () => {
           .find('[aria-label="accountStep.refreshRecoveryPhrase"]')
           .exists(),
       ).toBe(false)
+      expect(
+        wrapper.find('[aria-label="accountStep.copyRecoveryPhrase"]').exists(),
+      ).toBe(true)
       expect(setSeed).not.toHaveBeenCalled()
       expect(commitValidatedSetupSeed).not.toHaveBeenCalled()
       expect(wallet.seedPhrase).toBe(STORED)
@@ -744,11 +747,24 @@ describe('Setup page mounted (#267)', () => {
 
       await importBox.setValue(OTHER)
       await nextTick()
+
+      expect(commitValidatedSetupSeed).not.toHaveBeenCalled()
+      expect(setSeed).not.toHaveBeenCalled()
+      expect(mockSetRelayData).not.toHaveBeenCalled()
+      expect(mockFlushProfile).not.toHaveBeenCalled()
+      expect(wallet.flushPersistence).not.toHaveBeenCalled()
+      expect(wallet.seedPhrase).toBe(STORED)
+      expect(wallet.seedConfirmedAt).toBeNull()
+
       await vm.next()
 
       expect(commitValidatedSetupSeed).toHaveBeenCalledTimes(1)
       expect(setSeed).toHaveBeenCalledTimes(1)
+      expect(mockSetRelayData).toHaveBeenCalledTimes(1)
+      expect(mockFlushProfile).toHaveBeenCalledTimes(1)
+      expect(wallet.flushPersistence).toHaveBeenCalledTimes(1)
       expect(wallet.seedPhrase).toBe(OTHER)
+      expect(wallet.seedConfirmedAt).toEqual(expect.any(Number))
     })
 
     it('describes the acknowledgement field with the destructive-loss warning', async () => {

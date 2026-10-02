@@ -1,7 +1,8 @@
 # Frank public federation, directory, and profile plan
 
-Status: reviewed architecture plan; production protobuf and storage migrations require the
-ticketed, staged implementation described below.
+Status: reviewed architecture plan. The directory/provider/profile state-machine semantics are
+fixed in [directory-profile-semantics.md](directory-profile-semantics.md); production protobuf and
+storage migrations require the ticketed, staged implementation described below.
 
 This document defines the public replication side of Frank. It deliberately excludes private
 mailbox delivery, mailbox synchronization, and deniable direct-message authentication except where
@@ -204,6 +205,11 @@ The descriptor payload lists the networks that node serves; a multi-network node
 modeled as belonging to one chain account.
 
 ## Exact time and record succession
+
+The rules below describe the record shape. The normative bootstrap, monotonic-revision,
+fork-resolution, validity, provider-overlap, resource-limit, and legacy-rollback behavior is in
+[directory-profile-semantics.md](directory-profile-semantics.md). Those rules are inputs to #133's
+CBOR allocation and must not be re-decided by storage or HTTP handlers.
 
 Frank retains nanosecond timestamps without passing Unix nanoseconds through a JavaScript
 `number`:

@@ -103,6 +103,14 @@
         >
           {{ preparationStatus }}
         </div>
+        <div
+          v-if="outcomeUnknown"
+          class="text-caption q-mr-sm"
+          role="status"
+          data-test="post-outcome-unknown"
+        >
+          {{ $t('stampPreparation.postOutcomeUnknown') }}
+        </div>
         <q-btn
           ref="composeFocusTarget"
           @click="back"
@@ -116,7 +124,9 @@
           label="Post"
           color="primary"
           class="q-ma-sm"
-          :disable="posting || (!!parentDigest && !parentMessage)"
+          :disable="
+            posting || outcomeUnknown || (!!parentDigest && !parentMessage)
+          "
           :loading="posting"
         />
       </q-card-actions>
@@ -141,6 +151,7 @@ import { activeChain } from '@frank/wallet/chain'
 import type { WalletHandle } from '@frank/wallet/chain'
 import { displayToSafeRawAmount } from 'src/utils/chain-amount'
 import { useWalletStore } from 'src/stores/wallet'
+import type { ForumPostReservationStatus } from 'src/stores/forum'
 
 import { useTopicStore } from 'src/stores/topics'
 import { topicOptions } from 'src/utils/topic-options'
@@ -173,6 +184,8 @@ export default defineComponent({
       getPostReservationId: forum.getPostReservationId,
       reservePostSubmission: forum.reservePostSubmission,
       releasePostSubmission: forum.releasePostSubmission,
+      markPostSubmissionOutcomeUnknown: forum.markPostSubmissionOutcomeUnknown,
+      getPostReservationStatus: forum.getPostReservationStatus,
     }
   },
   components: {
@@ -198,6 +211,7 @@ export default defineComponent({
       parentDigest,
       chainUnit: activeChain.unit,
       posting: false,
+      outcomeUnknown: false,
       preparationStatus: null as string | null,
       activeSubmissionId: null as number | null,
       componentMounted: false,
@@ -227,6 +241,13 @@ export default defineComponent({
     this.parentFocusHandoffId = null
   },
   computed: {
+    currentReservationStatus(): ForumPostReservationStatus | undefined {
+      if (!this.activeWallet) return undefined
+      return this.getPostReservationStatus({
+        wallet: this.activeWallet,
+        destination: this.submissionDestination(this.parentDigest),
+      })
+    },
     // Topics seen in posts, plus the default and relay-discovered ones the topic store tracks.
     knownTopics(): string[] {
       return [...this.availableTopics, ...this.topicStore.getTopics]
@@ -284,11 +305,25 @@ export default defineComponent({
       }
     },
     'currentReservationId'(nextReservationId: number | undefined) {
-      this.posting = nextReservationId !== undefined
       if (nextReservationId === undefined) {
+        this.posting = false
+        this.outcomeUnknown = false
         this.preparationStatus = null
       } else if (this.activeSubmissionId !== nextReservationId) {
-        this.preparationStatus = this.$t('stampPreparation.posting')
+        // A reservation this instance does not own is live for this destination
+        // (remount, duplicate attempt, or a sibling instance). Render its state.
+        this.syncCurrentReservationUi()
+      }
+    },
+    'currentReservationStatus'(nextStatus) {
+      // A reservation this instance does not own can flip from in-flight to
+      // outcome-unknown while this page is mounted (the owner instance settles
+      // elsewhere). Re-render the destination's truthful state.
+      if (
+        nextStatus !== undefined &&
+        this.activeSubmissionId !== this.currentReservationId
+      ) {
+        this.syncCurrentReservationUi()
       }
     },
     'selectedTopic'(nextTopic: string) {
@@ -302,6 +337,7 @@ export default defineComponent({
       this.activeSubmissionId = null
       this.activeWallet = null
       this.posting = false
+      this.outcomeUnknown = false
       this.preparationStatus = null
       if (!this.parentDigest || this.parentMessage) {
         void this.syncSubmissionUi(this.parentDigest)
@@ -314,7 +350,11 @@ export default defineComponent({
     },
     syncCurrentReservationUi() {
       const reservationId = this.currentReservationId
-      this.posting = reservationId !== undefined
+      const outcomeUnknown =
+        reservationId !== undefined &&
+        this.currentReservationStatus === 'outcome-unknown'
+      this.posting = reservationId !== undefined && !outcomeUnknown
+      this.outcomeUnknown = outcomeUnknown
       this.preparationStatus = this.posting
         ? this.$t('stampPreparation.posting')
         : null
@@ -365,6 +405,7 @@ export default defineComponent({
       if (parentDigest && !this.parentMessage) {
         this.activeWallet = null
         this.posting = false
+        this.outcomeUnknown = false
         this.preparationStatus = null
         void this.loadParent()
       } else {
@@ -586,6 +627,16 @@ export default defineComponent({
           infoNotify,
           onOutcome: outcome => {
             retainReservation = outcome === 'unknown-outcome'
+            if (outcome === 'unknown-outcome') {
+              // The paid call may have landed: keep the reservation but mark it
+              // so every mounted instance of this destination renders the
+              // terminal unknown state instead of a false ongoing post.
+              this.markPostSubmissionOutcomeUnknown({
+                wallet,
+                destination: submittedDestination,
+                reservationId: submissionId,
+              })
+            }
           },
           navigateBack: () => {
             if (

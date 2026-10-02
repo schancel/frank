@@ -34,7 +34,7 @@ jest.mock('src/stores/forum', () => ({
   useForumStore: (() => {
     const reservations = jest
       .requireActual('vue')
-      .reactive(new Map<string, { id: number }>())
+      .reactive(new Map<string, { id: number; status: string }>())
     let nextReservationId = 0
     const reservationKey = (
       wallet: { identity: { address: { raw: string } } },
@@ -73,9 +73,31 @@ jest.mock('src/stores/forum', () => ({
         const key = reservationKey(wallet, destination)
         if (reservations.has(key)) return undefined
         const id = ++nextReservationId
-        reservations.set(key, { id })
+        reservations.set(key, { id, status: 'in-flight' })
         return id
       },
+      markPostSubmissionOutcomeUnknown: ({
+        wallet,
+        destination,
+        reservationId,
+      }: {
+        wallet: { identity: { address: { raw: string } } }
+        destination: string
+        reservationId: number
+      }) => {
+        const key = reservationKey(wallet, destination)
+        const reservation = reservations.get(key)
+        if (reservation?.id !== reservationId) return false
+        reservation.status = 'outcome-unknown'
+        return true
+      },
+      getPostReservationStatus: ({
+        wallet,
+        destination,
+      }: {
+        wallet: { identity: { address: { raw: string } } }
+        destination: string
+      }) => reservations.get(reservationKey(wallet, destination))?.status,
       releasePostSubmission: ({
         wallet,
         destination,

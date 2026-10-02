@@ -61,6 +61,84 @@ beforeEach(() => {
 })
 
 describe('useForumStore: session post reservations', () => {
+  it('starts in-flight and can be marked outcome-unknown only by its own reservation id', () => {
+    const store = useForumStore()
+    const reservationId = store.reservePostSubmission({
+      wallet: testWallet,
+      destination: 'reply:parent',
+    })
+    expect(reservationId).toEqual(expect.any(Number))
+    expect(
+      store.getPostReservationStatus({
+        wallet: testWallet,
+        destination: 'reply:parent',
+      }),
+    ).toBe('in-flight')
+
+    expect(
+      store.markPostSubmissionOutcomeUnknown({
+        wallet: testWallet,
+        destination: 'reply:parent',
+        reservationId: (reservationId as number) + 1,
+      }),
+    ).toBe(false)
+    expect(
+      store.getPostReservationStatus({
+        wallet: testWallet,
+        destination: 'reply:parent',
+      }),
+    ).toBe('in-flight')
+
+    expect(
+      store.markPostSubmissionOutcomeUnknown({
+        wallet: testWallet,
+        destination: 'reply:parent',
+        reservationId: reservationId as number,
+      }),
+    ).toBe(true)
+    expect(
+      store.getPostReservationStatus({
+        wallet: testWallet,
+        destination: 'reply:parent',
+      }),
+    ).toBe('outcome-unknown')
+    // Release: the module-scope reservation map is process-lifetime, and later tests in this
+    // file must be able to reserve the same destination again.
+    expect(
+      store.releasePostSubmission({
+        wallet: testWallet,
+        destination: 'reply:parent',
+        reservationId: reservationId as number,
+      }),
+    ).toBe(true)
+  })
+
+  it('reports no status once the reservation is released', () => {
+    const store = useForumStore()
+    const reservationId = store.reservePostSubmission({
+      wallet: testWallet,
+      destination: 'top-level',
+    })
+    store.markPostSubmissionOutcomeUnknown({
+      wallet: testWallet,
+      destination: 'top-level',
+      reservationId: reservationId as number,
+    })
+    expect(
+      store.releasePostSubmission({
+        wallet: testWallet,
+        destination: 'top-level',
+        reservationId: reservationId as number,
+      }),
+    ).toBe(true)
+    expect(
+      store.getPostReservationStatus({
+        wallet: testWallet,
+        destination: 'top-level',
+      }),
+    ).toBeUndefined()
+  })
+
   it('survives a Pinia remount and treats rebuilt handles for one identity as one owner', () => {
     const firstStore = useForumStore()
     const rebuiltWallet = {

@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
 
-import { flushPromises, shallowMount } from '@vue/test-utils'
+import { flushPromises, mount, shallowMount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
 import CreatePost from './CreatePost.vue'
@@ -47,6 +47,22 @@ jest.mock('../components/forum/ForumMessage.vue', () => ({
 }))
 jest.mock('../utils/markdown', () => ({ renderMarkdown: () => '' }))
 
+// Jest aliases `quasar` to its SSR build, whose form controls do not render. Load the real UMD
+// components for the regression that must observe the disabled Post button's truthful state.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function loadQuasar(): any {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const globals = globalThis as any
+  globals.Vue = jest.requireActual('vue')
+  globals.ResizeObserver ??= class {
+    observe = jest.fn()
+    unobserve = jest.fn()
+    disconnect = jest.fn()
+  }
+  jest.requireActual('quasar/dist/quasar.umd.prod.js')
+  return globals.Quasar
+}
+
 const wallet = {
   identity: {
     address: { raw: '0xabc' },
@@ -86,6 +102,22 @@ function mountPage(
       stubs: {
         QSelect: true,
         AMessage: true,
+      },
+    },
+  })
+}
+
+function mountRealPage(pinia: ReturnType<typeof createPinia>) {
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  return mount(CreatePost, {
+    attachTo: host,
+    global: {
+      plugins: [pinia, loadQuasar()],
+      mocks: {
+        $t,
+        $route: { params: {} },
+        $router: { go: jest.fn(), push: jest.fn(), back: jest.fn() },
       },
     },
   })
@@ -211,13 +243,26 @@ it('keeps an unknown paid outcome reserved across a Pinia remount and rebuilt wa
   )
   const firstPinia = createPinia()
   setActivePinia(firstPinia)
-  const original = mountPage(firstPinia)
+  const original = mountRealPage(firstPinia)
   await flushPromises()
 
   await (original.vm as unknown as { post(): Promise<void> }).post()
   await flushPromises()
   expect(mockTopicPost).toHaveBeenCalledTimes(1)
-  expect(original.vm).toMatchObject({ posting: true })
+  // The async operation has ended: no false ongoing-post status, no spinner.
+  expect(original.vm).toMatchObject({
+    posting: false,
+    outcomeUnknown: true,
+    preparationStatus: null,
+  })
+  expect(original.find('[data-test="post-status"]').exists()).toBe(false)
+  const warning = original.get('[data-test="post-outcome-unknown"]')
+  expect(warning.attributes('role')).toBe('status')
+  expect(warning.text()).toBe('stampPreparation.postOutcomeUnknown')
+  // Post stays disabled (no second paid call) but without the loading spinner.
+  const originalPostButton = original.get('button[type="submit"]')
+  expect(originalPostButton.attributes('disabled')).toBe('')
+  expect(originalPostButton.find('.q-spinner').exists()).toBe(false)
   original.unmount()
 
   const rebuiltWallet = {
@@ -229,19 +274,35 @@ it('keeps an unknown paid outcome reserved across a Pinia remount and rebuilt wa
   jest.mocked(useActiveWallet).mockResolvedValue(rebuiltWallet as never)
   const remountedPinia = createPinia()
   setActivePinia(remountedPinia)
-  const remounted = mountPage(remountedPinia)
+  const remounted = mountRealPage(remountedPinia)
   await flushPromises()
 
-  expect(remounted.vm).toMatchObject({ posting: true })
+  expect(remounted.vm).toMatchObject({
+    posting: false,
+    outcomeUnknown: true,
+    preparationStatus: null,
+  })
+  expect(remounted.find('[data-test="post-outcome-unknown"]').exists()).toBe(
+    true,
+  )
+  const remountedPostButton = remounted.get('button[type="submit"]')
+  expect(remountedPostButton.attributes('disabled')).toBe('')
+  expect(remountedPostButton.find('.q-spinner').exists()).toBe(false)
+  // Retry actions cannot issue a second paid call while the outcome is unknown.
   await (remounted.vm as unknown as { post(): Promise<void> }).post()
   await flushPromises()
   expect(mockTopicPost).toHaveBeenCalledTimes(1)
+  const reservationId = useForumStore().getPostReservationId({
+    wallet: rebuiltWallet as never,
+    destination: 'top-level',
+  })
+  expect(reservationId).toEqual(expect.any(Number))
   expect(
-    useForumStore().getPostReservationId({
+    useForumStore().getPostReservationStatus({
       wallet: rebuiltWallet as never,
       destination: 'top-level',
     }),
-  ).toEqual(expect.any(Number))
+  ).toBe('outcome-unknown')
   remounted.unmount()
 })
 

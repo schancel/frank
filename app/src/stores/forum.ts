@@ -31,8 +31,11 @@ export interface State {
   hasFetchedOnce: boolean
 }
 
+export type ForumPostReservationStatus = 'in-flight' | 'outcome-unknown'
+
 type ForumPostReservation = {
   id: number
+  status: ForumPostReservationStatus
 }
 
 // Session-only economic ownership for paid forum submissions. This deliberately lives outside
@@ -106,7 +109,7 @@ export const useForumStore = defineStore('forum', {
       const reservationKey = forumPostReservationKey(wallet, destination)
       if (forumPostReservations.has(reservationKey)) return undefined
       const id = ++nextForumPostReservationId
-      forumPostReservations.set(reservationKey, { id })
+      forumPostReservations.set(reservationKey, { id, status: 'in-flight' })
       return id
     },
     releasePostSubmission({
@@ -124,6 +127,34 @@ export const useForumStore = defineStore('forum', {
         return false
       }
       return forumPostReservations.delete(reservationKey)
+    },
+    markPostSubmissionOutcomeUnknown({
+      wallet,
+      destination,
+      reservationId,
+    }: {
+      wallet: WalletHandle
+      destination: string
+      reservationId: number
+    }): boolean {
+      const reservationKey = forumPostReservationKey(wallet, destination)
+      const reservation = forumPostReservations.get(reservationKey)
+      if (reservation?.id !== reservationId) {
+        return false
+      }
+      reservation.status = 'outcome-unknown'
+      return true
+    },
+    getPostReservationStatus({
+      wallet,
+      destination,
+    }: {
+      wallet: WalletHandle
+      destination: string
+    }): ForumPostReservationStatus | undefined {
+      return forumPostReservations.get(
+        forumPostReservationKey(wallet, destination),
+      )?.status
     },
     setSortMode(sortMode: SortMode) {
       this.sortMode = sortMode

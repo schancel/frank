@@ -21,7 +21,11 @@ import {
 import { Wallet } from '../legacy-wallet'
 import { Utxo } from '../types/utxo'
 import { calcUtxoId } from '../legacy-wallet/helpers'
-import { lotusFromAddress } from '../legacy-wallet/lotus-address'
+import {
+  lotusFromAddress,
+  lotusFromPrivateKey,
+  lotusFromPublicKey,
+} from '../legacy-wallet/lotus-address'
 import __pb_broadcast_pb from './broadcast_pb'
 const { BroadcastEntry, BroadcastMessage, ForumPost } = __pb_broadcast_pb
 import { ForumMessage, ForumMessageEntry } from '../types/forum'
@@ -261,10 +265,7 @@ export class RegistryHandler {
 
   async updateKeyMetadata(relayUrl: string, idPrivKey: PrivateKey) {
     assert(this.wallet, 'Missing wallet while running updateKeyMetadata')
-    const idAddress = lotusFromAddress(
-      idPrivKey.toAddress(this.networkName),
-      this.networkName,
-    )
+    const idAddress = lotusFromPrivateKey(idPrivKey, this.networkName)
     // Construct metadata
     const signedPayload = this.constructRelayUrlMetadata(relayUrl, idPrivKey)
 
@@ -441,8 +442,8 @@ export class RegistryHandler {
     assert(typeof payload !== 'string', 'payload type should not be a string')
     const message = BroadcastMessage.deserializeBinary(payload)
     const pubKey = Buffer.from(wrapper.getPublicKey())
-    const address = lotusFromAddress(
-      PublicKey.fromBuffer(pubKey).toAddress(this.networkName),
+    const address = lotusFromPublicKey(
+      PublicKey.fromBuffer(pubKey),
       this.networkName,
     )
     const entries = message.getEntriesList()

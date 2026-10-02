@@ -1,6 +1,9 @@
 import { Address, PrivateKey, Script } from 'bitcore-lib-xpi'
 
 import {
+  lotusFromAddress,
+  lotusFromPrivateKey,
+  lotusFromPublicKey,
   p2pkhHashFromPublicKey,
   p2pkhHashFromScript,
   p2pkhLockingScript,
@@ -30,6 +33,12 @@ it('builds the p2pkh script from a lotus string and omits that string from the u
   ).toBe(true)
   expect(Buffer.from(p2pkhHashFromScript(fromKey)).toString('hex')).toBe(
     key.toAddress().hashBuffer.toString('hex'),
+  )
+  expect(lotusFromPrivateKey(key, 'livenet')).toBe(
+    lotusFromAddress(key.toAddress('livenet'), 'livenet'),
+  )
+  expect(lotusFromPublicKey(key.toPublicKey(), 'testnet')).toBe(
+    lotusFromAddress(key.toAddress('testnet'), 'testnet'),
   )
   expect(Buffer.from(p2pkhLockingScript(key.toAddress().toString()))).toEqual(
     fromKey,

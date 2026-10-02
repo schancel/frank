@@ -51,6 +51,23 @@ export function p2pkhHashFromPublicKey(publicKey: Uint8Array): Uint8Array {
   return hash.value
 }
 
+export function lotusFromPublicKey(
+  publicKey: { toBuffer(): Uint8Array },
+  networkName: string,
+): string {
+  return lotusP2pkhFromHash(
+    p2pkhHashFromPublicKey(publicKey.toBuffer()),
+    networkName,
+  )
+}
+
+export function lotusFromPrivateKey(
+  key: { toPublicKey(): { toBuffer(): Uint8Array } },
+  networkName: string,
+): string {
+  return lotusFromPublicKey(key.toPublicKey(), networkName)
+}
+
 export function sameHash(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false
   for (let index = 0; index < left.length; index += 1) {

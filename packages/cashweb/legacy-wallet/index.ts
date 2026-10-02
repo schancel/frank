@@ -17,7 +17,12 @@ import { Utxo } from '../types/utxo'
 import { ChronikClient, WsEndpoint } from 'chronik-client'
 import { AddressEvent, ChainAdapter } from './chain-adapter'
 import { LotusAdapter } from './lotus-adapter'
-import { lotusFromAddress, p2pkhLockingScript } from './lotus-address'
+import {
+  lotusFromPrivateKey,
+  p2pkhHashFromPublicKey,
+  p2pkhLockingScript,
+} from './lotus-address'
+import { lotusP2pkhFromHash } from './lotus-identity'
 import {
   BTC_MAINNET,
   BTC_TESTNET,
@@ -411,10 +416,10 @@ export class Wallet {
     privKey: PrivateKey
     change: boolean
   }) {
-    const address = privKey.toAddress(this.networkName)
-    const pkh = address.hashBuffer.toString('hex')
+    const hash = p2pkhHashFromPublicKey(privKey.toPublicKey().toBuffer())
+    const pkh = Buffer.from(hash).toString('hex')
     this.addressDataByPkh.set(pkh, {
-      address: lotusFromAddress(address, this.networkName),
+      address: lotusP2pkhFromHash(hash, this.networkName),
       change,
       privKey,
     })
@@ -553,7 +558,9 @@ export class Wallet {
       [...this.walletKeys, ...this.changeKeys],
       key =>
         chainAdapter.subscribeAddress(
-          key.privKey.toAddress().hashBuffer.toString('hex'),
+          Buffer.from(
+            p2pkhHashFromPublicKey(key.privKey.toPublicKey().toBuffer()),
+          ).toString('hex'),
         ),
       { concurrency: 5 },
     )
@@ -1162,7 +1169,7 @@ export class Wallet {
   get displayAddress() {
     const key = this.identityPrivKey
     if (!key) return undefined
-    return lotusFromAddress(key.toAddress(this.networkName), this.networkName)
+    return lotusFromPrivateKey(key, this.networkName)
   }
 
   freezeUtxo(utxo: Utxo) {

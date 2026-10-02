@@ -101,7 +101,7 @@ import {
  * `decodeMonadTopicPostView` -- written fresh here rather than imported, per this ticket's own
  * task description (see this file's header). */
 function decodeMonadTopicPostViewPb(
-  pb: MonadTopicPostView,
+  pb: InstanceType<typeof MonadTopicPostView>,
 ): MonadTopicPostViewProto {
   const storedPb = pb.getPost()
   let post: StoredMonadTopicPostProto | undefined
@@ -122,6 +122,7 @@ function decodeMonadTopicPostViewPb(
       txHash: storedPb.getTxHash_asU8(),
       timestamp: storedPb.getTimestamp(),
       networkTag: storedPb.getNetworkTag_asU8(),
+      cborPostFrame: storedPb.getCborPostFrame_asU8(),
     }
   }
   return {
@@ -144,6 +145,7 @@ export async function fetchMonadTopicPostsSince(params: {
     method: 'get',
     url: `${params.relayBaseUrl.replace(/\/+$/, '')}/message/monad/topics`,
     params: { topic: params.topic, since: params.sinceMs },
+    headers: { Accept: 'application/x-protobuf' },
     responseType: 'arraybuffer',
   })
   const decoded = MonadTopicPostViews.deserializeBinary(
@@ -168,6 +170,7 @@ export async function fetchMonadTopicPostView(params: {
       url: `${params.relayBaseUrl.replace(/\/+$/, '')}/message/monad/topics/${
         params.payloadHashHex
       }`,
+      headers: { Accept: 'application/x-protobuf' },
       responseType: 'arraybuffer',
     })
     return decodeMonadTopicPostViewPb(
@@ -219,6 +222,7 @@ export async function fetchDiscoveredTopics(params: {
         /\/+$/,
         '',
       )}/message/monad/topics/discover`,
+      headers: { Accept: 'application/x-protobuf' },
       responseType: 'arraybuffer',
     })
     const decoded = ListTopicsResponse.deserializeBinary(

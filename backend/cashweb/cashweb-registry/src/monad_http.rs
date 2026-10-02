@@ -286,6 +286,9 @@ pub struct TransactionReceipt {
     /// Number of the block this transaction was included in.
     #[serde(with = "hex_quantity")]
     pub block_number: u64,
+    /// Position of this transaction within its block. Monad production receipts include it.
+    #[serde(default, with = "hex_quantity::option")]
+    pub transaction_index: Option<u64>,
     /// Address that sent this transaction.
     pub from: Address,
     /// Address this transaction was sent to (`None` for a contract-creation transaction).

@@ -1129,6 +1129,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           stampPaymentJournal,
           stampAttemptJournal,
           relayBaseUrl: config.relayBaseUrl,
+          cborNetwork:
+            config.networkTag === "MON1" ? "monad-mainnet" : "monad-testnet",
         };
         await new MonadStampClient(wallet).resumePendingAttempts();
         return wallet;

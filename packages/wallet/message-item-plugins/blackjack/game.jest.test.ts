@@ -531,13 +531,43 @@ describe('dealing rules shared by the bot and the fairness check (#378)', () => 
     }
   })
 
-  it('the dealer bot resolves hands through the shared function', () => {
-    const source = require('fs').readFileSync(
-      require('path').resolve(__dirname, '../../../bot/blackjack-bot.livecheck.ts'),
-      'utf8',
-    )
-    expect(source).toContain('playOutDealer(')
-    expect(source).not.toMatch(/while \(handValue\(dealerCards\)\.total < 17\)/)
+  it('tampered dealer cards on a player bust fail verification (#380)', () => {
+    let bustFound = false
+    const flip = (cards: number[]) => [(cards[0] + 1) % 52, ...cards.slice(1)]
+    for (let i = 0; i < 20000; i++) {
+      const s = `bust-check-${i}`
+      for (const hits of [1, 2, 3]) {
+        const ref = botReference(s, WAGER_TX_HASH, hits)
+        if (handValue(ref.playerCards).bust) {
+          const goodBust = revealed(s, WAGER_TX_HASH, hits)
+          expect(verifyRevealedHand(goodBust)).toEqual({ valid: true })
+
+          // Replacing dealer cards fails verification:
+          expect(
+            verifyRevealedHand({ ...goodBust, dealerCards: flip(goodBust.dealerCards) }),
+          ).toEqual({
+            valid: false,
+            reason: 'recorded dealer cards do not match the committed shuffle',
+          })
+
+          // Extra drawn card by dealer on player bust also fails:
+          expect(
+            verifyRevealedHand({
+              ...goodBust,
+              dealerCards: [...goodBust.dealerCards, ref.deck[4 + hits]],
+            }),
+          ).toEqual({
+            valid: false,
+            reason: 'recorded dealer cards do not match the committed shuffle',
+          })
+
+          bustFound = true
+          break
+        }
+      }
+      if (bustFound) break
+    }
+    expect(bustFound).toBe(true)
   })
 })
 

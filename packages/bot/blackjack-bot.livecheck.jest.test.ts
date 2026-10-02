@@ -20,7 +20,9 @@ import {
   dealInitialCards,
   HydratedBlackjackMove,
   parseBlackjackError,
+  playOutDealer,
   resolveOutcome,
+  verifyRevealedHand,
 } from '@frank/wallet/message-item-plugins/blackjack/game'
 import {
   deserializeMessageItems,
@@ -34,12 +36,14 @@ import {
 } from './qwen-bot-common'
 import {
   BlackjackBotStateStore,
+  BlackjackGameRecord,
   MAX_BLACKJACK_GAME_ID_BYTES,
 } from './blackjack-bot-state'
 import {
   handleMove,
   hydrateMoveWithValidatedGameId,
   attemptRefund,
+  resolveAndReveal,
   retryPendingRefunds,
 } from './blackjack-bot.livecheck'
 
@@ -1014,4 +1018,242 @@ describe('blackjack move authorization', () => {
       expect(mainAccountSigner.submit).not.toHaveBeenCalled()
     },
   )
+
+  // ---- resolveAndReveal: behavioral tests with fake ports (#380) ---------------------------
+  describe('resolveAndReveal behavioral checks (#380)', () => {
+    function runResolve(record: BlackjackGameRecord, gameId = 'game-a') {
+      return resolveAndReveal({
+        gameId,
+        record,
+        identity: { displayAddress: DEALER } as never,
+        senderPubKey: Buffer.alloc(33, 1),
+        networkTag: 'TEST',
+        stampValueWei: 1n,
+        stampClient: {} as never,
+        pool: {} as never,
+        mainAccountSigner: mainAccountSigner as never,
+        provider: { getBalance } as never,
+        state,
+      })
+    }
+
+    async function createTestGame(gameId: string, seed: string, wagerTxHash: string) {
+      await state.setPendingCommitment(seed, sha256Hex(seed))
+      const nextSeed = `next-${seed}`
+      const rec: BlackjackGameRecord = {
+        authority: 'verified-wager-sender',
+        playerAddress: getAddress(PLAYER),
+        wagerWei: 100n,
+        wagerTxHash: wagerTxHash.toLowerCase(),
+        serverSeed: seed,
+        serverSeedHash: sha256Hex(seed),
+        dealtCount: 4,
+        doubled: false,
+        doubleWagerWei: undefined,
+        revealed: false,
+      }
+      await state.claimWagerAndCreateGame({
+        gameId,
+        wagerTxHash: wagerTxHash.toLowerCase(),
+        playerAddress: getAddress(PLAYER),
+        expectedCommitment: { serverSeed: seed, serverSeedHash: sha256Hex(seed) },
+        nextCommitment: { serverSeed: nextSeed, serverSeedHash: sha256Hex(nextSeed) },
+        record: rec,
+      })
+      return rec
+    }
+
+    it('rejects a record without verified-wager-sender authority', async () => {
+      await bet()
+      const rec = state.getGame('game-a')!
+      const unverified = { ...rec, authority: 'legacy-unverified' as const }
+      await expect(runResolve(unverified as never)).rejects.toThrow(
+        'cannot resolve or pay a blackjack game without verified wager authority',
+      )
+    })
+
+    it('on player bust: dealer holds initial cards (draws nothing), outcomes dealer_win, pays 0, and passes verifyRevealedHand', async () => {
+      const seed = findSeed('resolve-bust', (deck) => {
+        const pv = handValue([deck[0], deck[2], deck[4]])
+        return pv.bust
+      })
+      await seedAndBet(seed)
+      const rec = state.getGame('game-a')!
+      // Player hit once and busted (dealtCount = 5)
+      await state.setGame('game-a', { ...rec, dealtCount: 5 })
+      const deck = deriveDeck(seed, WAGER_HASH.toLowerCase(), 0)
+      const expectedInitialDealerCards = [deck[1], deck[3]]
+
+      jest.clearAllMocks()
+      await runResolve(state.getGame('game-a')!)
+
+      expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+      expect(sendDirectMessageItems).toHaveBeenCalledTimes(1)
+      const sentItems = (sendDirectMessageItems as jest.Mock).mock.calls[0][0].items
+      expect(sentItems).toEqual([
+        {
+          type: 'blackjack-move',
+          gameId: 'game-a',
+          action: 'reveal',
+          dealerCards: expectedInitialDealerCards,
+          serverSeed: seed,
+          outcome: 'dealer_win',
+        },
+      ])
+
+      const gameAfter = state.getGame('game-a')!
+      expect(gameAfter.revealed).toBe(true)
+      expect(gameAfter.dealtCount).toBe(5) // dealer drew 0 cards
+
+      // Client fairness check passes
+      expect(
+        verifyRevealedHand({
+          gameId: 'game-a',
+          phase: 'resolved',
+          playerAddress: PLAYER,
+          wagerTxHash: WAGER_HASH.toLowerCase(),
+          serverSeed: seed,
+          serverSeedHash: sha256Hex(seed),
+          playerCards: [deck[0], deck[2], deck[4]],
+          dealerCards: sentItems[0].dealerCards,
+          outcome: sentItems[0].outcome,
+          availableActions: [],
+        }),
+      ).toEqual({ valid: true })
+    })
+
+    it('on player natural: dealer draws nothing even when under 17, pays 2.5x, and passes verifyRevealedHand', async () => {
+      const wagerTxHash = `0x${'33'.repeat(32)}`
+      let seed = ''
+      for (let i = 0; i < 5000; i++) {
+        const candidate = `resolve-nat-${i}`
+        const d = deriveDeck(candidate, wagerTxHash.toLowerCase(), 0)
+        const pv = handValue([d[0], d[2]])
+        const dv = handValue([d[1], d[3]])
+        if (pv.blackjack && dv.total < 17) {
+          seed = candidate
+          break
+        }
+      }
+      expect(seed).not.toBe('')
+      const rec = await createTestGame('game-nat', seed, wagerTxHash)
+      const deck = deriveDeck(seed, wagerTxHash.toLowerCase(), 0)
+
+      jest.clearAllMocks()
+      await runResolve(rec, 'game-nat')
+
+      // Pays 2.5x on 100n wager = 250n
+      expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledTimes(1)
+      expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledWith(getAddress(PLAYER), 250n)
+      expect(mainAccountSigner.submitRaw).toHaveBeenCalledWith('0xsigned-payout', '0xpayout')
+
+      expect(sendDirectMessageItems).toHaveBeenCalledTimes(1)
+      const sentItems = (sendDirectMessageItems as jest.Mock).mock.calls[0][0].items
+      expect(sentItems[0]).toEqual({
+        type: 'blackjack-move',
+        gameId: 'game-nat',
+        action: 'reveal',
+        dealerCards: [deck[1], deck[3]], // exactly 2 cards, stayed on < 17
+        serverSeed: seed,
+        outcome: 'player_blackjack',
+      })
+
+      const gameAfter = state.getGame('game-nat')!
+      expect(gameAfter.revealed).toBe(true)
+      expect(gameAfter.dealtCount).toBe(4) // dealer did not draw
+
+      expect(
+        verifyRevealedHand({
+          gameId: 'game-nat',
+          phase: 'resolved',
+          playerAddress: PLAYER,
+          wagerTxHash: wagerTxHash.toLowerCase(),
+          serverSeed: seed,
+          serverSeedHash: sha256Hex(seed),
+          playerCards: [deck[0], deck[2]],
+          dealerCards: sentItems[0].dealerCards,
+          outcome: sentItems[0].outcome,
+          availableActions: [],
+        }),
+      ).toEqual({ valid: true })
+    })
+
+    it('on normal stand: dealer draws until >= 17 according to playOutDealer, and passes verifyRevealedHand', async () => {
+      const seed = findSeed('resolve-draw', (deck) => {
+        const pv = handValue([deck[0], deck[2]])
+        const dv = handValue([deck[1], deck[3]])
+        // Player stands, dealer starts < 17 and draws at least 1 card
+        return !pv.bust && !pv.blackjack && dv.total < 17
+      })
+      await seedAndBet(seed)
+      const rec = state.getGame('game-a')!
+      const deck = deriveDeck(seed, WAGER_HASH.toLowerCase(), 0)
+      const playerCards = [deck[0], deck[2]]
+      const expected = playOutDealer(deck, playerCards, 4)
+      expect(expected.dealerCards.length).toBeGreaterThan(2)
+
+      jest.clearAllMocks()
+      await runResolve(rec)
+
+      const gameAfter = state.getGame('game-a')!
+      expect(gameAfter.revealed).toBe(true)
+      expect(gameAfter.dealtCount).toBe(expected.dealtCount)
+
+      expect(sendDirectMessageItems).toHaveBeenCalledTimes(1)
+      const sentItems = (sendDirectMessageItems as jest.Mock).mock.calls[0][0].items
+      expect(sentItems[0]).toEqual({
+        type: 'blackjack-move',
+        gameId: 'game-a',
+        action: 'reveal',
+        dealerCards: expected.dealerCards,
+        serverSeed: seed,
+        outcome: expected.outcome,
+      })
+
+      expect(
+        verifyRevealedHand({
+          gameId: 'game-a',
+          phase: 'resolved',
+          playerAddress: PLAYER,
+          wagerTxHash: WAGER_HASH.toLowerCase(),
+          serverSeed: seed,
+          serverSeedHash: sha256Hex(seed),
+          playerCards,
+          dealerCards: sentItems[0].dealerCards,
+          outcome: sentItems[0].outcome,
+          availableActions: [],
+        }),
+      ).toEqual({ valid: true })
+    })
+
+    it('is idempotent: re-invoking resolveAndReveal on an already resolved game does not send duplicate reveals or payouts', async () => {
+      const wagerTxHash = `0x${'44'.repeat(32)}`
+      let seed = ''
+      for (let i = 0; i < 5000; i++) {
+        const candidate = `resolve-idem-${i}`
+        const d = deriveDeck(candidate, wagerTxHash.toLowerCase(), 0)
+        const pv = handValue([d[0], d[2]])
+        const dv = handValue([d[1], d[3]])
+        if (pv.blackjack && dv.total < 17) {
+          seed = candidate
+          break
+        }
+      }
+      expect(seed).not.toBe('')
+      const rec = await createTestGame('game-idem', seed, wagerTxHash)
+
+      await runResolve(rec, 'game-idem')
+      expect(sendDirectMessageItems).toHaveBeenCalledTimes(1)
+      expect(mainAccountSigner.submitRaw).toHaveBeenCalledTimes(1)
+
+      jest.clearAllMocks()
+      // Calling resolveAndReveal again with the resolved record
+      const resolvedRec = state.getGame('game-idem')!
+      await runResolve(resolvedRec, 'game-idem')
+
+      expect(sendDirectMessageItems).not.toHaveBeenCalled()
+      expect(mainAccountSigner.submitRaw).not.toHaveBeenCalled()
+      expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+    })
+  })
 })

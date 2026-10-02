@@ -178,7 +178,7 @@ function playerCardsSoFar(deck: Card[], dealtCount: number): Card[] {
   return [...initial.playerCards, ...deck.slice(4, dealtCount)]
 }
 
-async function resolveAndReveal(params: {
+export async function resolveAndReveal(params: {
   gameId: string
   record: BlackjackGameRecord
   identity: MonadIdentity

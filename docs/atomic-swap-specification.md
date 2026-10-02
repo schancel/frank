@@ -147,11 +147,29 @@ authorized keys and sighash constraints. An observed witness is appended as sett
 must satisfy that predicate; it need not byte-match an illustrative preparation witness. Variable
 witnesses never overwrite or reinterpret the originally attested preparation transcript.
 
-Later chain evidence is appended to an audit transcript and does not require renewed peer
-cooperation. Native chain signatures continue to sign only the exact digest accepted by their chain;
-they are transaction authorization, not a substitute for protocol attestation. Any future primitive
-that adds associated context to NIZK challenges is a new version requiring encodings, vectors, and
-independent review.
+An immutable artifact leaf may instead be a canonical opaque commitment when a named mode
+deliberately withholds the artifact bytes. The leaf type, commitment algorithm, party able to
+validate the bytes, and reveal predicate are transcript-bound. In the initial withheld-parent mode,
+the eCash parent leaf is its txid/output commitment rather than undisclosed parent bytes; B attests
+only that opaque commitment and the disclosed grief risk until reveal.
+
+The protocol keeps three domains separate:
+
+1. the immutable authorization transcript and its signed pre-funding root;
+2. a replicated protocol-state root over single-valued negotiation facts and monotone keyed fact
+   sets; and
+3. each observer's append-only local evidence journal.
+
+Message predecessor fields commit only to the replicated protocol-state root, never to
+arrival-ordered local observations. Chain observations receive canonical semantic evidence IDs and
+merge as an order-independent set whose root sorts by semantic slot and evidence ID; duplicate or
+byte-distinct witnesses satisfying the same allowed predicate may coexist. Equivocation applies only
+to a single-valued semantic slot, not to multiple valid observations. Reorganizations append status
+facts and never rewrite either the authorization transcript or prior evidence. Later chain evidence
+needs no renewed peer cooperation. Native chain signatures continue to sign only the exact digest
+accepted by their chain; they are transaction
+authorization, not a substitute for protocol attestation. Any future primitive that adds associated
+context to NIZK challenges is a new version requiring encodings, vectors, and independent review.
 
 No JavaScript floating-point value may represent an amount, price, deadline, chain identifier, or
 nonce. Wire integers must have a canonical bounded representation. Raw transactions, public keys,
@@ -186,15 +204,18 @@ event journal so a restart can reconstruct the state without repeating a signing
 a nonce.
 
 Every message has a canonical authenticated envelope containing protocol/version, swap and lane
-IDs, message type, sender identity and role, unique event ID, predecessor state/transcript hash, and
+IDs, message type, sender identity and role, unique event ID, predecessor replicated-state root, and
 canonical payload hash. A transition table must assign each message its authorized producer,
 admissible predecessor state, validation guards, durable effects, and next state. Byte-identical
-duplicates are no-ops. A conflicting message for the same step is recorded as equivocation and
-enters the specified violation/recovery path. Premature messages follow one specified durable-buffer
-or reject-and-retransmit policy; implementations do not choose independently. Stale and
-post-terminal messages never revive a signing session.
+duplicates are no-ops. A conflicting value for a single-valued slot is recorded as equivocation and
+enters the specified violation/recovery path; repeatable keyed funding/evidence facts instead merge
+idempotently and may cite a known ancestor root when concurrent facts commute. A noncommutative
+transition must cite the exact canonical root containing all of its declared prerequisites.
+Premature messages follow one specified durable-buffer or reject-and-retransmit policy;
+implementations do not choose independently. Stale and post-terminal messages never revive a
+signing session.
 
-The initial message flow is:
+The common preparation flow is:
 
 ```text
 Offer
@@ -204,15 +225,36 @@ Offer
   -> EncryptedSignatures
   -> PrefundingAuthorizationAttestations
   -> ReadyToFund
-  -> FundingEvidence
-  -> ReadyToSettle
-  -> SettlementEvidence
-  -> SecretExtraction
-  -> CounterSettlementEvidence
-  -> Complete | Refunded | FailedBeforeFunding
-     | CooperativeRecoveryRequired | PermanentlyLockedByDesign
-     | ManualRecoveryRequired | LossOrProtocolViolation
 ```
+
+Funding is not one overwriteable step. `FundingProgress` facts are keyed by
+`(laneId, legId, chainObjectId)` and advance monotonically through the pair policy's broadcast,
+observed, and final states. `ArtifactReveal` is a distinct keyed fact that validates exact bytes
+against a committed opaque leaf. The readiness join enters `ReadyToSettle` only when every required
+funding and reveal predicate is satisfied in the pair-specific order. For the initial pair that order
+is: EVM funding final, exact withheld parent revealed and validated, then that eCash parent final.
+
+After `ReadyToSettle`, the manifest selects exactly one versioned custody-mode branch:
+
+```text
+adaptor:
+  FirstLegSettlementEvidence -> ExtractedAdaptorSecret
+    -> CounterLegSettlementEvidence -> Complete
+
+hashlock-or-program:
+  FirstLegSettlementEvidence -> RevealedPreimageEvidence
+    -> CounterLegSettlementEvidence -> Complete
+
+native-atomic:
+  AtomicSettlementEvidence -> Complete
+```
+
+Each branch may also reach its declared `Refunded`, `CooperativeRecoveryRequired`,
+`PermanentlyLockedByDesign`, `ManualRecoveryRequired`, or `LossOrProtocolViolation` outcomes.
+Transitions from a different branch are invalid, not synthetic no-ops. A native-atomic evidence fact
+must prove every transfer covered by the atomic action; it does not manufacture secret-extraction or
+counter-settlement events. Before the conservative authorization cutoff, the common preparation
+flow may terminate as `FailedBeforeFunding`.
 
 Messages may arrive more than once or out of order. Each transition must therefore be idempotent
 and validate its predecessor state. A party must never generate a fresh cryptographic nonce merely
@@ -247,17 +289,40 @@ negotiated horizon expires; only then are their resources eligible for terminal 
 The last state must not be softened into a generic failure message. A testnet demonstration needs
 to make protocol failures visible.
 
-Cancellation is terminal only before the local party durably releases `ReadyToFund` or any unilateral
-funding authorization, whichever comes first. The absence of a mempool or RPC observation never
-proves that the peer has not broadcast. After that conservative cutoff, “cancel” means enter or
-remain in nonterminal recovery: watchers, signed artifacts, account nonces or durable nonces, fee
-reserves, and keys remain available until `complete`, `refunded`, a completed cooperative salvage,
-or an explicitly acknowledged manual-recovery or irreversible-abandonment handoff. Returning to
-`failed-before-funding` later requires a specified bilateral revocation that makes every funding
-artifact unusable, reconciles all outboxes, and observes that invalidation through the
-finality/reorg model. A hostile peer cannot cancel the other party's recovery capability.
+`Cancel` is a terminal action only before the local party durably releases `ReadyToFund` or any
+unilateral funding authorization, whichever comes first. The absence of a mempool or RPC observation
+never proves that the peer has not broadcast. At or after that conservative cutoff, the UI MUST NOT
+offer an unqualified `Cancel`. It offers a phase-specific action such as “stop active participation
+and enter recovery,” states that funding, settlement, or refund may still broadcast, and identifies
+the assets, deadlines, reserves, and watcher authority that remain live. Watchers, signed artifacts,
+account nonces or durable nonces, fee reserves, and keys remain available until `complete`,
+`refunded`, a completed cooperative salvage, or an explicitly completed manual-recovery or
+irreversible-abandonment handoff. Returning to `failed-before-funding` later requires a specified
+bilateral revocation that makes every funding artifact unusable, reconciles all outboxes, and
+observes that invalidation through the finality/reorg model. A hostile peer cannot cancel the other
+party's recovery capability.
+
+Irreversible abandonment is a distinct locally initiated destructive ceremony, not a checkbox in
+swap cancellation or account deletion and never entered through a deep link, message, QR code, or
+support instruction. It pins the exact operation/account revisions and displays every affected
+asset, amount, deadline, sole recovery capability, and outcome that will become impossible. Frank
+first offers a minimal recovery-package export, then requires fresh local authentication and an
+operation-bound confirmation that cannot be pasted from generic boilerplate. One durable
+compare-and-swap records the immutable abandonment decision before capability destruction; stale,
+wrong-operation, duplicate, and crash-retried requests fail or converge idempotently. Account
+deletion may consume only such a completed record when live value or a sole recovery capability
+would otherwise be destroyed.
 
 ## Amounts, multiple lanes, and multiple users
+
+The versioned bundle grammar is bounded before decoding variable collections or running closure
+logic. Protocol v1 permits at most 65,536 manifest bytes, 8 parties, 8 lanes, 8 reveal events, 16
+capability nodes, and 32 derivation edges; the initial eCash/Monad policy further restricts this to
+one lane and two parties. One-over-limit input is rejected during structural parsing before graph or
+subset allocation. Derivation is monotone and history-independent: a reveal prefix canonicalizes to
+its set of revealed event IDs, so v1 visits at most `2^8` reveal states and `2^8` terminal subsets,
+not their order permutations. A future version needing larger bundles must specify a reviewed
+polynomial certificate/validator rather than silently raising these limits.
 
 The fundamental batching invariant is:
 
@@ -311,6 +376,10 @@ signature, account authorization, or another indispensable spend artifact until 
 holds. A cyclic dependency with no cryptographic or consensus gate is invalid and cannot enter
 `ReadyToFund`. Generating a capability does not itself invalidate the bundle, but it must not create
 an ungated exercise option.
+
+The per-holder exercise gate is necessary but not sufficient. No withheld artifact may be released
+and no incoming exercise gate may open before the bundle atomically enters `ReadyToSettle` after all
+four global conditions above and every deadline inequality below pass.
 
 At `ReadyToSettle`, deadline ordering must be acyclic. For every revelation leg `r` and remaining
 leg `j`, the manifest must establish, in a common conservative time model:
@@ -907,7 +976,8 @@ The first implementation should provide:
     fails;
 13. withheld-parent tests proving B cannot reconstruct or broadcast the eCash parent from disclosed
     preparation data, and that alternate parent encodings, signatures, or txids never retarget the
-    claim outpoint;
+    claim outpoint; A and B derive the same authorization root from the canonical opaque commitment,
+    parent bytes are absent before reveal, and commitment mutation changes the root;
 14. claim-malleability tests proving a fresh valid B signature, every accepted push encoding, and B
     sighash variants including `ALL | FORKID | ANYONECANPAY` still trigger extraction from A's fixed
     `ALL | FORKID` signature, while any body mutation or A-sighash mutation fails; the original
@@ -929,7 +999,25 @@ The first implementation should provide:
     accordingly; and
 20. generic bundle boundary tests that reject `ReadyToSettle` when the remaining-leg inequality passes
     but the revelation leg cannot itself reach finality and reorg margin before its refund, including
-    equality and one-unit failures.
+    equality and one-unit failures;
+21. transcript-convergence tests delivering two predicate-valid byte-distinct witnesses, duplicates,
+    and reorg status facts in opposite orders to two replicas; both retain all evidence, derive the
+    same replicated state, accept the same next message, and do not report equivocation, while a
+    conflicting single-valued preparation fact does;
+22. initial-pair reducer tests in which EVM pending/final, exact or invalid parent reveal, and eCash
+    pending/final facts arrive duplicated and reordered with restart after every step; only `EVM
+    final -> exact parent validated -> eCash final` enters `ReadyToSettle`;
+23. custody-mode transition tests proving adaptor mode requires scalar extraction and counter-leg
+    evidence, hashlock/program mode requires a validated preimage rather than scalar extraction, and
+    native-atomic mode completes from one action proving both transfers while rejecting the other
+    branches;
+24. bounded-work tests rejecting one-over-limit manifests before graph/subset allocation, visiting at
+    most 256 canonical reveal sets and terminal subsets at the v1 maximum, and mapping all reveal
+    permutations to those sets; and
+25. presentation and destructive-flow tests proving terminal `Cancel` exists only before the cutoff,
+    post-cutoff controls disclose continuing recovery obligations, and generic delete, deep-link,
+    support-prompt, stale-revision, or generic confirmation cannot abandon a capability; the exact
+    freshly authenticated operation-bound ceremony commits once and crash-retries idempotently.
 
 Passing functional tests is not a substitute for cryptographic review. Each threshold-signature
 scheme, cross-curve proof, adaptor-point reuse pattern, or other primitive actually used by a

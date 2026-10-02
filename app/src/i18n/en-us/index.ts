@@ -432,7 +432,7 @@ export default {
     receiveMonad: 'Receive MON',
     profile: 'Profile',
     settings: 'Settings',
-    wipeAndSave: 'Remote Wipe Wallet',
+    wipeAndSave: 'Delete relay messages',
     changeLog: 'Changelog',
     showSeed: 'Show Seed',
     confirmSeed: 'Confirm Recovery Phrase',
@@ -520,13 +520,13 @@ export default {
     profile: 'Profile',
   },
   wipeWallet: {
-    warning: 'WARNING!',
+    warning: 'Delete all relay messages?',
     warningMsg:
-      'This will delete all messages from the remove server and consolidate any funds associated with them back into your HD wallet.',
-    cannotBeUndone: 'This cannot be undoned!',
+      'This permanently deletes every message stored on the relay server, along with the local copies in this app. Your wallet, seed phrase, and funds are not touched.',
+    cannotBeUndone: 'This cannot be undone.',
     cancel: 'Cancel',
-    wipe: 'Wipe All Remote Content',
-    spinnerText: 'Deleting All Messages',
+    wipe: 'Delete All Messages',
+    spinnerText: 'Deleting messages…',
   },
   seedPhraseDialog: {
     seedPhrase: 'Seed Phrase',

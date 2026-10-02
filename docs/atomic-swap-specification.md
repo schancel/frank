@@ -169,9 +169,12 @@ Equivocation applies only to a single-valued semantic slot, not to multiple vali
 Reorganizations append status facts that identify the affected evidence ID, chain object, block
 identity, and accepted-chain ancestry; they never rewrite the authorization transcript or prior
 evidence. A deterministic, order-independent `activeFinal(legId, chainObjectId)` projection is true
-only when an accepted inclusion is on the adapter's current canonical chain and has the required
-depth with no accepted invalidation targeting that inclusion. Re-inclusion after invalidation
-creates new evidence and must independently regain finality. Readiness and every irreversible
+only when an accepted inclusion is on the adapter's current canonical chain and a final-status fact
+for that inclusion has the required depth under the current accepted tip. An invalidation applies
+only while its own accepted-tip branch is canonical and proves the inclusion absent; it is not a
+permanent veto after that invalidating branch becomes noncanonical. Re-inclusion in a different
+block creates a new inclusion ID; exact-block recanonicalization reuses the inclusion ID but requires
+a fresh final-status fact under the new canonical tip. Readiness and every irreversible
 action are re-evaluated against this projection, never against the historical presence or maximum
 status of a `final` fact. Later chain evidence
 needs no renewed peer cooperation. Native chain signatures continue to sign only the exact digest
@@ -181,8 +184,13 @@ context to NIZK challenges is a new version requiring encodings, vectors, and in
 
 V1 uses one canonical evidence codec. `frame(tag, payload)` is
 `u16be(tagByteLength) || ASCII(tag) || u32be(payloadByteLength) || payload`; integers inside payloads
-are fixed-width unsigned big-endian values and byte strings are `u32be(length) || bytes`. No field
-may be omitted or defaulted. The IDs are:
+are fixed-width unsigned big-endian values and variable byte strings are `u32be(length) || bytes`.
+No field may be omitted or defaulted. V1 primitive fields are: `swapId`, `slotKey`, all hashes,
+chain genesis IDs, transaction identities, block identities, and accepted-tip identities are raw
+`byte[32]`; `laneId` and `legId` are `u8`; block height is `u64`; adapter-policy version is `u16`.
+V1 enum octets are leaf type `{single=0, effect=1, status=2, checkpoint=3}`, effect kind
+`{funding=0, settlement=1, refund=2, artifactReveal=3}`, and status
+`{observed=0, final=1, invalidated=2}`. Values not listed are rejected. The IDs are:
 
 ```text
 effectId = SHA256(frame("frank/swap-effect/v1",
@@ -191,11 +199,16 @@ inclusionEvidenceId = SHA256(frame("frank/swap-inclusion/v1",
   effectId || chainGenesisId || transactionIdentity || blockIdentity || blockHeightU64))
 ```
 
-An invalidation targets one `inclusionEvidenceId`, never the stable `effectId`; canonical re-inclusion
-therefore receives a new inclusion ID. A status leaf contains, in this exact order, its type tag,
-effect ID, inclusion ID, chain genesis ID, transaction identity, block identity, height, status enum,
-accepted-tip identity, ancestry-proof digest, and adapter-policy version. Other rooted fact types have
-equally frozen versioned field tables before implementation. Each leaf hash is
+An invalidation targets one `inclusionEvidenceId`, never the stable `effectId`; re-inclusion in a
+different block therefore receives a new inclusion ID. A single-valued leaf is exactly
+`typeU8 || slotKey[32] || payloadHash[32]`; `slotKey` is the SHA-256 of a separately versioned,
+domain-separated message-type/semantic-key frame. An effect leaf is exactly
+`typeU8 || effectId[32] || effectKindU8 || authorizedBodyHash[32]`. A status leaf is exactly
+`typeU8 || effectId[32] || inclusionEvidenceId[32] || chainGenesisId[32] ||
+transactionIdentity[32] || blockIdentity[32] || blockHeightU64 || statusU8 ||
+acceptedTipIdentity[32] || ancestryProofDigest[32] || adapterPolicyVersionU16`. A checkpoint leaf is
+the exact canonical checkpoint payload defined below, prefixed by `typeU8`. No other rooted leaf type
+is permitted in v1; adding a slot kind or leaf type versions this table. Each leaf hash is
 `SHA256(frame("frank/swap-state-leaf/v1", canonicalLeafBytes))`; the state root is
 `SHA256(frame("frank/swap-state-root/v1", authorizationRoot || u32be(count) ||
 lexicographicallySortedLeafHashes))`. Semantic slots, envelope event IDs, effect IDs, and inclusion
@@ -334,9 +347,11 @@ offer an unqualified `Cancel`. It offers a phase-specific action such as “stop
 and enter recovery,” states that funding, settlement, or refund may still broadcast, and identifies
 the assets, deadlines, reserves, and watcher authority that remain live. Watchers, signed artifacts,
 account nonces or durable nonces, fee reserves, and keys remain available through
-`lifecycleTerminal`: an apparent `complete`, `refunded`, cooperative-salvage, or manual-recovery
-outcome has survived the negotiated reorg/recovery horizon and is cleanup-eligible. The only earlier
-endpoint is an explicitly completed irreversible-abandonment handoff. Returning to
+`lifecycleTerminal`: an apparent `complete`, `refunded`, or **completed** cooperative-salvage outcome
+has survived the negotiated reorg/recovery horizon and is cleanup-eligible. A
+`manual-recovery-required` outcome is never terminal merely because time passes; it requires a
+durable completed recovery/handoff or explicit irreversible abandonment. The only earlier endpoint
+is an explicitly completed irreversible-abandonment handoff. Returning to
 `failed-before-funding` later requires a specified
 bilateral revocation that makes every funding artifact unusable, reconciles all outboxes, and
 observes that invalidation through the finality/reorg model. A hostile peer cannot cancel the other
@@ -347,7 +362,10 @@ swap cancellation or account deletion and never entered through a deep link, mes
 support instruction. It pins the exact operation/account revisions and displays every affected
 asset, amount, deadline, sole recovery capability, and outcome that will become impossible. Frank
 first offers a minimal recovery-package export, then requires fresh local authentication and an
-operation-bound confirmation that cannot be pasted from generic boilerplate. One durable
+operation-bound confirmation that cannot be pasted from generic boilerplate. After any export,
+Frank re-inventories authority, classifies what the package can and cannot recover, updates the
+displayed “sole capability” and impossible outcomes, and requires renewed confirmation; an
+observation-only package is never described as preserving recovery authority. One durable
 compare-and-swap records the immutable abandonment decision before capability destruction; stale,
 wrong-operation, duplicate, and crash-retried requests fail or converge idempotently. Account
 deletion may consume only such a completed record when live value or a sole recovery capability
@@ -371,23 +389,40 @@ and cannot force a new root. A replicated checkpoint is a noncommutative protoco
 an independently chosen local compaction. Its deterministic per-chain frontier is the greatest
 height no newer than `min(attested finalized tips) - negotiated reorg/recovery horizon`; it may prune
 only inclusion/status records strictly below that frontier whose effects are lifecycle-terminal.
-The versioned checkpoint contains the predecessor root, frontier for every chain, prior-checkpoint
-hash, sorted pruned inclusion IDs, their audit accumulator, and the complete canonical active-effect
-summary. Both peers verify it from retained facts and chain proofs and attest the same bytes before
+The frontier encoding is `0x00` (`None`) when `minTip < horizon`, permitting no pruning on that
+chain, and otherwise `0x01 || u64be(minTip - horizon)`; subtraction never wraps. The exact checkpoint
+payload is `predecessorRoot[32] || priorCheckpointHash[32] || u8(chainCount) ||` lexicographically
+sorted chain entries `(chainGenesisId[32] || minTipU64 || horizonU64 || frontierEncoding) ||
+u16(prunedCount) || sortedPrunedInclusionIds[32]* || auditAccumulator[32]`. All eligible terminal
+records below the frontier are included; implementations cannot choose a subset. Active or
+reopenable effects are never summarized away. Both peers verify it from retained facts and chain proofs and attest the same bytes before
 it replaces those leaves in the replicated root. Concurrent evidence is buffered against the
 predecessor and merged only after the checkpoint commits. An offline implementation may compact a
 separate local raw journal, but cannot advertise a new replicated root until this transition is
 attested; absence of the peer therefore fails closed rather than inventing competing checkpoint
 authority. Checkpoints form one hash-linked prefix, so overlapping or sibling summaries never merge:
 a peer resynchronizes to the latest common checkpoint, exchanges bounded later facts, and performs
-the single next checkpoint. The checkpoint preserves every fact needed by `activeFinal`, recovery,
-and the negotiated reorg horizon. Only the
+the single next checkpoint. Every proposal from predecessor `r` uses
+`checkpointSlot = SHA256(frame("frank/checkpoint-slot/v1", swapId || r))`. Before either identity
+attests, it reserves that one slot with the exact checkpoint hash and stable signer-request ID under
+the action-reservation rules; only byte-identical retry is allowed. The checkpoint preserves every
+fact needed by `activeFinal`, recovery, and the negotiated reorg horizon. Only the
 64 most recent roots are accepted as commuting predecessors; an older sender must resynchronize to
 the current root. Parsing rejects an over-limit peer message before allocation or signature work.
 Quota pressure never suppresses the first valid safety-critical reveal or invalidation: reserved
 slots admit it, then the operation fails closed into recovery if safe checkpointing cannot restore
 headroom. Raw local witnesses use deterministic byte/count caps and may be discarded after their
 semantic effect and audit hash are durable.
+
+At each agreed root with `C` status records, the protocol allocates a signed per-producer tranche
+`q[p]` for every one of the at most eight manifest participants, with
+`C + sum(q[p]) <= 512` and at least one reserved safety-status slot per participant. A producer fact
+consumes only its own tranche; a fact exceeding it remains in the local safety journal and cannot
+create a divergent replicated root. Tranches replenish only through the single checkpoint transition.
+Admission/checkpoint policy therefore runs before common state exceeds `512 - participantCount`.
+If unprunable history prevents replenishment, the swap stops new cooperative activity and enters
+recovery while local watchers continue; it never lets two replicas independently spend the same
+last global slot.
 
 The fundamental batching invariant is:
 
@@ -738,7 +773,10 @@ For this subsection, A offers XEC and receives MON; B offers MON and receives XE
    artifact, the presignature commitment and release predicate (not its withheld bytes), and conservative `lastSafeClaimBroadcast`.
    They durably record both attestations. B cannot validate the hidden parent's signatures or output
    before risking MON and explicitly accepts invalid-parent, invalid-presignature, double-spend,
-   and non-reveal grief.
+   and non-reveal grief. Immediately before B authorizes EVM broadcast, the UI separately names the
+   still-unverified parent and withheld adaptor presignature, explains that even a final parent is
+   unclaimable until A releases a valid presignature, and obtains operation-bound consent that A's
+   disappearance can strand MON permanently.
 6. B broadcasts EVM funding and waits for the manifest's threshold. Only then does A reveal and
    broadcast the exact raw eCash parent. B byte-checks its txid and promised output, fully validates
    it, retains the bytes for rebroadcast, and waits until that exact txid reaches the negotiated
@@ -1128,7 +1166,10 @@ The first implementation should provide:
     still fit reserved slots, and checkpoint/resynchronization preserves the correct reducer state.
     Two peers receiving different commuting facts near the cap cannot publish sibling checkpoints:
     they converge on the deterministic frontier/root, buffer later facts, attest one checkpoint, and
-    resynchronize from its common hash-linked prefix;
+    resynchronize from its common hash-linked prefix. Vectors cover `tip < horizon`, `tip = horizon`,
+    and `tip = horizon + 1`; two valid same-predecessor proposals race one checkpoint slot and only
+    byte-identical retry reaches either signer. A root with 511 common records cannot give two
+    producers the same last slot: per-producer tranches reject that state before it is reachable;
 28. fee-lineage tests cover known-not-sent, known-pending, accepted with lost response, and unknown
     parent outcomes; only specified authoritative states allocate one CAS-winning successor, and
     restart/takeover never creates parallel replacements; and
@@ -1139,7 +1180,9 @@ The first implementation should provide:
     every capability class, and observation-only exports. Screen-reader and keyboard users receive
     programmatically associated assets, deadlines, continuing watcher behavior, and irreversible
     consequences in deterministic focus order; “enter recovery” never implies unilateral recovery
-    in a griefable mode.
+    in a griefable mode. Before EVM funding, B must identify both unverified withheld artifacts and
+    the permanent-lock consequence; after any recovery-package export, abandonment copy is derived
+    from a fresh authority inventory and distinguishes observation from recovery capability.
 
 Passing functional tests is not a substitute for cryptographic review. Each threshold-signature
 scheme, cross-curve proof, adaptor-point reuse pattern, or other primitive actually used by a

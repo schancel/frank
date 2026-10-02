@@ -276,7 +276,8 @@ retrieved copies stored in distinct trust and failure domains independent from
 the threshold shares; activation is blocked with zero or one. A duplicate
 retrieval from the same declared destination does not increment the count.
 Each destination produces a versioned attestation
-`{class, providerId?, accountIdCommitment?, deviceId?, syncDomainId?, userAssertions}`.
+`{version, class, providerId?, accountIdCommitment?, deviceId?, syncDomainId?,
+removableVolumeId?, physicalDomainId?, userAssertions}`.
 Frank machine-verifies available stable provider/account/device/sync identifiers,
 normalizes aliases, and rejects two destinations sharing any policy-disallowed
 provider account, synchronized storage domain, or physical device. Properties a
@@ -290,6 +291,15 @@ require separately confirmed physical-domain labels and are explicitly
 user-asserted rather than machine-verified. Same-provider/different-account is
 one domain in v1. An online destination with an unknown provider, account, or
 sync correlation fails closed for activation.
+
+All identifier fields are canonical UTF-8 NFC strings with leading/trailing
+whitespace forbidden and provider-issued opaque identifiers preferred; equality
+is byte equality after class-specific alias normalization frozen by the
+attestation version. `physicalDomainId` is a locally generated stable opaque ID
+selected from the user's existing named-location inventory, not free-form display
+text. The complete equivalence table applies uniformly to descriptor↔descriptor
+and descriptor↔share comparisons: for online classes, equal `providerId` alone is
+one domain even when account and sync IDs differ.
 Losing every trusted descriptor blocks authenticated blank-install recovery
 even when `k` shares survive. In v1 there is no descriptorless preview: a
 missing descriptor stops the normal recovery route before share entry. A future
@@ -527,7 +537,7 @@ Each screen shows:
 
 A share counts as stored for activation only after that local attestation is
 recorded. Frank compares every descriptor destination against every share
-destination and rejects any shared provider account, sync domain, physical
+destination and rejects any shared provider ID, provider account, sync domain, physical
 device, removable volume, or declared physical domain. Advanced raw copy with an
 unknown eventual destination cannot satisfy this activation inventory until the
 user returns and declares the actual destination. These attestations are local
@@ -620,8 +630,10 @@ Only after exact reconstruction succeeds may setup:
    acknowledgement checkbox or redisplay of Frank's own in-memory value is
    insufficient;
 5. build one complete durable account record;
-6. write that record, setup-complete marker, and every vault-intent ownership
-   transfer through one awaitable atomic persistence boundary;
+6. through one awaitable transaction, conditionally insert both identity claims
+   into the shared unique identity index as `active {accountId}`—failing if either
+   key is active, deleting, or deleted—and write the record, setup-complete marker,
+   and every vault-intent ownership transfer;
 7. read it back or otherwise obtain durable-store acknowledgement;
 8. clear `R`, `M`, `M_verify`, shares, share strings, KDF intermediates, and
    obsolete component state; and
@@ -842,8 +854,10 @@ Account deletion itself is a distinct locally initiated destructive ceremony,
 never entered through a deep link, QR code, message, or support instruction. It
 requires fresh local authentication; pins the exact account ID, recovery
 fingerprint, custody epoch, account revision, and frozen inventory; discloses
-that activation and recovery of this identity will be permanently rejected and
-that Frank cannot know whether physical shares still exist; and offers re-export
+that this non-rolled-back Frank store will permanently reject activation and
+recovery of the identity, while surviving shares remain live recovery authority
+on a fresh or rolled-back installation unless an external non-rollbackable anchor
+exists; states that Frank cannot know whether physical shares still exist; and offers re-export
 of the exact public recovery descriptor through the backup-status view while
 stating that it is not a master backup and cannot replace missing Codex32 shares,
 before an accessible account-bound confirmation. The
@@ -855,9 +869,11 @@ Before any account-owned vault handle is destroyed, one atomic transaction
 commits a non-cancellable deletion tombstone under a stable deletion ID. It
 fences the inactive account, checks its expected custody epoch/revision, and
 freezes the exact inventory of account-owned handles and wrapping references
-after operation capabilities have been detached. That same transaction copies
+after operation capabilities have been detached. That same transaction CASes
 the account's canonical `masterRetirementId` and `recoveryIdentityCommitment`
-into the permanent retirement index. Every create, import, restore, and activation
+rows in the shared unique identity index from `active {accountId}` to
+`deleting {accountId, deletionId}`. Finalization changes them to `deleted`; they
+are never removed. Every create, import, restore, and activation
 path consults both pending tombstones and completed receipts, so cleanup creates
 no identity-reuse window. Only then may idempotent,
 queryable per-handle destruction begin. Completion is recorded per handle; the
@@ -1128,7 +1144,10 @@ Detached safety-critical watchers are the narrow exception: before exclusive
 quiescence, one atomic transfer retires the account-bound token and creates an
 operation-local capability with `watcherLeaseRevision`, lease, and immutable
 outbox, then fences the old watcher. Detached callbacks CAS the watcher lease and
-operation/action revisions and do not compare a later active account's custody
+the affected row's action revision; an independent slot's operation-revision
+advance cannot stale them. Only detach, close, invalidate, or other operation-level
+transitions CAS `operationRevision` plus the complete affected action-revision
+inventory. Detached callbacks do not compare a later active account's custody
 epoch; reattachment performs the inverse atomic transfer. They cannot access
 candidate secrets or general account authority. If safe handoff cannot be
 proven, replacement remains blocked. Read-only polling may continue only when
@@ -1219,6 +1238,15 @@ The record does not need a family identifier, threshold, total count, or share
 indices. Optional local backup inventory is a separate, deletable convenience
 record, never public recovery authority.
 
+The identity index is authoritative, not a preflight cache. It has unique rows
+keyed independently by `(kind: root-retirement, masterRetirementId)` and
+`(kind: recovery-identity, recoveryIdentityCommitment)`, each with state
+`active {accountId} | deleting {accountId, deletionId} | deleted {accountId,
+deletionId}`. Account creation and deletion mutate these rows in the same storage
+transaction as their account/tombstone linearization. A read-before-build may
+improve UX but never authorizes commit; the conditional insert/CAS is the check
+that closes create-versus-delete races.
+
 The persisted fingerprint field is exactly the raw 32-byte SHA-256 result from
 Section 7.2. The `frankrec` Bech32m string is its human-facing rendering and the
 `frankdesc` record is its external descriptor envelope; neither encoded string
@@ -1228,13 +1256,14 @@ bytes before comparison.
 `masterRetirementId` is registry- and format-independent and is exactly:
 
 ```text
-SHA-256(ASCII("frank/master-retirement/v1") || 0x00 || M)
+SHA-256(ASCII("frank/root-retirement/v1") || 0x00 || R)
 ```
 
 It is non-secret public verifier material with the same offline-guessing caveat
 as the recovery fingerprint. It exists solely to reject a previously deleted
-master even if a later append-only registry or recovery-format version would
-produce a different public fingerprint. Every reconstruction computes and checks
+root even if a later append-only registry or recovery format encodes the same
+`R` with different validation material and produces a different public fingerprint.
+Every reconstruction extracts `R`, computes, and checks
 it against pending and completed retirement indices before account creation.
 
 The whole record becomes visible atomically after an in-transaction custody
@@ -1584,9 +1613,13 @@ identity commitment; every retired handle is rejected by exact membership after
 compaction, while a fresh identifier remains allocatable.
 The tombstone transaction reserves both identity indices before remote cleanup;
 a stalled deletion cannot race a fresh-ID import. Frozen known-answer vectors
-cover both commitment preimages. Re-import of the same `M` under a later append-
-only registry is rejected by `masterRetirementId` even when its descriptor and
-public recovery fingerprint differ.
+cover both commitment preimages. Re-import of the same `R` under a later append-
+only registry or recovery format—with different `V`, `M`, descriptor, and public
+recovery fingerprint—is rejected by `masterRetirementId`.
+An import paused after its preflight lookup races deletion linearization and its
+own final commit: the shared unique-index transaction permits exactly one
+compatible active/deleting outcome and never commits a new account after the
+retirement claim wins.
 
 Usability testing MUST include nontechnical users, keyboard-only users, screen
 reader users, handwritten uppercase shares, camera scanning, one deliberately
@@ -1610,7 +1643,10 @@ correlation according to the frozen v1 table.
 They also place each share and descriptor in named domains and reject every
 descriptor-to-share collision, including advanced raw copy whose eventual
 destination was never attested; activation succeeds only with two descriptor
-domains distinct from one another and from every stored-share domain.
+domains distinct from one another and from every stored-share domain. A share at
+provider `P`/account `A`/sync `S1` and descriptor at provider `P`/account `B`/sync
+`S2` fail because equal provider ID alone is one v1 domain; removable-volume and
+physical-domain aliases exercise their typed canonical fields.
 
 ## 16. Implementation sequence and gates
 

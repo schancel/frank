@@ -609,6 +609,15 @@ describe('AccountStep resume mode (#284)', () => {
       expect((data as { nameRequired: boolean }).nameRequired).toBe(true)
     }
   })
+
+  it('preserves the copy action and copies the stored phrase in resume mode', async () => {
+    const wrapper = mountResume()
+    await nextTick()
+    const copy = wrapper.find('button[aria-label="Copy recovery phrase"]')
+    expect(copy.exists()).toBe(true)
+    await copy.trigger('click')
+    expect(copyToClipboard).toHaveBeenCalledWith(VALID_MNEMONIC)
+  })
 })
 
 describe('AccountStep mode switching (#516)', () => {

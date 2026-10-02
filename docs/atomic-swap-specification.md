@@ -65,6 +65,12 @@ necessarily been committed. **Funded** means that the chain object controlling t
 exists at the required confirmation or finality level. **Completable** means that the beneficiary
 already possesses everything except the secret that the other chain outcome will reveal.
 
+The initial griefable protocol has one named exception: B funds the EVM leg against only a committed
+eCash parent txid/output description while A withholds the raw signed parent. That eCash parent is
+not `Prepared` from B's perspective until reveal. B explicitly accepts the risk that an invalid or
+withheld parent permanently locks B's MON; the commitment gives A no ability to obtain that MON
+without B's secret.
+
 ## Security properties
 
 An implementation claiming a **recoverable atomic swap** must establish all of the following
@@ -76,10 +82,12 @@ must not imply that either party can recover after the other disappears.
 
 If one party follows the protocol, the other party cannot obtain that party's offered asset while
 preventing the honest party from obtaining the agreed counter-asset. A recoverable mode additionally
-requires a unilateral refund. A griefable mode may lock both principals forever after abort, but it
-must never turn disappearance into unilateral profit. A signature promised after funding is not a
-refund path. Required signatures, adaptor signatures, proofs, and transaction commitments must be
-received and verified before funding.
+requires a unilateral refund. A griefable mode may lock principal forever after abort, but it must
+never turn disappearance into unilateral profit. A signature promised after funding is not a refund
+path. Required signatures, adaptor signatures, proofs, and transaction commitments must be received
+and verified before a funding action can give the peer unilateral value. The named withheld-parent
+mode may put B's own principal at unverifiable grief risk because A still cannot spend it without
+`t`.
 
 ### Liveness
 
@@ -140,8 +148,10 @@ signatures, and proofs are byte strings, not hex strings with ambiguous normaliz
 ### Replay and substitution resistance
 
 Artifacts for one network, fork, asset, lane, transaction, or protocol version must not verify in
-another context. A party must reject changes to recipients, amounts, fees, inputs, account lists,
-nonces, blockhashes, locktimes, sighash flags, or output order after approving a transcript.
+another context. A party must reject changes to recipients, amounts, inputs, account lists, nonces,
+blockhashes, locktimes, sighash flags, output order, or any fee outside the exact canonical policy
+approved by the transcript. Where a policy intentionally permits replacement fees, it commits the
+range and every otherwise immutable field rather than one signed transaction encoding.
 
 ### Cryptographic validation
 
@@ -187,7 +197,8 @@ Offer
   -> SettlementEvidence
   -> SecretExtraction
   -> CounterSettlementEvidence
-  -> Complete | Refunded | Failed
+  -> Complete | Refunded | FailedBeforeFunding
+     | PermanentlyLockedByDesign | ManualRecoveryRequired | LossOrProtocolViolation
 ```
 
 Messages may arrive more than once or out of order. Each transition must therefore be idempotent
@@ -206,13 +217,16 @@ the plugin acknowledges or advances state. Startup reconciles journal/outbox ent
 chain observations. Crash tests surround every durable commit, send, broadcast, observation, and
 acknowledgement boundary.
 
-The following are outcome states. `complete` and `refunded` remain monitored and may reopen on a
-rollback until the negotiated horizon expires; only then are their resources eligible for terminal
-cleanup:
+The following are outcome states. `complete`, `refunded`, and
+`permanently-locked-by-design` remain monitored and may reopen on a rollback until the negotiated
+horizon expires; only then are their resources eligible for terminal cleanup:
 
 - `complete`: all expected settlement legs reached their required finality;
 - `refunded`: the tracked principal returned through the specified recovery path;
 - `failed-before-funding`: no principal was committed;
+- `permanently-locked-by-design`: the user-accepted griefable branch became irreversible under its
+  declared chain assumptions, such as a final eCash refund after B withheld `t` while MON remained
+  in the one-use EOA;
 - `manual-recovery-required`: funds remain recoverable but automated assumptions expired; and
 - `loss-or-protocol-violation`: observed chain state contradicts the promised safety property.
 
@@ -432,6 +446,11 @@ asymmetric griefing risk. A fixed-fee EVM success transaction is insufficient: a
 XEC, A must be able to sign a fresh transaction or otherwise cover the complete negotiated success
 fee envelope.
 
+The eCash timeout is not needed for signature extraction; it exists so A can eventually recover XEC.
+Omitting it creates a simpler but strictly weaker no-refund experiment in which disappearance can
+lock both principals forever. It does not make the protocol more atomic. V1 therefore retains CLTV
+and treats its absence as a separately labelled test mode, never the default.
+
 **Two-party threshold ECDSA adaptor research.** A protocol that keeps the EVM private key shared even
 after settlement is desirable but is not supplied by ordinary threshold ECDSA or by the current
 single-key `@frank/adaptor-signatures` API. MuSig2 is not applicable because it is Schnorr. This mode
@@ -452,6 +471,28 @@ The initial contractless research path is conditional one-use key-share transfer
 griefable mode. Long-lived or institutional custody must instead use a separately reviewed threshold
 signing protocol or on-chain policy.
 
+### Canonical EVM success policy
+
+The initial protocol does not attest an informal phrase such as “reasonable fees.” It serializes a
+versioned, domain-separated success-policy artifact with one canonical byte encoding. V1 permits
+only an EIP-1559 type-2 transaction and commits:
+
+- protocol and policy versions, swap and lane IDs, network genesis identity and numeric chain ID;
+- the one-use sender `P`, reserved nonce, exact recipient A, exact principal value, gas limit, empty
+  calldata, empty access list, and an explicit ban on blob or extension fields;
+- inclusive unsigned-integer ranges for `maxFeePerGas` and `maxPriorityFeePerGas`, with
+  `maxPriorityFeePerGas <= maxFeePerGas`;
+- a reserve invariant proving `principal + gasLimit * maxFeePerGas` does not exceed the funded
+  balance at the policy ceiling;
+- the exact eCash claim/outpoint whose first valid reveal authorizes signing, the last-claim cutoff,
+  validity window, and the same-nonce replacement rule; and
+- canonical lengths and big-endian encodings for every integer and byte field.
+
+The local signer parses and validates the policy before signing. It accepts only the exact immutable
+fields and fees inside both ranges, then parses the final signed bytes, recovers the sender, and
+rechecks the same policy before release. Replacement uses the same nonce and template. No generic
+`signTransaction` or arbitrary-recipient capability satisfies this requirement.
+
 ### Initial griefable protocol
 
 For this subsection, A offers XEC and receives MON; B offers MON and receives XEC.
@@ -459,30 +500,39 @@ For this subsection, A offers XEC and receives MON; B offers MON and receives XE
 1. A samples nonzero EVM share `a`; B samples nonzero `t`. They exchange `A_evm`, `T`, and proofs of
    knowledge, reject invalid points and `P = A_evm + T` at infinity, and derive the one-use EVM
    address from `P`.
-2. A constructs and signs, but does not broadcast, an eCash funding transaction to a P2SH output
-   whose success branch requires both A's and B's signatures and whose CLTV refund branch requires
-   A's signature. From that exact funding transaction, both construct the exact claim and refund.
-   The adapter freezes the redeem script, sighash flags, scriptSig stacks, funding outpoint, success
-   recipient B, refund recipient A, fees, and refund height/time in test vectors.
+2. A constructs and signs an eCash funding transaction to a P2SH output whose success branch requires
+   both A's and B's signatures and whose CLTV refund branch requires A's signature. A reveals only
+   the committed txid, output index, amount, redeem script, and child-building data—not the raw signed
+   parent, input signatures, scriptSigs, or anything from which B can reconstruct and broadcast it.
+   From that commitment, both construct the exact claim and refund. The adapter freezes the redeem
+   script, sighash flags, scriptSig stacks, funding outpoint, success recipient B, refund recipient
+   A, fees, and refund height/time in test vectors.
 3. B produces its ordinary signature for the exact eCash claim. A gives B an adaptor signature for
    A's required success-branch signature under `T`. B verifies it. The claim pays only B and is the
    sole first-reveal action. A holds its complete refund artifact.
 4. B constructs, but does not broadcast, exact EVM funding to `P` for the MON principal plus the
    negotiated success-fee reserve. The settlement policy fixes A's recipient, principal, allowed
    transaction type, nonce, gas limit, and maximum fee envelope while allowing A to choose a fresh
-   fee within that envelope after learning `t`.
-5. Both identities sign the pre-funding authorization root containing the exact EVM and eCash
-   funding commitments, eCash claim/refund artifacts, all public points/proofs/signatures, amounts,
-   fee envelope, and conservative last-claim cutoff. They durably record both attestations.
-6. B broadcasts EVM funding and waits for the manifest's threshold. Only then does A broadcast the
-   exact committed eCash funding transaction and wait for its threshold. This order deliberately
-   puts B at griefing risk but gives B no claim on XEC before its MON is committed. A transaction-ID
-   mismatch or malleation aborts settlement and leaves only the specified recovery/grief outcome.
+   fee within that envelope after learning `t`. Because possession of `x` ultimately controls the
+   entire EOA, the quote treats the whole funded balance, including any unused reserve, as value
+   transferred to A; it does not pretend residual change remains under B's control.
+5. Both identities sign the pre-funding authorization root containing the exact EVM funding bytes,
+   the withheld-parent txid/output commitment, eCash claim/refund artifacts, all public
+   points/proofs/signatures, amounts, EVM success-policy artifact, and conservative last-claim cutoff.
+   They durably record both attestations. B cannot validate the hidden parent's signatures or output
+   before risking MON and explicitly accepts invalid-parent, double-spend, and non-reveal grief.
+6. B broadcasts EVM funding and waits for the manifest's threshold. Only then does A reveal and
+   broadcast the exact raw eCash parent. B byte-checks its txid and promised output, fully validates
+   it, retains the bytes for rebroadcast, and waits until that exact txid reaches the negotiated
+   eCash threshold. B never adapts the claim for a replacement outpoint. Re-signing, alternate
+   encoding, malleation, non-reveal, or confirmation under another txid aborts settlement and leaves
+   the disclosed grief outcome. This order gives B no broadcastable claim on XEC before MON is
+   committed.
 7. B either stops before the last-claim cutoff or completes A's adaptor signature with `t`, adds the
    exact success witness, and broadcasts the eCash claim. A treats `t` as public on first mempool
    observation, extracts and validates it against `T`, computes `x = a + t mod n`, and signs a fresh
-   EVM principal payment to A within the authorized fee envelope. The watcher may reprice this
-   payment and later sweep the residual reserve because A now holds the complete one-use key.
+   EVM principal payment to A under the canonical success policy. A trusted local signer may reprice
+   this payment and later sweep the residual reserve because it now holds the complete one-use key.
 8. If B does not reveal in time, A broadcasts the eCash refund. B's EVM principal has no contractless
    refund and may remain locked forever. A never publishes or authorizes an EVM payment to itself
    before observing B's exact claim reveal.
@@ -727,12 +777,16 @@ spend-capable material on a best-effort basis.
 
 Each custody mode defines a watcher capability matrix naming the principal, exact permitted action,
 immutable transaction fields, fee range, trigger evidence, validity window, revocation rule, and
-compromise blast radius. A local watcher may use a completed one-use settlement key only within its
-bound lane and fee envelope. A delegated watcher receives preauthorized byte-exact transactions or
-the narrowest operation-scoped signing capability; it never receives unrelated wallet roots. If a
-mode requires arbitrary repricing but cannot delegate it without broad custody, that liveness claim
-remains unsatisfied. Tests assume a malicious watcher and prove it cannot redirect value, act before
-its trigger, exceed fees, or affect another lane.
+compromise blast radius. In conditional key-share mode, raw `a` and completed `x` remain inside A's
+trusted local signer or vault boundary. A watcher observes the trigger and requests only a
+policy-conforming signature; it does not receive `x`. A delegated watcher receives preauthorized
+byte-exact transactions or the narrowest operation-scoped signing capability and never receives
+unrelated wallet roots. If an implementation exports `x` to a watcher, that watcher is part of the
+trusted computing base: compromise can steal that lane, and the malicious-watcher non-redirection
+claim does not apply. If a mode requires arbitrary repricing but cannot delegate it without broad
+custody, its delegated-liveness claim remains unsatisfied. Capability tests assume a malicious
+untrusted watcher and prove it cannot redirect value, act before its trigger, exceed fees, or affect
+another lane.
 
 Changing the active Frank account does not delete or orphan funded swap state. Account replacement
 is blocked while nonterminal obligations exist unless their account-bound journal and capabilities
@@ -758,9 +812,14 @@ The first implementation should provide:
 10. account-replacement tests proving a funded old-account swap remains recoverable after restart;
 11. fee-ceiling tests proving unilateral success coverage in every mode and refund coverage across
     the recoverable envelope, including peer claim, fee spike, and disappearance;
-12. authentic old-snapshot restore tests that either verify an external freshness anchor or fail
+12. canonical EVM policy tests in which two differently priced in-range type-2 transactions pass,
+    while mutation of every immutable field, either fee bound, the priority/base relationship, the
+    reserve ceiling, encoding, recovered sender, trigger, validity window, or nonce fails;
+13. withheld-parent tests proving B cannot reconstruct or broadcast the eCash parent from disclosed
+    preparation data, and that alternate encodings, signatures, or txids never retarget the claim;
+14. authentic old-snapshot restore tests that either verify an external freshness anchor or fail
     closed without signing; malicious-watcher capability tests; and
-13. a live testnet griefable-mode completion/lockout demonstration or recoverable-mode
+15. a live testnet griefable-mode completion/lockout demonstration or recoverable-mode
     completion/refund demonstration, using disposable keys and negligible value and labelled
     accordingly.
 

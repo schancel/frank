@@ -131,11 +131,15 @@ callers. Implementers MUST NOT improvise a mixture of BIP-32 paths, SLIP-0010
 paths, mnemonic conversion, or raw hash labels. This document can be approved
 before that companion registry, but production signup cannot.
 
-Released registry entries are immutable. A later registry is either an
-append-only superset that preserves every earlier purpose byte-for-byte, or each
-stored domain record carries its own `{purpose, derivationVersion}` provenance.
-Adding a domain never reinterprets an existing root. Any constrained extension
-root needs a frozen child KDF and namespace of its own.
+Released registry entries are immutable. In recovery-format v1, a later
+registry may only be an append-only superset that preserves every earlier
+purpose byte-for-byte; the account and recovery descriptor retain the single
+registry version that originally derived the account. A changed KDF, label,
+interpretation, or other non-append evolution requires a new recovery-format
+version, descriptor, explicit account rotation, and migration procedure. It may
+not create a mixed-provenance v1 account. Adding a domain never reinterprets an
+existing root. Any constrained extension root needs a frozen child KDF and
+namespace of its own.
 
 Before integration, every chain-facing wallet constructor MUST accept its typed
 byte domain root. The current mnemonic-shaped active-chain and Monad APIs need a
@@ -147,7 +151,7 @@ forbidden.
 
 After setup, durable state may contain only what normal operation needs:
 
-- the recovery-format version and per-domain derivation provenance;
+- the recovery-format version, single frozen registry version, and domain purposes;
 - domain-specific private roots or keys approved for residency;
 - corresponding public identifiers;
 - an optional local backup-verification time and method version; and
@@ -165,7 +169,12 @@ conforming production configuration.
 
 ### 5.1 Supported format
 
-Frank v1 uses the BIP-93 regular format with:
+Frank v1 uses the BIP-93 regular format exactly as specified at Bitcoin BIPs
+commit `5117f5831bcbf0485949e5951d2954b792eded28`, plus the Frank constraints in
+this document. BIP-93 remains Draft; a later upstream edit does not silently
+change Frank's parser, encoder, accepted lengths, checksum behavior, or vector
+corpus. Updating the pinned revision requires a recovery-format version review
+and compatibility vectors. The pinned profile has:
 
 - human-readable part `ms`;
 - a threshold digit from `2` through `9` for split backups;
@@ -263,7 +272,7 @@ The cryptographic library MUST:
 - recover from exactly `k` valid non-`s` shares;
 - return structured error codes that reveal no secret material;
 - never log or stringify caller inputs on failure; and
-- pass all applicable official BIP-93 vectors plus independent negative and
+- pass all applicable vectors from the pinned BIP-93 revision plus independent negative and
   property tests.
 
 Callers MUST NOT implement interpolation, field arithmetic, checksum checks, or
@@ -300,6 +309,8 @@ choose policy
     -> collect verification shares one at a time
     -> reconstruct and compare
     -> derive approved domain material
+    -> present recovery descriptor
+    -> independently re-enter or scan descriptor and verify
     -> atomically persist account
     -> discard master/intermediates
     -> activate account
@@ -315,8 +326,8 @@ share set.
 Before generating anything, the UI explains:
 
 - any `k` shares recover the whole account master;
-- fewer than `k` shares reveal no information about `M` under the scheme's
-  assumptions;
+- fewer than `k` shares reveal no information about `M` beyond disclosed public
+  metadata under the scheme's information-theoretic sharing assumptions;
 - loss of enough shares makes master recovery impossible;
 - theft of any `k` shares compromises every domain derived from `M`;
 - every share is sensitive, disclosures can be retained and aggregated across
@@ -409,15 +420,19 @@ Only after exact reconstruction succeeds may setup:
 
 1. derive all initially approved domain roots according to the frozen registry;
 2. derive public recovery fingerprints and addresses needed for confirmation;
-3. require the user to record and verify a versioned public recovery descriptor
-   in a trust/failure domain independent from the threshold shares;
-4. build one complete durable account record;
-5. write that record and the setup-complete marker through an awaitable atomic
+3. present the versioned public recovery descriptor and require the user to
+   independently re-enter or scan it from the copy stored in a trust/failure
+   domain independent from the threshold shares;
+4. byte-validate its format, registry, and complete fingerprint against the
+   ceremony values; an acknowledgement checkbox or redisplay of Frank's own
+   in-memory value is insufficient;
+5. build one complete durable account record;
+6. write that record and the setup-complete marker through an awaitable atomic
    persistence boundary;
-6. read it back or otherwise obtain durable-store acknowledgement;
-7. clear `M`, `M_verify`, shares, share strings, KDF intermediates, and obsolete
+7. read it back or otherwise obtain durable-store acknowledgement;
+8. clear `M`, `M_verify`, shares, share strings, KDF intermediates, and obsolete
    component state; and
-8. activate or reload into the account.
+9. activate or reload into the account.
 
 No route guard may infer completion merely from a truthy secret field. No fixed
 delay may stand in for persistence acknowledgement. If the durable write fails,
@@ -540,6 +555,12 @@ abbreviation never reduces the comparison. This provides at least 128 bits of
 targeted preimage security under SHA-256, not merely a low accidental-collision
 rate. Known-answer vectors freeze field lengths, tag, conversion, round-trip,
 and version separation. A four-character Codex32 identifier is not sufficient.
+The fingerprint is deterministic public metadata and therefore an offline
+verifier for guesses of `M`. It does not reduce the entropy of a uniformly
+random 256-bit `M` in practice under SHA-256, but the recovery claim is
+computational once this descriptor is disclosed. Implementations and UI MUST
+not describe the descriptor as secret or the complete system as providing
+unqualified information-theoretic secrecy.
 
 ### 7.3 Restore, import, and commit
 
@@ -731,7 +752,7 @@ API rules:
   logging operations.
 
 Before integration, the existing package needs at least: uniform-uppercase
-decoding, a documented cleanup contract, official vector parity for every
+decoding, a documented cleanup contract, pinned vector parity for every
 supported size, fuzz/property coverage, and independent cryptographic review.
 Long-checksum support is not required for v1 but unsupported strings must fail
 with a distinguishable error rather than “bad checksum.”
@@ -742,7 +763,8 @@ A Codex32-backed account record needs an explicit schema version and at least:
 
 ```text
 recoveryFormat: "codex32-master-v1"
-domainDerivations: [{ purpose, derivationVersion }]
+derivationRegistry: <single frozen registry identifier>
+domainPurposes: [<purpose identifiers from that registry>]
 backupVerification: <optional local timestamp and method version>
 publicRecoveryFingerprint: <versioned encoding>
 domainSecrets: <wrapped records or non-exportable key handles>
@@ -811,7 +833,8 @@ the repository's current localization boundary.
 
 ### 15.1 Cryptographic package
 
-- Every applicable official BIP-93 valid and invalid vector.
+- Every applicable valid and invalid vector from the pinned BIP-93 revision;
+  upstream vectors are monitored but do not alter v1 without format review.
 - All supported 16-, 20-, 24-, 28-, and 32-byte regular payload sizes, even
   though application v1 generates only 32 bytes.
 - Uppercase acceptance, lowercase acceptance, and mixed-case rejection.
@@ -828,6 +851,10 @@ the repository's current localization boundary.
 ### 15.2 Signup integration
 
 - No durable write, networking, or activation before exact recovery succeeds.
+- No durable write, networking, or activation until an independently re-entered
+  or scanned descriptor exactly matches format, registry, and all fingerprint
+  bytes; acknowledgement-only, absent, stale, wrong-version, and wrong-account
+  descriptors fail closed.
 - Deterministic fake entropy proves generated, displayed, entered,
   reconstructed, derived, persisted, and activated identities agree.
 - Wrong, duplicate, stale, mixed-set, and corrected-but-unconfirmed shares
@@ -838,6 +865,8 @@ the repository's current localization boundary.
   DOM or a live ceremony.
 - Late worker, QR, clipboard, and persistence completions cannot revive it;
   camera tracks, workers, ports, and decoder loops are actually terminated.
+- Abandonment or a stale asynchronous descriptor-verification completion cannot
+  advance the ceremony or authorize persistence.
 - Persistence remains pending until acknowledged; failure never reloads.
 - Cancellation immediately before and after the commit linearization point has
   the specified abort-wins or commit-wins result under a storage fence.
@@ -947,7 +976,7 @@ None of these may be silently decided by a UI component or chain adapter.
 
 ## 18. References
 
-- [BIP-93: Codex32](https://github.com/bitcoin/bips/blob/master/bip-0093.mediawiki)
+- [Pinned BIP-93: Codex32](https://github.com/bitcoin/bips/blob/5117f5831bcbf0485949e5951d2954b792eded28/bip-0093.mediawiki)
 - [BIP-350: Bech32m](https://github.com/bitcoin/bips/blob/master/bip-0350.mediawiki)
 - Frank issue #289, root-secret and backup-format decision
 - Frank issue #288, mandatory signup recovery confirmation

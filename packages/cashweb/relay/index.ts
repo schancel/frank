@@ -25,6 +25,8 @@ import { messageMixin } from './extension'
 import { calcUtxoId } from '../legacy-wallet/helpers'
 import {
   lotusFromAddress,
+  lotusFromPrivateKey,
+  lotusFromPublicKey,
   p2pkhHashFromPublicKey,
   p2pkhHashFromScript,
   sameHash,
@@ -549,8 +551,8 @@ export class RelayClient extends ReadOnlyRelayClient {
       const messageSet = new MessageSet()
       messageSet.addMessages(message)
 
-      const destinationAddress = lotusFromAddress(
-        destinationPublicKey.toAddress(this.networkName),
+      const destinationAddress = lotusFromPublicKey(
+        destinationPublicKey,
         this.networkName,
       )
       const chronikClient = this.wallet?.chronikClient
@@ -808,8 +810,8 @@ export class RelayClient extends ReadOnlyRelayClient {
     // Parse message
     const message = messageMixin(this.displayNetwork, rawMessage)
     const preParsedMessage = message.parse()
-    const senderAddress = lotusFromAddress(
-      preParsedMessage.sourcePublicKey.toAddress(this.displayNetwork),
+    const senderAddress = lotusFromPublicKey(
+      preParsedMessage.sourcePublicKey,
       this.displayNetwork,
     )
     const wallet = this.wallet
@@ -880,8 +882,8 @@ export class RelayClient extends ReadOnlyRelayClient {
       return null
     }
 
-    const destinationAddress = lotusFromAddress(
-      parsedMessage.destinationPublicKey.toAddress(this.displayNetwork),
+    const destinationAddress = lotusFromPublicKey(
+      parsedMessage.destinationPublicKey,
       this.displayNetwork,
     )
 
@@ -1001,8 +1003,8 @@ export class RelayClient extends ReadOnlyRelayClient {
     const copartyPubKey = outbound
       ? parsedMessage.destinationPublicKey
       : parsedMessage.sourcePublicKey
-    const copartyAddress = lotusFromAddress(
-      copartyPubKey.toAddress(this.displayNetwork),
+    const copartyAddress = lotusFromPublicKey(
+      copartyPubKey,
       this.displayNetwork,
     )
     const payloadDigestHex = payloadDigest.toString('hex')
@@ -1076,7 +1078,7 @@ export class RelayClient extends ReadOnlyRelayClient {
       idPrivKey,
     )
     await this.putProfile(
-      lotusFromAddress(idPrivKey.toAddress(this.networkName), this.networkName),
+      lotusFromPrivateKey(idPrivKey, this.networkName),
       metadata,
     )
   }

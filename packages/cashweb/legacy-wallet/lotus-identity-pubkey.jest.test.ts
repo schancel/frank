@@ -41,18 +41,10 @@ it('matches bitcore FrankIdentity public keys', () => {
 
   const identity = FrankIdentity.fromPrivateKeyHex(SECRET, 'mainnet')
   expect(identity.pubKey).toEqual(bitcorePublicKey(SECRET, true))
-  expect(identity.privateKey.toBuffer().toString('hex')).toBe(SECRET)
-
-  const uncompressed = new PrivateKey(Buffer.from(SECRET, 'hex'))
-  const uncompressedIdentity = new FrankIdentity(uncompressed, 'mainnet')
-  expect(uncompressedIdentity.pubKey).toEqual(
-    uncompressed.toPublicKey().toBuffer(),
-  )
-  expect(uncompressedIdentity.pubKey.length).toBe(65)
-  expect(uncompressed.toBuffer().toString('hex')).toBe(SECRET)
+  expect(identity.toPrivateKeyHex()).toBe(SECRET)
 
   const source = readFileSync(join(__dirname, 'lotus-identity.ts'), 'utf8')
-  const ctorStart = source.indexOf('constructor(privateKey: PrivateKey')
+  const ctorStart = source.indexOf('constructor(secret: Uint8Array')
   const ctor = source.slice(
     ctorStart,
     source.indexOf('static generate', ctorStart),

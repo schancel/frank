@@ -35,9 +35,15 @@ import { randomBytes } from 'crypto'
 
 import {
   cryptoBackend,
+  encodeAddress,
   privateKeyFromHex,
   privateKeyFromSecretBytes,
+  pubkeyHashFromBytes,
   signEcdsa,
+  XPI_MAINNET,
+  XPI_REGTEST,
+  XPI_TESTNET,
+  type ChainDescriptor,
 } from '@frank/nakamoto'
 import { lotusIdentityPublicKey } from './lotus-identity-pubkey'
 import axios from 'axios'
@@ -85,19 +91,6 @@ export function base58Encode(bytes: Uint8Array): string {
   return '1'.repeat(leadingZeros) + encoded
 }
 
-/** `bitcoinsuite_core::Script::p2pkh` -- standard `OP_DUP OP_HASH160 <push 20> <pkh>
- * OP_EQUALVERIFY OP_CHECKSIG` (25 bytes). */
-function p2pkhScript(pubKeyHash20: Buffer): Buffer {
-  if (pubKeyHash20.length !== 20) {
-    throw new Error(`pubKeyHash must be 20 bytes, got ${pubKeyHash20.length}`)
-  }
-  return Buffer.concat([
-    Buffer.from([0x76, 0xa9, 0x14]),
-    pubKeyHash20,
-    Buffer.from([0x88, 0xac]),
-  ])
-}
-
 function sha256(bytes: Uint8Array): Buffer {
   // cryptoBackend rejects Buffer, which is a Uint8Array subclass.
   return Buffer.from(cryptoBackend.sha256(Uint8Array.from(bytes)))
@@ -109,32 +102,51 @@ export function pubKeyHash160(pubKeyCompressed: Buffer): Buffer {
   return Buffer.from(cryptoBackend.hash160(Uint8Array.from(pubKeyCompressed)))
 }
 
+export function chainForNetworkName(networkName: string): ChainDescriptor {
+  if (networkName === 'testnet' || networkName === 'cash-testnet') {
+    return XPI_TESTNET
+  }
+  if (networkName === 'regtest') return XPI_REGTEST
+  if (
+    networkName === 'livenet' ||
+    networkName === 'mainnet' ||
+    networkName === 'cash-livenet' ||
+    networkName === 'cash-mainnet'
+  ) {
+    return XPI_MAINNET
+  }
+  throw new Error(`lotus-network:${networkName}`)
+}
+
+export function lotusP2pkhFromHash(
+  hash: Uint8Array,
+  networkName: string,
+): string {
+  const branded = pubkeyHashFromBytes(Uint8Array.from(hash))
+  if (!branded.ok) throw new Error('address-hash')
+  const encoded = encodeAddress(
+    { kind: 'p2pkh', hash: branded.value },
+    chainForNetworkName(networkName),
+    'lotus',
+  )
+  if (!encoded.ok) throw new Error(encoded.error.code)
+  return encoded.value
+}
+
 /**
- * `<prefix><net_char><base58(payload_type=0 || p2pkh_script || checksum)>`.
- * Checksum is SHA256(prefix || net_char || payload_type || p2pkh_script)[..4],
- * one SHA-256, matching `calc_checksum` in
- * `backend/bitcoinsuite/bitcoinsuite-core/src/address/lotusaddress.rs`.
- * A hash that is not 20 bytes throws and returns no address.
- *
- * `encode_lotus_address` in that file: pkh `b50b86a893d80c9e2ee72b199612374b7b4c1cd8`
- * is `lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi` (mainnet) and
- * `lotusR16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyVqAied` (regtest).
+ * P2PKH Lotus address. pkh `b50b86a893d80c9e2ee72b199612374b7b4c1cd8` is
+ * `lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi` on mainnet and
+ * `lotusR16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyVqAied` on regtest.
+ * A hash that is not 20 bytes throws.
  */
 export function lotusAddressFromPubKeyHash(
   pubKeyHash20: Buffer,
   net: LotusNet,
 ): string {
-  const netChar = net === 'mainnet' ? '_' : 'R'
-  const payloadType = 0
-  const script = p2pkhScript(pubKeyHash20)
-  const checksumPreimage = Buffer.concat([
-    Buffer.from(LOTUS_PREFIX, 'ascii'),
-    Buffer.from([netChar.charCodeAt(0), payloadType]),
-    script,
-  ])
-  const checksum = sha256(checksumPreimage).slice(0, 4)
-  const data = Buffer.concat([Buffer.from([payloadType]), script, checksum])
-  return `${LOTUS_PREFIX}${netChar}${base58Encode(data)}`
+  return lotusP2pkhFromHash(
+    pubKeyHash20,
+    net === 'mainnet' ? 'mainnet' : 'regtest',
+  )
 }
 
 /** HASH160 of `pubKeyCompressed`, then `lotusAddressFromPubKeyHash`. */

@@ -4,13 +4,9 @@ import type { PayloadEntry } from './relay_pb'
 import { entryToImage } from './images'
 import stealth from './stealth_pb'
 import { TextItem, MessageItem } from '../types/messages'
-import {
-  Networks,
-  PrivateKey,
-  PublicKey,
-  Script,
-} from 'bitcore-lib-xpi'
+import { Networks, PrivateKey, PublicKey, Script } from 'bitcore-lib-xpi'
 import { Wallet } from '../legacy-wallet'
+import { lotusFromAddress } from '../legacy-wallet/lotus-address'
 import { calcUtxoId } from '../legacy-wallet/helpers'
 import { Utxo } from '../types/utxo'
 import { outpointPrivateKey } from './outpoint-hd'
@@ -132,12 +128,10 @@ export async function decodeEntry(
           Buffer.from(outpointSecret).toString('hex'),
           Networks.get(networkName),
         )
-        // Address strings stay on bitcore (issue #242).
         const address = new Script(Buffer.from(output.script)).toAddress(
           networkName,
         )
-        // Compressed point of the outpoint secret (decision #555). Address
-        // strings stay on bitcore (issue #242).
+        // Compressed point of the outpoint secret (decision #555).
         const computedAddress = new PublicKey(
           Buffer.from(stealthOutpointPublicKey(outpointSecret)),
         ).toAddress(networkName)
@@ -153,7 +147,7 @@ export async function decodeEntry(
 
         const stampOutput = {
           type: 'stealth',
-          address: address.toCashAddress(),
+          address: lotusFromAddress(address, networkName),
           satoshis,
           outputIndex,
           txId,

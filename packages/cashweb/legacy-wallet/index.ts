@@ -17,6 +17,7 @@ import { Utxo } from '../types/utxo'
 import { ChronikClient, WsEndpoint } from 'chronik-client'
 import { AddressEvent, ChainAdapter } from './chain-adapter'
 import { LotusAdapter } from './lotus-adapter'
+import { lotusFromAddress } from './lotus-address'
 import {
   BTC_MAINNET,
   BTC_TESTNET,
@@ -398,7 +399,7 @@ export class Wallet {
     const address = privKey.toAddress(this.networkName)
     const pkh = address.hashBuffer.toString('hex')
     this.addressDataByPkh.set(pkh, {
-      address: address.toXAddress(),
+      address: lotusFromAddress(address, this.networkName),
       change,
       privKey,
     })
@@ -785,7 +786,9 @@ export class Wallet {
       const changeOutputAmount = delta - properFee
       if (changeOutputAmount >= minimumNewInputAmount) {
         const output = new Transaction.Output({
-          script: walletChangeP2pkhScript(changeKeys[0].privKey).toString('hex'),
+          script: walletChangeP2pkhScript(changeKeys[0].privKey).toString(
+            'hex',
+          ),
           satoshis: changeOutputAmount,
         })
         transaction = transaction.addOutput(output)
@@ -1153,9 +1156,9 @@ export class Wallet {
   }
 
   get displayAddress() {
-    // TODO: This should be in the relay client, not the wallet...
-    // TODO: Not just testnet
-    return this.identityPrivKey?.toAddress(this.networkName).toXAddress()
+    const key = this.identityPrivKey
+    if (!key) return undefined
+    return lotusFromAddress(key.toAddress(this.networkName), this.networkName)
   }
 
   freezeUtxo(utxo: Utxo) {

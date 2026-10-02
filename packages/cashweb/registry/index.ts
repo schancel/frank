@@ -7,7 +7,7 @@ import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
 const { SignedPayload, SignedPayloadSet, BurnOutputs } =
   __pb_signed_payload_payload_pb
 import pop from '../pop'
-import { Address, Networks, PrivateKey, PublicKey } from 'bitcore-lib-xpi'
+import { PrivateKey, PublicKey } from 'bitcore-lib-xpi'
 import { pondBurnOutputSatoshis } from './burn-script'
 import { registryBroadcastDigest } from './broadcast-digest'
 import { registryWrapperDigest } from './wrapper-digest'
@@ -21,6 +21,7 @@ import {
 import { Wallet } from '../legacy-wallet'
 import { Utxo } from '../types/utxo'
 import { calcUtxoId } from '../legacy-wallet/helpers'
+import { lotusFromAddress } from '../legacy-wallet/lotus-address'
 import __pb_broadcast_pb from './broadcast_pb'
 const { BroadcastEntry, BroadcastMessage, ForumPost } = __pb_broadcast_pb
 import { ForumMessage, ForumMessageEntry } from '../types/forum'
@@ -83,14 +84,12 @@ export function signRegistryDigest(hash: Buffer, privKey: PrivateKey): Buffer {
 /** One SHA-256 of AddressMetadata protobuf bytes. Matches `Sha256::digest`
  * in `SignedPayload::parse_proto` and the registry HTTP test that hashes
  * `AddressMetadata::encode_to_vec`. Not double-SHA256. createBroadcast uses
- * registryBroadcastDigest (decision #598). parseWrapper still hashes with
- * bitcore and emits an address string (#242). Address strings stay on
- * bitcore (decision #507). The burn script is decision #519. Burn output
+ * registryBroadcastDigest (decision #598). parseWrapper hashes with
+ * registryWrapperDigest and emits a Lotus address. The burn script is
+ * decision #519. Burn output
  * amounts are decision #521.
  * cryptoBackend rejects Buffer. */
-export function registryAddressMetadataDigest(
-  payload: Uint8Array,
-): Uint8Array {
+export function registryAddressMetadataDigest(payload: Uint8Array): Uint8Array {
   return cryptoBackend.sha256(Uint8Array.from(payload))
 }
 
@@ -148,10 +147,7 @@ export class RegistryHandler {
   }
 
   toAPIAddressString(address: string) {
-    return new Address(
-      new Address(address).hashBuffer,
-      Networks.get(this.networkName, undefined),
-    ).toCashAddress()
+    return lotusFromAddress(address, this.networkName)
   }
 
   constructRelayUrlMetadata(relayUrl: string, privKey: PrivateKey) {
@@ -265,7 +261,10 @@ export class RegistryHandler {
 
   async updateKeyMetadata(relayUrl: string, idPrivKey: PrivateKey) {
     assert(this.wallet, 'Missing wallet while running updateKeyMetadata')
-    const idAddress = idPrivKey.toAddress(this.networkName).toCashAddress()
+    const idAddress = lotusFromAddress(
+      idPrivKey.toAddress(this.networkName),
+      this.networkName,
+    )
     // Construct metadata
     const signedPayload = this.constructRelayUrlMetadata(relayUrl, idPrivKey)
 
@@ -442,9 +441,10 @@ export class RegistryHandler {
     assert(typeof payload !== 'string', 'payload type should not be a string')
     const message = BroadcastMessage.deserializeBinary(payload)
     const pubKey = Buffer.from(wrapper.getPublicKey())
-    const address = PublicKey.fromBuffer(pubKey)
-      .toAddress(this.networkName)
-      .toXAddress()
+    const address = lotusFromAddress(
+      PublicKey.fromBuffer(pubKey).toAddress(this.networkName),
+      this.networkName,
+    )
     const entries = message.getEntriesList()
     const parsedEntries: ForumMessageEntry[] = []
     const satoshisBurned = calculateBurnAmount(wrapper.getTransactionsList())

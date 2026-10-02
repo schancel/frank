@@ -530,7 +530,7 @@ export default defineComponent({
         registrys: registrys,
         networkName,
       })
-      const idAddress = this.$wallet.myAddress?.toCashAddress() ?? ''
+      const idAddress = this.$wallet.displayAddress ?? ''
 
       // Check for existing metadata
       this.$q.loading.show({
@@ -641,7 +641,7 @@ export default defineComponent({
       while (triesLeft > 0) {
         try {
           const relayPaymentRequest = await relayClient.profilePaymentRequest(
-            idAddress.toCashAddress().toString(),
+            this.$wallet.displayAddress,
           )
           assert(
             relayPaymentRequest,

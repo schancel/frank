@@ -9,7 +9,13 @@ The words MUST, MUST NOT, SHOULD, and MAY are normative as described by RFC 2119
 the status named for the rule. A **PROPOSED** rule is a conformance requirement for the target
 cutover, not a statement about the current daemon.
 
+Every normative paragraph or list below is governed by its nearest explicit bold status label.
+A section without a label has no normative default; tables carry status per row. This prevents a
+current implementation fact from silently turning a target rule into a shipped claim.
+
 ## 1. Status vocabulary and source hierarchy
+
+**PROPOSED.**
 
 - **SHIPPED** — reachable through a normal in-repository runtime path on this branch.
 - **IMPLEMENTED-NOT-WIRED** — code and tests exist, but normal clients do not use the path.
@@ -89,11 +95,13 @@ or export a role-level extended public key. A missing `M` or `P'` is an unreacha
 a request to fall back to `P` or to any legacy identity key. Restore MUST recover each role from
 the seed plus its persisted/verified rotation index; ambiguity fails closed.
 
-**SHIPPED conflict.** Current protobuf profiles publish one key and current code reuses it across
-these roles. The target rule therefore requires new directory semantics and a coordinated rewrite;
-it cannot be asserted by a codec-only change.
+**SHIPPED.** Current protobuf profiles publish one key and current code reuses it across these
+roles. This conflicts with the proposed target and therefore requires new directory semantics and
+a coordinated rewrite; it cannot be asserted by a codec-only change.
 
 ### 3.2 Public authority and deniable messages
+
+**IMPLEMENTED-NOT-WIRED.**
 
 Directory statements and transitions are intentionally transferable public evidence. Their exact
 T2/T2a transcripts, signer selection, key-type and signature-algorithm pairings are frozen in
@@ -101,26 +109,34 @@ T2/T2a transcripts, signer selection, key-type and signature-algorithm pairings 
 A relay or peer is a carrier, not an authority: consumers trust a record only after validating its
 authority chain and network context.
 
-Ordinary DMs are different. **PROPOSED:** authenticated mode uses `M` and MUST remain deniable: the
+**PROPOSED.** Ordinary authenticated DMs use `M` and MUST remain deniable: the
 recipient can construct a ciphertext accepted as coming from the sender, so the ciphertext is not
 third-party proof of authorship. Chain transactions authenticate their funding accounts and public
 directory signatures authenticate `P`; neither becomes a signature over DM plaintext.
 
-The implemented crypto-box authenticated modes have no forward secrecy against compromise of the
-recipient's static `M`: there are no prekeys or ratchet, and recorded ciphertext can be decrypted
-after that compromise. A stolen recipient `M` also permits key-compromise impersonation to that
-recipient. Implementations and UI MUST state these limits and MUST NOT claim forward secrecy.
+**IMPLEMENTED-NOT-WIRED.** The crypto-box authenticated modes have no forward secrecy against
+compromise of the recipient's static key: there are no prekeys or ratchet, and recorded ciphertext
+can be decrypted after that compromise. A stolen recipient static key also permits key-compromise
+impersonation to that recipient.
+
+**PROPOSED.** Directory-bound `M` revisions do not change those limits. The directory hash selects
+an accepted public-key revision; it does not prove authorship, restore forward secrecy, or prevent
+a holder of a compromised accepted `M` from impersonating a sender to that recipient. Implementations
+and UI MUST state these limits and MUST NOT claim forward secrecy.
 
 ### 3.3 Required context binding
+
+**PROPOSED.**
 
 Every signature, content hash, encryption operation, payment commitment, provider receipt, and
 journal identity MUST use a distinct versioned ASCII domain. Its transcript MUST length-delimit
 variable inputs and bind the exact network tag and operation context. Target DM authenticated data
-MUST additionally bind both parties' exact `M` keys, the recipient directory statement's T1 hash,
-and the selected provider-descriptor/binding hash. A valid object from another network, directory
-revision, provider binding, record family, or operation is therefore not reusable. Callers do not
-choose which network or directory hash a transcript uses; those values come from the validated
-records. Missing context is a failure, never an empty-string default.
+MUST additionally bind both parties' exact `M` keys, both exact sender and recipient directory
+statement hashes, and every relevant origin/destination provider-binding and descriptor-revision
+hash. The delivery frame and payment identity cover that same context. A valid object from another
+network, directory revision, provider binding, record family, or operation is therefore not
+reusable. Callers do not choose which network or directory hash a transcript uses; those values
+come from the validated records. Missing context is a failure, never an empty-string default.
 
 ## 4. Namespaces and allocations
 
@@ -128,22 +144,31 @@ Identifiers are scoped; equal integers in different columns have no relationship
 
 | Namespace | Current allocation | Status |
 | --- | --- | --- |
-| FRNK frame version | `1` | IMPLEMENTED-NOT-WIRED except opt-in topic transport |
-| FRNK type IDs | `1–11`, `16`, `17`; proof-only `0xffff0001` | IMPLEMENTED-NOT-WIRED except opt-in topic types 9–11; see [CBOR E5](protocol/cbor/README.md#2-common-envelope) |
-| Account key types | `1` compressed secp256k1, `2` Ed25519, `3` x-only secp256k1 | IMPLEMENTED-NOT-WIRED |
-| Signature algorithms | `1` strict-DER low-S ECDSA, `2` BIP340, `3` BCH-2019 Schnorr, `16` Ed25519 | IMPLEMENTED-NOT-WIRED allocation; actual verifier support is slice-specific |
-| FRNK DM encryption suites | proof-only `65535`; no production suite | **UNALLOCATED** |
-| Crypto-box suites | private registry `0xFE01–0xFE04` | IMPLEMENTED-NOT-WIRED for the normal relay path; not FRNK allocations |
-| Crypto-box KEM/AEAD private use | KEM `0xFF00`; XChaCha AEAD `0xFF01` | Implemented inside crypto-box only |
-| Checkpoint journal fact kinds | none | **UNALLOCATED** |
-| Provider/descriptor, delivery, status, reset records | no FRNK type IDs | **UNALLOCATED** |
-| Target hardened wallet branches for `P`, `M`, `P'` | none | **UNALLOCATED** |
+| FRNK frame version, explicit slices | `1` for explicit CBOR registration and opt-in topics | SHIPPED |
+| FRNK frame version, other families | `1` in codecs, with no normal production route | IMPLEMENTED-NOT-WIRED |
+| FRNK type IDs, explicit slices | `2`/`4` registration and `9–11` opt-in topics | SHIPPED |
+| FRNK type IDs, other codec structures | `1`, `3`, `5–8`, `16`, `17`; proof-only `0xffff0001`, never production; see [CBOR E5](protocol/cbor/README.md#2-common-envelope) | IMPLEMENTED-NOT-WIRED |
+| Account key type, explicit registration | type `1` | SHIPPED |
+| Account key types, other codec allocations | `2` Ed25519 and `3` x-only secp256k1 | IMPLEMENTED-NOT-WIRED |
+| Signature algorithm, explicit registration | algorithm `1` strict-DER low-S ECDSA | SHIPPED |
+| Signature algorithms, other codec allocations | `2` BIP340, `3` BCH-2019 Schnorr, `16` Ed25519; individual operations may remain unsupported | IMPLEMENTED-NOT-WIRED |
+| FRNK DM encryption suites | proof-only `65535`; no production suite | UNALLOCATED |
+| Crypto-box suites | private registry `0xFE01–0xFE04`; not FRNK allocations and not used by the normal relay path | IMPLEMENTED-NOT-WIRED |
+| Crypto-box KEM/AEAD private use | KEM `0xFF00`; XChaCha AEAD `0xFF01`, inside crypto-box only | IMPLEMENTED-NOT-WIRED |
+| Target directory statement and standalone presentation profile | no FRNK type IDs or schemas | UNALLOCATED |
+| Checkpoint journal fact kinds | none | UNALLOCATED |
+| Provider/descriptor, delivery, status, reset records | no FRNK type IDs | UNALLOCATED |
+| Target hardened wallet branches for `P`, `M`, `P'` | none | UNALLOCATED |
 
-A writer MUST NOT copy a crypto-box suite ID into the FRNK encryption-suite field, emit proof-only
-IDs, infer a suite from nonce length, or consume an unallocated number. Allocation requires exact
-KEM, KDF, AEAD, nonce, associated-data, deniability/authentication, error, and vector rules.
+**IMPLEMENTED-NOT-WIRED.** A codec writer MUST NOT copy a crypto-box suite ID into the FRNK
+encryption-suite field, emit proof-only IDs, infer a suite from nonce length, or consume an
+unallocated number. Allocation requires exact KEM, KDF, AEAD, nonce, associated-data,
+deniability/authentication, error, and vector rules.
 
 ## 5. FRNK and canonical validation
+
+**SHIPPED.** The rules in this section govern explicit CBOR registration and opt-in topic
+boundaries.
 
 An independently stored, signed, hashed, forwarded, or interpreted object is one FRNK frame. The
 exact nine-byte header, common envelope, deterministic-CBOR profile, resource limits, and staged
@@ -154,15 +179,27 @@ The non-negotiable system properties are:
 
 - Validate route and global limits before allocation; validate canonical form before typed
   conversion; then schema, semantic, cryptographic, and external observations in the frozen order.
-- Reject unsupported versions, length mismatch, trailing data, indefinite forms, non-minimal
+- An unsupported frame version rejects at an interpreting boundary. A contract that explicitly
+  permits exact opaque retention keeps the complete frame and stops before parsing its
+  version-specific length or CBOR; it does not interpret those bytes as version 1.
+- For decoded version-1 CBOR, reject length mismatch, trailing data, indefinite forms, non-minimal
   integers/lengths, non-integer keys, out-of-order keys, and duplicate keys. Never codec-sniff or
-  fall back to protobuf/JSON/BCS after failure.
+  fall back to protobuf/JSON/BCS after failure. Canonical-at-depth rules do not inspect opaque
+  unsupported-version bytes.
 - The exact complete frame is the byte identity for every transcript. Forwarders MUST retain the
   original frame and MUST NOT decode and re-encode authenticated, committed, or unknown data.
-- No stage may spend funds, consume a payment, advance a cursor, or persist an interpreted object
-  until every applicable later stage succeeds.
+- Within one actor's validation boundary, no stage may spend funds, consume a payment, advance a
+  cursor, or persist an interpreted object until every later check available to that actor
+  succeeds. Recipient-only decryption and plaintext checks are not provider stages and cannot
+  retroactively undo valid opaque delivery or its payment.
+
+**IMPLEMENTED-NOT-WIRED.** The same validation machinery exists for other record families, but no
+normal production path thereby uses those families.
 
 ## 6. Versioning and authenticated unknown fields
+
+**SHIPPED.** The rules in this section govern explicit CBOR registration and opt-in topic
+boundaries.
 
 Payload extensions use additive unsigned-integer keys and a monotonically increasing
 `schema_version`. Changing identity, ordering, cryptographic meaning, validation, or a required
@@ -176,8 +213,13 @@ MUST NOT claim the unknown semantics were verified.
 An intermediary MUST NOT drop an authenticated unknown field and re-sign the known projection.
 It forwards the original bytes or rejects. If `min_reader_version` is too high, the object is
 opaque only where the containing contract permits exact retention; otherwise it fails closed.
-Canonical order and duplicate rejection apply at every nesting depth, including opaque values.
-These rules are the system interpretation of [CBOR C12 and V1–V6](protocol/cbor/README.md#7-evolution-and-retention).
+Canonical order and duplicate rejection apply at every nesting depth of decoded version-1 CBOR,
+including unknown extension values; they do not inspect exact-retained unsupported-version bytes.
+These rules are the system interpretation of
+[CBOR C12 and V1–V6](protocol/cbor/README.md#7-evolution-and-retention).
+
+**IMPLEMENTED-NOT-WIRED.** The same evolution and retention machinery exists for other record
+families, but no normal production path thereby uses those families.
 
 ## 7. Record families and identity
 
@@ -185,15 +227,20 @@ Exact maps live in CDDL; this section defines what each record means and what id
 
 | Family | Types / structure | Identity and authority | Status |
 | --- | --- | --- | --- |
-| Recipient delivery | type 1 wrapping type 5; decrypted type 6 wraps type 8 and items 16/17 | Delivery bytes and T3 recipient-payload digest are recipient-specific; logical message identity is type-6 `message_id`; content revision identity is T1a over type 8 | Structure IMPLEMENTED-NOT-WIRED; full checks PROPOSED |
-| Directory | type 2 attests exact type 4; type 7 authorizes a subject transition | T1 of the opened type-4 statement, not the type-2 wrapper; authority is `P` plus the accepted predecessor/recovery rules | Codec slice IMPLEMENTED-NOT-WIRED; target topology PROPOSED |
-| Presentation profile | currently optional field 9 of type-4 schema 3 | Signed public content fetched from selected provider; not the routing directory and not public gossip | Encoding IMPLEMENTED-NOT-WIRED; split PROPOSED |
-| Provider descriptor | target record naming provider identity, endpoints, capabilities, networks, pricing and expiry | Stable provider identity and signed descriptor revision; endpoints are not identity | PROPOSED, type **UNALLOCATED** |
-| Mailbox checkpoint | type 3 | `checkpoint_id` is stable identity, not a serialization hash; facts keep stable `fact_id` | Structure IMPLEMENTED-NOT-WIRED; semantics PROPOSED |
-| Mailbox journal/tombstone | type-3 facts and future mailbox journal records | Append identity is provider-local sequence plus stable object/fact identity; tombstones target logical identity and optionally an exact revision | Fact kinds and live wire **UNALLOCATED** |
-| Provider delivery/store-forward | future obligation, attempt, receipt/status and expiry records | Client operation ID plus exact delivery-frame hash; a provider receipt is delivery evidence, not sender authorship | PROPOSED, types **UNALLOCATED** |
-| Topic post/submission/vote | types 9/10/11 | Logical post and stored frame identity are the exact type-9 T1 hash; burn tx ID is a separate consumption key | Opt-in write/exact read SHIPPED; target read/status surface PROPOSED |
+| Recipient-delivery codec structure | type 1 wrapping type 5; decrypted type 6 wraps type 8 and items 16/17 | Delivery bytes and T3 recipient-payload digest are recipient-specific; logical message identity is type-6 `message_id`; content revision identity is T1a over type 8 | IMPLEMENTED-NOT-WIRED |
+| Target recipient-delivery semantics | same structure after production allocations | Complete construction, cryptographic, payment, provider and recipient checks in section 9 | PROPOSED |
+| Directory codec structure | type 2 attests exact type 4; type 7 authorizes a subject transition | T1 of the opened type-4 statement, not the type-2 wrapper | IMPLEMENTED-NOT-WIRED |
+| Target directory topology | target statement type/schema unallocated | Authority is `P` plus accepted predecessor/recovery rules | PROPOSED |
+| Transitional registration profile | optional field 9 of type-4 schema 3 | Exact signed registration statement; not the target routing directory or standalone presentation profile | SHIPPED |
+| Target presentation profile | standalone record; schema/type unallocated | Signed by `P`/account authority, fetched from selected provider, never public gossip by default | UNALLOCATED |
+| Provider descriptor | target record naming provider identity, endpoints, capabilities, networks, pricing and expiry; type unallocated | Stable provider identity and signed descriptor revision; endpoints are not identity | UNALLOCATED |
+| Mailbox-checkpoint codec structure | type 3 | `checkpoint_id` is stable identity, not a serialization hash; facts keep stable `fact_id` | IMPLEMENTED-NOT-WIRED |
+| Target mailbox journal/tombstone | type-3 facts and future mailbox journal records; fact kinds/live wire unallocated | Append identity is provider-local sequence plus stable object/fact identity; tombstones target logical identity and optionally an exact revision | UNALLOCATED |
+| Provider delivery/store-forward | future obligation, attempt, receipt/status and expiry records; types unallocated | Client operation ID plus exact delivery-frame hash; a provider receipt is delivery evidence, not sender authorship | UNALLOCATED |
+| Topic post/submission/vote | types 9/10/11 | Current stored frame/event identity is exact type-9 T1; burn tx ID is a separate consumption key | SHIPPED |
+| Target topic read/status extensions | future versioned schemas; types unallocated | Stable root/revision/status semantics require the allocations in section 12 | UNALLOCATED |
 
+**IMPLEMENTED-NOT-WIRED.**
 Unknown item kinds in an open message-item field remain exact child-frame bytes. Unknown checkpoint
 sections remain exact bytes and are not interpreted merely because they resemble a frame.
 
@@ -218,6 +265,44 @@ directory. Clock time does not choose authority: revisions, predecessor links an
 authorization do. A fork is retained and surfaced as a conflict; arrival order or the largest
 authored timestamp MUST NOT silently select a winner.
 
+### 8.1 Target directory and profile records
+
+**PROPOSED.** The target directory statement schema and type ID are **UNALLOCATED**. It MUST contain
+the network-qualified account, current directory authority `P`, current `M` plus its mailbox-key
+generation, current `P'`, signed provider bindings and exact descriptor revision hashes, a
+monotonic revision, predecessor statement hash, issue/expiry data, and recovery/transition
+attachments. The statement is signed by `P` or the account authority selected by an already
+accepted transition/recovery rule. Its identity is the authenticated exact statement commitment,
+not its wrapper, URL, timestamp, or presentation profile. Migration from transitional type-4
+schema 3 MUST create a new target statement and explicit predecessor/migration evidence; it MUST
+NOT reinterpret field 9 as the target profile or silently invent `M` and descriptor hashes.
+
+**PROPOSED.** The standalone presentation-profile schema and type ID are **UNALLOCATED**. A profile
+MUST name its network-qualified account, directory-statement hash, revision/predecessor, expiry,
+and exact presentation payload, and MUST be signed by `P` or the accepted account authority. It is
+independently cacheable and replaceable and cannot authorize routing, mailbox access, payment
+receipt, or directory succession.
+
+### 8.2 Mailbox-key lifecycle
+
+**PROPOSED.** Each `M` has a monotonically increasing mailbox-key generation recorded by the
+directory. Routine rotation MAY accept the current and immediately retired generation for a
+bounded, explicitly advertised delivery grace; every delivery names the selected generation and
+directory hash. Compromise revocation has no grace: after acceptance, new submissions under that
+`M` fail, and delayed operations are accepted only if the destination durably admitted their exact
+identity before the revocation boundary. A sender `M` is accepted only when its exact current or
+explicitly graced retired directory revision is named and retained.
+
+Seed restore MUST recover the current and still-graced historical `M` secrets and verified
+directory history before acknowledging mailbox replay. Erasing a retired secret is allowed only
+after its grace, every referenced delivery/checkpoint is resolved, and policy accepts losing the
+ability to decrypt older ciphertext. Erasure does not create forward secrecy retroactively and
+does not cure impersonation performed while a compromised static `M` remained accepted.
+
+Referenced sender/recipient directory statements, provider descriptors/bindings, and mailbox-key
+generation records MUST remain available until dependent deliveries, receipts, journal entries,
+checkpoints, disputes and retries are terminal, or an authenticated compact proof replaces them.
+
 ## 9. Direct-message construction and acceptance
 
 ### 9.1 Target sender order
@@ -233,12 +318,16 @@ authored timestamp MUST NOT silently select a winner.
    data binds the suite, sender and recipient `M` bytes, network, protocol context, and the exact
    directory/provider context required by that suite. `E` and `X` for stamps are never reused as
    encryption keys or ephemerals.
-4. Build type 5 and then type 1. Derive the T3 digest, fresh `E`, `X`, proof, child destinations,
-   and T4 commitments exactly as
+4. Build type 5 and then type 1. The authenticated delivery carries the exact sender and recipient
+   directory-statement hashes, provider binding/descriptor revision hashes, and mailbox generation;
+   those fields are inside the frame and therefore its payment identity. Derive the T3 digest,
+   fresh `E`, `X`, proof, child destinations, and T4 commitments exactly as
    [T3–T4](protocol/cbor/README.md#8-cryptographic-transcripts) require. Payments go to children of
    `P'`, never to `P`, `M`, a provider fee key, or a burn address.
-5. Build and sign every payment without submitting it. Verify locally that indices are contiguous,
-   destinations, amounts, transaction IDs and commitments match the frame and configured minimum.
+5. Atomically claim and durably flush the complete funding-account and nonce reservation set before
+   signing. Then build and sign every payment without submitting it. Verify locally that indices
+   are contiguous and destinations, amounts, transaction IDs and commitments match the frame and
+   configured minimum.
 6. Durably journal the exact type-1 frame, exact signed payment bytes, operation ID, reservations,
    directory/provider binding hashes, and retry state. Flush the journal before any transaction or
    `PUT` can leave the process.
@@ -249,23 +338,53 @@ authored timestamp MUST NOT silently select a winner.
    journaled operation. Never rebuild payments or re-encrypt under the same operation ID. A new
    attempt is allowed only after durable terminal proof that the prior exact set cannot land.
 
-Current protobuf code already enforces the important journal-before-PUT and exact-byte replay
+**SHIPPED.** Current protobuf code already enforces the important reservation-before-signing,
+journal-before-PUT, and exact-byte replay
 shape, but it does not implement the target FRNK frame, `M`/`P'` separation, or production FRNK
 suite.
 
-### 9.2 Target receiver/provider checks
+### 9.2 Provider-visible admission and economics
 
-Validation follows section 5 and then the full stage-10 order in the CBOR profile: decrypted type-6
-frame, network and T1a, T3, binding of `P'`, DLEQ/destination derivation, independently observed
-transactions and T4 commitments, and payment policy. The provider MUST bind its chain adapter to
-the configured network and directory state. Encoded amounts or destinations are assertions, never
-payment evidence.
+**PROPOSED.** A provider validates only what it can verify without recipient secrets: FRNK and
+typed outer structure, routing/network/directory/provider/generation bindings, T3, binding of
+`P'`, DLEQ and child-destination derivation, independently observed transactions, T4 commitments,
+replay/operation identity, and configured payment policy. It MUST bind its chain adapter to the
+configured network and directory state. Encoded amounts or destinations are assertions, never
+payment evidence. Provider admission and payment consumption occur only after every
+provider-visible check passes; recipient-only checks are not prerequisites the provider can assert.
 
 Provider admission, provider delivery fees, and recipient stamp payments are distinct. A provider
 fee MUST use its own domain and record; it MUST NOT be counted as the recipient stamp. Store and
 forward retries are idempotent by `(client_operation_id, exact_delivery_hash)`. Reusing an
 operation ID for different bytes is a conflict. A successful duplicate returns the same terminal
 result and does not rebroadcast, append a second inbox row, or consume payment twice.
+
+A valid recipient stamp pays for opaque provider delivery even if the recipient later cannot
+decrypt or rejects plaintext/type-6/item semantics. The provider MUST NOT claim that payment,
+storage, or a receipt proves recipient decryption, semantic acceptance, or sender authorship.
+
+### 9.3 Recipient-only acceptance
+
+**PROPOSED.** The recipient authenticates and decrypts with the named `M` generation, opens the
+type-6 frame, checks the type-6 network, T1a/content revision, item graph and application semantics,
+and only then commits the plaintext projection. Failure has no recipient-side message effect, but
+does not roll back a provider's already valid delivery or recipient stamp payment. Recipient
+acknowledgement, if any, is a separate authenticated status and MUST NOT be forged by the provider.
+
+### 9.4 Origin and destination providers
+
+**PROPOSED.** The origin/home submission provider and destination/mailbox provider are distinct
+roles; they MAY be the same provider as a degenerate case. The operation binds both stable provider
+identities, their exact descriptor revisions, the recipient mailbox generation, and the exact
+delivery-frame hash. Client submission ID, inter-provider delivery ID, destination receipt/status,
+origin-provider fee, destination-provider fee, and recipient stamp each use separate domains and
+deduplication keys.
+
+The origin provider owns retry/failover until one destination provider durably claims the exact
+inter-provider operation. After that claim, failover cannot create a second owner; it queries or
+transfers the same durable obligation under an authenticated protocol. Descriptor expiry or route
+failure permits another destination only before ownership, or after terminal proof that the prior
+destination cannot complete. Ambiguity retains the old owner and exact bytes.
 
 ## 10. Mailbox journal, checkpoints, and tombstones
 
@@ -274,7 +393,9 @@ delivery, checkpoint and tombstone views are projections, not independent replay
 event channel only announces a new opaque cursor; recovery always pages the journal.
 
 - The provider assigns a durable monotonic sequence. The sequence orders transport at that
-  provider; it is not object identity, global time, or authority.
+  provider and mailbox generation; it is not object identity, global time, or authority. Every
+  append, cursor, snapshot, status and receipt names that generation and the governing capability
+  or descriptor revision.
 - Applying a page and advancing its opaque cursor is one atomic client commit. A crash before that
   commit replays the page; stable object/fact IDs make the replay idempotent.
 - Logical messages deduplicate by stable `message_id`; revisions resolve by authenticated
@@ -293,6 +414,33 @@ Exactly once means one durable terminal effect per stable identity despite dupli
 does not mean the network sends a packet once. Providers, wallets and bots MUST tolerate replay,
 late completion, disconnect after commit, and replacement connections.
 
+Mailbox generation and capability identity are part of every delivery operation ID and its
+authenticated context. Late completion performs compare-and-set against the unresolved operation's
+generation, descriptor capability and exact bytes; mismatch is terminal stale-generation, not a
+write into the replacement mailbox. A reset atomically fences the old generation before it is
+acknowledged, persists the successor generation/capabilities and reset boundary together, and only
+then admits successor operations.
+
+### 10.1 Tombstone dominance and compaction
+
+**PROPOSED.** Within one authority and mailbox generation, an accepted tombstone dominates the
+named object revision and every create/update whose authenticated predecessor is at or before that
+revision. A stale create is a terminal `deleted/stale` result; it is not appended, forwarded, or
+allowed to resurrect the object. A later recreation requires an explicitly allocated successor
+identity or post-tombstone revision rule; none is currently allocated.
+
+An expired-cursor snapshot MUST either carry authoritative tombstones and their dominance frontier,
+or declare itself a complete replacement for the named generation at a fixed high-water mark. A
+receiver MUST NOT merge a replacement snapshot with pre-boundary positive rows.
+
+A tombstone is a deletion marker, not automatically a positive retention root for the deleted
+body. Retaining tombstone `T` does not itself pin body `R`; `R` may be deleted after every other
+reachability gate clears unless verification/dispute policy needs its exact bytes. Security
+tombstones or a compact authenticated exclusion frontier are retained permanently across the
+generation's authority history. Ordinary body bytes and redundant per-event tombstones MAY be
+compacted only after an authenticated frontier/snapshot preserves non-resurrection and all retry,
+payment, receipt, checkpoint and dispute dependencies are terminal.
+
 ## 11. Reset, deletion, and reachability
 
 **PROPOSED.** Reset is boundary-scoped and generation-changing. There is no generic “reset CashWeb”
@@ -301,7 +449,8 @@ operation.
 - A wallet-local view reset discards derived projections/cursors only; it preserves seed material,
   operation journals, unresolved payments, and the last verified authority state, then replays.
 - A mailbox reset requires authenticated mailbox authority `M`, creates a new mailbox generation,
-  and cannot rewrite public directory or provider records.
+  and cannot rewrite public directory or provider records. It atomically fences the old generation
+  before acknowledging reset, as section 10 requires.
 - A directory-authority reset/rotation requires `P` or an already-pinned recovery authority and a
   linked successor/tombstone. Losing `P` is not repaired by `M`, `P'`, a provider, or a clock.
 - A provider-local operational reset cannot delete customer mailbox state or public authority
@@ -316,9 +465,16 @@ payment/delivery evidence outlive ordinary presentation or routing TTLs. A clock
 previously authenticated expiry but MUST NOT manufacture authority, settle a fork, or prove that
 an ambiguous payment did not land.
 
+Here “tombstone” is a reachability gate only when verification needs the deleted bytes; otherwise
+its dominance marker remains while the body may become unreachable under section 10.1. A deletion
+proof MUST cover shared references, retries, payment recovery, cross-generation late completion,
+snapshot/cursor recovery, disputes, and provider receipts. Permanent security history and bounded
+body compaction are separate retention policies.
+
 ## 12. Topic semantics and transition
 
-For CBOR topics, the exact type-9 frame has one T1 identity. Type 10 carries the initial up-burn;
+**SHIPPED.** For the opt-in CBOR topic slice, the exact immutable type-9 post frame/revision has one
+T1 event identity. Type 10 carries the initial up-burn;
 type 11 carries a later vote. Author, direction, and weight come from the independently verified
 chain transaction. The transaction ID is the consumption key, so one burn counts once across
 legacy and CBOR entry points.
@@ -328,13 +484,21 @@ may maintain protobuf-shaped indexes only as projections. It MUST NOT reconstruc
 projection. A CBOR-origin row cannot be returned as a semantically false legacy post. Reads select
 the representation by row origin and `Accept`, as specified in the coexistence document.
 
-**PROPOSED.** Normal-client cutover requires versioned CBOR schemas and vectors for single-post
+**PROPOSED.** A future stable logical/root post identity is distinct from every immutable revision
+or event T1. Predecessor/edit, tombstone, moderation and root relations require explicit versioned
+records; their type IDs are **UNALLOCATED**. Votes MUST state whether they target an immutable
+revision/event or a logical root. Until a new allocation, type 11 targets exactly the immutable
+type-9 T1 named by its current schema.
+
+Normal-client cutover requires versioned CBOR schemas and vectors for single-post
 view, topic page/list, discovery, and transaction-specific vote/recovery status. Until those exist,
 the protobuf read model remains authoritative for list/discovery and the CBOR writer remains
 opt-in. First-confirmed-burn authorship and the public front-running limitation remain the current
 type-9 semantics unless a later schema adds an author commitment.
 
 ## 13. Replay, restart, fork, and clock rules
+
+**PROPOSED.**
 
 Across every family:
 
@@ -352,23 +516,38 @@ Across every family:
 
 ## 14. Conformance matrix
 
-“Required proof” means evidence needed before the clean-break target can be called wired.
+**PROPOSED.** “Required proof” means evidence needed before the clean-break target can be called wired.
 
-| Surface | Current evidence on this branch | Target required proof | Status |
+| Surface / slice | Current evidence on this branch | Current status | Proposed required proof |
 | --- | --- | --- | --- |
-| TypeScript codec | FRNK, restricted CBOR, stages 1–9, type-2 signature/registration slice, topic writers, shared vectors | Production DM suite, full type-1 stage 10, provider/mailbox/status records, target key binding | IMPLEMENTED-NOT-WIRED except opt-in topics |
-| Rust codec | FRNK, restricted CBOR, stages 1–9, pure hashes, shared vectors | Same target structures and full checks, independently cross-checked | SHIPPED in opt-in topic and registration slices; otherwise IMPLEMENTED-NOT-WIRED |
-| Relay / `cashwebd` | Protobuf DM, durable exact-set outbox, authenticated inbox; opt-in CBOR topics; explicit CBOR account-registration route | FRNK DM/directory/provider/profile/mailbox journal, exact replay/restart/fork/reset/deletion gates | SHIPPED legacy/opt-in slices; target PROPOSED |
-| Wallet | Protobuf DM, deniable v2 envelope, durable payment attempts and journal-before-PUT; opt-in CBOR topics | Disjoint hardened `P`/`M`/`P'`, production suite, FRNK order, atomic mailbox replay and clean migration | SHIPPED legacy; target PROPOSED |
-| Bot | Uses wallet/relay flows and persists operational state | Same protocol client as wallet, exact journal recovery, no private alternative wire | SHIPPED legacy; target PROPOSED |
-| App | Uses `ActiveChain`, recipient-scoped polling, protobuf presentation/read models | Reachability UX, fork/expiry/status surfacing, scoped reset/deletion, target CBOR read models | SHIPPED legacy; target PROPOSED |
-| Cross-language vectors | Shared TS/Rust/Python/browser codec corpora; account-registration and topic commitments | Full DM crypto/payment observations, provider/mailbox/status/reset cases, hostile unknown-field retention | Partial IMPLEMENTED-NOT-WIRED |
+| TypeScript codec, registration/topics | Explicit registration and topic writers using FRNK/restricted CBOR | SHIPPED | Cross-check every production slice against Rust and hostile vectors |
+| TypeScript codec, other families | Stages 1–9, type-2 signatures, shared vectors | IMPLEMENTED-NOT-WIRED | Production DM suite, full type-1 stage 10, provider/mailbox/status records, target key binding |
+| Rust codec, registration/topics | Explicit registration and opt-in topics using FRNK/restricted CBOR | SHIPPED | Cross-check every production slice against TypeScript and hostile vectors |
+| Rust codec, other families | Stages 1–9, pure hashes and shared vectors | IMPLEMENTED-NOT-WIRED | Target structures and full checks independently cross-checked |
+| Relay / `cashwebd` | Protobuf DM, durable exact-set outbox, authenticated inbox; opt-in CBOR topics; explicit CBOR account registration | SHIPPED | FRNK DM/directory/provider/profile/mailbox journal, exact replay/restart/fork/reset/deletion gates |
+| Wallet | Protobuf DM, deniable v2 envelope, durable payment attempts and journal-before-PUT; opt-in CBOR topics | SHIPPED | Disjoint hardened `P`/`M`/`P'`, production suite, FRNK order, atomic mailbox replay and clean migration |
+| Bot | Uses wallet/relay flows and persists operational state | SHIPPED | Same protocol client as wallet, exact journal recovery, no private alternative wire |
+| App | Uses `ActiveChain`, recipient-scoped polling, protobuf presentation/read models | SHIPPED | Reachability UX, fork/expiry/status surfacing, scoped reset/deletion, target CBOR read models |
+| Cross-language vectors | Shared TS/Rust/Python/browser codec corpora; account-registration and topic commitments | IMPLEMENTED-NOT-WIRED | Full DM crypto/payment observations, provider/mailbox/status/reset cases, hostile unknown-field retention |
+| Public federation | Architecture plan only; no target convergence claim | PROPOSED | Multi-node directory/descriptor/pubsub convergence, exact deduplication, offline cursor catch-up, expired-cursor snapshot recovery, fork exposure |
+| Public/private isolation | Store classification exists; no production-boundary isolation proof | IMPLEMENTED-NOT-WIRED | Presentation profiles and every private mailbox/journal/payment record never enter public federation |
 
 Target conformance requires the same accepted/rejected bytes and first-failure category in
 TypeScript and Rust; relay production-boundary tests; wallet restart and ambiguous-outcome tests;
 and bot/app tests using the same public client. Unit success in one codec is not daemon support.
 
+**PROPOSED.** Decision-gate review MUST cover: directory/profile migration without field-9
+reinterpretation; current/retired/compromised `M` and delayed delivery; provider-paid opaque
+delivery followed by recipient rejection; origin/destination provider failover and duplicate
+claims; generation reset racing late completion; tombstone dominance, stale create and both
+snapshot modes; permanent exclusion history with bounded body compaction; deletion reachability
+across shared references and payment recovery; topic root/revision/vote targeting; federation
+convergence/cursor recovery; and proof that profiles/private mailboxes never federate. These proofs
+do not allocate numeric identifiers.
+
 ## 15. Unresolved allocations and review gates
+
+**UNALLOCATED.**
 
 The following remain deliberately unresolved rather than inferred:
 
@@ -381,6 +560,6 @@ The following remain deliberately unresolved rather than inferred:
 - CBOR topic list/discovery/status schemas and their cutover release;
 - cryptographic approval of the current T3a/T3b stamp derivation and proof.
 
-No daemon, client, or migration may allocate these locally. Each allocation updates this index,
+**PROPOSED.** No daemon, client, or migration may allocate these locally. Each allocation updates this index,
 the relevant CDDL, both codecs, independent vectors, production-boundary tests, and the conformance
 matrix in one reviewed sequence.

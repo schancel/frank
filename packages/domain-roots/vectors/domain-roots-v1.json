@@ -1,0 +1,27 @@
+{
+  "registry": "frank-domain-roots-v1",
+  "registryCode": 1,
+  "algorithm": "hkdf-sha256-rfc5869",
+  "vectors": [
+    {
+      "accountRoot": "0000000000000000000000000000000000000000000000000000000000000000",
+      "outputs": {
+        "ecash-bch-wallet": "b69b4040177891a564acc8b7fc81ebb5da0b5e03e6b3f3913b2954f646afdcb7",
+        "evm-wallet": "cee86a4b731c08858ad659009790516658141bb99e3be5bd144ab6ca657d19c4",
+        "solana-wallet": "24df22e3939688ffdf2d622ff5f0f9d6ed6ebe3f988aa371f7d52cf21cc260aa",
+        "messaging-encryption": "64e0df3a659dc4720f18753deff7586d9dcb2984cf2fbd602e53eae49d963c40",
+        "identity-authentication": "5719945a0500eaeef2d0beee0de446e7ef65e9ff7c607681c0a7a7a95bb8914e"
+      }
+    },
+    {
+      "accountRoot": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "outputs": {
+        "ecash-bch-wallet": "3f7e6601a459a8f3c4e2976d662578361ad7ec2f7b5e80f4daca5526d33ecc33",
+        "evm-wallet": "07cbdd9e307849bda7312fa4144afbd78e05b710aa6241bca48e08f028b615b3",
+        "solana-wallet": "fbd0a74f43c9e84e6f7920b234c20d59df0e850ae24063ac243b32bcf1eb154c",
+        "messaging-encryption": "3785f5f436b651879055d71087b9ed3df7fb88054000ce520b4bd8ed11961331",
+        "identity-authentication": "006831dc0753bd4020bf7ea41d98f27bb03142cc78e94d38b4199215aedbc0fc"
+      }
+    }
+  ]
+}

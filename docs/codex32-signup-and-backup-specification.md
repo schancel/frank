@@ -161,10 +161,14 @@ distinct and pass known-answer vectors. Vectors establish interoperability, not
 the one-wayness claim; the selected construction requires independent
 cryptographic review.
 
-The exact KDF is intentionally a blocking decision, not left to individual
-callers. Implementers MUST NOT improvise a mixture of BIP-32 paths, SLIP-0010
-paths, mnemonic conversion, or raw hash labels. This document can be approved
-before that companion registry, but production signup cannot.
+The frozen companion specification is
+[`domain-derivation-registry-v1.md`](domain-derivation-registry-v1.md). It
+assigns recovery-format code `1` to `codex32-master-v1`, registry code `1` to
+`frank-domain-roots-v1`, and fixes HKDF-SHA-256 framing, purpose codes, labels,
+lengths, downstream interpretations, and vectors. Implementers MUST NOT
+improvise a mixture of BIP-32 paths, SLIP-0010 paths, mnemonic conversion, or
+raw hash labels. Independent cryptographic review remains a production gate,
+not permission to reinterpret the frozen pre-production registry in place.
 
 Released registry entries are immutable. In recovery-format v1, a later
 registry may only be an append-only superset that preserves every earlier
@@ -1775,8 +1779,7 @@ integration have all passed their gates.
 ## 17. Open decisions
 
 - Product default for `k` and `n`, and whether advanced choices ship initially.
-- The exact derivation KDF/registry and identity aggregate defined outside this
-  document.
+- The future aggregate identity-key construction defined outside this document.
 - The platform-specific local vault and passkey wrapping policy.
 - Hardware or air-gapped ceremony support.
 - Domain-specific rotation and funded-account migration.

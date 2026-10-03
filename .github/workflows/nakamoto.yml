@@ -8,6 +8,7 @@ on:
       - "packages/crypto-box/**"
       - "packages/adaptor-signatures/**"
       - "packages/codex32/**"
+      - "packages/domain-roots/**"
       - "packages/swap-protocol/**"
       - "packages/cashweb/**"
       - "packages/wallet/**"
@@ -20,6 +21,7 @@ on:
       - "packages/crypto-box/**"
       - "packages/adaptor-signatures/**"
       - "packages/codex32/**"
+      - "packages/domain-roots/**"
       - "packages/swap-protocol/**"
       - "packages/cashweb/**"
       - "packages/wallet/**"
@@ -47,6 +49,9 @@ jobs:
       - name: codex32
         working-directory: packages/codex32
         run: yarn test --runInBand && yarn typecheck && ../../node_modules/.bin/prettier --config ../../app/.prettierrc.json --check .
+      - name: domain-roots
+        working-directory: packages/domain-roots
+        run: yarn test --runInBand && yarn typecheck && yarn check:vectors && ../../node_modules/.bin/prettier --config ../../app/.prettierrc.json --check .
       - name: swap-protocol
         working-directory: packages/swap-protocol
         run: yarn test --runInBand && yarn typecheck && ../../node_modules/.bin/prettier --config ../../app/.prettierrc.json --check .

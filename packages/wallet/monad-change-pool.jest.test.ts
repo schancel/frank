@@ -104,6 +104,16 @@ function makeReadProvider(params: {
 }
 
 describe('MonadChangeKeyring', () => {
+  it('uses the same byte domain root while keeping the change branch disjoint', () => {
+    const root = new Uint8Array(32).fill(0x42)
+    const domainRoot = { purpose: 'evm-wallet' as const, bytes: root }
+    const change =
+      MonadChangeKeyring.fromDomainRoot(domainRoot).deriveChangeAccount(0)
+    const spend = MonadHdKeyring.fromDomainRoot(domainRoot).deriveSubAccount(0)
+    expect(change.address).not.toBe(spend.address)
+    expect(change.privateKey).not.toBe(spend.privateKey)
+  })
+
   it('derives the same address/private key from the same mnemonic + index (deterministic)', () => {
     const a =
       MonadChangeKeyring.fromMnemonic(TEST_MNEMONIC).deriveChangeAccount(0)

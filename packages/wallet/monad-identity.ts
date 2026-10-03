@@ -118,6 +118,7 @@ import {
   requireValidProfileDisplayName,
   validateProfileDisplayName,
 } from './profile-display-name'
+import { MonadDomainRoot, monadMasterFromDomainRoot } from './monad-domain-root'
 
 /** Reserved BIP-44 path (account index `1'`) for the stable Frank identity key -- see this file's
  * header for why it's kept structurally separate from both `monad-hd-keyring.ts`'s burner
@@ -140,8 +141,18 @@ export class MonadIdentity implements FrankIdentityHandle {
     this.displayAddress = wallet.address
   }
 
-  /** Derives the identity key deterministically from `seed`, at
-   * `MONAD_IDENTITY_DERIVATION_PATH` -- see this file's header. */
+  /** Builds the authentication identity from its already-separated registry output. */
+  static fromDomainRoot(
+    domainRoot: MonadDomainRoot<'identity-authentication'>,
+  ): MonadIdentity {
+    const node = monadMasterFromDomainRoot(
+      domainRoot,
+      'identity-authentication',
+    ).derivePath(MONAD_IDENTITY_DERIVATION_PATH)
+    return new MonadIdentity(new Wallet(node.privateKey))
+  }
+
+  /** @deprecated Legacy mnemonic derivation. */
   static fromSeed(seed: HDSeed): MonadIdentity {
     const computedSeed = Mnemonic.fromPhrase(
       seed.mnemonic,

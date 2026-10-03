@@ -58,6 +58,44 @@ function makeMockHttpClient(): jest.Mocked<MonadTxSubmitter> {
 }
 
 describe('MonadHdKeyring', () => {
+  it('derives deterministically from a snapshotted byte domain root', () => {
+    const root = new Uint8Array(32).fill(0x21)
+    const first = MonadHdKeyring.fromDomainRoot({
+      purpose: 'evm-wallet',
+      bytes: root,
+    }).deriveSubAccount(0)
+    root.fill(0xff)
+    const second = MonadHdKeyring.fromDomainRoot({
+      purpose: 'evm-wallet',
+      bytes: new Uint8Array(32).fill(0x21),
+    }).deriveSubAccount(0)
+    expect(first).toEqual(second)
+  })
+
+  it('rejects domain roots outside the BIP-32 seed boundary', () => {
+    expect(() =>
+      MonadHdKeyring.fromDomainRoot({
+        purpose: 'evm-wallet',
+        bytes: new Uint8Array(15),
+      }),
+    ).toThrow(/16 to 64 bytes/)
+    expect(() =>
+      MonadHdKeyring.fromDomainRoot({
+        purpose: 'evm-wallet',
+        bytes: new Uint8Array(65),
+      }),
+    ).toThrow(/16 to 64 bytes/)
+  })
+
+  it('rejects a domain root allocated to another purpose at runtime', () => {
+    expect(() =>
+      MonadHdKeyring.fromDomainRoot({
+        purpose: 'identity-authentication',
+        bytes: new Uint8Array(32),
+      } as unknown as Parameters<typeof MonadHdKeyring.fromDomainRoot>[0]),
+    ).toThrow(/evm-wallet.*domain root/)
+  })
+
   it('derives the same address/private key from the same mnemonic + index (deterministic)', () => {
     const a = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC).deriveSubAccount(0)
     const b = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC).deriveSubAccount(0)

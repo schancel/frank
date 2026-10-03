@@ -114,9 +114,9 @@ burstable fixed-hour IP quota; anonymous `sendrawtransaction`, `broadcast-tx`, a
 `broadcast-txs` use a separate small fixed-hour broadcast quota. Other node RPC and indexer
 operations require the same registered-customer challenge as EVM calls. Anonymous history queries
 accept only bounded `page` and `page_size` parameters, and anonymous batch script requests consume
-one quota unit per script. Chronik paths are canonicalized before policy and forwarding; valid
-upstream protobuf error bodies are preserved byte-for-byte unless they contain configured upstream
-credentials.
+one quota unit per script. Chronik paths are canonicalized before policy and forwarding. Every valid
+non-success upstream protobuf error retains its HTTP status and protobuf shape, but its
+provider-controlled message is replaced with `upstream Chronik error` so credentials cannot leak.
 
 ```toml
 [registry.bitcoin_proxy]

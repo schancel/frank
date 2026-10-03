@@ -460,6 +460,12 @@ fn is_single_response_envelope(value: &Value, version: JsonRpcVersion) -> bool {
     }
     let has_result = response.contains_key("result");
     let has_error = response.contains_key("error");
+    let valid_error = response.get("error").is_some_and(|error| {
+        error.as_object().is_some_and(|error| {
+            error.get("code").and_then(Value::as_i64).is_some()
+                && error.get("message").is_some_and(Value::is_string)
+        })
+    });
     if response
         .keys()
         .any(|key| !matches!(key.as_str(), "jsonrpc" | "id" | "result" | "error"))
@@ -473,10 +479,13 @@ fn is_single_response_envelope(value: &Value, version: JsonRpcVersion) -> bool {
                 None | Some("1.0")
             ) && has_result
                 && has_error
+                && (response["result"].is_null() ^ response["error"].is_null())
+                && (response["error"].is_null() || valid_error)
         }
         JsonRpcVersion::V2 => {
             response.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
                 && (has_result ^ has_error)
+                && (!has_error || valid_error)
         }
     }
 }
@@ -655,8 +664,8 @@ impl<R: BufRead> ResponseParser<R> {
     fn parse_response_object(&mut self) -> Result<Value, StreamInspectError> {
         let mut fields = HashSet::new();
         let mut id = None;
-        let mut has_result = false;
-        let mut has_error = false;
+        let mut result_is_null = None;
+        let mut error_is_null = None;
         let mut version = None;
         if self.lexer.peek_non_whitespace()? == Some(b'}') {
             self.lexer.expect_punctuation(TokenKind::RightBrace)?;
@@ -690,18 +699,19 @@ impl<R: BufRead> ResponseParser<R> {
                     id = Some(token.rpc_id()?);
                 }
                 "result" => {
-                    has_result = true;
                     let token = self.lexer.next_token(false)?;
+                    result_is_null = Some(matches!(&token.kind, TokenKind::Null));
                     self.lexer.skip_value(token, 0)?;
                 }
                 "error" => {
-                    has_error = true;
                     let token = self.lexer.next_token(false)?;
                     let start = token.start;
                     let is_null = matches!(&token.kind, TokenKind::Null);
-                    let code = self.lexer.parse_error_code(token, 0)?;
-                    if !is_null {
-                        let code = code.unwrap_or(-32000);
+                    error_is_null = Some(is_null);
+                    if is_null {
+                        self.lexer.skip_value(token, 0)?;
+                    } else {
+                        let code = self.lexer.parse_error_object(token, 0)?;
                         self.error_rewrites.push(ErrorRewrite {
                             range: start..self.lexer.offset,
                             replacement: Bytes::from(format!(
@@ -721,12 +731,22 @@ impl<R: BufRead> ResponseParser<R> {
         let id = id.ok_or(StreamInspectError::Invalid)?;
         match self.version {
             JsonRpcVersion::Legacy => {
-                if !matches!(version.as_deref(), None | Some("1.0")) || !has_result || !has_error {
+                if !matches!(version.as_deref(), None | Some("1.0"))
+                    || !matches!(
+                        (result_is_null, error_is_null),
+                        (Some(true), Some(false)) | (Some(false), Some(true))
+                    )
+                {
                     return Err(StreamInspectError::Invalid);
                 }
             }
             JsonRpcVersion::V2 => {
-                if version.as_deref() != Some("2.0") || !(has_result ^ has_error) {
+                if version.as_deref() != Some("2.0")
+                    || !matches!(
+                        (result_is_null, error_is_null),
+                        (Some(_), None) | (None, Some(false))
+                    )
+                {
                     return Err(StreamInspectError::Invalid);
                 }
             }
@@ -979,21 +999,21 @@ impl<R: BufRead> Lexer<R> {
         Ok(())
     }
 
-    fn parse_error_code(
+    fn parse_error_object(
         &mut self,
         token: Token,
         depth: usize,
-    ) -> Result<Option<i64>, StreamInspectError> {
+    ) -> Result<i64, StreamInspectError> {
         if !matches!(&token.kind, TokenKind::LeftBrace) {
-            self.skip_value(token, depth)?;
-            return Ok(None);
+            return Err(StreamInspectError::Invalid);
         }
         if self.peek_non_whitespace()? == Some(b'}') {
             self.expect_punctuation(TokenKind::RightBrace)?;
-            return Ok(None);
+            return Err(StreamInspectError::Invalid);
         }
         let mut fields = HashSet::new();
         let mut code = None;
+        let mut has_message = false;
         loop {
             let key = self.next_token(true)?;
             let TokenKind::String(Some(key)) = key.kind else {
@@ -1012,7 +1032,16 @@ impl<R: BufRead> Lexer<R> {
                     TokenKind::Number(Some(raw)) => raw.parse::<i64>().ok(),
                     _ => None,
                 };
+                if code.is_none() {
+                    return Err(StreamInspectError::Invalid);
+                }
                 self.skip_value(value, depth + 1)?;
+            } else if key == "message" {
+                let value = self.next_token(false)?;
+                if !matches!(value.kind, TokenKind::String(_)) {
+                    return Err(StreamInspectError::Invalid);
+                }
+                has_message = true;
             } else {
                 let value = self.next_token(false)?;
                 self.skip_value(value, depth + 1)?;
@@ -1023,7 +1052,10 @@ impl<R: BufRead> Lexer<R> {
                 _ => return Err(StreamInspectError::Invalid),
             }
         }
-        Ok(code)
+        if !has_message {
+            return Err(StreamInspectError::Invalid);
+        }
+        code.ok_or(StreamInspectError::Invalid)
     }
 
     fn skip_value(&mut self, token: Token, depth: usize) -> Result<(), StreamInspectError> {
@@ -1246,6 +1278,22 @@ mod tests {
             &serde_json::json!([]),
             JsonRpcVersion::Legacy,
         ));
+        for invalid in [
+            json!({"jsonrpc":"2.0","id":1,"error":null}),
+            json!({"jsonrpc":"2.0","id":1,"error":"no"}),
+            json!({"jsonrpc":"2.0","id":1,"error":{"message":"no"}}),
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":-1}}),
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":-1.5,"message":"no"}}),
+            json!({"id":1,"result":"ok","error":{"code":-1,"message":"no"}}),
+            json!({"id":1,"result":null,"error":null}),
+        ] {
+            let version = if invalid.get("jsonrpc").is_some() {
+                JsonRpcVersion::V2
+            } else {
+                JsonRpcVersion::Legacy
+            };
+            assert!(!is_response_envelope(&invalid, version), "{invalid}");
+        }
     }
 
     #[test]
@@ -1384,6 +1432,46 @@ mod tests {
             "[".repeat(MAX_JSON_DEPTH + 1) + &"]".repeat(MAX_JSON_DEPTH + 1)
         );
         assert!(inspect(deeply_nested.as_bytes(), &[json!(1)]).is_err());
+        for malformed_error in [
+            r#"null"#,
+            r#""not-an-object""#,
+            r#"[]"#,
+            r#"{}"#,
+            r#"{"message":"no code"}"#,
+            r#"{"code":-1}"#,
+            r#"{"code":-1.5,"message":"not an integer"}"#,
+            r#"{"code":-1,"message":7}"#,
+        ] {
+            let response = format!(r#"{{"jsonrpc":"2.0","id":1,"error":{malformed_error}}}"#);
+            assert!(
+                inspect(response.as_bytes(), &[json!(1)]).is_err(),
+                "accepted malformed error: {response}"
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_inspector_enforces_legacy_success_error_exclusivity() {
+        let inspect_legacy = |bytes: &[u8]| {
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            file.write_all(bytes).unwrap();
+            inspect_spooled_response(
+                file.path(),
+                JsonRpcVersion::Legacy,
+                &RequestCorrelation {
+                    ids: vec![json!(1)],
+                    is_batch: false,
+                },
+            )
+        };
+        assert!(inspect_legacy(br#"{"id":1,"result":"ok","error":null}"#).is_ok());
+        assert!(
+            inspect_legacy(br#"{"id":1,"result":null,"error":{"code":-1,"message":"no"}}"#).is_ok()
+        );
+        assert!(
+            inspect_legacy(br#"{"id":1,"result":"ok","error":{"code":-1,"message":"no"}}"#)
+                .is_err()
+        );
     }
 
     #[test]

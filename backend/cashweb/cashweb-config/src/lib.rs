@@ -268,6 +268,55 @@ pub struct RegistryConf {
     pub curated_defaults: Vec<CuratedContactConf>,
 }
 
+/// Invalid resource relationship spanning multiple registry proxy families.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RegistryConfigError {
+    /// A configured concurrency-and-size product exceeds the process ceiling.
+    InvalidLimit(&'static str),
+}
+
+impl fmt::Display for RegistryConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidLimit(limit) => write!(formatter, "invalid registry limit: {limit}"),
+        }
+    }
+}
+
+impl Error for RegistryConfigError {}
+
+impl RegistryConf {
+    /// Validate process-wide resource bounds shared by otherwise independent proxy families.
+    pub fn validate_rpc_resource_limits(&self) -> Result<(), RegistryConfigError> {
+        let family_bytes = |enabled: bool, response: usize, concurrency: usize| {
+            if enabled {
+                response.checked_mul(concurrency)
+            } else {
+                Some(0)
+            }
+        };
+        let evm = family_bytes(
+            self.evm_rpc.enabled,
+            self.evm_rpc.max_response_bytes,
+            self.evm_rpc.max_concurrency,
+        );
+        let bitcoin = family_bytes(
+            self.bitcoin_proxy.enabled,
+            self.bitcoin_proxy.max_response_bytes,
+            self.bitcoin_proxy.max_concurrency,
+        );
+        if evm
+            .and_then(|evm| bitcoin.and_then(|bitcoin| evm.checked_add(bitcoin)))
+            .map_or(true, |bytes| bytes > MAX_AGGREGATE_RPC_RESPONSE_BYTES)
+        {
+            return Err(RegistryConfigError::InvalidLimit(
+                "aggregate RPC response bytes",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Relay-owned EVM JSON-RPC proxy configuration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct EvmRpcConf {
@@ -977,7 +1026,7 @@ mod tests {
         parse_conf, protocol_chain_registry, BitcoinProxyChainConf, BitcoinProxyConf, CashwebdConf,
         CuratedContactConf, EvmRpcChainConf, EvmRpcConf, EvmRpcConfigError,
         InitialMetadataDownloadConf, MonadMailboxConf, MonadMailboxConfigError, MonadMailboxMode,
-        PopConf, ProtocolChainFamily, ProtocolProxyCapability, RegistryConf,
+        PopConf, ProtocolChainFamily, ProtocolProxyCapability, RegistryConf, RegistryConfigError,
     };
 
     #[test]
@@ -1443,6 +1492,33 @@ mod tests {
                 "{name}"
             );
             conf.registry.evm_rpc.validate().unwrap();
+            assert_eq!(
+                conf.registry.validate_rpc_resource_limits(),
+                Ok(()),
+                "{name}"
+            );
+
+            // Each family may fit its local ceiling while their combined in-flight response
+            // reservations exceed the process-wide ceiling.
+            conf.registry.evm_rpc.max_response_bytes = 512 * 1024 * 1024;
+            conf.registry.evm_rpc.max_concurrency = 4;
+            conf.registry.bitcoin_proxy.enabled = true;
+            conf.registry.bitcoin_proxy.max_response_bytes = 32 * 1024 * 1024;
+            conf.registry.bitcoin_proxy.max_concurrency = 64;
+            assert_eq!(
+                conf.registry.validate_rpc_resource_limits(),
+                Err(RegistryConfigError::InvalidLimit(
+                    "aggregate RPC response bytes"
+                )),
+                "{name}"
+            );
+            conf.registry.evm_rpc.max_concurrency = 3;
+            conf.registry.bitcoin_proxy.max_concurrency = 16;
+            assert_eq!(
+                conf.registry.validate_rpc_resource_limits(),
+                Ok(()),
+                "{name}"
+            );
         }
     }
 

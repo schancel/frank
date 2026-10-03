@@ -36,6 +36,7 @@ use crate::{
 };
 
 const PROXY_METHOD_HEADER: &str = "x-frank-proxy-method";
+const MAX_STARTUP_RESPONSE_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone)]
 struct Chain {
@@ -237,7 +238,10 @@ impl BitcoinProxyRuntime {
             if let Some(url) = &chain.rpc {
                 let body = json!({"jsonrpc":"1.0","id":"startup","method":"getblockhash","params":[chain.checkpoint_height]});
                 let response = self
-                    .rpc_request(url, serde_json::to_vec(&body).unwrap())
+                    .bounded_request_with_limit(
+                        self.rpc_request_builder(url, serde_json::to_vec(&body).unwrap()),
+                        MAX_STARTUP_RESPONSE_BYTES,
+                    )
                     .await
                     .map_err(|_| BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
                 if !response.status.is_success() {
@@ -265,7 +269,7 @@ impl BitcoinProxyRuntime {
                             BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone())
                         })?;
                 let bytes = self
-                    .simple_request(self.client.get(url))
+                    .simple_request_with_limit(self.client.get(url), MAX_STARTUP_RESPONSE_BYTES)
                     .await
                     .map_err(|_| BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
                 let block = proto::Block::decode(bytes.as_ref())
@@ -285,8 +289,14 @@ impl BitcoinProxyRuntime {
         Ok(())
     }
 
-    async fn simple_request(&self, request: reqwest::RequestBuilder) -> Result<Bytes, ()> {
-        let response = self.bounded_request(request).await?;
+    async fn simple_request_with_limit(
+        &self,
+        request: reqwest::RequestBuilder,
+        max_response_bytes: usize,
+    ) -> Result<Bytes, ()> {
+        let response = self
+            .bounded_request_with_limit(request, max_response_bytes)
+            .await?;
         if !response.status.is_success() {
             return Err(());
         }
@@ -297,19 +307,23 @@ impl BitcoinProxyRuntime {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<UpstreamResponse, ()> {
+        self.bounded_request_with_limit(request, self.max_response_bytes)
+            .await
+    }
+
+    async fn bounded_request_with_limit(
+        &self,
+        request: reqwest::RequestBuilder,
+        max_response_bytes: usize,
+    ) -> Result<UpstreamResponse, ()> {
         tokio::time::timeout(self.timeout, async {
             let response = request.send().await.map_err(|_| ())?;
             let status = response.status();
-            let body = read_response(response, self.max_response_bytes).await?;
+            let body = read_response(response, max_response_bytes).await?;
             Ok(UpstreamResponse { status, body })
         })
         .await
         .map_err(|_| ())?
-    }
-
-    async fn rpc_request(&self, url: &Url, body: Vec<u8>) -> Result<UpstreamResponse, ()> {
-        self.bounded_request(self.rpc_request_builder(url, body))
-            .await
     }
 
     fn rpc_request_builder(&self, url: &Url, body: Vec<u8>) -> reqwest::RequestBuilder {

@@ -141,6 +141,9 @@ fn read_and_validate_conf_with_env(
         .bitcoin_proxy
         .validate()
         .wrap_err("Invalid registry.bitcoin_proxy configuration")?;
+    conf.registry
+        .validate_rpc_resource_limits()
+        .wrap_err("Invalid registry RPC resource limits")?;
     // An enabled mailbox admits only envelopes carrying the relay's network tag; an unset tag would
     // silently reject every direct message, so refuse to start instead.
     let network_tag = env(NETWORK_TAG_ENV);
@@ -171,7 +174,8 @@ fn read_and_validate_conf_with_env(
             .into());
         }
     }
-    if let Some(network) = network {
+    if conf.registry.evm_rpc.enabled {
+        let network = network.expect("enabled EVM RPC requires a validated network tag");
         for chain in &conf.registry.evm_rpc.chains {
             if chain.expected_chain_id != network.evm_chain_id {
                 return Err(NetworkChainMismatch {
@@ -606,6 +610,23 @@ mod tests {
         )
         .expect_err("a disabled mailbox must not permit a crossed RPC chain and network tag");
         assert!(format!("{error:?}").contains("identifies EVM chain 10143"));
+
+        // Retained rows are inert when the EVM proxy is disabled. Operators may stage a future
+        // chain or disable a bad upstream without unrelated network-tag validation blocking boot.
+        let disabled_evm_mainnet = LOCAL
+            .replacen("enabled = true", "enabled = false", 2)
+            .replace("id = \"monad-testnet\"", "id = \"monad-mainnet\"")
+            .replace("expected_chain_id = 10143", "expected_chain_id = 143")
+            .replace(
+                "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9",
+                "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9",
+            );
+        read_and_validate_conf_with_env(
+            "-",
+            &mut Cursor::new(disabled_evm_mainnet),
+            env(&[("FRANK_NETWORK_TAG", "MONT")]),
+        )
+        .expect("disabled EVM chain rows must be inert");
     }
 
     #[test]

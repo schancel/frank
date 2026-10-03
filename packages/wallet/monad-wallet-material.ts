@@ -6,6 +6,178 @@ import { MonadIdentity, MONAD_IDENTITY_DERIVATION_PATH } from './monad-identity'
 import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadChangeKeyring } from './monad-change-keyring'
 import { monadMasterFromDomainRoot } from './monad-domain-root'
+import { deriveRoleLeaves, matchLocalRolePoints } from '../role-keys/src'
+import type { RolePoint } from '../role-keys/src'
+import type { Current } from '../directory-admission/src'
+import {
+  decodeCanonical,
+  verifyPreviewDirectoryEvidence,
+} from '../frank-codec/src'
+import { seal, open, SUITE_AUTH_XCHACHA } from '@frank/crypto-box'
+import type { SuiteResult } from '@frank/crypto-box'
+
+/** Owned, scoped operations: no secret arrays or general-purpose borrow escape. */
+export interface MonadCanonicalRoles {
+  readonly auth: RolePoint<'auth'>
+  readonly message: RolePoint<'message'>
+  readonly stamp: RolePoint<'stamp'>
+  readonly previousStamp?: RolePoint<'stamp'>
+  sealMessage(input: {
+    recipientPublicKey: Uint8Array
+    plaintext: Uint8Array
+    context: Uint8Array
+  }): SuiteResult<Uint8Array>
+  openMessage(input: {
+    envelope: Uint8Array
+    senderPublicKey: Uint8Array
+    context: Uint8Array
+  }): SuiteResult<Uint8Array>
+  dispose(): void
+}
+
+/** Caller must obtain Current from fresh admission; this owner never grants that authority. */
+export interface MonadCanonicalRoleOwner {
+  create(network: string, current: Current): MonadCanonicalRoles
+  dispose(): void
+}
+
+const sameBytes = (a: Uint8Array, b: Uint8Array): boolean =>
+  a.length === b.length && a.every((v, i) => v === b[i])
+
+function roleOwner(
+  evm: DomainRoot<'evm-wallet'>,
+  authentication: DomainRoot<'identity-authentication'>,
+  messaging: DomainRoot<'messaging-encryption'>,
+  identityPoint: Uint8Array,
+): MonadCanonicalRoleOwner {
+  const authRoot = snapshot(authentication, 'identity-authentication')
+  const messageRoot = snapshot(messaging, 'messaging-encryption')
+  const stampRoot = snapshot(evm, 'evm-wallet')
+  const ownedIdentity = new Uint8Array(identityPoint)
+  const sessions = new Set<MonadCanonicalRoles>()
+  let disposed = false
+  return Object.freeze({
+    create(network: string, current: Current): MonadCanonicalRoles {
+      if (disposed) throw new Error('canonical-roles:disposed')
+      if (current.kind !== 'current')
+        throw new Error('canonical-roles:current-required')
+      const evidence = verifyPreviewDirectoryEvidence(
+        current.evidence.attestation,
+        network,
+      )
+      const statement = evidence.statement
+      const roles = statement.preview
+      if (
+        current.status.forked ||
+        !sameBytes(evidence.statementFrame.frame, current.evidence.statement) ||
+        !sameBytes(evidence.statementHash, current.evidence.hash) ||
+        !sameBytes(statement.subject.keyBytes, ownedIdentity) ||
+        statement.subject.keyType !== 1 ||
+        current.messageKey.keyType !== 1 ||
+        current.stampKey.keyType !== 1 ||
+        !sameBytes(roles.messageDhKey.keyBytes, current.messageKey.keyBytes) ||
+        !sameBytes(statement.stampKey.keyBytes, current.stampKey.keyBytes) ||
+        roles.mailboxKeyGeneration !== current.generations[0] ||
+        roles.stampKeyGeneration !== current.generations[1] ||
+        statement.revision !== current.revision ||
+        (current.previousStamp !== null && current.previousStamp.keyType !== 1)
+      )
+        throw new Error('canonical-roles:directory-mismatch')
+      const derivation = {
+        authRoot,
+        messageRoot,
+        stampRoot,
+        messageGeneration: current.generations[0],
+        stampGeneration: current.generations[1],
+        ...(current.previousStamp === null
+          ? {}
+          : {
+              previousStampGeneration: current.generations[1] - 1n,
+            }),
+      }
+      if (
+        !matchLocalRolePoints(derivation, {
+          auth: ownedIdentity,
+          message: current.messageKey.keyBytes,
+          stamp: current.stampKey.keyBytes,
+          ...(current.previousStamp === null
+            ? {}
+            : {
+                previousStamp: current.previousStamp.keyBytes,
+              }),
+        }).matches
+      )
+        throw new Error('canonical-roles:local-mismatch')
+      const leaves = deriveRoleLeaves(derivation)
+      let closed = false
+      const session: MonadCanonicalRoles = Object.freeze({
+        auth: leaves.auth.public,
+        message: leaves.message.public,
+        stamp: leaves.stamp.public,
+        ...(leaves.previousStamp
+          ? { previousStamp: leaves.previousStamp.public }
+          : {}),
+        sealMessage(input: Parameters<MonadCanonicalRoles['sealMessage']>[0]) {
+          if (closed) throw new Error('canonical-roles:disposed')
+          const recipientPublicKey = new Uint8Array(input.recipientPublicKey)
+          const plaintext = new Uint8Array(input.plaintext)
+          const context = new Uint8Array(input.context)
+          return leaves.message.useSecret(secret =>
+            seal({
+              suiteId: SUITE_AUTH_XCHACHA,
+              senderPublicKey: leaves.message.public.compressedPoint,
+              senderPrivateKey: secret,
+              recipientPublicKey,
+              plaintext,
+              context,
+            }),
+          )
+        },
+        openMessage(input: Parameters<MonadCanonicalRoles['openMessage']>[0]) {
+          if (closed) throw new Error('canonical-roles:disposed')
+          const ownedEnvelope = new Uint8Array(input.envelope)
+          const senderPublicKey = new Uint8Array(input.senderPublicKey)
+          const context = new Uint8Array(input.context)
+          // This capability is suite1-only even though crypto-box has private legacy readers.
+          try {
+            const envelope = decodeCanonical(ownedEnvelope)
+            if (
+              !(envelope instanceof Map) ||
+              envelope.get(0n) !== 2n ||
+              envelope.get(1n) !== 1n
+            )
+              return {
+                ok: false as const,
+                error: { code: 'envelope' as const },
+              }
+          } catch {
+            return { ok: false as const, error: { code: 'envelope' as const } }
+          }
+          return leaves.message.useSecret(secret =>
+            open({
+              envelope: ownedEnvelope,
+              recipientPrivateKey: secret,
+              senderPublicKey,
+              context,
+            }),
+          )
+        },
+        dispose() {
+          closed = true
+          leaves.dispose()
+          sessions.delete(session)
+        },
+      })
+      sessions.add(session)
+      return session
+    },
+    dispose() {
+      disposed = true
+      for (const session of sessions) session.dispose()
+      for (const root of [authRoot, messageRoot, stampRoot]) root.bytes.fill(0)
+    },
+  })
+}
 
 /** Frozen registry outputs. Messaging child derivation is reserved for #696. */
 export interface MonadRootBundle {
@@ -22,6 +194,8 @@ export interface MonadWalletMaterial {
   readonly fingerprint: string
   /** Owned copy only; never used for legacy identity-based encryption. */
   readonly messagingRoot?: Uint8Array
+  /** Typed roots only. Legacy mnemonic material cannot authorize canonical messaging. */
+  readonly canonicalRoles?: MonadCanonicalRoleOwner
   dispose(): void
 }
 
@@ -69,6 +243,7 @@ export function createMonadWalletMaterial(
   if ('passphrase' in input)
     throw new Error('Cannot mix Monad domain roots and legacy mnemonic input')
   const owned: Uint8Array[] = []
+  let canonicalRoles: MonadCanonicalRoleOwner | undefined
   try {
     const evm = snapshot(input.evm, 'evm-wallet')
     owned.push(evm.bytes)
@@ -98,8 +273,15 @@ export function createMonadWalletMaterial(
     } finally {
       combined.fill(0)
     }
+    const identity = MonadIdentity.fromDomainRoot(authentication)
+    canonicalRoles = roleOwner(
+      evm,
+      authentication,
+      messaging,
+      identity.compressedPubKey,
+    )
     const material: MonadWalletMaterial = {
-      identity: MonadIdentity.fromDomainRoot(authentication),
+      identity,
       // Existing native main-account path, now solely below the EVM spending root.
       mainAccount: new Wallet(
         monadMasterFromDomainRoot(evm, 'evm-wallet').derivePath(
@@ -110,12 +292,17 @@ export function createMonadWalletMaterial(
       changeKeyring: MonadChangeKeyring.fromDomainRoot(evm),
       fingerprint,
       messagingRoot: messaging.bytes,
+      canonicalRoles,
       dispose() {
         messaging.bytes.fill(0)
+        canonicalRoles?.dispose()
       },
     }
     owned.pop() // material owns messaging until close; EVM/auth roots are no longer needed.
     return material
+  } catch (error) {
+    canonicalRoles?.dispose()
+    throw error
   } finally {
     for (const bytes of owned) bytes.fill(0)
   }

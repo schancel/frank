@@ -502,11 +502,12 @@ yarn bot   # keeps running; set QWEN_BOT_MAX_REPLIES=<n> to exit after n replies
 ### Reply mode: live or stub (`QWEN_BOT_MODE`)
 
 - `QWEN_BOT_MODE=live` (default): real Qwen replies. `QWEN_API_KEY` and
-  `QWEN_OPENAI_COMPATIBLE_ENDPOINT` are required; if one is missing the bot exits at startup with a
-  message naming it. It never falls back to the stub by itself.
+  `QWEN_OPENAI_COMPATIBLE_ENDPOINT` are required; if one is missing the bot exits at startup.
+  It never falls back to the stub by itself. Failure logs omit provider bodies, even with
+  `QWEN_BOT_DEBUG` set; check configuration and durable state locally.
 - `QWEN_BOT_MODE=stub`: no API key, no network call to any model. Replies are deterministic and
   every one starts with `[STUB -- no model, offline canned reply]`, the startup banner and the
-  logs say `STUB mode`. Use it for offline demos, smoke tests and CI.
+  logs identify `Reply mode: stub`. Use it for offline demos, smoke tests and CI.
 - `QWEN_BOT_MAX_REPLIES` (default unset = keep running; `1` = exit after one reply) and
   `QWEN_BOT_IDLE_TIMEOUT_MS` (default: never when unlimited, 10 minutes when a reply cap is set;
   `0` = never).
@@ -523,6 +524,40 @@ conversation history under `QWEN_BOT_STATE_DIR` (default `~/.frank-bots/qwen`, o
 wallet authority before funding or signing anything new, then resumes the persisted mailbox
 cursor. Set `QWEN_BOT_MESSAGE_SINCE_MS=<unix milliseconds>` only for a new state root or an
 intentional historical backfill.
+
+Qwen responses have a separate input-keyed record (`response:v1:<inbound payload hash>`) in
+`QWEN_BOT_STATE_DIR/qwen-bot-state`. The bot fsyncs the generated response and proposed history
+before sending, then fsyncs a `send-started` boundary before entering the ordinary send builder.
+Only a confirmed send commits the response receipt, conversation and processed marker together.
+Existing processed markers remain terminal. The database contains private conversation text;
+keep it local and do not paste its contents into diagnostic logs or tickets.
+
+| Durable response phase | Restart behavior |
+| --- | --- |
+| `model-started` | Held: the provider may have completed, but no result was durably accepted. No automatic model retry. |
+| `response-ready` | Reuses the saved response/history without a model call, subject to peer policy and matching bot/funding/network/relay/stamp context. |
+| `send-started` | Held: delivery or payment may have happened. No rebuilt envelope, new signature, or automatic resend. |
+| `confirmed` | Terminal: duplicates do not generate or send again. |
+
+A held diagnostic includes the inbound hash and a fixed reason. Stop the bot and preserve both
+state roots before investigating that record alongside the wallet journals. There is deliberately
+no automatic release/reset command in this stage: #703 owns exact outbound-envelope and wallet
+attempt reconciliation. Later turns from the held peer are deferred with a diagnostic; other
+peers proceed. Those later inputs are not durably queued yet, so retain/replay them during operator
+recovery; #704 owns mailbox cursor/import atomicity. This does not complete #168 or promise
+exactly-once provider execution in the model-call/persistence crash window.
+
+Safe rollback: stop the bot and back up both state roots and its identity. Do not run older bot
+code against these roots while any nonterminal response row exists: old code ignores those rows
+and could repeat a paid send. Preserve the rows and keep the bot stopped until a compatible
+version or reviewed reconciliation is available. Never delete the state root to clear a held turn.
+
+Credential-free regression fixtures run the real CLI in stub mode with local Level state and
+mock relay/payment boundaries, including interrupted response persistence and restart:
+
+```sh
+yarn workspace @frank/bot test --runInBand qwen-bot-loop qwen-response-workflow
+```
 
 In a separate shell, once the bot prints its address (or is already running from a prior run —
 its identity persists at `QWEN_BOT_IDENTITY_JSON`, default `/tmp/qwen-bot-identity.json`):

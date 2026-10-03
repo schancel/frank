@@ -31,6 +31,90 @@ const SINCE_PROFILES_KEY = '__since_profiles__'
 const GREETED_PREFIX = 'greeted:'
 const PROCESSED_PREFIX = 'processed:'
 const CONVERSATION_PREFIX = 'conversation:'
+const RESPONSE_PREFIX = 'response:v1:'
+
+/** Context must match on restart before a saved response may spend from a wallet. */
+export interface QwenResponseContext {
+  botAddress: string
+  fundingAddress: string
+  networkTag: string
+  relayBaseUrl: string
+  stampValueWei: string
+}
+
+export interface QwenResponseInput {
+  payloadHashHex: string
+  senderAddress: string
+  senderPubKeyHex: string
+  context: QwenResponseContext
+}
+
+interface QwenResponseBase extends QwenResponseInput {
+  version: 1
+}
+export interface QwenSavedResponse extends QwenResponseBase {
+  response: string
+  proposedHistory: QwenChatMessage[]
+}
+export interface QwenResponseReceipt {
+  payloadHashHex: string
+  txHashes: string[]
+}
+
+/** send-started is deliberately held, not retryable: #703 owns exact-envelope reconciliation. */
+export type QwenResponseRow =
+  | (QwenResponseBase & { phase: 'model-started' })
+  | (QwenSavedResponse & { phase: 'response-ready' | 'send-started' })
+  | (QwenSavedResponse & { phase: 'confirmed'; receipt: QwenResponseReceipt })
+
+function copy<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value))
+}
+
+function parseResponseRow(raw: string): QwenResponseRow {
+  const row = JSON.parse(raw) as QwenResponseRow
+  const historyValid = (history: QwenChatMessage[]) =>
+    Array.isArray(history) &&
+    history.every(
+      turn =>
+        turn &&
+        ['system', 'user', 'assistant'].includes(turn.role) &&
+        typeof turn.content === 'string',
+    )
+  if (
+    !row ||
+    row.version !== 1 ||
+    typeof row.payloadHashHex !== 'string' ||
+    typeof row.senderAddress !== 'string' ||
+    typeof row.senderPubKeyHex !== 'string' ||
+    !row.context ||
+    ![
+      'botAddress',
+      'fundingAddress',
+      'networkTag',
+      'relayBaseUrl',
+      'stampValueWei',
+    ].every(
+      key => typeof row.context[key as keyof QwenResponseContext] === 'string',
+    ) ||
+    !['model-started', 'response-ready', 'send-started', 'confirmed'].includes(
+      row.phase,
+    ) ||
+    (row.phase !== 'model-started' &&
+      (typeof row.response !== 'string' ||
+        !historyValid(row.proposedHistory))) ||
+    (row.phase === 'confirmed' &&
+      (!row.receipt ||
+        typeof row.receipt.payloadHashHex !== 'string' ||
+        !Array.isArray(row.receipt.txHashes) ||
+        !row.receipt.txHashes.every(hash => typeof hash === 'string')))
+  ) {
+    throw new Error(
+      'Invalid Qwen response record; preserve state and investigate',
+    )
+  }
+  return row
+}
 
 export class QwenBotStateStore {
   private readonly dbLocation: string
@@ -40,6 +124,9 @@ export class QwenBotStateStore {
   private greetedAddresses = new Set<string>()
   private processedPayloadHashes = new Set<string>()
   private conversations = new Map<string, QwenChatMessage[]>()
+  private responses = new Map<string, QwenResponseRow>()
+  // After an uncertain write, no further effects are safe until the database is reopened.
+  private responseWriteFailed = false
   private pendingWrites: Promise<unknown>[] = []
 
   constructor(location: string) {
@@ -78,6 +165,11 @@ export class QwenBotStateStore {
         )
       } else if (key.startsWith(PROCESSED_PREFIX)) {
         this.processedPayloadHashes.add(key.slice(PROCESSED_PREFIX.length))
+      } else if (key.startsWith(RESPONSE_PREFIX)) {
+        const row = parseResponseRow(value)
+        if (key !== RESPONSE_PREFIX + row.payloadHashHex)
+          throw new Error('Invalid Qwen response key')
+        this.responses.set(row.payloadHashHex, row)
       } else if (key.startsWith(CONVERSATION_PREFIX)) {
         const address = canonicalMonadEnvelopeAddress(
           key.slice(CONVERSATION_PREFIX.length),
@@ -146,7 +238,111 @@ export class QwenBotStateStore {
     const history = this.conversations.get(
       canonicalMonadEnvelopeAddress(address),
     )
-    return history ? [...history] : undefined
+    return history ? copy(history) : undefined
+  }
+
+  getResponse(payloadHashHex: string): QwenResponseRow | undefined {
+    const row = this.responses.get(payloadHashHex)
+    return row ? copy(row) : undefined
+  }
+
+  pendingResponses(): QwenResponseRow[] {
+    return [...this.responses.values()]
+      .filter(row => row.phase !== 'confirmed')
+      .map(copy)
+  }
+
+  pendingResponseForPeer(address: string): QwenResponseRow | undefined {
+    const sender = canonicalMonadEnvelopeAddress(address)
+    return this.pendingResponses().find(row => row.senderAddress === sender)
+  }
+
+  private async writeResponse(row: QwenResponseRow): Promise<void> {
+    if (this.responseWriteFailed)
+      throw new Error('Qwen response storage unavailable; restart required')
+    const operations = [
+      {
+        type: 'put',
+        key: RESPONSE_PREFIX + row.payloadHashHex,
+        value: JSON.stringify(row),
+      },
+    ]
+    if (row.phase === 'confirmed') {
+      operations.push(
+        {
+          type: 'put',
+          key: CONVERSATION_PREFIX + row.senderAddress,
+          value: JSON.stringify(row.proposedHistory),
+        },
+        { type: 'put', key: PROCESSED_PREFIX + row.payloadHashHex, value: '1' },
+      )
+    }
+    try {
+      // One atomic, fsynced batch: never publish an uncommitted conversation or terminal marker.
+      await this.db.batch(operations, { sync: true })
+    } catch {
+      this.responseWriteFailed = true
+      throw new Error(
+        'Qwen response persistence failed; preserve state and restart',
+      )
+    }
+    this.responses.set(row.payloadHashHex, copy(row))
+    if (row.phase === 'confirmed') {
+      this.conversations.set(row.senderAddress, copy(row.proposedHistory))
+      this.processedPayloadHashes.add(row.payloadHashHex)
+    }
+  }
+
+  async beginResponse(input: QwenResponseInput): Promise<void> {
+    if (
+      this.hasProcessed(input.payloadHashHex) ||
+      this.responses.has(input.payloadHashHex) ||
+      this.pendingResponseForPeer(input.senderAddress)
+    )
+      throw new Error('Qwen turn already owned')
+    await this.writeResponse({
+      ...copy(input),
+      senderAddress: canonicalMonadEnvelopeAddress(input.senderAddress),
+      version: 1,
+      phase: 'model-started',
+    })
+  }
+
+  async saveResponse(
+    payloadHashHex: string,
+    response: string,
+    proposedHistory: QwenChatMessage[],
+  ): Promise<void> {
+    const row = this.responses.get(payloadHashHex)
+    if (row?.phase !== 'model-started')
+      throw new Error('Invalid Qwen response transition')
+    await this.writeResponse({
+      ...row,
+      phase: 'response-ready',
+      response,
+      proposedHistory: copy(proposedHistory),
+    })
+  }
+
+  async startResponseSend(payloadHashHex: string): Promise<void> {
+    const row = this.responses.get(payloadHashHex)
+    if (row?.phase !== 'response-ready')
+      throw new Error('Invalid Qwen response transition')
+    await this.writeResponse({ ...row, phase: 'send-started' })
+  }
+
+  async confirmResponse(
+    payloadHashHex: string,
+    receipt: QwenResponseReceipt,
+  ): Promise<void> {
+    const row = this.responses.get(payloadHashHex)
+    if (row?.phase !== 'send-started')
+      throw new Error('Invalid Qwen response transition')
+    await this.writeResponse({
+      ...row,
+      phase: 'confirmed',
+      receipt: copy(receipt),
+    })
   }
 
   setConversation(address: string, history: QwenChatMessage[]): void {

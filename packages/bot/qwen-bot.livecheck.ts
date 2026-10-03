@@ -69,7 +69,7 @@
  *   QWEN_BOT_STATE_DIR          -- where the `level` DB of polling cursors, greeted-addresses/
  *                                  processed-message idempotency sets, and per-user Qwen
  *                                  conversation history is kept (default ~/.frank-bots/qwen, or $XDG_STATE_HOME/frank-bots/qwen).
- *                                  Survives restarts -- delete this directory to start clean.
+ *                                  Survives restarts; preserve held response rows (see README).
  *   QWEN_BOT_WALLET_STATE_DIR   -- durable HD seed, sender/change pools, and exact stamp journals
  *                                  (default ~/.frank-bots/qwen-wallet, or $XDG_STATE_HOME/frank-bots/qwen-wallet).
  */
@@ -104,6 +104,7 @@ import {
 } from './qwen-bot-common'
 import { botProfileFields } from './bot-directory'
 import { QwenBotStateStore } from './qwen-bot-state'
+import { QwenResponseWorkflow } from './qwen-response-workflow'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
@@ -188,7 +189,7 @@ async function main() {
 
   console.log('== Ticket #9: Qwen 3.8 Max bot over Frank (Monad testnet) ==')
   console.log(`Relay:        ${relayBaseUrl}`)
-  console.log(`Reply mode:   ${replyGenerator.describe()}`)
+  console.log(`Reply mode:   ${replyGenerator.mode}`)
   console.log(
     `Max replies:  ${Number.isFinite(maxReplies) ? maxReplies : 'unlimited'}`,
   )
@@ -254,6 +255,45 @@ async function main() {
   let repliesSent = 0
   let greetingsSent = 0
   let lastActivityAt = Date.now()
+
+  const responses = new QwenResponseWorkflow({
+    state,
+    context: {
+      botAddress: canonicalMonadEnvelopeAddress(identity.displayAddress),
+      fundingAddress: canonicalMonadEnvelopeAddress(mainAccountSigner.address),
+      networkTag,
+      relayBaseUrl,
+      stampValueWei: stampValueWei.toString(),
+    },
+    systemPrompt: SYSTEM_PROMPT,
+    generator: replyGenerator,
+    send: row =>
+      sendDirectMessageText({
+        stampClient,
+        pool,
+        mainAccountSigner,
+        provider,
+        fromIdentity: identity,
+        toAddress: row.senderAddress,
+        toPubKey: Buffer.from(row.senderPubKeyHex, 'hex'),
+        text: row.response,
+        stampValueWei,
+        networkTag,
+      }),
+  })
+
+  // Recovery is driven by durable rows, independent of the mailbox cursor or relay retention.
+  for (const row of state.pendingResponses()) {
+    if (repliesSent >= maxReplies) break
+    if (
+      row.phase === 'response-ready' &&
+      ((await guard.peerBlockReason(row.senderAddress)) ||
+        !guard.reserveReply(row.senderAddress))
+    )
+      continue
+    if ((await responses.resume(row.payloadHashHex)) === 'confirmed')
+      repliesSent++
+  }
 
   // Ticket #77's own sketch used `sinceProfiles = 0` (every historical registration). Deliberately
   // starting from "now" instead: a live relay this bot points at may already have many
@@ -347,8 +387,10 @@ async function main() {
               greeting.payloadHashHex
             } stamp txs=${greeting.txHashes.join(',')}`,
           )
-        } catch (err) {
-          console.error(`[bot] failed to greet ${profile.address}:`, err)
+        } catch {
+          console.error(
+            `[bot] greeting failed; delivery outcome requires inspection`,
+          )
         }
 
         // `QWEN_BOT_FUND_VALUE_WEI=0` turns funding off (e.g. when the standalone faucet, #316,
@@ -364,16 +406,17 @@ async function main() {
             )
             const fundTxHash = await mainAccountSigner.submit(signedFundTx)
             console.log(`[bot] funding tx sent: ${fundTxHash}`)
-          } catch (err) {
-            console.error(`[bot] failed to fund ${profile.address}:`, err)
+          } catch {
+            console.error(
+              `[bot] funding failed; transfer outcome requires inspection`,
+            )
           }
         }
 
         // Counted once per newly-greeted address regardless of whether the greeting DM and/or the
         // funding transfer above individually succeeded -- `greetedAddresses` already guards
-        // against re-attempting this same address on a later poll/restart (see this loop's header
-        // comment; matches this script's existing risk tolerance for the message-reply path, which
-        // similarly never retries a `processedPayloadHashes` entry).
+        // against re-attempting this same address on a later poll/restart. Greeting/funding
+        // lifecycle remains separate from the response workflow below.
         greetingsSent++
       }
 
@@ -397,7 +440,6 @@ async function main() {
         'hex',
       )
       if (state.hasProcessed(payloadHashHex)) continue
-      state.addProcessed(payloadHashHex)
 
       const envelope = parseEnvelope(message.message.encryptedPayload)
       if (!envelope) continue // not our envelope convention -- e.g. #8's plain-JSON demo blob
@@ -405,6 +447,16 @@ async function main() {
         continue
       if (sameMonadEnvelopeAddress(envelope.from, identity.displayAddress))
         continue
+
+      // Held turns remain unprocessed and block this conversation, even when the cursor moves.
+      // Cursor/import atomicity and durable queuing of later inputs belong to #704.
+      const pending = state.pendingResponseForPeer(envelope.from)
+      if (pending) {
+        console.warn(
+          `[bot] response ${pending.payloadHashHex} unresolved; later peer turn deferred`,
+        )
+        continue
+      }
 
       lastActivityAt = Date.now()
       const paymentHashes = message.message.stampPayments.map(
@@ -464,60 +516,13 @@ async function main() {
         )
         continue
       }
-      console.log(`[bot] decrypted: "${plaintext}"`)
-
-      const history = state.getConversation(envelope.from) ?? [
-        { role: 'system', content: SYSTEM_PROMPT },
-      ]
-      history.push({ role: 'user', content: plaintext })
-
-      console.log(
-        replyGenerator.mode === 'stub'
-          ? '[bot] STUB mode: generating a canned reply (no model call) ...'
-          : '[bot] asking Qwen 3.8 Max ...',
-      )
-      const completion = await replyGenerator.reply(history)
-      console.log(
-        `[bot] ${
-          replyGenerator.mode === 'stub' ? 'STUB' : 'Qwen'
-        } reasoning: ${completion.reasoning.slice(0, 400)}`,
-      )
-      console.log(
-        `[bot] ${replyGenerator.mode === 'stub' ? 'STUB' : 'Qwen'} reply: "${
-          completion.content
-        }"`,
-      )
-
-      history.push({ role: 'assistant', content: completion.content })
-      state.setConversation(envelope.from, history)
-
-      console.log('[bot] stamping + sending reply over Monad testnet ...')
-      // Ticket #77: goes through the shared `sendDirectMessageText` helper (`qwen-bot-common.ts`),
-      // extracted from this exact build-envelope-then-submit sequence (previously duplicated
-      // between this file and `qwen-bot-send-demo.livecheck.ts`) -- also the same path the new
-      // auto-greet logic below uses. Ticket #57: a reply is a direct message, so its stamp must
-      // pay the recipient (`envelope.from`, the human it's replying to) -- not burn to the fixed
-      // `MONAD_STAMP_BURN_ADDRESS`, which is only correct for a broadcast with no single
-      // recipient (see `chain/monad-chain.ts`'s `directMessages.send` for the same fix), and the
-      // helper derives one-time stealth destinations from the recipient's registered public key.
-      const result = await sendDirectMessageText({
-        stampClient,
-        pool,
-        mainAccountSigner,
-        provider,
-        fromIdentity: identity,
-        toAddress: envelope.from,
-        toPubKey: senderPubKey,
-        text: completion.content,
-        stampValueWei,
-        networkTag,
+      const outcome = await responses.respond({
+        payloadHashHex,
+        senderAddress: envelope.from,
+        senderPubKeyHex: senderPubKey.toString('hex'),
+        prompt: plaintext,
       })
-      console.log(
-        `[bot] reply sent -- payload_hash=${
-          result.payloadHashHex
-        } stamp txs=${result.txHashes.join(',')}`,
-      )
-      repliesSent++
+      if (outcome === 'confirmed') repliesSent++
       if (repliesSent >= maxReplies) break
     }
 
@@ -551,15 +556,10 @@ main()
       await closeFundedSetup?.()
     }
   })
-  .catch(err => {
-    // Message only (no stack) for operator-facing config errors; opt into the stack for debugging.
+  .catch(() => {
+    // Provider errors may contain prompts, tokens or raw response bodies, including in debug mode.
     console.error(
-      '\nQWEN BOT FAILED:',
-      process.env.QWEN_BOT_DEBUG
-        ? err
-        : err instanceof Error
-        ? err.message
-        : err,
+      '\nQWEN BOT FAILED: check QWEN_API_KEY and QWEN_OPENAI_COMPATIBLE_ENDPOINT (or QWEN_BOT_MODE=stub), configuration and durable response state; preserve held rows before restart',
     )
     process.exit(1)
   })

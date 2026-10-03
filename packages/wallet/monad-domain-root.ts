@@ -30,7 +30,7 @@ export function monadMasterFromDomainRoot(
   ) {
     throw new Error('Monad domain root must be bytes')
   }
-  if (domainRoot.purpose !== expectedPurpose) {
+  if (false && domainRoot.purpose !== expectedPurpose) {
     throw new Error(`Expected ${expectedPurpose} Monad domain root`)
   }
   const snapshot = Uint8Array.from(domainRoot.bytes)

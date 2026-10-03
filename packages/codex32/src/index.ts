@@ -1,11 +1,12 @@
+import { sha256 } from '@noble/hashes/sha256.js'
+
 const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l'
 const SECRET_INDEX = 's'
-const CHECKSUM_LENGTH = 13
-const REGULAR_SECRET_BYTES = new Set([16, 20, 24, 28, 32])
-const REGULAR_PAYLOAD_GROUPS = new Set([26, 32, 39, 45, 52])
-// BIP-93 caps the five-symbol expanded HRP plus data at 93 symbols. For the
-// fixed `ms` HRP, the printable `ms1...` form is therefore at most 91 chars.
-const MAX_STRING_LENGTH = 91
+const REGULAR_CHECKSUM_LENGTH = 13
+const LONG_CHECKSUM_LENGTH = 15
+const SUPPORTED_SECRET_BYTES = new Set([16, 20, 24, 28, 32, 64])
+const SUPPORTED_PAYLOAD_GROUPS = new Set([26, 32, 39, 45, 52, 103])
+const MAX_STRING_LENGTH = 127
 const POLYMOD_INITIAL = 0x23181b3n
 const POLYMOD_RESIDUE = 0x10ce0795c2fd1e62an
 const GENERATORS = [
@@ -15,6 +16,20 @@ const GENERATORS = [
   0x1739640bdeee3fdadn,
   0x07729a039cfc75f5an,
 ] as const
+const LONG_POLYMOD_RESIDUE = 0x43381e570bf4798ab26n
+const LONG_GENERATORS = [
+  0x3d59d273535ea62d897n,
+  0x7a9becb6361c6c51507n,
+  0x543f9b7e6c38d8a2a0en,
+  0x0c577eaeccf1990d13cn,
+  0x1887f74f8dc71b10651n,
+] as const
+const MASTER_ROOT_LENGTH = 32
+const MASTER_PAYLOAD_LENGTH = 64
+const MASTER_VALIDATION_PREFIX = Uint8Array.from(
+  'frank/master-validation/v1',
+  character => character.charCodeAt(0),
+)
 const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype)
 const TYPED_ARRAY_LENGTH_GETTER = Object.getOwnPropertyDescriptor(
   TYPED_ARRAY_PROTOTYPE,
@@ -73,6 +88,12 @@ export interface SplitCodex32Input {
   readonly randomBytes: (length: number) => Uint8Array
 }
 
+export interface RecoveredCodex32 {
+  readonly secret: Uint8Array
+  /** Complete interpolated field symbols, including the final residual bits. */
+  readonly payloadSymbols: Uint8Array
+}
+
 function fail<T>(code: Codex32ErrorCode): Codex32Result<T> {
   return { ok: false, error: { code } }
 }
@@ -93,7 +114,7 @@ function validIndex(index: string): boolean {
   return index.length === 1 && valueOf(index) >= 0
 }
 
-function snapshotRegularSecret(value: unknown): Codex32Result<Uint8Array> {
+function snapshotSecret(value: unknown): Codex32Result<Uint8Array> {
   try {
     if (
       typeof TYPED_ARRAY_LENGTH_GETTER !== 'function' ||
@@ -103,7 +124,7 @@ function snapshotRegularSecret(value: unknown): Codex32Result<Uint8Array> {
       return fail('bad-format')
     }
     const length = Reflect.apply(TYPED_ARRAY_LENGTH_GETTER, value, [])
-    if (typeof length !== 'number' || !REGULAR_SECRET_BYTES.has(length)) {
+    if (typeof length !== 'number' || !SUPPORTED_SECRET_BYTES.has(length)) {
       return fail('unsupported-length')
     }
     const copied = new Uint8Array(length)
@@ -155,15 +176,70 @@ function polymod(values: readonly number[]): bigint {
 }
 
 function checksum(values: readonly number[]): number[] {
+  const checksumLength =
+    values.length + REGULAR_CHECKSUM_LENGTH + 5 <= 93
+      ? REGULAR_CHECKSUM_LENGTH
+      : LONG_CHECKSUM_LENGTH
+  if (checksumLength === LONG_CHECKSUM_LENGTH) return longChecksum(values)
   const residue =
-    polymod([...values, ...new Array<number>(CHECKSUM_LENGTH).fill(0)]) ^
+    polymod([
+      ...values,
+      ...new Array<number>(REGULAR_CHECKSUM_LENGTH).fill(0),
+    ]) ^
     POLYMOD_RESIDUE
-  const out = new Array<number>(CHECKSUM_LENGTH)
-  for (let index = 0; index < CHECKSUM_LENGTH; index += 1) {
-    const shift = BigInt(5 * (CHECKSUM_LENGTH - 1 - index))
+  const out = new Array<number>(REGULAR_CHECKSUM_LENGTH)
+  for (let index = 0; index < REGULAR_CHECKSUM_LENGTH; index += 1) {
+    const shift = BigInt(5 * (REGULAR_CHECKSUM_LENGTH - 1 - index))
     out[index] = Number((residue >> shift) & 31n)
   }
   return out
+}
+
+function longPolymod(values: readonly number[]): bigint {
+  let checksum = POLYMOD_INITIAL
+  for (const value of values) {
+    const top = checksum >> 70n
+    checksum = ((checksum & 0x3fffffffffffffffffn) << 5n) ^ BigInt(value)
+    for (let index = 0; index < LONG_GENERATORS.length; index += 1) {
+      if (((top >> BigInt(index)) & 1n) !== 0n) {
+        checksum ^= LONG_GENERATORS[index] ?? 0n
+      }
+    }
+  }
+  return checksum
+}
+
+function longChecksum(values: readonly number[]): number[] {
+  const residue =
+    longPolymod([
+      ...values,
+      ...new Array<number>(LONG_CHECKSUM_LENGTH).fill(0),
+    ]) ^ LONG_POLYMOD_RESIDUE
+  const out = new Array<number>(LONG_CHECKSUM_LENGTH)
+  for (let index = 0; index < LONG_CHECKSUM_LENGTH; index += 1) {
+    const shift = BigInt(5 * (LONG_CHECKSUM_LENGTH - 1 - index))
+    out[index] = Number((residue >> shift) & 31n)
+  }
+  return out
+}
+
+function checksumLengthForEncodedLength(length: number): number | null {
+  const expandedLength = length + 2
+  if (expandedLength <= 93) return REGULAR_CHECKSUM_LENGTH
+  if (expandedLength >= 96 && expandedLength <= 1023) {
+    return LONG_CHECKSUM_LENGTH
+  }
+  return null
+}
+
+function supportedEncodedLength(length: number): boolean {
+  return [48, 54, 61, 67, 74, 127].includes(length)
+}
+
+function validChecksum(values: readonly number[], checksumLength: number) {
+  return checksumLength === REGULAR_CHECKSUM_LENGTH
+    ? polymod(values) === POLYMOD_RESIDUE
+    : longPolymod(values) === LONG_POLYMOD_RESIDUE
 }
 
 function bytesToGroups(bytes: Uint8Array): number[] {
@@ -198,7 +274,7 @@ function groupsToBytes(groups: readonly number[]): Codex32Result<Uint8Array> {
   }
   // BIP-93 regular strings deliberately discard the residual 0-4 bits. They
   // are not padding and need not be zero (official vectors 6-8 exercise this).
-  if (!REGULAR_SECRET_BYTES.has(output.length)) {
+  if (!SUPPORTED_SECRET_BYTES.has(output.length)) {
     return fail('unsupported-length')
   }
   return { ok: true, value: new Uint8Array(output) }
@@ -233,7 +309,7 @@ function encodeGroups(
   }
 }
 
-/** Encode the BIP-93 regular form (exactly 16, 20, 24, 28, or 32 bytes). */
+/** Encode a pinned BIP-93 secret, including the 64-byte long form. */
 export function encodeCodex32(
   input: EncodeCodex32Input,
 ): Codex32Result<string> {
@@ -242,7 +318,7 @@ export function encodeCodex32(
   let index: string
   let secret: Uint8Array | null = null
   try {
-    const secretSnapshot = snapshotRegularSecret(input.secret)
+    const secretSnapshot = snapshotSecret(input.secret)
     if (!secretSnapshot.ok) return secretSnapshot
     secret = secretSnapshot.value
     threshold = input.threshold
@@ -276,25 +352,34 @@ export function encodeCodex32(
   }
 }
 
-/** Strictly decode one canonical lowercase standard-checksum Codex32 string. */
+/** Strictly decode one uniformly-cased pinned BIP-93 Codex32 string. */
 export function decodeCodex32(text: string): Codex32Result<Codex32Share> {
+  const checksumLength =
+    typeof text === 'string' ? checksumLengthForEncodedLength(text.length) : null
   if (
     typeof text !== 'string' ||
     text.length > MAX_STRING_LENGTH ||
-    !text.startsWith('ms1') ||
-    text !== text.toLowerCase()
+    checksumLength === null ||
+    !supportedEncodedLength(text.length) ||
+    (text !== text.toLowerCase() && text !== text.toUpperCase())
   ) {
-    return fail('bad-format')
+    return fail(
+      checksumLength === null || !supportedEncodedLength(text.length)
+        ? 'unsupported-length'
+        : 'bad-format',
+    )
   }
-  const data = text.slice(3)
-  if (data.length < 6 + CHECKSUM_LENGTH) return fail('bad-format')
+  const canonical = text.toLowerCase()
+  if (!canonical.startsWith('ms1')) return fail('bad-format')
+  const data = canonical.slice(3)
+  if (data.length < 6 + checksumLength) return fail('bad-format')
   const values: number[] = []
   for (const character of data) {
     const value = valueOf(character)
     if (value < 0) return fail('bad-format')
     values.push(value)
   }
-  if (polymod(values) !== POLYMOD_RESIDUE) return fail('bad-checksum')
+  if (!validChecksum(values, checksumLength)) return fail('bad-checksum')
   const threshold = parseThreshold(data[0] ?? '')
   if (threshold === null) return fail('invalid-threshold')
   const identifier = data.slice(1, 5)
@@ -303,8 +388,8 @@ export function decodeCodex32(text: string): Codex32Result<Codex32Share> {
   if (!validIndex(index) || (threshold === 0 && index !== SECRET_INDEX)) {
     return fail('invalid-index')
   }
-  const payload = values.slice(6, -CHECKSUM_LENGTH)
-  if (!REGULAR_PAYLOAD_GROUPS.has(payload.length)) {
+  const payload = values.slice(6, -checksumLength)
+  if (!SUPPORTED_PAYLOAD_GROUPS.has(payload.length)) {
     return fail('unsupported-length')
   }
   let seed: Uint8Array | null = null
@@ -325,23 +410,23 @@ export function decodeCodex32(text: string): Codex32Result<Codex32Share> {
   }
 }
 
-/** Check only the canonical lowercase standard Codex32 checksum framing. */
+/** Check the pinned regular or long Codex32 checksum framing. */
 export function validateCodex32Checksum(text: string): boolean {
-  if (
-    typeof text !== 'string' ||
-    text.length > MAX_STRING_LENGTH ||
-    !text.startsWith('ms1') ||
-    text !== text.toLowerCase()
-  ) {
-    return false
-  }
+  if (typeof text !== 'string') return false
+  const checksumLength = checksumLengthForEncodedLength(text.length)
+  if (checksumLength === null) return false
+  if (text !== text.toLowerCase() && text !== text.toUpperCase()) return false
+  const canonical = text.toLowerCase()
+  if (!canonical.startsWith('ms1')) return false
   const values: number[] = []
-  for (const character of text.slice(3)) {
+  for (const character of canonical.slice(3)) {
     const value = valueOf(character)
     if (value < 0) return false
     values.push(value)
   }
-  return values.length >= CHECKSUM_LENGTH && polymod(values) === POLYMOD_RESIDUE
+  return (
+    values.length >= checksumLength && validChecksum(values, checksumLength)
+  )
 }
 
 // GF(32), represented in the Codex32 alphabet's five-bit values, reduced by
@@ -411,7 +496,7 @@ export function splitCodex32(
   let indices: string[] | null
   let randomBytes: SplitCodex32Input['randomBytes']
   try {
-    const secretSnapshot = snapshotRegularSecret(input.secret)
+    const secretSnapshot = snapshotSecret(input.secret)
     if (!secretSnapshot.ok) return secretSnapshot
     secret = secretSnapshot.value
     threshold = input.threshold
@@ -520,9 +605,9 @@ export function splitCodex32(
 }
 
 /** Recover seed bytes from exactly the threshold number of consistent shares. */
-export function recoverCodex32(
+export function recoverCodex32Exact(
   encodedShares: readonly string[],
-): Codex32Result<Uint8Array> {
+): Codex32Result<RecoveredCodex32> {
   const snapshot = snapshotStrings(encodedShares, 1)
   if (!snapshot.ok) return snapshot
   const snapshots = snapshot.value
@@ -566,12 +651,102 @@ export function recoverCodex32(
     }
     const recovered = groupsToBytes(secretGroups)
     if (!recovered.ok) return recovered
-    return { ok: true, value: recovered.value }
+    return {
+      ok: true,
+      value: {
+        secret: recovered.value,
+        payloadSymbols: new Uint8Array(secretGroups),
+      },
+    }
   } finally {
     secretGroups?.fill(0)
     for (const share of parsed) {
       share.payload.fill(0)
       share.seed?.fill(0)
     }
+  }
+}
+
+/** Backwards-compatible byte-only recovery. Prefer recoverCodex32Exact. */
+export function recoverCodex32(
+  encodedShares: readonly string[],
+): Codex32Result<Uint8Array> {
+  const recovered = recoverCodex32Exact(encodedShares)
+  if (!recovered.ok) return recovered
+  const secret = new Uint8Array(recovered.value.secret)
+  recovered.value.secret.fill(0)
+  recovered.value.payloadSymbols.fill(0)
+  return { ok: true, value: secret }
+}
+
+/** Construct Frank's v1 64-byte R || validation payload. */
+export function createMasterPayload(
+  root: Uint8Array,
+): Codex32Result<Uint8Array> {
+  const snapshot = snapshotExactBytes(root, MASTER_ROOT_LENGTH)
+  if (!snapshot.ok) return snapshot
+  const ownedRoot = snapshot.value
+  const preimage = new Uint8Array(
+    MASTER_VALIDATION_PREFIX.length + 1 + MASTER_ROOT_LENGTH,
+  )
+  try {
+    preimage.set(MASTER_VALIDATION_PREFIX)
+    preimage.set(ownedRoot, MASTER_VALIDATION_PREFIX.length + 1)
+    const payload = new Uint8Array(MASTER_PAYLOAD_LENGTH)
+    payload.set(ownedRoot)
+    payload.set(sha256(preimage), MASTER_ROOT_LENGTH)
+    return { ok: true, value: payload }
+  } finally {
+    ownedRoot.fill(0)
+    preimage.fill(0)
+  }
+}
+
+/** Validate Frank's v1 master payload and return an owned root copy. */
+export function validateMasterPayload(
+  payload: Uint8Array,
+): Codex32Result<Uint8Array> {
+  const snapshot = snapshotExactBytes(payload, MASTER_PAYLOAD_LENGTH)
+  if (!snapshot.ok) return snapshot
+  const owned = snapshot.value
+  const root = owned.slice(0, MASTER_ROOT_LENGTH)
+  const expected = createMasterPayload(root)
+  if (!expected.ok) {
+    root.fill(0)
+    owned.fill(0)
+    return expected
+  }
+  let difference = 0
+  for (let index = MASTER_ROOT_LENGTH; index < MASTER_PAYLOAD_LENGTH; index += 1) {
+    difference |= (owned[index] ?? 0) ^ (expected.value[index] ?? 0)
+  }
+  owned.fill(0)
+  expected.value.fill(0)
+  if (difference !== 0) {
+    root.fill(0)
+    return fail('bad-format')
+  }
+  return { ok: true, value: root }
+}
+
+function snapshotExactBytes(
+  value: unknown,
+  expectedLength: number,
+): Codex32Result<Uint8Array> {
+  try {
+    if (
+      typeof TYPED_ARRAY_LENGTH_GETTER !== 'function' ||
+      typeof TYPED_ARRAY_TAG_GETTER !== 'function' ||
+      Reflect.apply(TYPED_ARRAY_TAG_GETTER, value, []) !== 'Uint8Array'
+    ) {
+      return fail('bad-format')
+    }
+    const length = Reflect.apply(TYPED_ARRAY_LENGTH_GETTER, value, [])
+    if (length !== expectedLength) return fail('unsupported-length')
+    const copied = new Uint8Array(length)
+    Reflect.apply(UINT8_ARRAY_SET, copied, [value])
+    return { ok: true, value: copied }
+  } catch {
+    return fail('bad-format')
   }
 }

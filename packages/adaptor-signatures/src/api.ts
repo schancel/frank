@@ -9,6 +9,7 @@ import {
   encryptedSign,
   recoverTweak,
   verifyEncryptedSignature,
+  verifyStandardEcdsaSignature,
 } from './ecdsa-adaptor.js'
 import {
   G,
@@ -83,7 +84,10 @@ export interface AdaptorCompleteInput {
 }
 
 export interface AdaptorExtractInput {
+  readonly publicKey: Uint8Array
   readonly adaptorPoint: AdaptorPoint
+  readonly adaptorProof: AdaptorSecretProof
+  readonly digest: Uint8Array
   readonly signature: AdaptorSignatureBytes
   readonly completedSignature: CompactEcdsaSignature
 }
@@ -463,28 +467,58 @@ export function completeAdaptorSignature(
 export function extractAdaptorSecret(
   input: AdaptorExtractInput,
 ): AdaptorResult<AdaptorSecret> {
+  let publicKey: Uint8Array | null
   let adaptorPoint: Uint8Array | null
+  let adaptorProof: Uint8Array | null
+  let digest: Uint8Array | null
   let signature: Uint8Array | null
   let completedSignature: Uint8Array | null
   try {
+    publicKey = copyLength(input.publicKey, 33)
     adaptorPoint = copyLength(input.adaptorPoint, 33)
+    adaptorProof = copyLength(input.adaptorProof, 65)
+    digest = copyLength(input.digest, 32)
     signature = copyLength(input.signature, 162)
     completedSignature = copyLength(input.completedSignature, 64)
   } catch {
     return failure('mismatched-signature')
   }
   if (
+    publicKey === null ||
     adaptorPoint === null ||
+    adaptorProof === null ||
+    digest === null ||
     signature === null ||
     completedSignature === null
   ) {
     return failure('bad-length')
   }
   try {
+    const encrypted = verifyAdaptorSignature({
+      publicKey,
+      adaptorPoint: adaptorPoint as AdaptorPoint,
+      adaptorProof: adaptorProof as AdaptorSecretProof,
+      digest,
+      signature: signature as AdaptorSignatureBytes,
+    })
+    if (!encrypted.ok || !encrypted.value) {
+      return failure('mismatched-signature')
+    }
+    const parsedPublicKey = pointFromBytes(publicKey)
+    const parsedCompleted = decodeEcdsaSignature(completedSignature)
+    if (
+      !verifyStandardEcdsaSignature(
+        parsedPublicKey,
+        digest,
+        parsedCompleted,
+      )
+    ) {
+      return failure('mismatched-signature')
+    }
     const recovered = recoverTweak(
       pointFromBytes(adaptorPoint),
       decodeAdaptorSignature(signature),
-      decodeEcdsaSignature(completedSignature),
+      parsedCompleted,
     )
     return success(copyBrand<'secret'>(scalarBytes(recovered)))
   } catch {

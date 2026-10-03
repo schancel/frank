@@ -1,7 +1,7 @@
 {
-  "allowed": [],
+  "allowed": ["@noble/hashes"],
   "optional": [],
   "planned": [],
   "plannedOptional": [],
-  "note": "Codex32 has no runtime dependencies."
+  "note": "Codex32 uses the pinned noble SHA-256 implementation for Frank master validation."
 }

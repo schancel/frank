@@ -17,7 +17,9 @@ copy byte inputs, and use only those owned snapshots. It supports:
 - proving and verifying knowledge of the secret behind an adaptor point;
 - encrypted signing and verification;
 - completion with the adaptor secret;
-- extraction of the secret from encrypted and completed signatures; and
+- extraction of the secret only after both the encrypted signature and the
+  completed ordinary signature verify for the supplied public key and exact
+  32-byte chain digest; and
 - strict parsing of points, scalars, proofs, and exact signature encodings.
 
 ```ts

@@ -1,7 +1,7 @@
 {
   "name": "@frank/codex32",
   "version": "0.0.1",
-  "description": "Strict browser-safe Codex32 seed backup and threshold-share core for BIP-93 standard-checksum strings.",
+  "description": "Strict browser-safe Codex32 backup and threshold-share core for Frank recovery payloads.",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -10,6 +10,9 @@
   "scripts": {
     "test": "jest",
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.8.0"
   },
   "devDependencies": {
     "@types/jest": "^29",

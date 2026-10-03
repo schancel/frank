@@ -76,7 +76,10 @@ describe('safe byte-oriented API', () => {
     expect(completed.ok).toBe(true)
     if (!completed.ok) return
     const extracted = extractAdaptorSecret({
+      publicKey: publicKey.value.compressed,
       adaptorPoint: generated.value.point,
+      adaptorProof: generated.value.proof,
+      digest,
       signature: signed.value,
       completedSignature: completed.value,
     })
@@ -422,7 +425,10 @@ describe('safe byte-oriented API', () => {
     let extractionReads = 0
     expect(
       extractAdaptorSecret({
+        publicKey: publicKey.value.compressed,
         adaptorPoint: material.value.point,
+        adaptorProof: material.value.proof,
+        digest,
         get signature() {
           extractionReads += 1
           return extractionReads === 1 ? signed.value : forged.value
@@ -431,6 +437,19 @@ describe('safe byte-oriented API', () => {
       }),
     ).toEqual({ ok: true, value: material.value.secret })
     expect(extractionReads).toBe(1)
+
+    const wrongDigest = new Uint8Array(digest)
+    wrongDigest[0] ^= 1
+    expect(
+      extractAdaptorSecret({
+        publicKey: publicKey.value.compressed,
+        adaptorPoint: material.value.point,
+        adaptorProof: material.value.proof,
+        digest: wrongDigest,
+        signature: signed.value,
+        completedSignature: completed.value,
+      }),
+    ).toEqual({ ok: false, error: { code: 'mismatched-signature' } })
   })
 
   it('copies earlier key buffers before later getters can mutate them', () => {

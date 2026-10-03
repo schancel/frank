@@ -1,8 +1,11 @@
 import {
+  createMasterPayload,
   decodeCodex32,
   encodeCodex32,
   recoverCodex32,
+  recoverCodex32Exact,
   splitCodex32,
+  validateMasterPayload,
   validateCodex32Checksum,
 } from './index.js'
 
@@ -17,6 +20,75 @@ function fromHex(hex: string): Uint8Array {
 }
 
 describe('Codex32 standard-checksum core', () => {
+  it('supports the pinned 64-byte long vector and uniform uppercase input', () => {
+    const encoded =
+      'MS100C8VSM32ZXFGUHPCHTLUPZRY9X8GF2TVDW0S3JN54KHCE6MUA7LQPZYGSFJD6AN074RXVCEMLH8WU3TK925ACDEFGHJKLMNPQRSTUVWXY06FHPV80UNDVARHRAK'
+    const expected =
+      'dc5423251cb87175ff8110c8531d0952d8d73e1194e95b5f19d6f9df7c01111104c9baecdfea8cccc677fb9ddc8aec5553b86e528bcadfdcc201c17c638c47e9'
+    expect(validateCodex32Checksum(encoded)).toBe(true)
+    const decoded = decodeCodex32(encoded)
+    expect(decoded.ok && decoded.value.seed).toEqual(fromHex(expected))
+    if (!decoded.ok || decoded.value.seed === null) return
+    const canonical = encodeCodex32({
+      threshold: 0,
+      identifier: '0c8v',
+      index: 's',
+      secret: decoded.value.seed,
+    })
+    expect(canonical.ok).toBe(true)
+    expect(canonical.ok && canonical.value).not.toBe(encoded.toLowerCase())
+    expect(
+      canonical.ok && decodeCodex32(canonical.value),
+    ).toMatchObject({ ok: true, value: { seed: fromHex(expected) } })
+    expect(decodeCodex32(`mS${encoded.slice(2)}`)).toEqual({
+      ok: false,
+      error: { code: 'bad-format' },
+    })
+  })
+
+  it('constructs and validates the frozen Frank master payload', () => {
+    const root = new Uint8Array(32)
+    const created = createMasterPayload(root)
+    expect(created.ok).toBe(true)
+    if (!created.ok) return
+    expect(created.value.slice(32)).toEqual(
+      fromHex('36ec91913f2246c19f8200ed41cb51b356cc7326752436c673752180c038e00d'),
+    )
+    expect(validateMasterPayload(created.value)).toEqual({
+      ok: true,
+      value: root,
+    })
+    const mutated = new Uint8Array(created.value)
+    mutated[63] ^= 1
+    expect(validateMasterPayload(mutated)).toEqual({
+      ok: false,
+      error: { code: 'bad-format' },
+    })
+  })
+
+  it('splits long payloads and returns all 103 interpolated symbols', () => {
+    const master = createMasterPayload(seed())
+    expect(master.ok).toBe(true)
+    if (!master.ok) return
+    const split = splitCodex32({
+      threshold: 2,
+      identifier: 'frnk',
+      indices: ['q', 'p', 'z'],
+      secret: master.value,
+      randomBytes: length =>
+        Uint8Array.from({ length }, (_, index) => (index * 31 + 7) & 0xff),
+    })
+    expect(split.ok).toBe(true)
+    if (!split.ok) return
+    expect(split.value.every(value => value.length === 127)).toBe(true)
+    const recovered = recoverCodex32Exact(split.value.slice(0, 2))
+    expect(recovered.ok).toBe(true)
+    if (!recovered.ok) return
+    expect(recovered.value.secret).toEqual(master.value)
+    expect(recovered.value.payloadSymbols).toHaveLength(103)
+    expect(recovered.value.payloadSymbols[102]! & 0b111).toBe(0)
+  })
+
   it('decodes official regular vectors 6-8 with nonzero discarded bits', () => {
     const vectors = [
       [

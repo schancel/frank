@@ -17,9 +17,9 @@ describe('qwenBotConfigFromEnv', () => {
   it('fails in live mode without a key, naming the variable and the stub option', () => {
     expect(() => qwenBotConfigFromEnv({})).toThrow(/QWEN_API_KEY/)
     expect(() => qwenBotConfigFromEnv({})).toThrow(/QWEN_BOT_MODE=stub/)
-    expect(() =>
-      qwenBotConfigFromEnv({ QWEN_BOT_MODE: 'live' }),
-    ).toThrow(/QWEN_API_KEY/)
+    expect(() => qwenBotConfigFromEnv({ QWEN_BOT_MODE: 'live' })).toThrow(
+      /QWEN_API_KEY/,
+    )
   })
 
   it('names the endpoint variable when only the key is set', () => {
@@ -113,7 +113,10 @@ describe('reply generator seam', () => {
       qwenBotConfigFromEnv(LIVE_ENV),
       makeClient,
     )
-    expect(await gen.reply(history)).toEqual({ content: 'real', reasoning: 'r' })
+    expect(await gen.reply(history)).toEqual({
+      content: 'real',
+      reasoning: 'r',
+    })
     expect(makeClient).toHaveBeenCalledWith(
       expect.objectContaining({ apiKey: 'dummy-key' }),
     )
@@ -124,7 +127,10 @@ describe('reply generator seam', () => {
 
 describe('qwen-bot.livecheck.ts entry point', () => {
   it('exits 1 with a clear message (no stack) when the key is missing and no stub mode', () => {
-    const env: NodeJS.ProcessEnv = { PATH: process.env.PATH }
+    const env: NodeJS.ProcessEnv = {
+      PATH: process.env.PATH,
+      TSX_TSCONFIG_PATH: join(__dirname, 'tsconfig.json'),
+    }
     const r = spawnSync(
       join(__dirname, '../../node_modules/.bin/tsx'),
       [join(__dirname, 'qwen-bot.livecheck.ts')],

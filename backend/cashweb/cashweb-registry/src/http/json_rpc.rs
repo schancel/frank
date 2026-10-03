@@ -472,15 +472,17 @@ fn is_single_response_envelope(value: &Value, version: JsonRpcVersion) -> bool {
     {
         return false;
     }
+    let valid_legacy_version = match response.get("jsonrpc") {
+        None => true,
+        Some(Value::String(version)) => version == "1.0",
+        Some(_) => false,
+    };
     match version {
         JsonRpcVersion::Legacy => {
-            matches!(
-                response.get("jsonrpc").and_then(Value::as_str),
-                None | Some("1.0")
-            ) && has_result
+            valid_legacy_version
+                && has_result
                 && has_error
-                && (response["result"].is_null() ^ response["error"].is_null())
-                && (response["error"].is_null() || valid_error)
+                && (response["error"].is_null() || (response["result"].is_null() && valid_error))
         }
         JsonRpcVersion::V2 => {
             response.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
@@ -734,7 +736,7 @@ impl<R: BufRead> ResponseParser<R> {
                 if !matches!(version.as_deref(), None | Some("1.0"))
                     || !matches!(
                         (result_is_null, error_is_null),
-                        (Some(true), Some(false)) | (Some(false), Some(true))
+                        (Some(_), Some(true)) | (Some(true), Some(false))
                     )
                 {
                     return Err(StreamInspectError::Invalid);
@@ -1285,7 +1287,6 @@ mod tests {
             json!({"jsonrpc":"2.0","id":1,"error":{"code":-1}}),
             json!({"jsonrpc":"2.0","id":1,"error":{"code":-1.5,"message":"no"}}),
             json!({"id":1,"result":"ok","error":{"code":-1,"message":"no"}}),
-            json!({"id":1,"result":null,"error":null}),
         ] {
             let version = if invalid.get("jsonrpc").is_some() {
                 JsonRpcVersion::V2
@@ -1293,6 +1294,16 @@ mod tests {
                 JsonRpcVersion::Legacy
             };
             assert!(!is_response_envelope(&invalid, version), "{invalid}");
+        }
+        assert!(is_response_envelope(
+            &json!({"id":1,"result":null,"error":null}),
+            JsonRpcVersion::Legacy
+        ));
+        for invalid in [
+            json!({"jsonrpc":null,"id":1,"result":"ok","error":null}),
+            json!({"jsonrpc":7,"id":1,"result":"ok","error":null}),
+        ] {
+            assert!(!is_response_envelope(&invalid, JsonRpcVersion::Legacy));
         }
     }
 
@@ -1465,6 +1476,7 @@ mod tests {
             )
         };
         assert!(inspect_legacy(br#"{"id":1,"result":"ok","error":null}"#).is_ok());
+        assert!(inspect_legacy(br#"{"id":1,"result":null,"error":null}"#).is_ok());
         assert!(
             inspect_legacy(br#"{"id":1,"result":null,"error":{"code":-1,"message":"no"}}"#).is_ok()
         );

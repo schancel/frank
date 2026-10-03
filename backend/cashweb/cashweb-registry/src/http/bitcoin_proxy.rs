@@ -405,9 +405,12 @@ fn validate_rpc(
         if !obj.contains_key("id") {
             return Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"));
         }
-        let call_version = match obj.get("jsonrpc").and_then(Value::as_str) {
-            None | Some("1.0") => super::json_rpc::JsonRpcVersion::Legacy,
-            Some("2.0") => super::json_rpc::JsonRpcVersion::V2,
+        let call_version = match obj.get("jsonrpc") {
+            None => super::json_rpc::JsonRpcVersion::Legacy,
+            Some(Value::String(version)) if version == "1.0" => {
+                super::json_rpc::JsonRpcVersion::Legacy
+            }
+            Some(Value::String(version)) if version == "2.0" => super::json_rpc::JsonRpcVersion::V2,
             Some(_) => return Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc")),
         };
         if version
@@ -1399,6 +1402,13 @@ mod tests {
             String::from_utf8_lossy(v2)
         );
         assert!(validate_rpc(mixed_versions.as_bytes(), 1024).is_err());
+        for malformed in [
+            br#"{"jsonrpc":null,"id":1,"method":"getblockhash","params":[1]}"#.as_slice(),
+            br#"{"jsonrpc":false,"id":1,"method":"getblockhash","params":[1]}"#.as_slice(),
+            br#"{"jsonrpc":1,"id":1,"method":"getblockhash","params":[1]}"#.as_slice(),
+        ] {
+            assert!(validate_rpc(malformed, 1024).is_err());
+        }
     }
 
     #[test]

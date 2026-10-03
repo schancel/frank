@@ -133,6 +133,11 @@ frank/
 
 The UI talks through an `ActiveChain` boundary rather than importing chain-specific clients directly. The current runtime selects Monad; [#59](https://github.com/schancel/frank/issues/59) tracks a unified multichain event stream and chain-as-data wire design.
 
+[`docs/CASHWEB-PROTOCOL-SPEC.md`](docs/CASHWEB-PROTOCOL-SPEC.md) is the normative human protocol and
+status index. [`docs/backend-topology.md`](docs/backend-topology.md) and
+[`docs/public-federation-plan.md`](docs/public-federation-plan.md) retain subordinate topology and
+historical transition constraints; their protobuf and exact-wire sketches are not target formats.
+
 ## Run the whole demo with one command
 
 ```bash

@@ -32,7 +32,11 @@ the conformance index. It intentionally does not duplicate every numbered CBOR f
 3. [`protocol/cbor/vectors/`](protocol/cbor/vectors/) and
    [`protocol/cbor/vectors.schema.json`](protocol/cbor/vectors.schema.json) are executable proof of
    the claimed bytes and outcomes. Passing vectors proves only the operations they name.
-4. Transitional documents, including
+4. [`backend-topology.md`](backend-topology.md) and
+   [`public-federation-plan.md`](public-federation-plan.md) are subordinate topology and historical
+   transition inputs. Their service/storage separation remains a constraint, but their protobuf,
+   route, record, and exact-wire sketches do not allocate or override this specification.
+5. Transitional documents, including
    [`protocol/cbor/topic-http-coexistence.md`](protocol/cbor/topic-http-coexistence.md), define a
    bounded coexistence path. They cannot silently redefine record identity or extend the target.
 
@@ -158,6 +162,10 @@ Identifiers are scoped; equal integers in different columns have no relationship
 | Target directory statement and standalone presentation profile | no FRNK type IDs or schemas | UNALLOCATED |
 | Checkpoint journal fact kinds | none | UNALLOCATED |
 | Provider/descriptor, delivery, status, reset records | no FRNK type IDs | UNALLOCATED |
+| Target type-1/type-5 delivery schemas | schema revisions, required context field IDs and `min_reader_version` | UNALLOCATED |
+| Target validation operations | `provider-admission` and `recipient-acceptance` contexts, error taxonomy, CDDL, codec and vector registrations | UNALLOCATED |
+| Mailbox generation fields | directory-authorized key generation and provider-authorized instance generation encodings | UNALLOCATED |
+| Topic logical relations | logical-root derivation; predecessor/edit/tombstone/moderation records; vote-target discriminator and migration | UNALLOCATED |
 | Target hardened wallet branches for `P`, `M`, `P'` | none | UNALLOCATED |
 
 **IMPLEMENTED-NOT-WIRED.** A codec writer MUST NOT copy a crypto-box suite ID into the FRNK
@@ -283,10 +291,25 @@ and exact presentation payload, and MUST be signed by `P` or the accepted accoun
 independently cacheable and replaceable and cannot authorize routing, mailbox access, payment
 receipt, or directory succession.
 
-### 8.2 Mailbox-key lifecycle
+### 8.2 Mailbox key and instance generations
 
-**PROPOSED.** Each `M` has a monotonically increasing mailbox-key generation recorded by the
-directory. Routine rotation MAY accept the current and immediately retired generation for a
+**PROPOSED.** `mailbox_key_generation` and `mailbox_instance_generation` are independent authority
+sequences; their wire fields remain **UNALLOCATED** in section 15.
+
+- `mailbox_key_generation` identifies `M` under the account/directory authority. Clients discover
+  it only from a validated directory revision. Its succession is authorized by `P` or the accepted
+  account recovery/transition rule and pins the exact `M` and predecessor directory statement.
+- `mailbox_instance_generation` identifies one destination-provider mailbox instance and
+  capability. Clients fetch it through the directory-pinned provider descriptor/binding and accept
+  only a destination-provider-signed capability linked to its predecessor or authenticated reset.
+  Provider failover creates a separately identified instance; it cannot continue another
+  provider's sequence by assertion.
+- Every operation binds both generations when it addresses encrypted delivery to a provider
+  mailbox. Directory-only key operations bind the key generation; provider-instance management
+  binds the instance generation. Rotating `M` does not reset a mailbox instance, and resetting or
+  migrating a mailbox instance does not rotate, revoke, or replace `M`.
+
+Routine `M` rotation MAY accept the current and immediately retired `mailbox_key_generation` for a
 bounded, explicitly advertised delivery grace; every delivery names the selected generation and
 directory hash. Compromise revocation has no grace: after acceptance, new submissions under that
 `M` fail, and delayed operations are accepted only if the destination durably admitted their exact
@@ -299,9 +322,10 @@ after its grace, every referenced delivery/checkpoint is resolved, and policy ac
 ability to decrypt older ciphertext. Erasure does not create forward secrecy retroactively and
 does not cure impersonation performed while a compromised static `M` remained accepted.
 
-Referenced sender/recipient directory statements, provider descriptors/bindings, and mailbox-key
-generation records MUST remain available until dependent deliveries, receipts, journal entries,
-checkpoints, disputes and retries are terminal, or an authenticated compact proof replaces them.
+Referenced sender/recipient directory statements, provider descriptors/bindings, mailbox key
+generations, instance capabilities and instance generations MUST remain available until dependent
+deliveries, receipts, journal entries, checkpoints, disputes and retries are terminal, or an
+authenticated compact proof replaces them.
 
 ## 9. Direct-message construction and acceptance
 
@@ -309,28 +333,34 @@ checkpoints, disputes and retries are terminal, or an authenticated compact proo
 
 **PROPOSED.** A sender performs this order exactly:
 
-1. Resolve and validate the recipient's current directory state, provider binding, `M`, and `P'`.
-   Pin the exact directory-statement T1 hash and provider-descriptor/binding hash. Missing,
-   expired, forked, unsupported, or unbound state fails before encryption or payment.
+1. Before randomness, encryption, or reservation, resolve, validate and pin both sender and
+   recipient directory revisions, `M` values and `mailbox_key_generation` values; the recipient
+   `P'`; both origin and destination provider identities, bindings, descriptor revisions and
+   capabilities; and the destination `mailbox_instance_generation`. A stale, forked, revoked,
+   expired, unsupported or mismatched record fails here. The sender also proves its local `M`
+   secret/public point and generation match the pinned sender revision; there is no fallback.
 2. Encode the ordered message items, type-8 content revision, and type-6 logical message. Compute
    T1a from the exact type-8 frame.
 3. Encrypt the complete type-6 frame to recipient `M` using an allocated deniable suite. Associated
    data binds the suite, sender and recipient `M` bytes, network, protocol context, and the exact
-   directory/provider context required by that suite. `E` and `X` for stamps are never reused as
-   encryption keys or ephemerals.
-4. Build type 5 and then type 1. The authenticated delivery carries the exact sender and recipient
-   directory-statement hashes, provider binding/descriptor revision hashes, and mailbox generation;
-   those fields are inside the frame and therefore its payment identity. Derive the T3 digest,
-   fresh `E`, `X`, proof, child destinations, and T4 commitments exactly as
+   directory/provider/generation context pinned in step 1. `E` and `X` for stamps are never reused
+   as encryption keys or ephemerals.
+4. Assemble the final type-5 recipient payload before T3. Required fields inside its exact bytes
+   carry both directory-statement hashes and key generations; both provider identities, binding and
+   descriptor-revision hashes and capabilities; the destination instance generation; the network;
+   and every policy/context digest authoritative for associated data, routing and economics. Any
+   outer copy is derived from type 5 and equality-checked. Compute T3 over that final type 5, then
+   derive fresh `E`, `X`, proof, child destinations, amounts and T4 commitments exactly as
    [T3–T4](protocol/cbor/README.md#8-cryptographic-transcripts) require. Payments go to children of
    `P'`, never to `P`, `M`, a provider fee key, or a burn address.
-5. Atomically claim and durably flush the complete funding-account and nonce reservation set before
-   signing. Then build and sign every payment without submitting it. Verify locally that indices
-   are contiguous and destinations, amounts, transaction IDs and commitments match the frame and
-   configured minimum.
-6. Durably journal the exact type-1 frame, exact signed payment bytes, operation ID, reservations,
-   directory/provider binding hashes, and retry state. Flush the journal before any transaction or
-   `PUT` can leave the process.
+5. Create and durably flush a pre-operation intent that owns the complete funding-account and nonce
+   reservation set before signing. The intent binds the operation, final type-5/T3 identity,
+   destinations, amounts and T4 commitments; no other operation may reuse any reservation.
+6. Build and sign every payment without I/O, derive every transaction ID from the exact signed
+   bytes, and verify member indices, destinations, amounts, IDs and commitments. Only then assemble,
+   encode and locally validate the final type-1 frame. Atomically promote the intent to
+   `signed-ready` while journaling the exact type-1 frame, exact signed transaction bytes, both
+   generation identities, all pinned context and retry state. Flush before any network dispatch.
 7. `PUT` the exact journaled bytes to the selected provider. The provider validates the complete
    frame and payment set before broadcast/acceptance, durably claims the exact operation, and
    returns a status bound to that operation and frame hash.
@@ -338,20 +368,37 @@ checkpoints, disputes and retries are terminal, or an authenticated compact proo
    journaled operation. Never rebuild payments or re-encrypt under the same operation ID. A new
    attempt is allowed only after durable terminal proof that the prior exact set cannot land.
 
+The target type-1 and type-5 schema revisions, required context field numbers and
+`min_reader_version` are **UNALLOCATED**. Existing schema 1 MUST NOT be reinterpreted or emitted as
+this target, and no production writer or daemon implementation may proceed until section 15's
+CDDL, codec and vector allocations land together.
+
+Restart resumes a flushed pre-operation intent before creating another. If no signed bytes were
+ever externally exposed, release requires durable proof of that fact and an atomic terminal
+transition; otherwise the funding account/nonces are conservatively retired or swept under an
+explicit recovery operation. A crash cannot leak a reservation indefinitely, and a reservation is
+never returned to the reusable pool merely because signing or journaling was interrupted.
+
 **SHIPPED.** Current protobuf code already enforces the important reservation-before-signing,
-journal-before-PUT, and exact-byte replay
-shape, but it does not implement the target FRNK frame, `M`/`P'` separation, or production FRNK
-suite.
+journal-before-PUT, and exact-byte replay shape, but it does not implement the target FRNK frame,
+`M`/`P'` separation, or production FRNK suite.
 
 ### 9.2 Provider-visible admission and economics
 
-**PROPOSED.** A provider validates only what it can verify without recipient secrets: FRNK and
-typed outer structure, routing/network/directory/provider/generation bindings, T3, binding of
-`P'`, DLEQ and child-destination derivation, independently observed transactions, T4 commitments,
-replay/operation identity, and configured payment policy. It MUST bind its chain adapter to the
-configured network and directory state. Encoded amounts or destinations are assertions, never
-payment evidence. Provider admission and payment consumption occur only after every
-provider-visible check passes; recipient-only checks are not prerequisites the provider can assert.
+**PROPOSED.** `provider-admission` and `recipient-acceptance` are distinct named operations with
+distinct validation contexts and error namespaces. Their operation registrations, context fields,
+errors, CDDL, codec support and vectors are **UNALLOCATED** in section 15; the current frozen
+validation profile is unchanged, and daemon implementation is blocked until those artifacts land.
+
+For `provider-admission`, the provider context supplies the requested route, exact network,
+validated sender/recipient directory revisions, both key generations, origin/destination provider
+identities and descriptor capabilities, destination instance generation, operation identity,
+canonical finality policy, and chain observations. The provider validates, in actor order: framing
+and canonical form; target schema; equality of type-5 authoritative context with its validated
+context and any derived outer copies; T3; `P'`, DLEQ, destination and T4 derivation; replay; then
+external payment observations and finality. Structural/context failures, cryptographic failures,
+replay conflicts, payment insufficiency and provisional/finality states remain distinguishable.
+The provider never invokes `recipient-acceptance` or reports its errors.
 
 Provider admission, provider delivery fees, and recipient stamp payments are distinct. A provider
 fee MUST use its own domain and record; it MUST NOT be counted as the recipient stamp. Store and
@@ -359,26 +406,54 @@ forward retries are idempotent by `(client_operation_id, exact_delivery_hash)`. 
 operation ID for different bytes is a conflict. A successful duplicate returns the same terminal
 result and does not rebroadcast, append a second inbox row, or consume payment twice.
 
+Each required payment member has a durable state: `reserved`, `signed`, `broadcast`,
+`observed-provisional`, `final`, or terminal failure, with its exact signed bytes, transaction ID,
+block hash/height and observations. The aggregate is pending, final, terminal failure, or
+`terminal-partial`. Delivery occurs only after every required member independently reaches final
+with the configured minimum and exact commitment. A confirmed prefix followed by terminal failure
+becomes `terminal-partial`: no delivery occurs, confirmed value remains recipient-owned and is
+recoverable exactly once, and all evidence is retained. It creates no automatic credit, deduction
+or fresh payment set. Only explicit sender acknowledgement and a new operation may risk additional
+payment.
+
+Finality policy comes from the canonical network descriptor or an owner-approved pinned policy;
+a provider cannot lower it. Type 5 binds the policy identity and digest. The journal retains each
+transaction, block hash/height, observation and finality transition. A pre-finality reorganization
+rolls back provisional member and aggregate state; no irreversible payment consumption or delivery
+occurs before finality. A post-finality exceptional reorganization enters an explicit reconciliation
+status, preserves evidence and cannot silently retract delivery or spend the operation again.
+
 A valid recipient stamp pays for opaque provider delivery even if the recipient later cannot
 decrypt or rejects plaintext/type-6/item semantics. The provider MUST NOT claim that payment,
 storage, or a receipt proves recipient decryption, semantic acceptance, or sender authorship.
 
 ### 9.3 Recipient-only acceptance
 
-**PROPOSED.** The recipient authenticates and decrypts with the named `M` generation, opens the
-type-6 frame, checks the type-6 network, T1a/content revision, item graph and application semantics,
-and only then commits the plaintext projection. Failure has no recipient-side message effect, but
-does not roll back a provider's already valid delivery or recipient stamp payment. Recipient
-acknowledgement, if any, is a separate authenticated status and MUST NOT be forged by the provider.
+**PROPOSED.** For `recipient-acceptance`, the recipient context supplies the exact delivery
+identity, both pinned generations, retained directory/provider records, the named `M` secret and
+the committed journal page/cursor. It authenticates and decrypts, opens type 6, then checks its
+network, T1a/content revision, item graph and application semantics. Its structural, authentication,
+deterministic plaintext and transient dependency errors are separate from provider errors.
+
+A deterministic invalid ciphertext or plaintext becomes a durable terminal opaque
+quarantine/rejection fact keyed by delivery identity, atomically with applying that row and
+advancing the page cursor; it stores no plaintext. This lets a valid/poison/valid page commit both
+valid rows exactly once without retrying the poison forever. A missing key generation, unresolved
+directory/provider record, unavailable crypto service, storage failure or other transient
+dependency does not quarantine the row and MUST NOT advance the cursor past it.
+
+Recipient failure has no plaintext-message effect and does not roll back already valid provider
+delivery or recipient stamp payment. Recipient acknowledgement, if any, is a separate authenticated
+status and MUST NOT be forged by the provider.
 
 ### 9.4 Origin and destination providers
 
 **PROPOSED.** The origin/home submission provider and destination/mailbox provider are distinct
 roles; they MAY be the same provider as a degenerate case. The operation binds both stable provider
-identities, their exact descriptor revisions, the recipient mailbox generation, and the exact
-delivery-frame hash. Client submission ID, inter-provider delivery ID, destination receipt/status,
-origin-provider fee, destination-provider fee, and recipient stamp each use separate domains and
-deduplication keys.
+identities, their exact descriptor revisions, both sender/recipient key generations, the destination
+instance generation, and the exact delivery-frame hash. Client submission ID, inter-provider
+delivery ID, destination receipt/status, origin-provider fee, destination-provider fee, and
+recipient stamp each use separate domains and deduplication keys.
 
 The origin provider owns retry/failover until one destination provider durably claims the exact
 inter-provider operation. After that claim, failover cannot create a second owner; it queries or
@@ -393,9 +468,9 @@ delivery, checkpoint and tombstone views are projections, not independent replay
 event channel only announces a new opaque cursor; recovery always pages the journal.
 
 - The provider assigns a durable monotonic sequence. The sequence orders transport at that
-  provider and mailbox generation; it is not object identity, global time, or authority. Every
-  append, cursor, snapshot, status and receipt names that generation and the governing capability
-  or descriptor revision.
+  provider and `mailbox_instance_generation`; it is not object identity, global time, or authority.
+  Every append, cursor, snapshot, status and receipt names that instance generation and governing
+  signed capability/descriptor revision; delivery facts also name the selected key generation.
 - Applying a page and advancing its opaque cursor is one atomic client commit. A crash before that
   commit replays the page; stable object/fact IDs make the replay idempotent.
 - Logical messages deduplicate by stable `message_id`; revisions resolve by authenticated
@@ -407,39 +482,47 @@ event channel only announces a new opaque cursor; recovery always pages the jour
 - A tombstone is an authenticated durable fact. It targets a logical family and object ID and,
   when known, an exact revision/content identity. Physical deletion is not a tombstone and cannot
   recreate one after restart.
-- Cursor expiry requires a consistent snapshot at a declared high-water mark, followed by normal
-  incremental replay. Restart MUST recover the same journal generation and committed cursor.
+- Cursor expiry requires a signed, content-identified snapshot naming its snapshot ID, instance
+  generation, fixed high-water, page count/order/hash chain and complete manifest. The client stages
+  pages in isolation, verifies signature, identity, completeness and frontier, then atomically swaps
+  projection, tombstone/exclusion frontier and cursor. A crash exposes either the old committed view
+  or a resumable/discardable staging set, never a partial new view. Incremental replay begins strictly
+  after the snapshot high-water.
 
 Exactly once means one durable terminal effect per stable identity despite duplicate delivery. It
 does not mean the network sends a packet once. Providers, wallets and bots MUST tolerate replay,
 late completion, disconnect after commit, and replacement connections.
 
-Mailbox generation and capability identity are part of every delivery operation ID and its
+Both mailbox generations and capability identity are part of every delivery operation ID and its
 authenticated context. Late completion performs compare-and-set against the unresolved operation's
-generation, descriptor capability and exact bytes; mismatch is terminal stale-generation, not a
-write into the replacement mailbox. A reset atomically fences the old generation before it is
-acknowledged, persists the successor generation/capabilities and reset boundary together, and only
-then admits successor operations.
+key generation, instance generation, descriptor capability and exact bytes; mismatch is terminal
+stale-generation, not a write into the replacement mailbox. An instance reset atomically fences
+the old instance generation before it is acknowledged, persists the successor generation,
+capabilities and reset boundary together, and only then admits successor operations.
 
 ### 10.1 Tombstone dominance and compaction
 
-**PROPOSED.** Within one authority and mailbox generation, an accepted tombstone dominates the
-named object revision and every create/update whose authenticated predecessor is at or before that
-revision. A stale create is a terminal `deleted/stale` result; it is not appended, forwarded, or
-allowed to resurrect the object. A later recreation requires an explicitly allocated successor
-identity or post-tombstone revision rule; none is currently allocated.
+**PROPOSED.** Within one authority and mailbox instance generation, an accepted tombstone dominates
+only the named revision and descendants on its authenticated predecessor branch. A sibling head is
+an explicit conflict, not a descendant and not silently deleted. A stale create on the dominated
+branch is a terminal `deleted/stale` result; it is not appended, forwarded, or allowed to resurrect
+the branch. Object-wide deletion needs an explicitly allocated scope covering every known head; a
+later recreation needs an allocated successor identity or post-tombstone revision rule.
 
 An expired-cursor snapshot MUST either carry authoritative tombstones and their dominance frontier,
-or declare itself a complete replacement for the named generation at a fixed high-water mark. A
-receiver MUST NOT merge a replacement snapshot with pre-boundary positive rows.
+or declare itself a complete replacement for the named instance generation at a fixed high-water
+mark. A receiver MUST NOT merge a replacement snapshot with pre-boundary positive rows. Neither a
+frontier nor snapshot compaction may discard a sibling head until an allocated authenticated
+fork-resolution record covers every head. Exact-branch and object-wide tombstones/frontiers are
+different scopes and MUST NOT be inferred from one another.
 
 A tombstone is a deletion marker, not automatically a positive retention root for the deleted
 body. Retaining tombstone `T` does not itself pin body `R`; `R` may be deleted after every other
 reachability gate clears unless verification/dispute policy needs its exact bytes. Security
 tombstones or a compact authenticated exclusion frontier are retained permanently across the
-generation's authority history. Ordinary body bytes and redundant per-event tombstones MAY be
-compacted only after an authenticated frontier/snapshot preserves non-resurrection and all retry,
-payment, receipt, checkpoint and dispute dependencies are terminal.
+mailbox instance generation's authority history. Ordinary body bytes and redundant per-event
+tombstones MAY be compacted only after an authenticated frontier/snapshot preserves
+non-resurrection and all retry, payment, receipt, checkpoint and dispute dependencies are terminal.
 
 ## 11. Reset, deletion, and reachability
 
@@ -448,9 +531,9 @@ operation.
 
 - A wallet-local view reset discards derived projections/cursors only; it preserves seed material,
   operation journals, unresolved payments, and the last verified authority state, then replays.
-- A mailbox reset requires authenticated mailbox authority `M`, creates a new mailbox generation,
-  and cannot rewrite public directory or provider records. It atomically fences the old generation
-  before acknowledging reset, as section 10 requires.
+- A mailbox-instance reset requires the authenticated destination-provider capability and mailbox
+  authority `M`, creates a new `mailbox_instance_generation`, and cannot rotate `M` or rewrite public
+  directory/provider records. It atomically fences the old instance before acknowledging reset.
 - A directory-authority reset/rotation requires `P` or an already-pinned recovery authority and a
   linked successor/tombstone. Losing `P` is not repaired by `M`, `P'`, a provider, or a clock.
 - A provider-local operational reset cannot delete customer mailbox state or public authority
@@ -485,10 +568,11 @@ projection. A CBOR-origin row cannot be returned as a semantically false legacy 
 the representation by row origin and `Accept`, as specified in the coexistence document.
 
 **PROPOSED.** A future stable logical/root post identity is distinct from every immutable revision
-or event T1. Predecessor/edit, tombstone, moderation and root relations require explicit versioned
-records; their type IDs are **UNALLOCATED**. Votes MUST state whether they target an immutable
-revision/event or a logical root. Until a new allocation, type 11 targets exactly the immutable
-type-9 T1 named by its current schema.
+or event T1. Its derivation is **UNALLOCATED**. Predecessor/edit, tombstone, moderation and root
+relations require explicit versioned records whose type IDs are **UNALLOCATED**. The vote-target
+discriminator and migration are also **UNALLOCATED**; votes MUST eventually state whether they
+target an immutable revision/event or a logical root. Until those allocations, type 11 targets
+exactly the immutable type-9 T1 named by its current schema.
 
 Normal-client cutover requires versioned CBOR schemas and vectors for single-post
 view, topic page/list, discovery, and transaction-specific vote/recovery status. Until those exist,
@@ -529,21 +613,33 @@ Across every family:
 | Bot | Uses wallet/relay flows and persists operational state | SHIPPED | Same protocol client as wallet, exact journal recovery, no private alternative wire |
 | App | Uses `ActiveChain`, recipient-scoped polling, protobuf presentation/read models | SHIPPED | Reachability UX, fork/expiry/status surfacing, scoped reset/deletion, target CBOR read models |
 | Cross-language vectors | Shared TS/Rust/Python/browser codec corpora; account-registration and topic commitments | IMPLEMENTED-NOT-WIRED | Full DM crypto/payment observations, provider/mailbox/status/reset cases, hostile unknown-field retention |
-| Public federation | Architecture plan only; no target convergence claim | PROPOSED | Multi-node directory/descriptor/pubsub convergence, exact deduplication, offline cursor catch-up, expired-cursor snapshot recovery, fork exposure |
-| Public/private isolation | Store classification exists; no production-boundary isolation proof | IMPLEMENTED-NOT-WIRED | Presentation profiles and every private mailbox/journal/payment record never enter public federation |
+| Legacy directory/broadcast federation | Legacy protobuf directory catch-up and broadcast forwarding paths are reachable | SHIPPED | Preserve only as historical migration evidence; do not treat their wire as target FRNK |
+| Legacy public-store capability boundary | `PublicFederationStore` exposes only the legacy public address-directory operations; peers do not receive the generic database, profile store or mailbox store | SHIPPED | Retain the capability boundary during deletion/migration; this is not a claim or hypothesis that private mailbox data leaked |
+| Target directory/descriptor/pubsub convergence | Architecture inputs exist; target FRNK convergence is not implemented | PROPOSED | Multi-node convergence, exact deduplication, offline cursor catch-up, signed snapshot recovery and fork exposure |
+| Target cross-record federation isolation | Full target records and federation facades are unallocated | PROPOSED | Reachability proof that only directory, descriptor and selected pubsub records export, while profiles and every private mailbox/journal/payment record have no public-federation path |
 
+**SHIPPED.** Current evidence supports the narrow legacy public-store capability boundary; it does
+not establish a private-mailbox leak. Any prior leak hypothesis is retracted.
+
+**PROPOSED.**
 Target conformance requires the same accepted/rejected bytes and first-failure category in
 TypeScript and Rust; relay production-boundary tests; wallet restart and ambiguous-outcome tests;
 and bot/app tests using the same public client. Unit success in one codec is not daemon support.
 
 **PROPOSED.** Decision-gate review MUST cover: directory/profile migration without field-9
-reinterpretation; current/retired/compromised `M` and delayed delivery; provider-paid opaque
-delivery followed by recipient rejection; origin/destination provider failover and duplicate
-claims; generation reset racing late completion; tombstone dominance, stale create and both
-snapshot modes; permanent exclusion history with bounded body compaction; deletion reachability
-across shared references and payment recovery; topic root/revision/vote targeting; federation
-convergence/cursor recovery; and proof that profiles/private mailboxes never federate. These proofs
-do not allocate numeric identifiers.
+reinterpretation; old/new type-1/type-5 schema rejection and retention; exact construction order
+with both directory/provider authorities pinned before randomness; `provider-admission` operation
+context/order/errors; current/retired/compromised `M` and delayed delivery; orthogonal mailbox key
+rotation and instance reset/failover; intent crashes before signing, between signing and journal
+promotion, and after flush; complete, partial and reorged payment sets including post-finality
+reconciliation; provider-paid opaque delivery followed by recipient rejection; deterministic poison
+quarantine in a valid/poison/valid page; signed multi-page snapshot crash/resume/atomic swap;
+origin/destination failover and duplicate claims; generation reset racing late completion;
+branch-scoped tombstone dominance, sibling forks, stale creates and object-wide deletion; permanent
+exclusion history with bounded body compaction; deletion reachability across shared references and
+payment recovery; topic root/revision/relation/vote migration; legacy and target federation
+reachability/convergence/cursor recovery; and proof that profiles/private mailbox records have no
+public-federation path. These proofs do not allocate numeric identifiers.
 
 ## 15. Unresolved allocations and review gates
 
@@ -553,11 +649,24 @@ The following remain deliberately unresolved rather than inferred:
 
 - numeric hardened paths/rotation encoding for `P`, `M`, and `P'`;
 - a production FRNK DM suite ID and its exact mapping to a reviewed crypto-box construction;
+- target directory-statement and standalone presentation-profile type IDs, schemas, fields,
+  authority transition/recovery and migration records;
+- target type-1/type-5 schema revisions, required context field IDs and `min_reader_version`, with
+  explicit old/new compatibility and rejection rules;
+- `provider-admission` and `recipient-acceptance` operation IDs, validation contexts, error
+  taxonomy, CDDL, both codecs and independent vectors;
+- `mailbox_key_generation` and `mailbox_instance_generation` wire fields, signed capability and
+  succession/reset records;
 - provider descriptor, delivery, receipt/status, mailbox-journal and reset record type IDs;
 - checkpoint journal-fact kinds, checkpoint authorization and chunk linkage;
-- provider-fee commitment/domain and delivery pricing semantics;
+- per-member/aggregate payment states, canonical finality-policy descriptor/digest, partial-set and
+  exceptional-reconciliation status records, and provider-fee commitment/pricing semantics;
+- pre-operation reservation-intent and signed-ready promotion/release/retire/sweep records;
+- opaque quarantine facts and signed snapshot identity/page-chain/manifest/frontier records;
+- branch-scoped versus object-wide tombstone/frontier encoding and authenticated fork resolution;
 - directory fork resolution and recovery cryptography beyond fail-closed conflict reporting;
-- CBOR topic list/discovery/status schemas and their cutover release;
+- topic logical-root derivation; predecessor/edit/tombstone/moderation/root relation records; vote
+  target discriminator and migration; list/discovery/status schemas and their cutover release;
 - cryptographic approval of the current T3a/T3b stamp derivation and proof.
 
 **PROPOSED.** No daemon, client, or migration may allocate these locally. Each allocation updates this index,

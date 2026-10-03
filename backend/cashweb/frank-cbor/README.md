@@ -12,15 +12,19 @@ it.
 ## Ownership
 
 This crate owns canonical CBOR encoding and decoding, FRNK frame bytes, schema
-checks through section 9 stage 9, and the pure hashes T1, T1a, T3, T4, and T7.
-Callers pass typed values or payload bytes. They do not hand-roll CBOR maps.
+checks through section 9 stage 9, type-2 directory signature validation at
+stage 10.6, and the pure hashes T1, T1a, T3, T4, and T7. Type-1 stages
+10.1–10.5 are absent. Callers pass typed values or payload bytes. They do not
+hand-roll CBOR maps.
 
 ## Public entry points
 
 `encode_frame`, `wrap_frame`, `parse_frame`, `validate_frame`,
 `encode_canonical`, `decode_canonical`, `is_valid_canonical`, and `cbor_map`,
-re-exported from `src/lib.rs`. Stage 10 (signatures, payment observation, and
-the DLEQ proof) is out of scope.
+re-exported from `src/lib.rs`. Explicit CBOR account registration and opt-in
+topics are production consumers. Direct-message and mailbox paths are not
+wired. Type-1 decryption, T3/DLEQ/payment observation and the rest of stages
+10.1–10.5 remain out of scope.
 
 ## Encryption suites
 

@@ -1,5 +1,12 @@
 # Frank backend topology
 
+> [!IMPORTANT]
+> [`CASHWEB-PROTOCOL-SPEC.md`](CASHWEB-PROTOCOL-SPEC.md) supersedes this document for human protocol
+> semantics and wire allocation. The protobuf, route, record and exact-wire sketches below are
+> historical transition inputs and are non-wire; they MUST NOT be implemented as target formats.
+> The service ownership, storage separation and public/private reachability constraints remain
+> required topology inputs subordinate to that specification.
+
 Status: owner-approved direction for #87, refined by `public-federation-plan.md`. Individual wire,
 storage, and route migrations remain staged behind their implementation tickets.
 

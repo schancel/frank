@@ -185,8 +185,7 @@ function checksum(values: readonly number[]): number[] {
     polymod([
       ...values,
       ...new Array<number>(REGULAR_CHECKSUM_LENGTH).fill(0),
-    ]) ^
-    POLYMOD_RESIDUE
+    ]) ^ POLYMOD_RESIDUE
   const out = new Array<number>(REGULAR_CHECKSUM_LENGTH)
   for (let index = 0; index < REGULAR_CHECKSUM_LENGTH; index += 1) {
     const shift = BigInt(5 * (REGULAR_CHECKSUM_LENGTH - 1 - index))
@@ -355,7 +354,9 @@ export function encodeCodex32(
 /** Strictly decode one uniformly-cased pinned BIP-93 Codex32 string. */
 export function decodeCodex32(text: string): Codex32Result<Codex32Share> {
   const checksumLength =
-    typeof text === 'string' ? checksumLengthForEncodedLength(text.length) : null
+    typeof text === 'string'
+      ? checksumLengthForEncodedLength(text.length)
+      : null
   if (
     typeof text !== 'string' ||
     text.length > MAX_STRING_LENGTH ||
@@ -717,7 +718,11 @@ export function validateMasterPayload(
     return expected
   }
   let difference = 0
-  for (let index = MASTER_ROOT_LENGTH; index < MASTER_PAYLOAD_LENGTH; index += 1) {
+  for (
+    let index = MASTER_ROOT_LENGTH;
+    index < MASTER_PAYLOAD_LENGTH;
+    index += 1
+  ) {
     difference |= (owned[index] ?? 0) ^ (expected.value[index] ?? 0)
   }
   owned.fill(0)

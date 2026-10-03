@@ -37,9 +37,10 @@ describe('Codex32 standard-checksum core', () => {
     })
     expect(canonical.ok).toBe(true)
     expect(canonical.ok && canonical.value).not.toBe(encoded.toLowerCase())
-    expect(
-      canonical.ok && decodeCodex32(canonical.value),
-    ).toMatchObject({ ok: true, value: { seed: fromHex(expected) } })
+    expect(canonical.ok && decodeCodex32(canonical.value)).toMatchObject({
+      ok: true,
+      value: { seed: fromHex(expected) },
+    })
     expect(decodeCodex32(`mS${encoded.slice(2)}`)).toEqual({
       ok: false,
       error: { code: 'bad-format' },
@@ -52,7 +53,9 @@ describe('Codex32 standard-checksum core', () => {
     expect(created.ok).toBe(true)
     if (!created.ok) return
     expect(created.value.slice(32)).toEqual(
-      fromHex('36ec91913f2246c19f8200ed41cb51b356cc7326752436c673752180c038e00d'),
+      fromHex(
+        '36ec91913f2246c19f8200ed41cb51b356cc7326752436c673752180c038e00d',
+      ),
     )
     expect(validateMasterPayload(created.value)).toEqual({
       ok: true,

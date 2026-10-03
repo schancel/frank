@@ -507,11 +507,7 @@ export function extractAdaptorSecret(
     const parsedPublicKey = pointFromBytes(publicKey)
     const parsedCompleted = decodeEcdsaSignature(completedSignature)
     if (
-      !verifyStandardEcdsaSignature(
-        parsedPublicKey,
-        digest,
-        parsedCompleted,
-      )
+      !verifyStandardEcdsaSignature(parsedPublicKey, digest, parsedCompleted)
     ) {
       return failure('mismatched-signature')
     }

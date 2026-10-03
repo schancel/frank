@@ -15,10 +15,16 @@ export { encodeFrame, wrapFrame } from './frame'
 export * from './types'
 export * from './forum'
 export * from './directory-preview'
-export type { Operation, SupportedSchema, ValidationContext } from './validate'
+export type {
+  DirectMessageValidationSession,
+  Operation,
+  SupportedSchema,
+  ValidationContext,
+} from './validate'
 export {
   KNOWN_TYPES,
   defaultContext,
+  beginDirectMessageValidation,
   parseFrame,
   validateFrame,
 } from './validate'

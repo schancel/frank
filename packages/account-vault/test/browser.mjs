@@ -109,5 +109,6 @@ try {
   clearTimeout(timeout)
   await stop()
   await new Promise(resolve => server.close(resolve))
-  await rm(directory, { recursive: true, force: true })
+  // Chrome helpers may finish profile writes just after the browser process exits.
+  await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 }

@@ -20,6 +20,61 @@ export const ECASH_MAINNET_CHECKPOINT_HASH =
   "000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d";
 const ECASH_MAINNET_PREFIX: EcashAddressPrefix = "ecash";
 
+type EcashCheckpointClient = Pick<ChronikClient, "block">;
+type EcashChronikConstructor = new (urls: string[]) => ChronikClient;
+
+async function verifyEcashChronikEndpoints(params: {
+  chronik: ChronikClient;
+  allowStructuralTestClient: boolean;
+  checkpointClientFactory?: (url: string) => EcashCheckpointClient;
+}): Promise<void> {
+  const proxyInterface = (
+    params.chronik as ChronikClient & {
+      proxyInterface?: () => {
+        getEndpointArray(): ReadonlyArray<{ url: string }>;
+      };
+    }
+  ).proxyInterface;
+  let checkpointClients: ReadonlyArray<{
+    label: string;
+    client: EcashCheckpointClient;
+  }>;
+  if (typeof proxyInterface === "function") {
+    const urls = Array.from(
+      new Set(
+        proxyInterface
+          .call(params.chronik)
+          .getEndpointArray()
+          .map((endpoint) => endpoint.url)
+      )
+    );
+    if (urls.length === 0) {
+      throw new Error("eCash Chronik client has no configured endpoints");
+    }
+    checkpointClients = urls.map((url) => ({
+      label: url,
+      client:
+        params.checkpointClientFactory?.(url) ??
+        new (params.chronik.constructor as EcashChronikConstructor)([url]),
+    }));
+  } else if (params.allowStructuralTestClient) {
+    checkpointClients = [{ label: "injected Chronik", client: params.chronik }];
+  } else {
+    throw new Error("eCash wallet requires chronik-client 4.3 or newer");
+  }
+
+  await Promise.all(
+    checkpointClients.map(async ({ label, client }) => {
+      const checkpoint = await client.block(ECASH_MAINNET_CHECKPOINT_HEIGHT);
+      if (checkpoint.blockInfo.hash !== ECASH_MAINNET_CHECKPOINT_HASH) {
+        throw new Error(
+          `eCash Chronik checkpoint mismatch for ${label} at height ${ECASH_MAINNET_CHECKPOINT_HEIGHT}: expected ${ECASH_MAINNET_CHECKPOINT_HASH}, got ${checkpoint.blockInfo.hash}`
+        );
+      }
+    })
+  );
+}
+
 export interface EcashBroadcastResult {
   success: boolean;
   broadcasted: string[];
@@ -142,6 +197,8 @@ export class EcashWallet implements NativeWalletHandle {
     chronik: ChronikClient;
     networkId: "ecash-mainnet";
     walletFactory?: EcashWalletFactory;
+    /** Test seam for independently checking every URL reported by a failover client. */
+    checkpointClientFactory?: (url: string) => EcashCheckpointClient;
     nativeAttemptStore?: NativeTransactionAttemptStore;
     getTransactionStatus?: (
       transaction: ChainTransaction
@@ -155,14 +212,11 @@ export class EcashWallet implements NativeWalletHandle {
     if (!bip39.validateMnemonic(params.mnemonic)) {
       throw new Error("Invalid BIP-39 mnemonic");
     }
-    const checkpoint = await params.chronik.block(
-      ECASH_MAINNET_CHECKPOINT_HEIGHT
-    );
-    if (checkpoint.blockInfo.hash !== ECASH_MAINNET_CHECKPOINT_HASH) {
-      throw new Error(
-        `eCash Chronik checkpoint mismatch at height ${ECASH_MAINNET_CHECKPOINT_HEIGHT}: expected ${ECASH_MAINNET_CHECKPOINT_HASH}, got ${checkpoint.blockInfo.hash}`
-      );
-    }
+    await verifyEcashChronikEndpoints({
+      chronik: params.chronik,
+      allowStructuralTestClient: params.walletFactory !== undefined,
+      checkpointClientFactory: params.checkpointClientFactory,
+    });
     const backend = await (params.walletFactory ?? defaultWalletFactory)({
       mnemonic: params.mnemonic,
       chronik: params.chronik,

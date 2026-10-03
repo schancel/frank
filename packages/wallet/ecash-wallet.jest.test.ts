@@ -166,6 +166,39 @@ describe("EcashWallet", () => {
     ).rejects.toThrow("eCash Chronik checkpoint mismatch");
   });
 
+  it("rejects an unverified fallback in a multi-endpoint Chronik client", async () => {
+    const chronik = {
+      proxyInterface: () => ({
+        getEndpointArray: () => [
+          { url: "https://xec.example" },
+          { url: "https://bch.example" },
+        ],
+      }),
+    } as unknown as ChronikClient;
+    const walletFactory = jest.fn(() => makeBackend());
+
+    await expect(
+      EcashWallet.fromMnemonic({
+        mnemonic: MNEMONIC,
+        chronik,
+        networkId: "ecash-mainnet",
+        nativeAttemptStore,
+        walletFactory,
+        checkpointClientFactory: (url) => ({
+          block: jest.fn().mockResolvedValue({
+            blockInfo: {
+              hash:
+                url === "https://xec.example"
+                  ? ECASH_MAINNET_CHECKPOINT_HASH
+                  : "bch-checkpoint",
+            },
+          }),
+        }),
+      })
+    ).rejects.toThrow("checkpoint mismatch for https://bch.example");
+    expect(walletFactory).not.toHaveBeenCalled();
+  });
+
   it("rejects the legacy Chronik client shape before creating the SDK wallet", async () => {
     const legacyChronik = makeChronik() as ChronikClient & {
       proxyInterface?: unknown;

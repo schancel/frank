@@ -1,0 +1,32 @@
+{
+  "name": "@frank/directory-admission",
+  "version": "0.0.1",
+  "private": true,
+  "sideEffects": false,
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./browser": "./src/browser.ts",
+    "./node": "./src/node.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node scripts/test.cjs",
+    "test:node": "node scripts/test-node.cjs",
+    "test:ownership": "node scripts/test-ownership.cjs",
+    "test:browser": "node test/browser-cleanup.cjs && node scripts/test-browser.cjs",
+    "test:resources": "node scripts/test-resources.cjs",
+    "check:boundary": "node scripts/check-boundary.cjs",
+    "format": "prettier --config ../../app/.prettierrc.json --check \"src/**/*.ts\" \"test/**/*.{js,cjs}\" \"scripts/*.cjs\" README.md package.json tsconfig.json ../../docs/protocol/directory-preview-client-admission.md ../../.github/workflows/directory-admission.yml"
+  },
+  "dependencies": {
+    "@frank/codec": "*",
+    "level": "^7.0.0"
+  },
+  "devDependencies": {
+    "@noble/curves": "1.9.1",
+    "@types/node": "^16.11.11",
+    "esbuild": "~0.28.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -98,4 +98,25 @@ describe('Supervisor', () => {
     await sleep(50)
     expect(printed).toEqual([])
   })
+
+  it('reports a startup error observed before shutdown even if shutdown starts in the error handler', async () => {
+    const unexpected = jest.fn()
+    const sup = new Supervisor({}, () => {}, unexpected)
+    const child = sup.start({
+      name: 'missing',
+      command: join(dir, 'missing-command'),
+      args: [],
+      cwd: dir,
+      env: {},
+      logPath: join(dir, 'missing.log'),
+    })
+    let stopping: Promise<void> | undefined
+    child.proc.once('error', () => {
+      stopping = sup.stopAll(100)
+    })
+    expect(await child.exited).toBe('error')
+    await stopping
+    expect(unexpected).toHaveBeenCalledTimes(1)
+    expect(unexpected).toHaveBeenCalledWith(child, 'error')
+  })
 })

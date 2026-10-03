@@ -9,7 +9,16 @@ import { ChildProcess, spawn } from 'child_process'
 import { createWriteStream, mkdirSync, WriteStream } from 'fs'
 import { dirname } from 'path'
 
-const INHERITED = ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'TERM', 'USER', 'SHELL']
+const INHERITED = [
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'LANG',
+  'LC_ALL',
+  'TERM',
+  'USER',
+  'SHELL',
+]
 const TAIL_LINES = 40
 
 export interface SupervisedChild {
@@ -48,8 +57,11 @@ export class Supervisor {
   constructor(
     private readonly baseEnv: Record<string, string | undefined>,
     private readonly print: (line: string) => void = line => console.log(line),
-    /** Called when a child exits while the supervisor is not stopping (never after stopAll). */
-    private readonly onUnexpectedExit: (child: SupervisedChild, status: string) => void = () => {},
+    /** Reports exits/errors observed before shutdown, once `exited` resolves (possibly during stopAll). */
+    private readonly onUnexpectedExit: (
+      child: SupervisedChild,
+      status: string,
+    ) => void = () => {},
   ) {}
 
   get(name: string): SupervisedChild | undefined {
@@ -59,7 +71,9 @@ export class Supervisor {
   /** `{name, pid}` of every child started (the pid is also its process-group id). */
   listPids(): Array<{ name: string; pid: number; argv: string[] }> {
     return this.children.flatMap(c =>
-      c.proc.pid === undefined ? [] : [{ name: c.name, pid: c.proc.pid, argv: c.argv }],
+      c.proc.pid === undefined
+        ? []
+        : [{ name: c.name, pid: c.proc.pid, argv: c.argv }],
     )
   }
 
@@ -87,7 +101,10 @@ export class Supervisor {
     onLine?: (line: string) => void
   }): SupervisedChild {
     mkdirSync(dirname(params.logPath), { recursive: true, mode: 0o700 })
-    const log: WriteStream = createWriteStream(params.logPath, { flags: 'a', mode: 0o600 })
+    const log: WriteStream = createWriteStream(params.logPath, {
+      flags: 'a',
+      mode: 0o600,
+    })
     const proc = spawn(params.command, params.args, {
       cwd: params.cwd,
       env: childEnv(this.baseEnv, params.env),
@@ -96,9 +113,11 @@ export class Supervisor {
     })
     const tailLines: string[] = []
     let exitedFlag = false
+    let unexpectedExit: boolean | undefined
     const exited = new Promise<string>(resolve => {
       proc.on('error', err => {
         tailLines.push(`failed to start: ${err.message}`)
+        unexpectedExit ??= !this.stopping
         exitedFlag = true
         resolve('error')
       })
@@ -106,6 +125,9 @@ export class Supervisor {
       // used to guard signalling flips on 'exit': once the group leader is gone its pgid may be
       // reused by an unrelated process, and killing -pgid would hit it.
       proc.on('exit', () => {
+        // Descendants can hold the pipes open beyond stopAll. Classify now; draining those
+        // pipes must not turn an already-unexpected exit into an intentional shutdown.
+        unexpectedExit ??= !this.stopping
         exitedFlag = true
       })
       proc.on('close', (code, signal) => {
@@ -142,7 +164,7 @@ export class Supervisor {
     }
     this.children.push(child)
     void exited.then(status => {
-      if (!this.stopping) {
+      if (unexpectedExit) {
         this.print(
           `[demo] ${params.name} exited unexpectedly (${status}); last output in ${params.logPath}`,
         )

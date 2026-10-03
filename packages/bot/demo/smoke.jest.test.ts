@@ -1,4 +1,5 @@
 import { spawnSync } from 'child_process'
+import { once } from 'events'
 import {
   existsSync,
   mkdirSync,
@@ -115,6 +116,79 @@ describe('smoke outcome and diagnostic retention', () => {
       if (String(line).startsWith('PASS')) unhealthy.push('qwen')
     })
     await expect(runSmoke({})).resolves.toBe(false)
+    expectRetained()
+  })
+
+  it('retains failure when a child exits before shutdown but its pipes close afterward', async () => {
+    let beforeStop: unknown
+    let tail: string[] = []
+    jest.mocked(runSmokeChecks).mockImplementation(async () => {
+      supervisor = new Supervisor(
+        {},
+        () => {},
+        child => unhealthy.push(child.name),
+      )
+      const release = join(dir, 'release-descendant')
+      // The descendant keeps the leader's stdout/stderr open until stopAll has begun.
+      // Its watchdog bounds cleanup even if an assertion fails before releasing it.
+      const descendant = `
+        const fs = require('fs')
+        setInterval(() => {
+          if (fs.existsSync(${JSON.stringify(release)})) {
+            console.log('late child diagnostic')
+            process.exit(0)
+          }
+        }, 10)
+        setTimeout(() => process.exit(0), 5000)
+      `
+      const child = supervisor.start({
+        name: 'qwen',
+        command: process.execPath,
+        args: [
+          '-e',
+          `
+          require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(
+            descendant,
+          )}], {
+            stdio: ['ignore', 1, 2],
+          })
+          process.exit(7)
+        `,
+        ],
+        cwd: dir,
+        env: {},
+        logPath,
+      })
+      let closed = false
+      child.proc.once('close', () => {
+        closed = true
+      })
+      handle.stop = async () => {
+        const stopping = supervisor!.stopAll(1000)
+        writeFileSync(release, '')
+        await stopping
+        tail = child.tail()
+      }
+      const [code] = await once(child.proc, 'exit')
+      beforeStop = {
+        code,
+        exited: child.hasExited(),
+        closed,
+        stopping: supervisor.isStopping(),
+        unhealthy: [...unhealthy],
+      }
+      return passing
+    })
+    await expect(runSmoke({})).resolves.toBe(false)
+    expect(beforeStop).toEqual({
+      code: 7,
+      exited: true,
+      closed: false,
+      stopping: false,
+      unhealthy: [],
+    }) // Notification still waits for drained pipes.
+    expect(tail).toContain('late child diagnostic')
+    expect(unhealthy).toEqual(['qwen'])
     expectRetained()
   })
 

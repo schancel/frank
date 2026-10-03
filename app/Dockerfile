@@ -23,21 +23,25 @@ COPY packages/wallet/package.json packages/wallet/package.json
 COPY packages/bot/package.json packages/bot/package.json
 COPY packages/bn.js/package.json packages/bn.js/package.json
 COPY packages/bitcore-lib-xpi/package.json packages/bitcore-lib-xpi/package.json
+COPY packages/crypto-box/package.json packages/crypto-box/package.json
+COPY packages/frank-codec/package.json packages/frank-codec/package.json
+COPY packages/nakamoto/package.json packages/nakamoto/package.json
 RUN yarn install --frozen-lockfile
 
 COPY . .
+RUN yarn --cwd packages/nakamoto tsc -p tsconfig.json --pretty false \
+    && yarn --cwd packages/crypto-box tsc -p tsconfig.json --pretty false
 
 # Ticket #54: Quasar's own `QCLI_`-prefixed env var convention (confirmed live -- see that
-# ticket's commit) is what actually reaches `import.meta.env` in the built bundle; a plain
-# `MONAD_TESTNET_HTTP_RPC_URL` env var here has no effect at all. Passed through as build ARGs
-# from docker-compose.yml rather than hardcoded, since the real values (a real Alchemy API key)
-# are secrets that must come from the environment, never committed.
-ARG QCLI_MONAD_TESTNET_HTTP_RPC_URL
+# ticket's commit) is what actually reaches `import.meta.env` in the built bundle. The SPA gets
+# only the public relay URL and shared chain identifier; the secret-bearing upstream RPC URL is a
+# backend runtime variable and must never be copied into this image or its static JavaScript.
 ARG QCLI_MONAD_RELAY_BASE_URL
+ARG QCLI_MONAD_RPC_CHAIN
 ARG QCLI_MONAD_STAMP_BURN_ADDRESS
 ARG QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI
-ENV QCLI_MONAD_TESTNET_HTTP_RPC_URL=${QCLI_MONAD_TESTNET_HTTP_RPC_URL}
 ENV QCLI_MONAD_RELAY_BASE_URL=${QCLI_MONAD_RELAY_BASE_URL}
+ENV QCLI_MONAD_RPC_CHAIN=${QCLI_MONAD_RPC_CHAIN}
 ENV QCLI_MONAD_STAMP_BURN_ADDRESS=${QCLI_MONAD_STAMP_BURN_ADDRESS}
 ENV QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=${QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI}
 

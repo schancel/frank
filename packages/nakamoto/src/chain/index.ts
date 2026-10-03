@@ -32,6 +32,7 @@ export type {
   MessageMagic,
   NetworkKind,
   PolicyAmount,
+  ProtocolIdentityProbe,
   ScriptRules,
   SighashFamily,
   UnknownChainError,

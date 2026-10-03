@@ -1,8 +1,17 @@
 //! Module containing [`RegistryServer`] to run the registry HTTP server.
 
 use crate::{
+    http::bitcoin_proxy::{
+        issue_chronik_challenge, proxy_chronik, proxy_chronik_capability, BitcoinProxyRuntime,
+        BITCOIN_PROXY_CORS_HEADERS,
+    },
     http::curated_defaults::{handle_get_curated_default_contacts, CuratedDefaultContact},
     http::error::HttpRegistryError,
+    http::evm_rpc::{
+        handle_issue_rpc_capability, handle_issue_rpc_capability_challenge,
+        handle_issue_rpc_challenge, handle_proxy_rpc, handle_proxy_rpc_capability, handle_proxy_ws,
+        EvmRpcRuntime, RPC_CORS_HEADERS,
+    },
     http::monad_message::{
         handle_ack_private_monad_recovery, handle_get_private_monad_messages,
         handle_get_private_monad_recovery, handle_issue_mailbox_challenge,
@@ -36,10 +45,78 @@ use cashweb_http_utils::protobuf::Protobuf;
 use cashweb_payload::proto::SignedPayloadSet;
 use prost::Message;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, str::FromStr, sync::Arc};
 use thiserror::Error;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::Level;
+
+#[derive(Serialize)]
+struct ChainDiscovery {
+    schema_version: u32,
+    chains: Vec<AdvertisedChain>,
+}
+
+#[derive(Serialize)]
+struct AdvertisedChain {
+    id: String,
+    family: cashweb_config::ProtocolChainFamily,
+    network: String,
+    caip2: Option<String>,
+    native_chain_id: Option<String>,
+    capabilities: Vec<cashweb_config::ProtocolProxyCapability>,
+}
+
+async fn handle_get_chains(Extension(server): Extension<RegistryServer>) -> Json<ChainDiscovery> {
+    use cashweb_config::{protocol_chain, ProtocolProxyCapability};
+
+    let mut configured = HashMap::<String, Vec<ProtocolProxyCapability>>::new();
+    if let Some(runtime) = &server.evm_rpc {
+        for id in runtime.chain_ids() {
+            configured.insert(id, vec![ProtocolProxyCapability::JsonRpc]);
+        }
+    }
+    if let Some(runtime) = &server.bitcoin_proxy {
+        for (id, json_rpc, chronik) in runtime.configured_capabilities() {
+            let capabilities = configured.entry(id).or_default();
+            if json_rpc {
+                capabilities.push(ProtocolProxyCapability::JsonRpc);
+            }
+            if chronik {
+                capabilities.push(ProtocolProxyCapability::Chronik);
+            }
+        }
+    }
+    let mut chains = configured
+        .into_iter()
+        .filter_map(|(id, capabilities)| {
+            let row = protocol_chain(&id)?;
+            Some(AdvertisedChain {
+                id,
+                family: row.family,
+                network: row.network.clone(),
+                caip2: row.caip2.clone(),
+                native_chain_id: row.native_chain_id.clone(),
+                capabilities,
+            })
+        })
+        .collect::<Vec<_>>();
+    chains.sort_by(|left, right| left.id.cmp(&right.id));
+    Json(ChainDiscovery {
+        schema_version: 1,
+        chains,
+    })
+}
+
+#[derive(Serialize)]
+struct PeerDiscovery {
+    relays: Vec<String>,
+}
+
+async fn handle_get_peers(Extension(server): Extension<RegistryServer>) -> Json<PeerDiscovery> {
+    Json(PeerDiscovery {
+        relays: server.peers.public_origins(),
+    })
+}
 
 #[derive(Deserialize)]
 struct MessagesQuery {
@@ -84,6 +161,10 @@ pub struct RegistryServer {
     pub curated_defaults: Arc<Vec<CuratedDefaultContact>>,
     /// Validated direct-message mailbox lifecycle. Disabled mode has no admission route.
     pub monad_mailbox: MonadMailboxRuntime,
+    /// Optional customer-authenticated EVM proxy runtime. `None` installs no EVM chain routes.
+    pub evm_rpc: Option<Arc<EvmRpcRuntime>>,
+    /// Optional Bitcoin-family JSON-RPC and Chronik runtime.
+    pub bitcoin_proxy: Option<Arc<BitcoinProxyRuntime>>,
 }
 
 /// Relevant parts of an HTTP request to put new address metadata.
@@ -141,7 +222,7 @@ async fn log_request<B>(
     next: axum::middleware::Next<B>,
 ) -> axum::response::Response {
     let method = request.method().to_owned();
-    let uri = request.uri().to_owned();
+    let path = safe_log_path(request.uri().path()).into_owned();
     let start = std::time::Instant::now();
 
     let response = next.run(request).await;
@@ -149,7 +230,7 @@ async fn log_request<B>(
     tracing::event!(
         Level::INFO,
         method = method.as_str(),
-        path = uri.path(),
+        path = path.as_str(),
         // latency = format_args!("{} ms", latency.as_millis()),
         status = response.status().as_u16(),
         duration = format!("{} mcs", start.elapsed().as_micros()),
@@ -159,11 +240,94 @@ async fn log_request<B>(
     response
 }
 
+fn safe_log_path(path: &str) -> Cow<'_, str> {
+    let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
+    match segments.as_slice() {
+        ["chain-rpc", _, "cap", _, "rpc"] => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/rpc"),
+        ["chain-rpc", _, "cap", _, "ws"] => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/ws"),
+        ["chain-rpc", _, "cap", _, "chronik", ..] => {
+            Cow::Borrowed("/chain-rpc/:chain/cap/:capability/chronik/*path")
+        }
+        ["chain-rpc", _, "chronik", ..] => Cow::Borrowed("/chain-rpc/:chain/chronik/*path"),
+        ["chain-rpc", _, "chronik-auth", ..] => {
+            Cow::Borrowed("/chain-rpc/:chain/chronik-auth/*path")
+        }
+        // Unknown paths under this namespace are fail-closed. Routers may percent-decode
+        // or normalize segments differently than this logging middleware, so no
+        // chain-rpc-shaped miss is allowed to copy attacker-controlled path text to logs.
+        _ if segments.iter().any(|segment| *segment == "chain-rpc") => {
+            Cow::Borrowed("/chain-rpc/*redacted")
+        }
+        // Never log an unclassified raw path: percent-encoding and case variants can disguise
+        // credential-bearing route segments from a literal matcher.
+        _ => Cow::Borrowed("/*redacted"),
+    }
+}
+
+#[cfg(test)]
+mod request_log_tests {
+    use super::safe_log_path;
+
+    #[test]
+    fn capability_credentials_never_enter_request_log_paths() {
+        let token = "sentinel-capability-secret";
+        for transport in ["rpc", "ws"] {
+            let path = format!("/chain-rpc/monad-testnet/cap/{token}/{transport}");
+            let logged = safe_log_path(&path);
+            assert!(!logged.contains(token));
+            assert_eq!(
+                logged,
+                format!("/chain-rpc/:chain/cap/:capability/{transport}")
+            );
+        }
+        let chronik_path =
+            format!("/chain-rpc/xec-mainnet/cap/{token}/chronik/script/p2pkh/sensitive/utxos");
+        let logged = safe_log_path(&chronik_path);
+        assert!(!logged.contains(token));
+        assert!(!logged.contains("sensitive"));
+        assert_eq!(logged, "/chain-rpc/:chain/cap/:capability/chronik/*path");
+        for malformed in [
+            format!("/chain-rpc/monad-testnet/cap/{token}"),
+            format!("/chain-rpc/monad-testnet/cap/{token}/rpc/extra"),
+            format!("/chain-rpc/monad-testnet/cap/{token}/unknown"),
+            format!("/chain-rpc//monad-testnet/cap/{token}/rpc"),
+            format!("/prefix/chain-rpc/monad-testnet/cap/{token}/rpc"),
+            format!("/chain-rpc/monad-testnet/c%61p/{token}/rpc"),
+            format!("/chain-rpc/monad-testnet/CAP/{token}/rpc"),
+            format!("/chain%2Drpc/monad-testnet/cap/{token}/rpc"),
+            format!("/CHAIN-RPC/monad-testnet/cap/{token}/rpc"),
+        ] {
+            let logged = safe_log_path(&malformed);
+            assert!(!logged.contains(token));
+            assert!(matches!(
+                logged.as_ref(),
+                "/chain-rpc/*redacted" | "/*redacted"
+            ));
+        }
+        assert_eq!(
+            safe_log_path("/chain-rpc/monad-testnet/rpc"),
+            "/chain-rpc/*redacted"
+        );
+        for path in [
+            "/chain-rpc/xec-mainnet/chronik/script/p2pkh/sentinel-wallet/history",
+            "/chain-rpc/xec-mainnet/chronik-auth/script/p2pkh/sentinel-wallet/utxos",
+        ] {
+            let logged = safe_log_path(path);
+            assert!(!logged.contains("sentinel-wallet"));
+            assert!(logged.ends_with("/*path"));
+        }
+    }
+}
+
 impl RegistryServer {
     /// Turn this registry server into a [`Router`].
     pub fn into_router(self) -> Router {
         let mailbox_enabled = self.monad_mailbox.as_enabled().is_some();
+        let rpc_enabled = self.evm_rpc.is_some() || self.bitcoin_proxy.is_some();
+        let bitcoin_proxy_enabled = self.bitcoin_proxy.is_some();
         let router = Router::new()
+            .route("/chains", routing::get(handle_get_chains))
+            .route("/peers", routing::get(handle_get_peers))
             .route("/metadata", routing::get(handle_get_metadata_range))
             .route(
                 "/metadata/:addr",
@@ -238,6 +402,49 @@ impl RegistryServer {
                 routing::any(|| async { StatusCode::NOT_FOUND }),
             )
         };
+        let router = if rpc_enabled {
+            router
+                .route("/chain-rpc/:chain/rpc", routing::post(handle_proxy_rpc))
+                .route(
+                    "/chain-rpc/:chain/rpc/auth",
+                    routing::post(handle_issue_rpc_challenge),
+                )
+                .route(
+                    "/chain-rpc/:chain/capability/auth",
+                    routing::post(handle_issue_rpc_capability_challenge),
+                )
+                .route(
+                    "/chain-rpc/:chain/capability",
+                    routing::post(handle_issue_rpc_capability),
+                )
+                .route(
+                    "/chain-rpc/:chain/cap/:capability/rpc",
+                    routing::post(handle_proxy_rpc_capability),
+                )
+                .route(
+                    "/chain-rpc/:chain/cap/:capability/ws",
+                    routing::get(handle_proxy_ws),
+                )
+        } else {
+            router
+        };
+        let router = if bitcoin_proxy_enabled {
+            router
+                .route(
+                    "/chain-rpc/:chain/chronik/*path",
+                    routing::any(proxy_chronik),
+                )
+                .route(
+                    "/chain-rpc/:chain/chronik-auth/*path",
+                    routing::post(issue_chronik_challenge),
+                )
+                .route(
+                    "/chain-rpc/:chain/cap/:capability/chronik/*path",
+                    routing::any(proxy_chronik_capability),
+                )
+        } else {
+            router
+        };
         router
             // Monad topic post + burn-weighted vote path (ticket #30), additive alongside
             // the plain Monad-message route above -- see `crate::http::monad_topics`'s module docs.
@@ -287,6 +494,13 @@ impl RegistryServer {
                         header::HeaderName::from_static("x-frank-mailbox-expires-at-ms"),
                         header::HeaderName::from_static("x-frank-mailbox-signature"),
                         header::HeaderName::from_static("x-frank-mailbox-token"),
+                        header::HeaderName::from_static(RPC_CORS_HEADERS[0]),
+                        header::HeaderName::from_static(RPC_CORS_HEADERS[1]),
+                        header::HeaderName::from_static(RPC_CORS_HEADERS[2]),
+                        header::HeaderName::from_static(RPC_CORS_HEADERS[3]),
+                        header::HeaderName::from_static(RPC_CORS_HEADERS[4]),
+                        header::HeaderName::from_static(RPC_CORS_HEADERS[5]),
+                        header::HeaderName::from_static(BITCOIN_PROXY_CORS_HEADERS[0]),
                     ])
                     .expose_headers([header::HeaderName::from_static(
                         "x-frank-mailbox-next-cursor",

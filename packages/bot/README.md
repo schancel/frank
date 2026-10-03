@@ -53,16 +53,16 @@ absent RPC URL or wallet file) each print one line, never a stack trace.
 chain and the burn address. The launcher prints the exact command; with `--fake-chain` it is
 
 ```sh
-cd app && QCLI_MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:8545 QCLI_MONAD_RELAY_BASE_URL=http://127.0.0.1:8098 \
+cd app && QCLI_MONAD_RELAY_BASE_URL=http://127.0.0.1:8098 QCLI_MONAD_RPC_CHAIN=monad-testnet \
   QCLI_MONAD_STAMP_BURN_ADDRESS=0x000000000000000000000000000000000000dEaD QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1000000000000 \
   yarn dev:browser
 ```
 
 (ports follow `FRANK_DEMO_RELAY_PORT` / `FRANK_DEMO_FAKE_RPC_PORT`) and the app is at
 **http://localhost:8080**, the fixed dev-server port from `app/quasar.config.js`. The relay and the
-fake chain send `Access-Control-Allow-Origin: *` and answer preflights, so the browser reaches them
-directly. The fake chain does this with `*` only because it is a local fake bound to 127.0.0.1;
-nothing here adds CORS to a real RPC (on a real network your RPC provider must allow the origin).
+fake chain send `Access-Control-Allow-Origin: *` and answer preflights. The browser reaches only
+the relay's `/chain-rpc/monad-testnet/rpc` route; the upstream RPC address remains process-owned
+relay configuration and is never embedded in the app.
 
 **Burn address**: the relay's forum routes (topic posts and votes) return HTTP 500 without
 `MONAD_STAMP_BURN_ADDRESS`. The launcher passes one value (default the well-known
@@ -210,6 +210,7 @@ to skip the Cargo build.
 | `RUSTUP_HOME`                         | relay build      | unset                                                                       | See CARGO.                                                                                                                                                                                                                                                                                                                                                 |
 | `RUSTUP_TOOLCHAIN`                    | relay build      | unset                                                                       | See CARGO.                                                                                                                                                                                                                                                                                                                                                 |
 | `MONAD_TESTNET_HTTP_RPC_URL`          | chain            | required unless fake chain                                                  | Monad TESTNET JSON-RPC URL (chain id 10143). May embed an API key. Secret: never printed.                                                                                                                                                                                                                                                                  |
+| `MONAD_TESTNET_WS_RPC_URL`            | chain            | optional on a real chain; unset with fake chain                             | Monad TESTNET WebSocket JSON-RPC URL used by the relay proxy. May embed an API key. Secret: never printed.                                                                                                                                                                                                                                                 |
 | `FRANK_NETWORK_TAG`                   | chain            | MONT                                                                        | Network tag the relay and bots stamp messages with (MONT = Monad testnet).                                                                                                                                                                                                                                                                                 |
 | `MONAD_STAMP_BURN_ADDRESS`            | relay, bots, app | 0x000000000000000000000000000000000000dEaD                                  | Burn address of stamps and topic votes (0x + 40 hex). Passed to the relay (without it every forum post and vote fails with HTTP 500), to the bots, and printed in the app command as QCLI_MONAD_STAMP_BURN_ADDRESS: all three must agree. The default is the well-known 0x...dEaD burn address.                                                            |
 | `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`    | relay            | 1000000000000                                                               | Minimum wei a message stamp must pay (0.000001 MON).                                                                                                                                                                                                                                                                                                       |

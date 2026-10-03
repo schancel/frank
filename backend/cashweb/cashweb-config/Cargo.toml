@@ -10,6 +10,7 @@ bitcoinsuite-error = { path = "../../bitcoinsuite/bitcoinsuite-error" }
 
 # De-/serialization
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 # TOML configuration file format
 toml = "0.5"

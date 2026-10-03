@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "chains": [
+    {
+      "id": "monad-mainnet",
+      "family": "evm",
+      "network": "mainnet",
+      "caip2": "eip155:143",
+      "native_chain_id": "143",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "143" },
+        {
+          "kind": "block-hash",
+          "capability": "json-rpc",
+          "height": 0,
+          "expected": "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9"
+        }
+      ]
+    },
+    {
+      "id": "monad-testnet",
+      "family": "evm",
+      "network": "testnet",
+      "caip2": "eip155:10143",
+      "native_chain_id": "10143",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        {
+          "kind": "evm-chain-id",
+          "capability": "json-rpc",
+          "expected": "10143"
+        },
+        {
+          "kind": "block-hash",
+          "capability": "json-rpc",
+          "height": 0,
+          "expected": "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
+        }
+      ]
+    },
+    {
+      "id": "btc-mainnet",
+      "family": "bitcoin",
+      "network": "mainnet",
+      "caip2": "bip122:000000000019d6689c085ae165831e93",
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "block-hash", "capability": "json-rpc", "height": 481824, "expected": "0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893" },
+        { "kind": "block-hash", "capability": "chronik", "height": 481824, "expected": "0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893" }
+      ]
+    },
+    {
+      "id": "btc-testnet",
+      "family": "bitcoin",
+      "network": "testnet",
+      "caip2": "bip122:000000000933ea01ad0ee984209779ba",
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "block-hash", "capability": "json-rpc", "height": 5125000, "expected": "00000000000009ad1946e21cb4f1a6323ee99c89017b59d5166472672b868133" },
+        { "kind": "block-hash", "capability": "chronik", "height": 5125000, "expected": "00000000000009ad1946e21cb4f1a6323ee99c89017b59d5166472672b868133" }
+      ]
+    },
+    {
+      "id": "btc-regtest",
+      "family": "bitcoin",
+      "network": "regtest",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    },
+    {
+      "id": "bch-mainnet",
+      "family": "bitcoin",
+      "network": "mainnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "block-hash", "capability": "json-rpc", "height": 478559, "expected": "000000000000000000651ef99cb9fcbe0dadde1d424bd9f15ff20136191a5eec" },
+        { "kind": "block-hash", "capability": "chronik", "height": 478559, "expected": "000000000000000000651ef99cb9fcbe0dadde1d424bd9f15ff20136191a5eec" }
+      ]
+    },
+    {
+      "id": "bch-testnet",
+      "family": "bitcoin",
+      "network": "testnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "block-hash", "capability": "json-rpc", "height": 1155876, "expected": "00000000000e38fef93ed9582a7df43815d5c2ba9fd37ef70c9a0ea4a285b8f5" },
+        { "kind": "block-hash", "capability": "chronik", "height": 1155876, "expected": "00000000000e38fef93ed9582a7df43815d5c2ba9fd37ef70c9a0ea4a285b8f5" }
+      ]
+    },
+    {
+      "id": "bch-regtest",
+      "family": "bitcoin",
+      "network": "regtest",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    },
+    {
+      "id": "xec-mainnet",
+      "family": "bitcoin",
+      "network": "mainnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "block-hash", "capability": "json-rpc", "height": 661648, "expected": "000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d" },
+        { "kind": "block-hash", "capability": "chronik", "height": 661648, "expected": "000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d" }
+      ]
+    },
+    {
+      "id": "xec-testnet",
+      "family": "bitcoin",
+      "network": "testnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "block-hash", "capability": "json-rpc", "height": 1421481, "expected": "00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d40b" },
+        { "kind": "block-hash", "capability": "chronik", "height": 1421481, "expected": "00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d40b" }
+      ]
+    },
+    {
+      "id": "xec-regtest",
+      "family": "bitcoin",
+      "network": "regtest",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    },
+    {
+      "id": "xpi-mainnet",
+      "family": "bitcoin",
+      "network": "mainnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "block-hash", "capability": "json-rpc", "height": 0, "expected": "000000000abc0cde58ee7e919d3d4de183e6844add1fd5d14b4eac89d958f470" },
+        { "kind": "block-hash", "capability": "chronik", "height": 0, "expected": "000000000abc0cde58ee7e919d3d4de183e6844add1fd5d14b4eac89d958f470" }
+      ]
+    },
+    {
+      "id": "xpi-testnet",
+      "family": "bitcoin",
+      "network": "testnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "block-hash", "capability": "json-rpc", "height": 0, "expected": "00000000080a6c9633aae9d24b9acda10d7e6b028e7aa714069798d18ca7bad1" },
+        { "kind": "block-hash", "capability": "chronik", "height": 0, "expected": "00000000080a6c9633aae9d24b9acda10d7e6b028e7aa714069798d18ca7bad1" }
+      ]
+    },
+    {
+      "id": "xpi-regtest",
+      "family": "bitcoin",
+      "network": "regtest",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    }
+  ]
+}

@@ -2459,6 +2459,8 @@ mod tests {
             // helper was originally written).
             curated_defaults: Arc::new(vec![]),
             monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_rpc: None,
+            bitcoin_proxy: None,
         }
     }
 

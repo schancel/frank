@@ -182,8 +182,9 @@ missing. `docker-compose.yml` defaults the tag to `MONT`; `run-local-monad.sh` d
 `MONAD_STAMP_BURN_ADDRESS` only affects the topic routes.
 
 A production operator must: set `MONAD_TESTNET_HTTP_RPC_URL` to their own provider endpoint; for a
-mainnet relay set `expected_chain_id = 143`, `FRANK_NETWORK_TAG=MON1` and an RPC URL for the same
-network; review `min_value_wei` for their spam-resistance policy; persist `/data`; and snapshot
+mainnet relay set `expected_chain_id = 143`, `FRANK_NETWORK_TAG=MON1`, the `monad-mainnet` proxy
+row's registry-pinned genesis checkpoint, and an RPC URL for the same network; review
+`min_value_wei` for their spam-resistance policy; persist `/data`; and snapshot
 before upgrading (older binaries cannot read newer outbox rows). Disabling the mailbox
 (`enabled = false`) is the supported rollback. Outbox rate and capacity limits are live on every
 default deployment; known residual gaps are tracked in ticket #231.

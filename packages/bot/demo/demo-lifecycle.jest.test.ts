@@ -112,6 +112,12 @@ process.stdin.on('end', () => {
   fs.writeFileSync(${JSON.stringify(
     pidFile + '.env',
   )}, process.env.MONAD_STAMP_BURN_ADDRESS || 'unset')
+  fs.writeFileSync(${JSON.stringify(
+    pidFile + '.checkpoint',
+  )}, process.env.FRANK_EVM_CHECKPOINT_HASH || 'unset')
+  fs.writeFileSync(${JSON.stringify(
+    pidFile + '.ws-rpc',
+  )}, process.env.MONAD_TESTNET_WS_RPC_URL || 'unset')
   if (${kind === 'stubborn'}) process.on('SIGTERM', () => {})
   if (${kind === 'http'}) {
     const [host, port] = /host = "([^"]+)"/.exec(input)[1].split(':')
@@ -381,6 +387,7 @@ process.stdin.on('end', () => {
     it('the relay is started with the burn address the bots and the app command use (#364)', async () => {
       const { handle, c } = await running()
       expect(readFileSync(pidFile + '.env', 'utf8')).toBe(c.stampBurnAddress)
+      expect(readFileSync(pidFile + '.checkpoint', 'utf8')).toBe(`0x${'11'.repeat(32)}`)
       expect(c.stampBurnAddress).toBe('0x000000000000000000000000000000000000dEaD')
       await handle.stop()
       await handle.done
@@ -398,14 +405,26 @@ process.stdin.on('end', () => {
       await handle.done
     }, 30000)
 
+    it('passes the optional WebSocket RPC only to the relay process', async () => {
+      const bot = fakeBot('worker', "console.log('READY'); setInterval(() => {}, 1000)")
+      const c = await config({ CASHWEBD_BIN: relayStub('http') }, [bot])
+      c.wsRpcUrl = 'wss://rpc.example.invalid/v2/sentinel-key'
+      const handle = await startDemo(c, opts)
+      expect(readFileSync(pidFile + '.ws-rpc', 'utf8')).toBe(c.wsRpcUrl)
+      expect(c.bots[0].env.MONAD_TESTNET_WS_RPC_URL).toBeUndefined()
+      await handle.stop()
+      await handle.done
+    }, 30000)
+
     it('the summary states the app URL and the exact app command with the relay, chain and burn address', async () => {
       const { handle, c } = await running()
       const lines: string[] = []
       printSummary(handle, l => lines.push(l))
       const text = lines.join('\n')
       expect(text).toContain('App URL: http://localhost:8080')
-      expect(text).toContain(`QCLI_MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:${c.fakeRpcPort}`)
       expect(text).toContain(`QCLI_MONAD_RELAY_BASE_URL=http://127.0.0.1:${c.relayPort}`)
+      expect(text).toContain('QCLI_MONAD_RPC_CHAIN=monad-testnet')
+      expect(text).not.toContain('QCLI_MONAD_TESTNET_HTTP_RPC_URL')
       expect(text).toContain(`QCLI_MONAD_STAMP_BURN_ADDRESS=${c.stampBurnAddress}`)
       expect(text).toContain(`QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=${c.minStampWei}`)
       expect(text).toContain('yarn dev:browser')

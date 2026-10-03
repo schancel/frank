@@ -52,7 +52,7 @@ const GAS_LIMIT = 60_000n
 const CONFIG: MonadChainConfig = {
   networkId: 'monad-test',
   chainId: CHAIN_ID,
-  rpcUrl: 'http://127.0.0.1:1',
+  rpcChain: 'monad-testnet',
   relayBaseUrl: 'http://relay.test',
   networkTag: 'MONT',
   stampBurnAddress: BURN_ADDRESS,

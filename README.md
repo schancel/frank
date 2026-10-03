@@ -206,14 +206,18 @@ cd app
 set -a
 source ../.env
 set +a
-export QCLI_MONAD_TESTNET_HTTP_RPC_URL="$MONAD_TESTNET_HTTP_RPC_URL"
 export QCLI_MONAD_RELAY_BASE_URL=http://localhost:8098
+export QCLI_MONAD_RPC_CHAIN="${MONAD_RPC_CHAIN:-monad-testnet}"
 export QCLI_MONAD_STAMP_BURN_ADDRESS="$MONAD_STAMP_BURN_ADDRESS"
 export QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI="$CASHWEB_STAMP_MIN_BURN_VALUE_WEI"
 yarn dev:browser
 ```
 
 Open [http://localhost:8080](http://localhost:8080).
+
+The frontend receives only the public relay URL and protocol chain identifier. The relay reads and
+validates `MONAD_TESTNET_HTTP_RPC_URL` server-side; the provider URL and its API key are never
+embedded in the browser bundle.
 
 > [!NOTE]
 > Docker definitions are present, but the Docker build has not been verified in the current development environment. The commands above are the known local path.

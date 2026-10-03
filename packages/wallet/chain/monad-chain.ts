@@ -16,8 +16,8 @@
  * convention"). This file *is* that caller: it's the composition root the whole app imports
  * through (`./index.ts`'s `activeChain`), the same role `qwen-bot-common.ts`/the
  * `*.livecheck.ts` scripts already play for their own one-off demos, just wired once for the whole
- * app instead of per script. `loadMonadChainConfigFromEnv` reads env under the same names those
- * scripts already established (`MONAD_TESTNET_HTTP_RPC_URL`, `MONAD_STAMP_BURN_ADDRESS`,
+ * app instead of per script. `loadMonadChainConfigFromEnv` reads the public relay and chain ID,
+ * never a secret-bearing upstream RPC URL, plus `MONAD_STAMP_BURN_ADDRESS`,
  * `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`), falling back to permissive localhost/testnet-adjacent
  * defaults (matching `qwen-bot.livecheck.ts`'s own `E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'`
  * precedent) rather than hard-failing on a missing var, so importing this module (e.g. from a jest
@@ -118,6 +118,7 @@ import { MonadHttpClient } from "../monad-http";
 import {
   createMonadJsonRpcProvider,
   DEFAULT_MONAD_CHAIN_ID,
+  monadProtocolIdentity,
 } from "../monad-provider";
 import { MonadAccountTxSigner } from "../monad-account-tx";
 import { MonadWalletHandle } from "../monad-wallet-handle";
@@ -179,8 +180,8 @@ import {
 export interface MonadChainConfig {
   /** Stable chain/deployment identifier used for wallet affinity checks. */
   networkId: string;
-  /** Monad JSON-RPC HTTP endpoint, e.g. `MONAD_TESTNET_HTTP_RPC_URL`. */
-  rpcUrl: string;
+  /** Shared protocol chain identifier used by the relay family route. */
+  rpcChain: string;
   /** Expected EVM chain ID, e.g. 10143 for Monad testnet. */
   chainId: number | bigint;
   /** Base URL of the `cashweb-registry` relay. */
@@ -221,6 +222,8 @@ function readEnv(key: string): string | undefined {
  * "Configuration", for why this (unlike the wallet client modules it configures) reads env
  * directly, and why it never throws on a missing var. */
 export function loadMonadChainConfigFromEnv(): MonadChainConfig {
+  const rpcChain = readEnv("MONAD_RPC_CHAIN") ?? "monad-testnet";
+  const protocolIdentity = monadProtocolIdentity(rpcChain);
   const rawChainId = readEnv("MONAD_CHAIN_ID");
   let chainId: bigint | undefined;
   if (rawChainId) {
@@ -232,14 +235,17 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
   }
 
   return {
-    networkId: readEnv("MONAD_NETWORK_ID") ?? "monad-testnet",
-    rpcUrl: readEnv("MONAD_TESTNET_HTTP_RPC_URL") ?? "http://127.0.0.1:8545",
-    chainId: chainId ?? DEFAULT_MONAD_CHAIN_ID,
+    networkId: readEnv("MONAD_NETWORK_ID") ?? rpcChain,
+    rpcChain,
+    // Known protocol rows are atomic: public overrides must not create a
+    // mainnet route with a testnet chain ID (or the inverse).
+    chainId: protocolIdentity?.chainId ?? chainId ?? DEFAULT_MONAD_CHAIN_ID,
     relayBaseUrl:
       readEnv("MONAD_RELAY_BASE_URL") ??
       readEnv("E2E_DEMO_RELAY_URL") ??
       "http://127.0.0.1:8098",
-    networkTag: readEnv("FRANK_NETWORK_TAG") ?? "MONT",
+    networkTag:
+      protocolIdentity?.networkTag ?? readEnv("FRANK_NETWORK_TAG") ?? "MONT",
     stampBurnAddress:
       readEnv("MONAD_STAMP_BURN_ADDRESS") ??
       "0x000000000000000000000000000000000000dEaD",
@@ -1199,13 +1205,26 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           store: changeStore,
         });
         const leaseManager = new SubAccountLeaseManager(pool);
+        const rpcUrl = `${config.relayBaseUrl.replace(
+          /\/$/,
+          ""
+        )}/chain-rpc/${encodeURIComponent(config.rpcChain)}/rpc`;
+        const relayAuth = {
+          chain: config.rpcChain,
+          customer: identity.address.raw,
+          networkTag: config.networkTag,
+          signDigest: (digest: Uint8Array) =>
+            identity.signHash(Buffer.from(digest)),
+        };
         const provider = createMonadJsonRpcProvider({
-          rpcUrl: config.rpcUrl,
+          rpcUrl,
           chainId: config.chainId,
+          relayAuth,
         });
         const httpClient = new MonadHttpClient({
-          rpcUrl: config.rpcUrl,
+          rpcUrl,
           chainId: config.chainId,
+          relayAuth,
         });
         const submitNative = async (
           signed: SignedNativeTransfer,

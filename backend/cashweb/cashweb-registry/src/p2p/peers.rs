@@ -7,6 +7,7 @@ use bitcoinsuite_error::Result;
 use cashweb_payload::payload::SignedPayload;
 use futures::{FutureExt, StreamExt};
 use rand::Rng;
+use url::Url;
 
 use crate::{
     http::server::{PutMessageRequest, PutMetadataRequest},
@@ -21,6 +22,7 @@ use crate::{
 pub struct Peers {
     client: reqwest::Client,
     own_origin: String,
+    public_relay_urls: Vec<Url>,
     /// List of [`Peer`] instances connected to the registry server.
     pub peers: Vec<Peer>,
 }
@@ -28,11 +30,33 @@ pub struct Peers {
 impl Peers {
     /// Create [`Peers`] from a fixed list of peers.
     pub fn new(own_origin: String, peers: Vec<Peer>) -> Self {
+        Self::new_with_public_relays(own_origin, peers, Vec::new())
+    }
+
+    /// Create peers with a separate, explicit client-facing relay allowlist.
+    pub fn new_with_public_relays(
+        own_origin: String,
+        peers: Vec<Peer>,
+        public_relay_urls: Vec<Url>,
+    ) -> Self {
         Peers {
             client: reqwest::Client::new(),
             own_origin,
+            public_relay_urls,
             peers,
         }
+    }
+
+    /// Public relay origins a client may independently try for reads or transaction broadcast.
+    pub fn public_origins(&self) -> Vec<String> {
+        let mut origins = std::iter::once(self.own_origin.parse::<Url>().ok())
+            .chain(self.public_relay_urls.iter().cloned().map(Some))
+            .flatten()
+            .filter_map(public_http_origin)
+            .collect::<Vec<_>>();
+        origins.sort();
+        origins.dedup();
+        origins
     }
 
     /// Relay the metadata to all the peers.
@@ -62,6 +86,52 @@ impl Peers {
             peer.relay_message_to(relay_info, request, &self.own_origin, &self.client)
         }))
         .await;
+    }
+}
+
+fn public_http_origin(url: Url) -> Option<String> {
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return None;
+    }
+    let origin = url.origin().ascii_serialization();
+    (origin != "null").then_some(origin)
+}
+
+#[cfg(test)]
+mod public_origin_tests {
+    use super::*;
+
+    #[test]
+    fn discovery_exposes_only_deduplicated_http_origins() {
+        let peers = Peers::new(
+            "https://owner:secret@example.test/private?token=hidden#fragment".to_string(),
+            vec![Peer::new(
+                "https://internal.service.local/sync".parse().unwrap(),
+            )],
+        );
+        let peers = Peers::new_with_public_relays(
+            peers.own_origin,
+            peers.peers,
+            vec![
+                "https://other:password@peer.test:8443/internal?key=secret"
+                    .parse()
+                    .unwrap(),
+                "https://example.test/another-path".parse().unwrap(),
+                "file:///private/relay".parse().unwrap(),
+            ],
+        );
+
+        assert_eq!(
+            peers.public_origins(),
+            vec![
+                "https://example.test".to_string(),
+                "https://peer.test:8443".to_string(),
+            ]
+        );
+        assert!(!peers
+            .public_origins()
+            .iter()
+            .any(|origin| origin.contains("internal.service.local")));
     }
 }
 

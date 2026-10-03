@@ -6,7 +6,8 @@ use cashweb_config::{parse_conf, CashwebdConf, MonadMailboxMode};
 use cashweb_registry::{
     disabled_chain_adapter::DisabledChainAdapter,
     http::{
-        curated_defaults::build_curated_defaults, pop_protection::PopGate, server::RegistryServer,
+        bitcoin_proxy::BitcoinProxyRuntime, curated_defaults::build_curated_defaults,
+        evm_rpc::EvmRpcRuntime, pop_protection::PopGate, server::RegistryServer,
     },
     lotus_adapter::LotusAdapter,
     monad_http::HttpTransport,
@@ -132,10 +133,21 @@ fn read_and_validate_conf_with_env(
         .monad_mailbox
         .mode()
         .wrap_err("Invalid registry.monad_mailbox configuration")?;
+    conf.registry
+        .evm_rpc
+        .validate()
+        .wrap_err("Invalid registry.evm_rpc configuration")?;
+    conf.registry
+        .bitcoin_proxy
+        .validate()
+        .wrap_err("Invalid registry.bitcoin_proxy configuration")?;
+    conf.registry
+        .validate_rpc_resource_limits()
+        .wrap_err("Invalid registry RPC resource limits")?;
     // An enabled mailbox admits only envelopes carrying the relay's network tag; an unset tag would
     // silently reject every direct message, so refuse to start instead.
     let network_tag = env(NETWORK_TAG_ENV);
-    if matches!(mailbox_mode, MonadMailboxMode::Enabled { .. })
+    if (matches!(mailbox_mode, MonadMailboxMode::Enabled { .. }) || conf.registry.evm_rpc.enabled)
         && !network_tag.as_deref().is_some_and(is_valid_network_tag)
     {
         return Err(MissingNetworkTagEnv.into());
@@ -226,6 +238,8 @@ async fn main() -> Result<()> {
     };
 
     let registry = Arc::new(Registry::new(db, chain_adapter, conf.registry.net));
+    let evm_rpc_conf = conf.registry.evm_rpc.clone();
+    let bitcoin_proxy_conf = conf.registry.bitcoin_proxy.clone();
     let (monad_mailbox, outbox_worker): (MonadMailboxRuntime, Option<MonadOutboxWorker>) =
         match mailbox_mode {
             MonadMailboxMode::Disabled => {
@@ -267,7 +281,11 @@ async fn main() -> Result<()> {
         .into_iter()
         .map(Peer::new)
         .collect::<Vec<_>>();
-    let peers = Arc::new(Peers::new(conf.url.to_string(), our_peers));
+    let peers = Arc::new(Peers::new_with_public_relays(
+        conf.url.to_string(),
+        our_peers,
+        conf.registry.public_relay_urls,
+    ));
 
     let imd_params = InitialMetadataDownloadParams {
         public_store: PublicFederationStore::new(registry.as_ref()),
@@ -321,6 +339,20 @@ async fn main() -> Result<()> {
         build_curated_defaults(&conf.registry.curated_defaults)
             .wrap_err("Invalid registry.curated_defaults entry in configuration file")?,
     );
+    let evm_rpc = EvmRpcRuntime::from_conf_with_env(
+        &evm_rpc_conf,
+        cashweb_registry::network_tag::frank_network_tag().to_vec(),
+        |name| std::env::var(name).ok(),
+    )
+    .await
+    .wrap_err("Starting customer-authenticated EVM RPC proxy")?;
+    let bitcoin_proxy = BitcoinProxyRuntime::from_conf_with_env(
+        &bitcoin_proxy_conf,
+        cashweb_registry::network_tag::frank_network_tag().to_vec(),
+        |name| std::env::var(name).ok(),
+    )
+    .await
+    .wrap_err("Starting Bitcoin-family RPC/indexer proxy")?;
 
     let server = RegistryServer {
         registry: Arc::clone(&registry),
@@ -328,11 +360,14 @@ async fn main() -> Result<()> {
         pop_gate,
         curated_defaults,
         monad_mailbox,
+        evm_rpc,
+        bitcoin_proxy,
     };
 
     let router = server.into_router();
     info!("Listening on {}", conf.host);
-    let server = axum::Server::bind(&conf.host).serve(router.into_make_service());
+    let server = axum::Server::bind(&conf.host)
+        .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>());
     tokio::pin!(server);
     let server_result = tokio::select! {
         result = &mut server => Some(result),
@@ -505,7 +540,13 @@ mod tests {
             read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV))
                 .expect("MONT and chain 10143 start");
 
-            let mainnet = config.replace("expected_chain_id = 10143", "expected_chain_id = 143");
+            let mainnet = config
+                .replace("id = \"monad-testnet\"", "id = \"monad-mainnet\"")
+                .replace("expected_chain_id = 10143", "expected_chain_id = 143")
+                .replace(
+                    "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9",
+                    "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9",
+                );
             let mainnet_vars = [
                 ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
                 ("FRANK_NETWORK_TAG", "MON1"),
@@ -540,6 +581,55 @@ mod tests {
             env(&[("FRANK_NETWORK_TAG", "MONX")])
         )
         .is_err());
+
+        let disabled_mainnet = LOCAL
+            .replacen("enabled = true", "enabled = false", 1)
+            .replace("id = \"monad-testnet\"", "id = \"monad-mainnet\"")
+            .replace("expected_chain_id = 10143", "expected_chain_id = 143")
+            .replace(
+                "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9",
+                "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9",
+            );
+        read_and_validate_conf_with_env(
+            "-",
+            &mut Cursor::new(disabled_mainnet),
+            env(&[("FRANK_NETWORK_TAG", "MONT")]),
+        )
+        .expect("the relay identity and proxy target chain are independent");
+
+        let two_chains = LOCAL.replace(
+            "max_get_logs_range = 10\n\n[registry.pop]",
+            "max_get_logs_range = 10\n\n\
+[[registry.evm_rpc.chains]]\n\
+id = \"monad-mainnet\"\n\
+expected_chain_id = 143\n\
+upstream_env = \"MONAD_MAINNET_HTTP_RPC_URL\"\n\
+checkpoint_block_number = 0\n\
+checkpoint_block_hash = \"0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9\"\n\
+max_get_logs_range = 10\n\n\
+[registry.pop]",
+        );
+        let (conf, _) =
+            read_and_validate_conf_with_env("-", &mut Cursor::new(two_chains), env(FULL_ENV))
+                .expect("one relay may expose multiple canonical EVM target chains");
+        assert_eq!(conf.registry.evm_rpc.chains.len(), 2);
+
+        // Retained rows are inert when the EVM proxy is disabled. Operators may stage a future
+        // chain or disable a bad upstream without unrelated network-tag validation blocking boot.
+        let disabled_evm_mainnet = LOCAL
+            .replacen("enabled = true", "enabled = false", 2)
+            .replace("id = \"monad-testnet\"", "id = \"monad-mainnet\"")
+            .replace("expected_chain_id = 10143", "expected_chain_id = 143")
+            .replace(
+                "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9",
+                "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9",
+            );
+        read_and_validate_conf_with_env(
+            "-",
+            &mut Cursor::new(disabled_evm_mainnet),
+            env(&[("FRANK_NETWORK_TAG", "MONT")]),
+        )
+        .expect("disabled EVM chain rows must be inert");
     }
 
     #[test]

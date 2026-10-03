@@ -89,6 +89,8 @@ impl RegistryTestInstance {
             // No curated defaults needed by any current caller of this test instance (ticket #49).
             curated_defaults: Arc::new(vec![]),
             monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_rpc: None,
+            bitcoin_proxy: None,
         };
 
         let router = server.into_router();

@@ -1,3 +1,5 @@
+/// <reference path="./storage/native-level.d.ts" />
+
 import type { Anchor, DirectoryStore, OpenMode } from './index'
 import { validateAnchor } from './policy/history'
 import { openStore } from './policy/store'

@@ -6,6 +6,7 @@ const assert = require('assert/strict')
 const { createContext, runInContext } = require('vm')
 const { root, packageRoot } = require('./build-tests.cjs')
 async function main() {
+  require('./check-node-consumer.cjs')()
   const manifest = require(path.join(packageRoot, 'package.json'))
   const allowed = ['@frank/codec', 'level']
   assert.deepEqual(Object.keys(manifest.dependencies).sort(), allowed)

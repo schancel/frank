@@ -38,6 +38,16 @@ on an already committed intent yields `conflict`; it never activates new materia
 Do not mint new IDs to evade an unresolved outcome. `remove(receipt)` atomically
 deletes its key/ciphertext and leaves a local fence; repeat removal is idempotent.
 
+To cancel a pending attempt, call `await vault.discardIntent(intent)` before
+clearing its persisted intent. This root-free operation permanently fences an
+absent initial slot or removes its exact committed receipt, so an in-flight stage
+cannot resurrect cancelled material. Retrying the same complete intent succeeds
+after restart; a foreign/superseded receipt, absent replacement or legacy removal
+fence yields `conflict`. Keep pending evidence on rejection. The caller decides
+whether cancellation is authorized and must never discard the active account.
+Discard tombstones retain only bounded public intent evidence; see the policy
+for the additive local record shape and compatibility guarantees.
+
 ## Verification
 
 From an installed repository workspace:

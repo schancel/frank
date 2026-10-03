@@ -1,9 +1,9 @@
-import { MAX_SLOTS, receipt, same } from './encoding.js'
+import { MAX_SLOTS, intent, receipt, same } from './encoding.js'
 import { VaultError, type VaultReceipt, type VaultWriteIntent } from './types.js'
 
 export interface RecordRow { receipt: VaultReceipt; iv: Uint8Array<ArrayBuffer>; ciphertext: Uint8Array<ArrayBuffer> }
 export interface KeyRow { receipt: VaultReceipt; key: CryptoKey }
-interface Fence { revision: number; receipt: VaultReceipt | null }
+interface Fence { revision: number; receipt: VaultReceipt | null; discardedIntent?: VaultWriteIntent }
 export interface Inventory { record?: RecordRow; key?: KeyRow; fence?: Fence }
 const STORES = ['records', 'keys', 'fences']
 
@@ -47,26 +47,40 @@ export function transaction<T>(db: IDBDatabase, stores: string[], mode: IDBTrans
   })
 }
 
+/** A discard tombstone binds the complete intent, including its expected predecessor. */
+function parseFence(fence: Fence): Fence {
+  if (fence === null || typeof fence !== 'object' || !Number.isInteger(fence.revision) ||
+      fence.revision < 1 || fence.revision > 0xffffffff) throw new VaultError('corrupt')
+  if (fence.receipt !== null) {
+    const current = receipt(fence.receipt)
+    if (current.revision !== fence.revision || fence.discardedIntent !== undefined) throw new VaultError('corrupt')
+    return { revision: current.revision, receipt: current }
+  }
+  if (fence.discardedIntent === undefined) return { revision: fence.revision, receipt: null }
+  const discardedIntent = intent(fence.discardedIntent)
+  if (fence.revision !== discardedIntent.receipt.revision + 1) throw new VaultError('corrupt')
+  return { revision: fence.revision, receipt: null, discardedIntent }
+}
+
 function inspect(value: Inventory): Inventory {
   try {
-    const { fence, record: row, key } = value
-    if (fence === undefined) {
+    const { record: row, key } = value
+    if (value.fence === undefined) {
       if (row !== undefined || key !== undefined) throw 0
       return value
     }
-    if (fence === null || typeof fence !== 'object') throw 0
-    if (!Number.isInteger(fence.revision) || fence.revision < 1 || fence.revision > 0xffffffff) throw 0
+    const fence = parseFence(value.fence)
     if (fence.receipt === null) {
       if (row !== undefined || key !== undefined) throw 0
-      return value
+      return { fence }
     }
-    const current = receipt(fence.receipt)
-    if (current.revision !== fence.revision || !row || !same(receipt(row.receipt), current) ||
+    const current = fence.receipt
+    if (!row || !same(receipt(row.receipt), current) ||
         !(row.iv instanceof Uint8Array) || row.iv.length !== 12 ||
         !(row.ciphertext instanceof Uint8Array) || row.ciphertext.length !== 18 + 33 * current.context.purposes.length) throw 0
     if (!key) throw new VaultError('locked')
     if (!same(receipt(key.receipt), current) || !validKey(key.key)) throw 0
-    return { fence: { revision: current.revision, receipt: current }, record: { ...row, receipt: current }, key: { ...key, receipt: current } }
+    return { fence, record: { ...row, receipt: current }, key: { ...key, receipt: current } }
   } catch (error) {
     if (error instanceof VaultError && error.code === 'locked') throw error
     throw new VaultError('corrupt')
@@ -78,7 +92,7 @@ export function validKey(key: CryptoKey): boolean {
     (key.algorithm as AesKeyAlgorithm).length === 256 && key.usages.length === 2 && key.usages.includes('encrypt') && key.usages.includes('decrypt')
 }
 
-function load(tx: IDBTransaction, id: string, done: (value: Inventory) => void, fail: (error: VaultError) => void): void {
+function loadInventory(tx: IDBTransaction, id: string, done: (value: Inventory) => void, fail: (error: VaultError) => void): void {
   const value: Inventory = {}
   let remaining = 3
   for (const [store, field] of [['records', 'record'], ['keys', 'key'], ['fences', 'fence']] as const) {
@@ -86,10 +100,14 @@ function load(tx: IDBTransaction, id: string, done: (value: Inventory) => void, 
     request.onsuccess = () => {
       value[field] = request.result
       if (--remaining === 0) {
-        try { done(inspect(value)) } catch (error) { fail(error instanceof VaultError ? error : new VaultError('storage-failed')) }
+        try { done(value) } catch (error) { fail(error instanceof VaultError ? error : new VaultError('storage-failed')) }
       }
     }
   }
+}
+
+function load(tx: IDBTransaction, id: string, done: (value: Inventory) => void, fail: (error: VaultError) => void): void {
+  loadInventory(tx, id, value => done(inspect(value)), fail)
 }
 
 export function read(db: IDBDatabase, id: string): Promise<Inventory> {
@@ -140,5 +158,42 @@ export function remove(db: IDBDatabase, target: VaultReceipt): Promise<void> {
         } catch { fail(new VaultError('storage-failed')) }
       } catch { fail(new VaultError('corrupt')) }
     }
+  })
+}
+
+export function discardIntent(db: IDBDatabase, target: VaultWriteIntent): Promise<void> {
+  return transaction(db, STORES, 'readwrite', (tx, result, fail) => {
+    const id = target.receipt.context.creationId
+    loadInventory(tx, id, current => {
+      let fence: Fence | undefined
+      try { fence = current.fence === undefined ? undefined : parseFence(current.fence) }
+      catch { fail(new VaultError('corrupt')); return }
+      if (!fence || fence.receipt === null) {
+        // No authorizing live fence: orphan material must never be silently deleted.
+        if (current.record !== undefined || current.key !== undefined) { fail(new VaultError('corrupt')); return }
+        if (fence) {
+          const prior = fence.discardedIntent
+          if (!prior || !same(prior.receipt, target.receipt) ||
+              (prior.expected === null ? target.expected !== null : !target.expected || !same(prior.expected, target.expected))) {
+            fail(new VaultError('conflict')); return
+          }
+          result(undefined); return
+        }
+        if (target.expected !== null) { fail(new VaultError('conflict')); return }
+      } else if (!same(fence.receipt, target.receipt)) { fail(new VaultError('conflict')); return }
+
+      const discard = () => {
+        tx.objectStore('records').delete(id)
+        tx.objectStore('keys').delete(id)
+        tx.objectStore('fences').put({ revision: target.receipt.revision + 1, receipt: null, discardedIntent: target } satisfies Fence, id)
+        result(undefined)
+      }
+      if (fence) { discard(); return }
+      const count = tx.objectStore('fences').count()
+      count.onsuccess = () => {
+        if (count.result >= MAX_SLOTS) { fail(new VaultError('capacity')); return }
+        try { discard() } catch { fail(new VaultError('storage-failed')) }
+      }
+    }, fail)
   })
 }

@@ -41,5 +41,7 @@ export interface PreviewVault {
   open(receipt: VaultReceipt): Promise<readonly DomainRoot[]>
   reconcile(receipt: VaultReceipt): Promise<'committed' | 'absent' | 'superseded' | 'removed'>
   remove(receipt: VaultReceipt): Promise<void>
+  /** Cancel a known pending write, even before its initial stage commits. No roots required. */
+  discardIntent(intent: VaultWriteIntent): Promise<void>
   close(): void
 }

@@ -689,6 +689,7 @@ where
                         .await
                         .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain_id.to_string()))?;
                 }
+                Some(Ok(UpstreamWsMessage::Pong(_))) => {}
                 _ => return Err(EvmRpcStartError::UpstreamUnavailable(chain_id.to_string())),
             }
         }
@@ -1545,6 +1546,7 @@ async fn proxy_ws_connection<S>(
                     .filter(|(_, request)| request.deadline <= now)
                     .map(|(key, request)| (key.clone(), request.id.clone()))
                     .collect::<Vec<_>>();
+                let has_expired = !expired.is_empty();
                 for (key, id) in expired {
                     pending.remove(&key);
                     if client_write
@@ -1554,6 +1556,11 @@ async fn proxy_ws_connection<S>(
                     {
                         return;
                     }
+                }
+                if has_expired {
+                    let _ = client_write.send(ClientWsMessage::Close(None)).await;
+                    let _ = upstream_write.send(UpstreamWsMessage::Close(None)).await;
+                    return;
                 }
             }
             client = client_read.next() => {
@@ -2666,6 +2673,9 @@ mod tests {
                                     "id":response_id,
                                     "result":"0x279f"
                                 });
+                                if socket.send(ClientWsMessage::Pong(vec![1])).await.is_err() {
+                                    break;
+                                }
                                 if socket
                                     .send(ClientWsMessage::Text(response.to_string()))
                                     .await
@@ -2698,6 +2708,7 @@ mod tests {
                 max_get_logs_range: 10,
             }],
             max_concurrency: 256,
+            timeout_ms: 100,
             ..EvmRpcConf::default()
         };
         let http_url = format!("http://{upstream_address}/provider-secret");
@@ -2794,6 +2805,34 @@ mod tests {
             serde_json::from_str::<Value>(&denied).unwrap()["error"]["code"],
             -32601
         );
+
+        let (mut timed_out, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        timed_out
+            .send(UpstreamWsMessage::Text(
+                json!({"jsonrpc":"2.0","id":77,"method":"eth_getBalance","params":["hold","latest"]})
+                    .to_string(),
+            ))
+            .await
+            .unwrap();
+        let timeout_error = tokio::time::timeout(Duration::from_secs(2), timed_out.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .into_text()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&timeout_error).unwrap()["error"]["code"],
+            -32002
+        );
+        let closed = tokio::time::timeout(Duration::from_secs(1), timed_out.next())
+            .await
+            .unwrap();
+        assert!(match closed {
+            None => true,
+            Some(Ok(message)) => message.is_close(),
+            Some(Err(_)) => true,
+        });
     }
 
     #[tokio::test]

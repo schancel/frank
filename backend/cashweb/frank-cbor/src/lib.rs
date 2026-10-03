@@ -12,9 +12,10 @@
 //! It implements section 9 stages 1-9 plus stage 10.6: every type-2 signature entry and
 //! key-transition authorization verifies as a strict-DER low-S secp256k1 ECDSA signature over
 //! the frozen T2/T2a digests (algorithm 1, key type 1; M7 puts allocated-but-unverifiable
-//! algorithms at `unsupported` before any verification). Stages 10.1-10.5 (the type-1 stamp
-//! checks: decrypted frame, T3, DLEQ, payment observations) are out of scope, matching the
-//! TypeScript reference codec. The pure-value M2/M3/M6 mappings of section 11 (lossless
+//! algorithms at `unsupported` before any verification). The separate DM validation session
+//! resumes the structural required-child part of 10.1 only, matching TypeScript; it does not
+//! authenticate plaintext or verify S8/T1a, T3, DLEQ, or payment observations. Ordinary `full`
+//! type-1 parsing is still unsupported. The pure-value M2/M3/M6 mappings of section 11 (lossless
 //! milliseconds, Keccak-256 address derivation) are in [`registration`]. Cashwebd consumes this
 //! crate for explicit CBOR account registration and opt-in CBOR topics. Direct-message and mailbox
 //! paths are not wired to it.
@@ -80,7 +81,9 @@ pub use registration::{
     registration_from_ms, split_timestamp_ms, uncompressed_pubkey, uncompressed_pubkey_xy,
 };
 pub use validate::{
-    default_context, validate_frame, Operation, PriorStatement, SupportedSchema, ValidationContext,
+    begin_direct_message_validation, default_context, validate_frame,
+    DirectMessageValidatedContent, DirectMessageValidationSession, Operation, PriorStatement,
+    SupportedSchema, ValidationContext,
 };
 
 /// Alias of [`validate_frame`].

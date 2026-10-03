@@ -1,6 +1,7 @@
 // Section 9 validation order, stages 1-9 plus stage 10.6 (the signature verification of the
-// type-2 attestation). Stages 10.1-10.5 (the type-1 stamp checks: decrypted frame, T3, DLEQ,
-// payment observations) are not implemented; a `full` type-1 root is a context error.
+// type-2 attestation). The separate DM session resumes only the structural required-child
+// part of 10.1; it does not authenticate plaintext or perform the remaining stamp checks.
+// Ordinary `full` type-1 validation remains a context error.
 import { Counters, FrankValue, decodeSingleItem, newCounters } from './cbor'
 import {
   FRAME_HEADER_BYTES,
@@ -141,6 +142,11 @@ interface Shared {
   counters: Counters
   /** R2: message items opened across the whole recursively opened graph. */
   itemsOpened: number
+  capturePayload?: (
+    payload: ParsedFrame,
+    depth: number,
+    location: string,
+  ) => void
 }
 
 const fail = (
@@ -443,6 +449,8 @@ function processFrame(
     ),
   )
   parsed.typed = typed
+  if (typed.type === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
+    sh.capturePayload?.(parsed, envDepth + 1, `${location}/decrypted`)
   if (mode.kind === 'root' && stopAfter === 'full') runStage10(typed)
   return parsed
 }
@@ -744,6 +752,14 @@ export function validateFrame(
   bytes: Uint8Array,
   ctx: ValidationContext = defaultContext(),
 ): ValidationResult {
+  return validateRoot(bytes, ctx)
+}
+
+function validateRoot(
+  bytes: Uint8Array,
+  ctx: ValidationContext,
+  supplied?: Shared,
+): ValidationResult {
   if (!Number.isInteger(ctx.routeByteLimit) || ctx.routeByteLimit < 1) {
     throw new FrankContextError('routeByteLimit must be a positive integer')
   }
@@ -758,7 +774,12 @@ export function validateFrame(
   }
   const supported = new Map<number, number>()
   for (const s of ctx.supportedSchemas) supported.set(s.typeId, s.schemaVersion)
-  const sh: Shared = { ctx, supported, counters: newCounters(), itemsOpened: 0 }
+  const sh: Shared = supplied ?? {
+    ctx,
+    supported,
+    counters: newCounters(),
+    itemsOpened: 0,
+  }
   return processFrame(
     // A real copy: `slice()` on some Uint8Array subclasses returns a view of the caller's memory.
     new Uint8Array(bytes),
@@ -768,6 +789,126 @@ export function validateFrame(
     'root',
     ctx.operation,
   )
+}
+
+/**
+ * Structural continuation only: the caller MUST authenticate the plaintext before completion.
+ * This API does not perform S8/T1a, stamp, DLEQ, payment, or full stage-10 verification.
+ * Completion (including failure) and abort are terminal; payload access then fails too.
+ */
+export interface DirectMessageValidationSession {
+  /** Owned copy, not authentication or admission evidence. */
+  readonly payload: ParsedFrame
+  completeAuthenticatedContent(type6Frame: Uint8Array): {
+    readonly root: ParsedFrame
+    readonly content: ParsedFrame
+  }
+  abort(): void
+}
+
+// Parsed values contain only byte arrays, maps, arrays, plain records and scalar values.
+// In particular, neither payload maps nor nested typed byte fields may escape by reference.
+function ownedCopy<T>(value: T): T {
+  if (value instanceof Uint8Array) return new Uint8Array(value) as T
+  if (value instanceof Map)
+    return new Map(
+      [...value].map(([key, child]) => [ownedCopy(key), ownedCopy(child)]),
+    ) as T
+  if (Array.isArray(value)) return value.map(child => ownedCopy(child)) as T
+  if (value !== null && typeof value === 'object') {
+    const result: Record<string, unknown> = {}
+    for (const key of Object.keys(value))
+      result[key] = ownedCopy((value as Record<string, unknown>)[key])
+    return result as T
+  }
+  return value
+}
+
+/**
+ * Begin stages 1–9 for an actual type-1/type-5 root with production schema-2 suite-1
+ * payload. Requires `context.operation === 'typed'`; ordinary parsing is unchanged.
+ * Retains the real traversal counters/depth privately across the authenticated boundary.
+ */
+export function beginDirectMessageValidation(
+  exactRoot: Uint8Array,
+  context: ValidationContext,
+): DirectMessageValidationSession {
+  if (!Number.isInteger(context.routeByteLimit) || context.routeByteLimit < 1)
+    throw new FrankContextError('routeByteLimit must be a positive integer')
+  if (context.operation !== 'typed')
+    throw new FrankContextError(
+      'DM validation sessions require typed operation',
+    )
+  const ctx = ownedCopy(context)
+  let point:
+    | { payload: ParsedFrame; depth: number; location: string }
+    | undefined
+  const sh: Shared = {
+    ctx,
+    supported: new Map(
+      ctx.supportedSchemas.map(s => [s.typeId, s.schemaVersion]),
+    ),
+    counters: newCounters(),
+    itemsOpened: 0,
+    capturePayload: (payload, depth, location) => {
+      point = { payload, depth, location }
+    },
+  }
+  const root = validateRoot(exactRoot, ctx, sh)
+  sh.capturePayload = undefined
+  if (
+    root.kind !== 'parsed' ||
+    (root.typeId !== TYPE_DIRECT_MESSAGE_DELIVERY &&
+      root.typeId !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD) ||
+    !point ||
+    point.payload.schemaVersion !== 2 ||
+    point.payload.minReaderVersion !== 2 ||
+    point.payload.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
+    point.payload.typed.suite !== 1
+  )
+    throw new FrankContextError(
+      'DM sessions require a type-1/type-5 root with schema-2 min-reader-2 suite-1 payload',
+    )
+  let saved: ({ root: ParsedFrame; sh: Shared } & typeof point) | undefined = {
+    root,
+    sh,
+    ...point,
+  }
+  const take = () => {
+    if (!saved) throw new FrankContextError('DM validation session is terminal')
+    const state = saved
+    saved = undefined
+    return state
+  }
+  return {
+    get payload() {
+      if (!saved)
+        throw new FrankContextError('DM validation session is terminal')
+      return ownedCopy(saved.payload)
+    },
+    completeAuthenticatedContent(bytes) {
+      const state = take()
+      // Plaintext is an embedded required child, not a second route request.
+      if (bytes.length > MAX_FRAME_BYTES)
+        throw fail(
+          'resource',
+          '1',
+          'decrypted frame exceeds MAX_FRAME_BYTES',
+          state.location,
+        )
+      const content = required(
+        new Uint8Array(bytes),
+        TYPE_ENCRYPTED_MESSAGE_CONTENT,
+        state.depth,
+        state.sh,
+        state.location,
+      )
+      return { root: state.root, content }
+    },
+    abort() {
+      take()
+    },
+  }
 }
 
 /** Alias: parses a frame under `ctx` (default: typed, all v1 types, no root retention). */

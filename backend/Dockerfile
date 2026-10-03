@@ -10,7 +10,7 @@
 FROM rust:1-bookworm AS builder
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc-12 g++-12 \
+    && apt-get install -y --no-install-recommends gcc-12 g++-12 protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 ENV CC=gcc-12
 ENV CXX=g++-12

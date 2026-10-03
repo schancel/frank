@@ -25,9 +25,9 @@ use url::Url;
 use crate::{
     http::{
         evm_rpc::{
-            authenticate, body_hash, now_ms, quota_error, rpc_error, BoundedRpcBody, RpcAuthState,
-            RpcBinding, RpcCapabilityBody, RpcChallengeBody, RpcRejection, RpcResource,
-            RPC_AUTH_DOMAIN, RPC_CUSTOMER_HEADER,
+            authenticate, body_hash, broadcast_error, now_ms, quota_error, rpc_error,
+            BoundedRpcBody, RpcAuthState, RpcBinding, RpcCapabilityBody, RpcChallengeBody,
+            RpcRejection, RpcResource, RPC_AUTH_DOMAIN, RPC_CUSTOMER_HEADER,
         },
         hourly_quota::{normalize_quota_ip, FixedHourQuota},
         server::RegistryServer,
@@ -727,7 +727,14 @@ async fn proxy_rpc_inner(
     };
     let permit = Arc::clone(&runtime.permits)
         .try_acquire_owned()
-        .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_busy"))?;
+        .map_err(|_| {
+            broadcast_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "rpc_busy",
+                send_only,
+                false,
+            )
+        })?;
     if let Some(ip) = anonymous_ip {
         runtime
             .broadcast_quota
@@ -742,40 +749,85 @@ async fn proxy_rpc_inner(
             .send(),
     )
     .await
-    .map_err(|_| rpc_error(StatusCode::GATEWAY_TIMEOUT, "rpc_upstream_timeout"))?
-    .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable"))?;
-    let upstream_status = upstream.status();
-    if version == super::json_rpc::JsonRpcVersion::V2 && upstream_status != StatusCode::OK {
-        return Err(rpc_error(
+    .map_err(|_| {
+        broadcast_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "rpc_upstream_timeout",
+            send_only,
+            true,
+        )
+    })?
+    .map_err(|_| {
+        broadcast_error(
             StatusCode::BAD_GATEWAY,
             "rpc_upstream_unavailable",
-        ));
-    }
+            send_only,
+            true,
+        )
+    })?;
+    let upstream_status = upstream.status();
     let spool = tokio::time::timeout_at(
         deadline,
         super::json_rpc::spool_response(upstream, runtime.max_response_bytes, runtime.timeout),
     )
     .await
-    .map_err(|_| rpc_error(StatusCode::GATEWAY_TIMEOUT, "rpc_upstream_timeout"))?
+    .map_err(|_| {
+        broadcast_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "rpc_upstream_timeout",
+            send_only,
+            true,
+        )
+    })?
     .map_err(|error| match error {
-        super::json_rpc::SpoolError::TooLarge => {
-            rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_response_too_large")
-        }
-        super::json_rpc::SpoolError::Timeout => {
-            rpc_error(StatusCode::GATEWAY_TIMEOUT, "rpc_upstream_timeout")
-        }
-        super::json_rpc::SpoolError::Io => {
-            rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable")
-        }
+        super::json_rpc::SpoolError::TooLarge => broadcast_error(
+            StatusCode::BAD_GATEWAY,
+            "rpc_upstream_response_too_large",
+            send_only,
+            true,
+        ),
+        super::json_rpc::SpoolError::Timeout => broadcast_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "rpc_upstream_timeout",
+            send_only,
+            true,
+        ),
+        super::json_rpc::SpoolError::Io => broadcast_error(
+            StatusCode::BAD_GATEWAY,
+            "rpc_upstream_unavailable",
+            send_only,
+            true,
+        ),
     })?;
     let inspected = tokio::time::timeout_at(deadline, spool.inspect(version, correlation))
         .await
-        .map_err(|_| rpc_error(StatusCode::GATEWAY_TIMEOUT, "rpc_upstream_timeout"))?
-        .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
+        .map_err(|_| {
+            broadcast_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "rpc_upstream_timeout",
+                send_only,
+                true,
+            )
+        })?
+        .map_err(|_| {
+            broadcast_error(
+                StatusCode::BAD_GATEWAY,
+                "invalid_rpc_upstream_response",
+                send_only,
+                true,
+            )
+        })?;
     let body = spool
         .into_body(inspected.error_rewrites)
         .await
-        .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable"))?;
+        .map_err(|_| {
+            broadcast_error(
+                StatusCode::BAD_GATEWAY,
+                "rpc_upstream_unavailable",
+                send_only,
+                true,
+            )
+        })?;
     let mut response = Response::new(boxed(body));
     *response.status_mut() = if version == super::json_rpc::JsonRpcVersion::V2 {
         StatusCode::OK
@@ -1222,7 +1274,14 @@ async fn proxy_chronik_inner(
     };
     let permit = Arc::clone(&runtime.permits)
         .try_acquire_owned()
-        .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_busy"))?;
+        .map_err(|_| {
+            broadcast_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "rpc_busy",
+                broadcast,
+                false,
+            )
+        })?;
     if let Some((is_broadcast, ip, units)) = anonymous_charge {
         let quota = if is_broadcast {
             &runtime.broadcast_quota
@@ -1233,8 +1292,16 @@ async fn proxy_chronik_inner(
             .charge(ip, units, unix_seconds())
             .map_err(|denial| quota_error("rpc_hourly_quota", is_broadcast, denial))?;
     }
-    let url = chronik_endpoint_url(chain.chronik.as_ref().unwrap(), &path, uri.query())
-        .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable"))?;
+    let url = chronik_endpoint_url(chain.chronik.as_ref().unwrap(), &path, uri.query()).map_err(
+        |_| {
+            broadcast_error(
+                StatusCode::BAD_GATEWAY,
+                "rpc_upstream_unavailable",
+                broadcast,
+                false,
+            )
+        },
+    )?;
     let request = if method == Method::GET {
         runtime.client.get(url)
     } else {
@@ -1244,15 +1311,25 @@ async fn proxy_chronik_inner(
             .header(reqwest::header::CONTENT_TYPE, "application/x-protobuf")
             .body(body.to_vec())
     };
-    let upstream = runtime
-        .bounded_request(request)
-        .await
-        .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable"))?;
+    let upstream = runtime.bounded_request(request).await.map_err(|_| {
+        broadcast_error(
+            StatusCode::BAD_GATEWAY,
+            "rpc_upstream_unavailable",
+            broadcast,
+            true,
+        )
+    })?;
     let body = if upstream.status.is_success() {
         upstream.body
     } else {
-        proto::Error::decode(upstream.body.as_ref())
-            .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
+        proto::Error::decode(upstream.body.as_ref()).map_err(|_| {
+            broadcast_error(
+                StatusCode::BAD_GATEWAY,
+                "invalid_rpc_upstream_response",
+                broadcast,
+                true,
+            )
+        })?;
         if chronik_error_contains_secret(upstream.body.as_ref(), chain.chronik.as_ref().unwrap()) {
             proto::Error {
                 msg: "upstream Chronik error".to_string(),
@@ -1599,11 +1676,24 @@ mod tests {
         let upstream = Router::new()
             .route(
                 "/",
-                routing::post(move || {
+                routing::post(move |body: Bytes| {
                     let calls = Arc::clone(&rpc_calls);
                     async move {
                         calls.fetch_add(1, Ordering::SeqCst);
-                        Json(json!({"result": "00", "error": null, "id": 1}))
+                        let request: Value = serde_json::from_slice(&body).unwrap();
+                        if request["jsonrpc"] == "2.0" {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(json!({
+                                    "jsonrpc": "2.0",
+                                    "id": request["id"],
+                                    "error": {"code": -26, "message": "rejected"}
+                                })),
+                            )
+                                .into_response()
+                        } else {
+                            Json(json!({"result": "00", "error": null, "id": 1})).into_response()
+                        }
                     }
                 }),
             )
@@ -1716,6 +1806,34 @@ mod tests {
             .unwrap();
         assert_eq!(rpc_response.status(), StatusCode::OK);
 
+        let rpc_v2_error = router
+            .clone()
+            .oneshot(
+                Request::post(format!("/chain-rpc/xec-mainnet/cap/{capability}/rpc"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        br#"{"jsonrpc":"2.0","id":2,"method":"sendrawtransaction","params":["00"]}"#
+                            .as_slice(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rpc_v2_error.status(), StatusCode::OK);
+        assert_eq!(
+            serde_json::from_slice::<Value>(
+                &hyper::body::to_bytes(rpc_v2_error.into_body())
+                    .await
+                    .unwrap()
+            )
+            .unwrap(),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "error": {"code": -26, "message": "upstream RPC error"}
+            })
+        );
+
         let chronik_response = router
             .clone()
             .oneshot(
@@ -1790,7 +1908,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(traversal.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(upstream_calls.load(Ordering::SeqCst), 4);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 5);
 
         let modified = router
             .oneshot(
@@ -1802,6 +1920,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(modified.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(upstream_calls.load(Ordering::SeqCst), 4);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 5);
     }
 }

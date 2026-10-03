@@ -38,7 +38,7 @@ const HD_TEST_PRIV = 0x04358394
 export function chain(
   fields: Omit<
     ChainDescriptor,
-    'protocolId' | 'proxyFamily' | 'allowedProxyCapabilities'
+    'protocolId' | 'proxyFamily' | 'allowedProxyCapabilities' | 'identityProbes'
   >,
 ): ChainDescriptor {
   return Object.freeze({
@@ -48,6 +48,16 @@ export function chain(
     allowedProxyCapabilities: Object.freeze([
       'json-rpc' as const,
       'chronik' as const,
+    ]),
+    identityProbes: Object.freeze([
+      Object.freeze({
+        kind: 'operator-block-checkpoint' as const,
+        capability: 'json-rpc' as const,
+      }),
+      Object.freeze({
+        kind: 'operator-block-checkpoint' as const,
+        capability: 'chronik' as const,
+      }),
     ]),
     alsoDocumentsSlip44: Object.freeze([...fields.alsoDocumentsSlip44]),
     sources: Object.freeze([...fields.sources]),

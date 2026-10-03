@@ -791,7 +791,7 @@ pub(crate) fn rpc_error(status: StatusCode, code: &'static str) -> RpcRejection 
     }
 }
 
-fn broadcast_error(
+pub(crate) fn broadcast_error(
     status: StatusCode,
     code: &'static str,
     broadcast: bool,
@@ -1342,29 +1342,9 @@ fn validate_ws_call(
                     },
                     true,
                 )),
-                Some("logs") if params.len() <= 2 => {
-                    if let Some(filter) = params.get(1) {
-                        let filter = filter.as_object().ok_or_else(|| {
-                            rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc")
-                        })?;
-                        if filter.len() > 3
-                            || filter
-                                .keys()
-                                .any(|key| !matches!(key.as_str(), "address" | "topics"))
-                        {
-                            return Err(rpc_error(StatusCode::FORBIDDEN, "rpc_method_denied"));
-                        }
-                        if filter
-                            .get("address")
-                            .and_then(Value::as_array)
-                            .is_some_and(|addresses| addresses.len() > 32)
-                            || filter
-                                .get("topics")
-                                .and_then(Value::as_array)
-                                .is_some_and(|topics| topics.len() > 4)
-                        {
-                            return Err(rpc_error(StatusCode::FORBIDDEN, "rpc_method_denied"));
-                        }
+                Some("logs") if params.len() == 2 => {
+                    if !bounded_log_subscription_filter(&params[1]) {
+                        return Err(rpc_error(StatusCode::FORBIDDEN, "rpc_method_denied"));
                     }
                     Ok((
                         CallCost {
@@ -1401,6 +1381,61 @@ fn validate_ws_call(
         Some(_) => validate_call(call, chain).map(|cost| (cost, false)),
         None => Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc")),
     }
+}
+
+fn fixed_hex(value: &Value, hex_digits: usize) -> bool {
+    value.as_str().is_some_and(|value| {
+        value.len() == hex_digits + 2
+            && value.starts_with("0x")
+            && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+fn bounded_log_subscription_filter(value: &Value) -> bool {
+    let Some(filter) = value.as_object() else {
+        return false;
+    };
+    if filter.is_empty()
+        || filter.len() > 2
+        || filter
+            .keys()
+            .any(|key| !matches!(key.as_str(), "address" | "topics"))
+    {
+        return false;
+    }
+    let address_restrictive = match filter.get("address") {
+        None => false,
+        Some(address) if fixed_hex(address, 40) => true,
+        Some(Value::Array(addresses)) => {
+            !addresses.is_empty()
+                && addresses.len() <= 32
+                && addresses.iter().all(|address| fixed_hex(address, 40))
+        }
+        Some(_) => return false,
+    };
+    let topics_restrictive = match filter.get("topics") {
+        None => false,
+        Some(Value::Array(topics)) if topics.len() <= 4 => {
+            let mut restrictive = false;
+            for topic in topics {
+                match topic {
+                    Value::Null => {}
+                    topic if fixed_hex(topic, 64) => restrictive = true,
+                    Value::Array(alternatives)
+                        if !alternatives.is_empty()
+                            && alternatives.len() <= 32
+                            && alternatives.iter().all(|topic| fixed_hex(topic, 64)) =>
+                    {
+                        restrictive = true;
+                    }
+                    _ => return false,
+                }
+            }
+            restrictive
+        }
+        Some(_) => return false,
+    };
+    address_restrictive || topics_restrictive
 }
 
 fn ws_error(id: Value, code: i64, message: &'static str) -> ClientWsMessage {
@@ -1948,6 +1983,19 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
 
+    const TEST_CHECKPOINT_HASH: &str =
+        "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9";
+
+    fn checkpoint_response(request: &Value) -> Option<Value> {
+        (request["method"] == "eth_getBlockByNumber").then(|| {
+            json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": { "hash": TEST_CHECKPOINT_HASH }
+            })
+        })
+    }
+
     use axum::{body::Body, http::Request, routing, Router};
     use bitcoinsuite_core::{ecc::Ecc, Hashed, Net, Sha256 as BitcoinSha256};
     use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
@@ -2131,13 +2179,24 @@ mod tests {
             "jsonrpc":"2.0", "id":2, "method":"eth_subscribe",
             "params":["logs", {"address": [format!("0x{}", "11".repeat(20))], "topics": []}]
         });
+        let topic_logs = json!({
+            "jsonrpc":"2.0", "id":3, "method":"eth_subscribe",
+            "params":["logs", {"topics": [null, format!("0x{}", "22".repeat(32))]}]
+        });
         assert!(validate_ws_call(&new_heads, &chain).unwrap().1);
         assert!(validate_ws_call(&logs, &chain).unwrap().1);
+        assert!(validate_ws_call(&topic_logs, &chain).unwrap().1);
 
         for denied in [
-            json!({"jsonrpc":"2.0", "id":3, "method":"eth_subscribe", "params":["newPendingTransactions"]}),
-            json!({"jsonrpc":"2.0", "id":4, "method":"eth_subscribe", "params":["logs", {"fromBlock":"0x1"}]}),
-            json!({"jsonrpc":"2.0", "id":5, "method":"debug_subscribe", "params":[]}),
+            json!({"jsonrpc":"2.0", "id":4, "method":"eth_subscribe", "params":["newPendingTransactions"]}),
+            json!({"jsonrpc":"2.0", "id":5, "method":"eth_subscribe", "params":["logs"]}),
+            json!({"jsonrpc":"2.0", "id":6, "method":"eth_subscribe", "params":["logs", {}]}),
+            json!({"jsonrpc":"2.0", "id":7, "method":"eth_subscribe", "params":["logs", {"topics": []}]}),
+            json!({"jsonrpc":"2.0", "id":8, "method":"eth_subscribe", "params":["logs", {"topics": [null, null]}]}),
+            json!({"jsonrpc":"2.0", "id":9, "method":"eth_subscribe", "params":["logs", {"address": []}]}),
+            json!({"jsonrpc":"2.0", "id":10, "method":"eth_subscribe", "params":["logs", {"address": "0x12"}]}),
+            json!({"jsonrpc":"2.0", "id":11, "method":"eth_subscribe", "params":["logs", {"fromBlock":"0x1"}]}),
+            json!({"jsonrpc":"2.0", "id":12, "method":"debug_subscribe", "params":[]}),
         ] {
             assert!(validate_ws_call(&denied, &chain).is_err(), "{denied}");
         }
@@ -2500,7 +2559,9 @@ mod tests {
                 async move {
                     calls.fetch_add(1, Ordering::SeqCst);
                     let request: Value = serde_json::from_slice(&body).unwrap();
-                    if request["method"] == "eth_chainId" {
+                    if let Some(response) = checkpoint_response(&request) {
+                        Json(response)
+                    } else if request["method"] == "eth_chainId" {
                         Json(json!({"jsonrpc":"2.0","id":request["id"],"result":"0x279f"}))
                     } else {
                         Json(json!({"jsonrpc":"2.0","id":request["id"],"result":"0x2a"}))
@@ -2523,8 +2584,11 @@ mod tests {
                 expected_chain_id: 10_143,
                 upstream_env: "TEST_UPSTREAM".to_string(),
                 upstream_ws_env: None,
-                checkpoint_block_number: None,
-                checkpoint_block_hash: None,
+                checkpoint_block_number: Some(0),
+                checkpoint_block_hash: Some(
+                    "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
+                        .to_string(),
+                ),
                 max_get_logs_range: 10,
             }],
             max_request_bytes: 1024,
@@ -2543,7 +2607,7 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(upstream_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 2);
         let (_tempdir, server) = registered_server(runtime);
         let router = server.into_router();
         let body = br#"{"jsonrpc":"2.0","id":"client-id","method":"eth_blockNumber","params":[]}"#;
@@ -2573,7 +2637,7 @@ mod tests {
         for name in RPC_CORS_HEADERS {
             assert!(allowed_headers.contains(name), "missing {name}");
         }
-        assert_eq!(upstream_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 2);
 
         let unauthorized = router
             .clone()
@@ -2586,7 +2650,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(upstream_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 2);
 
         let unregistered = Address([0x44; 20]);
         let unregistered_challenge = router
@@ -2608,7 +2672,7 @@ mod tests {
         *unregistered_request.headers_mut() = unregistered_headers;
         let unregistered_response = router.clone().oneshot(unregistered_request).await.unwrap();
         assert_eq!(unregistered_response.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(upstream_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 2);
 
         let challenge_response = router
             .clone()
@@ -2623,7 +2687,7 @@ mod tests {
             .unwrap();
         assert_eq!(challenge_response.status(), StatusCode::OK);
         let challenge = response_json(challenge_response).await;
-        assert_eq!(upstream_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 2);
         let headers = signed_headers(&challenge, customer_address(), "rpc");
 
         let request = || {
@@ -2640,11 +2704,11 @@ mod tests {
             response_json(authorized).await,
             json!({"jsonrpc":"2.0","id":"client-id","result":"0x2a"})
         );
-        assert_eq!(upstream_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 3);
 
         let replay = router.clone().oneshot(request()).await.unwrap();
         assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(upstream_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 3);
 
         let capability_challenge = router
             .clone()
@@ -2672,7 +2736,7 @@ mod tests {
             .to_string();
         assert!(rpc_path.starts_with("/chain-rpc/monad-testnet/cap/"));
 
-        for expected_calls in [3, 4] {
+        for expected_calls in [4, 5] {
             let capability_request = Request::post(&rpc_path)
                 .header("content-type", "application/json")
                 .body(Body::from(body.as_slice()))
@@ -2701,7 +2765,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(upstream_calls.load(Ordering::SeqCst), 4);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 5);
 
         let mut tampered = Request::post("/chain-rpc/monad-testnet/rpc")
             .body(Body::from(
@@ -2712,7 +2776,7 @@ mod tests {
         *tampered.headers_mut() = headers;
         let tampered = router.oneshot(tampered).await.unwrap();
         assert_eq!(tampered.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(upstream_calls.load(Ordering::SeqCst), 4);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 5);
     }
 
     #[tokio::test]
@@ -2721,43 +2785,50 @@ mod tests {
         let counted = Arc::clone(&ws_calls);
         let upstream = Router::new().route(
             "/provider-secret",
-            routing::post(|| async { Json(json!({"jsonrpc":"2.0","id":1,"result":"0x279f"})) })
-                .get(move |ws: WebSocketUpgrade| {
-                    let counted = Arc::clone(&counted);
-                    async move {
-                        ws.on_upgrade(move |mut socket| async move {
-                            while let Some(Ok(ClientWsMessage::Text(text))) = socket.next().await {
-                                counted.fetch_add(1, Ordering::SeqCst);
-                                let request: Value = serde_json::from_str(&text).unwrap();
-                                if request["method"] == "eth_getBalance"
-                                    && request["params"].get(0) == Some(&json!("hold"))
-                                {
-                                    continue;
-                                }
-                                let response_id = if request["method"] == "eth_blockNumber" {
-                                    json!(999)
-                                } else {
-                                    request["id"].clone()
-                                };
-                                let response = json!({
+            routing::post(|body: Bytes| async move {
+                let request: Value = serde_json::from_slice(&body).unwrap();
+                Json(checkpoint_response(&request).unwrap_or_else(
+                    || json!({"jsonrpc":"2.0","id":request["id"],"result":"0x279f"}),
+                ))
+            })
+            .get(move |ws: WebSocketUpgrade| {
+                let counted = Arc::clone(&counted);
+                async move {
+                    ws.on_upgrade(move |mut socket| async move {
+                        while let Some(Ok(ClientWsMessage::Text(text))) = socket.next().await {
+                            counted.fetch_add(1, Ordering::SeqCst);
+                            let request: Value = serde_json::from_str(&text).unwrap();
+                            if request["method"] == "eth_getBalance"
+                                && request["params"].get(0) == Some(&json!("hold"))
+                            {
+                                continue;
+                            }
+                            let response_id = if request["method"] == "eth_blockNumber" {
+                                json!(999)
+                            } else {
+                                request["id"].clone()
+                            };
+                            let response = checkpoint_response(&request).unwrap_or_else(|| {
+                                json!({
                                     "jsonrpc":"2.0",
                                     "id":response_id,
                                     "result":"0x279f"
-                                });
-                                if socket.send(ClientWsMessage::Pong(vec![1])).await.is_err() {
-                                    break;
-                                }
-                                if socket
-                                    .send(ClientWsMessage::Text(response.to_string()))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
+                                })
+                            });
+                            if socket.send(ClientWsMessage::Pong(vec![1])).await.is_err() {
+                                break;
                             }
-                        })
-                    }
-                }),
+                            if socket
+                                .send(ClientWsMessage::Text(response.to_string()))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    })
+                }
+            }),
         );
         let upstream_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         upstream_listener.set_nonblocking(true).unwrap();
@@ -2774,8 +2845,11 @@ mod tests {
                 expected_chain_id: 10_143,
                 upstream_env: "TEST_UPSTREAM".to_string(),
                 upstream_ws_env: Some("TEST_WS_UPSTREAM".to_string()),
-                checkpoint_block_number: None,
-                checkpoint_block_hash: None,
+                checkpoint_block_number: Some(0),
+                checkpoint_block_hash: Some(
+                    "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
+                        .to_string(),
+                ),
                 max_get_logs_range: 10,
             }],
             max_concurrency: 256,
@@ -2817,7 +2891,7 @@ mod tests {
             .unwrap();
         let response = client.next().await.unwrap().unwrap().into_text().unwrap();
         assert_eq!(serde_json::from_str::<Value>(&response).unwrap()["id"], 7);
-        assert_eq!(ws_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(ws_calls.load(Ordering::SeqCst), 5);
 
         let (mut malicious, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
         malicious
@@ -2927,8 +3001,11 @@ mod tests {
                 expected_chain_id: 10_143,
                 upstream_env: "TEST_UPSTREAM".to_string(),
                 upstream_ws_env: None,
-                checkpoint_block_number: None,
-                checkpoint_block_hash: None,
+                checkpoint_block_number: Some(0),
+                checkpoint_block_hash: Some(
+                    "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
+                        .to_string(),
+                ),
                 max_get_logs_range: 10,
             }],
             ..EvmRpcConf::default()
@@ -2949,20 +3026,25 @@ mod tests {
     async fn startup_rejects_wrong_websocket_chain_identity() {
         let upstream = Router::new().route(
             "/provider-secret",
-            routing::post(|| async { Json(json!({"jsonrpc":"2.0","id":1,"result":"0x279f"})) })
-                .get(|ws: WebSocketUpgrade| async move {
-                    ws.on_upgrade(move |mut socket| async move {
-                        if let Some(Ok(ClientWsMessage::Text(text))) = socket.next().await {
-                            let request: Value = serde_json::from_str(&text).unwrap();
-                            let _ = socket
-                                .send(ClientWsMessage::Text(
-                                    json!({"jsonrpc":"2.0","id":request["id"],"result":"0x1"})
-                                        .to_string(),
-                                ))
-                                .await;
-                        }
-                    })
-                }),
+            routing::post(|body: Bytes| async move {
+                let request: Value = serde_json::from_slice(&body).unwrap();
+                Json(checkpoint_response(&request).unwrap_or_else(
+                    || json!({"jsonrpc":"2.0","id":request["id"],"result":"0x279f"}),
+                ))
+            })
+            .get(|ws: WebSocketUpgrade| async move {
+                ws.on_upgrade(move |mut socket| async move {
+                    if let Some(Ok(ClientWsMessage::Text(text))) = socket.next().await {
+                        let request: Value = serde_json::from_str(&text).unwrap();
+                        let _ = socket
+                            .send(ClientWsMessage::Text(
+                                json!({"jsonrpc":"2.0","id":request["id"],"result":"0x1"})
+                                    .to_string(),
+                            ))
+                            .await;
+                    }
+                })
+            }),
         );
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -2979,8 +3061,11 @@ mod tests {
                 expected_chain_id: 10_143,
                 upstream_env: "TEST_HTTP".to_string(),
                 upstream_ws_env: Some("TEST_WS".to_string()),
-                checkpoint_block_number: None,
-                checkpoint_block_hash: None,
+                checkpoint_block_number: Some(0),
+                checkpoint_block_hash: Some(
+                    "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
+                        .to_string(),
+                ),
                 max_get_logs_range: 10,
             }],
             ..EvmRpcConf::default()
@@ -3012,6 +3097,7 @@ mod tests {
                     "eth_chainId" => {
                         Json(json!({"jsonrpc":"2.0","id":request["id"],"result":"0x279f"}))
                     }
+                    "eth_getBlockByNumber" => Json(checkpoint_response(&request).unwrap()),
                     "eth_getBalance" => Json(json!({
                         "jsonrpc":"2.0",
                         "id":request["id"],
@@ -3045,8 +3131,11 @@ mod tests {
                 expected_chain_id: 10_143,
                 upstream_env: "TEST_UPSTREAM".to_string(),
                 upstream_ws_env: None,
-                checkpoint_block_number: None,
-                checkpoint_block_hash: None,
+                checkpoint_block_number: Some(0),
+                checkpoint_block_hash: Some(
+                    "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
+                        .to_string(),
+                ),
                 max_get_logs_range: 10,
             }],
             max_request_bytes: 1024,
@@ -3112,7 +3201,9 @@ mod tests {
             "/",
             routing::post(|body: Bytes| async move {
                 let request: Value = serde_json::from_slice(&body).unwrap();
-                let response = if request["method"] == "eth_chainId" {
+                let response = if let Some(response) = checkpoint_response(&request) {
+                    response
+                } else if request["method"] == "eth_chainId" {
                     json!({"jsonrpc":"2.0","id":request["id"],"result":"0x279f"})
                 } else {
                     json!({"jsonrpc":"2.0","id":request["id"],"result":"0x2a"})
@@ -3148,8 +3239,11 @@ mod tests {
                 expected_chain_id: 10_143,
                 upstream_env: "TEST_UPSTREAM".to_string(),
                 upstream_ws_env: None,
-                checkpoint_block_number: None,
-                checkpoint_block_hash: None,
+                checkpoint_block_number: Some(0),
+                checkpoint_block_hash: Some(
+                    "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
+                        .to_string(),
+                ),
                 max_get_logs_range: 10,
             }],
             max_request_bytes: 1024,
@@ -3200,6 +3294,9 @@ mod tests {
                     }))
                     .into_response();
                 }
+                if let Some(response) = checkpoint_response(&request) {
+                    return Json(response).into_response();
+                }
                 let prefix = Bytes::from(format!(
                     "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":\"",
                     request["id"]
@@ -3237,8 +3334,11 @@ mod tests {
                 expected_chain_id: 10_143,
                 upstream_env: "TEST_UPSTREAM".to_string(),
                 upstream_ws_env: None,
-                checkpoint_block_number: None,
-                checkpoint_block_hash: None,
+                checkpoint_block_number: Some(0),
+                checkpoint_block_hash: Some(
+                    "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
+                        .to_string(),
+                ),
                 max_get_logs_range: 10,
             }],
             max_request_bytes: 1024,

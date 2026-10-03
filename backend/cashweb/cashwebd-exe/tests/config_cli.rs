@@ -181,7 +181,11 @@ fn check_config_cli_rejects_crossed_network_tags_and_chain_ids() {
 
     let mainnet = include_str!("../../cashwebd.local.toml")
         .replace("id = \"monad-testnet\"", "id = \"monad-mainnet\"")
-        .replace("expected_chain_id = 10143", "expected_chain_id = 143");
+        .replace("expected_chain_id = 10143", "expected_chain_id = 143")
+        .replace(
+            "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9",
+            "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9",
+        );
     let mainnet_with_testnet_tag = check_stdin_with_env(
         mainnet.as_bytes(),
         &[

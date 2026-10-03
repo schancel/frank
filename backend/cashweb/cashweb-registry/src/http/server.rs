@@ -249,6 +249,10 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
             Cow::Borrowed("/chain-rpc/:chain/cap/:capability/chronik/*path")
         }
         ["chain-rpc", _, "cap", _, ..] => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/*"),
+        ["chain-rpc", _, "chronik", ..] => Cow::Borrowed("/chain-rpc/:chain/chronik/*path"),
+        ["chain-rpc", _, "chronik-auth", ..] => {
+            Cow::Borrowed("/chain-rpc/:chain/chronik-auth/*path")
+        }
         _ => Cow::Borrowed(path),
     }
 }
@@ -288,6 +292,14 @@ mod request_log_tests {
             safe_log_path("/chain-rpc/monad-testnet/rpc"),
             "/chain-rpc/monad-testnet/rpc"
         );
+        for path in [
+            "/chain-rpc/xec-mainnet/chronik/script/p2pkh/sentinel-wallet/history",
+            "/chain-rpc/xec-mainnet/chronik-auth/script/p2pkh/sentinel-wallet/utxos",
+        ] {
+            let logged = safe_log_path(path);
+            assert!(!logged.contains("sentinel-wallet"));
+            assert!(logged.ends_with("/*path"));
+        }
     }
 }
 

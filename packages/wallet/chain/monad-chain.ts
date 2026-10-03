@@ -116,6 +116,7 @@ import { MonadHttpClient } from "../monad-http";
 import {
   createMonadJsonRpcProvider,
   DEFAULT_MONAD_CHAIN_ID,
+  monadProtocolIdentity,
 } from "../monad-provider";
 import { MonadAccountTxSigner } from "../monad-account-tx";
 import { MonadWalletHandle } from "../monad-wallet-handle";
@@ -208,6 +209,8 @@ function readEnv(key: string): string | undefined {
  * "Configuration", for why this (unlike the wallet client modules it configures) reads env
  * directly, and why it never throws on a missing var. */
 export function loadMonadChainConfigFromEnv(): MonadChainConfig {
+  const rpcChain = readEnv("MONAD_RPC_CHAIN") ?? "monad-testnet";
+  const protocolIdentity = monadProtocolIdentity(rpcChain);
   const rawChainId = readEnv("MONAD_CHAIN_ID");
   let chainId: bigint | undefined;
   if (rawChainId) {
@@ -219,13 +222,16 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
   }
 
   return {
-    rpcChain: readEnv("MONAD_RPC_CHAIN") ?? "monad-testnet",
-    chainId: chainId ?? DEFAULT_MONAD_CHAIN_ID,
+    rpcChain,
+    // Known protocol rows are atomic: public overrides must not create a
+    // mainnet route with a testnet chain ID (or the inverse).
+    chainId: protocolIdentity?.chainId ?? chainId ?? DEFAULT_MONAD_CHAIN_ID,
     relayBaseUrl:
       readEnv("MONAD_RELAY_BASE_URL") ??
       readEnv("E2E_DEMO_RELAY_URL") ??
       "http://127.0.0.1:8098",
-    networkTag: readEnv("FRANK_NETWORK_TAG") ?? "MONT",
+    networkTag:
+      protocolIdentity?.networkTag ?? readEnv("FRANK_NETWORK_TAG") ?? "MONT",
     stampBurnAddress:
       readEnv("MONAD_STAMP_BURN_ADDRESS") ??
       "0x000000000000000000000000000000000000dEaD",

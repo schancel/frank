@@ -6,6 +6,7 @@ import {
   MonadJsonRpcProvider,
   createMonadJsonRpcProvider,
   createMonadRelayRpcConnection,
+  monadProtocolIdentity,
 } from "./monad-provider";
 
 describe("MonadJsonRpcProvider (#534)", () => {
@@ -17,6 +18,18 @@ describe("MonadJsonRpcProvider (#534)", () => {
   let statusCode = 200;
   let chainIdHex = "0x279f"; // 10143
   let balanceHex = "0x2a"; // 42
+
+  it("maps protocol chain names to one chain-id and network-tag identity", () => {
+    expect(monadProtocolIdentity("monad-testnet")).toEqual({
+      chainId: 10143n,
+      networkTag: "MONT",
+    });
+    expect(monadProtocolIdentity("monad-mainnet")).toEqual({
+      chainId: 143n,
+      networkTag: "MON1",
+    });
+    expect(monadProtocolIdentity("unknown")).toBeUndefined();
+  });
 
   beforeEach(async () => {
     requestCount = 0;
@@ -644,6 +657,68 @@ describe("MonadJsonRpcProvider (#534)", () => {
     expect(challengeRequests).toBe(1);
     expect(capabilityRequests).toBe(0);
     expect(rpcRequests).toBe(0);
+  });
+
+  it("promptly aborts a stalled capability challenge on destruction", async () => {
+    const customer = `0x${"12".repeat(20)}`;
+    let challengeStartedResolve!: () => void;
+    let challengeAbortedResolve!: () => void;
+    const challengeStarted = new Promise<void>((resolve) => {
+      challengeStartedResolve = resolve;
+    });
+    const challengeAborted = new Promise<void>((resolve) => {
+      challengeAbortedResolve = resolve;
+    });
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    server = createServer((req) => {
+      req.resume();
+      req.on("end", challengeStartedResolve);
+      req.on("aborted", challengeAbortedResolve);
+      req.socket.on("close", challengeAbortedResolve);
+      // Intentionally never send a response. Destruction must cancel this socket instead of
+      // waiting for ethers' normal five-minute request timeout.
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        rpcUrl = `http://127.0.0.1:${
+          (server.address() as AddressInfo).port
+        }/chain-rpc/monad-testnet/rpc`;
+        resolve();
+      });
+    });
+
+    const provider = createMonadJsonRpcProvider({
+      rpcUrl,
+      relayAuth: {
+        chain: "monad-testnet",
+        customer,
+        networkTag: "MONT",
+        signDigest: () =>
+          Uint8Array.from([0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01]),
+      },
+    });
+    const sending = provider.send("eth_blockNumber", []);
+    await challengeStarted;
+    provider.destroy();
+
+    await expect(
+      Promise.race([
+        sending,
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("cancellation was not prompt")),
+            200
+          )
+        ),
+      ])
+    ).rejects.toThrow(/cancel|destroy/i);
+    await Promise.race([
+      challengeAborted,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("challenge socket stayed open")), 200)
+      ),
+    ]);
   });
 
   it("recovers promptly when RPC becomes healthy", async () => {

@@ -430,6 +430,27 @@ export function validateCodex32Checksum(text: string): boolean {
   )
 }
 
+/**
+ * Return the complete canonical GF(32) payload for a secret without creating
+ * an encoded `s`-index backup string. Signup ceremonies use this to compare
+ * all payload symbols, including the residual bits that byte recovery drops.
+ */
+export function codex32SecretPayloadSymbols(
+  secretValue: Uint8Array,
+): Codex32Result<Uint8Array> {
+  const snapshot = snapshotSecret(secretValue)
+  if (!snapshot.ok) return snapshot
+  const secret = snapshot.value
+  let groups: number[] | null = null
+  try {
+    groups = bytesToGroups(secret)
+    return { ok: true, value: new Uint8Array(groups) }
+  } finally {
+    secret.fill(0)
+    groups?.fill(0)
+  }
+}
+
 // GF(32), represented in the Codex32 alphabet's five-bit values, reduced by
 // x^5 + x^3 + 1. Addition is XOR.
 function multiply(left: number, right: number): number {

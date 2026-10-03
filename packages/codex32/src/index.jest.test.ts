@@ -1,4 +1,5 @@
 import {
+  codex32SecretPayloadSymbols,
   createMasterPayload,
   decodeCodex32,
   encodeCodex32,
@@ -90,6 +91,21 @@ describe('Codex32 standard-checksum core', () => {
     expect(recovered.value.secret).toEqual(master.value)
     expect(recovered.value.payloadSymbols).toHaveLength(103)
     expect(recovered.value.payloadSymbols[102]! & 0b111).toBe(0)
+  })
+
+  it('exposes canonical secret symbols without serializing an s-index string', () => {
+    const master = createMasterPayload(seed())
+    expect(master.ok).toBe(true)
+    if (!master.ok) return
+    const symbols = codex32SecretPayloadSymbols(master.value)
+    expect(symbols.ok).toBe(true)
+    if (!symbols.ok) return
+    expect(symbols.value).toHaveLength(103)
+    expect(symbols.value[102]! & 0b111).toBe(0)
+    const copy = codex32SecretPayloadSymbols(master.value)
+    expect(copy.ok).toBe(true)
+    symbols.value.fill(31)
+    expect(copy.ok && copy.value[0]).not.toBe(31)
   })
 
   it('decodes official regular vectors 6-8 with nonzero discarded bits', () => {

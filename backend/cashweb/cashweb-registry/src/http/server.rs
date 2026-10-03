@@ -258,7 +258,9 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
         _ if segments.iter().any(|segment| *segment == "chain-rpc") => {
             Cow::Borrowed("/chain-rpc/*redacted")
         }
-        _ => Cow::Borrowed(path),
+        // Never log an unclassified raw path: percent-encoding and case variants can disguise
+        // credential-bearing route segments from a literal matcher.
+        _ => Cow::Borrowed("/*redacted"),
     }
 }
 
@@ -292,10 +294,15 @@ mod request_log_tests {
             format!("/prefix/chain-rpc/monad-testnet/cap/{token}/rpc"),
             format!("/chain-rpc/monad-testnet/c%61p/{token}/rpc"),
             format!("/chain-rpc/monad-testnet/CAP/{token}/rpc"),
+            format!("/chain%2Drpc/monad-testnet/cap/{token}/rpc"),
+            format!("/CHAIN-RPC/monad-testnet/cap/{token}/rpc"),
         ] {
             let logged = safe_log_path(&malformed);
             assert!(!logged.contains(token));
-            assert_eq!(logged, "/chain-rpc/*redacted");
+            assert!(matches!(
+                logged.as_ref(),
+                "/chain-rpc/*redacted" | "/*redacted"
+            ));
         }
         assert_eq!(
             safe_log_path("/chain-rpc/monad-testnet/rpc"),

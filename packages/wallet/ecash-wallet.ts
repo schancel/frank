@@ -11,9 +11,14 @@ import {
 } from "./chain/chain-wallet";
 import { Address } from "ecash-lib/dist/address/address";
 import type { ChronikClient } from "chronik-client";
+import type { DomainRoot } from "../domain-roots/src";
+import {
+  createEcashSeedBackend,
+  snapshotEcashDomainRoot,
+} from "./ecash-seed-boundary";
+import type { LegacyEcashSeedOptions } from "./ecash-legacy-seed";
 
 export type EcashAddressPrefix = "ecash" | "ectest" | "ecregtest";
-import * as bip39 from "bip39";
 
 export const ECASH_MAINNET_CHECKPOINT_HEIGHT = 661_648;
 export const ECASH_MAINNET_CHECKPOINT_HASH =
@@ -113,48 +118,21 @@ export interface EcashWalletBackend {
 }
 
 export type EcashWalletFactory = (params: {
-  mnemonic: string;
+  domainRoot: DomainRoot<"ecash-bch-wallet">;
   chronik: ChronikClient;
   addressPrefix: EcashAddressPrefix;
 }) => EcashWalletBackend | Promise<EcashWalletBackend>;
 
-interface EcashSdkWalletConstructor {
-  fromMnemonic(
-    mnemonic: string,
-    chronik: ChronikClient,
-    options: { hd: true; prefix: EcashAddressPrefix }
-  ): EcashWalletBackend;
+export interface EcashWalletOptions {
+  chronik: ChronikClient;
+  networkId: "ecash-mainnet";
+  /** Test seam for independently checking every URL reported by a failover client. */
+  checkpointClientFactory?: (url: string) => EcashCheckpointClient;
+  nativeAttemptStore?: NativeTransactionAttemptStore;
+  getTransactionStatus?: (
+    transaction: ChainTransaction
+  ) => Promise<"confirmed" | "failed" | "pending" | "unknown">;
 }
-
-const defaultWalletFactory: EcashWalletFactory = async ({
-  mnemonic,
-  chronik,
-  addressPrefix,
-}) => {
-  if (
-    typeof (chronik as ChronikClient & { proxyInterface?: unknown })
-      .proxyInterface !== "function"
-  ) {
-    throw new Error("eCash wallet requires chronik-client 4.3 or newer");
-  }
-  // ecash-wallet 6.2.1 publishes JavaScript but no declaration entry. Dynamically importing it
-  // keeps that packaging gap at this boundary while still allowing Vite to bundle the backend.
-  const imported = await import("ecash-wallet/dist/index.js");
-  const sdk = imported as unknown as {
-    Wallet?: unknown;
-    default?: { Wallet?: unknown };
-  };
-  const Wallet = (sdk.Wallet ?? sdk.default?.Wallet) as
-    | EcashSdkWalletConstructor
-    | undefined;
-  if (Wallet === undefined) {
-    throw new Error("ecash-wallet did not export Wallet");
-  }
-  return Wallet.fromMnemonic(mnemonic, chronik, {
-    hd: true,
-    prefix: addressPrefix,
-  });
-};
 
 /**
  * High-level XEC wallet adapter. UTXO selection, chained transaction construction, optimistic
@@ -202,37 +180,54 @@ export class EcashWallet implements NativeWalletHandle {
     }
   }
 
-  static async fromMnemonic(params: {
-    mnemonic: string;
-    passphrase?: string;
-    chronik: ChronikClient;
-    networkId: "ecash-mainnet";
-    walletFactory?: EcashWalletFactory;
-    /** Test seam for independently checking every URL reported by a failover client. */
-    checkpointClientFactory?: (url: string) => EcashCheckpointClient;
-    nativeAttemptStore?: NativeTransactionAttemptStore;
-    getTransactionStatus?: (
-      transaction: ChainTransaction
-    ) => Promise<"confirmed" | "failed" | "pending" | "unknown">;
-  }): Promise<EcashWallet> {
-    if (params.passphrase !== undefined && params.passphrase.length > 0) {
-      throw new Error(
-        "The eCash wallet backend does not support BIP-39 passphrases"
+  static async fromDomainRoot(
+    params: EcashWalletOptions & {
+      domainRoot: DomainRoot<"ecash-bch-wallet">;
+      walletFactory?: EcashWalletFactory;
+    }
+  ): Promise<EcashWallet> {
+    // Validate and own a snapshot before the first await, endpoint probe, or SDK load.
+    const domainRoot = snapshotEcashDomainRoot(params.domainRoot);
+    try {
+      return await EcashWallet.initialize(
+        params,
+        () =>
+          (params.walletFactory ?? createEcashSeedBackend)({
+            domainRoot,
+            chronik: params.chronik,
+            addressPrefix: ECASH_MAINNET_PREFIX,
+          }),
+        params.walletFactory !== undefined
       );
+    } finally {
+      domainRoot.bytes.fill(0);
     }
-    if (!bip39.validateMnemonic(params.mnemonic)) {
-      throw new Error("Invalid BIP-39 mnemonic");
-    }
+  }
+
+  /** Legacy import only. Application activation/removal is owned by #692. */
+  static async fromLegacyMnemonic(
+    params: EcashWalletOptions & LegacyEcashSeedOptions
+  ): Promise<EcashWallet> {
+    const { legacyEcashBackendFactory } = await import("./ecash-legacy-seed");
+    const createBackend = legacyEcashBackendFactory(params);
+    return EcashWallet.initialize(
+      params,
+      createBackend,
+      params.walletFactory !== undefined
+    );
+  }
+
+  private static async initialize(
+    params: EcashWalletOptions,
+    createBackend: () => EcashWalletBackend | Promise<EcashWalletBackend>,
+    allowStructuralTestClient: boolean
+  ): Promise<EcashWallet> {
     await verifyEcashChronikEndpoints({
       chronik: params.chronik,
-      allowStructuralTestClient: params.walletFactory !== undefined,
+      allowStructuralTestClient,
       checkpointClientFactory: params.checkpointClientFactory,
     });
-    const backend = await (params.walletFactory ?? defaultWalletFactory)({
-      mnemonic: params.mnemonic,
-      chronik: params.chronik,
-      addressPrefix: ECASH_MAINNET_PREFIX,
-    });
+    const backend = await createBackend();
     await backend.syncAndDiscoverAddresses();
     const primaryAddress = canonicalEcashMainnetAddress(
       backend.getReceiveAddress(0)

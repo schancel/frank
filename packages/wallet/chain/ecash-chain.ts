@@ -2,7 +2,8 @@
 // the address codec is a standalone published module with no WASM side effects.
 import { Address } from "ecash-lib/dist/address/address";
 
-import { HDSeed, NativeAssetChain } from "./active-chain";
+import { NativeAssetChain } from "./active-chain";
+import type { DomainRoot } from "../../domain-roots/src";
 import { formatBaseUnit, parseBaseUnit } from "./base-unit";
 import { NativeTransactionAttemptStore } from "./chain-wallet";
 import {
@@ -59,7 +60,15 @@ function parseEcashAddress(
   }
 }
 
-export function createEcashChain(config: EcashChainConfig): NativeAssetChain {
+export interface EcashChain
+  extends Omit<NativeAssetChain, "kind" | "createWallet"> {
+  readonly kind: "ecash";
+  createWallet(
+    domainRoot: DomainRoot<"ecash-bch-wallet">
+  ): Promise<EcashWallet>;
+}
+
+export function createEcashChain(config: EcashChainConfig): EcashChain {
   return {
     kind: "ecash",
     name: "eCash",
@@ -78,9 +87,9 @@ export function createEcashChain(config: EcashChainConfig): NativeAssetChain {
     parseAddress(input) {
       return parseEcashAddress(config, input);
     },
-    async createWallet(seed: HDSeed) {
-      return EcashWallet.fromMnemonic({
-        ...seed,
+    async createWallet(domainRoot) {
+      return EcashWallet.fromDomainRoot({
+        domainRoot,
         chronik: config.chronik,
         networkId: config.networkId,
         walletFactory: config.walletFactory,

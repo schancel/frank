@@ -6,16 +6,25 @@ import { NativeAssetChain } from "./active-chain";
 import { EcashWalletBackend } from "../ecash-wallet";
 import { SolanaWalletConnection } from "../solana-wallet";
 import { InMemoryNativeTransactionAttemptStore } from "./chain-wallet";
+import type { DomainRoot } from "../../domain-roots/src";
 
 const ECASH_ADDRESS = "ecash:qq86jv6h0y97q8l63ndynvk3fn9aq8fqru3exew8gl";
 const ECASH_CHECKPOINT =
   "000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d";
+const ECASH_ROOT: DomainRoot<"ecash-bch-wallet"> = {
+  registry: "frank-domain-roots-v1",
+  purpose: "ecash-bch-wallet",
+  bytes: new Uint8Array(32).fill(1),
+};
 const MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const SOLANA_BLOCKHASH = new PublicKey(new Uint8Array(32).fill(9)).toBase58();
 const base58Decoder = getBase58Decoder();
 
-function exerciseCodecs(chain: NativeAssetChain, address: string): void {
+function exerciseCodecs(
+  chain: Omit<NativeAssetChain, "createWallet">,
+  address: string
+): void {
   const parsed = chain.parseAddress(address);
   expect(parsed).toBeDefined();
   expect(chain.addressToString(parsed!)).toBe(address);
@@ -25,6 +34,29 @@ function exerciseCodecs(chain: NativeAssetChain, address: string): void {
 }
 
 describe("createChain", () => {
+  it("requires a purpose-tagged eCash root at the factory boundary before effects", async () => {
+    const block = jest.fn();
+    const walletFactory = jest.fn();
+    const chain = await createChain({
+      kind: "ecash",
+      config: {
+        networkId: "ecash-mainnet",
+        chronik: { block } as unknown as import("chronik-client").ChronikClient,
+        walletFactory,
+      },
+    });
+    // @ts-expect-error eCash's factory output does not accept the predecessor HDSeed.
+    await expect(chain.createWallet({ mnemonic: MNEMONIC })).rejects.toThrow(
+      "ecash-bch-wallet root"
+    );
+    await expect(
+      // @ts-expect-error a different domain must not typecheck as an eCash input.
+      chain.createWallet({ ...ECASH_ROOT, purpose: "evm-wallet" })
+    ).rejects.toThrow("ecash-bch-wallet root");
+    expect(block).not.toHaveBeenCalled();
+    expect(walletFactory).not.toHaveBeenCalled();
+  });
+
   it("creates the still-default Monad application chain", async () => {
     await expect(
       createChain({
@@ -207,7 +239,7 @@ describe("createChain", () => {
       "at most 2 decimal places"
     );
 
-    const wallet = await chain.createWallet({ mnemonic: MNEMONIC });
+    const wallet = await chain.createWallet(ECASH_ROOT);
     await expect(chain.nativeTransfers.getBalance({ wallet })).resolves.toBe(
       500n
     );
@@ -256,9 +288,9 @@ describe("createChain", () => {
         walletFactory: () => backend,
       },
     });
-    await expect(
-      wrongCheckpoint.createWallet({ mnemonic: MNEMONIC })
-    ).rejects.toThrow("eCash Chronik checkpoint mismatch");
+    await expect(wrongCheckpoint.createWallet(ECASH_ROOT)).rejects.toThrow(
+      "eCash Chronik checkpoint mismatch"
+    );
   });
 
   it("rejects a wallet created for another chain", async () => {

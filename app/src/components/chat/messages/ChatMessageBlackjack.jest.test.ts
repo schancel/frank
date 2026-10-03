@@ -3,6 +3,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import * as quasar from 'quasar'
 import { defineComponent, h, reactive } from 'vue'
+import { createPinia, setActivePinia } from 'pinia'
 
 import { formatBlackjackError } from '@frank/wallet/message-item-plugins/blackjack/game'
 import {
@@ -16,6 +17,10 @@ import ChatMessageBlackjack from './ChatMessageBlackjack.vue'
 
 const DEALER = '0xDealer'
 const PLAYER = '0xPlayer'
+beforeEach(() => setActivePinia(createPinia()))
+jest.mock('../../../utils/own-address', () => ({
+  getOwnCanonicalAddress: async () => PLAYER,
+}))
 const store: { chats: Record<string, { messages: any[] }> } = reactive({
   chats: {},
 }) as any

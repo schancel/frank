@@ -37,6 +37,45 @@ function boot(data: Record<string, string>) {
 }
 
 describe('unsent wagers store (#310)', () => {
+  it('preserves double intent and original stake through every durable phase', async () => {
+    const data: Record<string, string> = {}
+    const store = boot(data)
+    await store.restored
+    const double = {
+      ...wager('0xdouble'),
+      kind: 'double' as const,
+      originalWagerTxHash: '0xoriginal',
+      originalAmountWei: '100000000000000000',
+    }
+    store.add(double)
+    for (const state of ['signed', 'paid', 'sent'] as const) {
+      store.setState('0xdouble', state, 99, 2)
+      await store.flushPersistence()
+      const reloaded = boot(data)
+      await reloaded.restored
+      expect(reloaded.wagers).toEqual([
+        { ...double, state, sentAt: 99, seenMessages: 2 },
+      ])
+      expect(reloaded.inFlight).toEqual([])
+    }
+  })
+
+  it.each([{ kind: 'unknown' }, { kind: 'double' }])(
+    'refuses an unreadable intent without overwriting it: %j',
+    intent => {
+      const raw = JSON.stringify({
+        wagers: [{ ...wager('0xdouble'), ...intent }],
+      })
+      const data = { unsentWagers: raw }
+      return (async () => {
+        const store = boot(data)
+        await store.restored
+        expect(store.loadError).toBeTruthy()
+        expect(() => store.add(wager('0xnew'))).toThrow()
+        expect(data.unsentWagers).toBe(raw)
+      })()
+    },
+  )
   it('a recorded unsent wager survives a reload, but "in flight" does not', async () => {
     const data: Record<string, string> = {}
     const first = boot(data)

@@ -93,7 +93,7 @@
       />
       <!-- Ticket #366: a paid move nobody answered. Only a plain hit/stand can be re-sent, and only
       behind an explicit consent: a resend is a second paid message, and a repeated hit could be
-      played twice once the dealer returns. A wager (bet/double) is never re-sent. -->
+      played twice once the dealer returns. Wagers use their separate journal recovery controls. -->
       <div
         v-if="dealerSilent"
         role="status"
@@ -143,7 +143,7 @@
           :key="action"
           :label="actionLabel(action)"
           :loading="sending"
-          :disable="sending || dealerSilent"
+          :disable="sending || dealerSilent || pendingDouble"
           dense
           color="primary"
           @click="onAction(action)"
@@ -182,12 +182,19 @@ import { useChatStore } from '../../../stores/chats'
 import { useContactStore } from '../../../stores/contacts'
 import { useMonadWallet } from '../../../utils/clients'
 import { useActiveWallet } from '../../../composables/useActiveWallet'
+import { useUnsentWagersStore } from '../../../stores/unsent-wagers'
+import { getOwnCanonicalAddress } from '../../../utils/own-address'
 import { errorNotify } from '../../../utils/notifications'
 import {
   BlackjackTable,
   betLimitsDisplay,
   latestDealerTable,
   peerOffersDealerTable,
+  sendBlackjackWager,
+  WagerBroadcastError,
+  awaitPayment,
+  checkWagerStatus,
+  wagerMove,
 } from '../../../utils/blackjack-bet'
 import BlackjackBetControl from '../BlackjackBetControl.vue'
 import type { MessageItem } from '@frank/cashweb/types/messages'
@@ -249,6 +256,8 @@ export default defineComponent({
       // Inline (aria-live) message: send failures such as insufficient funds, and the dealer's
       // own rejection text. Kept alongside, not instead of, the toast.
       actionError: '',
+      walletAddress: '',
+      paymentStatus: '',
     }
   },
   computed: {
@@ -256,10 +265,23 @@ export default defineComponent({
       return this.isLatest ? this.liveState : null
     },
     visibleError(): string {
-      return this.isLatest ? this.actionError || this.dealerError : ''
+      return this.isLatest
+        ? this.actionError ||
+            this.paymentStatus ||
+            (this.pendingDouble
+              ? this.$t('blackjackBet.doublePending')
+              : this.dealerError)
+        : ''
     },
-    // Only a plain hit/stand can be re-sent: a bet or double carries a wager transfer that would be
-    // paid a second time.
+    pendingDouble(): boolean {
+      if (!this.walletAddress) return false
+      return useUnsentWagersStore()
+        .forDealer(this.address, this.walletAddress)
+        .some(
+          wager => wager.kind === 'double' && wager.gameId === this.item.gameId,
+        )
+    },
+    // This control resends plain moves. Paid wagers retry their recorded hash in the banner.
     resendAction(): 'hit' | 'stand' | undefined {
       const action = this.unansweredAction
       return this.dealerSilent && (action === 'hit' || action === 'stand')
@@ -371,6 +393,9 @@ export default defineComponent({
     'chatMessageCount'() {
       void this.loadState()
     },
+  },
+  async created() {
+    this.walletAddress = (await getOwnCanonicalAddress()) ?? ''
   },
   beforeUnmount() {
     clearTimeout(this.dealerTimer)
@@ -513,33 +538,12 @@ export default defineComponent({
       void this.onAction(action)
     },
     async onAction(action: BlackjackAction) {
-      if (this.sending) return
+      if (this.sending || this.pendingDouble) return
       this.sending = true
       this.actionError = ''
       try {
         if (action === 'double') {
-          const wagerWei = this.liveState?.verifiedWagerWei
-          if (wagerWei === undefined) {
-            this.actionError =
-              'Cannot double down: original wager not verified yet'
-            return
-          }
-          const wallet = await useActiveWallet()
-          const result = await activeChain.nativeTransfers.send({
-            wallet,
-            recipient: { raw: this.address },
-            value: wagerWei,
-          })
-          this.$emit('sendFollowUp', {
-            items: [
-              {
-                type: 'blackjack-move',
-                gameId: this.item.gameId,
-                action: 'double',
-                doubleWagerTxHash: result.txHash,
-              },
-            ],
-          })
+          await this.doubleDown()
           return
         }
 
@@ -555,6 +559,106 @@ export default defineComponent({
         errorNotify(error)
       } finally {
         this.sending = false
+      }
+    },
+    async doubleDown() {
+      const hand = this.actionState
+      const context = this.blackjackChat as BlackjackChatContext | null
+      if (
+        !context ||
+        !hand?.availableActions.includes('double') ||
+        hand.verifiedWagerWei === undefined ||
+        !hand.wagerTxHash
+      ) {
+        this.actionError = this.$t('blackjackBet.doubleUnavailable')
+        return
+      }
+      const address = this.address
+      const gameId = hand.gameId
+      const amount = hand.verifiedWagerWei
+      const store = useUnsentWagersStore()
+      await store.restored
+      const wallet = await useActiveWallet()
+      this.walletAddress = activeChain.formatAddress(wallet.identity.address)
+      if (this.pendingDouble) return
+      const payingWallet = this.walletAddress
+      if (payingWallet.toLowerCase() !== hand.playerAddress.toLowerCase()) {
+        this.actionError = this.$t('blackjackBet.doubleUnavailable')
+        return
+      }
+      let hash: string | undefined
+      try {
+        try {
+          await sendBlackjackWager(address, amount, {
+            doubleGameId: gameId,
+            onSigned: async info => {
+              if (
+                info.walletAddress.toLowerCase() !== payingWallet.toLowerCase()
+              ) {
+                throw new Error(this.$t('blackjackBet.doubleUnavailable'))
+              }
+              // Repeat at the signing boundary: another mounted bubble may have won the race.
+              if (
+                store
+                  .forDealer(address, info.walletAddress)
+                  .some(w => w.kind === 'double' && w.gameId === gameId)
+              ) {
+                throw new Error(this.$t('blackjackBet.doublePending'))
+              }
+              store.add({
+                kind: 'double',
+                gameId,
+                dealerAddress: address,
+                walletAddress: info.walletAddress,
+                wagerTxHash: info.txHash,
+                originalWagerTxHash: hand.wagerTxHash as string,
+                originalAmountWei: amount.toString(),
+                amountWei: amount.toString(),
+                createdAt: Date.now(),
+                state: 'signed',
+                seenMessages:
+                  useChatStore().chats[address]?.messages.length ?? 0,
+              })
+              hash = info.txHash
+              store.setInFlight(hash, true)
+              await store.flushPersistence()
+            },
+          })
+        } catch (err) {
+          if (!(err instanceof WagerBroadcastError)) {
+            if (hash) store.remove(hash)
+            throw err
+          }
+          hash = err.txHash
+        }
+        if (!hash) throw new Error(this.$t('blackjackBet.doubleUnavailable'))
+        this.paymentStatus = this.$t('blackjackBet.confirming')
+        const status = await awaitPayment(() =>
+          checkWagerStatus(hash as string),
+        )
+        if (status === 'failed') {
+          store.remove(hash)
+          this.actionError = this.$t('blackjackBet.errorPaymentFailed')
+          return
+        }
+        if (status !== 'confirmed') {
+          this.actionError = this.$t(
+            status === 'pending'
+              ? 'blackjackBet.paymentPending'
+              : 'blackjackBet.paymentUnknown',
+          )
+          return
+        }
+        const wager = store.wagers.find(w => w.wagerTxHash === hash)
+        if (!wager) return
+        store.setState(hash, 'paid', undefined, wager.seenMessages)
+        await store.flushPersistence()
+        await context.submit({ address, items: [wagerMove(wager)] })
+        store.setState(hash, 'sent', Date.now(), wager.seenMessages)
+        await store.flushPersistence()
+      } finally {
+        if (hash) store.setInFlight(hash, false)
+        this.paymentStatus = ''
       }
     },
   },

@@ -11,6 +11,7 @@ import {
 } from '@frank/wallet/message-item-plugins/blackjack/game'
 
 import { useActiveWallet } from '../composables/useActiveWallet'
+import type { UnsentWager } from '../stores/unsent-wagers'
 import { toChainDisplayAddress } from './chain-address'
 import { shortAddress } from './short-address'
 
@@ -186,8 +187,9 @@ export class WagerBroadcastError extends Error {
 }
 
 /**
- * Sends ONE wager transfer to the dealer and returns the `bet` move that references it. Every
- * call creates a fresh `gameId` and a fresh transfer: the caller must have validated `wei` first
+ * Sends ONE wager transfer to the dealer and returns the move that references it. A first bet
+ * creates a fresh `gameId`; double-down keeps `doubleGameId`. Every call makes a fresh transfer:
+ * the caller must have validated `wei` first
  * and must not call this twice for one click (the transfer is real money and the dealer claims
  * each transaction hash for exactly one stake).
  *
@@ -199,6 +201,8 @@ export async function sendBlackjackWager(
   dealerAddress: string,
   wei: bigint,
   hooks: {
+    /** Double-down pays the same game, rather than creating a new first bet. */
+    doubleGameId?: string
     onSigned?: (info: {
       gameId: string
       txHash: string
@@ -207,7 +211,9 @@ export async function sendBlackjackWager(
   } = {},
 ): Promise<BlackjackMoveItem> {
   const wallet = await useActiveWallet()
-  const gameId = `bj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const gameId =
+    hooks.doubleGameId ??
+    `bj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   let signedHash: string | undefined
   try {
     const result = await activeChain.nativeTransfers.send({
@@ -226,8 +232,9 @@ export async function sendBlackjackWager(
     return {
       type: 'blackjack-move',
       gameId,
-      action: 'bet',
-      wagerTxHash: result.txHash,
+      ...(hooks.doubleGameId !== undefined
+        ? { action: 'double' as const, doubleWagerTxHash: result.txHash }
+        : { action: 'bet' as const, wagerTxHash: result.txHash }),
     }
   } catch (err) {
     if (signedHash !== undefined) {
@@ -238,6 +245,17 @@ export async function sendBlackjackWager(
 }
 
 export type PaymentStatus = 'confirmed' | 'failed' | 'pending' | 'unknown'
+
+/** Reconstruct only the move: recovery must never create another transfer. */
+export function wagerMove(wager: UnsentWager): BlackjackMoveItem {
+  return {
+    type: 'blackjack-move',
+    gameId: wager.gameId,
+    ...(wager.kind === 'double'
+      ? { action: 'double' as const, doubleWagerTxHash: wager.wagerTxHash }
+      : { action: 'bet' as const, wagerTxHash: wager.wagerTxHash }),
+  }
+}
 
 /** What the node says about a wager transaction hash right now. */
 export async function checkWagerStatus(txHash: string): Promise<PaymentStatus> {
@@ -283,21 +301,41 @@ export type DealerReply = 'none' | 'accepted' | 'unconfirmed' | 'rejected'
  * `accepted` (the hand is dealt); a game-tagged error "already authorized" = `accepted` (this very
  * wager already has its game); one saying the payment could not be verified/is unconfirmed =
  * `unconfirmed` (the bet was DROPPED, retry is safe); any other tagged error = `rejected` (the bot
- * refunds a rejected stake). The latest reply wins.
+ * refunds a rejected stake). The latest reply wins for bets. Doubles require an explicit dealer
+ * double card: game-only errors cannot identify which of the game's two payments they answer.
  */
 export function dealerReplyFor(
   messages: Array<{ outbound: boolean; items: Array<Record<string, any>> }>,
   gameId: string,
+  kind: 'bet' | 'double' = 'bet',
 ): DealerReply {
   let reply: DealerReply = 'none'
   for (const message of messages) {
     if (message.outbound) continue
     for (const item of message.items) {
       if (item.type === 'blackjack-move' && item.gameId === gameId) {
+        if (
+          kind === 'double' &&
+          (item.action !== 'double' ||
+            !Array.isArray(item.playerCards) ||
+            item.playerCards.length !== 3)
+        )
+          continue
         reply = 'accepted'
       } else if (item.type === 'text') {
         const parsed = parseBlackjackError(String(item.text))
         if (parsed?.gameId !== gameId) continue
+        // Errors bind only the game, not the payment or action. A delayed first-bet error,
+        // even "already authorized", cannot prove the outcome of this additional stake.
+        if (kind === 'double') {
+          if (
+            reply !== 'accepted' &&
+            /double/i.test(parsed.text) &&
+            /unconfirmed|could not verify/i.test(parsed.text)
+          )
+            reply = 'unconfirmed'
+          continue
+        }
         reply = /already authorized/i.test(parsed.text)
           ? 'accepted'
           : /unconfirmed|could not verify/i.test(parsed.text)

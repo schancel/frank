@@ -430,16 +430,14 @@ test.each([false, true])(
   'close drains an in-flight native operation and rejects further work (demo: %s)',
   async demo => {
     if (demo)
-      jest
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue({
-          ok: true,
-          json: async () => ({
-            kind: 'frank-simulated-ledger-v1',
-            amountWei: '1000000000000000000',
-            token: 'ab'.repeat(32),
-          }),
-        } as Response)
+      jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          kind: 'frank-simulated-ledger-v1',
+          amountWei: '1000000000000000000',
+          token: 'ab'.repeat(32),
+        }),
+      } as Response)
     const chain = createMonadChain({
       ...config,
       ...(demo

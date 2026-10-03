@@ -22,6 +22,9 @@ import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-stor
 import { LevelStampPaymentJournal } from '../storage/stamp-payment-journal'
 import { MonadStampClient } from '../monad-stamp-client'
 import * as topicModule from '../monad-topic-post-client'
+import { MonadHttpClient } from '../monad-http'
+import { createServer } from 'http'
+import type { AddressInfo } from 'net'
 
 jest.mock('../monad-account-tx', () => ({
   ...jest.requireActual('../monad-account-tx'),
@@ -429,6 +432,7 @@ test('close drains an in-flight native operation and rejects further work', asyn
     nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
   })
   const wallet = await chain.createWallet(roots())
+  const destroyHttp = jest.spyOn(MonadHttpClient.prototype, 'destroy')
   const signed = { txHash: `0x${'55'.repeat(32)}` }
   let release!: () => void
   let started!: () => void
@@ -460,10 +464,12 @@ test('close drains an in-flight native operation and rejects further work', asyn
     wallet.sendNative({ recipient: { raw: expected[1].main }, value: 1n }),
   ).rejects.toThrow('closed')
   expect(submit).not.toHaveBeenCalled()
+  expect(destroyHttp).not.toHaveBeenCalled()
   release()
   await expect(send).resolves.toEqual(signed)
   await close
   expect(submit).toHaveBeenCalledTimes(1)
+  expect(destroyHttp).toHaveBeenCalledTimes(1)
 })
 
 test('cached callers serialize native sends through the same economic owner', async () => {
@@ -564,3 +570,114 @@ test('construction failure closes opened stores and wipes owned messaging root',
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('failed fake discovery creates no providers, wipes owned material and releases ownership for retry', async () => {
+  const original = materialModule.createMonadWalletMaterial
+  const materials: materialModule.MonadWalletMaterial[] = []
+  jest
+    .spyOn(materialModule, 'createMonadWalletMaterial')
+    .mockImplementation(input => {
+      const material = original(input)
+      materials.push(material)
+      return material
+    })
+  const provider = jest.spyOn(providerModule, 'createMonadJsonRpcProvider')
+  const open = jest.spyOn(LevelSubAccountPoolStore.prototype, 'Open')
+  const fetcher = jest
+    .spyOn(globalThis, 'fetch')
+    .mockResolvedValue({ ok: false } as Response)
+  const chain = createMonadChain({
+    ...config,
+    networkId: 'monad-testnet',
+    fakeDemo: { enabled: true, controlUrl: 'http://127.0.0.1:8545' },
+  })
+  await expect(chain.createWallet(roots())).rejects.toThrow('capability')
+  expect(provider).not.toHaveBeenCalled()
+  expect(open).not.toHaveBeenCalled()
+  expect(materials[0].messagingRoot!.every(byte => byte === 0)).toBe(true)
+  fetcher.mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      kind: 'frank-simulated-ledger-v1',
+      amountWei: '1000000000000000000',
+      token: 'ab'.repeat(32),
+    }),
+  } as Response)
+  const wallet = (await chain.createWallet(roots())) as MonadChainWalletHandle
+  expect(
+    provider.mock.calls.map(([options]) => [options.rpcUrl, options.relayAuth]),
+  ).toEqual([
+    ['http://127.0.0.1:8545', undefined],
+    ['http://127.0.0.1:8545', undefined],
+  ])
+  const destroy = jest.spyOn(MonadHttpClient.prototype, 'destroy')
+  await wallet.close()
+  expect(destroy).toHaveBeenCalledTimes(1)
+  expect(wallet.provider.destroyed).toBe(true)
+  expect(materials[1].messagingRoot!.every(byte => byte === 0)).toBe(true)
+})
+
+test('construction failure after both clients exist destroys both providers', async () => {
+  const providers = jest.spyOn(providerModule, 'createMonadJsonRpcProvider')
+  jest
+    .spyOn(MonadStampClient.prototype, 'resumePendingAttempts')
+    .mockRejectedValue(new Error('fixture resume failure'))
+  await expect(
+    createMonadChain(config).createWallet({
+      mnemonic:
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+    }),
+  ).rejects.toThrow('fixture resume failure')
+  expect(providers.mock.results).toHaveLength(2)
+  expect(providers.mock.results.every(result => result.value.destroyed)).toBe(
+    true,
+  )
+})
+
+test.each([undefined, false])(
+  'production capability 401 never probes or retries direct (flag %s)',
+  async enabled => {
+    const paths: string[] = []
+    const server = createServer((req, res) => {
+      paths.push(req.url!)
+      res.setHeader('content-type', 'application/json')
+      if (req.url!.endsWith('/capability/auth')) {
+        res.end(
+          JSON.stringify({
+            signing_domain: 'frank:rpc-http-auth:v1',
+            customer: req.headers['x-frank-rpc-customer'],
+            chain: 'monad-testnet',
+            network_tag: '4d4f4e54',
+            body_sha256:
+              'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+            epoch: '01'.repeat(32),
+            nonce: '02'.repeat(32),
+            token: '03'.repeat(32),
+            expires_at_ms: Date.now() + 60000,
+          }),
+        )
+      } else {
+        res.statusCode = 401
+        res.end(JSON.stringify({ error: 'rpc_auth_failed' }))
+      }
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    const wallet = await createMonadChain({
+      ...config,
+      relayBaseUrl: url,
+      fakeDemo:
+        enabled === undefined ? undefined : { enabled, controlUrl: url },
+    }).createWallet(roots())
+    try {
+      await expect(wallet.getBalance()).rejects.toThrow('401')
+      expect(paths).toEqual([
+        '/chain-rpc/monad-testnet/capability/auth',
+        '/chain-rpc/monad-testnet/capability',
+      ])
+    } finally {
+      await wallet.close()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
+  },
+)

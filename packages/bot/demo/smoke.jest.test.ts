@@ -16,6 +16,108 @@ import { resolveDemoConfig } from './demo-config'
 import { runSmoke } from './smoke'
 import { runSmokeChecks } from './smoke-checks'
 import { Supervisor } from './supervisor'
+import { startFakeRpc } from './fake-rpc'
+import { ensureDemoBalance } from './demo-funding'
+import { createMonadChain } from '../../wallet/chain/monad-chain'
+import type {
+  MonadChainConfig,
+  MonadChainWalletHandle,
+} from '../../wallet/chain/monad-chain'
+import type { MonadRootBundle } from '../../wallet/chain/active-chain'
+import { InMemoryNativeTransactionAttemptStore } from '../../wallet/chain/chain-wallet'
+import * as providerModule from '../../wallet/monad-provider'
+import * as botCommon from '../qwen-bot-common'
+
+test('real typed wallets discover the built-in fake transport and fund/send only EVM roles', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'typed-demo-transport-'))
+  const fake = await startFakeRpc({
+    port: 0,
+    stateFile: join(dir, 'ledger.json'),
+    demoFunding: true,
+  })
+  const roots = (n: number): MonadRootBundle => ({
+    evm: {
+      registry: 'frank-domain-roots-v1',
+      purpose: 'evm-wallet',
+      bytes: new Uint8Array(32).fill(n),
+    },
+    authentication: {
+      registry: 'frank-domain-roots-v1',
+      purpose: 'identity-authentication',
+      bytes: new Uint8Array(32).fill(n + 1),
+    },
+    messaging: {
+      registry: 'frank-domain-roots-v1',
+      purpose: 'messaging-encryption',
+      bytes: new Uint8Array(32).fill(n + 2),
+    },
+  })
+  const config = {
+    networkId: 'monad-testnet',
+    rpcChain: 'monad-testnet',
+    chainId: 10143,
+    networkTag: 'MONT',
+    relayBaseUrl: fake.url,
+    stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
+    defaultStampValueWei: 1n,
+    defaultTopicVoteValueWei: 1n,
+    subAccountPoolSize: 1,
+    walletStorageLocation: false,
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+    fakeDemo: { enabled: true, controlUrl: fake.url },
+  } satisfies MonadChainConfig & {
+    fakeDemo: { enabled: boolean; controlUrl: string }
+  }
+  const chain = createMonadChain(config)
+  const wallets: MonadChainWalletHandle[] = []
+  try {
+    const sender = (await chain.createWallet(
+      roots(11),
+    )) as MonadChainWalletHandle
+    wallets.push(sender)
+    const recipient = (await chain.createWallet(
+      roots(21),
+    )) as MonadChainWalletHandle
+    wallets.push(recipient)
+    const from = (await sender.getReceiveAddress()).raw
+    const to = (await recipient.getReceiveAddress()).raw
+    expect(await sender.getBalance()).toBe(0n)
+    expect(await recipient.getBalance()).toBe(0n)
+    await ensureDemoBalance({ fakeChain: true, rpcUrl: fake.url }, from)
+    // Provider caches reads for 250 ms; allow the previous zero read to expire.
+    await new Promise(resolve => setTimeout(resolve, 300))
+    expect(await sender.getBalance()).toBe(10n ** 18n)
+    expect(await sender.provider.getBalance(sender.identity.address.raw)).toBe(
+      0n,
+    )
+    const sent = await sender.sendNative({
+      recipient: { raw: to },
+      value: 10n ** 17n,
+    })
+    expect(fake.transactions()).toEqual([
+      expect.objectContaining({
+        hash: sent.txHash,
+        from,
+        to,
+        valueWei: (10n ** 17n).toString(),
+      }),
+    ])
+    expect(await recipient.getBalance()).toBe(10n ** 17n)
+    expect(
+      await recipient.provider.getBalance(recipient.identity.address.raw),
+    ).toBe(0n)
+    await expect(
+      chain.directMessages.fetchSince({ wallet: sender, sinceMs: 0 }),
+    ).rejects.toThrow('#696')
+    await sender.close()
+    expect(sender.provider.destroyed).toBe(true)
+    await expect(sender.getBalance()).rejects.toThrow('closed')
+  } finally {
+    await Promise.all(wallets.map(wallet => wallet.close()))
+    await fake.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 jest.mock('./demo', () => ({
   startDemo: jest.fn(),
@@ -44,6 +146,11 @@ describe('smoke outcome and diagnostic retention', () => {
     unhealthy = []
     output = []
     supervisor = undefined
+    jest.spyOn(botCommon, 'registerAndLog').mockResolvedValue()
+    jest.spyOn(providerModule, 'createMonadJsonRpcProvider').mockReturnValue({
+      getBalance: jest.fn().mockResolvedValue(0n),
+      destroy: jest.fn(),
+    } as unknown as ReturnType<typeof providerModule.createMonadJsonRpcProvider>)
     jest
       .spyOn(console, 'log')
       .mockImplementation(line => output.push(String(line)))
@@ -85,10 +192,40 @@ describe('smoke outcome and diagnostic retention', () => {
   }
 
   it('keeps an explicit compiler override in the smoke relay toolchain', async () => {
-    await expect(runSmoke({ PROTOC: '/tools with spaces/protoc', UNLISTED_TOOL: 'hidden' })).resolves.toBe(true)
+    await expect(
+      runSmoke({
+        PROTOC: '/tools with spaces/protoc',
+        UNLISTED_TOOL: 'hidden',
+      }),
+    ).resolves.toBe(true)
     expect(jest.mocked(startDemo).mock.calls[0][0].toolchainEnv).toEqual({
       PROTOC: '/tools with spaces/protoc',
     })
+  })
+
+  it('checks authenticated relay RPC even when the demo uses a fake chain', async () => {
+    await expect(runSmoke({})).resolves.toBe(true)
+    expect(providerModule.createMonadJsonRpcProvider).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rpcUrl: `${handle.relayUrl}/chain-rpc/monad-testnet/rpc`,
+        relayAuth: expect.objectContaining({
+          chain: 'monad-testnet',
+          signDigest: expect.any(Function),
+        }),
+      }),
+    )
+    expect(
+      output.some(line => line.startsWith('PASS  protected-relay-rpc:')),
+    ).toBe(true)
+  })
+
+  it('retains diagnostics when protected relay authentication fails', async () => {
+    jest.mocked(providerModule.createMonadJsonRpcProvider).mockReturnValue({
+      getBalance: jest.fn().mockRejectedValue(new Error('401 rpc_auth_failed')),
+      destroy: jest.fn(),
+    } as unknown as ReturnType<typeof providerModule.createMonadJsonRpcProvider>)
+    await expect(runSmoke({})).resolves.toBe(false)
+    expectRetained()
   })
 
   it('fails after every feature passes if a supervised child exits unexpectedly', async () => {
@@ -307,6 +444,8 @@ const scenario = ${JSON.stringify(scenario)}
 let unhealthy = []
 Module._load = function(request, parent, isMain) {
   if (parent?.filename.endsWith('/demo/smoke.ts')) {
+    if (request === '../qwen-bot-common') return { registerAndLog: async () => {} }
+    if (request === '../../wallet/monad-provider') return { createMonadJsonRpcProvider: () => ({ getBalance: async () => 0n, destroy() {} }) }
     if (request === './demo') return { redact: text => text, startDemo: async config => {
       fs.writeFileSync(${JSON.stringify(
         capture,

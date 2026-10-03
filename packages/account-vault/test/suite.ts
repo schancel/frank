@@ -93,6 +93,22 @@ export async function run(phase: string) {
   const ns = 'regressions'
   const vault = await openPreviewVault({ namespace: ns })
   const other = await openPreviewVault({ namespace: ns })
+  for (const kind of ['accessor', 'proxy']) {
+    const original = initial(`purpose-${kind}`)
+    await vault.stage(original, roots())
+    const replacement = next(original.receipt)
+    const replacementRoots = roots(45)
+    let reads = 0
+    const purpose = () => ++reads === 1 ? DOMAIN_PURPOSES[0] : DOMAIN_PURPOSES[1]
+    replacementRoots[0] = kind === 'accessor'
+      ? { ...replacementRoots[0], get purpose() { return purpose() } }
+      : new Proxy(replacementRoots[0], { get(target, key, receiver) {
+        return key === 'purpose' ? purpose() : Reflect.get(target, key, receiver)
+      } })
+    await vault.stage(replacement, replacementRoots)
+    equalRoots(await vault.open(replacement.receipt), roots(45))
+    ok(reads === 1, `${kind} purpose read once and replacement remains readable`)
+  }
   const first = initial('first')
   const input = roots()
   const staged = vault.stage(first, input)
@@ -210,10 +226,16 @@ export async function run(phase: string) {
     { ...winner.receipt, context: { ...winner.receipt.context, custodyEpoch: 0 } },
   ]) await fails(() => vault.open(changed), changed.context.creationId === 'wrong' ? 'locked' : 'conflict')
 
-  for (const damage of ['iv', 'ciphertext', 'tag', 'oversized', 'missing-key', 'missing-record', 'context', 'bad-payload']) {
+  for (const damage of ['iv', 'ciphertext', 'tag', 'oversized', 'missing-key', 'malformed-key', 'extractable-key', 'missing-record', 'context', 'bad-payload']) {
     const item = initial(`damage-${damage}`)
     await vault.stage(item, roots())
     if (damage === 'missing-key') await change(ns, 'keys', item.receipt.context.creationId, () => undefined)
+    else if (damage === 'malformed-key' || damage === 'extractable-key') {
+      const key = damage === 'extractable-key'
+        ? await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt'])
+        : { not: 'a CryptoKey' }
+      await change(ns, 'keys', item.receipt.context.creationId, r => ({ ...r, key }))
+    }
     else if (damage === 'missing-record') await change(ns, 'records', item.receipt.context.creationId, () => undefined)
     else if (damage === 'bad-payload') {
       // Derive AAD from an intercepted authentic encryption call, without private imports.

@@ -1,0 +1,44 @@
+name: account vault - type, failure and browser gates
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/account-vault/**'
+      - 'packages/domain-roots/**'
+      - 'docs/preview-vault-policy.md'
+      - 'package.json'
+      - 'yarn.lock'
+      - '.github/workflows/account-vault.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'packages/account-vault/**'
+      - 'packages/domain-roots/**'
+      - 'docs/preview-vault-policy.md'
+      - 'package.json'
+      - 'yarn.lock'
+      - '.github/workflows/account-vault.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  vault:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+      - run: yarn install --frozen-lockfile
+      - name: Typecheck vault and browser fixtures
+        run: yarn workspace @frank/account-vault typecheck
+      - name: Browser-independent validation and fail-closed regressions
+        run: yarn workspace @frank/account-vault test:node
+      - name: Real Chrome process restart and storage failure regressions
+        run: |
+          export VAULT_CHROME="$(command -v google-chrome)"
+          test -x "$VAULT_CHROME"
+          yarn workspace @frank/account-vault test

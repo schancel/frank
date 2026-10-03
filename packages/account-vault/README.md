@@ -44,6 +44,7 @@ From an installed repository workspace:
 
 ```sh
 yarn workspace @frank/account-vault typecheck
+yarn workspace @frank/account-vault test:node
 yarn workspace @frank/account-vault test
 ```
 
@@ -56,3 +57,9 @@ profile afterward. It never opens a user's browser profile or uses account funds
 Browser absence is a failed prerequisite, never a mocked success. Build metadata
 also checks that registry imports resolve inside this checkout and that the
 package exposes only its facade.
+
+The account-vault CI workflow triggers on package, registry, policy and relevant
+configuration changes. It runs typechecking, browser-independent facade/failure
+tests and the same real Chrome restart suite on Linux. A missing or failing
+Chrome prerequisite fails the gate; browser-independent tests do not replace
+the browser proof. Local macOS restart evidence remains recorded in the policy.

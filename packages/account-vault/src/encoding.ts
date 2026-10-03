@@ -101,7 +101,7 @@ export function plaintext(roots: readonly DomainRoot[], c: VaultContext): Uint8A
       if (!root || root.registry !== DERIVATION_REGISTRY_ID || root.purpose !== c.purposes[i]) reject()
       const bytes = root.bytes
       if (!(bytes instanceof Uint8Array) || bytes.byteLength !== 32 || !(bytes.buffer instanceof ArrayBuffer)) reject()
-      output[2 + 33 * i] = DOMAIN_PURPOSES.indexOf(root.purpose) + 1
+      output[2 + 33 * i] = DOMAIN_PURPOSES.indexOf(c.purposes[i]) + 1
       output.set(bytes, 3 + 33 * i)
     }
     return output

@@ -8,7 +8,8 @@
   "exports": { ".": "./src/index.ts" },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node test/browser.mjs"
+    "test": "node test/browser.mjs",
+    "test:node": "node --test test/node.test.mjs"
   },
   "dependencies": { "@frank/domain-roots": "*" }
 }

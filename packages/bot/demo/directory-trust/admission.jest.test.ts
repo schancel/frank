@@ -1,5 +1,7 @@
 import { createServer } from 'node:net'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
+import { createServer as createHttpsServer } from 'node:https'
+import { createHash, X509Certificate } from 'node:crypto'
 import {
   existsSync,
   mkdtempSync,
@@ -885,6 +887,212 @@ rustTest(
     await expect(probe(reopen)).rejects.toThrow('continuity')
   },
   60000,
+)
+
+rustTest(
+  'real Rust TLS certificate policy rejects wrong CA, SAN, expiry and same-key recertification',
+  async () => {
+    const nodeStore = await openDemoNodeAdmission(options())
+    let expected
+    try {
+      expected = summary(await nodeStore.enroll([bootstrap], now))
+    } finally {
+      await nodeStore.close()
+    }
+    await fixture.stop()
+    // These keys belong only to this test server. Never read the #758 fixture's
+    // private CA/leaf files or alter its immutable public bundle directory.
+    const caKey = join(root, 'test-ca.key'),
+      caFile = join(root, 'test-ca.pem')
+    const leafKey = join(root, 'test-leaf.key'),
+      csr = join(root, 'test-leaf.csr')
+    const ext = join(root, 'test-leaf.ext')
+    const openssl = (args: string[]) =>
+      execFileSync('openssl', args, {
+        timeout: 10000,
+        stdio: ['ignore', 'ignore', 'pipe'],
+        maxBuffer: 65536,
+      })
+    openssl([
+      'req',
+      '-x509',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-keyout',
+      caKey,
+      '-out',
+      caFile,
+      '-days',
+      '1',
+      '-subj',
+      '/CN=Owned Rust TLS test CA',
+      '-addext',
+      'basicConstraints=critical,CA:TRUE',
+    ])
+    openssl([
+      'req',
+      '-new',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-keyout',
+      leafKey,
+      '-out',
+      csr,
+      '-subj',
+      '/CN=Owned Rust TLS test leaf',
+    ])
+    const certificates = new Map<string, Buffer>()
+    for (const [index, kind] of [
+      'valid',
+      'wrong-san',
+      'expired',
+      'same-key',
+    ].entries()) {
+      writeFileSync(
+        ext,
+        `basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=IP:${
+          kind === 'wrong-san' ? '127.0.0.2' : '127.0.0.1'
+        }\n`,
+        { mode: 0o600 },
+      )
+      const file = join(root, `test-${kind}.pem`)
+      openssl([
+        'x509',
+        '-req',
+        '-in',
+        csr,
+        '-CA',
+        caFile,
+        '-CAkey',
+        caKey,
+        '-set_serial',
+        String(index + 1),
+        '-out',
+        file,
+        '-extfile',
+        ext,
+        ...(kind === 'expired'
+          ? ['-not_before', '20200101000000Z', '-not_after', '20200102000000Z']
+          : ['-days', '1']),
+      ])
+      certificates.set(kind, readFileSync(file))
+    }
+    const pins = (pem: Buffer) => {
+      const certificate = new X509Certificate(pem)
+      return {
+        leafSha256: createHash('sha256').update(certificate.raw).digest('hex'),
+        leafSpkiSha256: createHash('sha256')
+          .update(certificate.publicKey.export({ type: 'spki', format: 'der' }))
+          .digest('base64'),
+      }
+    }
+    expect(pins(certificates.get('same-key')!).leafSpkiSha256).toBe(
+      pins(certificates.get('valid')!).leafSpkiSha256,
+    )
+    expect(pins(certificates.get('same-key')!).leafSha256).not.toBe(
+      pins(certificates.get('valid')!).leafSha256,
+    )
+    for (const kind of [
+      'valid',
+      'wrong-ca',
+      'wrong-san',
+      'expired',
+      'same-key',
+    ]) {
+      const served = certificates.get(kind === 'wrong-ca' ? 'valid' : kind)!
+      const pinned = kind === 'same-key' ? certificates.get('valid')! : served
+      let requests = 0
+      const sockets = new Set<import('node:net').Socket>()
+      const server = createHttpsServer(
+        { key: readFileSync(leafKey), cert: served },
+        (request, response) => {
+          requests++
+          expect(request.method).toBe('GET')
+          expect(request.url).toBe('/fixture/evidence')
+          const body = JSON.stringify({
+            kind: 'synthetic-directory-evidence',
+            trustInputs: trustJSON(trust),
+            witnessHex: bundle.witnessHex,
+          })
+          response.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+          })
+          response.end(body)
+        },
+      )
+      server.on('connection', socket => {
+        sockets.add(socket)
+        socket.once('close', () => sockets.delete(socket))
+      })
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject)
+        server.listen(
+          Number(new URL(trust.endpoint).port),
+          '127.0.0.1',
+          resolve,
+        )
+      })
+      const location = join(root, `native-tls-${kind}`),
+        continuityFile = join(root, `native-tls-${kind}.json`)
+      try {
+        const scenario = join(root, 'native-tls-scenario.json')
+        writeFileSync(
+          scenario,
+          JSON.stringify({
+            bundle: {
+              ...bundle,
+              trustInputs: trustJSON(trust),
+              tls: {
+                caPem:
+                  kind === 'wrong-ca'
+                    ? bundle.tls.caPem
+                    : readFileSync(caFile, 'utf8'),
+                ...pins(pinned),
+              },
+            },
+            manifestIdentity: bundle.manifestIdentity,
+            installed: trustJSON(trust),
+            nowNs: now.toString(),
+            location,
+            continuityFile,
+            mode: 'new',
+            candidates: [
+              {
+                statement: toHex(bootstrap.statement),
+                attestation: toHex(bootstrap.attestation),
+              },
+            ],
+          }),
+        )
+        const result = child(process.env.DIRECTORY_ADMISSION_RUST_PROBE!, [
+          scenario,
+        ])
+        if (kind === 'valid') {
+          expect(JSON.parse(await result)).toEqual(expected)
+          expect(requests).toBe(1)
+        } else {
+          await expect(result).rejects.toThrow(
+            kind === 'same-key' ? 'tls-pin' : 'tls',
+          )
+          expect(requests).toBe(0)
+          expect(existsSync(location)).toBe(false)
+          expect(existsSync(continuityFile)).toBe(false)
+        }
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          server.close(error => (error ? reject(error) : resolve()))
+          for (const socket of sockets) socket.destroy()
+        })
+      }
+    }
+    expect(reopenBundle(bundle, now).manifestIdentity).toBe(
+      bundle.manifestIdentity,
+    )
+  },
+  90000,
 )
 
 browserTest(

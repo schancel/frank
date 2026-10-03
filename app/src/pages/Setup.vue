@@ -285,7 +285,7 @@ export default defineComponent({
           ...defaultRelayData,
           profile: {
             ...defaultRelayData.profile,
-            name: this.accountData.name || 'Stamp User',
+            name: this.accountData.name || 'Frank User',
             avatar: this.avatar,
           },
         }

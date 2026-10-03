@@ -38,6 +38,44 @@ direct message  ── stamp payment ──▶ recipient
 topic broadcast ── burn ───────────▶ unspendable address
 ```
 
+## The product thesis
+
+Cryptocurrency reached the mainstream mostly as financial exposure, not as usable permissionless
+money. Buying an asset through a familiar custodian does not help someone who needs to communicate,
+negotiate, recover an account, or move spendable value when banks, governments, issuers, app stores,
+or technology platforms are unwilling or unable to cooperate.
+
+Frank's long-term bet is that the missing piece is a **whole product**, not another consensus
+algorithm. A successful user should not need to understand wallets, gas, bridges, recovery
+polynomials, timelocks, or signature protocols. They should be able to express an ordinary intent:
+
+- send a private message that is expensive to spam;
+- transfer value without exposing a reusable payment address;
+- exchange assets or make a conditional payment with an understandable refund path;
+- recover an account with a chosen threshold of independently stored backup shares; or
+- coordinate privately before settling on a public chain.
+
+Frank can be thought of as a compiler from those human intentions into encrypted messages,
+payments, signatures, routes, and recovery procedures. The cryptography should become invisible,
+but its consequences must not: the interface still has to state who can do what, what it costs,
+which deadlines apply, how recovery works, and what happens if another participant disappears.
+
+A plausible first beachhead is organizations funding journalists, activists, and other people who
+operate under financial surveillance or communications censorship. That is a demanding target:
+metadata privacy, resilient relay access, safe pseudonymous identity, usable recovery, and a path
+from received crypto to something locally useful all matter as much as settlement. Frank does not
+claim to solve that complete journey today; the current testnet prototype is the transport and
+payment foundation on which it can be built.
+
+The roadmap includes first-class
+[Codex32 threshold recovery](https://github.com/schancel/frank/issues/289), hardened recipient
+stamp keys and one-time destinations, federated relays, and explicitly scoped interactive
+protocols such as conditional settlement. Adaptor signatures and scriptless scripts are a design
+direction—not a shipped capability—and require a complete protocol plus independently reviewed,
+audited cryptography before they can protect real funds
+([#64](https://github.com/schancel/frank/issues/64),
+[#250](https://github.com/schancel/frank/issues/250)).
+
 ## Why this belongs in the Ethereum ecosystem
 
 Frank is an implementation-driven exploration of themes that have repeatedly appeared in Ethereum research:

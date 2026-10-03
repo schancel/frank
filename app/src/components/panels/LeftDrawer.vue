@@ -1,12 +1,11 @@
 <template>
-  <div class="column full-height">
+  <div class="row no-wrap full-height">
     <!-- Relay reconnect dialog -->
     <q-dialog v-if="legacyRelayEnabled" v-model="relayConnectOpen">
       <relay-connect-dialog />
     </q-dialog>
 
-    <q-tabs v-model="tab" v-if="$status.setup">
-      <q-tab v-if="$status.setup" name="settings" icon="settings" />
+    <q-tabs v-model="tab" v-if="$status.setup" vertical class="nav-rail">
       <!-- Navigates to the active (or most recently used) chat, so this tab actually shows
       something different from "forum" in the main pane -- an earlier version of this fix
       removed navigation entirely to stop it fighting with "forum" over `/`, but that also made
@@ -29,17 +28,22 @@
       now. This tab navigates straight to /forum rather than switching local drawer content, since
       Forum is a full page/route, not another sidebar-list mode like contacts/settings. -->
       <q-tab name="forum" icon="forum" @click="$router.push('/forum')" />
+
+      <q-space />
+
+      <q-tab name="settings" icon="settings" />
     </q-tabs>
 
-    <settings-panel v-if="$status.setup" v-show="tab == 'settings'" />
-    <div v-if="!$status.setup">
-      <q-separator />
-      <chat-list-link title="Login/Sign Up" route="/setup" icon="login" />
-    </div>
+    <div class="col column">
+      <settings-panel v-if="$status.setup" v-show="tab == 'settings'" />
+      <div v-if="!$status.setup">
+        <q-separator />
+        <chat-list-link title="Login/Sign Up" route="/setup" icon="login" />
+      </div>
 
-    <chat-list v-show="tab == 'contacts'" v-bind="$attrs" :compact="false" />
+      <chat-list v-show="tab == 'contacts'" v-bind="$attrs" :compact="false" />
 
-    <!-- Real user-reported gap (ticket #61's own follow-up comment admitted this was a stopgap:
+      <!-- Real user-reported gap (ticket #61's own follow-up comment admitted this was a stopgap:
     "there's no forum-specific content this drawer could show instead"): clicking "forum" used to
     just fall back to showing the same chat-list as "contacts" -- so the two tabs looked and
     behaved identically in the sidebar, with nothing anywhere to actually browse different
@@ -54,46 +58,47 @@
     handling, no consistent width/column behavior) and (b) didn't fill the remaining flex space,
     so "Balance" below no longer stayed pinned to the bottom of the drawer the way it does for
     every other tab -- it just sat directly under however many topics happened to be listed. -->
-    <div class="full-width column col" v-show="tab == 'forum'">
-      <q-scroll-area class="q-px-none col">
-        <q-list v-bind="$attrs">
-          <q-separator />
-          <q-item
-            v-for="name in discoveredTopicNames"
-            :key="name"
-            clickable
-            :active="name === selectedForumTopic"
-            active-class="active-chat-list-item"
-            @click="browseForumTopic(name)"
-          >
-            <q-item-section>{{ name }}</q-item-section>
-          </q-item>
-          <q-item v-if="discoveredTopicNames.length === 0">
-            <q-item-section class="text-grey"
-              >No forums discovered yet.</q-item-section
+      <div class="full-width column col" v-show="tab == 'forum'">
+        <q-scroll-area class="q-px-none col">
+          <q-list v-bind="$attrs">
+            <q-separator />
+            <q-item
+              v-for="name in discoveredTopicNames"
+              :key="name"
+              clickable
+              :active="name === selectedForumTopic"
+              active-class="active-chat-list-item"
+              @click="browseForumTopic(name)"
             >
-          </q-item>
-        </q-list>
-      </q-scroll-area>
-    </div>
+              <q-item-section>{{ name }}</q-item-section>
+            </q-item>
+            <q-item v-if="discoveredTopicNames.length === 0">
+              <q-item-section class="text-grey"
+                >No forums discovered yet.</q-item-section
+              >
+            </q-item>
+          </q-list>
+        </q-scroll-area>
+      </div>
 
-    <q-list v-if="$status.setup">
-      <q-separator />
-      <q-item clickable>
-        <q-item-section @click="openReceive">
-          <q-item-label>{{ $t('chatList.balance') }}</q-item-label>
-          <q-item-label caption>{{ formattedBalance }}</q-item-label>
-        </q-item-section>
-        <q-item-section
-          v-if="legacyRelayEnabled && !relayConnected"
-          side
-          clickable
-          @click="relayConnectOpen = true"
-        >
-          <q-btn icon="email" flat round color="red" />
-        </q-item-section>
-      </q-item>
-    </q-list>
+      <q-list v-if="$status.setup">
+        <q-separator />
+        <q-item clickable>
+          <q-item-section @click="openReceive">
+            <q-item-label>{{ $t('chatList.balance') }}</q-item-label>
+            <q-item-label caption>{{ formattedBalance }}</q-item-label>
+          </q-item-section>
+          <q-item-section
+            v-if="legacyRelayEnabled && !relayConnected"
+            side
+            clickable
+            @click="relayConnectOpen = true"
+          >
+            <q-btn icon="email" flat round color="red" />
+          </q-item-section>
+        </q-item>
+      </q-list>
+    </div>
   </div>
 </template>
 
@@ -272,5 +277,19 @@ export default defineComponent({
 .active-chat-list-item {
   background: var(--q-color-bg-active);
   color: #f0409b;
+}
+
+// Quasar renders vertical tab content as `display: block !important`, so it must be overridden
+// to a flex column for the `<q-space />` before the settings tab to actually grow and pin
+// settings to the rail's bottom; the tabs themselves need `flex: 0 0 auto` or Quasar's own
+// `.q-tab { flex: auto }` stretches them to share the rail's height evenly instead of stacking
+// at the top.
+.nav-rail :deep(.q-tabs__content) {
+  display: flex !important;
+  flex-direction: column;
+}
+
+.nav-rail :deep(.q-tab) {
+  flex: 0 0 auto;
 }
 </style>

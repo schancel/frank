@@ -1,5 +1,11 @@
 # Message and stamp derivation preview proposal
 
+Historical proposal provenance is retained below. Following independent review
+and owner acceptance in #745, the schedules are now activated solely through the
+[provisional pure derivation API](../../message-stamp-derivation.md). The frozen
+proposal fixtures/checkers remain unchanged; they do not establish directory
+authority or activate any runtime consumer.
+
 Status: **PROPOSED — NOT ALLOCATED, NOT ACTIVE**. Issue [#734](https://github.com/schancel/frank/issues/734), base `d11773555cdfccf1bd811654da819176e4803baf`.
 The owner authorized choosing provisional constants for the no-real-users preview.
 Independent protocol/security review and @schancel/coordinator disposition must

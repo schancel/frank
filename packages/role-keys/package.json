@@ -1,0 +1,31 @@
+{
+  "name": "@frank/role-keys",
+  "version": "0.0.1",
+  "description": "Provisional pure role derivation and unauthenticated local point matching.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "jest --runInBand",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.jest.json",
+    "check:boundary": "node scripts/check-boundary.mjs",
+    "format": "prettier --config ../../app/.prettierrc.json --check ."
+  },
+  "dependencies": {
+    "@frank/domain-roots": "*",
+    "@frank/nakamoto": "*"
+  },
+  "devDependencies": {
+    "@types/jest": "^29",
+    "@types/node": "^16.11.11",
+    "esbuild": "~0.28.0",
+    "jest": "^29",
+    "ts-jest": "^29",
+    "typescript": "^5.9.3"
+  }
+}

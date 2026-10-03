@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "paths": {
+      "@frank/domain-roots": ["../domain-roots/src/index.ts"],
+      "@frank/nakamoto/hd": ["../nakamoto/src/hd.ts"],
+      "@frank/nakamoto/keys": ["../nakamoto/src/keys.ts"],
+      "@frank/nakamoto/curve": ["../nakamoto/src/curve.ts"]
+    },
+    "types": ["jest", "node"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": []
+}

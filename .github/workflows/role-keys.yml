@@ -1,0 +1,61 @@
+name: role keys - provisional derivation and local matching
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/role-keys/**"
+      - "packages/nakamoto/**"
+      - "packages/domain-roots/**"
+      - "packages/account-recovery/**"
+      - "docs/protocol/message-stamp-derivation.md"
+      - "docs/protocol/proposals/message-stamp-derivation/**"
+      - "backend/cashweb/frank-cbor/**"
+      - "package.json"
+      - "yarn.lock"
+      - ".github/workflows/role-keys.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/role-keys/**"
+      - "packages/nakamoto/**"
+      - "packages/domain-roots/**"
+      - "packages/account-recovery/**"
+      - "docs/protocol/message-stamp-derivation.md"
+      - "docs/protocol/proposals/message-stamp-derivation/**"
+      - "backend/cashweb/frank-cbor/**"
+      - "package.json"
+      - "yarn.lock"
+      - ".github/workflows/role-keys.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  role-keys:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: yarn install --frozen-lockfile
+      - name: Build existing public HD dependency
+        run: yarn --cwd packages/nakamoto tsc -p tsconfig.json
+      - name: Pure facade, ownership and exact vectors
+        run: |
+          yarn workspace @frank/role-keys typecheck
+          yarn workspace @frank/role-keys test
+          yarn workspace @frank/role-keys format
+          yarn workspace @frank/role-keys check:boundary
+      - name: Preserve existing roots, addresses and exact-index primitive behavior
+        run: |
+          yarn workspace @frank/nakamoto test --runInBand test/hd.jest.test.ts test/hd-zero-tweak.jest.test.ts
+          yarn workspace @frank/domain-roots test --runInBand
+          yarn workspace @frank/domain-roots check:vectors
+          yarn workspace @frank/account-recovery check:vectors
+          node packages/domain-roots/proposals/message-stamp-derivation/run.cjs
+      - name: Independent frozen Rust oracle
+        run: cargo run --locked --manifest-path backend/cashweb/frank-cbor/proposals/message-stamp-derivation/Cargo.toml

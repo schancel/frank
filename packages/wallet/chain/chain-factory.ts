@@ -1,5 +1,5 @@
 import { ActiveChain, NativeAssetChain } from "./active-chain";
-import type { EcashChainConfig } from "./ecash-chain";
+import type { EcashChain, EcashChainConfig } from "./ecash-chain";
 import { createMonadChain, MonadChainConfig } from "./monad-chain";
 import type { SolanaChainConfig } from "./solana-chain";
 
@@ -19,13 +19,13 @@ export function createChain(params: {
 export function createChain(params: {
   kind: "ecash";
   config: EcashChainConfig;
-}): Promise<NativeAssetChain>;
+}): Promise<EcashChain>;
 export function createChain(
   params: ChainFactoryConfig
-): Promise<NativeAssetChain>;
+): Promise<NativeAssetChain | EcashChain>;
 export async function createChain(
   params: ChainFactoryConfig
-): Promise<NativeAssetChain> {
+): Promise<NativeAssetChain | EcashChain> {
   switch (params.kind) {
     case "monad":
       return createMonadChain(params.config);

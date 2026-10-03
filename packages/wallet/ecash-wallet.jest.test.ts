@@ -10,10 +10,16 @@ import {
   NativeTransactionSubmissionError,
 } from "./chain/chain-wallet";
 import type { ChronikClient } from "chronik-client";
+import type { DomainRoot } from "../domain-roots/src";
 
 const ADDRESS = "ecash:qq86jv6h0y97q8l63ndynvk3fn9aq8fqru3exew8gl";
 const MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+const ROOT: DomainRoot<"ecash-bch-wallet"> = {
+  registry: "frank-domain-roots-v1",
+  purpose: "ecash-bch-wallet",
+  bytes: new Uint8Array(32).fill(1),
+};
 
 function makeChronik(): ChronikClient {
   return {
@@ -61,10 +67,74 @@ describe("EcashWallet", () => {
     nativeAttemptStore = new InMemoryNativeTransactionAttemptStore();
   });
 
+  it.each([
+    null,
+    { ...ROOT, purpose: "evm-wallet" },
+    { ...ROOT, registry: "frank-domain-roots-v2" },
+    { ...ROOT, bytes: new Uint8Array(31) },
+    { ...ROOT, bytes: new Uint8Array(33) },
+    { ...ROOT, bytes: Array(32).fill(1) },
+    { mnemonic: MNEMONIC },
+  ])(
+    "rejects invalid typed roots before endpoint, backend or journal effects (%#)",
+    async (root) => {
+      const chronik = makeChronik();
+      const factory = jest.fn(() => makeBackend());
+      const journalRead = jest.spyOn(nativeAttemptStore, "get");
+      await expect(
+        EcashWallet.fromDomainRoot({
+          domainRoot: root as DomainRoot<"ecash-bch-wallet">,
+          chronik,
+          networkId: "ecash-mainnet",
+          nativeAttemptStore,
+          walletFactory: factory,
+        })
+      ).rejects.toThrow(
+        "Expected a frank-domain-roots-v1 ecash-bch-wallet root of exactly 32 bytes"
+      );
+      expect(chronik.block).not.toHaveBeenCalled();
+      expect(factory).not.toHaveBeenCalled();
+      expect(journalRead).not.toHaveBeenCalled();
+    }
+  );
+
+  it("snapshots root bytes before awaiting the checkpoint and clears only its owned copy", async () => {
+    const root = { ...ROOT, bytes: Uint8Array.from(ROOT.bytes) };
+    const expected = Uint8Array.from(root.bytes);
+    const chronik = makeChronik();
+    let release!: () => void;
+    jest.spyOn(chronik, "block").mockImplementation(async () => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { blockInfo: { hash: ECASH_MAINNET_CHECKPOINT_HASH } } as Awaited<
+        ReturnType<ChronikClient["block"]>
+      >;
+    });
+    let received: Uint8Array | undefined;
+    const constructing = EcashWallet.fromDomainRoot({
+      domainRoot: root,
+      chronik,
+      networkId: "ecash-mainnet",
+      nativeAttemptStore,
+      walletFactory: ({ domainRoot }) => {
+        expect(domainRoot.bytes).toEqual(expected);
+        expect(domainRoot.bytes).not.toBe(root.bytes);
+        received = domainRoot.bytes;
+        return makeBackend();
+      },
+    });
+    root.bytes.fill(9);
+    release();
+    await constructing;
+    expect(received).toEqual(new Uint8Array(32));
+    expect(root.bytes).toEqual(new Uint8Array(32).fill(9));
+  });
+
   it("exposes identity and a freshly synced bigint balance", async () => {
     const backend = makeBackend();
-    const wallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -84,8 +154,8 @@ describe("EcashWallet", () => {
 
   it("does not consume HD indices when the receive address is displayed repeatedly", async () => {
     const backend = makeBackend();
-    const wallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -106,8 +176,8 @@ describe("EcashWallet", () => {
 
   it("hides UTXO/chained-action details behind one native transfer", async () => {
     const backend = makeBackend();
-    const wallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -130,8 +200,8 @@ describe("EcashWallet", () => {
 
   it("rejects a non-mainnet recipient at the direct wallet boundary", async () => {
     const backend = makeBackend();
-    const wallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -156,8 +226,8 @@ describe("EcashWallet", () => {
     } as Awaited<ReturnType<ChronikClient["block"]>>);
 
     await expect(
-      EcashWallet.fromMnemonic({
-        mnemonic: MNEMONIC,
+      EcashWallet.fromDomainRoot({
+        domainRoot: ROOT,
         chronik,
         networkId: "ecash-mainnet",
         nativeAttemptStore,
@@ -178,8 +248,8 @@ describe("EcashWallet", () => {
     const walletFactory = jest.fn(() => makeBackend());
 
     await expect(
-      EcashWallet.fromMnemonic({
-        mnemonic: MNEMONIC,
+      EcashWallet.fromDomainRoot({
+        domainRoot: ROOT,
         chronik,
         networkId: "ecash-mainnet",
         nativeAttemptStore,
@@ -206,8 +276,8 @@ describe("EcashWallet", () => {
     legacyChronik.proxyInterface = undefined;
 
     await expect(
-      EcashWallet.fromMnemonic({
-        mnemonic: MNEMONIC,
+      EcashWallet.fromDomainRoot({
+        domainRoot: ROOT,
         chronik: legacyChronik,
         networkId: "ecash-mainnet",
         nativeAttemptStore,
@@ -221,8 +291,8 @@ describe("EcashWallet", () => {
       broadcasted: [],
       errors: ["conflicting UTXO"],
     });
-    const wallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -245,8 +315,8 @@ describe("EcashWallet", () => {
   it("retains the exact attempt when the broadcaster rejects", async () => {
     const backend = makeBackend();
     backend.broadcast.mockRejectedValueOnce(new Error("connection reset"));
-    const wallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -274,8 +344,8 @@ describe("EcashWallet", () => {
   ])("rejects a %s accepted-id response", async (broadcasted) => {
     const backend = makeBackend();
     backend.broadcast.mockResolvedValueOnce({ success: true, broadcasted });
-    const wallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -298,8 +368,8 @@ describe("EcashWallet", () => {
   it("does not broadcast when the exact attempt cannot be persisted first", async () => {
     const backend = makeBackend();
     const persistenceError = new Error("durable store unavailable");
-    const wallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore: {
@@ -326,8 +396,8 @@ describe("EcashWallet", () => {
       relatedTxHashes: ["first", "requested"],
     };
     let persisted: typeof transaction | undefined;
-    const wallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore: {
@@ -348,8 +418,8 @@ describe("EcashWallet", () => {
     ).resolves.toEqual(transaction);
     expect(wallet.getUnresolvedNativeTransaction()).toBeUndefined();
     const competingBackend = makeBackend();
-    const competingWallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const competingWallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore: {
@@ -382,8 +452,8 @@ describe("EcashWallet", () => {
 
   it("reconciles a confirmed restored attempt before a later send", async () => {
     const store = new InMemoryNativeTransactionAttemptStore();
-    const firstWallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const firstWallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore: store,
@@ -392,8 +462,8 @@ describe("EcashWallet", () => {
     await firstWallet.sendNative({ recipient: { raw: ADDRESS }, value: 1n });
 
     const restoredBackend = makeBackend();
-    const restoredWallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const restoredWallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore: store,
@@ -412,7 +482,7 @@ describe("EcashWallet", () => {
   it("rejects unsupported mnemonic passphrases explicitly", async () => {
     const factory = jest.fn(() => makeBackend());
     await expect(
-      EcashWallet.fromMnemonic({
+      EcashWallet.fromLegacyMnemonic({
         mnemonic: MNEMONIC,
         passphrase: "secret",
         chronik: makeChronik(),
@@ -424,10 +494,28 @@ describe("EcashWallet", () => {
     expect(factory).not.toHaveBeenCalled();
   });
 
+  it("keeps mnemonic import behind the explicitly named legacy constructor", async () => {
+    const factory = jest.fn(() => makeBackend());
+    const chronik = makeChronik();
+    const wallet = await EcashWallet.fromLegacyMnemonic({
+      mnemonic: MNEMONIC,
+      chronik,
+      networkId: "ecash-mainnet",
+      nativeAttemptStore,
+      walletFactory: factory,
+    });
+    expect(factory).toHaveBeenCalledWith({
+      mnemonic: MNEMONIC,
+      chronik,
+      addressPrefix: "ecash",
+    });
+    expect(wallet.identity.address.raw).toBe(ADDRESS);
+  });
+
   it("rejects malformed recovery phrases before constructing a backend", async () => {
     const factory = jest.fn(() => makeBackend());
     await expect(
-      EcashWallet.fromMnemonic({
+      EcashWallet.fromLegacyMnemonic({
         mnemonic: "not a valid BIP-39 mnemonic",
         chronik: makeChronik(),
         networkId: "ecash-mainnet",
@@ -442,8 +530,8 @@ describe("EcashWallet", () => {
     "rejects non-positive transfer value %s",
     async (value) => {
       const backend = makeBackend();
-      const wallet = await EcashWallet.fromMnemonic({
-        mnemonic: MNEMONIC,
+      const wallet = await EcashWallet.fromDomainRoot({
+        domainRoot: ROOT,
         chronik: makeChronik(),
         networkId: "ecash-mainnet",
         nativeAttemptStore,
@@ -461,8 +549,8 @@ describe("EcashWallet", () => {
   );
 
   it("returns accepted txids when finalization times out after broadcast", async () => {
-    const wallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -491,8 +579,8 @@ describe("EcashWallet", () => {
         success: true,
         broadcasted: ["first", "requested"],
       });
-    const wallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -525,8 +613,8 @@ describe("EcashWallet", () => {
       broadcasted: [],
       errors: ["response lost"],
     });
-    const wallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -559,8 +647,8 @@ describe("EcashWallet", () => {
       broadcasted: [],
       errors: ["response lost"],
     });
-    const wallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -594,8 +682,8 @@ describe("EcashWallet", () => {
       broadcasted: [],
       errors: ["definitive rejection"],
     });
-    const wallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -628,8 +716,8 @@ describe("EcashWallet", () => {
       broadcasted: [],
       errors: ["response lost"],
     });
-    const firstWallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const firstWallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -640,8 +728,8 @@ describe("EcashWallet", () => {
     ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
 
     const restoredBackend = makeBackend();
-    const restoredWallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const restoredWallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -675,8 +763,8 @@ describe("EcashWallet", () => {
       broadcasted: [],
       errors: ["response lost"],
     });
-    const firstWallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const firstWallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -688,8 +776,8 @@ describe("EcashWallet", () => {
 
     const aliasBackend = makeBackend();
     aliasBackend.getReceiveAddress.mockReturnValue(ADDRESS.toUpperCase());
-    const aliasWallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const aliasWallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,
@@ -722,8 +810,8 @@ describe("EcashWallet", () => {
             });
         })
     );
-    const wallet = await EcashWallet.fromMnemonic({
-      mnemonic: MNEMONIC,
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
       chronik: makeChronik(),
       networkId: "ecash-mainnet",
       nativeAttemptStore,

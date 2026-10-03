@@ -18,6 +18,42 @@ import { join } from 'path'
 import { runSmokeChecks, SmokeCheck } from './smoke-checks'
 import { resolveDemoConfig } from './demo-config'
 import { DemoHandle, redact, startDemo } from './demo'
+import { MonadIdentity } from '../../wallet/monad-identity'
+import { createMonadJsonRpcProvider } from '../../wallet/monad-provider'
+import { registerAndLog } from '../qwen-bot-common'
+
+/** Keep protected proxy coverage independent of the opt-in typed UI demo transport. */
+export async function checkProtectedRelayRpc(
+  handle: DemoHandle,
+): Promise<SmokeCheck> {
+  // Public synthetic fixture, registered only for this legacy protected-proxy smoke check.
+  const identity = MonadIdentity.fromPrivateKeyHex(`0x${'07'.repeat(32)}`)
+  await registerAndLog({
+    relayBaseUrl: handle.relayUrl,
+    identity,
+    label: 'proxy-smoke',
+  })
+  const provider = createMonadJsonRpcProvider({
+    rpcUrl: `${handle.relayUrl}/chain-rpc/monad-testnet/rpc`,
+    chainId: 10143,
+    relayAuth: {
+      chain: 'monad-testnet',
+      customer: identity.address.raw,
+      networkTag: 'MONT',
+      signDigest: digest => identity.signHash(Buffer.from(digest)),
+    },
+  })
+  try {
+    await provider.getBalance(identity.address.raw)
+    return {
+      name: 'protected-relay-rpc',
+      ok: true,
+      detail: 'authenticated capability and balance through relay proxy',
+    }
+  } finally {
+    provider.destroy()
+  }
+}
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -74,6 +110,7 @@ export async function runSmoke(
     const results: SmokeCheck[] = await runSmokeChecks(handle, {
       timeoutMs: 120_000,
     })
+    results.push(await checkProtectedRelayRpc(handle))
     for (const r of results) {
       console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}: ${r.detail}`)
     }

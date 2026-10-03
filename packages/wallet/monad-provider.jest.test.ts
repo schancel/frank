@@ -20,6 +20,21 @@ describe("MonadJsonRpcProvider (#534)", () => {
   let chainIdHex = "0x279f"; // 10143
   let balanceHex = "0x2a"; // 42
 
+  it("refuses combining demo-only direct cancellation with relay authentication", () => {
+    expect(() =>
+      createMonadJsonRpcProvider({
+        rpcUrl: "http://127.0.0.1:8545",
+        demoOnlyAbortOnDestroy: true,
+        relayAuth: {
+          chain: "monad-testnet",
+          customer: "0x0000000000000000000000000000000000000001",
+          networkTag: "MONT",
+          signDigest: () => new Uint8Array(0),
+        },
+      })
+    ).toThrow("cannot be combined");
+  });
+
   it("maps protocol chain names to one chain-id and network-tag identity", () => {
     expect(monadProtocolIdentity("monad-testnet")).toEqual({
       chainId: 10143n,

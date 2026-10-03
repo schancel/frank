@@ -119,6 +119,7 @@ import {
   SubAccountLeaseManager,
 } from "../monad-account-lease";
 import { MonadHttpClient } from "../monad-http";
+import { discoverFakeDemoRpc, FakeDemoRpcConfig } from "../monad-demo-rpc";
 import {
   createMonadJsonRpcProvider,
   DEFAULT_MONAD_CHAIN_ID,
@@ -206,6 +207,8 @@ export interface MonadChainConfig {
    * sender account or rewind the change derivation path. */
   walletStorageLocation: string | false;
   nativeAttemptStore?: NativeTransactionAttemptStore;
+  /** Explicit disposable fake-service opt-in; never selected by a relay failure. */
+  fakeDemo?: FakeDemoRpcConfig;
 }
 
 // Ticket #54 (found live doing real end-to-end GUI testing against a real relay + real Alchemy
@@ -229,6 +232,7 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
   const rpcChain = readEnv("MONAD_RPC_CHAIN") ?? "monad-testnet";
   const protocolIdentity = monadProtocolIdentity(rpcChain);
   const rawChainId = readEnv("MONAD_CHAIN_ID");
+  const fakeDemoEnabled = readEnv("FRANK_FAKE_DEMO") === "true";
   let chainId: bigint | undefined;
   if (rawChainId) {
     try {
@@ -243,13 +247,19 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
     rpcChain,
     // Known protocol rows are atomic: public overrides must not create a
     // mainnet route with a testnet chain ID (or the inverse).
-    chainId: protocolIdentity?.chainId ?? chainId ?? DEFAULT_MONAD_CHAIN_ID,
+    chainId:
+      fakeDemoEnabled && rawChainId !== undefined
+        ? chainId ?? -1n
+        : protocolIdentity?.chainId ?? chainId ?? DEFAULT_MONAD_CHAIN_ID,
     relayBaseUrl:
       readEnv("MONAD_RELAY_BASE_URL") ??
       readEnv("E2E_DEMO_RELAY_URL") ??
       "http://127.0.0.1:8098",
     networkTag:
-      protocolIdentity?.networkTag ?? readEnv("FRANK_NETWORK_TAG") ?? "MONT",
+      (fakeDemoEnabled ? readEnv("FRANK_NETWORK_TAG") : undefined) ??
+      protocolIdentity?.networkTag ??
+      readEnv("FRANK_NETWORK_TAG") ??
+      "MONT",
     stampBurnAddress:
       readEnv("MONAD_STAMP_BURN_ADDRESS") ??
       "0x000000000000000000000000000000000000dEaD",
@@ -264,6 +274,14 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
     subAccountPoolSize: Number(readEnv("MONAD_SUB_ACCOUNT_POOL_SIZE") ?? "8"),
     walletStorageLocation:
       readEnv("MONAD_WALLET_STORAGE_LOCATION") ?? "frank-monad-wallet-state",
+    ...(fakeDemoEnabled
+      ? {
+          fakeDemo: {
+            enabled: true,
+            controlUrl: readEnv("FRANK_DEMO_CONTROL_URL") ?? "",
+          },
+        }
+      : {}),
   };
 }
 
@@ -1316,7 +1334,9 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               : undefined,
           ]);
         let destroyProvider: (() => void) | undefined;
+        let destroyHttpClient: (() => void) | undefined;
         try {
+          const demoRpcUrl = await discoverFakeDemoRpc(config);
           const opened = await Promise.allSettled([
             subAccountStore?.Open(),
             changeStore?.Open(),
@@ -1380,28 +1400,40 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             store: changeStore,
           });
           const leaseManager = new SubAccountLeaseManager(pool);
-          const rpcUrl = `${config.relayBaseUrl.replace(
-            /\/$/,
-            ""
-          )}/chain-rpc/${encodeURIComponent(config.rpcChain)}/rpc`;
-          const relayAuth = {
-            chain: config.rpcChain,
-            customer: identity.address.raw,
-            networkTag: config.networkTag,
-            signDigest: (digest: Uint8Array) =>
-              identity.signHash(Buffer.from(digest)),
-          };
+          const rpcUrl =
+            demoRpcUrl ??
+            `${config.relayBaseUrl.replace(
+              /\/$/,
+              ""
+            )}/chain-rpc/${encodeURIComponent(config.rpcChain)}/rpc`;
+          const relayAuth =
+            demoRpcUrl === undefined
+              ? {
+                  chain: config.rpcChain,
+                  customer: identity.address.raw,
+                  networkTag: config.networkTag,
+                  signDigest: (digest: Uint8Array) =>
+                    identity.signHash(Buffer.from(digest)),
+                }
+              : undefined;
           const provider = createMonadJsonRpcProvider({
             rpcUrl,
             chainId: config.chainId,
             relayAuth,
+            ...(demoRpcUrl === undefined
+              ? {}
+              : { demoOnlyAbortOnDestroy: true }),
           });
           destroyProvider = () => provider.destroy();
           const httpClient = new MonadHttpClient({
             rpcUrl,
             chainId: config.chainId,
             relayAuth,
+            ...(demoRpcUrl === undefined
+              ? {}
+              : { demoOnlyAbortOnDestroy: true }),
           });
+          destroyHttpClient = () => httpClient.destroy();
           const submitNative = async (
             signed: SignedNativeTransfer,
             onSigned?: (transaction: ChainTransaction) => Promise<void>
@@ -1577,6 +1609,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                     openTypedEvmAccounts.delete(economicOwnerKey);
                 } finally {
                   provider.destroy();
+                  httpClient.destroy();
                   material.dispose();
                   walletMaterial.delete(wallet);
                 }
@@ -1595,6 +1628,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         } catch (error) {
           await closeStores();
           destroyProvider?.();
+          destroyHttpClient?.();
           material.dispose();
           throw error;
         }

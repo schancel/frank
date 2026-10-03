@@ -206,6 +206,27 @@ layer (`cashweb-registry` `http/server.rs`), which the smoke checks on the prefl
 PUT and GET responses of the topics route. Use `CASHWEBD_BIN=... yarn demo:smoke`
 to skip the Cargo build.
 
+The smoke also obtains an authenticated relay RPC capability for a separate synthetic registered
+identity and reads its balance through `/chain-rpc/monad-testnet/rpc`. This protected-proxy
+check stays enabled when typed preview wallets use the direct fake transport.
+
+Typed preview wallets can opt into the built-in disposable fake service with
+`QCLI_FRANK_FAKE_DEMO=true` and `QCLI_FRANK_DEMO_CONTROL_URL=http://127.0.0.1:<port>`
+in the browser (`FRANK_FAKE_DEMO` and `FRANK_DEMO_CONTROL_URL` in Node). Both flags are
+explicit; the chain, network ID and network tag must identify Monad testnet. The URL must be a
+literal loopback HTTP origin with an explicit valid port and no path, credentials, query or
+fragment. Before constructing either RPC client, the wallet checks the existing simulated
+funding capability with a five-second timeout and redirects disabled. It retains only the URL,
+does not fund or register the wallet, and never retries direct after a production authorization
+failure. Use the explicit funding control with the wallet's EVM receive address; typed DM remains
+unavailable pending #696. Discovery identifies this disposable test service, not a security
+boundary against a hostile local machine. Use only synthetic accounts and simulated value.
+
+This temporary demo transport is owned by the #696 integration coordinator for removal in
+[#752](https://github.com/schancel/frank/issues/752), once typed accounts can publish authenticated
+directory statements and obtain the normal relay capabilities. Default and real-chain wallets
+continue to use the authenticated relay proxy.
+
 #### Variables
 
 | Variable                              | Applies to       | Default                                                                     | Meaning                                                                                                                                                                                                                                                                                                                                                    |

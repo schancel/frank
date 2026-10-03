@@ -28,6 +28,7 @@ cashweb-config = { path = "../cashweb-config" }
 
 # #[async_trait] macro, needed to implement the ChainAdapter trait
 async-trait = "0.1.50"
+base64 = "0.13"
 
 # Web app framework
 axum = { version = "0.5", features = ["ws"] }

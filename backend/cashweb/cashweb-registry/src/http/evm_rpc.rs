@@ -609,49 +609,61 @@ impl EvmRpcRuntime {
         .await
         .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?
         .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
-        let chain_id = ws_startup_call(
-            &mut socket,
-            json!({"jsonrpc":"2.0","id":"frank-chain-id","method":"eth_chainId","params":[]}),
-            "frank-chain-id",
-            self.timeout,
-            &chain.id,
-        )
-        .await?
-        .as_str()
-        .and_then(|value| u64::from_str_radix(value.strip_prefix("0x")?, 16).ok())
-        .ok_or_else(|| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
-        if chain_id != chain.expected_chain_id {
-            return Err(EvmRpcStartError::ChainMismatch {
-                id: chain.id.clone(),
-                expected: chain.expected_chain_id,
-                actual: chain_id,
-            });
-        }
-        if let Some((block_number, expected_hash)) = &chain.checkpoint {
-            let result = ws_startup_call(
-                &mut socket,
-                json!({
-                    "jsonrpc":"2.0",
-                    "id":"frank-checkpoint",
-                    "method":"eth_getBlockByNumber",
-                    "params":[format!("0x{block_number:x}"), false]
-                }),
-                "frank-checkpoint",
-                self.timeout,
-                &chain.id,
-            )
-            .await?;
-            let actual = result
-                .pointer("/hash")
-                .and_then(Value::as_str)
-                .ok_or_else(|| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
-            if !actual.eq_ignore_ascii_case(expected_hash) {
-                return Err(EvmRpcStartError::CheckpointMismatch(chain.id.clone()));
-            }
-        }
-        let _ = socket.close(None).await;
+        verify_ws_socket(&mut socket, chain, self.timeout).await?;
+        let _ = tokio::time::timeout(self.timeout, socket.close(None)).await;
         Ok(())
     }
+}
+
+async fn verify_ws_socket<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    chain: &EvmChainRuntime,
+    timeout: Duration,
+) -> Result<(), EvmRpcStartError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let chain_id = ws_startup_call(
+        socket,
+        json!({"jsonrpc":"2.0","id":"frank-chain-id","method":"eth_chainId","params":[]}),
+        "frank-chain-id",
+        timeout,
+        &chain.id,
+    )
+    .await?
+    .as_str()
+    .and_then(|value| u64::from_str_radix(value.strip_prefix("0x")?, 16).ok())
+    .ok_or_else(|| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
+    if chain_id != chain.expected_chain_id {
+        return Err(EvmRpcStartError::ChainMismatch {
+            id: chain.id.clone(),
+            expected: chain.expected_chain_id,
+            actual: chain_id,
+        });
+    }
+    if let Some((block_number, expected_hash)) = &chain.checkpoint {
+        let result = ws_startup_call(
+            socket,
+            json!({
+                "jsonrpc":"2.0",
+                "id":"frank-checkpoint",
+                "method":"eth_getBlockByNumber",
+                "params":[format!("0x{block_number:x}"), false]
+            }),
+            "frank-checkpoint",
+            timeout,
+            &chain.id,
+        )
+        .await?;
+        let actual = result
+            .pointer("/hash")
+            .and_then(Value::as_str)
+            .ok_or_else(|| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
+        if !actual.eq_ignore_ascii_case(expected_hash) {
+            return Err(EvmRpcStartError::CheckpointMismatch(chain.id.clone()));
+        }
+    }
+    Ok(())
 }
 
 async fn ws_startup_call<S>(
@@ -664,11 +676,11 @@ async fn ws_startup_call<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    socket
-        .send(UpstreamWsMessage::Text(request.to_string()))
-        .await
-        .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain_id.to_string()))?;
     tokio::time::timeout(timeout, async {
+        socket
+            .send(UpstreamWsMessage::Text(request.to_string()))
+            .await
+            .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain_id.to_string()))?;
         loop {
             match socket.next().await {
                 Some(Ok(UpstreamWsMessage::Text(text))) => {
@@ -1405,6 +1417,9 @@ enum WsRpcId {
 
 impl WsRpcId {
     fn from_value(value: &Value) -> Option<Self> {
+        if !super::json_rpc::rpc_id_is_bounded(value) {
+            return None;
+        }
         match value {
             Value::String(value) => Some(Self::String(value.clone())),
             Value::Number(value) => Some(Self::Number(value.to_string())),
@@ -1451,6 +1466,16 @@ fn ws_subscription_notification(value: &Value) -> Option<&str> {
         return None;
     }
     params.get("subscription")?.as_str()
+}
+
+async fn bounded_ws_send<S, M>(sink: &mut S, message: M, timeout: Duration) -> bool
+where
+    S: futures::Sink<M> + Unpin,
+{
+    matches!(
+        tokio::time::timeout(timeout, sink.send(message)).await,
+        Ok(Ok(()))
+    )
 }
 
 pub(crate) async fn handle_proxy_ws(
@@ -1500,9 +1525,16 @@ pub(crate) async fn handle_proxy_ws(
                     connect_async_with_config(upstream_url.as_str(), Some(config)),
                 )
                 .await;
-                let Ok(Ok((upstream, _response))) = connected else {
+                let Ok(Ok((mut upstream, _response))) = connected else {
                     return;
                 };
+                if verify_ws_socket(&mut upstream, &chain, timeout)
+                    .await
+                    .is_err()
+                {
+                    let _ = tokio::time::timeout(timeout, upstream.close(None)).await;
+                    return;
+                }
                 proxy_ws_connection(
                     socket,
                     upstream,
@@ -1535,33 +1567,35 @@ async fn proxy_ws_connection<S>(
     let mut subscription_attempts = 0usize;
     let mut active_subscriptions = HashSet::new();
     let mut pending = HashMap::<WsRpcId, WsPending>::new();
-    let mut expiry_check = tokio::time::interval(Duration::from_secs(1));
-    expiry_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
+        let next_deadline = pending.values().map(|request| request.deadline).min();
+        let deadline = next_deadline
+            .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(86_400));
         tokio::select! {
-            _ = expiry_check.tick() => {
-                let now = tokio::time::Instant::now();
-                let expired = pending
+            _ = tokio::time::sleep_until(deadline), if next_deadline.is_some() => {
+                let request = pending
                     .iter()
-                    .filter(|(_, request)| request.deadline <= now)
-                    .map(|(key, request)| (key.clone(), request.id.clone()))
-                    .collect::<Vec<_>>();
-                let has_expired = !expired.is_empty();
-                for (key, id) in expired {
-                    pending.remove(&key);
-                    if client_write
-                        .send(ws_error(id, -32002, "upstream request timed out"))
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-                if has_expired {
-                    let _ = client_write.send(ClientWsMessage::Close(None)).await;
-                    let _ = upstream_write.send(UpstreamWsMessage::Close(None)).await;
-                    return;
-                }
+                    .min_by_key(|(_, request)| request.deadline)
+                    .map(|(key, request)| (key.clone(), request.id.clone()));
+                let Some((key, id)) = request else { continue; };
+                pending.remove(&key);
+                pending.clear();
+                let _ = bounded_ws_send(
+                    &mut client_write,
+                    ws_error(id, -32002, "upstream request timed out"),
+                    request_timeout,
+                ).await;
+                let _ = bounded_ws_send(
+                    &mut client_write,
+                    ClientWsMessage::Close(None),
+                    request_timeout,
+                ).await;
+                let _ = bounded_ws_send(
+                    &mut upstream_write,
+                    UpstreamWsMessage::Close(None),
+                    request_timeout,
+                ).await;
+                return;
             }
             client = client_read.next() => {
                 let Some(Ok(client)) = client else { break; };
@@ -1570,37 +1604,37 @@ async fn proxy_ws_connection<S>(
                         let parsed = super::json_rpc::parse_without_duplicate_keys(text.as_bytes());
                         let id = parsed.as_ref().ok().and_then(|value| value.get("id")).cloned().unwrap_or(Value::Null);
                         let Ok(value) = parsed else {
-                            let _ = client_write.send(ws_error(id, -32600, "invalid request")).await;
+                            if !bounded_ws_send(&mut client_write, ws_error(id, -32600, "invalid request"), request_timeout).await { return; }
                             continue;
                         };
                         let Some(id_key) = WsRpcId::from_value(&id) else {
-                            let _ = client_write.send(ws_error(Value::Null, -32600, "invalid request id")).await;
+                            if !bounded_ws_send(&mut client_write, ws_error(Value::Null, -32600, "invalid request id"), request_timeout).await { return; }
                             continue;
                         };
                         if pending.len() >= MAX_WS_PENDING_REQUESTS || pending.contains_key(&id_key) {
-                            let _ = client_write.send(ws_error(id, -32005, "pending request limit exceeded")).await;
+                            if !bounded_ws_send(&mut client_write, ws_error(id, -32005, "pending request limit exceeded"), request_timeout).await { return; }
                             continue;
                         }
                         let Ok((cost, subscribes)) = validate_ws_call(&value, &chain) else {
-                            let _ = client_write.send(ws_error(id, -32601, "method denied by relay")).await;
+                            if !bounded_ws_send(&mut client_write, ws_error(id, -32601, "method denied by relay"), request_timeout).await { return; }
                             continue;
                         };
                         if subscribes {
                             subscription_attempts = subscription_attempts.saturating_add(1);
                             if subscription_attempts > MAX_WS_SUBSCRIPTIONS {
-                                let _ = client_write.send(ws_error(id, -32005, "subscription limit exceeded")).await;
+                                if !bounded_ws_send(&mut client_write, ws_error(id, -32005, "subscription limit exceeded"), request_timeout).await { return; }
                                 continue;
                             }
                         }
                         let request_permit = match Arc::clone(&request_permits).try_acquire_owned() {
                             Ok(permit) => permit,
                             Err(_) => {
-                                let _ = client_write.send(ws_error(id, -32005, "relay busy")).await;
+                                if !bounded_ws_send(&mut client_write, ws_error(id, -32005, "relay busy"), request_timeout).await { return; }
                                 continue;
                             }
                         };
                         if quota.charge(customer, cost.units, now_seconds()).is_err() {
-                            let _ = client_write.send(ws_error(id, -32005, "hourly quota exceeded")).await;
+                            if !bounded_ws_send(&mut client_write, ws_error(id, -32005, "hourly quota exceeded"), request_timeout).await { return; }
                             continue;
                         }
                         let method = value.get("method").and_then(Value::as_str);
@@ -1624,17 +1658,17 @@ async fn proxy_ws_connection<S>(
                             deadline: tokio::time::Instant::now() + request_timeout,
                             _permit: request_permit,
                         });
-                        if upstream_write.send(UpstreamWsMessage::Text(text)).await.is_err() {
+                        if !bounded_ws_send(&mut upstream_write, UpstreamWsMessage::Text(text), request_timeout).await {
                             pending.remove(&id_key);
                             break;
                         }
                     }
                     ClientWsMessage::Ping(payload) => {
-                        if client_write.send(ClientWsMessage::Pong(payload)).await.is_err() { break; }
+                        if !bounded_ws_send(&mut client_write, ClientWsMessage::Pong(payload), request_timeout).await { break; }
                     }
                     ClientWsMessage::Close(_) => break,
                     ClientWsMessage::Binary(_) => {
-                        let _ = client_write.send(ws_error(Value::Null, -32600, "binary requests are not supported")).await;
+                        if !bounded_ws_send(&mut client_write, ws_error(Value::Null, -32600, "binary requests are not supported"), request_timeout).await { return; }
                     }
                     ClientWsMessage::Pong(_) => {}
                 }
@@ -1650,6 +1684,15 @@ async fn proxy_ws_connection<S>(
                             }
                             let Some(id_key) = WsRpcId::from_value(&id) else { break; };
                             let Some(request) = pending.remove(&id_key) else { break; };
+                            if request.deadline <= tokio::time::Instant::now() {
+                                pending.clear();
+                                let _ = bounded_ws_send(
+                                    &mut client_write,
+                                    ws_error(request.id, -32002, "upstream request timed out"),
+                                    request_timeout,
+                                ).await;
+                                return;
+                            }
                             if value.get("error").is_none() {
                                 match request.kind {
                                     WsPendingKind::Subscribe => {
@@ -1671,10 +1714,10 @@ async fn proxy_ws_connection<S>(
                             }
                         }
                         super::json_rpc::sanitize_response_errors(&mut value);
-                        if client_write.send(ClientWsMessage::Text(value.to_string())).await.is_err() { break; }
+                        if !bounded_ws_send(&mut client_write, ClientWsMessage::Text(value.to_string()), request_timeout).await { break; }
                     }
                     UpstreamWsMessage::Ping(payload) => {
-                        if upstream_write.send(UpstreamWsMessage::Pong(payload)).await.is_err() { break; }
+                        if !bounded_ws_send(&mut upstream_write, UpstreamWsMessage::Pong(payload), request_timeout).await { break; }
                     }
                     UpstreamWsMessage::Close(_) => break,
                     UpstreamWsMessage::Binary(_) => break,
@@ -2746,7 +2789,7 @@ mod tests {
             .unwrap();
         let response = client.next().await.unwrap().unwrap().into_text().unwrap();
         assert_eq!(serde_json::from_str::<Value>(&response).unwrap()["id"], 7);
-        assert_eq!(ws_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(ws_calls.load(Ordering::SeqCst), 3);
 
         let (mut malicious, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
         malicious

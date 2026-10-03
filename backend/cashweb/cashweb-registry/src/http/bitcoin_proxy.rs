@@ -256,8 +256,11 @@ impl BitcoinProxyRuntime {
                 }
             }
             if let Some(base) = &chain.chronik {
-                let url = endpoint_url(base, &format!("block/{}", chain.checkpoint_height))
-                    .map_err(|_| BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
+                let url =
+                    chronik_endpoint_url(base, &format!("block/{}", chain.checkpoint_height), None)
+                        .map_err(|_| {
+                            BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone())
+                        })?;
                 let bytes = self
                     .simple_request(self.client.get(url))
                     .await
@@ -307,23 +310,11 @@ impl BitcoinProxyRuntime {
     }
 
     fn rpc_request_builder(&self, url: &Url, body: Vec<u8>) -> reqwest::RequestBuilder {
-        let mut request = self
-            .client
+        self.client
             .post(url.clone())
             .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body);
-        if !url.username().is_empty() {
-            request = request.basic_auth(url.username(), url.password());
-        }
-        request
+            .body(body)
     }
-}
-
-fn endpoint_url(base: &Url, path: &str) -> Result<Url, ()> {
-    let mut text = base.as_str().trim_end_matches('/').to_owned();
-    text.push('/');
-    text.push_str(path.trim_start_matches('/'));
-    text.parse().map_err(|_| ())
 }
 
 fn chronik_endpoint_url(base: &Url, path: &str, query: Option<&str>) -> Result<Url, ()> {
@@ -373,9 +364,21 @@ fn percent_decode_component(value: &str) -> Vec<u8> {
 fn chronik_error_contains_secret(body: &[u8], upstream: &Url) -> bool {
     let mut needles = Vec::<Vec<u8>>::new();
     needles.push(upstream.as_str().as_bytes().to_vec());
+    if let Some(host) = upstream.host_str().filter(|host| !host.is_empty()) {
+        needles.push(host.as_bytes().to_vec());
+    }
     if !upstream.username().is_empty() {
         needles.push(upstream.username().as_bytes().to_vec());
-        needles.push(percent_decode_component(upstream.username()));
+        let username = percent_decode_component(upstream.username());
+        needles.push(username.clone());
+        let password = upstream
+            .password()
+            .map(percent_decode_component)
+            .unwrap_or_default();
+        let mut credentials = username;
+        credentials.push(b':');
+        credentials.extend_from_slice(&password);
+        needles.push(format!("Basic {}", base64::encode(credentials)).into_bytes());
     }
     if let Some(password) = upstream.password().filter(|password| !password.is_empty()) {
         needles.push(password.as_bytes().to_vec());
@@ -1440,6 +1443,18 @@ mod tests {
         assert!(chronik_error_contains_secret(
             b"decoded private/tenant",
             &encoded
+        ));
+        let hosted: Url = "https://tenant-secret.example/private?api=hidden"
+            .parse()
+            .unwrap();
+        assert!(chronik_error_contains_secret(
+            b"dial tenant-secret.example refused",
+            &hosted
+        ));
+        let basic: Url = "https://zyxw:qvkj@example.test/".parse().unwrap();
+        assert!(chronik_error_contains_secret(
+            b"bad Authorization: Basic enl4dzpxdmtq",
+            &basic
         ));
     }
 

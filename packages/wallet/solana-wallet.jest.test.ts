@@ -42,6 +42,14 @@ class FakeConnection implements SolanaWalletConnection {
   blockhashes: string[] = [blockhash];
   blockhashRequests = 0;
 
+  async getGenesisHash(): Promise<string> {
+    return "solana-genesis";
+  }
+
+  async getSignatureStatus(): Promise<{ value: null }> {
+    return { value: null };
+  }
+
   async getBalance(): Promise<bigint> {
     return this.balance;
   }
@@ -421,83 +429,6 @@ describe("SolanaWallet", () => {
     );
   });
 
-  it("refreshes a stealth bundle without deriving new destinations", async () => {
-    const connection = new FakeConnection();
-    connection.blockhashes = [blockhash, rotatedBlockhash];
-    const createDestination = jest
-      .fn()
-      .mockResolvedValueOnce({
-        address: (await makeKeypair(21)).publicKey,
-        metadata: { ephemeral: 1 },
-      })
-      .mockResolvedValueOnce({
-        address: (await makeKeypair(22)).publicKey,
-        metadata: { ephemeral: 2 },
-      });
-    const wallet = new SolanaStealthWallet({
-      networkId: "solana-test",
-      connection,
-      signer: await makeKeypair(1),
-      stealthStrategy: { createDestination },
-    });
-    const original = await wallet.buildStealthTransactionBundle({
-      intentId: intentId(21),
-      recipient: (await makeKeypair(2)).publicKey,
-      lamports: [10n],
-      context: new Uint8Array(),
-    });
-
-    const refreshed = await wallet.refreshTransactionBundle(original);
-
-    expect(createDestination).toHaveBeenCalledTimes(1);
-    expect(refreshed.bundleId).toBe(original.bundleId);
-    expect(refreshed.transactions[0].destination).toBe(
-      original.transactions[0].destination
-    );
-    expect(refreshed.transactions[0].metadata).toEqual(
-      original.transactions[0].metadata
-    );
-    expect(refreshed.transactions[0].rawTransaction).not.toEqual(
-      original.transactions[0].rawTransaction
-    );
-  });
-
-  it("authenticates original signed bytes before refreshing a bundle", async () => {
-    const connection = new FakeConnection();
-    const wallet = new SolanaWallet({
-      networkId: "solana-test",
-      connection,
-      signer: await makeKeypair(1),
-    });
-    const original = await wallet.buildTransactionBundle({
-      intentId: intentId(23),
-      transfers: [
-        { destination: (await makeKeypair(2)).publicKey, lamports: 10n },
-      ],
-    });
-    const redirected = await wallet.buildTransactionBundle({
-      intentId: intentId(23),
-      transfers: [
-        { destination: (await makeKeypair(3)).publicKey, lamports: 999n },
-      ],
-    });
-    const tampered = {
-      ...original,
-      bundleId: redirected.bundleId,
-      transactions: [
-        {
-          ...original.transactions[0],
-          destination: redirected.transactions[0].destination,
-          value: redirected.transactions[0].value,
-        },
-      ],
-    };
-
-    await expect(
-      wallet.refreshTransactionBundle(tampered as typeof original)
-    ).rejects.toThrow("description does not match signed bytes");
-  });
-
   it("does not expose base factories that silently drop stealth capability", async () => {
     await expect(
       SolanaStealthWallet.generate({
@@ -819,7 +750,7 @@ describe("SolanaWallet", () => {
       restoredWallet.retryUnresolvedNativeTransaction()
     ).rejects.toThrow("must be reconciled by id");
 
-    restoredWallet.resolveUnresolvedNativeTransaction({
+    await restoredWallet.resolveUnresolvedNativeTransaction({
       transaction: unresolved,
       outcome: "not-submitted",
     });
@@ -905,6 +836,7 @@ describe("SolanaWallet", () => {
       signer,
       networkId: "solana-test",
       nativeAttemptStore,
+      getTransactionStatus: async () => "confirmed",
     });
     expect(reconstructed.getUnresolvedNativeTransaction()).toEqual(
       wallet.getUnresolvedNativeTransaction()
@@ -912,6 +844,12 @@ describe("SolanaWallet", () => {
 
     releaseSend!();
     await expect(sending).resolves.toEqual({ txHash: expect.any(String) });
+    await expect(
+      reconstructed.sendNative({
+        recipient: { raw: (await makeKeypair(3)).publicKey.toBase58() },
+        value: 2n,
+      })
+    ).resolves.toEqual({ txHash: expect.any(String) });
   });
 
   it("does not submit when the exact attempt cannot be persisted first", async () => {
@@ -922,6 +860,7 @@ describe("SolanaWallet", () => {
       connection,
       signer: await makeKeypair(1),
       nativeAttemptStore: {
+        coordinationScope: "single-realm",
         get: () => undefined,
         put: () => {
           throw persistenceError;

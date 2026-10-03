@@ -9,6 +9,8 @@ import { SolanaWallet, SolanaWalletConnection } from "../solana-wallet";
 export interface SolanaChainConfig {
   /** Stable cluster/genesis identifier used to namespace durable transaction attempts. */
   networkId: string;
+  /** Expected genesis hash, checked against the RPC before wallet construction. */
+  genesisHash: string;
   connection: SolanaWalletConnection;
   /** The application owns the reviewed mnemonic-to-ed25519 derivation policy. */
   deriveSigner(seed: HDSeed): Promise<Keypair> | Keypair;
@@ -42,10 +44,17 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
       if (!bip39.validateMnemonic(seed.mnemonic)) {
         throw new Error("Invalid BIP-39 mnemonic");
       }
+      const actualGenesisHash = await config.connection.getGenesisHash();
+      if (actualGenesisHash !== config.genesisHash) {
+        throw new Error(
+          `Solana RPC genesis mismatch: expected ${config.genesisHash}, got ${actualGenesisHash}`
+        );
+      }
       return new SolanaWallet({
         connection: config.connection,
         signer: await config.deriveSigner(seed),
         networkId: config.networkId,
+        attemptNetworkId: config.genesisHash,
         nativeAttemptStore: config.nativeAttemptStore,
       });
     },
@@ -71,6 +80,26 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
           );
         }
         return wallet.sendNative({ recipient, value, onSigned });
+      },
+      async getTransactionStatus({ wallet, transaction }) {
+        if (wallet.chainKind !== "solana") {
+          throw new Error(`Expected a Solana wallet, got ${wallet.chainKind}`);
+        }
+        if (wallet.networkId !== config.networkId) {
+          throw new Error(
+            `Expected Solana network ${config.networkId}, got ${wallet.networkId}`
+          );
+        }
+        const response = await config.connection.getSignatureStatus(
+          transaction.txHash,
+          { searchTransactionHistory: true }
+        );
+        if (response.value === null) return "unknown";
+        if (response.value.err !== null) return "failed";
+        return response.value.confirmationStatus === "confirmed" ||
+          response.value.confirmationStatus === "finalized"
+          ? "confirmed"
+          : "pending";
       },
     },
   };

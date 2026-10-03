@@ -6,7 +6,11 @@ import {
   NativeTransactionAttemptStore,
   NativeTransactionSubmissionError,
   NativeWalletHandle,
+  runNativeTransactionExclusive,
+  sameChainTransaction,
 } from "./chain/chain-wallet";
+
+export type EcashAddressPrefix = "ecash" | "ectest" | "ecregtest";
 import * as bip39 from "bip39";
 
 export interface EcashBroadcastResult {
@@ -39,19 +43,21 @@ export interface EcashWalletBackend {
 export type EcashWalletFactory = (params: {
   mnemonic: string;
   chronik: unknown;
+  addressPrefix: EcashAddressPrefix;
 }) => EcashWalletBackend | Promise<EcashWalletBackend>;
 
 interface EcashSdkWalletConstructor {
   fromMnemonic(
     mnemonic: string,
     chronik: unknown,
-    options: { hd: true; prefix: "ecash" }
+    options: { hd: true; prefix: EcashAddressPrefix }
   ): EcashWalletBackend;
 }
 
 const defaultWalletFactory: EcashWalletFactory = async ({
   mnemonic,
   chronik,
+  addressPrefix,
 }) => {
   // ecash-wallet 6.2.1 publishes JavaScript but no declaration entry. Dynamically importing it
   // keeps that packaging gap at this boundary while still allowing Vite to bundle the backend.
@@ -68,7 +74,7 @@ const defaultWalletFactory: EcashWalletFactory = async ({
   }
   return Wallet.fromMnemonic(mnemonic, chronik, {
     hd: true,
-    prefix: "ecash",
+    prefix: addressPrefix,
   });
 };
 
@@ -81,6 +87,7 @@ export class EcashWallet implements NativeWalletHandle {
   readonly chainKind = "ecash" as const;
   readonly networkId: string;
   private operationQueue: Promise<void> = Promise.resolve();
+  private lastSubmittedNative: ChainTransaction | undefined;
   private unresolvedNative:
     | {
         built?: EcashBuiltAction;
@@ -93,12 +100,16 @@ export class EcashWallet implements NativeWalletHandle {
   private constructor(
     private readonly backend: EcashWalletBackend,
     networkId: string,
-    private readonly nativeAttemptStore: NativeTransactionAttemptStore
+    attemptNetworkId: string,
+    private readonly nativeAttemptStore: NativeTransactionAttemptStore,
+    private readonly getTransactionStatus: (
+      transaction: ChainTransaction
+    ) => Promise<"confirmed" | "failed" | "pending" | "unknown">
   ) {
     this.networkId = networkId;
     this.nativeAttemptKey = nativeTransactionAttemptKey({
       chainKind: "ecash",
-      networkId,
+      networkId: attemptNetworkId,
       address: this.identity.address.raw,
     });
     const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey);
@@ -117,8 +128,13 @@ export class EcashWallet implements NativeWalletHandle {
     passphrase?: string;
     chronik: unknown;
     networkId: string;
+    attemptNetworkId?: string;
+    addressPrefix?: EcashAddressPrefix;
     walletFactory?: EcashWalletFactory;
     nativeAttemptStore?: NativeTransactionAttemptStore;
+    getTransactionStatus?: (
+      transaction: ChainTransaction
+    ) => Promise<"confirmed" | "failed" | "pending" | "unknown">;
   }): Promise<EcashWallet> {
     if (params.passphrase !== undefined && params.passphrase.length > 0) {
       throw new Error(
@@ -131,12 +147,15 @@ export class EcashWallet implements NativeWalletHandle {
     const backend = await (params.walletFactory ?? defaultWalletFactory)({
       mnemonic: params.mnemonic,
       chronik: params.chronik,
+      addressPrefix: params.addressPrefix ?? "ecash",
     });
     await backend.syncAndDiscoverAddresses();
     return new EcashWallet(
       backend,
       params.networkId,
-      params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore
+      params.attemptNetworkId ?? params.networkId,
+      params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore,
+      params.getTransactionStatus ?? (async () => "unknown")
     );
   }
 
@@ -169,35 +188,71 @@ export class EcashWallet implements NativeWalletHandle {
   }
 
   async retryUnresolvedNativeTransaction(): Promise<ChainTransaction> {
-    return this.runExclusive(async () => {
-      const unresolved = this.unresolvedNative;
-      if (unresolved === undefined) {
-        throw new Error("No unresolved native transaction to retry");
-      }
-      if (unresolved.built === undefined) {
-        throw new Error(
-          "Recovered unresolved transaction must be reconciled by id before sending again"
-        );
-      }
-      return this.broadcastNativeAction(unresolved.built);
-    });
+    return runNativeTransactionExclusive(
+      this.nativeAttemptKey,
+      this.nativeAttemptStore.coordinationScope,
+      () =>
+        this.runExclusive(async () => {
+          const unresolved = this.unresolvedNative;
+          if (unresolved === undefined) {
+            throw new Error("No unresolved native transaction to retry");
+          }
+          if (unresolved.built === undefined) {
+            throw new Error(
+              "Recovered unresolved transaction must be reconciled by id before sending again"
+            );
+          }
+          const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey);
+          if (
+            persisted === undefined ||
+            !sameChainTransaction(persisted, unresolved.error.transaction)
+          ) {
+            this.unresolvedNative =
+              persisted === undefined
+                ? undefined
+                : {
+                    error: new NativeTransactionSubmissionError({
+                      transaction: persisted,
+                      reason: new Error(
+                        "Recovered unresolved native transaction"
+                      ),
+                    }),
+                  };
+            throw new Error(
+              "Unresolved native transaction changed before retry"
+            );
+          }
+          return this.broadcastNativeAction(unresolved.built);
+        })
+    );
   }
 
   resolveUnresolvedNativeTransaction(params: {
     transaction: ChainTransaction;
     outcome: "submitted" | "not-submitted";
-  }): void {
-    const unresolved = this.unresolvedNative;
-    if (
-      unresolved === undefined ||
-      unresolved.error.transaction.txHash !== params.transaction.txHash
-    ) {
-      throw new Error(
-        "Transaction does not match the unresolved native attempt"
-      );
-    }
-    this.nativeAttemptStore.delete(this.nativeAttemptKey);
-    this.unresolvedNative = undefined;
+  }): Promise<void> {
+    return runNativeTransactionExclusive(
+      this.nativeAttemptKey,
+      this.nativeAttemptStore.coordinationScope,
+      async () => {
+        const expected =
+          this.unresolvedNative?.error.transaction ?? this.lastSubmittedNative;
+        const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey);
+        if (
+          expected === undefined ||
+          !sameChainTransaction(expected, params.transaction) ||
+          persisted === undefined ||
+          !sameChainTransaction(persisted, params.transaction)
+        ) {
+          throw new Error(
+            "Transaction does not match the unresolved native attempt"
+          );
+        }
+        this.nativeAttemptStore.delete(this.nativeAttemptKey);
+        this.unresolvedNative = undefined;
+        this.lastSubmittedNative = undefined;
+      }
+    );
   }
 
   async sendNative(params: {
@@ -205,7 +260,41 @@ export class EcashWallet implements NativeWalletHandle {
     value: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction> {
-    return this.runExclusive(() => this.sendNativeExclusive(params));
+    return runNativeTransactionExclusive(
+      this.nativeAttemptKey,
+      this.nativeAttemptStore.coordinationScope,
+      () =>
+        this.runExclusive(async () => {
+          const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey);
+          if (persisted === undefined) {
+            this.unresolvedNative = undefined;
+          } else if (
+            persisted !== undefined &&
+            (this.lastSubmittedNative === undefined ||
+              !sameChainTransaction(persisted, this.lastSubmittedNative)) &&
+            (this.unresolvedNative === undefined ||
+              this.unresolvedNative.built === undefined ||
+              !sameChainTransaction(
+                persisted,
+                this.unresolvedNative.error.transaction
+              ))
+          ) {
+            const status = await this.getTransactionStatus(persisted);
+            if (status === "confirmed" || status === "failed") {
+              this.nativeAttemptStore.delete(this.nativeAttemptKey);
+              this.unresolvedNative = undefined;
+            } else {
+              this.unresolvedNative ??= {
+                error: new NativeTransactionSubmissionError({
+                  transaction: persisted,
+                  reason: new Error("Recovered unresolved native transaction"),
+                }),
+              };
+            }
+          }
+          return this.sendNativeExclusive(params);
+        })
+    );
   }
 
   private async sendNativeExclusive(params: {
@@ -299,7 +388,7 @@ export class EcashWallet implements NativeWalletHandle {
       throw error;
     }
 
-    this.nativeAttemptStore.delete(this.nativeAttemptKey);
+    this.lastSubmittedNative = attemptedTransaction;
     this.unresolvedNative = undefined;
     return result.broadcasted.length === 1
       ? { txHash }

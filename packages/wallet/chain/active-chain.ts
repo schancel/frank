@@ -254,9 +254,9 @@ export interface NativeTransferClient {
     value: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction>;
-  getTransactionStatus?(params: {
+  getTransactionStatus(params: {
     wallet: NativeWalletHandle;
-    txHash: string;
+    transaction: ChainTransaction;
   }): Promise<"confirmed" | "failed" | "pending" | "unknown">;
 }
 
@@ -277,7 +277,7 @@ export interface ActiveNativeTransferClient extends NativeTransferClient {
    * meaningful as "not paid" after enough time has passed and the caller says so). */
   getTransactionStatus(params: {
     wallet: NativeWalletHandle;
-    txHash: string;
+    transaction: ChainTransaction;
   }): Promise<"confirmed" | "failed" | "pending" | "unknown">;
 }
 

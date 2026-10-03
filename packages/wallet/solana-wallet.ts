@@ -28,6 +28,8 @@ import {
   NativeTransactionAttemptStore,
   NativeTransactionSubmissionError,
   NativeWalletHandle,
+  runNativeTransactionExclusive,
+  sameChainTransaction,
 } from "./chain/chain-wallet";
 
 // Capacitor still targets pre-iOS-17 WebViews, which lack native WebCrypto Ed25519. Probe once so
@@ -64,7 +66,17 @@ function ensureEd25519Support(): Promise<void> {
 
 /** The small RPC boundary needed by this wallet. A real web3.js Connection satisfies it. */
 export interface SolanaWalletConnection {
-  getBalance(address: PublicKey): Promise<bigint>;
+  getGenesisHash(): Promise<string>;
+  getSignatureStatus(
+    signature: string,
+    config?: { searchTransactionHistory: boolean }
+  ): Promise<{
+    value: {
+      err: unknown;
+      confirmationStatus?: "processed" | "confirmed" | "finalized" | null;
+    } | null;
+  }>;
+  getBalance(address: PublicKey): Promise<number | bigint>;
   getLatestBlockhash(): Promise<{
     blockhash: string;
     lastValidBlockHeight: number | bigint;
@@ -154,12 +166,6 @@ function bytesKey(bytes: Uint8Array): string {
   let key = "";
   for (const byte of bytes) key += byte.toString(16).padStart(2, "0");
   return key;
-}
-
-function bytesFromHex(hex: string): Uint8Array {
-  return Uint8Array.from(
-    hex.match(/.{2}/g)?.map((byte) => Number.parseInt(byte, 16)) ?? []
-  );
 }
 
 function parsePublicKey(value: PublicKey | string): PublicKey {
@@ -274,7 +280,7 @@ export class SolanaWallet
 {
   readonly chainKind = "solana" as const;
   readonly networkId: string;
-  private nativeOperationQueue: Promise<void> = Promise.resolve();
+  private lastSubmittedNative: ChainTransaction | undefined;
   private unresolvedNative:
     | {
         bundle?: SolanaTransactionBundle;
@@ -284,22 +290,43 @@ export class SolanaWallet
   protected readonly connection: SolanaWalletConnection;
   protected readonly signer: Keypair;
   private readonly nativeAttemptStore: NativeTransactionAttemptStore;
+  private readonly getTransactionStatus: (
+    transaction: ChainTransaction
+  ) => Promise<"confirmed" | "failed" | "pending" | "unknown">;
   private readonly nativeAttemptKey: string;
 
   constructor(params: {
     connection: SolanaWalletConnection;
     signer: Keypair;
     networkId: string;
+    attemptNetworkId?: string;
     nativeAttemptStore?: NativeTransactionAttemptStore;
+    getTransactionStatus?: (
+      transaction: ChainTransaction
+    ) => Promise<"confirmed" | "failed" | "pending" | "unknown">;
   }) {
     this.connection = params.connection;
     this.signer = params.signer;
     this.networkId = params.networkId;
     this.nativeAttemptStore =
       params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore;
+    this.getTransactionStatus =
+      params.getTransactionStatus ??
+      (async (transaction) => {
+        const response = await this.connection.getSignatureStatus(
+          transaction.txHash,
+          { searchTransactionHistory: true }
+        );
+        if (response.value === null) return "unknown";
+        if (response.value.err !== null) return "failed";
+        return response.value.confirmationStatus === "confirmed" ||
+          response.value.confirmationStatus === "finalized"
+          ? "confirmed"
+          : "pending";
+      });
     this.nativeAttemptKey = nativeTransactionAttemptKey({
       chainKind: "solana",
-      networkId: params.networkId,
+      networkId: params.attemptNetworkId ?? params.networkId,
       address: this.address,
     });
     const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey);
@@ -357,7 +384,7 @@ export class SolanaWallet
   }
 
   async getBalance(): Promise<bigint> {
-    return this.connection.getBalance(this.signer.publicKey);
+    return BigInt(await this.connection.getBalance(this.signer.publicKey));
   }
 
   getUnresolvedNativeTransaction(): ChainTransaction | undefined {
@@ -365,35 +392,68 @@ export class SolanaWallet
   }
 
   async retryUnresolvedNativeTransaction(): Promise<ChainTransaction> {
-    return this.runNativeExclusive(async () => {
-      const unresolved = this.unresolvedNative;
-      if (unresolved === undefined) {
-        throw new Error("No unresolved native transaction to retry");
+    return runNativeTransactionExclusive(
+      this.nativeAttemptKey,
+      this.nativeAttemptStore.coordinationScope,
+      async () => {
+        const unresolved = this.unresolvedNative;
+        if (unresolved === undefined) {
+          throw new Error("No unresolved native transaction to retry");
+        }
+        if (unresolved.bundle === undefined) {
+          throw new Error(
+            "Recovered unresolved transaction must be reconciled by id before sending again"
+          );
+        }
+        const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey);
+        if (
+          persisted === undefined ||
+          !sameChainTransaction(persisted, unresolved.error.transaction)
+        ) {
+          this.unresolvedNative =
+            persisted === undefined
+              ? undefined
+              : {
+                  error: new NativeTransactionSubmissionError({
+                    transaction: persisted,
+                    reason: new Error(
+                      "Recovered unresolved native transaction"
+                    ),
+                  }),
+                };
+          throw new Error("Unresolved native transaction changed before retry");
+        }
+        return this.submitNativeBundle(unresolved.bundle);
       }
-      if (unresolved.bundle === undefined) {
-        throw new Error(
-          "Recovered unresolved transaction must be reconciled by id before sending again"
-        );
-      }
-      return this.submitNativeBundle(unresolved.bundle);
-    });
+    );
   }
 
-  resolveUnresolvedNativeTransaction(params: {
+  async resolveUnresolvedNativeTransaction(params: {
     transaction: ChainTransaction;
     outcome: "submitted" | "not-submitted";
-  }): void {
-    const unresolved = this.unresolvedNative;
-    if (
-      unresolved === undefined ||
-      unresolved.error.transaction.txHash !== params.transaction.txHash
-    ) {
-      throw new Error(
-        "Transaction does not match the unresolved native attempt"
-      );
-    }
-    this.nativeAttemptStore.delete(this.nativeAttemptKey);
-    this.unresolvedNative = undefined;
+  }): Promise<void> {
+    await runNativeTransactionExclusive(
+      this.nativeAttemptKey,
+      this.nativeAttemptStore.coordinationScope,
+      async () => {
+        const expected =
+          this.unresolvedNative?.error.transaction ?? this.lastSubmittedNative;
+        const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey);
+        if (
+          expected === undefined ||
+          !sameChainTransaction(expected, params.transaction) ||
+          persisted === undefined ||
+          !sameChainTransaction(persisted, params.transaction)
+        ) {
+          throw new Error(
+            "Transaction does not match the unresolved native attempt"
+          );
+        }
+        this.nativeAttemptStore.delete(this.nativeAttemptKey);
+        this.unresolvedNative = undefined;
+        this.lastSubmittedNative = undefined;
+      }
+    );
   }
 
   async sendNative(params: {
@@ -401,27 +461,49 @@ export class SolanaWallet
     value: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction> {
-    return this.runNativeExclusive(async () => {
-      if (this.unresolvedNative !== undefined) {
-        throw this.unresolvedNative.error;
+    return runNativeTransactionExclusive(
+      this.nativeAttemptKey,
+      this.nativeAttemptStore.coordinationScope,
+      async () => {
+        const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey);
+        if (persisted === undefined) {
+          this.unresolvedNative = undefined;
+        } else if (
+          persisted !== undefined &&
+          (this.lastSubmittedNative === undefined ||
+            !sameChainTransaction(persisted, this.lastSubmittedNative)) &&
+          (this.unresolvedNative === undefined ||
+            this.unresolvedNative.bundle === undefined ||
+            !sameChainTransaction(
+              persisted,
+              this.unresolvedNative.error.transaction
+            ))
+        ) {
+          const status = await this.getTransactionStatus(persisted);
+          if (status === "confirmed" || status === "failed") {
+            this.nativeAttemptStore.delete(this.nativeAttemptKey);
+            this.unresolvedNative = undefined;
+          } else {
+            this.unresolvedNative ??= {
+              error: new NativeTransactionSubmissionError({
+                transaction: persisted,
+                reason: new Error("Recovered unresolved native transaction"),
+              }),
+            };
+          }
+        }
+        if (this.unresolvedNative !== undefined) {
+          throw this.unresolvedNative.error;
+        }
+        const bundle = await this.buildTransactionBundle({
+          intentId: randomIntentId(),
+          transfers: [
+            { destination: params.recipient.raw, lamports: params.value },
+          ],
+        });
+        return this.submitNativeBundle(bundle, params.onSigned);
       }
-      const bundle = await this.buildTransactionBundle({
-        intentId: randomIntentId(),
-        transfers: [
-          { destination: params.recipient.raw, lamports: params.value },
-        ],
-      });
-      return this.submitNativeBundle(bundle, params.onSigned);
-    });
-  }
-
-  private async runNativeExclusive<T>(operation: () => Promise<T>): Promise<T> {
-    const run = this.nativeOperationQueue.then(operation);
-    this.nativeOperationQueue = run.then(
-      () => undefined,
-      () => undefined
     );
-    return run;
   }
 
   private async submitNativeBundle(
@@ -445,9 +527,10 @@ export class SolanaWallet
     this.unresolvedNative = { bundle, error: pendingError };
     try {
       const result = await this.submitTransactionBundle(bundle);
-      this.nativeAttemptStore.delete(this.nativeAttemptKey);
+      const submitted = { txHash: result.submitted[0].txId };
+      this.lastSubmittedNative = submitted;
       this.unresolvedNative = undefined;
-      return { txHash: result.submitted[0].txId };
+      return submitted;
     } catch (reason) {
       if (reason instanceof TransactionBundleSubmissionError) {
         const error = new NativeTransactionSubmissionError({
@@ -526,42 +609,6 @@ export class SolanaWallet
       }
     }
     return { submitted };
-  }
-
-  /**
-   * Re-sign an expired bundle without changing destinations, values, metadata, intent, or bundle
-   * identity. In particular, this does not invoke a stealth derivation strategy again.
-   */
-  async refreshTransactionBundle<TMetadata = never>(
-    bundle: SolanaTransactionBundle<TMetadata>
-  ): Promise<SolanaTransactionBundle<TMetadata>> {
-    const hasMetadata = bundle.transactions.every(
-      (transaction) => "metadata" in transaction
-    );
-    const metadata = hasMetadata
-      ? (bundle.transactions.map(
-          (transaction) =>
-            (transaction as WalletTransaction<string, Uint8Array, TMetadata>)
-              .metadata
-        ) as TMetadata[])
-      : undefined;
-    const { canonicalTransactions, bundleIntentId } = await this.validateBundle(
-      bundle
-    );
-    const refreshed = await this.buildSignedBundle<TMetadata>(
-      canonicalTransactions.map((transaction) => ({
-        destination: transaction.destination,
-        lamports: transaction.value,
-      })),
-      bytesFromHex(bundleIntentId),
-      metadata
-    );
-    if (refreshed.bundleId !== bundle.bundleId) {
-      throw new Error(
-        "refreshed bundle does not match the original payment plan"
-      );
-    }
-    return refreshed;
   }
 
   private async validateBundle<TMetadata>(

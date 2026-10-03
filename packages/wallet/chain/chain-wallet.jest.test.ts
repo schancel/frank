@@ -1,7 +1,14 @@
 import {
   DefaultNativeTransactionAttemptStore,
   nativeTransactionAttemptKey,
+  runNativeTransactionExclusive,
 } from "./chain-wallet";
+
+it("fails closed for a cross-process attempt store without an external coordinator", async () => {
+  await expect(
+    runNativeTransactionExclusive("shared", "cross-process", async () => 1)
+  ).rejects.toThrow("require an external coordinator");
+});
 
 type MutableGlobal = typeof globalThis & {
   window?: unknown;

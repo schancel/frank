@@ -32,6 +32,8 @@ export class NativeTransactionSubmissionError extends Error {
 
 /** Durable guard record; signed replay material may remain wallet-specific and in memory. */
 export interface NativeTransactionAttemptStore {
+  /** Coordination reach of this store. Cross-process stores require a host lock not yet exposed. */
+  readonly coordinationScope: "single-realm" | "cross-process";
   get(key: string): ChainTransaction | undefined;
   /** Must not return until the record is durable; throw instead of degrading to volatile state. */
   put(key: string, transaction: ChainTransaction): void;
@@ -42,6 +44,7 @@ export interface NativeTransactionAttemptStore {
 export class InMemoryNativeTransactionAttemptStore
   implements NativeTransactionAttemptStore
 {
+  readonly coordinationScope = "single-realm" as const;
   private readonly attempts = new Map<string, ChainTransaction>();
 
   get(key: string): ChainTransaction | undefined {
@@ -109,6 +112,7 @@ function parseStoredTransaction(
 export class DefaultNativeTransactionAttemptStore
   implements NativeTransactionAttemptStore
 {
+  readonly coordinationScope = "single-realm" as const;
   private readonly prefix = "frank:native-attempt:v1:";
 
   get(key: string): ChainTransaction | undefined {
@@ -191,7 +195,7 @@ export interface NativeWalletHandle {
   resolveUnresolvedNativeTransaction?(params: {
     transaction: ChainTransaction;
     outcome: "submitted" | "not-submitted";
-  }): void;
+  }): Promise<void>;
   sendNative(params: {
     recipient: ChainAddress;
     value: bigint;
@@ -218,4 +222,68 @@ export function nativeTransactionAttemptKey(params: {
   return `${params.chainKind}:${encodeURIComponent(params.networkId)}:${
     params.address
   }`;
+}
+
+const nativeOperationQueues = new Map<string, Promise<void>>();
+
+/**
+ * Serializes one wallet's durable-attempt transition across instances. Browser hosts require the
+ * Web Locks API so separate tabs cannot overwrite or clear each other's in-flight payment.
+ */
+export async function runNativeTransactionExclusive<T>(
+  key: string,
+  coordinationScope: NativeTransactionAttemptStore["coordinationScope"],
+  operation: () => Promise<T>
+): Promise<T> {
+  const host = globalThis as {
+    window?: unknown;
+    navigator?: {
+      locks?: {
+        request<T>(name: string, callback: () => Promise<T>): Promise<T>;
+      };
+    };
+  };
+  if (host.window !== undefined) {
+    if (host.navigator?.locks === undefined) {
+      throw new Error(
+        "Cross-context native transaction locking is unavailable"
+      );
+    }
+    return host.navigator.locks.request(
+      `frank:native-transaction:${key}`,
+      operation
+    );
+  }
+
+  if (coordinationScope !== "single-realm") {
+    throw new Error(
+      "Cross-process native transaction stores require an external coordinator"
+    );
+  }
+
+  const previous = nativeOperationQueues.get(key) ?? Promise.resolve();
+  const run = previous.then(operation);
+  const tail = run.then(
+    () => undefined,
+    () => undefined
+  );
+  nativeOperationQueues.set(key, tail);
+  try {
+    return await run;
+  } finally {
+    if (nativeOperationQueues.get(key) === tail) {
+      nativeOperationQueues.delete(key);
+    }
+  }
+}
+
+export function sameChainTransaction(
+  left: ChainTransaction,
+  right: ChainTransaction
+): boolean {
+  return (
+    left.txHash === right.txHash &&
+    JSON.stringify(left.relatedTxHashes ?? []) ===
+      JSON.stringify(right.relatedTxHashes ?? [])
+  );
 }

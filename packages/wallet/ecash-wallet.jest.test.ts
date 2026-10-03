@@ -5,6 +5,7 @@ import {
 } from "./ecash-wallet";
 import {
   InMemoryNativeTransactionAttemptStore,
+  nativeTransactionAttemptKey,
   NativeTransactionSubmissionError,
 } from "./chain/chain-wallet";
 
@@ -170,6 +171,33 @@ describe("EcashWallet", () => {
     });
   });
 
+  it.each([
+    [["requested"], "partial"],
+    [["requested", "first"], "reordered"],
+  ])("rejects a %s accepted-id response", async (broadcasted) => {
+    const backend = makeBackend();
+    backend.broadcast.mockResolvedValueOnce({ success: true, broadcasted });
+    const wallet = await EcashWallet.fromMnemonic({
+      mnemonic: MNEMONIC,
+      chronik: {},
+      networkId: "ecash-test",
+      nativeAttemptStore,
+      walletFactory: () => backend,
+    });
+
+    await expect(
+      wallet.sendNative({ recipient: { raw: ADDRESS }, value: 1n })
+    ).rejects.toMatchObject({
+      transaction: {
+        txHash: "requested",
+        relatedTxHashes: ["first", "requested"],
+      },
+      reason: expect.objectContaining({
+        message: "eCash backend returned unexpected transaction ids",
+      }),
+    });
+  });
+
   it("does not broadcast when the exact attempt cannot be persisted first", async () => {
     const backend = makeBackend();
     const persistenceError = new Error("durable store unavailable");
@@ -178,6 +206,7 @@ describe("EcashWallet", () => {
       chronik: {},
       networkId: "ecash-test",
       nativeAttemptStore: {
+        coordinationScope: "single-realm",
         get: () => undefined,
         put: () => {
           throw persistenceError;
@@ -193,19 +222,23 @@ describe("EcashWallet", () => {
     expect(backend.broadcast).not.toHaveBeenCalled();
   });
 
-  it("stays blocked when a successful attempt cannot be durably cleared", async () => {
+  it("retains a successful attempt durably until explicit reconciliation", async () => {
     const backend = makeBackend();
     const transaction = {
       txHash: "requested",
       relatedTxHashes: ["first", "requested"],
     };
+    let persisted: typeof transaction | undefined;
     const wallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
       chronik: {},
       networkId: "ecash-test",
       nativeAttemptStore: {
-        get: () => undefined,
-        put: jest.fn(),
+        coordinationScope: "single-realm",
+        get: () => persisted,
+        put: (_key, value) => {
+          persisted = value as typeof transaction;
+        },
         delete: () => {
           throw new Error("durable delete failed");
         },
@@ -215,12 +248,68 @@ describe("EcashWallet", () => {
 
     await expect(
       wallet.sendNative({ recipient: { raw: ADDRESS }, value: 1n })
-    ).rejects.toThrow("durable delete failed");
-    expect(wallet.getUnresolvedNativeTransaction()).toEqual(transaction);
+    ).resolves.toEqual(transaction);
+    expect(wallet.getUnresolvedNativeTransaction()).toBeUndefined();
+    const competingBackend = makeBackend();
+    const competingWallet = await EcashWallet.fromMnemonic({
+      mnemonic: MNEMONIC,
+      chronik: {},
+      networkId: "ecash-test",
+      nativeAttemptStore: {
+        coordinationScope: "single-realm",
+        get: () => persisted,
+        put: (_key, value) => {
+          persisted = value as typeof transaction;
+        },
+        delete: () => {
+          throw new Error("durable delete failed");
+        },
+      },
+      walletFactory: () => competingBackend,
+    });
+    expect(competingWallet.getUnresolvedNativeTransaction()).toEqual(
+      transaction
+    );
     await expect(
-      wallet.sendNative({ recipient: { raw: ADDRESS }, value: 2n })
+      competingWallet.sendNative({ recipient: { raw: ADDRESS }, value: 2n })
     ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
+    expect(competingBackend.action).not.toHaveBeenCalled();
+    await expect(
+      wallet.resolveUnresolvedNativeTransaction({
+        transaction,
+        outcome: "submitted",
+      })
+    ).rejects.toThrow("durable delete failed");
     expect(backend.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconciles a confirmed restored attempt before a later send", async () => {
+    const store = new InMemoryNativeTransactionAttemptStore();
+    const firstWallet = await EcashWallet.fromMnemonic({
+      mnemonic: MNEMONIC,
+      chronik: {},
+      networkId: "ecash-test",
+      nativeAttemptStore: store,
+      walletFactory: () => makeBackend(),
+    });
+    await firstWallet.sendNative({ recipient: { raw: ADDRESS }, value: 1n });
+
+    const restoredBackend = makeBackend();
+    const restoredWallet = await EcashWallet.fromMnemonic({
+      mnemonic: MNEMONIC,
+      chronik: {},
+      networkId: "ecash-test",
+      nativeAttemptStore: store,
+      getTransactionStatus: async () => "confirmed",
+      walletFactory: () => restoredBackend,
+    });
+    await expect(
+      restoredWallet.sendNative({ recipient: { raw: ADDRESS }, value: 2n })
+    ).resolves.toEqual({
+      txHash: "requested",
+      relatedTxHashes: ["first", "requested"],
+    });
+    expect(restoredBackend.action).toHaveBeenCalledTimes(1);
   });
 
   it("rejects unsupported mnemonic passphrases explicitly", async () => {
@@ -333,6 +422,74 @@ describe("EcashWallet", () => {
     expect(wallet.getUnresolvedNativeTransaction()).toBeUndefined();
   });
 
+  it("refuses to retry after another instance replaces the durable attempt", async () => {
+    const backend = makeBackend({
+      success: false,
+      broadcasted: [],
+      errors: ["response lost"],
+    });
+    const wallet = await EcashWallet.fromMnemonic({
+      mnemonic: MNEMONIC,
+      chronik: {},
+      networkId: "ecash-test",
+      nativeAttemptStore,
+      walletFactory: () => backend,
+    });
+    await expect(
+      wallet.sendNative({ recipient: { raw: ADDRESS }, value: 1n })
+    ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
+    nativeAttemptStore.put(
+      nativeTransactionAttemptKey({
+        chainKind: "ecash",
+        networkId: "ecash-test",
+        address: ADDRESS,
+      }),
+      { txHash: "newer-attempt" }
+    );
+
+    await expect(wallet.retryUnresolvedNativeTransaction()).rejects.toThrow(
+      "changed before retry"
+    );
+    expect(backend.broadcast).toHaveBeenCalledTimes(1);
+    expect(wallet.getUnresolvedNativeTransaction()).toEqual({
+      txHash: "newer-attempt",
+    });
+  });
+
+  it("clears a stale cached guard after another instance resolves it", async () => {
+    const backend = makeBackend({
+      success: false,
+      broadcasted: [],
+      errors: ["response lost"],
+    });
+    const wallet = await EcashWallet.fromMnemonic({
+      mnemonic: MNEMONIC,
+      chronik: {},
+      networkId: "ecash-test",
+      nativeAttemptStore,
+      walletFactory: () => backend,
+    });
+    await expect(
+      wallet.sendNative({ recipient: { raw: ADDRESS }, value: 1n })
+    ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
+    nativeAttemptStore.delete(
+      nativeTransactionAttemptKey({
+        chainKind: "ecash",
+        networkId: "ecash-test",
+        address: ADDRESS,
+      })
+    );
+    backend.broadcast.mockResolvedValueOnce({
+      success: true,
+      broadcasted: ["attempted"],
+    });
+
+    await expect(
+      wallet.sendNative({ recipient: { raw: ADDRESS }, value: 2n })
+    ).resolves.toEqual({ txHash: "attempted" });
+    expect(backend.action).toHaveBeenCalledTimes(2);
+  });
+
   it("can clear an exact attempt after external reconciliation proves rejection", async () => {
     const backend = makeBackend();
     backend.broadcast.mockResolvedValueOnce({
@@ -356,7 +513,7 @@ describe("EcashWallet", () => {
     );
     const transaction = wallet.getUnresolvedNativeTransaction()!;
 
-    wallet.resolveUnresolvedNativeTransaction({
+    await wallet.resolveUnresolvedNativeTransaction({
       transaction,
       outcome: "not-submitted",
     });
@@ -403,7 +560,7 @@ describe("EcashWallet", () => {
       restoredWallet.retryUnresolvedNativeTransaction()
     ).rejects.toThrow("must be reconciled by id");
 
-    restoredWallet.resolveUnresolvedNativeTransaction({
+    await restoredWallet.resolveUnresolvedNativeTransaction({
       transaction: unresolved,
       outcome: "not-submitted",
     });

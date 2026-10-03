@@ -28,12 +28,17 @@ jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
     toDisplayAmount: (amount: bigint) => amount.toString(),
+    addressToString: ({ raw }: { raw: string }) => raw,
     nativeTransfers: {
       getBalance: (...args: unknown[]) => mockGetBalance(...args),
     },
   },
 }))
-const mockWallet = Promise.resolve({ identity: { displayAddress: '0xabc' } })
+const mockGetReceiveAddress = jest.fn(async () => ({ raw: '0xabc' }))
+const mockWallet = Promise.resolve({
+  identity: { displayAddress: 'legacy-display-address' },
+  getReceiveAddress: mockGetReceiveAddress,
+})
 jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: jest.fn(() => mockWallet),
 }))
@@ -49,6 +54,7 @@ describe('Receive balance', () => {
       doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
     })
     mockGetBalance.mockReset()
+    mockGetReceiveAddress.mockClear()
   })
   afterEach(() => jest.useRealTimers())
 
@@ -129,5 +135,15 @@ describe('Receive balance', () => {
     expect(wrapper.text()).toContain('4 MON')
     wrapper.unmount()
     expect(jest.getTimerCount()).toBe(0)
+  })
+
+  it('renders the address supplied by the chain-neutral receive API', async () => {
+    mockGetBalance.mockResolvedValue(1n)
+    const wrapper = mountReceive()
+    await advance(0)
+
+    expect(mockGetReceiveAddress).toHaveBeenCalledTimes(1)
+    expect(wrapper.vm.displayAddress).toBe('0xabc')
+    wrapper.unmount()
   })
 })

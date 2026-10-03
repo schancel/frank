@@ -432,18 +432,25 @@ obligations and retries are terminal, or an authenticated compact proof replaces
 ### 8.3 Target public federation lifecycle
 
 **PROPOSED.** Only validated directory statements, provider descriptors and explicitly public
-topic/pubsub records enter target federation. Each family defines a stable semantic `record_id`.
-Every accepted immutable occurrence additionally has a domain-separated `event_id` over network,
-record family, `record_id`, exact authoritative bytes and predecessor/revision context. Durable
-deduplication by exact `event_id` precedes append and forwarding; Bloom filters MAY avoid work but
-are never acceptance, absence or deletion authority, and false positives fall back to exact lookup.
+topic/pubsub records enter target federation. Each family defines a canonical semantic `record_id`
+that commits its authoritative semantic body and revision/predecessor context as that family
+requires. A domain-separated `event_id` derives only from network, stream, record family and that
+canonical `record_id`, never from alternate wrapper or signature bytes. The same `record_id` with
+different semantic bytes is a conflict. Multiple valid wrappers, signatures or authorization
+proofs merge as evidence for one event; they do not create events. Durable exact deduplication by
+`event_id` precedes append and forwarding. Bloom filters MAY avoid work but are never acceptance,
+absence or deletion authority, and false positives fall back to exact lookup.
 
 A cursor and its journal state are scoped to `(remote provider identity, stream, network,
 subscription_generation)`. Pages name a fixed signed high-water mark and do not grow underneath a
-reader. `CURSOR_EXPIRED` is explicit: the peer supplies or identifies a signed bounded snapshot,
-the receiver validates its manifest/completeness and atomically installs it, then resumes strictly
-after its high-water mark. Retention MUST preserve the journal/snapshot overlap promised by the
-advertised capability; silent cursor reset or timestamp recovery is forbidden.
+reader. `CURSOR_EXPIRED` is explicit: the peer supplies or identifies a signed bounded snapshot
+whose completeness claim, manifest and high-water are scoped to that exact tuple plus the negotiated
+capability. The receiver stages and validates it, merges exact-deduplicated valid events into the
+global semantic store, and atomically advances only that remote tuple's cursor/high-water. An absent
+record—even in an empty or head-only snapshot—never deletes global state learned from another peer.
+Only an authenticated tombstone, succession, expiry or family fork-resolution rule removes state.
+Retention MUST preserve the journal/snapshot overlap promised by the advertised capability; silent
+cursor reset or timestamp recovery is forbidden.
 
 Peers perform a signed descriptor/capability handshake before exchange. Discovery is bounded,
 scheme/port/address allowlisted, redirect-limited and SSRF-safe; fetched descriptors do not gain
@@ -486,15 +493,18 @@ journals, payments and recovery obligations have no federation export path.
    `P'`, never to `P`, `M`, a provider fee key, or a burn address.
 5. Create and durably flush a pre-operation intent that owns the complete funding-account and nonce
    reservation set before signing. The intent binds the operation, final type-5/T3 identity,
-   destinations, amounts and T4 commitments; no other operation may reuse any reservation. Before
-   `signed-ready`, recover every funder from the canonical chain signing preimage/transaction,
-   require pairwise-distinct funding identities, and require the complete funder set to be disjoint
-   from the complete destination set. Funding identity is the network-qualified chain account/spend
-   authority selected by the pinned adapter; destination equality compares the adapter's canonical
-   destination bytes. Reusing a funder with another nonce is still a duplicate.
+   destinations, amounts and T4 commitments; no other operation may reuse any reservation. Validate
+   the intended network-qualified funding identities and nonces, require pairwise-distinct intended
+   funders, and require the intended funder set to be disjoint from the complete destination set.
+   Funding identity is the network-qualified chain account/spend authority selected by the pinned
+   adapter; destination equality compares the adapter's canonical destination bytes. Reserving one
+   funder under another nonce is still a duplicate.
 6. Build and sign every payment without network dispatch or other external exposure, derive every
-   transaction ID from the exact signed bytes, and verify member indices, destinations, amounts,
-   IDs and commitments. Compute the domain-separated `preseal_context_id` over the client operation
+   transaction ID from the exact signed bytes, recover the actual network-qualified funder from each
+   signed transaction, equality-check it and its nonce against the reserved intent, then rerun
+   pairwise funder uniqueness and complete funder/destination disjointness. A signer substitution
+   fails before `signed-ready`. Verify member indices, destinations, amounts, IDs and commitments,
+   then compute the domain-separated `preseal_context_id` over the client operation
    ID, exact type-5/T3, ordered transaction IDs and domain-separated commitments to each exact
    signed transaction byte string, all pinned directory/descriptor/capability/authorization hashes,
    all generations, network, policy and every other authoritative input. It deliberately excludes
@@ -550,13 +560,15 @@ For `provider-admission`, the provider context supplies the requested route, exa
 validated sender/recipient directory revisions and mailbox-key generations, origin/destination
 provider identities and descriptor capabilities, destination instance generation, current `P'`,
 stamp generation, installed mailbox-admission capability and account authorization, operation
-identity, canonical finality policy, and chain observations. The common pre-claim order is framing
-and canonical form; target schema; equality of type-5 authoritative context with validated context
-and any derived outer copies; T3; visible `P'`/DLEQ; recomputation of the acyclic
-`preseal_context_id`, sealed-ciphertext commitment and `exact_delivery_hash`; then replay and
-capacity checks. Only the destination continues after claim: it unseals, checks the exact signed
-transaction IDs/bytes, destinations, amounts, T4 and chain-adapter rules, repeats the pairwise
-distinct-funder and funder/destination-disjoint checks, then performs external
+identity, canonical finality policy, and chain observations. The common pre-claim order uses only
+visible data: framing and canonical outer form; target outer schema; equality of visible copies;
+T3 and visible `P'`/DLEQ; asserted `preseal_context_id` shape, equality across visible occurrences
+and claim binding; sealed-ciphertext commitment; recomputed final `exact_delivery_hash`; then replay
+and capacity checks. Neither the origin nor the destination can recompute the full preseal context
+before unsealing, and the origin never recomputes it. Only after durable claim does the destination
+unseal, recompute `preseal_context_id` from the exact signed bytes, transaction IDs and every bound
+input, and compare it to the assertion. It then checks destinations, amounts, T4 and chain-adapter
+rules, repeats the pairwise distinct-funder and funder/destination-disjoint checks, then performs external
 observation and finality. Structural/context failures, cryptographic failures, replay conflicts,
 payment insufficiency and provisional/finality states remain distinguishable. The origin never
 runs the bearer-payment stages. A provider never invokes `recipient-acceptance` or reports its
@@ -564,12 +576,14 @@ errors.
 
 An origin provider may validate only the outer frame, routing bindings and sealed-bundle commitment;
 it gains no economic authority and never receives broadcastable transaction bytes. The destination
-validates the same pre-claim structure/context and the still-sealed bundle commitment, atomically
+validates the same visible pre-claim structure/context and the still-sealed bundle commitment, atomically
 reserves recovery capacity, claims the operation and signs the claim receipt. Only then does it
-unseal and validate exact transaction bytes, T4 destinations/amounts and chain rules before any
-recipient-stamp exposure. Unseal or post-claim validation failure is a zero-exposure terminal claim.
+unseal, recompute the full preseal context and validate exact transaction bytes, T4
+destinations/amounts and chain rules before any recipient-stamp exposure. Unseal, hidden-member or
+asserted-ID mismatch and every other post-claim validation failure is a zero-exposure terminal claim.
 Duplicate funding identities (including different nonces) and any cross-member funder/destination
-overlap are distinct allocated provider-admission errors; they fail after claim but before exposure.
+overlap are distinct provider-admission error categories whose registrations remain
+**UNALLOCATED**; once allocated, they fail after claim but before exposure.
 
 The destination provider verifies the bound account authorization and proves that the capability's
 accepted recipient-`M` tuples and grace policy equal or narrow the authorized tuples/policy by
@@ -880,14 +894,18 @@ substitute for the retained historical key.
 **SHIPPED.** Legacy Lotus topic identity and deduplication use `payload_hash`, not original
 `SignedPayload` wrapper bytes. Parsing derives an omitted hash from exact embedded `payload_raw`,
 derives an omitted/zero burn amount from the referenced outputs, validates supplied values, then
-normalizes and reserializes the wrapper. Later evidence merges distinct raw burn transactions by
-transaction identity. The authentication material is public key, signature scheme and signature;
-the durable content/economic evidence is exact `payload_raw` plus every raw burn transaction and
-`burn_idx`. Unknown wrapper fields, wrapper ordering and original wrapper bytes are not preserved
-authority. `parent_digest` is an immutable reply edge; `BroadcastEntry` remains opaque application
+normalizes and reserializes the wrapper. Later evidence merges distinct canonicalized burn
+transactions by canonical Lotus transaction ID. The authentication material is public key,
+signature scheme and signature; the durable content/economic evidence is exact `payload_raw` plus
+each parsed burn transaction's canonical evidence and `burn_idx`. Incoming `BurnTx.tx` bytes are
+parsed and normalized; durable evidence is canonical `Tx::ser` bytes, canonical Lotus transaction
+ID, parsed outputs and `burn_idx`, not the exact input transaction encoding. Unknown wrapper fields,
+wrapper ordering and original wrapper bytes are not preserved authority. `parent_digest` is an
+immutable reply edge; `BroadcastEntry` remains opaque application
 data and `ForumPost` one interpretation. A payload-less hash reference may only augment an existing
 payload. Normalization/merge tests MUST cover omitted derived fields, duplicate and additional burn
-evidence, restart and rejection of a different payload under the same hash.
+evidence, nonminimal/trailing transaction encodings canonicalized or rejected by the frozen parser,
+restart and rejection of a different payload under the same hash.
 
 **SHIPPED.** Historical read contracts are intentionally different:
 
@@ -1035,7 +1053,8 @@ signed multi-page snapshot crash/resume/atomic swap; sender-directory partition/
 freshness-window expiry, newer-recipient-state rejection and proof that no sender-home fence or
 receipt is portable; origin structural preflight with proof of zero recipient-stamp exposure before
 a destination-signed durable claim; destination-sealed bundle context/key/suite/schema vectors,
-acyclic `preseal_context_id`/ciphertext/final-delivery KATs and single-input mutation rejection;
+acyclic `preseal_context_id`/ciphertext/final-delivery KATs, visible asserted-ID/claim checks,
+hostile hidden-member mutation and post-unseal mismatch rejection;
 proof the origin never receives bearer bytes, unseal only after claim, and rejection of the unsafe
 raw-origin model; same-provider claim ordering; destination fence-wins
 zero-exposure and claim-wins idempotent broadcast/reconciliation; disconnect before node submission,
@@ -1047,8 +1066,9 @@ reset racing late completion;
 branch-scoped tombstone dominance, sibling forks, stale creates and object-wide deletion; permanent
 exclusion history with bounded body compaction; deletion reachability across shared references and
 payment recovery; immutable DM identity collision/reordering and rejection of unallocated revision
-semantics; duplicate funders with different nonces, pairwise funder uniqueness and every
-cross-member funder/destination overlap before and after sealing; EIP-1559 and every supported
+semantics; duplicate funders with different nonces, pairwise funder uniqueness, signer substitution
+against the reserved identity/nonce and every cross-member funder/destination overlap before and
+after sealing; EIP-1559 and every supported
 chain adapter's canonical replay-protected preimage, chain ID and registry-selected legacy
 `POND || 0x02` versus symbolic target `POND || TARGET_T4_TAG || T4` mapping, route/media type and
 exact vectors; topic-weight bounds through `u128::MAX`; unsigned topic-author tuple ties, endian
@@ -1057,8 +1077,10 @@ restart/replay without double credit; frozen Monad JSON v1/v2 decrypt and trimme
 cross-family crypto-box rejection and sender rotation; Lotus normalization/merge, payload-hash
 identity, half-open boundaries and payload-less augmentation; equal-time legacy cursor/page crashes;
 checked protobuf descriptor/AST inventory, stale-snapshot rejection and runtime reachability before
-source deletion; deterministic three-node federation under partition, cycle, Bloom false positive,
-offline catch-up, crash, expired-cursor snapshot, subscription reset and hostile peer discovery;
+source deletion; alternate signature/wrapper cyclic federation dedup and semantic-ID conflict;
+deterministic three-node federation under partition, cycle, Bloom false positive, offline catch-up,
+crash, tuple-scoped expired-cursor snapshot, multi-peer head-only/empty snapshot without global
+deletion, subscription reset and hostile peer discovery;
 cutover of a large mailbox with
 paginated tagging, page crashes and idempotent resume; marker/admission ambiguity, partial payment, unread pre-marker
 row, delayed legacy completion rejected by the target generation, rollback-reader/reconciler-only
@@ -1148,17 +1170,22 @@ that actually decodes it.
 The deterministic executable gate is
 [`check-protobuf-inventory.sh`](protocol/check-protobuf-inventory.sh); its committed
 [`protobuf-inventory.snapshot`](protocol/protobuf-inventory.snapshot) is generated from `protoc`
-descriptors. Run `./docs/protocol/check-protobuf-inventory.sh --check`. Every descriptor message,
+descriptors using exactly `libprotoc 36.2`. It also maps and hashes every tracked `*_pb.js` and
+`*_pb.d.ts` artifact. Run `./docs/protocol/check-protobuf-inventory.sh --check`. Every descriptor message,
 enum and field inherits its explicit source's owner/family/disposition; only the snapshot's
 `explicit_source_group` may group generated mirrors. An added or changed source, message, field,
-enum, default or presence rule, or an unclassified source makes the gate fail.
+enum, default or presence rule, or an added, removed, changed or unclassified generated binding
+makes the gate fail. Historical JS/TS generator/plugin versions are not recoverable, so binding
+hashes prove exact-artifact drift only, not equivalence to source. Deterministic regeneration and
+runtime conformance remain cutover gates. Backend CI pins `protoc` 36.2 and invokes this checker for
+backend, protobuf-source, generated-binding, checker and snapshot changes.
 
 **PROPOSED.** The fence-disposition column defines the clean-break migration target. It is not a
 claim that those fences or deletion gates are implemented.
 
 | Sources / family | Production role | Fence disposition |
 | --- | --- | --- |
-| `backend/cashweb/cashweb-payload/proto/payload.proto`; `packages/cashweb/signed_payload/proto/payload.proto` | Lotus signed payload, signature, payload digest and burn transactions; package copy uses older field names with the same material wrapper role | Retain normalized reader plus exact embedded payload and raw burn evidence; delete only after payload, burn, reply and federation reachability clears |
+| `backend/cashweb/cashweb-payload/proto/payload.proto`; `packages/cashweb/signed_payload/proto/payload.proto` | Lotus signed payload, signature, payload digest and burn transactions; package copy uses older field names with the same material wrapper role | Retain normalized reader plus exact embedded payload and canonicalized burn evidence; delete only after payload, burn, reply and federation reachability clears |
 | `backend/cashweb/cashweb-registry/proto/broadcast.proto`; `packages/cashweb/registry/proto/broadcast.proto` | Lotus topic `BroadcastMessage`/opaque entries; client copy additionally declares `ForumPost` and `parent_digest` | Historical-only exact reader; preserve immutable reply/burn evidence; no new post after fence |
 | `packages/cashweb/bip70/proto/paymentrequest.proto` | Legacy POP request/payment/ack and output contract | Disable new issuance at fence; retain exact pre-fence request/payment/token evidence through scoped terminal/expiry |
 | `backend/cashweb/cashweb-registry/proto/monad_message.proto`; `packages/cashweb/relay/proto/monad_message.proto` | Legacy Monad encrypted DM, raw stamp-payment set, stored timestamp/network and list response | Constrained migration reader/decryptor and reconciler for pre-fence rows; no new writes; remove after decrypt/payment/cursor reachability clears |
@@ -1178,10 +1205,11 @@ Proto3 absent values decode as empty bytes, zero integer, empty repeated list an
 zero (`SCHNORR`). The parser derives an omitted payload hash from exact `payload_raw`, derives zero
 burn amount from referenced outputs, validates non-default claims, and reserializes normalized
 fields. `payload_hash` is identity/dedup; public key, scheme and signature are authentication
-material. Exact `payload_raw` and each raw transaction plus burn index are durable evidence, and
-later distinct burns merge. Defaults document historical reader fidelity without promising unknown
-wrapper-field/order preservation. A payload-less wrapper must name an existing hash before adding
-evidence.
+material. Exact `payload_raw`, plus each parsed transaction's canonical `Tx::ser` bytes, canonical
+Lotus transaction ID, parsed outputs and burn index, are durable evidence, and later distinct burns
+merge. Defaults document historical reader fidelity without promising unknown wrapper-field/order
+or incoming transaction-encoding preservation. A payload-less wrapper must name an existing hash
+before adding evidence.
 
 **SHIPPED.** BIP70 is proto2: `Output.amount` defaults to zero, `PaymentDetails.network` to `main`,
 `PaymentRequest.payment_details_version` to 1 and `pki_type` to `none`; required fields and explicit
@@ -1192,9 +1220,9 @@ economic or bearer meaning and are never inferred into recipient stamps or targe
 `(child_index, raw_tx)` payment set. Stored timestamp and network tag are relay facts; an absent
 network tag decodes empty for older rows and is not invented during migration. Legacy profile
 timestamp/TTL/entries and discovery raw signed bytes retain their original presence/defaults.
-Legacy topic post authority includes topic, empty-or-32-byte parent hash, exact raw burn
-transaction, ciphertext and payload hash; stored sender/transaction/time/network fields are relay
-facts. Topic vote weight has the shipped cast/saturation defect documented in section 12.
+Legacy Monad topic post authority includes topic, empty-or-32-byte parent hash, exact signed EVM
+burn-transaction bytes, ciphertext and payload hash; stored sender/transaction/time/network fields
+are relay facts. Topic vote weight has the shipped cast/saturation defect documented in section 12.
 
 **SHIPPED.** Legacy relay `Message` separately carries source/destination keys, malleable server
 time, payload digest, stamp, encryption enum/salt/HMAC/size and ciphertext. `Stamp.None`/enum zero,
@@ -1216,6 +1244,6 @@ not elided.
 
 Deletion additionally requires runtime reachability proof: routes, stores, federation, app, wallet,
 bot, restore, retry and historical export must have no remaining caller or retained row. Source-file
-absence alone is not proof. Exact embedded Lotus payload/burn evidence, ciphertext, payment and
+absence alone is not proof. Exact embedded Lotus payload, canonicalized Lotus burn evidence, ciphertext, payment and
 broadcast bytes remain non-transcodable throughout the migration; normalized wrapper bytes are not
 misrepresented as the original wrapper.

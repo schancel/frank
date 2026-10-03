@@ -516,8 +516,7 @@ QWEN_BOT_MODE=stub yarn bot   # still needs the relay/RPC/wallet env, but no Qwe
 
 The bot persists its mailbox/profile cursors, greeted and processed identities, and per-user Qwen
 conversation history under `QWEN_BOT_STATE_DIR` (default `~/.frank-bots/qwen`, or under
-`$XDG_STATE_HOME`). Its HD sender
-seed, single-use account pools, and exact payment journals live separately under
+`$XDG_STATE_HOME`). Its HD sender seed, single-use account pools, and exact payment journals live separately under
 `QWEN_BOT_WALLET_STATE_DIR` (default `~/.frank-bots/qwen-wallet`, or under
 `$XDG_STATE_HOME`). On restart it reconciles that
 wallet authority before funding or signing anything new, then resumes the persisted mailbox
@@ -566,8 +565,9 @@ Configuration (env vars, all optional):
 - `QWEN_BOT_WALLET_STATE_DIR` -- durable bot sender seed, account pools, and payment journals.
 
 The sender demo uses the equivalent `QWEN_SENDER_WALLET_STATE_DIR` (default
-`~/.frank-bots/qwen-sender-wallet`, or under `$XDG_STATE_HOME`). Keep the bot and sender roots distinct: opening one root in
-two processes fails closed rather than allowing two signers to race the same accounts and nonces.
+`~/.frank-bots/qwen-sender-wallet`, or under `$XDG_STATE_HOME`). Keep the bot and sender roots
+distinct: opening one root in two processes fails closed rather than allowing two signers to race
+the same accounts and nonces.
 
 ## Bot loop guard (#311)
 

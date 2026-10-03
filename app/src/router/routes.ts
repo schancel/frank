@@ -1,4 +1,5 @@
 import type { RouteRecordRaw } from 'vue-router'
+import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
 
 export function createRoutes(): RouteRecordRaw[] {
   const routes: RouteRecordRaw[] = [
@@ -65,6 +66,7 @@ export function createRoutes(): RouteRecordRaw[] {
         { path: 'setup', component: () => import('pages/Setup.vue') },
         {
           path: 'wipe-wallet',
+          beforeEnter: () => legacyLotusModeEnabled() || '/settings',
           component: () => import('pages/WipeWallet.vue'),
         },
       ],

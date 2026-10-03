@@ -36,7 +36,12 @@
         </q-item>
         <q-separator />
 
-        <q-item clickable v-ripple @click="deleteForever">
+        <q-item
+          v-if="legacyLotusMode"
+          clickable
+          v-ripple
+          @click="deleteForever"
+        >
           <q-item-section avatar>
             <q-icon name="delete_forever" />
           </q-item-section>
@@ -72,6 +77,7 @@ import { openPage } from '../../utils/routes'
 import { useProfileStore } from 'src/stores/my-profile'
 import { storeToRefs } from 'pinia'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
 
 export default defineComponent({
   setup() {
@@ -86,6 +92,7 @@ export default defineComponent({
       }
     })
     return {
+      legacyLotusMode: legacyLotusModeEnabled(),
       profile,
       inbox,
       myAddress,

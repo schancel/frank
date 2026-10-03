@@ -5,6 +5,35 @@ use frank_cbor::{verify_preview_directory_evidence, TypedPayload};
 use serde_json::Value;
 use std::{path::Path, process::Command};
 
+// Exact sorted registry CF inventory registered by reviewed base
+// 7b45b3374c102dda10c8c561535c8fd7f7183778 (including RocksDB's default CF).
+// This must not be derived from the candidate opener, even when no old binary is supplied.
+const REVIEWED_BASE_CFS: &[&str] = &[
+    "default",
+    "message_payloads",
+    "metadata",
+    "monad_message_attempts",
+    "monad_messages",
+    "monad_messages_by_recipient_time",
+    "monad_messages_by_time",
+    "monad_outbox_active_v1",
+    "monad_outbox_history_v2",
+    "monad_outbox_members_v1",
+    "monad_outbox_meta_v2",
+    "monad_outbox_recipient_v1",
+    "monad_outbox_v1",
+    "monad_profiles",
+    "monad_profiles_by_name",
+    "monad_profiles_by_time",
+    "monad_topic_discovery",
+    "monad_topic_posts",
+    "monad_topic_posts_by_topic",
+    "monad_topic_votes",
+    "pkh_by_time",
+    "topic_burn_txs",
+    "topic_messages",
+];
+
 fn base_open(path: &Path) -> bool {
     let Ok(helper) = std::env::var("FRANK_DIRECTORY_BASE_OPENER") else {
         return false;
@@ -49,12 +78,14 @@ fn regression(populated: bool) {
     if !base_open(&path) {
         drop(Db::open(&path).unwrap());
     }
-    let legacy_names = names(&path);
-    assert!(legacy_names
-        .iter()
-        .all(|name| !name.starts_with("directory_preview_")));
+    assert_eq!(
+        names(&path),
+        REVIEWED_BASE_CFS,
+        "initial registry must match the reviewed base, not the candidate's own inventory"
+    );
     {
-        let raw = rocksdb::DB::open_cf(&rocksdb::Options::default(), &path, &legacy_names).unwrap();
+        let raw =
+            rocksdb::DB::open_cf(&rocksdb::Options::default(), &path, REVIEWED_BASE_CFS).unwrap();
         let mut sync = rocksdb::WriteOptions::default();
         sync.set_sync(true);
         raw.put_opt(b"legacy-sentinel", b"exact-preexisting-legacy-bytes", &sync)
@@ -115,11 +146,12 @@ fn regression(populated: bool) {
     base_open(&path);
     assert_eq!(
         names(&path),
-        legacy_names,
+        REVIEWED_BASE_CFS,
         "preview must not modify the legacy CF set"
     );
     {
-        let raw = rocksdb::DB::open_cf(&rocksdb::Options::default(), &path, &legacy_names).unwrap();
+        let raw =
+            rocksdb::DB::open_cf(&rocksdb::Options::default(), &path, REVIEWED_BASE_CFS).unwrap();
         assert_eq!(
             raw.get(b"legacy-sentinel").unwrap().unwrap(),
             b"exact-preexisting-legacy-bytes"

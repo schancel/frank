@@ -1,0 +1,1172 @@
+{
+  "format": "message-stamp-derivation-proposal-v1",
+  "status": "PROPOSED-NOT-ALLOCATED",
+  "base_commit": "d11773555cdfccf1bd811654da819176e4803baf",
+  "registry": "frank-domain-roots-v1",
+  "recovery": "codex32-master-v1",
+  "network": "monad-testnet",
+  "alternate_network": "monad-mainnet",
+  "accounts": [
+    {
+      "account_root": "0000000000000000000000000000000000000000000000000000000000000000",
+      "roots": [
+        {
+          "purpose": "ecash-bch-wallet",
+          "code": 1,
+          "label": "frank/domain-root/v1/ecash-bch-wallet",
+          "salt_hex": "6672616e6b2f646f6d61696e2d726f6f742d72656769737472792f7631",
+          "info_hex": "00156672616e6b2d646f6d61696e2d726f6f74732d7631000100256672616e6b2f646f6d61696e2d726f6f742f76312f65636173682d6263682d77616c6c65740020",
+          "prk_hex": "fe6623d1fe1257bf6acadf78ef47a7bd315615edd9058d2814a5538ab8e9504a",
+          "output_hex": "b69b4040177891a564acc8b7fc81ebb5da0b5e03e6b3f3913b2954f646afdcb7"
+        },
+        {
+          "purpose": "evm-wallet",
+          "code": 2,
+          "label": "frank/domain-root/v1/evm-wallet",
+          "salt_hex": "6672616e6b2f646f6d61696e2d726f6f742d72656769737472792f7631",
+          "info_hex": "00156672616e6b2d646f6d61696e2d726f6f74732d76310002001f6672616e6b2f646f6d61696e2d726f6f742f76312f65766d2d77616c6c65740020",
+          "prk_hex": "fe6623d1fe1257bf6acadf78ef47a7bd315615edd9058d2814a5538ab8e9504a",
+          "output_hex": "cee86a4b731c08858ad659009790516658141bb99e3be5bd144ab6ca657d19c4"
+        },
+        {
+          "purpose": "solana-wallet",
+          "code": 3,
+          "label": "frank/domain-root/v1/solana-wallet",
+          "salt_hex": "6672616e6b2f646f6d61696e2d726f6f742d72656769737472792f7631",
+          "info_hex": "00156672616e6b2d646f6d61696e2d726f6f74732d7631000300226672616e6b2f646f6d61696e2d726f6f742f76312f736f6c616e612d77616c6c65740020",
+          "prk_hex": "fe6623d1fe1257bf6acadf78ef47a7bd315615edd9058d2814a5538ab8e9504a",
+          "output_hex": "24df22e3939688ffdf2d622ff5f0f9d6ed6ebe3f988aa371f7d52cf21cc260aa"
+        },
+        {
+          "purpose": "messaging-encryption",
+          "code": 4,
+          "label": "frank/domain-root/v1/messaging-encryption",
+          "salt_hex": "6672616e6b2f646f6d61696e2d726f6f742d72656769737472792f7631",
+          "info_hex": "00156672616e6b2d646f6d61696e2d726f6f74732d7631000400296672616e6b2f646f6d61696e2d726f6f742f76312f6d6573736167696e672d656e6372797074696f6e0020",
+          "prk_hex": "fe6623d1fe1257bf6acadf78ef47a7bd315615edd9058d2814a5538ab8e9504a",
+          "output_hex": "64e0df3a659dc4720f18753deff7586d9dcb2984cf2fbd602e53eae49d963c40"
+        },
+        {
+          "purpose": "identity-authentication",
+          "code": 5,
+          "label": "frank/domain-root/v1/identity-authentication",
+          "salt_hex": "6672616e6b2f646f6d61696e2d726f6f742d72656769737472792f7631",
+          "info_hex": "00156672616e6b2d646f6d61696e2d726f6f74732d76310005002c6672616e6b2f646f6d61696e2d726f6f742f76312f6964656e746974792d61757468656e7469636174696f6e0020",
+          "prk_hex": "fe6623d1fe1257bf6acadf78ef47a7bd315615edd9058d2814a5538ab8e9504a",
+          "output_hex": "5719945a0500eaeef2d0beee0de446e7ef65e9ff7c607681c0a7a7a95bb8914e"
+        }
+      ],
+      "leaves": [
+        {
+          "id": "auth-0",
+          "role": "auth",
+          "purpose": "identity-authentication",
+          "generation": "0",
+          "path": "m/44'/60'/1'/0/0",
+          "indices_hex": "8000002c8000003c800000010000000000000000",
+          "seed_hex": "5719945a0500eaeef2d0beee0de446e7ef65e9ff7c607681c0a7a7a95bb8914e",
+          "private_hex": "433a27d042e2fcdacdbecaa4736b6f10339271f5c6038588bc7d31ffa1fe52f9",
+          "public_hex": "032de89548d6742189952342246af8e438ce63c8ad25a857690e353f3331d6c537",
+          "chain_hex": "9facf7fb11c930e2cc4ef5bf152399cdfe00eedd12a9f65441bdb48bede6f68d",
+          "address": "0xa3b72b83A95d61352E969D9f09DB4276295B4175"
+        },
+        {
+          "id": "main-0",
+          "role": "main",
+          "purpose": "evm-wallet",
+          "generation": "0",
+          "path": "m/44'/60'/1'/0/0",
+          "indices_hex": "8000002c8000003c800000010000000000000000",
+          "seed_hex": "cee86a4b731c08858ad659009790516658141bb99e3be5bd144ab6ca657d19c4",
+          "private_hex": "4d7a4c4fcaa0c511f048652187aa56fb70fc74f1432636982200c58b0385c5d2",
+          "public_hex": "031209aaa3ba92623b19bbeaa38248a82ce545c15fc08605754eb0fd49b36105cc",
+          "chain_hex": "3454a94806673cd134909beccd381cae6764ad2a8a9718e26cc4f206000eefa4",
+          "address": "0x4669EFf913A3c595CeA5FA92a600201e8e9E75d8"
+        },
+        {
+          "id": "funding-0",
+          "role": "funding",
+          "purpose": "evm-wallet",
+          "generation": "0",
+          "path": "m/44'/60'/0'/0/0",
+          "indices_hex": "8000002c8000003c800000000000000000000000",
+          "seed_hex": "cee86a4b731c08858ad659009790516658141bb99e3be5bd144ab6ca657d19c4",
+          "private_hex": "f2ad30babce4027ed5ad1ffc783695526d5d6220c451f4235f86d8237173fefb",
+          "public_hex": "039a73930dcc9d37477a032ca8b226cfefdb52d93a439ee93ca60002361cefbba5",
+          "chain_hex": "20434f5af1921ed54610f12788abd8d318e474bcf84ac3c458894cdb9b751def",
+          "address": "0x5b2657B0E7A5b7582beDc9Ae1724ba61BeC67724"
+        },
+        {
+          "id": "funding-1",
+          "role": "funding",
+          "purpose": "evm-wallet",
+          "generation": "1",
+          "path": "m/44'/60'/0'/0/1",
+          "indices_hex": "8000002c8000003c800000000000000000000001",
+          "seed_hex": "cee86a4b731c08858ad659009790516658141bb99e3be5bd144ab6ca657d19c4",
+          "private_hex": "94afad3a87235aa9af8a0269e7b3261d5e517907e9ca9c151e5d5a7f86cb504b",
+          "public_hex": "03893e128850c6d6e6956692721a5fb91a7672d3efbaf552e7b5ff548e94f96666",
+          "chain_hex": "01fd83404c1858a3bbf18fea2872c951194a65e9d643d78547b4d1c0bf41fa94",
+          "address": "0xE0C56aeAE75076FAD5c6eDAde1da721a17C5EDc4"
+        },
+        {
+          "id": "funding-2147483647",
+          "role": "funding",
+          "purpose": "evm-wallet",
+          "generation": "2147483647",
+          "path": "m/44'/60'/0'/0/2147483647",
+          "indices_hex": "8000002c8000003c80000000000000007fffffff",
+          "seed_hex": "cee86a4b731c08858ad659009790516658141bb99e3be5bd144ab6ca657d19c4",
+          "private_hex": "8069c07f0935643f3c1e778f4f90beeb9e9cc9d3f632052b1f2a9d2d57e610a4",
+          "public_hex": "039d1eff3ddf6df016be8fe82da0bc3f2241133719d82f6cd13860e04611d661dd",
+          "chain_hex": "aa9105899f586101cbc8530f05ff8ea500a176b204896f4e1d80b224f981e3a1",
+          "address": "0x94248e8D9b9C05144787da0399b3E27C84A10B5A"
+        },
+        {
+          "id": "change-0",
+          "role": "change",
+          "purpose": "evm-wallet",
+          "generation": "0",
+          "path": "m/44'/60'/0'/1/0",
+          "indices_hex": "8000002c8000003c800000000000000100000000",
+          "seed_hex": "cee86a4b731c08858ad659009790516658141bb99e3be5bd144ab6ca657d19c4",
+          "private_hex": "43f401cfb425cde2ab12a178ea83d20898245f569bde3b679b4a9392796f3c3f",
+          "public_hex": "02bacca8fbb690191ab24c86e9032232ab75c58f31706a3280096ada4b08d1d36b",
+          "chain_hex": "5400e23374259b1e3c3143814df141e44bde603abd526cb869f4e28c4e5fa337",
+          "address": "0x3912fB0cE7495829590C67914166ecB586D8F598"
+        },
+        {
+          "id": "change-1",
+          "role": "change",
+          "purpose": "evm-wallet",
+          "generation": "1",
+          "path": "m/44'/60'/0'/1/1",
+          "indices_hex": "8000002c8000003c800000000000000100000001",
+          "seed_hex": "cee86a4b731c08858ad659009790516658141bb99e3be5bd144ab6ca657d19c4",
+          "private_hex": "ce59e2de7ddc031c65939dc5601cb7e83bbd866c4a0dfcc78ed34504ee57e220",
+          "public_hex": "02008a4fc12d1f9b58510b1de23f342348fa08b239acd4f3bc3117359d3a5b0b72",
+          "chain_hex": "394cfb37cd2cbe7b3fb69296e849c3cbc4958ac6b8c0bda6f82cc0de40301faa",
+          "address": "0x8A93736379f84779753d76F85933C1Cd268CD962"
+        },
+        {
+          "id": "change-2147483647",
+          "role": "change",
+          "purpose": "evm-wallet",
+          "generation": "2147483647",
+          "path": "m/44'/60'/0'/1/2147483647",
+          "indices_hex": "8000002c8000003c80000000000000017fffffff",
+          "seed_hex": "cee86a4b731c08858ad659009790516658141bb99e3be5bd144ab6ca657d19c4",
+          "private_hex": "c302c8358924547bc81236e7463c3582be4f4b209e25a27b753f0e4238a90762",
+          "public_hex": "02608bf4b9f21a10a326f5a6ab07e3e9da38124af2035ee38a51fb8fcd5a5e5a77",
+          "chain_hex": "cd09044ba36a9a5e8d980327a41773000b0727949cbf91c9408ea651e5ad2faa",
+          "address": "0xdd1016D9912ae1e868Da3408714ca4586396787a"
+        },
+        {
+          "id": "message-0",
+          "role": "message",
+          "purpose": "messaging-encryption",
+          "generation": "0",
+          "path": "m/44'/60'/4'/0'/0'",
+          "indices_hex": "8000002c8000003c800000048000000080000000",
+          "seed_hex": "64e0df3a659dc4720f18753deff7586d9dcb2984cf2fbd602e53eae49d963c40",
+          "private_hex": "6ab30d7020977351cf50346090261a2401fb581fe7950c30706a2174abf6fabd",
+          "public_hex": "02c05066c3239fc712592940a09c9272ea9b0373bbf548008e17a20c3d2a0161c2",
+          "chain_hex": "fb3e748f3a40d457a8608c05d5eb9589fdaaafe1a15d1ae95d82ee7aa809f959",
+          "address": "0x6eb0EBF7bC8ca81B9F502125D0C3fbBB7cA59181"
+        },
+        {
+          "id": "message-1",
+          "role": "message",
+          "purpose": "messaging-encryption",
+          "generation": "1",
+          "path": "m/44'/60'/4'/0'/1'",
+          "indices_hex": "8000002c8000003c800000048000000080000001",
+          "seed_hex": "64e0df3a659dc4720f18753deff7586d9dcb2984cf2fbd602e53eae49d963c40",
+          "private_hex": "11e26b4dbbecdddfa6c7bf719622b3b74d5a6691de00a3f9fbb5fd08d1c375f1",
+          "public_hex": "0202b4f8d398cbbbc08839f162be111257415d2562cfc36517ca085927366e584c",
+          "chain_hex": "fdfab3ec44bea4d5601eca4b2c216436e48d5c2df8439a73a54d6224cc30472b",
+          "address": "0xDf873a3f7FD0AEAD40C698Ad4B5D1d8dd33b359F"
+        },
+        {
+          "id": "message-2",
+          "role": "message",
+          "purpose": "messaging-encryption",
+          "generation": "2",
+          "path": "m/44'/60'/4'/0'/2'",
+          "indices_hex": "8000002c8000003c800000048000000080000002",
+          "seed_hex": "64e0df3a659dc4720f18753deff7586d9dcb2984cf2fbd602e53eae49d963c40",
+          "private_hex": "d34090c3fe98c12bf34c1b108515961b548b75eb701a06c773a960f31ddcee7f",
+          "public_hex": "028b58bdb253163654f1a820bf82aaf33449862814607530fed8360684d7cf1d76",
+          "chain_hex": "69ee8981c487e111685477f30f7ec554bd12de0068257aa6c4864cd86bc7f248",
+          "address": "0x70A07bBe71E01477329090ab225715f543ae9045"
+        },
+        {
+          "id": "message-2147483647",
+          "role": "message",
+          "purpose": "messaging-encryption",
+          "generation": "2147483647",
+          "path": "m/44'/60'/4'/0'/2147483647'",
+          "indices_hex": "8000002c8000003c8000000480000000ffffffff",
+          "seed_hex": "64e0df3a659dc4720f18753deff7586d9dcb2984cf2fbd602e53eae49d963c40",
+          "private_hex": "ad866db4a95a6f84b2451587a59d6cd19229ba5e2be32ffb4cc4e8cdb9458905",
+          "public_hex": "0322a73d08975262a6172ba1082c9ddcbcf01c2d9910c1f94cd1ec70513cc8f1cb",
+          "chain_hex": "504320cf676a7df17c62ad1fc6e04fda63de3ddbf3b6c3319a7341d69c705827",
+          "address": "0xa754b5191f6C0e8051E02702dD6f8A3676182a83"
+        },
+        {
+          "id": "stamp-0",
+          "role": "stamp",
+          "purpose": "evm-wallet",
+          "generation": "0",
+          "path": "m/44'/60'/2'/0'/0'",
+          "indices_hex": "8000002c8000003c800000028000000080000000",
+          "seed_hex": "cee86a4b731c08858ad659009790516658141bb99e3be5bd144ab6ca657d19c4",
+          "private_hex": "c276394aab2f77f2c8b6ba8034c1552db6b9f3a85671988dfb1a9635e9ee7aa8",
+          "public_hex": "03bbaedbe9e24ae4bc7297370ec672274f41baeb8e149e060dc388e2ac536429e3",
+          "chain_hex": "9210cb9eac09ac6e3980a3dd89e84867e28dfed7c056e7e2f8c6862842e88443",
+          "address": "0x484123751DC22dc67d663a216De1a92057AE558e"
+        },
+        {
+          "id": "stamp-1",
+          "role": "stamp",
+          "purpose": "evm-wallet",
+          "generation": "1",
+          "path": "m/44'/60'/2'/0'/1'",
+          "indices_hex": "8000002c8000003c800000028000000080000001",
+          "seed_hex": "cee86a4b731c08858ad659009790516658141bb99e3be5bd144ab6ca657d19c4",
+          "private_hex": "f49e2d4244b24abbb26f7160cbcb9aa7808e31803cd7042723fa8fb17683baa1",
+          "public_hex": "03c2f4eb4bb457cfbf47bfc9762f756dae41d9bf9ee32716442d7c1c2cfba1a019",
+          "chain_hex": "fa924c01db25a48518ec33bb86c39279a10b50d088471af955668bb6c9370336",
+          "address": "0x3d72e4731837553285068f4300c74eb86886544A"
+        },
+        {
+          "id": "stamp-2",
+          "role": "stamp",
+          "purpose": "evm-wallet",
+          "generation": "2",
+          "path": "m/44'/60'/2'/0'/2'",
+          "indices_hex": "8000002c8000003c800000028000000080000002",
+          "seed_hex": "cee86a4b731c08858ad659009790516658141bb99e3be5bd144ab6ca657d19c4",
+          "private_hex": "63ef2fb051d499b226b07da4843638ee148bbd4caee1576e6a8ab3049d47d9fa",
+          "public_hex": "034d75c51de76dab02196613b5d98bafb012d4b0f240474f236aaf494e57230aad",
+          "chain_hex": "ec4a5a640d46a228a893d7f3151c8da2e97fb7ecb21d2052490ccc9d0d29d8dd",
+          "address": "0x25B250a904A01a774509CbB8b79Bc4997a53F939"
+        },
+        {
+          "id": "stamp-2147483647",
+          "role": "stamp",
+          "purpose": "evm-wallet",
+          "generation": "2147483647",
+          "path": "m/44'/60'/2'/0'/2147483647'",
+          "indices_hex": "8000002c8000003c8000000280000000ffffffff",
+          "seed_hex": "cee86a4b731c08858ad659009790516658141bb99e3be5bd144ab6ca657d19c4",
+          "private_hex": "61c4b3580ca47da8bc43feee8356ef1e404867ad78fe904f2f13926f4e530fb4",
+          "public_hex": "02e2135e8adbaa581cb5e31e96260069084196d3f6711522d2d582f0e2ce339a19",
+          "chain_hex": "aa346808226de460ebe8562e3d47837bcd37b17dd12daa916efff7d5e91b7713",
+          "address": "0xA159938f4493290939Cb8e19B4Ba837d49f1cdF8"
+        }
+      ],
+      "snapshots": [
+        {
+          "revision": "0",
+          "message_generation": "0",
+          "stamp_generation": "0",
+          "previous_stamp_generation": null,
+          "auth": "032de89548d6742189952342246af8e438ce63c8ad25a857690e353f3331d6c537",
+          "message": "02c05066c3239fc712592940a09c9272ea9b0373bbf548008e17a20c3d2a0161c2",
+          "stamp": "03bbaedbe9e24ae4bc7297370ec672274f41baeb8e149e060dc388e2ac536429e3",
+          "previous_stamp": null,
+          "type4_hex": "46524e4b0100000116a40004010402040359010bab006d6d6f6e61642d746573746e657401a20001015821032de89548d6742189952342246af8e438ce63c8ad25a857690e353f3331d6c537020003a2001a6553f10001000481a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582103acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe03a2001a65540d20010006a2001a6553ff10010008a2000101582103bbaedbe9e24ae4bc7297370ec672274f41baeb8e149e060dc388e2ac536429e30aa2000101582102c05066c3239fc712592940a09c9272ea9b0373bbf548008e17a20c3d2a0161c20b000c000df6",
+          "t1": "0f04eb705eed8b575fdca959cf0700f0e6e321fe0a7a36d7a87d8746b1e8d022"
+        },
+        {
+          "revision": "1",
+          "message_generation": "0",
+          "stamp_generation": "1",
+          "previous_stamp_generation": "0",
+          "auth": "032de89548d6742189952342246af8e438ce63c8ad25a857690e353f3331d6c537",
+          "message": "02c05066c3239fc712592940a09c9272ea9b0373bbf548008e17a20c3d2a0161c2",
+          "stamp": "03c2f4eb4bb457cfbf47bfc9762f756dae41d9bf9ee32716442d7c1c2cfba1a019",
+          "previous_stamp": "03bbaedbe9e24ae4bc7297370ec672274f41baeb8e149e060dc388e2ac536429e3",
+          "type4_hex": "46524e4b0100000137a40004010402040359012cab006d6d6f6e61642d746573746e657401a20001015821032de89548d6742189952342246af8e438ce63c8ad25a857690e353f3331d6c537020103a2001a6553f10101000481a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582103acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe03a2001a65540d20010006a2001a6553ff11010008a2000101582103c2f4eb4bb457cfbf47bfc9762f756dae41d9bf9ee32716442d7c1c2cfba1a0190aa2000101582102c05066c3239fc712592940a09c9272ea9b0373bbf548008e17a20c3d2a0161c20b000c010d58200f04eb705eed8b575fdca959cf0700f0e6e321fe0a7a36d7a87d8746b1e8d022",
+          "t1": "f51c59dc409111e9dd5c181cd3e346457047ae8df462662e198eb28dfd9a8e73"
+        },
+        {
+          "revision": "2",
+          "message_generation": "0",
+          "stamp_generation": "2",
+          "previous_stamp_generation": "1",
+          "auth": "032de89548d6742189952342246af8e438ce63c8ad25a857690e353f3331d6c537",
+          "message": "02c05066c3239fc712592940a09c9272ea9b0373bbf548008e17a20c3d2a0161c2",
+          "stamp": "034d75c51de76dab02196613b5d98bafb012d4b0f240474f236aaf494e57230aad",
+          "previous_stamp": "03c2f4eb4bb457cfbf47bfc9762f756dae41d9bf9ee32716442d7c1c2cfba1a019",
+          "type4_hex": "46524e4b0100000137a40004010402040359012cab006d6d6f6e61642d746573746e657401a20001015821032de89548d6742189952342246af8e438ce63c8ad25a857690e353f3331d6c537020203a2001a6553f10201000481a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582103acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe03a2001a65540d20010006a2001a6553ff12010008a20001015821034d75c51de76dab02196613b5d98bafb012d4b0f240474f236aaf494e57230aad0aa2000101582102c05066c3239fc712592940a09c9272ea9b0373bbf548008e17a20c3d2a0161c20b000c020d5820f51c59dc409111e9dd5c181cd3e346457047ae8df462662e198eb28dfd9a8e73",
+          "t1": "e6b679dd012a4830ab8256f970614d144cc231af8b1a31be39cc08266bd18844"
+        },
+        {
+          "revision": "3",
+          "message_generation": "1",
+          "stamp_generation": "2",
+          "previous_stamp_generation": "1",
+          "auth": "032de89548d6742189952342246af8e438ce63c8ad25a857690e353f3331d6c537",
+          "message": "0202b4f8d398cbbbc08839f162be111257415d2562cfc36517ca085927366e584c",
+          "stamp": "034d75c51de76dab02196613b5d98bafb012d4b0f240474f236aaf494e57230aad",
+          "previous_stamp": "03c2f4eb4bb457cfbf47bfc9762f756dae41d9bf9ee32716442d7c1c2cfba1a019",
+          "type4_hex": "46524e4b0100000137a40004010402040359012cab006d6d6f6e61642d746573746e657401a20001015821032de89548d6742189952342246af8e438ce63c8ad25a857690e353f3331d6c537020303a2001a6553f10301000481a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582103acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe03a2001a65540d20010006a2001a6553ff13010008a20001015821034d75c51de76dab02196613b5d98bafb012d4b0f240474f236aaf494e57230aad0aa200010158210202b4f8d398cbbbc08839f162be111257415d2562cfc36517ca085927366e584c0b010c020d5820e6b679dd012a4830ab8256f970614d144cc231af8b1a31be39cc08266bd18844",
+          "t1": "b7a64be673a77010ff8110497a3688299721b18edf9f4c6c2d8fd751fffcfdae"
+        }
+      ]
+    },
+    {
+      "account_root": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "roots": [
+        {
+          "purpose": "ecash-bch-wallet",
+          "code": 1,
+          "label": "frank/domain-root/v1/ecash-bch-wallet",
+          "salt_hex": "6672616e6b2f646f6d61696e2d726f6f742d72656769737472792f7631",
+          "info_hex": "00156672616e6b2d646f6d61696e2d726f6f74732d7631000100256672616e6b2f646f6d61696e2d726f6f742f76312f65636173682d6263682d77616c6c65740020",
+          "prk_hex": "b0b31edbad4d66b96788884cc146e938d0190e73336051cb6cd5098b564157fa",
+          "output_hex": "3f7e6601a459a8f3c4e2976d662578361ad7ec2f7b5e80f4daca5526d33ecc33"
+        },
+        {
+          "purpose": "evm-wallet",
+          "code": 2,
+          "label": "frank/domain-root/v1/evm-wallet",
+          "salt_hex": "6672616e6b2f646f6d61696e2d726f6f742d72656769737472792f7631",
+          "info_hex": "00156672616e6b2d646f6d61696e2d726f6f74732d76310002001f6672616e6b2f646f6d61696e2d726f6f742f76312f65766d2d77616c6c65740020",
+          "prk_hex": "b0b31edbad4d66b96788884cc146e938d0190e73336051cb6cd5098b564157fa",
+          "output_hex": "07cbdd9e307849bda7312fa4144afbd78e05b710aa6241bca48e08f028b615b3"
+        },
+        {
+          "purpose": "solana-wallet",
+          "code": 3,
+          "label": "frank/domain-root/v1/solana-wallet",
+          "salt_hex": "6672616e6b2f646f6d61696e2d726f6f742d72656769737472792f7631",
+          "info_hex": "00156672616e6b2d646f6d61696e2d726f6f74732d7631000300226672616e6b2f646f6d61696e2d726f6f742f76312f736f6c616e612d77616c6c65740020",
+          "prk_hex": "b0b31edbad4d66b96788884cc146e938d0190e73336051cb6cd5098b564157fa",
+          "output_hex": "fbd0a74f43c9e84e6f7920b234c20d59df0e850ae24063ac243b32bcf1eb154c"
+        },
+        {
+          "purpose": "messaging-encryption",
+          "code": 4,
+          "label": "frank/domain-root/v1/messaging-encryption",
+          "salt_hex": "6672616e6b2f646f6d61696e2d726f6f742d72656769737472792f7631",
+          "info_hex": "00156672616e6b2d646f6d61696e2d726f6f74732d7631000400296672616e6b2f646f6d61696e2d726f6f742f76312f6d6573736167696e672d656e6372797074696f6e0020",
+          "prk_hex": "b0b31edbad4d66b96788884cc146e938d0190e73336051cb6cd5098b564157fa",
+          "output_hex": "3785f5f436b651879055d71087b9ed3df7fb88054000ce520b4bd8ed11961331"
+        },
+        {
+          "purpose": "identity-authentication",
+          "code": 5,
+          "label": "frank/domain-root/v1/identity-authentication",
+          "salt_hex": "6672616e6b2f646f6d61696e2d726f6f742d72656769737472792f7631",
+          "info_hex": "00156672616e6b2d646f6d61696e2d726f6f74732d76310005002c6672616e6b2f646f6d61696e2d726f6f742f76312f6964656e746974792d61757468656e7469636174696f6e0020",
+          "prk_hex": "b0b31edbad4d66b96788884cc146e938d0190e73336051cb6cd5098b564157fa",
+          "output_hex": "006831dc0753bd4020bf7ea41d98f27bb03142cc78e94d38b4199215aedbc0fc"
+        }
+      ],
+      "leaves": [
+        {
+          "id": "auth-0",
+          "role": "auth",
+          "purpose": "identity-authentication",
+          "generation": "0",
+          "path": "m/44'/60'/1'/0/0",
+          "indices_hex": "8000002c8000003c800000010000000000000000",
+          "seed_hex": "006831dc0753bd4020bf7ea41d98f27bb03142cc78e94d38b4199215aedbc0fc",
+          "private_hex": "e05fa24a6928e582da41c4163219e62313fcabc6e1d3362fa95d17fdb4bc0e7a",
+          "public_hex": "036253871fdcfbb0497776db33754caaafad98c1b4b0ae4945ddf8660e27687a1a",
+          "chain_hex": "834bc1c2e59faf0908c61a7abb219ed2d5980e32aeeafb8e09c411205441dd84",
+          "address": "0x8dc3750A7789544eB239029B1Eb0EaaDdEbdfe9d"
+        },
+        {
+          "id": "main-0",
+          "role": "main",
+          "purpose": "evm-wallet",
+          "generation": "0",
+          "path": "m/44'/60'/1'/0/0",
+          "indices_hex": "8000002c8000003c800000010000000000000000",
+          "seed_hex": "07cbdd9e307849bda7312fa4144afbd78e05b710aa6241bca48e08f028b615b3",
+          "private_hex": "ff688b36360c408d30d1c4856f64c1041fb1c9175a5e194fc3a0952243ebe25a",
+          "public_hex": "0361299070ab35b78ae1be12547b0023c3edc63e5841ab88d656a1cccec2e876b4",
+          "chain_hex": "49b53739a377eff3cba13455fb039fafcbed9e8efb38a84fd75571ed3ddbb8b5",
+          "address": "0x44403a53EbB81056E865Fd706fE9B64E0B780390"
+        },
+        {
+          "id": "funding-0",
+          "role": "funding",
+          "purpose": "evm-wallet",
+          "generation": "0",
+          "path": "m/44'/60'/0'/0/0",
+          "indices_hex": "8000002c8000003c800000000000000000000000",
+          "seed_hex": "07cbdd9e307849bda7312fa4144afbd78e05b710aa6241bca48e08f028b615b3",
+          "private_hex": "344ca72b7ab70c8374f9b45c0a8cb664e6fb02cd26d97282a0dbb445cbdc6e53",
+          "public_hex": "037c05b799c2a377ce58b29931ae0019b8a7e6d35bf0c020e8e0869970f86d3f60",
+          "chain_hex": "9182c02e6b8f362134bb2a224037fec5bb9fff5f8c00fdbda0671111f4172379",
+          "address": "0xBcF19B8C0495b9436c99d720b0A1fdcd587C3fB2"
+        },
+        {
+          "id": "funding-1",
+          "role": "funding",
+          "purpose": "evm-wallet",
+          "generation": "1",
+          "path": "m/44'/60'/0'/0/1",
+          "indices_hex": "8000002c8000003c800000000000000000000001",
+          "seed_hex": "07cbdd9e307849bda7312fa4144afbd78e05b710aa6241bca48e08f028b615b3",
+          "private_hex": "5b241ceac9d844f5bdeb66c48759b9bd028c10331980b711443eaca44c6ed24e",
+          "public_hex": "026a59629c20eb8a17cb73d5606ead07ac9f41e5726828a867c52bcc90abc7b18d",
+          "chain_hex": "fddddc3d5678a5275de372136604d56e77cd8eabdfe5c65618c09be83f8ecb7c",
+          "address": "0x8D9699Ee3b3322806d4f83fe573D4b5C74534abB"
+        },
+        {
+          "id": "funding-2147483647",
+          "role": "funding",
+          "purpose": "evm-wallet",
+          "generation": "2147483647",
+          "path": "m/44'/60'/0'/0/2147483647",
+          "indices_hex": "8000002c8000003c80000000000000007fffffff",
+          "seed_hex": "07cbdd9e307849bda7312fa4144afbd78e05b710aa6241bca48e08f028b615b3",
+          "private_hex": "333e16ec439764d574f3a3c39db22dc357b58b593232e146571decc03c0759d4",
+          "public_hex": "0300b9c54b737dc2ec5725736184af0f9d72a20442696dcdd1d8970b72316074d4",
+          "chain_hex": "8e77d65a3163d3a61126d83ac008cecee22d80ad51bd9ca3af810ecfcb784289",
+          "address": "0x1e635AC9233C8c7fEfFcD67f24ED9E7a02d9E35b"
+        },
+        {
+          "id": "change-0",
+          "role": "change",
+          "purpose": "evm-wallet",
+          "generation": "0",
+          "path": "m/44'/60'/0'/1/0",
+          "indices_hex": "8000002c8000003c800000000000000100000000",
+          "seed_hex": "07cbdd9e307849bda7312fa4144afbd78e05b710aa6241bca48e08f028b615b3",
+          "private_hex": "232c47ece406ada27555529f5c1fccfaeaa18d9eab7e56bc94f4b97fa43fbdb9",
+          "public_hex": "032da106cd2454dbab921908d11706c9352aa983a6d4c6bd123c5e130383ef2380",
+          "chain_hex": "a26e57450af190b18f90b7974689e70ac00225f6686dd54d4695865c064db826",
+          "address": "0x7cf72fC477c43cA1aEAD13F92a3Ed0F32b33b280"
+        },
+        {
+          "id": "change-1",
+          "role": "change",
+          "purpose": "evm-wallet",
+          "generation": "1",
+          "path": "m/44'/60'/0'/1/1",
+          "indices_hex": "8000002c8000003c800000000000000100000001",
+          "seed_hex": "07cbdd9e307849bda7312fa4144afbd78e05b710aa6241bca48e08f028b615b3",
+          "private_hex": "dc63990e4fc627cf5618b9be7c5348edd5862493fdae90c0c02297373f9af547",
+          "public_hex": "03376c36b754cd15d7e879a90b497a4154e35271ba94e4c3eea58350b068692cd3",
+          "chain_hex": "8dda32f372205b37b4e54f7a3352ce83f09bf2c5c363eaf89094e6ae6cd16ece",
+          "address": "0xcb56Db790E64488a08bcd30D99d23AE8130c26fD"
+        },
+        {
+          "id": "change-2147483647",
+          "role": "change",
+          "purpose": "evm-wallet",
+          "generation": "2147483647",
+          "path": "m/44'/60'/0'/1/2147483647",
+          "indices_hex": "8000002c8000003c80000000000000017fffffff",
+          "seed_hex": "07cbdd9e307849bda7312fa4144afbd78e05b710aa6241bca48e08f028b615b3",
+          "private_hex": "1611e069b311cfee9a848e6a56d2f3debd90e821486ec4289e6cf762613a3da3",
+          "public_hex": "0388a7cea9a66172c81c8b5fad3e8595d75172d1f58dc41712e4760d1f75ca1014",
+          "chain_hex": "2968016d85847c4f83f68de43ca96a4d8b94cbfd7adfa6034ed5a194e5c93af8",
+          "address": "0x53B15339a66741F29476366d29e8c49083B9A136"
+        },
+        {
+          "id": "message-0",
+          "role": "message",
+          "purpose": "messaging-encryption",
+          "generation": "0",
+          "path": "m/44'/60'/4'/0'/0'",
+          "indices_hex": "8000002c8000003c800000048000000080000000",
+          "seed_hex": "3785f5f436b651879055d71087b9ed3df7fb88054000ce520b4bd8ed11961331",
+          "private_hex": "4d310abe9d4e3950d1960432621d776407f2551818ecceb597e7c14edd1dcba5",
+          "public_hex": "03e84266f9de81abb5455f18083f781b09367263e3992bf51a9ea571f28619b81b",
+          "chain_hex": "d24edde9e22e297cb41968edb65a624eef92189266ccdfd5d131b3c59c51a540",
+          "address": "0x2A78f3ac2223f0A5Ff054C8E33093811B6fCDfA0"
+        },
+        {
+          "id": "message-1",
+          "role": "message",
+          "purpose": "messaging-encryption",
+          "generation": "1",
+          "path": "m/44'/60'/4'/0'/1'",
+          "indices_hex": "8000002c8000003c800000048000000080000001",
+          "seed_hex": "3785f5f436b651879055d71087b9ed3df7fb88054000ce520b4bd8ed11961331",
+          "private_hex": "42c48cab32034e66e48bfaf4c14cd15929b69eff0a1693796bbf465a00adad19",
+          "public_hex": "02ef23d331815162a503cc418dd812d383f114f4a4aea4031cd4041d1f64cf9ce2",
+          "chain_hex": "d97c296ec7eb3e3b613950dbbf7b9cb4b5f9b8878af5cd3082454abcfc843442",
+          "address": "0x1faE61b7e2799ac4e5fF22587B0d49c7d6CE9dcE"
+        },
+        {
+          "id": "message-2",
+          "role": "message",
+          "purpose": "messaging-encryption",
+          "generation": "2",
+          "path": "m/44'/60'/4'/0'/2'",
+          "indices_hex": "8000002c8000003c800000048000000080000002",
+          "seed_hex": "3785f5f436b651879055d71087b9ed3df7fb88054000ce520b4bd8ed11961331",
+          "private_hex": "6e238e3210c99fe6319a91c5d30f74860e0a5f92111a15cbb8dc88d1f5c89df8",
+          "public_hex": "03aabfa9a3fe080dd96a430e185b629370af3be0a5b0300edb5028457fbc647b5a",
+          "chain_hex": "5461549b34959d38cbeb186ac509402d9e3c9566cb913884cab293537ebdf8e0",
+          "address": "0xBC1C3e597C994b11d6131B70CD95e6038AD6ee39"
+        },
+        {
+          "id": "message-2147483647",
+          "role": "message",
+          "purpose": "messaging-encryption",
+          "generation": "2147483647",
+          "path": "m/44'/60'/4'/0'/2147483647'",
+          "indices_hex": "8000002c8000003c8000000480000000ffffffff",
+          "seed_hex": "3785f5f436b651879055d71087b9ed3df7fb88054000ce520b4bd8ed11961331",
+          "private_hex": "c99902e16107c446a79f3124ca65a308f38d3c7c82b20f3c6c5bac727bc74061",
+          "public_hex": "03cc95526675a07c635e3c104d5931e93282887f92629ac85520e181c6ebd14dc1",
+          "chain_hex": "528199dea4124ef9798372fedeaf219bff842231b99d69e19369dfbe626c8aff",
+          "address": "0xCc70C5Ba32799A9B2916ff806d4dD38437Dd00B6"
+        },
+        {
+          "id": "stamp-0",
+          "role": "stamp",
+          "purpose": "evm-wallet",
+          "generation": "0",
+          "path": "m/44'/60'/2'/0'/0'",
+          "indices_hex": "8000002c8000003c800000028000000080000000",
+          "seed_hex": "07cbdd9e307849bda7312fa4144afbd78e05b710aa6241bca48e08f028b615b3",
+          "private_hex": "5ef17dc7f2de9d9148ba22d784b3fd9397e35099318d3812f55b37252656e0e0",
+          "public_hex": "031932bd4a3b404c1477cab87652d75ce112d24e8b1698d8cf5b1834cfc8d33fbb",
+          "chain_hex": "c21877ecfdbe7cae0e039535e6affbddfe12115bb19d442ca77f36810b3e935b",
+          "address": "0xc32Dd8EF2233150Bc770968d696A7Cf1684e5b78"
+        },
+        {
+          "id": "stamp-1",
+          "role": "stamp",
+          "purpose": "evm-wallet",
+          "generation": "1",
+          "path": "m/44'/60'/2'/0'/1'",
+          "indices_hex": "8000002c8000003c800000028000000080000001",
+          "seed_hex": "07cbdd9e307849bda7312fa4144afbd78e05b710aa6241bca48e08f028b615b3",
+          "private_hex": "315c16dc76deda9e54406ab78682f2b8b35cf8d30911fe2901accdb35bfa863a",
+          "public_hex": "030e7627ebebf2a25ea81f0caefc8f013d55527e4684770034082caa015414965d",
+          "chain_hex": "c65e409bf571ba25286e9ad1f01fbb96d775c5edbde03d32ab780cf3351d4758",
+          "address": "0x2b3670C5F0b21e5f7c278092717FA41848506f89"
+        },
+        {
+          "id": "stamp-2",
+          "role": "stamp",
+          "purpose": "evm-wallet",
+          "generation": "2",
+          "path": "m/44'/60'/2'/0'/2'",
+          "indices_hex": "8000002c8000003c800000028000000080000002",
+          "seed_hex": "07cbdd9e307849bda7312fa4144afbd78e05b710aa6241bca48e08f028b615b3",
+          "private_hex": "2077c6f3025c4cc87894c240badefb2541af5b73b1e5e4a231f9e96b02a9f604",
+          "public_hex": "02e5cba49c21e967013cfc54178457bef3e519a0f0a73d4ecf3f654446f06fa687",
+          "chain_hex": "8dd918051d60021f50116339fd07edb1468b15ce560c2281a848e183be0c3867",
+          "address": "0xEacDB7E100e9DA1095F691a8935Ce7c86e218166"
+        },
+        {
+          "id": "stamp-2147483647",
+          "role": "stamp",
+          "purpose": "evm-wallet",
+          "generation": "2147483647",
+          "path": "m/44'/60'/2'/0'/2147483647'",
+          "indices_hex": "8000002c8000003c8000000280000000ffffffff",
+          "seed_hex": "07cbdd9e307849bda7312fa4144afbd78e05b710aa6241bca48e08f028b615b3",
+          "private_hex": "840d9b74a1e9f1d5d4d308cdc3f14ec5957054fe08bb5e8bb325e1e50a858810",
+          "public_hex": "029ab3bb71229a4453c26b99d98d32d1ce4a33746a0578232f7e02c7ef5ab2f25f",
+          "chain_hex": "f89f1f7c6439fa543ff59f14702276ac178a053696da71b91dadffeeb2ef433d",
+          "address": "0x4DE8F44E336Cf19b2B800e60A7E1AC44877e91B4"
+        }
+      ],
+      "snapshots": [
+        {
+          "revision": "0",
+          "message_generation": "0",
+          "stamp_generation": "0",
+          "previous_stamp_generation": null,
+          "auth": "036253871fdcfbb0497776db33754caaafad98c1b4b0ae4945ddf8660e27687a1a",
+          "message": "03e84266f9de81abb5455f18083f781b09367263e3992bf51a9ea571f28619b81b",
+          "stamp": "031932bd4a3b404c1477cab87652d75ce112d24e8b1698d8cf5b1834cfc8d33fbb",
+          "previous_stamp": null,
+          "type4_hex": "46524e4b0100000116a40004010402040359010bab006d6d6f6e61642d746573746e657401a20001015821036253871fdcfbb0497776db33754caaafad98c1b4b0ae4945ddf8660e27687a1a020003a2001a6553f10001000481a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582103acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe03a2001a65540d20010006a2001a6553ff10010008a20001015821031932bd4a3b404c1477cab87652d75ce112d24e8b1698d8cf5b1834cfc8d33fbb0aa2000101582103e84266f9de81abb5455f18083f781b09367263e3992bf51a9ea571f28619b81b0b000c000df6",
+          "t1": "41e1b702171e0ec47eac88e6fcf621c3561cd093d0f432a950894b528bfcd7a7"
+        },
+        {
+          "revision": "1",
+          "message_generation": "0",
+          "stamp_generation": "1",
+          "previous_stamp_generation": "0",
+          "auth": "036253871fdcfbb0497776db33754caaafad98c1b4b0ae4945ddf8660e27687a1a",
+          "message": "03e84266f9de81abb5455f18083f781b09367263e3992bf51a9ea571f28619b81b",
+          "stamp": "030e7627ebebf2a25ea81f0caefc8f013d55527e4684770034082caa015414965d",
+          "previous_stamp": "031932bd4a3b404c1477cab87652d75ce112d24e8b1698d8cf5b1834cfc8d33fbb",
+          "type4_hex": "46524e4b0100000137a40004010402040359012cab006d6d6f6e61642d746573746e657401a20001015821036253871fdcfbb0497776db33754caaafad98c1b4b0ae4945ddf8660e27687a1a020103a2001a6553f10101000481a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582103acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe03a2001a65540d20010006a2001a6553ff11010008a20001015821030e7627ebebf2a25ea81f0caefc8f013d55527e4684770034082caa015414965d0aa2000101582103e84266f9de81abb5455f18083f781b09367263e3992bf51a9ea571f28619b81b0b000c010d582041e1b702171e0ec47eac88e6fcf621c3561cd093d0f432a950894b528bfcd7a7",
+          "t1": "9a9d5d78438ab5df44c2ff43a7f975fadda40667bd16d67709dadae507225263"
+        },
+        {
+          "revision": "2",
+          "message_generation": "0",
+          "stamp_generation": "2",
+          "previous_stamp_generation": "1",
+          "auth": "036253871fdcfbb0497776db33754caaafad98c1b4b0ae4945ddf8660e27687a1a",
+          "message": "03e84266f9de81abb5455f18083f781b09367263e3992bf51a9ea571f28619b81b",
+          "stamp": "02e5cba49c21e967013cfc54178457bef3e519a0f0a73d4ecf3f654446f06fa687",
+          "previous_stamp": "030e7627ebebf2a25ea81f0caefc8f013d55527e4684770034082caa015414965d",
+          "type4_hex": "46524e4b0100000137a40004010402040359012cab006d6d6f6e61642d746573746e657401a20001015821036253871fdcfbb0497776db33754caaafad98c1b4b0ae4945ddf8660e27687a1a020203a2001a6553f10201000481a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582103acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe03a2001a65540d20010006a2001a6553ff12010008a2000101582102e5cba49c21e967013cfc54178457bef3e519a0f0a73d4ecf3f654446f06fa6870aa2000101582103e84266f9de81abb5455f18083f781b09367263e3992bf51a9ea571f28619b81b0b000c020d58209a9d5d78438ab5df44c2ff43a7f975fadda40667bd16d67709dadae507225263",
+          "t1": "4e8814e801fa241b9317faede4d6955b821654233a0813f10c5bc77d9e5492f5"
+        },
+        {
+          "revision": "3",
+          "message_generation": "1",
+          "stamp_generation": "2",
+          "previous_stamp_generation": "1",
+          "auth": "036253871fdcfbb0497776db33754caaafad98c1b4b0ae4945ddf8660e27687a1a",
+          "message": "02ef23d331815162a503cc418dd812d383f114f4a4aea4031cd4041d1f64cf9ce2",
+          "stamp": "02e5cba49c21e967013cfc54178457bef3e519a0f0a73d4ecf3f654446f06fa687",
+          "previous_stamp": "030e7627ebebf2a25ea81f0caefc8f013d55527e4684770034082caa015414965d",
+          "type4_hex": "46524e4b0100000137a40004010402040359012cab006d6d6f6e61642d746573746e657401a20001015821036253871fdcfbb0497776db33754caaafad98c1b4b0ae4945ddf8660e27687a1a020303a2001a6553f10301000481a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582103acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe03a2001a65540d20010006a2001a6553ff13010008a2000101582102e5cba49c21e967013cfc54178457bef3e519a0f0a73d4ecf3f654446f06fa6870aa2000101582102ef23d331815162a503cc418dd812d383f114f4a4aea4031cd4041d1f64cf9ce20b010c020d58204e8814e801fa241b9317faede4d6955b821654233a0813f10c5bc77d9e5492f5",
+          "t1": "2cbfe404650146085beb0f9dddf7da7a50fa6b2f15da75642ddc1ff2dd9364c7"
+        }
+      ]
+    }
+  ],
+  "generation_cases": [
+    {
+      "value": "0",
+      "expected": "accept"
+    },
+    {
+      "value": "1",
+      "expected": "accept"
+    },
+    {
+      "value": "2147483647",
+      "expected": "accept"
+    },
+    {
+      "value": "2147483648",
+      "expected": "reject"
+    },
+    {
+      "value": "4294967295",
+      "expected": "reject"
+    },
+    {
+      "value": "9007199254740993",
+      "expected": "reject"
+    },
+    {
+      "value": "18446744073709551615",
+      "expected": "reject"
+    },
+    {
+      "value": "18446744073709551616",
+      "expected": "reject"
+    },
+    {
+      "value": "-1",
+      "expected": "reject"
+    },
+    {
+      "value": "01",
+      "expected": "reject"
+    },
+    {
+      "value": "1.0",
+      "expected": "reject"
+    },
+    {
+      "value": "",
+      "expected": "reject"
+    },
+    {
+      "value": "1e2",
+      "expected": "reject"
+    },
+    {
+      "value": 1,
+      "expected": "reject"
+    },
+    {
+      "value": null,
+      "expected": "reject"
+    }
+  ],
+  "scalar_cases": [
+    {
+      "id": "master-zero",
+      "operation": "master",
+      "left_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected": "master-scalar"
+    },
+    {
+      "id": "master-order",
+      "operation": "master",
+      "left_hex": "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
+      "expected": "master-scalar"
+    },
+    {
+      "id": "child-order",
+      "operation": "child",
+      "left_hex": "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
+      "expected": "child-scalar"
+    },
+    {
+      "id": "child-zero-sum",
+      "operation": "child",
+      "left_hex": "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140",
+      "expected": "child-zero"
+    },
+    {
+      "id": "child-zero-tweak-valid",
+      "operation": "child",
+      "left_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected": "accept"
+    }
+  ],
+  "reuse_cases": [
+    {
+      "candidate": "message-1",
+      "history": [
+        "auth-0",
+        "message-0",
+        "stamp-0"
+      ],
+      "negate": false,
+      "expected": "accept"
+    },
+    {
+      "candidate": "message-0",
+      "history": [
+        "auth-0",
+        "message-0",
+        "stamp-0"
+      ],
+      "negate": false,
+      "expected": "reject"
+    },
+    {
+      "candidate": "message-0",
+      "history": [
+        "auth-0",
+        "message-0",
+        "stamp-0"
+      ],
+      "negate": true,
+      "expected": "reject"
+    },
+    {
+      "candidate": "stamp-0",
+      "history": [
+        "auth-0",
+        "message-0",
+        "stamp-0"
+      ],
+      "negate": false,
+      "expected": "reject"
+    }
+  ],
+  "restore_cases": [
+    {
+      "id": "restore-0-0",
+      "account": 0,
+      "snapshot": 0,
+      "operation": "restore",
+      "expected": "accept"
+    },
+    {
+      "id": "restore-0-1",
+      "account": 0,
+      "snapshot": 1,
+      "operation": "restore",
+      "expected": "accept"
+    },
+    {
+      "id": "restore-0-2",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "expected": "accept"
+    },
+    {
+      "id": "restore-0-3",
+      "account": 0,
+      "snapshot": 3,
+      "operation": "restore",
+      "expected": "accept"
+    },
+    {
+      "id": "restore-1-0",
+      "account": 1,
+      "snapshot": 0,
+      "operation": "restore",
+      "expected": "accept"
+    },
+    {
+      "id": "restore-1-1",
+      "account": 1,
+      "snapshot": 1,
+      "operation": "restore",
+      "expected": "accept"
+    },
+    {
+      "id": "restore-1-2",
+      "account": 1,
+      "snapshot": 2,
+      "operation": "restore",
+      "expected": "accept"
+    },
+    {
+      "id": "restore-1-3",
+      "account": 1,
+      "snapshot": 3,
+      "operation": "restore",
+      "expected": "accept"
+    },
+    {
+      "id": "registry",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "registry",
+      "expected": "reject"
+    },
+    {
+      "id": "recovery",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "recovery",
+      "expected": "reject"
+    },
+    {
+      "id": "registry-code",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "registry-code",
+      "expected": "reject"
+    },
+    {
+      "id": "recovery-code",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "recovery-code",
+      "expected": "reject"
+    },
+    {
+      "id": "message-purpose-code",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "message-purpose-code",
+      "expected": "reject"
+    },
+    {
+      "id": "stamp-purpose-code",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "stamp-purpose-code",
+      "expected": "reject"
+    },
+    {
+      "id": "interpretation",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "interpretation",
+      "expected": "reject"
+    },
+    {
+      "id": "seed-length",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "seed-length",
+      "expected": "reject"
+    },
+    {
+      "id": "purpose",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "purpose",
+      "expected": "reject"
+    },
+    {
+      "id": "stamp-purpose",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "stamp-purpose",
+      "expected": "reject"
+    },
+    {
+      "id": "auth-as-message",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "auth-as-message",
+      "expected": "reject"
+    },
+    {
+      "id": "evm-as-message",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "evm-as-message",
+      "expected": "reject"
+    },
+    {
+      "id": "stamp-as-message",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "stamp-as-message",
+      "expected": "reject"
+    },
+    {
+      "id": "funding-as-stamp",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "funding-as-stamp",
+      "expected": "reject"
+    },
+    {
+      "id": "negated-message",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "negated-message",
+      "expected": "reject"
+    },
+    {
+      "id": "nonhardened-message",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "nonhardened-message",
+      "expected": "reject"
+    },
+    {
+      "id": "nonhardened-stamp",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "nonhardened-stamp",
+      "expected": "reject"
+    },
+    {
+      "id": "wrong-account",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "wrong-account",
+      "expected": "reject"
+    },
+    {
+      "id": "missing-generation",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "missing-generation",
+      "expected": "reject"
+    },
+    {
+      "id": "missing-stamp-generation",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "missing-stamp-generation",
+      "expected": "reject"
+    },
+    {
+      "id": "wrong-message-generation",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "wrong-message-generation",
+      "expected": "reject"
+    },
+    {
+      "id": "wrong-stamp-generation",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "wrong-stamp-generation",
+      "expected": "reject"
+    },
+    {
+      "id": "overflow-generation",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "overflow-generation",
+      "expected": "reject"
+    },
+    {
+      "id": "missing-previous",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "missing-previous",
+      "expected": "reject"
+    },
+    {
+      "id": "wrong-previous",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "wrong-previous",
+      "expected": "reject"
+    },
+    {
+      "id": "wrong-current",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "wrong-current",
+      "expected": "reject"
+    },
+    {
+      "id": "network",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "network",
+      "expected": "reject"
+    },
+    {
+      "id": "head-lost",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "head-lost",
+      "expected": "reject"
+    },
+    {
+      "id": "t1",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "t1",
+      "expected": "reject"
+    },
+    {
+      "id": "pair-lost-current-only",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "restore",
+      "mutation": "pair-lost",
+      "expected": "current-only"
+    },
+    {
+      "id": "stamp-current",
+      "account": 0,
+      "snapshot": 0,
+      "operation": "stamp-admission",
+      "candidate_generation": "0",
+      "expected": "accept"
+    },
+    {
+      "id": "compromised-after-one-rotation",
+      "account": 0,
+      "snapshot": 1,
+      "operation": "stamp-admission",
+      "candidate_generation": "0",
+      "expected": "accept"
+    },
+    {
+      "id": "compromised-after-two-rotations",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "stamp-admission",
+      "candidate_generation": "0",
+      "expected": "reject"
+    },
+    {
+      "id": "previous-independent-restore",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "stamp-admission",
+      "candidate_generation": "1",
+      "expected": "accept"
+    },
+    {
+      "id": "renewal-does-not-clear-previous",
+      "account": 0,
+      "snapshot": 3,
+      "operation": "stamp-admission",
+      "candidate_generation": "1",
+      "expected": "accept"
+    },
+    {
+      "id": "pair-lost-blocks-previous",
+      "account": 0,
+      "snapshot": 2,
+      "operation": "stamp-admission",
+      "candidate_generation": "1",
+      "mutation": "pair-lost",
+      "expected": "reject"
+    },
+    {
+      "id": "retired-message-no-new-admission",
+      "account": 0,
+      "snapshot": 3,
+      "operation": "message-admission",
+      "candidate_generation": "0",
+      "expected": "reject"
+    },
+    {
+      "id": "current-message",
+      "account": 0,
+      "snapshot": 3,
+      "operation": "message-admission",
+      "candidate_generation": "1",
+      "expected": "accept"
+    },
+    {
+      "id": "retired-message-archive",
+      "account": 0,
+      "snapshot": 3,
+      "operation": "archive",
+      "candidate_generation": "0",
+      "expected": "archive-only"
+    }
+  ],
+  "frozen_sha256": [
+    {
+      "path": "packages/domain-roots/src/index.ts",
+      "sha256": "35e09bdf95c9b6baa9dd6120479b0dbd1f6669f1235ca384e5cd9ce5a9b68b0a"
+    },
+    {
+      "path": "packages/domain-roots/vectors/domain-roots-v1.json",
+      "sha256": "53a0cb0f15d4db976c2989581e6e98b3a13705ec1446fcba21dd4e721d13d342"
+    },
+    {
+      "path": "packages/wallet/monad-identity.ts",
+      "sha256": "e536f4651f3ed92305260786d1bf1b85e625a5d1acf14d5398c35cc4467926c2"
+    },
+    {
+      "path": "packages/wallet/monad-wallet-material.ts",
+      "sha256": "2fc9ee69558d8165ebc638511fcc9f64111b1644cd4d792067c0bd7adb81eb7e"
+    },
+    {
+      "path": "packages/wallet/monad-hd-keyring.ts",
+      "sha256": "0a61ef7baf5659a70cf486cf687d7ede4d68914c287307f7cfd27041325541c3"
+    },
+    {
+      "path": "packages/wallet/monad-change-keyring.ts",
+      "sha256": "a6e7100b8396c7dfb908446e899c58d5e4f86a1f2d093bdef297bee09bb51005"
+    },
+    {
+      "path": "packages/wallet/chain/monad-domain-wallet.jest.test.ts",
+      "sha256": "1805ac306cdb8f2eae7d135d8c2983087f3dc59e242c04968ea9259e28844df7"
+    },
+    {
+      "path": "docs/protocol/proposals/suite1-directory/README.md",
+      "sha256": "3a80017552989887d19b3cf1e61ba5131db321f0061064dbe817e1bdeb2d6b5b"
+    }
+  ]
+}

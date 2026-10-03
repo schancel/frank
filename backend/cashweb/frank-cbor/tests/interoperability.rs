@@ -165,7 +165,11 @@ fn assert_unknown(unknown: &[(u64, CborValue)], value: &str, id: &str) {
 }
 
 fn assert_direct_nested_opaque(payload_frame: &frank_cbor::ParsedFrame) {
-    let Some(TypedPayload::RecipientPayload { ciphertext, .. }) = payload_frame.typed.as_deref()
+    let Some(TypedPayload::RecipientPayload {
+        schema_version: 1,
+        ciphertext: Some(ciphertext),
+        ..
+    }) = payload_frame.typed.as_deref()
     else {
         panic!("direct payload was not typed as type 5")
     };

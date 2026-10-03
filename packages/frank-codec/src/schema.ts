@@ -2,10 +2,12 @@
 // identifiers) for the version-1 payload schemas.
 import type { FrankValue } from './cbor'
 import {
+  ENCRYPTION_SUITE_DM_AUTH_XCHACHA,
   ENCRYPTION_SUITE_PROOF,
   I64_MAX,
   I64_MIN,
   MAX_CIPHERTEXT_BYTES,
+  MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES,
   MAX_JOURNAL_FACTS,
   MAX_MESSAGE_ITEMS_PER_ARRAY,
   MAX_OPAQUE_SECTIONS,
@@ -287,6 +289,12 @@ export function checkTypeLimits(typeId: number, payload: FrankValue): void {
       if (tooMany(f(4), MAX_RELAY_BINDINGS)) over('relay bindings')
       break
     case TYPE_RECIPIENT_ENCRYPTED_PAYLOAD: {
+      const e = f(4)
+      if (
+        e instanceof Uint8Array &&
+        e.length > MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES
+      )
+        over('crypto-box envelope')
       const c = f(5)
       if (c instanceof Uint8Array && c.length > MAX_CIPHERTEXT_BYTES)
         over('ciphertext')
@@ -529,9 +537,31 @@ export function parseDraft(
       return st
     }
     case TYPE_RECIPIENT_ENCRYPTED_PAYLOAD: {
+      if (schema.effective >= 2) {
+        const m = fields(payload, P, [0, 1, 2, 3, 4, 5, 6, 7], [], true, allow)
+        return {
+          type: 5,
+          schemaVersion: 2,
+          network: networkTag(m.get(0), `${P}.0`),
+          sender: account(m.get(1), `${P}.1`),
+          recipient: account(m.get(2), `${P}.2`),
+          suite: u32ish(m.get(3), `${P}.3`, 0, 65535),
+          cryptoBoxEnvelope: bstr(
+            m.get(4),
+            `${P}.4`,
+            1,
+            MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES,
+          ),
+          ephemeralPoint: point(m.get(5), `${P}.5`),
+          sharedPoint: point(m.get(6), `${P}.6`),
+          dleqProof: proof(m.get(7), `${P}.7`),
+          unknownFields: m.unknown,
+        }
+      }
       const m = fields(payload, P, [0, 1, 2, 3, 4, 5, 6, 7, 8], [], true, allow)
       return {
         type: 5,
+        schemaVersion: 1,
         network: networkTag(m.get(0), `${P}.0`),
         sender: account(m.get(1), `${P}.1`),
         recipient: account(m.get(2), `${P}.2`),
@@ -718,7 +748,10 @@ export function checkAllocated(d: DraftPayload): void {
     case 5:
       checkKeyType(d.sender, `${P}.1`)
       checkKeyType(d.recipient, `${P}.2`)
-      if (d.suite !== ENCRYPTION_SUITE_PROOF) {
+      if (
+        (d.schemaVersion === 1 && d.suite !== ENCRYPTION_SUITE_PROOF) ||
+        (d.schemaVersion === 2 && d.suite !== ENCRYPTION_SUITE_DM_AUTH_XCHACHA)
+      ) {
         throw unsupported(
           `${P}.3`,
           `encryption suite ${d.suite} is unallocated (S2c)`,

@@ -1,5 +1,6 @@
-//! The stamp fields of #198 at the typed level: type-5 fields 6 through 8 (README T3a, T3b
-//! encoding rules), the type-4 stamp key (S10a.1) and the same-subject schema order (S10a.2).
+//! The stamp fields of #198 at the typed level: type-5 schema-1 fields 6 through 8 and schema-2
+//! fields 5 through 7 (README T3a, T3b encoding rules), the type-4 stamp key (S10a.1), and the
+//! same-subject schema order (S10a.2).
 //! The manifest carries the vectors; these tests pin the boundaries and the typed projection.
 
 mod common;
@@ -39,6 +40,28 @@ fn outcome(frame: &[u8]) -> String {
         Err(Error::Codec(e)) => format!("{:?}@{:?}", e.category, e.stage),
         Err(e) => panic!("{e}"),
     }
+}
+
+fn production_type5(suite: u32) -> Vec<u8> {
+    let payload = cbor_map(vec![
+        (0, CborValue::Text(NET.to_string())),
+        (1, acct1(9)),
+        (2, acct1(3)),
+        (3, int(i128::from(suite))),
+        (4, CborValue::Bytes(vec![0xa0])),
+        (5, hex_bytes(T3C_EPHEMERAL)),
+        (6, hex_bytes(T3C_SHARED)),
+        (7, hex_bytes(T3C_PROOF)),
+    ]);
+    encode_frame(
+        EnvelopeFields {
+            type_id: 5,
+            schema_version: 2,
+            min_reader_version: 2,
+        },
+        FramePayload::Value(&payload),
+    )
+    .expect("schema-2 type 5")
 }
 
 fn point(prefix: u8, x_hex: &str) -> CborValue {
@@ -126,6 +149,23 @@ fn typed_projection_carries_the_stamp_fields() {
         }
         other => panic!("unexpected {other:?}"),
     }
+}
+
+#[test]
+fn production_suite_one_is_typed_only_in_schema_two() {
+    let frame = production_type5(1);
+    let Ok(ValidationResult::Parsed(parsed)) = validate_frame(&frame, &typed_context()) else {
+        panic!("type 5 did not parse");
+    };
+    match parsed.typed.as_deref() {
+        Some(TypedPayload::RecipientPayload {
+            schema_version: 2,
+            crypto_box_envelope: Some(envelope),
+            ..
+        }) => assert_eq!(envelope, &[0xa0]),
+        other => panic!("unexpected {other:?}"),
+    }
+    assert_eq!(outcome(&production_type5(65_535)), "Unsupported@S83");
 }
 
 fn statement(schema: u32, subject: CborValue, revision: u64, key: Option<CborValue>) -> Vec<u8> {

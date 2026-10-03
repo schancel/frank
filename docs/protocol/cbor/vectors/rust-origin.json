@@ -40,7 +40,7 @@
             "type_id": 4
           },
           {
-            "schema_version": 1,
+            "schema_version": 2,
             "type_id": 5
           },
           {
@@ -104,7 +104,7 @@
             "type_id": 4
           },
           {
-            "schema_version": 1,
+            "schema_version": 2,
             "type_id": 5
           },
           {
@@ -167,7 +167,7 @@
             "type_id": 4
           },
           {
-            "schema_version": 1,
+            "schema_version": 2,
             "type_id": 5
           },
           {
@@ -230,7 +230,7 @@
             "type_id": 4
           },
           {
-            "schema_version": 1,
+            "schema_version": 2,
             "type_id": 5
           },
           {
@@ -306,7 +306,7 @@
             "type_id": 4
           },
           {
-            "schema_version": 1,
+            "schema_version": 2,
             "type_id": 5
           },
           {
@@ -381,7 +381,7 @@
             "type_id": 4
           },
           {
-            "schema_version": 1,
+            "schema_version": 2,
             "type_id": 5
           },
           {

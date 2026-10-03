@@ -417,12 +417,12 @@ fn context_for(types: impl Iterator<Item = u32>) -> ValidationContext {
     ValidationContext {
         operation: Operation::Typed,
         route_byte_limit: MAX_FRAME_BYTES as u64,
-        // Reader version 2 reads type 4 at schema 2 (the stamp key); every other type is at 1.
+        // Reader version 2 reads type 4 and production type 5 at schema 2.
         reader_version: 2,
         supported_schemas: types
             .map(|type_id| SupportedSchema {
                 type_id,
-                schema_version: if type_id == 4 { 2 } else { 1 },
+                schema_version: if type_id == 4 || type_id == 5 { 2 } else { 1 },
             })
             .collect(),
         opaque_retention_allowed: false,

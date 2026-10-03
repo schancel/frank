@@ -10,6 +10,7 @@ import type { Encodable, ParsedFrame } from '../src'
 import {
   M,
   NET,
+  T3C,
   acct1,
   acct2,
   attestationFrame,
@@ -182,13 +183,23 @@ describe('type-specific limits (R2-R4)', () => {
     expect(outcome(p(524_289))).toBe('resource@8.1')
   })
 
-  /** A type-5 child at schema 2 padded with an unknown field so the parent hits a byte size. */
+  /** A newer type-5 child projected through schema 2 with one padding field. */
   const paddedDelivery = (pad: number): Uint8Array => {
     const child = fr(
       5,
-      new Map<number, Encodable>([...type5Payload(), [9, new Uint8Array(pad)]]),
+      new Map<number, Encodable>([
+        [0, NET],
+        [1, acct2(9)],
+        [2, acct1(3)],
+        [3, 1],
+        [4, Uint8Array.of(0xa0)],
+        [5, T3C.ephemeral],
+        [6, T3C.shared],
+        [7, T3C.proof],
+        [8, new Uint8Array(pad)],
+      ]),
+      3,
       2,
-      1,
     )
     return deliveryFrame({ payloadFrame: child, payments: 2 })
   }

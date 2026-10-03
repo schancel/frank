@@ -100,12 +100,16 @@ export function defaultContext(
   return {
     operation: 'typed',
     routeByteLimit: MAX_FRAME_BYTES,
-    // Reader version 2 reads type 4 at schema 3 (the stamp key from schema 2, the profile
-    // entries of section 11 from schema 3); every other type stays at schema 1.
+    // Reader version 2 reads type 4 at schema 3 and the production type-5 DM at schema 2.
     readerVersion: 2,
     supportedSchemas: KNOWN_TYPES.map(typeId => ({
       typeId,
-      schemaVersion: typeId === TYPE_DIRECTORY_STATEMENT ? 3 : 1,
+      schemaVersion:
+        typeId === TYPE_DIRECTORY_STATEMENT
+          ? 3
+          : typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
+          ? 2
+          : 1,
     })),
     opaqueRetentionAllowed: false,
     priorDirectoryStatementFrame: null,

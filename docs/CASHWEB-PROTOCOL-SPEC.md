@@ -181,8 +181,8 @@ Identifiers are scoped; equal integers in different columns have no relationship
 | Account key types, other codec allocations | `2` Ed25519 and `3` x-only secp256k1 | IMPLEMENTED-NOT-WIRED |
 | Signature algorithm, explicit registration | algorithm `1` strict-DER low-S ECDSA | SHIPPED |
 | Signature algorithms, other codec allocations | `2` BIP340, `3` BCH-2019 Schnorr, `16` Ed25519; individual operations may remain unsupported | IMPLEMENTED-NOT-WIRED |
-| FRNK DM encryption suites | proof-only `65535`; no production suite | UNALLOCATED |
-| Crypto-box suites | private registry `0xFE01–0xFE04`; not FRNK allocations and not used by the normal relay path | IMPLEMENTED-NOT-WIRED |
+| FRNK DM encryption suites | production `1` = authenticated secp256k1/HKDF-SHA256/XChaCha20-Poly1305 in type-5 schema 2; proof-only `65535` remains schema 1 | IMPLEMENTED-NOT-WIRED |
+| Crypto-box suites | production suite `1` is the FRNK DM allocation; `0xFE01–0xFE03` remain private library-only suites and are not used by the normal relay path | IMPLEMENTED-NOT-WIRED |
 | Crypto-box KEM/AEAD private use | KEM `0xFF00`; XChaCha AEAD `0xFF01`, inside crypto-box only | IMPLEMENTED-NOT-WIRED |
 | Target directory statement and standalone presentation profile | no FRNK type IDs or schemas | UNALLOCATED |
 | Checkpoint journal fact kinds | none | UNALLOCATED |
@@ -1103,7 +1103,6 @@ proofs do not allocate numeric identifiers.
 The following remain deliberately unresolved rather than inferred:
 
 - numeric hardened paths/rotation encoding for `P`, `M`, and `P'`;
-- a production FRNK DM suite ID and its exact mapping to a reviewed crypto-box construction;
 - target directory-statement and standalone presentation-profile type IDs, schemas, fields,
   authority transition/recovery and migration records;
 - target type-1/type-5 schema revisions, required context field IDs and `min_reader_version`, with

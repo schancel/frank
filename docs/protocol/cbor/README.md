@@ -125,7 +125,8 @@ The CDDL rule for each type's payload is: 1 `direct-message-delivery`; 2
 `directory-attestation`; 3 `mailbox-checkpoint`; 4 `directory-statement`
 (schema 2; schema 1 is `directory-statement-v1`; schema 3, the registration
 profile of section 11, is `directory-statement-v3`); 5
-`recipient-encrypted-payload`; 6 `encrypted-message-content`; 7
+`recipient-encrypted-payload-v1` at schema 1 or
+`recipient-encrypted-payload-v2` at schema 2; 6 `encrypted-message-content`; 7
 `key-transition-statement`; 8 `message-content-revision`; 9 `topic-post`; 10 `topic-post-submission`; 11
 `topic-vote-submission`; 16 `container-message-item`; 17 `text-message-item`.
 
@@ -342,16 +343,32 @@ This pairing applies to every entry that carries an algorithm, a signer
 account, and signature bytes: each type-2 `signature-entry` and each type-4
 `key-transition` entry (fields 1, 2, and 3), at stage 8.3.
 
-S2c. Encryption-suite identifier 65535 is reserved for opaque proof-vector
-ciphertext and MUST NOT be emitted by a production writer. Production suites
-are allocated only with their nonce, key-agreement, authentication/deniability,
-and failure rules. The codec does not infer a suite from nonce length.
+S2c. Encryption-suite identifier 65535 is reserved for schema-1 opaque
+proof-vector ciphertext and MUST NOT be emitted by a production writer.
+Type-5 schema 2 allocates suite `1` to `@frank/crypto-box` authenticated mode:
+DHKEM(secp256k1, HKDF-SHA256) private-use KEM `0xFF00`, HKDF-SHA256 KDF
+`0x0001`, and XChaCha20-Poly1305 private-use AEAD `0xFF01` with its 24-byte
+derived nonce. The complete deterministic-CBOR crypto-box v2 envelope is field
+4 and MUST repeat suite `1`; an outer/inner mismatch is `cryptographic` at stage
+10.1. Private library suite IDs `0xFE01` through `0xFE03` are not Frank-CBOR
+allocations and MUST NOT appear on this wire. A crypto-box envelope is not a
+FRNK frame. The codec never infers a suite from a nonce or ciphertext length.
 
-`@frank/crypto-box` registry identifiers `0xFE01`, `0xFE02`, `0xFE03`, and
-`0xFE04` are not version-1 encryption-suite allocations (decision 356). A
-version-1 writer MUST NOT emit them in an encryption-suite field. Version 1
-allocates no production encryption suite. A crypto-box envelope is not a frame.
-Frames are produced only by this specification's codecs.
+S2d. Suite 1 passes the canonical deterministic-CBOR encoding of
+`dm-crypto-context-v1` to crypto-box as its `context`. The context binds, in
+numeric-key order: domain `frank/dm-crypto-context/v1`; network; routing sender
+and recipient account references; the exact opened sender and recipient
+directory-statement T1 hashes; the distinct sender and recipient message-DH
+keys `M`; recipient stamp key `P'`; `E`, `X`, and the DLEQ proof; suite `1`;
+object type `5`; schema `2`; and minimum reader `2`. Account references use the
+common two-field schema and every `M`/`P'` entry MUST be key type 1 with a
+33-byte compressed SEC1 point. No context field is optional. The sender and
+recipient public keys supplied separately to crypto-box MUST byte-match fields
+6 and 7. A context, key, outer/inner suite, envelope-version, KEM, or routing
+mismatch fails as one non-oracular `cryptographic` result at stage 10.1 before
+payment ownership, durable storage, or forwarding. The recipient can construct
+the same authenticated-mode transcript and therefore no ciphertext is a
+transferable proof of sender authorship.
 
 S3. Payment members are ordered by numeric `child_index`, then bytewise
 `transaction_id`. Child indices and transaction identifiers MUST each be
@@ -657,10 +674,11 @@ one. The construction is multiplicative rather than additive, and uses no BIP32,
 chain code, or HMAC. A cryptographic review of the DLEQ construction is
 required before any implementation ships it.
 
-`schema_version` stays 1 for types 1 and 5: their new fields are added in place
-because no frame of these types exists outside this documentation, and that
-must be reconsidered (a version 2 with a raised `min_reader_version`) if any is
-deployed before this merges. Type 4 gets `schema_version` 2 with
+`schema_version` stays 1 for type 1. Type 5 schema 1 remains the proof-only
+nonce/ciphertext layout; production writers MUST emit type 5 with
+`schema_version = 2` and `min_reader_version = 2`, carrying the complete
+crypto-box envelope in field 4 and stamp fields in 5 through 7. Type 4 gets
+`schema_version` 2 with
 `min_reader_version` 2, per V1 and V2, because the stamp key is a required
 field (S10a.1): schema 1 is the statement layout without field 8 and stays
 readable by a schema-2 reader, and a reader below version 2 retains a schema-2
@@ -1105,10 +1123,11 @@ category, and an implementation MUST NOT continue to report a later failure.
       the upper bounds of `[1*16 key-transition]` and `[1*8 account-ref]`, is `schema`;
    2. the type's CDDL structure and range rules, including network-tag,
       ASCII-identifier, and endpoint-ASCII syntax (S1, C6, S4), and C12 unknown
-      keys, plus the T3b encoding rules for type-5 fields 6 through 8: `schema`. A CDDL cardinality or `.size` bound that merely restates an
+      keys, plus the T3b encoding rules for type-5 schema-1 fields 6 through 8 and schema-2
+      fields 5 through 7: `schema`. A CDDL cardinality or `.size` bound that merely restates an
       R2 through R4 or R6 limit is `resource`, checked in 8.1, not `schema`;
-   3. allocated-identifier checks (S2b, S2c; every encryption suite other than
-      65535 is unallocated in version 1): `unsupported`;
+   3. allocated-identifier checks (S2b, S2c; type-5 schema 1 permits only proof suite 65535,
+      while schema 2 permits only production suite 1): `unsupported`;
    4. recursive opening of only the byte-string fields that the schema declares
       as framed objects (never opaque sections). Each child is an embedded
       frame with the root operation's shared counters (R1), not charged against

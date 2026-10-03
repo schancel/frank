@@ -1,0 +1,53 @@
+{
+  "format": "frank-dm-suite-1-vectors",
+  "version": 1,
+  "suite": {
+    "id": 1,
+    "mode": 2,
+    "kem": 65280,
+    "kdf": 1,
+    "aead": 65281,
+    "name": "auth-xchacha20-poly1305"
+  },
+  "context": {
+    "network": "monad-testnet",
+    "sender": { "keyType": 1, "keyByte": 17, "keyLength": 33, "prefix": 2 },
+    "recipient": { "keyType": 2, "keyByte": 34, "keyLength": 32 },
+    "senderDirectoryHashByte": 170,
+    "recipientDirectoryHashByte": 187,
+    "senderMessageKey": { "keyType": 1, "keyByte": 51, "prefix": 2 },
+    "recipientMessageKey": { "keyType": 1, "keyByte": 68, "prefix": 3 },
+    "stampKey": { "keyType": 1, "keyByte": 85, "prefix": 2 },
+    "ephemeralPointByte": 102,
+    "ephemeralPointPrefix": 3,
+    "sharedPointByte": 119,
+    "sharedPointPrefix": 2,
+    "dleqProofByte": 136,
+    "encodedHex": "b000781a6672616e6b2f646d2d63727970746f2d636f6e746578742f7631016d6d6f6e61642d746573746e657402a2000101582102111111111111111111111111111111111111111111111111111111111111111103a200020158202222222222222222222222222222222222222222222222222222222222222222045820aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa055820bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb06a2000101582102333333333333333333333333333333333333333333333333333333333333333307a2000101582103444444444444444444444444444444444444444444444444444444444444444408a200010158210255555555555555555555555555555555555555555555555555555555555555550958210366666666666666666666666666666666666666666666666666666666666666660a58210277777777777777777777777777777777777777777777777777777777777777770b5840888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888880c010d050e020f02"
+  },
+  "cryptoBox": {
+    "plaintextHex": "6672616e6b",
+    "saltByte": 7,
+    "ephemeralSecret": 3,
+    "senderSecret": 1,
+    "recipientSecret": 2,
+    "envelopeHex": "a6000201010219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9055819453102530a8f436b5771165b17713bf7a21b8fa08771dc521d"
+  },
+  "hostileContextFields": [
+    "network",
+    "sender",
+    "recipient",
+    "senderDirectoryHash",
+    "recipientDirectoryHash",
+    "senderMessageKey",
+    "recipientMessageKey",
+    "stampKey",
+    "ephemeralPoint",
+    "sharedPoint",
+    "dleqProof",
+    "suite",
+    "type",
+    "schemaVersion",
+    "minReaderVersion"
+  ]
+}

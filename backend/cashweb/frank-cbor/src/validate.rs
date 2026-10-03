@@ -81,8 +81,7 @@ pub fn default_context() -> ValidationContext {
     ValidationContext {
         operation: Operation::Typed,
         route_byte_limit: MAX_FRAME_BYTES as u64,
-        // Reader version 2 reads type 4 at schema 3 (the stamp key and profile entries, README
-        // S10a.1 and M4); every other type stays at schema 1.
+        // Reader version 2 reads type 4 at schema 3 and the production type-5 DM at schema 2.
         reader_version: 2,
         supported_schemas: KNOWN_TYPES
             .iter()
@@ -91,6 +90,8 @@ pub fn default_context() -> ValidationContext {
                 type_id,
                 schema_version: if type_id == TYPE_DIRECTORY_STATEMENT {
                     3
+                } else if type_id == TYPE_RECIPIENT_PAYLOAD {
+                    2
                 } else {
                     1
                 },
@@ -861,23 +862,27 @@ fn open_children(
             })
         }
         Draft::Recipient {
+            schema_version,
             network,
             sender,
             recipient,
             suite,
             nonce,
             ciphertext,
+            crypto_box_envelope,
             ephemeral_point,
             shared_point,
             dleq_proof,
             unknown,
         } => Ok(TypedPayload::RecipientPayload {
+            schema_version,
             network,
             sender,
             recipient,
             suite,
             nonce,
             ciphertext,
+            crypto_box_envelope,
             ephemeral_point,
             shared_point,
             dleq_proof,

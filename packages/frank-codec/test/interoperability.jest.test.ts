@@ -167,6 +167,8 @@ function assertDirectNestedOpaque(
   const recipient = direct.payloadFrame.typed
   expect(recipient?.type).toBe(5)
   if (recipient?.type !== 5) throw new Error('type-5 payload expected')
+  if (recipient.schemaVersion !== 1)
+    throw new Error('proof fixture must use type-5 schema 1')
   const encrypted = validateFrame(recipient.ciphertext, defaultContext())
   expect(encrypted.kind).toBe('parsed')
   if (encrypted.kind !== 'parsed' || encrypted.typed?.type !== 6)

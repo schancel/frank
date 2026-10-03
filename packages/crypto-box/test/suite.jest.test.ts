@@ -95,10 +95,6 @@ const LEGACY_V1_VECTORS = new Map([
     SUITE_AUTH_AES_GCM,
     '01fe03ff00070707070707070707070707070707070707070707070707070707070707070702f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9988bf88bd65e72ddf13713ea9cc5be63da20d7fb81ab73f864',
   ],
-  [
-    SUITE_AUTH_XCHACHA,
-    '01fe04ff00070707070707070707070707070707070707070707070707070707070707070702f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9c1b582181da35780536a806ac7f220b9ccb5e3760fa2ca3daa',
-  ],
 ])
 
 function mustSeal(suiteId: number, plaintext: string, padding = 0): Uint8Array {
@@ -135,14 +131,17 @@ function rewrapAsLegacy(envelope: Uint8Array): Uint8Array {
 }
 
 describe('encryption suites', () => {
-  test('the registry is not a CBOR version-1 suite and never emits 65535', () => {
+  test('the registry allocates suite 1 and never emits 65535', () => {
     expect(KEM_SECP256K1).toBe(0xff00)
     expect(KEM_NAME).toBe('DHKEM(secp256k1, HKDF-SHA256)')
     expect(producedSuiteIds).not.toContain(RESERVED_PROOF_SUITE_ID)
-    for (const suite of SUITES) {
-      expect(suite.cborVersion1).toBe('waiting')
-      expect(suite.id).not.toBe(65535)
-    }
+    expect(SUITES.find(suite => suite.id === 1)?.frankCbor).toBe('production')
+    expect(
+      SUITES.filter(suite => suite.id !== 1).every(
+        suite => suite.frankCbor === 'private',
+      ),
+    ).toBe(true)
+    expect(SUITES.every(suite => suite.id !== 65535)).toBe(true)
     const refused = seal({
       suiteId: 65535,
       recipientPublicKey: recipientPk,
@@ -168,7 +167,7 @@ describe('encryption suites', () => {
     expect(readme).toContain('0xFE01')
     expect(readme).toContain('0xFE02')
     expect(readme).toContain('0xFE03')
-    expect(readme).toContain('0xFE04')
+    expect(readme).toContain('| `1`')
     expect(readme).toContain('does not read or write CashWeb CBOR')
     expect(readme).toContain('@frank/codec')
     expect(readme).toContain('frank-cbor')
@@ -197,9 +196,8 @@ describe('encryption suites', () => {
     for (const boundary of [spec, codecReadme, rustReadme]) {
       expect(boundary).toContain('0xFE01')
       expect(boundary).toContain('65535')
-      expect(boundary).toContain(
-        'not version-1 encryption-suite allocations (decision 356)',
-      )
+      expect(boundary.toLowerCase()).toContain('suite 1')
+      expect(boundary).toMatch(/not\s+(?:a\s+)?Frank-CBOR/)
     }
     for (const boundary of [codecReadme, nakamotoReadme, rustReadme]) {
       const prose = boundary.replace(/\s+/g, ' ')
@@ -228,8 +226,9 @@ describe('encryption suites', () => {
       const envelope = mustSeal(suiteId, 'frank')
       expect(envelope[0]).toBe(0xa6)
       expect(envelope.slice(0, 4)).toEqual(Uint8Array.of(0xa6, 0, 2, 1))
-      expect((envelope[5] << 8) | envelope[6]).toBe(suiteId)
-      expect((envelope[9] << 8) | envelope[10]).toBe(0xff00)
+      const decoded = decodeEnvelope(envelope)
+      expect(decoded?.suiteId).toBe(suiteId)
+      expect(decoded?.kemId).toBe(0xff00)
       const opened = open({
         envelope,
         recipientPrivateKey: recipientSk,
@@ -405,9 +404,15 @@ describe('encryption suites', () => {
       expect(result.ok).toBe(false)
     }
 
-    const reserved = new Uint8Array(envelope)
-    reserved[5] = 0xff
-    reserved[6] = 0xff
+    const decoded = decodeEnvelope(envelope)
+    if (decoded === null) throw new Error('envelope')
+    const reserved = encodeEnvelope(
+      65535,
+      decoded.kemId,
+      decoded.salt,
+      decoded.enc,
+      decoded.ciphertext,
+    )
     const reservedOpen = open({
       envelope: reserved,
       recipientPrivateKey: recipientSk,
@@ -417,9 +422,13 @@ describe('encryption suites', () => {
     expect(reservedOpen.ok).toBe(false)
     if (!reservedOpen.ok) expect(reservedOpen.error.code).toBe('reserved-suite')
 
-    const badKem = new Uint8Array(envelope)
-    badKem[9] = 0x00
-    badKem[10] = 0x10
+    const badKem = encodeEnvelope(
+      decoded.suiteId,
+      0x0010,
+      decoded.salt,
+      decoded.enc,
+      decoded.ciphertext,
+    )
     const kemOpen = open({
       envelope: badKem,
       recipientPrivateKey: recipientSk,
@@ -446,28 +455,19 @@ describe('encryption suites', () => {
       replaceBytes(valid, 0, 1, [0xb8, 0x06]), // non-canonical map length
       replaceBytes(valid, 1, 1, [0x18, 0x00]), // non-canonical map key
       replaceBytes(valid, 2, 1, [0x18, 0x02]), // non-canonical integer
-      replaceBytes(valid, 4, 3, [0x1a, 0x00, 0x00, 0xfe, 0x04]),
-      replaceBytes(valid, 12, 2, [0x59, 0x00, 0x20]), // non-canonical bstr length
-      replaceBytes(valid, 83, 2, [0x59, 0x00, 0x19]),
-      replaceBytes(
-        valid,
-        3,
-        8,
-        Array.from(valid.subarray(7, 11)).concat(
-          Array.from(valid.subarray(3, 7)),
-        ),
-      ), // reordered keys
-      replaceBytes(valid, 7, 1, [0x01]), // duplicate key
-      replaceBytes(valid, 7, 1, [0x06]), // unknown key
-      replaceBytes(valid, 0, 1, [0xa5]).slice(0, 82), // missing key
+      replaceBytes(valid, 4, 1, [0x18, 0x01]), // non-canonical suite
+      replaceBytes(valid, 10, 2, [0x59, 0x00, 0x20]), // non-canonical bstr length
+      replaceBytes(valid, 81, 2, [0x59, 0x00, 0x19]),
+      replaceBytes(valid, 5, 1, [0x01]), // duplicate key
+      replaceBytes(valid, 5, 1, [0x06]), // unknown key
       replaceBytes(valid, 4, 1, [0x59]), // wrong suite type
-      replaceBytes(valid, 12, 1, [0x98]), // wrong salt type
-      replaceBytes(valid, 83, 1, [0x99]), // wrong ciphertext type
+      replaceBytes(valid, 10, 1, [0x98]), // wrong salt type
+      replaceBytes(valid, 81, 1, [0x99]), // wrong ciphertext type
       replaceBytes(valid, 0, 1, [0xbf]), // indefinite map
-      replaceBytes(valid, 12, 1, [0x5f]), // indefinite bstr
+      replaceBytes(valid, 10, 1, [0x5f]), // indefinite bstr
       replaceBytes(valid, valid.length, 0, [0x00]), // trailing byte
-      replaceBytes(valid, 12, 2, [0x58, 0x1f]), // salt fixed length
-      replaceBytes(valid, 47, 2, [0x58, 0x20]), // enc fixed length
+      replaceBytes(valid, 10, 2, [0x58, 0x1f]), // salt fixed length
+      replaceBytes(valid, 45, 2, [0x58, 0x20]), // enc fixed length
     ]
     for (const envelope of malformed) {
       const result = open({
@@ -493,61 +493,59 @@ describe('encryption suites', () => {
     if (!overBound.ok) expect(overBound.error.code).toBe('envelope')
   })
 
-  test.each([
-    SUITE_BASE_AES_GCM,
-    SUITE_BASE_XCHACHA,
-    SUITE_AUTH_AES_GCM,
-    SUITE_AUTH_XCHACHA,
-  ])('authenticates v1 and v2 as distinct domains for suite %i', suiteId => {
-    const frozen = LEGACY_V1_VECTORS.get(suiteId)
-    if (frozen === undefined) throw new Error('legacy vector')
-    const legacy = fromHex(frozen)
-    const legacyOpened = open({
-      envelope: legacy,
-      recipientPrivateKey: recipientSk,
-      senderPublicKey: senderPk,
-      context,
-    })
-    expect(legacyOpened.ok).toBe(true)
-    if (legacyOpened.ok) {
-      expect(Buffer.from(legacyOpened.value).toString()).toBe('frank')
-    }
+  test.each([SUITE_BASE_AES_GCM, SUITE_BASE_XCHACHA, SUITE_AUTH_AES_GCM])(
+    'authenticates v1 and v2 as distinct domains for suite %i',
+    suiteId => {
+      const frozen = LEGACY_V1_VECTORS.get(suiteId)
+      if (frozen === undefined) throw new Error('legacy vector')
+      const legacy = fromHex(frozen)
+      const legacyOpened = open({
+        envelope: legacy,
+        recipientPrivateKey: recipientSk,
+        senderPublicKey: senderPk,
+        context,
+      })
+      expect(legacyOpened.ok).toBe(true)
+      if (legacyOpened.ok) {
+        expect(Buffer.from(legacyOpened.value).toString()).toBe('frank')
+      }
 
-    const current = mustSeal(suiteId, 'frank')
-    const currentOpened = open({
-      envelope: current,
-      recipientPrivateKey: recipientSk,
-      senderPublicKey: senderPk,
-      context,
-    })
-    expect(currentOpened.ok).toBe(true)
+      const current = mustSeal(suiteId, 'frank')
+      const currentOpened = open({
+        envelope: current,
+        recipientPrivateKey: recipientSk,
+        senderPublicKey: senderPk,
+        context,
+      })
+      expect(currentOpened.ok).toBe(true)
 
-    const v2AsV1 = open({
-      envelope: rewrapAsLegacy(current),
-      recipientPrivateKey: recipientSk,
-      senderPublicKey: senderPk,
-      context,
-    })
-    expect(v2AsV1.ok).toBe(false)
-    if (!v2AsV1.ok) expect(v2AsV1.error.code).toBe('open-failed')
+      const v2AsV1 = open({
+        envelope: rewrapAsLegacy(current),
+        recipientPrivateKey: recipientSk,
+        senderPublicKey: senderPk,
+        context,
+      })
+      expect(v2AsV1.ok).toBe(false)
+      if (!v2AsV1.ok) expect(v2AsV1.error.code).toBe('open-failed')
 
-    const decodedLegacy = decodeEnvelope(legacy)
-    if (decodedLegacy === null) throw new Error('legacy decode')
-    const v1AsV2 = open({
-      envelope: encodeEnvelope(
-        decodedLegacy.suiteId,
-        decodedLegacy.kemId,
-        decodedLegacy.salt,
-        decodedLegacy.enc,
-        decodedLegacy.ciphertext,
-      ),
-      recipientPrivateKey: recipientSk,
-      senderPublicKey: senderPk,
-      context,
-    })
-    expect(v1AsV2.ok).toBe(false)
-    if (!v1AsV2.ok) expect(v1AsV2.error.code).toBe('open-failed')
-  })
+      const decodedLegacy = decodeEnvelope(legacy)
+      if (decodedLegacy === null) throw new Error('legacy decode')
+      const v1AsV2 = open({
+        envelope: encodeEnvelope(
+          decodedLegacy.suiteId,
+          decodedLegacy.kemId,
+          decodedLegacy.salt,
+          decodedLegacy.enc,
+          decodedLegacy.ciphertext,
+        ),
+        recipientPrivateKey: recipientSk,
+        senderPublicKey: senderPk,
+        context,
+      })
+      expect(v1AsV2.ok).toBe(false)
+      if (!v1AsV2.ok) expect(v1AsV2.error.code).toBe('open-failed')
+    },
+  )
 
   test('rejects unknown versions and malformed legacy envelopes', () => {
     const frozen = LEGACY_V1_VECTORS.get(SUITE_BASE_AES_GCM)
@@ -713,11 +711,11 @@ describe('encryption suites', () => {
     const envelope = mustSeal(SUITE_AUTH_XCHACHA, 'frank')
     const mutations = [
       [2, 0x01], // CBOR v1 is not the legacy fixed layout
-      [6, 0x03], // suite: auth XChaCha -> auth AES-GCM
-      [10, 0x01], // KEM
-      [14, 0x06], // salt
+      [4, 0x03], // suite: auth XChaCha -> auth AES-GCM
+      [8, 0x01], // KEM
+      [12, 0x06], // salt
       [49, envelope[49] ^ 0x01], // encapsulated point
-      [85, envelope[85] ^ 0x01], // ciphertext
+      [83, envelope[83] ^ 0x01], // ciphertext
     ] as const
     for (const [offset, value] of mutations) {
       const changed = new Uint8Array(envelope)
@@ -731,7 +729,7 @@ describe('encryption suites', () => {
       expect(result.ok).toBe(false)
     }
     const unknownSuite = new Uint8Array(envelope)
-    unknownSuite[6] = 0x05
+    unknownSuite[4] = 0x05
     const unknown = open({
       envelope: unknownSuite,
       recipientPrivateKey: recipientSk,
@@ -758,7 +756,7 @@ describe('encryption suites', () => {
       ],
       [
         SUITE_AUTH_XCHACHA,
-        'a600020119fe040219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9055819c1b582181da3578053f5e224eb01c12b89ce7429dc47ef3803',
+        'a6000201010219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9055819453102530a8f436b5771165b17713bf7a21b8fa08771dc521d',
       ],
     ])
     for (const [suiteId, expected] of vectors) {

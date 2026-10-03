@@ -21,6 +21,8 @@ export const MAX_MESSAGE_ITEMS_TOTAL = 256
 export const MAX_MESSAGE_ITEMS_PER_ARRAY = 256
 export const MAX_PAYMENT_MEMBERS = 64
 export const MAX_CIPHERTEXT_BYTES = 524_288
+/** Crypto-box's maximum deterministic-CBOR envelope overhead is 88 bytes. */
+export const MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES = MAX_CIPHERTEXT_BYTES + 88
 // R6: topic events.
 export const MAX_TOPIC_FRAME_BYTES = 1_048_576
 export const MAX_TOPIC_VOTE_FRAME_BYTES = 65_536
@@ -52,3 +54,5 @@ export const TYPE_TEXT_MESSAGE_ITEM = 17
 export const TYPE_PROOF_UNKNOWN_ITEM = 0xffff0001
 
 export const ENCRYPTION_SUITE_PROOF = 65535
+/** Authenticated/deniable secp256k1 + HKDF-SHA256 + XChaCha20-Poly1305. */
+export const ENCRYPTION_SUITE_DM_AUTH_XCHACHA = 1

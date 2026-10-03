@@ -1,5 +1,5 @@
-// Identifiers for the crypto-box registry. Frank CBOR version 1 allocates no
-// production encryption suite. 65535 stays reserved. Decision 356.
+// Identifiers for the crypto-box registry. Frank CBOR allocates production
+// suite 1 to authenticated XChaCha20-Poly1305. 65535 stays proof-only.
 
 /** RFC 9180 private-use KEM. Not a registered code point. */
 export const KEM_SECP256K1 = 0xff00
@@ -24,11 +24,12 @@ export const MODE_AUTH = 0x02
 /** Reserved for proof vectors. Never emitted as a produced suite. */
 export const RESERVED_PROOF_SUITE_ID = 65535
 
-/** Library registry. Not a CBOR version-1 suite id. Waiting on the spec. */
+/** Private library suites. They are never emitted in Frank-CBOR suite fields. */
 export const SUITE_BASE_AES_GCM = 0xfe01
 export const SUITE_BASE_XCHACHA = 0xfe02
 export const SUITE_AUTH_AES_GCM = 0xfe03
-export const SUITE_AUTH_XCHACHA = 0xfe04
+/** Frank-CBOR production DM suite 1 (type 5 schema 2). */
+export const SUITE_AUTH_XCHACHA = 1
 
 export const SALT_LENGTH = 32
 export const ENC_LENGTH = 33
@@ -48,8 +49,7 @@ export interface SuiteSpec {
   readonly aeadId: number
   readonly aead: AeadName
   readonly nonceLength: number
-  /** Frank CBOR version 1 has not allocated this id. */
-  readonly cborVersion1: 'waiting'
+  readonly frankCbor: 'private' | 'production'
 }
 
 function spec(
@@ -67,7 +67,7 @@ function spec(
     aeadId,
     aead,
     nonceLength,
-    cborVersion1: 'waiting',
+    frankCbor: id === SUITE_AUTH_XCHACHA ? 'production' : 'private',
   })
 }
 

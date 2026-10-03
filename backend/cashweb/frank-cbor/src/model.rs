@@ -300,6 +300,8 @@ pub enum TypedPayload {
     },
     /// Type 5.
     RecipientPayload {
+        /// The interpreted type-5 schema version.
+        schema_version: u32,
         /// Field 0.
         network: String,
         /// Field 1.
@@ -308,15 +310,17 @@ pub enum TypedPayload {
         recipient: AccountRef,
         /// Field 3.
         suite: u32,
-        /// Field 4.
-        nonce: Vec<u8>,
-        /// Field 5.
-        ciphertext: Vec<u8>,
-        /// Field 6, `E = e*G`: a 33-byte compressed point (T3a, T3b encoding rules).
+        /// Schema-1 field 4; absent in schema 2.
+        nonce: Option<Vec<u8>>,
+        /// Schema-1 field 5; absent in schema 2.
+        ciphertext: Option<Vec<u8>>,
+        /// Schema-2 field 4: complete deterministic-CBOR crypto-box envelope.
+        crypto_box_envelope: Option<Vec<u8>>,
+        /// Schema-1 field 6 or schema-2 field 5, `E = e*G` (T3a, T3b encoding rules).
         ephemeral_point: Vec<u8>,
-        /// Field 7, `X = e*P'`: a 33-byte compressed point (T3a).
+        /// Schema-1 field 7 or schema-2 field 6, `X = e*P'` (T3a).
         shared_point: Vec<u8>,
-        /// Field 8, the DLEQ proof `c || s` (T3b); verified only at stage 10.
+        /// Schema-1 field 8 or schema-2 field 7, the DLEQ proof `c || s` (T3b).
         dleq_proof: Vec<u8>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,

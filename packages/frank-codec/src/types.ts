@@ -130,22 +130,38 @@ export interface DirectoryStatement<F> {
   unknownFields: UnknownFields
 }
 
-export interface RecipientEncryptedPayload {
+interface RecipientEncryptedPayloadCommon {
   type: 5
   network: string
   sender: AccountRef
   recipient: AccountRef
   suite: number
-  nonce: Uint8Array
-  ciphertext: Uint8Array
-  /** Field 6, `E = e*G`: a 33-byte compressed point (T3a, T3b encoding rules). */
+  /** Field 5 in schema 2, `E = e*G`; field 6 in legacy proof schema 1. */
   ephemeralPoint: Uint8Array
-  /** Field 7, `X = e*P'`: a 33-byte compressed point (T3a). */
+  /** Field 6 in schema 2, `X = e*P'`; field 7 in legacy proof schema 1. */
   sharedPoint: Uint8Array
-  /** Field 8, the DLEQ proof `c || s` (T3b). Verified only at stage 10. */
+  /** Field 7 in schema 2; field 8 in legacy proof schema 1. */
   dleqProof: Uint8Array
   unknownFields: UnknownFields
 }
+
+export interface RecipientEncryptedPayloadV1
+  extends RecipientEncryptedPayloadCommon {
+  readonly schemaVersion: 1
+  nonce: Uint8Array
+  ciphertext: Uint8Array
+}
+
+export interface RecipientEncryptedPayloadV2
+  extends RecipientEncryptedPayloadCommon {
+  readonly schemaVersion: 2
+  /** Field 4: the complete deterministic-CBOR crypto-box v2 envelope. */
+  cryptoBoxEnvelope: Uint8Array
+}
+
+export type RecipientEncryptedPayload =
+  | RecipientEncryptedPayloadV1
+  | RecipientEncryptedPayloadV2
 
 export interface EncryptedMessageContent<F> {
   type: 6

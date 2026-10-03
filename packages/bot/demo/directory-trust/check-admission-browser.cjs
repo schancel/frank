@@ -81,42 +81,50 @@ async function launch(chromium, profile, spki) {
     { detached: true, stdio: ['ignore', 'ignore', 'pipe'] },
   )
   console.log(`Demo admission Chrome PID ${child.pid}`)
-  const endpoint = await new Promise((resolve, reject) => {
-    let text = ''
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL')
-      reject(new Error('Chromium startup timeout'))
-    }, 15000)
-    child.stderr.on('data', chunk => {
-      text = (text + chunk).slice(-4096)
-      const match = /DevTools listening on (ws:\/\/[^\s]+)/.exec(text)
-      if (match) {
+  let socket
+  try {
+    const endpoint = await new Promise((resolve, reject) => {
+      let text = ''
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL')
+        reject(new Error('Chromium startup timeout'))
+      }, 15000)
+      child.stderr.on('data', chunk => {
+        text = (text + chunk).slice(-4096)
+        const match = /DevTools listening on (ws:\/\/[^\s]+)/.exec(text)
+        if (match) {
+          clearTimeout(timer)
+          resolve(match[1])
+        }
+      })
+      child.once('error', error => {
         clearTimeout(timer)
-        resolve(match[1])
-      }
+        reject(error)
+      })
+      child.once('exit', () => {
+        clearTimeout(timer)
+        reject(new Error('Chromium exited before debugger'))
+      })
     })
-    child.once('error', error => {
-      clearTimeout(timer)
-      reject(error)
+    socket = new WebSocket(endpoint)
+    await new Promise((resolve, reject) => {
+      socket.addEventListener('open', resolve, { once: true })
+      socket.addEventListener('error', reject, { once: true })
     })
-    child.once('exit', () => {
-      clearTimeout(timer)
-      reject(new Error('Chromium exited before debugger'))
-    })
-  })
-  const socket = new WebSocket(endpoint)
-  await new Promise((resolve, reject) => {
-    socket.addEventListener('open', resolve, { once: true })
-    socket.addEventListener('error', reject, { once: true })
-  })
-  return { child, cdp: new CDP(socket) }
+    return { child, cdp: new CDP(socket) }
+  } catch (error) {
+    socket?.close()
+    await stop({ child })
+    throw error
+  }
 }
 async function stop(browser) {
   if (!browser) return
   if (browser.child.exitCode === null && browser.child.signalCode === null) {
     const exited = new Promise(resolve => browser.child.once('exit', resolve))
     const timer = setTimeout(() => browser.child.kill('SIGKILL'), 5000)
-    browser.cdp.send('Browser.close').catch(() => {})
+    if (browser.cdp) browser.cdp.send('Browser.close').catch(() => {})
+    else browser.child.kill('SIGKILL')
     try {
       await exited
     } finally {
@@ -147,7 +155,7 @@ async function stop(browser) {
       await new Promise(resolve => setTimeout(resolve, 50))
     }
   }
-  browser.cdp.socket.close()
+  browser.cdp?.socket.close()
 }
 async function page(browser, bundle, script, continuityFile) {
   const { cdp } = browser
@@ -212,7 +220,16 @@ async function page(browser, bundle, script, continuityFile) {
   )
   return sessionId
 }
-const summarized = `current => ({head: DemoDirectory.toHex ? DemoDirectory.toHex(current.evidence.hash) : Array.from(current.evidence.hash,b=>b.toString(16).padStart(2,'0')).join(''), statement: Array.from(current.evidence.statement,b=>b.toString(16).padStart(2,'0')).join(''), attestation: Array.from(current.evidence.attestation,b=>b.toString(16).padStart(2,'0')).join(''), message: Array.from(current.messageKey.keyBytes,b=>b.toString(16).padStart(2,'0')).join(''), stamp: Array.from(current.stampKey.keyBytes,b=>b.toString(16).padStart(2,'0')).join(''), previous: current.previousStamp ? Array.from(current.previousStamp.keyBytes,b=>b.toString(16).padStart(2,'0')).join('') : null, revision: String(current.revision), generations: current.generations.map(String), accepted: current.status.accepted, retained: current.status.retained, charged: current.status.chargedBytes})`
+const summarized = `current => {
+  const hex = bytes => Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
+  return {
+    kind: current.kind, head: hex(current.evidence.hash), statement: hex(current.evidence.statement), attestation: hex(current.evidence.attestation),
+    message: hex(current.messageKey.keyBytes), stamp: hex(current.stampKey.keyBytes), previous: current.previousStamp ? hex(current.previousStamp.keyBytes) : null,
+    revision: String(current.revision), generations: current.generations.map(String),
+    accepted: current.status.accepted, retained: current.status.retained, charged: current.status.chargedBytes,
+    checkpoint: JSON.parse(DemoDirectory.continuityJSON(installation, current.status.checkpoint)).checkpoint
+  };
+}`
 async function main() {
   const inputPath = process.argv[2],
     chromium = process.argv[3]

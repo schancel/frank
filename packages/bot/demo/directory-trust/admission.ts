@@ -4,9 +4,10 @@ import {
   constants,
   existsSync,
   fsyncSync,
+  fstatSync,
   lstatSync,
   openSync,
-  readFileSync,
+  readSync,
   realpathSync,
   renameSync,
   writeFileSync,
@@ -57,7 +58,9 @@ function externalPath(file: string, location: string): string {
   const parent = realpathSync(dirname(file))
   const dbParent = realpathSync(dirname(location))
   const canonicalFile = join(parent, basename(file))
-  const canonicalDb = join(dbParent, basename(location))
+  const canonicalDb = existsSync(location)
+    ? realpathSync(location)
+    : join(dbParent, basename(location))
   const inside = relative(canonicalDb, canonicalFile)
   if (
     !inside ||
@@ -74,7 +77,19 @@ function readContinuity(file: string): string {
     throw new Error('Invalid bounded continuity file')
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
-    return readFileSync(fd, 'utf8')
+    if (!fstatSync(fd).isFile())
+      throw new Error('Regular continuity file required')
+    const bytes = Buffer.alloc(8193)
+    let length = 0
+    while (length < bytes.length) {
+      const count = readSync(fd, bytes, length, bytes.length - length, null)
+      if (!count) break
+      length += count
+    }
+    if (length > 8192) throw new Error('Continuity size limit')
+    return new TextDecoder('utf-8', { fatal: true }).decode(
+      bytes.subarray(0, length),
+    )
   } finally {
     closeSync(fd)
   }

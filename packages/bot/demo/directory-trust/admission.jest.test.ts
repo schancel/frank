@@ -144,6 +144,7 @@ function signed(
 }
 const hash = (c: Candidate) => contentHash(parsed(c.statement))
 const summary = (current: Current) => ({
+  kind: current.kind,
   head: toHex(current.evidence.hash),
   statement: toHex(current.evidence.statement),
   attestation: toHex(current.evidence.attestation),
@@ -157,6 +158,16 @@ const summary = (current: Current) => ({
   accepted: current.status.accepted,
   retained: current.status.retained,
   charged: current.status.chargedBytes,
+  checkpoint: JSON.parse(
+    continuityJSON(
+      {
+        manifestIdentity: bundle.manifestIdentity,
+        trustInputs: trust,
+        witnessHex: bundle.witnessHex!,
+      },
+      current.status.checkpoint,
+    ),
+  ).checkpoint,
 })
 let root: string,
   bundle: TrustBundle,

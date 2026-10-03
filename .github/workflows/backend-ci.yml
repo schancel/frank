@@ -87,7 +87,7 @@ jobs:
           ${{ runner.os }}-flatbuffers-ninja-
 
     - name: Install Protoc
-      uses: arduino/setup-protoc@v1
+      uses: arduino/setup-protoc@v3
       with:
         version: "36.2"
         # Without a token this calls the GitHub releases API unauthenticated (60 req/hr, shared

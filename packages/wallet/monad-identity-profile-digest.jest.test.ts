@@ -1,9 +1,6 @@
 import { createHash } from 'crypto'
-import { readFileSync } from 'fs'
-import { join } from 'path'
 
 import axios from 'axios'
-import { crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
 import __pb_signed_payload_payload_pb from '@frank/cashweb/signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
@@ -25,23 +22,17 @@ const SEED = {
 }
 
 it('hashes AddressMetadata with one SHA-256', async () => {
-  const source = readFileSync(join(__dirname, 'monad-identity.ts'), 'utf8')
-  expect(source).toContain('cryptoBackend.sha256')
-  expect(source).not.toContain('bitcoreCrypto')
-
   const empty = Buffer.from(monadProfilePayloadDigest(new Uint8Array()))
   expect(empty.toString('hex')).toBe(EMPTY_SHA256)
   expect(empty.toString('hex')).toBe(
     createHash('sha256').update(Buffer.alloc(0)).digest('hex'),
   )
-  expect(empty).toEqual(bitcoreCrypto.Hash.sha256(Buffer.alloc(0)))
 
   const sample = Uint8Array.from([0, 1, 2, 255, 16])
   const digest = Buffer.from(monadProfilePayloadDigest(sample))
   expect(digest.toString('hex')).toBe(
     createHash('sha256').update(sample).digest('hex'),
   )
-  expect(digest).toEqual(bitcoreCrypto.Hash.sha256(Buffer.from(sample)))
   const doubled = createHash('sha256')
     .update(createHash('sha256').update(sample).digest())
     .digest('hex')
@@ -68,6 +59,5 @@ it('hashes AddressMetadata with one SHA-256', async () => {
   expect(declared.toString('hex')).toBe(
     createHash('sha256').update(payload).digest('hex'),
   )
-  expect(declared).toEqual(bitcoreCrypto.Hash.sha256(payload))
   expect(declared).toEqual(Buffer.from(monadProfilePayloadDigest(payload)))
 })

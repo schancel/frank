@@ -1,7 +1,10 @@
 import assert from 'assert'
 import { hmacSha256 } from '@frank/crypto-box'
-import { privateKeyFromSecretBytes, publicFromPrivate } from '@frank/nakamoto'
-import { PrivateKey, PublicKey } from 'bitcore-lib-xpi'
+import {
+  ecdh,
+  privateKeyFromSecretBytes,
+  publicFromPrivate,
+} from '@frank/nakamoto'
 import * as forge from 'node-forge'
 import { p2pkhHashFromPublicKey } from '../legacy-wallet/lotus-address'
 import { lotusP2pkhFromHash } from '../legacy-wallet/lotus-identity'
@@ -16,23 +19,25 @@ import { stealthParentPublicKey } from './stealth-public'
 import { stealthPointDigest } from './stealth-point-digest'
 import { stealthSharedPoint } from './stealth-shared'
 
-type HasToBuffer = {
+/** 32-byte secret. `toBuffer()` is that secret. */
+type PrivateKey = {
   toBuffer(): Uint8Array
 }
 
-type Sec1PublicKey = {
+/** SEC1 point. `toBuffer()` is the 33-byte or 65-byte encoding. */
+type PublicKey = {
   toBuffer(): Uint8Array
 }
 
 type DerivedPrivateKey = {
   toBuffer(): Uint8Array
-  toPublicKey(): Sec1PublicKey
+  toPublicKey(): PublicKey
 }
 
 // Copy of SEC1 bytes. Each toBuffer call returns a new copy so a caller
 // cannot mutate the stored key. The bytes are the encoding
 // PublicKey(bytes).toBuffer() already produced.
-function sec1PublicKey(bytes: Uint8Array): Sec1PublicKey {
+function sec1PublicKey(bytes: Uint8Array): PublicKey {
   const copy = Uint8Array.from(bytes)
   return Object.freeze({
     toBuffer(): Uint8Array {
@@ -61,7 +66,7 @@ function derivedPrivateKey(
       toBuffer(): Uint8Array {
         return Buffer.from(copy)
       },
-      toPublicKey(): Sec1PublicKey {
+      toPublicKey(): PublicKey {
         return publicKey
       },
     })
@@ -87,12 +92,22 @@ export class PayloadConstructor {
   }
 
   /**
-   * The ECDH shared point `privateKey * publicKey`. Serialize it with `toBuffer()`: the result is
-   * always the 33-byte compressed encoding (`02`/`03` parity prefix, then the x coordinate
-   * left-padded to exactly 32 big-endian bytes), so both parties derive identical bytes.
+   * The ECDH shared point `privateKey * publicKey`. `toBuffer()` is the 33-byte
+   * compressed encoding (`02`/`03` || x), the same bytes as bitcore
+   * `publicKey.point.mul(privateKey.toBigNumber()).toBuffer()`.
    */
   constructMergedKey(privateKey: PrivateKey, publicKey: PublicKey) {
-    return PublicKey.fromPoint(publicKey.point.mul(privateKey.toBigNumber()))
+    const secret = Uint8Array.from(privateKey.toBuffer())
+    const parsed = privateKeyFromSecretBytes(secret, true)
+    secret.fill(0)
+    if (!parsed.ok) throw new Error(`merged-key:${parsed.error.code}`)
+    try {
+      const shared = ecdh(parsed.value, Uint8Array.from(publicKey.toBuffer()))
+      if (!shared.ok) throw new Error(`merged-key:${shared.error.code}`)
+      return sec1PublicKey(shared.value.point)
+    } finally {
+      parsed.value.bytes.fill(0)
+    }
   }
 
   /**
@@ -106,7 +121,9 @@ export class PayloadConstructor {
     privateKey: PrivateKey,
     publicKey: PublicKey,
   ): Buffer[] {
-    const canonical = this.constructMergedKey(privateKey, publicKey).toBuffer()
+    const canonical = Buffer.from(
+      this.constructMergedKey(privateKey, publicKey).toBuffer(),
+    )
     let firstNonZero = 1
     while (
       firstNonZero < canonical.length - 1 &&
@@ -147,11 +164,11 @@ export class PayloadConstructor {
   // destination + (H(ebG) mod n)·G.
   // A reduced hash of 0 yields the destination. A point at infinity is an
   // error. The digest is the raw SHA-256 and is the HD chain code.
-  // toBuffer is the compressed SEC1 encoding. Envelope ECDH stays on
-  // bitcore point.mul until #258.
+  // toBuffer is the compressed SEC1 encoding. The shared point is
+  // nakamoto ecdh.
   constructStealthPublicKey(
-    emphemeralPrivKey: HasToBuffer,
-    destinationPublicKey: HasToBuffer,
+    emphemeralPrivKey: PrivateKey,
+    destinationPublicKey: PublicKey,
   ) {
     const dhKeyPointRaw = Buffer.from(
       stealthSharedPoint(
@@ -175,7 +192,7 @@ export class PayloadConstructor {
   // scalar (decision #559). Public key bytes match bitcore HDPublicKey.
   // A secret outside (0, n), a public key that is not 33 or 65 SEC1
   // bytes, an invalid point, or a point at infinity is an error. The
-  // caller's PrivateKey is not wiped. HMAC, salt, and envelope ECDH stay on bitcore.
+  // caller's key is not wiped.
   constructHDStealthPublicKey(
     emphemeralPrivKey: PrivateKey,
     destinationPublicKey: PublicKey,
@@ -194,8 +211,8 @@ export class PayloadConstructor {
   // SHA-256 and is the HD chain code. Stealth public addition is
   // stealthParentPublicKey.
   constructStealthPrivateKey(
-    emphemeralPubKey: HasToBuffer,
-    destinationPrivateKey: HasToBuffer,
+    emphemeralPubKey: PublicKey,
+    destinationPrivateKey: PrivateKey,
   ) {
     const derived = stealthParentSecret(
       Uint8Array.from(destinationPrivateKey.toBuffer()),
@@ -211,7 +228,7 @@ export class PayloadConstructor {
   // scalar (decision #559). Secret bytes match bitcore HDPrivateKey.
   // A secret outside (0, n), a public key that is not 33 or 65 SEC1
   // bytes, an invalid point, or a zero sum is an error. The caller's
-  // PrivateKey is not wiped. HMAC, salt, and envelope ECDH stay on bitcore.
+  // key is not wiped.
   constructHDStealthPrivateKey(
     emphemeralPubKey: PublicKey,
     destinationPrivateKey: PrivateKey,
@@ -229,7 +246,7 @@ export class PayloadConstructor {
   // reject-digest rule.
   constructStampPublicKey(
     payloadDigest: Uint8Array,
-    destinationPublicKey: HasToBuffer,
+    destinationPublicKey: PublicKey,
   ) {
     const bytes = stampParentPublicKey(
       Uint8Array.from(destinationPublicKey.toBuffer()),
@@ -242,8 +259,8 @@ export class PayloadConstructor {
   // scalar (decision #537). A digest >= n is an error and is not reduced.
   // Public key bytes match bitcore HDPublicKey. A zero digest, a digest
   // that is not 32 bytes, a destination that is not 33 or 65 SEC1 bytes,
-  // or a point at infinity is an error. The caller's PublicKey is not
-  // wiped. HMAC, salt, and envelope ECDH stay on bitcore.
+  // or a point at infinity is an error. The caller's public key is not
+  // wiped.
   constructStampHDPublicKey(
     payloadDigest: Uint8Array,
     destinationPublicKey: PublicKey,
@@ -260,7 +277,7 @@ export class PayloadConstructor {
   // (decision #559).
   constructStampPrivateKey(
     payloadDigest: Uint8Array,
-    destinationPrivateKey: HasToBuffer,
+    destinationPrivateKey: PrivateKey,
   ) {
     const secret = stampParentSecret(
       Uint8Array.from(destinationPrivateKey.toBuffer()),
@@ -273,8 +290,7 @@ export class PayloadConstructor {
   // scalar (decision #537). A digest >= n is an error and is not reduced.
   // Secret bytes match bitcore HDPrivateKey. A zero digest, a digest that
   // is not 32 bytes, a destination outside (0, n), or a zero sum is an
-  // error. The caller's PrivateKey is not wiped. HMAC, salt, and envelope
-  // ECDH stay on bitcore.
+  // error. The caller's key is not wiped.
   constructStampHDPrivateKey(
     payloadDigest: Uint8Array,
     destinationPrivateKey: PrivateKey,

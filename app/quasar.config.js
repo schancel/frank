@@ -106,7 +106,6 @@ export default configure(ctx => {
       'pinia',
       'i18n',
       'axios',
-      'network-prefix',
       'setup-apis',
       // ticket #42: separate from 'setup-apis' (the pre-existing Lotus boot sequence) -- see this
       // boot file's own header comment for why.

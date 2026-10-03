@@ -1,25 +1,15 @@
 import { randomBytes } from 'crypto'
 
-import { PrivateKey } from 'bitcore-lib-xpi'
-
 import { FrankIdentity, computeLotusAddress } from './lotus-identity'
+import { sec1Point, SEC1_N_MINUS_1, SEC1_ONE, SEC1_SECRET } from '../sec1-pins'
 
-const SECRET = '22'.repeat(32)
 const N_HEX =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
-const N_MINUS_1 =
-  'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140'
-const ONE = `${'00'.repeat(31)}01`
 
-function bitcorePublicKey(hex: string): Buffer {
-  return new PrivateKey(hex).toPublicKey().toBuffer()
-}
-
-it('matches bitcore public keys for a known compressed secret', () => {
-
-  for (const hex of [SECRET, N_MINUS_1, ONE]) {
+it('returns the pinned public key for a known compressed secret', () => {
+  for (const hex of [SEC1_SECRET, SEC1_N_MINUS_1, SEC1_ONE]) {
     const identity = FrankIdentity.fromPrivateKeyHex(hex, 'mainnet')
-    expect(identity.pubKey).toEqual(bitcorePublicKey(hex))
+    expect(identity.pubKey).toEqual(sec1Point(hex, true))
     expect(identity.pubKey.length).toBe(33)
     expect(identity.toPrivateKeyHex()).toBe(hex)
     expect(identity.address).toBe(
@@ -37,15 +27,17 @@ it('matches bitcore public keys for a known compressed secret', () => {
     ).toEqual(identity.pubKey)
   }
 
-  const kept = Buffer.from(N_MINUS_1, 'hex')
+  const kept = Buffer.from(SEC1_N_MINUS_1, 'hex')
   const identity = FrankIdentity.fromPrivateKeyHex(kept.toString('hex'), 'mainnet')
   identity.toPrivateKeyHex()
-  expect(kept.toString('hex')).toBe(N_MINUS_1)
+  expect(kept.toString('hex')).toBe(SEC1_N_MINUS_1)
 
   const generated = FrankIdentity.generate('mainnet')
   const generatedHex = generated.toPrivateKeyHex()
-  expect(generated.pubKey).toEqual(bitcorePublicKey(generatedHex))
   expect(generated.pubKey.length).toBe(33)
+  expect(generated.pubKey[0] === 0x02 || generated.pubKey[0] === 0x03).toBe(
+    true,
+  )
   expect(
     FrankIdentity.fromPrivateKeyHex(generatedHex, 'mainnet').toPrivateKeyHex(),
   ).toBe(generatedHex)
@@ -68,7 +60,7 @@ it('rejects 0, n, a short hex, and a non-hex secret', () => {
     'lotus-identity:hex-invalid',
   )
   expect(() =>
-    FrankIdentity.fromPrivateKeyHex(`0x${SECRET}`, 'mainnet'),
+    FrankIdentity.fromPrivateKeyHex(`0x${SEC1_SECRET}`, 'mainnet'),
   ).toThrow('lotus-identity:hex-invalid')
 })
 

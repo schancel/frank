@@ -1,7 +1,5 @@
 import { createHash } from 'crypto'
 
-import { crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
-
 import type { Message } from './relay_pb'
 import { relayCipherPayloadDigest } from './cipher-payload-digest'
 import { messageMixin } from './extension'
@@ -18,7 +16,6 @@ it('hashes relay cipher payloads with one SHA-256', () => {
   expect(empty.toString('hex')).toBe(
     createHash('sha256').update(Buffer.alloc(0)).digest('hex'),
   )
-  expect(empty).toEqual(bitcoreCrypto.Hash.sha256(Buffer.alloc(0)))
 
   const abc = Buffer.from('abc')
   const abcDigest = Buffer.from(relayCipherPayloadDigest(abc))
@@ -26,14 +23,12 @@ it('hashes relay cipher payloads with one SHA-256', () => {
   expect(abcDigest.toString('hex')).toBe(
     createHash('sha256').update(abc).digest('hex'),
   )
-  expect(abcDigest).toEqual(bitcoreCrypto.Hash.sha256(abc))
 
   const sample = Uint8Array.from([1, 2, 3, 4, 5])
   const digest = Buffer.from(relayCipherPayloadDigest(sample))
   expect(digest.toString('hex')).toBe(
     createHash('sha256').update(sample).digest('hex'),
   )
-  expect(digest).toEqual(bitcoreCrypto.Hash.sha256(Buffer.from(sample)))
   const doubled = createHash('sha256').update(digest).digest('hex')
   expect(digest.toString('hex')).not.toBe(doubled)
 })
@@ -44,11 +39,8 @@ it('checks opened message payloads against that digest', () => {
     getPayloadDigest: () => new Uint8Array(),
     getPayload: () => payload,
   } as unknown as Message)
-  expect(Buffer.from(open.digest() as Uint8Array)).toEqual(
-    bitcoreCrypto.Hash.sha256(Buffer.from(payload)),
-  )
-
-  const expected = bitcoreCrypto.Hash.sha256(Buffer.from(payload))
+  const expected = createHash('sha256').update(payload).digest()
+  expect(Buffer.from(open.digest() as Uint8Array)).toEqual(expected)
   const matched = messageMixin('livenet', {
     getPayloadDigest: () => expected,
     getPayload: () => payload,

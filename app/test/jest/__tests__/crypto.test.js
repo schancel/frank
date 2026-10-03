@@ -1,11 +1,18 @@
 import { PayloadConstructor } from '@frank/cashweb/relay/crypto'
-// NOTE: was 'bitcore-lib-cash' (stale leftover package name; the whole codebase moved to the
-// 'bitcore-lib-xpi' fork - see e.g. packages/cashweb/relay/crypto.ts's own import). 'bitcore-lib-cash'
-// isn't even a declared dependency, so this import previously failed to resolve at all - fixed
-// here since it's unrelated to the missing jest infra itself (ticket #28).
-import { PrivateKey } from 'bitcore-lib-xpi'
+import { randomBytes } from '@frank/crypto-box'
+import { secretKey } from '@frank/cashweb/nakamoto-oracle'
 
 const payloadConstructor = new PayloadConstructor({ networkName: 'test-net' })
+
+function randomKey() {
+  for (;;) {
+    try {
+      return secretKey(Buffer.from(randomBytes(32)).toString('hex'))
+    } catch {
+      // scalar was 0 or not below the group order
+    }
+  }
+}
 
 function getRandomInt(max) {
   return Math.floor(Math.random() * Math.floor(max))
@@ -23,8 +30,8 @@ test('Encrypt', () => {
     salt[i] = getRandomInt(255)
   }
 
-  const privateKey = PrivateKey()
-  const destinationPublicKey = PrivateKey().toPublicKey()
+  const privateKey = randomKey()
+  const destinationPublicKey = randomKey().toPublicKey()
   const sharedKey = payloadConstructor.constructSharedKey(
     privateKey,
     destinationPublicKey,
@@ -46,8 +53,8 @@ test('Decrypt', () => {
     salt[i] = getRandomInt(255)
   }
 
-  const privateKey = PrivateKey()
-  const destinationPublicKey = PrivateKey().toPublicKey()
+  const privateKey = randomKey()
+  const destinationPublicKey = randomKey().toPublicKey()
   const sharedKey = payloadConstructor.constructSharedKey(
     privateKey,
     destinationPublicKey,
@@ -60,10 +67,10 @@ test('Decrypt', () => {
 })
 
 test('StealthKey', () => {
-  const destPrivKey = PrivateKey()
+  const destPrivKey = randomKey()
   const destPubKey = destPrivKey.toPublicKey()
 
-  const ephemeralPrivKey = PrivateKey()
+  const ephemeralPrivKey = randomKey()
   const ephemeralPubKey = ephemeralPrivKey.toPublicKey()
 
   const { stealthPublicKey } = payloadConstructor.constructStealthPublicKey(

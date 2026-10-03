@@ -1,11 +1,9 @@
-import { PrivateKey } from 'bitcore-lib-xpi'
-
 import type { Wallet } from '../legacy-wallet'
 import type { MessageConstructor } from './constructors'
 import { encodeEntry } from './encode-entry'
 
 it('passes the destination key object through to stealth entries', () => {
-  const key = new PrivateKey('11'.repeat(32)).toPublicKey()
+  const key = { toBuffer: () => new Uint8Array([0x02, 0x11]) }
   let seen: { toBuffer(): Uint8Array } | undefined
   const messageConstructor = {
     constructStealthEntry(args: { destPubKey: { toBuffer(): Uint8Array } }) {
@@ -22,7 +20,7 @@ it('passes the destination key object through to stealth entries', () => {
     },
   )
   expect(seen).toBe(key)
-  expect(Buffer.from(seen!.toBuffer())).toEqual(key.toBuffer())
+  expect(Buffer.from(seen!.toBuffer())).toEqual(Buffer.from(key.toBuffer()))
   expect(entry).toEqual({ kind: 'stealth' })
   expect(transactions).toEqual([])
   expect(utxos).toEqual([])

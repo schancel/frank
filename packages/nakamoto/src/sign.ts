@@ -4,6 +4,7 @@
 // annex, and lotus extension witnesses are unsupported, not silently dropped.
 
 import { cryptoBackend } from './backend.js'
+import type { SigningKey } from './signing-key.js'
 import { copyBytes, isPlainBytes } from './bytes.js'
 import type { ChainDescriptor } from './chain/types.js'
 import {
@@ -52,10 +53,8 @@ export type SignResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: SignFailure }
 
-export interface InputSigner {
-  readonly publicKey: Uint8Array
-  sign(digest: Uint8Array): Uint8Array
-}
+/** A transaction input signs with a {@link SigningKey}. */
+export type InputSigner = SigningKey
 
 export interface SignOptions {
   readonly chain: ChainDescriptor

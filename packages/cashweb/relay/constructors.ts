@@ -1,6 +1,5 @@
-import { PublicKey, Transaction, PrivateKey } from 'bitcore-lib-xpi'
-import { hmacSha256 } from '@frank/crypto-box'
-import { cryptoBackend } from '@frank/nakamoto'
+import { hmacSha256, randomBytes } from '@frank/crypto-box'
+import { cryptoBackend, privateKeyFromSecretBytes } from '@frank/nakamoto'
 import assert from 'assert'
 import atob from 'atob'
 
@@ -25,7 +24,7 @@ import { PayloadConstructor } from './crypto'
 import VCard from 'vcf'
 import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
-import { Wallet } from '../legacy-wallet'
+import { Wallet, WalletOutput } from '../legacy-wallet'
 import { p2pkhLockingScript } from '../legacy-wallet/lotus-address'
 import { signRegistryDigest } from '../registry'
 import { relayCipherPayloadDigest } from './cipher-payload-digest'
@@ -37,10 +36,48 @@ import { stealthEphemeralPublicKey } from './stealth-ephemeral-pubkey'
 
 /** One SHA-256 of Profile protobuf bytes. Matches `Sha256::digest` in
  * `SignedPayload::parse_proto`, the message `SignedPayload::verify` checks.
- * Not double-SHA256. cryptoBackend rejects Buffer. Relay encryption in this
- * file stays on bitcore (decision #505, issue #258). */
+ * Not double-SHA256. cryptoBackend rejects Buffer. AES-CBC stays
+ * node-forge. Transaction bytes are nakamoto. */
 export function relayProfilePayloadDigest(payload: Uint8Array): Uint8Array {
   return cryptoBackend.sha256(Uint8Array.from(payload))
+}
+
+/** 32-byte secret. `compressed` selects the SEC1 form of its point. */
+type PrivateKey = {
+  toBuffer(): Uint8Array
+  compressed?: boolean
+}
+
+/** SEC1 point. `toBuffer()` is the 33-byte or 65-byte encoding. */
+type PublicKey = {
+  toBuffer(): Uint8Array
+}
+
+/** Stop if every draw is 0 or >= n. A working RNG hits that with negligible probability. */
+const EPHEMERAL_DRAWS = 64
+
+/** Compressed stealth ephemeral secret. `new PrivateKey()` defaulted compressed. */
+function ephemeralStealthKey(): PrivateKey {
+  for (let draw = 0; draw < EPHEMERAL_DRAWS; draw += 1) {
+    const drawn = randomBytes(32)
+    const secret = Uint8Array.from(drawn)
+    drawn.fill(0)
+    const parsed = privateKeyFromSecretBytes(secret, true)
+    if (!parsed.ok) {
+      secret.fill(0)
+      continue
+    }
+    const stored = Uint8Array.from(parsed.value.bytes)
+    parsed.value.bytes.fill(0)
+    secret.fill(0)
+    return Object.freeze({
+      compressed: true,
+      toBuffer() {
+        return Uint8Array.from(stored)
+      },
+    })
+  }
+  throw new Error('stealth-ephemeral:exhausted')
 }
 
 export class MessageConstructor {
@@ -184,8 +221,8 @@ export class MessageConstructor {
       }
 
       // Construct message. SEC1 point of the sender (decision #574).
-      // types.d.ts omits the runtime compression flag; bitcore-lib-xpi
-      // stays until #259. HMAC, salt, and envelope ECDH stay on bitcore.
+      // The compression flag lives on the key. HMAC is crypto-box and
+      // the shared point is nakamoto ecdh.
       const message = new Message()
       const compressed = (
         sourcePrivateKey as unknown as { compressed?: boolean }
@@ -250,7 +287,7 @@ export class MessageConstructor {
     paymentEntry.setKind('stealth-payment')
 
     const stealthPaymentEntry = new stealth.StealthPaymentEntry()
-    const ephemeralPrivKey = new PrivateKey()
+    const ephemeralPrivKey = ephemeralStealthKey()
 
     const transactionBundle = this.constructStealthTransactions(
       wallet,
@@ -261,9 +298,8 @@ export class MessageConstructor {
 
     // Sent to HASH160(ephemeralPrivKey * destPubKey)
     // Sent to HASH160(ephemeralPrivKey * destPubKey)
-    // Ephemeral SEC1 point (decision #576). types.d.ts omits the runtime
-    // compression flag; bitcore-lib-xpi stays until #259. HMAC, salt,
-    // the plaintext digest, and envelope ECDH stay on bitcore.
+    // Ephemeral SEC1 point (decision #576). The generated secret is
+    // compressed. HMAC is crypto-box and the shared point is nakamoto ecdh.
     const compressed = (ephemeralPrivKey as unknown as { compressed?: boolean })
       .compressed
     if (compressed !== true && compressed !== false) {
@@ -329,7 +365,7 @@ export class MessageConstructor {
   }) {
     const p2pkhEntry = new p2pkh.P2PKHEntry()
 
-    const output = new Transaction.Output({
+    const output = new WalletOutput({
       script: Buffer.from(p2pkhLockingScript(address)),
       satoshis: amount,
     })

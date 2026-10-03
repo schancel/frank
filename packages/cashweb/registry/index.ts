@@ -12,11 +12,7 @@ import { registryBroadcastDigest } from './broadcast-digest'
 import { registryWrapperDigest } from './wrapper-digest'
 import { registryBurnOutput } from './burn-output'
 import { registryIdentityPublicKey } from './identity-pubkey'
-import {
-  cryptoBackend,
-  privateKeyFromSecretBytes,
-  signEcdsa,
-} from '@frank/nakamoto'
+import { cryptoBackend, signingKey } from '@frank/nakamoto'
 import { pointFromPublicKey } from '../../nakamoto/src/secp256k1'
 import { Wallet } from '../legacy-wallet'
 import { Utxo } from '../types/utxo'
@@ -85,13 +81,9 @@ export function signRegistryDigest(
   privKey: RegistryPrivateKey,
 ): Buffer {
   if (hash.length !== 32) throw new Error('sign-digest')
-  const secretBytes = Uint8Array.from(privKey.toBuffer())
-  const key = privateKeyFromSecretBytes(secretBytes, true)
-  secretBytes.fill(0)
-  if (!key.ok) throw new Error(key.error.code)
-  const signed = signEcdsa(key.value, Uint8Array.from(hash))
-  if (!signed.ok) throw new Error(signed.error.code)
-  return compactRsFromDer(signed.value)
+  const signing = signingKey('secret', privKey)
+  if (!signing.ok) throw new Error(signing.error.code)
+  return compactRsFromDer(signing.value.sign(Uint8Array.from(hash)))
 }
 
 /** One SHA-256 of AddressMetadata protobuf bytes. Matches `Sha256::digest`

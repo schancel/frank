@@ -1,10 +1,8 @@
-import { HDPrivateKey, PrivateKey } from 'bitcore-lib-xpi'
-
 import { PayloadConstructor } from './crypto'
 import { stampDepthZeroNode, stampParentHdNode } from './stamp-hd'
 import { stampParentSecret } from './stamp-parent'
+import { addedSecret, secretKey } from '../nakamoto-oracle'
 
-const NETWORK = 'livenet'
 const DEST_SECRET = '11'.repeat(32)
 const N_HEX = 'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
 const N_PLUS_ONE =
@@ -13,52 +11,27 @@ const N_MINUS_1 =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140'
 const ZERO_SUM_DIGEST =
   'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeda99dcbd59e378f2aaec14d7bbf253030'
-
-function bitcoreNode(secret: Buffer, chainCode: Buffer, network: string) {
-  return new HDPrivateKey({
-    privateKey: secret,
-    depth: 0,
-    network,
-    childIndex: 0,
-    chainCode,
-    parentFingerPrint: 0,
-  })
-}
+const ONE = `${'00'.repeat(31)}01`
 
 it('builds a depth-0 stamp parent whose chain code is the raw digest', () => {
   const ctor = new PayloadConstructor({ networkName: 'testnet' })
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
+  const destination = secretKey(DEST_SECRET, false)
   const digest = Buffer.from('33'.repeat(32), 'hex')
-  const secret = Buffer.from(
-    stampParentSecret(Uint8Array.from(destination.toBuffer()), digest),
-  )
+  const secret = addedSecret(destination.toBuffer(), digest)
+  expect(
+    Buffer.from(
+      stampParentSecret(Uint8Array.from(destination.toBuffer()), digest),
+    ),
+  ).toEqual(secret)
 
   const node = ctor.constructStampHDPrivateKey(digest, destination)
-  const described = bitcoreNode(secret, digest, 'testnet').toObject() as {
-    chainCode: string
-    parentFingerPrint: number
-    depth: number
-    childIndex: number
-  }
-  expect(Buffer.from(node.privateKey.bytes)).toEqual(
-    bitcoreNode(secret, digest, 'testnet').privateKey.toBuffer(),
-  )
-  expect(Buffer.from(node.privateKey.bytes)).toEqual(
-    bitcoreNode(secret, digest, NETWORK).privateKey.toBuffer(),
-  )
+  expect(Buffer.from(node.privateKey.bytes)).toEqual(secret)
   expect(Buffer.from(node.chainCode)).toEqual(digest)
-  expect(Buffer.from(node.chainCode).toString('hex')).toBe(described.chainCode)
   expect(Buffer.from(node.chainCode)).not.toEqual(secret)
   expect(node.depth).toBe(0)
   expect(node.childIndex).toBe(0)
-  expect(described.depth).toBe(0)
-  expect(described.childIndex).toBe(0)
-  expect(described.parentFingerPrint).toBe(0)
   expect(Buffer.from(node.parentFingerprint)).toEqual(Buffer.alloc(4))
-  expect(destination.toBuffer().toString('hex')).toBe(DEST_SECRET)
+  expect(Buffer.from(destination.toBuffer()).toString('hex')).toBe(DEST_SECRET)
 
   const again = Buffer.from(node.privateKey.bytes)
   expect(again.equals(Buffer.alloc(32))).toBe(false)
@@ -77,22 +50,20 @@ it('builds a depth-0 stamp parent whose chain code is the raw digest', () => {
   expect(Buffer.from(held.privateKey.bytes)).toEqual(secret)
   expect(Buffer.from(held.chainCode)).toEqual(digest)
 
-  const almost = new PrivateKey(N_MINUS_1)
+  const almost = secretKey(N_MINUS_1, true)
   const cross = Buffer.alloc(32)
   cross[31] = 2
   const crossed = ctor.constructStampHDPrivateKey(cross, almost)
-  expect(Buffer.from(crossed.privateKey.bytes).toString('hex')).toBe(
-    `${'00'.repeat(31)}01`,
+  expect(Buffer.from(crossed.privateKey.bytes)).toEqual(
+    addedSecret(almost.toBuffer(), cross),
   )
+  expect(Buffer.from(crossed.privateKey.bytes).toString('hex')).toBe(ONE)
   expect(Buffer.from(crossed.chainCode)).toEqual(cross)
-  expect(almost.toBuffer().toString('hex')).toBe(N_MINUS_1)
+  expect(Buffer.from(almost.toBuffer()).toString('hex')).toBe(N_MINUS_1)
 })
 
 it('stores a chain code >= n without reducing it', () => {
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
+  const destination = secretKey(DEST_SECRET, false)
   const secret = Uint8Array.from(destination.toBuffer())
   const order = Uint8Array.from(Buffer.from(N_HEX, 'hex'))
   const node = stampDepthZeroNode(secret, order)
@@ -124,10 +95,7 @@ it('stores a chain code >= n without reducing it', () => {
 
 it('rejects a stamp digest >= n instead of reducing it', () => {
   const ctor = new PayloadConstructor({ networkName: 'testnet' })
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
+  const destination = secretKey(DEST_SECRET, false)
   const secret = Uint8Array.from(destination.toBuffer())
   expect(() => stampParentHdNode(secret, Buffer.alloc(32))).toThrow(
     'stamp-parent:scalar-out-of-range',
@@ -153,7 +121,6 @@ it('rejects a stamp digest >= n instead of reducing it', () => {
   expect(() =>
     stampParentHdNode(Buffer.alloc(32), Buffer.from('33'.repeat(32), 'hex')),
   ).toThrow('stamp-parent:scalar-out-of-range')
-  expect(destination.toBuffer().toString('hex')).toBe(DEST_SECRET)
+  expect(Buffer.from(destination.toBuffer()).toString('hex')).toBe(DEST_SECRET)
   expect(Buffer.from(secret).toString('hex')).toBe(DEST_SECRET)
-
 })

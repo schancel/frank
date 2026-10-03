@@ -1,9 +1,48 @@
 import { createHash } from 'crypto'
 
-import { Address, Networks, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
+import { sha256 } from '@frank/crypto-box'
+import {
+  BCH_MAINNET,
+  BCH_REGTEST,
+  BCH_TESTNET,
+  XPI_MAINNET,
+  XPI_REGTEST,
+  XPI_TESTNET,
+  addressVersionBytes,
+  encodeAddress,
+  pubkeyHashFromBytes,
+  type ChainDescriptor,
+  type ScriptHash,
+} from '@frank/nakamoto'
 
 import { colorSalt } from './constants'
 import { addressColor, addressColorFromStr, pubKeyToColor } from './formatting'
+
+function digestOf(bytes: Uint8Array): Buffer {
+  const hashed = sha256(Uint8Array.from(bytes))
+  const node = createHash('sha256').update(bytes).digest()
+  const box = Buffer.from(hashed)
+  if (!box.equals(node)) throw new Error('sha256 mismatch')
+  return box
+}
+
+function destination(hash: Uint8Array, kind: 'p2pkh' | 'p2sh') {
+  const branded = pubkeyHashFromBytes(Uint8Array.from(hash))
+  if (!branded.ok) throw new Error(branded.error.code)
+  if (kind === 'p2pkh') return { kind, hash: branded.value }
+  return { kind, hash: branded.value as unknown as ScriptHash }
+}
+
+function encoded(
+  hash: Uint8Array,
+  kind: 'p2pkh' | 'p2sh',
+  chain: ChainDescriptor,
+  encoding: 'cashaddr' | 'base58check' | 'lotus',
+): string {
+  const text = encodeAddress(destination(hash, kind), chain, encoding)
+  if (!text.ok) throw new Error(text.error.code)
+  return text.value
+}
 
 function salted(bytes: Uint8Array): Buffer {
   return Buffer.concat([Buffer.from(bytes), colorSalt])
@@ -50,28 +89,24 @@ describe('salted color digest', () => {
   it('hashes public keys and address bytes with one SHA-256', () => {
     const pubKey = Uint8Array.from([0x02, ...new Array(32).fill(1)])
     const pubSalted = salted(pubKey)
-    const pubBitcore = bitcoreCrypto.Hash.sha256(pubSalted)
-    const pubNode = createHash('sha256').update(pubSalted).digest()
-    expect(pubBitcore.equals(pubNode)).toBe(true)
-    expect(pubKeyToColor(pubKey)).toBe(hsl(pubBitcore))
-    expect(pubKeyToColor(Buffer.from(pubKey))).toBe(hsl(pubBitcore))
-    const doubled = createHash('sha256').update(pubBitcore).digest()
+    const pubHash = digestOf(pubSalted)
+    expect(pubKeyToColor(pubKey)).toBe(hsl(pubHash))
+    expect(pubKeyToColor(Buffer.from(pubKey))).toBe(hsl(pubHash))
+    const doubled = createHash('sha256').update(pubHash).digest()
     expect(pubKeyToColor(pubKey)).not.toBe(hsl(doubled))
 
     const hash160 = Buffer.alloc(20, 0x11)
-    const address = new Address(hash160, Networks.livenet)
-    const addressBytes = address.toBuffer()
-    const addressSalted = salted(addressBytes)
-    const addressBitcore = bitcoreCrypto.Hash.sha256(addressSalted)
-    const addressNode = createHash('sha256').update(addressSalted).digest()
-    expect(addressBitcore.equals(addressNode)).toBe(true)
+    const addressBytes = Buffer.concat([
+      Buffer.from([addressVersionBytes(BCH_MAINNET, 'pubkeyhash')]),
+      hash160,
+    ])
+    const addressHash = digestOf(salted(addressBytes))
     const color = addressColor(addressBytes)
-    expect(color.hue).toBe(addressBitcore[0])
-    expect(color.saturation).toBe(addressBitcore[1] / 255)
+    expect(color.hue).toBe(addressHash[0])
+    expect(color.saturation).toBe(addressHash[1] / 255)
 
     const zeroLead = Buffer.alloc(32, 0)
-    const zeroHash = bitcoreCrypto.Hash.sha256(salted(zeroLead))
-    expect(pubKeyToColor(zeroLead)).toBe(hsl(zeroHash))
+    expect(pubKeyToColor(zeroLead)).toBe(hsl(digestOf(salted(zeroLead))))
   })
 })
 
@@ -89,30 +124,39 @@ describe('address string colors', () => {
     Buffer.alloc(20, 0x11),
     Buffer.from('b50b86a893d80c9e2ee72b199612374b7b4c1cd8', 'hex'),
   ]
-  const networks = [Networks.livenet, Networks.testnet, Networks.regtest]
-  const types = ['pubkeyhash', 'scripthash'] as const
+  const networks = [
+    { name: 'mainnet', bch: BCH_MAINNET, xpi: XPI_MAINNET },
+    { name: 'testnet', bch: BCH_TESTNET, xpi: XPI_TESTNET },
+    { name: 'regtest', bch: BCH_REGTEST, xpi: XPI_REGTEST },
+  ] as const
+  const types = ['p2pkh', 'p2sh'] as const
 
   for (const hash of hashes) {
     for (const network of networks) {
       for (const type of types) {
-        const address = new Address(hash, network, type)
+        const versionKind = type === 'p2pkh' ? 'pubkeyhash' : 'scripthash'
+        const oracleBytes = Uint8Array.from(
+          Buffer.concat([
+            Buffer.from([addressVersionBytes(network.bch, versionKind)]),
+            hash,
+          ]),
+        )
+        const cashaddr = encoded(hash, type, network.bch, 'cashaddr')
+        const legacy = encoded(hash, type, network.bch, 'base58check')
+        const lotus = encoded(hash, type, network.xpi, 'lotus')
         const forms = [
-          address.toLegacyAddress(),
-          address.toCashAddress(),
-          address.toCashAddress(true),
-          address.toCashAddress().toUpperCase(),
-          address.toXAddress(),
+          legacy,
+          cashaddr,
+          cashaddr.slice(cashaddr.indexOf(':') + 1),
+          cashaddr.toUpperCase(),
+          lotus,
         ]
         for (const form of forms) {
-          it(`matches toBuffer for ${network} ${type} ${form.slice(
-            0,
-            16,
-          )}`, () => {
-            const oracle = new Address(form)
-            expect(Array.from(oracle.toBuffer())).toEqual(
-              Array.from(address.toBuffer()),
+          it(`colors ${network.name} ${type} ${form.slice(0, 16)}`, () => {
+            expect(addressVersionBytes(network.xpi, versionKind)).toBe(
+              addressVersionBytes(network.bch, versionKind),
             )
-            expectSameColor(form, address.toBuffer())
+            expectSameColor(form, oracleBytes)
           })
         }
       }
@@ -121,15 +165,29 @@ describe('address string colors', () => {
 
   it('colors the pinned mainnet and regtest Lotus vectors', () => {
     const hash = Buffer.from('b50b86a893d80c9e2ee72b199612374b7b4c1cd8', 'hex')
-    const main = new Address(hash, Networks.livenet)
-    const regtest = new Address(hash, Networks.regtest)
+    expect(encoded(hash, 'p2pkh', XPI_MAINNET, 'lotus')).toBe(
+      'lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi',
+    )
+    expect(encoded(hash, 'p2pkh', XPI_REGTEST, 'lotus')).toBe(
+      'lotusR16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyVqAied',
+    )
     expectSameColor(
       'lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi',
-      main.toBuffer(),
+      Uint8Array.from(
+        Buffer.concat([
+          Buffer.from([addressVersionBytes(XPI_MAINNET, 'pubkeyhash')]),
+          hash,
+        ]),
+      ),
     )
     expectSameColor(
       'lotusR16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyVqAied',
-      regtest.toBuffer(),
+      Uint8Array.from(
+        Buffer.concat([
+          Buffer.from([addressVersionBytes(XPI_REGTEST, 'pubkeyhash')]),
+          hash,
+        ]),
+      ),
     )
   })
 })

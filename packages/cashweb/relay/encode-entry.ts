@@ -1,10 +1,9 @@
 import assert from 'assert'
 import type { PayloadEntry } from './relay_pb'
 import { MessageItem } from '../types/messages'
-import { Wallet } from '../legacy-wallet'
+import { Wallet, type WalletTransaction } from '../legacy-wallet'
 import { MessageConstructor } from './constructors'
 import { Utxo } from '../types/utxo'
-import { Transaction } from 'bitcore-lib-xpi'
 import { UIOutput } from '../types/user-interface'
 
 export function encodeEntry(
@@ -14,7 +13,7 @@ export function encodeEntry(
     wallet,
     messageConstructor,
   }: { wallet: Wallet; messageConstructor: MessageConstructor },
-): [PayloadEntry, Transaction[], Utxo[], UIOutput[]] {
+): [PayloadEntry, WalletTransaction[], Utxo[], UIOutput[]] {
   // TODO: internal type does not match protocol. Consistency is good.
   if (item.type === 'stealth') {
     const { paymentEntry, transactionBundle } =
@@ -25,7 +24,7 @@ export function encodeEntry(
           MessageConstructor['constructStealthEntry']
         >[0]['destPubKey'],
       })
-    const transactions: Transaction[] = []
+    const transactions: WalletTransaction[] = []
     const stagedUtxos: Utxo[] = []
     const outpoints = transactionBundle
       .map(({ transaction, vouts, usedUtxos }) => {

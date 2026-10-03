@@ -38,7 +38,7 @@
  * addresses case-independently even though this identity presents its preferred EIP-55 spelling.
  * secp256k1 is the same curve Monad/Ethereum accounts use, so the same raw 32-byte private key
  * this module derives via `ethers` is exposed as a compressed `@frank/nakamoto` private key
- * (`toNakamotoPrivateKey` below). `signHash` calls `@frank/nakamoto` `signEcdsa` (DER, bitcore
+ * (`toNakamotoPrivateKey` below). `signHash` calls `@frank/nakamoto` `signingKey` (ECDSA, DER,
  * RFC6979 nonce) for `AddressMetadata` registration signatures. The payload digest is one
  * `cryptoBackend.sha256`, matching `Sha256::digest` in `verify_monad_profile`.
  * The *address* itself is always computed the
@@ -88,7 +88,7 @@ import {
 import {
   cryptoBackend,
   privateKeyFromHex,
-  signEcdsa,
+  signingKey,
   type PrivateKey,
 } from '@frank/nakamoto'
 import axios from 'axios'
@@ -183,11 +183,14 @@ export class MonadIdentity implements FrankIdentityHandle {
   /** DER-encoded ECDSA signature over a 32-byte `hash`. A bad digest throws. */
   signHash(hash: Buffer): Buffer {
     if (hash.length !== 32) throw new Error('sign-digest')
-    const key = privateKeyFromHex(this.wallet.privateKey.slice(2), true)
-    if (!key.ok) throw new Error(key.error.code)
-    const signed = signEcdsa(key.value, Uint8Array.from(hash))
-    if (!signed.ok) throw new Error(signed.error.code)
-    return Buffer.from(signed.value)
+    const key = this.toNakamotoPrivateKey()
+    try {
+      const signing = signingKey('ecdsa', key)
+      if (!signing.ok) throw new Error(signing.error.code)
+      return Buffer.from(signing.value.sign(Uint8Array.from(hash)))
+    } finally {
+      key.bytes.fill(0)
+    }
   }
 
   /** Compressed `@frank/nakamoto` private key for Monad envelope ECDH. Not a Lotus address key.

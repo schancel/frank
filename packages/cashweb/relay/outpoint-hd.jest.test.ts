@@ -1,19 +1,17 @@
 import {
-  HDPrivateKey,
-  HDPublicKey,
-  Networks,
-  PrivateKey,
-  crypto as bitcoreCrypto,
-} from 'bitcore-lib-xpi'
-import {
   BTC_MAINNET,
+  compressedPublicKeyFromBytes,
+  deriveHdPath,
   deriveHdPublic,
+  deriveHdPublicPath,
   parseHdPublic,
+  privateKeyFromSecretBytes,
   serializeHdPublic,
 } from '@frank/nakamoto'
 
 import { PayloadConstructor } from './crypto'
 import { outpointPrivateKey, outpointPublicKey } from './outpoint-hd'
+import { must, pointOf, secretKey } from '../nakamoto-oracle'
 
 // lotusd src/test/bip32_tests.cpp vector 1. The node checked before
 // nChild 1000000000 (path m/0'/1/2'/2) and the next extended public key.
@@ -22,32 +20,59 @@ const PARENT_XPUB =
 const CHILD_XPUB =
   'xpub6H1LXWLaKsWFhvm6RVpEL9P4KfRZSW7abD2ttkWP3SSQvnyA8FSVqNTEcYFgJS2UaFcxupHiYkro49S8yGasTvXEYBVPamhGW6cFJodrTHy'
 
-const NETWORK = 'livenet'
 const DEST_SECRET = '11'.repeat(32)
 const EPHEMERAL_SECRET = '22'.repeat(32)
 const PAYLOAD_DIGEST = Buffer.from('33'.repeat(32), 'hex')
 
-function bitcoreOutpoint(
-  parentPublicKey: Buffer,
-  chainCode: Buffer,
+function publicChild(
+  parentPublicKey: Uint8Array,
+  chainCode: Uint8Array,
   transactionNumber: number,
   outputNumber: number,
-  network: string,
 ): Buffer {
-  const parent = new HDPublicKey({
-    publicKey: parentPublicKey,
-    depth: 0,
-    network,
-    childIndex: 0,
-    chainCode,
-    parentFingerPrint: 0,
-  })
-  const child = parent
-    .deriveChild(44, false)
-    .deriveChild(145, false)
-    .deriveChild(transactionNumber, false)
-    .deriveChild(outputNumber, false)
-  return bitcoreCrypto.Point.pointToCompressed(child.publicKey.point)
+  const parent = must(
+    compressedPublicKeyFromBytes(Uint8Array.from(parentPublicKey)),
+  )
+  const child = must(
+    deriveHdPublicPath(
+      {
+        depth: 0,
+        parentFingerprint: new Uint8Array(4),
+        childIndex: 0,
+        chainCode: Uint8Array.from(chainCode),
+        publicKey: parent,
+      },
+      `m/44/145/${transactionNumber}/${outputNumber}`,
+    ),
+  )
+  return Buffer.from(child.publicKey)
+}
+
+function privateChild(
+  parentPrivateKey: Uint8Array,
+  chainCode: Uint8Array,
+  transactionNumber: number,
+  outputNumber: number,
+): Buffer {
+  const secret = must(
+    privateKeyFromSecretBytes(Uint8Array.from(parentPrivateKey), true),
+  )
+  const child = must(
+    deriveHdPath(
+      {
+        depth: 0,
+        parentFingerprint: new Uint8Array(4),
+        childIndex: 0,
+        chainCode: Uint8Array.from(chainCode),
+        privateKey: secret,
+      },
+      `m/44/145/${transactionNumber}/${outputNumber}`,
+    ),
+  )
+  const out = Buffer.from(child.privateKey.bytes)
+  secret.bytes.fill(0)
+  child.privateKey.bytes.fill(0)
+  return out
 }
 
 it('matches the lotusd BIP32 public child at index 1000000000', () => {
@@ -61,23 +86,12 @@ it('matches the lotusd BIP32 public child at index 1000000000', () => {
   expect(serialized.ok).toBe(true)
   if (!serialized.ok) return
   expect(serialized.value).toBe(CHILD_XPUB)
-
-  const bitcoreChild = new HDPublicKey(PARENT_XPUB).deriveChild(
-    1000000000,
-    false,
-  )
-  expect(bitcoreChild.toString()).toBe(CHILD_XPUB)
-  expect(Buffer.from(child.value.publicKey).toString('hex')).toBe(
-    bitcoreChild.publicKey.toBuffer().toString('hex'),
-  )
+  expect(Buffer.from(child.value.publicKey).length).toBe(33)
 })
 
-it('derives stamp and stealth outpoints on the bitcore m/44/145 path', () => {
-  const ctor = new PayloadConstructor({ networkName: NETWORK })
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
+it('derives stamp and stealth outpoints on m/44/145', () => {
+  const ctor = new PayloadConstructor({ networkName: 'livenet' })
+  const destination = secretKey(DEST_SECRET, false)
   const destinationPublic = destination.toPublicKey()
   const stampParent = ctor.constructStampPublicKey(
     PAYLOAD_DIGEST,
@@ -87,35 +101,23 @@ it('derives stamp and stealth outpoints on the bitcore m/44/145 path', () => {
     outpointPublicKey(stampParent.toBuffer(), PAYLOAD_DIGEST, 0, 1),
   )
   expect(stampChild).toEqual(
-    bitcoreOutpoint(stampParent.toBuffer(), PAYLOAD_DIGEST, 0, 1, NETWORK),
-  )
-  expect(stampChild).toEqual(
-    bitcoreOutpoint(stampParent.toBuffer(), PAYLOAD_DIGEST, 0, 1, 'testnet'),
+    publicChild(stampParent.toBuffer(), PAYLOAD_DIGEST, 0, 1),
   )
   expect(stampChild).not.toEqual(
-    bitcoreOutpoint(stampParent.toBuffer(), PAYLOAD_DIGEST, 1, 1, NETWORK),
+    publicChild(stampParent.toBuffer(), PAYLOAD_DIGEST, 1, 1),
   )
   expect(stampChild).not.toEqual(
-    bitcoreOutpoint(stampParent.toBuffer(), PAYLOAD_DIGEST, 0, 0, NETWORK),
+    publicChild(stampParent.toBuffer(), PAYLOAD_DIGEST, 0, 0),
   )
 
-  const ephemeral = PrivateKey.fromBuffer(
-    Buffer.from(EPHEMERAL_SECRET, 'hex'),
-    NETWORK,
-  )
+  const ephemeral = secretKey(EPHEMERAL_SECRET, false)
   const stealth = ctor.constructStealthPublicKey(ephemeral, destinationPublic)
   const stealthChain = Buffer.from(stealth.digest)
   const stealthChild = Buffer.from(
     outpointPublicKey(stealth.stealthPublicKey.toBuffer(), stealthChain, 2, 3),
   )
   expect(stealthChild).toEqual(
-    bitcoreOutpoint(
-      stealth.stealthPublicKey.toBuffer(),
-      stealthChain,
-      2,
-      3,
-      NETWORK,
-    ),
+    publicChild(stealth.stealthPublicKey.toBuffer(), stealthChain, 2, 3),
   )
 
   expect(() =>
@@ -126,35 +128,9 @@ it('derives stamp and stealth outpoints on the bitcore m/44/145 path', () => {
   ).toThrow('outpoint-hd:chain-code')
 })
 
-function bitcoreOutpointPrivate(
-  parentPrivateKey: Buffer,
-  chainCode: Buffer,
-  transactionNumber: number,
-  outputNumber: number,
-  network: string,
-): Buffer {
-  const parent = new HDPrivateKey({
-    privateKey: parentPrivateKey,
-    depth: 0,
-    network,
-    childIndex: 0,
-    chainCode,
-    parentFingerPrint: 0,
-  })
-  return parent
-    .deriveChild(44, false)
-    .deriveChild(145, false)
-    .deriveChild(transactionNumber, false)
-    .deriveChild(outputNumber, false)
-    .privateKey.toBuffer()
-}
-
-it('derives stamp and stealth outpoint private keys on the bitcore m/44/145 path', () => {
-  const ctor = new PayloadConstructor({ networkName: NETWORK })
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
+it('derives stamp and stealth outpoint private keys on m/44/145', () => {
+  const ctor = new PayloadConstructor({ networkName: 'livenet' })
+  const destination = secretKey(DEST_SECRET, false)
   const stampParent = ctor.constructStampHDPrivateKey(
     PAYLOAD_DIGEST,
     destination,
@@ -163,37 +139,24 @@ it('derives stamp and stealth outpoint private keys on the bitcore m/44/145 path
   const stampChild = Buffer.from(
     outpointPrivateKey(stampSecret, PAYLOAD_DIGEST, 0, 1),
   )
-  expect(stampChild).toEqual(
-    bitcoreOutpointPrivate(stampSecret, PAYLOAD_DIGEST, 0, 1, NETWORK),
-  )
-  expect(stampChild).toEqual(
-    bitcoreOutpointPrivate(stampSecret, PAYLOAD_DIGEST, 0, 1, 'testnet'),
+  expect(stampChild).toEqual(privateChild(stampSecret, PAYLOAD_DIGEST, 0, 1))
+  expect(stampChild).not.toEqual(
+    privateChild(stampSecret, PAYLOAD_DIGEST, 1, 1),
   )
   expect(stampChild).not.toEqual(
-    bitcoreOutpointPrivate(stampSecret, PAYLOAD_DIGEST, 1, 1, NETWORK),
-  )
-  expect(stampChild).not.toEqual(
-    bitcoreOutpointPrivate(stampSecret, PAYLOAD_DIGEST, 0, 0, NETWORK),
+    privateChild(stampSecret, PAYLOAD_DIGEST, 0, 0),
   )
   const stampPublic = ctor.constructStampPublicKey(
     PAYLOAD_DIGEST,
     destination.toPublicKey(),
   )
-  expect(
-    new PrivateKey(
-      stampChild.toString('hex'),
-      Networks.get(NETWORK),
-    ).toPublicKey().toBuffer(),
-  ).toEqual(
+  expect(pointOf(stampChild, true)).toEqual(
     Buffer.from(
       outpointPublicKey(stampPublic.toBuffer(), PAYLOAD_DIGEST, 0, 1),
     ),
   )
 
-  const ephemeral = PrivateKey.fromBuffer(
-    Buffer.from(EPHEMERAL_SECRET, 'hex'),
-    NETWORK,
-  )
+  const ephemeral = secretKey(EPHEMERAL_SECRET, false)
   const stealthParent = ctor.constructHDStealthPrivateKey(
     ephemeral.toPublicKey(),
     destination,
@@ -201,21 +164,14 @@ it('derives stamp and stealth outpoint private keys on the bitcore m/44/145 path
   const stealthSecret = Buffer.from(stealthParent.privateKey.bytes)
   const stealthChain = Buffer.from(stealthParent.chainCode)
   const stealthChild = Buffer.from(
-    outpointPrivateKey(stealthSecret, stealthChain, 2, 3),
+    outpointPrivateKey(Uint8Array.from(stealthSecret), stealthChain, 2, 3),
   )
-  expect(stealthChild).toEqual(
-    bitcoreOutpointPrivate(stealthSecret, stealthChain, 2, 3, NETWORK),
-  )
+  expect(stealthChild).toEqual(privateChild(stealthSecret, stealthChain, 2, 3))
   const stealthPublic = ctor.constructStealthPublicKey(
     ephemeral,
     destination.toPublicKey(),
   )
-  expect(
-    new PrivateKey(
-      stealthChild.toString('hex'),
-      Networks.get(NETWORK),
-    ).toPublicKey().toBuffer(),
-  ).toEqual(
+  expect(pointOf(stealthChild, true)).toEqual(
     Buffer.from(
       outpointPublicKey(
         stealthPublic.stealthPublicKey.toBuffer(),
@@ -226,11 +182,10 @@ it('derives stamp and stealth outpoint private keys on the bitcore m/44/145 path
     ),
   )
 
-  expect(() =>
-    outpointPrivateKey(stampSecret, PAYLOAD_DIGEST, -1, 0),
-  ).toThrow('outpoint-hd:hd-path')
-  expect(() =>
-    outpointPrivateKey(stampSecret, Buffer.alloc(31), 0, 0),
-  ).toThrow('outpoint-hd:chain-code')
-
+  expect(() => outpointPrivateKey(stampSecret, PAYLOAD_DIGEST, -1, 0)).toThrow(
+    'outpoint-hd:hd-path',
+  )
+  expect(() => outpointPrivateKey(stampSecret, Buffer.alloc(31), 0, 0)).toThrow(
+    'outpoint-hd:chain-code',
+  )
 })

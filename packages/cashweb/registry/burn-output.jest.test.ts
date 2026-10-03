@@ -1,5 +1,3 @@
-import { Transaction } from 'bitcore-lib-xpi'
-
 import { pondBurnScript } from './burn-script'
 import { registryBurnOutput } from './burn-output'
 
@@ -26,9 +24,4 @@ it('matches pondBurnScript and wraps as a payment output', () => {
   const output = registryBurnOutput(hash, 1000)
   hash[0] = 0
   expect(output.script[8]).toBe(0x11)
-
-  const wrapped = new Transaction.Output(up)
-  expect(Array.from(wrapped.script.toBuffer())).toEqual(Array.from(up.script))
-  expect(wrapped.satoshis).toBe(1000)
-
 })

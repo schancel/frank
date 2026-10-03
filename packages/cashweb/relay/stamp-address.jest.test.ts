@@ -1,12 +1,12 @@
-import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
+import { privateKeyFromHex, tweakAddPrivateKey } from '@frank/nakamoto'
 
 import {
-  lotusFromAddress,
   lotusFromPrivateKey,
+  lotusFromPublicKey,
 } from '../legacy-wallet/lotus-address'
+import { addedSecret, must, pointOf, secretKey } from '../nakamoto-oracle'
 import { PayloadConstructor } from './crypto'
 
-const NETWORK = 'livenet'
 const DEST_SECRET = '11'.repeat(32)
 const N_HEX = 'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
 const N_MINUS_1 =
@@ -15,56 +15,37 @@ const N_PLUS_ONE =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364142'
 const ZERO_SUM_DIGEST =
   'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeda99dcbd59e378f2aaec14d7bbf253030'
+const ONE = `${'00'.repeat(31)}01`
 
-function bitcoreStampAddress(
-  digest: Buffer,
-  destination: PrivateKey,
-  network: string,
-) {
-  const sum = bitcoreCrypto.BN.fromBuffer(digest)
-    .add(destination.toBigNumber())
-    .mod(bitcoreCrypto.Point.getN())
-  return new PrivateKey(sum).toAddress(network)
+function lotusOfSecret(secret: Uint8Array, networkName: string): string {
+  return lotusFromPublicKey(
+    { toBuffer: () => pointOf(secret, true) },
+    networkName,
+  )
 }
 
-it('matches bitcore stamp addresses for digests in (0, n)', () => {
+it('encodes the tweaked stamp key as a Lotus address', () => {
   const ctor = new PayloadConstructor({ networkName: 'testnet' })
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
+  const destination = secretKey(DEST_SECRET, false)
   const digest = Buffer.from('33'.repeat(32), 'hex')
   const address = ctor.constructStampAddress(digest, destination)
-  const oracle = bitcoreStampAddress(digest, destination, 'testnet')
-  const live = bitcoreStampAddress(digest, destination, NETWORK)
-  expect(address).toBe(lotusFromAddress(oracle, 'testnet'))
-  expect(address).not.toBe(lotusFromAddress(live, NETWORK))
+  const sum = addedSecret(Buffer.from(DEST_SECRET, 'hex'), digest)
+  expect(address).toBe(lotusOfSecret(sum, 'testnet'))
+  expect(address).not.toBe(lotusOfSecret(sum, 'livenet'))
   const fromPrivate = ctor.constructStampPrivateKey(digest, destination)
-  const fromPrivateOracle = new PrivateKey(
-    bitcoreCrypto.BN.fromBuffer(digest)
-      .add(destination.toBigNumber())
-      .mod(bitcoreCrypto.Point.getN()),
-  )
-  expect(fromPrivate.toBuffer()).toEqual(fromPrivateOracle.toBuffer())
-  expect(fromPrivate.toPublicKey().toBuffer()).toEqual(
-    fromPrivateOracle.toPublicKey().toBuffer(),
-  )
+  expect(fromPrivate.toBuffer()).toEqual(sum)
+  expect(fromPrivate.toPublicKey().toBuffer()).toEqual(pointOf(sum, true))
   expect(address).toBe(lotusFromPrivateKey(fromPrivate, 'testnet'))
 
-  const almost = new PrivateKey(N_MINUS_1)
+  const almost = secretKey(N_MINUS_1, true)
   const cross = Buffer.alloc(32)
   cross[31] = 2
   const crossed = ctor.constructStampAddress(cross, almost)
-  const crossedOracle = bitcoreStampAddress(cross, almost, 'testnet')
-  expect(crossed).toBe(lotusFromAddress(crossedOracle, 'testnet'))
-  expect(crossed).toBe(
-    lotusFromAddress(
-      new PrivateKey(`${'00'.repeat(31)}01`).toAddress('testnet'),
-      'testnet',
-    ),
-  )
+  const crossedSum = addedSecret(Buffer.from(N_MINUS_1, 'hex'), cross)
+  expect(crossed).toBe(lotusOfSecret(crossedSum, 'testnet'))
+  expect(crossed).toBe(lotusOfSecret(Buffer.from(ONE, 'hex'), 'testnet'))
 
-  const wide = new PrivateKey(Buffer.from(DEST_SECRET, 'hex'))
+  const wide = secretKey(DEST_SECRET, false)
   expect(wide.toPublicKey().toBuffer().length).toBe(65)
   const wideAddress = ctor.constructStampAddress(digest, wide)
   expect(wideAddress).toBe(address)
@@ -78,23 +59,20 @@ it('matches bitcore stamp addresses for digests in (0, n)', () => {
 })
 
 it('rejects a zero sum and digests outside (0, n)', () => {
-  const ctor = new PayloadConstructor({ networkName: NETWORK })
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
+  const ctor = new PayloadConstructor({ networkName: 'livenet' })
+  const destination = secretKey(DEST_SECRET, false)
   const zeroSum = Buffer.from(ZERO_SUM_DIGEST, 'hex')
   expect(() => ctor.constructStampAddress(zeroSum, destination)).toThrow(
     'stamp-parent:scalar-out-of-range',
   )
-  expect(
-    () =>
-      new PrivateKey(
-        bitcoreCrypto.BN.fromBuffer(zeroSum)
-          .add(destination.toBigNumber())
-          .mod(bitcoreCrypto.Point.getN()),
-      ),
-  ).toThrow('Number can not be equal to zero')
+  const parsed = must(privateKeyFromHex(DEST_SECRET, true))
+  try {
+    const added = tweakAddPrivateKey(parsed, Uint8Array.from(zeroSum))
+    expect(added.ok).toBe(false)
+    if (added.ok) added.value.bytes.fill(0)
+  } finally {
+    parsed.bytes.fill(0)
+  }
   expect(() =>
     ctor.constructStampAddress(Buffer.alloc(32), destination),
   ).toThrow('stamp-parent:scalar-out-of-range')

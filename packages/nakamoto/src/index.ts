@@ -238,6 +238,7 @@ export type {
 } from './block.js'
 
 export { isSignError, signAll, signInput } from './sign.js'
+export { signingKey } from './signing-key.js'
 export {
   ecdh,
   ecdhWithHash,
@@ -256,6 +257,7 @@ export {
   verifyMessage,
   verifySchnorr,
 } from './curve.js'
+export type { SigningKey, SigningKeyMap } from './signing-key.js'
 export type {
   InputSigner,
   InputStatus,

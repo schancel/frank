@@ -1,82 +1,50 @@
-import { HDPublicKey, PrivateKey, PublicKey } from 'bitcore-lib-xpi'
-
 import { PayloadConstructor } from './crypto'
 import {
   stampDepthZeroPublicNode,
   stampParentHdPublicNode,
 } from './stamp-hd-public'
 import { stampParentPublicKey } from './stamp-public'
+import { addedPoint, pointOf, secretKey } from '../nakamoto-oracle'
 
-const NETWORK = 'livenet'
 const DEST_SECRET = '11'.repeat(32)
-const N_HEX =
-  'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
+const N_HEX = 'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
 const N_PLUS_ONE =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364142'
 const N_MINUS_1 =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140'
 const ONE = `${'00'.repeat(31)}01`
 
-function bitcoreNode(publicKey: Buffer, chainCode: Buffer, network: string) {
-  return new HDPublicKey({
-    publicKey,
-    depth: 0,
-    network,
-    childIndex: 0,
-    chainCode,
-    parentFingerPrint: 0,
-  })
-}
-
-function bitcoreStampPublic(digest: Buffer, destination: PublicKey): Buffer {
-  const digestPoint = PrivateKey.fromBuffer(digest).toPublicKey().point
-  return PublicKey.fromPoint(digestPoint.add(destination.point)).toBuffer()
-}
-
 it('builds a depth-0 stamp public parent whose chain code is the raw digest', () => {
   const ctor = new PayloadConstructor({ networkName: 'testnet' })
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
+  const destination = secretKey(DEST_SECRET, false)
   const uncompressed = destination.toPublicKey()
   const digest = Buffer.from('33'.repeat(32), 'hex')
-  const publicKey = Buffer.from(
-    stampParentPublicKey(Uint8Array.from(uncompressed.toBuffer()), digest),
-  )
-  expect(publicKey).toEqual(bitcoreStampPublic(digest, uncompressed))
+  const publicKey = addedPoint(uncompressed.toBuffer(), digest)
+  expect(
+    Buffer.from(
+      stampParentPublicKey(Uint8Array.from(uncompressed.toBuffer()), digest),
+    ),
+  ).toEqual(publicKey)
 
   const node = ctor.constructStampHDPublicKey(digest, uncompressed)
-  const described = bitcoreNode(publicKey, digest, 'testnet').toObject() as {
-    chainCode: Buffer
-    parentFingerPrint: number
-    depth: number
-    childIndex: number
-  }
-  expect(Buffer.from(node.publicKey)).toEqual(
-    bitcoreNode(publicKey, digest, 'testnet').publicKey.toBuffer(),
-  )
-  expect(Buffer.from(node.publicKey)).toEqual(
-    bitcoreNode(publicKey, digest, NETWORK).publicKey.toBuffer(),
-  )
+  expect(Buffer.from(node.publicKey)).toEqual(publicKey)
   expect(Buffer.from(node.publicKey)).toEqual(
     ctor.constructStampPublicKey(digest, uncompressed).toBuffer(),
   )
   expect(Buffer.from(node.chainCode)).toEqual(digest)
-  expect(Buffer.from(described.chainCode)).toEqual(digest)
   expect(Buffer.from(node.chainCode)).not.toEqual(publicKey)
   expect(node.depth).toBe(0)
   expect(node.childIndex).toBe(0)
-  expect(described.depth).toBe(0)
-  expect(described.childIndex).toBe(0)
-  expect(described.parentFingerPrint).toBe(0)
   expect(Buffer.from(node.parentFingerprint)).toEqual(Buffer.alloc(4))
   expect(uncompressed.toBuffer().length).toBe(65)
-  expect(destination.toBuffer().toString('hex')).toBe(DEST_SECRET)
+  expect(Buffer.from(destination.toBuffer()).toString('hex')).toBe(DEST_SECRET)
 
-  const compressed = PublicKey.fromPoint(uncompressed.point, true)
-  expect(compressed.toBuffer().length).toBe(33)
-  const compressedNode = ctor.constructStampHDPublicKey(digest, compressed)
+  const compressedKey = secretKey(DEST_SECRET, true)
+  expect(compressedKey.toPublicKey().toBuffer().length).toBe(33)
+  const compressedNode = ctor.constructStampHDPublicKey(
+    digest,
+    compressedKey.toPublicKey(),
+  )
   expect(Buffer.from(compressedNode.publicKey)).toEqual(publicKey)
   expect(Buffer.from(compressedNode.chainCode)).toEqual(digest)
 
@@ -101,26 +69,22 @@ it('builds a depth-0 stamp public parent whose chain code is the raw digest', ()
   expect(Buffer.from(held.chainCode)).toEqual(digest)
   expect(Buffer.from(callerDigest)).not.toEqual(digest)
 
-  const almost = new PrivateKey(N_MINUS_1)
+  const almost = secretKey(N_MINUS_1, true)
   const cross = Buffer.alloc(32)
   cross[31] = 2
   const crossed = ctor.constructStampHDPublicKey(cross, almost.toPublicKey())
   expect(Buffer.from(crossed.publicKey)).toEqual(
-    new PrivateKey(ONE).toPublicKey().toBuffer(),
+    pointOf(Buffer.from(ONE, 'hex'), true),
   )
   expect(Buffer.from(crossed.publicKey)).toEqual(
-    bitcoreStampPublic(cross, almost.toPublicKey()),
+    addedPoint(almost.toPublicKey().toBuffer(), cross),
   )
   expect(Buffer.from(crossed.chainCode)).toEqual(cross)
-  expect(almost.toBuffer().toString('hex')).toBe(N_MINUS_1)
+  expect(Buffer.from(almost.toBuffer()).toString('hex')).toBe(N_MINUS_1)
 })
 
 it('stores a chain code >= n without reducing it', () => {
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
-  const compressed = PublicKey.fromPoint(destination.toPublicKey().point, true)
+  const compressed = secretKey(DEST_SECRET, true).toPublicKey()
   expect(compressed.toBuffer().length).toBe(33)
   const point = Uint8Array.from(compressed.toBuffer())
   const order = Uint8Array.from(Buffer.from(N_HEX, 'hex'))
@@ -153,10 +117,7 @@ it('stores a chain code >= n without reducing it', () => {
 
 it('rejects a stamp digest >= n instead of reducing it', () => {
   const ctor = new PayloadConstructor({ networkName: 'testnet' })
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
+  const destination = secretKey(DEST_SECRET, false)
   const uncompressed = destination.toPublicKey()
   const point = Uint8Array.from(uncompressed.toBuffer())
   const before = Buffer.from(uncompressed.toBuffer())
@@ -194,8 +155,8 @@ it('rejects a stamp digest >= n instead of reducing it', () => {
   expect(() => stampParentHdPublicNode(point, inverse)).toThrow(
     'stamp-public:point-at-infinity',
   )
+  expect(() => addedPoint(point, inverse)).toThrow('point-at-infinity')
   expect(uncompressed.toBuffer()).toEqual(before)
   expect(Buffer.from(point)).toEqual(before)
-  expect(destination.toBuffer().toString('hex')).toBe(DEST_SECRET)
-
+  expect(Buffer.from(destination.toBuffer()).toString('hex')).toBe(DEST_SECRET)
 })

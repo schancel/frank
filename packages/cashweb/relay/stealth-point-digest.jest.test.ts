@@ -1,21 +1,22 @@
 import { createHash } from 'crypto'
 
-import {
-  PrivateKey,
-  PublicKey,
-  crypto as bitcoreCrypto,
-} from 'bitcore-lib-xpi'
+import { sha256 } from '@frank/crypto-box'
 
 import { PayloadConstructor } from './crypto'
 import { stealthPointDigest } from './stealth-point-digest'
+import {
+  addedPoint,
+  addedSecretMod,
+  digestSha256,
+  secretKey,
+  sharedPoint,
+} from '../nakamoto-oracle'
 
 const EMPTY_SHA256 =
   'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
-// NIST SHA-256("abc")
 const ABC_SHA256 =
   'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
 
-const NETWORK = 'livenet'
 const DEST_SECRET = '11'.repeat(32)
 const EPHEMERAL_SECRET = '22'.repeat(32)
 
@@ -25,20 +26,20 @@ it('hashes a compressed stealth point with one SHA-256', () => {
   expect(empty.toString('hex')).toBe(
     createHash('sha256').update(Buffer.alloc(0)).digest('hex'),
   )
-  expect(empty).toEqual(bitcoreCrypto.Hash.sha256(Buffer.alloc(0)))
+  expect(empty).toEqual(Buffer.from(sha256(new Uint8Array())))
 
   const abc = Buffer.from('abc')
-  const abcDigest = Buffer.from(stealthPointDigest(abc))
+  const abcDigest = Buffer.from(stealthPointDigest(Uint8Array.from(abc)))
   expect(abcDigest.toString('hex')).toBe(ABC_SHA256)
   expect(abcDigest.toString('hex')).toBe(
     createHash('sha256').update(abc).digest('hex'),
   )
-  expect(abcDigest).toEqual(bitcoreCrypto.Hash.sha256(abc))
+  expect(abcDigest).toEqual(Buffer.from(sha256(Uint8Array.from(abc))))
 
   const leadingZero = Uint8Array.from([0x02, 0x00, 0x01])
   const leadingZeroDigest = Buffer.from(stealthPointDigest(leadingZero))
   expect(leadingZeroDigest).toEqual(
-    bitcoreCrypto.Hash.sha256(Buffer.from(leadingZero)),
+    Buffer.from(sha256(Uint8Array.from(leadingZero))),
   )
   expect(leadingZeroDigest.toString('hex')).toBe(
     createHash('sha256').update(leadingZero).digest('hex'),
@@ -47,23 +48,14 @@ it('hashes a compressed stealth point with one SHA-256', () => {
   expect(leadingZeroDigest.toString('hex')).not.toBe(doubled)
 })
 
-it('derives stealth keys from that digest and leaves HMAC on bitcore', () => {
-
-  const ctor = new PayloadConstructor({ networkName: NETWORK })
-  const destination = PrivateKey.fromBuffer(
-    Buffer.from(DEST_SECRET, 'hex'),
-    NETWORK,
-  )
-  const ephemeral = PrivateKey.fromBuffer(
-    Buffer.from(EPHEMERAL_SECRET, 'hex'),
-    NETWORK,
-  )
+it('derives stealth keys from that digest', () => {
+  const ctor = new PayloadConstructor({ networkName: 'livenet' })
+  const destination = secretKey(DEST_SECRET, false)
+  const ephemeral = secretKey(EPHEMERAL_SECRET, false)
   const destinationPublic = destination.toPublicKey()
   const ephemeralPublic = ephemeral.toPublicKey()
-  const raw = bitcoreCrypto.Point.pointToCompressed(
-    destinationPublic.point.mul(ephemeral.bn),
-  )
-  const expectedDigest = bitcoreCrypto.Hash.sha256(raw)
+  const raw = sharedPoint(EPHEMERAL_SECRET, destinationPublic.toBuffer())
+  const expectedDigest = digestSha256(raw)
   expect(Buffer.from(stealthPointDigest(raw))).toEqual(expectedDigest)
   expect(expectedDigest.toString('hex')).toBe(
     createHash('sha256').update(raw).digest('hex'),
@@ -74,15 +66,8 @@ it('derives stealth keys from that digest and leaves HMAC on bitcore', () => {
     destinationPublic,
   )
   expect(Buffer.from(stealthPublic.digest)).toEqual(expectedDigest)
-  const digestPublic = PrivateKey.fromBuffer(
-    expectedDigest,
-    NETWORK,
-  ).toPublicKey()
-  const expectedPublic = PublicKey.fromPoint(
-    digestPublic.point.add(destinationPublic.point),
-  )
   expect(stealthPublic.stealthPublicKey.toBuffer()).toEqual(
-    expectedPublic.toBuffer(),
+    addedPoint(destinationPublic.toBuffer(), expectedDigest),
   )
 
   const stealthPrivate = ctor.constructStealthPrivateKey(
@@ -90,11 +75,7 @@ it('derives stealth keys from that digest and leaves HMAC on bitcore', () => {
     destination,
   )
   expect(Buffer.from(stealthPrivate.digest)).toEqual(expectedDigest)
-  const digestBn = bitcoreCrypto.BN.fromBuffer(expectedDigest)
-  const expectedPrivate = new PrivateKey(
-    digestBn.add(destination.bn).mod(bitcoreCrypto.Point.getN()),
-  )
   expect(stealthPrivate.stealthPrivateKey.toBuffer()).toEqual(
-    expectedPrivate.toBuffer(),
+    addedSecretMod(destination.toBuffer(), expectedDigest),
   )
 })

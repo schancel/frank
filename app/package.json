@@ -6,6 +6,8 @@
   "author": "shammah@cryptonumismatics.org",
   "private": true,
   "scripts": {
+    "test:custody": "node src/accounts/custody/test/browser.mjs",
+    "typecheck:custody": "tsc -p src/accounts/custody/tsconfig.json",
     "lint": "eslint 'src/**/*.{ts,js,vue}' && prettier --check .",
     "lint:fix": "prettier --write . && eslint 'src/**/*.{ts,js,vue}' --fix",
     "dev": "quasar dev -m electron -- --no-sandbox --disable-setuid-sandbox",
@@ -31,6 +33,9 @@
     "format": "prettier --write ."
   },
   "dependencies": {
+    "@frank/account-recovery": "*",
+    "@frank/account-vault": "*",
+    "@frank/domain-roots": "*",
     "@capacitor/core": "2.5.0",
     "@electron/remote": "^2.0.8",
     "@frank/cashweb": "*",

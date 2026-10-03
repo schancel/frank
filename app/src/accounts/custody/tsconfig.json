@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "lib": ["es2022", "dom"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": [],
+    "paths": {
+      "@frank/account-vault": [
+        "../../../../packages/account-vault/src/index.ts"
+      ],
+      "@frank/account-recovery": [
+        "../../../../packages/account-recovery/src/index.ts"
+      ],
+      "@frank/domain-roots": ["../../../../packages/domain-roots/src/index.ts"],
+      "@frank/codex32": ["../../../../packages/codex32/src/index.ts"],
+      "@frank/nakamoto/*": ["../../../../packages/nakamoto/src/*"]
+    }
+  },
+  "include": ["*.ts", "test/**/*.ts"]
+}

@@ -357,12 +357,15 @@ Each bound destination provider signs and atomically installs one mailbox-admiss
 binds the account-authorization hash, provider identity and exact descriptor revision, exact
 directory-statement hash, accepted recipient-`M` tuple set and policy, current
 `stamp_key_generation`, `mailbox_instance_generation`, expiry, monotonic sequence and predecessor
-capability hash. It MUST equal the account authorization or be a strict subset: the provider may
-shorten a routine grace or remove an allowed tuple, but MUST NOT add an older generation,
-substitute `M`, extend the deadline, change provider/descriptor, or relabel compromise as routine.
-Its schema, fields and operation are **UNALLOCATED** in section 15. Every delivery and mailbox
-challenge names the selected tuple and capability hash; recipient `M` is accepted only when that
-installed capability permits the exact tuple.
+capability hash. Its accepted recipient-`M` tuple set and grace policy MUST equal or narrow the
+`P`-authorized tuple set and policy: narrowing means only removing an allowed tuple or shortening
+its deadline. Capability-only/provider fields validate independently; the provider signature,
+capability sequence/predecessor, mailbox instance and current `P'` may differ only as their own
+rules define. They MUST NOT alter the authorization-bound destination/descriptor or rotation class,
+add an older generation, substitute `M`, or extend grace. Its schema, fields and operation are
+**UNALLOCATED** in section 15. Every delivery and mailbox challenge names the selected tuple and
+capability hash; recipient `M` is accepted only when that installed capability permits the exact
+tuple.
 
 Seed restore MUST recover the current and still-graced historical `M` secrets and verified
 directory history before acknowledging mailbox replay. Erasing a retired secret is allowed only
@@ -496,10 +499,13 @@ atomically claims the operation and signs the claim receipt before any recipient
 is exposed. Only then may that destination broadcast and perform external observation/finality
 stages. A failed claim has no broadcast, credit, consumption or recipient-stamp side effect.
 
-The destination provider verifies the bound account authorization and proves its installed
-mailbox-admission capability is equal or narrower before claiming the operation. It compares the
-capability, directory hash and exact recipient-`M` tuple to its atomically installed generations and
-policy. Capability installation,
+The destination provider verifies the bound account authorization and proves that the capability's
+accepted recipient-`M` tuples and grace policy equal or narrow the authorized tuples/policy by
+removal or shorter deadline only. It independently validates the provider signature, capability
+sequence/predecessor, mailbox instance and current `P'`, and proves none alters the
+authorization-bound destination/descriptor or rotation class. It then compares the capability,
+directory hash and exact recipient-`M` tuple to its atomically installed generations and policy.
+Capability installation,
 operation claim and challenge/session issuance use the compare-and-set order in section 8.2. A
 generation retired at that provider is a stale-context failure even when its proof and transactions
 are otherwise valid; only an operation claimed before the fence may enter the broadcast and
@@ -819,9 +825,11 @@ and bot/app tests using the same public client. Unit success in one codec is not
 **PROPOSED.** Decision-gate review MUST cover: directory/profile migration without field-9
 reinterpretation; old/new type-1/type-5 schema rejection and retention; exact construction order
 with both directory/provider authorities pinned before randomness; `provider-admission` operation
-context/order/errors; account authorization signature, exact tuple, rotation-class, grace-bound,
-destination/predecessor/sequence and capability-subset validation; provider substitution, tuple
-widening, replay and fork rejection; routine `M` grace versus compromise no-grace; provider-effective `M`/`P'`
+context/order/errors; account authorization signature, exact tuple, rotation-class, grace-bound and
+destination validation; scoped tuple/grace narrowing by removal or shorter deadline only;
+independent capability signature/sequence/predecessor/instance/current-`P'` validation; provider
+substitution, tuple widening, replay and fork rejection; routine `M` grace versus compromise
+no-grace; provider-effective `M`/`P'`
 rotation, partition and restart; missing/expired capability failure, provider-by-provider compromise
 closure, and capability-installation races against operation claim and challenge/session issuance;
 bounded authority for a pre-fence winning claim or session; exposed old-generation
@@ -878,7 +886,8 @@ The following remain deliberately unresolved rather than inferred:
   succession/reset/rotation records;
 - `P`-signed account admission authorization or authorized request, including exact allowed
   `(directory hash, generation, M)` tuples, routine/compromise class, maximum grace boundary,
-  destination provider/descriptor, predecessor/sequence, and provider-subset validation;
+  destination provider/descriptor and authorization predecessor/sequence; the scoped tuple/grace
+  narrowing order and independent capability-only/provider-field validation;
 - maximum sender-directory validity/freshness window and expiry/convergence validation; portable
   origin receipts remain unallocated and are not authority;
 - provider descriptor, delivery, receipt/status, mailbox-journal and reset record type IDs;

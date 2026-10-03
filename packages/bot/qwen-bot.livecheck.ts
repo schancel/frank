@@ -267,8 +267,8 @@ async function main() {
     },
     systemPrompt: SYSTEM_PROMPT,
     generator: replyGenerator,
-    send: row =>
-      sendDirectMessageText({
+    send: async row => {
+      const result = await sendDirectMessageText({
         stampClient,
         pool,
         mainAccountSigner,
@@ -279,7 +279,14 @@ async function main() {
         text: row.response,
         stampValueWei,
         networkTag,
-      }),
+      })
+      // Stamp results also contain wallet/protobuf details (including BigInts). Only the
+      // delivery proof belongs in the durable response receipt.
+      return {
+        payloadHashHex: result.payloadHashHex,
+        txHashes: [...result.txHashes],
+      }
+    },
   })
 
   // Surface nonretryable ambiguity once on startup. Only ready rows enter periodic recovery.

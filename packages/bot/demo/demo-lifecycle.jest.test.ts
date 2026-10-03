@@ -387,11 +387,32 @@ process.stdin.on('end', () => {
     it('the relay is started with the burn address the bots and the app command use (#364)', async () => {
       const { handle, c } = await running()
       expect(readFileSync(pidFile + '.env', 'utf8')).toBe(c.stampBurnAddress)
-      expect(readFileSync(pidFile + '.checkpoint', 'utf8')).toBe(`0x${'11'.repeat(32)}`)
+      // The launcher supplies the protocol registry's checkpoint by default.
+      expect(readFileSync(pidFile + '.checkpoint', 'utf8')).toBe('unset')
       expect(c.stampBurnAddress).toBe('0x000000000000000000000000000000000000dEaD')
       await handle.stop()
       await handle.done
     }, 30000)
+
+    // Supply a real built cashwebd-exe to exercise the generated TOML's production validator
+    // and startup. Ordinary lifecycle tests continue to use the small relay stand-in.
+    const realRelayTest = process.env.CASHWEBD_BIN ? it : it.skip
+    realRelayTest(
+      'starts the real relay with the generated fake-chain configuration',
+      async () => {
+        const c = await config({ CASHWEBD_BIN: process.env.CASHWEBD_BIN! })
+        const handle = await startDemo(c, { ...opts, relayTimeoutS: 15 })
+        try {
+          expect(handle.fakeRpc?.host).toBe('127.0.0.1')
+          expect((await fetch(`${handle.relayUrl}/metadata/monad?since=0`)).ok).toBe(true)
+          expect(output.some(line => line.includes('fake chain'))).toBe(true)
+        } finally {
+          await handle.stop()
+          await handle.done
+        }
+      },
+      30000,
+    )
 
     it('a custom burn address reaches the relay too', async () => {
       const other = '0x2222222222222222222222222222222222222222'

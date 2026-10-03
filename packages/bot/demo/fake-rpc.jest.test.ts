@@ -4,6 +4,7 @@ import { join } from 'path'
 
 import { Transaction, Wallet } from 'ethers'
 
+import chainRegistry from '../../../docs/protocol/chains/v1.json'
 import { FakeRpc, startFakeRpc } from './fake-rpc'
 
 async function rpc(fake: FakeRpc, method: string, params: unknown[] = []) {
@@ -44,6 +45,24 @@ describe('fake chain RPC', () => {
       BigInt((await rpc(fake, 'eth_getBalance', [rich.address])).result),
     ).toBeGreaterThanOrEqual(10n ** 24n)
     expect((await rpc(fake, 'eth_getBalance', [poor.address])).result).toBe('0x0')
+  })
+
+  it('serves the protocol-pinned genesis while keeping later demo blocks synthetic', async () => {
+    const checkpoint = chainRegistry.chains
+      .find(chain => chain.id === 'monad-testnet')!
+      .identity_probes.find(probe => probe.kind === 'block-hash' && probe.height === 0)!
+    expect(checkpoint.expected).toMatch(/^0x[0-9a-f]{64}$/)
+    for (const tag of ['0x0', 'earliest']) {
+      expect((await rpc(fake, 'eth_getBlockByNumber', [tag, false])).result).toMatchObject({
+        number: '0x0',
+        hash: checkpoint.expected,
+      })
+    }
+    for (const tag of ['0x1', '0x3e8', 'latest']) {
+      expect((await rpc(fake, 'eth_getBlockByNumber', [tag, false])).result.hash).toBe(
+        `0x${'11'.repeat(32)}`,
+      )
+    }
   })
 
   it('a transfer moves value, is mined at once, and bumps the sender nonce', async () => {

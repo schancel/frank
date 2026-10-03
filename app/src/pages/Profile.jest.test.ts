@@ -71,8 +71,9 @@ describe('Profile page display name handling', () => {
 
       expect(registerMonadIdentity).not.toHaveBeenCalled()
       expect(mockSetRelayData).not.toHaveBeenCalled()
-      expect(errorNotify).toHaveBeenCalledTimes(1)
-      expect((errorNotify as jest.Mock).mock.calls[0][0].message).toBe(message)
+      expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+        safeMessage: message,
+      })
     },
   )
 

@@ -324,6 +324,7 @@ export default {
     seedCopied:
       'Votre phrase de récupération a été copiée dans votre presse-papier.',
     sentTransaction: 'Transaction envoyée',
+    unexpectedError: 'Une erreur s’est produite. Veuillez réessayer.',
     viewAction: 'Voir',
   },
   chatRightDrawer: {

@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 
 import { shallowMount } from '@vue/test-utils'
-import { defineComponent, nextTick, ref } from 'vue'
+import { nextTick, ref } from 'vue'
 
 const balance = {
   formattedBalance: ref('1 MON'),
@@ -151,7 +151,9 @@ describe('Wallet detail page (#570)', () => {
     await wrapper.get('[data-testid="wallet-copy-address"]').trigger('click')
     await flush()
     expect(mockCopyToClipboard).toHaveBeenCalledWith('0xabc')
-    expect(errorNotify).toHaveBeenCalledTimes(1)
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'walletPanel.unableCopyAddress',
+    })
     expect(addressCopiedNotify).not.toHaveBeenCalled()
     wrapper.unmount()
   })
@@ -165,6 +167,9 @@ describe('Wallet detail page (#570)', () => {
     await wrapper.get('[data-testid="wallet-copy-address"]').trigger('click')
     await flush()
     expect(mockCopyToClipboard).not.toHaveBeenCalled()
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'walletPanel.failedLoadAddress',
+    })
     wrapper.unmount()
     spy.mockRestore()
   })

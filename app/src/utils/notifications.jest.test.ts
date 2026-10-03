@@ -13,11 +13,101 @@ import { useAppearanceStore } from 'src/stores/appearance'
 import {
   addressCopiedNotify,
   desktopNotify,
+  errorNotify,
   infoNotify,
   insufficientStampNotify,
   seedCopiedNotify,
   sentTransactionNotify,
 } from './notifications'
+
+describe('errorNotify', () => {
+  let consoleError: jest.SpyInstance
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    createNotification.mockReset()
+    consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined)
+  })
+
+  afterEach(() => consoleError.mockRestore())
+
+  it('keeps plain and ethers error details diagnostic-only and renders text', () => {
+    const externalMarkup = '<img src=x onerror="globalThis.errorXss=true">'
+
+    errorNotify(new Error(externalMarkup))
+    errorNotify({
+      message: 'provider transaction dump',
+      shortMessage: externalMarkup,
+    })
+
+    expect(createNotification).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        message: 'Something went wrong. Please try again.',
+        html: false,
+      }),
+    )
+    expect(createNotification).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        message: 'Something went wrong. Please try again.',
+        html: false,
+      }),
+    )
+    expect(createNotification.mock.calls.flat().join(' ')).not.toContain(
+      externalMarkup,
+    )
+  })
+
+  it('resolves a caller-selected fallback key in the current locale', () => {
+    errorNotify(new Error('rpc down'), {
+      fallbackKey: 'walletPanel.failedLoadAddress',
+    })
+    expect(createNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message: 'Failed to load the Monad wallet address',
+      }),
+    )
+
+    useAppearanceStore().locale = 'fr-fr'
+    errorNotify(new Error('rpc down'), {
+      fallbackKey: 'walletPanel.failedLoadAddress',
+    })
+    expect(createNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message: 'Échec du chargement de l’adresse du portefeuille Monad',
+      }),
+    )
+  })
+
+  it('uses the generic localized message when a fallback key is missing', () => {
+    useAppearanceStore().locale = 'fr-fr'
+
+    errorNotify(new Error('rpc down'), {
+      fallbackKey: 'notifications.doesNotExist',
+    })
+
+    expect(createNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message: 'Une erreur s’est produite. Veuillez réessayer.',
+        html: false,
+      }),
+    )
+  })
+
+  it('renders an explicitly app-authored localized fallback as text', () => {
+    const safeMessage =
+      'The transaction may have been broadcast. Check its status before retrying.'
+
+    errorNotify(new Error('provider transaction dump'), { safeMessage })
+
+    expect(createNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({ message: safeMessage, html: false }),
+    )
+  })
+})
 
 describe('infoNotify', () => {
   beforeEach(() => {

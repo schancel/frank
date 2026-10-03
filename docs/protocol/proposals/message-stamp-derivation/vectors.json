@@ -1162,7 +1162,7 @@
     },
     {
       "path": "packages/wallet/chain/monad-domain-wallet.jest.test.ts",
-      "sha256": "1805ac306cdb8f2eae7d135d8c2983087f3dc59e242c04968ea9259e28844df7"
+      "sha256": "042149410a72bf7cd76f3397ff2f2cf23f4f90f027d6203c296e85520bc317f0"
     },
     {
       "path": "docs/protocol/proposals/suite1-directory/README.md",

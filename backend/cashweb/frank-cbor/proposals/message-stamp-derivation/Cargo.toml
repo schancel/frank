@@ -1,0 +1,20 @@
+[package]
+name = "message-stamp-derivation-proposal-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Isolated opt-in checker, never an active workspace member.
+[workspace]
+
+[dependencies]
+frank-cbor = { path = "../.." }
+sha2 = "=0.10.5"
+hmac = "=0.12.1"
+hex = "=0.4.3"
+serde_json = "=1.0.85"
+secp256k1-abc = { git = "https://github.com/raipay/secp256k1-abc" }
+
+[[bin]]
+name = "check"
+path = "check.rs"

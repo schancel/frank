@@ -1,6 +1,6 @@
 import type { DomainRoot } from '@frank/domain-roots'
 import { aad, createIntent, decode, intent, plaintext, receipt, same, validate } from './encoding.js'
-import { commit, database, read, remove, transaction, validKey, type RecordRow } from './storage.js'
+import { commit, database, discardIntent, read, remove, transaction, validKey, type RecordRow } from './storage.js'
 import { VaultError, type PreviewVault, type VaultContext, type VaultReceipt, type VaultWriteIntent } from './types.js'
 
 export { VaultError } from './types.js'
@@ -99,6 +99,7 @@ export async function openPreviewVault(options: { namespace: string }): Promise<
       return same(stored.fence.receipt, target) ? 'committed' : 'superseded'
     },
     async remove(input) { active(); await remove(db, validate(() => receipt(input))) },
+    async discardIntent(input) { active(); await discardIntent(db, validate(() => intent(input))) },
     close() { closed = true; db.close() },
   } satisfies PreviewVault)
 }

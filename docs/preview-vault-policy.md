@@ -28,7 +28,7 @@ internal copies that this API cannot erase. There is no secret string/JSON
 representation, telemetry, logging, networking or DOM use in runtime code.
 
 Callers use `createVaultWriteIntent`, `openPreviewVault`, then `stage`, `open`,
-`reconcile`, `remove` and `close`. Exported errors carry only these stable codes:
+`reconcile`, `remove`, `discardIntent` and `close`. Exported errors carry only these stable codes:
 
 | Code | Meaning |
 | --- | --- |
@@ -56,7 +56,7 @@ public creation ID as their out-of-line primary key:
 | --- | --- |
 | `records` | `{ receipt, iv: Uint8Array(12), ciphertext: Uint8Array }` |
 | `keys` | `{ receipt, key: CryptoKey }`, non-extractable AES-256-GCM, encrypt/decrypt usages |
-| `fences` | `{ revision, receipt }`; removed slots retain only `{ revision, receipt: null }` |
+| `fences` | `{ revision, receipt }`; `remove` retains `{ revision, receipt: null }`; `discardIntent` retains `{ revision, receipt: null, discardedIntent }` |
 
 Only WebCrypto structured clone persists keys; no raw/JWK export or raw-key import
 path exists. Each preparation generates a fresh key and random 96-bit IV. Crypto
@@ -78,6 +78,39 @@ resurrect it. This is a **local staging fence**, not global account retirement:
 a different creation ID can refer to the same account ID. #699 owns permission
 for that identity transition. Corrupt authorization fences require coordinator
 recovery; the facade does not guess which inventory may be deleted.
+
+`discardIntent(intent: VaultWriteIntent): Promise<void>` cancels a known pending
+write without receiving roots or performing crypto. It snapshots and validates
+the complete intent before asynchronous storage work. One strict readwrite
+transaction may either reserve an entirely absent slot for an initial
+`expected: null` intent, or delete the key/record authorized by the intent's exact
+live receipt. An absent replacement, superseded/foreign live receipt, or legacy
+tombstone without exact discard evidence rejects with `conflict`. Missing or
+malformed authorization and orphan material reject with `corrupt` without
+deleting inventory. An exact live fence can authorize cleanup of missing or
+damaged material, as with `remove`. The operation never deletes another slot.
+
+The additive `discardedIntent` field is the canonical bounded public
+`{ expected: VaultReceipt | null, receipt: VaultReceipt }` snapshot. Both receipts
+retain the existing validated receipt/context shape; no keys or root material
+are retained. The expected receipt is necessary to distinguish retries with a
+different predecessor even if they name the same output receipt. The fence's
+`revision` is always `discardedIntent.receipt.revision + 1`, including cancellation
+before initial stage (`revision: 2`). Exact retries compare both receipts, consume
+no additional capacity, and succeed across database and browser restart. A
+different operation, context or predecessor cannot claim another discard's
+success. A malformed discard field, wrong fence revision or discard evidence on
+a live fence is corrupt. Legacy live and removed rows retain their meaning;
+`remove` retains its existing behavior and does not erase discard evidence.
+
+This optional local field needs no IDB version change or migration. Existing
+readers still recognize the null receipt as a permanent fence. Prepared initial
+and replacement stages fail their existing CAS after a successful discard.
+Absent cancellation consumes one of the same 1,024 slots; exact retry and live
+cleanup consume none. Transaction aborts and storage failures roll back all
+deletions and the fence write. A closed facade rejects new discard calls. Like
+existing removal, a transaction already submitted before close may finish;
+completion is acknowledged only after transaction commit.
 
 Readers take a coherent key/record/fence snapshot and recheck the receipt after
 decryption before publishing all roots together. This provides an operation
@@ -158,7 +191,17 @@ reconcile. `committed` means continue the existing attempt after authenticated
 open; `absent` allows retrying the same intent; `superseded`/`removed` requires
 coordinator reconciliation. Duplicate `stage` conflicts without changing stored
 material. Never create random new account/creation IDs on an ambiguous retry.
-Cleanup's lost response is resolved by `removed` and repeat exact removal.
+Cleanup's lost response is resolved by repeat removal for the legacy removal
+path. `removed` alone does not prove which intent performed a discard.
+
+For cancellation, [#732](https://github.com/schancel/frank/issues/732) persists the
+pending intent before stage and calls `discardIntent` before clearing that
+pending state. Success durably fences even an initial stage still preparing
+crypto, so a cancelled absent attempt need not lock setup forever. A lost discard
+acknowledgement is resolved by retrying the exact saved intent; rejection requires
+coordinator reconciliation. The caller owns authorization to cancel and must
+never discard its active account. The vault does not inspect account activation
+state or provide a second account directory.
 
 Rollback preserves encrypted records, fences and pending activation evidence.
 It must not delete a namespace or substitute plaintext storage to recover from

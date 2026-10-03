@@ -8,7 +8,8 @@ function ok(value: unknown, message: string): asserts value {
 }
 async function fails(operation: () => unknown, code: string): Promise<void> {
   try { await operation() } catch (error) {
-    ok(error instanceof VaultError && error.code === code, `expected ${code}, got ${String(error)}`); return
+    ok(error instanceof VaultError && error.code === code && error.message === `Preview vault: ${code}`,
+      `expected stable ${code}, got ${String(error)}`); return
   }
   throw new Error(`expected failure: ${code}`)
 }
@@ -77,11 +78,25 @@ export async function run(phase: string) {
     const intent = initial('restart')
     if (phase === 'create') {
       await vault.stage(intent, roots())
+      await vault.discardIntent(initial('restart-absent-discard'))
+      const committedDiscard = initial('restart-committed-discard')
+      await vault.stage(committedDiscard, roots())
+      await vault.discardIntent(committedDiscard)
       // Only public coordinator state, never plaintext, is serialized.
       localStorage.setItem('vault-intent', JSON.stringify(intent))
     } else {
       const saved = JSON.parse(localStorage.getItem('vault-intent')!) as VaultWriteIntent
       ok(await vault.reconcile(saved.receipt) === 'committed', 'persisted intent reconciles in fresh browser')
+    }
+    for (const id of ['restart-absent-discard', 'restart-committed-discard']) {
+      const discarded = initial(id)
+      // Treat the original response as lost; a fresh process must prove exact ownership.
+      await vault.discardIntent(discarded)
+      ok(await vault.reconcile(discarded.receipt) === 'removed', 'discard retry survives process restart')
+      await fails(() => vault.open(discarded.receipt), 'locked')
+      await fails(() => vault.stage(discarded, roots()), 'conflict')
+      await fails(() => vault.discardIntent(createVaultWriteIntent({ context: discarded.receipt.context,
+        expected: null, operationId: 'foreign-operation' })), 'conflict')
     }
     equalRoots(await vault.open(intent.receipt), roots())
     await nonExtractable('restart', intent.receipt)
@@ -93,6 +108,166 @@ export async function run(phase: string) {
   const ns = 'regressions'
   const vault = await openPreviewVault({ namespace: ns })
   const other = await openPreviewVault({ namespace: ns })
+  // Cancellation can win before the very first crypto preparation has committed.
+  const cancelled = initial('cancel-before-stage')
+  const encryptBeforeCancel = SubtleCrypto.prototype.encrypt
+  let resumeCancel!: () => void, beginCancel!: () => void
+  const cancelGate = new Promise<void>(resolve => { resumeCancel = resolve })
+  const cancelStarted = new Promise<void>(resolve => { beginCancel = resolve })
+  SubtleCrypto.prototype.encrypt = async function (...args: Parameters<SubtleCrypto['encrypt']>) {
+    beginCancel(); await cancelGate; return encryptBeforeCancel.apply(this, args)
+  }
+  const cancelledStage = vault.stage(cancelled, roots())
+  try {
+    await cancelStarted
+    ok(await other.reconcile(cancelled.receipt) === 'absent', 'paused initial stage is absent')
+    await other.discardIntent(cancelled)
+    resumeCancel()
+    await fails(() => cancelledStage, 'conflict')
+  } finally { resumeCancel(); SubtleCrypto.prototype.encrypt = encryptBeforeCancel }
+  ok(await vault.reconcile(cancelled.receipt) === 'removed', 'absent cancellation retains a fence')
+  await fails(() => vault.open(cancelled.receipt), 'locked')
+  await vault.discardIntent(cancelled)
+  const cancelledFence = await row(ns, 'fences', cancelled.receipt.context.creationId)
+  ok(JSON.stringify(cancelledFence) === JSON.stringify({ revision: 2, receipt: null, discardedIntent: cancelled }),
+    'discard stores only bounded public intent evidence')
+
+  // Commit-before-cancel and simultaneous calls across independent facade connections.
+  const preserved = initial('discard-preserved'), committedDiscard = initial('discard-committed')
+  await vault.stage(preserved, roots(44))
+  await vault.stage(committedDiscard, roots())
+  let resumeReplacement!: () => void, beginReplacement!: () => void
+  const replacementGate = new Promise<void>(resolve => { resumeReplacement = resolve })
+  const replacementStarted = new Promise<void>(resolve => { beginReplacement = resolve })
+  SubtleCrypto.prototype.encrypt = async function (...args: Parameters<SubtleCrypto['encrypt']>) {
+    beginReplacement(); await replacementGate; return encryptBeforeCancel.apply(this, args)
+  }
+  const lateReplacement = vault.stage(next(committedDiscard.receipt), roots(33))
+  try {
+    await replacementStarted
+    await other.discardIntent(committedDiscard)
+    resumeReplacement()
+    await fails(() => lateReplacement, 'conflict')
+  } finally { resumeReplacement(); SubtleCrypto.prototype.encrypt = encryptBeforeCancel }
+  await vault.discardIntent(committedDiscard)
+  equalRoots(await vault.open(preserved.receipt), roots(44))
+  for (const store of ['records', 'keys']) {
+    ok(await row(ns, store, committedDiscard.receipt.context.creationId) === undefined, 'exact discard deletes material')
+  }
+  for (let i = 0; i < 4; i++) {
+    const item = initial(`discard-race-${i}`)
+    const results = await Promise.allSettled([vault.stage(item, roots()), other.discardIntent(item)])
+    ok(results[1].status === 'fulfilled', 'concurrent discard succeeds in either ordering')
+    if (results[0].status === 'rejected') ok(results[0].reason instanceof VaultError && results[0].reason.code === 'conflict', 'late stage conflicts')
+    ok(await vault.reconcile(item.receipt) === 'removed', 'no live material after concurrent discard success')
+    await fails(() => vault.open(item.receipt), 'locked')
+  }
+  for (const item of [cancelled, committedDiscard, preserved]) {
+    for (const update of [{ operationId: 'foreign-operation' },
+      { context: { ...item.receipt.context, accountId: 'foreign-account' } },
+      { context: { ...item.receipt.context, custodyEpoch: 2 } },
+      { context: { ...item.receipt.context, recoveryFingerprint: 'foreign-fingerprint' } },
+      { context: { ...item.receipt.context, retirementContext: 'foreign-retirement' } },
+      { context: { ...item.receipt.context, purposes: [DOMAIN_PURPOSES[0]] } }]) {
+      await fails(() => vault.discardIntent({ expected: null, receipt: { ...item.receipt, ...update } }), 'conflict')
+    }
+  }
+  equalRoots(await vault.open(preserved.receipt), roots(44))
+  const superseded = initial('discard-superseded'), replacement = next(superseded.receipt)
+  await vault.stage(superseded, roots())
+  await vault.stage(replacement, roots(55))
+  await fails(() => other.discardIntent(superseded), 'conflict')
+  equalRoots(await vault.open(replacement.receipt), roots(55))
+  await other.discardIntent(replacement)
+  await vault.discardIntent(replacement)
+  await fails(() => vault.discardIntent({ ...replacement, expected: { ...superseded.receipt, operationId: 'foreign-predecessor' } }), 'conflict')
+  const absentReplacement = next(initial('discard-absent-replacement').receipt)
+  await fails(() => vault.discardIntent(absentReplacement), 'conflict')
+  ok(await vault.reconcile(absentReplacement.receipt) === 'absent', 'absent replacement leaves no fence')
+  const legacy = initial('discard-legacy')
+  await vault.stage(legacy, roots()); await vault.remove(legacy.receipt)
+  await fails(() => vault.discardIntent(legacy), 'conflict')
+  await vault.remove(legacy.receipt)
+  ok(await vault.reconcile(legacy.receipt) === 'removed', 'legacy removal remains readable and retryable')
+  // Existing remove can read new tombstones without erasing their stronger retry proof.
+  await vault.remove(committedDiscard.receipt)
+  await vault.discardIntent(committedDiscard)
+
+  const mutableDiscard = structuredClone(initial('discard-snapshot'))
+  const savedDiscard = structuredClone(mutableDiscard)
+  const snapshotDiscard = vault.discardIntent(mutableDiscard)
+  ;(mutableDiscard.receipt.context as { accountId: string }).accountId = 'changed-after-call'
+  ;(mutableDiscard.receipt as { operationId: string }).operationId = 'changed-after-call'
+  await snapshotDiscard
+  await vault.discardIntent(savedDiscard)
+  await fails(() => vault.discardIntent(mutableDiscard), 'conflict')
+  await fails(() => vault.discardIntent({ get receipt(): VaultReceipt { throw new Error('private-fixture-detail') }, expected: null }), 'invalid-input')
+  await fails(() => vault.discardIntent({ ...savedDiscard, expected: undefined } as unknown as VaultWriteIntent), 'invalid-input')
+
+  // Missing authorization and orphan material must be preserved for coordinator recovery.
+  for (const damage of ['missing-fence', 'orphan-record', 'orphan-key', 'bad-fence', 'bad-revision', 'bad-evidence', 'live-evidence']) {
+    const item = initial(`discard-damage-${damage}`), id = item.receipt.context.creationId
+    await vault.stage(item, roots())
+    if (damage === 'missing-fence' || damage.startsWith('orphan-')) {
+      await change(ns, 'fences', id, () => undefined)
+      if (damage === 'orphan-record') await change(ns, 'keys', id, () => undefined)
+      if (damage === 'orphan-key') await change(ns, 'records', id, () => undefined)
+    } else await change(ns, 'fences', id, r => {
+      if (damage === 'bad-fence') return null
+      if (damage === 'bad-revision') return { ...r, revision: 10 }
+      if (damage === 'bad-evidence') return { revision: 2, receipt: null, discardedIntent: {} }
+      return { ...r, discardedIntent: item }
+    })
+    const before = JSON.stringify(await row(ns, 'fences', id))
+    await fails(() => vault.discardIntent(item), 'corrupt')
+    ok(JSON.stringify(await row(ns, 'fences', id)) === before, 'bad authorization fence remains unchanged')
+    ok((await row(ns, 'keys', id) !== undefined) === (damage !== 'orphan-record'), 'unauthorized key inventory preserved')
+    ok((await row(ns, 'records', id) !== undefined) === (damage !== 'orphan-key'), 'unauthorized record inventory preserved')
+  }
+  // As with remove, an exact live fence can authorize cleanup of damaged material.
+  const damagedMaterial = initial('discard-damaged-material')
+  await vault.stage(damagedMaterial, roots())
+  await change(ns, 'keys', damagedMaterial.receipt.context.creationId, () => undefined)
+  await change(ns, 'records', damagedMaterial.receipt.context.creationId, r => ({ ...r, ciphertext: new Uint8Array(1) }))
+  await vault.discardIntent(damagedMaterial)
+  ok(await vault.reconcile(damagedMaterial.receipt) === 'removed', 'exact live fence authorizes damaged-material cleanup')
+
+  const discardPut = IDBObjectStore.prototype.put
+  const discardDelete = IDBObjectStore.prototype.delete
+  for (const absent of [false, true]) {
+    for (const failure of ['abort', 'put', 'delete']) {
+      const item = initial(`discard-failure-${absent}-${failure}`)
+      if (!absent) await vault.stage(item, roots())
+      IDBObjectStore.prototype.put = function (...args: Parameters<IDBObjectStore['put']>) {
+        if (this.name === 'fences' && failure !== 'delete') {
+          if (failure === 'abort') this.transaction.abort()
+          else throw new DOMException('private-fixture-storage-detail')
+        }
+        return discardPut.apply(this, args)
+      }
+      IDBObjectStore.prototype.delete = function (...args: Parameters<IDBObjectStore['delete']>) {
+        if (this.name === 'keys' && failure === 'delete') throw new DOMException('private-fixture-storage-detail')
+        return discardDelete.apply(this, args)
+      }
+      try { await fails(() => vault.discardIntent(item), 'storage-failed') }
+      finally { IDBObjectStore.prototype.put = discardPut; IDBObjectStore.prototype.delete = discardDelete }
+      ok(await vault.reconcile(item.receipt) === (absent ? 'absent' : 'committed'), 'failed discard cannot partially commit')
+      if (!absent) equalRoots(await vault.open(item.receipt), roots())
+      await vault.discardIntent(item)
+    }
+  }
+  const closedDiscard = await openPreviewVault({ namespace: ns })
+  closedDiscard.close()
+  await fails(() => closedDiscard.discardIntent(preserved), 'closed')
+  equalRoots(await vault.open(preserved.receipt), roots(44))
+  const discardTransaction = IDBDatabase.prototype.transaction
+  IDBDatabase.prototype.transaction = function (...args: Parameters<IDBDatabase['transaction']>) {
+    if (args[1] === 'readwrite') throw new DOMException('private-fixture-transaction-detail')
+    return discardTransaction.apply(this, args)
+  }
+  try { await fails(() => vault.discardIntent(preserved), 'storage-failed') }
+  finally { IDBDatabase.prototype.transaction = discardTransaction }
+  equalRoots(await vault.open(preserved.receipt), roots(44))
   for (const kind of ['accessor', 'proxy']) {
     const original = initial(`purpose-${kind}`)
     await vault.stage(original, roots())
@@ -380,14 +555,31 @@ export async function run(phase: string) {
   const db = await raw('bounded')
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction('fences', 'readwrite')
-    for (let i = 1; i < 1024; i++) tx.objectStore('fences').put({ revision: 2, receipt: null }, `fixture-fence-${i}`)
+    for (let i = 1; i < 1023; i++) tx.objectStore('fences').put({ revision: 2, receipt: null }, `fixture-fence-${i}`)
     tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error)
   })
   db.close()
+  const cappedOther = await openPreviewVault({ namespace: 'bounded' })
+  const boundaryDiscards = [initial('capacity-discard-a'), initial('capacity-discard-b')]
+  const capacityRace = await Promise.allSettled([capped.discardIntent(boundaryDiscards[0]), cappedOther.discardIntent(boundaryDiscards[1])])
+  ok(capacityRace.filter(r => r.status === 'fulfilled').length === 1, 'concurrent absent discards cannot exceed slot capacity')
+  for (let i = 0; i < 2; i++) {
+    const result = capacityRace[i]
+    if (result.status === 'fulfilled') await cappedOther.discardIntent(boundaryDiscards[i])
+    else {
+      ok(result.reason instanceof VaultError && result.reason.code === 'capacity', 'discard at capacity rejects stably')
+      ok(await capped.reconcile(boundaryDiscards[i].receipt) === 'absent', 'capacity rejection leaves no fence')
+    }
+  }
+  cappedOther.close()
   const excess = initial('over-capacity')
   await fails(() => capped.stage(excess, roots()), 'capacity')
   ok(await capped.reconcile(excess.receipt) === 'absent', 'capacity leaves no partial inventory')
-  await capped.stage(next(cappedFirst.receipt), roots())
+  const cappedReplacement = next(cappedFirst.receipt)
+  await capped.stage(cappedReplacement, roots())
+  await capped.discardIntent(cappedReplacement)
+  await capped.discardIntent(cappedReplacement)
+  ok(await capped.reconcile(cappedReplacement.receipt) === 'removed', 'live discard and exact retry need no new capacity')
   capped.close()
   const malformed = await openPreviewVault({ namespace: 'malformed' })
   for (const value of [null, false, 0, {}, { revision: 0, receipt: null }]) {

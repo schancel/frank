@@ -4,6 +4,7 @@ import { shallowMount } from '@vue/test-utils'
 
 import Receive from './Receive.vue'
 import enUS from 'src/i18n/en-us'
+import { errorNotify } from 'src/utils/notifications'
 
 const mockGetBalance = jest.fn()
 
@@ -55,6 +56,7 @@ describe('Receive balance', () => {
     })
     mockGetBalance.mockReset()
     mockGetReceiveAddress.mockClear()
+    jest.mocked(errorNotify).mockClear()
   })
   afterEach(() => jest.useRealTimers())
 
@@ -144,6 +146,19 @@ describe('Receive balance', () => {
 
     expect(mockGetReceiveAddress).toHaveBeenCalledTimes(1)
     expect(wrapper.vm.displayAddress).toBe('0xabc')
+    wrapper.unmount()
+  })
+
+  it('uses the localized address-load fallback instead of provider text', async () => {
+    const failure = new Error('raw provider failure')
+    mockGetBalance.mockResolvedValue(1n)
+    mockGetReceiveAddress.mockRejectedValueOnce(failure)
+    const wrapper = mountReceive()
+    await advance(0)
+
+    expect(errorNotify).toHaveBeenCalledWith(failure, {
+      fallbackKey: 'receiveBitcoinDialog.failedLoadBalance',
+    })
     wrapper.unmount()
   })
 })

@@ -210,8 +210,8 @@ export default defineComponent({
       reviewTransfer: () => {
         const transfer = parsedTransfer.value
         if (!transfer) {
-          errorNotify({
-            message: $t('sendAddressDialog.invalidTransfer'),
+          errorNotify(new Error('invalid transfer'), {
+            fallbackKey: 'sendAddressDialog.invalidTransfer',
           })
           return
         }
@@ -227,8 +227,8 @@ export default defineComponent({
         if (sending.value) return
         const transfer = parsedTransfer.value
         if (!transfer) {
-          errorNotify({
-            message: $t('sendAddressDialog.invalidTransfer'),
+          errorNotify(new Error('invalid transfer'), {
+            fallbackKey: 'sendAddressDialog.invalidTransfer',
           })
           return
         }
@@ -248,14 +248,14 @@ export default defineComponent({
           navigateBack(router)
         } catch (err) {
           if (signedTxHash) {
-            errorNotify({
-              message: $t('sendAddressDialog.potentiallyBroadcast', {
+            errorNotify(err, {
+              safeMessage: $t('sendAddressDialog.potentiallyBroadcast', {
                 txHash: signedTxHash,
               }),
             })
           } else {
-            errorNotify({
-              message: $t('sendAddressDialog.definitelyNotBroadcast'),
+            errorNotify(err, {
+              fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
             })
           }
         } finally {

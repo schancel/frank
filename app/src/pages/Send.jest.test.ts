@@ -297,8 +297,8 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     await flushPromises()
 
     // Must notify definitely not broadcast
-    expect(errorNotify).toHaveBeenCalledWith({
-      message: 'Transaction was not broadcast. No funds were transferred.',
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
     })
     expect(sentTransactionNotify).not.toHaveBeenCalled()
   })
@@ -329,8 +329,8 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     await flushPromises()
 
     // Must notify potentially broadcast with txHash
-    expect(errorNotify).toHaveBeenCalledWith({
-      message:
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      safeMessage:
         'Transaction was signed (0xsignedtx999) and may have been broadcast. Check your balance or transaction status before retrying.',
     })
   })
@@ -376,9 +376,8 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     await reviewCard.get('[data-test="review-confirm-button"]').trigger('click')
     await flushPromises()
 
-    expect(errorNotify).toHaveBeenCalledWith({
-      message:
-        "La transaction n'a pas été diffusée. Aucun fond n'a été transféré.",
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
     })
   })
 })

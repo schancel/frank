@@ -314,6 +314,7 @@ export default {
     insufficientStamp: 'Stamp is too small, receiver will not be notified.',
     seedCopied: 'Your recovery phrase has been copied to your clipboard.',
     sentTransaction: 'Sent transaction',
+    unexpectedError: 'Something went wrong. Please try again.',
     viewAction: 'View',
   },
   chatRightDrawer: {

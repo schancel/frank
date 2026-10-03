@@ -81,12 +81,10 @@ import { copyToClipboard } from 'quasar'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
-import { useTranslate } from 'src/composables/useTranslate'
 import { activeChain } from '@frank/wallet/chain'
 
 export default defineComponent({
   setup() {
-    const $t = useTranslate()
     const router = useRouter()
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
     const { formattedBalance, loaded, isEmpty, hasError } = useBalance()
@@ -104,11 +102,9 @@ export default defineComponent({
           await wallet.getReceiveAddress(),
         )
       } catch (err) {
-        errorNotify(
-          err instanceof Error
-            ? err
-            : new Error($t('receiveBitcoinDialog.failedLoadBalance')),
-        )
+        errorNotify(err, {
+          fallbackKey: 'receiveBitcoinDialog.failedLoadBalance',
+        })
       }
     })
 
@@ -125,8 +121,10 @@ export default defineComponent({
         try {
           await copyToClipboard(displayAddress.value)
           addressCopiedNotify()
-        } catch {
-          errorNotify(new Error($t('receiveBitcoinDialog.unableCopyAddress')))
+        } catch (err) {
+          errorNotify(err, {
+            fallbackKey: 'receiveBitcoinDialog.unableCopyAddress',
+          })
         }
       },
     }

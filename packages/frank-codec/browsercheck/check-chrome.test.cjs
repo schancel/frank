@@ -111,7 +111,8 @@ function fixture(mode = 'pass', result = passing()) {
           alive = false
           return child.emit('error', new Error('ENOENT'))
         }
-        if (mode === 'startup-timeout') return
+        if (['startup-timeout', 'kill-required', 'unreaped'].includes(mode))
+          return
         if (mode === 'output-flood') {
           child.stdout.write(Buffer.alloc(100000, 120))
           child.stderr.write(Buffer.alloc(100000, 120))
@@ -132,6 +133,11 @@ function fixture(mode = 'pass', result = passing()) {
         },
         signal(signal) {
           signals.push(signal)
+          if (
+            mode === 'unreaped' ||
+            (mode === 'kill-required' && signal === 'SIGTERM')
+          )
+            return
           exit(null, signal)
         },
       }
@@ -156,6 +162,14 @@ function fixture(mode = 'pass', result = passing()) {
       assert.equal(removedWhileAlive, false)
       assert.equal(fs.existsSync(profile), false)
       assert.equal(alive, false)
+    },
+    retained() {
+      assert.equal(alive, true)
+      assert.equal(removedWhileAlive, false)
+      assert.ok(fs.existsSync(profile))
+      // This fixture has no native process. Dispose only its freshly created path.
+      alive = false
+      fs.rmSync(profile, { recursive: true })
     },
   }
 }
@@ -269,6 +283,19 @@ test('native diagnostics are retained and bounded without hiding startup', async
     2,
   )
   f.cleaned()
+})
+
+test('deadline escalates only owned members from TERM to KILL', async () => {
+  const f = fixture('kill-required')
+  await assert.rejects(f.run(), /timeout/)
+  assert.deepEqual(f.signals, ['SIGTERM', 'SIGKILL'])
+  f.cleaned()
+})
+
+test('unreaped members fail and retain the disposable profile', async () => {
+  const f = fixture('unreaped')
+  await assert.rejects(f.run(), /processes remain; profile retained/)
+  f.retained()
 })
 
 test('real ownership includes descendants, not an unrelated sibling', async () => {

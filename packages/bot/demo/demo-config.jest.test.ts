@@ -16,6 +16,7 @@ import {
   NEVER_IDLE_MS,
   renderDemoVarTable,
   resolveDemoConfig,
+  resolveDirectoryDemoConfig,
 } from './demo-config'
 import { childEnv } from './supervisor'
 import {
@@ -48,6 +49,35 @@ const REAL = (env: Record<string, string> = {}, envFile: Record<string, string> 
     home: HOME,
     cwd: '/work',
   })
+
+describe('explicit directory integration configuration', () => {
+  const p = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
+  const trust = {
+    network: 'monad-testnet', subject: p, rev0T1: '11'.repeat(32), relayId: '00'.repeat(16),
+    relayIdentity: { keyType: 1, point: p }, endpoint: 'https://127.0.0.1:19443', bindingExpiryNs: '1700000600000000000',
+  }
+  const complete = () => ({
+    mode: 'synthetic-directory-admission', intent: 'new', nowNs: '1700000100000000001',
+    bundle: { runDir: '/tmp/directory-trust-explicit', manifestIdentity: '22'.repeat(32) },
+    installed: trust, participants: { 'relay-a': trust, 'relay-b': trust, bot: trust },
+    location: '/tmp/directory-admission.level', continuityFile: '/tmp/directory-continuity.json', statementHex: '01',
+  })
+  it('selects the complete public configuration atomically without defaults or private account material', () => {
+    const config = resolveDirectoryDemoConfig(complete())
+    expect(config.installed.subject).toBe(p)
+    expect(config.nowNs).toBe(1700000100000000001n)
+    expect(config.intent).toBe('new')
+    expect(config).not.toHaveProperty('wallet')
+    expect(FAKE()).not.toHaveProperty('directory')
+  })
+  it('keeps pending/mismatched participant sets unselected', () => {
+    for (const participants of [undefined, { 'relay-a': trust, 'relay-b': null, bot: trust }, { 'relay-a': trust, 'relay-b': trust, bot: { ...trust, rev0T1: '33'.repeat(32) } }])
+      expect(() => resolveDirectoryDemoConfig({ ...complete(), participants })).toThrow()
+    expect(() => resolveDirectoryDemoConfig({ ...complete(), mode: undefined })).toThrow()
+    expect(() => resolveDirectoryDemoConfig({ ...complete(), nowNs: 1700000100000000001 })).toThrow()
+    expect(() => resolveDirectoryDemoConfig({ ...complete(), statementHex: undefined })).toThrow()
+  })
+})
 
 function problemsOf(fn: () => unknown): string[] {
   try {

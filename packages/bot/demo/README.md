@@ -58,3 +58,16 @@ back to 1 simulated MON**, including a delayed retry after another operation
 has spent funds. There is no per-operation retry journal. A rejected request
 does not credit anything; startup and ordinary account creation never invoke
 this seam automatically.
+# Explicit directory admission integration
+
+`yarn workspace @frank/bot demo --directory-admission /absolute/public-config.json`
+selects the separate synthetic public-trust/admission integration. It requires
+explicit installed inputs for both relays and the bot, trusted nanosecond time,
+new/reopen intent and continuity outside the admission store. It starts only an
+owned pinned-HTTPS fixture and uses the public admission facade; it does not
+activate production directory routes, writers, DM or UI. Normal `yarn demo`
+behavior is unchanged, and its topic wire remains protobuf.
+
+See [the integration contract and configuration](directory-trust/README.md).
+Real directory publication/resolution is #774; actual UI/game/two-relay proof
+remains separately owned. Synthetic fixture completion is not those outcomes.

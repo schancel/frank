@@ -25,7 +25,7 @@ import { loadOrCreateIdentity } from '../qwen-bot-common'
 import { ensurePrivateDir } from '../stamp-pool-seed'
 import { collectCuratedEntries, renderCuratedDefaultsToml } from '../print-curated-defaults'
 import { BOT_PROFILES } from '../bot-directory'
-import { DemoBot, DemoConfig, DemoConfigError, minBlackjackFundsWei, resolveDemoConfig } from './demo-config'
+import { DemoBot, DemoConfig, DemoConfigError, minBlackjackFundsWei, resolveDemoConfig, resolveDirectoryDemoConfig } from './demo-config'
 import { checkDemoMode, writeDemoMode } from './demo-mode'
 import { EnvFileError, readEnvFile } from './env-file'
 import { startFakeRpc, FakeRpc } from './fake-rpc'
@@ -645,6 +645,82 @@ export function printSummary(handle: DemoHandle, print: (line: string) => void):
 export async function main(argv: string[], env: Record<string, string | undefined>): Promise<number> {
   const print = (line: string) => console.log(line)
   try {
+    const integration = argv.indexOf('--directory-admission')
+    if (integration !== -1) {
+      if (argv.length !== 2 || integration !== 0 || !argv[1])
+        throw new DemoConfigError([
+          'Use --directory-admission /absolute/public-config.json alone',
+        ])
+      const path = resolve(env.INIT_CWD ?? process.cwd(), argv[1])
+      if (!statSync(path).isFile() || statSync(path).size > 1048576)
+        throw new DemoConfigError([
+          'Bounded public directory configuration file required',
+        ])
+      const config = resolveDirectoryDemoConfig(
+        JSON.parse(readFileSync(path, 'utf8')),
+      )
+      const { reopenBundle, startFixture } = await import(
+        './directory-trust/index'
+      )
+      const { openDemoNodeAdmission } = await import(
+        './directory-trust/admission'
+      )
+      const { fromHex, toHex } = await import('@frank/codec')
+      const bundle = reopenBundle(config.bundle, config.nowNs)
+      let fixture: Awaited<ReturnType<typeof startFixture>> | undefined
+      let admission:
+        | Awaited<ReturnType<typeof openDemoNodeAdmission>>
+        | undefined
+      let interrupted: number | undefined
+      const onInterrupt = () => { interrupted ??= 130 }
+      const onTerminate = () => { interrupted ??= 143 }
+      const onHangup = () => { interrupted ??= 129 }
+      process.once('SIGINT', onInterrupt)
+      process.once('SIGTERM', onTerminate)
+      process.once('SIGHUP', onHangup)
+      const assertRunning = () => { if (interrupted !== undefined) throw new DemoAborted(interrupted) }
+      try {
+        fixture = await startFixture(config.bundle, config.nowNs)
+        assertRunning()
+        admission = await openDemoNodeAdmission({
+          ...config,
+          mode: config.intent,
+        })
+        assertRunning()
+        const current =
+          config.intent === 'new'
+            ? await admission.enroll(
+                [
+                  {
+                    statement: fromHex(config.statementHex!),
+                    attestation: fromHex(bundle.witnessHex!),
+                  },
+                ],
+                config.nowNs,
+              )
+            : await admission.current(config.nowNs)
+        assertRunning()
+        print(
+          JSON.stringify({
+            kind: 'demo-directory-point-in-time',
+            head: toHex(current.evidence.hash),
+            revision: current.revision.toString(),
+            accepted: current.status.accepted,
+            runtimeRoutesChanged: false,
+            topicWire: 'protobuf',
+          }),
+        )
+        return 0
+      } finally {
+        try { await admission?.close() } finally {
+          try { await fixture?.stop() } finally {
+            process.removeListener('SIGINT', onInterrupt)
+            process.removeListener('SIGTERM', onTerminate)
+            process.removeListener('SIGHUP', onHangup)
+          }
+        }
+      }
+    }
     const envFilePath = env.FRANK_DEMO_ENV_FILE
       ? resolve(env.INIT_CWD ?? process.cwd(), env.FRANK_DEMO_ENV_FILE)
       : join(REPO_ROOT, '.env')

@@ -1,9 +1,76 @@
 # Disposable directory trust fixture
 
-This opt-in Node utility provisions **public trust inputs and synthetic signed
-evidence only** for the later #750 integration. It does not admit directory state,
-return a usable head, configure a runtime consumer, or start the normal demo.
-The stable consumer surface is `./index.ts`. No runtime imports this module.
+The provisioning facade `./index.ts` supplies **public trust inputs and synthetic
+signed evidence only**; it never admits a directory or returns a usable head.
+The separate #750 consumers `./admission.ts` and `./browser-admission.ts` perform
+explicit demo-only admission through the public #748/#749 facades. Normal demo
+routes, writers, DM and app behavior are unchanged without explicit selection.
+
+## Opt-in admission integration
+
+`openDemoNodeAdmission` requires a retained bundle reference, independently
+installed public inputs, dedicated absolute Level location, separate continuity
+file, explicit `new`/`reopen` intent and bigint nanosecond time. Every fresh call
+first checks the real pinned HTTPS fixture through `checkNode`, then invokes the
+public admission facade. `enroll` requires both the separately supplied exact
+type4 and the fixture's exact signed type2. `advance` and `current` require fresh
+explicit time; results are point-in-time, not cached routing permissions.
+
+Input byte views are cumulatively bounded before copying, including shared-buffer
+views. Signed history authentication, generations, no-reuse, fork quarantine and
+durable acceptance remain owned by the admission packages, not these adapters.
+Historical methods retain their historical-only types.
+
+The versioned public continuity file pins manifest identity, complete installed
+tuple, enrollment intent and the **whole** facade checkpoint. A prospective
+checkpoint is synced outside the Level directory before first enrollment; a
+committed-prefix checkpoint is synced after acceptance and before any usable
+result is returned. Replacement uses a synced temporary file, rename and parent
+barrier. Save failure exposes no result and requires explicit close/reopen from
+the last durable prefix. A verified descendant may recover lost acknowledgement;
+missing/corrupt state never becomes a fresh enrollment. Artifacts are preserved,
+including incomplete public configuration after failure; no reset or disposal is
+automatic. This is not full-disk rollback protection or secret custody.
+
+The launcher accepts a separate mode:
+
+```sh
+yarn workspace @frank/bot demo --directory-admission /absolute/public-config.json
+```
+
+The bounded JSON file must have `mode: "synthetic-directory-admission"`, explicit
+`intent: "new" | "reopen"`, decimal `nowNs`, `bundle: {runDir, manifestIdentity}`,
+complete `installed` trust inputs (JSON expiry is decimal), `location`, and
+`continuityFile`. New enrollment additionally requires lowercase exact
+`statementHex`. `participants` must contain independently installed matching
+`relay-a`, `relay-b`, and `bot` tuples. Any missing/mismatched participant leaves
+the complete configuration unselected; there is no cross-database atomicity
+claim. The mode starts only its owned fixture, admits/reopens through the Node
+facade, reports the point-in-time head and closes its own resources. It neither
+starts nor reconfigures the normal relay/bot stack. The topic wire remains
+protobuf until its separately owned cutover.
+
+Actual UI-created/recovered P and exact revision-zero T1 can occupy this public
+configuration shape; they are never derived from the witness. These synthetic
+tests do not substitute for actual UI export/enrollment proof. #774 owns real
+authenticated publication/resolution; #778/#780 and later #696 consumers own
+the actual UI/game/two-relay continuation. #258 remains held.
+
+`openDemoBrowserAdmission` uses the public strict IndexedDB facade at the exact
+controlled fixture origin. Its caller saves whole continuity records outside
+that database; the owned runner acknowledges saves in the controlling Node
+process before admission can return. `check-admission-browser.cjs` source-builds
+the browser consumer, runs strict Node preflight, launches only an isolated
+profile with the unique fixture leaf-SPKI exception, and reuses that profile for
+browser restart. It is not general browser PKI. Same-key recertification is
+caught by Node exact-certificate preflight, not claimed as browser detection.
+The existing #758 certificate-negative and lifecycle gates remain required.
+
+The focused adapter Jest suite always runs real Node TLS and Level gates. Set
+`DIRECTORY_ADMISSION_CHROMIUM` to an absolute executable for the separately
+leased real-browser gate; an unset variable is an explicit skip, never a pass.
+Tests sign fresh local-tuple evidence using disposable published keys; frozen
+shared vectors are read-only. Process restart is not machine power-loss proof.
 
 ## Explicit inputs and public facade
 

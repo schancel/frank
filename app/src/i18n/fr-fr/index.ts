@@ -1,7 +1,10 @@
 // This is just an example,
 // so you can safely delete all default props below
 
+import { fr as accountRecovery } from '../account-recovery'
+
 export default {
+  accountRecovery,
   forum: {
     noPosts: 'Aucun message pour le moment.',
     outageTitle: 'Forum indisponible',
@@ -231,7 +234,6 @@ export default {
     cancelReply: 'Annuler la réponse',
     scrollToLatest: 'Aller aux derniers messages',
     copyAddress: "Copier l'adresse",
-    switchAddressFormat: "Changer le format d'adresse",
     connectRelay: 'Se connecter au relais',
     choosePhoto: 'Choisir une photo de profil',
     previousAvatar: 'Avatar précédent',

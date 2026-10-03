@@ -12,18 +12,13 @@
 </template>
 
 <script lang="ts">
-import assert from 'assert'
-
 import { defineComponent, ref, watch } from 'vue'
 import { QBtn } from 'quasar'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 
-import { registrys, networkName } from 'src/utils/constants'
-import { RegistryHandler } from '@frank/cashweb/registry'
 import { fetchCuratedDefaultContacts } from '@frank/wallet/monad-identity'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
-import { errorNotify } from 'src/utils/notifications'
 import { applyLocale } from 'src/utils/apply-locale'
 import { useRelayClientStore } from 'src/stores/relay-client'
 import { useAppearanceStore } from 'src/stores/appearance'
@@ -34,10 +29,7 @@ import { usePersistentStorageStore } from 'src/stores/persistent-storage'
 import { openChat } from 'src/utils/routes'
 
 import ContactBookDialog from 'src/components/dialogs/ContactBookDialog.vue'
-import { useWallet } from './utils/clients'
-import { monadModeEnabled } from './utils/runtime-mode'
-import { isSetupComplete } from 'src/utils/account-state'
-import { useWalletStore } from 'src/stores/wallet'
+import { accountStatus } from './accounts/session'
 
 export default defineComponent({
   components: {
@@ -144,111 +136,8 @@ export default defineComponent({
         })
     },
     setupConnections() {
-      if (monadModeEnabled()) {
-        const walletStore = useWalletStore()
-        const profileStore = useProfileStore()
-        if (
-          !isSetupComplete({
-            seedPhrase: walletStore.seedPhrase,
-            name: profileStore.profile.name,
-            seedConfirmedAt: walletStore.seedConfirmedAt,
-          })
-        ) {
-          return
-        }
-        this.$status.setup = true
-        this.loadCuratedDefaults()
-        return
-      }
-      // Not currently setup. User needs to go through setup flow first
-      if (!this.relayToken()) {
-        return
-      }
-      this.$status.setup = true
-      const wallet = useWallet()
-
-      console.log('Loading')
-      // Setup everything at once. This are independent processes
-      try {
-        if (wallet.myAddress) {
-          this.$relayClient.setUpWebsocket(wallet.myAddress)
-        } else {
-          console.error('wallet.myAddress not setup yet in MainLayout.vue')
-        }
-      } catch (err) {
-        console.error(err)
-      }
-
-      // Add relay-served default contacts (ticket #49) and remember which
-      // addresses the relay curated for this session (#425).
-      this.loadCuratedDefaults()
-
-      // const lastReceived = this.lastReceived
-      const t0 = performance.now()
-      const refreshMessages = () => {
-        this.$q.loading.show({ message: 'Loading messages' })
-        // Wait for a connected blockchain client
-        if (!this.$indexer.connected) {
-          setTimeout(refreshMessages, 100)
-          return
-        }
-        this.$relayClient
-          .refresh()
-          .then(() => {
-            const t1 = performance.now()
-            console.log(`Loading messages took ${t1 - t0}ms`)
-            this.$status.loaded = true
-            this.$q.loading.hide()
-          })
-          .catch(err => {
-            console.error(err)
-            setTimeout(refreshMessages, 100)
-          })
-      }
-      refreshMessages()
-
-      const handler = new RegistryHandler({
-        wallet: wallet,
-        registrys: registrys,
-        networkName,
-      })
-      assert(wallet.myAddress, 'Address not yet defined?')
-
-      // Update registry data if it doesn't exist.
-      handler.getRelayUrl(wallet.displayAddress).catch(() => {
-        if (!wallet.identityPrivKey) {
-          return
-        }
-        handler.updateKeyMetadata(this.$relayClient.url, wallet.identityPrivKey)
-      })
-
-      // Update profile if it doesn't exist.
-      this.$relayClient.getRelayData(wallet.myAddress).catch(() => {
-        if (!wallet.identityPrivKey) {
-          return
-        }
-        const relayData = this.getRelayData
-
-        this.$relayClient
-          .updateProfile(
-            wallet.identityPrivKey,
-            relayData.profile,
-            relayData.inbox.acceptancePrice,
-          )
-          .catch(err => {
-            console.error(err)
-            // TODO: Move specialization down error displayer
-            if (err.response.status === 413) {
-              errorNotify(err, { fallbackKey: 'profileDialog.avatarTooLarge' })
-              this.$q.loading.hide()
-              throw err
-            }
-            errorNotify(err, {
-              fallbackKey: 'profileDialog.unableContactRelay',
-            })
-            throw err
-          })
-      })
+      this.$status.setup = accountStatus.status === 'ready'
+      if (this.$status.setup) this.loadCuratedDefaults()
     },
   },
   created() {

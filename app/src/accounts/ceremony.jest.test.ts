@@ -1,0 +1,136 @@
+import { webcrypto } from 'crypto'
+import { createAccountCeremony, recoveryErrorMessage } from './ceremony'
+import { accountSession } from './session'
+import { assertLegacyUnchanged } from './legacy'
+
+jest.mock('./session', () => ({
+  accountSession: {
+    state: { revision: 0, account: null },
+    snapshot: jest.fn(async () => ({
+      revision: 0,
+      active: null,
+      pending: null,
+    })),
+    stage: jest.fn(async () => undefined),
+    cancelPending: jest.fn(async () => undefined),
+  },
+}))
+jest.mock('./legacy', () => ({
+  legacyStatus: { revision: 0 },
+  assertLegacyUnchanged: jest.fn(async () => undefined),
+}))
+
+beforeAll(() => {
+  Object.defineProperty(globalThis, 'crypto', {
+    value: webcrypto,
+    configurable: true,
+  })
+})
+beforeEach(() => {
+  jest.clearAllMocks()
+})
+async function signup() {
+  const ceremony = createAccountCeremony()
+  const descriptor = await ceremony.beginNew(2, 3)
+  return {
+    ceremony,
+    descriptor,
+    shares: [0, 1, 2].map(index => ceremony.share(index)),
+  }
+}
+test('does not stage before exact confirmation; wipes all caller roots after staging', async () => {
+  const f = await signup()
+  expect(accountSession.stage).not.toHaveBeenCalled()
+  await f.ceremony.confirm(f.shares.slice(0, 2), '  Synthetic account  ')
+  const staged = jest.mocked(accountSession.stage).mock.calls[0][0]
+  expect(staged.displayName).toBe('Synthetic account')
+  expect(staged.expectedActive).toEqual({ revision: 0, accountId: null })
+  expect(staged.roots.every(root => root.bytes.every(byte => byte === 0))).toBe(
+    true,
+  )
+  expect(f.ceremony.share(0)).toBe('')
+  await expect(
+    f.ceremony.confirm(f.shares.slice(0, 2), 'Again'),
+  ).rejects.toThrow()
+})
+test.each(['insufficient', 'excess', 'duplicate', 'checksum', 'other-account'])(
+  'rejects %s without staging and consumes the ceremony',
+  async kind => {
+    const f = await signup()
+    let shares = f.shares.slice(0, 2)
+    if (kind === 'insufficient') shares = shares.slice(0, 1)
+    if (kind === 'excess') shares = f.shares
+    if (kind === 'duplicate') shares = [shares[0], shares[0]]
+    if (kind === 'checksum')
+      shares = [
+        shares[0].slice(0, -1) + (shares[0].endsWith('q') ? 'p' : 'q'),
+        shares[1],
+      ]
+    if (kind === 'other-account') {
+      const other = await signup()
+      shares = other.shares.slice(0, 2)
+      other.ceremony.cancel()
+    }
+    await expect(f.ceremony.confirm(shares, 'Fixture')).rejects.toThrow()
+    expect(accountSession.stage).not.toHaveBeenCalled()
+    await expect(
+      f.ceremony.confirm(f.shares.slice(0, 2), 'Fixture'),
+    ).rejects.toThrow()
+  },
+)
+test('independently pinned descriptor mismatch consumes restore rather than changing the expected account', async () => {
+  const a = await signup(),
+    b = await signup()
+  const restore = createAccountCeremony()
+  await restore.beginRestore(a.descriptor)
+  await expect(
+    restore.confirm(b.shares.slice(0, 2), 'Restored'),
+  ).rejects.toMatchObject({ code: 'descriptor-mismatch' })
+  await expect(
+    restore.confirm(a.shares.slice(0, 2), 'Restored'),
+  ).rejects.toThrow()
+  expect(accountSession.stage).not.toHaveBeenCalled()
+  a.ceremony.cancel()
+  b.ceremony.cancel()
+})
+test('cancel during legacy-state check never stages recovered roots', async () => {
+  const f = await signup()
+  let resolve!: () => void
+  jest.mocked(assertLegacyUnchanged).mockImplementationOnce(
+    () =>
+      new Promise(done => {
+        resolve = done
+      }),
+  )
+  const confirming = f.ceremony.confirm(f.shares.slice(0, 2), 'Fixture')
+  f.ceremony.cancel()
+  resolve()
+  await expect(confirming).rejects.toThrow()
+  expect(accountSession.stage).not.toHaveBeenCalled()
+})
+test('cancel while stage is suspended explicitly cleans the same attempt once stage settles', async () => {
+  const f = await signup()
+  let resolve!: () => void
+  jest.mocked(accountSession.stage).mockImplementationOnce(
+    () =>
+      new Promise(done => {
+        resolve = done
+      }),
+  )
+  const confirming = f.ceremony.confirm(f.shares.slice(0, 2), 'Fixture')
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+  f.ceremony.cancel()
+  resolve()
+  await confirming
+  expect(accountSession.cancelPending).toHaveBeenCalledWith(
+    jest.mocked(accountSession.stage).mock.calls[0][0].attemptId,
+  )
+})
+test('bounded error text never includes arbitrary secret exception messages', () => {
+  expect(recoveryErrorMessage(new Error('PRIVATE-SENTINEL'))).not.toContain(
+    'PRIVATE-SENTINEL',
+  )
+  expect(recoveryErrorMessage({ code: 'duplicate-share' })).toContain(
+    'different index',
+  )
+})

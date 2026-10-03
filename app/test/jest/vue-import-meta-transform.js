@@ -7,7 +7,9 @@
 const vueJest = require('@vue/vue3-jest')
 
 const rewrite = source =>
-  source.replace(/import\.meta\.url/g, '"file:///jest-import-meta-url"')
+  source
+    .replace(/import\.meta\.url/g, '"file:///jest-import-meta-url"')
+    .replace(/import\.meta\.env\.([A-Z_0-9]+)/g, 'process.env.$1')
 
 module.exports = {
   ...vueJest,

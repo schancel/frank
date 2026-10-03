@@ -10,6 +10,11 @@ const mockUseRelayClientStore = jest.fn(() => ({
   token: '',
 }))
 let mockProfileName: string | undefined = 'Monad user'
+const mockAccountStatus = { status: 'ready' }
+jest.mock('../accounts/session', () => ({
+  accountStatus: mockAccountStatus,
+  accountSession: { initialize: jest.fn(async () => undefined) },
+}))
 const mockLegacyWallet = { setXPrivKey: jest.fn() }
 const mockLegacyWalletConstructor = jest.fn(() => mockLegacyWallet)
 
@@ -79,7 +84,7 @@ describe('setup-apis in Monad mode', () => {
     } as never)
 
     expect(globalProperties.$status).toMatchObject({
-      loaded: false,
+      loaded: true,
       setup: true,
     })
     expect(globalProperties).not.toHaveProperty('$wallet')
@@ -93,6 +98,7 @@ describe('setup-apis in Monad mode', () => {
 
   it('a stored seed with no display name is not set up (#284, the old #267 bug)', async () => {
     mockProfileName = undefined
+    mockAccountStatus.status = 'locked'
     try {
       const globalProperties: Record<string, unknown> = {}
       await setupApis({
@@ -101,6 +107,7 @@ describe('setup-apis in Monad mode', () => {
       expect(globalProperties.$status).toMatchObject({ setup: false })
     } finally {
       mockProfileName = 'Monad user'
+      mockAccountStatus.status = 'ready'
     }
   })
 })

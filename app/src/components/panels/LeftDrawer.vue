@@ -218,9 +218,7 @@ import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
 import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
-import { useWalletStore } from 'src/stores/wallet'
-import { useProfileStore } from 'src/stores/my-profile'
-import { isSetupComplete } from 'src/utils/account-state'
+import { accountStatus } from '../../accounts/session'
 
 const compactCutoff = 325
 
@@ -265,17 +263,9 @@ export default defineComponent({
     // near-identical `setTopic` for the precedent this mirrors).
     const topicStore = useTopicStore()
     const forum = useForumStore()
-    const walletStore = useWalletStore()
-    const profileStore = useProfileStore()
 
     function maybeRefreshTopics() {
-      if (
-        !isSetupComplete({
-          seedPhrase: walletStore.seedPhrase,
-          name: profileStore.profile.name,
-          seedConfirmedAt: walletStore.seedConfirmedAt,
-        })
-      ) {
+      if (!(accountStatus.status === 'ready')) {
         return
       }
       topicStore.refreshDiscoveredTopics()
@@ -312,12 +302,7 @@ export default defineComponent({
     })
 
     watch(
-      () =>
-        isSetupComplete({
-          seedPhrase: walletStore.seedPhrase,
-          name: profileStore.profile.name,
-          seedConfirmedAt: walletStore.seedConfirmedAt,
-        }),
+      () => accountStatus.status === 'ready',
       complete => {
         if (complete) {
           maybeRefreshTopics()

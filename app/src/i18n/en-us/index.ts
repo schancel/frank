@@ -1,7 +1,10 @@
 // This is just an example,
 // so you can safely delete all default props below
 
+import { en as accountRecovery } from '../account-recovery'
+
 export default {
+  accountRecovery,
   agree: 'Agree',
   chat: {
     stampPreparationChecking: 'Checking private stamp accounts…',
@@ -226,7 +229,6 @@ export default {
     cancelReply: 'Cancel reply',
     scrollToLatest: 'Scroll to latest messages',
     copyAddress: 'Copy address',
-    switchAddressFormat: 'Switch address format',
     connectRelay: 'Connect to relay',
     choosePhoto: 'Choose profile photo',
     previousAvatar: 'Previous avatar',

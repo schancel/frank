@@ -70,12 +70,6 @@ jest.mock('../components/panels/ContactCard.vue', () => ({
 jest.mock('../components/dialogs/ContactBookDialog.vue', () => ({
   template: '<div />',
 }))
-jest.mock('../components/dialogs/SeedPhraseDialog.vue', () => ({
-  template: '<div />',
-}))
-jest.mock('../components/dialogs/SeedConfirmDialog.vue', () => ({
-  template: '<div />',
-}))
 jest.mock('../components/panels/BackupReminder.vue', () => ({
   template: '<div />',
 }))

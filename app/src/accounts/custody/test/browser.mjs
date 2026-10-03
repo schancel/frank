@@ -201,5 +201,10 @@ try {
   clearTimeout(timeout)
   await stop()
   await new Promise(resolve => server.close(resolve))
-  await rm(directory, { recursive: true, force: true })
+  await rm(directory, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  })
 }

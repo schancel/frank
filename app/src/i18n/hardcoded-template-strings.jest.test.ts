@@ -31,7 +31,6 @@ const BASELINE: Record<string, number> = {
   'components/forum/ForumPost.vue': 1,
   'components/panels/ForumDrawer.vue': 6,
   'components/panels/LeftDrawer.vue': 1,
-  'components/setup/DepositStep.vue': 2,
   'components/StatusFooter.vue': 1,
   'components/SubscribeDialog.vue': 9,
   'components/topic/TopicDrawer.vue': 2,

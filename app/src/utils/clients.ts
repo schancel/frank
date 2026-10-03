@@ -21,15 +21,7 @@ export function useRelayClient(newRelayClient?: RelayClient) {
   return relayClient
 }
 
-/** Singleton accessor for the app's `ActiveChain` `WalletHandle` (ticket #42), mirroring
- * `useWallet`/`useRelayClient`'s established pattern above. Set once by
- * `src/boot/monad-direct-messages.ts`; `stores/chats.ts`'s `sendMessage` action and any UI wiring
- * to it (ticket #44's job -- see `PLAN.md`'s M9 section) read it via this accessor. */
-let monadWallet: WalletHandle | null = null
-export function useMonadWallet(newWallet?: WalletHandle) {
-  if (newWallet) {
-    monadWallet = newWallet
-  }
-  assert(monadWallet, 'Attempting to use Monad wallet before setup')
-  return monadWallet
+/** Legacy DM access fails closed for typed accounts until #696. */
+export function useMonadWallet(_newWallet?: WalletHandle): WalletHandle {
+  throw new Error('Messaging is unavailable for typed accounts in this preview')
 }

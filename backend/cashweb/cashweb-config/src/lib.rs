@@ -42,6 +42,45 @@ pub struct ProtocolChainDescriptor {
     pub native_chain_id: Option<String>,
     /// Proxy capabilities this chain is permitted to expose.
     pub allowed_proxy_capabilities: Vec<ProtocolProxyCapability>,
+    /// Required probes that bind an upstream to this exact protocol chain.
+    pub identity_probes: Vec<ProtocolIdentityProbe>,
+}
+
+/// One machine-readable upstream identity requirement.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ProtocolIdentityProbe {
+    /// Require the EVM upstream to report this decimal EIP-155 chain ID.
+    EvmChainId {
+        /// Proxy capability whose upstream is probed.
+        capability: ProtocolProxyCapability,
+        /// Expected decimal EIP-155 chain ID.
+        expected: String,
+    },
+    /// Require the upstream block hash at a protocol-pinned height.
+    BlockHash {
+        /// Proxy capability whose upstream is probed.
+        capability: ProtocolProxyCapability,
+        /// Block height to probe.
+        height: u64,
+        /// Expected lowercase `0x`-prefixed block hash.
+        expected: String,
+    },
+    /// Require the operator configuration to provide a block checkpoint.
+    OperatorBlockCheckpoint {
+        /// Proxy capability whose upstream is probed.
+        capability: ProtocolProxyCapability,
+    },
+}
+
+impl ProtocolIdentityProbe {
+    fn capability(&self) -> ProtocolProxyCapability {
+        match self {
+            Self::EvmChainId { capability, .. }
+            | Self::BlockHash { capability, .. }
+            | Self::OperatorBlockCheckpoint { capability } => *capability,
+        }
+    }
 }
 
 /// Relay proxy handler family.
@@ -82,6 +121,33 @@ pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
                 *capability == ProtocolProxyCapability::JsonRpc
                     || chain.family == ProtocolChainFamily::Bitcoin
             }));
+            assert!(!chain.identity_probes.is_empty());
+            assert!(chain.identity_probes.iter().all(|probe| chain
+                .allowed_proxy_capabilities
+                .contains(&probe.capability())));
+            match chain.family {
+                ProtocolChainFamily::Evm => {
+                    let native_chain_id = chain
+                        .native_chain_id
+                        .as_deref()
+                        .expect("EVM registry row must have a native chain ID");
+                    assert!(chain.identity_probes.iter().any(|probe| matches!(
+                        probe,
+                        ProtocolIdentityProbe::EvmChainId { capability: ProtocolProxyCapability::JsonRpc, expected }
+                            if expected == native_chain_id
+                    )));
+                    assert!(chain.identity_probes.iter().any(|probe| matches!(
+                        probe,
+                        ProtocolIdentityProbe::BlockHash { capability: ProtocolProxyCapability::JsonRpc, .. }
+                    )));
+                }
+                ProtocolChainFamily::Bitcoin => {
+                    assert!(chain.allowed_proxy_capabilities.iter().all(|capability| chain
+                        .identity_probes
+                        .iter()
+                        .any(|probe| matches!(probe, ProtocolIdentityProbe::OperatorBlockCheckpoint { capability: probe_capability } if probe_capability == capability))));
+                }
+            }
         }
         registry
     })
@@ -245,11 +311,9 @@ pub struct EvmRpcChainConf {
     /// Optional server-only environment variable containing the upstream WebSocket URL.
     #[serde(default)]
     pub upstream_ws_env: Option<String>,
-    /// Optional block number whose hash must match before readiness.
-    #[serde(default)]
+    /// Protocol-pinned block number whose hash must match before readiness.
     pub checkpoint_block_number: Option<u64>,
-    /// Expected `0x`-prefixed 32-byte block hash for `checkpoint_block_number`.
-    #[serde(default)]
+    /// Protocol-pinned `0x`-prefixed 32-byte hash for `checkpoint_block_number`.
     pub checkpoint_block_hash: Option<String>,
     /// Largest inclusive explicit block range accepted by `eth_getLogs`.
     #[serde(default = "default_rpc_log_range")]
@@ -271,6 +335,8 @@ pub enum EvmRpcConfigError {
     WrongChainFamily(String),
     /// The configured native chain ID contradicts the protocol registry.
     NativeChainIdMismatch(String),
+    /// The configured checkpoint contradicts or omits the protocol-pinned checkpoint.
+    CheckpointMismatch(String),
     /// An upstream environment-variable name is empty or malformed.
     InvalidUpstreamEnv(String),
     /// A numeric protection limit is zero or exceeds its hard ceiling.
@@ -287,6 +353,12 @@ impl fmt::Display for EvmRpcConfigError {
                 write!(
                     f,
                     "EVM chain id for {id:?} contradicts the protocol registry"
+                )
+            }
+            Self::CheckpointMismatch(id) => {
+                write!(
+                    f,
+                    "EVM checkpoint for {id:?} contradicts the protocol registry"
                 )
             }
             Self::InvalidUpstreamEnv(name) => {
@@ -383,16 +455,22 @@ impl EvmRpcConf {
             if chain.expected_chain_id == 0 || chain.max_get_logs_range == 0 {
                 return Err(EvmRpcConfigError::InvalidLimit("chain row"));
             }
-            match (
-                chain.checkpoint_block_number,
-                chain.checkpoint_block_hash.as_deref(),
-            ) {
-                (None, None) => {}
-                (Some(_), Some(hash))
-                    if hash.len() == 66
-                        && hash.starts_with("0x")
-                        && hash[2..].bytes().all(|byte| byte.is_ascii_hexdigit()) => {}
-                _ => return Err(EvmRpcConfigError::InvalidLimit("checkpoint")),
+            let (checkpoint_height, checkpoint_hash) = protocol
+                .identity_probes
+                .iter()
+                .find_map(|probe| match probe {
+                    ProtocolIdentityProbe::BlockHash {
+                        capability: ProtocolProxyCapability::JsonRpc,
+                        height,
+                        expected,
+                    } => Some((*height, expected.as_str())),
+                    _ => None,
+                })
+                .expect("validated EVM registry row must pin a JSON-RPC checkpoint");
+            if chain.checkpoint_block_number != Some(checkpoint_height)
+                || chain.checkpoint_block_hash.as_deref() != Some(checkpoint_hash)
+            {
+                return Err(EvmRpcConfigError::CheckpointMismatch(chain.id.clone()));
             }
         }
         Ok(())
@@ -805,13 +883,26 @@ mod tests {
                 expected_chain_id: 10_143,
                 upstream_env: "MONAD_TESTNET_HTTP_RPC_URL".to_string(),
                 upstream_ws_env: None,
-                checkpoint_block_number: None,
-                checkpoint_block_hash: None,
+                checkpoint_block_number: Some(0),
+                checkpoint_block_hash: Some(
+                    "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
+                        .to_string(),
+                ),
                 max_get_logs_range: 10,
             }],
             ..base
         };
         assert_eq!(enabled.validate(), Ok(()));
+
+        enabled.chains[0].checkpoint_block_hash = Some(format!("0x{}", "00".repeat(32)));
+        assert_eq!(
+            enabled.validate(),
+            Err(EvmRpcConfigError::CheckpointMismatch(
+                "monad-testnet".to_string()
+            ))
+        );
+        enabled.chains[0].checkpoint_block_hash =
+            Some("0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9".to_string());
 
         enabled.capability_ttl_ms = 59_999;
         assert_eq!(
@@ -861,8 +952,11 @@ mod tests {
                 expected_chain_id: 10_143,
                 upstream_env: "BTC_RPC".to_string(),
                 upstream_ws_env: None,
-                checkpoint_block_number: None,
-                checkpoint_block_hash: None,
+                checkpoint_block_number: Some(0),
+                checkpoint_block_hash: Some(
+                    "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
+                        .to_string(),
+                ),
                 max_get_logs_range: 10,
             }],
             ..EvmRpcConf::default()

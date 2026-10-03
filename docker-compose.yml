@@ -39,7 +39,9 @@ services:
         # container reads (unlike the backend service above, a real Rust binary that reads real
         # process env vars directly -- no bundler involved, no QCLI_ prefix needed there).
         QCLI_MONAD_RELAY_BASE_URL: ${MONAD_RELAY_BASE_URL:-http://localhost:${BACKEND_PORT:-8080}}
-        QCLI_MONAD_RPC_CHAIN: ${MONAD_RPC_CHAIN:-monad-testnet}
+        # The checked-in backend topology is intentionally testnet-only. A mainnet deployment
+        # supplies its own coherent relay and frontend deployment configuration.
+        QCLI_MONAD_RPC_CHAIN: monad-testnet
         QCLI_MONAD_STAMP_BURN_ADDRESS: ${MONAD_STAMP_BURN_ADDRESS:-0x000000000000000000000000000000000000dEaD}
         QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI: ${CASHWEB_STAMP_MIN_BURN_VALUE_WEI:-1000000000000}
     ports:

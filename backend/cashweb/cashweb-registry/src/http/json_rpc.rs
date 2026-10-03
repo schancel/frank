@@ -103,6 +103,7 @@ pub(crate) struct RequestCorrelation {
 
 struct PermitBody {
     state: Arc<Mutex<PermitBodyState>>,
+    watchdog: Option<tokio::task::JoinHandle<()>>,
 }
 
 struct PermitBodyState {
@@ -113,6 +114,9 @@ struct PermitBodyState {
 
 impl Drop for PermitBody {
     fn drop(&mut self) {
+        if let Some(watchdog) = self.watchdog.take() {
+            watchdog.abort();
+        }
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.inner.take();
         state.permit.take();
@@ -149,7 +153,7 @@ impl HttpBody for PermitBody {
     }
 
     fn poll_trailers(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<axum::http::HeaderMap>, Self::Error>> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
@@ -157,12 +161,19 @@ impl HttpBody for PermitBody {
             return Poll::Ready(Ok(None));
         };
         let result = Pin::new(inner).poll_trailers(cx);
+        let terminal = result.is_ready();
         match &result {
             Poll::Pending => state.waker = Some(cx.waker().clone()),
             Poll::Ready(_) => {
                 state.inner.take();
                 state.permit.take();
                 state.waker.take();
+            }
+        }
+        drop(state);
+        if terminal {
+            if let Some(watchdog) = self.watchdog.take() {
+                watchdog.abort();
             }
         }
         result
@@ -184,7 +195,7 @@ pub(crate) fn hold_response_permit(
         waker: None,
     }));
     let expiry_state = Arc::clone(&state);
-    tokio::spawn(async move {
+    let watchdog = tokio::spawn(async move {
         tokio::time::sleep(delivery_timeout).await;
         let mut state = expiry_state
             .lock()
@@ -195,7 +206,13 @@ pub(crate) fn hold_response_permit(
             waker.wake();
         }
     });
-    Response::from_parts(parts, boxed(PermitBody { state }))
+    Response::from_parts(
+        parts,
+        boxed(PermitBody {
+            state,
+            watchdog: Some(watchdog),
+        }),
+    )
 }
 
 /// Decode and spool an upstream response under a strict byte ceiling.
@@ -1396,6 +1413,36 @@ mod tests {
             "ok"
         );
         assert!(Arc::clone(&permits).try_acquire_owned().is_ok());
+    }
+
+    #[tokio::test]
+    async fn completed_response_cancels_delivery_watchdog() {
+        let state = Arc::new(Mutex::new(PermitBodyState {
+            inner: Some(boxed(Body::from("ok"))),
+            permit: None,
+            waker: None,
+        }));
+        let weak_state = Arc::downgrade(&state);
+        let expiry_state = Arc::clone(&state);
+        let watchdog = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            drop(expiry_state);
+        });
+        let body = PermitBody {
+            state,
+            watchdog: Some(watchdog),
+        };
+        drop(body);
+
+        // The cancelled watchdog must release its cloned state promptly rather
+        // than retaining one sleeping task and allocation per completed call.
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+            if weak_state.upgrade().is_none() {
+                break;
+            }
+        }
+        assert!(weak_state.upgrade().is_none());
     }
 
     #[tokio::test]

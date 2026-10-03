@@ -13,8 +13,25 @@ import {
   toBeHex,
   toUtf8Bytes,
 } from "ethers";
+import type { FetchGetUrlFunc } from "ethers";
 
 export const DEFAULT_MONAD_CHAIN_ID = 10143n;
+
+export const MONAD_PROTOCOL_IDENTITIES = Object.freeze({
+  "monad-mainnet": Object.freeze({ chainId: 143n, networkTag: "MON1" }),
+  "monad-testnet": Object.freeze({ chainId: 10143n, networkTag: "MONT" }),
+});
+
+export function monadProtocolIdentity(chain: string):
+  | {
+      readonly chainId: bigint;
+      readonly networkTag: string;
+    }
+  | undefined {
+  return MONAD_PROTOCOL_IDENTITIES[
+    chain as keyof typeof MONAD_PROTOCOL_IDENTITIES
+  ];
+}
 
 export interface MonadJsonRpcProviderOptions extends JsonRpcApiProviderOptions {
   rpcUrl: string;
@@ -30,6 +47,103 @@ export interface MonadRelayRpcAuth {
 }
 
 const relayConnectionDestroy = new WeakMap<FetchRequest, () => void>();
+
+interface RelayCapabilityLifecycle {
+  isCancelled: () => boolean;
+  cancelled: Promise<void>;
+  trackRequest: (request: FetchRequest) => () => void;
+}
+
+type RelayFetchResponse = {
+  status: number;
+  statusText: string;
+  headers: { forEach: (visit: (value: string, key: string) => void) => void };
+  arrayBuffer: () => Promise<ArrayBuffer>;
+};
+
+type RelayFetch = (
+  url: string,
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    body?: Uint8Array;
+    signal: AbortSignal;
+  }
+) => Promise<RelayFetchResponse>;
+
+/** ethers' Node transport currently rejects cancellation without closing its socket. Use the
+ * platform fetch transport for the capability handshake so cancellation reaches the wire in
+ * browsers and modern Node runtimes alike. */
+const relayCapabilityGetUrl: FetchGetUrlFunc | undefined = (() => {
+  const fetchImpl = (globalThis as unknown as { fetch?: RelayFetch }).fetch;
+  if (!fetchImpl) return undefined;
+  return async (request, signal) => {
+    const controller = new AbortController();
+    let cancellationError: Error | null = null;
+    const timer = setTimeout(() => {
+      cancellationError = makeError("request timeout", "TIMEOUT");
+      controller.abort();
+    }, request.timeout);
+    signal?.addListener(() => {
+      cancellationError = makeError("request cancelled", "CANCELLED");
+      controller.abort();
+    });
+    try {
+      const response = await fetchImpl(request.url, {
+        method: request.method,
+        headers: Object.fromEntries(request),
+        body: request.body ?? undefined,
+        signal: controller.signal,
+      });
+      const headers: Record<string, string> = {};
+      response.headers.forEach((value, key) => {
+        headers[key.toLowerCase()] = value;
+      });
+      return {
+        statusCode: response.status,
+        statusMessage: response.statusText,
+        headers,
+        body: new Uint8Array(await response.arrayBuffer()),
+      };
+    } catch (error) {
+      if (cancellationError) throw cancellationError;
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+})();
+
+function makeRelayCapabilityRequest(url: string): FetchRequest {
+  const request = new FetchRequest(url);
+  if (relayCapabilityGetUrl) request.getUrlFunc = relayCapabilityGetUrl;
+  return request;
+}
+
+async function awaitRelayCapabilityStep<T>(
+  operation: Promise<T>,
+  lifecycle?: RelayCapabilityLifecycle
+): Promise<T> {
+  if (!lifecycle) return operation;
+  const result = await Promise.race([
+    operation.then((value) => ({ cancelled: false as const, value })),
+    lifecycle.cancelled.then(() => ({ cancelled: true as const })),
+  ]);
+  if ("value" in result) return result.value;
+  throw new Error("relay capability request cancelled");
+}
+
+async function sendRelayCapabilityRequest(
+  request: FetchRequest,
+  lifecycle?: RelayCapabilityLifecycle
+) {
+  const untrack = lifecycle?.trackRequest(request);
+  try {
+    return await awaitRelayCapabilityStep(request.send(), lifecycle);
+  } finally {
+    untrack?.();
+  }
+}
 
 interface RelayRpcChallenge {
   epoch: string;
@@ -122,37 +236,45 @@ function rpcAuthDigest(
   );
 }
 
-/** Obtain one standard-client-compatible HTTP/WebSocket bearer URL pair from a relay. */
-export async function issueMonadRelayRpcCapability(
+async function issueMonadRelayRpcCapabilityWithLifecycle(
   rpcUrl: string,
   auth: MonadRelayRpcAuth,
   timeout = 30_000,
-  isCancelled: () => boolean = () => false
+  lifecycle?: RelayCapabilityLifecycle
 ): Promise<MonadRelayRpcCapability> {
   const ensureActive = () => {
-    if (isCancelled()) throw new Error("relay capability request cancelled");
+    if (lifecycle?.isCancelled())
+      throw new Error("relay capability request cancelled");
   };
   ensureActive();
   const relayBaseUrl = rpcUrl.replace(/\/rpc\/?$/, "");
   const emptyBody = new Uint8Array(0);
   const bodyHash = bareHex(getBytes(sha256(emptyBody)));
-  const challengeRequest = new FetchRequest(`${relayBaseUrl}/capability/auth`);
+  const challengeRequest = makeRelayCapabilityRequest(
+    `${relayBaseUrl}/capability/auth`
+  );
   challengeRequest.body = emptyBody;
   challengeRequest.timeout = timeout;
   challengeRequest.retryFunc = async () => false;
   challengeRequest.setHeader("content-type", "application/octet-stream");
   challengeRequest.setHeader("x-frank-rpc-customer", auth.customer);
-  const challengeResponse = await challengeRequest.send();
+  const challengeResponse = await sendRelayCapabilityRequest(
+    challengeRequest,
+    lifecycle
+  );
   ensureActive();
   challengeResponse.assertOk();
   const challenge = challengeResponse.bodyJson as RelayRpcChallenge;
   validateChallenge(challenge, auth, bodyHash);
-  const signature = await auth.signDigest(
-    rpcAuthDigest(challenge, auth, bodyHash, "capability")
+  const signature = await awaitRelayCapabilityStep(
+    Promise.resolve(
+      auth.signDigest(rpcAuthDigest(challenge, auth, bodyHash, "capability"))
+    ),
+    lifecycle
   );
   ensureActive();
 
-  const issueRequest = new FetchRequest(`${relayBaseUrl}/capability`);
+  const issueRequest = makeRelayCapabilityRequest(`${relayBaseUrl}/capability`);
   issueRequest.body = emptyBody;
   issueRequest.timeout = timeout;
   issueRequest.retryFunc = async () => false;
@@ -163,7 +285,10 @@ export async function issueMonadRelayRpcCapability(
   issueRequest.setHeader("x-frank-rpc-expires-at-ms", challenge.expires_at_ms);
   issueRequest.setHeader("x-frank-rpc-token", challenge.token);
   issueRequest.setHeader("x-frank-rpc-signature", bareHex(signature));
-  const issueResponse = await issueRequest.send();
+  const issueResponse = await sendRelayCapabilityRequest(
+    issueRequest,
+    lifecycle
+  );
   ensureActive();
   issueResponse.assertOk();
   const capability = issueResponse.bodyJson as RelayRpcCapability;
@@ -188,6 +313,20 @@ export async function issueMonadRelayRpcCapability(
   };
 }
 
+/** Obtain one standard-client-compatible HTTP/WebSocket bearer URL pair from a relay. */
+export async function issueMonadRelayRpcCapability(
+  rpcUrl: string,
+  auth: MonadRelayRpcAuth,
+  timeout = 30_000,
+  isCancelled: () => boolean = () => false
+): Promise<MonadRelayRpcCapability> {
+  return issueMonadRelayRpcCapabilityWithLifecycle(rpcUrl, auth, timeout, {
+    isCancelled,
+    cancelled: new Promise<void>(() => {}),
+    trackRequest: () => () => {},
+  });
+}
+
 /** Builds an ethers connection to a relay family route. The first customer request obtains one
  * expiring bearer capability; subsequent requests are ordinary JSON-RPC POSTs to that URL. The
  * upstream provider URL never reaches this process or the browser bundle. */
@@ -202,9 +341,26 @@ export function createMonadRelayRpcConnection(
   let cachedCapability: MonadRelayRpcCapability | null = null;
   let capabilityInFlight: Promise<MonadRelayRpcCapability> | null = null;
   let destroyed = false;
+  let cancelLifecycle!: () => void;
+  const cancelled = new Promise<void>((resolve) => {
+    cancelLifecycle = resolve;
+  });
+  const activeCapabilityRequests = new Set<FetchRequest>();
+  const lifecycle: RelayCapabilityLifecycle = {
+    isCancelled: () => destroyed,
+    cancelled,
+    trackRequest: (request) => {
+      activeCapabilityRequests.add(request);
+      return () => activeCapabilityRequests.delete(request);
+    },
+  };
   relayConnectionDestroy.set(connection, () => {
+    if (destroyed) return;
     destroyed = true;
     cachedCapability = null;
+    cancelLifecycle();
+    for (const request of activeCapabilityRequests) request.cancel();
+    activeCapabilityRequests.clear();
   });
 
   const capabilityFor = async (
@@ -219,11 +375,11 @@ export function createMonadRelayRpcConnection(
     }
     if (capabilityInFlight !== null) return capabilityInFlight;
 
-    const issuance = issueMonadRelayRpcCapability(
+    const issuance = issueMonadRelayRpcCapabilityWithLifecycle(
       rpcUrl,
       auth,
       timeout,
-      () => destroyed
+      lifecycle
     );
     capabilityInFlight = issuance;
     try {

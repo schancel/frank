@@ -38,8 +38,9 @@ serve the Chronik HTTP/Protobuf API at `/chain-rpc/:chain/chronik/*`. Chronik is
 
 The shipped relay configurations expose `monad-testnet`. Its provider URL is read only from the row's `upstream_env`
 environment variable. At startup the relay calls `eth_chainId` and refuses readiness unless the
-provider reports the configured `expected_chain_id`; every configured WebSocket upstream is
-probed independently with the same identity check (and the configured checkpoint, when present).
+provider reports the configured `expected_chain_id` and registry-pinned block checkpoint; every
+configured WebSocket upstream is probed independently with both identity checks. EVM proxy rows
+must repeat the registry checkpoint exactly so a configuration cannot silently weaken the probe.
 Rotate a provider key by changing that
 server-side environment value and restarting the relay; the URL and key are never returned or
 logged by the proxy.

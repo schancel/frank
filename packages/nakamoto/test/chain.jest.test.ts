@@ -35,6 +35,12 @@ describe('chain descriptors', () => {
         id: string
         family: string
         allowed_proxy_capabilities: string[]
+        identity_probes: Array<{
+          kind: string
+          capability: string
+          height?: number
+          expected?: string
+        }>
       }>
     }
     expect(registry.schema_version).toBe(1)
@@ -43,6 +49,7 @@ describe('chain descriptors', () => {
       expect(rows.get(descriptor.protocolId)).toMatchObject({
         family: descriptor.proxyFamily,
         allowed_proxy_capabilities: descriptor.allowedProxyCapabilities,
+        identity_probes: descriptor.identityProbes,
       })
     }
   })

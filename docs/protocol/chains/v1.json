@@ -1,19 +1,187 @@
 {
   "schema_version": 1,
   "chains": [
-    { "id": "monad-mainnet", "family": "evm", "network": "mainnet", "caip2": "eip155:143", "native_chain_id": "143", "allowed_proxy_capabilities": ["json-rpc"] },
-    { "id": "monad-testnet", "family": "evm", "network": "testnet", "caip2": "eip155:10143", "native_chain_id": "10143", "allowed_proxy_capabilities": ["json-rpc"] },
-    { "id": "btc-mainnet", "family": "bitcoin", "network": "mainnet", "caip2": "bip122:000000000019d6689c085ae165831e93", "native_chain_id": null, "allowed_proxy_capabilities": ["json-rpc", "chronik"] },
-    { "id": "btc-testnet", "family": "bitcoin", "network": "testnet", "caip2": "bip122:000000000933ea01ad0ee984209779ba", "native_chain_id": null, "allowed_proxy_capabilities": ["json-rpc", "chronik"] },
-    { "id": "btc-regtest", "family": "bitcoin", "network": "regtest", "caip2": null, "native_chain_id": null, "allowed_proxy_capabilities": ["json-rpc", "chronik"] },
-    { "id": "bch-mainnet", "family": "bitcoin", "network": "mainnet", "caip2": null, "native_chain_id": null, "allowed_proxy_capabilities": ["json-rpc", "chronik"] },
-    { "id": "bch-testnet", "family": "bitcoin", "network": "testnet", "caip2": null, "native_chain_id": null, "allowed_proxy_capabilities": ["json-rpc", "chronik"] },
-    { "id": "bch-regtest", "family": "bitcoin", "network": "regtest", "caip2": null, "native_chain_id": null, "allowed_proxy_capabilities": ["json-rpc", "chronik"] },
-    { "id": "xec-mainnet", "family": "bitcoin", "network": "mainnet", "caip2": null, "native_chain_id": null, "allowed_proxy_capabilities": ["json-rpc", "chronik"] },
-    { "id": "xec-testnet", "family": "bitcoin", "network": "testnet", "caip2": null, "native_chain_id": null, "allowed_proxy_capabilities": ["json-rpc", "chronik"] },
-    { "id": "xec-regtest", "family": "bitcoin", "network": "regtest", "caip2": null, "native_chain_id": null, "allowed_proxy_capabilities": ["json-rpc", "chronik"] },
-    { "id": "xpi-mainnet", "family": "bitcoin", "network": "mainnet", "caip2": null, "native_chain_id": null, "allowed_proxy_capabilities": ["json-rpc", "chronik"] },
-    { "id": "xpi-testnet", "family": "bitcoin", "network": "testnet", "caip2": null, "native_chain_id": null, "allowed_proxy_capabilities": ["json-rpc", "chronik"] },
-    { "id": "xpi-regtest", "family": "bitcoin", "network": "regtest", "caip2": null, "native_chain_id": null, "allowed_proxy_capabilities": ["json-rpc", "chronik"] }
+    {
+      "id": "monad-mainnet",
+      "family": "evm",
+      "network": "mainnet",
+      "caip2": "eip155:143",
+      "native_chain_id": "143",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "143" },
+        {
+          "kind": "block-hash",
+          "capability": "json-rpc",
+          "height": 0,
+          "expected": "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9"
+        }
+      ]
+    },
+    {
+      "id": "monad-testnet",
+      "family": "evm",
+      "network": "testnet",
+      "caip2": "eip155:10143",
+      "native_chain_id": "10143",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        {
+          "kind": "evm-chain-id",
+          "capability": "json-rpc",
+          "expected": "10143"
+        },
+        {
+          "kind": "block-hash",
+          "capability": "json-rpc",
+          "height": 0,
+          "expected": "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
+        }
+      ]
+    },
+    {
+      "id": "btc-mainnet",
+      "family": "bitcoin",
+      "network": "mainnet",
+      "caip2": "bip122:000000000019d6689c085ae165831e93",
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    },
+    {
+      "id": "btc-testnet",
+      "family": "bitcoin",
+      "network": "testnet",
+      "caip2": "bip122:000000000933ea01ad0ee984209779ba",
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    },
+    {
+      "id": "btc-regtest",
+      "family": "bitcoin",
+      "network": "regtest",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    },
+    {
+      "id": "bch-mainnet",
+      "family": "bitcoin",
+      "network": "mainnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    },
+    {
+      "id": "bch-testnet",
+      "family": "bitcoin",
+      "network": "testnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    },
+    {
+      "id": "bch-regtest",
+      "family": "bitcoin",
+      "network": "regtest",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    },
+    {
+      "id": "xec-mainnet",
+      "family": "bitcoin",
+      "network": "mainnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    },
+    {
+      "id": "xec-testnet",
+      "family": "bitcoin",
+      "network": "testnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    },
+    {
+      "id": "xec-regtest",
+      "family": "bitcoin",
+      "network": "regtest",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    },
+    {
+      "id": "xpi-mainnet",
+      "family": "bitcoin",
+      "network": "mainnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    },
+    {
+      "id": "xpi-testnet",
+      "family": "bitcoin",
+      "network": "testnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    },
+    {
+      "id": "xpi-regtest",
+      "family": "bitcoin",
+      "network": "regtest",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    }
   ]
 }

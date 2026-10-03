@@ -83,6 +83,24 @@ export interface ScriptRules {
   readonly maxScriptNumBytes: number
 }
 
+export type ProtocolIdentityProbe = Readonly<
+  | {
+      kind: 'operator-block-checkpoint'
+      capability: 'json-rpc' | 'chronik'
+    }
+  | {
+      kind: 'evm-chain-id'
+      capability: 'json-rpc'
+      expected: string
+    }
+  | {
+      kind: 'block-hash'
+      capability: 'json-rpc' | 'chronik'
+      height: number
+      expected: string
+    }
+>
+
 export interface ChainDescriptor {
   /** Stable Frank protocol identifier used in relay paths and signed scopes. */
   readonly protocolId: string
@@ -90,6 +108,8 @@ export interface ChainDescriptor {
   readonly proxyFamily: 'bitcoin'
   /** Capabilities the protocol permits; a relay may advertise only a configured subset. */
   readonly allowedProxyCapabilities: readonly ('json-rpc' | 'chronik')[]
+  /** Required checks binding an upstream to this exact chain. */
+  readonly identityProbes: readonly ProtocolIdentityProbe[]
   readonly family: ChainFamily
   readonly network: NetworkKind
   readonly pubkeyHashVersion: number

@@ -174,6 +174,7 @@ function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
     getReceiveAddress: jest.fn(async () => identity.address),
     getBalance: jest.fn(),
     sendNative: jest.fn(),
+    close: jest.fn(),
     // These are never dereferenced by real logic in this test file: every client that would
     // actually use them (`MonadStampClient`/`MonadTopicPostClient`/`MonadTopicVoteClient`) is
     // mocked above, so `MonadChain` only ever passes this bundle through to a mock constructor.

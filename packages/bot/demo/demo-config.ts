@@ -91,6 +91,12 @@ export const DEMO_VARS: readonly DemoVar[] = [
     description: 'Path of a prebuilt cashwebd-exe; skips the Cargo build in run-local-monad.sh.',
   },
   {
+    name: 'PROTOC',
+    scope: 'relay build',
+    default: 'auto-detected',
+    description: 'Native protoc executable path (libprotoc 3+); an invalid override fails before Cargo. Otherwise tries PATH, then the installed npm native compiler. Ignored with CASHWEBD_BIN.',
+  },
+  {
     name: 'CARGO',
     scope: 'relay build',
     default: 'cargo',
@@ -316,7 +322,7 @@ const PASSTHROUGH = [
   'FRANK_BOT_MAX_REPLIES_PER_PEER',
 ] as const
 
-export const TOOLCHAIN_VARS = ['CARGO', 'CARGO_HOME', 'CARGO_TARGET_DIR', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN'] as const
+export const TOOLCHAIN_VARS = ['PROTOC', 'CARGO', 'CARGO_HOME', 'CARGO_TARGET_DIR', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN'] as const
 
 /** The Quasar dev server's port (`devServer.port` in app/quasar.config.js). */
 export const APP_DEV_PORT = 8080
@@ -659,7 +665,11 @@ export function resolveDemoConfig(params: {
     mainWalletJson,
     cashwebdBin: merged.CASHWEBD_BIN || undefined,
     toolchainEnv: Object.fromEntries(
-      TOOLCHAIN_VARS.flatMap(name => (merged[name] ? [[name, merged[name] as string]] : [])),
+      TOOLCHAIN_VARS.flatMap(name =>
+        (name === 'PROTOC' ? merged[name] !== undefined : !!merged[name])
+          ? [[name, merged[name] as string]]
+          : [],
+      ),
     ),
     qwenMode,
     secrets,

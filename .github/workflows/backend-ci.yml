@@ -95,6 +95,12 @@ jobs:
         # exceeded" during iteration on this workflow.
         repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+    - name: Check local relay compiler resolution and prebuilt bypass
+      run: |
+        node --test backend/cashweb/protoc-tool/resolve.test.cjs
+        bash backend/cashweb/run-local-monad-overrides.test.sh
+      shell: bash
+
     - name: Check protobuf source and generated-binding inventory
       run: ./docs/protocol/check-protobuf-inventory.sh --check
       shell: bash

@@ -84,6 +84,13 @@ describe('smoke outcome and diagnostic retention', () => {
     expect(output).not.toContain('\nSMOKE OK')
   }
 
+  it('keeps an explicit compiler override in the smoke relay toolchain', async () => {
+    await expect(runSmoke({ PROTOC: '/tools with spaces/protoc', UNLISTED_TOOL: 'hidden' })).resolves.toBe(true)
+    expect(jest.mocked(startDemo).mock.calls[0][0].toolchainEnv).toEqual({
+      PROTOC: '/tools with spaces/protoc',
+    })
+  })
+
   it('fails after every feature passes if a supervised child exits unexpectedly', async () => {
     jest.mocked(runSmokeChecks).mockImplementation(async () => {
       supervisor = new Supervisor(

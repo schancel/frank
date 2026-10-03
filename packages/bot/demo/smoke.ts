@@ -51,6 +51,7 @@ export async function runSmoke(
       HOME: env.HOME,
       TMPDIR: env.TMPDIR,
       CASHWEBD_BIN: env.CASHWEBD_BIN,
+      PROTOC: env.PROTOC,
       CARGO_TARGET_DIR: env.CARGO_TARGET_DIR,
       CARGO_HOME: env.CARGO_HOME,
       RUSTUP_HOME: env.RUSTUP_HOME,

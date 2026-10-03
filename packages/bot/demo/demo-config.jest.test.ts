@@ -145,6 +145,14 @@ describe('resolveDemoConfig', () => {
     expect(env('faucet').FAUCET_MAX_PER_RUN).toBe('1000')
   })
 
+  it('passes the exact PROTOC override only to the relay toolchain, with environment precedence', () => {
+    const c = FAKE({ PROTOC: '/tools with spaces/protoc', UNLISTED_TOOL: 'hidden' }, { PROTOC: '/file/protoc' })
+    expect(c.toolchainEnv).toEqual({ PROTOC: '/tools with spaces/protoc' })
+    expect(FAKE({}, { PROTOC: '/file/protoc' }).toolchainEnv.PROTOC).toBe('/file/protoc')
+    expect(FAKE({ PROTOC: '' }).toolchainEnv.PROTOC).toBe('')
+    for (const bot of c.bots) expect(bot.env).not.toHaveProperty('PROTOC')
+  })
+
   describe('Qwen mode', () => {
     it('is stub without a key, and never carries a key or endpoint then', () => {
       const c = FAKE()

@@ -16,6 +16,7 @@ jest.mock('./qwen-bot-common', () => ({
 }))
 jest.mock('@frank/wallet/monad-identity', () => ({
   fetchMonadIdentityPubKey: async () => Buffer.from('public-key'),
+  fetchMonadProfile: jest.fn(async () => ({ bot: false })),
   mailboxAuthFor: () => ({}),
 }))
 jest.mock('@frank/cashweb/relay/monad-message-feed', () => ({
@@ -30,12 +31,6 @@ jest.mock('@frank/cashweb/relay/monad-message-envelope', () => ({
 }))
 jest.mock('./qwen-prompt', () => ({
   extractPromptText: (text: string) => text,
-}))
-jest.mock('./bot-loop-guard', () => ({
-  botLoopGuardFromEnv: () => ({
-    peerBlockReason: async () => undefined,
-    reserveReply: () => true,
-  }),
 }))
 jest.mock('./bot-directory', () => ({ botProfileFields: () => [] }))
 
@@ -71,6 +66,7 @@ async function boot(
     interruptBeforeSend?: boolean
     sendError?: boolean
     modelError?: boolean
+    profileError?: boolean
     emptyFeed?: boolean
   } = {},
 ) {
@@ -79,6 +75,11 @@ async function boot(
     require('./qwen-bot-state') as typeof import('./qwen-bot-state')
   const common = require('./qwen-bot-common')
   const feed = require('@frank/cashweb/relay/monad-message-feed')
+  const identity = require('@frank/wallet/monad-identity')
+  if (options.profileError)
+    identity.fetchMonadProfile.mockRejectedValue(
+      new Error('PROFILE_PROVIDER_BODY_SENTINEL'),
+    )
   const reply = require('./qwen-reply') as typeof import('./qwen-reply')
   const logs: unknown[][] = []
   const spies = ['log', 'warn', 'error'].map(method =>
@@ -261,3 +262,14 @@ it.each(['sendError', 'modelError'] as const)(
     }
   },
 )
+
+it('CLI uses the shared guard and keeps its profile-provider error body out of logs', async () => {
+  const result = await boot({ profileError: true })
+  expect(result.modelCalls).toBe(0)
+  expect(result.sends).toHaveLength(0)
+  expect(result.logs).toContain(
+    '[loop-guard] profile lookup failed -- treating as automated',
+  )
+  expect(result.logs).not.toContain('PROFILE_PROVIDER_BODY_SENTINEL')
+  expect((await stored()).processed).toBe(false)
+})

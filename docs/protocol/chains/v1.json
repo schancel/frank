@@ -47,8 +47,8 @@
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik"],
       "identity_probes": [
-        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
-        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+        { "kind": "block-hash", "capability": "json-rpc", "height": 481824, "expected": "0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893" },
+        { "kind": "block-hash", "capability": "chronik", "height": 481824, "expected": "0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893" }
       ]
     },
     {
@@ -59,8 +59,8 @@
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik"],
       "identity_probes": [
-        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
-        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+        { "kind": "block-hash", "capability": "json-rpc", "height": 5125000, "expected": "00000000000009ad1946e21cb4f1a6323ee99c89017b59d5166472672b868133" },
+        { "kind": "block-hash", "capability": "chronik", "height": 5125000, "expected": "00000000000009ad1946e21cb4f1a6323ee99c89017b59d5166472672b868133" }
       ]
     },
     {
@@ -83,8 +83,8 @@
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik"],
       "identity_probes": [
-        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
-        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+        { "kind": "block-hash", "capability": "json-rpc", "height": 478559, "expected": "000000000000000000651ef99cb9fcbe0dadde1d424bd9f15ff20136191a5eec" },
+        { "kind": "block-hash", "capability": "chronik", "height": 478559, "expected": "000000000000000000651ef99cb9fcbe0dadde1d424bd9f15ff20136191a5eec" }
       ]
     },
     {
@@ -95,8 +95,8 @@
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik"],
       "identity_probes": [
-        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
-        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+        { "kind": "block-hash", "capability": "json-rpc", "height": 1155876, "expected": "00000000000e38fef93ed9582a7df43815d5c2ba9fd37ef70c9a0ea4a285b8f5" },
+        { "kind": "block-hash", "capability": "chronik", "height": 1155876, "expected": "00000000000e38fef93ed9582a7df43815d5c2ba9fd37ef70c9a0ea4a285b8f5" }
       ]
     },
     {
@@ -119,8 +119,8 @@
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik"],
       "identity_probes": [
-        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
-        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+        { "kind": "block-hash", "capability": "json-rpc", "height": 661648, "expected": "000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d" },
+        { "kind": "block-hash", "capability": "chronik", "height": 661648, "expected": "000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d" }
       ]
     },
     {
@@ -131,8 +131,8 @@
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik"],
       "identity_probes": [
-        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
-        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+        { "kind": "block-hash", "capability": "json-rpc", "height": 1421481, "expected": "00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d40b" },
+        { "kind": "block-hash", "capability": "chronik", "height": 1421481, "expected": "00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d40b" }
       ]
     },
     {
@@ -155,8 +155,8 @@
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik"],
       "identity_probes": [
-        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
-        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+        { "kind": "block-hash", "capability": "json-rpc", "height": 0, "expected": "000000000abc0cde58ee7e919d3d4de183e6844add1fd5d14b4eac89d958f470" },
+        { "kind": "block-hash", "capability": "chronik", "height": 0, "expected": "000000000abc0cde58ee7e919d3d4de183e6844add1fd5d14b4eac89d958f470" }
       ]
     },
     {
@@ -167,8 +167,8 @@
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc", "chronik"],
       "identity_probes": [
-        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
-        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+        { "kind": "block-hash", "capability": "json-rpc", "height": 0, "expected": "00000000080a6c9633aae9d24b9acda10d7e6b028e7aa714069798d18ca7bad1" },
+        { "kind": "block-hash", "capability": "chronik", "height": 0, "expected": "00000000080a6c9633aae9d24b9acda10d7e6b028e7aa714069798d18ca7bad1" }
       ]
     },
     {

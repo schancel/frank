@@ -57,7 +57,16 @@ interface RelayCapabilityLifecycle {
 type RelayFetchResponse = {
   status: number;
   statusText: string;
-  headers: { forEach: (visit: (value: string, key: string) => void) => void };
+  headers: {
+    forEach: (visit: (value: string, key: string) => void) => void;
+    get?: (name: string) => string | null;
+  };
+  body?: {
+    getReader: () => {
+      read: () => Promise<{ done: boolean; value?: Uint8Array }>;
+      cancel: () => Promise<void>;
+    };
+  } | null;
   arrayBuffer: () => Promise<ArrayBuffer>;
 };
 
@@ -71,10 +80,54 @@ type RelayFetch = (
   }
 ) => Promise<RelayFetchResponse>;
 
+const MAX_RELAY_CAPABILITY_RESPONSE_BYTES = 64 * 1024;
+
+async function readBoundedRelayResponse(
+  response: RelayFetchResponse,
+  maxBytes: number
+): Promise<Uint8Array> {
+  const declared = response.headers.get?.("content-length");
+  if (declared !== undefined && declared !== null) {
+    const length = Number(declared);
+    if (Number.isFinite(length) && length > maxBytes)
+      throw makeError("relay response too large", "SERVER_ERROR");
+  }
+  if (!response.body) {
+    const body = new Uint8Array(await response.arrayBuffer());
+    if (body.length > maxBytes)
+      throw makeError("relay response too large", "SERVER_ERROR");
+    return body;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    length += value.length;
+    if (length > maxBytes) {
+      await reader.cancel();
+      throw makeError("relay response too large", "SERVER_ERROR");
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return body;
+}
+
 /** ethers' Node transport currently rejects cancellation without closing its socket. Use the
- * platform fetch transport for the capability handshake so cancellation reaches the wire in
- * browsers and modern Node runtimes alike. */
-const relayCapabilityGetUrl: FetchGetUrlFunc | undefined = (() => {
+ * platform fetch transport so cancellation reaches the wire in browsers and modern Node runtimes. */
+function makeRelayGetUrl(
+  maxResponseBytes?: number,
+  sanitizeTransportErrors = false,
+  externalAbort?: AbortSignal
+): FetchGetUrlFunc | undefined {
   const fetchImpl = (globalThis as unknown as { fetch?: RelayFetch }).fetch;
   if (!fetchImpl) return undefined;
   return async (request, signal) => {
@@ -87,6 +140,13 @@ const relayCapabilityGetUrl: FetchGetUrlFunc | undefined = (() => {
     signal?.addListener(() => {
       cancellationError = makeError("request cancelled", "CANCELLED");
       controller.abort();
+    });
+    const abortFromLifecycle = () => {
+      cancellationError = makeError("request cancelled", "CANCELLED");
+      controller.abort();
+    };
+    externalAbort?.addEventListener("abort", abortFromLifecycle, {
+      once: true,
     });
     try {
       const response = await fetchImpl(request.url, {
@@ -103,16 +163,26 @@ const relayCapabilityGetUrl: FetchGetUrlFunc | undefined = (() => {
         statusCode: response.status,
         statusMessage: response.statusText,
         headers,
-        body: new Uint8Array(await response.arrayBuffer()),
+        body:
+          maxResponseBytes === undefined
+            ? new Uint8Array(await response.arrayBuffer())
+            : await readBoundedRelayResponse(response, maxResponseBytes),
       };
     } catch (error) {
       if (cancellationError) throw cancellationError;
+      if (sanitizeTransportErrors)
+        throw makeError("relay RPC transport failed", "SERVER_ERROR");
       throw error;
     } finally {
       clearTimeout(timer);
+      externalAbort?.removeEventListener("abort", abortFromLifecycle);
     }
   };
-})();
+}
+
+const relayCapabilityGetUrl = makeRelayGetUrl(
+  MAX_RELAY_CAPABILITY_RESPONSE_BYTES
+);
 
 function makeRelayCapabilityRequest(url: string): FetchRequest {
   const request = new FetchRequest(url);
@@ -320,11 +390,44 @@ export async function issueMonadRelayRpcCapability(
   timeout = 30_000,
   isCancelled: () => boolean = () => false
 ): Promise<MonadRelayRpcCapability> {
-  return issueMonadRelayRpcCapabilityWithLifecycle(rpcUrl, auth, timeout, {
-    isCancelled,
-    cancelled: new Promise<void>(() => {}),
-    trackRequest: () => () => {},
+  let cancel!: () => void;
+  const cancelled = new Promise<void>((resolve) => {
+    cancel = resolve;
   });
+  const activeRequests = new Set<FetchRequest>();
+  const poll = setInterval(() => {
+    if (!isCancelled()) return;
+    cancel();
+    for (const request of activeRequests) {
+      try {
+        request.cancel();
+      } catch {}
+    }
+    activeRequests.clear();
+  }, 10);
+  const lifecycle: RelayCapabilityLifecycle = {
+    isCancelled,
+    cancelled,
+    trackRequest: (request) => {
+      activeRequests.add(request);
+      return () => activeRequests.delete(request);
+    },
+  };
+  try {
+    return await issueMonadRelayRpcCapabilityWithLifecycle(
+      rpcUrl,
+      auth,
+      timeout,
+      lifecycle
+    );
+  } finally {
+    clearInterval(poll);
+    for (const request of activeRequests) {
+      try {
+        request.cancel();
+      } catch {}
+    }
+  }
 }
 
 /** Builds an ethers connection to a relay family route. The first customer request obtains one
@@ -341,6 +444,13 @@ export function createMonadRelayRpcConnection(
   let cachedCapability: MonadRelayRpcCapability | null = null;
   let capabilityInFlight: Promise<MonadRelayRpcCapability> | null = null;
   let destroyed = false;
+  const rpcAbortController = new AbortController();
+  const relayRpcTransport = makeRelayGetUrl(
+    undefined,
+    true,
+    rpcAbortController.signal
+  );
+  if (relayRpcTransport) connection.getUrlFunc = relayRpcTransport;
   let cancelLifecycle!: () => void;
   const cancelled = new Promise<void>((resolve) => {
     cancelLifecycle = resolve;
@@ -358,8 +468,16 @@ export function createMonadRelayRpcConnection(
     if (destroyed) return;
     destroyed = true;
     cachedCapability = null;
+    rpcAbortController.abort();
     cancelLifecycle();
-    for (const request of activeCapabilityRequests) request.cancel();
+    for (const request of activeCapabilityRequests) {
+      try {
+        request.cancel();
+      } catch {
+        // Ethers rejects cancellation before a preflight request has actually
+        // entered its transport; there is no socket to abort in that state.
+      }
+    }
     activeCapabilityRequests.clear();
   });
 
@@ -404,6 +522,17 @@ export function createMonadRelayRpcConnection(
     authorized.timeout = request.timeout;
     authorized.retryFunc = async () => false;
     authorized.setHeader("content-type", "application/json");
+    const untrack = lifecycle.trackRequest(authorized);
+    const rpcGetUrl = relayRpcTransport;
+    if (rpcGetUrl) {
+      authorized.getUrlFunc = async (relayRequest, signal) => {
+        try {
+          return await rpcGetUrl(relayRequest, signal);
+        } finally {
+          untrack();
+        }
+      };
+    }
     return authorized;
   };
   connection.processFunc = async (request, response) => {

@@ -20,6 +20,7 @@ const PROTOCOL_CHAIN_REGISTRY_V1: &str = include_str!("../../../../docs/protocol
 
 /// Versioned protocol registry used by clients and relay family dispatch.
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProtocolChainRegistry {
     /// Registry schema version.
     pub schema_version: u32,
@@ -29,6 +30,7 @@ pub struct ProtocolChainRegistry {
 
 /// One canonical protocol chain identifier and its permitted proxy surface.
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProtocolChainDescriptor {
     /// Stable Frank identifier used in URLs and signed scopes.
     pub id: String,
@@ -47,8 +49,8 @@ pub struct ProtocolChainDescriptor {
 }
 
 /// One machine-readable upstream identity requirement.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ProtocolIdentityProbe {
     /// Require the EVM upstream to report this decimal EIP-155 chain ID.
     EvmChainId {
@@ -84,7 +86,7 @@ impl ProtocolIdentityProbe {
 }
 
 /// Relay proxy handler family.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProtocolChainFamily {
     /// Ethereum-compatible JSON-RPC.
@@ -94,7 +96,7 @@ pub enum ProtocolChainFamily {
 }
 
 /// Capability names advertised by chain discovery.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProtocolProxyCapability {
     /// Allowlisted JSON-RPC.
@@ -114,14 +116,53 @@ pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
             "unsupported chain registry schema"
         );
         let mut ids = HashSet::new();
+        let mut aliases = HashSet::new();
         for chain in &registry.chains {
             assert!(ids.insert(chain.id.as_str()), "duplicate protocol chain id");
+            assert!(
+                !chain.id.is_empty()
+                    && chain.id.len() <= 64
+                    && chain.id.bytes().all(|byte| byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || byte == b'-'),
+                "unsafe protocol chain id"
+            );
+            assert!(
+                matches!(chain.network.as_str(), "mainnet" | "testnet" | "regtest"),
+                "unsupported protocol network"
+            );
+            if let Some(alias) = &chain.caip2 {
+                assert!(
+                    !alias.is_empty() && aliases.insert(alias.as_str()),
+                    "empty or duplicate CAIP-2 alias"
+                );
+            }
             assert!(!chain.allowed_proxy_capabilities.is_empty());
+            assert_eq!(
+                chain
+                    .allowed_proxy_capabilities
+                    .iter()
+                    .copied()
+                    .collect::<HashSet<_>>()
+                    .len(),
+                chain.allowed_proxy_capabilities.len(),
+                "duplicate protocol capability"
+            );
             assert!(chain.allowed_proxy_capabilities.iter().all(|capability| {
                 *capability == ProtocolProxyCapability::JsonRpc
                     || chain.family == ProtocolChainFamily::Bitcoin
             }));
             assert!(!chain.identity_probes.is_empty());
+            assert_eq!(
+                chain
+                    .identity_probes
+                    .iter()
+                    .cloned()
+                    .collect::<HashSet<_>>()
+                    .len(),
+                chain.identity_probes.len(),
+                "duplicate protocol identity probe"
+            );
             assert!(chain.identity_probes.iter().all(|probe| chain
                 .allowed_proxy_capabilities
                 .contains(&probe.capability())));
@@ -136,6 +177,12 @@ pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
                         ProtocolIdentityProbe::EvmChainId { capability: ProtocolProxyCapability::JsonRpc, expected }
                             if expected == native_chain_id
                     )));
+                    let expected_caip2 = format!("eip155:{native_chain_id}");
+                    assert_eq!(
+                        chain.caip2.as_deref(),
+                        Some(expected_caip2.as_str()),
+                        "EVM CAIP-2 alias contradicts native chain ID"
+                    );
                     assert!(chain.identity_probes.iter().any(|probe| matches!(
                         probe,
                         ProtocolIdentityProbe::BlockHash { capability: ProtocolProxyCapability::JsonRpc, .. }
@@ -145,7 +192,16 @@ pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
                     assert!(chain.allowed_proxy_capabilities.iter().all(|capability| chain
                         .identity_probes
                         .iter()
-                        .any(|probe| matches!(probe, ProtocolIdentityProbe::OperatorBlockCheckpoint { capability: probe_capability } if probe_capability == capability))));
+                        .any(|probe| probe.capability() == *capability)));
+                    if chain.network != "regtest" {
+                        assert!(chain.allowed_proxy_capabilities.iter().all(|capability| chain
+                            .identity_probes
+                            .iter()
+                            .any(|probe| matches!(probe, ProtocolIdentityProbe::BlockHash { capability: probe_capability, expected, .. }
+                                if probe_capability == capability
+                                    && expected.len() == 64
+                                    && expected.bytes().all(|byte| byte.is_ascii_hexdigit())))));
+                    }
                 }
             }
         }
@@ -568,6 +624,8 @@ pub enum BitcoinProxyConfigError {
     InvalidUpstreamEnv(String),
     /// Checkpoint hash is not 32-byte lowercase/uppercase hex.
     InvalidCheckpoint(String),
+    /// Checkpoint contradicts a protocol-pinned chain checkpoint.
+    CheckpointMismatch(String),
     /// Protection limit is invalid.
     InvalidLimit(&'static str),
 }
@@ -616,10 +674,9 @@ impl BitcoinProxyConf {
             if !valid_id || !ids.insert(chain.id.as_str()) {
                 return Err(BitcoinProxyConfigError::InvalidChainId(chain.id.clone()));
             }
-            if protocol_chain(&chain.id).map(|row| row.family) != Some(ProtocolChainFamily::Bitcoin)
-            {
-                return Err(BitcoinProxyConfigError::WrongChainFamily(chain.id.clone()));
-            }
+            let protocol = protocol_chain(&chain.id)
+                .filter(|row| row.family == ProtocolChainFamily::Bitcoin)
+                .ok_or_else(|| BitcoinProxyConfigError::WrongChainFamily(chain.id.clone()))?;
             if chain.rpc_upstream_env.is_none() && chain.chronik_upstream_env.is_none() {
                 return Err(BitcoinProxyConfigError::MissingUpstream(chain.id.clone()));
             }
@@ -641,6 +698,41 @@ impl BitcoinProxyConf {
                 || !chain.checkpoint_hash.bytes().all(|b| b.is_ascii_hexdigit())
             {
                 return Err(BitcoinProxyConfigError::InvalidCheckpoint(chain.id.clone()));
+            }
+            let configured_capabilities = [
+                chain
+                    .rpc_upstream_env
+                    .as_ref()
+                    .map(|_| ProtocolProxyCapability::JsonRpc),
+                chain
+                    .chronik_upstream_env
+                    .as_ref()
+                    .map(|_| ProtocolProxyCapability::Chronik),
+            ];
+            for capability in configured_capabilities.into_iter().flatten() {
+                if let Some((height, expected)) =
+                    protocol
+                        .identity_probes
+                        .iter()
+                        .find_map(|probe| match probe {
+                            ProtocolIdentityProbe::BlockHash {
+                                capability: probe_capability,
+                                height,
+                                expected,
+                            } if *probe_capability == capability => {
+                                Some((*height, expected.as_str()))
+                            }
+                            _ => None,
+                        })
+                {
+                    if chain.checkpoint_height != height
+                        || !chain.checkpoint_hash.eq_ignore_ascii_case(expected)
+                    {
+                        return Err(BitcoinProxyConfigError::CheckpointMismatch(
+                            chain.id.clone(),
+                        ));
+                    }
+                }
             }
         }
         Ok(())
@@ -974,12 +1066,21 @@ mod tests {
                 id: "xec-mainnet".to_string(),
                 rpc_upstream_env: None,
                 chronik_upstream_env: Some("XEC_CHRONIK".to_string()),
-                checkpoint_height: 1,
-                checkpoint_hash: "00".repeat(32),
+                checkpoint_height: 661_648,
+                checkpoint_hash: "000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d"
+                    .to_string(),
             }],
             ..BitcoinProxyConf::default()
         };
         assert_eq!(bitcoin.validate(), Ok(()));
+        bitcoin.chains[0].checkpoint_height = 0;
+        assert_eq!(
+            bitcoin.validate(),
+            Err(crate::BitcoinProxyConfigError::CheckpointMismatch(
+                "xec-mainnet".to_string()
+            ))
+        );
+        bitcoin.chains[0].checkpoint_height = 661_648;
         bitcoin.capability_ttl_ms = 59_999;
         assert_eq!(
             bitcoin.validate(),
@@ -1298,7 +1399,8 @@ mod tests {
                 "{name}"
             );
             assert_eq!(
-                conf.registry.evm_rpc.chains[0].upstream_ws_env, None,
+                conf.registry.evm_rpc.chains[0].upstream_ws_env.as_deref(),
+                Some("MONAD_TESTNET_WS_RPC_URL"),
                 "{name}"
             );
             conf.registry.evm_rpc.validate().unwrap();

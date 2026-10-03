@@ -12,11 +12,11 @@ a separate capability and protocol contract.
 the subset an individual relay actually configured. A relay must additionally probe each upstream:
 
 - EVM: `eth_chainId`, plus the registry-pinned block checkpoint.
-- Bitcoin-family JSON-RPC: `getblockhash` at an operator-pinned height.
-- Chronik: `GET /block/<height>` at the same operator-pinned checkpoint.
+- Bitcoin-family JSON-RPC: `getblockhash` at the registry-pinned post-fork checkpoint (operator
+  checkpoints remain available only for regtest rows).
+- Chronik: `GET /block/<height>` at the same registry-pinned checkpoint.
 
 Forks can share genesis blocks and numeric IDs can be reused. For that reason a native ID or CAIP-2
-alias never substitutes for the required checkpoint probe. EVM checkpoints are protocol data;
-Bitcoin-family checkpoints are operator data because those descriptors cover multiple compatible
-node implementations and locally created regtest networks. CAIP-2 is omitted when the registry
+alias never substitutes for the required checkpoint probe. Public-network checkpoints are protocol
+data; only regtest checkpoints are operator data because those chains are created locally. CAIP-2 is omitted when the registry
 cannot name a network without creating a false uniqueness claim.

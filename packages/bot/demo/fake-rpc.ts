@@ -32,6 +32,9 @@ const CHAIN_ID = 10143
 const FUNDED_BALANCE_WEI = 1_000_000n * 10n ** 18n
 const ZERO32 = `0x${'00'.repeat(32)}`
 const BLOCK_HASH = `0x${'11'.repeat(32)}`
+// Monad testnet's height-zero identity probe in docs/protocol/chains/v1.json. Later blocks
+// remain synthetic: sharing this checkpoint does not make the demo a real chain.
+const GENESIS_HASH = '0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9'
 
 const hex = (n: bigint | number) => `0x${BigInt(n).toString(16)}`
 
@@ -173,10 +176,11 @@ export async function startFakeRpc(params: {
           gasUsedRatio: [0.5],
           reward: [['0x77359400']],
         }
-      case 'eth_getBlockByNumber':
+      case 'eth_getBlockByNumber': {
+        const genesis = p[0] === '0x0' || p[0] === 'earliest'
         return {
-          number: hex(1000),
-          hash: BLOCK_HASH,
+          number: genesis ? '0x0' : hex(1000),
+          hash: genesis ? GENESIS_HASH : BLOCK_HASH,
           parentHash: ZERO32,
           timestamp: hex(Math.floor(Date.now() / 1000)),
           baseFeePerGas: '0x2540be400',
@@ -197,6 +201,7 @@ export async function startFakeRpc(params: {
           uncles: [],
           mixHash: ZERO32,
         }
+      }
       case 'eth_sendRawTransaction': {
         const tx = Transaction.from(String(p[0]))
         const hash = tx.hash as string

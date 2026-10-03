@@ -101,7 +101,8 @@ describe('HD derivation', () => {
     expect(source).not.toContain('registeredSlip44')
     expect(source).toContain('Bitcoin seed')
     expect(deriveBip44Account.length).toBe(3)
-    expect(hdChildScalar(1n, 0n)).toEqual({
+    expect(hdChildScalar(1n, 0n)).toEqual({ ok: true, value: 1n })
+    expect(hdChildScalar(1n, -1n)).toEqual({
       ok: false,
       error: { code: 'hd-invalid-child' },
     })

@@ -161,11 +161,11 @@ function fingerprintOf(publicKey: Uint8Array): Uint8Array {
 }
 
 /**
- * BIP32 child scalar. `tweak` must be in [1, n) before reduction.
+ * BIP32 child scalar. `tweak` must be in [0, n) before reduction.
  * A zero sum is invalid. This does not try the next index.
  */
 export function hdChildScalar(parent: bigint, tweak: bigint): HdResult<bigint> {
-  if (tweak <= 0n || tweak >= SECP256K1_N) {
+  if (tweak < 0n || tweak >= SECP256K1_N) {
     return fail({ code: 'hd-invalid-child' })
   }
   const sum = (parent + tweak) % SECP256K1_N
@@ -348,7 +348,12 @@ export function deriveHdPublic(
   wipe(mac)
   const tweak = bytesToBigint(left)
   wipe(left)
-  const child = addScalarToPublicKey(hdNode.publicKey, tweak)
+  // BIP32 permits a zero IL: retain the valid parent point, but use the new
+  // chain code and child metadata below. Generic curve tweaks remain nonzero.
+  const child =
+    tweak === 0n && compressedPointFromBytes(hdNode.publicKey) !== null
+      ? copyBytes(hdNode.publicKey)
+      : addScalarToPublicKey(hdNode.publicKey, tweak)
   if (child === null) {
     wipe(chainCode)
     return fail({ code: 'hd-invalid-child' })

@@ -1,0 +1,7 @@
+{
+  "allowed": ["@frank/nakamoto", "@noble/curves", "@noble/hashes"],
+  "optional": [],
+  "planned": [],
+  "plannedOptional": [],
+  "note": "Nakamoto owns shared key validation; Noble versions exactly match Nakamoto's pinned curve backend."
+}

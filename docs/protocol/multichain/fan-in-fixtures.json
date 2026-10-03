@@ -1,0 +1,1722 @@
+{
+  "format": "frank.multichain.fan-in-fixtures",
+  "schema_version": 2,
+  "description": "Encoding-agnostic state-transition fixtures. Opaque, frame, and commit labels assert equality only.",
+  "manifest_schema": {
+    "required_fixture_fields": [
+      "id",
+      "covers",
+      "initial_state",
+      "ingest",
+      "expected_state",
+      "canonical_revision_output",
+      "logical_object_output",
+      "assertions"
+    ],
+    "required_state_fields": [
+      "revisions",
+      "observations",
+      "local_projections",
+      "revision_conflicts",
+      "observation_conflicts",
+      "quarantines",
+      "cursors"
+    ],
+    "reference_collections": {
+      "revisions": "record_catalog.revisions",
+      "observations": "record_catalog.observations",
+      "local_projections": "record_catalog.local_projections",
+      "revision_conflicts": "record_catalog.revision_conflicts",
+      "observation_conflicts": "record_catalog.observation_conflicts",
+      "quarantines": "record_catalog.quarantines",
+      "cursors": "record_catalog.cursors",
+      "canonical_revision_output": "record_catalog.revisions"
+    },
+    "constraints": [
+      "fixture ids are unique",
+      "all state and output references resolve through reference_collections",
+      "state.observations lists only valid observations; quarantined variants appear only through quarantine records",
+      "every cursor names a position with a valid observation or a quarantine row of the same source, scope, and generation",
+      "every quarantine variant_ref is distinct from every valid observation and from other quarantine records",
+      "an atomic ingest cursor_after_ref and every item key use the ingest source, scope, and generation, else the batch is rejected",
+      "canonical_revision_output = state revisions, minus ambiguous keys (revision_conflicts), minus edits whose predecessor key is ambiguous, minus revisions with no valid observation, sorted by (order tuple, key)",
+      "a rejected or rolled-back batch leaves expected_state equal to initial_state",
+      "retractions = previously_emitted_output minus canonical_revision_output"
+    ]
+  },
+  "field_owners": {
+    "logical_and_revision_identifier_bytes": "#67/#113 (opaque here)",
+    "canonical_source_bytes_and_commitment_encoding": "#130 (symbolic here)",
+    "key_byte_tie_break_encoding": "#130",
+    "type_to_cbor_id_mapping": "later migration tickets #67/#113/#130",
+    "intrinsic_order_tuple": "owning protocol, integrated by #59",
+    "source_scope_generation_position_and_order_assertion": "#111/#134",
+    "cursor_and_atomic_ingest": "#59/#134",
+    "logical_reduction": "owning protocol reducer, dispatched by #59",
+    "local_projection": "local consumer under #59"
+  },
+  "record_catalog": {
+    "revisions": {
+      "REV-E1": {
+        "revision_key": {
+          "logical_object_key": {
+            "object_type": "public.topic-post",
+            "network_tag": "opaque:network-tag:N1",
+            "authority": {
+              "type": "author",
+              "value": "opaque:author:A1"
+            },
+            "object_id": "opaque:object:E1"
+          },
+          "revision_type": "public.event",
+          "revision_id": "opaque:revision:E1"
+        },
+        "authenticated_facts": {
+          "action": "create"
+        },
+        "authenticates_under_owning_protocol": true,
+        "canonical_source_bytes": "frame:post:E1:v1",
+        "frame_object_type": "label:post-object",
+        "intrinsic_order_tuple": [
+          {
+            "type": "u64",
+            "value": 10
+          }
+        ],
+        "revision_commitment": "commit:revision:REV-E1"
+      },
+      "REV-E1-EDIT": {
+        "revision_key": {
+          "logical_object_key": {
+            "object_type": "public.topic-post",
+            "network_tag": "opaque:network-tag:N1",
+            "authority": {
+              "type": "author",
+              "value": "opaque:author:A1"
+            },
+            "object_id": "opaque:object:E1"
+          },
+          "revision_type": "public.edit",
+          "revision_id": "opaque:revision:E1:edit"
+        },
+        "authenticated_facts": {
+          "action": "edit",
+          "predecessor_revision_id": "opaque:revision:E1"
+        },
+        "authenticates_under_owning_protocol": true,
+        "canonical_source_bytes": "frame:post:E1:edit:v1",
+        "frame_object_type": "label:post-object",
+        "intrinsic_order_tuple": [
+          {
+            "type": "u64",
+            "value": 11
+          }
+        ],
+        "revision_commitment": "commit:revision:REV-E1-EDIT"
+      },
+      "REV-E1-TOMB": {
+        "revision_key": {
+          "logical_object_key": {
+            "object_type": "public.topic-post",
+            "network_tag": "opaque:network-tag:N1",
+            "authority": {
+              "type": "author",
+              "value": "opaque:author:A1"
+            },
+            "object_id": "opaque:object:E1"
+          },
+          "revision_type": "public.tombstone",
+          "revision_id": "opaque:revision:E1:tomb"
+        },
+        "authenticated_facts": {
+          "action": "tombstone",
+          "predecessor_revision_id": "opaque:revision:E1:edit"
+        },
+        "authenticates_under_owning_protocol": true,
+        "canonical_source_bytes": "frame:post:E1:tomb:v1",
+        "frame_object_type": "label:post-object",
+        "intrinsic_order_tuple": [
+          {
+            "type": "u64",
+            "value": 12
+          }
+        ],
+        "revision_commitment": "commit:revision:REV-E1-TOMB"
+      },
+      "REV-E1-A9": {
+        "revision_key": {
+          "logical_object_key": {
+            "object_type": "public.topic-post",
+            "network_tag": "opaque:network-tag:N1",
+            "authority": {
+              "type": "author",
+              "value": "opaque:author:A9"
+            },
+            "object_id": "opaque:object:E1"
+          },
+          "revision_type": "public.event",
+          "revision_id": "opaque:revision:E1"
+        },
+        "authenticated_facts": {
+          "action": "create"
+        },
+        "authenticates_under_owning_protocol": true,
+        "canonical_source_bytes": "frame:post:E1-by-A9:v1",
+        "frame_object_type": "label:post-object",
+        "intrinsic_order_tuple": [
+          {
+            "type": "u64",
+            "value": 15
+          }
+        ],
+        "revision_commitment": "commit:revision:REV-E1-A9"
+      },
+      "REV-E1-AUTH-VARIANT": {
+        "revision_key": {
+          "logical_object_key": {
+            "object_type": "public.topic-post",
+            "network_tag": "opaque:network-tag:N1",
+            "authority": {
+              "type": "author",
+              "value": "opaque:author:A1"
+            },
+            "object_id": "opaque:object:E1"
+          },
+          "revision_type": "public.event",
+          "revision_id": "opaque:revision:E1"
+        },
+        "authenticated_facts": {
+          "action": "create"
+        },
+        "authenticates_under_owning_protocol": true,
+        "canonical_source_bytes": "frame:post:E1:changed",
+        "frame_object_type": "label:post-object",
+        "intrinsic_order_tuple": [
+          {
+            "type": "u64",
+            "value": 10
+          }
+        ],
+        "revision_commitment": "commit:revision:REV-E1-AUTH-VARIANT"
+      },
+      "REV-E2": {
+        "revision_key": {
+          "logical_object_key": {
+            "object_type": "public.topic-post",
+            "network_tag": "opaque:network-tag:N1",
+            "authority": {
+              "type": "author",
+              "value": "opaque:author:A1"
+            },
+            "object_id": "opaque:object:E2"
+          },
+          "revision_type": "public.event",
+          "revision_id": "opaque:revision:E2"
+        },
+        "authenticated_facts": {
+          "action": "create"
+        },
+        "authenticates_under_owning_protocol": true,
+        "canonical_source_bytes": "frame:post:E2:v1",
+        "frame_object_type": "label:post-object",
+        "intrinsic_order_tuple": [
+          {
+            "type": "u64",
+            "value": 30
+          }
+        ],
+        "revision_commitment": "commit:revision:REV-E2"
+      },
+      "REV-E2-POISON": {
+        "revision_key": {
+          "logical_object_key": {
+            "object_type": "public.topic-post",
+            "network_tag": "opaque:network-tag:N1",
+            "authority": {
+              "type": "author",
+              "value": "opaque:author:A1"
+            },
+            "object_id": "opaque:object:E2"
+          },
+          "revision_type": "public.event",
+          "revision_id": "opaque:revision:E2"
+        },
+        "authenticated_facts": {
+          "action": "create"
+        },
+        "authenticates_under_owning_protocol": false,
+        "canonical_source_bytes": "frame:post:E2:poison",
+        "frame_object_type": "label:post-object",
+        "intrinsic_order_tuple": [
+          {
+            "type": "u64",
+            "value": 30
+          }
+        ],
+        "revision_commitment": "commit:revision:REV-E2-POISON"
+      },
+      "REV-E4": {
+        "revision_key": {
+          "logical_object_key": {
+            "object_type": "public.topic-post",
+            "network_tag": "opaque:network-tag:N1",
+            "authority": {
+              "type": "author",
+              "value": "opaque:author:A1"
+            },
+            "object_id": "opaque:object:E4"
+          },
+          "revision_type": "public.event",
+          "revision_id": "opaque:revision:E4"
+        },
+        "authenticated_facts": {
+          "action": "create"
+        },
+        "authenticates_under_owning_protocol": true,
+        "canonical_source_bytes": "frame:post:E4:v1",
+        "frame_object_type": "label:post-object",
+        "intrinsic_order_tuple": [
+          {
+            "type": "u64",
+            "value": 40
+          }
+        ],
+        "revision_commitment": "commit:revision:REV-E4"
+      },
+      "REV-PD-1": {
+        "revision_key": {
+          "logical_object_key": {
+            "object_type": "recipient.private-delivery",
+            "network_tag": "opaque:network-tag:N1",
+            "authority": {
+              "type": "destination-account",
+              "value": "opaque:account:D1"
+            },
+            "object_id": "opaque:delivery:P1"
+          },
+          "revision_type": "private.delivery",
+          "revision_id": "opaque:revision:P1"
+        },
+        "authenticated_facts": {
+          "note": "relay-visible authenticated facts only"
+        },
+        "authenticates_under_owning_protocol": true,
+        "canonical_source_bytes": "frame:delivery:P1:v1",
+        "frame_object_type": "label:type-1-delivery",
+        "intrinsic_order_tuple": [
+          {
+            "type": "u64",
+            "value": 20
+          }
+        ],
+        "revision_commitment": "commit:revision:REV-PD-1"
+      },
+      "REV-PD-2": {
+        "revision_key": {
+          "logical_object_key": {
+            "object_type": "recipient.private-delivery",
+            "network_tag": "opaque:network-tag:N1",
+            "authority": {
+              "type": "destination-account",
+              "value": "opaque:account:D1"
+            },
+            "object_id": "opaque:delivery:P2"
+          },
+          "revision_type": "private.delivery",
+          "revision_id": "opaque:revision:P2"
+        },
+        "authenticated_facts": {
+          "note": "relay-visible authenticated facts only"
+        },
+        "authenticates_under_owning_protocol": true,
+        "canonical_source_bytes": "frame:delivery:P2:v1",
+        "frame_object_type": "label:type-1-delivery",
+        "intrinsic_order_tuple": [
+          {
+            "type": "u64",
+            "value": 21
+          }
+        ],
+        "revision_commitment": "commit:revision:REV-PD-2"
+      }
+    },
+    "observations": {
+      "OBS-R1-G1-10-E1": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R1",
+          "source_scope": {
+            "type": "public-stream",
+            "value": "opaque:scope:S1"
+          },
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:10"
+        },
+        "revision_ref": "REV-E1",
+        "revision_commitment": "commit:revision:REV-E1",
+        "source_order_assertion": {
+          "ordinal": "opaque:ordinal:10"
+        },
+        "observation_commitment": "commit:observation:R1:S1:G1:10:commit:revision:REV-E1",
+        "status": "valid",
+        "local_metadata": {
+          "peer_path": "opaque:path:R1",
+          "page": "opaque:page:10",
+          "relay_receipt": "opaque:receipt:R1:10",
+          "validation": "valid"
+        }
+      },
+      "OBS-R1-G2-10-E1": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R1",
+          "source_scope": {
+            "type": "public-stream",
+            "value": "opaque:scope:S1"
+          },
+          "source_generation": "opaque:generation:G2",
+          "source_position": "opaque:position:10"
+        },
+        "revision_ref": "REV-E1",
+        "revision_commitment": "commit:revision:REV-E1",
+        "source_order_assertion": {
+          "ordinal": "opaque:ordinal:10"
+        },
+        "observation_commitment": "commit:observation:R1:S1:G2:10:commit:revision:REV-E1",
+        "status": "valid",
+        "local_metadata": {
+          "peer_path": "opaque:path:R1",
+          "page": "opaque:page:10",
+          "relay_receipt": "opaque:receipt:R1:10",
+          "validation": "valid"
+        }
+      },
+      "OBS-R2-G1-44-E1": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R2",
+          "source_scope": {
+            "type": "public-stream",
+            "value": "opaque:scope:S1"
+          },
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:44"
+        },
+        "revision_ref": "REV-E1",
+        "revision_commitment": "commit:revision:REV-E1",
+        "source_order_assertion": {
+          "ordinal": "opaque:ordinal:44"
+        },
+        "observation_commitment": "commit:observation:R2:S1:G1:44:commit:revision:REV-E1",
+        "status": "valid",
+        "local_metadata": {
+          "peer_path": "opaque:path:R2",
+          "page": "opaque:page:44",
+          "relay_receipt": "opaque:receipt:R2:44",
+          "validation": "valid"
+        }
+      },
+      "OBS-R1-G1-11-E1-EDIT": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R1",
+          "source_scope": {
+            "type": "public-stream",
+            "value": "opaque:scope:S1"
+          },
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:11"
+        },
+        "revision_ref": "REV-E1-EDIT",
+        "revision_commitment": "commit:revision:REV-E1-EDIT",
+        "source_order_assertion": {
+          "ordinal": "opaque:ordinal:11"
+        },
+        "observation_commitment": "commit:observation:R1:S1:G1:11:commit:revision:REV-E1-EDIT",
+        "status": "valid",
+        "local_metadata": {
+          "peer_path": "opaque:path:R1",
+          "page": "opaque:page:11",
+          "relay_receipt": "opaque:receipt:R1:11",
+          "validation": "valid"
+        }
+      },
+      "OBS-R1-G1-12-E1-TOMB": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R1",
+          "source_scope": {
+            "type": "public-stream",
+            "value": "opaque:scope:S1"
+          },
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:12"
+        },
+        "revision_ref": "REV-E1-TOMB",
+        "revision_commitment": "commit:revision:REV-E1-TOMB",
+        "source_order_assertion": {
+          "ordinal": "opaque:ordinal:12"
+        },
+        "observation_commitment": "commit:observation:R1:S1:G1:12:commit:revision:REV-E1-TOMB",
+        "status": "valid",
+        "local_metadata": {
+          "peer_path": "opaque:path:R1",
+          "page": "opaque:page:12",
+          "relay_receipt": "opaque:receipt:R1:12",
+          "validation": "valid"
+        }
+      },
+      "OBS-R2-G1-46-E1-A9": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R2",
+          "source_scope": {
+            "type": "public-stream",
+            "value": "opaque:scope:S1"
+          },
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:46"
+        },
+        "revision_ref": "REV-E1-A9",
+        "revision_commitment": "commit:revision:REV-E1-A9",
+        "source_order_assertion": {
+          "ordinal": "opaque:ordinal:46"
+        },
+        "observation_commitment": "commit:observation:R2:S1:G1:46:commit:revision:REV-E1-A9",
+        "status": "valid",
+        "local_metadata": {
+          "peer_path": "opaque:path:R2",
+          "page": "opaque:page:46",
+          "relay_receipt": "opaque:receipt:R2:46",
+          "validation": "valid"
+        }
+      },
+      "OBS-R2-G1-44-E1-AUTHVAR": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R2",
+          "source_scope": {
+            "type": "public-stream",
+            "value": "opaque:scope:S1"
+          },
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:44"
+        },
+        "revision_ref": "REV-E1-AUTH-VARIANT",
+        "revision_commitment": "commit:revision:REV-E1-AUTH-VARIANT",
+        "source_order_assertion": {
+          "ordinal": "opaque:ordinal:44"
+        },
+        "observation_commitment": "commit:observation:R2:S1:G1:44:commit:revision:REV-E1-AUTH-VARIANT",
+        "status": "valid",
+        "local_metadata": {
+          "peer_path": "opaque:path:R2",
+          "page": "opaque:page:44",
+          "relay_receipt": "opaque:receipt:R2:44",
+          "validation": "valid"
+        }
+      },
+      "OBS-R1-G1-30-E2": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R1",
+          "source_scope": {
+            "type": "public-stream",
+            "value": "opaque:scope:S1"
+          },
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:30"
+        },
+        "revision_ref": "REV-E2",
+        "revision_commitment": "commit:revision:REV-E2",
+        "source_order_assertion": {
+          "ordinal": "opaque:ordinal:30"
+        },
+        "observation_commitment": "commit:observation:R1:S1:G1:30:commit:revision:REV-E2",
+        "status": "valid",
+        "local_metadata": {
+          "peer_path": "opaque:path:R1",
+          "page": "opaque:page:30",
+          "relay_receipt": "opaque:receipt:R1:30",
+          "validation": "valid"
+        }
+      },
+      "OBS-R1-G1-30-E1-VARIANT": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R1",
+          "source_scope": {
+            "type": "public-stream",
+            "value": "opaque:scope:S1"
+          },
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:30"
+        },
+        "revision_ref": "REV-E1",
+        "revision_commitment": "commit:revision:REV-E1",
+        "source_order_assertion": {
+          "ordinal": "opaque:ordinal:30"
+        },
+        "observation_commitment": "commit:observation:R1:S1:G1:30:commit:revision:REV-E1",
+        "status": "quarantined-variant",
+        "local_metadata": {
+          "peer_path": "opaque:path:R1",
+          "page": "opaque:page:30",
+          "relay_receipt": "opaque:receipt:R1:30",
+          "validation": "invalid-or-conflicting"
+        }
+      },
+      "OBS-R2-G1-45-E2-POISON": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R2",
+          "source_scope": {
+            "type": "public-stream",
+            "value": "opaque:scope:S1"
+          },
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:45"
+        },
+        "revision_ref": "REV-E2-POISON",
+        "revision_commitment": "commit:revision:REV-E2-POISON",
+        "source_order_assertion": {
+          "ordinal": "opaque:ordinal:45"
+        },
+        "observation_commitment": "commit:observation:R2:S1:G1:45:commit:revision:REV-E2-POISON",
+        "status": "quarantined-variant",
+        "local_metadata": {
+          "peer_path": "opaque:path:R2",
+          "page": "opaque:page:45",
+          "relay_receipt": "opaque:receipt:R2:45",
+          "validation": "invalid-or-conflicting"
+        }
+      },
+      "OBS-R1-G1-31-E4": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R1",
+          "source_scope": {
+            "type": "public-stream",
+            "value": "opaque:scope:S1"
+          },
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:31"
+        },
+        "revision_ref": "REV-E4",
+        "revision_commitment": "commit:revision:REV-E4",
+        "source_order_assertion": {
+          "ordinal": "opaque:ordinal:31"
+        },
+        "observation_commitment": "commit:observation:R1:S1:G1:31:commit:revision:REV-E4",
+        "status": "valid",
+        "local_metadata": {
+          "peer_path": "opaque:path:R1",
+          "page": "opaque:page:31",
+          "relay_receipt": "opaque:receipt:R1:31",
+          "validation": "valid"
+        }
+      },
+      "OBS-R2-BATCH-SPOOF-R1-13": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R1",
+          "source_scope": {
+            "type": "public-stream",
+            "value": "opaque:scope:S1"
+          },
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:13"
+        },
+        "revision_ref": "REV-E2",
+        "revision_commitment": "commit:revision:REV-E2",
+        "source_order_assertion": {
+          "ordinal": "opaque:ordinal:13"
+        },
+        "observation_commitment": "commit:observation:R1:S1:G1:13:commit:revision:REV-E2",
+        "status": "valid",
+        "local_metadata": {
+          "peer_path": "opaque:path:R1",
+          "page": "opaque:page:13",
+          "relay_receipt": "opaque:receipt:R1:13",
+          "validation": "valid"
+        }
+      },
+      "OBS-R2-M1-G1-70-PD1": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R2",
+          "source_scope": {
+            "type": "recipient-mailbox",
+            "value": "opaque:scope:N1:D1"
+          },
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:70"
+        },
+        "revision_ref": "REV-PD-1",
+        "revision_commitment": "commit:revision:REV-PD-1",
+        "source_order_assertion": {
+          "ordinal": "opaque:ordinal:70"
+        },
+        "observation_commitment": "commit:observation:R2:M1:G1:70:commit:revision:REV-PD-1",
+        "status": "valid",
+        "local_metadata": {
+          "peer_path": "opaque:path:R2",
+          "page": "opaque:page:70",
+          "relay_receipt": "opaque:receipt:R2:70",
+          "validation": "valid"
+        }
+      },
+      "OBS-R2-M1-G1-71-PD2": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R2",
+          "source_scope": {
+            "type": "recipient-mailbox",
+            "value": "opaque:scope:N1:D1"
+          },
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:71"
+        },
+        "revision_ref": "REV-PD-2",
+        "revision_commitment": "commit:revision:REV-PD-2",
+        "source_order_assertion": {
+          "ordinal": "opaque:ordinal:71"
+        },
+        "observation_commitment": "commit:observation:R2:M1:G1:71:commit:revision:REV-PD-2",
+        "status": "valid",
+        "local_metadata": {
+          "peer_path": "opaque:path:R2",
+          "page": "opaque:page:71",
+          "relay_receipt": "opaque:receipt:R2:71",
+          "validation": "valid"
+        }
+      }
+    },
+    "local_projections": {
+      "PROJ-PD1-LOCKED": {
+        "projection_key": {
+          "revision_ref": "REV-PD-1",
+          "projection_type": "recipient-view",
+          "viewer_context": "opaque:local-viewer:V1"
+        },
+        "state": "locked",
+        "local_payload": null
+      },
+      "PROJ-PD2-LOCKED": {
+        "projection_key": {
+          "revision_ref": "REV-PD-2",
+          "projection_type": "recipient-view",
+          "viewer_context": "opaque:local-viewer:V1"
+        },
+        "state": "locked",
+        "local_payload": null
+      },
+      "PROJ-PD1-DECRYPTED": {
+        "projection_key": {
+          "revision_ref": "REV-PD-1",
+          "projection_type": "recipient-view",
+          "viewer_context": "opaque:local-viewer:V1"
+        },
+        "state": "decrypted",
+        "local_payload": {
+          "plaintext": "opaque:local-plaintext:P1"
+        }
+      },
+      "PROJ-PD2-DECRYPTED": {
+        "projection_key": {
+          "revision_ref": "REV-PD-2",
+          "projection_type": "recipient-view",
+          "viewer_context": "opaque:local-viewer:V1"
+        },
+        "state": "decrypted",
+        "local_payload": {
+          "plaintext": "opaque:local-plaintext:P2",
+          "edit_of_revision_ref": "REV-PD-1",
+          "relation_source": "decrypted-content"
+        }
+      }
+    },
+    "revision_conflicts": {
+      "REVCONFLICT-E1-AUTH": {
+        "revision_ref": "REV-E1",
+        "variant_refs": ["REV-E1", "REV-E1-AUTH-VARIANT"],
+        "reason": "same CanonicalRevisionKey, different bytes and commitment, both authenticate under the owning protocol",
+        "ambiguity_marker_durable_across_eviction": true,
+        "canonical_output_suppressed": true
+      }
+    },
+    "observation_conflicts": {
+      "OBSCONFLICT-R1-G1-30": {
+        "valid_ref": "OBS-R1-G1-30-E2",
+        "variant_ref": "OBS-R1-G1-30-E1-VARIANT",
+        "reason": "same ObservationKey, same position asserted for a different revision",
+        "key_ambiguous": false
+      }
+    },
+    "quarantines": {
+      "QUAR-R1-G1-30-VARIANT": {
+        "variant_ref": "OBS-R1-G1-30-E1-VARIANT",
+        "valid_ref": "OBS-R1-G1-30-E2",
+        "reason": "observation-key commitment conflict",
+        "durable": true,
+        "canonical_output_allowed": false
+      },
+      "QUAR-R2-G1-45-POISON": {
+        "variant_ref": "OBS-R2-G1-45-E2-POISON",
+        "valid_ref": null,
+        "reason": "variant failed owning-protocol validation; not an ambiguity marker",
+        "durable": true,
+        "canonical_output_allowed": false
+      }
+    },
+    "cursors": {
+      "CURSOR-R1-S1-G1-10": {
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "position": "opaque:position:10"
+      },
+      "CURSOR-R1-S1-G2-10": {
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G2",
+        "position": "opaque:position:10"
+      },
+      "CURSOR-R2-S1-G1-44": {
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "position": "opaque:position:44"
+      },
+      "CURSOR-R2-S1-G1-46": {
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "position": "opaque:position:46"
+      },
+      "CURSOR-R1-S1-G1-11": {
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "position": "opaque:position:11"
+      },
+      "CURSOR-R1-S1-G1-12": {
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "position": "opaque:position:12"
+      },
+      "CURSOR-R2-M1-G1-70": {
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {
+          "type": "recipient-mailbox",
+          "value": "opaque:scope:N1:D1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "position": "opaque:position:70"
+      },
+      "CURSOR-R2-M1-G1-71": {
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {
+          "type": "recipient-mailbox",
+          "value": "opaque:scope:N1:D1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "position": "opaque:position:71"
+      },
+      "CURSOR-R2-S1-G1-45": {
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "position": "opaque:position:45"
+      },
+      "CURSOR-R1-S1-G1-30": {
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "position": "opaque:position:30"
+      },
+      "CURSOR-R1-S1-G1-31": {
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "position": "opaque:position:31"
+      }
+    }
+  },
+  "fixtures": [
+    {
+      "id": "generation-replay",
+      "covers": "The same public E1 observed in G1 and replayed in G2.",
+      "initial_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-G1-10-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10"]
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G2",
+        "items": [
+          {
+            "revision_ref": "REV-E1",
+            "observation_ref": "OBS-R1-G2-10-E1"
+          }
+        ],
+        "cursor_after_ref": "CURSOR-R1-S1-G2-10"
+      },
+      "expected_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-G1-10-E1", "OBS-R1-G2-10-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10", "CURSOR-R1-S1-G2-10"]
+      },
+      "canonical_revision_output": ["REV-E1"],
+      "logical_object_output": {
+        "status": "reduced",
+        "objects": [
+          {
+            "logical_object": "opaque:object:E1",
+            "state": "created",
+            "revision_refs": ["REV-E1"]
+          }
+        ]
+      },
+      "assertions": [
+        "G2 creates a second observation, not a second canonical revision",
+        "generation and source position do not affect revision identity",
+        "E1 emits once"
+      ]
+    },
+    {
+      "id": "two-relay-public",
+      "covers": "Public E1 observed independently from R1 and R2.",
+      "initial_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-G1-10-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10"]
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "items": [
+          {
+            "revision_ref": "REV-E1",
+            "observation_ref": "OBS-R2-G1-44-E1"
+          }
+        ],
+        "cursor_after_ref": "CURSOR-R2-S1-G1-44"
+      },
+      "expected_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-G1-10-E1", "OBS-R2-G1-44-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10", "CURSOR-R2-S1-G1-44"]
+      },
+      "canonical_revision_output": ["REV-E1"],
+      "logical_object_output": {
+        "status": "reduced",
+        "objects": [
+          {
+            "logical_object": "opaque:object:E1",
+            "state": "created",
+            "revision_refs": ["REV-E1"]
+          }
+        ]
+      },
+      "assertions": [
+        "relay identity occurs only in observations",
+        "R2 arrival does not reposition or re-emit E1",
+        "E1 emits once"
+      ]
+    },
+    {
+      "id": "authority-namespace-key",
+      "covers": "The same object and revision ids under a different authority (A9) are a different key, not a conflict.",
+      "initial_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-G1-10-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10"]
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "items": [
+          {
+            "revision_ref": "REV-E1-A9",
+            "observation_ref": "OBS-R2-G1-46-E1-A9"
+          }
+        ],
+        "cursor_after_ref": "CURSOR-R2-S1-G1-46"
+      },
+      "expected_state": {
+        "revisions": ["REV-E1", "REV-E1-A9"],
+        "observations": ["OBS-R1-G1-10-E1", "OBS-R2-G1-46-E1-A9"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10", "CURSOR-R2-S1-G1-46"]
+      },
+      "canonical_revision_output": ["REV-E1", "REV-E1-A9"],
+      "logical_object_output": {
+        "status": "reduced",
+        "objects": [
+          {
+            "logical_object": "opaque:object:E1",
+            "state": "created",
+            "revision_refs": ["REV-E1"]
+          },
+          {
+            "logical_object": "opaque:object:E1",
+            "authority": "opaque:author:A9",
+            "state": "created",
+            "revision_refs": ["REV-E1-A9"]
+          }
+        ]
+      },
+      "assertions": [
+        "authority and NetworkTag are part of the key",
+        "no revision conflict and no squatting of E1 by A9"
+      ]
+    },
+    {
+      "id": "public-post-edit",
+      "covers": "Public post E1 creation plus its edit, one logical object.",
+      "initial_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-G1-10-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10"]
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "items": [
+          {
+            "revision_ref": "REV-E1-EDIT",
+            "observation_ref": "OBS-R1-G1-11-E1-EDIT"
+          }
+        ],
+        "cursor_after_ref": "CURSOR-R1-S1-G1-11"
+      },
+      "expected_state": {
+        "revisions": ["REV-E1", "REV-E1-EDIT"],
+        "observations": ["OBS-R1-G1-10-E1", "OBS-R1-G1-11-E1-EDIT"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-11"]
+      },
+      "canonical_revision_output": ["REV-E1", "REV-E1-EDIT"],
+      "logical_object_output": {
+        "status": "reduced",
+        "objects": [
+          {
+            "logical_object": "opaque:object:E1",
+            "state": "edited",
+            "revision_refs": ["REV-E1", "REV-E1-EDIT"]
+          }
+        ],
+        "reducer": "public.topic-post"
+      },
+      "assertions": [
+        "the edit has its own revision key under the same logical object",
+        "the edit is not key reuse or equivocation",
+        "order is by intrinsic tuple 10 then 11"
+      ]
+    },
+    {
+      "id": "tombstone-identity",
+      "covers": "A tombstone is a new revision with its own key under the same logical object.",
+      "initial_state": {
+        "revisions": ["REV-E1", "REV-E1-EDIT"],
+        "observations": ["OBS-R1-G1-10-E1", "OBS-R1-G1-11-E1-EDIT"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-11"]
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "items": [
+          {
+            "revision_ref": "REV-E1-TOMB",
+            "observation_ref": "OBS-R1-G1-12-E1-TOMB"
+          }
+        ],
+        "cursor_after_ref": "CURSOR-R1-S1-G1-12"
+      },
+      "expected_state": {
+        "revisions": ["REV-E1", "REV-E1-EDIT", "REV-E1-TOMB"],
+        "observations": [
+          "OBS-R1-G1-10-E1",
+          "OBS-R1-G1-11-E1-EDIT",
+          "OBS-R1-G1-12-E1-TOMB"
+        ],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-12"]
+      },
+      "canonical_revision_output": ["REV-E1", "REV-E1-EDIT", "REV-E1-TOMB"],
+      "logical_object_output": {
+        "status": "reduced",
+        "objects": [
+          {
+            "logical_object": "opaque:object:E1",
+            "state": "tombstoned",
+            "revision_refs": ["REV-E1", "REV-E1-EDIT", "REV-E1-TOMB"]
+          }
+        ],
+        "reducer": "public.topic-post"
+      },
+      "assertions": [
+        "the tombstone revision key differs from the create and edit keys",
+        "all revisions stay auditable; the tombstone is not physical deletion"
+      ]
+    },
+    {
+      "id": "private-create-edit",
+      "covers": "Two private deliveries (an original and its later edit) with distinct relay-visible ids and no plaintext predecessor.",
+      "initial_state": {
+        "revisions": [],
+        "observations": [],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": []
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {
+          "type": "recipient-mailbox",
+          "value": "opaque:scope:N1:D1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "items": [
+          {
+            "revision_ref": "REV-PD-1",
+            "observation_ref": "OBS-R2-M1-G1-70-PD1"
+          },
+          {
+            "revision_ref": "REV-PD-2",
+            "observation_ref": "OBS-R2-M1-G1-71-PD2"
+          }
+        ],
+        "cursor_after_ref": "CURSOR-R2-M1-G1-71"
+      },
+      "expected_state": {
+        "revisions": ["REV-PD-1", "REV-PD-2"],
+        "observations": ["OBS-R2-M1-G1-70-PD1", "OBS-R2-M1-G1-71-PD2"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R2-M1-G1-71"]
+      },
+      "canonical_revision_output": ["REV-PD-1", "REV-PD-2"],
+      "logical_object_output": {
+        "status": "locked-opaque",
+        "objects": [
+          {
+            "logical_object": "opaque:delivery:P1",
+            "state": "locked-opaque",
+            "revision_refs": ["REV-PD-1"]
+          },
+          {
+            "logical_object": "opaque:delivery:P2",
+            "state": "locked-opaque",
+            "revision_refs": ["REV-PD-2"]
+          }
+        ]
+      },
+      "assertions": [
+        "each private object is one delivery with one revision",
+        "no relay-visible field links P2 to P1; the edit relation is absent until decryption",
+        "the destination in the key is the account address (assumption #206)"
+      ]
+    },
+    {
+      "id": "revision-key-changed-bytes",
+      "covers": "An authenticated second variant under E1's existing revision key.",
+      "initial_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-G1-10-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10"]
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "items": [
+          {
+            "claimed_revision_ref": "REV-E1",
+            "incoming_revision_ref": "REV-E1-AUTH-VARIANT",
+            "observation_ref": "OBS-R2-G1-44-E1-AUTHVAR"
+          }
+        ],
+        "cursor_after_ref": "CURSOR-R2-S1-G1-44"
+      },
+      "expected_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-G1-10-E1", "OBS-R2-G1-44-E1-AUTHVAR"],
+        "local_projections": [],
+        "revision_conflicts": ["REVCONFLICT-E1-AUTH"],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10", "CURSOR-R2-S1-G1-44"]
+      },
+      "canonical_revision_output": [],
+      "logical_object_output": {
+        "status": "suppressed-ambiguous-revision",
+        "objects": []
+      },
+      "assertions": [
+        "both variants authenticate, so the key is ambiguous and suppressed rather than selected by arrival",
+        "the ambiguity marker survives eviction of variant bytes",
+        "evidence and R2 cursor commit atomically with the conflict"
+      ]
+    },
+    {
+      "id": "unauthenticated-variant-quarantined",
+      "covers": "A different-bytes variant of E2 that fails owning-protocol validation.",
+      "initial_state": {
+        "revisions": ["REV-E2"],
+        "observations": ["OBS-R1-G1-30-E2"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-30"]
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "items": [
+          {
+            "claimed_revision_ref": "REV-E2",
+            "incoming_revision_ref": "REV-E2-POISON",
+            "observation_ref": "OBS-R2-G1-45-E2-POISON"
+          }
+        ],
+        "cursor_after_ref": "CURSOR-R2-S1-G1-45"
+      },
+      "expected_state": {
+        "revisions": ["REV-E2"],
+        "observations": ["OBS-R1-G1-30-E2"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": ["QUAR-R2-G1-45-POISON"],
+        "cursors": ["CURSOR-R1-S1-G1-30", "CURSOR-R2-S1-G1-45"]
+      },
+      "canonical_revision_output": ["REV-E2"],
+      "logical_object_output": {
+        "status": "reduced",
+        "objects": [
+          {
+            "logical_object": "opaque:object:E2",
+            "state": "created",
+            "revision_refs": ["REV-E2"]
+          }
+        ]
+      },
+      "assertions": [
+        "only an authenticated variant suppresses; this one is a quarantined observation on R2",
+        "no revision conflict and no ambiguity marker exist",
+        "E2 stays output regardless of arrival order"
+      ]
+    },
+    {
+      "id": "retract-on-late-ambiguity",
+      "covers": "E1 and its dependent edit were emitted; an authenticated variant of E1 then arrives.",
+      "initial_state": {
+        "revisions": ["REV-E1", "REV-E1-EDIT"],
+        "observations": ["OBS-R1-G1-10-E1", "OBS-R1-G1-11-E1-EDIT"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-11"]
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "items": [
+          {
+            "claimed_revision_ref": "REV-E1",
+            "incoming_revision_ref": "REV-E1-AUTH-VARIANT",
+            "observation_ref": "OBS-R2-G1-44-E1-AUTHVAR"
+          }
+        ],
+        "cursor_after_ref": "CURSOR-R2-S1-G1-44"
+      },
+      "expected_state": {
+        "revisions": ["REV-E1", "REV-E1-EDIT"],
+        "observations": [
+          "OBS-R1-G1-10-E1",
+          "OBS-R1-G1-11-E1-EDIT",
+          "OBS-R2-G1-44-E1-AUTHVAR"
+        ],
+        "local_projections": [],
+        "revision_conflicts": ["REVCONFLICT-E1-AUTH"],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-11", "CURSOR-R2-S1-G1-44"]
+      },
+      "canonical_revision_output": [],
+      "logical_object_output": {
+        "status": "suppressed-ambiguous-revision",
+        "objects": [],
+        "blocked": [
+          {
+            "revision_ref": "REV-E1-EDIT",
+            "reason": "predecessor key ambiguous"
+          }
+        ]
+      },
+      "assertions": [
+        "the view retracts REV-E1 and the withheld REV-E1-EDIT",
+        "the edit is reported blocked, not dropped",
+        "value-bearing consumers read only this reduced view"
+      ],
+      "previously_emitted_output": ["REV-E1", "REV-E1-EDIT"],
+      "retractions": ["REV-E1", "REV-E1-EDIT"]
+    },
+    {
+      "id": "observation-key-changed-body",
+      "covers": "Same ObservationKey (R1, S1, G1, position 30) reused to assert a different revision (E1 instead of E2).",
+      "initial_state": {
+        "revisions": ["REV-E2"],
+        "observations": ["OBS-R1-G1-30-E2"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-30"]
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "items": [
+          {
+            "revision_ref": "REV-E1",
+            "observation_ref": "OBS-R1-G1-30-E1-VARIANT"
+          }
+        ],
+        "cursor_after_ref": "CURSOR-R1-S1-G1-30"
+      },
+      "expected_state": {
+        "revisions": ["REV-E2", "REV-E1"],
+        "observations": ["OBS-R1-G1-30-E2"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": ["OBSCONFLICT-R1-G1-30"],
+        "quarantines": ["QUAR-R1-G1-30-VARIANT"],
+        "cursors": ["CURSOR-R1-S1-G1-30"]
+      },
+      "canonical_revision_output": ["REV-E2"],
+      "logical_object_output": {
+        "status": "reduced",
+        "objects": [
+          {
+            "logical_object": "opaque:object:E2",
+            "state": "created",
+            "revision_refs": ["REV-E2"]
+          }
+        ]
+      },
+      "assertions": [
+        "the conflicting observation is stored as a separate quarantined variant",
+        "the first valid row stays valid and the key is not ambiguous",
+        "E1 is seen only via a quarantined observation, so it is not output-eligible",
+        "the cursor stays at the last recorded position 30"
+      ]
+    },
+    {
+      "id": "batch-key-mismatch-rejected",
+      "covers": "An R2 batch carries an item whose ObservationKey names source R1.",
+      "initial_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-G1-10-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10"]
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "items": [
+          {
+            "revision_ref": "REV-E2",
+            "observation_ref": "OBS-R2-BATCH-SPOOF-R1-13"
+          }
+        ],
+        "cursor_after_ref": null,
+        "expect": "reject_whole_batch"
+      },
+      "expected_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-G1-10-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10"]
+      },
+      "canonical_revision_output": ["REV-E1"],
+      "logical_object_output": {
+        "status": "reduced",
+        "objects": [
+          {
+            "logical_object": "opaque:object:E1",
+            "state": "created",
+            "revision_refs": ["REV-E1"]
+          }
+        ]
+      },
+      "assertions": [
+        "item key source, scope, and generation must equal the authenticated batch",
+        "nothing is persisted under R1's identity and no cursor moves"
+      ]
+    },
+    {
+      "id": "crash-atomicity-batch-rollback",
+      "covers": "A two-item batch whose second item fails to write.",
+      "initial_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-G1-10-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10"]
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "items": [
+          {
+            "revision_ref": "REV-E2",
+            "observation_ref": "OBS-R1-G1-30-E2"
+          },
+          {
+            "revision_ref": "REV-E4",
+            "observation_ref": "OBS-R1-G1-31-E4",
+            "fault": "durable-write-failure"
+          }
+        ],
+        "cursor_after_ref": "CURSOR-R1-S1-G1-31",
+        "expect": "rollback_whole_batch"
+      },
+      "expected_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-G1-10-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10"]
+      },
+      "canonical_revision_output": ["REV-E1"],
+      "logical_object_output": {
+        "status": "reduced",
+        "objects": [
+          {
+            "logical_object": "opaque:object:E1",
+            "state": "created",
+            "revision_refs": ["REV-E1"]
+          }
+        ]
+      },
+      "assertions": [
+        "the first item and the cursor roll back with the failed second item",
+        "after restart the batch is replayed as a first ingest"
+      ]
+    },
+    {
+      "id": "locked-to-decrypted",
+      "covers": "The recipient unlocks both persisted private deliveries.",
+      "initial_state": {
+        "revisions": ["REV-PD-1", "REV-PD-2"],
+        "observations": ["OBS-R2-M1-G1-70-PD1", "OBS-R2-M1-G1-71-PD2"],
+        "local_projections": ["PROJ-PD1-LOCKED", "PROJ-PD2-LOCKED"],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R2-M1-G1-71"]
+      },
+      "ingest": {
+        "kind": "replace_local_projections",
+        "replacements": [
+          {
+            "replace_ref": "PROJ-PD1-LOCKED",
+            "with_ref": "PROJ-PD1-DECRYPTED"
+          },
+          {
+            "replace_ref": "PROJ-PD2-LOCKED",
+            "with_ref": "PROJ-PD2-DECRYPTED"
+          }
+        ]
+      },
+      "expected_state": {
+        "revisions": ["REV-PD-1", "REV-PD-2"],
+        "observations": ["OBS-R2-M1-G1-70-PD1", "OBS-R2-M1-G1-71-PD2"],
+        "local_projections": ["PROJ-PD1-DECRYPTED", "PROJ-PD2-DECRYPTED"],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R2-M1-G1-71"]
+      },
+      "canonical_revision_output": ["REV-PD-1", "REV-PD-2"],
+      "logical_object_output": {
+        "status": "locally-readable",
+        "objects": [
+          {
+            "relation_source": "local-projection",
+            "state": "edited",
+            "local_projection_refs": [
+              "PROJ-PD1-DECRYPTED",
+              "PROJ-PD2-DECRYPTED"
+            ],
+            "revision_refs": ["REV-PD-1", "REV-PD-2"]
+          }
+        ]
+      },
+      "assertions": [
+        "only replaceable local projections change",
+        "the edit relation appears only in the decrypted local projection",
+        "revision and observation commitments and the cursor are unchanged",
+        "no canonical revision is emitted a second time"
+      ]
+    },
+    {
+      "id": "restart-from-durable-state",
+      "covers": "Restart reconstructs state, then receives an identical retry.",
+      "initial_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-G1-10-E1", "OBS-R2-G1-44-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10", "CURSOR-R2-S1-G1-44"]
+      },
+      "ingest": {
+        "kind": "restart_then_atomic_identical_retry",
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "items": [
+          {
+            "revision_ref": "REV-E1",
+            "observation_ref": "OBS-R2-G1-44-E1"
+          }
+        ],
+        "cursor_after_ref": "CURSOR-R2-S1-G1-44",
+        "reconstruct_from": [
+          "persisted rows",
+          "persisted conflicts and quarantines",
+          "persisted cursors"
+        ],
+        "forbidden_inputs": [
+          "in-memory seen set",
+          "prior arrival sequence",
+          "transport high-water mark"
+        ]
+      },
+      "expected_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-G1-10-E1", "OBS-R2-G1-44-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10", "CURSOR-R2-S1-G1-44"]
+      },
+      "canonical_revision_output": ["REV-E1"],
+      "logical_object_output": {
+        "status": "reduced",
+        "objects": [
+          {
+            "logical_object": "opaque:object:E1",
+            "state": "created",
+            "revision_refs": ["REV-E1"]
+          }
+        ]
+      },
+      "assertions": [
+        "restart output is derived only from persisted records",
+        "the identical retry adds no row, conflict, or output (equal commitments)",
+        "E1 emits at most once"
+      ]
+    },
+    {
+      "id": "restart-from-quarantined-state",
+      "covers": "Restart from a state holding a quarantined variant, then the identical variant is retried.",
+      "initial_state": {
+        "revisions": ["REV-E2", "REV-E1"],
+        "observations": ["OBS-R1-G1-30-E2"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": ["OBSCONFLICT-R1-G1-30"],
+        "quarantines": ["QUAR-R1-G1-30-VARIANT"],
+        "cursors": ["CURSOR-R1-S1-G1-30"]
+      },
+      "ingest": {
+        "kind": "restart_then_atomic_identical_retry",
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {
+          "type": "public-stream",
+          "value": "opaque:scope:S1"
+        },
+        "source_generation": "opaque:generation:G1",
+        "items": [
+          {
+            "revision_ref": "REV-E1",
+            "observation_ref": "OBS-R1-G1-30-E1-VARIANT"
+          }
+        ],
+        "cursor_after_ref": "CURSOR-R1-S1-G1-30",
+        "reconstruct_from": [
+          "persisted rows",
+          "persisted conflicts and quarantines",
+          "persisted cursors"
+        ],
+        "forbidden_inputs": [
+          "in-memory seen set",
+          "prior arrival sequence",
+          "transport high-water mark"
+        ]
+      },
+      "expected_state": {
+        "revisions": ["REV-E2", "REV-E1"],
+        "observations": ["OBS-R1-G1-30-E2"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": ["OBSCONFLICT-R1-G1-30"],
+        "quarantines": ["QUAR-R1-G1-30-VARIANT"],
+        "cursors": ["CURSOR-R1-S1-G1-30"]
+      },
+      "canonical_revision_output": ["REV-E2"],
+      "logical_object_output": {
+        "status": "reduced",
+        "objects": [
+          {
+            "logical_object": "opaque:object:E2",
+            "state": "created",
+            "revision_refs": ["REV-E2"]
+          }
+        ]
+      },
+      "assertions": [
+        "output after restart equals output before it",
+        "the identical quarantined variant creates no new quarantine row",
+        "E1 stays output-ineligible and E2 stays valid"
+      ]
+    }
+  ]
+}

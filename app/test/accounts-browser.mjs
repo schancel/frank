@@ -14,6 +14,41 @@ let events = []
 const allEvents = []
 const allSentinels = []
 const profileExports = []
+async function fakeRpc(method, params) {
+  const response = await fetch('http://127.0.0.1:9701', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  })
+  const body = await response.json()
+  assert.equal(body.error, undefined)
+  return body.result
+}
+async function assertRetainedBalance(expected, identity, phase) {
+  await evaluate(`location.hash='#/wallet'`)
+  const raw = await evaluate(
+    `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name).then(async m => (await (await m.accountSession.getWallet()).getBalance()).toString())`,
+  )
+  assert.equal(BigInt(raw), expected)
+  assert.equal(
+    BigInt(await fakeRpc('eth_getBalance', [identity, 'latest'])),
+    0n,
+  )
+  const fraction =
+    (expected % 1000000000000000000n)
+      .toString()
+      .padStart(18, '0')
+      .replace(/0+$/, '') || '0'
+  const display = `${expected / 1000000000000000000n}.${fraction} MON`
+  await until(
+    `document.querySelector('[data-testid="wallet-balance"]')?.textContent.trim() === ${JSON.stringify(
+      display,
+    )}`,
+  )
+  console.log(
+    `${phase}: raw=${raw}, rendered=${display}, authentication=0 wei: pass`,
+  )
+}
 async function stop() {
   socket?.close()
   if (child && child.exitCode === null && child.signalCode === null) {
@@ -271,17 +306,9 @@ try {
   console.log(
     'Rendered clipboard denial has independent visible live feedback: pass',
   )
+  let postSendBalance
   if (process.env.ACCOUNT_FAKE_DEMO === 'true') {
-    const rpc = async (method, params) => {
-      const response = await fetch('http://127.0.0.1:9701', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-      })
-      const body = await response.json()
-      assert.equal(body.error, undefined)
-      return body.result
-    }
+    const rpc = fakeRpc
     assert.equal(
       BigInt(await rpc('eth_getBalance', [identifiers.receive, 'latest'])),
       0n,
@@ -319,6 +346,21 @@ try {
         beforeReceive,
       10000000000000000n,
     )
+    postSendBalance = BigInt(
+      await rpc('eth_getBalance', [identifiers.receive, 'latest']),
+    )
+    assert.equal(
+      postSendBalance > 0n && postSendBalance < 990000000000000000n,
+      true,
+    )
+    await assertRetainedBalance(
+      postSendBalance,
+      identifiers.identity,
+      'Post-send native balance',
+    )
+    console.log(
+      `Role assertions: receive=${identifiers.receive}; authentication=${identifiers.identity}; funding=1000000000000000000 wei; recipient delta=10000000000000000 wei`,
+    )
     console.log(
       'Real fake demo: zero activation, explicit EVM-only funding, refreshed balance and native Send: pass',
     )
@@ -343,6 +385,12 @@ try {
     `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name).then(async m => { const w=await m.accountSession.getWallet(); return {identity:w.identity.displayAddress,receive:(await w.getReceiveAddress()).raw,descriptor:m.accountStatus.account.descriptor}; })`,
   )
   assert.deepEqual(reopened, identifiers)
+  if (postSendBalance !== undefined)
+    await assertRetainedBalance(
+      postSendBalance,
+      identifiers.identity,
+      'Process restart native balance',
+    )
   profileExports.push(await exportStorage())
   console.log(
     'Browser process restart preserves identity and encrypted account: pass',
@@ -398,6 +446,12 @@ try {
     `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name).then(async m=>{const w=await m.accountSession.getWallet();return {identity:w.identity.displayAddress,receive:(await w.getReceiveAddress()).raw,descriptor:m.accountStatus.account.descriptor};})`,
   )
   assert.deepEqual(restored, identifiers)
+  if (postSendBalance !== undefined)
+    await assertRetainedBalance(
+      postSendBalance,
+      identifiers.identity,
+      'Independent restore native balance',
+    )
   profileExports.push(await exportStorage())
   console.log(
     'Independent profile descriptor-pinned restore and identifier equivalence: pass',

@@ -34,10 +34,12 @@ and network equal the type-11 target and network. This check happens before broa
 ## Storage boundary
 
 RocksDB remains protobuf-at-rest. A CBOR row stores the existing projection plus the exact type-9
-frame and confirmed `(block number, transaction index)` order. The frame is authoritative and is
-never reconstructed from the projection. Repeated burns for one type-9 frame are votes; the author
-is selected by earliest confirmed chain order (transaction hash breaks an exact tie). Admission of
-the post and mandatory initial vote is one atomic batch.
+frame. The frame is authoritative and is never reconstructed from the projection. Repeated burns
+for one type-9 frame are votes. The author is selected by the unsigned tuple `(uint64 block_number,
+uint64 transaction_index, lexicographic raw stored 32-byte tx_hash)`; numeric comparison is
+host-endian independent. Zero block/index fields on a non-CBOR or pre-field row mean the tuple is
+absent and ineligible, not block zero. Replacing author facts preserves the original relay
+timestamp. Admission of the post and mandatory initial vote is one atomic batch.
 
 The projection's `payload_hash` is the type-9 T1 identity, not the legacy
 `SHA256(encrypted_payload)`. Therefore CBOR rows are intentionally absent from legacy topic and
@@ -61,6 +63,9 @@ because it includes transaction-specific sender and burn-transaction evidence.
 Release **R** must allocate and freeze deterministic-CBOR schemas and cross-language vectors for
 the single-post view, topic page, discovery list, and vote recovery/status query. R may then switch
 the normal wallet and bots to CBOR while retaining both formats. R+1 disables protobuf writes after
-one released-client compatibility interval. R+2 removes protobuf reads and migrates protobuf-at-
-rest only after preserving every authoritative type-9 frame byte-for-byte. Until R lands, the
-legacy format and generated bindings remain supported and the CBOR writer stays opt-in.
+one released-client compatibility interval. R+2 removes protobuf projections and read paths only
+for CBOR-origin rows after proving their exact authoritative type-9 bytes remain available.
+Protobuf-origin rows have no type-9 frame and retain exact constrained historical storage, reader
+and export paths until the main specification's legacy reachability/deletion gates clear. Neither
+origin is transcoded into the other. Until R lands, the legacy format and generated bindings remain
+supported and the CBOR writer stays opt-in.

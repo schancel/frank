@@ -78,9 +78,9 @@ repository's Rust relay, TypeScript clients, wallet, bots, and app will switch a
 clean break. Legacy readers may exist only where an explicit bounded migration owns them. They are
 not aliases, writers, identity bridges, or permission to transcode legacy bytes into FRNK.
 
-Issue #60 (wallet/payment persistence and runtime integration) is an active implementation mutex.
-This specification is the hostile-review point before daemon work proceeds: concurrent work MUST
-NOT independently allocate record types, suites, routes, or persistence semantics covered here.
+This specification is the hostile-review point before daemon work proceeds. Implementations MUST
+NOT independently allocate record types, suites, routes, or persistence semantics covered here;
+the normative allocation gates stand on their own and do not depend on mutable tracker status.
 
 ## 3. Authorities, keys, and trust
 
@@ -162,10 +162,10 @@ EIP-1559 typed transactions; a generic message-signing or wrong-chain preimage f
 
 The Monad adapter registry MUST distinguish the shipped legacy recipient-stamp calldata
 `POND || 0x02 || legacy_commitment` from the **PROPOSED** target mapping
-`POND || 0x03 || T4`. The chain-adapter/transaction-family registry, applicable route and media
-type, exact calldata bytes and known-answer/hostile vectors are **UNALLOCATED** until reviewed; issue
-text alone is never protocol authority. No target transaction is admitted under the legacy tag and
-no legacy transaction is reinterpreted as T4.
+`POND || TARGET_T4_TAG || T4`, where `TARGET_T4_TAG` is symbolic and distinct from legacy `0x02`.
+Its numeric value, chain-adapter/transaction-family registry, applicable route and media type,
+exact calldata bytes and known-answer/hostile vectors are **UNALLOCATED** until reviewed. No target
+transaction is admitted under the legacy tag and no legacy transaction is reinterpreted as T4.
 
 ## 4. Namespaces and allocations
 
@@ -191,7 +191,10 @@ Identifiers are scoped; equal integers in different columns have no relationship
 | Target validation operations | `provider-admission` and `recipient-acceptance` contexts, error taxonomy, CDDL, codec and vector registrations | UNALLOCATED |
 | Destination-sealed payment bundle | sealing suite/key/transcript/schema and destination unseal operation | UNALLOCATED |
 | DM revision relation | authenticated predecessor/revision/fork schema for post-v1 mutable messages | UNALLOCATED |
-| Chain-adapter transaction commitments | registry entry for legacy `POND || 0x02` and target `POND || 0x03 || T4`, per route/media and transaction family | UNALLOCATED |
+| Chain-adapter transaction commitments | registry entry for legacy `POND || 0x02` and target `POND || TARGET_T4_TAG || T4`, including numeric target tag, route/media and transaction family | UNALLOCATED |
+| Delivery preseal context | domain, schema and encoding for acyclic `preseal_context_id`, ciphertext commitment and delivery-hash binding | UNALLOCATED |
+| Target public federation | event/journal/cursor/snapshot, peer capability, retention-mode and subscription-generation wire IDs/routes | UNALLOCATED |
+| Stamp-set structural errors | funding/destination identity rules and duplicate/overlap error registrations | UNALLOCATED |
 | Mailbox/stamp generation fields | directory-authorized mailbox-key and stamp-key generations, destination-provider mailbox-admission capabilities, plus provider-authorized instance generation encodings | UNALLOCATED |
 | Account admission authorization | allowed recipient-`M` tuples, rotation class/grace bound, destination binding and predecessor/sequence fields | UNALLOCATED |
 | Inter-provider destination claim | exact handoff ID/hash, signed claim receipt and reconciliation/status records | UNALLOCATED |
@@ -278,7 +281,7 @@ Exact maps live in CDDL; this section defines what each record means and what id
 | Provider descriptor | target record naming provider identity, endpoints, capabilities, networks, pricing and expiry; type unallocated | Stable provider identity and signed descriptor revision; endpoints are not identity | UNALLOCATED |
 | Mailbox-checkpoint codec structure | type 3 | `checkpoint_id` is stable identity, not a serialization hash; facts keep stable `fact_id` | IMPLEMENTED-NOT-WIRED |
 | Target mailbox journal/tombstone | type-3 facts and future mailbox journal records; fact kinds/live wire unallocated | Append identity is provider-local sequence plus stable object/fact identity; tombstones target logical identity and optionally an exact revision | UNALLOCATED |
-| Provider delivery/store-forward | future obligation, attempt, receipt/status and expiry records; types unallocated | Client operation ID plus exact delivery-frame hash; a provider receipt is delivery evidence, not sender authorship | UNALLOCATED |
+| Provider delivery/store-forward | future obligation, attempt, receipt/status and expiry records; types unallocated | Client operation ID plus `preseal_context_id` and exact delivery-frame hash; a provider receipt is delivery evidence, not sender authorship | UNALLOCATED |
 | Account admission authorization | `P`-signed directory rotation or separate `P`-authorized request; type/fields unallocated | Exact recipient-`M` tuples and destination/grace constraints bound what a provider capability may install | UNALLOCATED |
 | Mailbox-admission capability | destination-provider-signed generation/policy/fence record; type unallocated | Provider/descriptor, directory hash, accepted `M` set, current `P'`, instance, sequence/predecessor and expiry define local authority | UNALLOCATED |
 | Inter-provider destination claim | signed claim receipt and handoff/status records; types unallocated | Inter-provider ID plus delivery and capability hashes establish the sole stamp-broadcast owner | UNALLOCATED |
@@ -287,6 +290,7 @@ Exact maps live in CDDL; this section defines what each record means and what id
 | Recovery-capacity reservation | admission reservation and cap-accounting records/errors; types unallocated | Exact operation and recipient scope own worst-case count/byte and unconfirmed capacity through acknowledgement or proved nonrecoverability | UNALLOCATED |
 | Recipient-owned output lifecycle | derivation/import/checkpoint/ack records; types unallocated | Stamp generation plus exact type-5/T3, member index and transaction ID identify each child | UNALLOCATED |
 | Legacy-to-FRNK cutover | per-account/mailbox epoch/fence and tagged-row records; types unallocated | Stable fence identity owns old/new protocol admission and target instance succession | UNALLOCATED |
+| Target public-federation lifecycle | event, journal/page, cursor, snapshot, peer-capability and subscription records; types unallocated | Semantic `record_id` and immutable domain-separated `event_id`; cursor scope includes remote, stream, network and subscription generation | UNALLOCATED |
 | Topic post/submission/vote | types 9/10/11 | Current stored frame/event identity is exact type-9 T1; burn tx ID is a separate consumption key | SHIPPED |
 | Target topic read/status extensions | future versioned schemas; types unallocated | Stable root/revision/status semantics require the allocations in section 12 | UNALLOCATED |
 
@@ -425,6 +429,30 @@ generations, stamp generations, instance capabilities and instance generations M
 available until dependent deliveries, receipts, journal entries, checkpoints, disputes, recovery
 obligations and retries are terminal, or an authenticated compact proof replaces them.
 
+### 8.3 Target public federation lifecycle
+
+**PROPOSED.** Only validated directory statements, provider descriptors and explicitly public
+topic/pubsub records enter target federation. Each family defines a stable semantic `record_id`.
+Every accepted immutable occurrence additionally has a domain-separated `event_id` over network,
+record family, `record_id`, exact authoritative bytes and predecessor/revision context. Durable
+deduplication by exact `event_id` precedes append and forwarding; Bloom filters MAY avoid work but
+are never acceptance, absence or deletion authority, and false positives fall back to exact lookup.
+
+A cursor and its journal state are scoped to `(remote provider identity, stream, network,
+subscription_generation)`. Pages name a fixed signed high-water mark and do not grow underneath a
+reader. `CURSOR_EXPIRED` is explicit: the peer supplies or identifies a signed bounded snapshot,
+the receiver validates its manifest/completeness and atomically installs it, then resumes strictly
+after its high-water mark. Retention MUST preserve the journal/snapshot overlap promised by the
+advertised capability; silent cursor reset or timestamp recovery is forbidden.
+
+Peers perform a signed descriptor/capability handshake before exchange. Discovery is bounded,
+scheme/port/address allowlisted, redirect-limited and SSRF-safe; fetched descriptors do not gain
+authority from DNS or URL ownership. Topic retention mode is explicit per subscription (`complete
+history`, `bounded history with snapshot`, or `head-only`). Changing filters or retention creates a
+new `subscription_generation`; the old cursor cannot advance the new subscription. Exact numeric
+wire IDs, routes and encodings remain **UNALLOCATED** in section 15. Private profiles, mailboxes,
+journals, payments and recovery obligations have no federation export path.
+
 ## 9. Direct-message construction and acceptance
 
 ### 9.1 Target sender order
@@ -458,22 +486,33 @@ obligations and retries are terminal, or an authenticated compact proof replaces
    `P'`, never to `P`, `M`, a provider fee key, or a burn address.
 5. Create and durably flush a pre-operation intent that owns the complete funding-account and nonce
    reservation set before signing. The intent binds the operation, final type-5/T3 identity,
-   destinations, amounts and T4 commitments; no other operation may reuse any reservation.
+   destinations, amounts and T4 commitments; no other operation may reuse any reservation. Before
+   `signed-ready`, recover every funder from the canonical chain signing preimage/transaction,
+   require pairwise-distinct funding identities, and require the complete funder set to be disjoint
+   from the complete destination set. Funding identity is the network-qualified chain account/spend
+   authority selected by the pinned adapter; destination equality compares the adapter's canonical
+   destination bytes. Reusing a funder with another nonce is still a duplicate.
 6. Build and sign every payment without network dispatch or other external exposure, derive every
    transaction ID from the exact signed bytes, and verify member indices, destinations, amounts,
-   IDs and commitments. Seal the complete payment set to the destination provider, binding the
-   directory/descriptor hashes, delivery and operation identities, capability/authorization hashes,
-   generations, exact type-5/T3 and transaction IDs. Only then assemble, encode and locally validate
-   the final type-1 frame containing the sealed bundle. Atomically promote the intent to
-   `signed-ready` while journaling the exact type-1 frame, exact signed transaction bytes and sealed
-   bundle, every pinned identity/context and retry state. Flush before any network dispatch. The
-   sealing suite, destination key, transcript and schema are **UNALLOCATED** in section 15; no target
-   writer may ship before independent vectors fix them.
+   IDs and commitments. Compute the domain-separated `preseal_context_id` over the client operation
+   ID, exact type-5/T3, ordered transaction IDs and domain-separated commitments to each exact
+   signed transaction byte string, all pinned directory/descriptor/capability/authorization hashes,
+   all generations, network, policy and every other authoritative input. It deliberately excludes
+   the sealed ciphertext, ciphertext commitment and final type-1/delivery hash, so the graph is
+   acyclic. Seal the complete payment set to the destination with `preseal_context_id` authenticated
+   in the sealing transcript. Assemble and encode the final type-1 frame containing the sealed
+   ciphertext plus its commitment and `preseal_context_id`, locally validate it, then compute
+   `exact_delivery_hash` over those final bytes. Atomically promote the intent to `signed-ready`
+   while journaling the exact type-1 frame, exact signed transaction bytes, sealed ciphertext,
+   `preseal_context_id`, `exact_delivery_hash`, every pinned input and retry state. Flush before
+   network dispatch. The preseal hash domain/schema and sealing suite/key/transcript/schema are
+   **UNALLOCATED** in section 15; no target writer may ship before independent vectors fix them.
 7. Submit only the exact frame and destination-sealed bundle to the origin provider. The origin may
    structurally preflight and forward those opaque bytes but MUST NOT learn bearer-broadcastable
    signed transaction bytes. The destination reserves worst-case recovery capacity, performs the
-   pre-claim checks, durably compare-and-set claims the exact inter-provider identity, delivery hash,
-   capability hash and generations, and returns a signed claim receipt. Only after claim may it
+   pre-claim checks, durably compare-and-set claims the exact inter-provider identity,
+   `preseal_context_id`, sealed-ciphertext commitment, `exact_delivery_hash`, capability hash and
+   generations, and returns a signed claim receipt binding both context and delivery hashes. Only after claim may it
    unseal, finish payment validation and enter the idempotent exact-byte broadcast/reconciliation
    loop in section 9.4. In the same-provider case the roles collapse, but durable claim still
    precedes unsealing and exposure.
@@ -513,9 +552,11 @@ provider identities and descriptor capabilities, destination instance generation
 stamp generation, installed mailbox-admission capability and account authorization, operation
 identity, canonical finality policy, and chain observations. The common pre-claim order is framing
 and canonical form; target schema; equality of type-5 authoritative context with validated context
-and any derived outer copies; T3; visible `P'`/DLEQ and sealed-bundle commitment checks; then replay
-and capacity checks. Only the destination continues after claim: it unseals, checks the exact signed
-transaction IDs/bytes, destinations, amounts, T4 and chain-adapter rules, then performs external
+and any derived outer copies; T3; visible `P'`/DLEQ; recomputation of the acyclic
+`preseal_context_id`, sealed-ciphertext commitment and `exact_delivery_hash`; then replay and
+capacity checks. Only the destination continues after claim: it unseals, checks the exact signed
+transaction IDs/bytes, destinations, amounts, T4 and chain-adapter rules, repeats the pairwise
+distinct-funder and funder/destination-disjoint checks, then performs external
 observation and finality. Structural/context failures, cryptographic failures, replay conflicts,
 payment insufficiency and provisional/finality states remain distinguishable. The origin never
 runs the bearer-payment stages. A provider never invokes `recipient-acceptance` or reports its
@@ -527,6 +568,8 @@ validates the same pre-claim structure/context and the still-sealed bundle commi
 reserves recovery capacity, claims the operation and signs the claim receipt. Only then does it
 unseal and validate exact transaction bytes, T4 destinations/amounts and chain rules before any
 recipient-stamp exposure. Unseal or post-claim validation failure is a zero-exposure terminal claim.
+Duplicate funding identities (including different nonces) and any cross-member funder/destination
+overlap are distinct allocated provider-admission errors; they fail after claim but before exposure.
 
 The destination provider verifies the bound account authorization and proves that the capability's
 accepted recipient-`M` tuples and grace policy equal or narrow the authorized tuples/policy by
@@ -635,9 +678,12 @@ status and MUST NOT be forged by the provider.
 **PROPOSED.** The origin/home submission provider and destination/mailbox provider are distinct
 roles; they MAY be the same provider as a degenerate case. The operation binds both stable provider
 identities, their exact descriptor revisions, both sender/recipient mailbox-key generations, the
-recipient stamp generation, destination instance generation, and exact delivery-frame hash. Client
+recipient stamp generation, destination instance generation, `preseal_context_id`, sealed
+ciphertext commitment and exact delivery-frame hash. Client
 submission ID, inter-provider delivery ID, destination receipt/status, origin-provider fee,
 destination-provider fee, and recipient stamp each use separate domains and deduplication keys.
+Every destination claim, receipt and status names both `preseal_context_id` and
+`exact_delivery_hash`; neither may be substituted by the other.
 
 The durable handoff state machine is `origin-ready`, `handoff-pending`, `destination-claimed`, then
 broadcast/observation/finality or terminal recovery. Only the destination compare-and-set may enter
@@ -647,7 +693,8 @@ recipient-stamp exposure transition exists before it. These state and operation 
 
 The origin provider owns handoff retry/failover until one destination provider durably claims the
 exact inter-provider operation and returns a destination-signed claim receipt binding the
-inter-provider ID, exact delivery hash, mailbox-admission capability hash and all generations. The origin MAY
+inter-provider ID, `preseal_context_id`, sealed-ciphertext commitment, exact delivery hash,
+mailbox-admission capability hash and all generations. The origin MAY
 perform structural preflight and forward the exact opaque sealed bundle, but it MUST NOT possess,
 broadcast, credit, consume or otherwise expose recipient-stamp transactions. The destination
 claimant is the sole actor authorized to unseal and broadcast them. If capability installation wins
@@ -814,22 +861,33 @@ never widened, renewed into the target, or counted twice after restart/replay. P
 retained until token disposition is terminal. Tests cover payment accepted before token response,
 disconnect, token replay, restart and fence installation without double credit.
 
-**PROPOSED.** The migration-only legacy decryptor retains the exact legacy recipient derivation and
-envelope version (`v1` fixed layout or `v2` deterministic-CBOR crypto-box envelope), plus the exact
-historical sender public-key/profile bytes selected for each ciphertext. It may decrypt only a
-protocol-tagged pre-fence row. It cannot authorize new mail, a mailbox challenge/session, directory
-succession, payment, or target identity. Seed restore MUST recover the legacy derivation/version and
-sender-key history needed by retained ciphertexts. GC/deletion requires every v1/v2 ciphertext and
-sender-rotation dependency to be terminal, exported under authenticated loss acceptance, or
-otherwise unreachable; a current sender profile is not a substitute for historical bytes.
+**SHIPPED.** Live Monad protobuf rows carry JSON identity-ECDH envelopes. Version 2 derives an
+AES-256-GCM key with HKDF-SHA256 and authenticates the JSON routing tuple; version 1 is a read-only
+JSON AES-CBC envelope using the legacy HMAC-SHA256 derivation. Readers try the canonical compressed
+ECDH point first and, only where the historical reader defines it, the pre-change encoding with
+leading zero bytes trimmed from the x-coordinate. `@frank/crypto-box` fixed-layout version 1 and
+deterministic-CBOR version 2 are a separate **IMPLEMENTED-NOT-WIRED** family, not protobuf-row
+cutover inputs unless a row is separately and unambiguously tagged for that family.
 
-**SHIPPED.** Legacy Lotus topic authority is the exact `SignedPayload` bytes and exact embedded
-`BroadcastMessage` bytes. `parent_digest` is an immutable reply edge. `BroadcastEntry` is opaque
-kind/headers/payload application data; `ForumPost` is one application interpretation, not protocol
-authority. A payload-less `SignedPayload` hash reference or vote can only augment burn evidence for
-an already-stored exact payload; it cannot create or replace the payload. Legacy readers retain
-these bytes across restart and cutover, never transcode them, and delete them only after the
-historical read/reply/burn-evidence reachability gates clear.
+**PROPOSED.** The migration-only legacy decryptor binds each historical row to its exact Monad JSON
+version, legacy recipient derivation and retained sender profile/public-key bytes. It may decrypt
+only a protocol-tagged pre-fence row and cannot authorize new mail, mailbox access, directory
+succession, payment or target identity. Seed restore and GC/deletion cover both Monad JSON versions,
+the trimmed-x read fallback and sender rotation. Frozen fixtures MUST accept each valid historical
+family and reject cross-family JSON/crypto-box substitution; a current sender profile is never a
+substitute for the retained historical key.
+
+**SHIPPED.** Legacy Lotus topic identity and deduplication use `payload_hash`, not original
+`SignedPayload` wrapper bytes. Parsing derives an omitted hash from exact embedded `payload_raw`,
+derives an omitted/zero burn amount from the referenced outputs, validates supplied values, then
+normalizes and reserializes the wrapper. Later evidence merges distinct raw burn transactions by
+transaction identity. The authentication material is public key, signature scheme and signature;
+the durable content/economic evidence is exact `payload_raw` plus every raw burn transaction and
+`burn_idx`. Unknown wrapper fields, wrapper ordering and original wrapper bytes are not preserved
+authority. `parent_digest` is an immutable reply edge; `BroadcastEntry` remains opaque application
+data and `ForumPost` one interpretation. A payload-less hash reference may only augment an existing
+payload. Normalization/merge tests MUST cover omitted derived fields, duplicate and additional burn
+evidence, restart and rejection of a different payload under the same hash.
 
 **SHIPPED.** Historical read contracts are intentionally different:
 
@@ -840,8 +898,8 @@ historical read/reply/burn-evidence reachability gates clear.
   exposed tie-break cursor. Equal-time rows require client deduplication/replay.
 - Monad topic discovery performs a full topic scan and sorts by `last_activity_ms` descending; it
   is not a durable cursor.
-- Lotus topic range reads are inclusive over the stored
-  `(topic_digest, timestamp, transaction_id)` order.
+- Lotus topic range reads are half-open, `from <= timestamp < to`, over the stored
+  `(topic_digest, timestamp, transaction_id)` order and expose no transaction-ID tie-break cursor.
 - Monad profile discovery is inclusive over `(registration_timestamp, address)` and returns exact
   raw signed bytes; its public `since` parameter does not expose the address tie-break cursor.
 
@@ -851,8 +909,8 @@ without an exposed stable tie-break cursor is served from the frozen keyspace wi
 rescan plus exact-ID deduplication; it MUST NOT pretend an inclusive timestamp is lossless. If a
 cursor/projection is retired, the server returns explicit cursor expiry and an authenticated,
 bounded complete replacement/export rather than silently skipping equal-time rows. Tests cover
-equal timestamps, page-boundary crash, deleted-row continuation, restart, cutover freeze and final
-historical deletion.
+equal timestamps, exact `from`/`to` boundaries, page-boundary crash, deleted-row continuation,
+restart, cutover freeze and final historical deletion.
 
 ## 12. Topic semantics and transition
 
@@ -871,6 +929,13 @@ The storage rule is frame-first: a CBOR-origin row retains the exact type-9 fram
 may maintain protobuf-shaped indexes only as projections. It MUST NOT reconstruct the frame from a
 projection. A CBOR-origin row cannot be returned as a semantically false legacy post. Reads select
 the representation by row origin and `Accept`, as specified in the coexistence document.
+
+Author selection uses the unsigned tuple `(uint64 block_number, uint64 transaction_index,
+lexicographic raw stored 32-byte tx_hash)`. Integer comparison is numeric, independent of host
+endianness. For a non-CBOR or pre-field row, zero block/index fields mean “author tuple absent” and
+the row is ineligible for CBOR author selection; they do not mean block zero. Updating selected
+author facts preserves the row's original relay timestamp. Proof covers block/index ties, raw-hash
+tie-break, endian independence, `uint64::MAX`, zero/absent legacy rows and restart.
 
 **PROPOSED.** A future stable logical/root post identity is distinct from every immutable revision
 or event T1. Its derivation is **UNALLOCATED**. Predecessor/edit, tombstone, moderation and root
@@ -891,9 +956,11 @@ the protobuf read model remains authoritative for list/discovery and the CBOR wr
 opt-in. First-confirmed-burn authorship and the public front-running limitation remain the current
 type-9 semantics unless a later schema adds an author commitment.
 
-The explicit bounded topic `R`/`R+1`/`R+2` coexistence in the subordinate transition document is an
-allowed migration, not a clean-break contradiction. Its author tuple remains the normative tuple
-already specified there; this document does not redefine it.
+The bounded topic `R`/`R+1`/`R+2` coexistence is an allowed migration. At R+2, exact type-9 bytes
+remain authoritative for CBOR-origin rows and their protobuf projections/read paths are removed.
+Protobuf-origin rows have no type-9 authority to preserve; they retain exact constrained historical
+storage, reader and export paths until sections 11 and 16 prove reachability/deletion. Neither row
+origin is transcoded into the other.
 
 ## 13. Replay, restart, fork, and clock rules
 
@@ -930,7 +997,7 @@ Across every family:
 | Cross-language vectors | Shared TS/Rust/Python/browser codec corpora; account-registration and topic commitments | IMPLEMENTED-NOT-WIRED | Full DM crypto/payment observations, provider/mailbox/status/reset cases, hostile unknown-field retention |
 | Legacy directory/broadcast federation | Legacy protobuf directory catch-up and broadcast forwarding paths are reachable | SHIPPED | Preserve only as historical migration evidence; do not treat their wire as target FRNK |
 | Legacy public-store capability boundary | `PublicFederationStore` exposes only the legacy public address-directory operations; peers do not receive the generic database, profile store or mailbox store | SHIPPED | Retain the capability boundary during deletion/migration; this is not a claim or hypothesis that private mailbox data leaked |
-| Target directory/descriptor/pubsub convergence | Architecture inputs exist; target FRNK convergence is not implemented | PROPOSED | Multi-node convergence, exact deduplication, offline cursor catch-up, signed snapshot recovery and fork exposure |
+| Target directory/descriptor/pubsub convergence | Architecture inputs exist; target FRNK convergence is not implemented | PROPOSED | Three-node cyclic/partitioned convergence, semantic/event dedup, scoped cursor catch-up/expiry, signed snapshot recovery, hostile peer isolation and subscription-generation reset |
 | Target cross-record federation isolation | Full target records and federation facades are unallocated | PROPOSED | Reachability proof that only directory, descriptor and selected pubsub records export, while profiles and every private mailbox/journal/payment record have no public-federation path |
 
 **SHIPPED.** Current evidence supports the narrow legacy public-store capability boundary; it does
@@ -968,6 +1035,7 @@ signed multi-page snapshot crash/resume/atomic swap; sender-directory partition/
 freshness-window expiry, newer-recipient-state rejection and proof that no sender-home fence or
 receipt is portable; origin structural preflight with proof of zero recipient-stamp exposure before
 a destination-signed durable claim; destination-sealed bundle context/key/suite/schema vectors,
+acyclic `preseal_context_id`/ciphertext/final-delivery KATs and single-input mutation rejection;
 proof the origin never receives bearer bytes, unseal only after claim, and rejection of the unsafe
 raw-origin model; same-provider claim ordering; destination fence-wins
 zero-exposure and claim-wins idempotent broadcast/reconciliation; disconnect before node submission,
@@ -979,12 +1047,19 @@ reset racing late completion;
 branch-scoped tombstone dominance, sibling forks, stale creates and object-wide deletion; permanent
 exclusion history with bounded body compaction; deletion reachability across shared references and
 payment recovery; immutable DM identity collision/reordering and rejection of unallocated revision
-semantics; EIP-1559 and every supported chain adapter's canonical replay-protected preimage,
-chain ID and registry-selected legacy `POND || 0x02` versus target `POND || 0x03 || T4` mapping,
-route/media type and exact vectors; topic-weight bounds through `u128::MAX`; POP token restart/replay
-without double credit; legacy v1/v2 decrypt restore with sender rotation; Lotus exact-byte reply and
-payload-less augmentation; equal-time legacy cursor/page crashes; checked protobuf descriptor/AST
-inventory and runtime reachability before source deletion; cutover of a large mailbox with
+semantics; duplicate funders with different nonces, pairwise funder uniqueness and every
+cross-member funder/destination overlap before and after sealing; EIP-1559 and every supported
+chain adapter's canonical replay-protected preimage, chain ID and registry-selected legacy
+`POND || 0x02` versus symbolic target `POND || TARGET_T4_TAG || T4` mapping, route/media type and
+exact vectors; topic-weight bounds through `u128::MAX`; unsigned topic-author tuple ties, endian
+independence, maximums, absent-zero legacy rows, timestamp preservation and restart; POP token
+restart/replay without double credit; frozen Monad JSON v1/v2 decrypt and trimmed-x fixtures,
+cross-family crypto-box rejection and sender rotation; Lotus normalization/merge, payload-hash
+identity, half-open boundaries and payload-less augmentation; equal-time legacy cursor/page crashes;
+checked protobuf descriptor/AST inventory, stale-snapshot rejection and runtime reachability before
+source deletion; deterministic three-node federation under partition, cycle, Bloom false positive,
+offline catch-up, crash, expired-cursor snapshot, subscription reset and hostile peer discovery;
+cutover of a large mailbox with
 paginated tagging, page crashes and idempotent resume; marker/admission ambiguity, partial payment, unread pre-marker
 row, delayed legacy completion rejected by the target generation, rollback-reader/reconciler-only
 behavior, creation-writer quiescence and removal gates; topic
@@ -1005,13 +1080,18 @@ The following remain deliberately unresolved rather than inferred:
 - target type-1/type-5 schema revisions, required context field IDs and `min_reader_version`, with
   explicit old/new compatibility and rejection rules;
 - destination-sealed payment-bundle suite, destination key/certificate, transcript, schema, unseal
-  operation and independent known-answer/hostile vectors;
+  operation and independent known-answer/hostile vectors; the domain/schema/encoding for acyclic
+  `preseal_context_id`, exact signed-byte commitments, sealed-ciphertext commitment and final
+  delivery-hash binding;
 - immutable DM logical-identity encoding and any future authenticated predecessor/revision/fork
   schema; type 6 version 1 allocates no mutable revision relation;
 - chain-adapter/transaction-family commitment registry, including route/media selection and exact
-  vectors for legacy `POND || 0x02` and target `POND || 0x03 || T4`;
+  vectors for legacy `POND || 0x02` and target `POND || TARGET_T4_TAG || T4`, including allocation
+  of the numeric `TARGET_T4_TAG`;
 - `provider-admission` and `recipient-acceptance` operation IDs, validation contexts, error
   taxonomy, CDDL, both codecs and independent vectors;
+- network-qualified canonical funding/destination identity encodings and provider-admission errors
+  for duplicate funders and funder/destination overlap;
 - `mailbox_key_generation`, `stamp_key_generation` and `mailbox_instance_generation` wire fields,
   current-only stamp semantics, unified destination-provider mailbox-admission capability/hash with
   exact provider/descriptor/directory and account-authorization-hash binding, accepted-`M`
@@ -1047,6 +1127,9 @@ The following remain deliberately unresolved rather than inferred:
 - opaque quarantine facts and signed snapshot identity/page-chain/manifest/frontier records;
 - branch-scoped versus object-wide tombstone/frontier encoding and authenticated fork resolution;
 - directory fork resolution and recovery cryptography beyond fail-closed conflict reporting;
+- public-federation `record_id`/`event_id` domains; journal/page/cursor/snapshot and
+  `CURSOR_EXPIRED` encodings; peer descriptor/capability handshake; discovery limits; topic
+  retention modes; subscription-generation reset; route and wire IDs;
 - topic logical-root derivation; predecessor/edit/tombstone/moderation/root relation records; vote
   target discriminator and migration; list/discovery/status schemas and their cutover release;
 - cryptographic approval of the current T3a/T3b stamp derivation and proof.
@@ -1062,12 +1145,20 @@ on this branch. Backend/client copies and generated response duplicates are grou
 intentionally share wire shape; grouping does not make either copy authoritative over the runtime
 that actually decodes it.
 
+The deterministic executable gate is
+[`check-protobuf-inventory.sh`](protocol/check-protobuf-inventory.sh); its committed
+[`protobuf-inventory.snapshot`](protocol/protobuf-inventory.snapshot) is generated from `protoc`
+descriptors. Run `./docs/protocol/check-protobuf-inventory.sh --check`. Every descriptor message,
+enum and field inherits its explicit source's owner/family/disposition; only the snapshot's
+`explicit_source_group` may group generated mirrors. An added or changed source, message, field,
+enum, default or presence rule, or an unclassified source makes the gate fail.
+
 **PROPOSED.** The fence-disposition column defines the clean-break migration target. It is not a
 claim that those fences or deletion gates are implemented.
 
 | Sources / family | Production role | Fence disposition |
 | --- | --- | --- |
-| `backend/cashweb/cashweb-payload/proto/payload.proto`; `packages/cashweb/signed_payload/proto/payload.proto` | Lotus signed payload, signature, payload digest and burn transactions; package copy uses older field names with the same material wrapper role | Retain exact bytes and constrained historical verifier/reader; never transcode; delete only after payload, burn, reply and federation reachability clears |
+| `backend/cashweb/cashweb-payload/proto/payload.proto`; `packages/cashweb/signed_payload/proto/payload.proto` | Lotus signed payload, signature, payload digest and burn transactions; package copy uses older field names with the same material wrapper role | Retain normalized reader plus exact embedded payload and raw burn evidence; delete only after payload, burn, reply and federation reachability clears |
 | `backend/cashweb/cashweb-registry/proto/broadcast.proto`; `packages/cashweb/registry/proto/broadcast.proto` | Lotus topic `BroadcastMessage`/opaque entries; client copy additionally declares `ForumPost` and `parent_digest` | Historical-only exact reader; preserve immutable reply/burn evidence; no new post after fence |
 | `packages/cashweb/bip70/proto/paymentrequest.proto` | Legacy POP request/payment/ack and output contract | Disable new issuance at fence; retain exact pre-fence request/payment/token evidence through scoped terminal/expiry |
 | `backend/cashweb/cashweb-registry/proto/monad_message.proto`; `packages/cashweb/relay/proto/monad_message.proto` | Legacy Monad encrypted DM, raw stamp-payment set, stored timestamp/network and list response | Constrained migration reader/decryptor and reconciler for pre-fence rows; no new writes; remove after decrypt/payment/cursor reachability clears |
@@ -1082,12 +1173,15 @@ claim that those fences or deletion gates are implemented.
 
 ### 16.1 Material legacy semantics
 
-**SHIPPED.** `SignedPayload` authority is its exact serialized bytes under the frozen verifier.
+**SHIPPED.** `SignedPayload` wrapper bytes are parsed and normalized, not retained authority.
 Proto3 absent values decode as empty bytes, zero integer, empty repeated list and signature-scheme
-zero (`SCHNORR`); historical validation may derive/check an omitted payload hash only as the frozen
-reader specifies. Those defaults document reader fidelity, not permission to synthesize, normalize
-or transcode a wrapper. `BurnTx`/`BurnOutputs` retains the full serialized transaction and exact
-burn-output index. A payload-less wrapper must name an existing payload hash before adding evidence.
+zero (`SCHNORR`). The parser derives an omitted payload hash from exact `payload_raw`, derives zero
+burn amount from referenced outputs, validates non-default claims, and reserializes normalized
+fields. `payload_hash` is identity/dedup; public key, scheme and signature are authentication
+material. Exact `payload_raw` and each raw transaction plus burn index are durable evidence, and
+later distinct burns merge. Defaults document historical reader fidelity without promising unknown
+wrapper-field/order preservation. A payload-less wrapper must name an existing hash before adding
+evidence.
 
 **SHIPPED.** BIP70 is proto2: `Output.amount` defaults to zero, `PaymentDetails.network` to `main`,
 `PaymentRequest.payment_details_version` to 1 and `pki_type` to `none`; required fields and explicit
@@ -1104,21 +1198,24 @@ facts. Topic vote weight has the shipped cast/saturation defect documented in se
 
 **SHIPPED.** Legacy relay `Message` separately carries source/destination keys, malleable server
 time, payload digest, stamp, encryption enum/salt/HMAC/size and ciphertext. `Stamp.None`/enum zero,
-empty byte fields and zero numeric fields are protobuf defaults, not target semantics. Price-filter
-zero/false defaults, P2PKH transaction bytes and stealth ephemeral-key/outpoints remain scoped to
-their owning legacy reader.
+empty byte fields and zero numeric fields are protobuf defaults, not target semantics. When
+`payload_digest` is empty and payload bytes are present, the frozen reader derives the digest; both
+empty is invalid. `payload_size == 0` means infer the actual payload length, while a nonzero mismatch
+is invalid. Price-filter zero/false defaults, P2PKH transaction bytes and stealth
+ephemeral-key/outpoints remain scoped to their owning legacy reader.
 
 ### 16.2 Inventory and deletion gate
 
-**PROPOSED.** A checked descriptor/AST inventory gate MUST enumerate every tracked `.proto` file,
-package, message, field number/type/cardinality, enum/default/presence rule and owning runtime before
-merge. Every family must map to this appendix as retained exact/constrained legacy reader, migrated
-by creation of a new authenticated record, deleted at fence, transport-only, or
-third-party/non-CashWeb. A new tracked protobuf family or field that lacks a classification fails
-the gate. Passive generated request/response duplicates may be grouped, but material authority,
-economic and default/presence semantics may not be elided.
+**SHIPPED.** The executable descriptor inventory above enumerates every tracked `.proto` file,
+package, message, field number/type/cardinality, enum/default/presence rule and owning runtime. Every
+source maps to this appendix as retained exact/constrained legacy reader, migrated by creation of a
+new authenticated record, deleted at fence, transport-only, or third-party/non-CashWeb. The checker
+fails closed on an unclassified or stale source/descriptor. Passive generated duplicates are
+grouped only by explicit source mapping; material authority, economics and presence semantics are
+not elided.
 
 Deletion additionally requires runtime reachability proof: routes, stores, federation, app, wallet,
 bot, restore, retry and historical export must have no remaining caller or retained row. Source-file
-absence alone is not proof. Exact legacy `SignedPayload`, ciphertext, payment and broadcast bytes
-remain non-transcodable throughout the migration.
+absence alone is not proof. Exact embedded Lotus payload/burn evidence, ciphertext, payment and
+broadcast bytes remain non-transcodable throughout the migration; normalized wrapper bytes are not
+misrepresented as the original wrapper.

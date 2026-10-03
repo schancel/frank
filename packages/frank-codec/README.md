@@ -215,7 +215,8 @@ One was waiting on the stamp-key PR (#200) and is now stated in the spec (S3):
 - **S3 / T3a.4, payment ordering.** T3a.4 requires the sorted child indices to be exactly
   contiguous from 0 and S3 requires them unique, so the `transaction_id` tie-break can never
   decide. The codec keeps both checks; all are `semantic`.
-# Structured Forum codec
+
+## Structured Forum codec
 
 `encodeForumPost` explicitly emits type9 schema2/min2. Existing `encodeTopicPost({body})`
 still emits opaque schema1. `validateFrame` returns schema-discriminated content with the
@@ -224,5 +225,6 @@ project relay observations and exact cursor bindings; they do not allocate a rea
 `encodeForumReadFrame`, the cursor helpers and `matchForumOperation`/`matchForumView`/
 `matchForumPage` are pure boundary tools. A matching response is not independently verified
 chain evidence and never releases a wallet lease. Normal writers/routes and retained snapshot
-publication remain #675's runtime work. Active shared vectors are in
+publication remain #769's server work under #675; #770 owns the whole normal-path
+switch and predecessor removal. Active shared vectors are in
 `docs/protocol/cbor/vectors/forum-content-read.json`.

@@ -212,12 +212,19 @@ pub fn forum_cursor_from_transport(text: &str) -> Result<ForumCursor, CodecError
 /// Explicit retained request facts, not transaction-derived evidence.
 #[derive(Debug, Clone)]
 pub struct ForumOperationExpectation {
+    /// Retained request network.
     pub network: String,
+    /// Complete original submitted operation bytes.
     pub submitted_frame: Vec<u8>,
+    /// Retained target post T1.
     pub target_hash: Vec<u8>,
+    /// Expected transaction identity supplied by the caller.
     pub transaction_hash: Vec<u8>,
+    /// Expected sender supplied by the caller.
     pub sender: Vec<u8>,
+    /// Zero for down, one for up.
     pub direction: u8,
+    /// Exact expected value; comparison does not verify admission.
     pub value: u64,
 }
 /// Binds every echoed request fact; a matched response retains its original evidence classification.

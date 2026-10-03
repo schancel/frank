@@ -18,99 +18,155 @@ pub enum ForumPostContent {
 pub enum ForumEntry {
     /// Known kind 1. Empty and absent strings retain distinct original frame bytes.
     Post {
+        /// Optional title, preserving empty versus absent.
         title: Option<String>,
+        /// Optional URL text; decoding never fetches it.
         url: Option<String>,
+        /// Optional message, preserving exact Unicode.
         message: Option<String>,
+        /// Original compatible extension fields.
         unknown: Vec<(u64, CborValue)>,
     },
     /// Never interpret fields as text or URLs. Display only `Unsupported content`.
     Unsupported {
+        /// Unrecognized numeric entry kind.
         kind: u64,
+        /// Uninterpreted fields; never render as known content.
         fields: Vec<(u64, CborValue)>,
     },
 }
 /// Structured schema-2 body; its exact bytes remain on the parent post.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForumContent {
+    /// Author-supplied time contributing to identity, not authority.
     pub authored: Timestamp,
+    /// Ordered, bounded entries.
     pub entries: Vec<ForumEntry>,
+    /// Original compatible extension fields.
     pub unknown: Vec<(u64, CborValue)>,
 }
 /// Signed 256-bit magnitude, never negative zero.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForumAggregate {
+    /// Sign bit, false for zero.
     pub negative: bool,
+    /// Exact unsigned 256-bit big-endian magnitude.
     pub magnitude: [u8; 32],
 }
 /// A closed cursor query and complete last-row tuple.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForumCursorPosition {
+    /// Topic-page query and complete last-row tuple.
     Topic {
+        /// Exact UTF-8 topic, without normalization.
         topic: String,
+        /// Inclusive lower timestamp bound.
         since: Timestamp,
+        /// Last row first-visible timestamp.
         timestamp: Timestamp,
+        /// Last row exact post T1.
         hash: Vec<u8>,
     },
+    /// Discovery-page last-topic tuple.
     Discovery {
+        /// Exact UTF-8 topic, without normalization.
         topic: String,
     },
 }
 /// Cursor bytes confer no authority or snapshot existence guarantee.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForumCursor {
+    /// Original canonical cursor bytes for forwarding.
     pub bytes: Vec<u8>,
+    /// Exact validated network tag.
     pub network: String,
+    /// Relay observation or snapshot revision.
     pub revision: u64,
+    /// Opaque 16-byte relay epoch.
     pub epoch: Vec<u8>,
+    /// Non-reused snapshot incarnation, retained without authority.
     pub incarnation: u64,
+    /// Family-specific query and last-row tuple.
     pub position: ForumCursorPosition,
 }
 /// Relay-observed single post, not independently verified chain evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForumView<F> {
+    /// Exact validated network tag.
     pub network: String,
+    /// Original required post frame and its validated projection.
     pub post_frame: F,
+    /// Relay-claimed 20-byte author address.
     pub author: Vec<u8>,
+    /// Original raw author-burn transaction, not verified here.
     pub author_burn_tx: Vec<u8>,
+    /// Relay-claimed transaction hash, or unverified request echo.
     pub transaction_hash: Vec<u8>,
+    /// Relay-observed first-visible time for ordering.
     pub first_visible: Timestamp,
+    /// Relay-observed block position.
     pub block: u64,
+    /// Relay-observed transaction position within its block.
     pub transaction_index: u64,
+    /// Exact signed magnitude, not narrowed to a host integer.
     pub aggregate: ForumAggregate,
+    /// Relay observation or snapshot revision.
     pub revision: u64,
+    /// Opaque 16-byte relay epoch.
     pub epoch: Vec<u8>,
+    /// Original compatible extension fields.
     pub unknown: Vec<(u64, CborValue)>,
 }
 /// One page of exact retained view frames.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForumTopicPage<F, K> {
+    /// Exact validated network tag.
     pub network: String,
+    /// Exact UTF-8 topic, without normalization.
     pub topic: String,
+    /// Inclusive lower timestamp bound.
     pub since: Timestamp,
+    /// Relay observation or snapshot revision.
     pub revision: u64,
+    /// Ordered required view frames.
     pub rows: Vec<F>,
+    /// Continuation identifying the last emitted row, when present.
     pub next_cursor: Option<K>,
+    /// Exact cursor echoed from this page request, when present.
     pub request_cursor: Option<K>,
+    /// Opaque 16-byte relay epoch.
     pub epoch: Vec<u8>,
+    /// Original compatible extension fields.
     pub unknown: Vec<(u64, CborValue)>,
 }
 /// Discovery uses exact UTF-8 ordering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForumDiscoveryEntry {
+    /// Exact UTF-8 topic, without normalization.
     pub topic: String,
+    /// Exact unsigned 64-bit count.
     pub count: u64,
+    /// Relay-claimed last activity time.
     pub last_activity: Timestamp,
+    /// Original compatible extension fields.
     pub unknown: Vec<(u64, CborValue)>,
 }
 /// One discovery page, not a complete published refresh.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForumDiscoveryPage<K> {
+    /// Exact validated network tag.
     pub network: String,
+    /// Relay observation or snapshot revision.
     pub revision: u64,
+    /// Ordered, bounded entries.
     pub entries: Vec<ForumDiscoveryEntry>,
+    /// Continuation identifying the last emitted row, when present.
     pub next_cursor: Option<K>,
+    /// Exact cursor echoed from this page request, when present.
     pub request_cursor: Option<K>,
+    /// Opaque 16-byte relay epoch.
     pub epoch: Vec<u8>,
+    /// Original compatible extension fields.
     pub unknown: Vec<(u64, CborValue)>,
 }
 /// Tagged claims ensure unverified request echoes are distinct from relay observations.
@@ -123,21 +179,37 @@ pub enum ForumOperationEvidence {
     /// State 1. A nonterminal relay observation.
     Pending,
     /// State 2. Relay-observed confirmation, not independently established finality.
-    Confirmed { block: u64, transaction_index: u64 },
+    Confirmed {
+        /// Relay-observed block position.
+        block: u64,
+        /// Relay-observed transaction index.
+        transaction_index: u64,
+    },
 }
 /// Exact operation response; the evidence tag determines the meaning of the echoed facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForumOperationStatus<F> {
+    /// Exact validated network tag.
     pub network: String,
+    /// Original required type-10 or type-11 operation frame.
     pub submitted_frame: F,
+    /// Exact target post T1, bound to the submitted operation.
     pub target_hash: Vec<u8>,
+    /// Relay-claimed transaction hash, or unverified request echo.
     pub transaction_hash: Vec<u8>,
+    /// Claimed sender or unverified request echo.
     pub sender: Vec<u8>,
+    /// Zero for down, one for up.
     pub direction: u8,
+    /// Exact value; admitted observations are bounded to i64::MAX.
     pub value: u64,
+    /// Tag separating request echoes from relay observations.
     pub evidence: ForumOperationEvidence,
+    /// Relay observation or snapshot revision.
     pub revision: u64,
+    /// Opaque 16-byte relay epoch.
     pub epoch: Vec<u8>,
+    /// Original compatible extension fields.
     pub unknown: Vec<(u64, CborValue)>,
 }
 

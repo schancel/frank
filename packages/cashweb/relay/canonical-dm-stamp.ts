@@ -11,7 +11,7 @@ import {
   paymentCommitment,
   recipientPayloadDigest,
   type AccountRef,
-} from '../../frank-codec/src'
+} from '@frank/codec'
 
 const ORDER = BigInt(
   '0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141',

@@ -11,7 +11,7 @@ import {
   encodeFrame,
   previewDirectoryContext,
   parseFrame,
-} from '../frank-codec/src'
+} from '@frank/codec'
 import {
   createMonadWalletMaterial,
   type MonadRootBundle,

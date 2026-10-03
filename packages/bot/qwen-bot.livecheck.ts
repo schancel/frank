@@ -75,7 +75,6 @@
  */
 import { writeFileSync } from 'fs'
 import { resolve } from 'path'
-import { Transaction, hexlify } from 'ethers'
 
 import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
 const { AddressMetadata } = __pb_registry_metadata_pb
@@ -84,17 +83,10 @@ import {
   fetchMonadProfilesSince,
   mailboxAuthFor,
 } from '@frank/wallet/monad-identity'
-import {
-  canonicalMonadEnvelopeAddress,
-  parseEnvelope,
-  sameMonadEnvelopeAddress,
-  tryDecryptEnvelope,
-} from '@frank/cashweb/relay/monad-message-envelope'
-import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
+import { canonicalMonadEnvelopeAddress } from '@frank/cashweb/relay/monad-message-envelope'
 import { botStateDir, persistentStateDir } from './bot-state-dir'
 import { createQwenReplyGenerator, qwenBotConfigFromEnv } from './qwen-reply'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
-import { extractPromptText } from './qwen-prompt'
 import {
   loadOrCreateIdentity,
   registerAndLog,
@@ -105,6 +97,7 @@ import {
 import { botProfileFields } from './bot-directory'
 import { QwenBotStateStore } from './qwen-bot-state'
 import { QwenResponseWorkflow } from './qwen-response-workflow'
+import { QwenInboundWorkflow } from './qwen-inbound-workflow'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
@@ -244,14 +237,15 @@ async function main() {
   closeBotState = () => state.Close()
   console.log(`[bot] persisted state loaded from ${stateDirPath}`)
 
-  // A process restart must not replay every retained message and pay for duplicate replies.
-  // Start at this run's pre-funding boundary so messages arriving during the potentially slow
-  // account setup are still handled. The override exists for deliberate historical backfills.
-  // Persisted state (a real previous run's cursor) wins over both when present -- that's the
-  // whole point of this fix: a restart should resume, not rewind to "now" and lose the plot.
-  let since =
-    state.getSince() ??
-    Number(process.env.QWEN_BOT_MESSAGE_SINCE_MS ?? profileWatchStartedAt)
+  const inboxContext = {
+    botAddress: canonicalMonadEnvelopeAddress(identity.displayAddress),
+    networkTag,
+    relayBaseUrl,
+  }
+  await state.initializeInbox(
+    inboxContext,
+    Number(process.env.QWEN_BOT_MESSAGE_SINCE_MS ?? profileWatchStartedAt),
+  )
   let repliesSent = 0
   let greetingsSent = 0
   let lastActivityAt = Date.now()
@@ -287,6 +281,25 @@ async function main() {
         txHashes: [...result.txHashes],
       }
     },
+  })
+
+  const inbound = new QwenInboundWorkflow({
+    state,
+    context: inboxContext,
+    auth: mailboxAuthFor(identity, relayBaseUrl),
+    responses,
+    privateKey: identity.toNakamotoPrivateKey(),
+    senderKey: async address => {
+      const sender = canonicalMonadEnvelopeAddress(address)
+      let key = senderPubKeyCache.get(sender)
+      if (!key) {
+        key = await fetchMonadIdentityPubKey({ relayBaseUrl, address })
+        if (key) senderPubKeyCache.set(sender, key)
+      }
+      return key
+    },
+    peerBlockReason: address => guard.peerBlockReason(address),
+    reserveReply: address => guard.reserveReply(address),
   })
 
   // Surface nonretryable ambiguity once on startup. Only ready rows enter periodic recovery.
@@ -444,111 +457,10 @@ async function main() {
       }
     }
 
-    const stored = await fetchMonadMessagesSince({
-      ...mailboxAuthFor(identity, relayBaseUrl),
-      sinceMs: since,
-    })
-    let maxSeenTimestamp = since - 1
-
-    for (const message of stored) {
-      if (repliesSent >= maxReplies) break
-      maxSeenTimestamp = Math.max(maxSeenTimestamp, message.timestamp)
-      if (!message.message) continue
-
-      const payloadHashHex = Buffer.from(message.message.payloadHash).toString(
-        'hex',
-      )
-      if (state.hasProcessed(payloadHashHex)) continue
-
-      const envelope = parseEnvelope(message.message.encryptedPayload)
-      if (!envelope) continue // not our envelope convention -- e.g. #8's plain-JSON demo blob
-      if (!sameMonadEnvelopeAddress(envelope.to, identity.displayAddress))
-        continue
-      if (sameMonadEnvelopeAddress(envelope.from, identity.displayAddress))
-        continue
-
-      // Held turns remain unprocessed and block this conversation, even when the cursor moves.
-      // Cursor/import atomicity and durable queuing of later inputs belong to #704.
-      const pending = state.pendingResponseForPeer(envelope.from)
-      if (pending) {
-        console.warn(
-          `[bot] response ${pending.payloadHashHex} unresolved; later peer turn deferred`,
-        )
-        continue
-      }
-
-      lastActivityAt = Date.now()
-      const paymentHashes = message.message.stampPayments.map(
-        payment => Transaction.from(hexlify(payment.rawTx)).hash,
-      )
-      console.log(
-        `\n[bot] new stamped message ${payloadHashHex} from ${
-          envelope.from
-        } (stamp txs ${paymentHashes.join(',')})`,
-      )
-
-      const senderKey = canonicalMonadEnvelopeAddress(envelope.from)
-      let senderPubKey = senderPubKeyCache.get(senderKey)
-      if (!senderPubKey) {
-        senderPubKey = await fetchMonadIdentityPubKey({
-          relayBaseUrl,
-          address: envelope.from,
-        })
-        if (!senderPubKey) {
-          console.log(
-            `[bot] sender ${envelope.from} has no registered Frank identity -- can't derive a shared key, skipping`,
-          )
-          continue
-        }
-        senderPubKeyCache.set(senderKey, senderPubKey)
-      }
-
-      const blockReason = await guard.peerBlockReason(envelope.from)
-      if (blockReason) {
-        console.log(
-          `[bot] ignoring message ${payloadHashHex} from ${envelope.from} (${blockReason})`,
-        )
-        continue
-      }
-
-      const rawPlaintext = tryDecryptEnvelope({
-        envelope,
-        myPrivateKey: identity.toNakamotoPrivateKey(),
-        senderPubKey,
-      })
-      if (rawPlaintext === undefined) {
-        console.warn(
-          `[bot] rejected unauthenticated or undecryptable message ${payloadHashHex}`,
-        )
-        continue
-      }
-      const plaintext = extractPromptText(rawPlaintext)
-      if (plaintext === undefined) {
-        console.log(
-          `[bot] message ${payloadHashHex} has no text item -- not a prompt, skipping`,
-        )
-        continue
-      }
-      if (!guard.reserveReply(envelope.from)) {
-        console.log(
-          `[bot] reply budget for ${envelope.from} exhausted this window -- skipping message ${payloadHashHex}`,
-        )
-        continue
-      }
-      const outcome = await responses.respond({
-        payloadHashHex,
-        senderAddress: envelope.from,
-        senderPubKeyHex: senderPubKey.toString('hex'),
-        prompt: plaintext,
-      })
-      if (outcome === 'confirmed') repliesSent++
-      if (repliesSent >= maxReplies) break
-    }
-
-    if (stored.length > 0) {
-      since = maxSeenTimestamp + 1
-      state.setSince(since)
-    }
+    await inbound.import()
+    const confirmed = await inbound.drain(maxReplies - repliesSent)
+    repliesSent += confirmed
+    if (confirmed) lastActivityAt = Date.now()
     if (repliesSent >= maxReplies && greetingsSent >= maxGreetings) break
     // Flushed once per poll cycle (not just at final Close()) so a crash mid-run loses at most
     // the current cycle's writes, not everything back to the last clean exit.

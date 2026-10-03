@@ -11,6 +11,13 @@ import { homedir } from 'os'
 import { join, resolve } from 'path'
 
 import { DEMO_FUNDING_AMOUNT_WEI } from './demo-funding'
+import { parseTrust } from './directory-trust/index'
+import type { BundleRef, TrustInputs } from './directory-trust/index'
+import {
+  assertInstalledParticipants,
+  splitTime,
+  trustSnapshot,
+} from './directory-trust/browser-admission'
 
 import { MAX_AMOUNT_WEI } from '../faucet-core'
 import {
@@ -372,6 +379,91 @@ export interface DemoConfig {
   /** Secret-bearing values that must never be printed. */
   secrets: string[]
   bots: DemoBot[]
+}
+
+/** Separate, explicit integration selection. It never enables production relay/DM routes. */
+export interface DirectoryDemoConfig {
+  mode: 'synthetic-directory-admission'
+  bundle: BundleRef
+  installed: TrustInputs
+  location: string
+  continuityFile: string
+  intent: 'new' | 'reopen'
+  nowNs: bigint
+  statementHex?: string
+}
+export function resolveDirectoryDemoConfig(
+  input: unknown,
+): DirectoryDemoConfig {
+  const raw = input as Record<string, any>
+  if (
+    !raw ||
+    raw.mode !== 'synthetic-directory-admission' ||
+    !['new', 'reopen'].includes(raw.intent)
+  )
+    throw new DemoConfigError([
+      'Explicit synthetic directory mode and new/reopen intent required',
+    ])
+  if (
+    typeof raw.nowNs !== 'string' ||
+    !/^(0|[1-9][0-9]{0,28})$/.test(raw.nowNs)
+  )
+    throw new DemoConfigError([
+      'Explicit canonical trusted nanosecond time required',
+    ])
+  const nowNs = BigInt(raw.nowNs)
+  splitTime(nowNs)
+  const installed = trustSnapshot(parseTrust(raw.installed))
+  const participants = raw.participants
+  if (!participants || typeof participants !== 'object')
+    throw new DemoConfigError(['All participant trust configurations required'])
+  assertInstalledParticipants(
+    installed,
+    Object.fromEntries(
+      ['relay-a', 'relay-b', 'bot'].map(name => [
+        name,
+        participants[name] == null ? null : parseTrust(participants[name]),
+      ]),
+    ),
+  )
+  if (
+    !raw.bundle ||
+    typeof raw.bundle.runDir !== 'string' ||
+    typeof raw.bundle.manifestIdentity !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(raw.bundle.manifestIdentity)
+  )
+    throw new DemoConfigError(['Retained public bundle reference required'])
+  for (const path of [raw.bundle.runDir, raw.location, raw.continuityFile])
+    if (
+      typeof path !== 'string' ||
+      !path.startsWith('/') ||
+      resolve(path) !== path
+    )
+      throw new DemoConfigError([
+        'Canonical absolute integration paths required',
+      ])
+  if (
+    raw.intent === 'new' &&
+    (typeof raw.statementHex !== 'string' ||
+      raw.statementHex.length > 524288 ||
+      !/^(?:[0-9a-f]{2})+$/.test(raw.statementHex))
+  )
+    throw new DemoConfigError([
+      'New enrollment requires separate bounded exact statement bytes',
+    ])
+  return {
+    mode: raw.mode,
+    bundle: {
+      runDir: raw.bundle.runDir,
+      manifestIdentity: raw.bundle.manifestIdentity,
+    },
+    installed,
+    location: raw.location,
+    continuityFile: raw.continuityFile,
+    intent: raw.intent,
+    nowNs,
+    ...(raw.intent === 'new' ? { statementHex: raw.statementHex } : {}),
+  }
 }
 
 export class DemoConfigError extends Error {

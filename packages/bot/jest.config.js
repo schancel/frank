@@ -5,6 +5,12 @@ module.exports = {
   testMatch: ['<rootDir>/**/*.jest.(spec|test).+(ts|js)'],
   moduleFileExtensions: ['js', 'json', 'ts'],
   moduleNameMapper: {
+    '^@frank/directory-admission$':
+      '<rootDir>/../directory-admission/src/index.ts',
+    '^@frank/directory-admission/browser$':
+      '<rootDir>/../directory-admission/src/browser.ts',
+    '^@frank/directory-admission/node$':
+      '<rootDir>/../directory-admission/src/node.ts',
     // Same source map cashweb's and wallet's own jest configs carry: `@frank/nakamoto` is
     // ESM-only ("exports" without a CJS condition), so a CJS jest require of the installed
     // package can never resolve -- tests load its TypeScript source instead.

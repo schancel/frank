@@ -20,6 +20,7 @@
  *
  *   cd packages/bot
  *   set -a; source ../../.env; set +a
+ *   export MONAD_TESTNET_HTTP_RPC_URL=https://... # Node-only funding helper
  *   export MONAD_RELAY_BASE_URL=http://127.0.0.1:8098
  *   export QWEN_BOT_ADDRESS=0x...   # from /tmp/qwen-bot-handoff.json
  *   export E2E_DEMO_MAIN_WALLET_JSON=/absolute/path/to/chain-wallet.json
@@ -84,32 +85,28 @@ async function main() {
   // which isn't pre-funded here (this script has no faucet access of its own) -- borrowing the
   // shared funded testnet wallet the same way the bot does, purely for this verification run.
   const { stampClient: fundedStampClient } = await setUpFundedStampClient({
-    rpcUrl: config.rpcUrl,
+    // This direct upstream is confined to the Node-only funding helper. The
+    // ActiveChain wallet below keeps its relay-backed provider and HTTP client.
+    rpcUrl: requiredEnv('MONAD_TESTNET_HTTP_RPC_URL'),
     relayBaseUrl: config.relayBaseUrl,
     mainWalletJsonPath: requiredEnv('E2E_DEMO_MAIN_WALLET_JSON'),
     poolSize: 1,
     stampValueWei: config.defaultStampValueWei,
     label: 'ui-verify',
   })
-  // Graft the funded pool/lease-manager/httpClient onto the ActiveChain wallet handle so
+  // Graft only the funded pool and lease manager onto the ActiveChain wallet handle so
   // `activeChain.directMessages.send` (which expects `MonadChainWalletHandle`'s bundle) uses the
   // already-funded pool instead of its own freshly-derived, unfunded one.
   const monadWallet = wallet as unknown as {
     pool: unknown
     leaseManager: unknown
-    provider: unknown
-    httpClient: unknown
   }
   const funded = fundedStampClient as unknown as {
     pool: unknown
     leaseManager: unknown
-    provider: unknown
-    httpClient: unknown
   }
   monadWallet.pool = funded.pool
   monadWallet.leaseManager = funded.leaseManager
-  monadWallet.provider = funded.provider
-  monadWallet.httpClient = funded.httpClient
 
   const message =
     process.argv[2] ?? 'Hello from a real ActiveChain wallet -- who are you?'

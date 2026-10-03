@@ -189,24 +189,38 @@ export function createMonadRelayRpcConnection(
   // A fixed-hour quota cannot recover during ethers' short automatic 429
   // retry window. Return ownership of retry timing to the application.
   connection.retryFunc = async () => false;
-  let capabilityPromise: Promise<MonadRelayRpcCapability> | null = null;
+  let cachedCapability: MonadRelayRpcCapability | null = null;
+  let capabilityInFlight: Promise<MonadRelayRpcCapability> | null = null;
+
+  const capabilityFor = async (
+    timeout: number
+  ): Promise<MonadRelayRpcCapability> => {
+    if (
+      cachedCapability !== null &&
+      cachedCapability.expiresAtMs > Date.now() + 30_000
+    ) {
+      return cachedCapability;
+    }
+    if (capabilityInFlight !== null) return capabilityInFlight;
+
+    const issuance = issueMonadRelayRpcCapability(rpcUrl, auth, timeout);
+    capabilityInFlight = issuance;
+    try {
+      const capability = await issuance;
+      // Only the currently registered issuance may update the cache. This
+      // keeps a late completion from replacing a newer capability.
+      if (capabilityInFlight === issuance) cachedCapability = capability;
+      return capability;
+    } finally {
+      // A failed challenge or issuance must not poison later requests.
+      if (capabilityInFlight === issuance) capabilityInFlight = null;
+    }
+  };
 
   connection.preflightFunc = async (request) => {
     const body = request.body;
     if (body === null) return request;
-    let capability = await (capabilityPromise ??= issueMonadRelayRpcCapability(
-      rpcUrl,
-      auth,
-      request.timeout
-    ));
-    if (capability.expiresAtMs <= Date.now() + 30_000) {
-      capabilityPromise = issueMonadRelayRpcCapability(
-        rpcUrl,
-        auth,
-        request.timeout
-      );
-      capability = await capabilityPromise;
-    }
+    const capability = await capabilityFor(request.timeout);
     const authorized = new FetchRequest(capability.rpcUrl);
     authorized.body = body;
     authorized.timeout = request.timeout;

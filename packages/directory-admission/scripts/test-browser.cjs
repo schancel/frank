@@ -4,7 +4,7 @@ const { existsSync } = require('fs')
 const path = require('path')
 const os = require('os')
 const http = require('http')
-const { spawn } = require('child_process')
+const { spawn, execFileSync } = require('child_process')
 const assert = require('assert/strict')
 
 const pack = value =>
@@ -135,27 +135,66 @@ async function launch(chrome, profile) {
   return { process: processChild, cdp: new CDP(socket) }
 }
 async function stop(browser, force = false) {
+  if (!browser) return
+  const killGroup = () => killOwnedGroup(browser.process.pid)
   if (
-    !browser ||
-    browser.process.exitCode !== null ||
-    browser.process.signalCode !== null
-  )
-    return
-  const exited = new Promise(resolve => browser.process.once('exit', resolve))
-  const killGroup = () => {
+    browser.process.exitCode === null &&
+    browser.process.signalCode === null
+  ) {
+    const exited = new Promise(resolve => browser.process.once('exit', resolve))
+    if (force) killGroup()
+    else browser.cdp.send('Browser.close').catch(() => {})
+    let timer
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        try {
+          killGroup()
+        } catch (error) {
+          reject(error)
+        }
+      }, 10000)
+    })
     try {
-      process.kill(-browser.process.pid, 'SIGKILL')
-    } catch (error) {
-      if (error.code !== 'ESRCH') throw error
+      await Promise.race([exited, timeout])
+    } finally {
+      clearTimeout(timer)
     }
   }
-  if (force) killGroup()
-  else browser.cdp.send('Browser.close').catch(() => {})
-  const timer = setTimeout(killGroup, 10000)
-  await exited
-  clearTimeout(timer)
   killGroup()
+  await poll(
+    () => liveGroupMembers(browser.process.pid).length === 0,
+    'owned Chromium process group exit',
+    10000,
+  )
   browser.cdp.socket.close()
+}
+function liveGroupMembers(group) {
+  return execFileSync('ps', ['-axo', 'pid=,pgid=,stat='], { encoding: 'utf8' })
+    .trim()
+    .split('\n')
+    .map(line => line.trim().split(/\s+/))
+    .filter(
+      ([pid, pgid, state]) =>
+        Number(pgid) === group && Number(pid) > 0 && !state.startsWith('Z'),
+    )
+    .map(([pid]) => Number(pid))
+}
+function killOwnedGroup(
+  group,
+  kill = process.kill,
+  members = liveGroupMembers,
+) {
+  assert.ok(Number.isInteger(group) && group > 0, 'owned detached group ID')
+  if (members(group).length === 0) return
+  try {
+    kill(-group, 'SIGKILL')
+  } catch (error) {
+    if (error.code === 'ESRCH') return
+    // A macOS group can disappear between ps and kill after its leader exits.
+    // Never swallow a permissions failure while any live member is still present.
+    if (error.code === 'EPERM' && members(group).length === 0) return
+    throw error
+  }
 }
 async function tab(cdp, origin) {
   const { targetId } = await cdp.send('Target.createTarget', { url: origin })
@@ -222,6 +261,8 @@ async function main() {
     path.join(packageRoot, 'dist/test-browser.js'),
   )
   const server = http.createServer((request, response) => {
+    response.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+    response.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
     response.setHeader(
       'Content-Type',
       request.url === '/bundle.js' ? 'text/javascript' : 'text/html',
@@ -243,7 +284,20 @@ async function main() {
     let { cdp } = browser
     let a = await tab(cdp, origin)
     let b = await tab(cdp, origin)
+    const ownership = await cdp.call(a, { action: 'ownership' })
+    assert.equal(ownership.ok, true, JSON.stringify(ownership.results))
+    if (process.argv.includes('--ownership-only')) {
+      console.log(
+        JSON.stringify({
+          backend: 'real-chromium-indexeddb',
+          ownership: ownership.cases,
+          ok: true,
+        }),
+      )
+      return
+    }
     const results = await cdp.call(a, { action: 'corpus' })
+    results.ownership = ownership.cases
     console.log(
       `IndexedDB shared policy and failures: ${JSON.stringify(results)}`,
     )
@@ -461,7 +515,9 @@ async function main() {
     await fs.rm(profile, { recursive: true, force: true })
   }
 }
-main().catch(error => {
-  console.error(error)
-  process.exitCode = 1
-})
+module.exports = { killOwnedGroup }
+if (require.main === module)
+  main().catch(error => {
+    console.error(error)
+    process.exitCode = 1
+  })

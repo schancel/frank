@@ -10,6 +10,14 @@ import type {
 } from '../index'
 import type { Timestamp } from '@frank/codec'
 import {
+  ownBytes,
+  ownCandidate,
+  ownContext,
+  ownEvidence,
+  ownPoint,
+  ownTime,
+} from './owned-inputs'
+import {
   AdmissionError,
   authenticate,
   bootstrap,
@@ -44,11 +52,6 @@ import {
   Metadata,
 } from '../storage/records'
 
-/** Copies occur synchronously at the API boundary, before queued operations yield. */
-function copy<T>(value: T): T {
-  return structuredClone(value)
-}
-
 export async function openStore(
   storage: Storage,
   anchor: Anchor,
@@ -58,7 +61,7 @@ export async function openStore(
   let closed = false
   let enrolled = mode.kind === 'reopen'
   let continuity: Checkpoint | null =
-    mode.kind === 'reopen' ? copy(mode.checkpoint) : null
+    mode.kind === 'reopen' ? mode.checkpoint : null
   let queue: Promise<unknown> = Promise.resolve()
   const run = <T>(action: () => Promise<T>): Promise<T> => {
     const result = queue.then(async () => {
@@ -140,8 +143,21 @@ export async function openStore(
     } catch (error) {
       return Promise.reject(error)
     }
-    const owned = copy(candidates)
-    const ctx = copy(context)
+    const owned = candidates.map(ownCandidate)
+    // Snapshot before yielding, but keep malformed-relay errors at the existing
+    // relay-validation boundary (after storage/evidence preflight and clock).
+    let ctx: Context = {
+      now: context?.now == null ? null : ownTime(context.now),
+      relay: null,
+    }
+    let contextError: AdmissionError | null = null
+    try {
+      ctx = ownContext(context)
+    } catch (error) {
+      if (!(error instanceof AdmissionError) || error.code !== 'binding')
+        throw error
+      contextError = error
+    }
     return run(async () => {
       const rows = await storage.read()
       const meta = header(rows, anchor)
@@ -158,6 +174,7 @@ export async function openStore(
       )
         fail('continuity')
       const now = clock(ctx.now, loaded?.checked)
+      if (contextError) throw contextError
       requireRelay(ctx.relay)
       const s: State = loaded ?? {
         history: [],
@@ -188,16 +205,17 @@ export async function openStore(
       fresh(head, now, ctx.relay)
       s.checked = now
       const committed = await commit(s, meta, rows)
-      return copy({
+      const previous = previousStamp(s.history)
+      return {
         kind: 'current',
-        evidence: head.evidence,
-        messageKey: head.message,
-        stampKey: head.stamp,
-        previousStamp: previousStamp(s.history),
+        evidence: ownEvidence(head.evidence),
+        messageKey: ownPoint(head.message, 'evidence'),
+        stampKey: ownPoint(head.stamp, 'evidence'),
+        previousStamp: previous ? ownPoint(previous, 'evidence') : null,
         revision: head.revision,
-        generations: head.generations,
+        generations: [...head.generations] as [bigint, bigint],
         status: status(committed),
-      })
+      }
     })
   }
   return {
@@ -210,8 +228,8 @@ export async function openStore(
       } catch (error) {
         return Promise.reject(error)
       }
-      const c = copy(candidate),
-        time = copy(now)
+      const c = ownCandidate(candidate),
+        time = ownTime(now)
       return run(async () => {
         if (!equal(statementBytes(c.attestation), c.statement)) fail('evidence')
         const r = authenticate(anchor, c.attestation)
@@ -221,8 +239,8 @@ export async function openStore(
         return {
           kind: 'ProspectiveEnrollment',
           identity: await identity(anchor),
-          anchor: copy(anchor.revisionZero),
-          head: copy(r.evidence.hash),
+          anchor: ownBytes(anchor.revisionZero, 32, 'anchor', true),
+          head: ownBytes(r.evidence.hash, 32, 'evidence', true),
           accepted: 1,
           retained: 1,
           evidenceDigest: await evidenceDigest([r]),
@@ -240,21 +258,21 @@ export async function openStore(
         return meta ? status(meta) : null
       }),
     historicalEvidence(hash) {
-      const owned = copy(hash)
+      const owned = ownBytes(hash, 32, 'evidence', true)
       return run(async () => {
         const { state } = await read()
         if (!state) fail('unenrolled')
-        return copy(
-          state.history.find(r => equal(r.evidence.hash, owned))?.evidence ??
-            null,
-        )
+        const evidence = state.history.find(r =>
+          equal(r.evidence.hash, owned),
+        )?.evidence
+        return evidence ? ownEvidence(evidence) : null
       })
     },
     conflictEvidence: () =>
       run(async () => {
         const { state } = await read()
         if (!state) fail('unenrolled')
-        return copy(state.proof.map(r => r.evidence))
+        return state.proof.map(r => ownEvidence(r.evidence))
       }),
     close() {
       const result = queue.then(async () => {

@@ -42,6 +42,11 @@ the exact supplied statement. Only then does
 bytes and recompute exact T1. Neither production entry imports proposal tools,
 wallet/account custody, a Rust service or a second signature/parser engine.
 Input copying occurs before yielding to queued work; returned arrays are copies.
+Known byte fields are bounded by their view lengths and copied into exact-length,
+ordinary `Uint8Array` allocations, including shared-buffer-backed input views.
+The copy never clones the caller's entire backing buffer. Relay optional fields
+use only the codec's bounded data vocabulary; authenticated retained wrappers
+come from the codec-owned verified frame.
 
 Every successful fresh result requires explicitly supplied trusted Unix time
 with bigint seconds and exact nanoseconds, plus the previously authenticated
@@ -158,7 +163,8 @@ created databases; after adoption, durable format changes need explicit migratio
 
 The package's dedicated CI runs typecheck, format, dependency boundary, the
 shared 71 policy cases and nine probes, real native Level restart/failure/lock
-tests, and real Chromium persistence/race/failure tests. The shared corpus and
+tests, public-boundary shared-buffer/bounded-view ownership regressions, and real
+Chromium persistence/race/failure tests. The shared corpus and
 actual signed retained-history count/byte cap tests exercise production policy
 and storage rather than only synthetic counters. The corpus and
 frozen source bytes remain owned by #748 and unchanged here. The Rust public

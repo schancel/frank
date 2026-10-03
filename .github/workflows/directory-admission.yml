@@ -48,6 +48,7 @@ jobs:
       - name: Shared policy and exact-byte corpus consistency
         run: |
           yarn workspace @frank/directory-admission test
+          yarn workspace @frank/directory-admission test:ownership
           node backend/cashweb/cashweb-registry/tests/directory_preview_corpus.cjs --check
       - name: Native Level sync, restart, lock and failure boundaries
         run: yarn workspace @frank/directory-admission test:node

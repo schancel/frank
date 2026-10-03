@@ -77,6 +77,7 @@ for checkpoint kinds, transaction semantics, error recovery and trust limits.
 - `yarn workspace @frank/directory-admission typecheck`
 - `yarn workspace @frank/directory-admission test`: shared policy/facade
 - `yarn workspace @frank/directory-admission test:node`: native Level processes
+- `yarn workspace @frank/directory-admission test:ownership`: shared-buffer and bounded-view public inputs
 - `yarn workspace @frank/directory-admission test:browser`: real Chromium
 - `yarn workspace @frank/directory-admission test:resources`: actual signed retained-history caps
 - `yarn workspace @frank/directory-admission check:boundary`

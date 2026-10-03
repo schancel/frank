@@ -158,7 +158,7 @@ export function authenticate(anchor: Anchor, wrapper: Uint8Array): Record {
     evidence: {
       kind: 'historical-evidence',
       statement: signed.statementFrame.frame,
-      attestation: wrapper,
+      attestation: signed.attestationFrame.frame,
       hash: signed.statementHash,
     },
     schema: signed.statementFrame.schemaVersion,

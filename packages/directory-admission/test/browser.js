@@ -1,4 +1,5 @@
 import { openBrowserDirectoryStore } from '../src/browser'
+import { runOwnership } from './ownership-cases'
 import {
   anchor,
   candidate,
@@ -191,6 +192,8 @@ async function supplemental() {
   return { failures: 3, corruption: 4, eviction: 1 }
 }
 async function dispatch(command) {
+  if (command.action === 'ownership')
+    return runOwnership(factory, command.selected)
   if (command.action === 'corpus')
     return {
       ...(await runCorpus(factory)),

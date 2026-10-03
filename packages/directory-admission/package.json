@@ -13,10 +13,11 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "node scripts/test.cjs",
     "test:node": "node scripts/test-node.cjs",
-    "test:browser": "node scripts/test-browser.cjs",
+    "test:ownership": "node scripts/test-ownership.cjs",
+    "test:browser": "node test/browser-cleanup.cjs && node scripts/test-browser.cjs",
     "test:resources": "node scripts/test-resources.cjs",
     "check:boundary": "node scripts/check-boundary.cjs",
-    "format": "prettier --config ../../app/.prettierrc.json --check \"src/**/*.ts\" \"test/**/*.js\" \"scripts/*.cjs\" README.md package.json tsconfig.json ../../docs/protocol/directory-preview-client-admission.md ../../.github/workflows/directory-admission.yml"
+    "format": "prettier --config ../../app/.prettierrc.json --check \"src/**/*.ts\" \"test/**/*.{js,cjs}\" \"scripts/*.cjs\" README.md package.json tsconfig.json ../../docs/protocol/directory-preview-client-admission.md ../../.github/workflows/directory-admission.yml"
   },
   "dependencies": {
     "@frank/codec": "*",

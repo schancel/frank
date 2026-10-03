@@ -72,6 +72,27 @@ leased real-browser gate; an unset variable is an explicit skip, never a pass.
 Tests sign fresh local-tuple evidence using disposable published keys; frozen
 shared vectors are read-only. Process restart is not machine power-loss proof.
 
+The example `backend/cashweb/cashweb-registry/examples/directory_trust_probe.rs`
+consumes a validated **public** bundle snapshot and independently installed trust,
+not private fixture files. Its sole argument is an absolute bounded JSON scenario
+with `bundle`, retained `manifestIdentity`, `installed`, decimal `nowNs`, dedicated
+absolute `location`, external `continuityFile`, explicit `mode: "new" | "reopen"`
+and `candidates: [{statement, attestation}]` containing exact lowercase frame hex.
+The bundle's JSON binding expiry is also decimal. New mode requires both paths
+absent; reopen requires the full saved continuity and existing registry. An empty
+reopen batch calls `current`. Only a durably accepted fresh result reaches stdout;
+errors emit a bounded code and exit nonzero. Native continuity uses the public
+Rust checkpoint serialization, not a shared on-disk format with the TS adapter.
+
+The example-only pinned `native-tls` dependency uses a per-instance explicit CA,
+normal hostname/expiry checks, and exact leaf-certificate digest on the same
+connection before the bounded fixed HTTPS request. It does not change production
+TLS, system roots, the admission policy or registry storage. Set
+`DIRECTORY_ADMISSION_RUST_PROBE` to the absolute built example executable to enable
+the Node/Rust exact-result, process-reopen, trust/TLS and quarantine comparison.
+An unset variable is an explicit skip. Compile and run this gate only under the
+same heavy-test lease as Chromium; the adapters are not production routes.
+
 ## Explicit inputs and public facade
 
 `initBundle({ mode: 'synthetic-demo', runDir, trustInputs, nowNs, witnessHex? })`
@@ -227,7 +248,8 @@ expired certificate. Required negatives cover wrong CA, leaf, SAN, expiry,
 endpoint, redirect, relay tuple, same-key reissue, missing tools, no/wrong browser
 pin and unrelated certificate. Lifecycle tests cover real restart, failure,
 signals, socket closure, exclusive leases and neighboring process/state survival.
-CI remains unchanged. The base has no prior implementation; proof is the new
-facade and positive/negative transport/lifecycle evidence, not an invented
-fail-before claim. Reversal before any future consumption is deleting these
-ten additive files. Integration and runtime proof remain #750's responsibility.
+CI remains unchanged. #758's provisioning and transport facade remains separate
+from these additive #750 admission consumers. Deselecting the opt-in mode leaves
+normal demo behavior intact and preserves trust, admission and continuity
+artifacts. These consumer proofs do not complete #774's runtime publication or
+the later actual UI/game/two-relay acceptance obligations.

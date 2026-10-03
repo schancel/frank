@@ -192,12 +192,21 @@ async function page(browser, bundle, script, continuityFile) {
     try {
       assert.equal(typeof record, 'string')
       assert.ok(record.length <= 8192)
-      const fd = fs.openSync(continuityFile, 'w', 0o600)
+      const replacement = fs.existsSync(continuityFile)
+      const target = replacement ? continuityFile + '.pending' : continuityFile
+      const fd = fs.openSync(target, 'wx', 0o600)
       try {
         fs.writeFileSync(fd, record)
         fs.fsyncSync(fd)
       } finally {
         fs.closeSync(fd)
+      }
+      if (replacement) fs.renameSync(target, continuityFile)
+      const parent = fs.openSync(path.dirname(continuityFile), 'r')
+      try {
+        fs.fsyncSync(parent)
+      } finally {
+        fs.closeSync(parent)
       }
       await cdp.evaluate(
         sessionId,
@@ -257,6 +266,12 @@ async function main() {
   facade._compile(node.outputFiles[0].text, facade.filename)
   const now = BigInt(scenario.nowNs)
   const bundle = facade.exports.reopenBundle(scenario.bundle, now)
+  const installed = facade.exports.parseTrust(scenario.installed)
+  assert.deepEqual(
+    installed,
+    bundle.trustInputs,
+    'Independent browser trust installation',
+  )
   await facade.exports.checkNode(scenario.bundle, now)
   const built = await esbuild.build({
     entryPoints: [path.join(__dirname, 'browser-admission.ts')],
@@ -282,8 +297,19 @@ async function main() {
   const profile = path.join(owned, 'profile'),
     continuityFile = path.join(owned, 'continuity.json')
   let browser
+  let interrupted = false
+  const onSignal = () => {
+    interrupted = true
+    stop(browser).catch(() => {})
+  }
+  const checkInterrupted = () => {
+    if (interrupted) throw new Error('Owned browser proof interrupted')
+  }
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP']
+  for (const signal of signals) process.on(signal, onSignal)
   try {
     browser = await launch(chromium, profile, bundle.tls.leafSpkiSha256)
+    checkInterrupted()
     let session = await page(
       browser,
       bundle,
@@ -293,8 +319,8 @@ async function main() {
     const setup = `globalThis.installation = ${JSON.stringify({
       manifestIdentity: bundle.manifestIdentity,
       trustInputs: {
-        ...bundle.trustInputs,
-        bindingExpiryNs: bundle.trustInputs.bindingExpiryNs.toString(),
+        ...installed,
+        bindingExpiryNs: installed.bindingExpiryNs.toString(),
       },
       witnessHex: bundle.witnessHex,
     })}; installation.trustInputs.bindingExpiryNs = BigInt(installation.trustInputs.bindingExpiryNs); globalThis.nowNs = BigInt(${JSON.stringify(
@@ -316,7 +342,9 @@ async function main() {
     await browser.cdp.evaluate(session, 'store.close()')
     await stop(browser)
     await facade.exports.checkNode(scenario.bundle, now)
+    checkInterrupted()
     browser = await launch(chromium, profile, bundle.tls.leafSpkiSha256)
+    checkInterrupted()
     session = await page(
       browser,
       bundle,
@@ -349,6 +377,35 @@ async function main() {
         )}},saveContinuity:saveRecord})`,
       ),
     )
+    await browser.cdp.evaluate(
+      session,
+      `globalThis.store = await DemoDirectory.openDemoBrowserAdmission({name:'explicit-demo',installation,nowNs,mode:{kind:'reopen',continuity:${JSON.stringify(
+        continuity,
+      )}},saveContinuity:saveRecord});
+       globalThis.conflict = ${JSON.stringify(scenario.conflict)};
+       conflict = {statement:DemoDirectory.exactHex(conflict.statement, conflict.statement.length/2),attestation:DemoDirectory.exactHex(conflict.attestation,conflict.attestation.length/2)};`,
+    )
+    await assert.rejects(
+      () => browser.cdp.evaluate(session, 'store.advance([conflict],nowNs)'),
+      /fork/i,
+    )
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(continuityFile, 'utf8')).checkpoint,
+      scenario.expectedFork,
+    )
+    await browser.cdp.evaluate(session, 'store.close()')
+    const forkContinuity = fs.readFileSync(continuityFile, 'utf8')
+    await browser.cdp.evaluate(
+      session,
+      `globalThis.store = await DemoDirectory.openDemoBrowserAdmission({name:'explicit-demo',installation,nowNs,mode:{kind:'reopen',continuity:${JSON.stringify(
+        forkContinuity,
+      )}},saveContinuity:saveRecord})`,
+    )
+    await assert.rejects(
+      () => browser.cdp.evaluate(session, 'store.current(nowNs)'),
+      /fork/i,
+    )
+    await browser.cdp.evaluate(session, 'store.close()')
     console.log(
       JSON.stringify({
         ok: true,
@@ -357,11 +414,13 @@ async function main() {
         restart: true,
         missingReopen: true,
         clockRollback: true,
+        durableQuarantine: true,
         crossLanguage: 'matches-node-signed-scenario',
       }),
     )
   } finally {
     await stop(browser)
+    for (const signal of signals) process.off(signal, onSignal)
     fs.rmSync(owned, { recursive: true, force: true })
   }
 }

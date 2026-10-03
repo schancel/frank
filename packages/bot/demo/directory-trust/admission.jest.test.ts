@@ -1,10 +1,10 @@
 import { createServer } from 'node:net'
 import { spawn } from 'node:child_process'
-import * as filesystem from 'node:fs'
 import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -38,6 +38,8 @@ import {
   splitTime,
   trustJSON,
 } from './browser-admission'
+
+const filesystem = require('node:fs') as typeof import('node:fs')
 
 const source = JSON.parse(
   readFileSync(
@@ -338,15 +340,47 @@ test('stale clock rejects with no usable result and no head advancement', async 
   }
 })
 
+test('retained external continuity cannot reopen a missing or corrupt dedicated store', async () => {
+  const store = await openDemoNodeAdmission(options())
+  await store.enroll([bootstrap], now)
+  await store.close()
+  filesystem.renameSync(options().location, join(root, 'saved-admission.level'))
+  await expect(openDemoNodeAdmission(options('reopen'))).rejects.toThrow()
+  expect(existsSync(options().location)).toBe(false)
+  filesystem.renameSync(join(root, 'saved-admission.level'), options().location)
+  writeFileSync(join(options().location, 'CURRENT'), 'not-a-manifest\n')
+  await expect(openDemoNodeAdmission(options('reopen'))).rejects.toThrow()
+  expect(
+    JSON.parse(readFileSync(options().continuityFile, 'utf8')).checkpoint.kind,
+  ).toBe('CommittedPrefix')
+})
+
+test('manifest substitution and mismatched supplied witness fail before a usable result', async () => {
+  await expect(
+    openDemoNodeAdmission({
+      ...options(),
+      bundle: { ...bundle, manifestIdentity: '00'.repeat(32) },
+    }),
+  ).rejects.toThrow()
+  expect(existsSync(options().location)).toBe(false)
+  const store = await openDemoNodeAdmission(options())
+  try {
+    await expect(store.enroll([rotation], now)).rejects.toThrow(
+      'enrollment witness',
+    )
+    expect(await store.status()).toBeNull()
+    expect(existsSync(options().continuityFile)).toBe(false)
+  } finally {
+    await store.close()
+  }
+})
+
 test('failed prospective save exposes no enrolled head and never retries as a new user', async () => {
   const store = await openDemoNodeAdmission(options())
   try {
-    jest.spyOn(filesystem, 'fsyncSync').mockImplementationOnce(() => {
-      throw new Error('checkpoint-save-failed')
-    })
-    await expect(store.enroll([bootstrap], now)).rejects.toThrow(
-      'checkpoint-save-failed',
-    )
+    // A competing public continuity file cannot be overwritten by enrollment.
+    writeFileSync(options().continuityFile, 'reserved', { flag: 'wx' })
+    await expect(store.enroll([bootstrap], now)).rejects.toThrow('EEXIST')
     expect(await store.status()).toBeNull()
     await expect(store.enroll([bootstrap], now)).rejects.toThrow(
       'explicitly reopen',
@@ -359,9 +393,14 @@ test('failed prospective save exposes no enrolled head and never retries as a ne
 test('lost checkpoint acknowledgement exposes no result; last prospective prefix reopens committed descendant', async () => {
   let store = await openDemoNodeAdmission(options())
   try {
-    jest.spyOn(filesystem, 'renameSync').mockImplementationOnce(() => {
-      throw new Error('checkpoint-ack-failed')
-    })
+    const rename = filesystem.renameSync
+    jest
+      .spyOn(filesystem, 'renameSync')
+      .mockImplementation((source, target) => {
+        if (target === join(realpathSync(root), 'continuity.json'))
+          throw new Error('checkpoint-ack-failed')
+        rename(source, target)
+      })
     await expect(store.enroll([bootstrap, rotation], now)).rejects.toThrow(
       'checkpoint-ack-failed',
     )
@@ -372,6 +411,7 @@ test('lost checkpoint acknowledgement exposes no result; last prospective prefix
     ).toBe('ProspectiveEnrollment')
     await expect(store.current(now)).rejects.toThrow('explicitly reopen')
     await store.close()
+    jest.restoreAllMocks()
     store = await openDemoNodeAdmission(options('reopen'))
     expect((await store.current(now)).evidence.hash).toEqual(hash(rotation))
   } finally {
@@ -442,6 +482,7 @@ function child(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv = {},
+  timeoutMs = 20000,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const processChild = spawn(command, args, {
@@ -450,10 +491,13 @@ function child(
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let output = ''
+    let timedOut = false
+    let force: NodeJS.Timeout | undefined
     const timer = setTimeout(() => {
-      processChild.kill('SIGKILL')
-      reject(new Error('Owned demo child timed out'))
-    }, 20000)
+      timedOut = true
+      processChild.kill('SIGTERM')
+      force = setTimeout(() => processChild.kill('SIGKILL'), 20000)
+    }, timeoutMs)
     processChild.stdout.on('data', bytes => {
       output += bytes
       if (output.length > 100000) processChild.kill('SIGKILL')
@@ -464,11 +508,14 @@ function child(
     })
     processChild.once('error', error => {
       clearTimeout(timer)
+      clearTimeout(force)
       reject(error)
     })
     processChild.once('exit', code => {
       clearTimeout(timer)
-      if (code === 0) resolve(output)
+      clearTimeout(force)
+      if (timedOut) reject(new Error('Owned demo child timed out'))
+      else if (code === 0) resolve(output)
       else reject(new Error(`Owned child exit ${code}: ${output}`))
     })
   })
@@ -529,13 +576,103 @@ test('exact demo source opt-in and independent process reopen preserve public id
 }, 25000)
 
 const browserTest = process.env.DIRECTORY_ADMISSION_CHROMIUM ? test : test.skip
-browserTest(
-  'real controlled-origin Chromium matches Node exact admission and survives browser restart',
+const rustTest = process.env.DIRECTORY_ADMISSION_RUST_PROBE ? test : test.skip
+rustTest(
+  'real Rust TLS/public admission agrees exactly with Node and preserves restart/quarantine',
   async () => {
     const store = await openDemoNodeAdmission(options())
     let expected
     try {
       expected = summary(await store.enroll([bootstrap, rotation], now))
+    } finally {
+      await store.close()
+    }
+    const scenarioFile = join(root, 'rust-scenario.json')
+    const config = {
+      bundle: { ...bundle, trustInputs: trustJSON(trust) },
+      manifestIdentity: bundle.manifestIdentity,
+      installed: trustJSON(trust),
+      nowNs: now.toString(),
+      location: join(root, 'rust-admission'),
+      continuityFile: join(root, 'rust-continuity.json'),
+      mode: 'new',
+      candidates: [bootstrap, rotation].map(c => ({
+        statement: toHex(c.statement),
+        attestation: toHex(c.attestation),
+      })),
+    }
+    const probe = async (input: typeof config) => {
+      writeFileSync(scenarioFile, JSON.stringify(input))
+      return JSON.parse(
+        await child(process.env.DIRECTORY_ADMISSION_RUST_PROBE!, [
+          scenarioFile,
+        ]),
+      )
+    }
+    expect(await probe(config)).toEqual(expected)
+    const reopen = { ...config, mode: 'reopen', candidates: [] }
+    expect(await probe(reopen)).toEqual(expected)
+    await expect(
+      probe({ ...reopen, nowNs: (now - 1n).toString() }),
+    ).rejects.toThrow()
+    await expect(
+      probe({ ...reopen, location: join(root, 'absent-rust') }),
+    ).rejects.toThrow('unavailable')
+    await expect(
+      probe({ ...reopen, continuityFile: join(root, 'absent-continuity') }),
+    ).rejects.toThrow('unavailable')
+    await expect(
+      probe({
+        ...reopen,
+        bundle: {
+          ...config.bundle,
+          tls: { ...bundle.tls, leafSha256: '00'.repeat(32) },
+        },
+      }),
+    ).rejects.toThrow('tls-pin')
+    await expect(
+      probe({
+        ...reopen,
+        installed: { ...config.installed, network: 'monad-mainnet' },
+      }),
+    ).rejects.toThrow('trust')
+    const conflict = signed(trust, 1, hash(bootstrap), 6, 1)
+    await expect(
+      probe({
+        ...reopen,
+        candidates: [
+          {
+            statement: toHex(conflict.statement),
+            attestation: toHex(conflict.attestation),
+          },
+        ],
+      }),
+    ).rejects.toThrow('fork')
+    expect(
+      JSON.parse(readFileSync(config.continuityFile, 'utf8')).checkpoint.forked,
+    ).toBe(true)
+    await expect(probe(reopen)).rejects.toThrow('fork')
+    writeFileSync(config.continuityFile, '{')
+    await expect(probe(reopen)).rejects.toThrow('continuity')
+  },
+  60000,
+)
+
+browserTest(
+  'real controlled-origin Chromium matches Node exact admission and survives browser restart',
+  async () => {
+    const store = await openDemoNodeAdmission(options())
+    let expected
+    let expectedFork
+    const conflict = signed(trust, 1, hash(bootstrap), 6, 1)
+    try {
+      expected = summary(await store.enroll([bootstrap, rotation], now))
+      await expect(store.advance([conflict], now)).rejects.toMatchObject({
+        code: 'fork',
+      })
+      expectedFork = JSON.parse(
+        readFileSync(options().continuityFile, 'utf8'),
+      ).checkpoint
     } finally {
       await store.close()
     }
@@ -548,20 +685,31 @@ browserTest(
           manifestIdentity: bundle.manifestIdentity,
         },
         nowNs: now.toString(),
+        installed: trustJSON(trust),
         candidates: [bootstrap, rotation].map(c => ({
           statement: toHex(c.statement),
           attestation: toHex(c.attestation),
         })),
         expected,
+        expectedFork,
+        conflict: {
+          statement: toHex(conflict.statement),
+          attestation: toHex(conflict.attestation),
+        },
       }),
     )
-    const output = await child(process.execPath, [
-      join(__dirname, 'check-admission-browser.cjs'),
-      scenario,
-      process.env.DIRECTORY_ADMISSION_CHROMIUM!,
-    ])
+    const output = await child(
+      process.execPath,
+      [
+        join(__dirname, 'check-admission-browser.cjs'),
+        scenario,
+        process.env.DIRECTORY_ADMISSION_CHROMIUM!,
+      ],
+      {},
+      120000,
+    )
     expect(output).toContain('"ok":true')
     expect(output).toContain('"restart":true')
   },
-  30000,
+  145000,
 )

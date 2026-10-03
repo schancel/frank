@@ -1,0 +1,44 @@
+; PROPOSAL ONLY: type18 / schema1 / min-reader1, not an active allocation.
+; Exact structural schema from accepted #771 artifact
+; f58473a93079048315d85f3250fb45b0418614568de6edd40e4b17bbbb02b139.
+; Frame envelope remains {0:18, 1:1, 2:1, 3:bstr(payload_cbor)}.
+; No wildcard: these nine maps are closed, including compatible-future projection.
+; All text is well-formed UTF-8; .size on text counts UTF-8 bytes.
+;
+; Additional mandatory stage8.2 schema predicates:
+; - reveal key8 is exactly 64 lowercase ASCII hex characters, NOT decoded seed bytes;
+; - welcome key13 is <=400 UTF-16 units, astral scalars counting two;
+;   this implies <=1200 UTF-8 bytes, so the explicit byte cap is redundant.
+; Stage9 semantic predicates:
+; - action6 iff gameId is exactly "welcome"; other game IDs are not normalized;
+; - cards are unique within each hand; deal up-card is not a player card;
+; - welcome 1<=min<=max<=10^40-1, optional fee 0<=fee<=10^40-1,
+;   read from fixed-width unsigned big-endian 32-byte quantities.
+; Type18 complete-frame cap4096 is stage8.1 resource; existing cumulative
+; item/container/depth budgets apply, not independent per-child budgets.
+; Request/response direction and cross-message fairness/ownership require the
+; existing authenticated runtime context: syntax proves no payment or authority.
+; Application writers validate BEFORE conversion: wager/double strings are
+; lowercase-prefix 0x + exactly64 ASCII mixed-case hex digits; commitment is
+; bare exactly64 lowercase hex; decimal hints are exactly1..40 ASCII digits.
+; Full-string consumption, no trimming/coercion/partial hex parsing.
+; See README.md for all normative semantics, projection rules and ownership.
+
+blackjack-message-item = bj-bet / bj-deal / bj-hit-request / bj-hit-response /
+                         bj-stand / bj-double-request / bj-double-response /
+                         bj-reveal / bj-welcome
+game-id = tstr .size (1..128)
+hash32 = bstr .size 32
+evm-quantity = bstr .size 32
+card = 0..51
+bj-bet = {0: game-id, 1: 0, 2: hash32}
+bj-deal = {0: game-id, 1: 1, 4: hash32, 5: [2*2 card], 6: card}
+bj-hit-request = {0: game-id, 1: 2}
+bj-hit-response = {0: game-id, 1: 2, 5: [3*52 card]}
+bj-stand = {0: game-id, 1: 3}
+bj-double-request = {0: game-id, 1: 4, 3: hash32}
+bj-double-response = {0: game-id, 1: 4, 5: [3*3 card]}
+bj-reveal = {0: game-id, 1: 5, 7: [2*52 card],
+             8: tstr .size 64, 9: 0..3}
+bj-welcome = {0: game-id, 1: 6, 10: evm-quantity, 11: evm-quantity,
+              ? 12: evm-quantity, ? 13: tstr .size (0..1200)}

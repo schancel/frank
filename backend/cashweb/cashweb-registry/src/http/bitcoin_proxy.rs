@@ -51,6 +51,7 @@ struct UpstreamResponse {
     body: Bytes,
 }
 
+#[cfg(test)]
 #[derive(Clone, PartialEq, Message)]
 struct ScriptRefWire {
     #[prost(string, tag = "1")]
@@ -59,12 +60,14 @@ struct ScriptRefWire {
     payload: Vec<u8>,
 }
 
+#[cfg(test)]
 #[derive(Clone, PartialEq, Message)]
 struct ScriptBatchParamsWire {
     #[prost(message, repeated, tag = "1")]
     scripts: Vec<ScriptRefWire>,
 }
 
+#[cfg(test)]
 #[derive(Clone, PartialEq, Message)]
 struct ScriptBatchRequestWire {
     #[prost(message, optional, tag = "1")]
@@ -343,31 +346,60 @@ fn chronik_endpoint_url(base: &Url, path: &str, query: Option<&str>) -> Result<U
     Ok(url)
 }
 
-fn chronik_error_contains_secret(body: &[u8], message: &str, upstream: &Url) -> bool {
-    let mut needles = Vec::new();
-    needles.push(upstream.as_str());
+fn percent_decode_component(value: &str) -> Vec<u8> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = |byte: u8| match byte {
+                b'0'..=b'9' => Some(byte - b'0'),
+                b'a'..=b'f' => Some(byte - b'a' + 10),
+                b'A'..=b'F' => Some(byte - b'A' + 10),
+                _ => None,
+            };
+            if let (Some(high), Some(low)) = (hex(bytes[index + 1]), hex(bytes[index + 2])) {
+                decoded.push((high << 4) | low);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    decoded
+}
+
+fn chronik_error_contains_secret(body: &[u8], upstream: &Url) -> bool {
+    let mut needles = Vec::<Vec<u8>>::new();
+    needles.push(upstream.as_str().as_bytes().to_vec());
     if !upstream.username().is_empty() {
-        needles.push(upstream.username());
+        needles.push(upstream.username().as_bytes().to_vec());
+        needles.push(percent_decode_component(upstream.username()));
     }
     if let Some(password) = upstream.password().filter(|password| !password.is_empty()) {
-        needles.push(password);
+        needles.push(password.as_bytes().to_vec());
+        needles.push(percent_decode_component(password));
     }
     if let Some(query) = upstream.query().filter(|query| !query.is_empty()) {
-        needles.push(query);
+        needles.push(query.as_bytes().to_vec());
+        for (key, value) in upstream.query_pairs() {
+            needles.push(key.as_bytes().to_vec());
+            needles.push(value.as_bytes().to_vec());
+        }
     }
     let path = upstream.path().trim_matches('/');
     if !path.is_empty() {
-        needles.push(path);
+        needles.push(path.as_bytes().to_vec());
+        for segment in path.split('/') {
+            needles.push(segment.as_bytes().to_vec());
+            needles.push(percent_decode_component(segment));
+        }
     }
     needles
         .into_iter()
-        .filter(|needle| needle.len() >= 4)
-        .any(|needle| {
-            message.contains(needle)
-                || body
-                    .windows(needle.len())
-                    .any(|window| window == needle.as_bytes())
-        })
+        .filter(|needle| !needle.is_empty())
+        .any(|needle| body.windows(needle.len()).any(|window| window == needle))
 }
 
 async fn read_response(mut response: reqwest::Response, max: usize) -> Result<Bytes, ()> {
@@ -808,6 +840,140 @@ fn validate_history_query(path: &str, query: Option<&str>) -> Result<(), RpcReje
     Ok(())
 }
 
+fn invalid_indexer_body() -> RpcRejection {
+    rpc_error(StatusCode::BAD_REQUEST, "invalid_indexer_body")
+}
+
+fn read_protobuf_varint(body: &[u8], cursor: &mut usize) -> Result<u64, RpcRejection> {
+    let mut value = 0_u64;
+    for shift in (0..=63).step_by(7) {
+        let byte = *body.get(*cursor).ok_or_else(invalid_indexer_body)?;
+        *cursor += 1;
+        if shift == 63 && byte > 1 {
+            return Err(invalid_indexer_body());
+        }
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+    }
+    Err(invalid_indexer_body())
+}
+
+fn read_protobuf_bytes<'a>(body: &'a [u8], cursor: &mut usize) -> Result<&'a [u8], RpcRejection> {
+    let len =
+        usize::try_from(read_protobuf_varint(body, cursor)?).map_err(|_| invalid_indexer_body())?;
+    let end = cursor
+        .checked_add(len)
+        .filter(|end| *end <= body.len())
+        .ok_or_else(invalid_indexer_body)?;
+    let value = &body[*cursor..end];
+    *cursor = end;
+    Ok(value)
+}
+
+fn skip_protobuf_value(
+    body: &[u8],
+    cursor: &mut usize,
+    wire_type: u64,
+) -> Result<(), RpcRejection> {
+    match wire_type {
+        0 => {
+            read_protobuf_varint(body, cursor)?;
+        }
+        1 => {
+            *cursor = cursor
+                .checked_add(8)
+                .filter(|end| *end <= body.len())
+                .ok_or_else(invalid_indexer_body)?;
+        }
+        2 => {
+            read_protobuf_bytes(body, cursor)?;
+        }
+        5 => {
+            *cursor = cursor
+                .checked_add(4)
+                .filter(|end| *end <= body.len())
+                .ok_or_else(invalid_indexer_body)?;
+        }
+        _ => return Err(invalid_indexer_body()),
+    }
+    Ok(())
+}
+
+fn read_protobuf_key(body: &[u8], cursor: &mut usize) -> Result<(u64, u64), RpcRejection> {
+    let key = read_protobuf_varint(body, cursor)?;
+    let field = key >> 3;
+    if field == 0 || field > 0x1fff_ffff {
+        return Err(invalid_indexer_body());
+    }
+    Ok((field, key & 7))
+}
+
+fn validate_script_ref(body: &[u8]) -> Result<(), RpcRejection> {
+    let mut cursor = 0;
+    while cursor < body.len() {
+        let (field, wire_type) = read_protobuf_key(body, &mut cursor)?;
+        match (field, wire_type) {
+            (1, 2) => {
+                std::str::from_utf8(read_protobuf_bytes(body, &mut cursor)?)
+                    .map_err(|_| invalid_indexer_body())?;
+            }
+            (2, 2) => {
+                read_protobuf_bytes(body, &mut cursor)?;
+            }
+            (1 | 2, _) => return Err(invalid_indexer_body()),
+            _ => skip_protobuf_value(body, &mut cursor, wire_type)?,
+        }
+    }
+    Ok(())
+}
+
+fn count_script_batch_params(body: &[u8]) -> Result<u32, RpcRejection> {
+    let mut cursor = 0;
+    let mut count = 0_u32;
+    while cursor < body.len() {
+        let (field, wire_type) = read_protobuf_key(body, &mut cursor)?;
+        if field == 1 {
+            if wire_type != 2 {
+                return Err(invalid_indexer_body());
+            }
+            let script = read_protobuf_bytes(body, &mut cursor)?;
+            count += 1;
+            if count > 500 {
+                return Err(rpc_error(StatusCode::BAD_REQUEST, "rpc_batch_limit"));
+            }
+            validate_script_ref(script)?;
+        } else {
+            skip_protobuf_value(body, &mut cursor, wire_type)?;
+        }
+    }
+    if count == 0 {
+        return Err(rpc_error(StatusCode::BAD_REQUEST, "rpc_batch_limit"));
+    }
+    Ok(count)
+}
+
+fn count_script_batch(body: &[u8]) -> Result<u32, RpcRejection> {
+    let mut cursor = 0;
+    let mut params = None;
+    while cursor < body.len() {
+        let (field, wire_type) = read_protobuf_key(body, &mut cursor)?;
+        if field == 1 {
+            if wire_type != 2 {
+                return Err(invalid_indexer_body());
+            }
+            if params.is_some() {
+                return Err(invalid_indexer_body());
+            }
+            params = Some(read_protobuf_bytes(body, &mut cursor)?);
+        } else {
+            skip_protobuf_value(body, &mut cursor, wire_type)?;
+        }
+    }
+    count_script_batch_params(params.ok_or_else(invalid_indexer_body)?)
+}
+
 fn anonymous_chronik_units(
     method: &Method,
     path: &str,
@@ -815,17 +981,7 @@ fn anonymous_chronik_units(
     body: &[u8],
 ) -> Result<u32, RpcRejection> {
     if method == Method::POST && matches!(path, "script/batch/utxos" | "script/batch/summary") {
-        let request = ScriptBatchRequestWire::decode(body)
-            .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_indexer_body"))?;
-        let count = request
-            .params
-            .map(|params| params.scripts.len())
-            .unwrap_or_default();
-        if count == 0 || count > 500 {
-            return Err(rpc_error(StatusCode::BAD_REQUEST, "rpc_batch_limit"));
-        }
-        return u32::try_from(count)
-            .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "rpc_batch_limit"));
+        return count_script_batch(body);
     }
     validate_history_query(path, query)?;
     Ok(1)
@@ -1087,13 +1243,9 @@ async fn proxy_chronik_inner(
     let body = if upstream.status.is_success() {
         upstream.body
     } else {
-        let error = proto::Error::decode(upstream.body.as_ref())
+        proto::Error::decode(upstream.body.as_ref())
             .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
-        if chronik_error_contains_secret(
-            upstream.body.as_ref(),
-            &error.msg,
-            chain.chronik.as_ref().unwrap(),
-        ) {
+        if chronik_error_contains_secret(upstream.body.as_ref(), chain.chronik.as_ref().unwrap()) {
             proto::Error {
                 msg: "upstream Chronik error".to_string(),
             }
@@ -1237,6 +1389,25 @@ mod tests {
             3
         );
         assert!(anonymous_chronik_units(&Method::POST, "script/batch/summary", None, &[]).is_err());
+
+        let mut dense_params = Vec::new();
+        for _ in 0..501 {
+            dense_params.extend_from_slice(&[0x0a, 0x00]);
+        }
+        let mut dense_body = vec![0x0a, 0xea, 0x07];
+        dense_body.extend_from_slice(&dense_params);
+        assert!(
+            anonymous_chronik_units(&Method::POST, "script/batch/utxos", None, &dense_body)
+                .is_err()
+        );
+
+        assert!(anonymous_chronik_units(
+            &Method::POST,
+            "script/batch/utxos",
+            None,
+            &[0x0a, 0x02, 0x0a]
+        )
+        .is_err());
     }
 
     #[test]
@@ -1249,13 +1420,26 @@ mod tests {
         assert_eq!(url.query(), Some("api_key=hidden&page=0"));
         assert!(chronik_error_contains_secret(
             b"unknown-field:api_key=hidden",
-            "txn-invalid",
             &base
         ));
-        assert!(!chronik_error_contains_secret(
-            b"txn-invalid",
-            "txn-invalid",
+        assert!(chronik_error_contains_secret(
+            b"unknown-field:hidden",
             &base
+        ));
+        assert!(chronik_error_contains_secret(
+            b"unknown-field:secret",
+            &base
+        ));
+        assert!(!chronik_error_contains_secret(b"txn-invalid", &base));
+
+        let encoded: Url = "https://u:s%65cret@example.test/private%2Ftenant?api_key=h%69dden"
+            .parse()
+            .unwrap();
+        assert!(chronik_error_contains_secret(b"decoded secret", &encoded));
+        assert!(chronik_error_contains_secret(b"decoded hidden", &encoded));
+        assert!(chronik_error_contains_secret(
+            b"decoded private/tenant",
+            &encoded
         ));
     }
 

@@ -300,7 +300,7 @@ try {
       0n,
     )
     await until(
-      `document.querySelector('[data-test="wallet-balance"]').textContent.trim() === '1 MON'`,
+      `document.querySelector('[data-test="wallet-balance"]').textContent.trim() === '1.0 MON'`,
     )
     const recipient = '0x1111111111111111111111111111111111111111'
     const beforeReceive = BigInt(

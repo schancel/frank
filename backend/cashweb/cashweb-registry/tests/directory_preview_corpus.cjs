@@ -129,6 +129,36 @@ const cases = source.cases
       ),
     }
   })
+for (const history of [[], ['bootstrap']]) {
+  const incoming = history.length
+    ? ['renew', 'fork-of-renew']
+    : ['bootstrap', 'renew', 'fork-of-renew']
+  const id = history.length ? 'staged-future-fork' : 'initial-batch-fork'
+  const oracle_input = {
+    id,
+    operation: 'advance',
+    history,
+    candidates: incoming,
+    anchor: records.get('bootstrap').t1,
+    expected: 'fork',
+  }
+  cases.push({
+    id,
+    oracle_input,
+    proposal_expected: 'fork',
+    history,
+    candidates: incoming,
+    anchor: records.get('bootstrap').t1,
+    clock: '1700000100',
+    initial_clock: '1700000100',
+    relay: source.synthetic_relay_cbor_hex,
+    result: 'fork',
+    expected: expected(history, incoming, '1700000100'),
+  })
+}
+const probes = source.cases.filter(c =>
+  ['history-budget', 'counter'].includes(c.operation),
+)
 const corpus = {
   format: 'directory-admission-v1',
   source: {
@@ -141,6 +171,7 @@ const corpus = {
   statement_limit: 4096,
   charged_byte_limit: 16777216,
   cases,
+  probes,
 }
 const json = JSON.stringify(corpus, null, 2) + '\n'
 if (process.argv.includes('--check')) {

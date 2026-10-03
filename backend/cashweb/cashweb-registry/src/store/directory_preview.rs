@@ -85,29 +85,49 @@ impl State {
 
     fn verifies_checkpoint(&self, anchor: &Anchor, expected: Checkpoint) -> bool {
         let actual = self.metadata(anchor);
-        expected.identity == actual.identity
+        let common = expected.identity == actual.identity
             && expected.anchor == actual.anchor
             && expected.retained > 0
             && expected.accepted <= expected.retained
             && expected.retained <= actual.retained
-            && expected.accepted <= actual.accepted
             && expected.checked_time.1 < 1_000_000_000
             && expected.checked_time <= actual.checked
-            && expected.head
-                == expected
-                    .accepted
-                    .checked_sub(1)
-                    .and_then(|i| self.history.records.get(i))
-                    .map(|r| r.evidence.hash)
-            && if expected.forked {
-                actual.forked
-                    && expected.accepted == actual.accepted
-                    && expected.retained == actual.retained
-            } else {
-                expected.accepted > 0 && expected.retained == expected.accepted
-            }
             && policy::evidence_digest(self.records().take(expected.retained))
-                == expected.evidence_digest
+                == expected.evidence_digest;
+        if !common {
+            return false;
+        }
+        match expected.kind {
+            CheckpointKind::ProspectiveEnrollment => {
+                // This expectation never asserted an accepted head. Initial quarantine may
+                // retain its exact anchor only as proof; load() has authenticated the full fork.
+                expected.accepted == 1
+                    && expected.retained == 1
+                    && !expected.forked
+                    && expected.head == Some(anchor.revision_zero)
+                    && self
+                        .records()
+                        .next()
+                        .is_some_and(|r| r.evidence.hash == anchor.revision_zero)
+                    && (actual.accepted > 0 || actual.forked)
+            }
+            CheckpointKind::CommittedPrefix => {
+                expected.accepted <= actual.accepted
+                    && expected.head
+                        == expected
+                            .accepted
+                            .checked_sub(1)
+                            .and_then(|i| self.history.records.get(i))
+                            .map(|r| r.evidence.hash)
+                    && if expected.forked {
+                        actual.forked
+                            && expected.accepted == actual.accepted
+                            && expected.retained == actual.retained
+                    } else {
+                        expected.accepted > 0 && expected.retained == expected.accepted
+                    }
+            }
+        }
     }
 }
 
@@ -118,6 +138,7 @@ impl Metadata {
     fn status(&self) -> Result<Status> {
         Ok(Status {
             checkpoint: Checkpoint {
+                kind: CheckpointKind::CommittedPrefix,
                 identity: self.identity,
                 anchor: self.anchor,
                 head: self.head,
@@ -161,7 +182,7 @@ pub struct Directory<'a> {
     enrolled: AtomicBool,
     unavailable: AtomicBool,
     #[cfg(test)]
-    commit_hook: Option<fn(bool)>,
+    commit_hook: Option<fn(bool) -> Result<()>>,
 }
 
 pub(crate) fn add_cfs(cfs: &mut Vec<ColumnFamilyDescriptor>) {
@@ -422,7 +443,7 @@ impl<'a> Directory<'a> {
         options.set_sync(true);
         #[cfg(test)]
         if let Some(hook) = self.commit_hook {
-            hook(false);
+            hook(false)?;
         }
         self.db
             .rocksdb()
@@ -431,7 +452,7 @@ impl<'a> Directory<'a> {
         self.enrolled.store(true, Ordering::Release);
         #[cfg(test)]
         if let Some(hook) = self.commit_hook {
-            hook(true);
+            hook(true)?;
         }
         Ok(meta)
     }

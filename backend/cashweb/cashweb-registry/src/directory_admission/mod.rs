@@ -33,6 +33,8 @@ pub struct Anchor {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Checkpoint {
+    /// Distinguishes a pre-commit expectation from an observed accepted-prefix checkpoint.
+    pub kind: CheckpointKind,
     /// Commitment to the unambiguous network/full-subject storage key.
     pub identity: [u8; 32],
     /// Installed revision-zero T1.
@@ -49,6 +51,16 @@ pub struct Checkpoint {
     pub checked_time: (i64, u32),
     /// Previously observed fork quarantine may never disappear.
     pub forked: bool,
+}
+
+/// The trust fact an external checkpoint records; prospective input is not past acceptance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CheckpointKind {
+    /// Exact installed anchor evidence/time prepared before the first commit. It may reappear
+    /// in accepted history or in authenticated initial-fork proof, but must actually be retained.
+    ProspectiveEnrollment,
+    /// Previously observed durable accepted/proof prefix. Its accepted head may not disappear.
+    CommittedPrefix,
 }
 
 impl Checkpoint {
@@ -73,6 +85,7 @@ impl Checkpoint {
             return Err(AdmissionError::Validity);
         }
         Ok(Self {
+            kind: CheckpointKind::ProspectiveEnrollment,
             identity: policy::identity(anchor),
             anchor: anchor.revision_zero,
             head: Some(record.evidence.hash),

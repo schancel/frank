@@ -2504,6 +2504,202 @@
           "0"
         ]
       }
+    },
+    {
+      "id": "initial-batch-fork",
+      "oracle_input": {
+        "id": "initial-batch-fork",
+        "operation": "advance",
+        "history": [],
+        "candidates": [
+          "bootstrap",
+          "renew",
+          "fork-of-renew"
+        ],
+        "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "expected": "fork"
+      },
+      "proposal_expected": "fork",
+      "history": [],
+      "candidates": [
+        "bootstrap",
+        "renew",
+        "fork-of-renew"
+      ],
+      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "clock": "1700000100",
+      "initial_clock": "1700000100",
+      "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
+      "result": "fork",
+      "expected": {
+        "enrolled": true,
+        "history": [],
+        "proof": [
+          "bootstrap",
+          "renew",
+          "fork-of-renew"
+        ],
+        "head": null,
+        "head_hash": null,
+        "revision": null,
+        "generations": null,
+        "message_key": null,
+        "current_stamp": null,
+        "previous_stamp": null,
+        "accepted": 0,
+        "retained": 3,
+        "charged_bytes": 2285,
+        "forked": true,
+        "checked_time": [
+          "1700000100",
+          "0"
+        ]
+      }
+    },
+    {
+      "id": "staged-future-fork",
+      "oracle_input": {
+        "id": "staged-future-fork",
+        "operation": "advance",
+        "history": [
+          "bootstrap"
+        ],
+        "candidates": [
+          "renew",
+          "fork-of-renew"
+        ],
+        "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "expected": "fork"
+      },
+      "proposal_expected": "fork",
+      "history": [
+        "bootstrap"
+      ],
+      "candidates": [
+        "renew",
+        "fork-of-renew"
+      ],
+      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "clock": "1700000100",
+      "initial_clock": "1700000100",
+      "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
+      "result": "fork",
+      "expected": {
+        "enrolled": true,
+        "history": [
+          "bootstrap"
+        ],
+        "proof": [
+          "renew",
+          "fork-of-renew"
+        ],
+        "head": "bootstrap",
+        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "revision": "0",
+        "generations": [
+          "0",
+          "0"
+        ],
+        "message_key": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+        "current_stamp": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+        "previous_stamp": null,
+        "accepted": 1,
+        "retained": 3,
+        "charged_bytes": 2285,
+        "forked": true,
+        "checked_time": [
+          "1700000100",
+          "0"
+        ]
+      }
+    }
+  ],
+  "probes": [
+    {
+      "id": "history-count-at-bound",
+      "operation": "history-budget",
+      "history": [],
+      "expected": "accept",
+      "stored_count": "4095",
+      "stored_bytes": "100",
+      "incoming_count": "1",
+      "incoming_bytes": "100"
+    },
+    {
+      "id": "history-count-over-bound",
+      "operation": "history-budget",
+      "history": [],
+      "expected": "history-resource",
+      "stored_count": "4096",
+      "stored_bytes": "100",
+      "incoming_count": "1",
+      "incoming_bytes": "100"
+    },
+    {
+      "id": "history-batch-over-bound",
+      "operation": "history-budget",
+      "history": [],
+      "expected": "history-resource",
+      "stored_count": "0",
+      "stored_bytes": "0",
+      "incoming_count": "4097",
+      "incoming_bytes": "100"
+    },
+    {
+      "id": "history-bytes-at-bound",
+      "operation": "history-budget",
+      "history": [],
+      "expected": "accept",
+      "stored_count": "1",
+      "stored_bytes": "16777116",
+      "incoming_count": "1",
+      "incoming_bytes": "100"
+    },
+    {
+      "id": "history-bytes-over-bound",
+      "operation": "history-budget",
+      "history": [],
+      "expected": "history-resource",
+      "stored_count": "1",
+      "stored_bytes": "16777216",
+      "incoming_count": "1",
+      "incoming_bytes": "1"
+    },
+    {
+      "id": "counter-last-increment",
+      "operation": "counter",
+      "history": [],
+      "prior_value": "18446744073709551614",
+      "next_value": "18446744073709551615",
+      "increment": true,
+      "expected": "accept"
+    },
+    {
+      "id": "counter-overflow-wrap",
+      "operation": "counter",
+      "history": [],
+      "prior_value": "18446744073709551615",
+      "next_value": "0",
+      "increment": true,
+      "expected": "counter"
+    },
+    {
+      "id": "counter-terminal-increment",
+      "operation": "counter",
+      "history": [],
+      "prior_value": "18446744073709551615",
+      "next_value": "18446744073709551615",
+      "increment": true,
+      "expected": "counter"
+    },
+    {
+      "id": "counter-max-unchanged",
+      "operation": "counter",
+      "history": [],
+      "prior_value": "18446744073709551615",
+      "next_value": "18446744073709551615",
+      "increment": false,
+      "expected": "accept"
     }
   ]
 }

@@ -123,8 +123,13 @@ the caller's last acknowledgement. A pinned fork may never disappear or change.
 Foreign identity, older/missing/corrupt prefix or rolled-back checked time
 fails. `Checkpoint::for_enrollment` can prepare an external expectation from
 the exact signed installed revision-zero candidate and trusted time before the
-first write; reopen still requires an actual marked enrollment, so the token
-does not create permission to bootstrap a missing database.
+first write. Its explicit `ProspectiveEnrollment` kind asserts only the exact
+anchor evidence/time expectation, so it may reopen that evidence inside a
+validated proof-only initial fork quarantine after a lost acknowledgement.
+It never asserts an accepted head. `CommittedPrefix` checkpoints retain their
+strict accepted-head requirement; they cannot be downgraded to proof-only
+state. Both kinds require an actual marked enrollment and exact retained
+evidence, so neither creates permission to bootstrap a missing database.
 
 The caller must durably retain checkpoints and new-versus-reopen intent
 **outside this database's rollback domain**. Ordinary RocksDB cannot detect
@@ -146,14 +151,21 @@ time. It references exact original frame bytes by pinned source digest and
 record ID. Codec rejection categories are represented as `evidence`; history
 policy categories are local API errors, not new protocol validation stages.
 The mechanical expander imports only the generic codec, not admission policy.
-The existing TS proposal oracle remains read-only and separately checked.
+The existing TS proposal oracle remains read-only. Its complete historical
+runner fails the intentionally stale frozen-document guards after active
+allocation; it is not reported as passing. `directory_preview_oracle.cjs`
+hash-pins that original source and replays its unchanged policy functions for
+all 102 original outcomes and the shared cases, separately from the obsolete
+artifact/generation driver. No source semantics or frozen vectors are edited.
 
 The public-facade Rust gate is `cargo test --locked -p cashweb-registry --test
 directory_preview` in `backend/cashweb`, through `.agents/scripts/with-cargo-slot`.
 The corpus consistency gate is `node
 backend/cashweb/cashweb-registry/tests/directory_preview_corpus.cjs --check`
-with the repository's existing Node dependencies. Scoped format/clippy,
-production-boundary restart/failure/concurrency/resource tests and backend CI
+with the repository's existing Node dependencies.
+The separately labeled semantic replay is `node
+backend/cashweb/cashweb-registry/tests/directory_preview_oracle.cjs`.
+Scoped format/clippy, production-boundary restart/failure/concurrency/resource tests and backend CI
 are required before integration. No active route, DM, profile consumer, writer
 or default codec context is switched by this enabling stage.
 

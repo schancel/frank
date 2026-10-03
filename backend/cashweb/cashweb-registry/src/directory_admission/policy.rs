@@ -49,6 +49,14 @@ pub(crate) fn nanos(t: Timestamp) -> i128 {
     i128::from(t.seconds) * 1_000_000_000 + i128::from(t.nanoseconds)
 }
 
+pub(crate) fn counter_follows(previous: u64, next: u64, changed: bool) -> bool {
+    (if changed {
+        previous.checked_add(1)
+    } else {
+        Some(previous)
+    }) == Some(next)
+}
+
 pub(crate) fn clock(
     now: Option<Timestamp>,
     prior: Option<Timestamp>,
@@ -234,7 +242,8 @@ impl History {
         r: &Record,
     ) -> Result<(), AdmissionError> {
         let p = &self.records[parent_index];
-        if p.revision.checked_add(1) != Some(r.revision) || r.predecessor != Some(p.evidence.hash) {
+        if !counter_follows(p.revision, r.revision, true) || r.predecessor != Some(p.evidence.hash)
+        {
             return Err(AdmissionError::Link);
         }
         if r.schema < p.schema || nanos(r.issued) < nanos(p.issued) {
@@ -245,12 +254,7 @@ impl History {
             .enumerate()
         {
             let changed = key != old;
-            let expected = if changed {
-                p.generations[index].checked_add(1)
-            } else {
-                Some(p.generations[index])
-            };
-            if expected != Some(r.generations[index]) {
+            if !counter_follows(p.generations[index], r.generations[index], changed) {
                 return Err(AdmissionError::Generation);
             }
             if changed

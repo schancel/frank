@@ -247,6 +247,7 @@ fn directory_preview_shared_policy_corpus_through_public_durable_facade() {
                 db.directory_preview(
                     a,
                     OpenMode::Reopen(Checkpoint {
+                        kind: CheckpointKind::CommittedPrefix,
                         identity: [0; 32],
                         anchor: [0; 32],
                         head: None,
@@ -300,7 +301,9 @@ fn directory_preview_external_prefix_allows_lost_ack_descendants_not_rollback_or
             .unwrap()
             .status
             .checkpoint;
-        assert_eq!(prepared, accepted);
+        assert_eq!(prepared.kind, CheckpointKind::ProspectiveEnrollment);
+        assert_eq!(accepted.kind, CheckpointKind::CommittedPrefix);
+        assert_eq!(prepared.evidence_digest, accepted.evidence_digest);
         d.advance(&candidates(&later), context).unwrap(); // Lost acknowledgement, caller still pins initial.
     }
     let db = Db::open(&path).unwrap();
@@ -329,6 +332,88 @@ fn directory_preview_external_prefix_allows_lost_ack_descendants_not_rollback_or
     assert_eq!(
         fresh
             .directory_preview(a, OpenMode::Reopen(accepted))
+            .unwrap_err(),
+        AdmissionError::Unavailable
+    );
+}
+
+#[test]
+fn directory_preview_prepared_enrollment_recovers_initial_fork_after_lost_ack() {
+    let c = corpus();
+    let source = source();
+    let r = record(&source, "bootstrap");
+    let a = anchor(&c, hash(&r["t1"]));
+    let batch = frames(
+        &source,
+        &serde_json::json!(["bootstrap", "renew", "fork-of-renew"]),
+    );
+    let now = Timestamp {
+        seconds: 1700000100,
+        nanoseconds: 0,
+    };
+    let trusted = relay(&source["synthetic_relay_cbor_hex"]).unwrap();
+    let prepared = Checkpoint::for_enrollment(&a, candidates(&batch)[0], now).unwrap();
+    let temp = tempdir::TempDir::new("directory-preview-prospective-fork").unwrap();
+    let path = temp.path().join("db");
+    {
+        let db = Db::open(&path).unwrap();
+        let d = db
+            .directory_preview(a.clone(), OpenMode::NewEnrollment)
+            .unwrap();
+        assert_eq!(
+            d.advance(
+                &candidates(&batch),
+                Context {
+                    now: Some(now),
+                    relay: Some(&trusted)
+                }
+            )
+            .unwrap_err(),
+            AdmissionError::Fork
+        );
+        // The caller still has only its prepared expectation when this process closes.
+    }
+    let db = Db::open(&path).unwrap();
+    let d = db
+        .directory_preview(a.clone(), OpenMode::Reopen(prepared))
+        .unwrap();
+    let status = d.status().unwrap().unwrap();
+    assert!(status.forked);
+    assert_eq!(status.accepted, 0);
+    assert_eq!(status.retained, 3);
+    assert_eq!(status.head, None);
+    assert_eq!(
+        d.conflict_evidence()
+            .unwrap()
+            .iter()
+            .map(|e| (&e.statement, &e.attestation))
+            .collect::<Vec<_>>(),
+        batch.iter().map(|(a, b)| (a, b)).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        d.current(Context {
+            now: Some(now),
+            relay: Some(&trusted)
+        })
+        .unwrap_err(),
+        AdmissionError::Fork
+    );
+    assert_eq!(
+        db.directory_preview(a.clone(), OpenMode::NewEnrollment)
+            .unwrap_err(),
+        AdmissionError::AlreadyEnrolled
+    );
+    let mut falsely_committed = prepared;
+    falsely_committed.kind = CheckpointKind::CommittedPrefix;
+    assert_eq!(
+        db.directory_preview(a.clone(), OpenMode::Reopen(falsely_committed))
+            .unwrap_err(),
+        AdmissionError::Continuity
+    );
+    let empty = Db::open(temp.path().join("missing")).unwrap();
+    assert_eq!(
+        empty
+            .directory_preview(a, OpenMode::Reopen(prepared))
             .unwrap_err(),
         AdmissionError::Unavailable
     );

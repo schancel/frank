@@ -95,6 +95,12 @@ pub(crate) enum JsonRpcVersion {
     V2,
 }
 
+#[derive(Debug)]
+pub(crate) struct RequestCorrelation {
+    pub(crate) ids: Vec<Value>,
+    pub(crate) is_batch: bool,
+}
+
 struct PermitBody {
     inner: BoxBody,
     _permit: OwnedSemaphorePermit,
@@ -170,7 +176,7 @@ impl ResponseSpool {
     pub(crate) async fn inspect(
         &self,
         version: JsonRpcVersion,
-        expected_ids: Vec<Value>,
+        correlation: RequestCorrelation,
     ) -> Result<InspectedResponse, StreamInspectError> {
         let path = self.path.to_path_buf();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -180,12 +186,7 @@ impl ResponseSpool {
             armed: true,
         };
         let result = tokio::task::spawn_blocking(move || {
-            inspect_spooled_response_with_cancel(
-                &path,
-                version,
-                &expected_ids,
-                Some(task_cancelled),
-            )
+            inspect_spooled_response_with_cancel(&path, version, &correlation, Some(task_cancelled))
         })
         .await
         .map_err(|_| StreamInspectError::Invalid)?;
@@ -245,8 +246,9 @@ impl ResponseSpool {
     }
 }
 
-pub(crate) fn request_ids(bytes: &[u8]) -> Result<Vec<Value>, ()> {
+pub(crate) fn request_correlation(bytes: &[u8]) -> Result<RequestCorrelation, ()> {
     let value = parse_without_duplicate_keys(bytes).map_err(|_| ())?;
+    let is_batch = value.is_array();
     let requests = match &value {
         Value::Array(requests) if !requests.is_empty() => requests.as_slice(),
         Value::Array(_) => return Err(()),
@@ -264,7 +266,7 @@ pub(crate) fn request_ids(bytes: &[u8]) -> Result<Vec<Value>, ()> {
         }
         ids.push(id.clone());
     }
-    Ok(ids)
+    Ok(RequestCorrelation { ids, is_batch })
 }
 
 /// Parse JSON while rejecting duplicate object members at every nesting level.
@@ -412,18 +414,18 @@ fn sanitize_response_error(value: &mut Value) {
 pub(crate) fn inspect_spooled_response(
     path: &Path,
     version: JsonRpcVersion,
-    expected_ids: &[Value],
+    correlation: &RequestCorrelation,
 ) -> Result<InspectedResponse, StreamInspectError> {
-    inspect_spooled_response_with_cancel(path, version, expected_ids, None)
+    inspect_spooled_response_with_cancel(path, version, correlation, None)
 }
 
 fn inspect_spooled_response_with_cancel(
     path: &Path,
     version: JsonRpcVersion,
-    expected_ids: &[Value],
+    correlation: &RequestCorrelation,
     cancelled: Option<Arc<AtomicBool>>,
 ) -> Result<InspectedResponse, StreamInspectError> {
-    if expected_ids.is_empty() {
+    if correlation.ids.is_empty() {
         return Err(StreamInspectError::Invalid);
     }
     validate_spool_utf8(path, cancelled.as_deref())?;
@@ -431,7 +433,8 @@ fn inspect_spooled_response_with_cancel(
     let mut parser = ResponseParser {
         lexer: Lexer::new(BufReader::with_capacity(64 * 1024, file), cancelled),
         version,
-        expected_ids: expected_ids.to_vec(),
+        expected_ids: correlation.ids.clone(),
+        is_batch: correlation.is_batch,
         error_rewrites: Vec::new(),
     };
     parser.parse()?;
@@ -480,6 +483,7 @@ struct ResponseParser<R> {
     lexer: Lexer<R>,
     version: JsonRpcVersion,
     expected_ids: Vec<Value>,
+    is_batch: bool,
     error_rewrites: Vec<ErrorRewrite>,
 }
 
@@ -488,11 +492,11 @@ impl<R: BufRead> ResponseParser<R> {
         let expected_count = self.expected_ids.len();
         let first = self.lexer.next_token(false)?;
         match first.kind {
-            TokenKind::LeftBrace if self.expected_ids.len() == 1 => {
+            TokenKind::LeftBrace if !self.is_batch => {
                 let id = self.parse_response_object()?;
                 self.consume_id(id)?;
             }
-            TokenKind::LeftBracket if self.expected_ids.len() > 1 => {
+            TokenKind::LeftBracket if self.is_batch => {
                 let mut count = 0usize;
                 if self.lexer.peek_non_whitespace()? == Some(b']') {
                     return Err(StreamInspectError::Invalid);
@@ -1158,7 +1162,32 @@ mod tests {
     fn inspect(bytes: &[u8], ids: &[Value]) -> Result<InspectedResponse, StreamInspectError> {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(bytes).unwrap();
-        inspect_spooled_response(file.path(), JsonRpcVersion::V2, ids)
+        inspect_spooled_response(
+            file.path(),
+            JsonRpcVersion::V2,
+            &RequestCorrelation {
+                ids: ids.to_vec(),
+                is_batch: ids.len() > 1,
+            },
+        )
+    }
+
+    #[test]
+    fn streaming_inspector_preserves_singleton_batch_shape() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(br#"[{"jsonrpc":"2.0","id":1,"result":true}]"#)
+            .unwrap();
+        let correlation = RequestCorrelation {
+            ids: vec![json!(1)],
+            is_batch: true,
+        };
+        assert!(inspect_spooled_response(file.path(), JsonRpcVersion::V2, &correlation).is_ok());
+
+        let mut object = tempfile::NamedTempFile::new().unwrap();
+        object
+            .write_all(br#"{"jsonrpc":"2.0","id":1,"result":true}"#)
+            .unwrap();
+        assert!(inspect_spooled_response(object.path(), JsonRpcVersion::V2, &correlation).is_err());
     }
 
     #[test]
@@ -1227,7 +1256,10 @@ mod tests {
         assert!(inspect_spooled_response_with_cancel(
             file.path(),
             JsonRpcVersion::V2,
-            &[json!(1)],
+            &RequestCorrelation {
+                ids: vec![json!(1)],
+                is_batch: false,
+            },
             Some(cancelled),
         )
         .is_err());
@@ -1242,7 +1274,13 @@ mod tests {
         let (_file, path) = named.into_parts();
         let spool = ResponseSpool { path };
         let inspected = spool
-            .inspect(JsonRpcVersion::V2, vec![json!(1), json!(2)])
+            .inspect(
+                JsonRpcVersion::V2,
+                RequestCorrelation {
+                    ids: vec![json!(1), json!(2)],
+                    is_batch: true,
+                },
+            )
             .await
             .unwrap();
         let body = spool.into_body(inspected.error_rewrites).await.unwrap();

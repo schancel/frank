@@ -1,0 +1,7 @@
+{
+  "allowed": ["@noble/hashes"],
+  "optional": [],
+  "planned": ["@frank/adaptor-signatures", "@frank/nakamoto"],
+  "plannedOptional": [],
+  "note": "Stage 0 owns only transcript hashing and deterministic reduction. Chain digests and adaptor operations enter through later typed boundaries."
+}

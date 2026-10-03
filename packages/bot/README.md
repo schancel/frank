@@ -15,12 +15,14 @@ yarn demo                   # against Monad testnet, using your .env (below)
 ```
 
 Run either from the repo root (or packages/bot). `yarn demo` runs `node --import tsx
-packages/bot/demo/demo.ts` directly, with no second `yarn`/`tsx` process in between. Stop it with
+packages/bot/demo/demo.ts` directly with the bot tsconfig selected, with no second `yarn`/`tsx`
+process in between. Stop it with
 Ctrl-C, `kill -INT <pid>` or `kill -TERM <pid>` using the launcher pid it prints (that is the
 `node` process). Killing the top-level `yarn` process (`kill -INT <yarn pid>`: yarn exits without
 forwarding SIGINT) also stops the stack: a launcher started by yarn notices that yarn is gone
 within a second and shuts down like a closed terminal. If you script it, prefer
-`node --import tsx packages/bot/demo/demo.ts` and signal that pid.
+`TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/demo.ts` and
+signal that pid.
 
 How the parent check works: when yarn started the launcher, the launcher polls its parent pid once
 a second. Nothing changes while yarn is alive, so `nohup yarn demo &` keeps working (yarn stays the

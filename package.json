@@ -17,7 +17,7 @@
     "yarn": ">= 1.21.1"
   },
   "scripts": {
-    "demo": "node --import tsx packages/bot/demo/demo.ts",
-    "demo:smoke": "node --import tsx packages/bot/demo/smoke.ts"
+    "demo": "TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/demo.ts",
+    "demo:smoke": "TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/smoke.ts"
   }
 }

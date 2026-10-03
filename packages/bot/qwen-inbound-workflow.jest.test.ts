@@ -573,7 +573,85 @@ it('new roots persist the startup floor once; legacy cursors adopt origin zero w
   }
 })
 
-it.each(['scan', 'pending', 'orphan', 'extra'] as const)(
+it.each([
+  'model-started',
+  'response-ready',
+  'send-started',
+  'confirmed',
+  'processed',
+  'history',
+] as const)(
+  'adopts origin zero from legacy %s evidence even when the first timestamp checkpoint was never written',
+  async phase => {
+    await state.Close()
+    const legacyLocation = join(location, 'legacy-without-cursor')
+    state = new QwenBotStateStore(legacyLocation)
+    await state.Open()
+    const history = [
+      { role: 'user' as const, content: 'legacy prompt' },
+      { role: 'assistant' as const, content: 'legacy reply' },
+    ]
+    if (phase === 'processed') state.addProcessed(hash('legacy-a'))
+    else if (phase === 'history') state.setConversation(PEER, history)
+    else {
+      await state.beginResponse({
+        payloadHashHex: hash('legacy-a'),
+        senderAddress: PEER,
+        senderPubKeyHex: 'aa',
+        context: responseContext,
+      })
+      if (phase !== 'model-started')
+        await state.saveResponse(hash('legacy-a'), 'legacy reply', history)
+      if (phase === 'send-started' || phase === 'confirmed')
+        await state.startResponseSend(hash('legacy-a'))
+      if (phase === 'confirmed')
+        await state.confirmResponse(hash('legacy-a'), {
+          payloadHashHex: 'legacy-outgoing',
+          txHashes: ['legacy-tx'],
+        })
+    }
+    await state.Close()
+    state = new QwenBotStateStore(legacyLocation)
+    await state.Open()
+    expect(state.getSince()).toBeUndefined()
+    const owned = state.getResponse(hash('legacy-a'))
+    await state.initializeInbox(context, 999999)
+    expect(state.getInboxScan().origin).toBe(0)
+    makeWorkflow()
+    if (phase !== 'history') add('legacy-a')
+    add('retained-b')
+    add('independent-c', OTHER)
+    await workflow.import()
+    expect(
+      state
+        .pendingInbox()
+        .map(row => row.payloadHashHex)
+        .sort(),
+    ).toEqual([hash('retained-b'), hash('independent-c')].sort())
+    expect(generate).not.toHaveBeenCalled()
+    expect(send).not.toHaveBeenCalled()
+    const held = ['model-started', 'response-ready', 'send-started'].includes(
+      phase,
+    )
+    expect(await workflow.drain(10)).toBe(held ? 1 : 2)
+    expect(state.getResponse(hash('legacy-a'))).toEqual(owned)
+    expect(state.pendingInbox().map(row => row.payloadHashHex)).toEqual(
+      held ? [hash('retained-b')] : [],
+    )
+    await state.Close()
+    state = new QwenBotStateStore(legacyLocation)
+    await state.Open()
+    await state.initializeInbox(context, 777777)
+    expect(state.getInboxScan().origin).toBe(0)
+    makeWorkflow()
+    await workflow.import()
+    expect(await workflow.drain(10)).toBe(0)
+    expect(generate).toHaveBeenCalledTimes(held ? 1 : 2)
+    expect(send).toHaveBeenCalledTimes(held ? 1 : 2)
+  },
+)
+
+it.each(['scan', 'pending', 'extra'] as const)(
   'malformed %s durable state fails closed and preserves the offending bytes',
   async kind => {
     const target = join(location, 'malformed-' + kind)
@@ -582,6 +660,18 @@ it.each(['scan', 'pending', 'orphan', 'extra'] as const)(
     await seed.Close()
     const dbLocation = join(target, 'qwen-bot-state')
     const db = level(dbLocation)
+    if (kind !== 'scan') {
+      await db.put(
+        'inbox-scan:v1',
+        JSON.stringify({
+          version: 1,
+          context,
+          origin: 0,
+          revision: 0,
+          nextOrder: 1,
+        }),
+      )
+    }
     const key = kind === 'scan' ? 'inbox-scan:v1' : 'inbox:v1:' + hash('bad')
     const value = JSON.stringify(
       kind === 'scan'
@@ -601,11 +691,53 @@ it.each(['scan', 'pending', 'orphan', 'extra'] as const)(
     const retained = level(dbLocation)
     try {
       expect(await retained.get(key)).toBe(value)
+      if (kind !== 'scan') {
+        await retained.put(
+          key,
+          JSON.stringify({
+            ...input('bad'),
+            version: 1,
+            phase: 'pending',
+            order: 0,
+          }),
+        )
+      }
     } finally {
       await retained.close()
     }
+    if (kind !== 'scan') {
+      const valid = new QwenBotStateStore(target)
+      await valid.Open()
+      expect(valid.pendingInbox()).toHaveLength(1)
+      await valid.Close()
+    }
   },
 )
+
+it('an otherwise valid orphan inbox row fails closed without a scan', async () => {
+  const target = join(location, 'orphan')
+  const seed = new QwenBotStateStore(target)
+  await seed.Open()
+  await seed.Close()
+  const db = level(join(target, 'qwen-bot-state'))
+  const value = JSON.stringify({
+    ...input('orphan'),
+    version: 1,
+    phase: 'pending',
+    order: 0,
+  })
+  await db.put('inbox:v1:' + hash('orphan'), value)
+  await db.close()
+  await expect(new QwenBotStateStore(target).Open()).rejects.toThrow(
+    'Invalid Qwen inbox state',
+  )
+  const preserved = level(join(target, 'qwen-bot-state'))
+  try {
+    expect(await preserved.get('inbox:v1:' + hash('orphan'))).toBe(value)
+  } finally {
+    await preserved.close()
+  }
+})
 
 it('refuses to bind pre-existing response ownership to another account before any inbox effects', async () => {
   const target = join(location, 'old-response')

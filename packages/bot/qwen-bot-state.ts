@@ -436,10 +436,17 @@ export class QwenBotStateStore {
         throw new Error(
           'Qwen inbox context mismatch; preserve state and restart with the original context',
         )
+      // Legacy response commits can precede the first timestamp checkpoint. Absence of
+      // __since__ is not evidence of a new root when durable input/history ownership exists.
+      const hasLegacyInputState =
+        this.since !== undefined ||
+        this.responses.size > 0 ||
+        this.processedPayloadHashes.size > 0 ||
+        this.conversations.size > 0
       const scan: QwenInboxScan = {
         version: 1,
         context: canonical,
-        origin: this.since === undefined ? origin : 0,
+        origin: hasLegacyInputState ? 0 : origin,
         revision: 0,
         nextOrder: 0,
       }

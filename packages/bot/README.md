@@ -561,8 +561,10 @@ otherwise the pre-funding startup time is used. The origin is saved once. Changi
 on restart does not rebind an existing scan.
 
 The `inbox-scan:v1` record binds the scan to the canonical bot identity, relay URL and network.
-An existing legacy `__since__` cannot prove that earlier inputs were retained: first adoption
-replays the relay's retained inbox from origin **0**, preserving all old processed/response rows.
+An existing legacy `__since__`, response, processed marker or conversation cannot prove that
+earlier inputs were retained: first adoption replays the relay's retained inbox from origin **0**,
+preserving all old processed/response rows. A response may have committed before the first
+`__since__` checkpoint, so a missing timestamp alone does not make the store new.
 This is an additive namespace; it does not rewrite or delete old state. A changed context or
 malformed record stops ingress without erasing data. Use the original context to resume.
 

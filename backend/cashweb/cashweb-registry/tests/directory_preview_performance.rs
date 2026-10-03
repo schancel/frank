@@ -31,6 +31,17 @@ fn nanos(duration: std::time::Duration) -> u64 {
         .expect("measurement fits u64 nanoseconds")
 }
 
+#[test]
+fn directory_preview_performance_timing_json_supports_pinned_serializer() {
+    let value = json!({"duration_ns": nanos(std::time::Duration::new(1, 234))});
+    assert_eq!(value["duration_ns"].as_u64(), Some(1_000_000_234));
+    assert_eq!(
+        json!(nanos(std::time::Duration::from_nanos(u64::MAX))).as_u64(),
+        Some(u64::MAX)
+    );
+    assert!(std::panic::catch_unwind(|| nanos(std::time::Duration::new(u64::MAX, 0))).is_err());
+}
+
 fn field(value: &CborValue, key: u64) -> &CborValue {
     let CborValue::Map(fields) = value else {
         panic!("map")

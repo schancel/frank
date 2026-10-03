@@ -2,6 +2,10 @@
 
 Versioned deniable encryption. This package owns suite ids, the KEM, the KDF, the AEAD, envelope bytes, and the vectors for those suites. `seal` returns a deterministic RFC 8949 CBOR envelope; `open` consumes that format and the read-only legacy envelope described below.
 
+The CashWeb semantics, allocation boundaries, and deployment status are indexed by
+[`docs/CASHWEB-PROTOCOL-SPEC.md`](../../docs/CASHWEB-PROTOCOL-SPEC.md). Crypto-box registry IDs are
+not FRNK direct-message suite allocations.
+
 Callers pass byte arrays in and get byte arrays out. This package does not read or write CashWeb CBOR. These envelopes are not the live relay protobuf or a Frank direct-message frame. The live relay path is still protobuf. `@frank/codec` and `frank-cbor` marshal frames and hand this package those bytes.
 
 Envelope version 2 is a definite-length map with unsigned integer keys in canonical order: `0` version, `1` suite id, `2` KEM id, `3` 32-byte salt, `4` 33-byte encapsulated public key, and `5` ciphertext. All integers and lengths use their shortest encoding. `seal` emits only version 2. `open` also reads the legacy version-1 fixed-layout envelope so previously sealed bytes remain usable; it never emits that layout. The outer first byte distinguishes legacy version 1 (`0x01`) from the CBOR map (`0xA6`). Version 2 authenticates a fixed envelope-domain label and its encoded version as associated data; legacy version 1 retains its historical associated data exactly. Callers must select a suite explicitly for every `seal`; `open` dispatches from the encoded suite id.

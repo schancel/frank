@@ -1,10 +1,13 @@
 # frank-cbor
 
-Rust codec for Frank deterministic CBOR, version 1. The normative text is
-`docs/protocol/cbor/`. The TypeScript reference is `@frank/codec`
+Rust codec for Frank deterministic CBOR, version 1. The human semantics and
+status front door is `docs/CASHWEB-PROTOCOL-SPEC.md`; the current frozen
+encoding/validation profile is `docs/protocol/cbor/`, whose CDDL owns exact
+structure and whose vectors are executable proof. The TypeScript reference is `@frank/codec`
 (`packages/frank-codec`). The two codecs meet at
-`docs/protocol/cbor/vectors/`. Nothing here is wired into cashwebd or a stored
-record format.
+`docs/protocol/cbor/vectors/`. Cashwebd uses this crate for opt-in CBOR topics
+and explicit CBOR account registration; no direct-message or mailbox path uses
+it.
 
 ## Ownership
 

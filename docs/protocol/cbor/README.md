@@ -1,8 +1,12 @@
 # Frank deterministic CBOR, version 1
 
-Status: normative for the codec proof in issues #131 and #182 and for the
-topic-event schemas of issue #136. The Monad topic write transport uses types
-9–11 as described in [topic HTTP coexistence](topic-http-coexistence.md); other
+Status: the current normative encoding and validation profile for the codec
+proof in issues #131 and #182 and for the topic-event schemas of issue #136.
+[`../../CASHWEB-PROTOCOL-SPEC.md`](../../CASHWEB-PROTOCOL-SPEC.md) is the
+single human-semantics and status front door. This file owns frozen FRNK/CBOR
+detail until its rules migrate there once; the CDDL owns structure and the
+vectors are executable proof. The Monad topic write transport uses types 9–11
+as described in [topic HTTP coexistence](topic-http-coexistence.md); other
 production paths require their separate migration tickets.
 
 The words MUST, MUST NOT, SHOULD, and MAY are normative as described by RFC 2119. Numbered rules are stable references for implementations and test
@@ -1447,8 +1451,9 @@ today's protobuf `SignedPayload` wrapping `MonadProfile` carries (`packages/
 cashweb/registry/proto/metadata.proto`, the backend `monad_profile.proto`, and
 the verifier in `backend/cashweb/cashweb-registry/src/monad_profile_verify.rs`).
 It is a pure serialization-format migration: same fields, same semantics, no new
-identity schema. No production route uses the CBOR record until the directory
-cutover (#133) lands. It is normative for
+identity schema. An explicit CBOR registration route and wallet helper exist,
+but normal app and bot registration remain protobuf until the directory cutover
+(#133) lands. It is normative for
 [vectors/account-registration.json](vectors/account-registration.json) and
 [vectors/account-registration-values.json](vectors/account-registration-values.json)
 and for the codec implementation of #106's child B.

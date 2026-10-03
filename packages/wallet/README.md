@@ -5,6 +5,10 @@ and topic clients, and the `ActiveChain` compile-time chain-selection seam. It
 has no Vue or Pinia dependency. The package is private. There is no barrel
 `index.ts`; callers import the module they need.
 
+Protocol semantics and the shipped/implemented/proposed boundary are indexed by
+[`docs/CASHWEB-PROTOCOL-SPEC.md`](../../docs/CASHWEB-PROTOCOL-SPEC.md). This README describes the
+current package, not target daemon support.
+
 ## Ownership
 
 This package owns wallet workflows: identity, stamps, topic posts and votes,
@@ -14,9 +18,11 @@ layouts or encryption suites. Frank-CBOR frames are `@frank/codec` and
 `frank-cbor`. Deniable envelopes are `@frank/crypto-box`. Chain bytes and Lotus
 address primitives are `@frank/nakamoto`.
 
-The live relay path in this package is still protobuf (`application/x-protobuf`).
-Some key operations still use `bitcore-lib-xpi` while issue #257 is open.
-Relay encryption has not moved to `@frank/crypto-box` (issue #258).
+The normal DM path and the default topic/profile writers still use protobuf
+(`application/x-protobuf`); CBOR topic writes and account registration are
+explicit opt-ins. Some key operations still use `bitcore-lib-xpi` while issue
+#257 is open. Relay encryption has not moved to `@frank/crypto-box` (issue
+#258).
 
 ## Public entry points
 

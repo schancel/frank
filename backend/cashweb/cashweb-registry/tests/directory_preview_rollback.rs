@@ -1,0 +1,149 @@
+//! Actual old-binary proof uses FRANK_DIRECTORY_BASE_OPENER (the separately built pinned helper).
+//! Without that artifact CI checks the exact legacy CF/data invariants, not an emulated old binary.
+use cashweb_registry::{directory_admission::*, store::db::Db};
+use frank_cbor::{verify_preview_directory_evidence, TypedPayload};
+use serde_json::Value;
+use std::{path::Path, process::Command};
+
+fn base_open(path: &Path) -> bool {
+    let Ok(helper) = std::env::var("FRANK_DIRECTORY_BASE_OPENER") else {
+        return false;
+    };
+    let result = Command::new(helper)
+        .args([
+            "--exact",
+            "directory_preview_actual_legacy_opener",
+            "--nocapture",
+        ])
+        .env("FRANK_DIRECTORY_LEGACY_DB", path)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "actual base opener failed for {}:\n{}\n{}",
+        path.display(),
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    true
+}
+fn names(path: &Path) -> Vec<String> {
+    let mut names = rocksdb::DB::list_cf(&rocksdb::Options::default(), path).unwrap();
+    names.sort();
+    names
+}
+fn regression(populated: bool) {
+    let label = if populated { "populated" } else { "unused" };
+    let temp = tempdir::TempDir::new("directory-preview-rollback").unwrap();
+    let path = match std::env::var("FRANK_DIRECTORY_ROLLBACK_EVIDENCE") {
+        Ok(root) => Path::new(&root).join(label),
+        Err(_) => temp.path().join(label),
+    };
+    eprintln!("retained rollback fixture: {}", path.display());
+    if !base_open(&path) {
+        drop(Db::open(&path).unwrap());
+    }
+    let legacy_names = names(&path);
+    assert!(legacy_names
+        .iter()
+        .all(|name| !name.starts_with("directory_preview_")));
+    {
+        let raw = rocksdb::DB::open_cf(&rocksdb::Options::default(), &path, &legacy_names).unwrap();
+        let mut sync = rocksdb::WriteOptions::default();
+        sync.set_sync(true);
+        raw.put_opt(b"legacy-sentinel", b"exact-preexisting-legacy-bytes", &sync)
+            .unwrap();
+    }
+    let source: Value = serde_json::from_str(include_str!(
+        "../../../../docs/protocol/proposals/suite1-directory/vectors.json"
+    ))
+    .unwrap();
+    let record = source["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "bootstrap")
+        .unwrap();
+    let statement = hex::decode(record["type4_hex"].as_str().unwrap()).unwrap();
+    let attestation = hex::decode(record["type2_hex"].as_str().unwrap()).unwrap();
+    let fixture = verify_preview_directory_evidence(&attestation, "monad-testnet").unwrap();
+    let Some(TypedPayload::DirectoryStatement {
+        subject, relays, ..
+    }) = fixture.statement_frame().typed.as_deref()
+    else {
+        panic!("fixture");
+    };
+    let anchor = Anchor {
+        network: "monad-testnet".into(),
+        subject: subject.clone(),
+        revision_zero: fixture.statement_hash,
+    };
+    let context = Context {
+        now: Some(Timestamp {
+            seconds: 1700000100,
+            nanoseconds: 0,
+        }),
+        relay: Some(&relays[0]),
+    };
+    let accepted = {
+        let db = Db::open(&path).unwrap();
+        if populated {
+            Some(
+                db.directory_preview(anchor.clone(), OpenMode::NewEnrollment)
+                    .unwrap()
+                    .advance(
+                        &[Candidate {
+                            statement: &statement,
+                            attestation: &attestation,
+                        }],
+                        context,
+                    )
+                    .unwrap(),
+            )
+        } else {
+            None
+        }
+    };
+    // Call the old executable before the structural assertion: the before proof must fail
+    // at the real production opener, not merely predict its behavior from a CF list.
+    base_open(&path);
+    assert_eq!(
+        names(&path),
+        legacy_names,
+        "preview must not modify the legacy CF set"
+    );
+    {
+        let raw = rocksdb::DB::open_cf(&rocksdb::Options::default(), &path, &legacy_names).unwrap();
+        assert_eq!(
+            raw.get(b"legacy-sentinel").unwrap().unwrap(),
+            b"exact-preexisting-legacy-bytes"
+        );
+    }
+    if let Some(accepted) = accepted {
+        let db = Db::open(&path).unwrap();
+        let d = db
+            .directory_preview(anchor, OpenMode::Reopen(accepted.status.checkpoint))
+            .unwrap();
+        assert_eq!(d.current(context).unwrap(), accepted);
+        let exact = d
+            .historical_evidence(fixture.statement_hash)
+            .unwrap()
+            .unwrap();
+        assert_eq!(exact.statement, statement);
+        assert_eq!(exact.attestation, attestation);
+    } else {
+        assert!(
+            !path.join("directory-preview-v1.rocksdb").exists(),
+            "ordinary startup must not create preview storage"
+        );
+    }
+}
+
+#[test]
+fn directory_preview_unused_registry_still_opens_on_reviewed_base() {
+    regression(false);
+}
+#[test]
+fn directory_preview_populated_registry_still_opens_on_reviewed_base() {
+    regression(true);
+}

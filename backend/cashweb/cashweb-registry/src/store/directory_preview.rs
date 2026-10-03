@@ -1,11 +1,18 @@
 //! Private RocksDB owner for preview admission. The public handle has no trusted-record setter.
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    marker::PhantomData,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
-use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode, Options, WriteBatch, WriteOptions};
+use rocksdb::{Direction, IteratorMode, WriteBatch, WriteOptions};
 use serde::{Deserialize, Serialize};
 
-use super::db::{
-    Db, CF_DIRECTORY_PREVIEW_ENROLLMENT_V1, CF_DIRECTORY_PREVIEW_EVIDENCE_V1,
+use super::db::Db;
+use super::directory_preview_owner::{
+    Store, CF_DIRECTORY_PREVIEW_ENROLLMENT_V1, CF_DIRECTORY_PREVIEW_EVIDENCE_V1,
     CF_DIRECTORY_PREVIEW_HEAD_V1,
 };
 use crate::directory_admission::{
@@ -176,23 +183,14 @@ impl Metadata {
 /// Storage failures disable this handle; use a verified reopen with external continuity.
 #[derive(Debug)]
 pub struct Directory<'a> {
-    db: &'a Db,
+    db: Arc<Store>,
+    registry_owner: PhantomData<&'a Db>,
     anchor: Anchor,
     key: Vec<u8>,
     enrolled: AtomicBool,
     unavailable: AtomicBool,
     #[cfg(test)]
     commit_hook: Option<fn(bool) -> Result<()>>,
-}
-
-pub(crate) fn add_cfs(cfs: &mut Vec<ColumnFamilyDescriptor>) {
-    for name in [
-        CF_DIRECTORY_PREVIEW_ENROLLMENT_V1,
-        CF_DIRECTORY_PREVIEW_HEAD_V1,
-        CF_DIRECTORY_PREVIEW_EVIDENCE_V1,
-    ] {
-        cfs.push(ColumnFamilyDescriptor::new(name, Options::default()));
-    }
 }
 
 impl<'a> Directory<'a> {
@@ -202,7 +200,8 @@ impl<'a> Directory<'a> {
         key.extend_from_slice(anchor.network.as_bytes());
         key.extend_from_slice(&anchor.subject.key_bytes);
         let directory = Self {
-            db,
+            db: db.open_directory_preview(mode)?,
+            registry_owner: PhantomData,
             anchor,
             key,
             enrolled: AtomicBool::new(matches!(mode, OpenMode::Reopen(_))),
@@ -210,7 +209,8 @@ impl<'a> Directory<'a> {
             #[cfg(test)]
             commit_hook: None,
         };
-        let _guard = db
+        let _guard = directory
+            .db
             .lock_directory_preview()
             .map_err(|_| AdmissionError::Unavailable)?;
         let meta = directory.header()?;
@@ -230,6 +230,7 @@ impl<'a> Directory<'a> {
                 }
             }
         }
+        drop(_guard);
         Ok(directory)
     }
 

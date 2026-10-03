@@ -98,6 +98,9 @@ fn directory_preview_concurrent_successors_fork_and_clock_checks_serialize() {
         .directory_preview(anchor(), OpenMode::NewEnrollment)
         .unwrap();
     let start = enroll(&d, &["bootstrap"]);
+    let sibling = db
+        .directory_preview(anchor(), OpenMode::Reopen(start.status.checkpoint))
+        .unwrap();
     let barrier = Barrier::new(2);
     let results = std::thread::scope(|s| {
         let a = s.spawn(|| {
@@ -108,7 +111,7 @@ fn directory_preview_concurrent_successors_fork_and_clock_checks_serialize() {
         let b = s.spawn(|| {
             barrier.wait();
             let r = fixture("fork-of-renew");
-            d.advance(&[candidate(&r)], context(&relay()))
+            sibling.advance(&[candidate(&r)], context(&relay()))
         });
         [a.join().unwrap(), b.join().unwrap()]
     });
@@ -220,6 +223,10 @@ fn directory_preview_valid_older_database_requires_external_continuity() {
             .unwrap()
             .create_checkpoint(&old_copy)
             .unwrap();
+        rocksdb::checkpoint::Checkpoint::new(d.db.rocksdb())
+            .unwrap()
+            .create_checkpoint(old_copy.join(super::super::directory_preview_owner::SIDECAR))
+            .unwrap();
         let later = enroll(&d, &["renew", "rotate-stamp"]);
         (older, later)
     };
@@ -255,7 +262,102 @@ fn directory_preview_valid_older_database_requires_external_continuity() {
 #[test]
 fn directory_preview_owner_lock_child() {
     if let Ok(path) = std::env::var("FRANK_DIRECTORY_TEST_LOCKED_DB") {
-        assert!(Db::open(path).is_err());
+        assert!(
+            super::super::directory_preview_owner::Owner::new(path.into())
+                .open(OpenMode::NewEnrollment)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn directory_preview_missing_or_corrupt_sidecar_never_recreates_on_reopen() {
+    for fault in ["missing", "empty", "file", "current", "missing-cf"] {
+        let temp = tempdir::TempDir::new("directory-preview-sidecar-loss").unwrap();
+        let root = temp.path().join("registry");
+        let sidecar = root.join(super::super::directory_preview_owner::SIDECAR);
+        let saved = temp.path().join("preserved-sidecar");
+        let prepared = Checkpoint::for_enrollment(
+            &anchor(),
+            candidate(&fixture("bootstrap")),
+            context(&relay()).now.unwrap(),
+        )
+        .unwrap();
+        let accepted = {
+            let db = Db::open(&root).unwrap();
+            let d = db
+                .directory_preview(anchor(), OpenMode::NewEnrollment)
+                .unwrap();
+            enroll(&d, &["bootstrap", "renew"])
+        };
+        match fault {
+            "missing" | "empty" | "file" => {
+                std::fs::rename(&sidecar, &saved).unwrap();
+                if fault == "empty" {
+                    std::fs::create_dir(&sidecar).unwrap();
+                }
+                if fault == "file" {
+                    std::fs::write(&sidecar, b"not a database").unwrap();
+                }
+            }
+            "current" => {
+                std::fs::rename(sidecar.join("CURRENT"), sidecar.join("CURRENT.preserved"))
+                    .unwrap();
+                std::fs::write(sidecar.join("CURRENT"), b"invalid manifest pointer\n").unwrap();
+            }
+            "missing-cf" => {
+                let names = rocksdb::DB::list_cf(&rocksdb::Options::default(), &sidecar).unwrap();
+                let mut raw =
+                    rocksdb::DB::open_cf(&rocksdb::Options::default(), &sidecar, names).unwrap();
+                rocksdb::checkpoint::Checkpoint::new(&raw)
+                    .unwrap()
+                    .create_checkpoint(&saved)
+                    .unwrap();
+                raw.drop_cf(CF_DIRECTORY_PREVIEW_EVIDENCE_V1).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        // Corrupt preview artifacts do not participate in ordinary legacy startup.
+        let db = Db::open(&root).unwrap();
+        for checkpoint in [prepared, accepted.status.checkpoint] {
+            assert_eq!(
+                db.directory_preview(anchor(), OpenMode::Reopen(checkpoint))
+                    .unwrap_err(),
+                AdmissionError::Unavailable,
+                "{fault}"
+            );
+        }
+        if fault == "missing" {
+            assert!(!sidecar.exists());
+        } else {
+            // Existing partial/corrupt storage is not a fresh-enrollment permission either.
+            assert_eq!(
+                db.directory_preview(anchor(), OpenMode::NewEnrollment)
+                    .unwrap_err(),
+                AdmissionError::Unavailable,
+                "{fault}"
+            );
+        }
+        if fault == "empty" {
+            assert_eq!(std::fs::read_dir(&sidecar).unwrap().count(), 0);
+        }
+        if fault == "file" {
+            assert_eq!(std::fs::read(&sidecar).unwrap(), b"not a database");
+        }
+        if fault == "current" {
+            assert_eq!(
+                std::fs::read(sidecar.join("CURRENT")).unwrap(),
+                b"invalid manifest pointer\n"
+            );
+        }
+        if fault == "missing-cf" {
+            assert!(
+                !rocksdb::DB::list_cf(&rocksdb::Options::default(), &sidecar)
+                    .unwrap()
+                    .iter()
+                    .any(|name| name == CF_DIRECTORY_PREVIEW_EVIDENCE_V1)
+            );
+        }
     }
 }
 
@@ -359,9 +461,9 @@ fn directory_preview_initial_fork_corruption_cannot_reopen_with_prospective_toke
         );
         let meta = d.header().unwrap().unwrap();
         let state = d.load(Some(&meta)).unwrap().unwrap();
-        db.rocksdb()
+        d.db.rocksdb()
             .delete_cf(
-                db.cf(CF_DIRECTORY_PREVIEW_EVIDENCE_V1).unwrap(),
+                d.db.cf(CF_DIRECTORY_PREVIEW_EVIDENCE_V1).unwrap(),
                 d.record_key(2, &state.proof[2]),
             )
             .unwrap();
@@ -405,6 +507,7 @@ fn directory_preview_corruption_and_partial_loss_fail_closed_without_deleting_ot
             checkpoint = enroll(&d, &["bootstrap", "renew", "rotate-stamp"])
                 .status
                 .checkpoint;
+            let db = &d.db; // Fault only the isolated sidecar, never the legacy registry.
             let mut meta = d.header().unwrap().unwrap();
             let state = d.load(Some(&meta)).unwrap().unwrap();
             let cf = db.cf(CF_DIRECTORY_PREVIEW_EVIDENCE_V1).unwrap();
@@ -766,12 +869,12 @@ fn directory_preview_actual_retention_count_and_byte_caps_are_terminal_and_linea
                 .unwrap_err(),
             AdmissionError::Resource
         );
-        let cf = db.cf(CF_DIRECTORY_PREVIEW_EVIDENCE_V1).unwrap();
-        let rows: Vec<_> = db
-            .rocksdb()
-            .iterator_cf(cf, IteratorMode::Start)
-            .map(|r| r.unwrap())
-            .collect();
+        let cf = d.db.cf(CF_DIRECTORY_PREVIEW_EVIDENCE_V1).unwrap();
+        let rows: Vec<_> =
+            d.db.rocksdb()
+                .iterator_cf(cf, IteratorMode::Start)
+                .map(|r| r.unwrap())
+                .collect();
         assert_eq!(rows.len(), accepted);
         assert_eq!(
             rows.iter().map(|(_, v)| v.len()).sum::<usize>(),

@@ -16,10 +16,6 @@ use crate::store::topics::DbTopics;
 // We collect the column family constants here so we have a nice overview.
 // This makes it easier to keep cf names consistent and non-conflicting.
 pub(crate) const CF_METADATA: &str = "metadata";
-// Additive unused namespace. No profile/registration data is migrated or reinterpreted.
-pub(crate) const CF_DIRECTORY_PREVIEW_ENROLLMENT_V1: &str = "directory_preview_enrollment_v1";
-pub(crate) const CF_DIRECTORY_PREVIEW_HEAD_V1: &str = "directory_preview_head_v1";
-pub(crate) const CF_DIRECTORY_PREVIEW_EVIDENCE_V1: &str = "directory_preview_evidence_v1";
 pub(crate) const CF_PKH_BY_TIME: &str = "pkh_by_time";
 pub(crate) const CF_MESSAGES: &str = "topic_messages";
 pub(crate) const CF_PAYLOADS: &str = "message_payloads";
@@ -117,8 +113,8 @@ pub struct Db {
     monad_profile_lock: Mutex<()>,
     /// Serializes compare-and-batch topic-author admission inside this process.
     monad_topic_lock: Mutex<()>,
-    /// Serializes authenticated directory history reads, validation and synchronous commits.
-    directory_preview_lock: Mutex<()>,
+    /// Lazy separate store; ordinary legacy startup never opens or modifies preview storage.
+    directory_preview_owner: super::directory_preview_owner::Owner,
 }
 
 /// Errors indicating something went wrong with the database itself.
@@ -159,7 +155,6 @@ impl Db {
         DbMonadTopicPosts::add_cfs(&mut cfs);
         DbMonadTopicVotes::add_cfs(&mut cfs);
         DbMonadProfiles::add_cfs(&mut cfs);
-        super::directory_preview::add_cfs(&mut cfs);
         let db = Self::open_with_cfs(path, cfs)?;
         db.monad_outbox()
             .migrate_legacy_delivered_ownership(limits)?;
@@ -224,12 +219,13 @@ impl Db {
         db_options.create_if_missing(true);
         db_options.create_missing_column_families(true);
         let db = rocksdb::DB::open_cf_descriptors(&db_options, path, cfs).wrap_err(RocksDb)?;
+        let registry_path = std::fs::canonicalize(db.path()).wrap_err(RocksDb)?;
         Ok(Db {
             db,
             monad_outbox_lock: Mutex::new(()),
             monad_profile_lock: Mutex::new(()),
             monad_topic_lock: Mutex::new(()),
-            directory_preview_lock: Mutex::new(()),
+            directory_preview_owner: super::directory_preview_owner::Owner::new(registry_path),
         })
     }
 
@@ -285,10 +281,14 @@ impl Db {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub(crate) fn lock_directory_preview(
+    pub(super) fn open_directory_preview(
         &self,
-    ) -> std::result::Result<std::sync::MutexGuard<'_, ()>, ()> {
-        self.directory_preview_lock.lock().map_err(|_| ())
+        mode: crate::directory_admission::OpenMode,
+    ) -> std::result::Result<
+        std::sync::Arc<super::directory_preview_owner::Store>,
+        crate::directory_admission::AdmissionError,
+    > {
+        self.directory_preview_owner.open(mode)
     }
 }
 

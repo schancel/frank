@@ -89,7 +89,12 @@ not require a current routing authorization. Fork resolution is external.
 
 ## Durable layout and continuity
 
-Three additive column families belong to the existing `Db` owner:
+Three column families live only in the lazy isolated sidecar
+`<canonical-registry-path>/directory-preview-v1.rocksdb`, owned privately by the
+existing `Db` lifetime. Ordinary `Db::open` retains the legacy descriptors
+unchanged and does not open, create, inspect, or repair the sidecar. Corrupt
+sidecar storage therefore cannot block ordinary registry startup. The sidecar
+is opened only through explicit preview admission:
 
 | Family | Key | Value |
 | --- | --- | --- |
@@ -102,7 +107,9 @@ storage version 1 is not a wire allocation. The exact bare frame is recovered
 from its wrapper without re-encoding. History is stored once per record, not
 inside each successor. Accepted rows precede proof-only rows. A single
 directory mutex serializes reads, validation and writes within the exclusive
-RocksDB owner. All marker/head/history/pair/counter/fork changes use one
+sidecar RocksDB owner, shared by all handles of the registry owner. Lazy owner
+initialization is serialized separately. The public handle still borrows the
+registry lifetime. All marker/head/history/pair/counter/fork changes use one
 `WriteBatch` with `sync = true`. No accepted result precedes successful write.
 
 Each operation rereads the bounded durable state rather than trusting a stale
@@ -137,7 +144,12 @@ complete disk rollback/deletion on its own. A checkpoint that was itself
 rolled back cannot protect later observations. The installed anchor alone
 cannot distinguish an old complete valid database. `Db::open` may create its
 generic database path; a subsequent preview `Reopen` still refuses missing
-enrollment. After a storage error the current handle fails unavailable until
+enrollment. Only explicit `NewEnrollment` may create an absent sidecar. Existing
+sidecar opens use neither create-if-missing nor create-missing-column-families;
+an interrupted empty creation, corrupt manifest, missing CF, file/symlink in
+place of the directory, or missing sidecar under `Reopen` fails unavailable.
+Artifacts are preserved, never automatically repaired or reset. After a storage
+error the current handle fails unavailable until
 verified reopen. Sync durability depends on RocksDB, the filesystem and device
 honoring their guarantees; process-restart tests are not machine power-loss
 proof. No existing database is deleted or migrated by this facade.
@@ -187,7 +199,15 @@ part of this stage. Process-exit and boundary-fault tests establish the stated
 old-or-complete-new recovery behavior, not hardware power-loss guarantees.
 
 Before adoption, rollback can remove the unused additive facade and namespace
-definition while preserving any created records. Once records are relied upon,
+definition while preserving any created sidecar records. The actual reviewed-base
+registry opener can reopen both unused and populated registry paths because
+preview never adds descriptors to the legacy MANIFEST. The rollback integration
+test uses a helper built from exact base production source when
+`FRANK_DIRECTORY_BASE_OPENER` is supplied; ordinary CI additionally pins legacy
+CF names and exact preexisting bytes. Earlier unlanded eager-CF artifacts are
+not migrated, deleted, or silently adopted by this repair; their preservation
+does not authorize widening the old binary or rewriting a legacy database.
+Once records are relied upon,
 changes to their meaning require an explicit migration. Trust provisioning,
 client persistence (#749), publication/routes and atomic directory-plus-secret
 ownership are separate reviewed successors.

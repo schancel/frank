@@ -3,6 +3,7 @@
 
 pub mod db;
 pub(crate) mod directory_preview;
+mod directory_preview_owner;
 pub mod metadata;
 pub mod monad_messages;
 pub mod monad_outbox;

@@ -35,6 +35,7 @@ import {
   MAILBOX_RECOVERY_SYNC_WAIT_MS,
   createMonadChain,
   deserializeMessageItems,
+  loadMonadChainConfigFromEnv,
   serializeMessageItems,
   viewToForumMessage,
 } from "./monad-chain";
@@ -237,6 +238,41 @@ describe("createMonadChain: basic chain properties", () => {
 
   it("parseAddress returns undefined for garbage input", () => {
     expect(chain.parseAddress("not-an-address")).toBeUndefined();
+  });
+});
+
+describe("loadMonadChainConfigFromEnv", () => {
+  const saved = {
+    chain: process.env.MONAD_RPC_CHAIN,
+    chainId: process.env.MONAD_CHAIN_ID,
+    networkId: process.env.MONAD_NETWORK_ID,
+    networkTag: process.env.FRANK_NETWORK_TAG,
+  };
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries({
+      MONAD_RPC_CHAIN: saved.chain,
+      MONAD_CHAIN_ID: saved.chainId,
+      MONAD_NETWORK_ID: saved.networkId,
+      FRANK_NETWORK_TAG: saved.networkTag,
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it("keeps a known relay chain, native identity, and wallet network atomic", () => {
+    process.env.MONAD_RPC_CHAIN = "monad-mainnet";
+    process.env.MONAD_CHAIN_ID = "10143";
+    process.env.FRANK_NETWORK_TAG = "MONT";
+    delete process.env.MONAD_NETWORK_ID;
+
+    expect(loadMonadChainConfigFromEnv()).toMatchObject({
+      rpcChain: "monad-mainnet",
+      networkId: "monad-mainnet",
+      chainId: 143n,
+      networkTag: "MON1",
+    });
   });
 });
 

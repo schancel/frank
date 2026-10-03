@@ -32,7 +32,7 @@ describe("createChain", () => {
         config: {
           networkId: "monad-test",
           chainId: 10143,
-          rpcUrl: "http://127.0.0.1:8545",
+          rpcChain: "monad-testnet",
           relayBaseUrl: "http://127.0.0.1:8098",
           networkTag: "MONT",
           stampBurnAddress: "0x000000000000000000000000000000000000dEaD",

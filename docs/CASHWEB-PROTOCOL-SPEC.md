@@ -292,7 +292,7 @@ Exact maps live in CDDL; this section defines what each record means and what id
 | Legacy-to-FRNK cutover | per-account/mailbox epoch/fence and tagged-row records; types unallocated | Stable fence identity owns old/new protocol admission and target instance succession | UNALLOCATED |
 | Target public-federation lifecycle | event, journal/page, cursor, snapshot, peer-capability and subscription records; types unallocated | Semantic `record_id` and immutable domain-separated `event_id`; cursor scope includes remote, stream, network and subscription generation | UNALLOCATED |
 | Topic post/submission/vote | types 9/10/11 | Current stored frame/event identity is exact type-9 T1; burn tx ID is a separate consumption key | SHIPPED |
-| Target topic read/status extensions | future versioned schemas; types unallocated | Stable root/revision/status semantics require the allocations in section 12 | UNALLOCATED |
+| Forum content/read/status | type9 schema2/min2 and types12–15 schema1/min1 | Exact immutable post identity, relay observations and incarnation-bound cursors; runtime switch remains under #675 | IMPLEMENTED-NOT-WIRED |
 
 **IMPLEMENTED-NOT-WIRED.**
 Unknown item kinds in an open message-item field remain exact child-frame bytes. Unknown checkpoint
@@ -973,17 +973,36 @@ For bounded version 1, topic post/vote admission MUST reject a transaction value
 future wider unsigned weight requires a new allocated schema and arithmetic rules; it is not an
 implicit relaxation of version 1.
 
-Normal-client cutover requires versioned CBOR schemas and vectors for single-post
-view, topic page/list, discovery, and transaction-specific vote/recovery status. Until those exist,
-the protobuf read model remains authoritative for list/discovery and the CBOR writer remains
-opt-in. First-confirmed-burn authorship and the public front-running limitation remain the current
-type-9 semantics unless a later schema adds an author commitment.
+**IMPLEMENTED-NOT-WIRED.** The accepted Forum allocation is now active in both pure codec
+facades and [normative topic CDDL](protocol/cbor/topic.cddl): type9 schema2/min-reader2 contains
+authored timestamp0 and ordered 1–64 entries1, with kind1/title1/URL2/message3. It preserves exact
+Unicode, optional-field bytes, full original frames and T1/T7. Authored time contributes to identity
+but never author or relay authority. Schema1 remains explicitly opaque and its existing writer
+does not silently switch formats. Per-type schema2 support is required independently of the global
+reader version, and schema>=2/min-reader<2 rejects without a legacy exception.
 
-The bounded topic `R`/`R+1`/`R+2` coexistence is an allowed migration. At R+2, exact type-9 bytes
-remain authoritative for CBOR-origin rows and their protobuf projections/read paths are removed.
-Protobuf-origin rows have no type-9 authority to preserve; they retain exact constrained historical
-storage, reader and export paths until sections 11 and 16 prove reachability/deletion. Neither row
-origin is transcoded into the other.
+Types12–15 schema1/min1 allocate single view, topic page, discovery page and operation status.
+Every response and required child binds the exact network, topic/query, epoch/revision and immutable
+target. Closed aggregates use a sign and 32-byte magnitude (no negative zero), with pre-overflow
+admission rejection; individual burns retain the i64::MAX ceiling. Status0/3 are unverified request
+echoes; status1/2 are relay observations, with chain positions present iff2. A codec match neither
+verifies chain facts nor releases a wallet lease. No new read-frame identity/hash domain is allocated.
+
+Both cursor families carry a non-reused u64 incarnation at key7. Cursor lookup binds a retained
+snapshot by epoch/incarnation, never a recreated query at the same revision. Exact wire fields,
+budgets, response binding and [runtime retention/publication obligations](protocol/cbor/README.md#structured-forum-content-and-reads)
+are normative. The pure codec proves parsing and query/tuple coherence, not storage freshness,
+complete multipage publication, restart, capacity accounting or finality. #675 owns that runtime
+successor and the normal post/reply/read/list/discovery/vote/reconciliation switch; #718 remains
+blocked until canonical target selection and reconciliation are reachable.
+
+The normal Forum target is a canonical clean reset with an explicit owner-approved creation fence,
+rebuild and predecessor-removal proof. This codec landing performs no reset, switches no wallet,
+route, storage or UI default, and makes no claim that #675 is complete. Existing protobuf reads and
+opt-in schema1 writers remain reachable until the named normal-path successor removes them.
+Preserve exact CBOR-origin authority and constrained historical protobuf storage/export until the
+sections11/16 deletion gates pass; never transcode one origin into the other's identity.
+First-confirmed-burn authorship and public front-running remain unchanged.
 
 ## 13. Replay, restart, fork, and clock rules
 

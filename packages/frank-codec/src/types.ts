@@ -193,7 +193,7 @@ export interface KeyTransitionStatement {
   unknownFields: UnknownFields
 }
 
-export interface TopicPost {
+interface TopicPostCommon {
   type: 9
   network: string
   /** Exact UTF-8, never normalized (S12). */
@@ -204,6 +204,134 @@ export interface TopicPost {
   body: Uint8Array
   unknownFields: UnknownFields
 }
+
+export type ForumEntry =
+  | {
+      kind: 'post'
+      title?: string
+      url?: string
+      message?: string
+      unknownFields: UnknownFields
+    }
+  | {
+      kind: 'unsupported'
+      kindId: bigint
+      placeholder: 'Unsupported content'
+      fields: UnknownFields
+    }
+
+export interface ForumContent {
+  authored: Timestamp
+  entries: ForumEntry[]
+  unknownFields: UnknownFields
+}
+
+/** Schema 1 is always opaque, even when its bytes happen to contain CBOR. */
+export type TopicPost<C = ForumContent> = TopicPostCommon &
+  ({ schemaVersion: 1; content?: never } | { schemaVersion: 2; content: C })
+
+export interface ForumAggregate {
+  negative: boolean
+  /** Exact unsigned 256-bit big-endian magnitude. */
+  magnitude: Uint8Array
+}
+
+interface ForumCursorCommon {
+  bytes: Uint8Array
+  network: string
+  revision: bigint
+  epoch: Uint8Array
+  incarnation: bigint
+}
+export type ForumCursor = ForumCursorCommon &
+  (
+    | {
+        family: 13
+        topic: string
+        since: Timestamp
+        last: { timestamp: Timestamp; hash: Uint8Array }
+      }
+    | { family: 14; last: string }
+  )
+
+export interface ForumView<F> {
+  type: 12
+  network: string
+  postFrame: F
+  author: Uint8Array
+  authorBurnTx: Uint8Array
+  transactionHash: Uint8Array
+  firstVisible: Timestamp
+  block: bigint
+  transactionIndex: bigint
+  aggregate: ForumAggregate
+  revision: bigint
+  epoch: Uint8Array
+  unknownFields: UnknownFields
+}
+export interface ForumTopicPage<F, K = ForumCursor> {
+  type: 13
+  network: string
+  topic: string
+  since: Timestamp
+  revision: bigint
+  rows: F[]
+  nextCursor?: K
+  requestCursor?: K
+  epoch: Uint8Array
+  unknownFields: UnknownFields
+}
+export interface ForumDiscoveryEntry {
+  topic: string
+  count: bigint
+  lastActivity: Timestamp
+  unknownFields: UnknownFields
+}
+export interface ForumDiscoveryPage<K = ForumCursor> {
+  type: 14
+  network: string
+  revision: bigint
+  entries: ForumDiscoveryEntry[]
+  nextCursor?: K
+  requestCursor?: K
+  epoch: Uint8Array
+  unknownFields: UnknownFields
+}
+interface ForumOperationCommon<F> {
+  type: 15
+  network: string
+  submittedFrame: F
+  targetHash: Uint8Array
+  transactionHash: Uint8Array
+  sender: Uint8Array
+  direction: 0 | 1
+  value: bigint
+  revision: bigint
+  epoch: Uint8Array
+  unknownFields: UnknownFields
+}
+/** Classification is a relay claim, never transaction verification or wallet authority. */
+export type ForumOperationStatus<F> = ForumOperationCommon<F> &
+  (
+    | {
+        state: 0 | 3
+        evidence: 'unverified-request'
+        block?: never
+        transactionIndex?: never
+      }
+    | {
+        state: 1
+        evidence: 'relay-observed'
+        block?: never
+        transactionIndex?: never
+      }
+    | {
+        state: 2
+        evidence: 'relay-observed'
+        block: bigint
+        transactionIndex: bigint
+      }
+  )
 
 export interface TopicPostSubmission<F> {
   type: 10
@@ -243,7 +371,7 @@ export interface TextMessageItem {
   unknownFields: UnknownFields
 }
 
-export type TypedPayload<F, C> =
+export type TypedPayload<F, C, P = ForumContent, K = ForumCursor> =
   | DirectMessageDelivery<F>
   | DirectoryAttestation<F>
   | MailboxCheckpoint
@@ -251,9 +379,13 @@ export type TypedPayload<F, C> =
   | RecipientEncryptedPayload
   | EncryptedMessageContent<F>
   | KeyTransitionStatement
-  | TopicPost
+  | TopicPost<P>
   | TopicPostSubmission<F>
   | TopicVoteSubmission
+  | ForumView<F>
+  | ForumTopicPage<F, K>
+  | ForumDiscoveryPage<K>
+  | ForumOperationStatus<F>
   | MessageContentRevision<C>
   | ContainerMessageItem<C>
   | TextMessageItem
@@ -298,7 +430,12 @@ export interface ParsedFrame {
 
 export type ChildFrame = ParsedFrame | RetainedFrame
 export type FinalPayload = TypedPayload<ParsedFrame, ChildFrame>
-export type DraftPayload = TypedPayload<Uint8Array, Uint8Array>
+export type DraftPayload = TypedPayload<
+  Uint8Array,
+  Uint8Array,
+  Uint8Array,
+  Uint8Array
+>
 
 /** Result of `operation: 'frame'`: stages 1-4 passed. */
 export interface FrameOnly {

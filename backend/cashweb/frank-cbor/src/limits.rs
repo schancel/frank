@@ -40,6 +40,11 @@ pub(crate) const MAX_TOPIC_FRAME_BYTES: usize = 1_048_576;
 pub(crate) const MAX_TOPIC_VOTE_FRAME_BYTES: usize = 65_536;
 /// R6 topic post body.
 pub(crate) const MAX_TOPIC_BODY_BYTES: usize = 524_288;
+pub(crate) const MAX_FORUM_VIEW_BYTES: usize = 2_097_152;
+pub(crate) const MAX_FORUM_PAGE_BYTES: usize = 4_194_304;
+pub(crate) const MAX_FORUM_ROWS: usize = 128;
+pub(crate) const MAX_FORUM_ENTRIES: usize = 64;
+pub(crate) const MAX_FORUM_CURSOR_BYTES: usize = 2048;
 /// Payment members in one delivery.
 pub(crate) const MAX_PAYMENT_MEMBERS: usize = 64;
 /// Ciphertext bytes in one recipient payload.
@@ -71,11 +76,15 @@ pub(crate) const TYPE_MESSAGE_REVISION: u32 = 8;
 pub(crate) const TYPE_TOPIC_POST: u32 = 9;
 pub(crate) const TYPE_TOPIC_POST_SUBMISSION: u32 = 10;
 pub(crate) const TYPE_TOPIC_VOTE_SUBMISSION: u32 = 11;
+pub(crate) const TYPE_FORUM_VIEW: u32 = 12;
+pub(crate) const TYPE_FORUM_TOPIC_PAGE: u32 = 13;
+pub(crate) const TYPE_FORUM_DISCOVERY_PAGE: u32 = 14;
+pub(crate) const TYPE_FORUM_OPERATION_STATUS: u32 = 15;
 pub(crate) const TYPE_CONTAINER_ITEM: u32 = 16;
 pub(crate) const TYPE_TEXT_ITEM: u32 = 17;
 
 /// Types with a version-1 schema in this codec (E5). `0xffff0001` is not included.
-pub const KNOWN_TYPES: [u32; 13] = [
+pub const KNOWN_TYPES: [u32; 17] = [
     TYPE_DIRECT_MESSAGE,
     TYPE_DIRECTORY_ATTESTATION,
     TYPE_MAILBOX_CHECKPOINT,
@@ -87,6 +96,10 @@ pub const KNOWN_TYPES: [u32; 13] = [
     TYPE_TOPIC_POST,
     TYPE_TOPIC_POST_SUBMISSION,
     TYPE_TOPIC_VOTE_SUBMISSION,
+    TYPE_FORUM_VIEW,
+    TYPE_FORUM_TOPIC_PAGE,
+    TYPE_FORUM_DISCOVERY_PAGE,
+    TYPE_FORUM_OPERATION_STATUS,
     TYPE_CONTAINER_ITEM,
     TYPE_TEXT_ITEM,
 ];

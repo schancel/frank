@@ -20,9 +20,14 @@ use crate::model::{
     ProfileEntry, ProfileHeader, Projection, RelayBinding, RetainedFrame, RetentionReason,
     SignatureEntry, TypedPayload, ValidationResult,
 };
+use crate::model::{
+    ForumCursor, ForumDiscoveryPage, ForumOperationStatus, ForumPostContent, ForumTopicPage,
+    ForumView,
+};
 use crate::schema::{
     check_allocated, check_root_frame_limit, check_type_limits, parse_draft, Draft, SchemaVersions,
 };
+use crate::schema::{parse_forum_content, parse_forum_cursor};
 use crate::semantic::{check_semantics, PriorView};
 
 /// How far section 9 runs.
@@ -91,7 +96,7 @@ pub fn default_context() -> ValidationContext {
                 type_id,
                 schema_version: if type_id == TYPE_DIRECTORY_STATEMENT {
                     3
-                } else if type_id == TYPE_RECIPIENT_PAYLOAD {
+                } else if type_id == TYPE_RECIPIENT_PAYLOAD || type_id == TYPE_TOPIC_POST {
                     2
                 } else {
                     1
@@ -106,7 +111,7 @@ pub fn default_context() -> ValidationContext {
 enum Mode {
     Root,
     Open,
-    Required { type_id: u32 },
+    Required { type_ids: Vec<u32> },
 }
 
 struct Shared<'a> {
@@ -309,20 +314,20 @@ fn process_frame(
         container_depth,
     )?;
     let env = parse_envelope(&env_value, location)?;
-    if let Mode::Required { type_id } = mode {
-        if env.type_id != type_id {
+    if let Mode::Required { ref type_ids } = mode {
+        if !type_ids.contains(&env.type_id) {
             return Err(fail(
                 ErrorCategory::Semantic,
                 ErrorStage::S84,
                 format!(
-                    "a required-type field must carry type {type_id}, found {} (S8)",
+                    "a required-type field must carry one of {type_ids:?}, found {} (S8)",
                     env.type_id
                 ),
                 location,
             ));
         }
     }
-    if matches!(mode, Mode::Open) && (1..=11).contains(&env.type_id) {
+    if matches!(mode, Mode::Open) && (1..=15).contains(&env.type_id) {
         return Err(fail(
             ErrorCategory::Semantic,
             ErrorStage::S84,
@@ -368,6 +373,27 @@ fn process_frame(
         );
     }
     let highest_schema = known.expect("known type");
+    if env.type_id == TYPE_TOPIC_POST && env.schema_version >= 2 {
+        if env.min_reader_version < 2 {
+            return Err(fail(
+                ErrorCategory::Unsupported,
+                ErrorStage::S7,
+                "structured Forum content requires min_reader_version at least 2",
+                location,
+            ));
+        }
+        if highest_schema < 2 {
+            return keep_or_reject(
+                shared,
+                &mode,
+                RetentionReason::UnsupportedMinReader,
+                "structured Forum content requires per-type schema-2 support".to_string(),
+                frame,
+                Some(&env),
+                location,
+            );
+        }
+    }
     // Suite 1 authenticates the complete schema-2 field set. A future type-5 schema needs an
     // updated authenticated context before this reader may project or retain its extensions.
     if env.type_id == crate::limits::TYPE_RECIPIENT_PAYLOAD && env.schema_version > highest_schema {
@@ -437,6 +463,7 @@ fn process_frame(
     }
     let effective_schema = parsed.schema_version.min(highest_schema);
     if (matches!(mode, Mode::Root)
+        || (9..=15).contains(&parsed.type_id)
         || (parsed.type_id == TYPE_DIRECTORY_STATEMENT && effective_schema >= 4))
         && !check_root_frame_limit(parsed.type_id, parsed.frame.len(), effective_schema)
     {
@@ -461,7 +488,7 @@ fn process_frame(
         check_allocated(&draft)?;
         Ok(draft)
     })?;
-    let typed = open_children(draft, env_depth, shared, location)?;
+    let typed = open_children(draft, env_depth, shared, location, allow_unknown)?;
     let is_preview = crate::directory_preview::is_preview(&typed);
     if typed_is_type2(&typed) && is_preview && shared.ctx.prior != PriorStatement::None {
         shared.context_error = Some(ContextError("preview evidence does not validate directory history; use a null prior and perform trusted admission separately".to_string()));
@@ -710,7 +737,9 @@ fn open_required(
 ) -> Result<ParsedFrame, CodecError> {
     match process_frame(
         bytes,
-        Mode::Required { type_id },
+        Mode::Required {
+            type_ids: vec![type_id],
+        },
         container_depth,
         shared,
         location,
@@ -754,11 +783,33 @@ fn open_items(
     Ok(out)
 }
 
+fn open_cursor(
+    bytes: Option<Vec<u8>>,
+    depth: u32,
+    shared: &mut Shared<'_>,
+    location: &str,
+) -> Result<Option<ForumCursor>, CodecError> {
+    match bytes {
+        None => Ok(None),
+        Some(bytes) => {
+            let value = decode_single_item(
+                &bytes,
+                ErrorStage::S84,
+                location,
+                &mut shared.counters,
+                depth,
+            )?;
+            parse_forum_cursor(&value, bytes, location).map(Some)
+        }
+    }
+}
+
 fn open_children(
     draft: Draft,
     env_depth: u32,
     shared: &mut Shared<'_>,
     location: &str,
+    allow_unknown: bool,
 ) -> Result<TypedPayload, CodecError> {
     let path = format!("{location}/payload");
     match draft {
@@ -995,14 +1046,127 @@ fn open_children(
             topic,
             parent_hash,
             body,
+            structured,
             unknown,
-        } => Ok(TypedPayload::TopicPost {
-            network,
-            topic,
-            parent_hash,
-            body,
-            unknown,
-        }),
+        } => {
+            let content = if structured {
+                let value = decode_single_item(
+                    &body,
+                    ErrorStage::S84,
+                    &format!("{path}.3"),
+                    &mut shared.counters,
+                    env_depth + 1,
+                )?;
+                ForumPostContent::Structured(parse_forum_content(
+                    &value,
+                    allow_unknown,
+                    &format!("{path}.3"),
+                )?)
+            } else {
+                ForumPostContent::Opaque
+            };
+            Ok(TypedPayload::TopicPost {
+                network,
+                topic,
+                parent_hash,
+                body,
+                content,
+                unknown,
+            })
+        }
+        Draft::ForumView(v) => Ok(TypedPayload::ForumView(ForumView {
+            post_frame: open_required(
+                v.post_frame,
+                TYPE_TOPIC_POST,
+                env_depth + 1,
+                shared,
+                &format!("{path}.1"),
+            )?,
+            network: v.network,
+            author: v.author,
+            author_burn_tx: v.author_burn_tx,
+            transaction_hash: v.transaction_hash,
+            first_visible: v.first_visible,
+            block: v.block,
+            transaction_index: v.transaction_index,
+            aggregate: v.aggregate,
+            revision: v.revision,
+            epoch: v.epoch,
+            unknown: v.unknown,
+        })),
+        Draft::ForumTopicPage(v) => {
+            let rows = v
+                .rows
+                .into_iter()
+                .enumerate()
+                .map(|(i, bytes)| {
+                    open_required(bytes, 12, env_depth + 2, shared, &format!("{path}.4[{i}]"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(TypedPayload::ForumTopicPage(ForumTopicPage {
+                rows,
+                network: v.network,
+                topic: v.topic,
+                since: v.since,
+                revision: v.revision,
+                epoch: v.epoch,
+                unknown: v.unknown,
+                next_cursor: open_cursor(
+                    v.next_cursor,
+                    env_depth + 1,
+                    shared,
+                    &format!("{path}.5"),
+                )?,
+                request_cursor: open_cursor(
+                    v.request_cursor,
+                    env_depth + 1,
+                    shared,
+                    &format!("{path}.7"),
+                )?,
+            }))
+        }
+        Draft::ForumDiscoveryPage(v) => Ok(TypedPayload::ForumDiscoveryPage(ForumDiscoveryPage {
+            network: v.network,
+            revision: v.revision,
+            entries: v.entries,
+            epoch: v.epoch,
+            unknown: v.unknown,
+            next_cursor: open_cursor(v.next_cursor, env_depth + 1, shared, &format!("{path}.3"))?,
+            request_cursor: open_cursor(
+                v.request_cursor,
+                env_depth + 1,
+                shared,
+                &format!("{path}.5"),
+            )?,
+        })),
+        Draft::ForumOperationStatus(v) => {
+            let ValidationResult::Parsed(submitted_frame) = process_frame(
+                v.submitted_frame,
+                Mode::Required {
+                    type_ids: vec![10, 11],
+                },
+                env_depth + 1,
+                shared,
+                &format!("{path}.1"),
+                Operation::Typed,
+            )?
+            else {
+                unreachable!("required child")
+            };
+            Ok(TypedPayload::ForumOperationStatus(ForumOperationStatus {
+                submitted_frame,
+                network: v.network,
+                target_hash: v.target_hash,
+                transaction_hash: v.transaction_hash,
+                sender: v.sender,
+                direction: v.direction,
+                value: v.value,
+                evidence: v.evidence,
+                revision: v.revision,
+                epoch: v.epoch,
+                unknown: v.unknown,
+            }))
+        }
         Draft::TopicPostSubmission {
             network,
             post_frame,

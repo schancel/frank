@@ -4,9 +4,11 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 
 use crate::error::{CodecError, ErrorCategory, ErrorStage};
+use crate::hash::content_hash;
 use crate::model::{
     AccountRef, KeyTransition, ParsedFrame, SignatureEntry, Timestamp, TypedPayload,
 };
+use crate::model::{ForumCursor, ForumCursorPosition, ForumDiscoveryPage, ForumTopicPage};
 
 pub(crate) struct PriorView {
     pub network: String,
@@ -40,6 +42,139 @@ fn cmp_timestamp(a: &Timestamp, b: &Timestamp) -> Ordering {
     a.seconds
         .cmp(&b.seconds)
         .then_with(|| a.nanoseconds.cmp(&b.nanoseconds))
+}
+
+fn cursor_binding(
+    c: &ForumCursor,
+    network: &str,
+    revision: u64,
+    epoch: &[u8],
+    topic: Option<(&str, &Timestamp)>,
+) -> Result<(), CodecError> {
+    if c.network != network || c.revision != revision || c.epoch != epoch {
+        return Err(semantic("cursor page binding", "root"));
+    }
+    match (&c.position, topic) {
+        (ForumCursorPosition::Topic { topic, since, .. }, Some((expected, time)))
+            if topic == expected && since == time =>
+        {
+            Ok(())
+        }
+        (ForumCursorPosition::Discovery { .. }, None) => Ok(()),
+        _ => Err(semantic("cursor query/family binding", "root")),
+    }
+}
+fn cursor_incarnation(
+    next: &Option<ForumCursor>,
+    request: &Option<ForumCursor>,
+) -> Result<(), CodecError> {
+    if let (Some(next), Some(request)) = (next, request) {
+        if next.incarnation != request.incarnation {
+            return Err(semantic("cursor incarnation changed", "root"));
+        }
+    }
+    Ok(())
+}
+fn forum_topic_page(page: &ForumTopicPage<ParsedFrame, ForumCursor>) -> Result<(), CodecError> {
+    if page.rows.is_empty() && page.next_cursor.is_some() {
+        return Err(semantic("empty page has continuation", "root"));
+    }
+    for c in [&page.next_cursor, &page.request_cursor]
+        .into_iter()
+        .flatten()
+    {
+        cursor_binding(
+            c,
+            &page.network,
+            page.revision,
+            &page.epoch,
+            Some((&page.topic, &page.since)),
+        )?;
+    }
+    cursor_incarnation(&page.next_cursor, &page.request_cursor)?;
+    let mut previous = match page.request_cursor.as_ref().map(|c| &c.position) {
+        Some(ForumCursorPosition::Topic {
+            timestamp, hash, ..
+        }) => Some((timestamp.clone(), hash.clone())),
+        _ => None,
+    };
+    let mut ids = HashSet::new();
+    for row in &page.rows {
+        let TypedPayload::ForumView(view) = opened(row) else {
+            unreachable!("required view")
+        };
+        let TypedPayload::TopicPost { topic, .. } = opened(&view.post_frame) else {
+            unreachable!("required post")
+        };
+        if view.network != page.network
+            || *topic != page.topic
+            || view.revision != page.revision
+            || view.epoch != page.epoch
+        {
+            return Err(semantic("Forum row binding", "root"));
+        }
+        let hash = content_hash(&view.post_frame)
+            .expect("validated post")
+            .to_vec();
+        if cmp_timestamp(&view.first_visible, &page.since) == Ordering::Less {
+            return Err(semantic("Forum row before inclusive since", "root"));
+        }
+        if let Some((time, id)) = &previous {
+            if cmp_timestamp(time, &view.first_visible).then_with(|| id.cmp(&hash))
+                != Ordering::Less
+            {
+                return Err(semantic("Forum rows not strictly ordered", "root"));
+            }
+        }
+        if !ids.insert(hash.clone()) {
+            return Err(semantic("duplicate Forum post", "root"));
+        }
+        previous = Some((view.first_visible.clone(), hash));
+    }
+    if let Some(ForumCursor {
+        position: ForumCursorPosition::Topic {
+            timestamp, hash, ..
+        },
+        ..
+    }) = &page.next_cursor
+    {
+        if previous.as_ref() != Some(&(timestamp.clone(), hash.clone())) {
+            return Err(semantic("continuation is not last Forum row", "root"));
+        }
+    }
+    Ok(())
+}
+fn forum_discovery_page(page: &ForumDiscoveryPage<ForumCursor>) -> Result<(), CodecError> {
+    if page.entries.is_empty() && page.next_cursor.is_some() {
+        return Err(semantic("empty page has continuation", "root"));
+    }
+    for c in [&page.next_cursor, &page.request_cursor]
+        .into_iter()
+        .flatten()
+    {
+        cursor_binding(c, &page.network, page.revision, &page.epoch, None)?;
+    }
+    cursor_incarnation(&page.next_cursor, &page.request_cursor)?;
+    let mut previous = match page.request_cursor.as_ref().map(|c| &c.position) {
+        Some(ForumCursorPosition::Discovery { topic }) => Some(topic),
+        _ => None,
+    };
+    for row in &page.entries {
+        if previous.is_some_and(|p| p.as_bytes() >= row.topic.as_bytes()) {
+            return Err(semantic("discovery rows not strictly ordered", "root"));
+        }
+        previous = Some(&row.topic);
+    }
+    if let Some(ForumCursor {
+        position: ForumCursorPosition::Discovery { topic },
+        ..
+    }) = &page.next_cursor
+    {
+        if previous != Some(topic) {
+            return Err(semantic("continuation is not last discovery row", "root"));
+        }
+    }
+    Ok(())
 }
 
 fn require_ordered<T>(
@@ -173,6 +308,34 @@ pub(crate) fn check_semantics(
                         &format!("{path}.4[{i}]"),
                     ));
                 }
+            }
+            Ok(())
+        }
+        TypedPayload::ForumView(view) => match opened(&view.post_frame) {
+            TypedPayload::TopicPost { network, .. } if *network == view.network => Ok(()),
+            _ => Err(semantic("Forum view network differs from post", path)),
+        },
+        TypedPayload::ForumTopicPage(page) => forum_topic_page(page),
+        TypedPayload::ForumDiscoveryPage(page) => forum_discovery_page(page),
+        TypedPayload::ForumOperationStatus(status) => {
+            let (network, target) = match opened(&status.submitted_frame) {
+                TypedPayload::TopicPostSubmission {
+                    network,
+                    post_frame,
+                    ..
+                } => (
+                    network,
+                    content_hash(post_frame).expect("validated post").to_vec(),
+                ),
+                TypedPayload::TopicVoteSubmission {
+                    network,
+                    target_hash,
+                    ..
+                } => (network, target_hash.clone()),
+                _ => unreachable!("required operation"),
+            };
+            if *network != status.network || target != status.target_hash {
+                return Err(semantic("status submission network/target binding", path));
             }
             Ok(())
         }

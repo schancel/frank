@@ -191,7 +191,7 @@ fn assigned_topic_types_are_not_message_items_but_type_12_is_still_open() {
     }
     let unassigned = encode_frame(
         EnvelopeFields {
-            type_id: 12,
+            type_id: 65535,
             schema_version: 1,
             min_reader_version: 1,
         },

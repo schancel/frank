@@ -2,6 +2,7 @@
 import { FrankCodecError } from './errors'
 import { utf8Encode } from './utf8'
 import { isCompressedPoint } from './point'
+import { contentHash } from './hash'
 import type {
   AccountRef,
   DirectoryStatement,
@@ -9,6 +10,9 @@ import type {
   KeyTransitionStatement,
   ParsedFrame,
   Timestamp,
+  ForumCursor,
+  ForumTopicPage,
+  ForumDiscoveryPage,
 } from './types'
 
 const semantic = (message: string, location = 'root'): FrankCodecError =>
@@ -38,6 +42,91 @@ export function accountsEqual(a: AccountRef, b: AccountRef): boolean {
 
 function compareTimestamps(a: Timestamp, b: Timestamp): number {
   return cmpNum(a.seconds, b.seconds) || cmpNum(a.nanoseconds, b.nanoseconds)
+}
+
+function checkForumPage(
+  page: ForumTopicPage<ParsedFrame> | ForumDiscoveryPage,
+): void {
+  const rows = page.type === 13 ? page.rows : page.entries
+  if (!rows.length && page.nextCursor)
+    throw semantic('empty page has continuation')
+  const bind = (cursor: ForumCursor) => {
+    if (
+      cursor.family !== page.type ||
+      cursor.network !== page.network ||
+      cursor.revision !== page.revision ||
+      compareBytes(cursor.epoch, page.epoch)
+    )
+      throw semantic('cursor page binding')
+    if (
+      cursor.family === 13 &&
+      page.type === 13 &&
+      (cursor.topic !== page.topic ||
+        compareTimestamps(cursor.since, page.since))
+    )
+      throw semantic('cursor query binding')
+  }
+  if (page.requestCursor) bind(page.requestCursor)
+  if (page.nextCursor) bind(page.nextCursor)
+  if (
+    page.requestCursor &&
+    page.nextCursor &&
+    page.requestCursor.incarnation !== page.nextCursor.incarnation
+  )
+    throw semantic('cursor incarnation changed')
+  if (page.type === 13) {
+    let previous =
+      page.requestCursor?.family === 13 ? page.requestCursor.last : undefined
+    const hashes: Uint8Array[] = []
+    for (const row of page.rows) {
+      const view = row.typed
+      if (view?.type !== 12 || view.postFrame.typed?.type !== 9)
+        throw semantic('required Forum view')
+      if (
+        view.network !== page.network ||
+        view.postFrame.typed.topic !== page.topic ||
+        view.revision !== page.revision ||
+        compareBytes(view.epoch, page.epoch)
+      )
+        throw semantic('Forum row binding')
+      const current = {
+        timestamp: view.firstVisible,
+        hash: contentHash(view.postFrame),
+      }
+      if (compareTimestamps(current.timestamp, page.since) < 0)
+        throw semantic('Forum row before inclusive since')
+      if (
+        previous &&
+        (compareTimestamps(previous.timestamp, current.timestamp) ||
+          compareBytes(previous.hash, current.hash)) >= 0
+      )
+        throw semantic('Forum rows not strictly ordered')
+      if (hashes.some(hash => compareBytes(hash, current.hash) === 0))
+        throw semantic('duplicate Forum post')
+      hashes.push(current.hash)
+      previous = current
+    }
+    if (
+      page.nextCursor?.family === 13 &&
+      (!previous ||
+        compareTimestamps(page.nextCursor.last.timestamp, previous.timestamp) ||
+        compareBytes(page.nextCursor.last.hash, previous.hash))
+    )
+      throw semantic('continuation is not last Forum row')
+  } else {
+    let previous =
+      page.requestCursor?.family === 14 ? page.requestCursor.last : undefined
+    for (const row of page.entries) {
+      if (
+        previous !== undefined &&
+        compareBytes(utf8Encode(previous), utf8Encode(row.topic)) >= 0
+      )
+        throw semantic('discovery rows not strictly ordered')
+      previous = row.topic
+    }
+    if (page.nextCursor?.family === 14 && page.nextCursor.last !== previous)
+      throw semantic('continuation is not last discovery row')
+  }
 }
 
 /** Requires `items` ascending under `cmp`; `strict` also rejects equal neighbours. */
@@ -210,6 +299,32 @@ export function checkSemantics(
           seen.add(s.sectionType)
         }
       }
+      return
+    }
+    case 12: {
+      if (
+        typed.postFrame.typed?.type !== 9 ||
+        typed.network !== typed.postFrame.typed.network
+      )
+        throw semantic('Forum view network differs from post')
+      return
+    }
+    case 13:
+    case 14:
+      checkForumPage(typed)
+      return
+    case 15: {
+      const sub = typed.submittedFrame.typed
+      if (
+        !sub ||
+        (sub.type !== 10 && sub.type !== 11) ||
+        sub.network !== typed.network
+      )
+        throw semantic('status submission network')
+      const target =
+        sub.type === 10 ? contentHash(sub.postFrame) : sub.targetHash
+      if (compareBytes(target, typed.targetHash))
+        throw semantic('status target differs from submitted operation')
       return
     }
     case 10: {

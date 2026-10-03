@@ -1,5 +1,11 @@
 # PROPOSED Forum content, reads and operation status
 
+Promotion: #766 activates these accepted wire bytes in the existing TypeScript/Rust codec facades
+and [normative topic CDDL](../../cbor/topic.cddl). This document and its fixtures remain historical
+proposal evidence. The active corpus adds the missing codec guard proofs; #675 owns retained-event
+storage, snapshot lifetime/publication and the normal-client switch. Codec promotion alone does not
+claim that runtime successor or the five proposal review obligations are complete.
+
 This is the isolated, preproduction proposal for [#759](https://github.com/schancel/frank/issues/759), a child of #675. It allocates **nothing in the active protocol**. The owner provisionally accepted these choices for independent review, including [type-12 epoch field 10](https://github.com/schancel/frank/issues/759#issuecomment-5970448350). The checkers are offline specification fixtures, not exported codecs or runtime admission. No route, wallet lease, database, default, or protobuf reader changes here.
 
 ## Identity and content

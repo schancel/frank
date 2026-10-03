@@ -5,6 +5,142 @@
 
 use crate::cbor::CborValue;
 
+/// Explicit projection of an opaque historical or structured Forum body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForumPostContent {
+    /// Schema 1: no content sniffing.
+    Opaque,
+    /// Schema 2 or a compatible future schema.
+    Structured(ForumContent),
+}
+/// An authored entry, or a bounded placeholder for a compatible future kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForumEntry {
+    /// Known kind 1. Empty and absent strings retain distinct original frame bytes.
+    Post {
+        title: Option<String>,
+        url: Option<String>,
+        message: Option<String>,
+        unknown: Vec<(u64, CborValue)>,
+    },
+    /// Never interpret fields as text or URLs. Display only `Unsupported content`.
+    Unsupported {
+        kind: u64,
+        fields: Vec<(u64, CborValue)>,
+    },
+}
+/// Structured schema-2 body; its exact bytes remain on the parent post.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForumContent {
+    pub authored: Timestamp,
+    pub entries: Vec<ForumEntry>,
+    pub unknown: Vec<(u64, CborValue)>,
+}
+/// Signed 256-bit magnitude, never negative zero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForumAggregate {
+    pub negative: bool,
+    pub magnitude: [u8; 32],
+}
+/// A closed cursor query and complete last-row tuple.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForumCursorPosition {
+    Topic {
+        topic: String,
+        since: Timestamp,
+        timestamp: Timestamp,
+        hash: Vec<u8>,
+    },
+    Discovery {
+        topic: String,
+    },
+}
+/// Cursor bytes confer no authority or snapshot existence guarantee.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForumCursor {
+    pub bytes: Vec<u8>,
+    pub network: String,
+    pub revision: u64,
+    pub epoch: Vec<u8>,
+    pub incarnation: u64,
+    pub position: ForumCursorPosition,
+}
+/// Relay-observed single post, not independently verified chain evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForumView<F> {
+    pub network: String,
+    pub post_frame: F,
+    pub author: Vec<u8>,
+    pub author_burn_tx: Vec<u8>,
+    pub transaction_hash: Vec<u8>,
+    pub first_visible: Timestamp,
+    pub block: u64,
+    pub transaction_index: u64,
+    pub aggregate: ForumAggregate,
+    pub revision: u64,
+    pub epoch: Vec<u8>,
+    pub unknown: Vec<(u64, CborValue)>,
+}
+/// One page of exact retained view frames.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForumTopicPage<F, K> {
+    pub network: String,
+    pub topic: String,
+    pub since: Timestamp,
+    pub revision: u64,
+    pub rows: Vec<F>,
+    pub next_cursor: Option<K>,
+    pub request_cursor: Option<K>,
+    pub epoch: Vec<u8>,
+    pub unknown: Vec<(u64, CborValue)>,
+}
+/// Discovery uses exact UTF-8 ordering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForumDiscoveryEntry {
+    pub topic: String,
+    pub count: u64,
+    pub last_activity: Timestamp,
+    pub unknown: Vec<(u64, CborValue)>,
+}
+/// One discovery page, not a complete published refresh.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForumDiscoveryPage<K> {
+    pub network: String,
+    pub revision: u64,
+    pub entries: Vec<ForumDiscoveryEntry>,
+    pub next_cursor: Option<K>,
+    pub request_cursor: Option<K>,
+    pub epoch: Vec<u8>,
+    pub unknown: Vec<(u64, CborValue)>,
+}
+/// Tagged claims ensure unverified request echoes are distinct from relay observations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForumOperationEvidence {
+    /// State 0. No observation and no wallet authority.
+    UnknownRequest,
+    /// State 3. Does not establish absence from any chain or other relay.
+    RejectedRequest,
+    /// State 1. A nonterminal relay observation.
+    Pending,
+    /// State 2. Relay-observed confirmation, not independently established finality.
+    Confirmed { block: u64, transaction_index: u64 },
+}
+/// Exact operation response; the evidence tag determines the meaning of the echoed facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForumOperationStatus<F> {
+    pub network: String,
+    pub submitted_frame: F,
+    pub target_hash: Vec<u8>,
+    pub transaction_hash: Vec<u8>,
+    pub sender: Vec<u8>,
+    pub direction: u8,
+    pub value: u64,
+    pub evidence: ForumOperationEvidence,
+    pub revision: u64,
+    pub epoch: Vec<u8>,
+    pub unknown: Vec<(u64, CborValue)>,
+}
+
 /// Why a frame was kept only as opaque bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetentionReason {
@@ -365,6 +501,8 @@ pub enum TypedPayload {
         parent_hash: Option<Vec<u8>>,
         /// Field 3, opaque.
         body: Vec<u8>,
+        /// Schema-discriminated content; never reconstructed from a historical opaque body.
+        content: ForumPostContent,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
@@ -390,6 +528,14 @@ pub enum TypedPayload {
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
+    /// Type 12, a relay observation over the exact post.
+    ForumView(ForumView<ParsedFrame>),
+    /// Type 13, exact view rows and bound continuation.
+    ForumTopicPage(ForumTopicPage<ParsedFrame, ForumCursor>),
+    /// Type 14, ordered discovery entries.
+    ForumDiscoveryPage(ForumDiscoveryPage<ForumCursor>),
+    /// Type 15, tagged request echo or relay observation.
+    ForumOperationStatus(ForumOperationStatus<ParsedFrame>),
     /// Type 8.
     MessageRevision {
         /// Field 1 children.

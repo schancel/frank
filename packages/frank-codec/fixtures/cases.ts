@@ -3343,7 +3343,10 @@ acc(
 // ---------------------------------------------------------------------------------------------
 
 const TOPIC_TYPES = new Set([9, 10, 11])
-const WITH_TOPICS: SupportedSchema[] = KNOWN_TYPES.map(typeId => ({
+// Preserve the original historical reader context when later types are allocated.
+const WITH_TOPICS: SupportedSchema[] = KNOWN_TYPES.filter(
+  typeId => typeId < 12 || typeId > 15,
+).map(typeId => ({
   typeId,
   // Type 4 is read at schema 2 (the stamp key, #198); every other type is at schema 1.
   schemaVersion: typeId === 4 ? 2 : 1,
@@ -3418,12 +3421,14 @@ acc(
   ['S12'],
   TP,
 )
-acc(
+rej(
   'topic-post-newer-schema-extra-field',
-  'A type-9 post at schema 2 (min_reader 1) with an undeclared field 9: read through the schema-1 projection and the field retained (V6.3).',
+  'Historical schema-2/min-reader-1 future-field probe. Now rejected because structured Forum schema 2 requires min-reader at least 2; no legacy exception. Historical accepted T1: 5a32b7b47a8d27d1ce7e8856f924d15785492e19ea0333a06bc3685c56cd5641.',
   fr(9, new Map([...topicPostPayload(), [9, 'future']]), 2, 1),
+  'unsupported',
+  '7',
   ['V6.3', 'C12'],
-  TP,
+  { ...TP, source: 'typescript' },
 )
 ret(
   'topic-post-retained-by-a-reader-without-topics',
@@ -3803,12 +3808,13 @@ tpRej(
   '8.4',
   ['S8'],
 )
-acc(
+tpRej(
   'unassigned-type-12-remains-an-open-item',
-  'A type-8 revision whose item has the still-unassigned type 12: retained as an unknown child (V6.1), so the assigned range ends at 11.',
+  'Historical type-12 open-item bytes, now rejected because type 12 is assigned and is not a message item. Historical accepted T1: 27fd927eba7aeff1c0958a2c8cf761e85ea98e78870fa0acf83fc74d640cbf80.',
   fr(8, revision8([fr(12, M([[0, 1]]))])),
+  'semantic',
+  '8.4',
   ['V6.1', 'S8'],
-  TP,
 )
 
 // R6 in the manifest, so the limits are interop vectors and not only per-codec unit tests.

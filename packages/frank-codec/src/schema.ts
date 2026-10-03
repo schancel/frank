@@ -19,6 +19,11 @@ import {
   MAX_TOPIC_BODY_BYTES,
   MAX_TOPIC_FRAME_BYTES,
   MAX_TOPIC_VOTE_FRAME_BYTES,
+  MAX_FORUM_VIEW_BYTES,
+  MAX_FORUM_PAGE_BYTES,
+  MAX_FORUM_ROWS,
+  MAX_FORUM_ENTRIES,
+  MAX_FORUM_CURSOR_BYTES,
   TYPE_CONTAINER_MESSAGE_ITEM,
   TYPE_DIRECT_MESSAGE_DELIVERY,
   TYPE_DIRECTORY_ATTESTATION,
@@ -32,6 +37,10 @@ import {
   TYPE_TOPIC_POST,
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
+  TYPE_FORUM_VIEW,
+  TYPE_FORUM_TOPIC_PAGE,
+  TYPE_FORUM_DISCOVERY_PAGE,
+  TYPE_FORUM_OPERATION_STATUS,
   U32_MAX,
   U64_MAX,
 } from './constants'
@@ -50,6 +59,10 @@ import type {
   SignatureEntry,
   Timestamp,
   UnknownFields,
+  ForumContent,
+  ForumCursor,
+  ForumAggregate,
+  TopicPost,
 } from './types'
 
 function fail(
@@ -269,6 +282,10 @@ export function checkRootFrameLimit(
     return frameLength <= MAX_TOPIC_FRAME_BYTES
   if (typeId === TYPE_TOPIC_VOTE_SUBMISSION)
     return frameLength <= MAX_TOPIC_VOTE_FRAME_BYTES
+  if (typeId === TYPE_FORUM_VIEW || typeId === TYPE_FORUM_OPERATION_STATUS)
+    return frameLength <= MAX_FORUM_VIEW_BYTES
+  if (typeId === TYPE_FORUM_TOPIC_PAGE || typeId === TYPE_FORUM_DISCOVERY_PAGE)
+    return frameLength <= MAX_FORUM_PAGE_BYTES
   return frameLength <= MAX_FRAME_BYTES
 }
 
@@ -327,6 +344,19 @@ export function checkTypeLimits(
         over('topic body')
       break
     }
+    case TYPE_FORUM_TOPIC_PAGE:
+    case TYPE_FORUM_DISCOVERY_PAGE:
+      if (tooMany(f(typeId === TYPE_FORUM_TOPIC_PAGE ? 4 : 2), MAX_FORUM_ROWS))
+        over('Forum rows')
+      for (const key of typeId === TYPE_FORUM_TOPIC_PAGE ? [5, 7] : [3, 5]) {
+        const cursor = f(key)
+        if (
+          cursor instanceof Uint8Array &&
+          cursor.length > MAX_FORUM_CURSOR_BYTES
+        )
+          over('Forum cursor')
+      }
+      break
     case TYPE_MESSAGE_CONTENT_REVISION:
       if (tooMany(f(1), MAX_MESSAGE_ITEMS_PER_ARRAY)) over('message items')
       break
@@ -454,6 +484,102 @@ function profileEntry(
  * Stage 8.2: converts a generic payload to the typed draft of `typeId`, applying the CDDL
  * structure and range rules. Framed fields stay raw bytes until stage 8.4 opens them.
  */
+export function parseForumContent(
+  value: FrankValue,
+  allow: boolean,
+  path: string,
+): ForumContent {
+  if (value instanceof Map && tooMany(value.get(1n), MAX_FORUM_ENTRIES))
+    throw fail('resource', '8.1', path, 'Forum content exceeds 64 entries')
+  const m = fields(value, path, [0, 1], [], true, allow)
+  return {
+    authored: timestamp(m.get(0), `${path}.0`),
+    unknownFields: m.unknown,
+    entries: asList(m.get(1), `${path}.1`, 1, MAX_FORUM_ENTRIES).map(
+      (entry, i) => {
+        const p = `${path}.1[${i}]`
+        if (!(entry instanceof Map)) throw bad(p, 'expected entry map')
+        const kind = uintRange(entry.get(0n), `${p}.0`, 0n, U64_MAX)
+        if (kind !== 1n) {
+          if (!allow) throw bad(p, 'unallocated Forum entry kind')
+          return {
+            kind: 'unsupported' as const,
+            kindId: kind,
+            placeholder: 'Unsupported content' as const,
+            fields: entry,
+          }
+        }
+        const e = fields(entry, p, [0], [1, 2, 3], true, allow)
+        return {
+          kind: 'post' as const,
+          ...(e.has(1)
+            ? { title: tstr(e.get(1), `${p}.1`, 0, MAX_TEXT_STRING_BYTES) }
+            : {}),
+          ...(e.has(2)
+            ? { url: tstr(e.get(2), `${p}.2`, 0, MAX_TEXT_STRING_BYTES) }
+            : {}),
+          ...(e.has(3)
+            ? { message: tstr(e.get(3), `${p}.3`, 0, MAX_TEXT_STRING_BYTES) }
+            : {}),
+          unknownFields: e.unknown,
+        }
+      },
+    ),
+  }
+}
+
+function forumAggregate(
+  value: FrankValue | undefined,
+  path: string,
+): ForumAggregate {
+  const m = fields(value, path, [0, 1], [], false, false)
+  const negative = m.get(0),
+    magnitude = bstr(m.get(1), `${path}.1`, 32, 32)
+  if (typeof negative !== 'boolean')
+    throw bad(`${path}.0`, 'expected boolean sign')
+  if (negative && magnitude.every(b => b === 0))
+    throw bad(path, 'negative zero')
+  return { negative, magnitude }
+}
+
+/** The cursor item has already passed canonical decoding with its enclosing counters. */
+export function parseForumCursor(
+  value: FrankValue,
+  bytes: Uint8Array,
+  path: string,
+): ForumCursor {
+  if (!(value instanceof Map)) throw bad(path, 'expected cursor map')
+  const family = u32ish(value.get(1n), `${path}.1`, 13, 14)
+  const m = fields(
+    value,
+    path,
+    family === 13 ? [0, 1, 2, 3, 4, 5, 6, 7] : [0, 1, 2, 3, 4, 7],
+    [],
+    false,
+    false,
+  )
+  const common = {
+    bytes,
+    network: networkTag(m.get(0), `${path}.0`),
+    revision: uintRange(m.get(2), `${path}.2`, 0n, U64_MAX),
+    epoch: bstr(m.get(3), `${path}.3`, 16, 16),
+    incarnation: uintRange(m.get(7), `${path}.7`, 0n, U64_MAX),
+  }
+  if (family === 14)
+    return { ...common, family, last: tstr(m.get(4), `${path}.4`, 1, 512) }
+  const last = fields(m.get(4), `${path}.4`, [0, 1], [], false, false)
+  return {
+    ...common,
+    family: 13,
+    topic: tstr(m.get(5), `${path}.5`, 1, 512),
+    since: timestamp(m.get(6), `${path}.6`),
+    last: {
+      timestamp: timestamp(last.get(0), `${path}.4.0`),
+      hash: bstr(last.get(1), `${path}.4.1`, 32, 32),
+    },
+  }
+}
+
 export function parseDraft(
   typeId: number,
   payload: FrankValue,
@@ -648,15 +774,136 @@ export function parseDraft(
     }
     case TYPE_TOPIC_POST: {
       const m = fields(payload, P, [0, 1, 3], [2], true, allow)
-      const post: DraftPayload = {
+      const body = bstr(m.get(3), `${P}.3`, 1, MAX_TOPIC_BODY_BYTES)
+      const post: TopicPost<Uint8Array> = {
         type: 9,
         network: networkTag(m.get(0), `${P}.0`),
         topic: tstr(m.get(1), `${P}.1`, 1, 512),
-        body: bstr(m.get(3), `${P}.3`, 1, MAX_TOPIC_BODY_BYTES),
+        body,
+        ...(schema.effective >= 2
+          ? { schemaVersion: 2 as const, content: body }
+          : { schemaVersion: 1 as const }),
         unknownFields: m.unknown,
       }
       if (m.has(2)) post.parentHash = bstr(m.get(2), `${P}.2`, 32, 32)
       return post
+    }
+    case TYPE_FORUM_VIEW: {
+      const m = fields(
+        payload,
+        P,
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        [],
+        true,
+        allow,
+      )
+      return {
+        type: 12,
+        network: networkTag(m.get(0), `${P}.0`),
+        postFrame: framed(m.get(1), `${P}.1`),
+        author: bstr(m.get(2), `${P}.2`, 20, 20),
+        authorBurnTx: bstr(m.get(3), `${P}.3`, 1, 16384),
+        transactionHash: bstr(m.get(4), `${P}.4`, 32, 32),
+        firstVisible: timestamp(m.get(5), `${P}.5`),
+        block: uintRange(m.get(6), `${P}.6`, 0n, U64_MAX),
+        transactionIndex: uintRange(m.get(7), `${P}.7`, 0n, U64_MAX),
+        aggregate: forumAggregate(m.get(8), `${P}.8`),
+        revision: uintRange(m.get(9), `${P}.9`, 0n, U64_MAX),
+        epoch: bstr(m.get(10), `${P}.10`, 16, 16),
+        unknownFields: m.unknown,
+      }
+    }
+    case TYPE_FORUM_TOPIC_PAGE: {
+      const m = fields(payload, P, [0, 1, 2, 3, 4, 6], [5, 7], true, allow)
+      return {
+        type: 13,
+        network: networkTag(m.get(0), `${P}.0`),
+        topic: tstr(m.get(1), `${P}.1`, 1, 512),
+        since: timestamp(m.get(2), `${P}.2`),
+        revision: uintRange(m.get(3), `${P}.3`, 0n, U64_MAX),
+        rows: asList(m.get(4), `${P}.4`, 0, MAX_FORUM_ROWS).map((row, i) =>
+          framed(row, `${P}.4[${i}]`),
+        ),
+        nextCursor: m.has(5)
+          ? bstr(m.get(5), `${P}.5`, 1, MAX_FORUM_CURSOR_BYTES)
+          : undefined,
+        requestCursor: m.has(7)
+          ? bstr(m.get(7), `${P}.7`, 1, MAX_FORUM_CURSOR_BYTES)
+          : undefined,
+        epoch: bstr(m.get(6), `${P}.6`, 16, 16),
+        unknownFields: m.unknown,
+      }
+    }
+    case TYPE_FORUM_DISCOVERY_PAGE: {
+      const m = fields(payload, P, [0, 1, 2, 4], [3, 5], true, allow)
+      return {
+        type: 14,
+        network: networkTag(m.get(0), `${P}.0`),
+        revision: uintRange(m.get(1), `${P}.1`, 0n, U64_MAX),
+        entries: asList(m.get(2), `${P}.2`, 0, MAX_FORUM_ROWS).map((row, i) => {
+          const path = `${P}.2[${i}]`,
+            r = fields(row, path, [0, 1, 2], [], true, allow)
+          return {
+            topic: tstr(r.get(0), `${path}.0`, 1, 512),
+            count: uintRange(r.get(1), `${path}.1`, 0n, U64_MAX),
+            lastActivity: timestamp(r.get(2), `${path}.2`),
+            unknownFields: r.unknown,
+          }
+        }),
+        nextCursor: m.has(3)
+          ? bstr(m.get(3), `${P}.3`, 1, MAX_FORUM_CURSOR_BYTES)
+          : undefined,
+        requestCursor: m.has(5)
+          ? bstr(m.get(5), `${P}.5`, 1, MAX_FORUM_CURSOR_BYTES)
+          : undefined,
+        epoch: bstr(m.get(4), `${P}.4`, 16, 16),
+        unknownFields: m.unknown,
+      }
+    }
+    case TYPE_FORUM_OPERATION_STATUS: {
+      const m = fields(
+        payload,
+        P,
+        [0, 1, 2, 3, 4, 5, 6, 7, 10, 11],
+        [8, 9],
+        true,
+        allow,
+      )
+      const common = {
+        type: 15 as const,
+        network: networkTag(m.get(0), `${P}.0`),
+        submittedFrame: framed(m.get(1), `${P}.1`),
+        targetHash: bstr(m.get(2), `${P}.2`, 32, 32),
+        transactionHash: bstr(m.get(3), `${P}.3`, 32, 32),
+        sender: bstr(m.get(4), `${P}.4`, 20, 20),
+        direction: u32ish(m.get(5), `${P}.5`, 0, 1) as 0 | 1,
+        value: uintRange(m.get(6), `${P}.6`, 0n, U64_MAX),
+        revision: uintRange(m.get(10), `${P}.10`, 0n, U64_MAX),
+        epoch: bstr(m.get(11), `${P}.11`, 16, 16),
+        unknownFields: m.unknown,
+      }
+      const state = u32ish(m.get(7), `${P}.7`, 0, 3)
+      if (m.has(8) !== (state === 2) || m.has(9) !== (state === 2))
+        throw bad(P, 'confirmation position iff confirmed')
+      if (
+        (state === 1 || state === 2) &&
+        (common.value === 0n || common.value > I64_MAX)
+      )
+        throw bad(`${P}.6`, 'observed burn outside 1..i64::MAX')
+      if (state === 2)
+        return {
+          ...common,
+          state,
+          evidence: 'relay-observed',
+          block: uintRange(m.get(8), `${P}.8`, 0n, U64_MAX),
+          transactionIndex: uintRange(m.get(9), `${P}.9`, 0n, U64_MAX),
+        }
+      if (state === 1) return { ...common, state, evidence: 'relay-observed' }
+      return {
+        ...common,
+        state: state as 0 | 3,
+        evidence: 'unverified-request',
+      }
     }
     case TYPE_TOPIC_POST_SUBMISSION: {
       const m = fields(payload, P, [0, 1, 2], [], true, allow)

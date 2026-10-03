@@ -196,6 +196,10 @@ E5. Type identifiers are never reused. Version 1 reserves:
 |          9 | Topic post                                  | [topic.cddl](topic.cddl)                   |
 |         10 | Topic post submission (post plus its burn)  | [topic.cddl](topic.cddl)                   |
 |         11 | Topic vote submission                       | [topic.cddl](topic.cddl)                   |
+|         12 | Forum single-post observation              | [topic.cddl](topic.cddl)                   |
+|         13 | Forum topic page                            | [topic.cddl](topic.cddl)                   |
+|         14 | Forum discovery page                        | [topic.cddl](topic.cddl)                   |
+|         15 | Forum operation status                      | [topic.cddl](topic.cddl)                   |
 |         16 | Container message item                      | [direct-message.cddl](direct-message.cddl) |
 |         17 | UTF-8 text message item                     | [direct-message.cddl](direct-message.cddl) |
 | 0xffff0001 | Proof-only unknown future message item      | Opaque fixture payload                     |
@@ -207,7 +211,10 @@ profile of section 11, is `directory-statement-v3`); 5
 `recipient-encrypted-payload-v1` at schema 1 or
 `recipient-encrypted-payload-v2` at schema 2; 6 `encrypted-message-content`; 7
 `key-transition-statement`; 8 `message-content-revision`; 9 `topic-post`; 10 `topic-post-submission`; 11
-`topic-vote-submission`; 16 `container-message-item`; 17 `text-message-item`.
+`topic-vote-submission`; 12 `forum-single-view`; 13 `forum-topic-page`;
+14 `forum-discovery-page`; 15 `forum-operation-status`; 16 `container-message-item`;
+17 `text-message-item`. Type 9 schema 2/min-reader 2 opens field 3 as
+`forum-content`; schema 1 remains the explicitly historical opaque-body schema.
 
 Unassigned identifiers remain reserved and MUST NOT be emitted. The proof-only
 identifier MUST NOT appear in a production writer; it remains permanently
@@ -381,6 +388,16 @@ These choices (type ids 9, 10, and 11, the 512-byte topic and 512 KiB body caps,
 the 16 KiB burn-transaction bound, and the Monad calldata version byte `02`) are
 chosen for version 1; changing any of them requires a new schema version, not an
 edit to this one.
+
+Forum reads cap complete type-12/type-15 frames at 2 MiB and type-13/type-14
+pages at 4 MiB, including children and cursor bytes. Pages have at most 128
+rows; schema-2 content has 1–64 entries. Cursor bytes are 1–2048 bytes;
+transport is unique unpadded base64url, at most 2731 characters before decoding.
+All opened frames, content and cursor maps share the enclosing operation's
+item/container/depth counters. Existing 256-KiB text limits apply to every
+entry string, including unknown fields. Nested Forum frames obey their own
+frame bounds too; no child is skipped to fit a budget. Frame/body/row/cursor
+byte excess is `resource` at 8.1; nested canonical decoding uses stage 8.4.
 
 ## 5. Semantic ordering and uniqueness
 
@@ -701,9 +718,9 @@ canonical encoding. The codec cannot check that a parent or target exists, and
 a post cannot name itself (its hash would depend on its own bytes). The topic
 is exact UTF-8 text: no case folding, trimming, segment splitting, or Unicode
 normalization is applied, so a consumer that wants any of those states its
-policy explicitly (as S4 does for endpoints). The body is an opaque byte string
-in this version; the topic in a type-9 frame is authoritative for routing, and a
-body that repeats a topic or parent is not cross-checked by the codec.
+policy explicitly (as S4 does for endpoints). Schema 1 keeps the body opaque;
+schema 2 opens the structured Forum content defined below. The outer topic
+and parent remain the sole routing/reference fields, without content sniffing.
 
 Known property, first-burner authorship. A post has no author field and no
 nonce: its identity is its T1 hash and its author is the sender of the first
@@ -819,7 +836,7 @@ message item whose exact bytes survive every round trip.
 ### Topic events
 
 Type 9 is a public post: a network, a topic, an optional parent post hash, and
-an opaque body. It carries no burn, author, or vote. Type 10 wraps the exact
+a schema-selected body. It carries no burn, author, or vote. Type 10 wraps the exact
 type-9 frame together with the raw signed transaction that burns for it, and
 type 11 carries a raw signed burn for an existing post together with that post's
 hash. The wrapper exists because a burn commits to the identity of the post
@@ -829,12 +846,89 @@ author, the vote direction, and the vote weight are properties of the verified
 chain transaction (T8). Neither wrapper repeats them, so there is one source of
 truth and nothing for a relay to reconcile.
 
-A post is public content, so the body is not encrypted. Its payload is opaque in
-this version: the forum payload migration (#113) will define what a body holds.
-The protobuf path keeps working unchanged until that migration's explicit
+A post is public content, so the body is not encrypted. The existing opaque
+`encodeTopicPost({body})` writer remains schema 1; the explicit structured
+Forum writer emits schema 2/min-reader 2. The normal-client/runtime switch
+under #675 owns removal of predecessor writer reachability. The protobuf path
+keeps working unchanged until that migration's explicit
 cutover; the two encodings never share an identity (V5), because a CBOR post is
 identified by its T1 hash and a protobuf post by the SHA-256 of its payload. A
 protobuf object is never transcoded into a type 9, 10, or 11, or the reverse.
+
+#### Structured Forum content and reads
+
+Type 9 schema 2 preserves outer fields 0 network, 1 exact topic, optional 2
+parent T1, and 3 exact content bytes. Content is one canonical map: key 0 is
+authored timestamp (signed i64 seconds and nanos 0–999999999); key 1 is an
+ordered array of 1–64 entries. Kind 1 at entry key 0 is a post with optional
+title 1, URL 2 and message 3. Writers omit empty optionals. Readers accept
+empty or absent displays but retain their distinct exact bytes. Preserve
+Unicode, URL spelling and entry order; do not fetch URLs during decoding.
+Authored time changes identity, never author authority or relay ordering.
+Relay first-visible time is the display/order timestamp. No author, edit,
+attachment, encryption, logical-root or tombstone field is allocated.
+
+Exact schema 2 rejects unknown keys/kinds. Compatible future schemas with
+minimum reader at least 2 retain the complete original frame and unknown
+fields. An unknown integer entry kind projects only the fixed `Unsupported
+content` placeholder, bounded by the same 64-entry/resource limits. Required
+unknown semantics reject before display. Timestamp and aggregate maps stay
+closed, even inside a compatible future schema.
+
+Types 12–15 use schema 1/min-reader 1 and [topic.cddl](topic.cddl):
+
+| Type | Fields |
+| --- | --- |
+| 12 | 0 network; 1 exact type-9 frame; 2 author address20; 3 author raw burn1–16384; 4 transaction hash32; 5 first-visible timestamp; 6 block u64; 7 transaction index u64; 8 aggregate; 9 observation revision u64; 10 epoch16 |
+| 13 | 0 network; 1 topic; 2 inclusive since; 3 snapshot revision u64; 4 array of type-12 frames; optional 5 next cursor; 6 epoch16; optional 7 exact request cursor |
+| 14 | 0 network; 1 snapshot revision u64; 2 entries of topic0/count-u64-1/last-activity2; optional 3 next cursor; 4 epoch16; optional 5 request cursor |
+| 15 | 0 network; 1 exact submitted type10/11; 2 target T1; 3 transaction hash32; 4 sender20; 5 direction0-down/1-up; 6 value u64; 7 state; optional 8 block u64; optional 9 index u64; 10 revision u64; 11 epoch16 |
+
+Aggregate is exactly `{0: boolean negative, 1: magnitude32}` with unsigned
+big-endian magnitude and no negative zero. Range is ±(2^256−1); admission
+rejects before aggregate overflow. No wrapping, saturation, float or i64
+narrowing. Individual admitted burns remain 1..i64::MAX. Revision/count/chain
+positions retain full u64 precision.
+
+State 0 unknown and state 3 rejected-before-broadcast classify fields 1–6 as
+`unverified-request` echoes, including otherwise inadmissible u64 values.
+State 1 pending and state 2 confirmed classify them as relay observations;
+only state 2 has both positions 8/9, including zero. Unknown for burn B cannot
+borrow author/payment facts from burn A on the same post. No status alone
+releases a wallet lease or proves chain inclusion/finality/absence. Pure
+matching compares exact request bytes, network, target, transaction hash,
+sender, direction and value against explicit retained expectations. Runtime
+admission still derives raw transaction hash/signature/sender/chain/destination,
+T7/T8 and successful finalized observation independently. Synthetic codec
+fixtures are not signed transaction evidence. No read-frame content-hash
+domain is allocated: post T1 and unchanged T7 remain the economic identity.
+
+Every network field, including cursors and required children, obeys S1
+`^[a-z0-9][a-z0-9._-]{0,63}$`. Views bind their post network; pages bind every
+row's network/topic/epoch/revision. Topic rows order strictly by first-visible
+seconds/nanos/raw T1, respect inclusive since, and cannot repeat a T1.
+Discovery orders exact unsigned UTF-8 topic bytes. Empty pages have no next
+cursor. A continuation identifies precisely the last emitted full tuple.
+
+Cursors are closed canonical maps: network0, family13/14 at1, revision2,
+epoch16 at3, last tuple4, incarnation-u64 at7; topic cursors additionally
+carry topic5 and inclusive-since6, with last tuple `{0:timestamp,1:T1}`.
+Discovery last tuple is an exact topic string. Duplicates, unknown keys,
+malformed/non-shortest/trailing bytes and noncanonical transport reject.
+Successive cursors retain epoch/incarnation and bind query/revision; the
+response echoes the exact request cursor even on a terminal page. Cursors
+confer no authority or snapshot existence guarantee.
+
+Runtime #675 owns retained snapshots and complete publication: lookup by
+(epoch,incarnation), never revived query/revision; non-reused monotonic u64
+incarnations per fresh restart epoch, fail before exhaustion/wrap; original
+120-second monotonic expiry never extended; at most 16 live snapshots,
+64 MiB per snapshot and 256 MiB total pinned storage, rejecting capacity
+without evicting live snapshots. Account pinned bytes before admission.
+Refresh staging is at most 64 MiB/32768 rows/120 seconds, one per query, with
+at most two fresh retries. Publish only a complete validated multipage view;
+discard staged failures and fence old-epoch/in-flight generations. These
+storage/lifecycle obligations are not discharged by pure codec acceptance.
 
 ## 7. Evolution and retention
 
@@ -879,6 +973,13 @@ V6. After generic validation, a reader applies this mandatory decision:
 
 An application MUST NOT claim that unknown semantics were verified. This
 decision is identical in TypeScript and Rust.
+
+Type 9 schema >=2 additionally requires min-reader >=2 and explicit per-type
+schema-2 support before structured projection. Global reader version 2 alone
+does not authorize a schema-1-only reader to reinterpret content. Unsupported
+required children always reject; a root may retain under V6.1. Historical
+schema-2/min-reader-1 future-field probe bytes are now rejection evidence,
+not a production compatibility exception. Schema-1 bodies remain opaque.
 
 ## 8. Cryptographic transcripts
 

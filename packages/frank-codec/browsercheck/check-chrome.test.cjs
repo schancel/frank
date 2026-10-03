@@ -3,7 +3,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const { EventEmitter, once } = require('node:events')
 const { PassThrough } = require('node:stream')
-const { spawn } = require('node:child_process')
+const { spawn, execFileSync } = require('node:child_process')
 const {
   runChrome,
   ownedProcesses,
@@ -111,7 +111,14 @@ function fixture(mode = 'pass', result = passing()) {
           alive = false
           return child.emit('error', new Error('ENOENT'))
         }
-        if (['startup-timeout', 'kill-required', 'unreaped'].includes(mode))
+        if (
+          [
+            'startup-timeout',
+            'kill-required',
+            'unreaped',
+            'ownership-error',
+          ].includes(mode)
+        )
           return
         if (mode === 'output-flood') {
           child.stdout.write(Buffer.alloc(100000, 120))
@@ -128,6 +135,8 @@ function fixture(mode = 'pass', result = passing()) {
     ownedProcesses() {
       return {
         members() {
+          if (mode === 'ownership-error')
+            throw Error('ownership absence cannot be established')
           if (alive && !fs.existsSync(profile)) removedWhileAlive = true
           return alive ? [{ pid: child.pid }] : []
         },
@@ -298,6 +307,35 @@ test('unreaped members fail and retain the disposable profile', async () => {
   f.retained()
 })
 
+test('unestablished ownership fails closed and retains its profile', async () => {
+  const f = fixture('ownership-error')
+  await assert.rejects(f.run(), /ownership absence cannot be established/)
+  assert.deepEqual(f.signals, [])
+  f.retained()
+})
+
+test('owned group survives leader exit, but is never reacquired after absence', () => {
+  let table = '501 1 500 original-helper\n900 1 900 unrelated'
+  const owner = ownedProcesses(500, () => table)
+  assert.deepEqual(
+    owner.members().map(p => p.pid),
+    [501],
+  )
+  table = '900 1 900 unrelated'
+  assert.deepEqual(owner.members(), [])
+  table =
+    '500 1 500 reused-leader\n501 500 500 reused-helper\n900 1 900 unrelated'
+  assert.deepEqual(owner.members(), [])
+})
+
+test('malformed process observations cannot establish absence', () => {
+  for (const table of ['', 'bad', '1 NaN 1 unknown-parent'])
+    assert.throws(
+      () => ownedProcesses(500, () => table).members(),
+      /unusable process table/,
+    )
+})
+
 test('real ownership includes descendants, not an unrelated sibling', async () => {
   const args = ['-e', 'setInterval(()=>{},1000)']
   const child = spawn(
@@ -338,5 +376,131 @@ test('real ownership includes descendants, not an unrelated sibling', async () =
       child.kill('SIGKILL')
     sibling.kill('SIGTERM')
     await Promise.all([childExit, siblingExit])
+  }
+})
+
+test('full runner cleans a reparented same-group helper before deleting its profile', async () => {
+  const row = pid => {
+    try {
+      return execFileSync('ps', [
+        '-p',
+        String(pid),
+        '-o',
+        'pid=,ppid=,pgid=,lstart=',
+      ])
+        .toString()
+        .trim()
+        .match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)
+    } catch (error) {
+      if (error.status === 1) return null
+      throw error
+    }
+  }
+  const sibling = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
+    detached: true,
+    stdio: 'ignore',
+  })
+  const siblingExit = once(sibling, 'exit')
+  let root,
+    rootExit,
+    exited = false,
+    helper,
+    birth,
+    first,
+    profile,
+    cleanupSafe
+  try {
+    await assert.rejects(
+      runChrome(
+        {
+          chrome: '/fixture/early-exit',
+          page: '/fixture/full.html',
+          expected,
+          timeoutMs: 3000,
+          log(line) {
+            if (!line.startsWith('chrome lifecycle: ')) return
+            const event = JSON.parse(line.slice('chrome lifecycle: '.length))
+            if (event.stage === 'launch') profile = event.profile
+            if (event.stage === 'cleanup') cleanupSafe = row(helper) === null
+          },
+        },
+        {
+          WebSocket: class {
+            constructor() {
+              throw Error('no CDP before early native exit')
+            }
+          },
+          spawn() {
+            root = spawn(
+              process.execPath,
+              [
+                '-e',
+                `
+          const helper = require('node:child_process').spawn(process.execPath,
+            ['-e', 'setInterval(()=>{},1000)'], {stdio:'ignore'})
+          console.log(helper.pid)
+          helper.unref()
+          setTimeout(()=>process.exit(7),10)
+        `,
+              ],
+              { detached: true, stdio: ['ignore', 'pipe', 'pipe'] },
+            )
+            rootExit = once(root, 'exit')
+            root.once('exit', () => {
+              exited = true
+            })
+            root.stdout.once('data', buffer => {
+              helper = Number(buffer.toString().trim())
+              birth = row(helper)?.[4]
+            })
+            return root
+          },
+          ownedProcesses(pid) {
+            const owner = ownedProcesses(pid)
+            return {
+              members() {
+                // Deterministically make the first ownership observation AFTER exit,
+                // even on a slow CI host. Merely adding an eager scan cannot fix this.
+                if (!exited) return []
+                if (!first) first = row(helper)
+                return owner.members()
+              },
+              signal: owner.signal,
+            }
+          },
+        },
+      ),
+      /unexpected Chrome exit/,
+    )
+    assert.ok(first, 'helper survives its unobserved leader')
+    assert.equal(Number(first[2]), 1, 'helper reparented')
+    assert.equal(
+      Number(first[3]),
+      root.pid,
+      'original detached process group survives',
+    )
+    assert.equal(
+      cleanupSafe,
+      true,
+      'profile cleanup must follow helper absence',
+    )
+    assert.equal(fs.existsSync(profile), false)
+    process.kill(sibling.pid, 0)
+  } finally {
+    if (root && !exited) root.kill('SIGKILL')
+    // Fail-before cleanup is identity checked; never signal a reused PID.
+    if (helper && birth && row(helper)?.[4] === birth)
+      process.kill(helper, 'SIGKILL')
+    for (let i = 0; helper && row(helper)?.[4] === birth && i < 50; i++)
+      await new Promise(resolve => setTimeout(resolve, 20))
+    assert.ok(
+      !helper || row(helper)?.[4] !== birth,
+      'exact fixture helper absent',
+    )
+    sibling.kill('SIGTERM')
+    await siblingExit
+    if (rootExit) await rootExit
+    if (profile && fs.existsSync(profile))
+      fs.rmSync(profile, { recursive: true })
   }
 })

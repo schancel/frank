@@ -9,16 +9,23 @@ const { spawn, execFileSync } = require('child_process')
 const { pathToFileURL } = require('url')
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-// Detached helpers are remembered by PID + birth time, including exec changes.
-// Never kill by name, or use a shared/system browser profile.
-function ownedProcesses(pid) {
-  const known = new Map()
-  function members() {
-    const rows = execFileSync('ps', ['-axo', 'pid=,ppid=,pgid=,lstart='], {
+// The caller has just spawned a detached child: POSIX gives it a new group whose
+// ID is its PID. That owned group survives leader exit; it is not rediscovered
+// from a live leader. Retire the group permanently once observed empty, so a
+// subsequently reused group ID cannot acquire ownership. Remember individual
+// descendants by PID + birth time across exec/reparenting. Never kill by name.
+function ownedProcesses(
+  pid,
+  readTable = () =>
+    execFileSync('ps', ['-axo', 'pid=,ppid=,pgid=,lstart='], {
       timeout: 1000,
       maxBuffer: 4 * 1024 * 1024,
-    })
-      .toString()
+    }).toString(),
+) {
+  const known = new Map()
+  let groupOwned = true
+  function members() {
+    const rows = readTable()
       .trim()
       .split('\n')
       .map(line => {
@@ -26,19 +33,29 @@ function ownedProcesses(pid) {
           /^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/.exec(line.trim()) || []
         return { pid: +id, parent: +parent, group: +group, born }
       })
+    assert.ok(
+      rows.length &&
+        rows.every(
+          row =>
+            Number.isSafeInteger(row.pid) &&
+            row.pid > 0 &&
+            Number.isSafeInteger(row.parent) &&
+            row.parent >= 0 &&
+            Number.isSafeInteger(row.group) &&
+            row.group >= 0 &&
+            row.born,
+        ),
+      'unusable process table; ownership absence cannot be established',
+    )
+    if (!rows.some(row => row.group === pid)) groupOwned = false
     let changed
     do {
       changed = false
-      const root = rows.find(row => row.pid === pid)
-      const groupOwned =
-        (root && (!known.has(pid) || known.get(pid) === root.born)) ||
-        rows.some(row => row.group === pid && known.get(row.pid) === row.born)
       for (const row of rows) {
         // Never reacquire a recycled PID, including the original group leader.
         if (known.has(row.pid)) continue
         const parent = rows.find(p => p.pid === row.parent)
         if (
-          row.pid === pid ||
           (groupOwned && row.group === pid) ||
           (parent && known.get(parent.pid) === parent.born)
         ) {

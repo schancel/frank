@@ -1,0 +1,30 @@
+; PROPOSAL ONLY — #719. Not part of the active CDDL concatenation.
+; Standalone preview grammar; numbered rules in README add semantic checks.
+preview-statement = {
+  0: tstr .size (1..64),
+  1: preview-key,
+  2: uint,
+  3: preview-time,
+  4: [preview-relay],
+  6: preview-time,
+  8: preview-key,
+  10: preview-key,
+  11: uint,
+  12: uint,
+  13: null / bstr .size 32,
+}
+preview-key = {0: 1, 1: bstr .size 33}
+preview-time = {0: -9223372036854775808..9223372036854775807, 1: 0..999999999}
+preview-relay = {
+  0: bstr .size (16..64),
+  1: tstr .size (1..2048),
+  2: preview-key,
+  3: preview-time,
+}
+preview-attestation = {
+  0: bstr .size (9..262144), ; complete type4 schema4/min4 frame
+  1: [{0: 1, 1: preview-key, 2: bstr .size (8..72)}],
+}
+; At exact schema4 there are no other keys. V6.3-compatible future schemas
+; may retain optional uint-keyed values under frozen frank-value restrictions.
+; At exact type2 schema1, no wrapper extension is allocated here.

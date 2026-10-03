@@ -24,6 +24,13 @@ use std::{
 
 type Frames = (Vec<u8>, Vec<u8>);
 
+fn nanos(duration: std::time::Duration) -> u64 {
+    duration
+        .as_nanos()
+        .try_into()
+        .expect("measurement fits u64 nanoseconds")
+}
+
 fn field(value: &CborValue, key: u64) -> &CborValue {
     let CborValue::Map(fields) = value else {
         panic!("map")
@@ -316,9 +323,9 @@ impl Bench {
                 "event": "timing", "operation": name, "sample": sample,
                 "phase": if preparation { "preparation" } else if sample == 0 { "warmup" } else { "measured" },
                 "retained_records": rows, "charged_bytes": charge,
-                "start_ns": start.duration_since(self.epoch).as_nanos(),
-                "end_ns": end.duration_since(self.epoch).as_nanos(),
-                "duration_ns": end.duration_since(start).as_nanos(),
+                "start_ns": nanos(start.duration_since(self.epoch)),
+                "end_ns": nanos(end.duration_since(self.epoch)),
+                "duration_ns": nanos(end.duration_since(start)),
                 "metric": "caller_observed_call_not_internal_mutex_wait"
             })
         );
@@ -392,7 +399,7 @@ fn enrollments(b: &Bench, h: &History) {
         println!(
             "{}",
             json!({"event":"combined", "operation":"enroll.total_with_driver_bookkeeping",
-            "sample": sample, "warmup": sample == 0, "duration_ns": total.elapsed().as_nanos()})
+            "sample": sample, "warmup": sample == 0, "duration_ns": nanos(total.elapsed())})
         );
         drop(d);
         drop(db);
@@ -474,7 +481,7 @@ fn current_and_reopen(b: &Bench, h: &History, count: usize, label: &str) {
             "{}",
             json!({"event":"combined", "operation":"reopen.total_with_driver_bookkeeping",
             "sample":sample, "warmup":sample == 0, "retained_records":count,
-            "charged_bytes":h.charge(count), "duration_ns":total.elapsed().as_nanos()})
+            "charged_bytes":h.charge(count), "duration_ns":nanos(total.elapsed())})
         );
         let state = d.status().unwrap().unwrap();
         h.verify(&state, count);
@@ -755,7 +762,15 @@ fn directory_preview_release_assessment() {
         .expect("record the actual linked production revision; do not infer it from this driver");
     assert_eq!(production_revision.len(), 40);
     assert!(production_revision.bytes().all(|b| b.is_ascii_hexdigit()));
-    fs::create_dir(artifacts.join("fixtures-archive")).unwrap();
+    let archives = artifacts.join("fixtures-archive");
+    if archives.exists() {
+        assert!(
+            archives.read_dir().unwrap().next().is_none(),
+            "preserve any earlier run's archives"
+        );
+    } else {
+        fs::create_dir(&archives).unwrap();
+    }
     let b = Bench {
         root,
         artifacts,
@@ -803,6 +818,6 @@ fn directory_preview_release_assessment() {
     );
     println!(
         "{}",
-        json!({"event":"complete", "duration_ns":b.epoch.elapsed().as_nanos()})
+        json!({"event":"complete", "duration_ns":nanos(b.epoch.elapsed())})
     );
 }

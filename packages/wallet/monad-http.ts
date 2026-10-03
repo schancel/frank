@@ -169,6 +169,7 @@ export interface MonadHttpClientOptions {
   rpcUrl: string
   chainId?: number | bigint
   relayAuth?: MonadRelayRpcAuth
+  demoOnlyAbortOnDestroy?: boolean
 }
 
 export class MonadHttpClient {
@@ -176,8 +177,18 @@ export class MonadHttpClient {
 
   /** @param options HTTPS JSON-RPC endpoint and optional expected chainId (defaults to Monad testnet 10143).
    * Read by the caller from env/config and passed in — this class never reads env itself. */
-  constructor({ rpcUrl, chainId, relayAuth }: MonadHttpClientOptions) {
-    this.provider = createMonadJsonRpcProvider({ rpcUrl, chainId, relayAuth })
+  constructor({
+    rpcUrl,
+    chainId,
+    relayAuth,
+    demoOnlyAbortOnDestroy,
+  }: MonadHttpClientOptions) {
+    this.provider = createMonadJsonRpcProvider({
+      rpcUrl,
+      chainId,
+      relayAuth,
+      demoOnlyAbortOnDestroy,
+    })
   }
 
   /** Releases resources and cancels pending requests on the underlying provider. */

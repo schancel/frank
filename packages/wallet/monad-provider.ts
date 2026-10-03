@@ -37,6 +37,8 @@ export interface MonadJsonRpcProviderOptions extends JsonRpcApiProviderOptions {
   rpcUrl: string;
   chainId?: number | bigint | Networkish;
   relayAuth?: MonadRelayRpcAuth;
+  /** Only the validated disposable demo composition opts into direct request cancellation. */
+  demoOnlyAbortOnDestroy?: boolean;
 }
 
 export interface MonadRelayRpcAuth {
@@ -587,11 +589,15 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
   #verifiedNetwork: Network | null = null;
   #pendingDetectNetwork: Promise<Network> | null = null;
   #destroyRelayConnection: (() => void) | null = null;
+  #demoAbortController: AbortController | null = null;
 
   constructor(
     url: string | FetchRequest,
     expectedChainId?: number | bigint | Networkish,
-    options?: JsonRpcApiProviderOptions & { relayAuth?: MonadRelayRpcAuth }
+    options?: JsonRpcApiProviderOptions & {
+      relayAuth?: MonadRelayRpcAuth;
+      demoOnlyAbortOnDestroy?: boolean;
+    }
   ) {
     const chainId =
       expectedChainId !== undefined && typeof expectedChainId !== "object"
@@ -600,11 +606,33 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
 
     // Pass staticNetwork: true so ethers initializes its internal #network and does NOT
     // enter the unbounded _start() loop that retries network detection every 1s indefinitely on 503.
-    const { relayAuth, ...providerOptions } = options ?? {};
-    const connection =
+    const { relayAuth, demoOnlyAbortOnDestroy, ...providerOptions } =
+      options ?? {};
+    if (demoOnlyAbortOnDestroy === true && relayAuth) {
+      throw new Error(
+        "Demo-only direct cancellation cannot be combined with relay authentication"
+      );
+    }
+    let connection =
       typeof url === "string" && relayAuth
         ? createMonadRelayRpcConnection(url, relayAuth)
         : url;
+    const demoAbortController =
+      demoOnlyAbortOnDestroy === true ? new AbortController() : null;
+    if (demoAbortController) {
+      // Reuse the existing wire-cancellable, bounded platform fetch transport. Ethers'
+      // default direct transport does not cancel dispatched batches on destroy().
+      const transport = makeRelayGetUrl(
+        MAX_RELAY_RPC_RESPONSE_BYTES,
+        true,
+        demoAbortController.signal
+      );
+      if (!transport)
+        throw new Error("Demo RPC requires platform fetch cancellation");
+      connection =
+        typeof url === "string" ? new FetchRequest(url) : url.clone();
+      connection.getUrlFunc = transport;
+    }
     super(connection, chainId, {
       ...providerOptions,
       batchMaxCount: providerOptions.batchMaxCount ?? 20,
@@ -613,6 +641,7 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
     });
 
     this.expectedChainId = chainId;
+    this.#demoAbortController = demoAbortController;
     if (connection instanceof FetchRequest) {
       this.#destroyRelayConnection =
         relayConnectionDestroy.get(connection) ?? null;
@@ -663,6 +692,8 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
   }
 
   override destroy(): void {
+    this.#demoAbortController?.abort();
+    this.#demoAbortController = null;
     this.#destroyRelayConnection?.();
     this.#destroyRelayConnection = null;
     this.#verifiedNetwork = null;

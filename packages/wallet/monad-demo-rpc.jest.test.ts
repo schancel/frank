@@ -164,6 +164,44 @@ test('discovery errors never expose capability response text', async () => {
   )
 })
 
+test('non-OK discovery cancels an unread response body', async () => {
+  let bodyClosed!: () => void
+  const closed = new Promise<void>(resolve => {
+    bodyClosed = resolve
+  })
+  const server = createServer((_req, res) => {
+    res.on('close', bodyClosed)
+    res.writeHead(503, { 'content-type': 'application/json' })
+    res.flushHeaders() // The body intentionally never completes.
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const controlUrl = `http://127.0.0.1:${
+    (server.address() as AddressInfo).port
+  }`
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await expect(
+      discoverFakeDemoRpc({
+        ...config,
+        fakeDemo: { enabled: true, controlUrl },
+      }),
+    ).rejects.toThrow('capability')
+    await Promise.race([
+      closed,
+      new Promise((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error('discovery response body stayed open')),
+          300,
+        )
+      }),
+    ])
+  } finally {
+    clearTimeout(timeout)
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
+
 describe('environment selection', () => {
   const saved = process.env
   beforeEach(() => {

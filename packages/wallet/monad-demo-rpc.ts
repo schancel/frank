@@ -62,6 +62,8 @@ export async function discoverFakeDemoRpc(config: {
     // A malformed response or fetch error may contain control-token text. Keep it private.
     throw new Error('Fake demo RPC capability unavailable')
   } finally {
+    // Also cancel an unread error body; clearing the timeout alone leaves it alive.
+    controller.abort()
     clearTimeout(timer)
   }
 }

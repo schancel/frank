@@ -1420,12 +1420,18 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             rpcUrl,
             chainId: config.chainId,
             relayAuth,
+            ...(demoRpcUrl === undefined
+              ? {}
+              : { demoOnlyAbortOnDestroy: true }),
           });
           destroyProvider = () => provider.destroy();
           const httpClient = new MonadHttpClient({
             rpcUrl,
             chainId: config.chainId,
             relayAuth,
+            ...(demoRpcUrl === undefined
+              ? {}
+              : { demoOnlyAbortOnDestroy: true }),
           });
           destroyHttpClient = () => httpClient.destroy();
           const submitNative = async (

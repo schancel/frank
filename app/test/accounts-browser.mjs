@@ -557,11 +557,24 @@ try {
   console.log(
     'Explicit legacy local validation, cancel, full 3-of-5 migration and byte-identical quarantine: pass',
   )
-  // Two ordinary app tabs sharing the same custody namespace. The retained old handle must
-  // be revoked by the session notification, without reloading or explicitly retrying tab A.
+  // Ordinary app tabs share custody: mounted Wallet/Receive observers and a replacement tab.
+  // Neither observer reloads or explicitly retries after the other tab activates an account.
   const tabA = sessionId
   const retired = await evaluate(
-    `import(performance.getEntriesByType('resource').find(e=>e.name.includes('/src/accounts/session.ts')).name).then(async m=>{window.__retiredWallet=await m.accountSession.getWallet(); return {revision:m.accountStatus.revision,receive:(await window.__retiredWallet.getReceiveAddress()).raw}})`,
+    `import(performance.getEntriesByType('resource').find(e=>e.name.includes('/src/accounts/session.ts')).name).then(async m=>{window.__retiredWallet=await m.accountSession.getWallet(); return {revision:m.accountStatus.revision,identity:window.__retiredWallet.identity.displayAddress,receive:(await window.__retiredWallet.getReceiveAddress()).raw}})`,
+  )
+  await until(
+    `document.querySelector('.q-page input[readonly]')?.value === ${JSON.stringify(
+      retired.identity,
+    )}`,
+  )
+  await openTab()
+  const receiveTab = sessionId
+  await evaluate(`location.hash='#/receive'`)
+  await until(
+    `document.querySelector('.q-page input[readonly]')?.value === ${JSON.stringify(
+      retired.receive,
+    )}`,
   )
   await openTab()
   const tabB = sessionId
@@ -602,14 +615,46 @@ try {
     true,
   )
   const current = await evaluate(
-    `import(performance.getEntriesByType('resource').find(e=>e.name.includes('/src/accounts/session.ts')).name).then(async m=>(await (await m.accountSession.getWallet()).getReceiveAddress()).raw)`,
+    `import(performance.getEntriesByType('resource').find(e=>e.name.includes('/src/accounts/session.ts')).name).then(async m=>{const wallet=await m.accountSession.getWallet();return {receive:(await wallet.getReceiveAddress()).raw,identity:wallet.identity.displayAddress}})`,
   )
-  assert.notEqual(current, retired.receive)
+  assert.notEqual(current.receive, retired.receive)
+  assert.notEqual(current.identity, retired.identity)
+  assert.notEqual(current.receive, current.identity)
+  await until(
+    `document.querySelector('.q-page input[readonly]')?.value === ${JSON.stringify(
+      current.identity,
+    )}`,
+  )
+  const captureClipboard = `Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { window.__copiedAddress=value } } })`
+  await evaluate(captureClipboard)
+  await evaluate(
+    `document.querySelector('[data-testid="wallet-copy-address"]').click()`,
+  )
+  await until(`window.__copiedAddress === ${JSON.stringify(current.identity)}`)
   profileExports.push(await exportStorage())
   await evaluate(`window.__retiredWallet=null`)
+  sessionId = receiveTab
+  await until(
+    `document.querySelector('.q-page input[readonly]')?.value === ${JSON.stringify(
+      current.receive,
+    )}`,
+  )
+  assert.equal(
+    await evaluate(`!!document.querySelector('.q-page canvas')`),
+    true,
+  )
+  await evaluate(captureClipboard)
+  await evaluate(
+    `document.querySelector('[data-testid="receive-copy-address"]').click()`,
+  )
+  await until(`window.__copiedAddress === ${JSON.stringify(current.receive)}`)
+  profileExports.push(await exportStorage())
   sessionId = tabB
   console.log(
     'Real two-tab replacement invalidates the retired handle and publishes only the new session in tab A: pass',
+  )
+  console.log(
+    'Mounted Wallet authentication and Receive EVM addresses/copy update to the new account without reload; current receive QR is present: pass',
   )
   for (const secret of allSentinels) {
     for (const profile of profileExports)

@@ -45,6 +45,7 @@
                   flat
                   icon="content_copy"
                   :aria-label="$t('a11y.copyAddress')"
+                  :disable="!displayAddress"
                   data-testid="wallet-copy-address"
                   @click="copyAddress"
                 />
@@ -72,7 +73,7 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, onMounted, ref } from 'vue'
+import { computed, defineComponent, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { copyToClipboard } from 'quasar'
@@ -80,6 +81,7 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
 import { openPage } from 'src/utils/routes'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
+import { accountStatus } from '../accounts/session'
 
 // One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
@@ -96,14 +98,25 @@ export default defineComponent({
     )
     const displayAddress = ref('')
 
-    onMounted(async () => {
-      try {
-        const wallet = await useActiveWallet()
-        displayAddress.value = wallet.identity.displayAddress
-      } catch (err) {
-        errorNotify(err, { fallbackKey: 'walletPanel.failedLoadAddress' })
-      }
-    })
+    watch(
+      () => [accountStatus.status, accountStatus.revision],
+      async ([status], _previous, onCleanup) => {
+        displayAddress.value = ''
+        if (status !== 'ready') return
+        let current = true
+        onCleanup(() => {
+          current = false
+        })
+        try {
+          const wallet = await useActiveWallet()
+          if (current) displayAddress.value = wallet.identity.displayAddress
+        } catch (err) {
+          if (current)
+            errorNotify(err, { fallbackKey: 'walletPanel.failedLoadAddress' })
+        }
+      },
+      { immediate: true, flush: 'sync' },
+    )
 
     return {
       displayAddress,

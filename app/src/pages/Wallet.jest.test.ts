@@ -1,7 +1,16 @@
 /** @jest-environment jsdom */
 
-import { shallowMount } from '@vue/test-utils'
+import { enableAutoUnmount, shallowMount } from '@vue/test-utils'
+enableAutoUnmount(afterEach)
 import { nextTick, ref } from 'vue'
+import { accountStatus } from '../accounts/session'
+
+jest.mock('../accounts/session', () => ({
+  accountStatus: jest
+    .requireActual('vue')
+    .reactive({ status: 'ready', revision: 1 }),
+}))
+const session = accountStatus as { status: string; revision: number }
 
 const balance = {
   formattedBalance: ref('1 MON'),
@@ -55,7 +64,10 @@ function mountWallet() {
       stubs: {
         // The copy button lives in q-input's named #after slot; a generic stub drops it.
         QInput: { template: '<div><slot /><slot name="after" /></div>' },
-        QBtn: { template: '<button><slot /></button>' },
+        QBtn: {
+          props: ['disable'],
+          template: '<button :disabled="disable"><slot /></button>',
+        },
         ...Object.fromEntries(
           [
             'q-page-container',
@@ -73,6 +85,8 @@ function mountWallet() {
 
 describe('Wallet detail page (#570)', () => {
   beforeEach(() => {
+    session.status = 'ready'
+    session.revision = 1
     balance.formattedBalance.value = '1 MON'
     balance.loaded.value = true
     balance.hasError.value = false
@@ -155,6 +169,69 @@ describe('Wallet detail page (#570)', () => {
       fallbackKey: 'walletPanel.unableCopyAddress',
     })
     expect(addressCopiedNotify).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('clears and replaces the mounted identity address on session replacement', async () => {
+    const wrapper = mountWallet()
+    await flush()
+    session.status = 'loading'
+    expect(wrapper.vm.displayAddress).toBe('')
+    await flush()
+    const copy = wrapper.get('[data-testid="wallet-copy-address"]')
+    expect(copy.attributes('disabled')).toBeDefined()
+    await copy.trigger('click')
+    expect(mockCopyToClipboard).not.toHaveBeenCalled()
+    mockUseActiveWallet.mockResolvedValue({
+      identity: { displayAddress: '0xauthB' },
+      getReceiveAddress: async () => ({ raw: '0xreceiveB' }),
+    })
+    session.revision++
+    session.status = 'ready'
+    await flush()
+    expect(wrapper.vm.displayAddress).toBe('0xauthB')
+    await copy.trigger('click')
+    expect(mockCopyToClipboard).toHaveBeenCalledWith('0xauthB')
+    expect(mockCopyToClipboard).not.toHaveBeenCalledWith('0xreceiveB')
+    wrapper.unmount()
+  })
+
+  it('ignores delayed acquisition of account A after account B is displayed', async () => {
+    let finish!: (wallet: typeof mockWallet) => void
+    mockUseActiveWallet.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        }),
+    )
+    const wrapper = mountWallet()
+    mockUseActiveWallet.mockResolvedValue({
+      identity: { displayAddress: '0xauthB' },
+    })
+    session.revision++
+    await flush()
+    expect(wrapper.vm.displayAddress).toBe('0xauthB')
+    finish(mockWallet)
+    await flush()
+    expect(wrapper.vm.displayAddress).toBe('0xauthB')
+    wrapper.unmount()
+  })
+
+  it('clears the old identity through unavailable and failed replacement acquisition', async () => {
+    const wrapper = mountWallet()
+    await flush()
+    session.status = 'unavailable'
+    expect(wrapper.vm.displayAddress).toBe('')
+    mockUseActiveWallet.mockRejectedValueOnce(new Error('locked'))
+    session.status = 'ready'
+    await flush()
+    expect(wrapper.vm.displayAddress).toBe('')
+    expect(
+      wrapper.get('[data-testid="wallet-copy-address"]').attributes('disabled'),
+    ).toBeDefined()
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'walletPanel.failedLoadAddress',
+    })
     wrapper.unmount()
   })
 

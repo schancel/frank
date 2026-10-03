@@ -36,6 +36,7 @@
         <q-card-section>
           <div class="row">
             <qrcode-vue
+              v-if="displayAddress"
               style="margin-left: auto; margin-right: auto"
               :value="displayAddress"
               :size="300"
@@ -57,6 +58,8 @@
                   flat
                   icon="content_copy"
                   :aria-label="$t('a11y.copyAddress')"
+                  :disable="!displayAddress"
+                  data-testid="receive-copy-address"
                   @click="copyAddress"
                 />
               </template>
@@ -73,7 +76,7 @@
 
 <script lang="ts">
 import { navigateBack } from 'src/utils/navigate-back'
-import { computed, defineComponent, onMounted, ref } from 'vue'
+import { computed, defineComponent, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import QrcodeVue from 'qrcode.vue'
@@ -82,6 +85,7 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 import { activeChain } from '@frank/wallet/chain'
+import { accountStatus } from '../accounts/session'
 
 export default defineComponent({
   setup() {
@@ -95,18 +99,30 @@ export default defineComponent({
     )
     const displayAddress = ref('')
 
-    onMounted(async () => {
-      try {
-        const wallet = await useActiveWallet()
-        displayAddress.value = activeChain.addressToString(
-          await wallet.getReceiveAddress(),
-        )
-      } catch (err) {
-        errorNotify(err, {
-          fallbackKey: 'receiveBitcoinDialog.failedLoadBalance',
+    watch(
+      () => [accountStatus.status, accountStatus.revision],
+      async ([status], _previous, onCleanup) => {
+        displayAddress.value = ''
+        if (status !== 'ready') return
+        let current = true
+        onCleanup(() => {
+          current = false
         })
-      }
-    })
+        try {
+          const wallet = await useActiveWallet()
+          if (!current) return
+          const address = await wallet.getReceiveAddress()
+          if (current)
+            displayAddress.value = activeChain.addressToString(address)
+        } catch (err) {
+          if (current)
+            errorNotify(err, {
+              fallbackKey: 'receiveBitcoinDialog.failedLoadBalance',
+            })
+        }
+      },
+      { immediate: true, flush: 'sync' },
+    )
 
     return {
       displayAddress,

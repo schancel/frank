@@ -1,12 +1,21 @@
 /** @jest-environment jsdom */
 
-import { shallowMount } from '@vue/test-utils'
+import { enableAutoUnmount, shallowMount } from '@vue/test-utils'
+enableAutoUnmount(afterEach)
 
 import Receive from './Receive.vue'
 import enUS from 'src/i18n/en-us'
 import { errorNotify } from 'src/utils/notifications'
+import { accountStatus } from '../accounts/session'
+import { copyToClipboard } from 'quasar'
 
 const mockGetBalance = jest.fn()
+jest.mock('../accounts/session', () => ({
+  accountStatus: jest
+    .requireActual('vue')
+    .reactive({ status: 'ready', revision: 1 }),
+}))
+const session = accountStatus as { status: string; revision: number }
 
 // Resolve real en-us strings (dotted keys), like the app does.
 function t(key: string): string {
@@ -55,7 +64,10 @@ describe('Receive balance', () => {
       doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
     })
     mockGetBalance.mockReset()
-    mockGetReceiveAddress.mockClear()
+    mockGetReceiveAddress.mockReset().mockResolvedValue({ raw: '0xabc' })
+    session.status = 'ready'
+    session.revision = 1
+    jest.mocked(copyToClipboard).mockClear()
     jest.mocked(errorNotify).mockClear()
   })
   afterEach(() => jest.useRealTimers())
@@ -64,12 +76,22 @@ describe('Receive balance', () => {
     return shallowMount(Receive, {
       global: {
         mocks: { $t: t },
-        stubs: Object.fromEntries(
-          ['q-page-container', 'q-page', 'q-card', 'q-card-section'].map(n => [
-            n,
-            { template: '<div><slot /></div>' },
-          ]),
-        ),
+        stubs: {
+          ...Object.fromEntries(
+            ['q-page-container', 'q-page', 'q-card', 'q-card-section'].map(
+              n => [n, { template: '<div><slot /></div>' }],
+            ),
+          ),
+          QInput: { template: '<div><slot name="after" /></div>' },
+          QBtn: {
+            props: ['disable'],
+            template: '<button :disabled="disable"><slot /></button>',
+          },
+          QrcodeVue: {
+            props: ['value'],
+            template: '<div data-testid="receive-qr" :data-value="value" />',
+          },
+        },
       },
     })
   }
@@ -146,6 +168,85 @@ describe('Receive balance', () => {
 
     expect(mockGetReceiveAddress).toHaveBeenCalledTimes(1)
     expect(wrapper.vm.displayAddress).toBe('0xabc')
+    wrapper.unmount()
+  })
+
+  it('clears and replaces the mounted receive QR and copy destination with the active EVM role', async () => {
+    mockGetBalance.mockResolvedValue(1n)
+    const wrapper = mountReceive()
+    await advance(0)
+    expect(
+      wrapper.get('[data-testid="receive-qr"]').attributes('data-value'),
+    ).toBe('0xabc')
+    session.status = 'loading'
+    expect(wrapper.vm.displayAddress).toBe('')
+    await advance(0)
+    expect(wrapper.find('[data-testid="receive-qr"]').exists()).toBe(false)
+    expect(
+      wrapper
+        .get('[data-testid="receive-copy-address"]')
+        .attributes('disabled'),
+    ).toBeDefined()
+    await wrapper.get('[data-testid="receive-copy-address"]').trigger('click')
+    expect(copyToClipboard).not.toHaveBeenCalled()
+    mockGetReceiveAddress.mockResolvedValue({ raw: '0xreceiveB' })
+    session.revision++
+    session.status = 'ready'
+    await advance(0)
+    expect(wrapper.vm.displayAddress).toBe('0xreceiveB')
+    expect(
+      wrapper.get('[data-testid="receive-qr"]').attributes('data-value'),
+    ).toBe('0xreceiveB')
+    await wrapper.get('[data-testid="receive-copy-address"]').trigger('click')
+    expect(copyToClipboard).toHaveBeenCalledWith('0xreceiveB')
+    expect(copyToClipboard).not.toHaveBeenCalledWith('legacy-display-address')
+    wrapper.unmount()
+  })
+
+  it('ignores a delayed retired receive-address result after the next account is displayed', async () => {
+    let finish!: (address: { raw: string }) => void
+    mockGetReceiveAddress.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        }),
+    )
+    mockGetBalance.mockResolvedValue(1n)
+    const wrapper = mountReceive()
+    await advance(0)
+    mockGetReceiveAddress.mockResolvedValue({ raw: '0xreceiveB' })
+    session.revision++
+    await advance(0)
+    expect(wrapper.vm.displayAddress).toBe('0xreceiveB')
+    finish({ raw: '0xretiredA' })
+    await advance(0)
+    expect(wrapper.vm.displayAddress).toBe('0xreceiveB')
+    expect(
+      wrapper.get('[data-testid="receive-qr"]').attributes('data-value'),
+    ).toBe('0xreceiveB')
+    wrapper.unmount()
+  })
+
+  it('clears a previously displayed receive destination on unavailability and on fresh acquisition failure', async () => {
+    mockGetBalance.mockResolvedValue(1n)
+    const wrapper = mountReceive()
+    await advance(0)
+    session.status = 'unavailable'
+    expect(wrapper.vm.displayAddress).toBe('')
+    await advance(0)
+    expect(wrapper.find('[data-testid="receive-qr"]').exists()).toBe(false)
+    mockGetReceiveAddress.mockRejectedValueOnce(new Error('unavailable'))
+    session.status = 'ready'
+    await advance(0)
+    expect(wrapper.vm.displayAddress).toBe('')
+    expect(
+      wrapper
+        .get('[data-testid="receive-copy-address"]')
+        .attributes('disabled'),
+    ).toBeDefined()
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'receiveBitcoinDialog.failedLoadBalance',
+    })
     wrapper.unmount()
   })
 

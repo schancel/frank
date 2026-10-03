@@ -1,4 +1,4 @@
-import level from 'level'
+import level from 'level/level.js'
 import { lstat, open, stat } from 'node:fs/promises'
 import { dirname, isAbsolute } from 'node:path'
 import { fail } from '../policy/history'

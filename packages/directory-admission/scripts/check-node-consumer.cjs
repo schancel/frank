@@ -1,11 +1,18 @@
 const path = require('path')
 const ts = require('typescript')
+const assert = require('assert/strict')
 
 function checkNodeConsumer() {
+  // The declaration boundary must not select a different runtime implementation.
+  assert.equal(require.resolve('level/level.js'), require.resolve('level'))
   const packageRoot = path.resolve(__dirname, '..')
   const root = path.resolve(packageRoot, '../..')
   const manifest = require(path.join(packageRoot, 'package.json'))
   const filename = path.join(root, 'directory-node-consumer.ts')
+  const envelopeFilename = path.join(
+    root,
+    'directory-node-consumer-envelope.d.ts',
+  )
   const source = `
 import {
   openNodeDirectoryStore,
@@ -33,26 +40,53 @@ export function consume(location: string, anchor: Anchor): Promise<DirectoryStor
         path.resolve(packageRoot, manifest.exports['./node']),
       ],
       '@frank/codec': [path.join(root, 'packages/frank-codec/src/index.ts')],
+      // Isolate the unchanged faucet's Level boundary from unrelated cashweb
+      // declarations. This stub does not declare or replace the Level module.
+      '@frank/cashweb/relay/monad-message-envelope': [envelopeFilename],
     },
   }
-  const host = ts.createCompilerHost(options)
-  const getSourceFile = host.getSourceFile.bind(host)
-  host.getSourceFile = (file, languageVersion, ...rest) =>
-    file === filename
-      ? ts.createSourceFile(file, source, languageVersion)
-      : getSourceFile(file, languageVersion, ...rest)
-  const program = ts.createProgram([filename], options, host)
-  const diagnostics = ts.getPreEmitDiagnostics(program)
-  if (diagnostics.length) {
-    throw new Error(
-      ts.formatDiagnostics(diagnostics, {
-        getCanonicalFileName: file => file,
-        getCurrentDirectory: () => root,
-        getNewLine: () => '\n',
-      }),
-    )
+  function check(label, consumer) {
+    const sources = new Map([
+      [filename, consumer],
+      [
+        envelopeFilename,
+        'export declare function canonicalMonadEnvelopeAddress(address: string): string',
+      ],
+    ])
+    const host = ts.createCompilerHost(options)
+    const getSourceFile = host.getSourceFile.bind(host)
+    const fileExists = host.fileExists.bind(host)
+    host.fileExists = file => sources.has(file) || fileExists(file)
+    host.getSourceFile = (file, languageVersion, ...rest) =>
+      sources.has(file)
+        ? ts.createSourceFile(file, sources.get(file), languageVersion)
+        : getSourceFile(file, languageVersion, ...rest)
+    const program = ts.createProgram([filename], options, host)
+    const diagnostics = ts.getPreEmitDiagnostics(program)
+    if (diagnostics.length) {
+      throw new Error(
+        `${label}:\n` +
+          ts.formatDiagnostics(diagnostics, {
+            getCanonicalFileName: file => file,
+            getCurrentDirectory: () => root,
+            getNewLine: () => '\n',
+          }),
+      )
+    }
+    console.log(`${label}: strict declaration closure ok`)
   }
-  console.log('directory Node public consumer: strict declaration closure ok')
+  check('directory Node public consumer', source)
+  // Compile the actual unmodified legacy consumer, including its location-only
+  // level(this.dbLocation) call, alongside the public Node entry. Neither check
+  // includes private ambient declarations as consumer root files.
+  check(
+    'directory Node + legacy faucet consumer',
+    source +
+      `
+import { FaucetStateStore } from './packages/bot/faucet-state'
+export const legacy = new FaucetStateStore('/unused-typecheck-only')
+`,
+  )
 }
 
 module.exports = checkNodeConsumer

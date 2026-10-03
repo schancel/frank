@@ -5,6 +5,7 @@ import {
   botStateDir,
   defaultBotStateDir,
   legacyBotStateDir,
+  persistentStateDir,
   planBotStateDir,
   StateDirBot,
 } from './bot-state-dir'
@@ -126,6 +127,30 @@ describe('bot state directories', () => {
       if (saved === undefined) delete process.env.VENDOR_BOT_STATE_DIR
       else process.env.VENDOR_BOT_STATE_DIR = saved
       warn.mockRestore()
+    }
+  })
+
+  it('uses an explicit persistent component path and rejects relative paths', () => {
+    const saved = process.env.QWEN_SENDER_WALLET_STATE_DIR
+    try {
+      process.env.QWEN_SENDER_WALLET_STATE_DIR = '/data/qwen-sender'
+      expect(
+        persistentStateDir(
+          'qwen-sender-wallet',
+          'QWEN_SENDER_WALLET_STATE_DIR',
+        ),
+      ).toBe('/data/qwen-sender')
+      process.env.QWEN_SENDER_WALLET_STATE_DIR = 'relative/wallet'
+      expect(() =>
+        persistentStateDir(
+          'qwen-sender-wallet',
+          'QWEN_SENDER_WALLET_STATE_DIR',
+        ),
+      ).toThrow(/must be an absolute path/)
+    } finally {
+      if (saved === undefined)
+        delete process.env.QWEN_SENDER_WALLET_STATE_DIR
+      else process.env.QWEN_SENDER_WALLET_STATE_DIR = saved
     }
   })
 })

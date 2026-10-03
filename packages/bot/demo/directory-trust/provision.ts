@@ -434,26 +434,32 @@ export function disposeBundle(ref: BundleRef, nowNs: bigint): void {
 }
 /** Private to the fixture listener; keys are never part of the public facade result. */
 export function listenerMaterial(ref: BundleRef, nowNs: bigint) {
-  const bundle = reopenBundle(ref, nowNs)
-  const lock = join(bundle.runDir, '.listener')
-  const fd = openSync(lock, 'wx', 0o600)
-  let released = false
-  const release = () => {
-    if (!released) {
-      released = true
-      closeSync(fd)
-      unlinkSync(lock)
+  const runDir = location(ref.runDir)
+  directory(runDir)
+  // Disposal uses this same critical section. Keep validated state protected
+  // until the listener reservation exists and all TLS material has been read.
+  return exclusive(runDir, () => {
+    const bundle = readBundle(ref, nowNs, true)
+    const lock = join(runDir, '.listener')
+    const fd = openSync(lock, 'wx', 0o600)
+    let released = false
+    const release = () => {
+      if (!released) {
+        released = true
+        closeSync(fd)
+        unlinkSync(lock)
+      }
     }
-  }
-  try {
-    return {
-      bundle,
-      key: regular(join(bundle.runDir, 'leaf.key')),
-      cert: regular(join(bundle.runDir, 'leaf.pem')),
-      release,
+    try {
+      return {
+        bundle,
+        key: regular(join(runDir, 'leaf.key')),
+        cert: regular(join(runDir, 'leaf.pem')),
+        release,
+      }
+    } catch (e) {
+      release()
+      throw e
     }
-  } catch (e) {
-    release()
-    throw e
-  }
+  })
 }

@@ -174,6 +174,111 @@ function cliInput(command: string, extra: Record<string, unknown> = {}) {
   )
   return file
 }
+test.each(['serve', 'dispose'] as const)(
+  'cross-process %s ownership excludes the competing operation before artifacts change',
+  async owner => {
+    const release = join(root, 'release-operation')
+    const artifacts = Object.fromEntries(
+      readdirSync(bundle.runDir).map(name => [
+        name,
+        readFileSync(join(bundle.runDir, name)),
+      ]),
+    )
+    // Pause the real CLI at the filesystem boundary, without adding production
+    // hooks. Both contenders are separate processes using the public facade.
+    const barrier = `
+      const fs = require('node:fs');
+      const listener = ${JSON.stringify(join(bundle.runDir, '.listener'))};
+      const release = ${JSON.stringify(release)};
+      const exists = fs.existsSync;
+      function pause() {
+        fs.writeSync(1, 'ownership-barrier\\n');
+        const wait = new Int32Array(new SharedArrayBuffer(4));
+        for (let n = 0; n < 500 && !exists(release); n++) Atomics.wait(wait, 0, 0, 20);
+        if (!exists(release)) throw Error('Test ownership barrier timed out');
+      }
+      if (${JSON.stringify(owner)} === 'serve') {
+        const open = fs.openSync;
+        fs.openSync = function(path, ...args) {
+          if (path === listener && args[0] === 'wx') pause();
+          return open.call(fs, path, ...args);
+        };
+      } else {
+        fs.existsSync = function(path) {
+          if (path === listener) pause();
+          return exists(path);
+        };
+      }
+      require(${JSON.stringify(cli)});
+    `
+    const env = {
+      ...process.env,
+      TSX_TSCONFIG_PATH: join(cwd, 'packages/bot/tsconfig.json'),
+    }
+    const child = spawn(
+      process.execPath,
+      ['--import', 'tsx', '-e', barrier, cli, owner, cliInput(owner)],
+      { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] },
+    )
+    children.add(child)
+    const exited = new Promise<number | null>(resolve =>
+      child.once('close', resolve),
+    )
+    let output = ''
+    child.stdout!.on('data', chunk => {
+      output += String(chunk)
+    })
+    const waitFor = (marker: string) =>
+      new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`CLI did not reach ${marker}`)),
+          5000,
+        )
+        const check = () => {
+          if (output.includes(marker)) {
+            clearTimeout(timer)
+            child.stdout!.off('data', check)
+            resolve()
+          }
+        }
+        child.stdout!.on('data', check)
+        check()
+        child.once('close', () => {
+          clearTimeout(timer)
+          if (!output.includes(marker))
+            reject(new Error(`CLI exited before ${marker}`))
+        })
+      })
+    try {
+      await waitFor('ownership-barrier')
+      const competitor = owner === 'serve' ? 'dispose' : 'serve'
+      const result = spawnSync(
+        process.execPath,
+        ['--import', 'tsx', cli, competitor, cliInput(competitor)],
+        { cwd, env, encoding: 'utf8', timeout: 5000 },
+      )
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('EEXIST')
+      for (const [name, bytes] of Object.entries(artifacts))
+        expect(readFileSync(join(bundle.runDir, name))).toEqual(bytes)
+      writeFileSync(release, '', { mode: 0o600 })
+      if (owner === 'serve') {
+        await waitFor('synthetic-fixture-listening')
+        await expect(checkNode(bundle, now)).resolves.toBeDefined()
+        child.kill('SIGTERM')
+        expect(await exited).toBe(130)
+        expect(reopenBundle(bundle, now)).toEqual(bundle)
+      } else {
+        expect(await exited).toBe(0)
+        expect(existsSync(bundle.runDir)).toBe(false)
+        await expect(startFixture(bundle, now)).rejects.toThrow()
+      }
+    } finally {
+      writeFileSync(release, '', { mode: 0o600 })
+    }
+  },
+  15000,
+)
 test.each(['SIGINT', 'SIGTERM'] as const)(
   'CLI handles %s and reaps only its owned listener, leaving trust and unrelated process',
   async signal => {

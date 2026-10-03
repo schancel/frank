@@ -180,6 +180,7 @@ Identifiers are scoped; equal integers in different columns have no relationship
 | Target type-1/type-5 delivery schemas | schema revisions, required context field IDs and `min_reader_version` | UNALLOCATED |
 | Target validation operations | `provider-admission` and `recipient-acceptance` contexts, error taxonomy, CDDL, codec and vector registrations | UNALLOCATED |
 | Mailbox/stamp generation fields | directory-authorized mailbox-key and stamp-key generations, destination-provider mailbox-admission capabilities, plus provider-authorized instance generation encodings | UNALLOCATED |
+| Account admission authorization | allowed recipient-`M` tuples, rotation class/grace bound, destination binding and predecessor/sequence fields | UNALLOCATED |
 | Inter-provider destination claim | exact handoff ID/hash, signed claim receipt and reconciliation/status records | UNALLOCATED |
 | Legacy-to-FRNK cutover | per-account/mailbox epoch, fence marker, tagged row states and removal evidence | UNALLOCATED |
 | Partial-payment recovery | obligation/status/journal-fact/ack record types and fields | UNALLOCATED |
@@ -265,6 +266,7 @@ Exact maps live in CDDL; this section defines what each record means and what id
 | Mailbox-checkpoint codec structure | type 3 | `checkpoint_id` is stable identity, not a serialization hash; facts keep stable `fact_id` | IMPLEMENTED-NOT-WIRED |
 | Target mailbox journal/tombstone | type-3 facts and future mailbox journal records; fact kinds/live wire unallocated | Append identity is provider-local sequence plus stable object/fact identity; tombstones target logical identity and optionally an exact revision | UNALLOCATED |
 | Provider delivery/store-forward | future obligation, attempt, receipt/status and expiry records; types unallocated | Client operation ID plus exact delivery-frame hash; a provider receipt is delivery evidence, not sender authorship | UNALLOCATED |
+| Account admission authorization | `P`-signed directory rotation or separate `P`-authorized request; type/fields unallocated | Exact recipient-`M` tuples and destination/grace constraints bound what a provider capability may install | UNALLOCATED |
 | Mailbox-admission capability | destination-provider-signed generation/policy/fence record; type unallocated | Provider/descriptor, directory hash, accepted `M` set, current `P'`, instance, sequence/predecessor and expiry define local authority | UNALLOCATED |
 | Inter-provider destination claim | signed claim receipt and handoff/status records; types unallocated | Inter-provider ID plus delivery and capability hashes establish the sole stamp-broadcast owner | UNALLOCATED |
 | Partial-payment recovery | recipient-private obligation/status/journal-fact/ack records; types unallocated | Stable obligation and operation IDs bind exact type-1/type-5/payment evidence; never normal plaintext delivery | UNALLOCATED |
@@ -344,15 +346,23 @@ receipt, or directory succession.
   generation. Rotating either account key does not reset a mailbox instance, and instance reset or
   migration does not rotate, revoke or replace either account key.
 
+A `P`-signed directory rotation, or a separate request authorized by `P`, commits the maximum
+account authority a destination may install. It names every allowed recipient-`M` tuple as exact
+`(directory_statement_hash, mailbox_key_generation, M)` values; rotation class `routine` or
+`compromise`; maximum grace boundary; exact destination-provider identity and descriptor revision;
+and authorization predecessor/sequence. Compromise authorization permits only the current tuple.
+The authorization record/hash and its wire fields are **UNALLOCATED** in section 15.
+
 Each bound destination provider signs and atomically installs one mailbox-admission capability. It
-binds the provider identity and exact descriptor revision, exact directory-statement hash, accepted
-`mailbox_key_generation` set and policy, current `stamp_key_generation`,
-`mailbox_instance_generation`, expiry, monotonic sequence and predecessor capability hash. Its
-schema, fields and operation are **UNALLOCATED** in section 15. Routine `M` rotation MAY explicitly
-list the current and immediately retired mailbox-key generations for a bounded grace. Compromise
-rotation lists only the current generation and has no grace. Every delivery and mailbox challenge
-names the selected generation and capability hash; an `M` is accepted only when that installed
-capability permits its exact directory revision and generation.
+binds the account-authorization hash, provider identity and exact descriptor revision, exact
+directory-statement hash, accepted recipient-`M` tuple set and policy, current
+`stamp_key_generation`, `mailbox_instance_generation`, expiry, monotonic sequence and predecessor
+capability hash. It MUST equal the account authorization or be a strict subset: the provider may
+shorten a routine grace or remove an allowed tuple, but MUST NOT add an older generation,
+substitute `M`, extend the deadline, change provider/descriptor, or relabel compromise as routine.
+Its schema, fields and operation are **UNALLOCATED** in section 15. Every delivery and mailbox
+challenge names the selected tuple and capability hash; recipient `M` is accepted only when that
+installed capability permits the exact tuple.
 
 Seed restore MUST recover the current and still-graced historical `M` secrets and verified
 directory history before acknowledging mailbox replay. Erasing a retired secret is allowed only
@@ -361,8 +371,9 @@ ability to decrypt older ciphertext. Erasure does not create forward secrecy ret
 does not cure impersonation performed while a compromised static `M` remained accepted.
 
 A sender MUST resolve the freshest directory state and an unexpired installed mailbox-admission
-capability before reserving funds. Type 5 and `provider-admission` bind its exact hash. Missing,
-expired, mismatched, superseded or uninstalled capability fails closed. Installing the capability
+capability before reserving funds. Type 5 and `provider-admission` bind both its exact hash and its
+account-authorization hash. Missing, expired, mismatched, superseded, widened or uninstalled
+capability fails closed. Installing the capability
 serializes through one provider-local compare-and-set against both delivery-operation claims and
 mailbox challenge/session issuance. If an old-generation claim wins first, that exact operation has
 the bounded delivery/recovery authority recorded by its claim. If an old-generation challenge or
@@ -380,6 +391,16 @@ terminal/reconciliation/recovery state, never a normal new-admission path. The r
 seed-derives a retired `P'` secret while any exposed operation, recovery obligation or
 unswept/unknown child for that generation remains reachable; it may erase the secret only under the
 output-lifecycle rule in section 9.2.
+
+This capability is destination/recipient scoped; it is not a portable fence for the sender's `M`.
+A destination validates sender `M` against its freshest locally validated, unexpired sender
+directory revision. Sender revocation is eventual at unrelated destinations, and a compromised
+sender `M` may impersonate until the successor revision converges or the old revision expires. A
+maximum sender-directory validity/freshness window is **UNALLOCATED** in section 15; after that
+bound, missing fresh authority fails closed. A recipient client holding a newer validated sender
+revision rejects the older revision even if its provider has not converged. A sender-home receipt
+does not close remote destinations and is not portable authority; a portable origin receipt is a
+future non-goal unless separately allocated.
 
 Referenced sender/recipient directory statements, provider descriptors/bindings, mailbox key
 generations, stamp generations, instance capabilities and instance generations MUST remain
@@ -409,8 +430,8 @@ obligations and retries are terminal, or an authenticated compact proof replaces
    final type-5 recipient payload. Required fields inside its exact bytes carry `E`, `X`, the proof,
    both directory-statement hashes and mailbox-key generations, the exact current `P'` and
    `stamp_key_generation`, both provider identities/binding/descriptor hashes/capabilities, the
-   destination provider's mailbox-admission capability hash, the destination instance generation,
-   network, and every policy/context digest authoritative for
+   destination provider's mailbox-admission capability and account-authorization hashes, the
+   destination instance generation, network, and every policy/context digest authoritative for
    associated data, routing and economics. Any outer copy is derived from type 5 and
    equality-checked. Compute T3 exactly once over that final type 5, then derive child destinations,
    amounts and T4 commitments exactly as
@@ -430,8 +451,8 @@ obligations and retries are terminal, or an authenticated compact proof replaces
    transaction. The destination provider performs `provider-admission`, durably compare-and-set
    claims the exact inter-provider identity, delivery hash, mailbox-admission capability hash and
    generations, and returns a signed claim receipt. Only that claimant may broadcast the recipient
-   stamps, exactly once. In the same-provider case the roles collapse, but claim still precedes
-   exposure.
+   stamps through the idempotent exact-byte reconciliation loop in section 9.4. In the same-provider
+   case the roles collapse, but claim still precedes exposure.
 8. On an ambiguous response, restart, timeout, or reconnect, reconcile and replay only the exact
    journaled operation. Never rebuild payments or re-encrypt under the same operation ID. A new
    attempt is allowed only after durable terminal proof that the prior exact set cannot land.
@@ -461,8 +482,8 @@ validation profile is unchanged, and daemon implementation is blocked until thos
 For `provider-admission`, the provider context supplies the requested route, exact network,
 validated sender/recipient directory revisions and mailbox-key generations, origin/destination
 provider identities and descriptor capabilities, destination instance generation, current `P'`,
-stamp generation and installed mailbox-admission capability, operation identity,
-canonical finality policy, and chain observations. The provider validates, in actor order: framing
+stamp generation, installed mailbox-admission capability and account authorization, operation
+identity, canonical finality policy, and chain observations. The provider validates, in actor order: framing
 and canonical form; target schema; equality of type-5 authoritative context with its validated
 context and any derived outer copies; T3; `P'`, DLEQ, destination and T4 derivation; replay; then
 external payment observations and finality. Structural/context failures, cryptographic failures,
@@ -475,8 +496,10 @@ atomically claims the operation and signs the claim receipt before any recipient
 is exposed. Only then may that destination broadcast and perform external observation/finality
 stages. A failed claim has no broadcast, credit, consumption or recipient-stamp side effect.
 
-The destination provider compares the bound mailbox-admission capability and directory hash to its
-atomically installed generations and policy before claiming the operation. Capability installation,
+The destination provider verifies the bound account authorization and proves its installed
+mailbox-admission capability is equal or narrower before claiming the operation. It compares the
+capability, directory hash and exact recipient-`M` tuple to its atomically installed generations and
+policy. Capability installation,
 operation claim and challenge/session issuance use the compare-and-set order in section 8.2. A
 generation retired at that provider is a stale-context failure even when its proof and transactions
 are otherwise valid; only an operation claimed before the fence may enter the broadcast and
@@ -576,14 +599,18 @@ broadcast/observation/finality or terminal recovery. Only the destination compar
 recipient-stamp exposure transition exists before it. These state and operation encodings are
 **UNALLOCATED** in section 15.
 
-The origin provider owns retry/failover until one destination provider durably claims the exact
-inter-provider operation and returns a destination-signed claim receipt binding the inter-provider
-ID, exact delivery hash, mailbox-admission capability hash and all generations. The origin MAY
+The origin provider owns handoff retry/failover until one destination provider durably claims the
+exact inter-provider operation and returns a destination-signed claim receipt binding the
+inter-provider ID, exact delivery hash, mailbox-admission capability hash and all generations. The origin MAY
 perform structural preflight and forward exact signed bytes, but it MUST NOT broadcast, credit,
 consume or otherwise expose recipient-stamp transactions. The destination claimant is the sole
 actor authorized to broadcast them. If capability installation wins the compare-and-set, the stale
 handoff terminates with zero exposure. If claim wins, that exact operation remains admitted and the
-destination broadcasts each member exactly once.
+destination owns an idempotent broadcast/reconciliation loop. It MAY resubmit only the exact
+journaled signed bytes with the same transaction ID; it never rebuilds, re-signs or substitutes a
+member. Retries converge on one durable exposure transition, one member state, one terminal/economic
+effect and one destination claimant, even though the exact transaction may be submitted to a node
+more than once.
 
 After claim, failover cannot create a second owner; it queries or transfers the same durable
 obligation under an authenticated protocol. Descriptor expiry or route failure permits another
@@ -792,8 +819,9 @@ and bot/app tests using the same public client. Unit success in one codec is not
 **PROPOSED.** Decision-gate review MUST cover: directory/profile migration without field-9
 reinterpretation; old/new type-1/type-5 schema rejection and retention; exact construction order
 with both directory/provider authorities pinned before randomness; `provider-admission` operation
-context/order/errors; unified mailbox-admission capability field/signature/predecessor/sequence and
-expiry validation; routine `M` grace versus compromise no-grace; provider-effective `M`/`P'`
+context/order/errors; account authorization signature, exact tuple, rotation-class, grace-bound,
+destination/predecessor/sequence and capability-subset validation; provider substitution, tuple
+widening, replay and fork rejection; routine `M` grace versus compromise no-grace; provider-effective `M`/`P'`
 rotation, partition and restart; missing/expired capability failure, provider-by-provider compromise
 closure, and capability-installation races against operation claim and challenge/session issuance;
 bounded authority for a pre-fence winning claim or session; exposed old-generation
@@ -807,10 +835,15 @@ landing with one sweep/import effect; fully successful and partial child derivat
 crash, reorganization, sweep, acknowledgement and restore, with unswept reachability and explicit
 loss acceptance; provider-paid opaque delivery
 followed by recipient rejection; deterministic poison quarantine in a valid/poison/valid page;
-signed multi-page snapshot crash/resume/atomic swap; origin structural preflight with proof of zero
-recipient-stamp exposure before a destination-signed durable claim; same-provider claim ordering;
-destination fence-wins zero-exposure and claim-wins exactly-once broadcast; ambiguous handoff/status
-reconciliation, duplicate claims and accidental-exposure `could-still-land` recovery; generation
+signed multi-page snapshot crash/resume/atomic swap; sender-directory partition/convergence,
+freshness-window expiry, newer-recipient-state rejection and proof that no sender-home fence or
+receipt is portable; origin structural preflight with proof of zero recipient-stamp exposure before
+a destination-signed durable claim; same-provider claim ordering; destination fence-wins
+zero-exposure and claim-wins idempotent broadcast/reconciliation; disconnect before node submission,
+disconnect after node acceptance, already-known response and restart, each preserving exact bytes,
+transaction ID, one exposure transition, member state, terminal/economic effect and claimant;
+ambiguous handoff/status reconciliation, duplicate claims and accidental-exposure
+`could-still-land` recovery; generation
 reset racing late completion;
 branch-scoped tombstone dominance, sibling forks, stale creates and object-wide deletion; permanent
 exclusion history with bounded body compaction; deletion reachability across shared references and
@@ -839,12 +872,19 @@ The following remain deliberately unresolved rather than inferred:
   taxonomy, CDDL, both codecs and independent vectors;
 - `mailbox_key_generation`, `stamp_key_generation` and `mailbox_instance_generation` wire fields,
   current-only stamp semantics, unified destination-provider mailbox-admission capability/hash with
-  exact provider/descriptor/directory binding, accepted-`M` set/policy, expiry/sequence/predecessor,
+  exact provider/descriptor/directory and account-authorization-hash binding, accepted-`M`
+  tuple-set/policy, expiry/sequence/predecessor,
   installation and compare-and-set against operation claims and challenge/session issuance, plus
   succession/reset/rotation records;
+- `P`-signed account admission authorization or authorized request, including exact allowed
+  `(directory hash, generation, M)` tuples, routine/compromise class, maximum grace boundary,
+  destination provider/descriptor, predecessor/sequence, and provider-subset validation;
+- maximum sender-directory validity/freshness window and expiry/convergence validation; portable
+  origin receipts remain unallocated and are not authority;
 - provider descriptor, delivery, receipt/status, mailbox-journal and reset record type IDs;
 - inter-provider handoff ID/delivery-hash binding, destination-signed claim receipt, destination
-  status/reconciliation/transfer operations, and sole-broadcaster/exposure state;
+  status/reconciliation/transfer operations, sole-broadcaster/exposure state and idempotent
+  exact-byte/transaction-ID resubmission state;
 - checkpoint journal-fact kinds, checkpoint authorization and chunk linkage;
 - per-member/aggregate payment states, canonical exposure/could-still-land policy and state
   precedence, canonical finality-policy descriptor/digest, partial-set and

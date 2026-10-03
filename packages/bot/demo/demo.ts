@@ -25,13 +25,7 @@ import { loadOrCreateIdentity } from '../qwen-bot-common'
 import { ensurePrivateDir } from '../stamp-pool-seed'
 import { collectCuratedEntries, renderCuratedDefaultsToml } from '../print-curated-defaults'
 import { BOT_PROFILES } from '../bot-directory'
-import {
-  DemoBot,
-  DemoConfig,
-  DemoConfigError,
-  minBlackjackFundsWei,
-  resolveDemoConfig,
-} from './demo-config'
+import { DemoBot, DemoConfig, DemoConfigError, minBlackjackFundsWei, resolveDemoConfig } from './demo-config'
 import { checkDemoMode, writeDemoMode } from './demo-mode'
 import { EnvFileError, readEnvFile } from './env-file'
 import { startFakeRpc, FakeRpc } from './fake-rpc'
@@ -104,10 +98,7 @@ export function redact(text: string, secrets: string[]): string {
   out = out.replace(/\b((?:https?|wss?):\/\/[^/\s"'?#]+)[/?#][^\s"']*/gi, '$1/<redacted>')
   // Scheme-less provider URLs: host.tld/v2/KEY or host.tld/<long token>
   out = out.replace(/\b((?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?)\/v\d+\/[^\s"']+/gi, '$1/<redacted>')
-  out = out.replace(
-    /\b((?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?)\/[A-Za-z0-9_-]{16,}[^\s"']*/gi,
-    '$1/<redacted>',
-  )
+  out = out.replace(/\b((?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?)\/[A-Za-z0-9_-]{16,}[^\s"']*/gi, '$1/<redacted>')
   // Cookies
   out = out.replace(/\b((?:set-)?cookie)\s*:[^\r\n]*/gi, '$1: <redacted>')
   // Authorization schemes, however short the token (a JWT after `bearer ` is one run of these)
@@ -150,10 +141,7 @@ export function redact(text: string, secrets: string[]): string {
   )
   // A recovery phrase: a run of 12 or more words (3-8 letters, any case) separated by spaces,
   // commas or newlines, whatever precedes it.
-  out = out.replace(
-    /(?<![A-Za-z<])(?:[A-Za-z]{3,8}[ \t,\r\n]+){11,}[A-Za-z]{3,8}(?![A-Za-z>])/g,
-    '<redacted>',
-  )
+  out = out.replace(/(?<![A-Za-z<])(?:[A-Za-z]{3,8}[ \t,\r\n]+){11,}[A-Za-z]{3,8}(?![A-Za-z>])/g, '<redacted>')
   return out
 }
 
@@ -194,8 +182,7 @@ export function walletAddress(path: string): string | undefined {
 export async function checkPrerequisites(config: DemoConfig): Promise<string[]> {
   const problems: string[] = []
   const major = Number(process.versions.node.split('.')[0])
-  if (major < 20)
-    problems.push(`Node.js 20 or newer is required (this is ${process.versions.node})`)
+  if (major < 20) problems.push(`Node.js 20 or newer is required (this is ${process.versions.node})`)
   if (!existsSync(RELAY_SCRIPT)) {
     problems.push(`relay launcher not found at ${RELAY_SCRIPT} (run from a full checkout)`)
   }
@@ -205,7 +192,9 @@ export async function checkPrerequisites(config: DemoConfig): Promise<string[]> 
       problems.push(`CASHWEBD_BIN does not exist: ${config.cashwebdBin}`)
     }
   } else if (
-    spawnSync('cargo', ['--version'], { env: { ...process.env, ...config.toolchainEnv } }).error
+    spawnSync('cargo', ['--version'], {
+      env: { ...process.env, ...config.toolchainEnv },
+    }).error
   ) {
     problems.push(
       'the relay is built with Cargo, but `cargo` was not found: install Rust (rustup.rs) or set CASHWEBD_BIN to a prebuilt cashwebd-exe',
@@ -244,9 +233,7 @@ export async function checkPrerequisites(config: DemoConfig): Promise<string[]> 
     )
   }
   if (config.fakeChain && !(await portIsFree(config.fakeRpcPort))) {
-    problems.push(
-      `port ${config.fakeRpcPort} is in use; set FRANK_DEMO_FAKE_RPC_PORT to use another`,
-    )
+    problems.push(`port ${config.fakeRpcPort} is in use; set FRANK_DEMO_FAKE_RPC_PORT to use another`)
   }
   return problems
 }
@@ -268,7 +255,10 @@ async function relayIsUp(relayUrl: string): Promise<boolean> {
 }
 
 async function registeredAddresses(relayUrl: string): Promise<Set<string>> {
-  const profiles = await fetchMonadProfilesSince({ relayBaseUrl: relayUrl, sinceMs: 0 })
+  const profiles = await fetchMonadProfilesSince({
+    relayBaseUrl: relayUrl,
+    sinceMs: 0,
+  })
   return new Set(profiles.map(p => p.address.toLowerCase()))
 }
 
@@ -276,10 +266,7 @@ function tsxArgs(script: string): string[] {
   return ['--import', 'tsx', script]
 }
 
-export async function startDemo(
-  config: DemoConfig,
-  options: StartOptions = {},
-): Promise<DemoHandle> {
+export async function startDemo(config: DemoConfig, options: StartOptions = {}): Promise<DemoHandle> {
   const print = options.print ?? ((line: string) => console.log(line))
   const baseEnv = options.env ?? process.env
 
@@ -325,7 +312,11 @@ export async function startDemo(
     void stop()
   }
 
-  const signalCodes: Record<string, number> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }
+  const signalCodes: Record<string, number> = {
+    SIGINT: 130,
+    SIGTERM: 143,
+    SIGHUP: 129,
+  }
   const onSignal = (signal: NodeJS.Signals) => {
     if (shuttingDown) {
       // Second signal while stopping: no more grace. Kill the process groups THIS launcher
@@ -334,9 +325,7 @@ export async function startDemo(
       supervisor.killAllNow()
       lock?.release()
       removeRunRecord(config.stateDir)
-      ;(options.forceExit ?? ((code: number) => process.exit(code)))(
-        exitCode ?? signalCodes[signal],
-      )
+      ;(options.forceExit ?? ((code: number) => process.exit(code)))(exitCode ?? signalCodes[signal])
       return
     }
     print(`\n[demo] received ${signal}, stopping ...`)
@@ -399,9 +388,7 @@ export async function startDemo(
     if (stale) for (const line of staleLines) print(`[demo] ${line}`)
     const problems = await checkPrerequisites(config)
     if (problems.length > 0) {
-      throw new DemoConfigError(
-        problems.some(p => p.includes('is in use')) ? [...problems, ...staleLines] : problems,
-      )
+      throw new DemoConfigError(problems.some(p => p.includes('is in use')) ? [...problems, ...staleLines] : problems)
     }
     // Only now is the run real enough to claim the directory for this mode.
     writeDemoMode(config.stateDir, config.fakeChain ? 'fake-chain' : 'real')
@@ -419,7 +406,10 @@ export async function startDemo(
           mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
           writeFileSync(
             path,
-            JSON.stringify({ address: wallet.address, privateKey: wallet.privateKey }),
+            JSON.stringify({
+              address: wallet.address,
+              privateKey: wallet.privateKey,
+            }),
             { mode: 0o600 },
           )
           chmodSync(path, 0o600)
@@ -454,18 +444,14 @@ export async function startDemo(
       const spec = BOT_PROFILES.find(s => s.key === bot.name)
       if (spec) identityEnv[spec.identityEnv] = bot.identityJson
     }
-    const curated = collectCuratedEntries(identityEnv, (path, label) =>
-      loadOrCreateIdentity(path, label),
-    )
+    const curated = collectCuratedEntries(identityEnv, (path, label) => loadOrCreateIdentity(path, label))
     if (curated.errors.length > 0 && Object.keys(identityEnv).length > 0) {
       throw new DemoConfigError(curated.errors)
     }
     const curatedToml = renderCuratedDefaultsToml(curated.entries)
     const curatedPath = join(config.stateDir, 'relay-curated.toml')
     writeFileSync(curatedPath, curatedToml, { mode: 0o600 })
-    print(
-      '[demo] curated default contacts for the relay config (already applied to this demo relay):',
-    )
+    print('[demo] curated default contacts for the relay config (already applied to this demo relay):')
     print(curatedToml.trimEnd())
     abortIfStopping()
 
@@ -479,10 +465,9 @@ export async function startDemo(
       logPath: join(logDir, 'relay.log'),
       env: {
         MONAD_TESTNET_HTTP_RPC_URL: config.rpcUrl,
+        ...(config.wsRpcUrl ? { MONAD_TESTNET_WS_RPC_URL: config.wsRpcUrl } : {}),
         FRANK_NETWORK_TAG: config.networkTag,
-        ...(config.fakeChain
-          ? { FRANK_EVM_CHECKPOINT_HASH: `0x${'11'.repeat(32)}` }
-          : {}),
+        ...(config.fakeChain ? { FRANK_EVM_CHECKPOINT_HASH: `0x${'11'.repeat(32)}` } : {}),
         CASHWEB_STAMP_MIN_BURN_VALUE_WEI: config.minStampWei,
         // The relay's topic routes (forum posts and votes) answer HTTP 500 without it (#364).
         MONAD_STAMP_BURN_ADDRESS: config.stampBurnAddress,
@@ -511,10 +496,7 @@ export async function startDemo(
       }
       if (Date.now() > relayDeadline) {
         throw new DemoConfigError([
-          `the relay did not answer on ${config.relayUrl} in time; see ${join(
-            logDir,
-            'relay.log',
-          )}`,
+          `the relay did not answer on ${config.relayUrl} in time; see ${join(logDir, 'relay.log')}`,
         ])
       }
       await sleep(options.pollMs ?? 500)
@@ -524,7 +506,10 @@ export async function startDemo(
 
     const readyLines = new Set<string>()
     for (const bot of config.bots) {
-      mkdirSync(join(config.stateDir, 'bots', bot.name), { recursive: true, mode: 0o700 })
+      mkdirSync(join(config.stateDir, 'bots', bot.name), {
+        recursive: true,
+        mode: 0o700,
+      })
       supervisor.start({
         name: bot.name,
         command: process.execPath,
@@ -648,10 +633,7 @@ export function printSummary(handle: DemoHandle, print: (line: string) => void):
   )
 }
 
-export async function main(
-  argv: string[],
-  env: Record<string, string | undefined>,
-): Promise<number> {
+export async function main(argv: string[], env: Record<string, string | undefined>): Promise<number> {
   const print = (line: string) => console.log(line)
   try {
     const envFilePath = env.FRANK_DEMO_ENV_FILE

@@ -248,10 +248,14 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
         ["chain-rpc", _, "cap", _, "chronik", ..] => {
             Cow::Borrowed("/chain-rpc/:chain/cap/:capability/chronik/*path")
         }
-        ["chain-rpc", _, "cap", _, ..] => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/*"),
         ["chain-rpc", _, "chronik", ..] => Cow::Borrowed("/chain-rpc/:chain/chronik/*path"),
         ["chain-rpc", _, "chronik-auth", ..] => {
             Cow::Borrowed("/chain-rpc/:chain/chronik-auth/*path")
+        }
+        _ if segments.iter().any(|segment| *segment == "chain-rpc")
+            && segments.iter().any(|segment| *segment == "cap") =>
+        {
+            Cow::Borrowed("/chain-rpc/:chain/cap/:capability/*")
         }
         _ => Cow::Borrowed(path),
     }
@@ -283,6 +287,8 @@ mod request_log_tests {
             format!("/chain-rpc/monad-testnet/cap/{token}"),
             format!("/chain-rpc/monad-testnet/cap/{token}/rpc/extra"),
             format!("/chain-rpc/monad-testnet/cap/{token}/unknown"),
+            format!("/chain-rpc//monad-testnet/cap/{token}/rpc"),
+            format!("/prefix/chain-rpc/monad-testnet/cap/{token}/rpc"),
         ] {
             let logged = safe_log_path(&malformed);
             assert!(!logged.contains(token));

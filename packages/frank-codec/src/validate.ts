@@ -62,6 +62,7 @@ export interface ValidationContext {
    * `frame` stops after stage 4, `generic` after stage 7, `typed` after stage 9. `full`
    * adds stage 10.6, the signature verification of a type-2 root; the type-1 stage-10
    * checks (10.1-10.5) are outside this slice and make a type-1 `full` root a context error.
+   * Preview directory `full` also fails: trusted admission requires a separate stateful API.
    */
   operation: Operation
   /** Stage 1 caller limit, at most MAX_FRAME_BYTES. */
@@ -73,6 +74,7 @@ export interface ValidationContext {
   /**
    * For a type-2 root under `typed` or `full`: the last accepted type-4 frame, or `null` for
    * bootstrap. Required (not `undefined`) in that case; ignored for other roots.
+   * Preview wrappers require null because this codec does not validate their history.
    */
   priorDirectoryStatementFrame?: Uint8Array | null
 }
@@ -295,6 +297,32 @@ function processFrame(
       `min_reader_version ${env.minReaderVersion} exceeds reader version (V6.1)`,
     )
   }
+  if (
+    env.typeId === TYPE_DIRECTORY_STATEMENT &&
+    env.schemaVersion >= 4 &&
+    env.minReaderVersion >= 4 &&
+    highest < 4
+  ) {
+    throw fail(
+      'unsupported',
+      '7',
+      'directory preview requires type-4 schema-4 support',
+      location,
+    )
+  }
+  if (
+    env.typeId === TYPE_DIRECTORY_STATEMENT &&
+    highest >= 4 &&
+    env.schemaVersion >= 4 &&
+    env.minReaderVersion !== 4
+  ) {
+    throw fail(
+      'unsupported',
+      '7',
+      'directory preview requires min_reader_version 4',
+      location,
+    )
+  }
   // Suite 1 authenticates the complete schema-2 field set. A future type-5 schema needs an
   // updated authenticated context before this reader may project or retain its extensions.
   if (
@@ -334,7 +362,12 @@ function processFrame(
   if (mode.kind === 'root' && stopAfter === 'generic') return parsed
 
   // Stage 8.1: type-specific limits.
-  if (mode.kind === 'root' && !checkRootFrameLimit(env.typeId, f.length)) {
+  const effectiveSchema = Math.min(env.schemaVersion, highest)
+  if (
+    (mode.kind === 'root' ||
+      (env.typeId === TYPE_DIRECTORY_STATEMENT && effectiveSchema >= 4)) &&
+    !checkRootFrameLimit(env.typeId, f.length, effectiveSchema)
+  ) {
     throw fail(
       'resource',
       '8.1',
@@ -355,8 +388,21 @@ function processFrame(
   // Stage 8.4: recursive opening of declared framed fields.
   const typed = openChildren(draft, envDepth, sh, location)
   // Stage 9: semantics. Only the root type-2 case consults the prior statement.
+  const previewAttestation =
+    typed.type === 2 &&
+    typed.statementFrame.typed?.type === 4 &&
+    typed.statementFrame.typed.preview !== undefined
+  if (previewAttestation && sh.ctx.priorDirectoryStatementFrame !== null)
+    throw new FrankContextError(
+      'preview evidence does not validate directory history; use a null prior and perform trusted admission separately',
+    )
   relocating(location, () =>
-    checkSemantics(typed, typed.type === 2 ? resolvePrior(sh.ctx) : undefined),
+    checkSemantics(
+      typed,
+      typed.type === 2 && !previewAttestation
+        ? resolvePrior(sh.ctx)
+        : undefined,
+    ),
   )
   parsed.typed = typed
   if (mode.kind === 'root' && stopAfter === 'full') runStage10(typed)
@@ -365,6 +411,15 @@ function processFrame(
 
 /** Stage 10 for a root frame. Only 10.6 exists in this slice; it applies to a type-2 root. */
 function runStage10(typed: FinalPayload): void {
+  if (
+    (typed.type === 4 && typed.preview) ||
+    (typed.type === 2 &&
+      typed.statementFrame.typed?.type === 4 &&
+      typed.statementFrame.typed.preview)
+  )
+    throw new FrankContextError(
+      'full preview directory admission requires trusted anchor, history, clock, relay and atomic state; use verifyPreviewDirectoryEvidence for bounded signed evidence',
+    )
   switch (typed.type) {
     case 2:
       verifyDirectoryAttestation(typed)
@@ -563,6 +618,11 @@ function resolvePrior(
   if (r.kind !== 'parsed' || r.typed?.type !== 4) {
     throw new FrankContextError(
       'the prior directory statement is not a type-4 frame',
+    )
+  }
+  if (r.typed.preview) {
+    throw new FrankContextError(
+      'preview directory history cannot authorize legacy updates or authority transitions',
     )
   }
   return r.typed

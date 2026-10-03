@@ -1,5 +1,5 @@
 // Typed projections of the payload schemas in docs/protocol/cbor/*.cddl (schema version 1,
-// type-4 schemas 1-3).
+// type-4 schemas 1-3 and explicitly opted-in provisional schema 4).
 //
 // `F` is the representation of a required-type framed field (the opened child frame once
 // validated, raw bytes in a draft) and `C` that of an open-field child.
@@ -127,7 +127,17 @@ export interface DirectoryStatement<F> {
   stampKey?: AccountRef
   /** Field 9, the migrated profile entries (M4); absent when empty. Schema 3 only. */
   profileEntries?: ProfileEntry[]
+  /** Provisional schema-4 roles; absent in schemas 1–3. */
+  preview?: PreviewDirectoryRoles
   unknownFields: UnknownFields
+}
+
+/** Required schema-4 fields, never inferred from the subject or a profile. */
+export interface PreviewDirectoryRoles {
+  messageDhKey: AccountRef
+  mailboxKeyGeneration: bigint
+  stampKeyGeneration: bigint
+  predecessor: Uint8Array | null
 }
 
 interface RecipientEncryptedPayloadCommon {

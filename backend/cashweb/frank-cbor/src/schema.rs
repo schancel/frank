@@ -13,7 +13,7 @@ use crate::limits::{
     TYPE_RECIPIENT_PAYLOAD, TYPE_TOPIC_POST, TYPE_TOPIC_POST_SUBMISSION,
     TYPE_TOPIC_VOTE_SUBMISSION,
 };
-use crate::model::{AccountRef, Timestamp};
+use crate::model::{AccountRef, PreviewDirectoryRoles, Timestamp};
 
 /// The schema versions a type-4 parse needs: the envelope's (kept for S10a.2) and the effective
 /// one, the envelope's or the reader's highest supported when the frame is newer (V6.3).
@@ -226,6 +226,18 @@ fn account(v: Option<&CborValue>, path: &str) -> Result<AccountRef, CodecError> 
     })
 }
 
+fn directory_account(
+    v: Option<&CborValue>,
+    path: &str,
+    preview: bool,
+) -> Result<AccountRef, CodecError> {
+    let key = account(v, path)?;
+    if preview && key.key_type != 1 {
+        return Err(bad(path, "directory preview key type must be 1"));
+    }
+    Ok(key)
+}
+
 /// A type-5 stamp point (T3b encoding rules): 33 compressed bytes on the curve. The parser
 /// rejects a prefix other than 02 or 03, an x at or above the field prime, an off-curve x, and
 /// the all-zero value (the point at infinity has no compressed encoding).
@@ -271,7 +283,14 @@ fn timestamp(v: Option<&CborValue>, path: &str) -> Result<Timestamp, CodecError>
 }
 
 /// Root frame length limits of R2 and R3. Only a root frame is charged by the caller.
-pub(crate) fn check_root_frame_limit(type_id: u32, frame_length: usize) -> bool {
+pub(crate) fn check_root_frame_limit(
+    type_id: u32,
+    frame_length: usize,
+    schema_version: u32,
+) -> bool {
+    if type_id == TYPE_DIRECTORY_STATEMENT && schema_version >= 4 {
+        return frame_length <= MAX_DIRECTORY_ATTESTATION_FRAME_BYTES;
+    }
     if type_id == TYPE_DIRECT_MESSAGE {
         return frame_length <= MAX_DIRECT_MESSAGE_FRAME_BYTES;
     }
@@ -470,6 +489,7 @@ pub(crate) enum Draft {
         schema_version: u32,
         stamp_key: Option<AccountRef>,
         profile_entries: Option<Vec<ProfileEntryDraft>>,
+        preview: Option<PreviewDirectoryRoles>,
         unknown: Vec<(u64, CborValue)>,
     },
     Recipient {
@@ -554,12 +574,17 @@ fn signature_entry(v: &CborValue, path: &str) -> Result<SignatureDraft, CodecErr
     })
 }
 
-fn relay_binding(v: &CborValue, path: &str, allow: bool) -> Result<RelayDraft, CodecError> {
+fn relay_binding(
+    v: &CborValue,
+    path: &str,
+    allow: bool,
+    preview: bool,
+) -> Result<RelayDraft, CodecError> {
     let map = fields(Some(v), path, &[0, 1, 2, 3], &[], true, allow)?;
     Ok(RelayDraft {
         relay_id: bstr(map.get(0), &format!("{path}.0"), 16, 64)?,
         endpoint: endpoint(map.get(1), &format!("{path}.1"))?,
-        identity: account(map.get(2), &format!("{path}.2"))?,
+        identity: directory_account(map.get(2), &format!("{path}.2"), preview)?,
         expiry: timestamp(map.get(3), &format!("{path}.3"))?,
         unknown: map.unknown,
     })
@@ -698,16 +723,36 @@ pub(crate) fn parse_draft(
             } else {
                 &[5, 6, 7]
             };
-            let required: &[u64] = if schema.effective >= 2 {
+            let preview = schema.effective >= 4;
+            let optional = if preview { &[][..] } else { optional };
+            let required: &[u64] = if preview {
+                &[0, 1, 2, 3, 4, 6, 8, 10, 11, 12, 13]
+            } else if schema.effective >= 2 {
                 &[0, 1, 2, 3, 4, 8]
             } else {
                 &[0, 1, 2, 3, 4]
             };
             let map = fields(Some(payload), path, required, optional, true, allow)?;
-            let relays = as_list(map.get(4), &format!("{path}.4"), 1, MAX_RELAY_BINDINGS)?;
+            if preview && [5, 7, 9].iter().any(|k| map.has(*k)) {
+                return Err(bad(
+                    path,
+                    "transitions, recovery and profiles are unsupported in directory preview",
+                ));
+            }
+            let relays = as_list(
+                map.get(4),
+                &format!("{path}.4"),
+                1,
+                if preview { 1 } else { MAX_RELAY_BINDINGS },
+            )?;
             let mut parsed_relays = Vec::with_capacity(relays.len());
             for (i, item) in relays.iter().enumerate() {
-                parsed_relays.push(relay_binding(item, &format!("{path}.4[{i}]"), allow)?);
+                parsed_relays.push(relay_binding(
+                    item,
+                    &format!("{path}.4[{i}]"),
+                    allow,
+                    preview,
+                )?);
             }
             let key_transitions = if map.has(5) {
                 let items = as_list(map.get(5), &format!("{path}.5"), 1, 16)?;
@@ -736,7 +781,7 @@ pub(crate) fn parse_draft(
             };
             Ok(Draft::Statement {
                 network: network_tag(map.get(0), &format!("{path}.0"))?,
-                subject: account(map.get(1), &format!("{path}.1"))?,
+                subject: directory_account(map.get(1), &format!("{path}.1"), preview)?,
                 revision: u64_in(map.get(2), &format!("{path}.2"), 0, u64::MAX)?,
                 timestamp: timestamp(map.get(3), &format!("{path}.3"))?,
                 relays: parsed_relays,
@@ -744,8 +789,40 @@ pub(crate) fn parse_draft(
                 expiry,
                 recovery,
                 schema_version: schema.envelope,
+                preview: if preview {
+                    Some(PreviewDirectoryRoles {
+                        message_dh_key: directory_account(
+                            map.get(10),
+                            &format!("{path}.10"),
+                            true,
+                        )?,
+                        mailbox_key_generation: u64_in(
+                            map.get(11),
+                            &format!("{path}.11"),
+                            0,
+                            u64::MAX,
+                        )?,
+                        stamp_key_generation: u64_in(
+                            map.get(12),
+                            &format!("{path}.12"),
+                            0,
+                            u64::MAX,
+                        )?,
+                        predecessor: if matches!(map.get(13), Some(CborValue::Null)) {
+                            None
+                        } else {
+                            Some(bstr(map.get(13), &format!("{path}.13"), 32, 32)?)
+                        },
+                    })
+                } else {
+                    None
+                },
                 stamp_key: if map.has(8) {
-                    Some(account(map.get(8), &format!("{path}.8"))?)
+                    Some(directory_account(
+                        map.get(8),
+                        &format!("{path}.8"),
+                        preview,
+                    )?)
                 } else {
                     None
                 },
@@ -989,6 +1066,7 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             key_transitions,
             recovery,
             stamp_key,
+            preview,
             ..
         } => {
             check_key_type(subject, &format!("{path}.1"))?;
@@ -997,6 +1075,9 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             }
             if let Some(key) = stamp_key {
                 check_key_type(key, &format!("{path}.8"))?;
+            }
+            if let Some(roles) = preview {
+                check_key_type(&roles.message_dh_key, &format!("{path}.10"))?;
             }
             if let Some(transitions) = key_transitions {
                 for (i, transition) in transitions.iter().enumerate() {

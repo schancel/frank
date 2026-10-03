@@ -9,6 +9,85 @@ vectors are executable proof. The Monad topic write transport uses types 9–11
 as described in [topic HTTP coexistence](topic-http-coexistence.md); other
 production paths require their separate migration tickets.
 
+### Provisional directory preview
+
+Issue #742 provisionally allocates the reviewed #719 C1–C14 wire profile as
+type **4/schema 4/minimum reader 4**, using `directory-statement-v4` in
+[`directory.cddl`](directory.cddl). This is codec support only. Existing
+type-4 schemas 1–3, type-2 schema1/min1 wrappers and default reader2/schema3
+contexts are unchanged. Runtime adoption needs separate integration/security
+review. The proposal remains historical evidence; its former unallocated
+status does not override this narrow allocation.
+
+Required fields are network (0), subject/authority P (1), uint64 revision (2),
+issue time (3), exactly one relay (4), expiry (6), stamp P' (8), message-DH M
+(10), uint64 mailbox/stamp generations (11/12), and predecessor type-4 T1 or
+null (13). P, P' and M MUST be valid compressed type-1 secp256k1 points with
+pairwise distinct x coordinates (including rejection of point negations).
+The relay identity MUST also be a valid compressed type-1 point, its endpoint
+MUST satisfy S4 and use `https:`, and its expiry MUST cover statement expiry.
+Statement validity MUST be positive and at most 3600 seconds, calculated at
+nanosecond precision. Revision zero requires null predecessor and zero
+generations; other revisions require a 32-byte predecessor and generations
+no greater than revision. These are stateless necessities, not evidence that
+the referenced predecessor exists or that generations advanced correctly.
+
+Fields 5 (transitions), 7 (recovery), and 9 (profile) MUST be absent, even in a
+future compatible projection. Exact schema4 unknown fields reject at 8.2;
+future optional fields with minimum reader4 follow V6.3 and retain the exact
+complete original frame. Higher required floors reject at stage7. A reader
+supporting this allocation rejects a schema4-or-newer floor other than 4;
+legacy readers retain their frozen V6 behavior and cannot infer v4 authority
+from a dishonestly lowered floor. Required v4 children reject in old readers.
+A raised global reader version without type-4 schema-4 support also rejects
+required v4 at stage7; it cannot turn an old projection into preview support.
+
+Both the complete bare preview statement and its type-2 wrapper are bounded
+by 262144 bytes; the statement bound is checked at 8.1 before point checks,
+including when nested. R1 aggregate accounting and all canonicality checks
+remain in force. This does not lower limits for old schema projections.
+The wrapper MUST contain exactly one algorithm-1 signature by P, verified as
+strict-DER low-S ECDSA over the existing T2 digest of the exact type-4 frame.
+T1 commits those same complete statement bytes. Neither payload projections
+nor wrapper hashes are statement identity; no re-encoding precedes hashing.
+
+The TS `previewDirectoryContext()` and Rust `preview_directory_context()`
+explicitly enable typed structural decoding. The bounded
+`verifyPreviewDirectoryEvidence(bytes, expectedNetwork)` /
+`verify_preview_directory_evidence(bytes, expected_network)` facades also
+check expected network and the subject signature, returning exact frames,
+role fields, T1 and T2. Their result is **signed evidence, not trusted current
+directory state**. `full` on a preview statement or wrapper fails with a
+context error: the existing full-validation context cannot express admission.
+A non-null/absent prior on a typed preview wrapper also fails with a context
+error; the facade does not silently pretend to validate a supplied history.
+Legacy incoming wrappers also reject a decoded preview prior with a context
+error, before projecting legacy prior authority: old transition proofs grant
+no preview migration authority, even when the subject changes.
+
+The runtime successor under #133/#696 MUST enforce the reviewed preview
+policy before any head, route or DM use: caller-installed trusted anchor;
+authenticated relay tuple; trusted nanosecond clock, freshness and rollback
+protection; contiguous revision and exact predecessor linkage; schema order;
+independent generation increments and cumulative no-reuse (including point
+negation); fork handling; S10a current/previous stamp state; and atomic bounded
+historical catch-up. Charge each exact statement plus one stable validating
+wrapper against the cumulative 4096-statement/16777216-byte cap before parsing
+or verification of a candidate batch. Expired historical links never authorize
+new use. All state, counters and current/previous keys commit atomically only
+with a fresh trusted terminal head. Derivation, secret possession, publication,
+provider fencing, persistence, protobuf removal and runtime cutover are not
+provided by this allocation. No M/P' possession proof is implied by P's signature.
+
+[`vectors/directory-preview.json`](vectors/directory-preview.json) indexes 56
+reviewed synthetic frame pairs (55 TS and an independently constructed Rust
+bootstrap) with codec-only outcomes; both language tests
+consume it independently. It deliberately accepts some signed evidence that
+the proposal's history/time/relay admission policy rejects. This corpus is
+separate from the frozen main manifest, registration and DM vectors, whose
+bytes remain unchanged. Before runtime adoption rollback is a library-only
+reversal; after publication a changed allocation requires explicit migration.
+
 The words MUST, MUST NOT, SHOULD, and MAY are normative as described by RFC 2119. Numbered rules are stable references for implementations and test
 vectors.
 

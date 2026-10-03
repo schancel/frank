@@ -11,6 +11,27 @@ still default to protobuf; no production DM or mailbox path uses it. The Rust co
 It is not imported here. Shared vectors under `docs/protocol/cbor/vectors/` are
 the compatibility contract.
 
+Provisional directory schema4/min-reader4 is available only through explicit
+`previewDirectoryContext()` opt-in. `defaultContext()` stays reader2/type4
+schema3, so existing routes reject required v4 children. The bounded
+`verifyPreviewDirectoryEvidence(bytes, expectedNetwork)` facade returns
+`kind: 'preview-directory-signed-evidence'`, exact statement/wrapper frames,
+T1 (`statementHash`), T2 (`signatureDigest`) and separate message-DH/stamp
+roles and generations. It verifies canonical structure, stateless preview
+semantics, network and the exact subject signature. It does not admit a
+trusted directory head. Generic `full` validation of preview records fails
+with `FrankContextError`; prior-state validation is deliberately unavailable
+in the bounded facade.
+
+Trusted anchors, clock/freshness, authenticated relay tuples, contiguous
+history/predecessors, schema order, independent generation increments,
+historical no-reuse, cumulative budgets, forks and atomic acceptance remain
+the runtime successor's obligations. See the [allocated profile and precise
+boundary](../../docs/protocol/cbor/README.md#provisional-directory-preview).
+The shared `vectors/directory-preview.json` has codec-only expectations over
+the reviewed synthetic #719 bytes; it is not the proposal's state-policy
+runner and does not demonstrate persistence, routing or DM activation.
+
 ## Encryption suites
 
 This package owns Frank-CBOR field layout. Type-5 schema 2 allocates production

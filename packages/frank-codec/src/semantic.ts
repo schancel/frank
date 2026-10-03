@@ -1,6 +1,7 @@
 // Stage 9: semantic checks that need no cryptography (README section 5, S3-S10, T3a.5).
 import { FrankCodecError } from './errors'
 import { utf8Encode } from './utf8'
+import { isCompressedPoint } from './point'
 import type {
   AccountRef,
   DirectoryStatement,
@@ -155,14 +156,25 @@ export function checkSemantics(
         `${P}.1`,
         true,
       )
-      if (prior === undefined)
-        throw new Error('internal: type-2 semantics need the prior slot')
       if (!typed.signatures.some(s => accountsEqual(s.signer, st.subject))) {
         throw semantic(
           'no signature entry is signed by the statement subject',
           `${P}.1`,
         )
       }
+      if (st.preview) {
+        if (
+          typed.signatures.length !== 1 ||
+          typed.signatures[0].algorithm !== 1
+        )
+          throw semantic(
+            'directory preview requires exactly one algorithm-1 subject signature',
+            `${P}.1`,
+          )
+        return
+      }
+      if (prior === undefined)
+        throw new Error('internal: type-2 semantics need the prior slot')
       checkDirectoryUpdate(st, prior)
       return
     }
@@ -211,6 +223,7 @@ export function checkSemantics(
       return
     }
     case 4: {
+      if (typed.preview) checkPreviewStatement(typed)
       requireOrdered(
         typed.relays,
         (a, b) =>
@@ -278,6 +291,69 @@ export function checkSemantics(
       return
     }
     default:
+  }
+}
+
+/** Stateless preview checks only. History, relay trust and clock admission are not inferred. */
+function checkPreviewStatement(st: DirectoryStatement<ParsedFrame>): void {
+  const { preview: roles, stampKey, expiry } = st
+  if (!roles || !stampKey || !expiry)
+    throw semantic('directory preview requires role fields and expiry')
+  const keys = [st.subject, stampKey, roles.messageDhKey]
+  if (keys.some(k => k.keyType !== 1 || !isCompressedPoint(k.keyBytes)))
+    throw semantic(
+      'directory preview requires valid compressed type-1 role points',
+    )
+  for (let i = 0; i < keys.length; i++)
+    for (let j = i + 1; j < keys.length; j++)
+      if (
+        compareBytes(
+          keys[i].keyBytes.subarray(1),
+          keys[j].keyBytes.subarray(1),
+        ) === 0
+      )
+        throw semantic(
+          'directory preview roles must differ, including point negation',
+        )
+  if (st.relays.length !== 1)
+    throw semantic('directory preview requires exactly one relay')
+  const relay = st.relays[0]
+  if (
+    !relay.endpoint.startsWith('https:') ||
+    relay.identity.keyType !== 1 ||
+    !isCompressedPoint(relay.identity.keyBytes)
+  )
+    throw semantic(
+      'directory preview requires HTTPS and a valid type-1 relay point',
+    )
+  const nanos = (t: Timestamp) =>
+    t.seconds * 1_000_000_000n + BigInt(t.nanoseconds)
+  const duration = nanos(expiry) - nanos(st.timestamp)
+  if (
+    duration <= 0n ||
+    duration > 3_600_000_000_000n ||
+    nanos(relay.expiry) < nanos(expiry)
+  )
+    throw semantic(
+      'directory preview validity must be positive, at most one hour and covered by relay expiry',
+    )
+  if (st.revision === 0n) {
+    if (
+      roles.predecessor !== null ||
+      roles.mailboxKeyGeneration !== 0n ||
+      roles.stampKeyGeneration !== 0n
+    )
+      throw semantic(
+        'directory preview bootstrap requires null predecessor and zero generations',
+      )
+  } else if (
+    roles.predecessor === null ||
+    roles.mailboxKeyGeneration > st.revision ||
+    roles.stampKeyGeneration > st.revision
+  ) {
+    throw semantic(
+      'directory preview successor requires predecessor and generations bounded by revision',
+    )
   }
 }
 

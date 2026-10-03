@@ -216,6 +216,17 @@ function account(v: FrankValue | undefined, path: string): AccountRef {
   return { keyType, keyBytes }
 }
 
+function directoryAccount(
+  v: FrankValue | undefined,
+  path: string,
+  preview: boolean,
+): AccountRef {
+  const key = account(v, path)
+  if (preview && key.keyType !== 1)
+    throw bad(path, 'directory preview key type must be 1')
+  return key
+}
+
 /** A type-5 stamp point (T3b encoding rules): 33 compressed bytes on the curve. */
 function point(v: FrankValue | undefined, path: string): Uint8Array {
   const b = bstr(v, path, 33, 33)
@@ -248,7 +259,10 @@ function timestamp(v: FrankValue | undefined, path: string): Timestamp {
 export function checkRootFrameLimit(
   typeId: number,
   frameLength: number,
+  schemaVersion = 1,
 ): boolean {
+  if (typeId === TYPE_DIRECTORY_STATEMENT && schemaVersion >= 4)
+    return frameLength <= 262_144
   if (typeId === TYPE_DIRECT_MESSAGE_DELIVERY) return frameLength <= 1_048_576
   if (typeId === TYPE_DIRECTORY_ATTESTATION) return frameLength <= 262_144
   if (typeId === TYPE_TOPIC_POST || typeId === TYPE_TOPIC_POST_SUBMISSION)
@@ -357,12 +371,13 @@ function relayBinding(
   v: FrankValue | undefined,
   path: string,
   allow: boolean,
+  preview = false,
 ): RelayBinding {
   const m = fields(v, path, [0, 1, 2, 3], [], true, allow)
   return {
     relayId: bstr(m.get(0), `${path}.0`, 16, 64),
     endpoint: endpoint(m.get(1), `${path}.1`),
-    identity: account(m.get(2), `${path}.2`),
+    identity: directoryAccount(m.get(2), `${path}.2`, preview),
     expiry: timestamp(m.get(3), `${path}.3`),
     unknownFields: m.unknown,
   }
@@ -501,28 +516,55 @@ export function parseDraft(
       // 9 (the profile entries, M4) is optional from schema 3, where a schema-2 reader reads
       // the statement through V6.3 and retains it. `effective` is the exact version, or the
       // reader's highest supported schema when a newer frame is read through V6.3.
-      const optional = schema.effective >= 3 ? [5, 6, 7, 9] : [5, 6, 7]
+      const preview = schema.effective >= 4
+      const optional = preview
+        ? []
+        : schema.effective >= 3
+        ? [5, 6, 7, 9]
+        : [5, 6, 7]
       const m = fields(
         payload,
         P,
-        schema.effective >= 2 ? [0, 1, 2, 3, 4, 8] : [0, 1, 2, 3, 4],
+        preview
+          ? [0, 1, 2, 3, 4, 6, 8, 10, 11, 12, 13]
+          : schema.effective >= 2
+          ? [0, 1, 2, 3, 4, 8]
+          : [0, 1, 2, 3, 4],
         optional,
         true,
         allow,
       )
+      // These allocated old meanings remain unsupported even in a future V6 projection.
+      if (preview && [5, 7, 9].some(k => m.has(k)))
+        throw bad(
+          P,
+          'transitions, recovery and profiles are unsupported in directory preview',
+        )
       const st: DraftPayload = {
         type: 4,
         network: networkTag(m.get(0), `${P}.0`),
-        subject: account(m.get(1), `${P}.1`),
+        subject: directoryAccount(m.get(1), `${P}.1`, preview),
         revision: uintRange(m.get(2), `${P}.2`, 0n, U64_MAX),
         timestamp: timestamp(m.get(3), `${P}.3`),
-        relays: asList(m.get(4), `${P}.4`, 1, MAX_RELAY_BINDINGS).map((e, i) =>
-          relayBinding(e, `${P}.4[${i}]`, allow),
-        ),
+        relays: asList(
+          m.get(4),
+          `${P}.4`,
+          1,
+          preview ? 1 : MAX_RELAY_BINDINGS,
+        ).map((e, i) => relayBinding(e, `${P}.4[${i}]`, allow, preview)),
         schemaVersion: schema.envelope,
         unknownFields: m.unknown,
       }
-      if (m.has(8)) st.stampKey = account(m.get(8), `${P}.8`)
+      if (m.has(8)) st.stampKey = directoryAccount(m.get(8), `${P}.8`, preview)
+      if (preview) {
+        st.preview = {
+          messageDhKey: directoryAccount(m.get(10), `${P}.10`, true),
+          mailboxKeyGeneration: uintRange(m.get(11), `${P}.11`, 0n, U64_MAX),
+          stampKeyGeneration: uintRange(m.get(12), `${P}.12`, 0n, U64_MAX),
+          predecessor:
+            m.get(13) === null ? null : bstr(m.get(13), `${P}.13`, 32, 32),
+        }
+      }
       // Field 9 is interpreted only by a reader whose highest type-4 schema is 3; a schema-2
       // reader projects the statement through V6.3 and retains it as an unknown field.
       if (m.has(9) && schema.effective >= 3) {
@@ -746,6 +788,7 @@ export function checkAllocated(d: DraftPayload): void {
       checkKeyType(d.subject, `${P}.1`)
       d.relays.forEach((r, i) => checkKeyType(r.identity, `${P}.4[${i}].2`))
       if (d.stampKey) checkKeyType(d.stampKey, `${P}.8`)
+      if (d.preview) checkKeyType(d.preview.messageDhKey, `${P}.10`)
       d.keyTransitions?.forEach((t, i) => {
         checkKeyType(t.signer, `${P}.5[${i}].2`)
         checkSignatureShape(t.algorithm, t.signer, t.signature, `${P}.5[${i}]`)

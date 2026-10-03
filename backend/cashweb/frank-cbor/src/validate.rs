@@ -35,6 +35,7 @@ pub enum Operation {
     /// Stop after stage 9.
     Typed,
     /// Run stage 10.6 (the type-2 signature verification) after stage 9.
+    /// Preview directories fail with a context error: trusted admission is not implemented.
     Full,
 }
 
@@ -391,6 +392,30 @@ fn process_frame(
             location,
         ));
     }
+    if env.type_id == TYPE_DIRECTORY_STATEMENT
+        && env.schema_version >= 4
+        && env.min_reader_version >= 4
+        && highest_schema < 4
+    {
+        return Err(fail(
+            ErrorCategory::Unsupported,
+            ErrorStage::S7,
+            "directory preview requires type-4 schema-4 support",
+            location,
+        ));
+    }
+    if env.type_id == TYPE_DIRECTORY_STATEMENT
+        && highest_schema >= 4
+        && env.schema_version >= 4
+        && env.min_reader_version != 4
+    {
+        return Err(fail(
+            ErrorCategory::Unsupported,
+            ErrorStage::S7,
+            "directory preview requires min_reader_version 4",
+            location,
+        ));
+    }
     let projection = if env.schema_version > highest_schema {
         Projection::NewerSchema
     } else {
@@ -410,7 +435,11 @@ fn process_frame(
     if matches!(mode, Mode::Root) && stop_after == Operation::Generic {
         return Ok(ValidationResult::Parsed(parsed));
     }
-    if matches!(mode, Mode::Root) && !check_root_frame_limit(parsed.type_id, parsed.frame.len()) {
+    let effective_schema = parsed.schema_version.min(highest_schema);
+    if (matches!(mode, Mode::Root)
+        || (parsed.type_id == TYPE_DIRECTORY_STATEMENT && effective_schema >= 4))
+        && !check_root_frame_limit(parsed.type_id, parsed.frame.len(), effective_schema)
+    {
         return Err(fail(
             ErrorCategory::Resource,
             ErrorStage::S81,
@@ -433,7 +462,17 @@ fn process_frame(
         Ok(draft)
     })?;
     let typed = open_children(draft, env_depth, shared, location)?;
-    let prior_slot = if typed_is_type2(&typed) {
+    let is_preview = crate::directory_preview::is_preview(&typed);
+    if typed_is_type2(&typed) && is_preview && shared.ctx.prior != PriorStatement::None {
+        shared.context_error = Some(ContextError("preview evidence does not validate directory history; use a null prior and perform trusted admission separately".to_string()));
+        return Err(fail(
+            ErrorCategory::Semantic,
+            ErrorStage::S9,
+            "preview history context",
+            location,
+        ));
+    }
+    let prior_slot = if typed_is_type2(&typed) && !is_preview {
         match resolve_prior_view(shared.ctx) {
             Ok(view) => Some(view),
             Err(Error::Context(context)) => {
@@ -480,6 +519,9 @@ fn run_stage_10(parsed: &ParsedFrame) -> Result<(), Error> {
             "internal: stage 10 needs the typed projection".to_string(),
         )));
     };
+    if crate::directory_preview::is_preview(typed) {
+        return Err(Error::Context(ContextError("full preview directory admission requires trusted anchor, history, clock, relay and atomic state; use verify_preview_directory_evidence for bounded signed evidence".to_string())));
+    }
     match typed {
         TypedPayload::DirectoryAttestation {
             statement,
@@ -500,7 +542,7 @@ fn run_stage_10(parsed: &ParsedFrame) -> Result<(), Error> {
 
 /// Stage 10.6: first preflight all entries for allocated-but-unverifiable algorithms (M7), then
 /// verify signature entries followed by key-transition authorizations in document order.
-fn verify_attestation(
+pub(crate) fn verify_attestation(
     statement: &ParsedFrame,
     signatures: &[SignatureEntry],
 ) -> Result<(), CodecError> {
@@ -819,6 +861,7 @@ fn open_children(
             schema_version,
             stamp_key,
             profile_entries,
+            preview,
             unknown,
         } => {
             let key_transitions = match key_transitions {
@@ -863,6 +906,7 @@ fn open_children(
                 recovery,
                 schema_version,
                 stamp_key,
+                preview,
                 profile_entries: profile_entries.map(|entries| {
                     entries
                         .into_iter()
@@ -1021,6 +1065,11 @@ fn resolve_prior_view(ctx: &ValidationContext) -> Result<Option<PriorView>, Erro
                 )))),
                 Err(error) => Err(error),
                 Ok(ValidationResult::Parsed(parsed)) => match parsed.typed.as_deref() {
+                    Some(TypedPayload::DirectoryStatement {
+                        preview: Some(_), ..
+                    }) => Err(Error::Context(ContextError(
+                        "preview directory history cannot authorize legacy updates or authority transitions".to_string(),
+                    ))),
                     Some(TypedPayload::DirectoryStatement {
                         network,
                         subject,

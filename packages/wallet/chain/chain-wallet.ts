@@ -243,6 +243,11 @@ export async function runNativeTransactionExclusive<T>(
       };
     };
   };
+  if (coordinationScope !== "single-realm") {
+    throw new Error(
+      "Cross-process native transaction stores require an external coordinator"
+    );
+  }
   if (host.window !== undefined) {
     if (host.navigator?.locks === undefined) {
       throw new Error(
@@ -252,12 +257,6 @@ export async function runNativeTransactionExclusive<T>(
     return host.navigator.locks.request(
       `frank:native-transaction:${key}`,
       operation
-    );
-  }
-
-  if (coordinationScope !== "single-realm") {
-    throw new Error(
-      "Cross-process native transaction stores require an external coordinator"
     );
   }
 

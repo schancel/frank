@@ -1,4 +1,5 @@
 import {
+  ECASH_MAINNET_CHECKPOINT_HASH,
   EcashBroadcastResult,
   EcashWallet,
   EcashWalletBackend,
@@ -8,10 +9,19 @@ import {
   nativeTransactionAttemptKey,
   NativeTransactionSubmissionError,
 } from "./chain/chain-wallet";
+import type { ChronikClient } from "chronik-client";
 
 const ADDRESS = "ecash:qq86jv6h0y97q8l63ndynvk3fn9aq8fqru3exew8gl";
 const MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+function makeChronik(): ChronikClient {
+  return {
+    block: jest.fn().mockResolvedValue({
+      blockInfo: { hash: ECASH_MAINNET_CHECKPOINT_HASH },
+    }),
+  } as unknown as ChronikClient;
+}
 
 function makeBackend(
   result: EcashBroadcastResult = {
@@ -55,8 +65,8 @@ describe("EcashWallet", () => {
     const backend = makeBackend();
     const wallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore,
       walletFactory: () => backend,
     });
@@ -76,8 +86,8 @@ describe("EcashWallet", () => {
     const backend = makeBackend();
     const wallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore,
       walletFactory: () => backend,
     });
@@ -98,8 +108,8 @@ describe("EcashWallet", () => {
     const backend = makeBackend();
     const wallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore,
       walletFactory: () => backend,
     });
@@ -118,6 +128,60 @@ describe("EcashWallet", () => {
     });
   });
 
+  it("rejects a non-mainnet recipient at the direct wallet boundary", async () => {
+    const backend = makeBackend();
+    const wallet = await EcashWallet.fromMnemonic({
+      mnemonic: MNEMONIC,
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
+      nativeAttemptStore,
+      walletFactory: () => backend,
+    });
+
+    await expect(
+      wallet.sendNative({
+        recipient: {
+          raw: "ectest:qq86jv6h0y97q8l63ndynvk3fn9aq8fqruhjcef2tw",
+        },
+        value: 1n,
+      })
+    ).rejects.toThrow("Invalid eCash recipient for the configured network");
+    expect(backend.action).not.toHaveBeenCalled();
+  });
+
+  it("rejects a Chronik endpoint that lacks the eCash checkpoint", async () => {
+    const chronik = makeChronik();
+    jest.spyOn(chronik, "block").mockResolvedValueOnce({
+      blockInfo: { hash: "a-bch-block-at-the-same-height" },
+    } as Awaited<ReturnType<ChronikClient["block"]>>);
+
+    await expect(
+      EcashWallet.fromMnemonic({
+        mnemonic: MNEMONIC,
+        chronik,
+        networkId: "ecash-mainnet",
+        nativeAttemptStore,
+        walletFactory: () => makeBackend(),
+      })
+    ).rejects.toThrow("eCash Chronik checkpoint mismatch");
+  });
+
+  it("rejects the legacy Chronik client shape before creating the SDK wallet", async () => {
+    const legacyChronik = makeChronik() as ChronikClient & {
+      proxyInterface?: unknown;
+    };
+    legacyChronik.proxyInterface = undefined;
+
+    await expect(
+      EcashWallet.fromMnemonic({
+        mnemonic: MNEMONIC,
+        chronik: legacyChronik,
+        networkId: "ecash-mainnet",
+        nativeAttemptStore,
+      })
+    ).rejects.toThrow("requires chronik-client 4.3 or newer");
+  });
+
   it("reports the exact attempted id when broadcast outcome is unknown", async () => {
     const backend = makeBackend({
       success: false,
@@ -126,8 +190,8 @@ describe("EcashWallet", () => {
     });
     const wallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore,
       walletFactory: () => backend,
     });
@@ -150,8 +214,8 @@ describe("EcashWallet", () => {
     backend.broadcast.mockRejectedValueOnce(new Error("connection reset"));
     const wallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore,
       walletFactory: () => backend,
     });
@@ -179,8 +243,8 @@ describe("EcashWallet", () => {
     backend.broadcast.mockResolvedValueOnce({ success: true, broadcasted });
     const wallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore,
       walletFactory: () => backend,
     });
@@ -203,8 +267,8 @@ describe("EcashWallet", () => {
     const persistenceError = new Error("durable store unavailable");
     const wallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore: {
         coordinationScope: "single-realm",
         get: () => undefined,
@@ -231,8 +295,8 @@ describe("EcashWallet", () => {
     let persisted: typeof transaction | undefined;
     const wallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore: {
         coordinationScope: "single-realm",
         get: () => persisted,
@@ -253,8 +317,8 @@ describe("EcashWallet", () => {
     const competingBackend = makeBackend();
     const competingWallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore: {
         coordinationScope: "single-realm",
         get: () => persisted,
@@ -287,8 +351,8 @@ describe("EcashWallet", () => {
     const store = new InMemoryNativeTransactionAttemptStore();
     const firstWallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore: store,
       walletFactory: () => makeBackend(),
     });
@@ -297,8 +361,8 @@ describe("EcashWallet", () => {
     const restoredBackend = makeBackend();
     const restoredWallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore: store,
       getTransactionStatus: async () => "confirmed",
       walletFactory: () => restoredBackend,
@@ -318,8 +382,8 @@ describe("EcashWallet", () => {
       EcashWallet.fromMnemonic({
         mnemonic: MNEMONIC,
         passphrase: "secret",
-        chronik: {},
-        networkId: "ecash-test",
+        chronik: makeChronik(),
+        networkId: "ecash-mainnet",
         nativeAttemptStore,
         walletFactory: factory,
       })
@@ -332,8 +396,8 @@ describe("EcashWallet", () => {
     await expect(
       EcashWallet.fromMnemonic({
         mnemonic: "not a valid BIP-39 mnemonic",
-        chronik: {},
-        networkId: "ecash-test",
+        chronik: makeChronik(),
+        networkId: "ecash-mainnet",
         nativeAttemptStore,
         walletFactory: factory,
       })
@@ -347,8 +411,8 @@ describe("EcashWallet", () => {
       const backend = makeBackend();
       const wallet = await EcashWallet.fromMnemonic({
         mnemonic: MNEMONIC,
-        chronik: {},
-        networkId: "ecash-test",
+        chronik: makeChronik(),
+        networkId: "ecash-mainnet",
         nativeAttemptStore,
         walletFactory: () => backend,
       });
@@ -366,8 +430,8 @@ describe("EcashWallet", () => {
   it("returns accepted txids when finalization times out after broadcast", async () => {
     const wallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore,
       walletFactory: () =>
         makeBackend({
@@ -396,8 +460,8 @@ describe("EcashWallet", () => {
       });
     const wallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore,
       walletFactory: () => backend,
     });
@@ -430,8 +494,8 @@ describe("EcashWallet", () => {
     });
     const wallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore,
       walletFactory: () => backend,
     });
@@ -441,7 +505,7 @@ describe("EcashWallet", () => {
     nativeAttemptStore.put(
       nativeTransactionAttemptKey({
         chainKind: "ecash",
-        networkId: "ecash-test",
+        networkId: ECASH_MAINNET_CHECKPOINT_HASH,
         address: ADDRESS,
       }),
       { txHash: "newer-attempt" }
@@ -464,8 +528,8 @@ describe("EcashWallet", () => {
     });
     const wallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore,
       walletFactory: () => backend,
     });
@@ -475,7 +539,7 @@ describe("EcashWallet", () => {
     nativeAttemptStore.delete(
       nativeTransactionAttemptKey({
         chainKind: "ecash",
-        networkId: "ecash-test",
+        networkId: ECASH_MAINNET_CHECKPOINT_HASH,
         address: ADDRESS,
       })
     );
@@ -499,8 +563,8 @@ describe("EcashWallet", () => {
     });
     const wallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore,
       walletFactory: () => backend,
     });
@@ -533,8 +597,8 @@ describe("EcashWallet", () => {
     });
     const firstWallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore,
       walletFactory: () => failedBackend,
     });
@@ -545,8 +609,8 @@ describe("EcashWallet", () => {
     const restoredBackend = makeBackend();
     const restoredWallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore,
       walletFactory: () => restoredBackend,
     });
@@ -590,8 +654,8 @@ describe("EcashWallet", () => {
     );
     const wallet = await EcashWallet.fromMnemonic({
       mnemonic: MNEMONIC,
-      chronik: {},
-      networkId: "ecash-test",
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
       nativeAttemptStore,
       walletFactory: () => backend,
     });

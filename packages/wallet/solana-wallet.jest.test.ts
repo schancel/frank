@@ -96,6 +96,7 @@ describe("SolanaWallet", () => {
       connection,
       signer,
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
     });
 
@@ -146,6 +147,7 @@ describe("SolanaWallet", () => {
     };
     const wallet = new SolanaStealthWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection,
       signer: await makeKeypair(1),
       stealthStrategy: strategy,
@@ -176,6 +178,7 @@ describe("SolanaWallet", () => {
   it("does not advertise stealth support without a reviewed strategy", async () => {
     const wallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection: new FakeConnection(),
       signer: await makeKeypair(1),
     });
@@ -187,6 +190,7 @@ describe("SolanaWallet", () => {
     const destination = (await makeKeypair(7)).publicKey;
     const wallet = new SolanaStealthWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection: new FakeConnection(),
       signer: await makeKeypair(1),
       stealthStrategy: {
@@ -211,6 +215,7 @@ describe("SolanaWallet", () => {
     connection.failAt = 1;
     const wallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection,
       signer: await makeKeypair(1),
       nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
@@ -250,6 +255,7 @@ describe("SolanaWallet", () => {
   it("signs equal payments as distinct transactions using their payment indices", async () => {
     const wallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection: new FakeConnection(),
       signer: await makeKeypair(1),
     });
@@ -276,6 +282,7 @@ describe("SolanaWallet", () => {
     connection.blockhashes = [blockhash, rotatedBlockhash, rotatedBlockhash];
     const wallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection,
       signer: await makeKeypair(1),
     });
@@ -312,6 +319,7 @@ describe("SolanaWallet", () => {
     const connection = new FakeConnection();
     const wallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection,
       signer: await makeKeypair(1),
     });
@@ -342,6 +350,7 @@ describe("SolanaWallet", () => {
     const connection = new FakeConnection();
     const wallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection,
       signer: await makeKeypair(1),
     });
@@ -375,6 +384,7 @@ describe("SolanaWallet", () => {
     const connection = new FakeConnection();
     const wallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection,
       signer: await makeKeypair(1),
     });
@@ -401,6 +411,7 @@ describe("SolanaWallet", () => {
     const connection = new FakeConnection();
     const wallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection,
       signer: await makeKeypair(1),
     });
@@ -434,12 +445,14 @@ describe("SolanaWallet", () => {
       SolanaStealthWallet.generate({
         connection: new FakeConnection(),
         networkId: "solana-test",
+        genesisHash: "solana-genesis",
       })
     ).rejects.toThrow("generateStealth");
     await expect(
       SolanaStealthWallet.fromSeed({
         connection: new FakeConnection(),
         networkId: "solana-test",
+        genesisHash: "solana-genesis",
         seed: new Uint8Array(32),
       })
     ).rejects.toThrow("fromSeedWithStealth");
@@ -451,6 +464,7 @@ describe("SolanaWallet", () => {
 
     const creating = SolanaWallet.fromSeed({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection: new FakeConnection(),
       seed,
     });
@@ -463,6 +477,7 @@ describe("SolanaWallet", () => {
     const connection = new FakeConnection();
     const wallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection,
       signer: await makeKeypair(1),
     });
@@ -487,6 +502,7 @@ describe("SolanaWallet", () => {
     const connection = new FakeConnection();
     const wallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection,
       signer: await makeKeypair(1),
     });
@@ -520,6 +536,7 @@ describe("SolanaWallet", () => {
     ).toBase58();
     const wallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection,
       signer: await makeKeypair(1),
     });
@@ -542,6 +559,7 @@ describe("SolanaWallet", () => {
       const connection = new FakeConnection();
       const wallet = new SolanaWallet({
         networkId: "solana-test",
+        genesisHash: "solana-genesis",
         connection,
         signer: await makeKeypair(1),
       });
@@ -563,6 +581,7 @@ describe("SolanaWallet", () => {
       const createDestination = jest.fn();
       const wallet = new SolanaStealthWallet({
         networkId: "solana-test",
+        genesisHash: "solana-genesis",
         connection: new FakeConnection(),
         signer: await makeKeypair(1),
         stealthStrategy: { createDestination },
@@ -584,6 +603,7 @@ describe("SolanaWallet", () => {
     const createDestination = jest.fn();
     const wallet = new SolanaStealthWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection: new FakeConnection(),
       signer: await makeKeypair(1),
       stealthStrategy: { createDestination },
@@ -607,9 +627,11 @@ describe("SolanaWallet", () => {
       connection,
       signer,
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
     });
     const stealthWallet = new SolanaStealthWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection,
       signer,
       stealthStrategy: {
@@ -635,10 +657,27 @@ describe("SolanaWallet", () => {
   it("returns balances as bigint", async () => {
     const wallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection: new FakeConnection(),
       signer: await makeKeypair(1),
     });
     await expect(wallet.getBalance()).resolves.toBe(123n);
+  });
+
+  it("rejects direct wallet operations when the RPC genesis does not match", async () => {
+    const connection = new FakeConnection();
+    jest.spyOn(connection, "getGenesisHash").mockResolvedValue("other-chain");
+    const wallet = new SolanaWallet({
+      networkId: "solana-test",
+      genesisHash: "solana-genesis",
+      connection,
+      signer: await makeKeypair(1),
+    });
+
+    await expect(wallet.getBalance()).rejects.toThrow(
+      "Solana RPC genesis mismatch"
+    );
+    expect(connection.sent).toHaveLength(0);
   });
 
   it("exposes the common identity and native-transfer API", async () => {
@@ -649,6 +688,7 @@ describe("SolanaWallet", () => {
       connection,
       signer,
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
     });
 
@@ -673,6 +713,7 @@ describe("SolanaWallet", () => {
     connection.failAt = 0;
     const wallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection,
       signer: await makeKeypair(1),
       nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
@@ -720,6 +761,7 @@ describe("SolanaWallet", () => {
     failedConnection.failAt = 0;
     const firstWallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection: failedConnection,
       signer,
       nativeAttemptStore,
@@ -734,6 +776,7 @@ describe("SolanaWallet", () => {
     const restoredConnection = new FakeConnection();
     const restoredWallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection: restoredConnection,
       signer,
       nativeAttemptStore,
@@ -762,7 +805,7 @@ describe("SolanaWallet", () => {
     ).resolves.toEqual({ txHash: expect.any(String) });
   });
 
-  it("isolates unresolved attempts by settlement network", async () => {
+  it("shares unresolved attempts across aliases of the same genesis", async () => {
     const nativeAttemptStore = new InMemoryNativeTransactionAttemptStore();
     const signer = await makeKeypair(1);
     const networkA = new FakeConnection();
@@ -771,6 +814,7 @@ describe("SolanaWallet", () => {
       connection: networkA,
       signer,
       networkId: "cluster-a",
+      genesisHash: "solana-genesis",
       nativeAttemptStore,
     });
     await expect(
@@ -785,20 +829,24 @@ describe("SolanaWallet", () => {
       connection: networkB,
       signer,
       networkId: "cluster-b",
+      genesisHash: "solana-genesis",
       nativeAttemptStore,
     });
-    expect(walletB.getUnresolvedNativeTransaction()).toBeUndefined();
+    expect(walletB.getUnresolvedNativeTransaction()).toEqual(
+      walletA.getUnresolvedNativeTransaction()
+    );
     await expect(
       walletB.sendNative({
         recipient: { raw: (await makeKeypair(3)).publicKey.toBase58() },
         value: 2n,
       })
-    ).resolves.toEqual({ txHash: expect.any(String) });
+    ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
 
     const restoredA = new SolanaWallet({
       connection: new FakeConnection(),
       signer,
       networkId: "cluster-a",
+      genesisHash: "solana-genesis",
       nativeAttemptStore,
     });
     expect(restoredA.getUnresolvedNativeTransaction()).toEqual(
@@ -823,6 +871,7 @@ describe("SolanaWallet", () => {
       connection,
       signer,
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       nativeAttemptStore,
     });
 
@@ -835,6 +884,7 @@ describe("SolanaWallet", () => {
       connection: new FakeConnection(),
       signer,
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       nativeAttemptStore,
       getTransactionStatus: async () => "confirmed",
     });
@@ -857,6 +907,7 @@ describe("SolanaWallet", () => {
     const persistenceError = new Error("durable store unavailable");
     const wallet = new SolanaWallet({
       networkId: "solana-test",
+      genesisHash: "solana-genesis",
       connection,
       signer: await makeKeypair(1),
       nativeAttemptStore: {

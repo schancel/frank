@@ -9,9 +9,16 @@ import {
   runNativeTransactionExclusive,
   sameChainTransaction,
 } from "./chain/chain-wallet";
+import { Address } from "ecash-lib/dist/address/address";
+import type { ChronikClient } from "chronik-client";
 
 export type EcashAddressPrefix = "ecash" | "ectest" | "ecregtest";
 import * as bip39 from "bip39";
+
+export const ECASH_MAINNET_CHECKPOINT_HEIGHT = 661_648;
+export const ECASH_MAINNET_CHECKPOINT_HASH =
+  "000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d";
+const ECASH_MAINNET_PREFIX: EcashAddressPrefix = "ecash";
 
 export interface EcashBroadcastResult {
   success: boolean;
@@ -42,14 +49,14 @@ export interface EcashWalletBackend {
 
 export type EcashWalletFactory = (params: {
   mnemonic: string;
-  chronik: unknown;
+  chronik: ChronikClient;
   addressPrefix: EcashAddressPrefix;
 }) => EcashWalletBackend | Promise<EcashWalletBackend>;
 
 interface EcashSdkWalletConstructor {
   fromMnemonic(
     mnemonic: string,
-    chronik: unknown,
+    chronik: ChronikClient,
     options: { hd: true; prefix: EcashAddressPrefix }
   ): EcashWalletBackend;
 }
@@ -59,9 +66,15 @@ const defaultWalletFactory: EcashWalletFactory = async ({
   chronik,
   addressPrefix,
 }) => {
+  if (
+    typeof (chronik as ChronikClient & { proxyInterface?: unknown })
+      .proxyInterface !== "function"
+  ) {
+    throw new Error("eCash wallet requires chronik-client 4.3 or newer");
+  }
   // ecash-wallet 6.2.1 publishes JavaScript but no declaration entry. Dynamically importing it
   // keeps that packaging gap at this boundary while still allowing Vite to bundle the backend.
-  const imported = await import("ecash-wallet");
+  const imported = await import("ecash-wallet/dist/index.js");
   const sdk = imported as unknown as {
     Wallet?: unknown;
     default?: { Wallet?: unknown };
@@ -126,10 +139,8 @@ export class EcashWallet implements NativeWalletHandle {
   static async fromMnemonic(params: {
     mnemonic: string;
     passphrase?: string;
-    chronik: unknown;
-    networkId: string;
-    attemptNetworkId?: string;
-    addressPrefix?: EcashAddressPrefix;
+    chronik: ChronikClient;
+    networkId: "ecash-mainnet";
     walletFactory?: EcashWalletFactory;
     nativeAttemptStore?: NativeTransactionAttemptStore;
     getTransactionStatus?: (
@@ -144,16 +155,24 @@ export class EcashWallet implements NativeWalletHandle {
     if (!bip39.validateMnemonic(params.mnemonic)) {
       throw new Error("Invalid BIP-39 mnemonic");
     }
+    const checkpoint = await params.chronik.block(
+      ECASH_MAINNET_CHECKPOINT_HEIGHT
+    );
+    if (checkpoint.blockInfo.hash !== ECASH_MAINNET_CHECKPOINT_HASH) {
+      throw new Error(
+        `eCash Chronik checkpoint mismatch at height ${ECASH_MAINNET_CHECKPOINT_HEIGHT}: expected ${ECASH_MAINNET_CHECKPOINT_HASH}, got ${checkpoint.blockInfo.hash}`
+      );
+    }
     const backend = await (params.walletFactory ?? defaultWalletFactory)({
       mnemonic: params.mnemonic,
       chronik: params.chronik,
-      addressPrefix: params.addressPrefix ?? "ecash",
+      addressPrefix: ECASH_MAINNET_PREFIX,
     });
     await backend.syncAndDiscoverAddresses();
     return new EcashWallet(
       backend,
       params.networkId,
-      params.attemptNetworkId ?? params.networkId,
+      ECASH_MAINNET_CHECKPOINT_HASH,
       params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore,
       params.getTransactionStatus ?? (async () => "unknown")
     );
@@ -308,11 +327,23 @@ export class EcashWallet implements NativeWalletHandle {
     if (params.value <= 0n) {
       throw new RangeError("Transfer value must be greater than zero");
     }
+    let recipient: string;
+    try {
+      const parsed = Address.fromCashAddress(
+        params.recipient.raw.toLowerCase()
+      );
+      if (parsed.prefix !== ECASH_MAINNET_PREFIX) {
+        throw new Error("wrong prefix");
+      }
+      recipient = parsed.toString().toLowerCase();
+    } catch {
+      throw new Error("Invalid eCash recipient for the configured network");
+    }
 
     await this.backend.sync();
     const built = this.backend
       .action({
-        outputs: [{ address: params.recipient.raw, sats: params.value }],
+        outputs: [{ address: recipient, sats: params.value }],
       })
       .build();
     return this.broadcastNativeAction(built, params.onSigned);

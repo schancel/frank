@@ -294,12 +294,15 @@ export class SolanaWallet
     transaction: ChainTransaction
   ) => Promise<"confirmed" | "failed" | "pending" | "unknown">;
   private readonly nativeAttemptKey: string;
+  private networkVerification: Promise<void> | undefined;
+  private readonly expectedGenesisHash: string;
 
   constructor(params: {
     connection: SolanaWalletConnection;
     signer: Keypair;
     networkId: string;
-    attemptNetworkId?: string;
+    /** Expected RPC genesis hash. Every operation waits for this identity check. */
+    genesisHash: string;
     nativeAttemptStore?: NativeTransactionAttemptStore;
     getTransactionStatus?: (
       transaction: ChainTransaction
@@ -308,6 +311,7 @@ export class SolanaWallet
     this.connection = params.connection;
     this.signer = params.signer;
     this.networkId = params.networkId;
+    this.expectedGenesisHash = params.genesisHash;
     this.nativeAttemptStore =
       params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore;
     this.getTransactionStatus =
@@ -326,7 +330,7 @@ export class SolanaWallet
       });
     this.nativeAttemptKey = nativeTransactionAttemptKey({
       chainKind: "solana",
-      networkId: params.attemptNetworkId ?? params.networkId,
+      networkId: params.genesisHash,
       address: this.address,
     });
     const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey);
@@ -343,11 +347,15 @@ export class SolanaWallet
   static async generate(params: {
     connection: SolanaWalletConnection;
     networkId: string;
+    genesisHash?: string;
     nativeAttemptStore?: NativeTransactionAttemptStore;
   }): Promise<SolanaWallet> {
     await ensureEd25519Support();
+    const genesisHash =
+      params.genesisHash ?? (await params.connection.getGenesisHash());
     return new SolanaWallet({
       ...params,
+      genesisHash,
       signer: await Keypair.generate(),
     });
   }
@@ -355,15 +363,19 @@ export class SolanaWallet
   static async fromSeed(params: {
     connection: SolanaWalletConnection;
     networkId: string;
+    genesisHash?: string;
     seed: Uint8Array;
     nativeAttemptStore?: NativeTransactionAttemptStore;
   }): Promise<SolanaWallet> {
     const stableSeed = params.seed.slice();
     await ensureEd25519Support();
+    const genesisHash =
+      params.genesisHash ?? (await params.connection.getGenesisHash());
     return new SolanaWallet({
       connection: params.connection,
       signer: await Keypair.fromSeed(stableSeed),
       networkId: params.networkId,
+      genesisHash,
       nativeAttemptStore: params.nativeAttemptStore,
     });
   }
@@ -383,7 +395,21 @@ export class SolanaWallet
     return this.identity.address;
   }
 
+  protected verifyNetwork(): Promise<void> {
+    this.networkVerification ??= this.connection
+      .getGenesisHash()
+      .then((actualGenesisHash) => {
+        if (actualGenesisHash !== this.expectedGenesisHash) {
+          throw new Error(
+            `Solana RPC genesis mismatch: expected ${this.expectedGenesisHash}, got ${actualGenesisHash}`
+          );
+        }
+      });
+    return this.networkVerification;
+  }
+
   async getBalance(): Promise<bigint> {
+    await this.verifyNetwork();
     return BigInt(await this.connection.getBalance(this.signer.publicKey));
   }
 
@@ -392,6 +418,7 @@ export class SolanaWallet
   }
 
   async retryUnresolvedNativeTransaction(): Promise<ChainTransaction> {
+    await this.verifyNetwork();
     return runNativeTransactionExclusive(
       this.nativeAttemptKey,
       this.nativeAttemptStore.coordinationScope,
@@ -432,6 +459,7 @@ export class SolanaWallet
     transaction: ChainTransaction;
     outcome: "submitted" | "not-submitted";
   }): Promise<void> {
+    await this.verifyNetwork();
     await runNativeTransactionExclusive(
       this.nativeAttemptKey,
       this.nativeAttemptStore.coordinationScope,
@@ -461,6 +489,7 @@ export class SolanaWallet
     value: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction> {
+    await this.verifyNetwork();
     return runNativeTransactionExclusive(
       this.nativeAttemptKey,
       this.nativeAttemptStore.coordinationScope,
@@ -547,13 +576,20 @@ export class SolanaWallet
   async buildTransactionBundle(
     params: BuildSolanaTransactionBundleParams
   ): Promise<SolanaTransactionBundle> {
-    return this.buildSignedBundle(params.transfers, params.intentId);
+    const stableTransfers = params.transfers.map((transfer) => ({
+      destination: transfer.destination,
+      lamports: transfer.lamports,
+    }));
+    const stableIntentId = params.intentId.slice();
+    await this.verifyNetwork();
+    return this.buildSignedBundle(stableTransfers, stableIntentId);
   }
 
   async submitTransactionBundle<TMetadata = never>(
     bundle: WalletTransactionBundle<string, Uint8Array, TMetadata>,
     options: SubmitTransactionBundleOptions = {}
   ): Promise<WalletBundleSubmission<string>> {
+    await this.verifyNetwork();
     const startIndex = options.startIndex ?? 0;
     if (
       !Number.isSafeInteger(startIndex) ||
@@ -905,6 +941,7 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
     connection: SolanaWalletConnection;
     signer: Keypair;
     networkId: string;
+    genesisHash: string;
     stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>;
   }) {
     super(params);
@@ -933,11 +970,15 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
   static async generateStealth<TStealthMetadata extends {}>(params: {
     connection: SolanaWalletConnection;
     networkId: string;
+    genesisHash?: string;
     stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>;
   }): Promise<SolanaStealthWallet<TStealthMetadata>> {
     await ensureEd25519Support();
+    const genesisHash =
+      params.genesisHash ?? (await params.connection.getGenesisHash());
     return new SolanaStealthWallet({
       ...params,
+      genesisHash,
       signer: await Keypair.generate(),
     });
   }
@@ -945,15 +986,19 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
   static async fromSeedWithStealth<TStealthMetadata extends {}>(params: {
     connection: SolanaWalletConnection;
     networkId: string;
+    genesisHash?: string;
     seed: Uint8Array;
     stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>;
   }): Promise<SolanaStealthWallet<TStealthMetadata>> {
     const stableSeed = params.seed.slice();
     await ensureEd25519Support();
+    const genesisHash =
+      params.genesisHash ?? (await params.connection.getGenesisHash());
     return new SolanaStealthWallet({
       connection: params.connection,
       signer: await Keypair.fromSeed(stableSeed),
       networkId: params.networkId,
+      genesisHash,
       stealthStrategy: params.stealthStrategy,
     });
   }
@@ -966,6 +1011,7 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
     const stableLamports = params.lamports.slice();
     const stableIntentId = params.intentId.slice();
     const stableContext = params.context.slice();
+    await this.verifyNetwork();
     const recipient = parsePublicKey(params.recipient);
     if (stableLamports.length === 0) {
       throw new RangeError(

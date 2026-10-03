@@ -54,7 +54,7 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
         connection: config.connection,
         signer: await config.deriveSigner(seed),
         networkId: config.networkId,
-        attemptNetworkId: config.genesisHash,
+        genesisHash: config.genesisHash,
         nativeAttemptStore: config.nativeAttemptStore,
       });
     },

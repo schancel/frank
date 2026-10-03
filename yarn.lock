@@ -5170,18 +5170,7 @@ chromium-pickle-js@^0.2.0:
   resolved "https://registry.yarnpkg.com/chromium-pickle-js/-/chromium-pickle-js-0.2.0.tgz#04a106672c18b085ab774d983dfa3ea138f22205"
   integrity sha512-1R5Fho+jBq0DDydt+/vHWj5KJNJCKdARKOCwZUen84I5BreWoLqRLANH1U87eJy1tiASPtMnGqJJq0ZsLoRPOw==
 
-chronik-client@^0.8.2:
-  version "0.8.5"
-  resolved "https://registry.yarnpkg.com/chronik-client/-/chronik-client-0.8.5.tgz#5f89b09c74c48f2b060f7fb520255b0fe556a431"
-  integrity sha512-RcqGjWizART3yM+pzEZNjHGfAP2vtTPeqkwM3sG4VXilxvoEU0Us8HgVELwg7jTosnxQHt0qUPvGuOvkkVtBwQ==
-  dependencies:
-    "@types/ws" "^8.2.1"
-    axios "^0.21.1"
-    isomorphic-ws "^4.0.1"
-    protobufjs "^6.8.8"
-    ws "^8.3.0"
-
-chronik-client@^4.3.1:
+chronik-client@4.3.1, chronik-client@^4.3.1:
   version "4.3.1"
   resolved "https://registry.yarnpkg.com/chronik-client/-/chronik-client-4.3.1.tgz#826482720553d5cc0499b0125183583288a412bf"
   integrity sha512-wfwAlZpA6x3xspGSHCQvlxSfJTw9TTVaDfwqb0/p/OIbsHt/FHqsUSf+1yK9uFa7gTjSQNnXEOYdfDZhhYhXXg==
@@ -5193,6 +5182,17 @@ chronik-client@^4.3.1:
     long "^4.0.0"
     protobufjs "^7.6.5"
     ws "^8.21.0"
+
+chronik-client@^0.8.2:
+  version "0.8.5"
+  resolved "https://registry.yarnpkg.com/chronik-client/-/chronik-client-0.8.5.tgz#5f89b09c74c48f2b060f7fb520255b0fe556a431"
+  integrity sha512-RcqGjWizART3yM+pzEZNjHGfAP2vtTPeqkwM3sG4VXilxvoEU0Us8HgVELwg7jTosnxQHt0qUPvGuOvkkVtBwQ==
+  dependencies:
+    "@types/ws" "^8.2.1"
+    axios "^0.21.1"
+    isomorphic-ws "^4.0.1"
+    protobufjs "^6.8.8"
+    ws "^8.3.0"
 
 ci-info@^3.2.0:
   version "3.9.0"

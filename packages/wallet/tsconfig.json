@@ -4,10 +4,6 @@
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "node",
-    "baseUrl": ".",
-    "paths": {
-      "ecash-wallet": ["./ecash-wallet-sdk.d.ts"]
-    },
     "noEmit": true,
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,

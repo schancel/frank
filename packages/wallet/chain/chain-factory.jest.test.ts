@@ -8,8 +8,8 @@ import { SolanaWalletConnection } from "../solana-wallet";
 import { InMemoryNativeTransactionAttemptStore } from "./chain-wallet";
 
 const ECASH_ADDRESS = "ecash:qq86jv6h0y97q8l63ndynvk3fn9aq8fqru3exew8gl";
-const ECASH_GENESIS =
-  "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
+const ECASH_CHECKPOINT =
+  "000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d";
 const MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const SOLANA_BLOCKHASH = new PublicKey(new Uint8Array(32).fill(9)).toBase58();
@@ -188,7 +188,7 @@ describe("createChain", () => {
         networkId: "ecash-mainnet",
         nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
         chronik: {
-          block: async () => ({ blockInfo: { hash: ECASH_GENESIS } }),
+          block: async () => ({ blockInfo: { hash: ECASH_CHECKPOINT } }),
           tx: getTransaction,
         },
         walletFactory: () => backend,
@@ -243,7 +243,7 @@ describe("createChain", () => {
       })
     ).rejects.toThrow("Invalid eCash recipient for the configured network");
 
-    const wrongGenesis = await createChain({
+    const wrongCheckpoint = await createChain({
       kind: "ecash",
       config: {
         networkId: "ecash-mainnet",
@@ -257,8 +257,8 @@ describe("createChain", () => {
       },
     });
     await expect(
-      wrongGenesis.createWallet({ mnemonic: MNEMONIC })
-    ).rejects.toThrow("eCash Chronik genesis mismatch");
+      wrongCheckpoint.createWallet({ mnemonic: MNEMONIC })
+    ).rejects.toThrow("eCash Chronik checkpoint mismatch");
   });
 
   it("rejects a wallet created for another chain", async () => {
@@ -267,7 +267,7 @@ describe("createChain", () => {
       config: {
         networkId: "ecash-mainnet",
         chronik: {
-          block: async () => ({ blockInfo: { hash: ECASH_GENESIS } }),
+          block: async () => ({ blockInfo: { hash: ECASH_CHECKPOINT } }),
           tx: async () => ({ block: { height: 1 } }),
         },
         walletFactory: () => ({

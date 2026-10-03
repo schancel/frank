@@ -17,6 +17,7 @@
     "axios": "^0.24.0",
     "bip39": "^3.0.2",
     "bitcore-lib-xpi": "*",
+    "chronik-client": "4.3.1",
     "ecash-lib": "4.14.1",
     "ecash-wallet": "6.2.1",
     "ethers": "^6.17.0",

@@ -10,24 +10,18 @@ import {
   EcashWallet,
   EcashWalletFactory,
 } from "../ecash-wallet";
+import type { ChronikClient } from "chronik-client";
 
 export interface EcashChainConfig {
   /** eCash network identity. Additional networks require a reviewed genesis/prefix profile. */
   networkId: "ecash-mainnet";
-  /** Initialized Chronik client. Kept structural so callers own endpoint selection and lifecycle. */
-  chronik: {
-    block(heightOrHash: number | string): Promise<{
-      blockInfo: { hash: string };
-    }>;
-    tx(txHash: string): Promise<{ block: unknown | undefined }>;
-  };
+  /** Initialized SDK-compatible Chronik client; callers own endpoint selection and lifecycle. */
+  chronik: ChronikClient;
   /** Test/embedding seam; production uses ecash-wallet's HD wallet implementation. */
   walletFactory?: EcashWalletFactory;
   nativeAttemptStore?: NativeTransactionAttemptStore;
 }
 
-const ECASH_MAINNET_GENESIS_HASH =
-  "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
 const ECASH_MAINNET_PREFIX: EcashAddressPrefix = "ecash";
 
 async function getEcashTransactionStatus(
@@ -85,18 +79,10 @@ export function createEcashChain(config: EcashChainConfig): NativeAssetChain {
       return parseEcashAddress(config, input);
     },
     async createWallet(seed: HDSeed) {
-      const genesis = await config.chronik.block(0);
-      if (genesis.blockInfo.hash !== ECASH_MAINNET_GENESIS_HASH) {
-        throw new Error(
-          `eCash Chronik genesis mismatch: expected ${ECASH_MAINNET_GENESIS_HASH}, got ${genesis.blockInfo.hash}`
-        );
-      }
       return EcashWallet.fromMnemonic({
         ...seed,
         chronik: config.chronik,
         networkId: config.networkId,
-        attemptNetworkId: ECASH_MAINNET_GENESIS_HASH,
-        addressPrefix: ECASH_MAINNET_PREFIX,
         walletFactory: config.walletFactory,
         nativeAttemptStore: config.nativeAttemptStore,
         getTransactionStatus: (transaction) =>

@@ -10,6 +10,34 @@ it("fails closed for a cross-process attempt store without an external coordinat
   ).rejects.toThrow("require an external coordinator");
 });
 
+it("fails closed for a cross-process store even when browser Web Locks exist", async () => {
+  const browserHost = globalThis as typeof globalThis & {
+    window?: unknown;
+    navigator?: { locks?: { request: jest.Mock } };
+  };
+  const originalWindow = browserHost.window;
+  const originalNavigator = browserHost.navigator;
+  const request = jest.fn();
+  browserHost.window = {};
+  Object.defineProperty(browserHost, "navigator", {
+    configurable: true,
+    value: { locks: { request } },
+  });
+  try {
+    await expect(
+      runNativeTransactionExclusive("shared", "cross-process", async () => 1)
+    ).rejects.toThrow("require an external coordinator");
+    expect(request).not.toHaveBeenCalled();
+  } finally {
+    if (originalWindow === undefined) delete browserHost.window;
+    else browserHost.window = originalWindow;
+    Object.defineProperty(browserHost, "navigator", {
+      configurable: true,
+      value: originalNavigator,
+    });
+  }
+});
+
 type MutableGlobal = typeof globalThis & {
   window?: unknown;
   localStorage?: {

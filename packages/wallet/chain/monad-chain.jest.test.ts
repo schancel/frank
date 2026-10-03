@@ -13,6 +13,7 @@
  * `directMessages.send`/`fetchSince` actually encrypt/decrypt, not merely pass a plaintext through.
  */
 import { Wallet, getBytes, hexlify } from "ethers";
+import * as viteEnv from "./vite-env";
 import { verifyEcdsa } from "@frank/nakamoto";
 
 import { MonadIdentity } from "../monad-identity";
@@ -248,18 +249,60 @@ describe("loadMonadChainConfigFromEnv", () => {
     chainId: process.env.MONAD_CHAIN_ID,
     networkId: process.env.MONAD_NETWORK_ID,
     networkTag: process.env.FRANK_NETWORK_TAG,
+    fakeDemo: process.env.FRANK_FAKE_DEMO,
   };
 
+  beforeEach(() => {
+    delete process.env.FRANK_FAKE_DEMO;
+  });
+
   afterEach(() => {
+    jest.restoreAllMocks();
     for (const [key, value] of Object.entries({
       MONAD_RPC_CHAIN: saved.chain,
       MONAD_CHAIN_ID: saved.chainId,
       MONAD_NETWORK_ID: saved.networkId,
       FRANK_NETWORK_TAG: saved.networkTag,
+      FRANK_FAKE_DEMO: saved.fakeDemo,
     })) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+  });
+
+  it.each([true, "true"])("accepts explicit demo opt-in %p", (raw) => {
+    jest.spyOn(viteEnv, "readViteEnv").mockImplementation((key) => {
+      if (key === "QCLI_FRANK_FAKE_DEMO") return raw as string;
+      if (key === "QCLI_FRANK_DEMO_CONTROL_URL") return "http://127.0.0.1:9701";
+      return undefined;
+    });
+    expect(loadMonadChainConfigFromEnv().fakeDemo).toEqual({
+      enabled: true,
+      controlUrl: "http://127.0.0.1:9701",
+    });
+  });
+
+  it.each([
+    false,
+    "false",
+    undefined,
+    "",
+    0,
+    1,
+    "1",
+    "TRUE",
+    "True",
+    " true ",
+    {},
+    [],
+    new Boolean(true),
+  ])("does not coerce demo opt-in %p", (raw) => {
+    jest
+      .spyOn(viteEnv, "readViteEnv")
+      .mockImplementation((key) =>
+        key === "QCLI_FRANK_FAKE_DEMO" ? (raw as string | undefined) : undefined
+      );
+    expect(loadMonadChainConfigFromEnv().fakeDemo).toBeUndefined();
   });
 
   it("keeps a known relay chain, native identity, and wallet network atomic", () => {

@@ -232,7 +232,9 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
   const rpcChain = readEnv("MONAD_RPC_CHAIN") ?? "monad-testnet";
   const protocolIdentity = monadProtocolIdentity(rpcChain);
   const rawChainId = readEnv("MONAD_CHAIN_ID");
-  const fakeDemoEnabled = readEnv("FRANK_FAKE_DEMO") === "true";
+  // Quasar emits this explicit flag as a boolean; Node env values are strings.
+  const fakeDemoFlag: unknown = readEnv("FRANK_FAKE_DEMO");
+  const fakeDemoEnabled = fakeDemoFlag === true || fakeDemoFlag === "true";
   let chainId: bigint | undefined;
   if (rawChainId) {
     try {

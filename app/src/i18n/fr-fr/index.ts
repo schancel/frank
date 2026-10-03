@@ -128,6 +128,15 @@ export default {
     title: 'Table de blackjack',
   },
   blackjackBet: {
+    doubleUnavailable:
+      'Impossible de doubler : la mise initiale ou la discussion n’est pas prête.',
+    doublePending:
+      'Le paiement pour doubler est enregistré. En attente du croupier ; des options de récupération apparaîtront dans cette discussion si le coup reste sans réponse.',
+    doublePaidTitle: 'Double payé, en attente de livraison ou de réponse',
+    doubleSignedBody:
+      'Votre mise supplémentaire de {amount} MON pour doubler auprès de {name} ({address}) a peut-être été payée. Vérifiez le paiement avant de réessayer ; aucune nouvelle mise ne sera envoyée.',
+    doublePendingBody:
+      'Votre mise supplémentaire de {amount} MON pour doubler auprès de {name} ({address}) est payée. Réessayer envoie le même coup avec le même paiement. Conservez cet enregistrement jusqu’à la confirmation du croupier ou la vérification du résultat.',
     playAgainTitle: 'Rejouer',
     faucetHint:
       'Il vous faut des MON pour jouer ? Cette application utilise des MON de testnet, sans valeur réelle. Le faucet de démonstration alimente automatiquement les nouveaux profils ; si rien n’est arrivé, demandez à l’opérateur de la démo de vous en envoyer.',

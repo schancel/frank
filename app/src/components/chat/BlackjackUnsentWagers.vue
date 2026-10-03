@@ -103,6 +103,7 @@ import {
   dealerReplyFor,
   DealerReply,
   shortAddress,
+  wagerMove,
 } from '../../utils/blackjack-bet'
 import { getOwnCanonicalAddress } from '../../utils/own-address'
 
@@ -169,6 +170,7 @@ export default defineComponent({
           out[w.wagerTxHash] = dealerReplyFor(
             this.messages.slice(w.seenMessages ?? 0),
             w.gameId,
+            w.kind,
           )
       }
       return out
@@ -243,6 +245,8 @@ export default defineComponent({
       }
     },
     titleFor(view: View): string {
+      if (view.wager.kind === 'double' && view.kind === 'paid')
+        return this.$t('blackjackBet.doublePaidTitle')
       switch (view.kind) {
         case 'signed':
           return this.$t('blackjackBet.unsentSigned')
@@ -256,6 +260,14 @@ export default defineComponent({
     },
     bodyFor(view: View): string {
       const params = this.params(view.wager)
+      if (view.wager.kind === 'double') {
+        return this.$t(
+          view.kind === 'signed'
+            ? 'blackjackBet.doubleSignedBody'
+            : 'blackjackBet.doublePendingBody',
+          params,
+        )
+      }
       switch (view.kind) {
         case 'signed':
           return this.$t('blackjackBet.unsentSignedBody', params)
@@ -313,24 +325,31 @@ export default defineComponent({
     async retry(wager: UnsentWager) {
       const hash = wager.wagerTxHash
       // Synchronous re-entrancy guard: a double click re-sends at most once at a time.
-      if (this.busyHashes.includes(hash)) return
+      if (this.busyHashes.includes(hash) || this.store.inFlight.includes(hash))
+        return
       this.busyHashes = [...this.busyHashes, hash]
       delete this.failures[hash]
       this.store.setInFlight(hash, true)
       try {
+        if (
+          wager.kind === 'double' &&
+          (await getOwnCanonicalAddress())?.toLowerCase() !==
+            wager.walletAddress.toLowerCase()
+        ) {
+          throw new Error(this.$t('blackjackBet.doubleUnavailable'))
+        }
+        // Capture before submission: a reply can arrive while the relay call is settling.
+        const seenMessages = wager.seenMessages ?? this.messages.length
+        if (wager.kind === 'double') {
+          this.store.setState(hash, 'paid', undefined, seenMessages)
+          await this.store.flushPersistence()
+        }
         await this.submit({
           address: wager.dealerAddress,
-          items: [
-            {
-              type: 'blackjack-move',
-              gameId: wager.gameId,
-              action: 'bet',
-              wagerTxHash: hash,
-            },
-          ],
+          items: [wagerMove(wager)],
         })
         // Delivered, not proven: the record stays until the dealer's reply arrives.
-        this.store.setState(hash, 'sent', Date.now(), this.messages.length)
+        this.store.setState(hash, 'sent', Date.now(), seenMessages)
       } catch (err) {
         this.failures[hash] = this.$t('blackjackBet.unsentFailed', {
           message: err instanceof Error ? err.message : String(err),

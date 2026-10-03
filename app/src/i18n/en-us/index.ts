@@ -127,6 +127,15 @@ export default {
     title: 'Blackjack table',
   },
   blackjackBet: {
+    doubleUnavailable:
+      'Cannot double down: the original wager or chat is not ready.',
+    doublePending:
+      'Your double-down payment is saved. Waiting for the dealer; recovery controls appear in this chat if it remains unanswered.',
+    doublePaidTitle: 'Double-down paid, awaiting delivery or reply',
+    doubleSignedBody:
+      'Your additional {amount} MON double-down wager to {name} ({address}) may have been paid. Check payment before retrying; no new stake will be sent.',
+    doublePendingBody:
+      'Your additional {amount} MON double-down wager to {name} ({address}) is paid. Retry sends the same double move with the same payment. Keep this record until the dealer confirms the double or you verify its outcome.',
     playAgainTitle: 'Play again',
     faucetHint:
       'Need MON to play? This app uses testnet MON, which has no real value. The demo faucet funds new profiles automatically; if nothing arrived, ask the demo operator to send you some.',

@@ -13,7 +13,7 @@ import { LevelDB } from 'level'
  * - `paid`: the node reports the transfer mined; the bet message is not delivered yet.
  * - `sent`: the bet message was delivered (`sentAt`); waiting for the dealer's reply.
  *
- * "Retry" re-sends the bet message for the SAME `wagerTxHash` and `gameId` (the bot claims each
+ * "Retry" re-sends the recorded bet or double for the SAME `wagerTxHash` and `gameId` (the bot claims each
  * transaction hash for one stake, so a duplicate is answered "already authorized" and can never
  * create a second game or charge). It never builds a second transfer.
  *
@@ -23,7 +23,7 @@ import { LevelDB } from 'level'
  */
 export type UnsentWagerState = 'signed' | 'paid' | 'sent'
 
-export interface UnsentWager {
+interface WagerRecord {
   gameId: string
   wagerTxHash: string
   dealerAddress: string
@@ -33,11 +33,22 @@ export interface UnsentWager {
   amountWei: string
   createdAt: number
   state: UnsentWagerState
-  /** When the bet message was delivered (`sent` only). */
+  /** When the recorded move was delivered (`sent` only). */
   sentAt?: number
   /** Chat messages that existed when the bet was (re)sent: only later ones can answer it. */
   seenMessages?: number
 }
+
+/** Absent kind is the original first-bet format. No rewrite of outstanding rows is needed. */
+export type UnsentWager = WagerRecord &
+  (
+    | { kind?: 'bet' }
+    | {
+        kind: 'double'
+        originalWagerTxHash: string
+        originalAmountWei: string
+      }
+  )
 
 export interface State {
   wagers: UnsentWager[]
@@ -92,11 +103,26 @@ export async function restoreUnsentWagers(
           typeof w?.wagerTxHash === 'string' &&
           typeof w?.dealerAddress === 'string',
       )
-      .map(w => ({
-        ...w,
-        walletAddress: w.walletAddress ?? '',
-        state: w.state ?? 'paid',
-      }))
+      .map(w => {
+        if (w.kind !== undefined && w.kind !== 'bet' && w.kind !== 'double') {
+          throw new Error('unknown wager intent')
+        }
+        if (
+          w.kind === 'double' &&
+          (typeof w.originalWagerTxHash !== 'string' ||
+            !w.originalWagerTxHash ||
+            typeof w.originalAmountWei !== 'string' ||
+            !/^[1-9]\d*$/.test(w.originalAmountWei) ||
+            w.originalAmountWei !== w.amountWei ||
+            !w.walletAddress)
+        )
+          throw new Error('incomplete double-down wager')
+        return {
+          ...w,
+          walletAddress: w.walletAddress ?? '',
+          state: w.state ?? 'paid',
+        }
+      })
     return { wagers }
   } catch (err) {
     return {

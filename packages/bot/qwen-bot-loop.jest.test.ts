@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { createHash } from 'crypto'
 
 // The real CLI, stub generator, poll loop and Level store; only network/identity/funding are
 // fixtures. Reset modules between boots to discard all volatile bot state.
@@ -17,10 +18,20 @@ jest.mock('./qwen-bot-common', () => ({
 jest.mock('@frank/wallet/monad-identity', () => ({
   fetchMonadIdentityPubKey: async () => Buffer.from('public-key'),
   fetchMonadProfile: jest.fn(async () => ({ bot: false })),
-  mailboxAuthFor: () => ({}),
+  mailboxAuthFor: (
+    identity: { displayAddress: string },
+    relayBaseUrl: string,
+  ) => ({
+    recipient: identity.displayAddress,
+    relayBaseUrl,
+  }),
 }))
 jest.mock('@frank/cashweb/relay/monad-message-feed', () => ({
   fetchMonadMessagesSince: jest.fn(),
+}))
+jest.mock('@frank/cashweb/relay/monad-mailbox-client', () => ({
+  ...jest.requireActual('@frank/cashweb/relay/monad-mailbox-client'),
+  fetchMonadMailboxInboxPage: jest.fn(),
 }))
 jest.mock('@frank/cashweb/relay/monad-message-envelope', () => ({
   canonicalMonadEnvelopeAddress: (address: string) => address.toLowerCase(),
@@ -34,7 +45,7 @@ jest.mock('./qwen-prompt', () => ({
 }))
 jest.mock('./bot-directory', () => ({ botProfileFields: () => [] }))
 
-const INPUT_HASH = Buffer.from('input').toString('hex')
+const INPUT_HASH = createHash('sha256').update('input').digest('hex')
 let location: string
 let previousEnv: NodeJS.ProcessEnv
 
@@ -76,6 +87,7 @@ async function boot(
     require('./qwen-bot-state') as typeof import('./qwen-bot-state')
   const common = require('./qwen-bot-common')
   const feed = require('@frank/cashweb/relay/monad-message-feed')
+  const mailbox = require('@frank/cashweb/relay/monad-mailbox-client')
   const identity = require('@frank/wallet/monad-identity')
   if (options.profileError)
     identity.fetchMonadProfile.mockRejectedValue(
@@ -141,14 +153,19 @@ async function boot(
             {
               timestamp: 1,
               message: {
-                payloadHash: Buffer.from('input'),
+                payloadHash: Buffer.from(INPUT_HASH, 'hex'),
                 encryptedPayload: Buffer.alloc(0),
                 stampPayments: [],
               },
+              networkTag: Buffer.from('fixture'),
             },
           ],
     )
     .mockRejectedValue(new Error('fixture end of feed'))
+  mailbox.fetchMonadMailboxInboxPage.mockImplementation(async () => ({
+    messages: await feed.fetchMonadMessagesSince(),
+    nextCursor: undefined,
+  }))
   const sends: Array<{ processed: boolean; history: unknown; text: string }> =
     []
   common.sendDirectMessageText.mockImplementation(

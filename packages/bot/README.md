@@ -556,8 +556,33 @@ conversation history under `QWEN_BOT_STATE_DIR` (default `~/.frank-bots/qwen`, o
 `QWEN_BOT_WALLET_STATE_DIR` (default `~/.frank-bots/qwen-wallet`, or under
 `$XDG_STATE_HOME`). On restart it reconciles that
 wallet authority before funding or signing anything new, then resumes the persisted mailbox
-cursor. Set `QWEN_BOT_MESSAGE_SINCE_MS=<unix milliseconds>` only for a new state root or an
-intentional historical backfill.
+scan. On a new root, `QWEN_BOT_MESSAGE_SINCE_MS=<unix milliseconds>` sets the replay origin;
+otherwise the pre-funding startup time is used. The origin is saved once. Changing the variable
+on restart does not rebind an existing scan.
+
+The `inbox-scan:v1` record binds the scan to the canonical bot identity, relay URL and network.
+An existing legacy `__since__`, response, processed marker or conversation cannot prove that
+earlier inputs were retained: first adoption replays the relay's retained inbox from origin **0**,
+preserving all old processed/response rows. A response may have committed before the first
+`__since__` checkpoint, so a missing timestamp alone does not make the store new.
+This is an additive namespace; it does not rewrite or delete old state. A changed context or
+malformed record stops ingress without erasing data. Use the original context to resume.
+
+Each authenticated mailbox page and its exact opaque continuation are committed in one synced
+Level batch before any imported turn reaches Qwen or a reply payment. Pending `inbox:v1:<hash>`
+rows contain ciphertext, timestamp, network and local admission order, with account/relay context
+owned by the immutable scan record. A completed sweep starts another sweep from the fixed origin,
+so late equal-timestamp inputs are discovered. Saved stale/foreign-epoch tokens are cleared durably
+and retried without a token at most once per poll; a no-token rejection remains an error.
+
+Named local limits are 100 messages / 4 MiB + 16 KiB per page (the existing relay ceiling),
+two page requests per poll, and 1,000 pending
+inputs / 16 MiB pending ciphertext. A full page that exceeds local capacity leaves the checkpoint
+unchanged and pauses admission; no pending row is evicted. Missing keys, policy/budget deferrals,
+unsupported envelopes and unavailable decryption remain pending. An authenticated, deterministic
+rejection retains only a fixed disposition and hash. Model ownership atomically removes the inbox
+ciphertext as it creates `model-started`. Terminal identities deliberately grow with replayable
+history; total storage is not constant and there is no tombstone garbage collector.
 
 Qwen responses have a separate input-keyed record (`response:v1:<inbound payload hash>`) in
 `QWEN_BOT_STATE_DIR/qwen-bot-state`. The bot fsyncs the generated response and proposed history
@@ -578,23 +603,23 @@ keep it local and do not paste its contents into diagnostic logs or tickets.
 A held diagnostic includes the inbound hash and a fixed reason. Stop the bot and preserve both
 state roots before investigating that record alongside the wallet journals. There is deliberately
 no automatic release/reset command in this stage: #703 owns exact outbound-envelope and wallet
-attempt reconciliation. Later turns from the held peer are deferred with a diagnostic; other
-peers proceed. Those later inputs are not durably queued yet, so retain/replay them during operator
-recovery; #704 owns mailbox cursor/import atomicity. This does not complete #168 or promise
+attempt reconciliation. Later admitted turns from the held peer remain durably pending in order;
+other peers proceed. This does not complete #168 or promise
 exactly-once provider execution in the model-call/persistence crash window.
 
 Safe rollback: stop the bot and back up both state roots and its identity. Do not run older bot
-code against these roots while any nonterminal response row exists: old code ignores those rows
-and could repeat a paid send. Preserve the rows and keep the bot stopped until a compatible
+code against these roots while any pending inbox or nonterminal response row exists: old code
+ignores those rows and could skip input or repeat a paid send. Preserve the rows and keep the bot stopped until a compatible
 version or reviewed reconciliation is available. Never delete the state root to clear a held turn.
 
-Credential-free regression fixtures run the real CLI in stub mode with local Level state and
-mock relay/payment boundaries. The CLI interruption fixture rejects the send-start transition
-after saving the response, then runs normal cleanup and reopens. Separate state-store child
-process tests use SIGKILL after durable writes without Close/flush; they do not kill the full CLI.
+Credential-free regression fixtures run the real CLI in stub mode with local Level state,
+the public authenticated mailbox client, and local relay/model/payment fixtures. CLI child tests
+use SIGKILL immediately after synced page, model-ownership and confirmation commits without
+Close/flush. Fault tests cover uncertain batch completion, stale imports, concurrent drains,
+capacity, context rejection and privacy. These fixtures do not prove live relay or chain finality.
 
 ```sh
-yarn workspace @frank/bot test --runInBand qwen-bot-loop qwen-response-workflow
+yarn workspace @frank/bot test --runInBand qwen-inbound-workflow qwen-bot-loop qwen-bot.livecheck qwen-response-workflow
 ```
 
 In a separate shell, once the bot prints its address (or is already running from a prior run —

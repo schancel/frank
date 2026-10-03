@@ -75,6 +75,8 @@ pub(crate) fn recipient_signature_work() -> usize {
 pub struct Registry {
     /// Database storing the address metadata in RocksDB.
     db: Db,
+    /// Lazy private canonical Forum sidecar and serialized publication/snapshot owner.
+    forum: crate::forum::Owner,
     /// Ecc for verifying secp256k1 signatures.
     ecc: EccSecp256k1,
     /// Chain boundary used for testing and broadcasting burn txs. Lotus-backed today (see
@@ -211,12 +213,18 @@ use self::RegistryError::*;
 impl Registry {
     /// Construct new [`Registry`]
     pub fn new(db: Db, chain_adapter: Arc<dyn ChainAdapter>, net: Net) -> Self {
+        let forum = crate::forum::Owner::new(db.owned_path().to_path_buf());
         Registry {
             db,
+            forum,
             ecc: EccSecp256k1::default(),
             chain_adapter,
             net,
         }
+    }
+
+    pub(crate) fn forum(&self) -> &crate::forum::Owner {
+        &self.forum
     }
 
     /// Read a signed [`proto::AddressMetadata`] entry from the database.

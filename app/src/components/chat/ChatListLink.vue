@@ -8,7 +8,10 @@
   >
     <q-item-section avatar>
       <q-avatar rounded>
-        <img src="~assets/stamp-icon.png" v-if="!icon" />
+        <img
+          src="~assets/brand-plainspoken/raster/plainspoken-transparent-512.png"
+          v-if="!icon"
+        />
         <q-icon :name="icon" v-if="icon" />
       </q-avatar>
     </q-item-section>

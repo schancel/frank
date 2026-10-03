@@ -10,6 +10,7 @@
  * Never point anything holding real value at it.
  *
  * Control/inspection: `GET /_ctl` returns every transaction seen, `[{hash, from, to, valueWei}]`.
+ * Explicit simulated credit: `/_ctl/demo-funding`, enabled only by the fake launcher; see README.md.
  *
  * CORS (#361): every response carries `Access-Control-Allow-Origin: *` and OPTIONS preflights get a
  * 204, so a browser app on another origin (the Quasar dev server) can reach it. `*` is safe HERE
@@ -17,15 +18,22 @@
  * real RPC and nothing in it may be copied into one.
  *
  * Persistence (#361 follow-up): with `stateFile` the ledger (balances, nonces, accepted raw
- * transactions) is written after every accepted transaction and reloaded on the next start, so a
+ * transactions) is written after every accepted transaction or simulated credit and reloaded on the next start, so a
  * restarted demo keeps every profile's balance and the bots' nonces. A file that cannot be parsed
  * is refused (never silently replaced by an empty chain).
  */
+import { randomBytes } from 'crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { createServer, IncomingMessage, Server, ServerResponse } from 'http'
 import { dirname } from 'path'
 
-import { Transaction } from 'ethers'
+import { isAddress, Transaction } from 'ethers'
+
+import {
+  DEMO_FUNDING_AMOUNT_WEI,
+  DEMO_FUNDING_KIND,
+  DEMO_FUNDING_PATH,
+} from './demo-funding'
 
 const CHAIN_ID = 10143
 /** Starting balance of each `funded` address: far more than any demo spends. */
@@ -111,7 +119,18 @@ export async function startFakeRpc(params: {
   funded?: string[]
   /** JSON file the ledger is persisted to (created 0600, parent directory created). */
   stateFile?: string
+  /** Explicit launcher-only simulated funding capability; requires loopback and persistence. */
+  demoFunding?: boolean
 }): Promise<FakeRpc> {
+  const host = params.host ?? '127.0.0.1'
+  if (params.demoFunding && (host !== '127.0.0.1' || !params.stateFile)) {
+    throw new Error(
+      'Demo funding requires a persisted built-in loopback fake chain',
+    )
+  }
+  const fundingToken = params.demoFunding
+    ? randomBytes(32).toString('hex')
+    : undefined
   const txs = new Map<string, Transaction>()
   const nonces = new Map<string, number>()
   const balances = new Map<string, bigint>()
@@ -285,6 +304,82 @@ export async function startFakeRpc(params: {
       res.end()
       return
     }
+    if (req.url === DEMO_FUNDING_PATH) {
+      const reply = (status: number, value: unknown) => {
+        res.statusCode = status
+        res.setHeader('content-type', 'application/json')
+        res.setHeader('cache-control', 'no-store')
+        res.end(JSON.stringify(value))
+      }
+      if (!fundingToken) {
+        reply(404, { error: 'Simulated funding unavailable' })
+        return
+      }
+      if (req.method === 'GET') {
+        reply(200, {
+          kind: DEMO_FUNDING_KIND,
+          token: fundingToken,
+          amountWei: DEMO_FUNDING_AMOUNT_WEI,
+        })
+        return
+      }
+      if (
+        req.method !== 'POST' ||
+        req.headers['x-frank-demo-funding'] !== fundingToken
+      ) {
+        reply(403, { error: 'Fake-chain funding capability required' })
+        return
+      }
+      let body = ''
+      req.on('data', chunk => {
+        if (res.writableEnded) return
+        body += chunk
+        if (Buffer.byteLength(body) > 1024)
+          reply(413, { error: 'Funding request too large' })
+      })
+      req.on('end', () => {
+        if (res.writableEnded) return
+        let input: { evmReceiveAddress: string; amountWei: string }
+        try {
+          input = JSON.parse(body)
+          if (
+            !input ||
+            Object.keys(input).sort().join(',') !== 'amountWei,evmReceiveAddress' ||
+            typeof input.evmReceiveAddress !== 'string' ||
+            !isAddress(input.evmReceiveAddress) ||
+            input.amountWei !== DEMO_FUNDING_AMOUNT_WEI
+          )
+            throw new Error('invalid input')
+        } catch {
+          reply(400, {
+            error: 'Expected an EVM receive address and the fixed simulated amount',
+          })
+          return
+        }
+        const address = input.evmReceiveAddress.toLowerCase()
+        const previous = balances.get(address)
+        const current = previous ?? 0n
+        const floor = BigInt(DEMO_FUNDING_AMOUNT_WEI)
+        const balance = current < floor ? floor : current
+        balances.set(address, balance)
+        try {
+          // Even a no-op retry verifies durability before reporting success.
+          persist()
+        } catch {
+          if (previous === undefined) balances.delete(address)
+          else balances.set(address, previous)
+          reply(500, { error: 'Simulated ledger credit could not be persisted' })
+          return
+        }
+        reply(200, {
+          kind: DEMO_FUNDING_KIND,
+          evmReceiveAddress: address,
+          balanceWei: balance.toString(),
+          creditedWei: (balance - current).toString(),
+        })
+      })
+      return
+    }
     if (req.method === 'GET' && req.url === '/_ctl') {
       const list: FakeChainTx[] = [...txs.values()].map(t => ({
         hash: t.hash as string,
@@ -312,7 +407,6 @@ export async function startFakeRpc(params: {
   }
 
   const server: Server = createServer(onRequest)
-  const host = params.host ?? '127.0.0.1'
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
     server.listen(params.port, host, () => resolve())

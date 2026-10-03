@@ -27,9 +27,9 @@
       "resource": 30,
       "schema": 147,
       "semantic": 57,
-      "unsupported": 22
+      "unsupported": 23
     },
-    "reject_count": 328
+    "reject_count": 329
   },
   "rust_origin_ids": [
     "rust-fixture-direct-message",

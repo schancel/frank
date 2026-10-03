@@ -81,8 +81,7 @@ pub fn default_context() -> ValidationContext {
     ValidationContext {
         operation: Operation::Typed,
         route_byte_limit: MAX_FRAME_BYTES as u64,
-        // Reader version 2 reads type 4 at schema 3 (the stamp key and profile entries, README
-        // S10a.1 and M4); every other type stays at schema 1.
+        // Reader version 2 reads type 4 at schema 3 and the production type-5 DM at schema 2.
         reader_version: 2,
         supported_schemas: KNOWN_TYPES
             .iter()
@@ -91,6 +90,8 @@ pub fn default_context() -> ValidationContext {
                 type_id,
                 schema_version: if type_id == TYPE_DIRECTORY_STATEMENT {
                     3
+                } else if type_id == TYPE_RECIPIENT_PAYLOAD {
+                    2
                 } else {
                     1
                 },
@@ -366,6 +367,30 @@ fn process_frame(
         );
     }
     let highest_schema = known.expect("known type");
+    // Suite 1 authenticates the complete schema-2 field set. A future type-5 schema needs an
+    // updated authenticated context before this reader may project or retain its extensions.
+    if env.type_id == crate::limits::TYPE_RECIPIENT_PAYLOAD && env.schema_version > highest_schema {
+        return Err(fail(
+            ErrorCategory::Unsupported,
+            ErrorStage::S7,
+            format!(
+                "type 5 schema {} requires an updated authenticated context",
+                env.schema_version
+            ),
+            location,
+        ));
+    }
+    if env.type_id == crate::limits::TYPE_RECIPIENT_PAYLOAD
+        && env.schema_version == 2
+        && env.min_reader_version != 2
+    {
+        return Err(fail(
+            ErrorCategory::Unsupported,
+            ErrorStage::S7,
+            "type 5 schema 2 requires min_reader_version 2",
+            location,
+        ));
+    }
     let projection = if env.schema_version > highest_schema {
         Projection::NewerSchema
     } else {
@@ -394,7 +419,7 @@ fn process_frame(
         ));
     }
     let draft = relocating(location, {
-        check_type_limits(parsed.type_id, &parsed.payload)?;
+        check_type_limits(parsed.type_id, &parsed.payload, parsed.schema_version)?;
         let draft = parse_draft(
             parsed.type_id,
             &parsed.payload,
@@ -861,23 +886,27 @@ fn open_children(
             })
         }
         Draft::Recipient {
+            schema_version,
             network,
             sender,
             recipient,
             suite,
             nonce,
             ciphertext,
+            crypto_box_envelope,
             ephemeral_point,
             shared_point,
             dleq_proof,
             unknown,
         } => Ok(TypedPayload::RecipientPayload {
+            schema_version,
             network,
             sender,
             recipient,
             suite,
             nonce,
             ciphertext,
+            crypto_box_envelope,
             ephemeral_point,
             shared_point,
             dleq_proof,

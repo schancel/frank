@@ -20,11 +20,13 @@ import {
   ENC_LENGTH,
   ENVELOPE_VERSION,
   KEM_SECP256K1,
+  LEGACY_ENVELOPE_VERSION,
   MAX_MESSAGE,
   MAX_PADDING,
   MODE_AUTH,
   RESERVED_PROOF_SUITE_ID,
   SALT_LENGTH,
+  SUITE_AUTH_XCHACHA,
   type SuiteSpec,
   suiteById,
 } from './ids.js'
@@ -406,6 +408,12 @@ export function open(args: OpenArgs): SuiteResult<Uint8Array> {
   if (!sender.ok) return sender
   const envelope = decodeEnvelope(args.envelope)
   if (envelope === null) return fail({ code: 'envelope' })
+  // Suite 1 has exactly one production wire encoding: deterministic-CBOR envelope v2.
+  if (
+    envelope.suiteId === SUITE_AUTH_XCHACHA &&
+    envelope.version === LEGACY_ENVELOPE_VERSION
+  )
+    return fail({ code: 'envelope' })
   if (envelope.kemId !== KEM_SECP256K1) return fail({ code: 'envelope' })
   const spec = selectSuite(envelope.suiteId)
   if (!spec.ok) return spec

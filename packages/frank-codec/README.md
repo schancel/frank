@@ -13,12 +13,12 @@ the compatibility contract.
 
 ## Encryption suites
 
-This package owns Frank-CBOR field layout, including the version-1 encryption-suite
-field. Version 1 allocates no production encryption suite. Suite 65535 is reserved
-for opaque proof-vector ciphertext (spec S2c) and is not a production suite.
-`@frank/crypto-box` registry ids `0xFE01`, `0xFE02`, `0xFE03`, and `0xFE04` are
-not version-1 encryption-suite allocations (decision 356). A crypto-box envelope
-is not a frame. This codec marshals and unmarshals frames. A digest or
+This package owns Frank-CBOR field layout. Type-5 schema 2 allocates production
+suite 1 to crypto-box authenticated XChaCha20-Poly1305. Suite 65535 remains
+reserved for schema-1 opaque proof-vector ciphertext (spec S2c).
+Private crypto-box registry ids `0xFE01`, `0xFE02`, and `0xFE03` are not
+Frank-CBOR encryption-suite allocations. A crypto-box envelope is not a frame.
+This codec marshals and unmarshals frames. A digest or
 ciphertext is a byte array passed into `@frank/nakamoto` or `@frank/crypto-box`.
 Nakamoto still owns the HD nodes, keys, and transactions that do the signing.
 Nakamoto does not parse CBOR. Crypto-box does not parse Frank/CashWeb CBOR; it
@@ -46,7 +46,8 @@ Implemented (against the spec as merged on main):
 - Topic events: type 9 (post), type 10 (post plus its burn transaction), and type 11 (vote),
   with the R6 limits and the S11 network equality. The burn transaction is opaque bytes here;
   verifying it against the chain (T8) belongs to the relay, not to this codec.
-- The stamp fields of #198 through stage 9: type-5 fields 6-8 (`E`, `X`, the DLEQ proof) with the
+- The stamp fields of #198 through stage 9: type-5 schema-1 fields 6-8 and schema-2 fields 5-7
+  (`E`, `X`, the DLEQ proof) with the
   T3b encoding rules (33-byte compressed point on the curve, `x < p`, prefix 02/03; proof
   scalars `c` and `s` each in `1..n-1`), the type-4 schema-2 stamp key (field 8, required from
   schema 2, undefined in schema 1, key type 1, S10a.1), the same-subject schema order (S10a.2),
@@ -62,8 +63,8 @@ Not implemented:
 - Stage 10.1-10.5 for type-1 roots: no payment verification or decrypted-frame opening. Calling
   `full` for type 1 fails with a context error; stage 10.6 is implemented only for type 2.
 - T3a stamp destination derivation and the T3b DLEQ proof (verify or prove), the S10a.4 binding
-  of `P'` to a directory state, and the remaining type-1 `cryptographic` checks. Type-5 fields 6-8
-  are checked for encoding only; a well-formed but wrong proof is accepted at `typed`.
+  of `P'` to a directory state, and the remaining type-1 `cryptographic` checks. The type-5 stamp
+  fields are checked for encoding only; a well-formed but wrong proof is accepted at `typed`.
 - The stage-10 vectors of the #198 type-1 list (README section 10). The typed ones are in the
   manifest. The separate account-registration corpus covers type-2 stage 10.6.
 

@@ -10,12 +10,13 @@ import type { Encodable, ParsedFrame } from '../src'
 import {
   M,
   NET,
+  T3C,
   acct1,
   acct2,
   attestationFrame,
   bytesOf,
   concatBytes,
-  deliveryFrame,
+  deliveryPayload,
   fact,
   fr,
   framePayload,
@@ -182,15 +183,29 @@ describe('type-specific limits (R2-R4)', () => {
     expect(outcome(p(524_289))).toBe('resource@8.1')
   })
 
-  /** A type-5 child at schema 2 padded with an unknown field so the parent hits a byte size. */
+  it('classifies schema-1 nonce length before applying schema-2 envelope limits', () => {
+    const legacy = new Map(type5Payload())
+    legacy.set(4, new Uint8Array(524_377))
+    expect(outcome(fr(5, legacy, 1, 1))).toBe('schema@8.2')
+
+    const production = new Map<number, Encodable>([
+      [0, NET],
+      [1, acct2(9)],
+      [2, acct1(3)],
+      [3, 1],
+      [4, new Uint8Array(524_377)],
+      [5, T3C.ephemeral],
+      [6, T3C.shared],
+      [7, T3C.proof],
+    ])
+    expect(outcome(fr(5, production, 2, 2))).toBe('resource@8.1')
+  })
+
+  /** A newer type-1 root projected through schema 1 with one padding field. */
   const paddedDelivery = (pad: number): Uint8Array => {
-    const child = fr(
-      5,
-      new Map<number, Encodable>([...type5Payload(), [9, new Uint8Array(pad)]]),
-      2,
-      1,
-    )
-    return deliveryFrame({ payloadFrame: child, payments: 2 })
+    const payload = deliveryPayload({ payments: 2 })
+    payload.set(5, new Uint8Array(pad))
+    return fr(1, payload, 2, 1)
   }
 
   it('bounds a type-1 frame at 1 MiB (R2) using the root frame length', () => {

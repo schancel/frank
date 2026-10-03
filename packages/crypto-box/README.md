@@ -3,8 +3,8 @@
 Versioned deniable encryption. This package owns suite ids, the KEM, the KDF, the AEAD, envelope bytes, and the vectors for those suites. `seal` returns a deterministic RFC 8949 CBOR envelope; `open` consumes that format and the read-only legacy envelope described below.
 
 The CashWeb semantics, allocation boundaries, and deployment status are indexed by
-[`docs/CASHWEB-PROTOCOL-SPEC.md`](../../docs/CASHWEB-PROTOCOL-SPEC.md). Crypto-box registry IDs are
-not FRNK direct-message suite allocations.
+[`docs/CASHWEB-PROTOCOL-SPEC.md`](../../docs/CASHWEB-PROTOCOL-SPEC.md). Suite 1 is the Frank-CBOR
+type-5 schema-2 production allocation; the remaining registry IDs are private library suites.
 
 Callers pass byte arrays in and get byte arrays out. This package does not read or write CashWeb CBOR. These envelopes are not the live relay protobuf or a Frank direct-message frame. The live relay path is still protobuf. `@frank/codec` and `frank-cbor` marshal frames and hand this package those bytes.
 
@@ -17,9 +17,11 @@ Envelope version 2 is a definite-length map with unsigned integer keys in canoni
 | `0xFE01` | base-aes-256-gcm        | base | AES-256-GCM        |
 | `0xFE02` | base-xchacha20-poly1305 | base | XChaCha20-Poly1305 |
 | `0xFE03` | auth-aes-256-gcm        | auth | AES-256-GCM        |
-| `0xFE04` | auth-xchacha20-poly1305 | auth | XChaCha20-Poly1305 |
+| `1`      | auth-xchacha20-poly1305 | auth | XChaCha20-Poly1305 |
 
 Suite id 65535 is reserved for proof vectors and is never produced. AES-CBC is not used.
+Suite 1 is accepted only in deterministic-CBOR envelope version 2; the legacy fixed layout remains
+read-only compatibility for private suites `0xFE01` through `0xFE03`.
 
 ## KEM
 

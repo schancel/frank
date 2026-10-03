@@ -3,8 +3,9 @@
 use crate::cbor::CborValue;
 use crate::error::{CodecError, ErrorCategory, ErrorStage};
 use crate::limits::{
-    ENCRYPTION_SUITE_PROOF, MAX_CIPHERTEXT_BYTES, MAX_DIRECTORY_ATTESTATION_FRAME_BYTES,
-    MAX_DIRECT_MESSAGE_FRAME_BYTES, MAX_FRAME_BYTES, MAX_JOURNAL_FACTS,
+    ENCRYPTION_SUITE_DM_AUTH_XCHACHA, ENCRYPTION_SUITE_PROOF, MAX_CIPHERTEXT_BYTES,
+    MAX_DIRECTORY_ATTESTATION_FRAME_BYTES, MAX_DIRECT_MESSAGE_FRAME_BYTES,
+    MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES, MAX_FRAME_BYTES, MAX_JOURNAL_FACTS,
     MAX_MESSAGE_ITEMS_PER_ARRAY, MAX_OPAQUE_SECTIONS, MAX_PAYMENT_MEMBERS, MAX_RELAY_BINDINGS,
     MAX_SIGNATURES, MAX_TEXT_STRING_BYTES, MAX_TOPIC_BODY_BYTES, MAX_TOPIC_FRAME_BYTES,
     MAX_TOPIC_VOTE_FRAME_BYTES, TYPE_CONTAINER_ITEM, TYPE_DIRECTORY_ATTESTATION,
@@ -298,7 +299,11 @@ fn map_field(payload: &CborValue, key: u64) -> Option<&CborValue> {
 }
 
 /// R2-R4 counts read from the decoded fields, before typed conversion.
-pub(crate) fn check_type_limits(type_id: u32, payload: &CborValue) -> Result<(), CodecError> {
+pub(crate) fn check_type_limits(
+    type_id: u32,
+    payload: &CborValue,
+    schema_version: u32,
+) -> Result<(), CodecError> {
     if !matches!(payload, CborValue::Map(_)) {
         return Ok(());
     }
@@ -335,7 +340,13 @@ pub(crate) fn check_type_limits(type_id: u32, payload: &CborValue) -> Result<(),
             }
         }
         TYPE_RECIPIENT_PAYLOAD => {
-            if let Some(CborValue::Bytes(bytes)) = map_field(payload, 5) {
+            if schema_version >= 2 {
+                if let Some(CborValue::Bytes(bytes)) = map_field(payload, 4) {
+                    if bytes.len() > MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES {
+                        return Err(over("crypto-box envelope"));
+                    }
+                }
+            } else if let Some(CborValue::Bytes(bytes)) = map_field(payload, 5) {
                 if bytes.len() > MAX_CIPHERTEXT_BYTES {
                     return Err(over("ciphertext"));
                 }
@@ -462,12 +473,14 @@ pub(crate) enum Draft {
         unknown: Vec<(u64, CborValue)>,
     },
     Recipient {
+        schema_version: u32,
         network: String,
         sender: AccountRef,
         recipient: AccountRef,
         suite: u32,
-        nonce: Vec<u8>,
-        ciphertext: Vec<u8>,
+        nonce: Option<Vec<u8>>,
+        ciphertext: Option<Vec<u8>>,
+        crypto_box_envelope: Option<Vec<u8>>,
         ephemeral_point: Vec<u8>,
         shared_point: Vec<u8>,
         dleq_proof: Vec<u8>,
@@ -750,26 +763,63 @@ pub(crate) fn parse_draft(
             })
         }
         TYPE_RECIPIENT_PAYLOAD => {
-            let map = fields(
-                Some(payload),
-                path,
-                &[0, 1, 2, 3, 4, 5, 6, 7, 8],
-                &[],
-                true,
-                allow,
-            )?;
-            Ok(Draft::Recipient {
-                network: network_tag(map.get(0), &format!("{path}.0"))?,
-                sender: account(map.get(1), &format!("{path}.1"))?,
-                recipient: account(map.get(2), &format!("{path}.2"))?,
-                suite: u32_in(map.get(3), &format!("{path}.3"), 0, 65_535)?,
-                nonce: bstr(map.get(4), &format!("{path}.4"), 1, 64)?,
-                ciphertext: bstr(map.get(5), &format!("{path}.5"), 1, MAX_CIPHERTEXT_BYTES)?,
-                ephemeral_point: point(map.get(6), &format!("{path}.6"))?,
-                shared_point: point(map.get(7), &format!("{path}.7"))?,
-                dleq_proof: proof(map.get(8), &format!("{path}.8"))?,
-                unknown: map.unknown,
-            })
+            if schema.effective >= 2 {
+                let map = fields(
+                    Some(payload),
+                    path,
+                    &[0, 1, 2, 3, 4, 5, 6, 7],
+                    &[],
+                    true,
+                    allow,
+                )?;
+                Ok(Draft::Recipient {
+                    schema_version: 2,
+                    network: network_tag(map.get(0), &format!("{path}.0"))?,
+                    sender: account(map.get(1), &format!("{path}.1"))?,
+                    recipient: account(map.get(2), &format!("{path}.2"))?,
+                    suite: u32_in(map.get(3), &format!("{path}.3"), 0, 65_535)?,
+                    nonce: None,
+                    ciphertext: None,
+                    crypto_box_envelope: Some(bstr(
+                        map.get(4),
+                        &format!("{path}.4"),
+                        1,
+                        MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES,
+                    )?),
+                    ephemeral_point: point(map.get(5), &format!("{path}.5"))?,
+                    shared_point: point(map.get(6), &format!("{path}.6"))?,
+                    dleq_proof: proof(map.get(7), &format!("{path}.7"))?,
+                    unknown: map.unknown,
+                })
+            } else {
+                let map = fields(
+                    Some(payload),
+                    path,
+                    &[0, 1, 2, 3, 4, 5, 6, 7, 8],
+                    &[],
+                    true,
+                    allow,
+                )?;
+                Ok(Draft::Recipient {
+                    schema_version: 1,
+                    network: network_tag(map.get(0), &format!("{path}.0"))?,
+                    sender: account(map.get(1), &format!("{path}.1"))?,
+                    recipient: account(map.get(2), &format!("{path}.2"))?,
+                    suite: u32_in(map.get(3), &format!("{path}.3"), 0, 65_535)?,
+                    nonce: Some(bstr(map.get(4), &format!("{path}.4"), 1, 64)?),
+                    ciphertext: Some(bstr(
+                        map.get(5),
+                        &format!("{path}.5"),
+                        1,
+                        MAX_CIPHERTEXT_BYTES,
+                    )?),
+                    crypto_box_envelope: None,
+                    ephemeral_point: point(map.get(6), &format!("{path}.6"))?,
+                    shared_point: point(map.get(7), &format!("{path}.7"))?,
+                    dleq_proof: proof(map.get(8), &format!("{path}.8"))?,
+                    unknown: map.unknown,
+                })
+            }
         }
         crate::limits::TYPE_ENCRYPTED_CONTENT => {
             let map = fields(Some(payload), path, &[0, 1, 2, 3], &[], true, allow)?;
@@ -970,11 +1020,14 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             sender,
             recipient,
             suite,
+            schema_version,
             ..
         } => {
             check_key_type(sender, &format!("{path}.1"))?;
             check_key_type(recipient, &format!("{path}.2"))?;
-            if *suite != ENCRYPTION_SUITE_PROOF {
+            if (*schema_version == 1 && *suite != ENCRYPTION_SUITE_PROOF)
+                || (*schema_version == 2 && *suite != ENCRYPTION_SUITE_DM_AUTH_XCHACHA)
+            {
                 return Err(unsupported(
                     &format!("{path}.3"),
                     format!("encryption suite {suite} is unallocated (S2c)"),

@@ -44,6 +44,8 @@ pub(crate) const MAX_TOPIC_BODY_BYTES: usize = 524_288;
 pub(crate) const MAX_PAYMENT_MEMBERS: usize = 64;
 /// Ciphertext bytes in one recipient payload.
 pub(crate) const MAX_CIPHERTEXT_BYTES: usize = 524_288;
+/// Complete deterministic-CBOR crypto-box envelope, including bounded overhead.
+pub(crate) const MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES: usize = MAX_CIPHERTEXT_BYTES + 88;
 /// Relay bindings in one statement.
 pub(crate) const MAX_RELAY_BINDINGS: usize = 32;
 /// Signature entries in one attestation.
@@ -89,7 +91,9 @@ pub const KNOWN_TYPES: [u32; 13] = [
     TYPE_TEXT_ITEM,
 ];
 
-/// Proof-only encryption suite (S2c). Production suites are unallocated.
+/// Frank-CBOR production DM suite (S2c): authenticated XChaCha20-Poly1305.
+pub(crate) const ENCRYPTION_SUITE_DM_AUTH_XCHACHA: u32 = 1;
+/// Proof-only encryption suite (S2c).
 pub(crate) const ENCRYPTION_SUITE_PROOF: u32 = 65_535;
 
 pub(crate) fn is_known_type(type_id: u32) -> bool {

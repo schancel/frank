@@ -2,6 +2,7 @@ import { FrankCodecError, defaultContext, validateFrame } from '../src'
 import { isCompressedPoint, isProofEncoding } from '../src/point'
 import {
   T3C,
+  M,
   deliveryFrame,
   fr,
   stampAccount,
@@ -86,6 +87,33 @@ describe('typed exposure of the stamp fields', () => {
     if (s.kind !== 'parsed' || s.typed?.type !== 4) throw new Error('not typed')
     expect(s.typed.stampKey).toEqual({ keyType: 1, keyBytes: T3C.stampKey })
     expect(s.typed.schemaVersion).toBe(2)
+  })
+
+  it('types production suite 1 only in type-5 schema 2', () => {
+    const payload = M([
+      [0, 'monad-testnet'],
+      [1, acct1(9)],
+      [2, acct1(3)],
+      [3, 1],
+      [4, Uint8Array.of(0xa0)],
+      [5, T3C.ephemeral],
+      [6, T3C.shared],
+      [7, T3C.proof],
+    ])
+    const parsed = validateFrame(fr(5, payload, 2, 2), ctx)
+    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 5)
+      throw new Error('not typed')
+    expect(parsed.typed.schemaVersion).toBe(2)
+    if (parsed.typed.schemaVersion !== 2) throw new Error('not schema 2')
+    expect(parsed.typed.cryptoBoxEnvelope).toEqual(Uint8Array.of(0xa0))
+    expect(outcome(fr(5, payload, 1, 1))).toBe('schema@8.2')
+    const proofSuite = new Map(payload)
+    proofSuite.set(3, 65535)
+    expect(outcome(fr(5, proofSuite, 2, 2))).toBe('unsupported@8.3')
+    expect(outcome(fr(5, payload, 2, 1))).toBe('unsupported@7')
+    const future = new Map(payload)
+    future.set(8, Uint8Array.of(1))
+    expect(outcome(fr(5, future, 3, 2))).toBe('unsupported@7')
   })
 
   it('does not compare the stamp key with the routing recipient (S8)', () => {

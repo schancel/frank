@@ -21,6 +21,7 @@
 
 mod cbor;
 mod crypto;
+mod dm;
 mod error;
 mod frame;
 mod hash;
@@ -34,6 +35,10 @@ mod validate;
 
 pub use cbor::{cbor_map, decode_canonical, encode_canonical, is_valid_canonical, CborValue};
 pub use crypto::{has_low_s, parse_strict_der, verify_algorithm_1};
+pub use dm::{
+    encode_direct_message_crypto_context, DirectMessageCryptoContext, DM_CRYPTO_CONTEXT_DOMAIN,
+    DM_CRYPTO_MIN_READER_VERSION, DM_CRYPTO_SCHEMA_VERSION, DM_CRYPTO_SUITE, DM_CRYPTO_TYPE,
+};
 pub use error::{CborPass, CodecError, ContextError, Error, ErrorCategory, ErrorStage, UsageError};
 pub use frame::{encode_frame, wrap_frame, EnvelopeFields, FramePayload};
 pub use hash::{

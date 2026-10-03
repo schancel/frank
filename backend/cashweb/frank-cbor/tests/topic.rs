@@ -290,19 +290,33 @@ fn t7_binds_network_and_target_and_needs_a_bounded_network() {
 fn the_pre_topic_corpus_behaves_identically_when_topic_types_are_listed() {
     let text_json = include_str!("../../../../docs/protocol/cbor/vectors/manifest.json");
     let manifest: serde_json::Value = serde_json::from_str(text_json).unwrap();
+    let mut pre_topic_context = common::typed_context();
+    pre_topic_context
+        .supported_schemas
+        .iter_mut()
+        .find(|schema| schema.type_id == 5)
+        .expect("type 5")
+        .schema_version = 1; // The frozen corpus predates the production DM schema.
+    let mut topic_only_context = topic_context();
+    topic_only_context
+        .supported_schemas
+        .iter_mut()
+        .find(|schema| schema.type_id == 5)
+        .expect("type 5")
+        .schema_version = 1;
     let mut checked = 0;
     for case in manifest["cases"].as_array().unwrap() {
         let before = context_from_json(&case["validation_context"]);
         // Only the default pre-topic reader: a case with its own list (such as one that omits a
         // type on purpose) is about that list, not about the new types.
-        if before.supported_schemas != common::typed_context().supported_schemas
+        if before.supported_schemas != pre_topic_context.supported_schemas
             || case["expectation"] == "retain" && case["id"].as_str().unwrap().starts_with("topic-")
         {
             continue;
         }
         let frame = hex::decode(case["frame_hex"].as_str().unwrap()).unwrap();
         let mut after = before.clone();
-        after.supported_schemas = topic_context().supported_schemas;
+        after.supported_schemas = topic_only_context.supported_schemas.clone();
         let run = |ctx: &frank_cbor::ValidationContext| match validate_frame(&frame, ctx) {
             Ok(ValidationResult::Frame(_)) => "frame".to_string(),
             Ok(ValidationResult::Parsed(_)) => "parsed".to_string(),

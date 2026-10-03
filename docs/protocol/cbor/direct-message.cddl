@@ -33,7 +33,8 @@ encrypted-message-content = {
   * uint => frank-value,
 }
 
-recipient-encrypted-payload = {
+; Type 5 schema 1 is retained for the permanently reserved proof fixture only.
+recipient-encrypted-payload-v1 = {
   0: network-tag,
   1: account-ref, ; routing sender identity, not transferable authorship proof
   2: account-ref, ; routing recipient identity
@@ -44,6 +45,39 @@ recipient-encrypted-payload = {
   7: stamp-point, ; X (README T3a)
   8: dleq-proof, ; DLEQ proof (README T3b)
   * uint => frank-value,
+}
+
+; Type 5 schema 2, min_reader_version 2, is the production DM payload.
+recipient-encrypted-payload-v2 = {
+  0: network-tag,
+  1: account-ref, ; routing sender identity, not transferable authorship proof
+  2: account-ref, ; routing recipient identity
+  3: 1, ; Frank-CBOR authenticated XChaCha20-Poly1305 suite
+  4: bstr .size (1..524376), ; complete deterministic-CBOR crypto-box v2 envelope
+  5: stamp-point, ; E (README T3a)
+  6: stamp-point, ; X (README T3a)
+  7: dleq-proof, ; DLEQ proof (README T3b)
+  * uint => frank-value,
+}
+
+; Deterministic-CBOR bytes passed as crypto-box `context`; not a FRNK frame.
+dm-crypto-context-v1 = {
+  0: "frank/dm-crypto-context/v1",
+  1: network-tag,
+  2: account-ref, ; routing sender
+  3: account-ref, ; routing recipient
+  4: digest-32, ; exact opened sender directory-statement T1 hash
+  5: digest-32, ; exact opened recipient directory-statement T1 hash
+  6: account-ref, ; sender message-DH key M, key type 1
+  7: account-ref, ; recipient message-DH key M, key type 1
+  8: account-ref, ; recipient stamp key P', key type 1
+  9: stamp-point, ; E
+  10: stamp-point, ; X
+  11: dleq-proof,
+  12: 1, ; suite
+  13: 5, ; object type
+  14: 2, ; schema_version
+  15: 2, ; min_reader_version
 }
 
 message-content-revision = {

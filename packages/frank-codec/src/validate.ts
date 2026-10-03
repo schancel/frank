@@ -100,12 +100,16 @@ export function defaultContext(
   return {
     operation: 'typed',
     routeByteLimit: MAX_FRAME_BYTES,
-    // Reader version 2 reads type 4 at schema 3 (the stamp key from schema 2, the profile
-    // entries of section 11 from schema 3); every other type stays at schema 1.
+    // Reader version 2 reads type 4 at schema 3 and the production type-5 DM at schema 2.
     readerVersion: 2,
     supportedSchemas: KNOWN_TYPES.map(typeId => ({
       typeId,
-      schemaVersion: typeId === TYPE_DIRECTORY_STATEMENT ? 3 : 1,
+      schemaVersion:
+        typeId === TYPE_DIRECTORY_STATEMENT
+          ? 3
+          : typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
+          ? 2
+          : 1,
     })),
     opaqueRetentionAllowed: false,
     priorDirectoryStatementFrame: null,
@@ -291,6 +295,31 @@ function processFrame(
       `min_reader_version ${env.minReaderVersion} exceeds reader version (V6.1)`,
     )
   }
+  // Suite 1 authenticates the complete schema-2 field set. A future type-5 schema needs an
+  // updated authenticated context before this reader may project or retain its extensions.
+  if (
+    env.typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD &&
+    env.schemaVersion > highest
+  ) {
+    throw fail(
+      'unsupported',
+      '7',
+      `type 5 schema ${env.schemaVersion} requires an updated authenticated context`,
+      location,
+    )
+  }
+  if (
+    env.typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD &&
+    env.schemaVersion === 2 &&
+    env.minReaderVersion !== 2
+  ) {
+    throw fail(
+      'unsupported',
+      '7',
+      'type 5 schema 2 requires min_reader_version 2',
+      location,
+    )
+  }
   const projection = env.schemaVersion > highest ? 'newer-schema' : 'exact'
   const parsed: ParsedFrame = {
     kind: 'parsed',
@@ -314,7 +343,7 @@ function processFrame(
     )
   }
   const draft = relocating(location, () => {
-    checkTypeLimits(env.typeId, payload)
+    checkTypeLimits(env.typeId, payload, env.schemaVersion)
     // Stage 8.2 and 8.3: structure, then allocated identifiers.
     const d = parseDraft(env.typeId, payload, projection === 'newer-schema', {
       envelope: env.schemaVersion,

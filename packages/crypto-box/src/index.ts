@@ -1,6 +1,6 @@
 // @frank/crypto-box public surface. Browser-safe: no Node built-ins.
-// Suite 65535 is reserved and is never produced. Registry ids are not
-// Frank CBOR version-1 production suites (decision 356).
+// Suite 1 is the Frank-CBOR authenticated XChaCha20-Poly1305 DM suite.
+// Suite 65535 is proof-only and is never produced.
 
 import { producedSuiteIds, RESERVED_PROOF_SUITE_ID } from './ids.js'
 

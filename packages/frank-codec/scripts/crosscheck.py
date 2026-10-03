@@ -8,7 +8,8 @@ It shares no code with packages/frank-codec/src. It checks:
     retention): whenever this implementation fails there the manifest must expect that exact
     category, and for `frame`/`generic` cases an implementation success must be an accept;
   * for every `typed` accept case, the T1 content hash;
-  * the README T3b encoding rules for type-5 fields 6-8 and the type-4 field-8 presence rule
+  * the README T3b encoding rules for legacy type-5 schema-1 fields 6-8 and the type-4 field-8
+    presence rule
     (stage 8.2), over the `stamp-t5-` and `stamp-t4-schema` vectors;
   * the complete account-registration corpus of README section 11 (stages 1-9 for the
     type-2/type-4 shapes, stage 10.6 with a pure-Python strict-DER low-S secp256k1 ECDSA

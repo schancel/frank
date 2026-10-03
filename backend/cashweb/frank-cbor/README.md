@@ -28,11 +28,11 @@ wired. Type-1 decryption, T3/DLEQ/payment observation and the rest of stages
 
 ## Encryption suites
 
-Version 1 allocates no production encryption suite. Suite 65535 is reserved for
-opaque proof-vector ciphertext and must not be emitted by a production writer.
-`@frank/crypto-box` registry ids `0xFE01`, `0xFE02`, `0xFE03`, and `0xFE04` are
-not version-1 encryption-suite allocations (decision 356). A crypto-box envelope
-is not a frame. This crate marshals and unmarshals frames. A digest or
+Type-5 schema 2 allocates production suite 1 to crypto-box authenticated
+XChaCha20-Poly1305. Suite 65535 remains reserved for schema-1 opaque proof-vector
+ciphertext and must not be emitted by a production writer. Private crypto-box
+registry ids `0xFE01`, `0xFE02`, and `0xFE03` are not Frank-CBOR
+encryption-suite allocations. A crypto-box envelope is not a frame. This crate marshals and unmarshals frames. A digest or
 ciphertext is a byte array passed into nakamoto or crypto-box. Nakamoto still
 owns the HD nodes, keys, and transactions that do the signing. Nakamoto does
 not parse CBOR. Crypto-box does not parse Frank/CashWeb CBOR; it privately

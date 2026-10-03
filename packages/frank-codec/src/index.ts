@@ -45,6 +45,13 @@ export {
 } from './registration'
 export { hasLowS, parseStrictDer, verifyAlgorithm1 } from './verify'
 export { compareAccounts, compareBytes } from './semantic'
+export {
+  DM_CRYPTO_CONTEXT_DOMAIN,
+  DM_CRYPTO_MIN_READER_VERSION,
+  DM_CRYPTO_SCHEMA_VERSION,
+  encodeDirectMessageCryptoContext,
+} from './dm-context'
+export type { DirectMessageCryptoContext } from './dm-context'
 export type { TopicPostFields, TopicVoteDirection } from './topic'
 export {
   TOPIC_CBOR_CALLDATA_LENGTH,

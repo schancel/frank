@@ -169,6 +169,23 @@ Scoped format/clippy, production-boundary restart/failure/concurrency/resource t
 are required before integration. No active route, DM, profile consumer, writer
 or default codec context is switched by this enabling stage.
 
+The private persistence gate is `cargo test --locked -p cashweb-registry --lib
+directory_preview -- --test-threads=1`. It uses real temporary RocksDB databases,
+process exits immediately before/after synchronous commit, injected boundary
+write failures, concurrent calls, corrupt/partial records, and a complete valid
+older database snapshot. It also signs and stores an actual 4096-record history
+and a separate near-16MiB charged history; those are not mocked counters. The
+counter/budget probes in the shared corpus are executed separately in this gate.
+
+The initial full private gate took 522.72 seconds on the local unoptimized build,
+dominated by actual full-cap authentication/reopen proof. This is not an
+operational latency guarantee. Before route adoption, release-build maximum
+history latency and contention under the single directory lock require a
+separate performance assessment. Every operation currently reauthenticates
+bounded retained history; no throughput claim or caching trust shortcut is
+part of this stage. Process-exit and boundary-fault tests establish the stated
+old-or-complete-new recovery behavior, not hardware power-loss guarantees.
+
 Before adoption, rollback can remove the unused additive facade and namespace
 definition while preserving any created records. Once records are relied upon,
 changes to their meaning require an explicit migration. Trust provisioning,

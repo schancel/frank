@@ -597,3 +597,7 @@ impl<'a> Directory<'a> {
         Ok(state.proof.into_iter().map(|r| r.evidence).collect())
     }
 }
+
+#[cfg(test)]
+#[path = "../directory_admission/storage_tests.rs"]
+mod tests;

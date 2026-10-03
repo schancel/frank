@@ -278,7 +278,11 @@ async fn main() -> Result<()> {
         .into_iter()
         .map(Peer::new)
         .collect::<Vec<_>>();
-    let peers = Arc::new(Peers::new(conf.url.to_string(), our_peers));
+    let peers = Arc::new(Peers::new_with_public_relays(
+        conf.url.to_string(),
+        our_peers,
+        conf.registry.public_relay_urls,
+    ));
 
     let imd_params = InitialMetadataDownloadParams {
         public_store: PublicFederationStore::new(registry.as_ref()),

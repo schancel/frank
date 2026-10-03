@@ -8,9 +8,9 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 
 use axum::{
@@ -102,8 +102,24 @@ pub(crate) struct RequestCorrelation {
 }
 
 struct PermitBody {
-    inner: BoxBody,
-    _permit: OwnedSemaphorePermit,
+    state: Arc<Mutex<PermitBodyState>>,
+}
+
+struct PermitBodyState {
+    inner: Option<BoxBody>,
+    permit: Option<OwnedSemaphorePermit>,
+    waker: Option<Waker>,
+}
+
+impl Drop for PermitBody {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.inner.take();
+        state.permit.take();
+        if let Some(waker) = state.waker.take() {
+            waker.wake();
+        }
+    }
 }
 
 impl HttpBody for PermitBody {
@@ -111,31 +127,75 @@ impl HttpBody for PermitBody {
     type Error = axum::Error;
 
     fn poll_data(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Self::Data, Self::Error>>> {
-        Pin::new(&mut self.inner).poll_data(cx)
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(inner) = state.inner.as_mut() else {
+            return Poll::Ready(None);
+        };
+        let result = Pin::new(inner).poll_data(cx);
+        match &result {
+            Poll::Pending => state.waker = Some(cx.waker().clone()),
+            // Keep the body alive through `poll_trailers`; dropping it here would silently
+            // discard legitimate upstream trailers. Consumers that do not poll trailers still
+            // release everything when they drop the body (or when the delivery timer expires).
+            Poll::Ready(None) => {
+                state.waker.take();
+            }
+            Poll::Ready(Some(_)) => {}
+        }
+        result
     }
 
     fn poll_trailers(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<axum::http::HeaderMap>, Self::Error>> {
-        Pin::new(&mut self.inner).poll_trailers(cx)
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(inner) = state.inner.as_mut() else {
+            return Poll::Ready(Ok(None));
+        };
+        let result = Pin::new(inner).poll_trailers(cx);
+        match &result {
+            Poll::Pending => state.waker = Some(cx.waker().clone()),
+            Poll::Ready(_) => {
+                state.inner.take();
+                state.permit.take();
+                state.waker.take();
+            }
+        }
+        result
     }
 }
 
 /// Keep upstream admission charged until the downstream response body is
-/// completely consumed or dropped by the transport.
-pub(crate) fn hold_response_permit(response: Response, permit: OwnedSemaphorePermit) -> Response {
+/// completely consumed or dropped by the transport, subject to a hard total
+/// delivery lifetime that also drops any owned response spool.
+pub(crate) fn hold_response_permit(
+    response: Response,
+    permit: OwnedSemaphorePermit,
+    delivery_timeout: Duration,
+) -> Response {
     let (parts, body) = response.into_parts();
-    Response::from_parts(
-        parts,
-        boxed(PermitBody {
-            inner: body,
-            _permit: permit,
-        }),
-    )
+    let state = Arc::new(Mutex::new(PermitBodyState {
+        inner: Some(body),
+        permit: Some(permit),
+        waker: None,
+    }));
+    let expiry_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        tokio::time::sleep(delivery_timeout).await;
+        let mut state = expiry_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.inner.take();
+        state.permit.take();
+        if let Some(waker) = state.waker.take() {
+            waker.wake();
+        }
+    });
+    Response::from_parts(parts, boxed(PermitBody { state }))
 }
 
 /// Decode and spool an upstream response under a strict byte ceiling.
@@ -371,6 +431,12 @@ fn is_single_response_envelope(value: &Value, version: JsonRpcVersion) -> bool {
     }
     let has_result = response.contains_key("result");
     let has_error = response.contains_key("error");
+    if response
+        .keys()
+        .any(|key| !matches!(key.as_str(), "jsonrpc" | "id" | "result" | "error"))
+    {
+        return false;
+    }
     match version {
         JsonRpcVersion::Legacy => {
             matches!(
@@ -601,10 +667,7 @@ impl<R: BufRead> ResponseParser<R> {
                         });
                     }
                 }
-                _ => {
-                    let token = self.lexer.next_token(false)?;
-                    self.lexer.skip_value(token, 0)?;
-                }
+                _ => return Err(StreamInspectError::Invalid),
             }
             match self.lexer.next_token(false)?.kind {
                 TokenKind::Comma => continue,
@@ -1240,6 +1303,11 @@ mod tests {
             "i".repeat(MAX_RPC_ID_BYTES + 1)
         );
         assert!(inspect(oversized_id.as_bytes(), &[json!("unused")]).is_err());
+        assert!(inspect(
+            br#"{"jsonrpc":"2.0","id":1,"result":true,"debug":"provider-secret"}"#,
+            &[json!(1)]
+        )
+        .is_err());
         let oversized_request = format!(
             r#"{{"jsonrpc":"2.0","id":"{}","method":"eth_chainId","params":[]}}"#,
             "i".repeat(MAX_RPC_ID_BYTES + 1)
@@ -1321,12 +1389,55 @@ mod tests {
     async fn response_permit_lives_until_body_is_consumed() {
         let permits = Arc::new(Semaphore::new(1));
         let permit = Arc::clone(&permits).try_acquire_owned().unwrap();
-        let response = hold_response_permit("ok".into_response(), permit);
+        let response = hold_response_permit("ok".into_response(), permit, Duration::from_secs(10));
         assert!(Arc::clone(&permits).try_acquire_owned().is_err());
         assert_eq!(
             hyper::body::to_bytes(response.into_body()).await.unwrap(),
             "ok"
         );
         assert!(Arc::clone(&permits).try_acquire_owned().is_ok());
+    }
+
+    #[tokio::test]
+    async fn response_delivery_guard_preserves_trailers() {
+        let permits = Arc::new(Semaphore::new(1));
+        let permit = Arc::clone(&permits).try_acquire_owned().unwrap();
+        let (mut sender, body) = Body::channel();
+        tokio::spawn(async move {
+            sender.send_data(Bytes::from_static(b"ok")).await.unwrap();
+            let mut trailers = axum::http::HeaderMap::new();
+            trailers.insert("x-upstream-proof", "present".parse().unwrap());
+            sender.send_trailers(trailers).await.unwrap();
+        });
+        let response =
+            hold_response_permit(Response::new(boxed(body)), permit, Duration::from_secs(10));
+        let mut guarded = response.into_body();
+        assert_eq!(guarded.data().await.unwrap().unwrap(), "ok");
+        assert!(guarded.data().await.is_none());
+        assert!(Arc::clone(&permits).try_acquire_owned().is_err());
+        let trailers = guarded.trailers().await.unwrap().unwrap();
+        assert_eq!(trailers["x-upstream-proof"], "present");
+        assert!(Arc::clone(&permits).try_acquire_owned().is_ok());
+    }
+
+    #[tokio::test]
+    async fn response_delivery_deadline_releases_permit_and_spool_without_polling() {
+        let permits = Arc::new(Semaphore::new(1));
+        let permit = Arc::clone(&permits).try_acquire_owned().unwrap();
+        let named = tempfile::NamedTempFile::new().unwrap();
+        let path_buf = named.path().to_path_buf();
+        let (_file, path) = named.into_parts();
+        let body = ResponseSpool { path }.into_body(Vec::new()).await.unwrap();
+        let response = hold_response_permit(
+            Response::new(boxed(body)),
+            permit,
+            Duration::from_millis(10),
+        );
+        assert!(path_buf.exists());
+        assert!(Arc::clone(&permits).try_acquire_owned().is_err());
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!path_buf.exists());
+        assert!(Arc::clone(&permits).try_acquire_owned().is_ok());
+        drop(response);
     }
 }

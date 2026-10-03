@@ -23,9 +23,14 @@ COPY packages/wallet/package.json packages/wallet/package.json
 COPY packages/bot/package.json packages/bot/package.json
 COPY packages/bn.js/package.json packages/bn.js/package.json
 COPY packages/bitcore-lib-xpi/package.json packages/bitcore-lib-xpi/package.json
+COPY packages/crypto-box/package.json packages/crypto-box/package.json
+COPY packages/frank-codec/package.json packages/frank-codec/package.json
+COPY packages/nakamoto/package.json packages/nakamoto/package.json
 RUN yarn install --frozen-lockfile
 
 COPY . .
+RUN yarn --cwd packages/nakamoto tsc -p tsconfig.json --pretty false \
+    && yarn --cwd packages/crypto-box tsc -p tsconfig.json --pretty false
 
 # Ticket #54: Quasar's own `QCLI_`-prefixed env var convention (confirmed live -- see that
 # ticket's commit) is what actually reaches `import.meta.env` in the built bundle. The SPA gets

@@ -27,6 +27,7 @@ url = "http://localhost:8080"
 db_path = "/data/registry.rocksdb"
 net = "mainnet"
 peers = []
+public_relay_urls = []
 
 [registry.monad_mailbox]
 enabled = true

@@ -63,6 +63,7 @@ const RPC_CAPABILITY_VERSION: u8 = 1;
 const MAX_WS_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_WS_SUBSCRIPTIONS: usize = 32;
 const MAX_WS_PENDING_REQUESTS: usize = 128;
+const MAX_WS_SUBSCRIPTION_ID_BYTES: usize = 256;
 // EVM clients batch when they can, but boot-time log scans and multi-account sweeps can still
 // legitimately exceed the mailbox's much smaller read cadence. This is replay-retention capacity,
 // not the usage limit; weighted fixed-hour quotas remain the resource-control boundary.
@@ -1384,7 +1385,7 @@ fn validate_ws_call(
                 .filter(|params| params.len() == 1)
                 .and_then(|params| params.first())
                 .and_then(Value::as_str)
-                .is_some();
+                .is_some_and(|subscription| subscription.len() <= MAX_WS_SUBSCRIPTION_ID_BYTES);
             if !valid {
                 return Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"));
             }
@@ -1448,6 +1449,12 @@ fn valid_ws_response(value: &Value) -> bool {
     };
     let has_result = object.contains_key("result");
     let error = object.get("error");
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "jsonrpc" | "id" | "result" | "error"))
+    {
+        return false;
+    }
     object.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
         && object.contains_key("id")
         && ((has_result && error.is_none()) || (!has_result && error.is_some_and(Value::is_object)))
@@ -1465,15 +1472,29 @@ fn ws_subscription_notification(value: &Value) -> Option<&str> {
     if params.len() != 2 || !params.contains_key("result") {
         return None;
     }
-    params.get("subscription")?.as_str()
+    params
+        .get("subscription")?
+        .as_str()
+        .filter(|subscription| subscription.len() <= MAX_WS_SUBSCRIPTION_ID_BYTES)
 }
 
-async fn bounded_ws_send<S, M>(sink: &mut S, message: M, timeout: Duration) -> bool
+fn ws_write_deadline(
+    pending: &HashMap<WsRpcId, WsPending>,
+    request_timeout: Duration,
+) -> tokio::time::Instant {
+    pending
+        .values()
+        .map(|request| request.deadline)
+        .min()
+        .unwrap_or_else(|| tokio::time::Instant::now() + request_timeout)
+}
+
+async fn bounded_ws_send<S, M>(sink: &mut S, message: M, deadline: tokio::time::Instant) -> bool
 where
     S: futures::Sink<M> + Unpin,
 {
     matches!(
-        tokio::time::timeout(timeout, sink.send(message)).await,
+        tokio::time::timeout_at(deadline, sink.send(message)).await,
         Ok(Ok(()))
     )
 }
@@ -1583,17 +1604,17 @@ async fn proxy_ws_connection<S>(
                 let _ = bounded_ws_send(
                     &mut client_write,
                     ws_error(id, -32002, "upstream request timed out"),
-                    request_timeout,
+                    ws_write_deadline(&pending, request_timeout),
                 ).await;
                 let _ = bounded_ws_send(
                     &mut client_write,
                     ClientWsMessage::Close(None),
-                    request_timeout,
+                    ws_write_deadline(&pending, request_timeout),
                 ).await;
                 let _ = bounded_ws_send(
                     &mut upstream_write,
                     UpstreamWsMessage::Close(None),
-                    request_timeout,
+                    ws_write_deadline(&pending, request_timeout),
                 ).await;
                 return;
             }
@@ -1604,37 +1625,37 @@ async fn proxy_ws_connection<S>(
                         let parsed = super::json_rpc::parse_without_duplicate_keys(text.as_bytes());
                         let id = parsed.as_ref().ok().and_then(|value| value.get("id")).cloned().unwrap_or(Value::Null);
                         let Ok(value) = parsed else {
-                            if !bounded_ws_send(&mut client_write, ws_error(id, -32600, "invalid request"), request_timeout).await { return; }
+                            if !bounded_ws_send(&mut client_write, ws_error(id, -32600, "invalid request"), ws_write_deadline(&pending, request_timeout)).await { return; }
                             continue;
                         };
                         let Some(id_key) = WsRpcId::from_value(&id) else {
-                            if !bounded_ws_send(&mut client_write, ws_error(Value::Null, -32600, "invalid request id"), request_timeout).await { return; }
+                            if !bounded_ws_send(&mut client_write, ws_error(Value::Null, -32600, "invalid request id"), ws_write_deadline(&pending, request_timeout)).await { return; }
                             continue;
                         };
                         if pending.len() >= MAX_WS_PENDING_REQUESTS || pending.contains_key(&id_key) {
-                            if !bounded_ws_send(&mut client_write, ws_error(id, -32005, "pending request limit exceeded"), request_timeout).await { return; }
+                            if !bounded_ws_send(&mut client_write, ws_error(id, -32005, "pending request limit exceeded"), ws_write_deadline(&pending, request_timeout)).await { return; }
                             continue;
                         }
                         let Ok((cost, subscribes)) = validate_ws_call(&value, &chain) else {
-                            if !bounded_ws_send(&mut client_write, ws_error(id, -32601, "method denied by relay"), request_timeout).await { return; }
+                            if !bounded_ws_send(&mut client_write, ws_error(id, -32601, "method denied by relay"), ws_write_deadline(&pending, request_timeout)).await { return; }
                             continue;
                         };
                         if subscribes {
                             subscription_attempts = subscription_attempts.saturating_add(1);
                             if subscription_attempts > MAX_WS_SUBSCRIPTIONS {
-                                if !bounded_ws_send(&mut client_write, ws_error(id, -32005, "subscription limit exceeded"), request_timeout).await { return; }
+                                if !bounded_ws_send(&mut client_write, ws_error(id, -32005, "subscription limit exceeded"), ws_write_deadline(&pending, request_timeout)).await { return; }
                                 continue;
                             }
                         }
                         let request_permit = match Arc::clone(&request_permits).try_acquire_owned() {
                             Ok(permit) => permit,
                             Err(_) => {
-                                if !bounded_ws_send(&mut client_write, ws_error(id, -32005, "relay busy"), request_timeout).await { return; }
+                                if !bounded_ws_send(&mut client_write, ws_error(id, -32005, "relay busy"), ws_write_deadline(&pending, request_timeout)).await { return; }
                                 continue;
                             }
                         };
                         if quota.charge(customer, cost.units, now_seconds()).is_err() {
-                            if !bounded_ws_send(&mut client_write, ws_error(id, -32005, "hourly quota exceeded"), request_timeout).await { return; }
+                            if !bounded_ws_send(&mut client_write, ws_error(id, -32005, "hourly quota exceeded"), ws_write_deadline(&pending, request_timeout)).await { return; }
                             continue;
                         }
                         let method = value.get("method").and_then(Value::as_str);
@@ -1658,17 +1679,17 @@ async fn proxy_ws_connection<S>(
                             deadline: tokio::time::Instant::now() + request_timeout,
                             _permit: request_permit,
                         });
-                        if !bounded_ws_send(&mut upstream_write, UpstreamWsMessage::Text(text), request_timeout).await {
+                        if !bounded_ws_send(&mut upstream_write, UpstreamWsMessage::Text(text), ws_write_deadline(&pending, request_timeout)).await {
                             pending.remove(&id_key);
                             break;
                         }
                     }
                     ClientWsMessage::Ping(payload) => {
-                        if !bounded_ws_send(&mut client_write, ClientWsMessage::Pong(payload), request_timeout).await { break; }
+                        if !bounded_ws_send(&mut client_write, ClientWsMessage::Pong(payload), ws_write_deadline(&pending, request_timeout)).await { break; }
                     }
                     ClientWsMessage::Close(_) => break,
                     ClientWsMessage::Binary(_) => {
-                        if !bounded_ws_send(&mut client_write, ws_error(Value::Null, -32600, "binary requests are not supported"), request_timeout).await { return; }
+                        if !bounded_ws_send(&mut client_write, ws_error(Value::Null, -32600, "binary requests are not supported"), ws_write_deadline(&pending, request_timeout)).await { return; }
                     }
                     ClientWsMessage::Pong(_) => {}
                 }
@@ -1678,18 +1699,20 @@ async fn proxy_ws_connection<S>(
                 match upstream {
                     UpstreamWsMessage::Text(text) => {
                         let Ok(mut value) = super::json_rpc::parse_without_duplicate_keys(text.as_bytes()) else { break; };
+                        let mut delivery_deadline = ws_write_deadline(&pending, request_timeout);
                         if let Some(id) = value.get("id").cloned() {
                             if !valid_ws_response(&value) {
                                 break;
                             }
                             let Some(id_key) = WsRpcId::from_value(&id) else { break; };
                             let Some(request) = pending.remove(&id_key) else { break; };
+                            delivery_deadline = delivery_deadline.min(request.deadline);
                             if request.deadline <= tokio::time::Instant::now() {
                                 pending.clear();
                                 let _ = bounded_ws_send(
                                     &mut client_write,
                                     ws_error(request.id, -32002, "upstream request timed out"),
-                                    request_timeout,
+                                    delivery_deadline,
                                 ).await;
                                 return;
                             }
@@ -1697,6 +1720,9 @@ async fn proxy_ws_connection<S>(
                                 match request.kind {
                                     WsPendingKind::Subscribe => {
                                         let Some(subscription) = value.get("result").and_then(Value::as_str) else { break; };
+                                        if subscription.len() > MAX_WS_SUBSCRIPTION_ID_BYTES {
+                                            break;
+                                        }
                                         active_subscriptions.insert(subscription.to_string());
                                     }
                                     WsPendingKind::Unsubscribe(subscription) => {
@@ -1714,10 +1740,10 @@ async fn proxy_ws_connection<S>(
                             }
                         }
                         super::json_rpc::sanitize_response_errors(&mut value);
-                        if !bounded_ws_send(&mut client_write, ClientWsMessage::Text(value.to_string()), request_timeout).await { break; }
+                        if !bounded_ws_send(&mut client_write, ClientWsMessage::Text(value.to_string()), delivery_deadline).await { break; }
                     }
                     UpstreamWsMessage::Ping(payload) => {
-                        if !bounded_ws_send(&mut upstream_write, UpstreamWsMessage::Pong(payload), request_timeout).await { break; }
+                        if !bounded_ws_send(&mut upstream_write, UpstreamWsMessage::Pong(payload), ws_write_deadline(&pending, request_timeout)).await { break; }
                     }
                     UpstreamWsMessage::Close(_) => break,
                     UpstreamWsMessage::Binary(_) => break,
@@ -1898,7 +1924,9 @@ async fn proxy_rpc_inner(
         axum::http::HeaderValue::from_static("application/json"),
     );
     Ok(crate::http::json_rpc::hold_response_permit(
-        response, permit,
+        response,
+        permit,
+        runtime.timeout,
     ))
 }
 

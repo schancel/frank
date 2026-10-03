@@ -54,6 +54,13 @@ function transcriptPrefix(domain: string, network: string): Uint8Array {
   )
 }
 
+function compressedPoint(bytes: Uint8Array, name: string) {
+  if (bytes.length !== 33 || (bytes[0] !== 0x02 && bytes[0] !== 0x03)) {
+    throw new Error(`${name} must be a 33-byte compressed SEC1 point`)
+  }
+  return pointFromBytes(bytes)
+}
+
 function challenge(
   network: string,
   stampKey: Uint8Array,
@@ -96,7 +103,7 @@ export function createFrankStampProof(params: {
   if (utf8ToBytes(params.network).length > 0xffff) {
     throw new RangeError('network UTF-8 encoding does not fit u16')
   }
-  const stampPoint = pointFromBytes(params.stampKey)
+  const stampPoint = compressedPoint(params.stampKey, 'stampKey')
   const e =
     params.ephemeralSecret === undefined
       ? randomScalar()
@@ -121,7 +128,9 @@ export function createFrankStampProof(params: {
       )
     } catch {
       if (params.proofNonce !== undefined) {
-        throw new Error('provided proof nonce produced an out-of-range challenge')
+        throw new Error(
+          'provided proof nonce produced an out-of-range challenge',
+        )
       }
       continue
     }
@@ -152,9 +161,9 @@ export function verifyFrankStampProof(params: {
     if (params.proof.length !== 64) return false
     const c = scalarFromBytesCanonical(params.proof.subarray(0, 32), false)
     const s = scalarFromBytesCanonical(params.proof.subarray(32), false)
-    const stampPoint = pointFromBytes(params.stampKey)
-    const ephemeral = pointFromBytes(params.ephemeralPoint)
-    const shared = pointFromBytes(params.sharedPoint)
+    const stampPoint = compressedPoint(params.stampKey, 'stampKey')
+    const ephemeral = compressedPoint(params.ephemeralPoint, 'ephemeralPoint')
+    const shared = compressedPoint(params.sharedPoint, 'sharedPoint')
     const r1 = G.multiply(s).subtract(ephemeral.multiply(c))
     const r2 = stampPoint.multiply(s).subtract(shared.multiply(c))
     return (

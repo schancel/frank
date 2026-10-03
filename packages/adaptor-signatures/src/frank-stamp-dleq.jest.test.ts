@@ -3,6 +3,7 @@ import {
   frankStampDeterministicNonce,
   verifyFrankStampProof,
 } from './frank-stamp-dleq'
+import { pointFromBytes } from './curve'
 
 const hex = (value: string): Uint8Array =>
   Uint8Array.from(Buffer.from(value, 'hex'))
@@ -60,4 +61,51 @@ it('rejects an overlong network before entering the proof nonce loop', () => {
       ephemeralSecret,
     }),
   ).toThrow('network UTF-8 encoding does not fit u16')
+})
+
+it('rejects uncompressed T3b points in proving and verification', () => {
+  const uncompressedStampKey = pointFromBytes(stampKey).toRawBytes(false)
+  expect(() =>
+    createFrankStampProof({
+      network: 'monad',
+      stampKey: uncompressedStampKey,
+      ephemeralSecret,
+    }),
+  ).toThrow('stampKey must be a 33-byte compressed SEC1 point')
+
+  const material = createFrankStampProof({
+    network: 'monad',
+    stampKey,
+    ephemeralSecret,
+    proofNonce: hex(expectedNonce),
+  })
+  const uncompressedEphemeral = pointFromBytes(
+    material.ephemeralPoint,
+  ).toRawBytes(false)
+  const uncompressedShared = pointFromBytes(material.sharedPoint).toRawBytes(
+    false,
+  )
+  expect(
+    verifyFrankStampProof({
+      network: 'monad',
+      stampKey: uncompressedStampKey,
+      ...material,
+    }),
+  ).toBe(false)
+  expect(
+    verifyFrankStampProof({
+      network: 'monad',
+      stampKey,
+      ...material,
+      ephemeralPoint: uncompressedEphemeral,
+    }),
+  ).toBe(false)
+  expect(
+    verifyFrankStampProof({
+      network: 'monad',
+      stampKey,
+      ...material,
+      sharedPoint: uncompressedShared,
+    }),
+  ).toBe(false)
 })

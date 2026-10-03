@@ -655,6 +655,9 @@ describe('main-account native attempt admission (#724)', () => {
       acknowledge: () => {
         unknown = false
       },
+      loseAcknowledgment: () => {
+        unknown = true
+      },
       send: () =>
         chain.nativeTransfers.send({ wallet, recipient, value: WEIGHT }),
     }
@@ -880,6 +883,27 @@ describe('main-account native attempt admission (#724)', () => {
     expect(f.rawAttempts).toHaveLength(3)
     expect(Transaction.from(f.rawAttempts[2]).nonce).toBe(1)
     expect(puts).toHaveLength(1)
+  })
+
+  it('keeps a later unknown attempt held when its hash was previously acknowledged', async () => {
+    const f = await open()
+    relay()
+    f.acknowledge()
+    await f.send()
+    // A stale pending-nonce response produces identical bytes for the next same-value send.
+    f.wallet.provider.getTransactionCount = async () => 0
+    f.loseAcknowledgment()
+    await expect(f.send()).rejects.toBeInstanceOf(
+      NativeTransactionSubmissionError,
+    )
+    expect(f.rawAttempts[1]).toBe(f.rawAttempts[0])
+    await expect(f.send()).rejects.toBeInstanceOf(
+      NativeTransactionSubmissionError,
+    )
+    await expect(actions[0][1](f.chain, f.wallet)).rejects.toBeInstanceOf(
+      TopicBurnPreparationError,
+    )
+    expect(f.rawAttempts).toHaveLength(2)
   })
 
   it('holds concurrent native admission until funding releases the shared account lock', async () => {

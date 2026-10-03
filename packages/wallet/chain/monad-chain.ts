@@ -322,7 +322,8 @@ async function reconcileNativeAdmission(
     sameChainTransaction(persisted, admission.lastSubmitted)
   ) {
     // Preserve the existing policy: this owner already received submission acknowledgment.
-    admission.unresolved = undefined;
+    // A later submission of identical bytes can still have lost its acknowledgment.
+    if (admission.unresolved !== undefined) throw admission.unresolved.error;
     return;
   }
   if (

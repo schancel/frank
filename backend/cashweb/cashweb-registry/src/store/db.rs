@@ -113,6 +113,8 @@ pub struct Db {
     monad_profile_lock: Mutex<()>,
     /// Serializes compare-and-batch topic-author admission inside this process.
     monad_topic_lock: Mutex<()>,
+    /// Lazy separate store; ordinary legacy startup never opens or modifies preview storage.
+    directory_preview_owner: super::directory_preview_owner::Owner,
 }
 
 /// Errors indicating something went wrong with the database itself.
@@ -164,6 +166,19 @@ impl Db {
         DbMetadata::new(self)
     }
 
+    /// Explicitly open an unused preview directory subject with installed trust and continuity.
+    /// Opening validates retained history but does not grant a fresh head.
+    pub fn directory_preview(
+        &self,
+        anchor: crate::directory_admission::Anchor,
+        mode: crate::directory_admission::OpenMode,
+    ) -> std::result::Result<
+        crate::directory_admission::Directory<'_>,
+        crate::directory_admission::AdmissionError,
+    > {
+        super::directory_preview::Directory::open(self, anchor, mode)
+    }
+
     /// Returns `DbTopics`, allowing access to registry metadata.
     pub fn topics(&self) -> DbTopics<'_> {
         DbTopics::new(self)
@@ -204,11 +219,13 @@ impl Db {
         db_options.create_if_missing(true);
         db_options.create_missing_column_families(true);
         let db = rocksdb::DB::open_cf_descriptors(&db_options, path, cfs).wrap_err(RocksDb)?;
+        let registry_path = std::fs::canonicalize(db.path()).wrap_err(RocksDb)?;
         Ok(Db {
             db,
             monad_outbox_lock: Mutex::new(()),
             monad_profile_lock: Mutex::new(()),
             monad_topic_lock: Mutex::new(()),
+            directory_preview_owner: super::directory_preview_owner::Owner::new(registry_path),
         })
     }
 
@@ -262,6 +279,16 @@ impl Db {
         self.monad_topic_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn open_directory_preview(
+        &self,
+        mode: crate::directory_admission::OpenMode,
+    ) -> std::result::Result<
+        std::sync::Arc<super::directory_preview_owner::Store>,
+        crate::directory_admission::AdmissionError,
+    > {
+        self.directory_preview_owner.open(mode)
     }
 }
 

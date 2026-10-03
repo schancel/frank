@@ -15,6 +15,12 @@ import {
 const mockGetBalance = jest.fn()
 let mockSeed = 'a'
 const mockWallets: Record<string, Promise<unknown>> = {}
+jest.mock('../accounts/session', () => ({
+  accountStatus: jest
+    .requireActual('vue')
+    .reactive({ status: 'ready', revision: 1 }),
+}))
+const mockAccount = jest.requireMock('../accounts/session').accountStatus
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
@@ -77,6 +83,8 @@ describe('useBalance', () => {
     mockGetBalance.mockReset()
     mockGetBalance.mockResolvedValue(1n)
     mockSeed = 'a'
+    mockAccount.status = 'ready'
+    mockAccount.revision = 1
     for (const k of Object.keys(mockWallets)) delete mockWallets[k]
     jest.spyOn(Math, 'random').mockReturnValue(0.5)
     errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -362,6 +370,7 @@ describe('useBalance', () => {
       const wrapper = mount(Consumer)
       await advance(0)
       mockSeed = 'b'
+      mockAccount.revision++
       mockGetBalance.mockResolvedValueOnce(2n)
       await refresh()
       await nextTick()
@@ -373,7 +382,7 @@ describe('useBalance', () => {
       wrapper.unmount()
     })
 
-    it('ignores an old-wallet response that lands after a seed change with no newer fetch', async () => {
+    it('automatically refreshes the new revision and ignores a late old-wallet response', async () => {
       let resolveOld: (v: bigint) => void = () => undefined
       mockGetBalance.mockReturnValueOnce(
         new Promise<bigint>(r => (resolveOld = r)),
@@ -381,9 +390,11 @@ describe('useBalance', () => {
       const wrapper = mount(Consumer)
       await advance(0)
       mockSeed = 'b'
+      mockAccount.revision++
       resolveOld(99n)
       await advance(0)
-      expect(loadedNow()).toBe(false)
+      expect(loadedNow()).toBe(true)
+      expect(wrapper.text()).toBe('1 MON')
       wrapper.unmount()
     })
 
@@ -393,6 +404,7 @@ describe('useBalance', () => {
       await advance(0)
       expect(loadedNow()).toBe(true)
       mockSeed = 'b'
+      mockAccount.revision++
       mockGetBalance.mockRejectedValue(new Error('rpc down'))
       await refresh()
       expect(loadedNow()).toBe(false)
@@ -406,6 +418,7 @@ describe('useBalance', () => {
       await advance(0)
       first.unmount()
       mockSeed = 'b'
+      mockAccount.revision++
       mockGetBalance.mockReturnValueOnce(new Promise(() => undefined))
       const second = mount(Consumer)
       await advance(0)

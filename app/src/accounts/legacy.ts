@@ -35,6 +35,11 @@ export async function assertLegacyUnchanged(revision: number) {
     throw new Error('Existing account changed; restart explicitly')
 }
 
+/** Retry only the original read-only adapter; never rewrite quarantined bytes. */
+export async function retryLegacyInspection() {
+  if (storage) await inspectLegacyWallet(storage)
+}
+
 /** Explicit local migration only. No wallet, network, or persistence is constructed. */
 export async function identifyLegacyAccount(phrase: string): Promise<string> {
   if (phrase.length > 512) throw new Error('Invalid legacy phrase')

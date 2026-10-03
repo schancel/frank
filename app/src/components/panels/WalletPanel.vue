@@ -16,10 +16,19 @@
         <q-item-section
           ><q-item-label> {{ $t('accountRecovery.main_wallet') }} </q-item-label
           ><q-item-label caption role="status" data-test="wallet-balance">{{
-            loaded ? formattedBalance : 'Balance unavailable'
+            loaded
+              ? formattedBalance
+              : $t(
+                  hasError
+                    ? 'accountRecovery.balance_unavailable'
+                    : 'accountRecovery.balance_loading',
+                )
           }}</q-item-label></q-item-section
         >
       </q-item>
+      <p v-if="loaded && hasError" role="status" data-test="balance-stale">
+        {{ $t('accountRecovery.balance_stale') }}
+      </p>
     </q-list>
     <section v-if="account.account" class="q-pa-sm">
       <h2 class="text-subtitle1">
@@ -41,8 +50,12 @@
       <q-btn
         flat
         :label="$t('accountRecovery.copy_public_descriptor')"
+        data-test="copy-descriptor"
         @click="copyDescriptor"
       />
+      <p role="status" aria-live="polite" data-test="copy-status">
+        {{ copyStatus }}
+      </p>
       <p class="recovery-text">
         {{ $t('accountRecovery.fingerprint') }}
         {{ account.account.fingerprint }}
@@ -76,13 +89,14 @@ import {
 } from '../../accounts/session'
 import { useBalance } from '../../composables/useBalance'
 import { ensureDemoBalance } from '@frank/bot/demo/demo-funding'
-const { loaded, formattedBalance, refresh } = useBalance()
+const { loaded, hasError, formattedBalance, refresh } = useBalance()
 const fakeChain = String(import.meta.env.QCLI_FRANK_FAKE_DEMO) === 'true'
 const rpcUrl = import.meta.env.QCLI_FRANK_DEMO_CONTROL_URL ?? ''
 const loopback = /^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})$/.exec(rpcUrl)
 const demoEnabled = fakeChain && !!loopback && Number(loopback[1]) <= 65535
 const funding = ref(false)
 const fundingStatus = ref('')
+const copyStatus = ref('')
 async function fund() {
   if (!demoEnabled || funding.value) return
   funding.value = true
@@ -107,8 +121,9 @@ async function copyDescriptor() {
   if (!account.account) return
   try {
     await navigator.clipboard.writeText(account.account.descriptor)
+    copyStatus.value = 'Public descriptor copied.'
   } catch {
-    fundingStatus.value =
+    copyStatus.value =
       'Copy unavailable. Save the displayed public descriptor manually.'
   }
 }

@@ -1,4 +1,10 @@
 export const en = {
+  pending_retry:
+    'Pending account cleanup could not finish. Your active account is unchanged. Retry or cancel this attempt before starting another.',
+  balance_loading: 'Loading balance…',
+  balance_unavailable: 'Balance unavailable. Retrying.',
+  balance_stale:
+    'Last known balance — refresh failed. This value may be out of date.',
   profile_unavailable:
     'Public profile publishing and direct messaging are not yet available for this account. No legacy directory identity will be published. Your local account name is unchanged.',
   open_navigation: 'Open navigation',
@@ -88,6 +94,12 @@ export const en = {
 }
 
 export const fr = {
+  pending_retry:
+    'Le nettoyage du compte en attente a échoué. Le compte actif est inchangé. Réessayez ou annulez cette tentative avant d’en commencer une autre.',
+  balance_loading: 'Chargement du solde…',
+  balance_unavailable: 'Solde indisponible. Nouvelle tentative.',
+  balance_stale:
+    'Dernier solde connu — l’actualisation a échoué. Cette valeur peut être périmée.',
   profile_unavailable:
     'La publication du profil et la messagerie directe ne sont pas encore disponibles pour ce compte. Aucune identité ne sera publiée dans l’ancien annuaire. Le nom local du compte reste inchangé.',
   open_navigation: 'Ouvrir la navigation',

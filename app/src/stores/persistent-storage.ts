@@ -5,6 +5,7 @@ import {
   queryPersistentStorage,
   mayRequestOnLaunch,
   requestPersistentStorage,
+  requestPersistentStorageWithin,
 } from 'src/utils/persistent-storage'
 import { accountStatus } from '../accounts/session'
 
@@ -15,6 +16,15 @@ import { accountStatus } from '../accounts/session'
 export const usePersistentStorageStore = defineStore('persistentStorage', {
   state: (): { status: PersistentStorageStatus } => ({ status: 'unknown' }),
   actions: {
+    /** Called once by an explicit successful activation; never blocks account readiness. */
+    async afterActivation() {
+      if (accountStatus.status !== 'ready') return
+      try {
+        this.status = await requestPersistentStorageWithin(1000)
+      } catch {
+        this.status = 'unknown'
+      }
+    },
     async refresh() {
       this.status = await queryPersistentStorage()
     },

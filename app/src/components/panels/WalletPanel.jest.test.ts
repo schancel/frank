@@ -6,6 +6,8 @@ import en from '../../i18n/en-us'
 const mockEnsure = jest.fn(async () => ({}))
 const mockReceive = '0x1111111111111111111111111111111111111111'
 const mockRefresh = jest.fn(async () => undefined)
+const mockLoaded = ref(true)
+const mockError = ref(false)
 jest.mock('@frank/bot/demo/demo-funding', () => ({
   ensureDemoBalance: (...args: unknown[]) => mockEnsure(...args),
 }))
@@ -27,7 +29,8 @@ jest.mock('../../accounts/session', () => ({
 }))
 jest.mock('../../composables/useBalance', () => ({
   useBalance: () => ({
-    loaded: ref(true),
+    loaded: mockLoaded,
+    hasError: mockError,
     formattedBalance: ref('0 MON'),
     refresh: mockRefresh,
   }),
@@ -55,6 +58,8 @@ afterEach(() => {
   delete process.env.QCLI_FRANK_FAKE_DEMO
   delete process.env.QCLI_FRANK_DEMO_CONTROL_URL
   mockEnsure.mockClear()
+  mockLoaded.value = true
+  mockError.value = false
 })
 test('normal mode has no fake-funding action and accurately disables messaging', () => {
   const view = render()
@@ -92,4 +97,42 @@ test('an unavailable fake capability reports bounded failure without changing th
     'Your account remains active',
   )
   expect(view.text()).not.toContain('PRIVATE-ERROR-SENTINEL')
+})
+test('cached success becomes visibly stale after a failed refresh', async () => {
+  const view = render()
+  expect(view.find('[data-test="balance-stale"]').exists()).toBe(false)
+  mockError.value = true
+  await flushPromises()
+  expect(view.get('[data-test="wallet-balance"]').text()).toBe('0 MON')
+  expect(view.get('[data-test="balance-stale"]').text()).toContain(
+    'out of date',
+  )
+  mockLoaded.value = false
+  await flushPromises()
+  expect(view.get('[data-test="wallet-balance"]').text()).toContain(
+    'unavailable',
+  )
+  mockError.value = false
+  await flushPromises()
+  expect(view.get('[data-test="wallet-balance"]').text()).toContain('Loading')
+})
+test('clipboard denial is visible and announced when fake demo is disabled', async () => {
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: {
+      writeText: jest.fn(async () => {
+        throw new Error('denied')
+      }),
+    },
+  })
+  const view = render()
+  await view.get('[data-test="copy-descriptor"]').trigger('click')
+  await flushPromises()
+  expect(view.find('[data-test="demo-fund"]').exists()).toBe(false)
+  expect(view.get('[data-test="copy-status"]').attributes('aria-live')).toBe(
+    'polite',
+  )
+  expect(view.get('[data-test="copy-status"]').text()).toContain(
+    'Copy unavailable',
+  )
 })

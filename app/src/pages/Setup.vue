@@ -50,10 +50,25 @@
           <q-btn
             :label="$t('accountRecovery.retry_opening_account')"
             :loading="busy"
+            data-test="retry-account"
             @click="retry"
           />
         </template>
         <template v-else-if="account.pending">
+          <p
+            v-if="account.pendingError"
+            role="status"
+            data-test="pending-error"
+          >
+            {{ $t('accountRecovery.pending_retry') }}
+          </p>
+          <q-btn
+            v-if="account.pendingError"
+            :label="$t('accountRecovery.retry_opening_account')"
+            data-test="retry-pending"
+            :disable="busy"
+            @click="retry"
+          />
           <p>
             {{ $t('accountRecovery.a_saved_account_attempt_is_pending_it') }}
           </p>
@@ -78,8 +93,14 @@
           <q-btn
             flat
             :label="$t('accountRecovery.cancel_pending_attempt')"
+            data-test="cancel-pending"
             :disable="busy"
             @click="cancelPending"
+          />
+          <q-btn
+            v-if="account.status === 'ready'"
+            :label="$t('accountRecovery.return_to_wallet')"
+            @click="$router.push('/wallet')"
           />
         </template>
         <template v-else-if="account.status !== 'loading'">
@@ -371,7 +392,9 @@ import {
 import {
   identifyLegacyAccount,
   legacyStatus as legacy,
+  retryLegacyInspection,
 } from '../accounts/legacy'
+import { usePersistentStorageStore } from '../stores/persistent-storage'
 defineProps<{ myDrawerOpen?: boolean }>()
 const emit = defineEmits(['toggleMyDrawerOpen', 'setupCompleted'])
 const router = useRouter()
@@ -545,6 +568,7 @@ function activate() {
       pending.expectedActive,
     )
     if (account.status !== 'ready') return
+    void usePersistentStorageStore().afterActivation()
     emit('setupCompleted')
     await router.push('/wallet')
   })
@@ -558,7 +582,10 @@ function cancelPending() {
   })
 }
 function retry() {
-  return run(() => accountSession.retry())
+  return run(async () => {
+    await retryLegacyInspection()
+    await accountSession.retry()
+  })
 }
 async function copy(text: string) {
   try {

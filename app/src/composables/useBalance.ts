@@ -18,8 +18,9 @@
  *   half deterministic, half random) so clients do not hammer an unhealthy RPC in lockstep. A
  *   success resets it. Failures are logged with `console.error`; there is no UI error state.
  */
-import { computed, onMounted, onUnmounted, readonly, ref } from 'vue'
-import { activeChain, NativeWalletHandle } from '@frank/wallet/chain'
+import { computed, onMounted, onUnmounted, readonly, ref, watch } from 'vue'
+import { activeChain } from '@frank/wallet/chain'
+import { accountStatus } from '../accounts/session'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { isWalletNotReady } from 'src/composables/wallet-not-ready'
 
@@ -48,16 +49,12 @@ let pending = false
 let failures = 0
 let backgrounded = false
 let timer: ReturnType<typeof setTimeout> | undefined
-// Identity of the wallet the current value/in-flight request belong to. `useActiveWallet`
-// memoizes its promise per seed phrase, so a new seed yields a new promise.
-let walletKey: Promise<NativeWalletHandle> | undefined
+// Acquisition revalidates custody every time; promises are not identity authorities.
+let walletKey: number | undefined
+let stopSessionWatch: (() => void) | undefined
 
-function currentWalletKey(): Promise<NativeWalletHandle> | undefined {
-  try {
-    return useActiveWallet()
-  } catch {
-    return undefined // no seed yet
-  }
+function currentWalletKey(): number | undefined {
+  return accountStatus.status === 'ready' ? accountStatus.revision : undefined
 }
 
 /** Delay before the next tick: the base interval while healthy, else bounded jittered backoff. */
@@ -107,7 +104,8 @@ async function fetchBalance(force: boolean) {
   schedule()
   const isCurrent = () => id === requestId && currentWalletKey() === key
   try {
-    const wallet = await (key ?? useActiveWallet())
+    const wallet = await useActiveWallet()
+    if (!isCurrent()) return
     const next = await activeChain.nativeTransfers.getBalance({ wallet })
     if (!isCurrent()) return
     balance.value = next
@@ -157,6 +155,17 @@ function onAppState(event: Event) {
 function acquire() {
   consumers++
   if (consumers === 1) {
+    stopSessionWatch = watch(
+      () => [accountStatus.revision, accountStatus.status],
+      () => {
+        balance.value = null
+        hasError.value = false
+        requestId++
+        pending = false
+        void fetchBalance(true)
+      },
+      { flush: 'sync' },
+    )
     document.addEventListener('visibilitychange', onVisibilityChange)
     window.addEventListener(APP_STATE_EVENT, onAppState)
   }
@@ -167,6 +176,8 @@ function release() {
   consumers = Math.max(0, consumers - 1)
   if (consumers > 0) return
   clearTimer()
+  stopSessionWatch?.()
+  stopSessionWatch = undefined
   document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener(APP_STATE_EVENT, onAppState)
   backgrounded = false

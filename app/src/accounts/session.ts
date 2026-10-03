@@ -32,6 +32,7 @@ export interface AccountSessionState {
   account: PublicAccount | null
   pending: CustodySnapshot['pending']
   pendingReady: boolean
+  pendingError: string | null
   error: string | null
 }
 
@@ -39,6 +40,8 @@ export interface AccountSessionState {
 export function createAccountSession(deps: {
   open: () => Promise<AccountCustody>
   createWallet: (roots: MonadRootBundle) => Promise<RuntimeWallet>
+  listen?: (invalidate: () => void, foreground: () => void) => () => void
+  notify?: () => void
 }) {
   const state = reactive<AccountSessionState>({
     status: 'loading',
@@ -46,14 +49,15 @@ export function createAccountSession(deps: {
     account: null,
     pending: null,
     pendingReady: false,
+    pendingError: null,
     error: null,
   })
   let custody: AccountCustody | undefined
   let wallet: RuntimeWallet | undefined
-  let walletPromise: Promise<RuntimeWallet> | undefined
   let generation = 0
   let tail = Promise.resolve()
   let initialized: Promise<void> | undefined
+  let unlisten: (() => void) | undefined
   let closed = false
   const publish = (snapshot: CustodySnapshot) => {
     state.revision = snapshot.revision
@@ -76,7 +80,6 @@ export function createAccountSession(deps: {
   const release = async () => {
     const previous = wallet
     wallet = undefined
-    walletPromise = undefined
     if (previous) await previous.close()
   }
   const check = (token: number) => {
@@ -88,14 +91,29 @@ export function createAccountSession(deps: {
     check(token)
     let snapshot = await custody.snapshot()
     check(token)
+    if (
+      wallet &&
+      (walletAccount !== snapshot.active?.receipt.context.accountId ||
+        walletRevision !== snapshot.revision)
+    ) {
+      state.status = 'loading'
+      await release()
+      check(token)
+    }
     publish(snapshot)
     state.pendingReady = false
+    state.pendingError = null
     if (snapshot.pending) {
-      const result = await custody.reconcile(
-        snapshot.pending.account.receipt.operationId,
-      )
+      try {
+        const result = await custody.reconcile(
+          snapshot.pending.account.receipt.operationId,
+        )
+        state.pendingReady = result === 'ready'
+      } catch (error) {
+        state.pendingError =
+          error instanceof CustodyError ? error.code : 'unavailable'
+      }
       check(token)
-      state.pendingReady = result === 'ready'
       snapshot = await custody.snapshot()
       check(token)
       publish(snapshot)
@@ -112,6 +130,14 @@ export function createAccountSession(deps: {
       walletAccount === snapshot.active.receipt.context.accountId &&
       walletRevision === snapshot.revision
     ) {
+      if (state.pendingError) {
+        // Failed pending cleanup is not evidence that the separate active record is locked.
+        const active = await custody.openActive()
+        active.close()
+        check(token)
+        if (active.account.receipt.context.accountId !== walletAccount)
+          throw new CustodyError('conflict')
+      }
       state.status = 'ready'
       state.error = null
       return
@@ -147,7 +173,6 @@ export function createAccountSession(deps: {
         throw new CustodyError('conflict')
       wallet = candidate
       candidate = undefined
-      walletPromise = Promise.resolve(wallet)
       walletAccount = capability.account.receipt.context.accountId
       walletRevision = latest.revision
       publish(latest)
@@ -175,18 +200,47 @@ export function createAccountSession(deps: {
       }
     }
   }
-  return {
+  function revalidate() {
+    if (initialized) return initialized
+    initialized = exclusive(runRefresh).finally(() => {
+      initialized = undefined
+    })
+    return initialized
+  }
+  function invalidate() {
+    if (closed) return
+    ++generation
+    // close() revokes the native handle synchronously, before its teardown awaits.
+    const releasing = release()
+    // Observe teardown failure immediately even when an earlier operation still owns the queue.
+    void releasing.catch(() => undefined)
+    void exclusive(async () => {
+      try {
+        await releasing
+        await runRefresh()
+      } catch (error) {
+        if (!closed) fail(error)
+      }
+    })
+    // Schedule teardown before reactive consumers can enqueue another acquisition.
+    state.status = 'loading'
+  }
+  const session = {
     state: readonly(state),
     initialize() {
-      return (initialized ??= exclusive(runRefresh))
+      if (closed) return Promise.resolve()
+      unlisten ??= deps.listen?.(invalidate, () => {
+        void revalidate().catch(() => undefined)
+      })
+      return revalidate()
     },
     retry() {
       return exclusive(runRefresh)
     },
-    getWallet(): Promise<RuntimeWallet> {
-      if (state.status !== 'ready' || !walletPromise)
-        throw new CustodyError('locked')
-      return walletPromise
+    async getWallet(): Promise<RuntimeWallet> {
+      await session.initialize()
+      if (state.status !== 'ready' || !wallet) throw new CustodyError('locked')
+      return wallet
     },
     async snapshot() {
       await this.initialize()
@@ -203,6 +257,7 @@ export function createAccountSession(deps: {
           check(token)
           publish(snapshot)
         } finally {
+          deps.notify?.()
           await runRefresh()
         }
       })
@@ -231,6 +286,7 @@ export function createAccountSession(deps: {
           check(token)
           publish(activated)
         } finally {
+          deps.notify?.()
           await runRefresh()
         }
       })
@@ -247,6 +303,8 @@ export function createAccountSession(deps: {
     },
     async close() {
       closed = true
+      unlisten?.()
+      unlisten = undefined
       ++generation
       state.status = 'locked'
       await exclusive(async () => {
@@ -259,9 +317,33 @@ export function createAccountSession(deps: {
       })
     },
   }
+  return session
 }
 
+let accountChannel: BroadcastChannel | undefined
 export const accountSession = createAccountSession({
+  listen(invalidate, foreground) {
+    const channel =
+      typeof window.BroadcastChannel === 'function'
+        ? new window.BroadcastChannel('frank-account-changed-v1')
+        : undefined
+    accountChannel = channel
+    if (channel) channel.onmessage = invalidate
+    const visible = () => {
+      if (!document.hidden) foreground()
+    }
+    window.addEventListener('focus', foreground)
+    document.addEventListener('visibilitychange', visible)
+    return () => {
+      channel?.close()
+      if (accountChannel === channel) accountChannel = undefined
+      window.removeEventListener('focus', foreground)
+      document.removeEventListener('visibilitychange', visible)
+    }
+  },
+  notify() {
+    accountChannel?.postMessage('changed')
+  },
   open: () => {
     // Preview capability evidence is browser-only; native webviews do not inherit it.
     if (

@@ -12,6 +12,8 @@ const executable =
 let child, socket, call, sessionId
 let events = []
 const allEvents = []
+const allSentinels = []
+const profileExports = []
 async function stop() {
   socket?.close()
   if (child && child.exitCode === null && child.signalCode === null) {
@@ -77,6 +79,9 @@ async function launch(profile = 'first') {
       pending.set(id, { resolve, reject })
       socket.send(JSON.stringify({ id, method, params, sessionId: tab }))
     })
+  await openTab()
+}
+async function openTab() {
   const { targetId } = await call(
     'Target.createTarget',
     { url: 'about:blank' },
@@ -219,6 +224,7 @@ try {
     )
     await click('next-share')
   }
+  allSentinels.push(...shares)
   const descriptor = await evaluate(
     `document.querySelector('[data-test="public-descriptor"]').value`,
   )
@@ -247,6 +253,24 @@ try {
   )
   assert.notEqual(identifiers.identity, identifiers.receive)
   assert.equal(identifiers.descriptor, descriptor)
+  await evaluate(`document.querySelector('#rail-tab-wallet').click()`)
+  await until(`document.querySelector('[data-test="copy-descriptor"]')`)
+  await evaluate(
+    `Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('Synthetic denied clipboard'); } } })`,
+  )
+  await click('copy-descriptor')
+  await until(
+    `document.querySelector('[data-test="copy-status"]').textContent.includes('Copy unavailable')`,
+  )
+  assert.equal(
+    await evaluate(
+      `document.querySelector('[data-test="copy-status"]').getAttribute('aria-live')`,
+    ),
+    'polite',
+  )
+  console.log(
+    'Rendered clipboard denial has independent visible live feedback: pass',
+  )
   if (process.env.ACCOUNT_FAKE_DEMO === 'true') {
     const rpc = async (method, params) => {
       const response = await fetch('http://127.0.0.1:9701', {
@@ -262,7 +286,6 @@ try {
       BigInt(await rpc('eth_getBalance', [identifiers.receive, 'latest'])),
       0n,
     )
-    await evaluate(`document.querySelector('#rail-tab-wallet').click()`)
     await until(`document.querySelector('[data-test="demo-fund"]')`)
     await click('demo-fund')
     await until(
@@ -276,7 +299,13 @@ try {
       BigInt(await rpc('eth_getBalance', [identifiers.identity, 'latest'])),
       0n,
     )
+    await until(
+      `document.querySelector('[data-test="wallet-balance"]').textContent.trim() === '1 MON'`,
+    )
     const recipient = '0x1111111111111111111111111111111111111111'
+    const beforeReceive = BigInt(
+      await rpc('eth_getBalance', [recipient, 'latest']),
+    )
     await evaluate(`location.hash='#/send'`)
     await until(`document.querySelector('[data-test="send-address-input"]')`)
     await input('send-address-input', recipient)
@@ -286,9 +315,9 @@ try {
     await click('review-confirm-button')
     await until(`location.hash !== '#/send'`)
     assert.equal(
-      BigInt(await rpc('eth_getBalance', [recipient, 'latest'])) >=
-        10000000000000000n,
-      true,
+      BigInt(await rpc('eth_getBalance', [recipient, 'latest'])) -
+        beforeReceive,
+      10000000000000000n,
     )
     console.log(
       'Real fake demo: zero activation, explicit EVM-only funding, refreshed balance and native Send: pass',
@@ -301,9 +330,8 @@ try {
       false,
     )
   }
-  const exported = await evaluate(
-    `Promise.all((await indexedDB.databases()).map(info => new Promise((resolve,reject) => { const request=indexedDB.open(info.name); request.onerror=()=>reject(request.error); request.onsuccess=()=> { const db=request.result; const names=Array.from(db.objectStoreNames); if(!names.length){db.close();resolve([]);return} const tx=db.transaction(names); Promise.all(names.map(name=>new Promise(done=>{const r=tx.objectStore(name).getAll();r.onsuccess=()=>done(r.result)}))).then(rows=>{db.close();resolve(rows)}) } }))).then(rows=>JSON.stringify({rows, localStorage: {...localStorage}, url:location.href}))`,
-  )
+  const exported = await exportStorage()
+  profileExports.push(exported)
   for (const share of shares) {
     assert.equal(exported.includes(share), false)
     assert.equal(JSON.stringify(allEvents).includes(share), false)
@@ -315,6 +343,7 @@ try {
     `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name).then(async m => { const w=await m.accountSession.getWallet(); return {identity:w.identity.displayAddress,receive:(await w.getReceiveAddress()).raw,descriptor:m.accountStatus.account.descriptor}; })`,
   )
   assert.deepEqual(reopened, identifiers)
+  profileExports.push(await exportStorage())
   console.log(
     'Browser process restart preserves identity and encrypted account: pass',
   )
@@ -369,6 +398,7 @@ try {
     `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name).then(async m=>{const w=await m.accountSession.getWallet();return {identity:w.identity.displayAddress,receive:(await w.getReceiveAddress()).raw,descriptor:m.accountStatus.account.descriptor};})`,
   )
   assert.deepEqual(restored, identifiers)
+  profileExports.push(await exportStorage())
   console.log(
     'Independent profile descriptor-pinned restore and identifier equivalence: pass',
   )
@@ -379,6 +409,7 @@ try {
     'test test test test test test test test test test test junk'
   const enteredPhrase =
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+  allSentinels.push(enteredPhrase)
   const legacyBlob = JSON.stringify({
     seedPhrase: legacyPhrase,
     seedConfirmedAt: 123,
@@ -453,6 +484,8 @@ try {
   await until(`location.hash === '#/wallet'`)
   assert.equal(await evaluate(walletRow('read')), legacyBlob)
   const migrationExport = await exportStorage()
+  allSentinels.push(...migrationShares)
+  profileExports.push(migrationExport)
   for (const secret of [enteredPhrase, ...migrationShares]) {
     assert.equal(migrationExport.includes(secret), false)
     assert.equal(JSON.stringify(allEvents).includes(secret), false)
@@ -469,6 +502,68 @@ try {
   )
   console.log(
     'Explicit legacy local validation, cancel, full 3-of-5 migration and byte-identical quarantine: pass',
+  )
+  // Two ordinary app tabs sharing the same custody namespace. The retained old handle must
+  // be revoked by the session notification, without reloading or explicitly retrying tab A.
+  const tabA = sessionId
+  const retired = await evaluate(
+    `import(performance.getEntriesByType('resource').find(e=>e.name.includes('/src/accounts/session.ts')).name).then(async m=>{window.__retiredWallet=await m.accountSession.getWallet(); return {revision:m.accountStatus.revision,receive:(await window.__retiredWallet.getReceiveAddress()).raw}})`,
+  )
+  await openTab()
+  const tabB = sessionId
+  await click('replace-ack')
+  await click('new-account')
+  await evaluate(
+    `document.querySelector('[data-test="backup-policy"] [role="radio"]').click()`,
+  )
+  await click('generate-backups')
+  await until(`document.querySelector('[data-test="backup-share"]')`)
+  const replacementShares = []
+  for (let i = 0; i < 3; i++) {
+    replacementShares.push(
+      await evaluate(
+        `document.querySelector('[data-test="backup-share"]').value`,
+      ),
+    )
+    await click('next-share')
+  }
+  allSentinels.push(...replacementShares)
+  await click('descriptor-saved')
+  await click('confirm-backups')
+  await input('confirm-shares', replacementShares.slice(0, 2).join('\n'))
+  await input('display-name', 'Second tab replacement')
+  await click('verify-backups')
+  await until(`document.querySelector('[data-test="activate-account"]')`)
+  await click('activate-account')
+  await until(`location.hash === '#/wallet'`)
+  profileExports.push(await exportStorage())
+  sessionId = tabA
+  await until(
+    `import(performance.getEntriesByType('resource').find(e=>e.name.includes('/src/accounts/session.ts')).name).then(m=>m.accountStatus.status==='ready' && m.accountStatus.revision > ${retired.revision})`,
+  )
+  assert.equal(
+    await evaluate(
+      `window.__retiredWallet.getReceiveAddress().then(()=>false,()=>true)`,
+    ),
+    true,
+  )
+  const current = await evaluate(
+    `import(performance.getEntriesByType('resource').find(e=>e.name.includes('/src/accounts/session.ts')).name).then(async m=>(await (await m.accountSession.getWallet()).getReceiveAddress()).raw)`,
+  )
+  assert.notEqual(current, retired.receive)
+  profileExports.push(await exportStorage())
+  await evaluate(`window.__retiredWallet=null`)
+  sessionId = tabB
+  console.log(
+    'Real two-tab replacement invalidates the retired handle and publishes only the new session in tab A: pass',
+  )
+  for (const secret of allSentinels) {
+    for (const profile of profileExports)
+      assert.equal(profile.includes(secret), false)
+    assert.equal(JSON.stringify(allEvents).includes(secret), false)
+  }
+  console.log(
+    'Aggregate original/restored/migration/replacement sentinels absent from every terminal profile and cumulative events: pass',
   )
   console.log('Evidence profiles:', directory)
 } finally {

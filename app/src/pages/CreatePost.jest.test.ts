@@ -2,7 +2,12 @@
 // CreatePost: the preparation stages are shown in a live region while posting, and a post whose
 // burn landed but could not be read back says so instead of inviting a retry (#273 review).
 
-import { flushPromises, mount, shallowMount } from '@vue/test-utils'
+import {
+  enableAutoUnmount,
+  flushPromises,
+  mount,
+  shallowMount,
+} from '@vue/test-utils'
 import { defineComponent, h, nextTick } from 'vue'
 
 import CreatePost from './CreatePost.vue'
@@ -13,6 +18,7 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { accountStatus } from '../accounts/session'
 
 const mockPutMessage = jest.fn()
+enableAutoUnmount(afterEach)
 const mockDisplayToSafeRawAmount = jest.fn(() => 1_000_000)
 // vue-router's CommonJS build imports this ESM-only diagnostics package. The router behavior is
 // the boundary under test here, not its development reporter.

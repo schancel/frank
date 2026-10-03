@@ -81,11 +81,14 @@ jest.mock('src/stores/forum', () => ({
     }),
 }))
 jest.mock('src/composables/useActiveWallet', () => ({
-  useActiveWallet: jest.fn(async () => ({})),
+  useActiveWallet: jest.fn(async () => ({
+    identity: { address: { raw: '0xsyntheticowner' } },
+  })),
 }))
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
+    formatAddress: (address: { raw: string }) => address.raw,
     defaultStampValue: 1n,
     fromDisplayAmount: (value: string) => BigInt(value),
     toDisplayAmount: (amount: bigint) => amount.toString(),

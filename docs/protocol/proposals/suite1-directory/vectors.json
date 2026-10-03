@@ -6,7 +6,7 @@
   "frozen_sha256": [
     {
       "path": "docs/protocol/cbor/directory.cddl",
-      "sha256": "73328e5cfa7dc11b49d13c92a6e8c00e9bb32224ce8ca85c7d4372815721d25d"
+      "sha256": "80e8eef68c5d53aa5ab4b90a88de32e9ebc90bcf309dbcdea7aec04f5074f4c4"
     },
     {
       "path": "docs/protocol/cbor/common.cddl",

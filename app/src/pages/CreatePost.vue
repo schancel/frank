@@ -150,7 +150,7 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { activeChain } from '@frank/wallet/chain'
 import type { WalletHandle } from '@frank/wallet/chain'
 import { displayToSafeRawAmount } from 'src/utils/chain-amount'
-import { useWalletStore } from 'src/stores/wallet'
+import { accountStatus } from '../accounts/session'
 import type { ForumPostReservationStatus } from 'src/stores/forum'
 
 import { useTopicStore } from 'src/stores/topics'
@@ -163,10 +163,9 @@ import { stampPreparationStatus } from 'src/utils/stamp-preparation-status'
 export default defineComponent({
   setup() {
     const forum = useForumStore()
-    const walletStore = useWalletStore()
     const walletRevision = ref(0)
     watch(
-      () => walletStore.seedPhrase,
+      () => [accountStatus.revision, accountStatus.status],
       () => {
         walletRevision.value += 1
       },

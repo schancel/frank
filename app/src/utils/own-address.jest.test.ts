@@ -10,12 +10,14 @@ import {
 
 // Only the wallet handle is faked; the lazy import, parse and format are the real ones.
 const mockUseActiveWallet = jest.fn()
-let mockWalletStore: { seedPhrase: string | null }
+let mockAccountStatus: { revision: number; status: string }
 jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: () => mockUseActiveWallet(),
 }))
-jest.mock('src/stores/wallet', () => ({
-  useWalletStore: () => mockWalletStore,
+jest.mock('../accounts/session', () => ({
+  get accountStatus() {
+    return mockAccountStatus
+  },
 }))
 
 const OWN = '0x3e3e3e3e3e3E3E3E3e3e3E3E3e3e3E3E3e3E3E3e'
@@ -27,7 +29,7 @@ const canonicalOwn = activeChain.formatAddress(
 describe('utils/own-address.ts', () => {
   let consoleError: jest.SpyInstance
   beforeEach(() => {
-    mockWalletStore = reactive({ seedPhrase: 'first seed' })
+    mockAccountStatus = reactive({ revision: 1, status: 'ready' })
     mockUseActiveWallet.mockReset()
     mockUseActiveWallet.mockResolvedValue({
       identity: { address: { raw: OWN } },
@@ -82,7 +84,7 @@ describe('utils/own-address.ts', () => {
     expect(await isOwnAddress(OWN)).toBe(false)
   })
 
-  it('clears synchronously on seed change and ignores a stale address resolution', async () => {
+  it('clears synchronously on session revision change and ignores a stale address resolution', async () => {
     const replacement = activeChain.formatAddress(
       activeChain.parseAddress(OTHER) as never,
     )
@@ -102,7 +104,7 @@ describe('utils/own-address.ts', () => {
     const scope = effectScope()
     const address = scope.run(() => useReactiveOwnCanonicalAddress())!
     await Promise.resolve()
-    mockWalletStore.seedPhrase = 'replacement seed'
+    mockAccountStatus.revision = 2
     expect(address.value).toBeNull()
     await Promise.resolve()
     resolveSecond?.({ identity: { address: { raw: OTHER } } })

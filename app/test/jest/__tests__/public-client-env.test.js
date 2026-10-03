@@ -4,6 +4,17 @@ const {
 } = require('../../../config/public-client-env.cjs')
 
 describe('public client environment boundary', () => {
+  it('explicitly carries only the fake-demo flag and local control URL additions', () => {
+    expect(PUBLIC_CLIENT_ENV.has('import.meta.env.QCLI_FRANK_FAKE_DEMO')).toBe(
+      true,
+    )
+    expect(
+      PUBLIC_CLIENT_ENV.has('import.meta.env.QCLI_FRANK_DEMO_CONTROL_URL'),
+    ).toBe(true)
+    expect(
+      PUBLIC_CLIENT_ENV.has('import.meta.env.QCLI_MONAD_TESTNET_HTTP_RPC_URL'),
+    ).toBe(false)
+  })
   it('preserves declared public settings and excludes upstream provider secrets', () => {
     const publicValues = Object.fromEntries(
       [...PUBLIC_CLIENT_ENV].map(key => [key, `public:${key}`]),

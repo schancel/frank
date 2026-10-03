@@ -60,12 +60,11 @@ export function useReactiveOwnCanonicalAddress(): DeepReadonly<
       scope.stop()
     })
   }
-  void import('src/stores/wallet').then(({ useWalletStore }) => {
+  void import('../accounts/session').then(({ accountStatus }) => {
     if (disposed) return
-    const wallet = useWalletStore()
     scope.run(() =>
       watch(
-        () => wallet.seedPhrase,
+        () => [accountStatus.revision, accountStatus.status],
         async () => {
           const currentRequest = ++request
           address.value = null

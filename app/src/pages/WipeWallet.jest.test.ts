@@ -85,45 +85,53 @@ beforeEach(() => {
   jest.mocked(errorNotify).mockClear()
 })
 
-it('redirects a default Monad direct route before mounting legacy confirmation', async () => {
-  const router = createRouter({
-    history: createMemoryHistory(),
-    routes: createRoutes(),
-  })
-  const options = mountOptions()
-  const relayAccess = jest.fn(() => {
-    throw new Error('Monad must not access the legacy relay client')
-  })
-  // Like Monad boot, there is no legacy client; a getter also catches attempted reads.
-  await router.push('/wipe-wallet')
-  await router.isReady()
-  const wrapper = mount(RouterView, {
-    global: {
-      ...options.global,
-      mocks: { $t: t, $q: { loading: options.loading } },
-      plugins: [
-        router,
-        {
-          install(app: App) {
-            Object.defineProperty(app.config.globalProperties, '$relayClient', {
-              get: relayAccess,
-            })
+it.each([undefined, 'false'])(
+  'redirects typed direct routes regardless of old flag %s',
+  async flag => {
+    mockLegacyFlag = flag
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: createRoutes(),
+    })
+    const options = mountOptions()
+    const relayAccess = jest.fn(() => {
+      throw new Error('Monad must not access the legacy relay client')
+    })
+    // Like Monad boot, there is no legacy client; a getter also catches attempted reads.
+    await router.push('/wipe-wallet')
+    await router.isReady()
+    const wrapper = mount(RouterView, {
+      global: {
+        ...options.global,
+        mocks: { $t: t, $q: { loading: options.loading } },
+        plugins: [
+          router,
+          {
+            install(app: App) {
+              Object.defineProperty(
+                app.config.globalProperties,
+                '$relayClient',
+                {
+                  get: relayAccess,
+                },
+              )
+            },
           },
-        },
-      ],
-    },
-  })
-  await flushPromises()
+        ],
+      },
+    })
+    await flushPromises()
 
-  expect(router.currentRoute.value.path).toBe('/settings')
-  expect(wrapper.get('h1').text()).toBe('Settings')
-  expect(wrapper.text()).not.toContain(t('wipeWallet.warning'))
-  expect(wrapper.findAll('button')).toHaveLength(0)
-  expect(relayAccess).not.toHaveBeenCalled()
-  expect(options.loading.show).not.toHaveBeenCalled()
-  expect(mockDeleteMessage).not.toHaveBeenCalled()
-  wrapper.unmount()
-})
+    expect(router.currentRoute.value.path).toBe('/settings')
+    expect(wrapper.get('h1').text()).toBe('Settings')
+    expect(wrapper.text()).not.toContain(t('wipeWallet.warning'))
+    expect(wrapper.findAll('button')).toHaveLength(0)
+    expect(relayAccess).not.toHaveBeenCalled()
+    expect(options.loading.show).not.toHaveBeenCalled()
+    expect(mockDeleteMessage).not.toHaveBeenCalled()
+    wrapper.unmount()
+  },
+)
 
 it('does not expose confirmation or call the legacy client if mounted in Monad mode', async () => {
   const options = mountOptions()
@@ -146,17 +154,9 @@ it('preserves Lotus confirmation and waits for relay completion before clearing 
         }),
     ),
   )
-  const router = createRouter({
-    history: createMemoryHistory(),
-    routes: createRoutes(),
-  })
-  await router.push('/wipe-wallet')
-  await router.isReady()
-  const wrapper = mount(RouterView, {
-    global: { ...options.global, plugins: [router] },
-  })
+  // Preserve the legacy component's isolated contract, not normal route reachability.
+  const wrapper = mount(WipeWallet, { global: options.global })
   await flushPromises()
-  expect(router.currentRoute.value.path).toBe('/wipe-wallet')
   expect(wrapper.text()).toContain(t('wipeWallet.warning'))
   expect(options.wipeWallet).not.toHaveBeenCalled()
   await wrapper

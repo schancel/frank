@@ -576,6 +576,7 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
 /** The exact shell command that starts the app so its browser can reach this stack. */
 export function appCommand(config: DemoConfig, relayUrl: string): string[] {
   return [
+    ...(config.fakeChain ? [`export QCLI_FRANK_FAKE_DEMO=true QCLI_FRANK_DEMO_CONTROL_URL=${config.rpcUrl}`] : ['unset QCLI_FRANK_FAKE_DEMO QCLI_FRANK_DEMO_CONTROL_URL']),
     `cd app && QCLI_MONAD_RELAY_BASE_URL=${relayUrl} QCLI_MONAD_RPC_CHAIN=monad-testnet \\`,
     `  QCLI_MONAD_STAMP_BURN_ADDRESS=${config.stampBurnAddress} QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=${config.minStampWei} \\`,
     '  yarn dev:browser',

@@ -10,7 +10,7 @@ import { BurnRefreshError } from 'src/utils/burn-refresh-error'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
 import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
-import { useWalletStore } from 'src/stores/wallet'
+import { accountStatus } from '../accounts/session'
 
 const mockPutMessage = jest.fn()
 const mockDisplayToSafeRawAmount = jest.fn(() => 1_000_000)
@@ -124,11 +124,10 @@ jest.mock('src/composables/useActiveWallet', () => ({
     identity: { address: { raw: '0xaaa' }, displayAddress: '0xaaa' },
   })),
 }))
-jest.mock('src/stores/wallet', () => ({
-  useWalletStore: (() => {
-    const store = jest.requireActual('vue').reactive({ seedPhrase: 'seed-a' })
-    return () => store
-  })(),
+jest.mock('../accounts/session', () => ({
+  accountStatus: jest
+    .requireActual('vue')
+    .reactive({ revision: 1, status: 'ready' }),
 }))
 jest.mock('src/utils/notifications', () => ({
   errorNotify: jest.fn(),
@@ -327,7 +326,7 @@ beforeEach(() => {
   jest
     .mocked(useActiveWallet)
     .mockReturnValue(Promise.resolve(makeWallet()) as never)
-  ;(useWalletStore() as unknown as { seedPhrase: string }).seedPhrase = 'seed-a'
+  ;(accountStatus as { revision: number }).revision = 1
   const forum = useForumStore() as unknown as {
     selectedTopic: string
     index: Record<string, { topic: string }>
@@ -1382,7 +1381,7 @@ describe('CreatePost preparation status', () => {
         destination: string
       }): number | undefined
     }
-    const walletStore = useWalletStore() as unknown as { seedPhrase: string }
+    const walletStore = accountStatus as { revision: number }
     const walletA = makeWallet('0xaaa')
     const walletB = makeWallet('0xbbb')
     const walletAPromise = Promise.resolve(walletA)
@@ -1405,7 +1404,7 @@ describe('CreatePost preparation status', () => {
     expect(page().vm).toMatchObject({ posting: true })
 
     jest.mocked(useActiveWallet).mockReturnValue(walletBPromise as never)
-    walletStore.seedPhrase = 'seed-b'
+    walletStore.revision = 2
     await flushPromises()
     expect(page().vm).toMatchObject({ posting: false })
     const postingB = (page().vm as unknown as { post(): Promise<void> }).post()
@@ -1413,7 +1412,7 @@ describe('CreatePost preparation status', () => {
     expect(page().vm).toMatchObject({ posting: true })
 
     jest.mocked(useActiveWallet).mockReturnValue(walletAPromise as never)
-    walletStore.seedPhrase = 'seed-a'
+    walletStore.revision = 1
     await flushPromises()
     expect(page().vm).toMatchObject({ posting: true })
 

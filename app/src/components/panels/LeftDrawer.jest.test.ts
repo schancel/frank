@@ -4,6 +4,10 @@ import { shallowMount } from '@vue/test-utils'
 import { defineComponent, nextTick, ref } from 'vue'
 
 const runtime = { legacy: false }
+const mockAccountStatus = { status: 'ready' }
+jest.mock('../../accounts/session', () => ({
+  accountStatus: mockAccountStatus,
+}))
 const mockRoute = { path: '/' }
 const balance = {
   formattedBalance: ref('1 MON'),
@@ -192,7 +196,7 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     })
 
     it('defers topic discovery when account setup is not complete', () => {
-      mockWalletStore.seedPhrase = null
+      mockAccountStatus.status = 'fresh'
       mockProfileStore.profile.name = ''
 
       mountDrawer(false, false)
@@ -201,7 +205,7 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     })
 
     it('triggers topic discovery when account setup is complete', () => {
-      mockWalletStore.seedPhrase = 'word '.repeat(12).trim()
+      mockAccountStatus.status = 'ready'
       mockProfileStore.profile.name = 'Alice'
 
       mountDrawer(true, true)

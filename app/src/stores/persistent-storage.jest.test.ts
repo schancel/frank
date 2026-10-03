@@ -2,12 +2,9 @@
 
 import { createPinia, setActivePinia } from 'pinia'
 
-jest.mock('src/stores/wallet', () => {
-  const state = { seedPhrase: null as string | null }
-  return { useWalletStore: () => state, __state: state }
-})
+jest.mock('../accounts/session', () => ({ accountStatus: { status: 'fresh' } }))
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const walletState = jest.requireMock('src/stores/wallet').__state
+const walletState = jest.requireMock('../accounts/session').accountStatus
 
 import { usePersistentStorageStore } from './persistent-storage'
 
@@ -18,7 +15,7 @@ function setManager(value: unknown) {
 describe('persistent storage store (ticket #370)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-    walletState.seedPhrase = 'a seed'
+    walletState.status = 'ready'
   })
   afterEach(() => {
     setManager(undefined)
@@ -131,7 +128,7 @@ describe('persistent storage store (ticket #370)', () => {
   })
 
   it('no account yet: asks nothing', async () => {
-    walletState.seedPhrase = null
+    walletState.status = 'fresh'
     const persist = jest.fn(async () => true)
     setManager({ persisted: async () => false, persist })
     const store = usePersistentStorageStore()

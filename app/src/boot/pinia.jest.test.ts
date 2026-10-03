@@ -29,7 +29,6 @@ import { useForumStore } from '../stores/forum'
 import { useProfileStore } from '../stores/my-profile'
 import { useRelayClientStore } from '../stores/relay-client'
 import { useTopicStore } from '../stores/topics'
-import { useWalletStore } from '../stores/wallet'
 
 interface Deferred {
   promise: Promise<void>
@@ -89,7 +88,6 @@ describe('Pinia persistence barrier', () => {
     ['profile', useProfileStore],
     ['relay client', useRelayClientStore],
     ['topics', useTopicStore],
-    ['wallet', useWalletStore],
   ])('tracks the real %s store write promise', async (_name, useStore) => {
     const writes: Deferred[] = []
     const storage = {

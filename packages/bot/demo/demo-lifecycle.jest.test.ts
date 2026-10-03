@@ -450,7 +450,10 @@ process.stdin.on('end', () => {
       expect(text).toContain(`QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=${c.minStampWei}`)
       expect(text).toContain('yarn dev:browser')
       expect(text).toContain(`launcher pid ${process.pid}`)
-      expect(appCommand(c, handle.relayUrl)).toHaveLength(3)
+      expect(appCommand(c, handle.relayUrl)).toHaveLength(4)
+      expect(appCommand(c, handle.relayUrl)[0]).toBe(
+        `export QCLI_FRANK_FAKE_DEMO=true QCLI_FRANK_DEMO_CONTROL_URL=${c.rpcUrl}`,
+      )
       await handle.stop()
       await handle.done
     }, 30000)

@@ -898,8 +898,10 @@ borrow author/payment facts from burn A on the same post. No status alone
 releases a wallet lease or proves chain inclusion/finality/absence. Pure
 matching compares exact request bytes, network, target, transaction hash,
 sender, direction and value against explicit retained expectations. Runtime
-admission still derives raw transaction hash/signature/sender/chain/destination,
-T7/T8 and successful finalized observation independently. Synthetic codec
+admission still derives raw transaction hash/signature/sender/chain/destination
+and T7/T8 independently. Claiming independently verified confirmation additionally
+requires a successful canonical-chain observation under the client's configured
+finality policy; relay-observed state 2 does not claim that stronger result. Synthetic codec
 fixtures are not signed transaction evidence. No read-frame content-hash
 domain is allocated: post T1 and unchanged T7 remain the economic identity.
 

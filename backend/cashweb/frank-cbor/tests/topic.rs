@@ -136,7 +136,7 @@ fn submission_with(post: Vec<u8>, pad: usize) -> Vec<u8> {
 }
 
 #[test]
-fn r6_frame_limits_apply_to_roots_only() {
+fn r6_frame_limits_bound_complete_roots() {
     let big = post_with(vec![7; 524_288]);
     assert_eq!(outcome(&submission_with(big.clone(), 0)), "parsed");
     // A type-10 frame over 1 MiB is a resource error before any field is read.
@@ -172,7 +172,7 @@ fn a_submission_must_share_its_posts_network() {
 }
 
 #[test]
-fn assigned_topic_types_are_not_message_items_but_type_12_is_still_open() {
+fn assigned_topic_types_are_not_message_items_but_an_unassigned_sentinel_is_open() {
     let item = |frame: Vec<u8>| {
         fr(
             8,

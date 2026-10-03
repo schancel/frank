@@ -6,7 +6,7 @@
 //! provider.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     net::{IpAddr, SocketAddr},
     sync::Arc,
@@ -41,7 +41,7 @@ use url::Url;
 use crate::{
     http::{
         bitcoin_proxy::BitcoinProxyRuntime,
-        hourly_quota::{normalize_quota_ip, FixedHourQuota},
+        hourly_quota::{normalize_quota_ip, FixedHourQuota, QuotaDenial},
         server::RegistryServer,
     },
     monad_http::Address,
@@ -62,6 +62,7 @@ const RPC_CAPABILITY_BYTES: usize = 1 + 20 + 8 + RPC_CAPABILITY_NONCE_BYTES + 32
 const RPC_CAPABILITY_VERSION: u8 = 1;
 const MAX_WS_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_WS_SUBSCRIPTIONS: usize = 32;
+const MAX_WS_PENDING_REQUESTS: usize = 128;
 // EVM clients batch when they can, but boot-time log scans and multi-account sweeps can still
 // legitimately exceed the mailbox's much smaller read cadence. This is replay-retention capacity,
 // not the usage limit; weighted fixed-hour quotas remain the resource-control boundary.
@@ -583,9 +584,117 @@ impl EvmRpcRuntime {
                     return Err(EvmRpcStartError::CheckpointMismatch(chain.id.clone()));
                 }
             }
+            if let Some(url) = &chain.upstream_ws_url {
+                self.verify_ws_identity(chain, url).await?;
+            }
         }
         Ok(())
     }
+
+    async fn verify_ws_identity(
+        &self,
+        chain: &EvmChainRuntime,
+        url: &Url,
+    ) -> Result<(), EvmRpcStartError> {
+        let config = WebSocketConfig {
+            max_send_queue: Some(4),
+            max_message_size: Some(self.max_response_bytes.min(MAX_WS_RESPONSE_BYTES)),
+            max_frame_size: Some(self.max_response_bytes.min(MAX_WS_RESPONSE_BYTES)),
+            accept_unmasked_frames: false,
+        };
+        let (mut socket, _) = tokio::time::timeout(
+            self.timeout,
+            connect_async_with_config(url.as_str(), Some(config)),
+        )
+        .await
+        .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?
+        .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
+        let chain_id = ws_startup_call(
+            &mut socket,
+            json!({"jsonrpc":"2.0","id":"frank-chain-id","method":"eth_chainId","params":[]}),
+            "frank-chain-id",
+            self.timeout,
+            &chain.id,
+        )
+        .await?
+        .as_str()
+        .and_then(|value| u64::from_str_radix(value.strip_prefix("0x")?, 16).ok())
+        .ok_or_else(|| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
+        if chain_id != chain.expected_chain_id {
+            return Err(EvmRpcStartError::ChainMismatch {
+                id: chain.id.clone(),
+                expected: chain.expected_chain_id,
+                actual: chain_id,
+            });
+        }
+        if let Some((block_number, expected_hash)) = &chain.checkpoint {
+            let result = ws_startup_call(
+                &mut socket,
+                json!({
+                    "jsonrpc":"2.0",
+                    "id":"frank-checkpoint",
+                    "method":"eth_getBlockByNumber",
+                    "params":[format!("0x{block_number:x}"), false]
+                }),
+                "frank-checkpoint",
+                self.timeout,
+                &chain.id,
+            )
+            .await?;
+            let actual = result
+                .pointer("/hash")
+                .and_then(Value::as_str)
+                .ok_or_else(|| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))?;
+            if !actual.eq_ignore_ascii_case(expected_hash) {
+                return Err(EvmRpcStartError::CheckpointMismatch(chain.id.clone()));
+            }
+        }
+        let _ = socket.close(None).await;
+        Ok(())
+    }
+}
+
+async fn ws_startup_call<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    request: Value,
+    expected_id: &str,
+    timeout: Duration,
+    chain_id: &str,
+) -> Result<Value, EvmRpcStartError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    socket
+        .send(UpstreamWsMessage::Text(request.to_string()))
+        .await
+        .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain_id.to_string()))?;
+    tokio::time::timeout(timeout, async {
+        loop {
+            match socket.next().await {
+                Some(Ok(UpstreamWsMessage::Text(text))) => {
+                    let value = super::json_rpc::parse_without_duplicate_keys(text.as_bytes())
+                        .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain_id.to_string()))?;
+                    if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+                        || value.get("id").and_then(Value::as_str) != Some(expected_id)
+                    {
+                        return Err(EvmRpcStartError::UpstreamUnavailable(chain_id.to_string()));
+                    }
+                    return value.get("result").cloned().ok_or_else(|| {
+                        EvmRpcStartError::UpstreamUnavailable(chain_id.to_string())
+                    });
+                }
+                Some(Ok(UpstreamWsMessage::Ping(payload))) => {
+                    socket
+                        .send(UpstreamWsMessage::Pong(payload))
+                        .await
+                        .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain_id.to_string()))?;
+                }
+                _ => return Err(EvmRpcStartError::UpstreamUnavailable(chain_id.to_string())),
+            }
+        }
+    })
+    .await
+    .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain_id.to_string()))?
 }
 
 async fn read_startup_response(
@@ -634,6 +743,7 @@ pub(crate) struct RpcRejection {
     status: StatusCode,
     code: &'static str,
     broadcast_state: Option<&'static str>,
+    quota_reset_unix_seconds: Option<u64>,
 }
 
 impl IntoResponse for RpcRejection {
@@ -642,7 +752,19 @@ impl IntoResponse for RpcRejection {
         if let Some(state) = self.broadcast_state {
             body["broadcast_state"] = Value::String(state.to_string());
         }
-        (self.status, Json(body)).into_response()
+        if let Some(reset) = self.quota_reset_unix_seconds {
+            body["reset_at_unix_seconds"] = Value::from(reset);
+        }
+        let mut response = (self.status, Json(body)).into_response();
+        if let Some(reset) = self.quota_reset_unix_seconds {
+            let retry_after = reset.saturating_sub(now_seconds()).max(1).to_string();
+            if let Ok(value) = axum::http::HeaderValue::from_str(&retry_after) {
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::RETRY_AFTER, value);
+            }
+        }
+        response
     }
 }
 
@@ -651,6 +773,7 @@ pub(crate) fn rpc_error(status: StatusCode, code: &'static str) -> RpcRejection 
         status,
         code,
         broadcast_state: None,
+        quota_reset_unix_seconds: None,
     }
 }
 
@@ -668,7 +791,38 @@ fn broadcast_error(
         } else {
             "not-attempted"
         }),
+        quota_reset_unix_seconds: None,
     }
+}
+
+pub(crate) fn quota_error(
+    code: &'static str,
+    broadcast: bool,
+    denial: QuotaDenial,
+) -> RpcRejection {
+    let (status, response_code, reset) = match denial {
+        QuotaDenial::Exhausted { reset_unix_seconds } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            code,
+            Some(reset_unix_seconds),
+        ),
+        QuotaDenial::Disabled => (StatusCode::FORBIDDEN, "rpc_quota_disabled", None),
+        QuotaDenial::RequestTooLarge => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "rpc_quota_request_too_large",
+            None,
+        ),
+        QuotaDenial::Capacity | QuotaDenial::Unavailable => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "rpc_quota_unavailable",
+            None,
+        ),
+    };
+    let mut rejection = broadcast_error(status, response_code, broadcast, false);
+    if let Some(reset_unix_seconds) = reset {
+        rejection.quota_reset_unix_seconds = Some(reset_unix_seconds);
+    }
+    rejection
 }
 
 fn parse_hex_quantity(value: &Value) -> Option<u64> {
@@ -1241,6 +1395,63 @@ fn ws_error(id: Value, code: i64, message: &'static str) -> ClientWsMessage {
     )
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum WsRpcId {
+    String(String),
+    Number(String),
+    Null,
+}
+
+impl WsRpcId {
+    fn from_value(value: &Value) -> Option<Self> {
+        match value {
+            Value::String(value) => Some(Self::String(value.clone())),
+            Value::Number(value) => Some(Self::Number(value.to_string())),
+            Value::Null => Some(Self::Null),
+            _ => None,
+        }
+    }
+}
+
+enum WsPendingKind {
+    Call,
+    Subscribe,
+    Unsubscribe(String),
+}
+
+struct WsPending {
+    id: Value,
+    kind: WsPendingKind,
+    deadline: tokio::time::Instant,
+    _permit: OwnedSemaphorePermit,
+}
+
+fn valid_ws_response(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let has_result = object.contains_key("result");
+    let error = object.get("error");
+    object.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
+        && object.contains_key("id")
+        && ((has_result && error.is_none()) || (!has_result && error.is_some_and(Value::is_object)))
+}
+
+fn ws_subscription_notification(value: &Value) -> Option<&str> {
+    let object = value.as_object()?;
+    if object.get("jsonrpc")?.as_str()? != "2.0"
+        || object.get("method")?.as_str()? != "eth_subscription"
+        || object.len() != 3
+    {
+        return None;
+    }
+    let params = object.get("params")?.as_object()?;
+    if params.len() != 2 || !params.contains_key("result") {
+        return None;
+    }
+    params.get("subscription")?.as_str()
+}
+
 pub(crate) async fn handle_proxy_ws(
     Path((chain_id, capability)): Path<(String, String)>,
     Extension(server): Extension<RegistryServer>,
@@ -1267,31 +1478,41 @@ pub(crate) async fn handle_proxy_ws(
     let max_upstream_bytes = runtime.max_response_bytes.min(MAX_WS_RESPONSE_BYTES);
     let timeout = runtime.timeout;
     let quota = runtime.customer_quota.clone();
+    let request_permits = Arc::clone(&runtime.permits);
     let chain = chain.clone();
     let lifetime_ms = expires_at_ms.saturating_sub(now_ms()).max(1) as u64;
+    let expiry_deadline = tokio::time::Instant::now() + Duration::from_millis(lifetime_ms);
     Ok(ws
         .max_message_size(max_client_bytes)
         .max_frame_size(max_client_bytes)
         .on_upgrade(move |socket| async move {
             let _permit = permit;
-            let config = WebSocketConfig {
-                max_send_queue: Some(32),
-                max_message_size: Some(max_upstream_bytes),
-                max_frame_size: Some(max_upstream_bytes),
-                accept_unmasked_frames: false,
-            };
-            let connected = tokio::time::timeout(
-                timeout,
-                connect_async_with_config(upstream_url.as_str(), Some(config)),
-            )
-            .await;
-            let Ok(Ok((upstream, _response))) = connected else {
-                return;
-            };
-            let _ = tokio::time::timeout(
-                Duration::from_millis(lifetime_ms),
-                proxy_ws_connection(socket, upstream, chain, customer, quota),
-            )
+            let _ = tokio::time::timeout_at(expiry_deadline, async move {
+                let config = WebSocketConfig {
+                    max_send_queue: Some(32),
+                    max_message_size: Some(max_upstream_bytes),
+                    max_frame_size: Some(max_upstream_bytes),
+                    accept_unmasked_frames: false,
+                };
+                let connected = tokio::time::timeout(
+                    timeout,
+                    connect_async_with_config(upstream_url.as_str(), Some(config)),
+                )
+                .await;
+                let Ok(Ok((upstream, _response))) = connected else {
+                    return;
+                };
+                proxy_ws_connection(
+                    socket,
+                    upstream,
+                    chain,
+                    customer,
+                    quota,
+                    request_permits,
+                    timeout,
+                )
+                .await;
+            })
             .await;
         })
         .into_response())
@@ -1303,14 +1524,38 @@ async fn proxy_ws_connection<S>(
     chain: EvmChainRuntime,
     customer: Address,
     quota: Arc<FixedHourQuota<Address>>,
+    request_permits: Arc<Semaphore>,
+    request_timeout: Duration,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let (mut client_write, mut client_read) = socket.split();
     let (mut upstream_write, mut upstream_read) = upstream.split();
-    let mut subscriptions = 0usize;
+    let mut subscription_attempts = 0usize;
+    let mut active_subscriptions = HashSet::new();
+    let mut pending = HashMap::<WsRpcId, WsPending>::new();
+    let mut expiry_check = tokio::time::interval(Duration::from_secs(1));
+    expiry_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
+            _ = expiry_check.tick() => {
+                let now = tokio::time::Instant::now();
+                let expired = pending
+                    .iter()
+                    .filter(|(_, request)| request.deadline <= now)
+                    .map(|(key, request)| (key.clone(), request.id.clone()))
+                    .collect::<Vec<_>>();
+                for (key, id) in expired {
+                    pending.remove(&key);
+                    if client_write
+                        .send(ws_error(id, -32002, "upstream request timed out"))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
             client = client_read.next() => {
                 let Some(Ok(client)) = client else { break; };
                 match client {
@@ -1321,22 +1566,61 @@ async fn proxy_ws_connection<S>(
                             let _ = client_write.send(ws_error(id, -32600, "invalid request")).await;
                             continue;
                         };
+                        let Some(id_key) = WsRpcId::from_value(&id) else {
+                            let _ = client_write.send(ws_error(Value::Null, -32600, "invalid request id")).await;
+                            continue;
+                        };
+                        if pending.len() >= MAX_WS_PENDING_REQUESTS || pending.contains_key(&id_key) {
+                            let _ = client_write.send(ws_error(id, -32005, "pending request limit exceeded")).await;
+                            continue;
+                        }
                         let Ok((cost, subscribes)) = validate_ws_call(&value, &chain) else {
                             let _ = client_write.send(ws_error(id, -32601, "method denied by relay")).await;
                             continue;
                         };
                         if subscribes {
-                            subscriptions = subscriptions.saturating_add(1);
-                            if subscriptions > MAX_WS_SUBSCRIPTIONS {
+                            subscription_attempts = subscription_attempts.saturating_add(1);
+                            if subscription_attempts > MAX_WS_SUBSCRIPTIONS {
                                 let _ = client_write.send(ws_error(id, -32005, "subscription limit exceeded")).await;
                                 continue;
                             }
                         }
-                        if quota.charge(customer, cost.units, now_seconds()).is_none() {
+                        let request_permit = match Arc::clone(&request_permits).try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                let _ = client_write.send(ws_error(id, -32005, "relay busy")).await;
+                                continue;
+                            }
+                        };
+                        if quota.charge(customer, cost.units, now_seconds()).is_err() {
                             let _ = client_write.send(ws_error(id, -32005, "hourly quota exceeded")).await;
                             continue;
                         }
-                        if upstream_write.send(UpstreamWsMessage::Text(text)).await.is_err() { break; }
+                        let method = value.get("method").and_then(Value::as_str);
+                        let kind = if subscribes {
+                            WsPendingKind::Subscribe
+                        } else if method == Some("eth_unsubscribe") {
+                            let subscription = value
+                                .get("params")
+                                .and_then(Value::as_array)
+                                .and_then(|params| params.first())
+                                .and_then(Value::as_str)
+                                .expect("validated unsubscribe")
+                                .to_string();
+                            WsPendingKind::Unsubscribe(subscription)
+                        } else {
+                            WsPendingKind::Call
+                        };
+                        pending.insert(id_key.clone(), WsPending {
+                            id: id.clone(),
+                            kind,
+                            deadline: tokio::time::Instant::now() + request_timeout,
+                            _permit: request_permit,
+                        });
+                        if upstream_write.send(UpstreamWsMessage::Text(text)).await.is_err() {
+                            pending.remove(&id_key);
+                            break;
+                        }
                     }
                     ClientWsMessage::Ping(payload) => {
                         if client_write.send(ClientWsMessage::Pong(payload)).await.is_err() { break; }
@@ -1353,6 +1637,32 @@ async fn proxy_ws_connection<S>(
                 match upstream {
                     UpstreamWsMessage::Text(text) => {
                         let Ok(mut value) = super::json_rpc::parse_without_duplicate_keys(text.as_bytes()) else { break; };
+                        if let Some(id) = value.get("id").cloned() {
+                            if !valid_ws_response(&value) {
+                                break;
+                            }
+                            let Some(id_key) = WsRpcId::from_value(&id) else { break; };
+                            let Some(request) = pending.remove(&id_key) else { break; };
+                            if value.get("error").is_none() {
+                                match request.kind {
+                                    WsPendingKind::Subscribe => {
+                                        let Some(subscription) = value.get("result").and_then(Value::as_str) else { break; };
+                                        active_subscriptions.insert(subscription.to_string());
+                                    }
+                                    WsPendingKind::Unsubscribe(subscription) => {
+                                        if value.get("result").and_then(Value::as_bool) == Some(true) {
+                                            active_subscriptions.remove(&subscription);
+                                        }
+                                    }
+                                    WsPendingKind::Call => {}
+                                }
+                            }
+                        } else {
+                            let Some(subscription) = ws_subscription_notification(&value) else { break; };
+                            if !active_subscriptions.contains(subscription) {
+                                break;
+                            }
+                        }
                         super::json_rpc::sanitize_response_errors(&mut value);
                         if client_write.send(ClientWsMessage::Text(value.to_string())).await.is_err() { break; }
                     }
@@ -1383,7 +1693,7 @@ async fn proxy_rpc_inner(
         return crate::http::bitcoin_proxy::proxy_rpc(chain_id, peer, headers, server, body).await;
     };
     let cost = validate_body(runtime, chain, &body)?;
-    let expected_ids = super::json_rpc::request_ids(&body)
+    let correlation = super::json_rpc::request_correlation(&body)
         .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"))?;
     let customer = if let Some(capability) = capability.as_deref() {
         Some(
@@ -1430,14 +1740,7 @@ async fn proxy_rpc_inner(
         runtime
             .customer_quota
             .charge(customer, cost.units, now_seconds())
-            .ok_or_else(|| {
-                broadcast_error(
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "rpc_hourly_quota",
-                    cost.broadcast,
-                    false,
-                )
-            })?;
+            .map_err(|denial| quota_error("rpc_hourly_quota", cost.broadcast, denial))?;
     } else {
         if !cost.anonymous {
             return Err(rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_required"));
@@ -1447,14 +1750,7 @@ async fn proxy_rpc_inner(
         runtime
             .anonymous_quota
             .charge(quota_ip(peer.0), cost.units, now_seconds())
-            .ok_or_else(|| {
-                broadcast_error(
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "rpc_hourly_quota",
-                    cost.broadcast,
-                    false,
-                )
-            })?;
+            .map_err(|denial| quota_error("rpc_hourly_quota", cost.broadcast, denial))?;
     }
     let deadline = tokio::time::Instant::now() + runtime.timeout;
     let upstream = async {
@@ -1516,7 +1812,7 @@ async fn proxy_rpc_inner(
         })??;
     let inspected = tokio::time::timeout_at(
         deadline,
-        spool.inspect(super::json_rpc::JsonRpcVersion::V2, expected_ids),
+        spool.inspect(super::json_rpc::JsonRpcVersion::V2, correlation),
     )
     .await
     .map_err(|_| {
@@ -1767,6 +2063,27 @@ mod tests {
         ] {
             assert!(validate_ws_call(&denied, &chain).is_err(), "{denied}");
         }
+
+        assert!(valid_ws_response(
+            &json!({"jsonrpc":"2.0","id":1,"result":"0x1"})
+        ));
+        assert!(!valid_ws_response(
+            &json!({"jsonrpc":"2.0","id":1,"result":"0x1","error":null})
+        ));
+        assert_eq!(
+            ws_subscription_notification(&json!({
+                "jsonrpc":"2.0",
+                "method":"eth_subscription",
+                "params":{"subscription":"sub-1","result":{"number":"0x1"}}
+            })),
+            Some("sub-1")
+        );
+        assert!(ws_subscription_notification(&json!({
+            "jsonrpc":"2.0",
+            "method":"other",
+            "params":{"subscription":"sub-1","result":{}}
+        }))
+        .is_none());
     }
 
     #[test]
@@ -2035,6 +2352,22 @@ mod tests {
                 "broadcast_state": "not-attempted"
             })
         );
+
+        let exhausted = quota_error(
+            "rpc_hourly_quota",
+            true,
+            QuotaDenial::Exhausted {
+                reset_unix_seconds: now_seconds() + 120,
+            },
+        )
+        .into_response();
+        assert_eq!(exhausted.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(exhausted
+            .headers()
+            .contains_key(axum::http::header::RETRY_AFTER));
+        let body = response_json(exhausted).await;
+        assert_eq!(body["error"], "rpc_hourly_quota");
+        assert!(body["reset_at_unix_seconds"].as_u64().is_some());
 
         let unknown = broadcast_error(
             StatusCode::GATEWAY_TIMEOUT,
@@ -2318,9 +2651,19 @@ mod tests {
                             while let Some(Ok(ClientWsMessage::Text(text))) = socket.next().await {
                                 counted.fetch_add(1, Ordering::SeqCst);
                                 let request: Value = serde_json::from_str(&text).unwrap();
+                                if request["method"] == "eth_getBalance"
+                                    && request["params"].get(0) == Some(&json!("hold"))
+                                {
+                                    continue;
+                                }
+                                let response_id = if request["method"] == "eth_blockNumber" {
+                                    json!(999)
+                                } else {
+                                    request["id"].clone()
+                                };
                                 let response = json!({
                                     "jsonrpc":"2.0",
-                                    "id":request["id"],
+                                    "id":response_id,
                                     "result":"0x279f"
                                 });
                                 if socket
@@ -2354,6 +2697,7 @@ mod tests {
                 checkpoint_block_hash: None,
                 max_get_logs_range: 10,
             }],
+            max_concurrency: 256,
             ..EvmRpcConf::default()
         };
         let http_url = format!("http://{upstream_address}/provider-secret");
@@ -2382,7 +2726,7 @@ mod tests {
         );
 
         let url = format!("ws://{relay_address}/chain-rpc/monad-testnet/cap/{capability}/ws");
-        let (mut client, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+        let (mut client, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
         client
             .send(UpstreamWsMessage::Text(
                 json!({"jsonrpc":"2.0","id":7,"method":"eth_chainId","params":[]}).to_string(),
@@ -2391,7 +2735,52 @@ mod tests {
             .unwrap();
         let response = client.next().await.unwrap().unwrap().into_text().unwrap();
         assert_eq!(serde_json::from_str::<Value>(&response).unwrap()["id"], 7);
-        assert_eq!(ws_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(ws_calls.load(Ordering::SeqCst), 2);
+
+        let (mut malicious, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        malicious
+            .send(UpstreamWsMessage::Text(
+                json!({"jsonrpc":"2.0","id":9,"method":"eth_blockNumber","params":[]}).to_string(),
+            ))
+            .await
+            .unwrap();
+        let closed = tokio::time::timeout(Duration::from_secs(1), malicious.next())
+            .await
+            .unwrap();
+        assert!(match closed {
+            None => true,
+            Some(Ok(message)) => message.is_close(),
+            Some(Err(_)) => true,
+        });
+
+        let (mut bounded, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        for id in 0..MAX_WS_PENDING_REQUESTS {
+            bounded
+                .send(UpstreamWsMessage::Text(
+                    json!({"jsonrpc":"2.0","id":id,"method":"eth_getBalance","params":["hold","latest"]})
+                        .to_string(),
+                ))
+                .await
+                .unwrap();
+        }
+        bounded
+            .send(UpstreamWsMessage::Text(
+                json!({"jsonrpc":"2.0","id":"overflow","method":"eth_getBalance","params":["hold","latest"]})
+                    .to_string(),
+            ))
+            .await
+            .unwrap();
+        let limited = tokio::time::timeout(Duration::from_secs(1), bounded.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .into_text()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&limited).unwrap()["error"]["code"],
+            -32005
+        );
 
         client
             .send(UpstreamWsMessage::Text(
@@ -2405,7 +2794,6 @@ mod tests {
             serde_json::from_str::<Value>(&denied).unwrap()["error"]["code"],
             -32601
         );
-        assert_eq!(ws_calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -2445,6 +2833,63 @@ mod tests {
         assert!(rendered.contains("reported 1, expected 10143"));
         assert!(!rendered.contains("sentinel-api-key"));
         assert!(!rendered.contains(&secret_url));
+    }
+
+    #[tokio::test]
+    async fn startup_rejects_wrong_websocket_chain_identity() {
+        let upstream = Router::new().route(
+            "/provider-secret",
+            routing::post(|| async { Json(json!({"jsonrpc":"2.0","id":1,"result":"0x279f"})) })
+                .get(|ws: WebSocketUpgrade| async move {
+                    ws.on_upgrade(move |mut socket| async move {
+                        if let Some(Ok(ClientWsMessage::Text(text))) = socket.next().await {
+                            let request: Value = serde_json::from_str(&text).unwrap();
+                            let _ = socket
+                                .send(ClientWsMessage::Text(
+                                    json!({"jsonrpc":"2.0","id":request["id"],"result":"0x1"})
+                                        .to_string(),
+                                ))
+                                .await;
+                        }
+                    })
+                }),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(
+            axum::Server::from_tcp(listener)
+                .unwrap()
+                .serve(upstream.into_make_service()),
+        );
+        let conf = EvmRpcConf {
+            enabled: true,
+            chains: vec![cashweb_config::EvmRpcChainConf {
+                id: "monad-testnet".to_string(),
+                expected_chain_id: 10_143,
+                upstream_env: "TEST_HTTP".to_string(),
+                upstream_ws_env: Some("TEST_WS".to_string()),
+                checkpoint_block_number: None,
+                checkpoint_block_hash: None,
+                max_get_logs_range: 10,
+            }],
+            ..EvmRpcConf::default()
+        };
+        let error = EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |name| match name {
+            "TEST_HTTP" => Some(format!("http://{address}/provider-secret")),
+            "TEST_WS" => Some(format!("ws://{address}/provider-secret")),
+            _ => None,
+        })
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            EvmRpcStartError::ChainMismatch {
+                expected: 10_143,
+                actual: 1,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

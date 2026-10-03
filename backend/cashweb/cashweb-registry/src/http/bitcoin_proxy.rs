@@ -25,9 +25,9 @@ use url::Url;
 use crate::{
     http::{
         evm_rpc::{
-            authenticate, body_hash, now_ms, rpc_error, BoundedRpcBody, RpcAuthState, RpcBinding,
-            RpcCapabilityBody, RpcChallengeBody, RpcRejection, RpcResource, RPC_AUTH_DOMAIN,
-            RPC_CUSTOMER_HEADER,
+            authenticate, body_hash, now_ms, quota_error, rpc_error, BoundedRpcBody, RpcAuthState,
+            RpcBinding, RpcCapabilityBody, RpcChallengeBody, RpcRejection, RpcResource,
+            RPC_AUTH_DOMAIN, RPC_CUSTOMER_HEADER,
         },
         hourly_quota::{normalize_quota_ip, FixedHourQuota},
         server::RegistryServer,
@@ -49,6 +49,26 @@ struct Chain {
 struct UpstreamResponse {
     status: StatusCode,
     body: Bytes,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct ScriptRefWire {
+    #[prost(string, tag = "1")]
+    script_type: String,
+    #[prost(bytes = "vec", tag = "2")]
+    payload: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct ScriptBatchParamsWire {
+    #[prost(message, repeated, tag = "1")]
+    scripts: Vec<ScriptRefWire>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct ScriptBatchRequestWire {
+    #[prost(message, optional, tag = "1")]
+    params: Option<ScriptBatchParamsWire>,
 }
 
 impl fmt::Debug for Chain {
@@ -301,6 +321,48 @@ fn endpoint_url(base: &Url, path: &str) -> Result<Url, ()> {
     text.push('/');
     text.push_str(path.trim_start_matches('/'));
     text.parse().map_err(|_| ())
+}
+
+fn chronik_endpoint_url(base: &Url, path: &str, query: Option<&str>) -> Result<Url, ()> {
+    let mut url = base.clone();
+    {
+        let mut segments = url.path_segments_mut().map_err(|_| ())?;
+        segments.pop_if_empty();
+        for segment in path.split('/') {
+            segments.push(segment);
+        }
+    }
+    let combined_query = match (base.query(), query) {
+        (Some(base), Some(request)) if !request.is_empty() => Some(format!("{base}&{request}")),
+        (Some(base), _) => Some(base.to_string()),
+        (None, Some(request)) if !request.is_empty() => Some(request.to_string()),
+        (None, _) => None,
+    };
+    url.set_query(combined_query.as_deref());
+    url.set_fragment(None);
+    Ok(url)
+}
+
+fn chronik_error_contains_secret(message: &str, upstream: &Url) -> bool {
+    let mut needles = Vec::new();
+    needles.push(upstream.as_str());
+    if !upstream.username().is_empty() {
+        needles.push(upstream.username());
+    }
+    if let Some(password) = upstream.password().filter(|password| !password.is_empty()) {
+        needles.push(password);
+    }
+    if let Some(query) = upstream.query().filter(|query| !query.is_empty()) {
+        needles.push(query);
+    }
+    let path = upstream.path().trim_matches('/');
+    if !path.is_empty() {
+        needles.push(path);
+    }
+    needles
+        .into_iter()
+        .filter(|needle| needle.len() >= 4)
+        .any(|needle| message.contains(needle))
 }
 
 async fn read_response(mut response: reqwest::Response, max: usize) -> Result<Bytes, ()> {
@@ -586,7 +648,7 @@ async fn proxy_rpc_inner(
         .filter(|c| c.rpc.is_some())
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
     let (_units, send_only, version) = validate_rpc(&body, runtime.max_request_bytes)?;
-    let expected_ids = super::json_rpc::request_ids(&body)
+    let correlation = super::json_rpc::request_correlation(&body)
         .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"))?;
     let capability_customer = capability
         .as_deref()
@@ -627,7 +689,7 @@ async fn proxy_rpc_inner(
         runtime
             .broadcast_quota
             .charge(ip, 1, unix_seconds())
-            .ok_or_else(|| rpc_error(StatusCode::TOO_MANY_REQUESTS, "rpc_hourly_quota"))?;
+            .map_err(|denial| quota_error("rpc_hourly_quota", true, denial))?;
     }
     let deadline = tokio::time::Instant::now() + runtime.timeout;
     let upstream = tokio::time::timeout_at(
@@ -663,7 +725,7 @@ async fn proxy_rpc_inner(
             rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable")
         }
     })?;
-    let inspected = tokio::time::timeout_at(deadline, spool.inspect(version, expected_ids))
+    let inspected = tokio::time::timeout_at(deadline, spool.inspect(version, correlation))
         .await
         .map_err(|_| rpc_error(StatusCode::GATEWAY_TIMEOUT, "rpc_upstream_timeout"))?
         .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
@@ -686,15 +748,82 @@ async fn proxy_rpc_inner(
     ))
 }
 
-fn chronik_scope(chain: &str, method: &Method, uri: &axum::http::Uri) -> String {
+fn chronik_scope(chain: &str, method: &Method, path: &str, query: Option<&str>) -> String {
     format!(
-        "chronik:{}:{}:{}",
+        "chronik:{}:{}:/{}{}",
         chain,
         method,
-        uri.path_and_query()
-            .map(|v| v.as_str())
-            .unwrap_or(uri.path())
+        path,
+        query.map(|query| format!("?{query}")).unwrap_or_default(),
     )
+}
+
+fn canonical_chronik_path(path: &str) -> Result<String, RpcRejection> {
+    let path = path.strip_prefix('/').unwrap_or(path);
+    let segments = path.split('/').collect::<Vec<_>>();
+    if segments.is_empty()
+        || segments.iter().any(|segment| {
+            segment.is_empty() || *segment == "." || *segment == ".." || segment.contains('\\')
+        })
+    {
+        return Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_indexer_path"));
+    }
+    Ok(segments.join("/"))
+}
+
+fn validate_history_query(path: &str, query: Option<&str>) -> Result<(), RpcRejection> {
+    if !matches!(
+        path.rsplit('/').next(),
+        Some("history" | "confirmed-txs" | "unconfirmed-txs")
+    ) {
+        return Ok(());
+    }
+    let mut page = false;
+    let mut page_size = false;
+    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+        match key.as_ref() {
+            "page" if !page => {
+                value
+                    .parse::<u32>()
+                    .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_indexer_query"))?;
+                page = true;
+            }
+            "page_size" if !page_size => {
+                let size = value
+                    .parse::<u32>()
+                    .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_indexer_query"))?;
+                if size == 0 || size > 200 {
+                    return Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_indexer_query"));
+                }
+                page_size = true;
+            }
+            _ => return Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_indexer_query")),
+        }
+    }
+    Ok(())
+}
+
+fn anonymous_chronik_units(
+    method: &Method,
+    path: &str,
+    query: Option<&str>,
+    body: &[u8],
+) -> Result<u32, RpcRejection> {
+    if method == Method::POST && matches!(path, "script/batch/utxos" | "script/batch/summary") {
+        let request = ScriptBatchRequestWire::decode(body)
+            .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_indexer_body"))?;
+        let count = request
+            .params
+            .map(|params| params.scripts.len())
+            .unwrap_or_default();
+        if count == 0 || count > 500 {
+            return Err(rpc_error(StatusCode::BAD_REQUEST, "rpc_batch_limit"));
+        }
+        return u32::try_from(count)
+            .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "rpc_batch_limit"));
+    }
+    validate_history_query(path, query)?;
+    Ok(1)
 }
 
 fn chronik_policy(method: &Method, path: &str) -> Option<(bool, bool)> {
@@ -787,6 +916,7 @@ pub(crate) async fn issue_chronik_challenge(
         .get(&chain_id)
         .filter(|c| c.chronik.is_some())
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
+    let path = canonical_chronik_path(&path)?;
     let method = headers
         .get(PROXY_METHOD_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -803,15 +933,10 @@ pub(crate) async fn issue_chronik_challenge(
     }
     let customer = parse_customer(&headers)?
         .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
-    let target_uri: axum::http::Uri = uri
-        .to_string()
-        .replace("/chronik-auth/", "/chronik/")
-        .parse()
-        .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_indexer_path"))?;
     challenge(
         runtime,
         customer,
-        chronik_scope(&chain_id, &method, &target_uri),
+        chronik_scope(&chain_id, &method, &path, uri.query()),
         &body,
     )
 }
@@ -880,6 +1005,7 @@ async fn proxy_chronik_inner(
         .get(&chain_id)
         .filter(|c| c.chronik.is_some())
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
+    let path = canonical_chronik_path(&path)?;
     let (public, broadcast) = chronik_policy(&method, &path)
         .ok_or_else(|| rpc_error(StatusCode::FORBIDDEN, "indexer_endpoint_denied"))?;
     if body.len() > runtime.max_request_bytes {
@@ -908,7 +1034,7 @@ async fn proxy_chronik_inner(
             &runtime.network_tag,
             &RpcBinding {
                 customer,
-                chain: chronik_scope(&chain_id, &method, &uri),
+                chain: chronik_scope(&chain_id, &method, &path, uri.query()),
                 body_sha256: body_hash(&body),
                 resource: RpcResource::Rpc,
             },
@@ -921,7 +1047,7 @@ async fn proxy_chronik_inner(
         let units = if broadcast {
             broadcast_units(&path, &body)?
         } else {
-            1
+            anonymous_chronik_units(&method, &path, uri.query(), &body)?
         };
         Some((broadcast, peer_ip(peer)?, units))
     };
@@ -936,20 +1062,9 @@ async fn proxy_chronik_inner(
         };
         quota
             .charge(ip, units, unix_seconds())
-            .ok_or_else(|| rpc_error(StatusCode::TOO_MANY_REQUESTS, "rpc_hourly_quota"))?;
+            .map_err(|denial| quota_error("rpc_hourly_quota", is_broadcast, denial))?;
     }
-    let suffix = uri
-        .path_and_query()
-        .map(|v| v.as_str())
-        .unwrap_or(uri.path());
-    let prefix = capability.as_ref().map_or_else(
-        || format!("/chain-rpc/{chain_id}/chronik/"),
-        |capability| format!("/chain-rpc/{chain_id}/cap/{capability}/chronik/"),
-    );
-    let upstream_path = suffix
-        .strip_prefix(&prefix)
-        .ok_or_else(|| rpc_error(StatusCode::BAD_REQUEST, "invalid_indexer_path"))?;
-    let url = endpoint_url(chain.chronik.as_ref().unwrap(), upstream_path)
+    let url = chronik_endpoint_url(chain.chronik.as_ref().unwrap(), &path, uri.query())
         .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable"))?;
     let request = if method == Method::GET {
         runtime.client.get(url)
@@ -967,10 +1082,17 @@ async fn proxy_chronik_inner(
     let body = if upstream.status.is_success() {
         upstream.body
     } else {
-        let mut error = proto::Error::decode(upstream.body.as_ref())
+        let error = proto::Error::decode(upstream.body.as_ref())
             .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
-        error.msg = "upstream Chronik error".to_string();
-        error.encode_to_vec().into()
+        if chronik_error_contains_secret(&error.msg, chain.chronik.as_ref().unwrap()) {
+            proto::Error {
+                msg: "upstream Chronik error".to_string(),
+            }
+            .encode_to_vec()
+            .into()
+        } else {
+            upstream.body
+        }
     };
     let response = (
         upstream.status,
@@ -1065,6 +1187,62 @@ mod tests {
         );
         assert_eq!(chronik_policy(&Method::GET, "pause"), None);
         assert_eq!(chronik_policy(&Method::GET, "ws"), None);
+    }
+
+    #[test]
+    fn chronik_paths_queries_and_batch_costs_are_bounded() {
+        assert!(canonical_chronik_path("blocks/../pause").is_err());
+        assert!(canonical_chronik_path("blocks\\..\\pause").is_err());
+        assert_eq!(
+            canonical_chronik_path("script/p2pkh/aa/history").unwrap(),
+            "script/p2pkh/aa/history"
+        );
+
+        assert!(
+            validate_history_query("script/p2pkh/aa/history", Some("page=0&page_size=200")).is_ok()
+        );
+        assert!(validate_history_query("script/p2pkh/aa/history", Some("page_size=201")).is_err());
+        assert!(validate_history_query("script/p2pkh/aa/history", Some("page=0&page=1")).is_err());
+
+        let body = ScriptBatchRequestWire {
+            params: Some(ScriptBatchParamsWire {
+                scripts: vec![
+                    ScriptRefWire {
+                        script_type: "p2pkh".to_string(),
+                        payload: vec![1; 20],
+                    },
+                    ScriptRefWire {
+                        script_type: "p2sh".to_string(),
+                        payload: vec![2; 20],
+                    },
+                    ScriptRefWire {
+                        script_type: "other".to_string(),
+                        payload: vec![0x51],
+                    },
+                ],
+            }),
+        }
+        .encode_to_vec();
+        assert_eq!(
+            anonymous_chronik_units(&Method::POST, "script/batch/utxos", None, &body).unwrap(),
+            3
+        );
+        assert!(anonymous_chronik_units(&Method::POST, "script/batch/summary", None, &[]).is_err());
+    }
+
+    #[test]
+    fn chronik_url_builder_cannot_escape_the_configured_base() {
+        let base: Url = "https://user:secret@example.test/private?api_key=hidden"
+            .parse()
+            .unwrap();
+        let url = chronik_endpoint_url(&base, "blocks/1/2", Some("page=0")).unwrap();
+        assert_eq!(url.path(), "/private/blocks/1/2");
+        assert_eq!(url.query(), Some("api_key=hidden&page=0"));
+        assert!(chronik_error_contains_secret(
+            "request to api_key=hidden failed",
+            &base
+        ));
+        assert!(!chronik_error_contains_secret("txn-invalid", &base));
     }
 
     #[test]
@@ -1186,6 +1364,13 @@ mod tests {
         let chronik_calls = Arc::clone(&upstream_calls);
         let chronik_body = proto::Block::default().encode_to_vec();
         let expected_chronik_body = chronik_body.clone();
+        let mut chronik_error = proto::Error {
+            msg: "txn-invalid".to_string(),
+        }
+        .encode_to_vec();
+        chronik_error.extend_from_slice(&[0x7a, 0x03, b'a', b'b', b'c']);
+        let expected_chronik_error = chronik_error.clone();
+        let error_calls = Arc::clone(&upstream_calls);
         let upstream = Router::new()
             .route(
                 "/",
@@ -1205,6 +1390,17 @@ mod tests {
                     async move {
                         calls.fetch_add(1, Ordering::SeqCst);
                         body
+                    }
+                }),
+            )
+            .route(
+                "/tx/:id",
+                routing::get(move || {
+                    let calls = Arc::clone(&error_calls);
+                    let body = chronik_error.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        (StatusCode::BAD_REQUEST, body)
                     }
                 }),
             );
@@ -1327,6 +1523,25 @@ mod tests {
             .unwrap();
         assert_eq!(chronik_only_response.status(), StatusCode::OK);
 
+        let chronik_error_response = router
+            .clone()
+            .oneshot(
+                Request::get(format!(
+                    "/chain-rpc/xec-mainnet/cap/{capability}/chronik/tx/abc"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(chronik_error_response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            hyper::body::to_bytes(chronik_error_response.into_body())
+                .await
+                .unwrap(),
+            expected_chronik_error
+        );
+
         let anonymous_protected = router
             .clone()
             .oneshot(
@@ -1338,6 +1553,20 @@ mod tests {
             .unwrap();
         assert_eq!(anonymous_protected.status(), StatusCode::UNAUTHORIZED);
 
+        let traversal = router
+            .clone()
+            .oneshot(
+                Request::get(format!(
+                    "/chain-rpc/xec-mainnet/cap/{capability}/chronik/blocks/%2e%2e/pause"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(traversal.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 4);
+
         let modified = router
             .oneshot(
                 Request::post(format!("/chain-rpc/xec-mainnet/cap/{capability}0/rpc"))
@@ -1348,6 +1577,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(modified.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(upstream_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 4);
     }
 }

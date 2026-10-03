@@ -38,7 +38,9 @@ serve the Chronik HTTP/Protobuf API at `/chain-rpc/:chain/chronik/*`. Chronik is
 
 The shipped relay configurations expose `monad-testnet`. Its provider URL is read only from the row's `upstream_env`
 environment variable. At startup the relay calls `eth_chainId` and refuses readiness unless the
-provider reports the configured `expected_chain_id`. Rotate a provider key by changing that
+provider reports the configured `expected_chain_id`; every configured WebSocket upstream is
+probed independently with the same identity check (and the configured checkpoint, when present).
+Rotate a provider key by changing that
 server-side environment value and restarting the relay; the URL and key are never returned or
 logged by the proxy.
 
@@ -85,7 +87,10 @@ length, per-chain log range, a weighted fixed-UTC-hour customer quota, a smaller
 and bounded upstream concurrency. Cheap wallet-bootstrap reads and raw transaction submission may
 be anonymous. The fixed-hour allowance can be consumed in a burst, so a wallet with hundreds of
 accounts is not broken by a rolling request rate. Expensive calls cost more quota units; unbounded
-debug/trace and log requests are denied. Transaction broadcasts are not put behind a short rolling
+debug/trace and log requests are denied. A genuinely exhausted HTTP allowance returns `429`, a
+`Retry-After` header, and `reset_at_unix_seconds`; disabled, structurally oversized, and temporarily
+unavailable quota states use distinct error codes and do not pretend that the next hour will help.
+Transaction broadcasts are not put behind a short rolling
 rate limiter: a pre-upstream quota or busy response is a definite non-attempt, while an upstream
 timeout is ambiguous and clients must retain the signed transaction/account reservation and retry
 the exact bytes. See issue #664 for the durable client reconciliation contract.
@@ -96,13 +101,20 @@ at `max_request_bytes`, and cap upstream frames at the lesser of `max_response_b
 Only the HTTP allowlist plus `eth_unsubscribe`, `eth_subscribe("newHeads")`, and bounded
 `eth_subscribe("logs", filter)` are accepted; pending-transaction and debug subscriptions are
 denied. A connection may attempt at most 32 subscriptions.
+At most 128 JSON-RPC requests may await an upstream response on one connection, each pending call
+holds a shared upstream-concurrency permit, and responses and subscription notifications are
+forwarded only when their IDs match an outstanding call or active subscription.
 
 Bitcoin-family configuration names optional node JSON-RPC and Chronik upstream environment
 variables plus a required checkpoint height/hash. Startup checks `getblockhash` and Chronik's
 `GET /block/<height>` before readiness. Anonymous Chronik wallet-bootstrap reads use a high,
 burstable fixed-hour IP quota; anonymous `sendrawtransaction`, `broadcast-tx`, and bounded
 `broadcast-txs` use a separate small fixed-hour broadcast quota. Other node RPC and indexer
-operations require the same registered-customer challenge as EVM calls.
+operations require the same registered-customer challenge as EVM calls. Anonymous history queries
+accept only bounded `page` and `page_size` parameters, and anonymous batch script requests consume
+one quota unit per script. Chronik paths are canonicalized before policy and forwarding; valid
+upstream protobuf error bodies are preserved byte-for-byte unless they contain configured upstream
+credentials.
 
 ```toml
 [registry.bitcoin_proxy]

@@ -16,6 +16,15 @@ pub(crate) struct QuotaSnapshot {
     pub(crate) reset_unix_seconds: u64,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum QuotaDenial {
+    Exhausted { reset_unix_seconds: u64 },
+    Disabled,
+    RequestTooLarge,
+    Capacity,
+    Unavailable,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Usage {
     units: u32,
@@ -45,29 +54,41 @@ impl<K: Eq + Hash + Clone> FixedHourQuota<K> {
         }
     }
 
-    pub(crate) fn charge(&self, key: K, units: u32, now_seconds: u64) -> Option<QuotaSnapshot> {
-        if self.limit == 0 || units > self.limit {
-            return None;
+    pub(crate) fn charge(
+        &self,
+        key: K,
+        units: u32,
+        now_seconds: u64,
+    ) -> Result<QuotaSnapshot, QuotaDenial> {
+        if self.limit == 0 {
+            return Err(QuotaDenial::Disabled);
+        }
+        if units > self.limit {
+            return Err(QuotaDenial::RequestTooLarge);
         }
         let hour = now_seconds / 3600;
-        let mut state = self.state.lock().ok()?;
+        let reset_unix_seconds = (hour + 1) * 3600;
+        let mut state = self.state.lock().map_err(|_| QuotaDenial::Unavailable)?;
         if state.hour != Some(hour) {
             state.hour = Some(hour);
             state.usage.clear();
         }
         if state.usage.len() >= MAX_QUOTA_KEYS && !state.usage.contains_key(&key) {
-            return None;
+            return Err(QuotaDenial::Capacity);
         }
         let entry = state.usage.entry(key).or_insert(Usage { units: 0 });
-        let next = entry.units.checked_add(units)?;
+        let next = entry
+            .units
+            .checked_add(units)
+            .ok_or(QuotaDenial::Unavailable)?;
         if next > self.limit {
-            return None;
+            return Err(QuotaDenial::Exhausted { reset_unix_seconds });
         }
         entry.units = next;
-        Some(QuotaSnapshot {
+        Ok(QuotaSnapshot {
             limit: self.limit,
             remaining: self.limit - next,
-            reset_unix_seconds: (hour + 1) * 3600,
+            reset_unix_seconds,
         })
     }
 }
@@ -90,8 +111,21 @@ mod tests {
     fn permits_bursts_and_resets_only_at_the_hour_boundary() {
         let quota = FixedHourQuota::new(5);
         assert_eq!(quota.charge("a", 5, 3599).unwrap().remaining, 0);
-        assert!(quota.charge("a", 1, 3599).is_none());
+        assert_eq!(
+            quota.charge("a", 1, 3599),
+            Err(QuotaDenial::Exhausted {
+                reset_unix_seconds: 3600
+            })
+        );
         assert_eq!(quota.charge("a", 1, 3600).unwrap().remaining, 4);
+        assert_eq!(
+            quota.charge("a", 6, 3600),
+            Err(QuotaDenial::RequestTooLarge)
+        );
+        assert_eq!(
+            FixedHourQuota::new(0).charge("a", 1, 3600),
+            Err(QuotaDenial::Disabled)
+        );
     }
 
     #[test]

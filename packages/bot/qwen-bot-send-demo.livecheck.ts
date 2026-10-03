@@ -46,12 +46,13 @@ import {
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
+import { botStateDir } from './bot-state-dir'
 import {
   loadOrCreateIdentity,
   registerAndLog,
   requiredEnv,
   sendDirectMessageText,
-  setUpFundedStampClient,
+  setUpDurableFundedStampClient,
 } from './qwen-bot-common'
 
 function sleep(ms: number): Promise<void> {
@@ -98,10 +99,9 @@ async function main() {
     process.env.E2E_DEMO_MAIN_WALLET_JSON ??
       '../frank-worktrees/spike-demo/spike/data/chain-wallet.json',
   )
-  const walletStateDirPath = resolve(
-    process.cwd(),
-    process.env.QWEN_SENDER_WALLET_STATE_DIR ??
-      '/tmp/qwen-bot-sender-wallet-state',
+  const walletStateDirPath = botStateDir(
+    'qwen-sender-wallet',
+    'QWEN_SENDER_WALLET_STATE_DIR',
   )
   const handoffJsonPath = resolve(
     process.cwd(),
@@ -144,7 +144,7 @@ async function main() {
   }
 
   // No `poolSize` -- funded lazily, per send (see `setUpFundedStampClient`'s doc comment).
-  const fundedSetup = await setUpFundedStampClient({
+  const fundedSetup = await setUpDurableFundedStampClient({
     rpcUrl,
     relayBaseUrl,
     mainWalletJsonPath,

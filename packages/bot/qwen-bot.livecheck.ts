@@ -71,7 +71,7 @@
  *                                  conversation history is kept (default ~/.frank-bots/qwen, or $XDG_STATE_HOME/frank-bots/qwen).
  *                                  Survives restarts -- delete this directory to start clean.
  *   QWEN_BOT_WALLET_STATE_DIR   -- durable HD seed, sender/change pools, and exact stamp journals
- *                                  (default /tmp/qwen-bot-wallet-state).
+ *                                  (default ~/.frank-bots/qwen-wallet, or $XDG_STATE_HOME/frank-bots/qwen-wallet).
  */
 import { writeFileSync } from 'fs'
 import { resolve } from 'path'
@@ -92,10 +92,7 @@ import {
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import { botStateDir } from './bot-state-dir'
-import {
-  createQwenReplyGenerator,
-  qwenBotConfigFromEnv,
-} from './qwen-reply'
+import { createQwenReplyGenerator, qwenBotConfigFromEnv } from './qwen-reply'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 import { extractPromptText } from './qwen-prompt'
 import {
@@ -103,7 +100,7 @@ import {
   registerAndLog,
   requiredEnv,
   sendDirectMessageText,
-  setUpFundedStampClient,
+  setUpDurableFundedStampClient,
 } from './qwen-bot-common'
 import { botProfileFields } from './bot-directory'
 import { QwenBotStateStore } from './qwen-bot-state'
@@ -220,7 +217,7 @@ async function main() {
   // tonight's nonce-contention pain: a fixed pool sized to `maxReplies + maxGreetings` meant a big
   // burst of near-simultaneous funding transactions from one account before the bot ever reached
   // its polling loop.
-  const fundedSetup = await setUpFundedStampClient({
+  const fundedSetup = await setUpDurableFundedStampClient({
     rpcUrl,
     relayBaseUrl,
     mainWalletJsonPath,
@@ -317,9 +314,7 @@ async function main() {
           profile.signedPayload,
         )
         if (skipReason) {
-          console.log(
-            `[bot] not greeting ${profile.address} (${skipReason})`,
-          )
+          console.log(`[bot] not greeting ${profile.address} (${skipReason})`)
           continue
         }
         if (state.hasGreeted(profile.address)) continue // idempotency guard, persisted
@@ -483,10 +478,14 @@ async function main() {
       )
       const completion = await replyGenerator.reply(history)
       console.log(
-        `[bot] ${replyGenerator.mode === 'stub' ? 'STUB' : 'Qwen'} reasoning: ${completion.reasoning.slice(0, 400)}`,
+        `[bot] ${
+          replyGenerator.mode === 'stub' ? 'STUB' : 'Qwen'
+        } reasoning: ${completion.reasoning.slice(0, 400)}`,
       )
       console.log(
-        `[bot] ${replyGenerator.mode === 'stub' ? 'STUB' : 'Qwen'} reply: "${completion.content}"`,
+        `[bot] ${replyGenerator.mode === 'stub' ? 'STUB' : 'Qwen'} reply: "${
+          completion.content
+        }"`,
       )
 
       history.push({ role: 'assistant', content: completion.content })
@@ -534,7 +533,9 @@ async function main() {
   }
 
   console.log(
-    `\nDone. Sent ${repliesSent} ${replyGenerator.mode === 'stub' ? 'STUB (canned)' : 'real Qwen-generated'} repl${
+    `\nDone. Sent ${repliesSent} ${
+      replyGenerator.mode === 'stub' ? 'STUB (canned)' : 'real Qwen-generated'
+    } repl${
       repliesSent === 1 ? 'y' : 'ies'
     } and greeted+funded ${greetingsSent} new profile registration${
       greetingsSent === 1 ? '' : 's'
@@ -557,8 +558,8 @@ main()
       process.env.QWEN_BOT_DEBUG
         ? err
         : err instanceof Error
-          ? err.message
-          : err,
+        ? err.message
+        : err,
     )
     process.exit(1)
   })

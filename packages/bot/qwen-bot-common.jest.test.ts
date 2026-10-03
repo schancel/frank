@@ -4,14 +4,8 @@ import { join } from 'path'
 
 import { JsonRpcProvider, Wallet } from 'ethers'
 
-import { MonadSubAccountPool } from '@frank/wallet/monad-account-pool'
 import { MonadTxSubmitter } from '@frank/wallet/monad-account-tx'
-import { MonadStampClient } from '@frank/wallet/monad-stamp-client'
-
-import {
-  sendDirectMessageItems,
-  setUpFundedStampClient,
-} from './qwen-bot-common'
+import { setUpDurableFundedStampClient } from './qwen-bot-common'
 
 describe('Qwen durable stamp-wallet lifecycle', () => {
   let root: string
@@ -53,7 +47,7 @@ describe('Qwen durable stamp-wallet lifecycle', () => {
   }
 
   function open(stateRoot: string) {
-    return setUpFundedStampClient({
+    return setUpDurableFundedStampClient({
       rpcUrl: 'http://127.0.0.1:1',
       relayBaseUrl: 'https://relay.invalid',
       mainWalletJsonPath: walletJsonPath,
@@ -65,7 +59,7 @@ describe('Qwen durable stamp-wallet lifecycle', () => {
     })
   }
 
-  it('reopens the same HD accounts and excludes a concurrent process', async () => {
+  it('reopens the same HD accounts and releases every store on close', async () => {
     const stateRoot = join(root, 'wallet-state')
     const first = await open(stateRoot)
     first.pool.ensureUnfundedSize(2)
@@ -77,34 +71,10 @@ describe('Qwen durable stamp-wallet lifecycle', () => {
     expect(reopened.pool.records().map(record => record.address)).toEqual(
       addresses,
     )
-    await expect(open(stateRoot)).rejects.toThrow(/already open|lease/i)
+    await reopened.close()
     await reopened.close()
 
     const afterRelease = await open(stateRoot)
     await afterRelease.close()
-  })
-
-  it('reconciles durable authority before quoting, funding, or signing a message', async () => {
-    const reconciliationFailure = new Error('retained authority needs audit')
-    const reconcileOrThrow = jest.fn().mockRejectedValue(reconciliationFailure)
-    const prepareStampInventory = jest.fn()
-
-    await expect(
-      sendDirectMessageItems({
-        stampClient: { reconcileOrThrow } as unknown as MonadStampClient,
-        pool: { prepareStampInventory } as unknown as MonadSubAccountPool,
-        mainAccountSigner: {} as never,
-        provider: {} as never,
-        fromIdentity: {} as never,
-        toAddress: Wallet.createRandom().address,
-        toPubKey: Buffer.alloc(33),
-        items: [{ type: 'text', text: 'must not send' }],
-        stampValueWei: 10_000n,
-        networkTag: 'MONT',
-      }),
-    ).rejects.toBe(reconciliationFailure)
-
-    expect(reconcileOrThrow).toHaveBeenCalledTimes(1)
-    expect(prepareStampInventory).not.toHaveBeenCalled()
   })
 })

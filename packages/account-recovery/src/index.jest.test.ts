@@ -346,6 +346,15 @@ describe('Codex32 account ceremony', () => {
       },
     })
     expectFreshError(() => pending.confirm(entered), 'bad-format')
+    const revoked = Proxy.revocable(
+      [pending.shares[0]!, pending.shares[1]!],
+      {},
+    )
+    revoked.revoke()
+    expectFreshError(
+      () => pending.confirm(revoked.proxy as unknown as string[]),
+      'bad-format',
+    )
     pending.cancel()
   })
 

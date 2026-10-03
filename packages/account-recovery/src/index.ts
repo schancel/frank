@@ -266,7 +266,13 @@ function snapshotRecoveryInput(
 }
 
 function snapshotShares(values: readonly string[]): string[] {
-  if (!Array.isArray(values)) throw new AccountRecoveryError('bad-format')
+  let isArray: boolean
+  try {
+    isArray = Array.isArray(values)
+  } catch {
+    throw new AccountRecoveryError('bad-format')
+  }
+  if (!isArray) throw new AccountRecoveryError('bad-format')
   let length: number
   try {
     length = values.length

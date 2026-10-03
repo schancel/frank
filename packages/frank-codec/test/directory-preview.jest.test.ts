@@ -152,6 +152,15 @@ describe('provisional directory codec, not directory admission', () => {
 
   test('full preview validation fails closed; history cannot be smuggled into evidence context', () => {
     for (const field of ['type4_hex', 'type2_hex'] as const) {
+      expectError(
+        () =>
+          validateFrame(
+            fromHex(record('bootstrap')[field]),
+            defaultContext({ readerVersion: 4, operation: 'full' }),
+          ),
+        'unsupported',
+        '7',
+      )
       const ctx = previewDirectoryContext()
       ctx.operation = 'full'
       expect(() =>

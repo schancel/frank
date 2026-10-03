@@ -115,6 +115,14 @@ fn old_readers_and_full_admission_fail_closed() {
         3
     );
     for field in ["type4_hex", "type2_hex"] {
+        let mut inconsistent = default_context();
+        inconsistent.reader_version = 4;
+        inconsistent.operation = Operation::Full;
+        let Error::Codec(err) = validate_frame(&bytes(r, field), &inconsistent).unwrap_err() else {
+            panic!("codec")
+        };
+        assert_eq!(err.category.to_string(), "unsupported");
+        assert_eq!(err.stage.to_string(), "7");
         for reader in [1, 2, 3] {
             let mut ctx = default_context();
             ctx.reader_version = reader;

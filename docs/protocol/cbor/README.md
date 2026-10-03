@@ -39,6 +39,8 @@ complete original frame. Higher required floors reject at stage7. A reader
 supporting this allocation rejects a schema4-or-newer floor other than 4;
 legacy readers retain their frozen V6 behavior and cannot infer v4 authority
 from a dishonestly lowered floor. Required v4 children reject in old readers.
+A raised global reader version without type-4 schema-4 support also rejects
+required v4 at stage7; it cannot turn an old projection into preview support.
 
 Both the complete bare preview statement and its type-2 wrapper are bounded
 by 262144 bytes; the statement bound is checked at 8.1 before point checks,

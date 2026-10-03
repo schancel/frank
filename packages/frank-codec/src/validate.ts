@@ -299,6 +299,19 @@ function processFrame(
   }
   if (
     env.typeId === TYPE_DIRECTORY_STATEMENT &&
+    env.schemaVersion >= 4 &&
+    env.minReaderVersion >= 4 &&
+    highest < 4
+  ) {
+    throw fail(
+      'unsupported',
+      '7',
+      'directory preview requires type-4 schema-4 support',
+      location,
+    )
+  }
+  if (
+    env.typeId === TYPE_DIRECTORY_STATEMENT &&
     highest >= 4 &&
     env.schemaVersion >= 4 &&
     env.minReaderVersion !== 4

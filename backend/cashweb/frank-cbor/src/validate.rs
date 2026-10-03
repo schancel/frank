@@ -393,6 +393,18 @@ fn process_frame(
         ));
     }
     if env.type_id == TYPE_DIRECTORY_STATEMENT
+        && env.schema_version >= 4
+        && env.min_reader_version >= 4
+        && highest_schema < 4
+    {
+        return Err(fail(
+            ErrorCategory::Unsupported,
+            ErrorStage::S7,
+            "directory preview requires type-4 schema-4 support",
+            location,
+        ));
+    }
+    if env.type_id == TYPE_DIRECTORY_STATEMENT
         && highest_schema >= 4
         && env.schema_version >= 4
         && env.min_reader_version != 4

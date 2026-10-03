@@ -1,0 +1,42 @@
+; PROPOSED ONLY. Combine conceptually with ../../cbor/common.cddl.
+; Prose adds version/unknown-key, cumulative resource and economic validation.
+forum-post = { 0: network-tag, 1: tstr .size (1..512), ? 2: digest-32,
+  3: bstr .size (1..524288), * uint => frank-value }
+; field 3 opens this canonical item, type9 schema2/min2:
+forum-content = { 0: timestamp, 1: [1*64 forum-entry], * uint => frank-value }
+forum-entry = known-forum-entry / future-forum-entry
+known-forum-entry = { 0: 1, ? 1: tstr, ? 2: tstr, ? 3: tstr, * uint => frank-value }
+; Only a compatible future containing schema admits this alternative; schema2
+; rejects undeclared keys and kinds. The generic kind is never rendered as text.
+future-forum-entry = { 0: uint, * uint => frank-value }
+u64 = 0..18446744073709551615
+epoch = bstr .size 16
+raw-burn = bstr .size (1..16384)
+address = bstr .size 20
+aggregate = { 0: bool, 1: bstr .size 32 } ; big endian, forbid negative zero
+cursor-bytes = bstr .size (1..2048)
+
+single-view = { ; candidate12 schema1/min1; complete frame <=2MiB
+  0: network-tag, 1: framed-object, 2: address, 3: raw-burn,
+  4: digest-32, 5: timestamp, 6: u64, 7: u64, 8: aggregate,
+  9: u64, 10: epoch, * uint => frank-value }
+topic-page = { ; candidate13; complete frame <=4MiB
+  0: network-tag, 1: tstr .size (1..512), 2: timestamp,
+  3: u64, 4: [*128 framed-object], ? 5: cursor-bytes, 6: epoch,
+  ? 7: cursor-bytes, * uint => frank-value }
+discovery-page = { ; candidate14; complete frame <=4MiB
+  0: network-tag, 1: u64, 2: [*128 discovery-entry],
+  ? 3: cursor-bytes, 4: epoch, ? 5: cursor-bytes, * uint => frank-value }
+discovery-entry = { 0: tstr .size (1..512), 1: u64, 2: timestamp,
+  * uint => frank-value }
+operation-status = { ; candidate15; complete frame <=2MiB
+  0: network-tag, 1: framed-object, 2: digest-32, 3: digest-32,
+  4: address, 5: 0..1, 6: u64, 7: 0..3, ? 8: u64, ? 9: u64,
+  10: u64, 11: epoch, * uint => frank-value }
+; 8/9 both present iff state2. States0/3: 1..6 UNVERIFIED REQUEST ECHOES.
+; States1/2: transaction-derived observed facts; value 1..i64::MAX.
+
+topic-cursor = { 0: network-tag, 1: 13, 2: u64, 3: epoch,
+  4: { 0: timestamp, 1: digest-32 }, 5: tstr .size (1..512), 6: timestamp }
+discovery-cursor = { 0: network-tag, 1: 14, 2: u64, 3: epoch,
+  4: tstr .size (1..512) }

@@ -25,6 +25,10 @@ fn base_open(path: &Path) -> bool {
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(stdout.contains("running 1 test\n")
+        && stdout.contains("test directory_preview_actual_legacy_opener ... ok"),
+        "wrong/no-op base helper executable: {stdout}");
     true
 }
 fn names(path: &Path) -> Vec<String> {

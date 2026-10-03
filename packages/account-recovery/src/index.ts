@@ -120,6 +120,9 @@ export function beginCodex32Signup(
           throw new AccountRecoveryError('ceremony-consumed')
         }
         const sharesSnapshot = snapshotShares(candidateShares)
+        if (!active || retainedSymbols === null) {
+          throw new AccountRecoveryError('ceremony-consumed')
+        }
         assertCeremonyFamily(descriptor, sharesSnapshot)
         const recovered = unwrap(recoverCodex32Exact(sharesSnapshot))
         try {
@@ -152,8 +155,9 @@ export function beginCodex32Signup(
 export function recoverCodex32Account(
   input: RecoverCodex32AccountInput,
 ): AccountDomainRoots {
-  const descriptor = snapshotDescriptor(input.descriptor)
-  const shares = snapshotShares(input.shares)
+  const recovery = snapshotRecoveryInput(input)
+  const descriptor = snapshotDescriptor(recovery.descriptor)
+  const shares = snapshotShares(recovery.shares)
   assertCeremonyFamily(descriptor, shares)
   const recovered = unwrap(recoverCodex32Exact(shares))
   try {
@@ -235,40 +239,56 @@ function snapshotDescriptor(value: RecoveryDescriptor): RecoveryDescriptor {
 function snapshotSignupInput(
   value: BeginCodex32SignupInput,
 ): BeginCodex32SignupInput {
+  let threshold: SplitCodex32Input['threshold']
+  let identifier: string
+  let randomBytes: (length: number) => Uint8Array
+  let rawIndices: readonly string[]
   try {
-    const threshold = value.threshold
-    const identifier = value.identifier
-    const randomBytes = value.randomBytes
-    const indices = snapshotShares(value.indices)
-    return { threshold, identifier, indices, randomBytes }
-  } catch (error) {
-    if (error instanceof AccountRecoveryError) throw error
+    threshold = value.threshold
+    identifier = value.identifier
+    randomBytes = value.randomBytes
+    rawIndices = value.indices
+  } catch {
+    throw new AccountRecoveryError('bad-format')
+  }
+  const indices = snapshotShares(rawIndices)
+  return { threshold, identifier, indices, randomBytes }
+}
+
+function snapshotRecoveryInput(
+  value: RecoverCodex32AccountInput,
+): RecoverCodex32AccountInput {
+  try {
+    return { descriptor: value.descriptor, shares: value.shares }
+  } catch {
     throw new AccountRecoveryError('bad-format')
   }
 }
 
 function snapshotShares(values: readonly string[]): string[] {
+  if (!Array.isArray(values)) throw new AccountRecoveryError('bad-format')
+  let length: number
   try {
-    if (!Array.isArray(values)) throw new AccountRecoveryError('bad-format')
-    if (values.length === 0) {
-      throw new AccountRecoveryError('insufficient-shares')
-    }
-    if (values.length > 31) {
-      throw new AccountRecoveryError('insufficient-shares')
-    }
-    const copied = new Array<string>(values.length)
-    for (let index = 0; index < values.length; index += 1) {
+    length = values.length
+  } catch {
+    throw new AccountRecoveryError('bad-format')
+  }
+  if (!Number.isSafeInteger(length) || length < 1 || length > 31) {
+    throw new AccountRecoveryError('insufficient-shares')
+  }
+  const copied = new Array<string>(length)
+  for (let index = 0; index < length; index += 1) {
+    try {
       const value = values[index]
       if (typeof value !== 'string') {
         throw new AccountRecoveryError('bad-format')
       }
       copied[index] = value
+    } catch {
+      throw new AccountRecoveryError('bad-format')
     }
-    return copied
-  } catch (error) {
-    if (error instanceof AccountRecoveryError) throw error
-    throw new AccountRecoveryError('bad-format')
   }
+  return copied
 }
 
 function assertCeremonyFamily(
@@ -303,8 +323,7 @@ function secureRandom(
       throw new AccountRecoveryError('rng-failed')
     }
     return new Uint8Array(supplied)
-  } catch (error) {
-    if (error instanceof AccountRecoveryError) throw error
+  } catch {
     throw new AccountRecoveryError('rng-failed')
   }
 }

@@ -32,20 +32,45 @@ export const FORKID_ZERO = (source: string): SighashFamily =>
 export const BITCOIN_80: HeaderShape = Object.freeze({ kind: 'bitcoin-80' })
 
 const PUBLIC_CHECKPOINTS = Object.freeze({
-  'btc-mainnet': [481824, '0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893'],
-  'btc-testnet': [5125000, '00000000000009ad1946e21cb4f1a6323ee99c89017b59d5166472672b868133'],
-  'bch-mainnet': [478559, '000000000000000000651ef99cb9fcbe0dadde1d424bd9f15ff20136191a5eec'],
-  'bch-testnet': [1155876, '00000000000e38fef93ed9582a7df43815d5c2ba9fd37ef70c9a0ea4a285b8f5'],
-  'xec-mainnet': [661648, '000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d'],
-  'xec-testnet': [1421481, '00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d40b'],
-  'xpi-mainnet': [0, '000000000abc0cde58ee7e919d3d4de183e6844add1fd5d14b4eac89d958f470'],
-  'xpi-testnet': [0, '00000000080a6c9633aae9d24b9acda10d7e6b028e7aa714069798d18ca7bad1'],
+  'btc-mainnet': [
+    481824,
+    '0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893',
+  ],
+  'btc-testnet': [
+    5125000,
+    '00000000000009ad1946e21cb4f1a6323ee99c89017b59d5166472672b868133',
+  ],
+  'bch-mainnet': [
+    478559,
+    '000000000000000000651ef99cb9fcbe0dadde1d424bd9f15ff20136191a5eec',
+  ],
+  'bch-testnet': [
+    1155876,
+    '00000000000e38fef93ed9582a7df43815d5c2ba9fd37ef70c9a0ea4a285b8f5',
+  ],
+  'xec-mainnet': [
+    661648,
+    '000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d',
+  ],
+  'xec-testnet': [
+    1421481,
+    '00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d40b',
+  ],
+  'xpi-mainnet': [
+    0,
+    '000000000abc0cde58ee7e919d3d4de183e6844add1fd5d14b4eac89d958f470',
+  ],
+  'xpi-testnet': [
+    0,
+    '00000000080a6c9633aae9d24b9acda10d7e6b028e7aa714069798d18ca7bad1',
+  ],
 } as const)
 
 function bitcoinIdentityProbes(
   protocolId: string,
 ): readonly ProtocolIdentityProbe[] {
-  const checkpoint = PUBLIC_CHECKPOINTS[protocolId as keyof typeof PUBLIC_CHECKPOINTS]
+  const checkpoint =
+    PUBLIC_CHECKPOINTS[protocolId as keyof typeof PUBLIC_CHECKPOINTS]
   if (!checkpoint) {
     return Object.freeze([
       Object.freeze({
@@ -60,8 +85,18 @@ function bitcoinIdentityProbes(
   }
   const [height, expected] = checkpoint
   return Object.freeze([
-    Object.freeze({ kind: 'block-hash' as const, capability: 'json-rpc' as const, height, expected }),
-    Object.freeze({ kind: 'block-hash' as const, capability: 'chronik' as const, height, expected }),
+    Object.freeze({
+      kind: 'block-hash' as const,
+      capability: 'json-rpc' as const,
+      height,
+      expected,
+    }),
+    Object.freeze({
+      kind: 'block-hash' as const,
+      capability: 'chronik' as const,
+      height,
+      expected,
+    }),
   ])
 }
 

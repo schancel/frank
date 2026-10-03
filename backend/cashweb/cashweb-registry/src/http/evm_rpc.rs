@@ -1684,6 +1684,11 @@ async fn proxy_ws_connection<S>(
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    enum WsEvent<C, U> {
+        Client(C),
+        Upstream(U),
+    }
+
     let (mut client_write, mut client_read) = socket.split();
     let (mut upstream_write, mut upstream_read) = upstream.split();
     let mut subscription_attempts = 0usize;
@@ -1726,7 +1731,16 @@ async fn proxy_ws_connection<S>(
                 ).await;
                 return;
             }
-            client = client_read.next() => {
+            event = async {
+                // The outer biased select keeps expiry and request deadlines authoritative. This
+                // inner select is deliberately fair: a client that continuously has buffered
+                // frames must not starve ready upstream responses (or vice versa).
+                tokio::select! {
+                    client = client_read.next() => WsEvent::Client(client),
+                    upstream = upstream_read.next() => WsEvent::Upstream(upstream),
+                }
+            } => match event {
+            WsEvent::Client(client) => {
                 let Some(Ok(client)) = client else { break; };
                 match client {
                     ClientWsMessage::Text(text) => {
@@ -1802,7 +1816,7 @@ async fn proxy_ws_connection<S>(
                     ClientWsMessage::Pong(_) => {}
                 }
             }
-            upstream = upstream_read.next() => {
+            WsEvent::Upstream(upstream) => {
                 let Some(Ok(upstream)) = upstream else { break; };
                 match upstream {
                     UpstreamWsMessage::Text(text) => {
@@ -1865,6 +1879,7 @@ async fn proxy_ws_connection<S>(
                     UpstreamWsMessage::Binary(_) => break,
                     UpstreamWsMessage::Pong(_) | UpstreamWsMessage::Frame(_) => {}
                 }
+            }
             }
         }
     }

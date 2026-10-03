@@ -174,19 +174,6 @@ fn read_and_validate_conf_with_env(
             .into());
         }
     }
-    if conf.registry.evm_rpc.enabled {
-        let network = network.expect("enabled EVM RPC requires a validated network tag");
-        for chain in &conf.registry.evm_rpc.chains {
-            if chain.expected_chain_id != network.evm_chain_id {
-                return Err(NetworkChainMismatch {
-                    tag: String::from_utf8_lossy(network.network_tag).into_owned(),
-                    expected_chain_id: network.evm_chain_id,
-                    actual_chain_id: chain.expected_chain_id,
-                }
-                .into());
-            }
-        }
-    }
     Ok((conf, mailbox_mode))
 }
 
@@ -603,13 +590,29 @@ mod tests {
                 "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9",
                 "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9",
             );
-        let error = read_and_validate_conf_with_env(
+        read_and_validate_conf_with_env(
             "-",
             &mut Cursor::new(disabled_mainnet),
             env(&[("FRANK_NETWORK_TAG", "MONT")]),
         )
-        .expect_err("a disabled mailbox must not permit a crossed RPC chain and network tag");
-        assert!(format!("{error:?}").contains("identifies EVM chain 10143"));
+        .expect("the relay identity and proxy target chain are independent");
+
+        let two_chains = LOCAL.replace(
+            "max_get_logs_range = 10\n\n[registry.pop]",
+            "max_get_logs_range = 10\n\n\
+[[registry.evm_rpc.chains]]\n\
+id = \"monad-mainnet\"\n\
+expected_chain_id = 143\n\
+upstream_env = \"MONAD_MAINNET_HTTP_RPC_URL\"\n\
+checkpoint_block_number = 0\n\
+checkpoint_block_hash = \"0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9\"\n\
+max_get_logs_range = 10\n\n\
+[registry.pop]",
+        );
+        let (conf, _) =
+            read_and_validate_conf_with_env("-", &mut Cursor::new(two_chains), env(FULL_ENV))
+                .expect("one relay may expose multiple canonical EVM target chains");
+        assert_eq!(conf.registry.evm_rpc.chains.len(), 2);
 
         // Retained rows are inert when the EVM proxy is disabled. Operators may stage a future
         // chain or disable a bad upstream without unrelated network-tag validation blocking boot.

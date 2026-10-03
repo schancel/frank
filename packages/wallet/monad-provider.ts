@@ -168,6 +168,9 @@ function makeRelayGetUrl(
             : await readBoundedRelayResponse(response, maxResponseBytes),
       };
     } catch (error) {
+      // Once fetch has returned headers, every rejection path must still tear down the body.
+      // In particular, an oversized declared Content-Length is rejected before a reader exists.
+      controller.abort();
       if (cancellationError) throw cancellationError;
       if (sanitizeTransportErrors)
         throw makeError("relay RPC transport failed", "SERVER_ERROR");

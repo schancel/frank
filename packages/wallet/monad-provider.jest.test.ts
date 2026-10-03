@@ -911,6 +911,10 @@ describe("MonadJsonRpcProvider (#534)", () => {
 
   it("rejects an oversized bearer RPC response before buffering its body", async () => {
     const customer = `0x${"12".repeat(20)}`;
+    let rpcClosedResolve!: () => void;
+    const rpcClosed = new Promise<void>((resolve) => {
+      rpcClosedResolve = resolve;
+    });
 
     await new Promise<void>((resolve) => server.close(() => resolve()));
     server = createServer((req, res) => {
@@ -948,7 +952,9 @@ describe("MonadJsonRpcProvider (#534)", () => {
           "Content-Type": "application/json",
           "Content-Length": String(64 * 1024 * 1024 + 1),
         });
-        res.end("{}");
+        res.on("close", rpcClosedResolve);
+        res.flushHeaders();
+        res.write("{}");
       });
     });
     await new Promise<void>((resolve) => {
@@ -975,6 +981,14 @@ describe("MonadJsonRpcProvider (#534)", () => {
     });
     request.setHeader("content-type", "application/json");
     await expect(request.send()).rejects.toThrow(/relay RPC transport failed/i);
+    await expect(
+      Promise.race([
+        rpcClosed.then(() => "closed"),
+        new Promise<string>((resolve) =>
+          setTimeout(() => resolve("still-open"), 1_000)
+        ),
+      ])
+    ).resolves.toBe("closed");
   });
 
   it("promptly aborts a stalled bearer RPC on destruction", async () => {

@@ -14,8 +14,10 @@ import { configure } from 'quasar/wrappers'
 import nodePolyfills from 'rollup-plugin-polyfill-node'
 import inject from '@rollup/plugin-inject'
 import stdLibBrowser from 'node-stdlib-browser'
+import publicClientEnv from './config/public-client-env.cjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const { filterPublicClientEnv } = publicClientEnv
 
 // Ticket #51 (Vite migration): `vite-plugin-node-polyfills` (tried first) is a documented,
 // known-broken combination with Vite 8's Rolldown-based dependency optimizer -- confirmed via a
@@ -170,6 +172,11 @@ export default configure(ctx => {
 
     // Full list of options: https://quasar.dev/quasar-cli/quasar-conf-js#Property%3A-build
     build: {
+      // Quasar otherwise exposes every QCLI_* variable. Keep this an explicit public inventory so
+      // a legacy/custom QCLI_MONAD_*_RPC_URL cannot place an upstream provider key in the bundle.
+      env: {
+        filter: filterPublicClientEnv,
+      },
       target: {
         browser: ['es2020'],
       },
@@ -183,9 +190,9 @@ export default configure(ctx => {
       // into webpack's `DefinePlugin`" -- false under this Quasar/Vite version, confirmed by
       // dumping `viteConf.define`: it contains only Quasar's own `import.meta.env.QUASAR_*`
       // entries, never a `process.env.*` key. The real, working mechanism is Quasar's own
-      // `QCLI_`-prefixed env var convention (confirmed live): any real environment variable named
-      // `QCLI_SOMETHING` is automatically exposed as `import.meta.env.QCLI_SOMETHING`, no config
-      // needed here at all. Every `process.env.MONAD_*`/`CASHWEB_*` read in this app
+      // `QCLI_`-prefixed env var convention (confirmed live): matching variables are candidates
+      // for `import.meta.env`, then the allowlist above restricts them to known-public settings.
+      // Every `process.env.MONAD_*`/`CASHWEB_*` read in this app
       // (`@frank/wallet/chain/monad-chain.ts`, `boot/monad-direct-messages.ts`, `router/index.ts`)
       // now checks `import.meta.env.QCLI_KEY` first. Only public client configuration belongs in
       // `QCLI_` variables: the browser uses `QCLI_MONAD_RELAY_BASE_URL` and

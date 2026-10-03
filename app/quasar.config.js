@@ -298,8 +298,8 @@ export default configure(ctx => {
 
     // Full list of options: https://quasar.dev/quasar-cli/quasar-conf-js#Property%3A-devServer
     devServer: {
-      open: true, // opens browser window automatically
-      port: 8080,
+      open: false, // review server must not open the owner's browser
+      port: 44781,
       // Found live while working on the chat redesign (2026-09-28): this repo's git-worktree
       // workflow (packages/frank_worktree_node_modules_symlink_bug.md) symlinks a worktree's
       // node_modules/@frank/* entries -- and reuses third-party packages -- from wherever the

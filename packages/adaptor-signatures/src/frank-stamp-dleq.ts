@@ -93,6 +93,9 @@ export function createFrankStampProof(params: {
   readonly proofNonce?: Uint8Array
 }): FrankStampProofMaterial {
   if (params.network.length === 0) throw new Error('network must not be empty')
+  if (utf8ToBytes(params.network).length > 0xffff) {
+    throw new RangeError('network UTF-8 encoding does not fit u16')
+  }
   const stampPoint = pointFromBytes(params.stampKey)
   const e =
     params.ephemeralSecret === undefined

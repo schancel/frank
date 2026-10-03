@@ -51,3 +51,13 @@ it('matches the Frank-CBOR T3c worked vector', () => {
     verifyFrankStampProof({ network: 'other', stampKey, ...material }),
   ).toBe(false)
 })
+
+it('rejects an overlong network before entering the proof nonce loop', () => {
+  expect(() =>
+    createFrankStampProof({
+      network: 'x'.repeat(65_536),
+      stampKey,
+      ephemeralSecret,
+    }),
+  ).toThrow('network UTF-8 encoding does not fit u16')
+})

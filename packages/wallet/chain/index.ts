@@ -6,16 +6,34 @@
  * `LotusChain`, once one is actually built for real -- see issue #41's "Non-goals"), never a
  * runtime branch anywhere else in the app.
  */
-import { MonadChain } from './monad-chain'
-import { ActiveChain } from './active-chain'
+import { MonadChain } from "./monad-chain";
+import { ActiveChain } from "./active-chain";
+export { createChain } from "./chain-factory";
+export type { ChainFactoryConfig } from "./chain-factory";
+export type { EcashChainConfig } from "./ecash-chain";
+export type { MonadChainConfig } from "./monad-chain";
+export type { SolanaChainConfig } from "./solana-chain";
 
-export const activeChain: ActiveChain = MonadChain
+export const activeChain: ActiveChain = MonadChain;
 
-export { TopicPostOutcomeUnknownError } from './active-chain'
+export {
+  NativeTransactionSubmissionError,
+  TopicPostOutcomeUnknownError,
+} from "./active-chain";
+export {
+  DefaultNativeTransactionAttemptStore,
+  InMemoryNativeTransactionAttemptStore,
+  defaultNativeTransactionAttemptStore,
+  nativeTransactionAttemptKey,
+} from "./chain-wallet";
 
 export type {
   ActiveChain,
+  ActiveNativeTransferClient,
   ChainAddress,
+  ChainCapabilities,
+  ChainKind,
+  ChainTransaction,
   DirectMessageAttemptStatus,
   DirectMessageClient,
   DirectMessagePreparationProgress,
@@ -24,7 +42,11 @@ export type {
   FrankIdentityHandle,
   HDSeed,
   NativeTransferClient,
+  NativeAssetChain,
+  NativeWalletHandle,
   ProfileInfo,
   TopicBroadcastClient,
   WalletHandle,
-} from './active-chain'
+} from "./active-chain";
+
+export type { NativeTransactionAttemptStore } from "./chain-wallet";

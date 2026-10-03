@@ -548,7 +548,7 @@ describe('BlackjackBetControl (ticket #310: first bet entry point)', () => {
     const { wrapper, submit } = mountControl()
     await place(wrapper)
     expect(mockStatus).toHaveBeenCalledWith(
-      expect.objectContaining({ txHash: HASH }),
+      expect.objectContaining({ transaction: { txHash: HASH } }),
     )
     expect(submit).toHaveBeenCalledTimes(1)
     expect(submit.mock.calls[0][0].items[0].wagerTxHash).toBe(HASH)

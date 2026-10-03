@@ -19,7 +19,7 @@
  *   success resets it. Failures are logged with `console.error`; there is no UI error state.
  */
 import { computed, onMounted, onUnmounted, readonly, ref } from 'vue'
-import { activeChain, WalletHandle } from '@frank/wallet/chain'
+import { activeChain, NativeWalletHandle } from '@frank/wallet/chain'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { isWalletNotReady } from 'src/composables/wallet-not-ready'
 
@@ -50,9 +50,9 @@ let backgrounded = false
 let timer: ReturnType<typeof setTimeout> | undefined
 // Identity of the wallet the current value/in-flight request belong to. `useActiveWallet`
 // memoizes its promise per seed phrase, so a new seed yields a new promise.
-let walletKey: Promise<WalletHandle> | undefined
+let walletKey: Promise<NativeWalletHandle> | undefined
 
-function currentWalletKey(): Promise<WalletHandle> | undefined {
+function currentWalletKey(): Promise<NativeWalletHandle> | undefined {
   try {
     return useActiveWallet()
   } catch {

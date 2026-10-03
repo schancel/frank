@@ -242,7 +242,10 @@ export type PaymentStatus = 'confirmed' | 'failed' | 'pending' | 'unknown'
 /** What the node says about a wager transaction hash right now. */
 export async function checkWagerStatus(txHash: string): Promise<PaymentStatus> {
   const wallet = await useActiveWallet()
-  return activeChain.nativeTransfers.getTransactionStatus({ wallet, txHash })
+  return activeChain.nativeTransfers.getTransactionStatus({
+    wallet,
+    transaction: { txHash },
+  })
 }
 
 export const PAYMENT_CONFIRM_TIMEOUT_MS = 60_000

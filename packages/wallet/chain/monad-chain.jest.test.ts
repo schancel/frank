@@ -41,6 +41,10 @@ import {
 import { TopicPostOutcomeUnknownError, WalletHandle } from "./active-chain";
 import { deriveMonadStampChildPublic } from "../monad-stamp-stealth";
 import { InMemoryStampPaymentJournal } from "../storage/stamp-payment-journal";
+import {
+  InMemoryNativeTransactionAttemptStore,
+  NativeTransactionSubmissionError,
+} from "./chain-wallet";
 
 jest.mock("../monad-stamp-client", () => {
   const actual = jest.requireActual("../monad-stamp-client");
@@ -144,6 +148,9 @@ const mockedFetchMonadProfile = fetchMonadProfile as jest.MockedFunction<
 >;
 
 const TEST_CONFIG: MonadChainConfig = {
+  networkId: "monad-test",
+  chainId: 10143,
+  nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
   rpcUrl: "http://127.0.0.1:1",
   relayBaseUrl: "http://relay.test",
   networkTag: "MONT",
@@ -160,7 +167,12 @@ const EVE_PRIVATE_KEY_HEX = "0x" + "33".repeat(31) + "3c";
 
 function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
   return {
+    chainKind: "monad",
+    networkId: TEST_CONFIG.networkId,
     identity,
+    getReceiveAddress: jest.fn(async () => identity.address),
+    getBalance: jest.fn(),
+    sendNative: jest.fn(),
     // These are never dereferenced by real logic in this test file: every client that would
     // actually use them (`MonadStampClient`/`MonadTopicPostClient`/`MonadTopicVoteClient`) is
     // mocked above, so `MonadChain` only ever passes this bundle through to a mock constructor.
@@ -191,11 +203,18 @@ describe("createMonadChain: basic chain properties", () => {
   const chain = createMonadChain(TEST_CONFIG);
 
   it("exposes the Monad name/unit", () => {
+    expect(chain.kind).toBe("monad");
     expect(chain.name).toBe("monad");
     expect(chain.unit).toBe("MON");
     expect(chain.defaultTopicVoteValue).toBe(
       TEST_CONFIG.defaultTopicVoteValueWei
     );
+    expect(chain.capabilities).toEqual({
+      profiles: true,
+      directMessages: true,
+      topics: true,
+      stealthPayments: true,
+    });
   });
 
   it("round-trips display <-> raw amounts", () => {
@@ -251,6 +270,42 @@ describe("createMonadChain: createWallet", () => {
     expect(records.every((record) => record.status === "unfunded")).toBe(true);
     expect(MonadAccountTxSigner).not.toHaveBeenCalled();
   });
+
+  it("reconciles a restored successful native attempt before a later send", async () => {
+    const nativeAttemptStore = new InMemoryNativeTransactionAttemptStore();
+    const isolatedConfig = { ...TEST_CONFIG, nativeAttemptStore };
+    const firstChain = createMonadChain(isolatedConfig);
+    const signed = { txHash: `0x${"44".repeat(32)}` };
+    MonadAccountTxSigner.mockImplementation(() => ({
+      buildAndSignTransfer: jest.fn().mockResolvedValue(signed),
+      submit: jest.fn().mockResolvedValue(signed.txHash),
+    }));
+    const firstWallet = await firstChain.createWallet(seed);
+
+    await expect(
+      firstWallet.sendNative({
+        recipient: firstWallet.identity.address,
+        value: 1n,
+      })
+    ).resolves.toEqual({ txHash: signed.txHash });
+
+    const restoredWallet = await createMonadChain(isolatedConfig).createWallet(
+      seed
+    );
+    expect(restoredWallet.getUnresolvedNativeTransaction?.()).toEqual({
+      txHash: signed.txHash,
+    });
+    const restoredMonadWallet = restoredWallet as MonadChainWalletHandle;
+    restoredMonadWallet.provider.getTransactionReceipt = jest
+      .fn()
+      .mockResolvedValue({ status: 1 });
+    await expect(
+      restoredWallet.sendNative({
+        recipient: restoredWallet.identity.address,
+        value: 2n,
+      })
+    ).resolves.toEqual({ txHash: signed.txHash });
+  });
 });
 
 describe("createMonadChain: fetchProfile", () => {
@@ -296,20 +351,20 @@ describe("createMonadChain: fetchProfile", () => {
 });
 
 describe("createMonadChain: nativeTransfers", () => {
-  it("reads the stable identity EOA balance from the Monad provider", async () => {
+  it("reads the balance through the common wallet API", async () => {
     const chain = createMonadChain(TEST_CONFIG);
     const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(identity);
     const getBalance = jest.fn().mockResolvedValue(123n);
-    wallet.provider = { getBalance } as MonadChainWalletHandle["provider"];
+    wallet.getBalance = getBalance;
 
     await expect(chain.nativeTransfers.getBalance({ wallet })).resolves.toBe(
       123n
     );
-    expect(getBalance).toHaveBeenCalledWith(identity.address.raw);
+    expect(getBalance).toHaveBeenCalledWith();
   });
 
-  it("builds and submits a plain transfer from the stable identity EOA", async () => {
+  it("sends through the common wallet API", async () => {
     const chain = createMonadChain(TEST_CONFIG);
     const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(identity);
@@ -318,13 +373,8 @@ describe("createMonadChain: nativeTransfers", () => {
     );
     expect(recipient).toBeDefined();
 
-    const signed = { txHash: "0xsigned" };
-    const buildAndSignTransfer = jest.fn().mockResolvedValue(signed);
-    const submit = jest.fn().mockResolvedValue("0xbroadcast");
-    (MonadAccountTxSigner as jest.Mock).mockImplementation(() => ({
-      buildAndSignTransfer,
-      submit,
-    }));
+    const sendNative = jest.fn().mockResolvedValue({ txHash: "0xbroadcast" });
+    wallet.sendNative = sendNative;
 
     await expect(
       chain.nativeTransfers.send({
@@ -334,57 +384,30 @@ describe("createMonadChain: nativeTransfers", () => {
       })
     ).resolves.toEqual({ txHash: "0xbroadcast" });
 
-    expect(MonadAccountTxSigner).toHaveBeenCalledWith({
-      privateKey: identity.toPrivateKeyHex(),
-      provider: wallet.provider,
-      httpClient: wallet.httpClient,
+    expect(sendNative).toHaveBeenCalledWith({
+      recipient,
+      value: 1_500_000_000_000_000_000n,
     });
-    expect(buildAndSignTransfer).toHaveBeenCalledWith(
-      recipient!.raw,
-      1_500_000_000_000_000_000n
-    );
-    expect(submit).toHaveBeenCalledWith(signed);
   });
 
-  it("awaits onSigned with the hash BEFORE broadcasting, and a failing onSigned broadcasts nothing", async () => {
+  it("forwards onSigned through the common wallet API", async () => {
     const chain = createMonadChain(TEST_CONFIG);
     const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(identity);
-    const order: string[] = [];
-    const buildAndSignTransfer = jest
-      .fn()
-      .mockResolvedValue({ txHash: "0xsigned" });
-    const submit = jest.fn(async () => {
-      order.push("submit");
-      return "0xsigned";
-    });
-    (MonadAccountTxSigner as jest.Mock).mockImplementation(() => ({
-      buildAndSignTransfer,
-      submit,
-    }));
+    const onSigned = jest.fn().mockResolvedValue(undefined);
+    const sendNative = jest.fn().mockResolvedValue({ txHash: "0xsigned" });
+    wallet.sendNative = sendNative;
     await chain.nativeTransfers.send({
       wallet,
       recipient: identity.address,
       value: 1n,
-      onSigned: async ({ txHash }) => {
-        await Promise.resolve();
-        order.push(`signed:${txHash}`);
-      },
+      onSigned,
     });
-    expect(order).toEqual(["signed:0xsigned", "submit"]);
-
-    submit.mockClear();
-    await expect(
-      chain.nativeTransfers.send({
-        wallet,
-        recipient: identity.address,
-        value: 1n,
-        onSigned: async () => {
-          throw new Error("disk full");
-        },
-      })
-    ).rejects.toThrow("disk full");
-    expect(submit).not.toHaveBeenCalled();
+    expect(sendNative).toHaveBeenCalledWith({
+      recipient: identity.address,
+      value: 1n,
+      onSigned,
+    });
   });
 
   it("reports a transaction hash as confirmed / failed / pending / unknown from the node", async () => {
@@ -399,7 +422,10 @@ describe("createMonadChain: nativeTransfers", () => {
       getTransaction,
     } as unknown as MonadChainWalletHandle["provider"];
     const status = () =>
-      chain.nativeTransfers.getTransactionStatus({ wallet, txHash: "0xh" });
+      chain.nativeTransfers.getTransactionStatus({
+        wallet,
+        transaction: { txHash: "0xh" },
+      });
     getTransactionReceipt.mockResolvedValue({ status: 1 });
     await expect(status()).resolves.toBe("confirmed");
     getTransactionReceipt.mockResolvedValue({ status: 0 });
@@ -411,18 +437,21 @@ describe("createMonadChain: nativeTransfers", () => {
     await expect(status()).resolves.toBe("unknown");
   });
 
-  it("rejects zero-value transfers before constructing a signer", async () => {
+  it("leaves native value validation at the wallet boundary", async () => {
     const chain = createMonadChain(TEST_CONFIG);
     const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
 
+    const wallet = makeWallet(identity);
+    const sendNative = jest.fn().mockRejectedValue(new RangeError("bad value"));
+    wallet.sendNative = sendNative;
     await expect(
       chain.nativeTransfers.send({
-        wallet: makeWallet(identity),
+        wallet,
         recipient: identity.address,
         value: 0n,
       })
-    ).rejects.toThrow("Transfer value must be greater than zero");
-    expect(MonadAccountTxSigner).not.toHaveBeenCalled();
+    ).rejects.toThrow("bad value");
+    expect(sendNative).toHaveBeenCalled();
   });
 });
 

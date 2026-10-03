@@ -232,7 +232,7 @@ describe('BlackjackUnsentWagers (#310)', () => {
     it('after a reload it checks automatically: mined -> paid, offers Retry of the bet', async () => {
       const { wrapper, store } = await setup(jest.fn(), signed())
       expect(mockStatus).toHaveBeenCalledWith(
-        expect.objectContaining({ txHash: HASH }),
+        expect.objectContaining({ transaction: { txHash: HASH } }),
       )
       expect(store.wagers).toEqual([expect.objectContaining({ state: 'paid' })])
       expect(q(wrapper, 'blackjack-unsent-retry').exists()).toBe(true)

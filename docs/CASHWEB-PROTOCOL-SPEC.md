@@ -108,10 +108,15 @@ a coordinated rewrite; it cannot be asserted by a codec-only change.
 
 ### 3.2 Public authority and deniable messages
 
-**IMPLEMENTED-NOT-WIRED.**
+**SHIPPED.** Explicit CBOR account registration reaches `PUT /metadata/:addr` through the wallet's
+`registerMonadIdentityCbor` helper and the relay's `verify_cbor_account_registration` verifier.
+That boundary validates a type-2 attestation and its embedded type-4 schema-3 statement through
+stage 10.6 and stores the exact accepted CBOR bytes.
 
-Directory statements and transitions are intentionally transferable public evidence. Their exact
-T2/T2a transcripts, signer selection, key-type and signature-algorithm pairings are frozen in
+**IMPLEMENTED-NOT-WIRED.** Generalized directory-transition use, including independently reachable
+type-7 transition workflows, is not a normal client path. Directory statements and transitions are
+intentionally transferable public evidence. Their exact T2/T2a transcripts, signer selection,
+key-type and signature-algorithm pairings are frozen in
 [`protocol/cbor/README.md#8-cryptographic-transcripts`](protocol/cbor/README.md#8-cryptographic-transcripts).
 A relay or peer is a carrier, not an authority: consumers trust a record only after validating its
 authority chain and network context.
@@ -174,9 +179,10 @@ Identifiers are scoped; equal integers in different columns have no relationship
 | Provider/descriptor, delivery, status, reset records | no FRNK type IDs | UNALLOCATED |
 | Target type-1/type-5 delivery schemas | schema revisions, required context field IDs and `min_reader_version` | UNALLOCATED |
 | Target validation operations | `provider-admission` and `recipient-acceptance` contexts, error taxonomy, CDDL, codec and vector registrations | UNALLOCATED |
-| Mailbox/stamp generation fields | directory-authorized mailbox-key and stamp-key generations plus provider-authorized instance generation encodings | UNALLOCATED |
+| Mailbox/stamp generation fields | directory-authorized mailbox-key and stamp-key generations, provider-specific stamp-fence capabilities, plus provider-authorized instance generation encodings | UNALLOCATED |
 | Legacy-to-FRNK cutover | per-account/mailbox epoch, fence marker, tagged row states and removal evidence | UNALLOCATED |
 | Partial-payment recovery | obligation/status/journal-fact/ack record types and fields | UNALLOCATED |
+| Recipient-owned output lifecycle | child-derivation/import/checkpoint/ack records and exposure policy | UNALLOCATED |
 | Topic logical relations | logical-root derivation; predecessor/edit/tombstone/moderation records; vote-target discriminator and migration | UNALLOCATED |
 | Target hardened wallet branches for `P`, `M`, `P'` | none | UNALLOCATED |
 
@@ -249,7 +255,8 @@ Exact maps live in CDDL; this section defines what each record means and what id
 | --- | --- | --- | --- |
 | Recipient-delivery codec structure | type 1 wrapping type 5; decrypted type 6 wraps type 8 and items 16/17 | Delivery bytes and T3 recipient-payload digest are recipient-specific; logical message identity is type-6 `message_id`; content revision identity is T1a over type 8 | IMPLEMENTED-NOT-WIRED |
 | Target recipient-delivery semantics | same structure after production allocations | Complete construction, cryptographic, payment, provider and recipient checks in section 9 | PROPOSED |
-| Directory codec structure | type 2 attests exact type 4; type 7 authorizes a subject transition | T1 of the opened type-4 statement, not the type-2 wrapper | IMPLEMENTED-NOT-WIRED |
+| Explicit account registration | type 2 attests exact type-4 schema-3 registration | Exact accepted statement and stage-10.6 authority validation through the helper/route/verifier path | SHIPPED |
+| Generalized directory codec structure | type 2 attests exact type 4; type 7 authorizes a subject transition | T1 of the opened type-4 statement, not the type-2 wrapper; generalized transition workflow is not normally reachable | IMPLEMENTED-NOT-WIRED |
 | Target directory topology | target statement type/schema unallocated | Authority is `P` plus accepted predecessor/recovery rules | PROPOSED |
 | Transitional registration profile | optional field 9 of type-4 schema 3 | Exact signed registration statement; not the target routing directory or standalone presentation profile | SHIPPED |
 | Target presentation profile | standalone record; schema/type unallocated | Signed by `P`/account authority, fetched from selected provider, never public gossip by default | UNALLOCATED |
@@ -258,6 +265,7 @@ Exact maps live in CDDL; this section defines what each record means and what id
 | Target mailbox journal/tombstone | type-3 facts and future mailbox journal records; fact kinds/live wire unallocated | Append identity is provider-local sequence plus stable object/fact identity; tombstones target logical identity and optionally an exact revision | UNALLOCATED |
 | Provider delivery/store-forward | future obligation, attempt, receipt/status and expiry records; types unallocated | Client operation ID plus exact delivery-frame hash; a provider receipt is delivery evidence, not sender authorship | UNALLOCATED |
 | Partial-payment recovery | recipient-private obligation/status/journal-fact/ack records; types unallocated | Stable obligation and operation IDs bind exact type-1/type-5/payment evidence; never normal plaintext delivery | UNALLOCATED |
+| Recipient-owned output lifecycle | derivation/import/checkpoint/ack records; types unallocated | Stamp generation plus exact type-5/T3, member index and transaction ID identify each child | UNALLOCATED |
 | Legacy-to-FRNK cutover | per-account/mailbox epoch/fence and tagged-row records; types unallocated | Stable fence identity owns old/new protocol admission and target instance succession | UNALLOCATED |
 | Topic post/submission/vote | types 9/10/11 | Current stored frame/event identity is exact type-9 T1; burn tx ID is a separate consumption key | SHIPPED |
 | Target topic read/status extensions | future versioned schemas; types unallocated | Stable root/revision/status semantics require the allocations in section 12 | UNALLOCATED |
@@ -323,9 +331,12 @@ receipt, or directory succession.
   Provider failover creates a separately identified instance; it cannot continue another
   provider's sequence by assertion.
 - `stamp_key_generation` identifies the exact current `P'` under the account/directory authority.
-  It is discovered from the freshest validated directory revision and is current-only: routine and
-  compromise rotation both retire the prior generation immediately for new admission. This clean
-  target deliberately does not inherit frozen S10a's one-previous-key grace.
+  The directory names the desired generation, but it becomes effective independently at each bound
+  destination provider only after that provider signs and installs an authenticated stamp-fence
+  capability mapping the exact directory-statement hash to that generation. The capability's wire
+  record and fields are **UNALLOCATED**. Routine and compromise rotation are current-only at an
+  effectively fenced provider: installation retires the prior generation for new admission. This
+  clean target deliberately does not inherit frozen S10a's one-previous-key grace.
 - Every stamped provider delivery binds all three generations. Directory-only `M` or `P'`
   operations bind their respective generation; provider-instance management binds the instance
   generation. Rotating either account key does not reset a mailbox instance, and instance reset or
@@ -344,12 +355,21 @@ after its grace, every referenced delivery/checkpoint is resolved, and policy ac
 ability to decrypt older ciphertext. Erasure does not create forward secrecy retroactively and
 does not cure impersonation performed while a compromised static `M` remained accepted.
 
-A sender MUST resolve the freshest current `P'` and `stamp_key_generation` before reserving funds.
-The provider rejects a stale stamp generation before payment consumption; no new operation is
-admitted to a retired `P'`. An old-generation operation already signed, broadcast or confirmed at
-rotation follows its exact terminal/reconciliation/recovery state, never the normal new-admission
-path. The recipient retains or seed-derives a retired `P'` secret only while an exposed operation or
-recovery obligation for that generation remains reachable, then erases it.
+A sender MUST resolve the freshest current `P'`, `stamp_key_generation` and unexpired provider
+stamp-fence capability before reserving funds. Type 5 and `provider-admission` bind the exact
+capability hash. Missing, expired, mismatched or uninstalled capability fails closed. Installing a
+rotation fence and claiming a delivery serialize through one provider-local compare-and-set: if the
+claim commits first, that exact old-generation operation remains admitted and recoverable; if the
+fence commits first, the stale operation is rejected before broadcast, observation credit or
+payment consumption. No new operation is admitted to a generation retired at that provider.
+
+Rotation is not globally instantaneous. Compromise closure requires installing a fence at every
+bound destination provider. A partitioned or unfenced provider is explicitly not yet revoked and
+MUST NOT be advertised as current for the new generation. Already signed, broadcast or confirmed
+old-generation operations follow their exact terminal/reconciliation/recovery state, never a normal
+new-admission path. The recipient retains or seed-derives a retired `P'` secret while any exposed
+operation, recovery obligation or unswept/unknown child for that generation remains reachable; it
+may erase the secret only under the output-lifecycle rule in section 9.2.
 
 Referenced sender/recipient directory statements, provider descriptors/bindings, mailbox key
 generations, stamp generations, instance capabilities and instance generations MUST remain
@@ -379,7 +399,8 @@ obligations and retries are terminal, or an authenticated compact proof replaces
    final type-5 recipient payload. Required fields inside its exact bytes carry `E`, `X`, the proof,
    both directory-statement hashes and mailbox-key generations, the exact current `P'` and
    `stamp_key_generation`, both provider identities/binding/descriptor hashes/capabilities, the
-   destination instance generation, network, and every policy/context digest authoritative for
+   destination provider's stamp-fence capability hash, the destination instance generation,
+   network, and every policy/context digest authoritative for
    associated data, routing and economics. Any outer copy is derived from type 5 and
    equality-checked. Compute T3 exactly once over that final type 5, then derive child destinations,
    amounts and T4 commitments exactly as
@@ -424,8 +445,8 @@ validation profile is unchanged, and daemon implementation is blocked until thos
 
 For `provider-admission`, the provider context supplies the requested route, exact network,
 validated sender/recipient directory revisions and mailbox-key generations, origin/destination
-provider identities and descriptor capabilities, destination instance generation, current `P'`
-and stamp generation, operation identity,
+provider identities and descriptor capabilities, destination instance generation, current `P'`,
+stamp generation and installed stamp-fence capability, operation identity,
 canonical finality policy, and chain observations. The provider validates, in actor order: framing
 and canonical form; target schema; equality of type-5 authoritative context with its validated
 context and any derived outer copies; T3; `P'`, DLEQ, destination and T4 derivation; replay; then
@@ -433,10 +454,11 @@ external payment observations and finality. Structural/context failures, cryptog
 replay conflicts, payment insufficiency and provisional/finality states remain distinguishable.
 The provider never invokes `recipient-acceptance` or reports its errors.
 
-The provider compares `stamp_key_generation` to the freshest validated recipient directory state
-before broadcast, observation credit or payment consumption. A retired generation is a stale-context
-failure even when its proof and transactions are otherwise valid; only a pre-existing exposed
-operation may enter the terminal/recovery path below.
+The provider compares the bound stamp-fence capability and directory hash to its atomically
+installed effective generation before broadcast, observation credit or payment consumption. Fence
+installation and operation claim use the compare-and-set order in section 8.2. A generation retired
+at that provider is a stale-context failure even when its proof and transactions are otherwise
+valid; only an operation claimed before the fence may enter the terminal/recovery path below.
 
 Provider admission, provider delivery fees, and recipient stamp payments are distinct. A provider
 fee MUST use its own domain and record; it MUST NOT be counted as the recipient stamp. Store and
@@ -445,20 +467,29 @@ operation ID for different bytes is a conflict. A successful duplicate returns t
 result and does not rebroadcast, append a second inbox row, or consume payment twice.
 
 Each required payment member has a durable state: `reserved`, `signed`, `broadcast`,
-`observed-provisional`, `final`, or terminal failure, with its exact signed bytes, transaction ID,
-block hash/height and observations. The aggregate is pending, final, terminal failure, or
-`terminal-partial`. Delivery occurs only after every required member independently reaches final
-with the configured minimum and exact commitment. A confirmed prefix followed by terminal failure
-becomes `terminal-partial`: no delivery occurs, confirmed value remains recipient-owned and is
-recoverable exactly once, and all evidence is retained. It creates no automatic credit, deduction
-or fresh payment set. Only explicit sender acknowledgement and a new operation may risk additional
-payment.
+`observed-provisional`, `ambiguous/could-still-land`, `final`, or terminal failure, with its exact
+signed bytes, transaction ID, block hash/height and observations. The exposure policy deciding when
+signed bytes could still land is canonical and **UNALLOCATED** in section 15; member index or
+settlement order never changes the result. Aggregate state precedence is: `final` only when every
+required member is final; `terminal-partial` when at least one member is final, irreversibly
+recipient-owned, or exposed/could-still-land and at least one required member terminally fails;
+terminal failure only when at least one member fails and every other member is proved unable to
+land; otherwise pending. A later observation may refine a member and the aggregate under those
+rules, but cannot erase exposure evidence.
 
-A `terminal-partial` result creates a durable recipient-private recovery obligation, not a normal
+Delivery occurs only after every required member independently reaches final with the configured
+minimum and exact commitment. A `terminal-partial` aggregate never delivers: recipient-owned or
+possibly landing value remains recoverable exactly once, and all evidence is retained. It creates
+no automatic credit, deduction or fresh payment set. Only explicit sender acknowledgement and a new
+operation may risk additional payment.
+
+A `terminal-partial` result creates one durable recipient-private recovery obligation, not a normal
 plaintext delivery. Its stable obligation ID binds the operation ID, exact authenticated type-1 and
-type-5 bytes and context (including network, `X`, `P'` and `stamp_key_generation`), every member's
-signed transaction/ID/observation/finality, and the destination provider signature. Its record,
-status, journal-fact and acknowledgement encodings are **UNALLOCATED** in section 15.
+type-5 bytes and context (including network, `X`, `P'` and `stamp_key_generation`), every final,
+provisional, ambiguous or could-still-land member's signed transaction/ID/observation/finality, and
+the destination provider signature. Later landings update that same obligation; they never create a
+second obligation. Its record, status, journal-fact and acknowledgement encodings are
+**UNALLOCATED** in section 15.
 
 The recipient fetches obligations through an authenticated, bounded journal/page operation. Before
 an idempotent acknowledgement bound to the obligation, `stamp_key_generation` and mailbox instance
@@ -466,6 +497,17 @@ generation, the wallet durably imports every child that could still land. The pr
 exact bytes and evidence until that acknowledgement. Restart, seed restore, stamp rotation and late
 landing resume the same obligation; stable member identities permit only one import/sweep effect.
 Recovery never exposes plaintext or converts the obligation into normal delivery.
+
+Every recipient-owned child, including each child of a fully successful delivery, has a durable
+generation-bound derivation record keyed by `stamp_key_generation`, exact type-5/T3 identity,
+member index and transaction ID, and retaining exact `X` and authenticated context. Every unswept
+or unknown child is a reachability root for the retired `P'` generation, exact frame and rotation
+metadata. The wallet acknowledges provider output/recovery state only after atomically importing
+all such records into a durable checkpoint/restore state sufficient to reconstruct them after seed
+restore. Erasure or compaction requires a verified sweep/spend, or explicit authenticated loss
+acceptance naming the affected outputs. Restart, reorganization, sweep and acknowledgement replay
+must produce one import and at most one spend/sweep effect. The derivation, import, checkpoint,
+acknowledgement, sweep and loss-acceptance records remain **UNALLOCATED** in section 15.
 
 Finality policy comes from the canonical network descriptor or an owner-approved pinned policy;
 a provider cannot lower it. Type 5 binds the policy identity and digest. The journal retains each
@@ -613,18 +655,27 @@ body compaction are separate retention policies.
 record type, fields, row tags and terminal/removal evidence are **UNALLOCATED** in section 15; no
 daemon cutover may begin before their CDDL, codecs, vectors and production-boundary tests land.
 
-Cutover atomically fences new legacy creation and writes the marker while protocol/version-tagging
-every existing journal, outbox, inbox and recovery row. A preserved exact legacy reader/worker may
-only replay or reconcile pre-fence nonterminal operations; it MUST NOT create new work, transcode,
-re-sign or re-encrypt bytes. Historical messages remain a bounded read-only projection. All legacy
-writers/workers are quiescent before target admission, and the target
-`mailbox_instance_generation` begins strictly after the durable marker.
+The only cutover-wide atomic action is writing the epoch/fence marker together with the admission
+guard that rejects new legacy creation. Existing legacy keyspace and untagged rows committed before
+the marker are legacy by rule; they do not need an unbounded atomic rewrite. Background
+protocol/version tagging is paginated, idempotent and non-authoritative: a crash resumes from its
+cursor, while row ownership still follows the marker and original keyspace.
+
+General legacy dispatch pauses while the fence and admission guard install. After target admission,
+a constrained legacy reconciler MAY run concurrently, but only to replay exact pre-fence rows and
+write legacy terminal/recovery facts. It MUST NOT create a legacy operation, transcode, re-sign or
+re-encrypt bytes, or write the target keyspace/generation. “Legacy writers quiescent” means no
+legacy creation or general writer remains; it does not require the constrained reconciler to stop.
+The target has a separate keyspace and a `mailbox_instance_generation` strictly after the marker,
+and rejects legacy late completions rather than projecting them into that generation. Historical
+messages remain a bounded read-only projection.
 
 A crash or ambiguous completion resumes the same epoch and proves which side of the fence owns each
 row. Partial payments, unread messages, delayed completion and recovery obligations retain their
 original protocol/version and exact bytes until terminal. Rollback may restore legacy readers and
-reconcilers, never legacy writers after the fence. Legacy machinery is removable only when no
-unresolved legacy operation remains and the required terminal/recovery evidence is retained.
+the constrained reconciler, never legacy creation or a general writer after the fence. Legacy
+machinery is removable only when no unresolved legacy operation remains and the required
+terminal/recovery evidence is retained.
 
 ## 12. Topic semantics and transition
 
@@ -676,12 +727,12 @@ Across every family:
 
 | Surface / slice | Current evidence on this branch | Current status | Proposed required proof |
 | --- | --- | --- | --- |
-| TypeScript codec, registration/topics | Explicit registration and topic writers using FRNK/restricted CBOR | SHIPPED | Cross-check every production slice against Rust and hostile vectors |
-| TypeScript codec, other families | Stages 1–9, type-2 signatures, shared vectors | IMPLEMENTED-NOT-WIRED | Production DM suite, full type-1 stage 10, provider/mailbox/status records, target key binding |
-| Rust codec, registration/topics | Explicit registration and opt-in topics using FRNK/restricted CBOR | SHIPPED | Cross-check every production slice against TypeScript and hostile vectors |
-| Rust codec, other families | Stages 1–9, pure hashes and shared vectors | IMPLEMENTED-NOT-WIRED | Target structures and full checks independently cross-checked |
-| Relay / `cashwebd` | Protobuf DM, durable exact-set outbox, authenticated inbox; opt-in CBOR topics; explicit CBOR account registration | SHIPPED | FRNK DM/directory/provider/profile/mailbox journal, current-only stamp generation, partial-recovery obligations, exact replay/restart/fork/reset/deletion and fenced cutover |
-| Wallet | Protobuf DM, deniable v2 envelope, durable payment attempts and journal-before-PUT; opt-in CBOR topics | SHIPPED | Disjoint hardened `P`/`M`/`P'`, current-only stamp rotation/recovery, production suite, exact FRNK order, recovery import/ack, atomic mailbox replay and fenced cutover |
+| TypeScript codec, registration/topics | Wallet helper emits explicit type-2/type-4-schema-3 registration; topic writers use FRNK/restricted CBOR | SHIPPED | Cross-check every production slice against Rust and hostile vectors |
+| TypeScript codec, other families | Stages 1–9, generalized directory structures/transcripts and shared vectors | IMPLEMENTED-NOT-WIRED | Production DM suite, full type-1 stage 10, generalized transition path, provider/mailbox/status records, target key binding |
+| Rust codec, registration/topics | Relay helper route/verifier performs explicit registration through stage 10.6; opt-in topics use FRNK/restricted CBOR | SHIPPED | Cross-check every production slice against TypeScript and hostile vectors |
+| Rust codec, other families | Stages 1–9, generalized type-2/type-7 transition verification at stage 10.6, pure hashes and shared vectors | IMPLEMENTED-NOT-WIRED | Target structures and full checks independently cross-checked |
+| Relay / `cashwebd` | Protobuf DM, durable exact-set outbox, authenticated inbox; opt-in CBOR topics; explicit type-2/type-4-schema-3 account registration verification | SHIPPED | FRNK DM/target directory/provider/profile/mailbox journal, provider-effective stamp fences, partial-recovery and all-output obligations, exact replay/restart/fork/reset/deletion and bounded fenced cutover |
+| Wallet | Protobuf DM, deniable v2 envelope, durable payment attempts and journal-before-PUT; explicit CBOR registration helper; opt-in CBOR topics | SHIPPED | Disjoint hardened `P`/`M`/`P'`, provider-effective current-only stamp rotation/recovery, production suite, exact FRNK order, all-output import/ack/restore, atomic mailbox replay and bounded fenced cutover |
 | Bot | Uses wallet/relay flows and persists operational state | SHIPPED | Same protocol client as wallet, exact journal recovery, no private alternative wire |
 | App | Uses `ActiveChain`, recipient-scoped polling, protobuf presentation/read models | SHIPPED | Reachability UX, fork/expiry/status surfacing, scoped reset/deletion, target CBOR read models |
 | Cross-language vectors | Shared TS/Rust/Python/browser codec corpora; account-registration and topic commitments | IMPLEMENTED-NOT-WIRED | Full DM crypto/payment observations, provider/mailbox/status/reset cases, hostile unknown-field retention |
@@ -702,20 +753,28 @@ and bot/app tests using the same public client. Unit success in one codec is not
 reinterpretation; old/new type-1/type-5 schema rejection and retention; exact construction order
 with both directory/provider authorities pinned before randomness; `provider-admission` operation
 context/order/errors; current/retired/compromised `M` and delayed delivery; orthogonal mailbox key
-rotation and instance reset/failover; current-only `P'` rotation before reservation, stale-provider
-rejection, exposed old-generation terminal/recovery handling, restore and secret erasure; fresh
+rotation and instance reset/failover; provider-effective current-only `P'` rotation before
+reservation, missing/expired capability failure, provider-by-provider compromise closure and
+fence-versus-operation-claim compare-and-set races; exposed old-generation terminal/recovery
+handling, restore and secret erasure; fresh
 `e`/`E`/`X`/DLEQ before final type 5 and exactly-one T3; intent crashes before signing, between
 signing and journal promotion, and after flush; complete, partial and reorged payment sets including
-post-finality reconciliation; terminal-partial obligation fetch/import/ack across restart, seed
-restore, stamp rotation and late landing with one sweep/import effect; provider-paid opaque delivery
+post-finality reconciliation; exhaustive member-index and settlement-order permutations proving
+aggregate-state precedence and one terminal-partial obligation for every exposed subset;
+terminal-partial obligation fetch/import/ack across restart, seed restore, stamp rotation and late
+landing with one sweep/import effect; fully successful and partial child derivation/import across
+crash, reorganization, sweep, acknowledgement and restore, with unswept reachability and explicit
+loss acceptance; provider-paid opaque delivery
 followed by recipient rejection; deterministic poison quarantine in a valid/poison/valid page;
 signed multi-page snapshot crash/resume/atomic swap;
 origin/destination failover and duplicate claims; generation reset racing late completion;
 branch-scoped tombstone dominance, sibling forks, stale creates and object-wide deletion; permanent
 exclusion history with bounded body compaction; deletion reachability across shared references and
 payment recovery; EIP-1559 and every supported chain adapter's canonical replay-protected preimage,
-chain ID and signed T4/provider-fee mapping; cutover crash/ambiguity, partial payment, unread row,
-delayed completion, rollback-reader-only behavior, worker quiescence and removal gates; topic
+chain ID and signed T4/provider-fee mapping; cutover of a large mailbox with paginated tagging,
+page crashes and idempotent resume; marker/admission ambiguity, partial payment, unread pre-marker
+row, delayed legacy completion rejected by the target generation, rollback-reader/reconciler-only
+behavior, creation-writer quiescence and removal gates; topic
 root/revision/relation/vote migration; legacy and target federation reachability/convergence/cursor
 recovery; and proof that profiles/private mailbox records have no public-federation path. These
 proofs do not allocate numeric identifiers.
@@ -735,16 +794,21 @@ The following remain deliberately unresolved rather than inferred:
 - `provider-admission` and `recipient-acceptance` operation IDs, validation contexts, error
   taxonomy, CDDL, both codecs and independent vectors;
 - `mailbox_key_generation`, `stamp_key_generation` and `mailbox_instance_generation` wire fields,
-  current-only stamp semantics, signed capability and succession/reset/rotation records;
+  current-only stamp semantics, provider-specific effective-fence capability/hash, installation and
+  operation-claim compare-and-set, signed capability and succession/reset/rotation records;
 - provider descriptor, delivery, receipt/status, mailbox-journal and reset record type IDs;
 - checkpoint journal-fact kinds, checkpoint authorization and chunk linkage;
-- per-member/aggregate payment states, canonical finality-policy descriptor/digest, partial-set and
+- per-member/aggregate payment states, canonical exposure/could-still-land policy and state
+  precedence, canonical finality-policy descriptor/digest, partial-set and
   exceptional-reconciliation status records, and provider-fee commitment/pricing semantics;
 - recipient-private partial-recovery obligation/status/journal-fact/ack types and fields, bounded
   fetch operation and generation-bound acknowledgement;
+- recipient-owned child derivation/import/checkpoint/ack/sweep/loss-acceptance records for complete
+  and partial sets, plus their restore and reachability encoding;
 - pre-operation reservation-intent and signed-ready promotion/release/retire/sweep records;
-- per-account/mailbox legacy-to-FRNK cutover epoch/fence, protocol/version row tags, legacy terminal
-  and recovery evidence, rollback/removal state and target-instance succession;
+- per-account/mailbox legacy-to-FRNK cutover epoch/fence and admission guard, paginated
+  protocol/version row tags, legacy terminal/recovery evidence, constrained reconciler,
+  rollback/removal state, separate keyspace and target-instance succession;
 - opaque quarantine facts and signed snapshot identity/page-chain/manifest/frontier records;
 - branch-scoped versus object-wide tombstone/frontier encoding and authenticated fork resolution;
 - directory fork resolution and recovery cryptography beyond fail-closed conflict reporting;

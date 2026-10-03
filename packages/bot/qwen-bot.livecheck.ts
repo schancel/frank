@@ -91,7 +91,7 @@ import {
   tryDecryptEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
-import { botStateDir } from './bot-state-dir'
+import { botStateDir, persistentStateDir } from './bot-state-dir'
 import { createQwenReplyGenerator, qwenBotConfigFromEnv } from './qwen-reply'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 import { extractPromptText } from './qwen-prompt'
@@ -159,7 +159,7 @@ async function main() {
   // user's Qwen conversation history across restarts -- see qwen-bot-state.ts's own header for
   // the concrete user-visible bug this fixes.
   const stateDirPath = botStateDir('qwen', 'QWEN_BOT_STATE_DIR')
-  const walletStateDirPath = botStateDir(
+  const walletStateDirPath = persistentStateDir(
     'qwen-wallet',
     'QWEN_BOT_WALLET_STATE_DIR',
   )

@@ -39,7 +39,9 @@ export function legacyBotStateDir(bot: StateDirBot): string {
 
 export function isUnderTmp(dir: string, tmpDirs: readonly string[]): boolean {
   const resolved = resolve(dir)
-  return tmpDirs.map(t => resolve(t)).some(t => resolved === t || resolved.startsWith(t + sep))
+  return tmpDirs
+    .map(t => resolve(t))
+    .some(t => resolved === t || resolved.startsWith(t + sep))
 }
 
 /** Pure decision: the directory to use plus the notices to print. */
@@ -57,7 +59,9 @@ export function planBotStateDir(params: {
       `${params.envVar} must be an absolute path (got "${explicit}"): a relative path would resolve against the current directory and a different one would silently start a new seed.`,
     )
   }
-  const dir = resolve(explicit || defaultBotStateDir(params.bot, params.env, params.home))
+  const dir = resolve(
+    explicit || defaultBotStateDir(params.bot, params.env, params.home),
+  )
   const notices: string[] = []
   if (isUnderTmp(dir, params.tmpDirs)) {
     notices.push(
@@ -86,4 +90,32 @@ export function botStateDir(bot: StateDirBot, envVar: string): string {
   })
   for (const line of plan.notices) console.warn(`[${bot}] ${line}`)
   return plan.dir
+}
+
+/** Persistent state for a component that does not share a bot's legacy `/tmp` migration path. */
+export function persistentStateDir(name: string, envVar: string): string {
+  const explicit = process.env[envVar]
+  if (explicit && !isAbsolute(explicit)) {
+    throw new Error(`${envVar} must be an absolute path (got "${explicit}")`)
+  }
+  const xdg = process.env.XDG_STATE_HOME
+  const base =
+    xdg && isAbsolute(xdg)
+      ? join(xdg, 'frank-bots')
+      : join(homedir(), '.frank-bots')
+  const dir = resolve(explicit || join(base, name))
+  if (
+    isUnderTmp(dir, [
+      tmpdir(),
+      '/tmp',
+      '/var/tmp',
+      '/private/tmp',
+      '/private/var/tmp',
+    ])
+  ) {
+    console.warn(
+      `[${name}] WARNING: state directory ${dir} is under a temporary directory; clearing it can strand wallet funds. Set ${envVar} to a persistent path.`,
+    )
+  }
+  return dir
 }

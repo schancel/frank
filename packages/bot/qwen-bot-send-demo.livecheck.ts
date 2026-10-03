@@ -46,7 +46,7 @@ import {
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
-import { botStateDir } from './bot-state-dir'
+import { persistentStateDir } from './bot-state-dir'
 import {
   loadOrCreateIdentity,
   registerAndLog,
@@ -99,7 +99,7 @@ async function main() {
     process.env.E2E_DEMO_MAIN_WALLET_JSON ??
       '../frank-worktrees/spike-demo/spike/data/chain-wallet.json',
   )
-  const walletStateDirPath = botStateDir(
+  const walletStateDirPath = persistentStateDir(
     'qwen-sender-wallet',
     'QWEN_SENDER_WALLET_STATE_DIR',
   )

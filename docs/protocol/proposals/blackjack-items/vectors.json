@@ -2814,6 +2814,16 @@
       }
     },
     {
+      "id": "minWagerWei-reject-zero",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "minWagerWei",
+      "input": "0",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
       "id": "minWagerWei-reject-empty",
       "origin": "review-authored",
       "boundary": "application-to-wire-before-conversion",
@@ -2941,6 +2951,16 @@
       "boundary": "application-to-wire-before-conversion",
       "field": "maxWagerWei",
       "input": "00000000000000000000000000000000000000001",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "maxWagerWei-reject-zero",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "maxWagerWei",
+      "input": "0",
       "expected": {
         "result": "reject"
       }

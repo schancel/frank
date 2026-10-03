@@ -447,6 +447,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64",
  "bitcoinsuite-bitcoind",
  "bitcoinsuite-chronik-client",
  "bitcoinsuite-core",

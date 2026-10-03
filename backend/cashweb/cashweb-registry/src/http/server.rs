@@ -248,6 +248,7 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
         ["chain-rpc", _, "cap", _, "chronik", ..] => {
             Cow::Borrowed("/chain-rpc/:chain/cap/:capability/chronik/*path")
         }
+        ["chain-rpc", _, "cap", _, ..] => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/*"),
         _ => Cow::Borrowed(path),
     }
 }
@@ -274,6 +275,15 @@ mod request_log_tests {
         assert!(!logged.contains(token));
         assert!(!logged.contains("sensitive"));
         assert_eq!(logged, "/chain-rpc/:chain/cap/:capability/chronik/*path");
+        for malformed in [
+            format!("/chain-rpc/monad-testnet/cap/{token}"),
+            format!("/chain-rpc/monad-testnet/cap/{token}/rpc/extra"),
+            format!("/chain-rpc/monad-testnet/cap/{token}/unknown"),
+        ] {
+            let logged = safe_log_path(&malformed);
+            assert!(!logged.contains(token));
+            assert_eq!(logged, "/chain-rpc/:chain/cap/:capability/*");
+        }
         assert_eq!(
             safe_log_path("/chain-rpc/monad-testnet/rpc"),
             "/chain-rpc/monad-testnet/rpc"

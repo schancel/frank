@@ -261,12 +261,19 @@ pub(crate) fn request_correlation(bytes: &[u8]) -> Result<RequestCorrelation, ()
             .and_then(|request| request.get("id"))
             .filter(|id| id.is_string() || id.is_number() || id.is_null())
             .ok_or(())?;
+        if !rpc_id_is_bounded(id) {
+            return Err(());
+        }
         if ids.contains(id) {
             return Err(());
         }
         ids.push(id.clone());
     }
     Ok(RequestCorrelation { ids, is_batch })
+}
+
+pub(crate) fn rpc_id_is_bounded(id: &Value) -> bool {
+    serde_json::to_vec(id).is_ok_and(|encoded| encoded.len() <= MAX_RPC_ID_BYTES)
 }
 
 /// Parse JSON while rejecting duplicate object members at every nesting level.
@@ -1233,6 +1240,11 @@ mod tests {
             "i".repeat(MAX_RPC_ID_BYTES + 1)
         );
         assert!(inspect(oversized_id.as_bytes(), &[json!("unused")]).is_err());
+        let oversized_request = format!(
+            r#"{{"jsonrpc":"2.0","id":"{}","method":"eth_chainId","params":[]}}"#,
+            "i".repeat(MAX_RPC_ID_BYTES + 1)
+        );
+        assert!(request_correlation(oversized_request.as_bytes()).is_err());
         let deeply_nested = format!(
             r#"{{"jsonrpc":"2.0","id":1,"result":{}}}"#,
             "[".repeat(MAX_JSON_DEPTH + 1) + &"]".repeat(MAX_JSON_DEPTH + 1)

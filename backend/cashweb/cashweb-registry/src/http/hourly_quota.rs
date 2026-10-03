@@ -67,12 +67,16 @@ impl<K: Eq + Hash + Clone> FixedHourQuota<K> {
             return Err(QuotaDenial::RequestTooLarge);
         }
         let hour = now_seconds / 3600;
-        let reset_unix_seconds = (hour + 1) * 3600;
         let mut state = self.state.lock().map_err(|_| QuotaDenial::Unavailable)?;
-        if state.hour != Some(hour) {
+        if match state.hour {
+            Some(active) => hour > active,
+            None => true,
+        } {
             state.hour = Some(hour);
             state.usage.clear();
         }
+        let active_hour = state.hour.expect("quota hour initialized above");
+        let reset_unix_seconds = (active_hour + 1) * 3600;
         if state.usage.len() >= MAX_QUOTA_KEYS && !state.usage.contains_key(&key) {
             return Err(QuotaDenial::Capacity);
         }
@@ -125,6 +129,16 @@ mod tests {
         assert_eq!(
             FixedHourQuota::new(0).charge("a", 1, 3600),
             Err(QuotaDenial::Disabled)
+        );
+
+        let quota = FixedHourQuota::new(1);
+        assert_eq!(quota.charge("a", 1, 3600).unwrap().remaining, 0);
+        assert_eq!(quota.charge("b", 1, 3599).unwrap().remaining, 0);
+        assert_eq!(
+            quota.charge("a", 1, 3600),
+            Err(QuotaDenial::Exhausted {
+                reset_unix_seconds: 7200
+            })
         );
     }
 

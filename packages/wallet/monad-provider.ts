@@ -228,6 +228,15 @@ export function createMonadRelayRpcConnection(
     authorized.setHeader("content-type", "application/json");
     return authorized;
   };
+  connection.processFunc = async (request, response) => {
+    if (
+      response.statusCode === 401 &&
+      cachedCapability?.rpcUrl === request.url
+    ) {
+      cachedCapability = null;
+    }
+    return response;
+  };
   return connection;
 }
 

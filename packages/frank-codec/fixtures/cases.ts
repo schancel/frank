@@ -2995,8 +2995,10 @@ rej(
   NOP,
 )
 
-// Depth accounting of every required-child path. Each child is a frame one schema above its
-// reader's highest (type 4: schema 3, type 5 and 8: schema 2) whose unknown field 9 nests arrays: the child's payload map sits at depth D, so `32 - D` array levels fit.
+// Depth accounting of required-child paths. Each child is a frame one schema above its reader's
+// highest (type 4: schema 3, type 5 and 8: schema 2) whose unknown field 9 nests arrays: the
+// child's payload map sits at depth D, so `32 - D` array levels fit. Type 5 reaches its explicit
+// fail-closed schema guard after decoding at the limit; one more level still fails R1 first.
 // (Any change to the depth offset used when opening that child flips exactly one of each pair.)
 const nestedArrays = (levels: number): Encodable => {
   let v: Encodable = []
@@ -3034,12 +3036,23 @@ const pair = (
 }
 // Root envelope depth 1, payload map 2: a child in a byte string of the payload map has its
 // envelope at depth 3 and its payload map at depth 4, leaving 28 levels.
-pair(
-  't1-child-t5',
-  'type-1 to type-5 child',
-  28,
-  n => deliveryFrame({ payloadFrame: child2(5, type5Payload(), n) }),
+rej(
+  'r2-depth-t1-child-t5-at-limit',
+  'type-1 to type-5 child: 28 nested levels reach depth 32, then the future DM schema fails closed.',
+  deliveryFrame({ payloadFrame: child2(5, type5Payload(), 28) }),
+  'unsupported',
+  '7',
+  ['R1', 'S2d'],
   {},
+)
+rej(
+  'r2-depth-t1-child-t5-one-over',
+  'type-1 to type-5 child: 29 nested levels reach depth 33 before the schema guard.',
+  deliveryFrame({ payloadFrame: child2(5, type5Payload(), 29) }),
+  'resource',
+  '7',
+  ['R1'],
+  { source: 'typescript' },
 )
 pair(
   't2-child-t4',

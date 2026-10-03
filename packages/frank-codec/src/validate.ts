@@ -295,6 +295,19 @@ function processFrame(
       `min_reader_version ${env.minReaderVersion} exceeds reader version (V6.1)`,
     )
   }
+  // Suite 1 authenticates the complete schema-2 field set. A future type-5 schema needs an
+  // updated authenticated context before this reader may project or retain its extensions.
+  if (
+    env.typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD &&
+    env.schemaVersion > highest
+  ) {
+    throw fail(
+      'unsupported',
+      '7',
+      `type 5 schema ${env.schemaVersion} requires an updated authenticated context`,
+      location,
+    )
+  }
   const projection = env.schemaVersion > highest ? 'newer-schema' : 'exact'
   const parsed: ParsedFrame = {
     kind: 'parsed',
@@ -318,7 +331,7 @@ function processFrame(
     )
   }
   const draft = relocating(location, () => {
-    checkTypeLimits(env.typeId, payload)
+    checkTypeLimits(env.typeId, payload, env.schemaVersion)
     // Stage 8.2 and 8.3: structure, then allocated identifiers.
     const d = parseDraft(env.typeId, payload, projection === 'newer-schema', {
       envelope: env.schemaVersion,

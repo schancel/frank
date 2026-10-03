@@ -1,47 +1,42 @@
 use frank_cbor::{
-    encode_direct_message_crypto_context, AccountRef, DirectMessageCryptoContext,
-    DM_CRYPTO_CONTEXT_DOMAIN,
+    cbor_map, encode_direct_message_crypto_context, encode_frame, AccountRef, CborValue,
+    DirectMessageCryptoContext, EnvelopeFields, FramePayload, DM_CRYPTO_CONTEXT_DOMAIN,
 };
 
-fn bytes(length: usize, value: u8) -> Vec<u8> {
-    vec![value; length]
+fn account(value: &serde_json::Value) -> AccountRef {
+    AccountRef {
+        key_type: value["keyType"].as_u64().expect("keyType") as u32,
+        key_bytes: hex::decode(value["keyHex"].as_str().expect("keyHex")).expect("key hex"),
+    }
 }
 
-fn point(prefix: u8, value: u8) -> Vec<u8> {
-    let mut out = vec![prefix];
-    out.extend(bytes(32, value));
-    out
+fn account_value(value: &AccountRef) -> CborValue {
+    cbor_map(vec![
+        (0, CborValue::Int(i128::from(value.key_type))),
+        (1, CborValue::Bytes(value.key_bytes.clone())),
+    ])
 }
 
 #[test]
 fn dm_context_matches_typescript_vector() {
-    let sender = AccountRef {
-        key_type: 1,
-        key_bytes: point(2, 0x11),
-    };
-    let recipient = AccountRef {
-        key_type: 2,
-        key_bytes: bytes(32, 0x22),
-    };
-    let sender_message_key = AccountRef {
-        key_type: 1,
-        key_bytes: point(2, 0x33),
-    };
-    let recipient_message_key = AccountRef {
-        key_type: 1,
-        key_bytes: point(3, 0x44),
-    };
-    let stamp_key = AccountRef {
-        key_type: 1,
-        key_bytes: point(2, 0x55),
-    };
-    let sender_hash = bytes(32, 0xaa);
-    let recipient_hash = bytes(32, 0xbb);
-    let ephemeral = point(3, 0x66);
-    let shared = point(2, 0x77);
-    let proof = bytes(64, 0x88);
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../docs/protocol/cbor/vectors/dm-suite-1.json"
+    ))
+    .expect("vector JSON");
+    let context = &corpus["context"];
+    let sender = account(&context["sender"]);
+    let recipient = account(&context["recipient"]);
+    let sender_message_key = account(&context["senderMessageKey"]);
+    let recipient_message_key = account(&context["recipientMessageKey"]);
+    let stamp_key = account(&context["stampKey"]);
+    let sender_hash = hex::decode(context["senderDirectoryHashHex"].as_str().unwrap()).unwrap();
+    let recipient_hash =
+        hex::decode(context["recipientDirectoryHashHex"].as_str().unwrap()).unwrap();
+    let ephemeral = hex::decode(context["ephemeralPointHex"].as_str().unwrap()).unwrap();
+    let shared = hex::decode(context["sharedPointHex"].as_str().unwrap()).unwrap();
+    let proof = hex::decode(context["dleqProofHex"].as_str().unwrap()).unwrap();
     let encoded = encode_direct_message_crypto_context(&DirectMessageCryptoContext {
-        network: "monad-testnet",
+        network: context["network"].as_str().unwrap(),
         sender: &sender,
         recipient: &recipient,
         sender_directory_hash: &sender_hash,
@@ -56,14 +51,42 @@ fn dm_context_matches_typescript_vector() {
     .expect("context");
 
     assert_eq!(DM_CRYPTO_CONTEXT_DOMAIN, "frank/dm-crypto-context/v1");
-    let corpus: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../docs/protocol/cbor/vectors/dm-suite-1.json"
-    ))
-    .expect("vector JSON");
     assert_eq!(
         hex::encode(encoded),
         corpus["context"]["encodedHex"]
             .as_str()
             .expect("encodedHex")
+    );
+
+    let payload = cbor_map(vec![
+        (
+            0,
+            CborValue::Text(context["network"].as_str().unwrap().into()),
+        ),
+        (1, account_value(&sender)),
+        (2, account_value(&recipient)),
+        (3, CborValue::Int(1)),
+        (
+            4,
+            CborValue::Bytes(
+                hex::decode(corpus["cryptoBox"]["envelopeHex"].as_str().unwrap()).unwrap(),
+            ),
+        ),
+        (5, CborValue::Bytes(ephemeral)),
+        (6, CborValue::Bytes(shared)),
+        (7, CborValue::Bytes(proof)),
+    ]);
+    let frame = encode_frame(
+        EnvelopeFields {
+            type_id: 5,
+            schema_version: 2,
+            min_reader_version: 2,
+        },
+        FramePayload::Value(&payload),
+    )
+    .expect("type-5 frame");
+    assert_eq!(
+        hex::encode(frame),
+        corpus["type5FrameHex"].as_str().expect("type5FrameHex")
     );
 }

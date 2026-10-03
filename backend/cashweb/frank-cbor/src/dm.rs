@@ -52,7 +52,9 @@ fn exact(bytes: &[u8], length: usize, name: &str) -> Result<CborValue, UsageErro
 }
 
 fn account(value: &AccountRef, name: &str, secp_only: bool) -> Result<CborValue, UsageError> {
-    if secp_only && (value.key_type != 1 || value.key_bytes.len() != 33) {
+    if secp_only
+        && (value.key_type != 1 || secp256k1_abc::PublicKey::from_slice(&value.key_bytes).is_err())
+    {
         return Err(UsageError(format!(
             "{name} must be a compressed secp256k1 account"
         )));
@@ -61,6 +63,33 @@ fn account(value: &AccountRef, name: &str, secp_only: bool) -> Result<CborValue,
         (0, CborValue::Int(i128::from(value.key_type))),
         (1, CborValue::Bytes(value.key_bytes.clone())),
     ]))
+}
+
+fn point(bytes: &[u8], name: &str) -> Result<CborValue, UsageError> {
+    if secp256k1_abc::PublicKey::from_slice(bytes).is_err() {
+        return Err(UsageError(format!(
+            "{name} must be a compressed secp256k1 point"
+        )));
+    }
+    Ok(CborValue::Bytes(bytes.to_vec()))
+}
+
+const SECP256K1_ORDER: [u8; 32] = [
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
+    0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x41,
+];
+
+fn proof(bytes: &[u8]) -> Result<CborValue, UsageError> {
+    if bytes.len() != 64
+        || bytes.chunks_exact(32).any(|scalar| {
+            scalar.iter().all(|byte| *byte == 0) || scalar >= SECP256K1_ORDER.as_slice()
+        })
+    {
+        return Err(UsageError(
+            "dleq_proof must contain two scalars in 1..n-1".into(),
+        ));
+    }
+    Ok(CborValue::Bytes(bytes.to_vec()))
 }
 
 /// Encodes the exact context passed to both crypto-box seal and open.
@@ -96,9 +125,9 @@ pub fn encode_direct_message_crypto_context(
             account(input.recipient_message_key, "recipient_message_key", true)?,
         ),
         (8, account(input.stamp_key, "stamp_key", true)?),
-        (9, exact(input.ephemeral_point, 33, "ephemeral_point")?),
-        (10, exact(input.shared_point, 33, "shared_point")?),
-        (11, exact(input.dleq_proof, 64, "dleq_proof")?),
+        (9, point(input.ephemeral_point, "ephemeral_point")?),
+        (10, point(input.shared_point, "shared_point")?),
+        (11, proof(input.dleq_proof)?),
         (12, CborValue::Int(i128::from(DM_CRYPTO_SUITE))),
         (13, CborValue::Int(i128::from(DM_CRYPTO_TYPE))),
         (14, CborValue::Int(i128::from(DM_CRYPTO_SCHEMA_VERSION))),

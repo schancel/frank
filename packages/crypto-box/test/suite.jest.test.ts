@@ -81,6 +81,15 @@ const senderPk = publicKey(senderSk)
 const recipientPk = publicKey(recipientSk)
 const ephemeralPk = publicKey(ephemeral)
 const context = text('ctx')
+const DM_CORPUS = JSON.parse(
+  readFileSync(
+    join(__dirname, '../../../docs/protocol/cbor/vectors/dm-suite-1.json'),
+    'utf8',
+  ),
+) as {
+  context: { encodedHex: string }
+  cryptoBox: { plaintextHex: string; envelopeHex: string }
+}
 const CIPHERTEXT_HEAD_OFFSET = 83
 const LEGACY_V1_VECTORS = new Map([
   [
@@ -555,6 +564,16 @@ describe('encryption suites', () => {
     const current = mustSeal(SUITE_BASE_AES_GCM, 'frank')
     expect(current.slice(0, 3)).toEqual(Uint8Array.of(0xa6, 0, 2))
 
+    const productionAsLegacy = open({
+      envelope: rewrapAsLegacy(mustSeal(SUITE_AUTH_XCHACHA, 'frank')),
+      recipientPrivateKey: recipientSk,
+      senderPublicKey: senderPk,
+      context,
+    })
+    expect(productionAsLegacy.ok).toBe(false)
+    if (!productionAsLegacy.ok)
+      expect(productionAsLegacy.error.code).toBe('envelope')
+
     for (const version of [1, 3]) {
       const changed = new Uint8Array(current)
       changed[2] = version
@@ -771,5 +790,31 @@ describe('encryption suites', () => {
       expect(opened.ok).toBe(true)
       if (opened.ok) expect(Buffer.from(opened.value).toString()).toBe('frank')
     }
+  })
+
+  test('the shared suite-1 envelope is bound to the published DM context', () => {
+    const dmContext = fromHex(DM_CORPUS.context.encodedHex)
+    const sealed = seal({
+      suiteId: SUITE_AUTH_XCHACHA,
+      recipientPublicKey: recipientPk,
+      senderPublicKey: senderPk,
+      senderPrivateKey: senderSk,
+      plaintext: fromHex(DM_CORPUS.cryptoBox.plaintextHex),
+      context: dmContext,
+      ephemeralSecret: ephemeral,
+      salt,
+    })
+    expect(sealed.ok).toBe(true)
+    if (!sealed.ok) throw new Error(sealed.error.code)
+    expect(toHex(sealed.value)).toBe(DM_CORPUS.cryptoBox.envelopeHex)
+    const opened = open({
+      envelope: sealed.value,
+      recipientPrivateKey: recipientSk,
+      senderPublicKey: senderPk,
+      context: dmContext,
+    })
+    expect(opened.ok).toBe(true)
+    if (opened.ok)
+      expect(toHex(opened.value)).toBe(DM_CORPUS.cryptoBox.plaintextHex)
   })
 })

@@ -299,7 +299,11 @@ fn map_field(payload: &CborValue, key: u64) -> Option<&CborValue> {
 }
 
 /// R2-R4 counts read from the decoded fields, before typed conversion.
-pub(crate) fn check_type_limits(type_id: u32, payload: &CborValue) -> Result<(), CodecError> {
+pub(crate) fn check_type_limits(
+    type_id: u32,
+    payload: &CborValue,
+    schema_version: u32,
+) -> Result<(), CodecError> {
     if !matches!(payload, CborValue::Map(_)) {
         return Ok(());
     }
@@ -336,12 +340,13 @@ pub(crate) fn check_type_limits(type_id: u32, payload: &CborValue) -> Result<(),
             }
         }
         TYPE_RECIPIENT_PAYLOAD => {
-            if let Some(CborValue::Bytes(bytes)) = map_field(payload, 4) {
-                if bytes.len() > MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES {
-                    return Err(over("crypto-box envelope"));
+            if schema_version >= 2 {
+                if let Some(CborValue::Bytes(bytes)) = map_field(payload, 4) {
+                    if bytes.len() > MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES {
+                        return Err(over("crypto-box envelope"));
+                    }
                 }
-            }
-            if let Some(CborValue::Bytes(bytes)) = map_field(payload, 5) {
+            } else if let Some(CborValue::Bytes(bytes)) = map_field(payload, 5) {
                 if bytes.len() > MAX_CIPHERTEXT_BYTES {
                     return Err(over("ciphertext"));
                 }

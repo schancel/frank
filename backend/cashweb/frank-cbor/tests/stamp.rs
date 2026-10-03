@@ -166,6 +166,28 @@ fn production_suite_one_is_typed_only_in_schema_two() {
         other => panic!("unexpected {other:?}"),
     }
     assert_eq!(outcome(&production_type5(65_535)), "Unsupported@S83");
+
+    let payload = cbor_map(vec![
+        (0, CborValue::Text(NET.to_string())),
+        (1, acct1(9)),
+        (2, acct1(3)),
+        (3, int(1)),
+        (4, CborValue::Bytes(vec![0xa0])),
+        (5, hex_bytes(T3C_EPHEMERAL)),
+        (6, hex_bytes(T3C_SHARED)),
+        (7, hex_bytes(T3C_PROOF)),
+        (8, CborValue::Bytes(vec![1])),
+    ]);
+    let future = encode_frame(
+        EnvelopeFields {
+            type_id: 5,
+            schema_version: 3,
+            min_reader_version: 2,
+        },
+        FramePayload::Value(&payload),
+    )
+    .unwrap();
+    assert_eq!(outcome(&future), "Unsupported@S7");
 }
 
 fn statement(schema: u32, subject: CborValue, revision: u64, key: Option<CborValue>) -> Vec<u8> {

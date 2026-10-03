@@ -20,6 +20,8 @@ Envelope version 2 is a definite-length map with unsigned integer keys in canoni
 | `1`      | auth-xchacha20-poly1305 | auth | XChaCha20-Poly1305 |
 
 Suite id 65535 is reserved for proof vectors and is never produced. AES-CBC is not used.
+Suite 1 is accepted only in deterministic-CBOR envelope version 2; the legacy fixed layout remains
+read-only compatibility for private suites `0xFE01` through `0xFE03`.
 
 ## KEM
 

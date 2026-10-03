@@ -263,7 +263,11 @@ function tooMany(v: FrankValue | undefined, limit: number): boolean {
 }
 
 /** Reads R2-R4 counts from the decoded fields, before typed conversion. */
-export function checkTypeLimits(typeId: number, payload: FrankValue): void {
+export function checkTypeLimits(
+  typeId: number,
+  payload: FrankValue,
+  schemaVersion = 1,
+): void {
   if (!isMap(payload)) return
   const over = (what: string): never => {
     throw fail(
@@ -289,15 +293,18 @@ export function checkTypeLimits(typeId: number, payload: FrankValue): void {
       if (tooMany(f(4), MAX_RELAY_BINDINGS)) over('relay bindings')
       break
     case TYPE_RECIPIENT_ENCRYPTED_PAYLOAD: {
-      const e = f(4)
-      if (
-        e instanceof Uint8Array &&
-        e.length > MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES
-      )
-        over('crypto-box envelope')
-      const c = f(5)
-      if (c instanceof Uint8Array && c.length > MAX_CIPHERTEXT_BYTES)
-        over('ciphertext')
+      if (schemaVersion >= 2) {
+        const e = f(4)
+        if (
+          e instanceof Uint8Array &&
+          e.length > MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES
+        )
+          over('crypto-box envelope')
+      } else {
+        const c = f(5)
+        if (c instanceof Uint8Array && c.length > MAX_CIPHERTEXT_BYTES)
+          over('ciphertext')
+      }
       break
     }
     case TYPE_TOPIC_POST: {

@@ -367,6 +367,19 @@ fn process_frame(
         );
     }
     let highest_schema = known.expect("known type");
+    // Suite 1 authenticates the complete schema-2 field set. A future type-5 schema needs an
+    // updated authenticated context before this reader may project or retain its extensions.
+    if env.type_id == crate::limits::TYPE_RECIPIENT_PAYLOAD && env.schema_version > highest_schema {
+        return Err(fail(
+            ErrorCategory::Unsupported,
+            ErrorStage::S7,
+            format!(
+                "type 5 schema {} requires an updated authenticated context",
+                env.schema_version
+            ),
+            location,
+        ));
+    }
     let projection = if env.schema_version > highest_schema {
         Projection::NewerSchema
     } else {
@@ -395,7 +408,7 @@ fn process_frame(
         ));
     }
     let draft = relocating(location, {
-        check_type_limits(parsed.type_id, &parsed.payload)?;
+        check_type_limits(parsed.type_id, &parsed.payload, parsed.schema_version)?;
         let draft = parse_draft(
             parsed.type_id,
             &parsed.payload,

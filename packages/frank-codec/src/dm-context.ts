@@ -4,6 +4,7 @@ import {
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
 } from './constants'
 import type { AccountRef } from './types'
+import { isCompressedPoint, isProofEncoding } from './point'
 
 export const DM_CRYPTO_CONTEXT_DOMAIN = 'frank/dm-crypto-context/v1'
 export const DM_CRYPTO_SCHEMA_VERSION = 2
@@ -41,13 +42,27 @@ function account(value: AccountRef, name: string, secpOnly = false): Encodable {
   ) {
     throw new TypeError(`${name} must be an account reference`)
   }
-  if (secpOnly && (value.keyType !== 1 || value.keyBytes.length !== 33)) {
+  if (secpOnly && (value.keyType !== 1 || !isCompressedPoint(value.keyBytes))) {
     throw new RangeError(`${name} must be a compressed secp256k1 account`)
   }
   return new Map<number, Encodable>([
     [0, value.keyType],
     [1, Uint8Array.from(value.keyBytes)],
   ])
+}
+
+function point(bytes: Uint8Array, name: string): Uint8Array {
+  if (!(bytes instanceof Uint8Array) || !isCompressedPoint(bytes)) {
+    throw new RangeError(`${name} must be a compressed secp256k1 point`)
+  }
+  return Uint8Array.from(bytes)
+}
+
+function proof(bytes: Uint8Array): Uint8Array {
+  if (!(bytes instanceof Uint8Array) || !isProofEncoding(bytes)) {
+    throw new RangeError('dleqProof must contain two scalars in 1..n-1')
+  }
+  return Uint8Array.from(bytes)
 }
 
 /** Byte-exact suite-1 context passed to both crypto-box seal and open. */
@@ -68,9 +83,9 @@ export function encodeDirectMessageCryptoContext(
       [6, account(input.senderMessageKey, 'senderMessageKey', true)],
       [7, account(input.recipientMessageKey, 'recipientMessageKey', true)],
       [8, account(input.stampKey, 'stampKey', true)],
-      [9, exact(input.ephemeralPoint, 33, 'ephemeralPoint')],
-      [10, exact(input.sharedPoint, 33, 'sharedPoint')],
-      [11, exact(input.dleqProof, 64, 'dleqProof')],
+      [9, point(input.ephemeralPoint, 'ephemeralPoint')],
+      [10, point(input.sharedPoint, 'sharedPoint')],
+      [11, proof(input.dleqProof)],
       [12, ENCRYPTION_SUITE_DM_AUTH_XCHACHA],
       [13, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD],
       [14, DM_CRYPTO_SCHEMA_VERSION],

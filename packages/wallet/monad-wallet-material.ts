@@ -9,10 +9,7 @@ import { monadMasterFromDomainRoot } from './monad-domain-root'
 import { deriveRoleLeaves, matchLocalRolePoints } from '../role-keys/src'
 import type { RolePoint } from '../role-keys/src'
 import type { Current } from '../directory-admission/src'
-import {
-  decodeCanonical,
-  verifyPreviewDirectoryEvidence,
-} from '../frank-codec/src'
+import { decodeCanonical, verifyPreviewDirectoryEvidence } from '@frank/codec'
 import { seal, open, SUITE_AUTH_XCHACHA } from '@frank/crypto-box'
 import type { SuiteResult } from '@frank/crypto-box'
 

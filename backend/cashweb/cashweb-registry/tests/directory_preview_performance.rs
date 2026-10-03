@@ -1,7 +1,9 @@
 //! Opt-in release assessment through the unchanged public facade; never a latency/SLO gate.
 //!
 //! Run the ignored test with --release --nocapture --test-threads=1 and set
-//! FRANK_DIRECTORY_PERF_DIR to an empty evidence directory. Databases are preserved there.
+//! FRANK_DIRECTORY_PERF_DIR to an empty frank-768-fixtures.* temporary directory and
+//! FRANK_DIRECTORY_PERF_ARTIFACTS to an owned frank-768-artifacts.* directory. Closed sample
+//! databases are archived, extracted and hash-verified before their exact live copies are removed.
 //! JSON lines distinguish preparation, warm-up and measured calls. Timing is caller-observed:
 //! no internal mutex acquisition/queue length, OS-cache eviction or cold-disk claim is made.
 use cashweb_registry::{directory_admission::*, store::db::Db};
@@ -12,7 +14,13 @@ use frank_cbor::{
 use secp256k1_abc::{Message, PublicKey, Secp256k1, SecretKey};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{path::PathBuf, sync::Barrier, time::Instant};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Barrier,
+    time::Instant,
+};
 
 type Frames = (Vec<u8>, Vec<u8>);
 
@@ -213,6 +221,7 @@ fn context(relay: &RelayBinding, nanos: u32) -> Context<'_> {
 
 struct Bench {
     root: PathBuf,
+    artifacts: PathBuf,
     epoch: Instant,
 }
 
@@ -225,6 +234,68 @@ impl Bench {
             path.display()
         );
         path
+    }
+
+    // Only generated, closed per-sample directories are eligible. Archives/manifests and
+    // every pre-existing artifact remain intact. Recovery is ordinary `tar -xzf`.
+    fn archive(&self, path: &Path) {
+        assert_eq!(path.parent(), Some(self.root.as_path()));
+        assert_eq!(path.canonicalize().unwrap(), path);
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert!(!name.starts_with('.'));
+        let archives = self.artifacts.join("fixtures-archive");
+        let archive = archives.join(format!("{name}.tar.gz"));
+        let manifest_path = archives.join(format!("{name}.manifest.json"));
+        let extracted = self.root.join(format!("verify-{name}"));
+        assert!(!archive.exists() && !manifest_path.exists() && !extracted.exists());
+        let original = manifest(path);
+        assert!(Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&self.root)
+            .arg(name)
+            .env("COPYFILE_DISABLE", "1")
+            .status()
+            .unwrap()
+            .success());
+        fs::create_dir(&extracted).unwrap();
+        assert!(Command::new("tar")
+            .arg("-xzf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&extracted)
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(manifest(&extracted.join(name)), original);
+        // Ensure no unexpected extraction roots; no symlinks are permitted by manifest().
+        assert_eq!(extracted.read_dir().unwrap().count(), 1);
+        assert_eq!(manifest(path), original, "fixture changed after close");
+        let archive_bytes = fs::metadata(&archive).unwrap().len();
+        let archive_hash = hex::encode(Sha256::digest(fs::read(&archive).unwrap()));
+        let evidence = json!({"fixture":name, "files":original,
+            "archive_sha256":archive_hash, "archive_bytes":archive_bytes,
+            "recovery":"tar -xzf <archive> -C <empty-recovery-directory>"});
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&manifest_path)
+            .unwrap();
+        use std::io::Write;
+        file.write_all(serde_json::to_string_pretty(&evidence).unwrap().as_bytes())
+            .unwrap();
+        file.sync_all().unwrap();
+        fs::File::open(&archive).unwrap().sync_all().unwrap();
+        // These are the only deletions: exact fresh paths, after byte-for-byte recoverability.
+        fs::remove_dir_all(&extracted).unwrap();
+        fs::remove_dir_all(path).unwrap();
+        println!(
+            "{}",
+            json!({"event":"fixture_archived", "fixture":name,
+            "archive":archive, "manifest":manifest_path, "archive_bytes":archive_bytes,
+            "archive_sha256":archive_hash, "verified_extract":true})
+        );
     }
 
     fn measure<T>(
@@ -280,6 +351,29 @@ impl Bench {
     }
 }
 
+fn manifest(root: &Path) -> Vec<(String, u64, String)> {
+    fn visit(root: &Path, path: &Path, files: &mut Vec<(String, u64, String)>) {
+        let meta = fs::symlink_metadata(path).unwrap();
+        assert!(!meta.file_type().is_symlink(), "no fixture symlinks");
+        if meta.is_dir() {
+            for entry in path.read_dir().unwrap() {
+                visit(root, &entry.unwrap().path(), files);
+            }
+        } else {
+            assert!(meta.is_file(), "regular files only");
+            files.push((
+                path.strip_prefix(root).unwrap().to_str().unwrap().into(),
+                meta.len(),
+                hex::encode(Sha256::digest(fs::read(path).unwrap())),
+            ));
+        }
+    }
+    let mut files = vec![];
+    visit(root, root, &mut files);
+    files.sort();
+    files
+}
+
 fn enrollments(b: &Bench, h: &History) {
     for sample in 0..=5 {
         let path = b.path("enroll", sample);
@@ -300,6 +394,9 @@ fn enrollments(b: &Bench, h: &History) {
             json!({"event":"combined", "operation":"enroll.total_with_driver_bookkeeping",
             "sample": sample, "warmup": sample == 0, "duration_ns": total.elapsed().as_nanos()})
         );
+        drop(d);
+        drop(db);
+        b.archive(&path);
     }
 }
 
@@ -307,12 +404,16 @@ fn updates(b: &Bench, h: &History) {
     for before in [1, 128, 4095] {
         let samples = if before < 4095 { 5 } else { 3 };
         for sample in 0..=samples {
-            let db = Db::open(b.path(&format!("update-{before}"), sample)).unwrap();
+            let path = b.path(&format!("update-{before}"), sample);
+            let db = Db::open(&path).unwrap();
             let d = db
                 .directory_preview(h.anchor.clone(), OpenMode::NewEnrollment)
                 .unwrap();
             b.advance(&d, h, 0..before, "update.prepare", sample, true);
             b.advance(&d, h, before..before + 1, "short_update", sample, false);
+            drop(d);
+            drop(db);
+            b.archive(&path);
         }
     }
 }
@@ -378,13 +479,17 @@ fn current_and_reopen(b: &Bench, h: &History, count: usize, label: &str) {
         let state = d.status().unwrap().unwrap();
         h.verify(&state, count);
         assert_eq!(state.checkpoint, checkpoint);
+        drop(d);
+        drop(db);
+        b.archive(&path);
     }
 }
 
 fn catchup(b: &Bench, h: &History, count: usize, prefix: usize, label: &str) {
     let r = relay();
     for sample in 0..=3 {
-        let db = Db::open(b.path(label, sample)).unwrap();
+        let path = b.path(label, sample);
+        let db = Db::open(&path).unwrap();
         let d = db
             .directory_preview(h.anchor.clone(), OpenMode::NewEnrollment)
             .unwrap();
@@ -405,6 +510,9 @@ fn catchup(b: &Bench, h: &History, count: usize, prefix: usize, label: &str) {
             .unwrap_err();
         assert_eq!(failure, AdmissionError::Resource);
         assert_eq!(d.status().unwrap().unwrap(), result.status);
+        drop(d);
+        drop(db);
+        b.archive(&path);
     }
 }
 
@@ -416,31 +524,9 @@ fn competing_subjects(b: &Bench, a: &History, other: &History, catch_up: bool) {
     };
     let r = relay();
     for sample in 0..=3 {
-        let db = Db::open(b.path(label, sample)).unwrap();
-        let da = db
-            .directory_preview(a.anchor.clone(), OpenMode::NewEnrollment)
-            .unwrap();
-        let db_subject = db
-            .directory_preview(other.anchor.clone(), OpenMode::NewEnrollment)
-            .unwrap();
-        b.advance(
-            &da,
-            a,
-            0..if catch_up { 1 } else { MAX_STATEMENTS },
-            "competing.prepare_a",
-            sample,
-            true,
-        );
-        b.advance(
-            &db_subject,
-            other,
-            0..1,
-            "competing.prepare_b",
-            sample,
-            true,
-        );
-        // Isolated B baseline uses a separate fresh DB with the same initial state.
-        let isolated_db = Db::open(b.path(&format!("{label}.isolated"), sample)).unwrap();
+        // Complete and archive baseline first: only one live workload DB at a time.
+        let isolated_path = b.path(&format!("{label}.isolated"), sample);
+        let isolated_db = Db::open(&isolated_path).unwrap();
         let isolated = isolated_db
             .directory_preview(other.anchor.clone(), OpenMode::NewEnrollment)
             .unwrap();
@@ -470,6 +556,33 @@ fn competing_subjects(b: &Bench, a: &History, other: &History, catch_up: bool) {
             )
             .unwrap();
         other.verify(&baseline.status, if catch_up { 2 } else { 1 });
+        drop(isolated);
+        drop(isolated_db);
+        b.archive(&isolated_path);
+        let path = b.path(label, sample);
+        let db = Db::open(&path).unwrap();
+        let da = db
+            .directory_preview(a.anchor.clone(), OpenMode::NewEnrollment)
+            .unwrap();
+        let db_subject = db
+            .directory_preview(other.anchor.clone(), OpenMode::NewEnrollment)
+            .unwrap();
+        b.advance(
+            &da,
+            a,
+            0..if catch_up { 1 } else { MAX_STATEMENTS },
+            "competing.prepare_a",
+            sample,
+            true,
+        );
+        b.advance(
+            &db_subject,
+            other,
+            0..1,
+            "competing.prepare_b",
+            sample,
+            true,
+        );
         let large = a.candidates(1, MAX_STATEMENTS);
         let barrier = Barrier::new(2);
         // Alternate spawn order, not an assertion about unobservable mutex acquisition order.
@@ -523,6 +636,10 @@ fn competing_subjects(b: &Bench, a: &History, other: &History, catch_up: bool) {
         a.verify(&ra.status, MAX_STATEMENTS);
         other.verify(&rb.status, if catch_up { 2 } else { 1 });
         assert_ne!(ra.status.checkpoint.identity, rb.status.checkpoint.identity);
+        drop(da);
+        drop(db_subject);
+        drop(db);
+        b.archive(&path);
     }
 }
 
@@ -580,7 +697,7 @@ fn competing_clocks(b: &Bench, h: &History) {
             assert_eq!(status.checked_time.nanoseconds, 2);
             status.checkpoint
         };
-        let db = Db::open(path).unwrap();
+        let db = Db::open(&path).unwrap();
         let d = db
             .directory_preview(h.anchor.clone(), OpenMode::Reopen(checkpoint))
             .unwrap();
@@ -591,11 +708,14 @@ fn competing_clocks(b: &Bench, h: &History) {
         let current = d.current(context(&r, 2)).unwrap();
         h.verify(&current.status, 128);
         assert_eq!(current.status.checkpoint, checkpoint);
+        drop(d);
+        drop(db);
+        b.archive(&path);
     }
 }
 
 #[test]
-#[ignore = "explicit release-only assessment; preserves databases and emits timing JSON"]
+#[ignore = "explicit release-only assessment; preserves verified fixture archives and timing JSON"]
 fn directory_preview_release_assessment() {
     assert!(
         !cfg!(debug_assertions),
@@ -603,7 +723,30 @@ fn directory_preview_release_assessment() {
     );
     let root = PathBuf::from(
         std::env::var_os("FRANK_DIRECTORY_PERF_DIR").expect("explicit evidence directory"),
-    );
+    )
+    .canonicalize()
+    .unwrap();
+    let artifacts = PathBuf::from(
+        std::env::var_os("FRANK_DIRECTORY_PERF_ARTIFACTS")
+            .expect("explicit owned artifact directory"),
+    )
+    .canonicalize()
+    .unwrap();
+    let temporary_root = Path::new("/private/tmp").canonicalize().unwrap();
+    assert_eq!(root.parent(), Some(temporary_root.as_path()));
+    assert_eq!(artifacts.parent(), Some(temporary_root.as_path()));
+    assert!(root
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("frank-768-fixtures."));
+    assert!(artifacts
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("frank-768-artifacts."));
     assert!(
         root.is_dir() && root.read_dir().unwrap().next().is_none(),
         "empty evidence directory required"
@@ -612,8 +755,10 @@ fn directory_preview_release_assessment() {
         .expect("record the actual linked production revision; do not infer it from this driver");
     assert_eq!(production_revision.len(), 40);
     assert!(production_revision.bytes().all(|b| b.is_ascii_hexdigit()));
+    fs::create_dir(artifacts.join("fixtures-archive")).unwrap();
     let b = Bench {
         root,
+        artifacts,
         epoch: Instant::now(),
     };
     let h = b.measure("fixture.sign_record_cap", 0, 0, 0, true, || {
@@ -647,6 +792,15 @@ fn directory_preview_release_assessment() {
     competing_subjects(&b, &h, &other, false);
     competing_subjects(&b, &h, &other, true);
     competing_clocks(&b, &h);
+    assert!(b.root.read_dir().unwrap().next().is_none());
+    assert_eq!(
+        b.artifacts
+            .join("fixtures-archive")
+            .read_dir()
+            .unwrap()
+            .count(),
+        74 * 2
+    );
     println!(
         "{}",
         json!({"event":"complete", "duration_ns":b.epoch.elapsed().as_nanos()})

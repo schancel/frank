@@ -81,6 +81,7 @@ type RelayFetch = (
 ) => Promise<RelayFetchResponse>;
 
 const MAX_RELAY_CAPABILITY_RESPONSE_BYTES = 64 * 1024;
+const MAX_RELAY_RPC_RESPONSE_BYTES = 64 * 1024 * 1024;
 
 async function readBoundedRelayResponse(
   response: RelayFetchResponse,
@@ -93,10 +94,7 @@ async function readBoundedRelayResponse(
       throw makeError("relay response too large", "SERVER_ERROR");
   }
   if (!response.body) {
-    const body = new Uint8Array(await response.arrayBuffer());
-    if (body.length > maxBytes)
-      throw makeError("relay response too large", "SERVER_ERROR");
-    return body;
+    throw makeError("relay response streaming unavailable", "SERVER_ERROR");
   }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -446,11 +444,10 @@ export function createMonadRelayRpcConnection(
   let destroyed = false;
   const rpcAbortController = new AbortController();
   const relayRpcTransport = makeRelayGetUrl(
-    undefined,
+    MAX_RELAY_RPC_RESPONSE_BYTES,
     true,
     rpcAbortController.signal
   );
-  if (relayRpcTransport) connection.getUrlFunc = relayRpcTransport;
   let cancelLifecycle!: () => void;
   const cancelled = new Promise<void>((resolve) => {
     cancelLifecycle = resolve;
@@ -512,6 +509,25 @@ export function createMonadRelayRpcConnection(
     }
   };
 
+  if (relayRpcTransport) {
+    connection.getUrlFunc = async (relayRequest, signal) => {
+      try {
+        const response = await relayRpcTransport(relayRequest, signal);
+        if (response.statusCode !== 401 || destroyed) return response;
+        if (cachedCapability?.rpcUrl === relayRequest.url) {
+          cachedCapability = null;
+        }
+        const renewed = await capabilityFor(relayRequest.timeout);
+        if (destroyed) throw new Error("relay capability request cancelled");
+        const retry = relayRequest.clone();
+        retry.url = renewed.rpcUrl;
+        return await relayRpcTransport(retry, signal);
+      } finally {
+        activeCapabilityRequests.delete(relayRequest);
+      }
+    };
+  }
+
   connection.preflightFunc = async (request) => {
     const body = request.body;
     if (body === null) return request;
@@ -522,17 +538,7 @@ export function createMonadRelayRpcConnection(
     authorized.timeout = request.timeout;
     authorized.retryFunc = async () => false;
     authorized.setHeader("content-type", "application/json");
-    const untrack = lifecycle.trackRequest(authorized);
-    const rpcGetUrl = relayRpcTransport;
-    if (rpcGetUrl) {
-      authorized.getUrlFunc = async (relayRequest, signal) => {
-        try {
-          return await rpcGetUrl(relayRequest, signal);
-        } finally {
-          untrack();
-        }
-      };
-    }
+    if (relayRpcTransport) lifecycle.trackRequest(authorized);
     return authorized;
   };
   connection.processFunc = async (request, response) => {

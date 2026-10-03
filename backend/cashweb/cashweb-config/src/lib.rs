@@ -354,6 +354,8 @@ const fn default_rpc_timeout_ms() -> u64 {
     15_000
 }
 
+const MAX_AGGREGATE_RPC_RESPONSE_BYTES: usize = 2 * 1024 * 1024 * 1024;
+
 /// One EVM chain row. The upstream itself is named by environment variable so provider secrets
 /// are never serialized into the checked-in operator configuration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -450,6 +452,13 @@ impl EvmRpcConf {
         }
         if self.max_concurrency == 0 || self.max_concurrency > 1024 {
             return Err(EvmRpcConfigError::InvalidLimit("max_concurrency"));
+        }
+        if self
+            .max_response_bytes
+            .checked_mul(self.max_concurrency)
+            .map_or(true, |bytes| bytes > MAX_AGGREGATE_RPC_RESPONSE_BYTES)
+        {
+            return Err(EvmRpcConfigError::InvalidLimit("aggregate response bytes"));
         }
         if self.timeout_ms == 0 || self.timeout_ms > 120_000 {
             return Err(EvmRpcConfigError::InvalidLimit("timeout_ms"));
@@ -659,6 +668,15 @@ impl BitcoinProxyConf {
             || self.timeout_ms > 120_000
         {
             return Err(BitcoinProxyConfigError::InvalidLimit("runtime limit"));
+        }
+        if self
+            .max_response_bytes
+            .checked_mul(self.max_concurrency)
+            .map_or(true, |bytes| bytes > MAX_AGGREGATE_RPC_RESPONSE_BYTES)
+        {
+            return Err(BitcoinProxyConfigError::InvalidLimit(
+                "aggregate response bytes",
+            ));
         }
         if self.capability_ttl_ms < 60_000 || self.capability_ttl_ms > 24 * 60 * 60 * 1000 {
             return Err(BitcoinProxyConfigError::InvalidLimit("capability_ttl_ms"));
@@ -1014,6 +1032,16 @@ mod tests {
         );
         enabled.chains[0].upstream_ws_env = Some("MONAD_TESTNET_WS_RPC_URL".to_string());
 
+        enabled.max_response_bytes = 512 * 1024 * 1024;
+        enabled.max_concurrency = 5;
+        assert_eq!(
+            enabled.validate(),
+            Err(EvmRpcConfigError::InvalidLimit("aggregate response bytes"))
+        );
+        enabled.max_response_bytes = 64 * 1024 * 1024;
+        enabled.max_concurrency = 32;
+        assert_eq!(enabled.validate(), Ok(()));
+
         enabled.chains.push(enabled.chains[0].clone());
         assert!(matches!(
             enabled.validate(),
@@ -1095,6 +1123,17 @@ mod tests {
                 "capability_ttl_ms"
             ))
         );
+        bitcoin.capability_ttl_ms = 60 * 60 * 1000;
+        bitcoin.max_response_bytes = 32 * 1024 * 1024;
+        bitcoin.max_concurrency = 65;
+        assert_eq!(
+            bitcoin.validate(),
+            Err(crate::BitcoinProxyConfigError::InvalidLimit(
+                "aggregate response bytes"
+            ))
+        );
+        bitcoin.max_concurrency = 64;
+        assert_eq!(bitcoin.validate(), Ok(()));
         assert!(registry
             .chains
             .iter()

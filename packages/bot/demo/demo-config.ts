@@ -95,21 +95,42 @@ export const DEMO_VARS: readonly DemoVar[] = [
     description:
       'Toolchain variables (also CARGO_HOME, CARGO_TARGET_DIR, RUSTUP_HOME, RUSTUP_TOOLCHAIN) are passed to the relay build only when set. Ignored with CASHWEBD_BIN.',
   },
-  { name: 'CARGO_HOME', scope: 'relay build', default: 'unset', description: 'See CARGO.' },
+  {
+    name: 'CARGO_HOME',
+    scope: 'relay build',
+    default: 'unset',
+    description: 'See CARGO.',
+  },
   {
     name: 'CARGO_TARGET_DIR',
     scope: 'relay build',
     default: 'unset',
-    description:
-      'See CARGO. Point it at a scratch directory to keep the build out of the repo tree.',
+    description: 'See CARGO. Point it at a scratch directory to keep the build out of the repo tree.',
   },
-  { name: 'RUSTUP_HOME', scope: 'relay build', default: 'unset', description: 'See CARGO.' },
-  { name: 'RUSTUP_TOOLCHAIN', scope: 'relay build', default: 'unset', description: 'See CARGO.' },
+  {
+    name: 'RUSTUP_HOME',
+    scope: 'relay build',
+    default: 'unset',
+    description: 'See CARGO.',
+  },
+  {
+    name: 'RUSTUP_TOOLCHAIN',
+    scope: 'relay build',
+    default: 'unset',
+    description: 'See CARGO.',
+  },
   {
     name: 'MONAD_TESTNET_HTTP_RPC_URL',
     scope: 'chain',
     default: 'required unless fake chain',
     description: 'Monad TESTNET JSON-RPC URL (chain id 10143). May embed an API key.',
+    secret: true,
+  },
+  {
+    name: 'MONAD_TESTNET_WS_RPC_URL',
+    scope: 'chain',
+    default: 'optional on a real chain; unset with fake chain',
+    description: 'Monad TESTNET WebSocket JSON-RPC URL used by the relay proxy. May embed an API key.',
     secret: true,
   },
   {
@@ -227,8 +248,7 @@ export const DEMO_VARS: readonly DemoVar[] = [
     name: 'BLACKJACK_BOT_MAX_GREETINGS',
     scope: 'blackjack',
     default: '5',
-    description:
-      'Welcome messages the dealer sends per run (each costs the dealer a stamp); 0 = never greet.',
+    description: 'Welcome messages the dealer sends per run (each costs the dealer a stamp); 0 = never greet.',
   },
   {
     name: 'BLACKJACK_BOT_MAX_GREETINGS_PER_DAY',
@@ -294,13 +314,7 @@ const PASSTHROUGH = [
   'FRANK_BOT_MAX_REPLIES_PER_PEER',
 ] as const
 
-export const TOOLCHAIN_VARS = [
-  'CARGO',
-  'CARGO_HOME',
-  'CARGO_TARGET_DIR',
-  'RUSTUP_HOME',
-  'RUSTUP_TOOLCHAIN',
-] as const
+export const TOOLCHAIN_VARS = ['CARGO', 'CARGO_HOME', 'CARGO_TARGET_DIR', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN'] as const
 
 /** The Quasar dev server's port (`devServer.port` in app/quasar.config.js). */
 export const APP_DEV_PORT = 8080
@@ -331,6 +345,7 @@ export interface DemoConfig {
   relayUrl: string
   fakeRpcPort: number
   rpcUrl: string
+  wsRpcUrl?: string
   networkTag: string
   minStampWei: string
   /** Burn address given to the relay, the bots and the app command (#364). */
@@ -400,17 +415,10 @@ export function resolveDemoConfig(params: {
   const fakeChain = params.fakeChainFlag || merged.FRANK_DEMO_FAKE_CHAIN === '1'
   const stateDir = resolve(cwd, merged.FRANK_DEMO_STATE_DIR || join(home, '.frank-demo'))
   const relayPort = port('FRANK_DEMO_RELAY_PORT', merged.FRANK_DEMO_RELAY_PORT, 8098, problems)
-  const fakeRpcPort = port(
-    'FRANK_DEMO_FAKE_RPC_PORT',
-    merged.FRANK_DEMO_FAKE_RPC_PORT,
-    8545,
-    problems,
-  )
+  const fakeRpcPort = port('FRANK_DEMO_FAKE_RPC_PORT', merged.FRANK_DEMO_FAKE_RPC_PORT, 8545, problems)
   const networkTag = merged.FRANK_NETWORK_TAG || 'MONT'
   if (networkTag !== 'MONT') {
-    problems.push(
-      `FRANK_NETWORK_TAG must be MONT: the demo runs on Monad testnet only (got "${networkTag}")`,
-    )
+    problems.push(`FRANK_NETWORK_TAG must be MONT: the demo runs on Monad testnet only (got "${networkTag}")`)
   }
   const minStampWei = wei(
     'CASHWEB_STAMP_MIN_BURN_VALUE_WEI',
@@ -421,15 +429,12 @@ export function resolveDemoConfig(params: {
 
   const stampBurnAddress = merged.MONAD_STAMP_BURN_ADDRESS || DEMO_DEFAULT_BURN_ADDRESS
   if (!/^0x[0-9a-fA-F]{40}$/.test(stampBurnAddress)) {
-    problems.push(
-      `MONAD_STAMP_BURN_ADDRESS must be 0x followed by 40 hex characters, got "${stampBurnAddress}"`,
-    )
+    problems.push(`MONAD_STAMP_BURN_ADDRESS must be 0x followed by 40 hex characters, got "${stampBurnAddress}"`)
   }
 
   let rpcUrl = merged.MONAD_TESTNET_HTTP_RPC_URL ?? ''
-  let mainWalletJson = merged.E2E_DEMO_MAIN_WALLET_JSON
-    ? resolve(cwd, merged.E2E_DEMO_MAIN_WALLET_JSON)
-    : ''
+  let wsRpcUrl = merged.MONAD_TESTNET_WS_RPC_URL || undefined
+  let mainWalletJson = merged.E2E_DEMO_MAIN_WALLET_JSON ? resolve(cwd, merged.E2E_DEMO_MAIN_WALLET_JSON) : ''
   if (fakeChain) {
     // The fake chain generates its own throwaway wallets; a real wallet file must never be used
     // (or even read) alongside it.
@@ -441,6 +446,12 @@ export function resolveDemoConfig(params: {
       }
     }
     rpcUrl = `http://127.0.0.1:${fakeRpcPort}`
+    if (wsRpcUrl) {
+      problems.push(
+        'MONAD_TESTNET_WS_RPC_URL is set, but --fake-chain does not provide a WebSocket RPC: unset it, or drop --fake-chain',
+      )
+    }
+    wsRpcUrl = undefined
     // The fake chain has no real funds: a wallet is generated under the state dir if none is given.
     mainWalletJson = join(stateDir, 'fake-chain-wallet.json')
   } else {
@@ -450,6 +461,9 @@ export function resolveDemoConfig(params: {
       )
     } else if (!/^https?:\/\//.test(rpcUrl)) {
       problems.push('MONAD_TESTNET_HTTP_RPC_URL must be an http(s) URL')
+    }
+    if (wsRpcUrl && !/^wss?:\/\//.test(wsRpcUrl)) {
+      problems.push('MONAD_TESTNET_WS_RPC_URL must be a ws(s) URL')
     }
     if (!mainWalletJson) {
       problems.push(
@@ -491,17 +505,13 @@ export function resolveDemoConfig(params: {
 
   if (!fakeChain && !noFaucet) {
     // Least privilege: the faucet never shares the stamp wallet.
-    const faucetPath = merged.FRANK_DEMO_FAUCET_WALLET_JSON
-      ? resolve(cwd, merged.FRANK_DEMO_FAUCET_WALLET_JSON)
-      : ''
+    const faucetPath = merged.FRANK_DEMO_FAUCET_WALLET_JSON ? resolve(cwd, merged.FRANK_DEMO_FAUCET_WALLET_JSON) : ''
     if (!faucetPath) {
       problems.push(
         'FRANK_DEMO_FAUCET_WALLET_JSON is required on a real network (a separate funded testnet wallet for the faucet), or set FRANK_DEMO_NO_FAUCET=1 to run without the faucet',
       )
     } else if (faucetPath === mainWalletJson) {
-      problems.push(
-        'FRANK_DEMO_FAUCET_WALLET_JSON must be a different file from E2E_DEMO_MAIN_WALLET_JSON',
-      )
+      problems.push('FRANK_DEMO_FAUCET_WALLET_JSON must be a different file from E2E_DEMO_MAIN_WALLET_JSON')
     }
   }
 
@@ -623,7 +633,7 @@ export function resolveDemoConfig(params: {
         ]),
   ]
 
-  const secrets = [fakeChain ? undefined : rpcUrl, qwenKey].filter((v): v is string => !!v)
+  const secrets = [fakeChain ? undefined : rpcUrl, wsRpcUrl, qwenKey].filter((v): v is string => !!v)
   return {
     fakeChain,
     stateDir,
@@ -631,6 +641,7 @@ export function resolveDemoConfig(params: {
     relayUrl,
     fakeRpcPort,
     rpcUrl,
+    wsRpcUrl,
     networkTag,
     minStampWei,
     stampBurnAddress,
@@ -651,15 +662,19 @@ export function resolveDemoConfig(params: {
 /** The one README table documenting every variable; a test keeps README.md identical to this. */
 export function renderDemoVarTable(): string {
   const cell = (s: string) => s.replace(/\|/g, '\\|')
-  const rows = DEMO_VARS.map(
-    v =>
-      `| \`${v.name}\` | ${v.scope} | ${cell(v.default)} | ${cell(v.description)}${
-        v.secret ? ' Secret: never printed.' : ''
-      } |`,
+  const rows = DEMO_VARS.map(v => [
+    `\`${v.name}\``,
+    v.scope,
+    cell(v.default),
+    `${cell(v.description)}${v.secret ? ' Secret: never printed.' : ''}`,
+  ])
+  const allRows = [['Variable', 'Applies to', 'Default', 'Meaning'], ...rows]
+  const widths = allRows[0].map((_, index) =>
+    Math.max(3, ...allRows.map(row => row[index].length)),
   )
-  return [
-    '| Variable | Applies to | Default | Meaning |',
-    '| --- | --- | --- | --- |',
-    ...rows,
-  ].join('\n')
+  const format = (row: string[]) =>
+    `| ${row.map((value, index) => value.padEnd(widths[index])).join(' | ')} |`
+  return [format(allRows[0]), format(widths.map(width => '-'.repeat(width))), ...rows.map(format)].join(
+    '\n',
+  )
 }

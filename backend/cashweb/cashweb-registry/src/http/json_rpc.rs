@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     fmt,
     fs::File,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Seek},
     ops::Range,
     path::Path,
     pin::Pin,
@@ -20,7 +20,6 @@ use axum::{
 use futures::stream;
 use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Number, Value};
-use tempfile::TempPath;
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::OwnedSemaphorePermit,
@@ -55,7 +54,7 @@ pub(crate) struct ErrorRewrite {
 }
 
 pub(crate) struct ResponseSpool {
-    path: TempPath,
+    file: File,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -70,7 +69,6 @@ pub(crate) enum SpoolError {
 
 struct SpoolStreamState {
     file: tokio::fs::File,
-    _path: TempPath,
     rewrites: std::vec::IntoIter<ErrorRewrite>,
     next_rewrite: Option<ErrorRewrite>,
     position: u64,
@@ -224,8 +222,9 @@ pub(crate) async fn spool_response(
     max_bytes: usize,
     idle_timeout: Duration,
 ) -> Result<ResponseSpool, SpoolError> {
-    let named = tempfile::NamedTempFile::new().map_err(|_| SpoolError::Io)?;
-    let (file, path) = named.into_parts();
+    // `tempfile()` unlinks the directory entry immediately on supported platforms, so crashes and
+    // SIGKILL reclaim the spool when the kernel closes this process's file descriptors.
+    let file = tempfile::tempfile().map_err(|_| SpoolError::Io)?;
     let mut file = tokio::fs::File::from_std(file);
     let mut len = 0u64;
     loop {
@@ -245,8 +244,8 @@ pub(crate) async fn spool_response(
         file.write_all(&chunk).await.map_err(|_| SpoolError::Io)?;
     }
     file.flush().await.map_err(|_| SpoolError::Io)?;
-    drop(file);
-    Ok(ResponseSpool { path })
+    let file = file.into_std().await;
+    Ok(ResponseSpool { file })
 }
 
 impl ResponseSpool {
@@ -255,7 +254,7 @@ impl ResponseSpool {
         version: JsonRpcVersion,
         correlation: RequestCorrelation,
     ) -> Result<InspectedResponse, StreamInspectError> {
-        let path = self.path.to_path_buf();
+        let file = self.file.try_clone()?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let task_cancelled = Arc::clone(&cancelled);
         let mut cancel_on_drop = CancelInspection {
@@ -263,7 +262,7 @@ impl ResponseSpool {
             armed: true,
         };
         let result = tokio::task::spawn_blocking(move || {
-            inspect_spooled_response_with_cancel(&path, version, &correlation, Some(task_cancelled))
+            inspect_spooled_response_file(file, version, &correlation, Some(task_cancelled))
         })
         .await
         .map_err(|_| StreamInspectError::Invalid)?;
@@ -275,10 +274,10 @@ impl ResponseSpool {
         self,
         error_rewrites: Vec<ErrorRewrite>,
     ) -> Result<Body, std::io::Error> {
-        let file = tokio::fs::File::open(&self.path).await?;
+        let mut file = tokio::fs::File::from_std(self.file);
+        file.seek(std::io::SeekFrom::Start(0)).await?;
         let state = SpoolStreamState {
             file,
-            _path: self.path,
             rewrites: error_rewrites.into_iter(),
             next_rewrite: None,
             position: 0,
@@ -363,6 +362,19 @@ pub(crate) fn parse_without_duplicate_keys(bytes: &[u8]) -> serde_json::Result<V
     let value = UniqueValue::deserialize(&mut deserializer)?.0;
     deserializer.end()?;
     Ok(value)
+}
+
+/// Parse one startup probe response with the same ambiguity and envelope rules as proxied traffic.
+pub(crate) fn startup_result(
+    bytes: &[u8],
+    version: JsonRpcVersion,
+    expected_id: &Value,
+) -> Option<Value> {
+    let value = parse_without_duplicate_keys(bytes).ok()?;
+    if !is_single_response_envelope(&value, version) || value.get("id")? != expected_id {
+        return None;
+    }
+    value.get("result").cloned()
 }
 
 /// Replace provider-controlled JSON-RPC error details with a stable envelope.
@@ -518,8 +530,22 @@ fn inspect_spooled_response_with_cancel(
     if correlation.ids.is_empty() {
         return Err(StreamInspectError::Invalid);
     }
-    validate_spool_utf8(path, cancelled.as_deref())?;
     let file = File::open(path)?;
+    inspect_spooled_response_file(file, version, correlation, cancelled)
+}
+
+fn inspect_spooled_response_file(
+    mut file: File,
+    version: JsonRpcVersion,
+    correlation: &RequestCorrelation,
+    cancelled: Option<Arc<AtomicBool>>,
+) -> Result<InspectedResponse, StreamInspectError> {
+    if correlation.ids.is_empty() {
+        return Err(StreamInspectError::Invalid);
+    }
+    file.seek(std::io::SeekFrom::Start(0))?;
+    validate_spool_utf8_file(&mut file, cancelled.as_deref())?;
+    file.seek(std::io::SeekFrom::Start(0))?;
     let mut parser = ResponseParser {
         lexer: Lexer::new(BufReader::with_capacity(64 * 1024, file), cancelled),
         version,
@@ -533,11 +559,11 @@ fn inspect_spooled_response_with_cancel(
     })
 }
 
-fn validate_spool_utf8(
-    path: &Path,
+fn validate_spool_utf8_file(
+    file: &mut File,
     cancelled: Option<&AtomicBool>,
 ) -> Result<(), StreamInspectError> {
-    let mut reader = BufReader::with_capacity(64 * 1024, File::open(path)?);
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
     let mut pending = Vec::with_capacity(64 * 1024 + 3);
     loop {
         if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Relaxed)) {
@@ -1223,6 +1249,29 @@ mod tests {
     }
 
     #[test]
+    fn startup_probe_requires_an_unambiguous_correlated_envelope() {
+        assert_eq!(
+            startup_result(
+                br#"{"jsonrpc":"2.0","id":1,"result":"0x279f"}"#,
+                JsonRpcVersion::V2,
+                &serde_json::json!(1),
+            ),
+            Some(serde_json::json!("0x279f"))
+        );
+        for invalid in [
+            br#"{"jsonrpc":"2.0","id":1,"id":2,"result":"0x279f"}"#.as_slice(),
+            br#"{"jsonrpc":"2.0","id":2,"result":"0x279f"}"#.as_slice(),
+            br#"{"id":1,"result":"0x279f"}"#.as_slice(),
+            br#"{"jsonrpc":"2.0","id":1,"result":"0x279f","error":null}"#.as_slice(),
+        ] {
+            assert_eq!(
+                startup_result(invalid, JsonRpcVersion::V2, &serde_json::json!(1)),
+                None
+            );
+        }
+    }
+
+    #[test]
     fn correlates_reordered_responses_and_rejects_missing_or_duplicate_ids() {
         let request =
             br#"[{"jsonrpc":"2.0","id":1,"method":"a"},{"jsonrpc":"2.0","id":2,"method":"b"}]"#;
@@ -1363,13 +1412,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spool_stream_rewrites_only_error_values_and_unlinks_on_drop() {
+    async fn anonymous_spool_stream_rewrites_only_error_values() {
         let bytes = br#"[{"jsonrpc":"2.0","id":1,"result":"secret stays in success"},{"jsonrpc":"2.0","id":2,"error":{"code":-7,"message":"provider secret","data":"leak"}}]"#;
-        let mut named = tempfile::NamedTempFile::new().unwrap();
-        named.write_all(bytes).unwrap();
-        let path_buf = named.path().to_path_buf();
-        let (_file, path) = named.into_parts();
-        let spool = ResponseSpool { path };
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(bytes).unwrap();
+        let spool = ResponseSpool { file };
         let inspected = spool
             .inspect(
                 JsonRpcVersion::V2,
@@ -1392,14 +1439,9 @@ mod tests {
                 }}
             ])
         );
-        assert!(!path_buf.exists());
-
-        let named = tempfile::NamedTempFile::new().unwrap();
-        let path_buf = named.path().to_path_buf();
-        let (_file, path) = named.into_parts();
-        let body = ResponseSpool { path }.into_body(Vec::new()).await.unwrap();
+        let file = tempfile::tempfile().unwrap();
+        let body = ResponseSpool { file }.into_body(Vec::new()).await.unwrap();
         drop(body);
-        assert!(!path_buf.exists());
     }
 
     #[tokio::test]
@@ -1471,19 +1513,15 @@ mod tests {
     async fn response_delivery_deadline_releases_permit_and_spool_without_polling() {
         let permits = Arc::new(Semaphore::new(1));
         let permit = Arc::clone(&permits).try_acquire_owned().unwrap();
-        let named = tempfile::NamedTempFile::new().unwrap();
-        let path_buf = named.path().to_path_buf();
-        let (_file, path) = named.into_parts();
-        let body = ResponseSpool { path }.into_body(Vec::new()).await.unwrap();
+        let file = tempfile::tempfile().unwrap();
+        let body = ResponseSpool { file }.into_body(Vec::new()).await.unwrap();
         let response = hold_response_permit(
             Response::new(boxed(body)),
             permit,
             Duration::from_millis(10),
         );
-        assert!(path_buf.exists());
         assert!(Arc::clone(&permits).try_acquire_owned().is_err());
         tokio::time::sleep(Duration::from_millis(30)).await;
-        assert!(!path_buf.exists());
         assert!(Arc::clone(&permits).try_acquire_owned().is_ok());
         drop(response);
     }

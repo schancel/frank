@@ -245,10 +245,13 @@ impl BitcoinProxyRuntime {
                         chain.id.clone(),
                     ));
                 }
-                let actual = serde_json::from_slice::<Value>(&response.body)
-                    .ok()
-                    .and_then(|v| v.get("result")?.as_str().map(str::to_owned))
-                    .ok_or_else(|| BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
+                let actual = super::json_rpc::startup_result(
+                    &response.body,
+                    super::json_rpc::JsonRpcVersion::Legacy,
+                    &json!("startup"),
+                )
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .ok_or_else(|| BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
                 if !actual.eq_ignore_ascii_case(&chain.checkpoint_hash) {
                     return Err(BitcoinProxyStartError::CheckpointMismatch {
                         id: chain.id.clone(),
@@ -335,77 +338,6 @@ fn chronik_endpoint_url(base: &Url, path: &str, query: Option<&str>) -> Result<U
     url.set_query(combined_query.as_deref());
     url.set_fragment(None);
     Ok(url)
-}
-
-fn percent_decode_component(value: &str) -> Vec<u8> {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            let hex = |byte: u8| match byte {
-                b'0'..=b'9' => Some(byte - b'0'),
-                b'a'..=b'f' => Some(byte - b'a' + 10),
-                b'A'..=b'F' => Some(byte - b'A' + 10),
-                _ => None,
-            };
-            if let (Some(high), Some(low)) = (hex(bytes[index + 1]), hex(bytes[index + 2])) {
-                decoded.push((high << 4) | low);
-                index += 3;
-                continue;
-            }
-        }
-        decoded.push(bytes[index]);
-        index += 1;
-    }
-    decoded
-}
-
-fn chronik_error_contains_secret(body: &[u8], upstream: &Url) -> bool {
-    let mut needles = Vec::<Vec<u8>>::new();
-    needles.push(upstream.as_str().as_bytes().to_vec());
-    if let Some(host) = upstream.host_str().filter(|host| !host.is_empty()) {
-        needles.push(host.as_bytes().to_vec());
-    }
-    if !upstream.username().is_empty() {
-        needles.push(upstream.username().as_bytes().to_vec());
-        let username = percent_decode_component(upstream.username());
-        needles.push(username.clone());
-    }
-    if !upstream.username().is_empty() || upstream.password().is_some() {
-        let username = percent_decode_component(upstream.username());
-        let password = upstream
-            .password()
-            .map(percent_decode_component)
-            .unwrap_or_default();
-        let mut credentials = username;
-        credentials.push(b':');
-        credentials.extend_from_slice(&password);
-        needles.push(format!("Basic {}", base64::encode(credentials)).into_bytes());
-    }
-    if let Some(password) = upstream.password().filter(|password| !password.is_empty()) {
-        needles.push(password.as_bytes().to_vec());
-        needles.push(percent_decode_component(password));
-    }
-    if let Some(query) = upstream.query().filter(|query| !query.is_empty()) {
-        needles.push(query.as_bytes().to_vec());
-        for (key, value) in upstream.query_pairs() {
-            needles.push(key.as_bytes().to_vec());
-            needles.push(value.as_bytes().to_vec());
-        }
-    }
-    let path = upstream.path().trim_matches('/');
-    if !path.is_empty() {
-        needles.push(path.as_bytes().to_vec());
-        for segment in path.split('/') {
-            needles.push(segment.as_bytes().to_vec());
-            needles.push(percent_decode_component(segment));
-        }
-    }
-    needles
-        .into_iter()
-        .filter(|needle| !needle.is_empty())
-        .any(|needle| body.windows(needle.len()).any(|window| window == needle))
 }
 
 async fn read_response(mut response: reqwest::Response, max: usize) -> Result<Bytes, ()> {
@@ -1362,15 +1294,13 @@ async fn proxy_chronik_inner(
                 true,
             )
         })?;
-        if chronik_error_contains_secret(upstream.body.as_ref(), chain.chronik.as_ref().unwrap()) {
-            proto::Error {
-                msg: "upstream Chronik error".to_string(),
-            }
-            .encode_to_vec()
-            .into()
-        } else {
-            upstream.body
+        // Provider-controlled errors are never forwarded verbatim: URL credentials can have
+        // many equivalent encodings, so substring redaction cannot be complete.
+        proto::Error {
+            msg: "upstream Chronik error".to_string(),
         }
+        .encode_to_vec()
+        .into()
     };
     let response = (
         upstream.status,
@@ -1557,46 +1487,6 @@ mod tests {
         let url = chronik_endpoint_url(&base, "blocks/1/2", Some("page=0")).unwrap();
         assert_eq!(url.path(), "/private/blocks/1/2");
         assert_eq!(url.query(), Some("api_key=hidden&page=0"));
-        assert!(chronik_error_contains_secret(
-            b"unknown-field:api_key=hidden",
-            &base
-        ));
-        assert!(chronik_error_contains_secret(
-            b"unknown-field:hidden",
-            &base
-        ));
-        assert!(chronik_error_contains_secret(
-            b"unknown-field:secret",
-            &base
-        ));
-        assert!(!chronik_error_contains_secret(b"txn-invalid", &base));
-
-        let encoded: Url = "https://u:s%65cret@example.test/private%2Ftenant?api_key=h%69dden"
-            .parse()
-            .unwrap();
-        assert!(chronik_error_contains_secret(b"decoded secret", &encoded));
-        assert!(chronik_error_contains_secret(b"decoded hidden", &encoded));
-        assert!(chronik_error_contains_secret(
-            b"decoded private/tenant",
-            &encoded
-        ));
-        let hosted: Url = "https://tenant-secret.example/private?api=hidden"
-            .parse()
-            .unwrap();
-        assert!(chronik_error_contains_secret(
-            b"dial tenant-secret.example refused",
-            &hosted
-        ));
-        let basic: Url = "https://zyxw:qvkj@example.test/".parse().unwrap();
-        assert!(chronik_error_contains_secret(
-            b"bad Authorization: Basic enl4dzpxdmtq",
-            &basic
-        ));
-        let password_only: Url = "https://:secret@example.test/".parse().unwrap();
-        assert!(chronik_error_contains_secret(
-            b"bad Authorization: Basic OnNlY3JldA==",
-            &password_only
-        ));
     }
 
     #[test]
@@ -1704,10 +1594,43 @@ mod tests {
         );
 
         conventional_hash[0] ^= 1;
-        conf.chains[0].checkpoint_hash = hex::encode(conventional_hash);
+        conf.chains[0].checkpoint_hash = hex::encode(&conventional_hash);
         assert!(matches!(
             BitcoinProxyRuntime::from_conf_with_env(&conf, vec![], |_| Some(url.clone())).await,
             Err(BitcoinProxyStartError::CheckpointMismatch { .. })
+        ));
+
+        conventional_hash[0] ^= 1;
+        conf.chains[0].checkpoint_hash = hex::encode(&conventional_hash);
+        conf.chains[0].rpc_upstream_env = Some("RPC_URL".to_string());
+        let duplicate_rpc_body = format!(
+            r#"{{"result":"{}","error":null,"id":"startup","id":"wrong"}}"#,
+            hex::encode(conventional_hash)
+        );
+        let duplicate_rpc = Router::new().route(
+            "/",
+            routing::post(move || {
+                let body = duplicate_rpc_body.clone();
+                async move { body }
+            }),
+        );
+        let rpc_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        rpc_listener.set_nonblocking(true).unwrap();
+        let rpc_address = rpc_listener.local_addr().unwrap();
+        tokio::spawn(
+            axum::Server::from_tcp(rpc_listener)
+                .unwrap()
+                .serve(duplicate_rpc.into_make_service()),
+        );
+        let rpc_url = format!("http://{rpc_address}");
+        assert!(matches!(
+            BitcoinProxyRuntime::from_conf_with_env(&conf, vec![], |name| match name {
+                "RPC_URL" => Some(rpc_url.clone()),
+                "CHRONIK_URL" => Some(url.clone()),
+                _ => None,
+            })
+            .await,
+            Err(BitcoinProxyStartError::UpstreamUnavailable(_))
         ));
     }
 
@@ -1723,7 +1646,6 @@ mod tests {
         }
         .encode_to_vec();
         chronik_error.extend_from_slice(&[0x7a, 0x03, b'a', b'b', b'c']);
-        let expected_chronik_error = chronik_error.clone();
         let error_calls = Arc::clone(&upstream_calls);
         let upstream = Router::new()
             .route(
@@ -1930,11 +1852,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(chronik_error_response.status(), StatusCode::BAD_REQUEST);
+        let sanitized_chronik_error = proto::Error {
+            msg: "upstream Chronik error".to_string(),
+        }
+        .encode_to_vec();
         assert_eq!(
             hyper::body::to_bytes(chronik_error_response.into_body())
                 .await
                 .unwrap(),
-            expected_chronik_error
+            sanitized_chronik_error
         );
 
         let anonymous_protected = router

@@ -171,6 +171,18 @@ fn read_and_validate_conf_with_env(
             .into());
         }
     }
+    if let Some(network) = network {
+        for chain in &conf.registry.evm_rpc.chains {
+            if chain.expected_chain_id != network.evm_chain_id {
+                return Err(NetworkChainMismatch {
+                    tag: String::from_utf8_lossy(network.network_tag).into_owned(),
+                    expected_chain_id: network.evm_chain_id,
+                    actual_chain_id: chain.expected_chain_id,
+                }
+                .into());
+            }
+        }
+    }
     Ok((conf, mailbox_mode))
 }
 
@@ -578,6 +590,22 @@ mod tests {
             env(&[("FRANK_NETWORK_TAG", "MONX")])
         )
         .is_err());
+
+        let disabled_mainnet = LOCAL
+            .replacen("enabled = true", "enabled = false", 1)
+            .replace("id = \"monad-testnet\"", "id = \"monad-mainnet\"")
+            .replace("expected_chain_id = 10143", "expected_chain_id = 143")
+            .replace(
+                "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9",
+                "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9",
+            );
+        let error = read_and_validate_conf_with_env(
+            "-",
+            &mut Cursor::new(disabled_mainnet),
+            env(&[("FRANK_NETWORK_TAG", "MONT")]),
+        )
+        .expect_err("a disabled mailbox must not permit a crossed RPC chain and network tag");
+        assert!(format!("{error:?}").contains("identifies EVM chain 10143"));
     }
 
     #[test]

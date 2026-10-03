@@ -115,6 +115,9 @@ process.stdin.on('end', () => {
   fs.writeFileSync(${JSON.stringify(
     pidFile + '.checkpoint',
   )}, process.env.FRANK_EVM_CHECKPOINT_HASH || 'unset')
+  fs.writeFileSync(${JSON.stringify(
+    pidFile + '.ws-rpc',
+  )}, process.env.MONAD_TESTNET_WS_RPC_URL || 'unset')
   if (${kind === 'stubborn'}) process.on('SIGTERM', () => {})
   if (${kind === 'http'}) {
     const [host, port] = /host = "([^"]+)"/.exec(input)[1].split(':')
@@ -398,6 +401,17 @@ process.stdin.on('end', () => {
       ])
       const handle = await startDemo(c, opts)
       expect(readFileSync(pidFile + '.env', 'utf8')).toBe(other)
+      await handle.stop()
+      await handle.done
+    }, 30000)
+
+    it('passes the optional WebSocket RPC only to the relay process', async () => {
+      const bot = fakeBot('worker', "console.log('READY'); setInterval(() => {}, 1000)")
+      const c = await config({ CASHWEBD_BIN: relayStub('http') }, [bot])
+      c.wsRpcUrl = 'wss://rpc.example.invalid/v2/sentinel-key'
+      const handle = await startDemo(c, opts)
+      expect(readFileSync(pidFile + '.ws-rpc', 'utf8')).toBe(c.wsRpcUrl)
+      expect(c.bots[0].env.MONAD_TESTNET_WS_RPC_URL).toBeUndefined()
       await handle.stop()
       await handle.done
     }, 30000)

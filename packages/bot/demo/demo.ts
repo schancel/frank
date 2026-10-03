@@ -13,7 +13,7 @@
  * stack trace.
  */
 import { spawnSync } from 'child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
+import { chmodSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'fs'
 import { createServer } from 'net'
 import { dirname, join, resolve } from 'path'
 
@@ -656,9 +656,23 @@ export async function main(argv: string[], env: Record<string, string | undefine
         throw new DemoConfigError([
           'Bounded public directory configuration file required',
         ])
-      const config = resolveDirectoryDemoConfig(
-        JSON.parse(readFileSync(path, 'utf8')),
-      )
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK)
+      let publicJSON: string
+      try {
+        if (!fstatSync(fd).isFile()) throw new Error('Regular public configuration required')
+        const bytes = Buffer.alloc(1048577)
+        let length = 0
+        while (length < bytes.length) {
+          const count = readSync(fd, bytes, length, bytes.length - length, null)
+          if (!count) break
+          length += count
+        }
+        if (length > 1048576) throw new Error('Bounded public directory configuration file required')
+        publicJSON = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, length))
+      } finally {
+        closeSync(fd)
+      }
+      const config = resolveDirectoryDemoConfig(JSON.parse(publicJSON))
       const { reopenBundle, startFixture } = await import(
         './directory-trust/index'
       )

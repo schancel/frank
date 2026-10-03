@@ -521,6 +521,46 @@ function child(
   })
 }
 const resolvePath = () => resolve(__dirname, '../..')
+test('oversized public configuration rejects before admission or browser launch', async () => {
+  const input = join(root, 'oversized-public.json')
+  writeFileSync(input, Buffer.alloc(1048577, 32))
+  await expect(
+    child(
+      process.execPath,
+      ['--import', 'tsx', 'demo/demo.ts', '--directory-admission', input],
+      { TSX_TSCONFIG_PATH: join(resolvePath(), 'tsconfig.json') },
+    ),
+  ).rejects.toThrow('Bounded public directory configuration')
+  await expect(
+    child(process.execPath, [
+      join(__dirname, 'check-admission-browser.cjs'),
+      input,
+      '/nonexistent-owned-chromium',
+    ]),
+  ).rejects.toThrow('Bounded scenario')
+  // Model a regular file growing after the initial metadata check. The fd read,
+  // not that earlier size, must enforce the public input budget.
+  const { main } = require('../demo') as {
+    main(argv: string[], env: Record<string, string>): Promise<number>
+  }
+  const stat = filesystem.statSync
+  jest.spyOn(filesystem, 'statSync').mockImplementation(((
+    file: import('node:fs').PathLike,
+    options?: unknown,
+  ) => {
+    const result = stat(file, options as any)
+    return file === input
+      ? new Proxy(result, {
+          get: (target, key) => (key === 'size' ? 0 : Reflect.get(target, key)),
+        })
+      : result
+  }) as typeof stat)
+  await expect(main(['--directory-admission', input], {})).rejects.toThrow(
+    'Bounded public directory configuration',
+  )
+  expect(existsSync(options().location)).toBe(false)
+  expect(existsSync(options().continuityFile)).toBe(false)
+})
 test('exact demo source opt-in and independent process reopen preserve public identity without starting the normal stack', async () => {
   await fixture.stop()
   const configFile = join(root, 'public-config.json')

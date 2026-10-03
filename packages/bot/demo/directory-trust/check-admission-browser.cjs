@@ -248,7 +248,36 @@ async function main() {
     fs.statSync(inputPath).size > 1048576
   )
     throw new Error('Bounded scenario and absolute Chromium path required')
-  const scenario = JSON.parse(fs.readFileSync(inputPath, 'utf8'))
+  const inputFd = fs.openSync(
+    inputPath,
+    fs.constants.O_RDONLY | fs.constants.O_NONBLOCK,
+  )
+  let scenario
+  try {
+    if (!fs.fstatSync(inputFd).isFile())
+      throw new Error('Regular bounded scenario required')
+    const bytes = Buffer.alloc(1048577)
+    let length = 0
+    while (length < bytes.length) {
+      const count = fs.readSync(
+        inputFd,
+        bytes,
+        length,
+        bytes.length - length,
+        null,
+      )
+      if (!count) break
+      length += count
+    }
+    if (length > 1048576) throw new Error('Bounded scenario required')
+    scenario = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(
+        bytes.subarray(0, length),
+      ),
+    )
+  } finally {
+    fs.closeSync(inputFd)
+  }
   const node = await esbuild.build({
     entryPoints: [path.join(__dirname, 'index.ts')],
     bundle: true,

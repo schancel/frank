@@ -41,3 +41,16 @@ parses only its fixed-schema envelope CBOR.
 ## Tests
 
 From `backend/cashweb`: `cargo test -p frank-cbor`.
+
+## Structured Forum codec
+
+The public facade validates type9 schema2/min2 structured bodies and types12–15 read/status
+frames through the existing shared traversal budgets. `ForumPostContent` distinguishes opaque
+schema1 from structured content, and `ForumOperationEvidence` distinguishes unverified request
+echoes from relay observations. Original frames and body bytes remain authoritative.
+`encode_forum_post`, `encode_forum_read_frame`, cursor transport helpers and
+`match_forum_operation` perform pure construction/comparison; they establish neither chain
+finality nor wallet authority. Active TS/Rust conformance uses
+`docs/protocol/cbor/vectors/forum-content-read.json`. Runtime snapshot storage/publication,
+normal-client switching and predecessor removal remain under #675: server successor #769
+and whole normal-path cutover/removal successor #770.

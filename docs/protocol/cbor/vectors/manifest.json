@@ -19431,7 +19431,7 @@
     },
     {
       "id": "topic-post-newer-schema-extra-field",
-      "description": "A type-9 post at schema 2 (min_reader 1) with an undeclared field 9: read through the schema-1 projection and the field retained (V6.3).",
+      "description": "Historical schema-2/min-reader-1 future-field probe. Now rejected because structured Forum schema 2 requires min-reader at least 2; no legacy exception. Historical accepted T1: 5a32b7b47a8d27d1ce7e8856f924d15785492e19ea0333a06bc3685c56cd5641.",
       "source": "typescript",
       "frame_hex": "46524e4b010000006ea4000901020201035864a4006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c30966667574757265",
       "validation_context": {
@@ -19495,14 +19495,13 @@
         "opaque_retention_allowed": false,
         "prior_directory_statement_frame_hex": null
       },
-      "expectation": "accept",
+      "expectation": "reject",
       "rules": [
         "V6.3",
         "C12"
       ],
-      "type_id": 9,
-      "schema_version": 2,
-      "content_hash_hex": "5a32b7b47a8d27d1ce7e8856f924d15785492e19ea0333a06bc3685c56cd5641"
+      "error_category": "unsupported",
+      "error_stage": "7"
     },
     {
       "id": "topic-post-retained-by-a-reader-without-topics",
@@ -22796,7 +22795,7 @@
     },
     {
       "id": "unassigned-type-12-remains-an-open-item",
-      "description": "A type-8 revision whose item has the still-unassigned type 12: retained as an unknown child (V6.1), so the assigned range ends at 11.",
+      "description": "Historical type-12 open-item bytes, now rejected because type 12 is assigned and is not a message item. Historical accepted T1: 27fd927eba7aeff1c0958a2c8cf761e85ea98e78870fa0acf83fc74d640cbf80.",
       "source": "typescript",
       "frame_hex": "46524e4b010000002aa4000801010201035820a200656672616e6b01815546524e4b010000000ca4000c010102010343a10001",
       "validation_context": {
@@ -22860,14 +22859,13 @@
         "opaque_retention_allowed": false,
         "prior_directory_statement_frame_hex": null
       },
-      "expectation": "accept",
+      "expectation": "reject",
       "rules": [
         "V6.1",
         "S8"
       ],
-      "type_id": 8,
-      "schema_version": 1,
-      "content_hash_hex": "27fd927eba7aeff1c0958a2c8cf761e85ea98e78870fa0acf83fc74d640cbf80"
+      "error_category": "semantic",
+      "error_stage": "8.4"
     },
     {
       "id": "topic-post-body-at-limit",

@@ -112,6 +112,40 @@ const frankBrowserCheckInstall = function () {
     runManifest('typescript', manifest)
     runManifest('rust', rustOrigin)
 
+    // The active Forum corpus intentionally gives no new content identity to read frames.
+    // Consume through the public facade in the same bare VM and real Chrome harness.
+    const forum = globalThis.FRANK_FORUM
+    for (const f of forum.frames) {
+      const context = codec.defaultContext({
+        readerVersion: f.context?.readerVersion ?? 2,
+        opaqueRetentionAllowed: f.context?.retention ?? false,
+      })
+      if (f.context?.topicSchema)
+        context.supportedSchemas = context.supportedSchemas.map(s =>
+          s.typeId === 9 ? { ...s, schemaVersion: f.context.topicSchema } : s,
+        )
+      try {
+        const r = codec.validateFrame(codec.fromHex(f.hex), context)
+        if (!f.valid) fail(f.id, 'accepted invalid Forum frame')
+        if (codec.toHex(r.frame) !== f.hex) fail(f.id, 'Forum bytes differ')
+        if (f.retained && r.kind !== 'retained') fail(f.id, 'not retained')
+        if (f.t1 && codec.toHex(codec.contentHash(r)) !== f.t1)
+          fail(f.id, 'Forum T1 differs')
+        if (
+          f.t7 &&
+          codec.toHex(
+            codec.topicVoteCommitment('monad-testnet', codec.contentHash(r)),
+          ) !== f.t7
+        )
+          fail(f.id, 'Forum T7 differs')
+      } catch (e) {
+        if (!(e instanceof codec.FrankCodecError) || f.valid)
+          fail(f.id, 'unexpected Forum rejection ' + e)
+        else if (f.error && `${e.category}@${e.stage}` !== f.error)
+          fail(f.id, 'Forum rejection boundary differs')
+      }
+    }
+
     const byId = (document, id) => document.cases.find(c => c.id === id)
     const unknownItem = n =>
       codec.encodeFrame(
@@ -479,6 +513,7 @@ const frankBrowserCheckInstall = function () {
       typescript: counts.typescript,
       rust: counts.rust,
       registration: registrationCounts,
+      forum: { total: forum.frames.length },
       interoperability: {
         hostileCases: hostile.case_count,
         mutationOffset: crypto.mutation_offset,

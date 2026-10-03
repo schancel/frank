@@ -40,6 +40,7 @@ async function main() {
     ['FRANK_INTEROPERABILITY', 'interoperability.json'],
     ['FRANK_REGISTRATION', 'account-registration.json'],
     ['FRANK_REGISTRATION_VALUES', 'account-registration-values.json'],
+    ['FRANK_FORUM', 'forum-content-read.json'],
   ]
     .map(
       ([globalName, file]) =>

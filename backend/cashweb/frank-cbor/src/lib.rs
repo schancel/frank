@@ -27,6 +27,7 @@ mod crypto;
 mod directory_preview;
 mod dm;
 mod error;
+mod forum;
 mod frame;
 mod hash;
 mod keccak;
@@ -47,6 +48,11 @@ pub use dm::{
     DM_CRYPTO_MIN_READER_VERSION, DM_CRYPTO_SCHEMA_VERSION, DM_CRYPTO_SUITE, DM_CRYPTO_TYPE,
 };
 pub use error::{CborPass, CodecError, ContextError, Error, ErrorCategory, ErrorStage, UsageError};
+pub use forum::{
+    decode_forum_cursor, encode_forum_cursor, encode_forum_post, encode_forum_read_frame,
+    forum_cursor_from_transport, forum_cursor_to_transport, match_forum_operation,
+    ForumOperationExpectation,
+};
 pub use frame::{encode_frame, wrap_frame, EnvelopeFields, FramePayload};
 pub use hash::{
     common_transcript, content_hash, content_hash_network, directory_signature_digest,
@@ -63,6 +69,11 @@ pub use model::{
     AccountRef, ChildFrame, FrameOnly, JournalFact, KeyTransition, OpaqueSection, ParsedFrame,
     PaymentMember, PreviewDirectoryRoles, ProfileEntry, ProfileHeader, Projection, RelayBinding,
     RetainedFrame, RetentionReason, SignatureEntry, Timestamp, TypedPayload, ValidationResult,
+};
+pub use model::{
+    ForumAggregate, ForumContent, ForumCursor, ForumCursorPosition, ForumDiscoveryEntry,
+    ForumDiscoveryPage, ForumEntry, ForumOperationEvidence, ForumOperationStatus, ForumPostContent,
+    ForumTopicPage, ForumView,
 };
 pub use registration::{
     address_from_compressed_pubkey, address_from_uncompressed_pubkey, expiry_timestamp, join_ms,

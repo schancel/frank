@@ -21,6 +21,10 @@ import {
   TYPE_TOPIC_POST,
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
+  TYPE_FORUM_VIEW,
+  TYPE_FORUM_TOPIC_PAGE,
+  TYPE_FORUM_DISCOVERY_PAGE,
+  TYPE_FORUM_OPERATION_STATUS,
   U32_MAX,
 } from './constants'
 import {
@@ -34,6 +38,8 @@ import {
   checkRootFrameLimit,
   checkTypeLimits,
   parseDraft,
+  parseForumContent,
+  parseForumCursor,
 } from './schema'
 import { checkSemantics } from './semantic'
 import type {
@@ -92,6 +98,10 @@ export const KNOWN_TYPES: readonly number[] = [
   TYPE_TOPIC_POST,
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
+  TYPE_FORUM_VIEW,
+  TYPE_FORUM_TOPIC_PAGE,
+  TYPE_FORUM_DISCOVERY_PAGE,
+  TYPE_FORUM_OPERATION_STATUS,
   TYPE_CONTAINER_MESSAGE_ITEM,
   TYPE_TEXT_MESSAGE_ITEM,
 ]
@@ -109,7 +119,8 @@ export function defaultContext(
       schemaVersion:
         typeId === TYPE_DIRECTORY_STATEMENT
           ? 3
-          : typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
+          : typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
+            typeId === TYPE_TOPIC_POST
           ? 2
           : 1,
     })),
@@ -122,7 +133,7 @@ export function defaultContext(
 type Mode =
   | { kind: 'root' }
   | { kind: 'open' }
-  | { kind: 'required'; typeId: number }
+  | { kind: 'required'; typeId: number | readonly number[] }
 
 interface Shared {
   ctx: ValidationContext
@@ -251,7 +262,12 @@ function processFrame(
   )
   // Stage 6: envelope keys, types, ranges.
   const env = parseEnvelope(envValue, location)
-  if (mode.kind === 'required' && env.typeId !== mode.typeId) {
+  if (
+    mode.kind === 'required' &&
+    !(Array.isArray(mode.typeId)
+      ? mode.typeId.includes(env.typeId)
+      : env.typeId === mode.typeId)
+  ) {
     throw fail(
       'semantic',
       '8.4',
@@ -259,7 +275,7 @@ function processFrame(
       location,
     )
   }
-  if (mode.kind === 'open' && env.typeId >= 1 && env.typeId <= 11) {
+  if (mode.kind === 'open' && env.typeId >= 1 && env.typeId <= 15) {
     throw fail(
       'semantic',
       '8.4',
@@ -296,6 +312,20 @@ function processFrame(
       'unsupported-min-reader',
       `min_reader_version ${env.minReaderVersion} exceeds reader version (V6.1)`,
     )
+  }
+  if (env.typeId === TYPE_TOPIC_POST && env.schemaVersion >= 2) {
+    if (env.minReaderVersion < 2)
+      throw fail(
+        'unsupported',
+        '7',
+        'structured Forum content requires min_reader_version at least 2',
+        location,
+      )
+    if (highest < 2)
+      return keep(
+        'unsupported-min-reader',
+        'structured Forum content requires per-type schema-2 support',
+      )
   }
   if (
     env.typeId === TYPE_DIRECTORY_STATEMENT &&
@@ -365,6 +395,8 @@ function processFrame(
   const effectiveSchema = Math.min(env.schemaVersion, highest)
   if (
     (mode.kind === 'root' ||
+      (env.typeId >= TYPE_TOPIC_POST &&
+        env.typeId <= TYPE_FORUM_OPERATION_STATUS) ||
       (env.typeId === TYPE_DIRECTORY_STATEMENT && effectiveSchema >= 4)) &&
     !checkRootFrameLimit(env.typeId, f.length, effectiveSchema)
   ) {
@@ -386,7 +418,13 @@ function processFrame(
     return d
   })
   // Stage 8.4: recursive opening of declared framed fields.
-  const typed = openChildren(draft, envDepth, sh, location)
+  const typed = openChildren(
+    draft,
+    envDepth,
+    sh,
+    location,
+    projection === 'newer-schema',
+  )
   // Stage 9: semantics. Only the root type-2 case consults the prior statement.
   const previewAttestation =
     typed.type === 2 &&
@@ -456,7 +494,7 @@ function relocating<T>(location: string, f: () => T): T {
 
 function required(
   bytes: Uint8Array,
-  typeId: number,
+  typeId: number | readonly number[],
   containerDepth: number,
   sh: Shared,
   location: string,
@@ -512,9 +550,77 @@ function openChildren(
   envDepth: number,
   sh: Shared,
   loc: string,
+  allowUnknown: boolean,
 ): FinalPayload {
   const P = `${loc}/payload`
   switch (d.type) {
+    case 9:
+      if (d.schemaVersion === 1) return d
+      return {
+        ...d,
+        content: parseForumContent(
+          decodeSingleItem(
+            d.body,
+            { stage: '8.4', location: `${P}.3` },
+            sh.counters,
+            envDepth + 1,
+          ),
+          allowUnknown,
+          `${P}.3`,
+        ),
+      }
+    case 12:
+      return {
+        ...d,
+        postFrame: required(
+          d.postFrame,
+          TYPE_TOPIC_POST,
+          envDepth + 1,
+          sh,
+          `${P}.1`,
+        ),
+      }
+    case 13:
+    case 14: {
+      const cursor = (bytes: Uint8Array | undefined, key: number) =>
+        bytes === undefined
+          ? undefined
+          : parseForumCursor(
+              decodeSingleItem(
+                bytes,
+                { stage: '8.4', location: `${P}.${key}` },
+                sh.counters,
+                envDepth + 1,
+              ),
+              bytes,
+              `${P}.${key}`,
+            )
+      if (d.type === 13)
+        return {
+          ...d,
+          rows: d.rows.map((bytes, i) =>
+            required(bytes, TYPE_FORUM_VIEW, envDepth + 2, sh, `${P}.4[${i}]`),
+          ),
+          nextCursor: cursor(d.nextCursor, 5),
+          requestCursor: cursor(d.requestCursor, 7),
+        }
+      return {
+        ...d,
+        nextCursor: cursor(d.nextCursor, 3),
+        requestCursor: cursor(d.requestCursor, 5),
+      }
+    }
+    case 15:
+      return {
+        ...d,
+        submittedFrame: required(
+          d.submittedFrame,
+          [TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION],
+          envDepth + 1,
+          sh,
+          `${P}.1`,
+        ),
+      }
     case 1:
       return {
         ...d,

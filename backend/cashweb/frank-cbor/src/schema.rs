@@ -13,7 +13,17 @@ use crate::limits::{
     TYPE_RECIPIENT_PAYLOAD, TYPE_TOPIC_POST, TYPE_TOPIC_POST_SUBMISSION,
     TYPE_TOPIC_VOTE_SUBMISSION,
 };
+use crate::limits::{
+    MAX_FORUM_CURSOR_BYTES, MAX_FORUM_ENTRIES, MAX_FORUM_PAGE_BYTES, MAX_FORUM_ROWS,
+    MAX_FORUM_VIEW_BYTES, TYPE_FORUM_DISCOVERY_PAGE, TYPE_FORUM_OPERATION_STATUS,
+    TYPE_FORUM_TOPIC_PAGE, TYPE_FORUM_VIEW,
+};
 use crate::model::{AccountRef, PreviewDirectoryRoles, Timestamp};
+use crate::model::{
+    ForumAggregate, ForumContent, ForumCursor, ForumCursorPosition, ForumDiscoveryEntry,
+    ForumDiscoveryPage, ForumEntry, ForumOperationEvidence, ForumOperationStatus, ForumTopicPage,
+    ForumView,
+};
 
 /// The schema versions a type-4 parse needs: the envelope's (kept for S10a.2) and the effective
 /// one, the envelope's or the reader's highest supported when the frame is newer (V6.3).
@@ -303,6 +313,12 @@ pub(crate) fn check_root_frame_limit(
     if type_id == TYPE_TOPIC_VOTE_SUBMISSION {
         return frame_length <= MAX_TOPIC_VOTE_FRAME_BYTES;
     }
+    if type_id == TYPE_FORUM_VIEW || type_id == TYPE_FORUM_OPERATION_STATUS {
+        return frame_length <= MAX_FORUM_VIEW_BYTES;
+    }
+    if type_id == TYPE_FORUM_TOPIC_PAGE || type_id == TYPE_FORUM_DISCOVERY_PAGE {
+        return frame_length <= MAX_FORUM_PAGE_BYTES;
+    }
     frame_length <= MAX_FRAME_BYTES
 }
 
@@ -375,6 +391,21 @@ pub(crate) fn check_type_limits(
             if let Some(CborValue::Bytes(bytes)) = map_field(payload, 3) {
                 if bytes.len() > MAX_TOPIC_BODY_BYTES {
                     return Err(over("topic body"));
+                }
+            }
+        }
+        TYPE_FORUM_TOPIC_PAGE | TYPE_FORUM_DISCOVERY_PAGE => {
+            if too_many(
+                map_field(payload, if type_id == 13 { 4 } else { 2 }),
+                MAX_FORUM_ROWS,
+            ) {
+                return Err(over("Forum rows"));
+            }
+            for key in if type_id == 13 { [5, 7] } else { [3, 5] } {
+                if let Some(CborValue::Bytes(bytes)) = map_field(payload, key) {
+                    if bytes.len() > MAX_FORUM_CURSOR_BYTES {
+                        return Err(over("Forum cursor"));
+                    }
                 }
             }
         }
@@ -526,6 +557,7 @@ pub(crate) enum Draft {
         topic: String,
         parent_hash: Option<Vec<u8>>,
         body: Vec<u8>,
+        structured: bool,
         unknown: Vec<(u64, CborValue)>,
     },
     TopicPostSubmission {
@@ -540,6 +572,10 @@ pub(crate) enum Draft {
         burn_tx: Vec<u8>,
         unknown: Vec<(u64, CborValue)>,
     },
+    ForumView(ForumView<Vec<u8>>),
+    ForumTopicPage(ForumTopicPage<Vec<u8>, Vec<u8>>),
+    ForumDiscoveryPage(ForumDiscoveryPage<Vec<u8>>),
+    ForumOperationStatus(ForumOperationStatus<Vec<u8>>),
     Revision {
         items: Vec<Vec<u8>>,
         unknown: Vec<(u64, CborValue)>,
@@ -648,6 +684,245 @@ fn profile_entry(v: &CborValue, path: &str, allow: bool) -> Result<ProfileEntryD
 }
 
 /// Stage 8.2. Framed fields stay raw bytes until stage 8.4.
+pub(crate) fn parse_forum_content(
+    value: &CborValue,
+    allow: bool,
+    path: &str,
+) -> Result<ForumContent, CodecError> {
+    if too_many(map_field(value, 1), MAX_FORUM_ENTRIES) {
+        return Err(fail(
+            ErrorCategory::Resource,
+            ErrorStage::S81,
+            path,
+            "Forum content exceeds 64 entries",
+        ));
+    }
+    let m = fields(Some(value), path, &[0, 1], &[], true, allow)?;
+    let mut entries = Vec::new();
+    for (i, entry) in as_list(m.get(1), path, 1, MAX_FORUM_ENTRIES)?
+        .iter()
+        .enumerate()
+    {
+        let p = format!("{path}.1[{i}]");
+        let kind = u64_in(map_field(entry, 0), &p, 0, u64::MAX)?;
+        if kind != 1 {
+            if !allow {
+                return Err(bad(&p, "unallocated Forum entry kind"));
+            }
+            let CborValue::Map(fields) = entry else {
+                return Err(bad(&p, "expected entry map"));
+            };
+            entries.push(ForumEntry::Unsupported {
+                kind,
+                fields: fields.clone(),
+            });
+        } else {
+            let e = fields(Some(entry), &p, &[0], &[1, 2, 3], true, allow)?;
+            let text = |key| {
+                if e.has(key) {
+                    tstr(e.get(key), &format!("{p}.{key}"), 0, MAX_TEXT_STRING_BYTES).map(Some)
+                } else {
+                    Ok(None)
+                }
+            };
+            entries.push(ForumEntry::Post {
+                title: text(1)?,
+                url: text(2)?,
+                message: text(3)?,
+                unknown: e.unknown,
+            });
+        }
+    }
+    Ok(ForumContent {
+        authored: timestamp(m.get(0), path)?,
+        entries,
+        unknown: m.unknown,
+    })
+}
+
+fn forum_aggregate(value: Option<&CborValue>, path: &str) -> Result<ForumAggregate, CodecError> {
+    let m = fields(value, path, &[0, 1], &[], false, false)?;
+    let Some(CborValue::Bool(negative)) = m.get(0) else {
+        return Err(bad(path, "expected boolean sign"));
+    };
+    let magnitude: [u8; 32] = bstr(m.get(1), path, 32, 32)?
+        .try_into()
+        .expect("checked length");
+    if *negative && magnitude.iter().all(|b| *b == 0) {
+        return Err(bad(path, "negative zero"));
+    }
+    Ok(ForumAggregate {
+        negative: *negative,
+        magnitude,
+    })
+}
+
+pub(crate) fn parse_forum_cursor(
+    value: &CborValue,
+    bytes: Vec<u8>,
+    path: &str,
+) -> Result<ForumCursor, CodecError> {
+    let family = u32_in(map_field(value, 1), path, 13, 14)?;
+    let required: &[u64] = if family == 13 {
+        &[0, 1, 2, 3, 4, 5, 6, 7]
+    } else {
+        &[0, 1, 2, 3, 4, 7]
+    };
+    let m = fields(Some(value), path, required, &[], false, false)?;
+    let position = if family == 13 {
+        let last = fields(m.get(4), path, &[0, 1], &[], false, false)?;
+        ForumCursorPosition::Topic {
+            topic: tstr(m.get(5), path, 1, 512)?,
+            since: timestamp(m.get(6), path)?,
+            timestamp: timestamp(last.get(0), path)?,
+            hash: bstr(last.get(1), path, 32, 32)?,
+        }
+    } else {
+        ForumCursorPosition::Discovery {
+            topic: tstr(m.get(4), path, 1, 512)?,
+        }
+    };
+    Ok(ForumCursor {
+        bytes,
+        network: network_tag(m.get(0), path)?,
+        revision: u64_in(m.get(2), path, 0, u64::MAX)?,
+        epoch: bstr(m.get(3), path, 16, 16)?,
+        incarnation: u64_in(m.get(7), path, 0, u64::MAX)?,
+        position,
+    })
+}
+
+fn parse_forum_read(
+    type_id: u32,
+    value: &CborValue,
+    allow: bool,
+    path: &str,
+) -> Result<Draft, CodecError> {
+    match type_id {
+        TYPE_FORUM_VIEW => {
+            let m = fields(
+                Some(value),
+                path,
+                &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                &[],
+                true,
+                allow,
+            )?;
+            Ok(Draft::ForumView(ForumView {
+                network: network_tag(m.get(0), path)?,
+                post_frame: framed(m.get(1), path)?,
+                author: bstr(m.get(2), path, 20, 20)?,
+                author_burn_tx: bstr(m.get(3), path, 1, 16384)?,
+                transaction_hash: bstr(m.get(4), path, 32, 32)?,
+                first_visible: timestamp(m.get(5), path)?,
+                block: u64_in(m.get(6), path, 0, u64::MAX)?,
+                transaction_index: u64_in(m.get(7), path, 0, u64::MAX)?,
+                aggregate: forum_aggregate(m.get(8), path)?,
+                revision: u64_in(m.get(9), path, 0, u64::MAX)?,
+                epoch: bstr(m.get(10), path, 16, 16)?,
+                unknown: m.unknown,
+            }))
+        }
+        TYPE_FORUM_TOPIC_PAGE => {
+            let m = fields(Some(value), path, &[0, 1, 2, 3, 4, 6], &[5, 7], true, allow)?;
+            let rows = as_list(m.get(4), path, 0, MAX_FORUM_ROWS)?
+                .iter()
+                .map(|v| framed(Some(v), path))
+                .collect::<Result<Vec<_>, _>>()?;
+            let cursor = |key| {
+                if m.has(key) {
+                    bstr(m.get(key), path, 1, MAX_FORUM_CURSOR_BYTES).map(Some)
+                } else {
+                    Ok(None)
+                }
+            };
+            Ok(Draft::ForumTopicPage(ForumTopicPage {
+                network: network_tag(m.get(0), path)?,
+                topic: tstr(m.get(1), path, 1, 512)?,
+                since: timestamp(m.get(2), path)?,
+                revision: u64_in(m.get(3), path, 0, u64::MAX)?,
+                rows,
+                next_cursor: cursor(5)?,
+                request_cursor: cursor(7)?,
+                epoch: bstr(m.get(6), path, 16, 16)?,
+                unknown: m.unknown,
+            }))
+        }
+        TYPE_FORUM_DISCOVERY_PAGE => {
+            let m = fields(Some(value), path, &[0, 1, 2, 4], &[3, 5], true, allow)?;
+            let entries = as_list(m.get(2), path, 0, MAX_FORUM_ROWS)?
+                .iter()
+                .map(|v| {
+                    let e = fields(Some(v), path, &[0, 1, 2], &[], true, allow)?;
+                    Ok(ForumDiscoveryEntry {
+                        topic: tstr(e.get(0), path, 1, 512)?,
+                        count: u64_in(e.get(1), path, 0, u64::MAX)?,
+                        last_activity: timestamp(e.get(2), path)?,
+                        unknown: e.unknown,
+                    })
+                })
+                .collect::<Result<Vec<_>, CodecError>>()?;
+            let cursor = |key| {
+                if m.has(key) {
+                    bstr(m.get(key), path, 1, MAX_FORUM_CURSOR_BYTES).map(Some)
+                } else {
+                    Ok(None)
+                }
+            };
+            Ok(Draft::ForumDiscoveryPage(ForumDiscoveryPage {
+                network: network_tag(m.get(0), path)?,
+                revision: u64_in(m.get(1), path, 0, u64::MAX)?,
+                entries,
+                next_cursor: cursor(3)?,
+                request_cursor: cursor(5)?,
+                epoch: bstr(m.get(4), path, 16, 16)?,
+                unknown: m.unknown,
+            }))
+        }
+        TYPE_FORUM_OPERATION_STATUS => {
+            let m = fields(
+                Some(value),
+                path,
+                &[0, 1, 2, 3, 4, 5, 6, 7, 10, 11],
+                &[8, 9],
+                true,
+                allow,
+            )?;
+            let state = u32_in(m.get(7), path, 0, 3)?;
+            if m.has(8) != (state == 2) || m.has(9) != (state == 2) {
+                return Err(bad(path, "confirmation position iff confirmed"));
+            }
+            let value = u64_in(m.get(6), path, 0, u64::MAX)?;
+            if (state == 1 || state == 2) && (value == 0 || value > i64::MAX as u64) {
+                return Err(bad(path, "observed burn outside 1..i64::MAX"));
+            }
+            let evidence = match state {
+                0 => ForumOperationEvidence::UnknownRequest,
+                1 => ForumOperationEvidence::Pending,
+                2 => ForumOperationEvidence::Confirmed {
+                    block: u64_in(m.get(8), path, 0, u64::MAX)?,
+                    transaction_index: u64_in(m.get(9), path, 0, u64::MAX)?,
+                },
+                _ => ForumOperationEvidence::RejectedRequest,
+            };
+            Ok(Draft::ForumOperationStatus(ForumOperationStatus {
+                network: network_tag(m.get(0), path)?,
+                submitted_frame: framed(m.get(1), path)?,
+                target_hash: bstr(m.get(2), path, 32, 32)?,
+                transaction_hash: bstr(m.get(3), path, 32, 32)?,
+                sender: bstr(m.get(4), path, 20, 20)?,
+                direction: u32_in(m.get(5), path, 0, 1)? as u8,
+                value,
+                evidence,
+                revision: u64_in(m.get(10), path, 0, u64::MAX)?,
+                epoch: bstr(m.get(11), path, 16, 16)?,
+                unknown: m.unknown,
+            }))
+        }
+        _ => unreachable!("Forum read type"),
+    }
+}
+
 pub(crate) fn parse_draft(
     type_id: u32,
     payload: &CborValue,
@@ -655,6 +930,9 @@ pub(crate) fn parse_draft(
     schema: SchemaVersions,
 ) -> Result<Draft, CodecError> {
     let path = "root/payload";
+    if (TYPE_FORUM_VIEW..=TYPE_FORUM_OPERATION_STATUS).contains(&type_id) {
+        return parse_forum_read(type_id, payload, allow, path);
+    }
     match type_id {
         TYPE_DIRECT_MESSAGE => {
             let map = fields(Some(payload), path, &[0, 1, 2, 3, 4], &[], true, allow)?;
@@ -931,6 +1209,7 @@ pub(crate) fn parse_draft(
                 topic: tstr(map.get(1), &format!("{path}.1"), 1, 512)?,
                 parent_hash,
                 body: bstr(map.get(3), &format!("{path}.3"), 1, MAX_TOPIC_BODY_BYTES)?,
+                structured: schema.effective >= 2,
                 unknown: map.unknown,
             })
         }
@@ -1131,6 +1410,10 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
         | Draft::TopicPost { .. }
         | Draft::TopicPostSubmission { .. }
         | Draft::TopicVoteSubmission { .. }
+        | Draft::ForumView(_)
+        | Draft::ForumTopicPage(_)
+        | Draft::ForumDiscoveryPage(_)
+        | Draft::ForumOperationStatus(_)
         | Draft::Revision { .. }
         | Draft::Container { .. }
         | Draft::Text { .. } => Ok(()),

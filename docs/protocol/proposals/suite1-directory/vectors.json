@@ -14,11 +14,11 @@
     },
     {
       "path": "docs/protocol/cbor/README.md",
-      "sha256": "e808f7a9d1c31cf17cd09b30f6f01bb4b8da93e26a4c56c27c8d41e63dd671a6"
+      "sha256": "573ce9a6746b641271266ccd1590661bfbc61d0f724b7eac8422182987dc57e5"
     },
     {
       "path": "docs/protocol/cbor/vectors/manifest.json",
-      "sha256": "9dfbd12d4fb0bac2cbec847f02dd3cf466973307577ebb6fd97d98753a80d3e9"
+      "sha256": "1d2a0b37eb227345215a58bcd6694ad6734dbaa904448434b2999893132b262b"
     },
     {
       "path": "docs/protocol/cbor/vectors/account-registration.json",

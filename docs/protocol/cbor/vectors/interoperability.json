@@ -26,10 +26,10 @@
       "noncanonical": 28,
       "resource": 30,
       "schema": 147,
-      "semantic": 57,
-      "unsupported": 23
+      "semantic": 58,
+      "unsupported": 24
     },
-    "reject_count": 329
+    "reject_count": 331
   },
   "rust_origin_ids": [
     "rust-fixture-direct-message",

@@ -178,7 +178,7 @@ impl Metadata {
     }
 }
 
-/// An explicitly opened subject, borrowing the existing exclusive RocksDB owner.
+/// An explicitly opened subject, borrowing the registry lifetime and sharing its isolated sidecar.
 /// Every operation reloads and authenticates bounded durable evidence under one directory lock.
 /// Storage failures disable this handle; use a verified reopen with external continuity.
 #[derive(Debug)]

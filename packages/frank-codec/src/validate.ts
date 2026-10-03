@@ -620,6 +620,11 @@ function resolvePrior(
       'the prior directory statement is not a type-4 frame',
     )
   }
+  if (r.typed.preview) {
+    throw new FrankContextError(
+      'preview directory history cannot authorize legacy updates or authority transitions',
+    )
+  }
   return r.typed
 }
 

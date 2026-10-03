@@ -61,6 +61,9 @@ directory state**. `full` on a preview statement or wrapper fails with a
 context error: the existing full-validation context cannot express admission.
 A non-null/absent prior on a typed preview wrapper also fails with a context
 error; the facade does not silently pretend to validate a supplied history.
+Legacy incoming wrappers also reject a decoded preview prior with a context
+error, before projecting legacy prior authority: old transition proofs grant
+no preview migration authority, even when the subject changes.
 
 The runtime successor under #133/#696 MUST enforce the reviewed preview
 policy before any head, route or DM use: caller-installed trusted anchor;

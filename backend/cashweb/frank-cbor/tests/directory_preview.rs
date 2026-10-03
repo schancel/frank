@@ -422,3 +422,93 @@ fn uint64_generations_and_nanosecond_window_are_exact() {
     assert_eq!(err.category.to_string(), "semantic");
     assert_eq!(err.stage.to_string(), "9");
 }
+
+#[test]
+fn preview_priors_cannot_authorize_legacy_updates_or_changed_subject_transitions() {
+    let legacy: Value = serde_json::from_str(include_str!(
+        "../../../../docs/protocol/cbor/vectors/account-registration.json"
+    ))
+    .unwrap();
+    let transition = legacy["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "reg-t2a-rust-known-answer-full")
+        .unwrap();
+    let old_prior_bytes = hex::decode(
+        transition["validation_context"]["prior_directory_statement_frame_hex"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let old_prior = parse(&old_prior_bytes);
+    let Some(TypedPayload::DirectoryStatement {
+        subject, revision, ..
+    }) = old_prior.typed.as_deref()
+    else {
+        panic!("prior")
+    };
+    let CborValue::Map(old_fields) = &old_prior.payload else {
+        panic!("map")
+    };
+    let mut p = payload();
+    let CborValue::Map(fields) = &p else {
+        panic!("map")
+    };
+    let message = fields.iter().find(|(k, _)| *k == 1).unwrap().1.clone();
+    set(&mut p, 10, message);
+    set(
+        &mut p,
+        1,
+        old_fields.iter().find(|(k, _)| *k == 1).unwrap().1.clone(),
+    );
+    set(&mut p, 2, CborValue::Int(i128::from(*revision)));
+    set(
+        &mut p,
+        13,
+        if *revision == 0 {
+            CborValue::Null
+        } else {
+            CborValue::Bytes(vec![0; 32])
+        },
+    );
+    let incoming = bytes(transition, "frame_hex");
+    let c = corpus();
+    for operation in [Operation::Typed, Operation::Full] {
+        let mut ctx = preview_directory_context();
+        ctx.operation = operation;
+        ctx.prior = PriorStatement::Frame(old_prior_bytes.clone());
+        let ValidationResult::Parsed(control) = validate_frame(&incoming, &ctx).unwrap() else {
+            panic!("control")
+        };
+        let Some(TypedPayload::DirectoryAttestation {
+            statement: next_statement,
+            ..
+        }) = control.typed.as_deref()
+        else {
+            panic!("attestation")
+        };
+        let Some(TypedPayload::DirectoryStatement {
+            subject: new_subject,
+            ..
+        }) = next_statement.typed.as_deref()
+        else {
+            panic!("statement")
+        };
+        assert_ne!(new_subject, subject);
+        for schema in [4, 5] {
+            let prior = statement(&p, schema, 4);
+            parse(&prior);
+            ctx.prior = PriorStatement::Frame(prior);
+            assert!(matches!(
+                validate_frame(&incoming, &ctx),
+                Err(Error::Context(_))
+            ));
+        }
+        ctx.prior = PriorStatement::Frame(bytes(record(&c, "bootstrap"), "type4_hex"));
+        assert!(matches!(
+            validate_frame(&bytes(record(&c, "old-schema3"), "type2_hex"), &ctx),
+            Err(Error::Context(_))
+        ));
+    }
+}

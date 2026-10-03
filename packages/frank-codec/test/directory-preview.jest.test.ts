@@ -212,6 +212,74 @@ describe('provisional directory codec, not directory admission', () => {
       ).toBe(e.kind)
   })
 
+  test('preview priors cannot authorize legacy updates or changed-subject transitions', () => {
+    const legacy = JSON.parse(
+      readFileSync(
+        resolve(root, 'docs/protocol/cbor/vectors/account-registration.json'),
+        'utf8',
+      ),
+    ) as {
+      cases: {
+        id: string
+        frame_hex: string
+        validation_context: { prior_directory_statement_frame_hex: string }
+      }[]
+    }
+    const transition = legacy.cases.find(
+      c => c.id === 'reg-t2a-rust-known-answer-full',
+    )
+    if (!transition) throw new Error('missing legacy transition control')
+    const oldPriorBytes = fromHex(
+      transition.validation_context.prior_directory_statement_frame_hex,
+    )
+    const oldPrior = validateFrame(
+      oldPriorBytes,
+      defaultContext(),
+    ) as ParsedFrame
+    if (oldPrior.typed?.type !== 4) throw new Error('legacy prior')
+    const p = bootstrap()
+    // Use public fixture roles distinct from the legacy authority (scalar 2).
+    p.set(10n, p.get(1n) as Encodable)
+    p.set(1n, (oldPrior.payload as Map<bigint, Encodable>).get(1n) as Encodable)
+    p.set(2n, oldPrior.typed.revision)
+    p.set(13n, oldPrior.typed.revision === 0n ? null : new Uint8Array(32))
+    for (const operation of ['typed', 'full'] as const) {
+      const ctx = {
+        ...previewDirectoryContext(),
+        operation,
+        priorDirectoryStatementFrame: oldPriorBytes,
+      }
+      const control = validateFrame(
+        fromHex(transition.frame_hex),
+        ctx,
+      ) as ParsedFrame
+      if (
+        control.typed?.type !== 2 ||
+        control.typed.statementFrame.typed?.type !== 4
+      )
+        throw new Error('transition')
+      expect(control.typed.statementFrame.typed.subject.keyBytes).not.toEqual(
+        oldPrior.typed.subject.keyBytes,
+      )
+      for (const schema of [4, 5]) {
+        ctx.priorDirectoryStatementFrame = statement(p, schema)
+        expect(
+          validateFrame(
+            ctx.priorDirectoryStatementFrame,
+            previewDirectoryContext(),
+          ).kind,
+        ).toBe('parsed')
+        expect(() => validateFrame(fromHex(transition.frame_hex), ctx)).toThrow(
+          FrankContextError,
+        )
+      }
+      ctx.priorDirectoryStatementFrame = fromHex(record('bootstrap').type4_hex)
+      expect(() =>
+        validateFrame(fromHex(record('old-schema3').type2_hex), ctx),
+      ).toThrow(FrankContextError)
+    }
+  })
+
   test('future optional bytes stay authenticated and retained; old schemas cannot acquire v4 fields', () => {
     const e = verifyPreviewDirectoryEvidence(
       fromHex(record('optional-future').type2_hex),

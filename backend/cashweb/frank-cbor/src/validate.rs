@@ -1066,6 +1066,11 @@ fn resolve_prior_view(ctx: &ValidationContext) -> Result<Option<PriorView>, Erro
                 Err(error) => Err(error),
                 Ok(ValidationResult::Parsed(parsed)) => match parsed.typed.as_deref() {
                     Some(TypedPayload::DirectoryStatement {
+                        preview: Some(_), ..
+                    }) => Err(Error::Context(ContextError(
+                        "preview directory history cannot authorize legacy updates or authority transitions".to_string(),
+                    ))),
+                    Some(TypedPayload::DirectoryStatement {
                         network,
                         subject,
                         revision,

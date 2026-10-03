@@ -16,6 +16,10 @@ use crate::store::topics::DbTopics;
 // We collect the column family constants here so we have a nice overview.
 // This makes it easier to keep cf names consistent and non-conflicting.
 pub(crate) const CF_METADATA: &str = "metadata";
+// Additive unused namespace. No profile/registration data is migrated or reinterpreted.
+pub(crate) const CF_DIRECTORY_PREVIEW_ENROLLMENT_V1: &str = "directory_preview_enrollment_v1";
+pub(crate) const CF_DIRECTORY_PREVIEW_HEAD_V1: &str = "directory_preview_head_v1";
+pub(crate) const CF_DIRECTORY_PREVIEW_EVIDENCE_V1: &str = "directory_preview_evidence_v1";
 pub(crate) const CF_PKH_BY_TIME: &str = "pkh_by_time";
 pub(crate) const CF_MESSAGES: &str = "topic_messages";
 pub(crate) const CF_PAYLOADS: &str = "message_payloads";
@@ -113,6 +117,8 @@ pub struct Db {
     monad_profile_lock: Mutex<()>,
     /// Serializes compare-and-batch topic-author admission inside this process.
     monad_topic_lock: Mutex<()>,
+    /// Serializes authenticated directory history reads, validation and synchronous commits.
+    directory_preview_lock: Mutex<()>,
 }
 
 /// Errors indicating something went wrong with the database itself.
@@ -153,6 +159,7 @@ impl Db {
         DbMonadTopicPosts::add_cfs(&mut cfs);
         DbMonadTopicVotes::add_cfs(&mut cfs);
         DbMonadProfiles::add_cfs(&mut cfs);
+        super::directory_preview::add_cfs(&mut cfs);
         let db = Self::open_with_cfs(path, cfs)?;
         db.monad_outbox()
             .migrate_legacy_delivered_ownership(limits)?;
@@ -162,6 +169,19 @@ impl Db {
     /// Returns `DbMetadata`, allowing access to registry metadata.
     pub fn metadata(&self) -> DbMetadata<'_> {
         DbMetadata::new(self)
+    }
+
+    /// Explicitly open an unused preview directory subject with installed trust and continuity.
+    /// Opening validates retained history but does not grant a fresh head.
+    pub fn directory_preview(
+        &self,
+        anchor: crate::directory_admission::Anchor,
+        mode: crate::directory_admission::OpenMode,
+    ) -> std::result::Result<
+        crate::directory_admission::Directory<'_>,
+        crate::directory_admission::AdmissionError,
+    > {
+        super::directory_preview::Directory::open(self, anchor, mode)
     }
 
     /// Returns `DbTopics`, allowing access to registry metadata.
@@ -209,6 +229,7 @@ impl Db {
             monad_outbox_lock: Mutex::new(()),
             monad_profile_lock: Mutex::new(()),
             monad_topic_lock: Mutex::new(()),
+            directory_preview_lock: Mutex::new(()),
         })
     }
 
@@ -262,6 +283,12 @@ impl Db {
         self.monad_topic_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn lock_directory_preview(
+        &self,
+    ) -> std::result::Result<std::sync::MutexGuard<'_, ()>, ()> {
+        self.directory_preview_lock.lock().map_err(|_| ())
     }
 }
 

@@ -11,6 +11,7 @@ const executable =
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 let child, socket, call, sessionId
 let events = []
+const allEvents = []
 async function stop() {
   socket?.close()
   if (child && child.exitCode === null && child.signalCode === null) {
@@ -62,6 +63,7 @@ async function launch(profile = 'first') {
     const message = JSON.parse(event.data)
     if (!message.id) {
       events.push(message)
+      allEvents.push(message)
       return
     }
     const handler = pending.get(message.id)
@@ -293,7 +295,9 @@ try {
     )
   } else {
     assert.equal(
-      events.some(e => e.params?.request?.url?.includes('/_ctl/demo-funding')),
+      allEvents.some(e =>
+        e.params?.request?.url?.includes('/_ctl/demo-funding'),
+      ),
       false,
     )
   }
@@ -302,7 +306,7 @@ try {
   )
   for (const share of shares) {
     assert.equal(exported.includes(share), false)
-    assert.equal(JSON.stringify(events).includes(share), false)
+    assert.equal(JSON.stringify(allEvents).includes(share), false)
   }
   await stop()
   sessionId = undefined
@@ -451,7 +455,7 @@ try {
   const migrationExport = await exportStorage()
   for (const secret of [enteredPhrase, ...migrationShares]) {
     assert.equal(migrationExport.includes(secret), false)
-    assert.equal(JSON.stringify(events).includes(secret), false)
+    assert.equal(JSON.stringify(allEvents).includes(secret), false)
   }
   assert.equal(
     JSON.stringify(

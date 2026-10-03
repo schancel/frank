@@ -1,0 +1,51 @@
+name: account custody - types and browser lifecycle
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/src/accounts/custody/**"
+      - "app/package.json"
+      - "app/tsconfig.json"
+      - "packages/account-recovery/**"
+      - "packages/account-vault/**"
+      - "packages/domain-roots/**"
+      - "packages/codex32/**"
+      - "packages/nakamoto/**"
+      - "package.json"
+      - "yarn.lock"
+      - ".github/workflows/account-custody.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "app/src/accounts/custody/**"
+      - "app/package.json"
+      - "app/tsconfig.json"
+      - "packages/account-recovery/**"
+      - "packages/account-vault/**"
+      - "packages/domain-roots/**"
+      - "packages/codex32/**"
+      - "packages/nakamoto/**"
+      - "package.json"
+      - "yarn.lock"
+      - ".github/workflows/account-custody.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  custody:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+      - run: yarn install --frozen-lockfile
+      - run: yarn workspace frank typecheck:custody
+      - name: Real Chrome crash, restart, transaction and dependency boundaries
+        run: |
+          export CUSTODY_CHROME="$(command -v google-chrome)"
+          test -x "$CUSTODY_CHROME"
+          yarn workspace frank test:custody

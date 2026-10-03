@@ -6,6 +6,8 @@ on:
     paths:
       - "packages/nakamoto/**"
       - "packages/crypto-box/**"
+      - "packages/adaptor-signatures/**"
+      - "packages/codex32/**"
       - "packages/cashweb/**"
       - "packages/wallet/**"
       - ".github/workflows/nakamoto.yml"
@@ -15,6 +17,8 @@ on:
     paths:
       - "packages/nakamoto/**"
       - "packages/crypto-box/**"
+      - "packages/adaptor-signatures/**"
+      - "packages/codex32/**"
       - "packages/cashweb/**"
       - "packages/wallet/**"
       - ".github/workflows/nakamoto.yml"
@@ -35,6 +39,12 @@ jobs:
       - name: crypto-box
         working-directory: packages/crypto-box
         run: yarn test && yarn typecheck && yarn lint && yarn format && yarn check:shared && yarn check:deps && yarn check:bundle
+      - name: adaptor-signatures
+        working-directory: packages/adaptor-signatures
+        run: yarn test --runInBand && yarn typecheck && ../../node_modules/.bin/prettier --config ../../app/.prettierrc.json --check .
+      - name: codex32
+        working-directory: packages/codex32
+        run: yarn test --runInBand && yarn typecheck && ../../node_modules/.bin/prettier --config ../../app/.prettierrc.json --check .
       # Cashweb's jest config maps @frank/nakamoto to TypeScript source. This step
       # builds dist, typechecks the consumer against that declaration, and runs the
       # suite through a require() of dist. Node 26 can require the ESM build.

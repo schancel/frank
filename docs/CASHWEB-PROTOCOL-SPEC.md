@@ -51,10 +51,13 @@ directory record and wallet cutover enforce it.
 
 **SHIPPED.** The normal direct-message path is protobuf. It encrypts a JSON message-item payload
 with the version-2 Monad envelope, derives payment children from the recipient's registered key,
-durably journals the signed payment set before `PUT /message/monad`, and uses the relay's durable
-outbox and recipient-scoped authenticated inbox. The same long-lived identity key currently serves
-directory/profile signing, mailbox challenge authentication, DM ECDH, and the base for payment
-children. That is implementation fact, not the target key model.
+and uses the relay's durable outbox and recipient-scoped authenticated inbox. App/production wallet
+composition wires `StampAttemptJournal` and journals the signed payment set before
+`PUT /message/monad`. The reachable Qwen bot composition constructs `MonadStampClient` without that
+journal; it is not crash-safe and MUST NOT be cited as journal-before-PUT evidence. The same
+long-lived identity key currently serves directory/profile signing, mailbox challenge
+authentication, DM ECDH, and the base for payment children. That is implementation fact, not the
+target key model.
 
 **SHIPPED.** Topic types 9–11 have an opt-in `application/cbor` write and exact-post read path.
 Normal wallet construction defaults to protobuf. Topic lists and discovery remain protobuf-only.
@@ -157,6 +160,13 @@ type. Frank separation is supplied by the T4 or provider-fee commitment carried 
 transaction. Adapters MUST prove the mapping for every supported transaction family, including
 EIP-1559 typed transactions; a generic message-signing or wrong-chain preimage fails closed.
 
+The Monad adapter registry MUST distinguish the shipped legacy recipient-stamp calldata
+`POND || 0x02 || legacy_commitment` from the **PROPOSED** target mapping
+`POND || 0x03 || T4`. The chain-adapter/transaction-family registry, applicable route and media
+type, exact calldata bytes and known-answer/hostile vectors are **UNALLOCATED** until reviewed; issue
+text alone is never protocol authority. No target transaction is admitted under the legacy tag and
+no legacy transaction is reinterpreted as T4.
+
 ## 4. Namespaces and allocations
 
 Identifiers are scoped; equal integers in different columns have no relationship.
@@ -179,6 +189,9 @@ Identifiers are scoped; equal integers in different columns have no relationship
 | Provider/descriptor, delivery, status, reset records | no FRNK type IDs | UNALLOCATED |
 | Target type-1/type-5 delivery schemas | schema revisions, required context field IDs and `min_reader_version` | UNALLOCATED |
 | Target validation operations | `provider-admission` and `recipient-acceptance` contexts, error taxonomy, CDDL, codec and vector registrations | UNALLOCATED |
+| Destination-sealed payment bundle | sealing suite/key/transcript/schema and destination unseal operation | UNALLOCATED |
+| DM revision relation | authenticated predecessor/revision/fork schema for post-v1 mutable messages | UNALLOCATED |
+| Chain-adapter transaction commitments | registry entry for legacy `POND || 0x02` and target `POND || 0x03 || T4`, per route/media and transaction family | UNALLOCATED |
 | Mailbox/stamp generation fields | directory-authorized mailbox-key and stamp-key generations, destination-provider mailbox-admission capabilities, plus provider-authorized instance generation encodings | UNALLOCATED |
 | Account admission authorization | allowed recipient-`M` tuples, rotation class/grace bound, destination binding and predecessor/sequence fields | UNALLOCATED |
 | Inter-provider destination claim | exact handoff ID/hash, signed claim receipt and reconciliation/status records | UNALLOCATED |
@@ -255,7 +268,7 @@ Exact maps live in CDDL; this section defines what each record means and what id
 
 | Family | Types / structure | Identity and authority | Status |
 | --- | --- | --- | --- |
-| Recipient-delivery codec structure | type 1 wrapping type 5; decrypted type 6 wraps type 8 and items 16/17 | Delivery bytes and T3 recipient-payload digest are recipient-specific; logical message identity is type-6 `message_id`; content revision identity is T1a over type 8 | IMPLEMENTED-NOT-WIRED |
+| Recipient-delivery codec structure | type 1 wrapping type 5; decrypted type 6 wraps type 8 and items 16/17 | Delivery bytes and T3 are recipient-specific; immutable logical identity is `(network, stable sender/account authority, message_id)`; T1a identifies exact type-8 content | IMPLEMENTED-NOT-WIRED |
 | Target recipient-delivery semantics | same structure after production allocations | Complete construction, cryptographic, payment, provider and recipient checks in section 9 | PROPOSED |
 | Explicit account registration | type 2 attests exact type-4 schema-3 registration | Exact accepted statement and stage-10.6 authority validation through the helper/route/verifier path | SHIPPED |
 | Generalized directory codec structure | type 2 attests exact type 4; type 7 authorizes a subject transition | T1 of the opened type-4 statement, not the type-2 wrapper; generalized transition workflow is not normally reachable | IMPLEMENTED-NOT-WIRED |
@@ -269,7 +282,9 @@ Exact maps live in CDDL; this section defines what each record means and what id
 | Account admission authorization | `P`-signed directory rotation or separate `P`-authorized request; type/fields unallocated | Exact recipient-`M` tuples and destination/grace constraints bound what a provider capability may install | UNALLOCATED |
 | Mailbox-admission capability | destination-provider-signed generation/policy/fence record; type unallocated | Provider/descriptor, directory hash, accepted `M` set, current `P'`, instance, sequence/predecessor and expiry define local authority | UNALLOCATED |
 | Inter-provider destination claim | signed claim receipt and handoff/status records; types unallocated | Inter-provider ID plus delivery and capability hashes establish the sole stamp-broadcast owner | UNALLOCATED |
+| Destination-sealed payment handoff | sealed bundle, destination unseal operation and exact binding transcript; types/suite unallocated | Delivery/operation, directory/descriptor, capability/authorization, generation, type-5/T3 and transaction identities bind the destination-only bearer payload | UNALLOCATED |
 | Partial-payment recovery | recipient-private obligation/status/journal-fact/ack records; types unallocated | Stable obligation and operation IDs bind exact type-1/type-5/payment evidence; never normal plaintext delivery | UNALLOCATED |
+| Recovery-capacity reservation | admission reservation and cap-accounting records/errors; types unallocated | Exact operation and recipient scope own worst-case count/byte and unconfirmed capacity through acknowledgement or proved nonrecoverability | UNALLOCATED |
 | Recipient-owned output lifecycle | derivation/import/checkpoint/ack records; types unallocated | Stamp generation plus exact type-5/T3, member index and transaction ID identify each child | UNALLOCATED |
 | Legacy-to-FRNK cutover | per-account/mailbox epoch/fence and tagged-row records; types unallocated | Stable fence identity owns old/new protocol admission and target instance succession | UNALLOCATED |
 | Topic post/submission/vote | types 9/10/11 | Current stored frame/event identity is exact type-9 T1; burn tx ID is a separate consumption key | SHIPPED |
@@ -424,7 +439,8 @@ obligations and retries are terminal, or an authenticated compact proof replaces
    record fails here. The sender also proves its local `M` secret/public point and generation match
    the pinned sender revision; there is no fallback.
 2. Encode the ordered message items, type-8 content revision, and type-6 logical message. Compute
-   T1a from the exact type-8 frame.
+   T1a from the exact type-8 frame. The target logical identity is the tuple `(network, stable
+   sender/account authority, message_id)`, not bare `message_id` and not arrival order.
 3. Encrypt the complete type-6 frame to recipient `M` using an allocated deniable suite. Associated
    data binds the suite, sender and recipient `M` bytes, network, protocol context, and the exact
    directory/provider/generation context pinned in step 1. `E` and `X` for stamps are never reused
@@ -445,20 +461,28 @@ obligations and retries are terminal, or an authenticated compact proof replaces
    destinations, amounts and T4 commitments; no other operation may reuse any reservation.
 6. Build and sign every payment without network dispatch or other external exposure, derive every
    transaction ID from the exact signed bytes, and verify member indices, destinations, amounts,
-   IDs and commitments. Only then assemble, encode and locally validate the final type-1 frame.
-   Atomically promote the intent to
-   `signed-ready` while journaling the exact type-1 frame, exact signed transaction bytes, every
-   pinned generation identity, all context and retry state. Flush before any network dispatch.
-7. Submit the exact journaled bytes to the origin provider. It MAY structurally preflight and
-   forward them, but MUST NOT broadcast, credit, consume or otherwise expose any recipient-stamp
-   transaction. The destination provider performs `provider-admission`, durably compare-and-set
-   claims the exact inter-provider identity, delivery hash, mailbox-admission capability hash and
-   generations, and returns a signed claim receipt. Only that claimant may broadcast the recipient
-   stamps through the idempotent exact-byte reconciliation loop in section 9.4. In the same-provider
-   case the roles collapse, but claim still precedes exposure.
+   IDs and commitments. Seal the complete payment set to the destination provider, binding the
+   directory/descriptor hashes, delivery and operation identities, capability/authorization hashes,
+   generations, exact type-5/T3 and transaction IDs. Only then assemble, encode and locally validate
+   the final type-1 frame containing the sealed bundle. Atomically promote the intent to
+   `signed-ready` while journaling the exact type-1 frame, exact signed transaction bytes and sealed
+   bundle, every pinned identity/context and retry state. Flush before any network dispatch. The
+   sealing suite, destination key, transcript and schema are **UNALLOCATED** in section 15; no target
+   writer may ship before independent vectors fix them.
+7. Submit only the exact frame and destination-sealed bundle to the origin provider. The origin may
+   structurally preflight and forward those opaque bytes but MUST NOT learn bearer-broadcastable
+   signed transaction bytes. The destination reserves worst-case recovery capacity, performs the
+   pre-claim checks, durably compare-and-set claims the exact inter-provider identity, delivery hash,
+   capability hash and generations, and returns a signed claim receipt. Only after claim may it
+   unseal, finish payment validation and enter the idempotent exact-byte broadcast/reconciliation
+   loop in section 9.4. In the same-provider case the roles collapse, but durable claim still
+   precedes unsealing and exposure.
 8. On an ambiguous response, restart, timeout, or reconnect, reconcile and replay only the exact
    journaled operation. Never rebuild payments or re-encrypt under the same operation ID. A new
-   attempt is allowed only after durable terminal proof that the prior exact set cannot land.
+   operation is allowed only after either durable proof that none of the old set can land, or a
+   `terminal-partial` classification followed by durable recipient import and acknowledgement bound
+   to the exact old risk set and evidence. A late landing updates only that old recovery obligation;
+   it never credits, delivers or mutates the new operation.
 
 The target type-1 and type-5 schema revisions, required context field numbers and
 `min_reader_version` are **UNALLOCATED**. Existing schema 1 MUST NOT be reinterpreted or emitted as
@@ -471,9 +495,10 @@ transition; otherwise the funding account/nonces are conservatively retired or s
 explicit recovery operation. A crash cannot leak a reservation indefinitely, and a reservation is
 never returned to the reusable pool merely because signing or journaling was interrupted.
 
-**SHIPPED.** Current protobuf code already enforces the important reservation-before-signing,
-journal-before-PUT, and exact-byte replay shape, but it does not implement the target FRNK frame,
-`M`/`P'` separation, or production FRNK suite.
+**SHIPPED.** Current protobuf code enforces reservation-before-signing and exact-byte retry. The
+app/production wallet composition also provides journal-before-PUT through `StampAttemptJournal`;
+the reachable bot composition omits it and is not crash-safe. Neither composition implements the
+target FRNK frame, `M`/`P'` separation, destination-sealed bundle or production FRNK suite.
 
 ### 9.2 Provider-visible admission and economics
 
@@ -486,18 +511,22 @@ For `provider-admission`, the provider context supplies the requested route, exa
 validated sender/recipient directory revisions and mailbox-key generations, origin/destination
 provider identities and descriptor capabilities, destination instance generation, current `P'`,
 stamp generation, installed mailbox-admission capability and account authorization, operation
-identity, canonical finality policy, and chain observations. The provider validates, in actor order: framing
-and canonical form; target schema; equality of type-5 authoritative context with its validated
-context and any derived outer copies; T3; `P'`, DLEQ, destination and T4 derivation; replay; then
-external payment observations and finality. Structural/context failures, cryptographic failures,
-replay conflicts, payment insufficiency and provisional/finality states remain distinguishable.
-The provider never invokes `recipient-acceptance` or reports its errors.
+identity, canonical finality policy, and chain observations. The common pre-claim order is framing
+and canonical form; target schema; equality of type-5 authoritative context with validated context
+and any derived outer copies; T3; visible `P'`/DLEQ and sealed-bundle commitment checks; then replay
+and capacity checks. Only the destination continues after claim: it unseals, checks the exact signed
+transaction IDs/bytes, destinations, amounts, T4 and chain-adapter rules, then performs external
+observation and finality. Structural/context failures, cryptographic failures, replay conflicts,
+payment insufficiency and provisional/finality states remain distinguishable. The origin never
+runs the bearer-payment stages. A provider never invokes `recipient-acceptance` or reports its
+errors.
 
-An origin provider may run the structural prefix only as preflight; it gains no economic authority.
-After the destination completes all local structural, context, cryptographic and replay checks, it
-atomically claims the operation and signs the claim receipt before any recipient-stamp transaction
-is exposed. Only then may that destination broadcast and perform external observation/finality
-stages. A failed claim has no broadcast, credit, consumption or recipient-stamp side effect.
+An origin provider may validate only the outer frame, routing bindings and sealed-bundle commitment;
+it gains no economic authority and never receives broadcastable transaction bytes. The destination
+validates the same pre-claim structure/context and the still-sealed bundle commitment, atomically
+reserves recovery capacity, claims the operation and signs the claim receipt. Only then does it
+unseal and validate exact transaction bytes, T4 destinations/amounts and chain rules before any
+recipient-stamp exposure. Unseal or post-claim validation failure is a zero-exposure terminal claim.
 
 The destination provider verifies the bound account authorization and proves that the capability's
 accepted recipient-`M` tuples and grace policy equal or narrow the authorized tuples/policy by
@@ -516,6 +545,15 @@ fee MUST use its own domain and record; it MUST NOT be counted as the recipient 
 forward retries are idempotent by `(client_operation_id, exact_delivery_hash)`. Reusing an
 operation ID for different bytes is a conflict. A successful duplicate returns the same terminal
 result and does not rebroadcast, append a second inbox row, or consume payment twice.
+
+Before claim or exposure, the destination atomically reserves worst-case recovery capacity for the
+operation. Policy has global and per-recipient count and byte caps plus a distinct cap for
+unconfirmed/could-still-land members; exact retries retain the same reservation. At capacity,
+admission returns a retryable result with zero claim and zero exposure. Capacity is released only
+after recipient acknowledgement of imported recoverable outputs or proof of a nonrecoverable
+terminal state. Expiry may release evidence only for members proved never confirmed and unable to
+land; confirmed recipient-owned value and its exact evidence never expire merely for quota relief.
+Cap values, accounting units, reservation records and errors are **UNALLOCATED** in section 15.
 
 Each required payment member has a durable state: `reserved`, `signed`, `broadcast`,
 `observed-provisional`, `ambiguous/could-still-land`, `final`, or terminal failure, with its exact
@@ -544,10 +582,12 @@ second obligation. Its record, status, journal-fact and acknowledgement encoding
 
 The recipient fetches obligations through an authenticated, bounded journal/page operation. Before
 an idempotent acknowledgement bound to the obligation, `stamp_key_generation` and mailbox instance
-generation, the wallet durably imports every child that could still land. The provider retains
-exact bytes and evidence until that acknowledgement. Restart, seed restore, stamp rotation and late
-landing resume the same obligation; stable member identities permit only one import/sweep effect.
-Recovery never exposes plaintext or converts the obligation into normal delivery.
+generation, the wallet durably imports every child that could still land. The acknowledgement also
+binds the exact risk set, member evidence and recovery-capacity reservation being released. The
+provider retains exact bytes and evidence until that acknowledgement. Restart, seed restore, stamp
+rotation and late landing resume the same obligation; stable member identities permit only one
+import/sweep effect. Recovery never exposes plaintext or converts the obligation into normal
+delivery.
 
 Every recipient-owned child, including each child of a fully successful delivery, has a durable
 generation-bound derivation record keyed by `stamp_key_generation`, exact type-5/T3 identity,
@@ -608,15 +648,22 @@ recipient-stamp exposure transition exists before it. These state and operation 
 The origin provider owns handoff retry/failover until one destination provider durably claims the
 exact inter-provider operation and returns a destination-signed claim receipt binding the
 inter-provider ID, exact delivery hash, mailbox-admission capability hash and all generations. The origin MAY
-perform structural preflight and forward exact signed bytes, but it MUST NOT broadcast, credit,
-consume or otherwise expose recipient-stamp transactions. The destination claimant is the sole
-actor authorized to broadcast them. If capability installation wins the compare-and-set, the stale
-handoff terminates with zero exposure. If claim wins, that exact operation remains admitted and the
-destination owns an idempotent broadcast/reconciliation loop. It MAY resubmit only the exact
-journaled signed bytes with the same transaction ID; it never rebuilds, re-signs or substitutes a
-member. Retries converge on one durable exposure transition, one member state, one terminal/economic
-effect and one destination claimant, even though the exact transaction may be submitted to a node
-more than once.
+perform structural preflight and forward the exact opaque sealed bundle, but it MUST NOT possess,
+broadcast, credit, consume or otherwise expose recipient-stamp transactions. The destination
+claimant is the sole actor authorized to unseal and broadcast them. If capability installation wins
+the compare-and-set, the stale handoff terminates with zero exposure and without unsealing. If claim
+wins, that exact operation remains admitted and the destination owns an idempotent
+broadcast/reconciliation loop. It MAY resubmit only the exact destination-journaled signed bytes
+with the same transaction ID; it never rebuilds, re-signs or substitutes a member. Retries converge
+on one durable exposure transition, one member state, one terminal/economic effect and one
+destination claimant, even though the exact transaction may be submitted to a node more than once.
+
+**SHIPPED.** The current protobuf/raw-origin composition lets the origin receive
+bearer-broadcastable signed transactions. It is not evidence for the target authority boundary.
+
+**PROPOSED.** The raw-origin composition MUST NOT be reused as the target handoff. Target
+implementation remains blocked on the allocated sealing suite/key/transcript/schema and independent
+vectors.
 
 After claim, failover cannot create a second owner; it queries or transfers the same durable
 obligation under an authenticated protocol. Descriptor expiry or route failure permits another
@@ -640,9 +687,12 @@ event channel only announces a new opaque cursor; recovery always pages the jour
   generations and the recipient stamp-key generation.
 - Applying a page and advancing its opaque cursor is one atomic client commit. A crash before that
   commit replays the page; stable object/fact IDs make the replay idempotent.
-- Logical messages deduplicate by stable `message_id`; revisions resolve by authenticated
-  predecessor/version semantics, not receipt time. Recipient-specific frames remain separately
-  identifiable for payment and delivery.
+- Target DMs deduplicate by `(network, stable sender/account authority, message_id)`. Type 6 has no
+  predecessor or revision field, so each target DM is immutable. Collision under that tuple with
+  different exact content is a conflict, and delivery/page reordering cannot select a winner.
+  Mutable DM predecessor/revision/fork semantics require a future allocated schema; receipt time is
+  never a revision rule. Recipient-specific frames remain separately identifiable for payment and
+  delivery.
 - Checkpoint facts sort by `(seconds, nanos, fact_id)` only for canonical encoding. Time is not a
   causal merge rule. Checkpoint authorization, linkage, and journal-fact kinds remain
   **UNALLOCATED** until their records and vectors land.
@@ -750,6 +800,60 @@ the constrained reconciler, never legacy creation or a general writer after the 
 machinery is removable only when no unresolved legacy operation remains and the required
 terminal/recovery evidence is retained.
 
+### 11.2 Legacy payment, decryption, broadcast, and read boundaries
+
+**SHIPPED.** POP/BIP70 is a distinct legacy admission-payment family. BIP70 `PaymentRequest`,
+`PaymentDetails`, `Payment`, `PaymentACK` and `Output` describe the request/payment exchange; a
+successful verifier can issue a scoped HMAC bearer token. That payment/token is neither a recipient
+stamp nor a target provider fee, and it creates no target credit.
+
+**PROPOSED.** At the cutover fence, new POP request/token issuance is disabled. Every pre-fence
+request, submitted payment and issued token is protocol/version tagged. An already-issued token is
+preserved only for its exact existing scope through its current terminal or expiry contract; it is
+never widened, renewed into the target, or counted twice after restart/replay. Payment evidence is
+retained until token disposition is terminal. Tests cover payment accepted before token response,
+disconnect, token replay, restart and fence installation without double credit.
+
+**PROPOSED.** The migration-only legacy decryptor retains the exact legacy recipient derivation and
+envelope version (`v1` fixed layout or `v2` deterministic-CBOR crypto-box envelope), plus the exact
+historical sender public-key/profile bytes selected for each ciphertext. It may decrypt only a
+protocol-tagged pre-fence row. It cannot authorize new mail, a mailbox challenge/session, directory
+succession, payment, or target identity. Seed restore MUST recover the legacy derivation/version and
+sender-key history needed by retained ciphertexts. GC/deletion requires every v1/v2 ciphertext and
+sender-rotation dependency to be terminal, exported under authenticated loss acceptance, or
+otherwise unreachable; a current sender profile is not a substitute for historical bytes.
+
+**SHIPPED.** Legacy Lotus topic authority is the exact `SignedPayload` bytes and exact embedded
+`BroadcastMessage` bytes. `parent_digest` is an immutable reply edge. `BroadcastEntry` is opaque
+kind/headers/payload application data; `ForumPost` is one application interpretation, not protocol
+authority. A payload-less `SignedPayload` hash reference or vote can only augment burn evidence for
+an already-stored exact payload; it cannot create or replace the payload. Legacy readers retain
+these bytes across restart and cutover, never transcode them, and delete them only after the
+historical read/reply/burn-evidence reachability gates clear.
+
+**SHIPPED.** Historical read contracts are intentionally different:
+
+- The authenticated Monad inbox uses strict-exclusive `(timestamp, payload_hash)` ordering. Its
+  opaque cursor remains valid after the referenced row is deleted; count and encoded-byte caps
+  bound each page.
+- Monad topic listing is inclusive `timestamp >= since` with payload-hash key ordering but no
+  exposed tie-break cursor. Equal-time rows require client deduplication/replay.
+- Monad topic discovery performs a full topic scan and sorts by `last_activity_ms` descending; it
+  is not a durable cursor.
+- Lotus topic range reads are inclusive over the stored
+  `(topic_digest, timestamp, transaction_id)` order.
+- Monad profile discovery is inclusive over `(registration_timestamp, address)` and returns exact
+  raw signed bytes; its public `since` parameter does not expose the address tie-break cursor.
+
+**PROPOSED.** At the fence, these legacy keyspaces become bounded read-only historical
+projections. The strict inbox cursor is preserved while its projection exists. A legacy endpoint
+without an exposed stable tie-break cursor is served from the frozen keyspace with bounded complete
+rescan plus exact-ID deduplication; it MUST NOT pretend an inclusive timestamp is lossless. If a
+cursor/projection is retired, the server returns explicit cursor expiry and an authenticated,
+bounded complete replacement/export rather than silently skipping equal-time rows. Tests cover
+equal timestamps, page-boundary crash, deleted-row continuation, restart, cutover freeze and final
+historical deletion.
+
 ## 12. Topic semantics and transition
 
 **SHIPPED.** For the opt-in CBOR topic slice, the exact immutable type-9 post frame/revision has one
@@ -757,6 +861,11 @@ T1 event identity. Type 10 carries the initial up-burn;
 type 11 carries a later vote. Author, direction, and weight come from the independently verified
 chain transaction. The transaction ID is the consumption key, so one burn counts once across
 legacy and CBOR entry points.
+
+The shipped Monad topic path computes direction by casting the transaction's `u128` value to
+`i128`, applying the sign, then saturating the result to the stored `i64`. Values above
+`i128::MAX` therefore sign-wrap at the first cast before saturation and can acquire the wrong sign;
+this is a shipped defect, not acceptable target arithmetic.
 
 The storage rule is frame-first: a CBOR-origin row retains the exact type-9 frame as authority and
 may maintain protobuf-shaped indexes only as projections. It MUST NOT reconstruct the frame from a
@@ -770,11 +879,21 @@ discriminator and migration are also **UNALLOCATED**; votes MUST eventually stat
 target an immutable revision/event or a logical root. Until those allocations, type 11 targets
 exactly the immutable type-9 T1 named by its current schema.
 
+For bounded version 1, topic post/vote admission MUST reject a transaction value greater than
+`i64::MAX` before broadcast, durable claim or economic consumption. Boundary vectors cover
+`i64::MAX`, `i64::MAX + 1`, `i128::MAX`, `i128::MAX + 1` and `u128::MAX` in both directions. A
+future wider unsigned weight requires a new allocated schema and arithmetic rules; it is not an
+implicit relaxation of version 1.
+
 Normal-client cutover requires versioned CBOR schemas and vectors for single-post
 view, topic page/list, discovery, and transaction-specific vote/recovery status. Until those exist,
 the protobuf read model remains authoritative for list/discovery and the CBOR writer remains
 opt-in. First-confirmed-burn authorship and the public front-running limitation remain the current
 type-9 semantics unless a later schema adds an author commitment.
+
+The explicit bounded topic `R`/`R+1`/`R+2` coexistence in the subordinate transition document is an
+allowed migration, not a clean-break contradiction. Its author tuple remains the normative tuple
+already specified there; this document does not redefine it.
 
 ## 13. Replay, restart, fork, and clock rules
 
@@ -804,9 +923,9 @@ Across every family:
 | TypeScript codec, other families | Stages 1–9, generalized directory structures/transcripts and shared vectors | IMPLEMENTED-NOT-WIRED | Production DM suite, full type-1 stage 10, generalized transition path, provider/mailbox/status records, target key binding |
 | Rust codec, registration/topics | Relay helper route/verifier performs explicit registration through stage 10.6; opt-in topics use FRNK/restricted CBOR | SHIPPED | Cross-check every production slice against TypeScript and hostile vectors |
 | Rust codec, other families | Stages 1–9, generalized type-2/type-7 transition verification at stage 10.6, pure hashes and shared vectors | IMPLEMENTED-NOT-WIRED | Target structures and full checks independently cross-checked |
-| Relay / `cashwebd` | Protobuf DM, durable exact-set outbox, authenticated inbox; opt-in CBOR topics; explicit type-2/type-4-schema-3 account registration verification | SHIPPED | FRNK DM/target directory/provider/profile/mailbox journal, unified provider-effective mailbox admission, destination-claim-before-exposure, partial-recovery and all-output obligations, exact replay/restart/fork/reset/deletion and bounded fenced cutover |
-| Wallet | Protobuf DM, deniable v2 envelope, durable payment attempts and journal-before-PUT; explicit CBOR registration helper; opt-in CBOR topics | SHIPPED | Disjoint hardened `P`/`M`/`P'`, provider-effective mailbox/stamp rotation and recovery, production suite, exact FRNK order, signed destination-claim reconciliation, all-output import/ack/restore, atomic mailbox replay and bounded fenced cutover |
-| Bot | Uses wallet/relay flows and persists operational state | SHIPPED | Same protocol client as wallet, exact journal recovery, no private alternative wire |
+| Relay / `cashwebd` | Protobuf DM/raw-payment outbox, authenticated bounded inbox; POP/BIP70; legacy/opt-in CBOR topics; explicit CBOR registration | SHIPPED | Destination-sealed FRNK DM, recovery-capacity admission, unified mailbox capability, exact replay/restart/fork/reset/deletion and bounded fenced cutover |
+| Wallet | App composition wires durable attempt/payment journals; deniable v2 envelope; explicit CBOR registration and opt-in topics | SHIPPED | Disjoint hardened `P`/`M`/`P'`, destination-sealed exact order, recovery import/ack, atomic replay and fenced cutover |
+| Bot | Reachable Qwen composition uses `MonadStampClient` without `StampAttemptJournal` and is not crash-safe | SHIPPED | Wire the same durable journals/protocol client as wallet; no private alternative wire |
 | App | Uses `ActiveChain`, recipient-scoped polling, protobuf presentation/read models | SHIPPED | Reachability UX, fork/expiry/status surfacing, scoped reset/deletion, target CBOR read models |
 | Cross-language vectors | Shared TS/Rust/Python/browser codec corpora; account-registration and topic commitments | IMPLEMENTED-NOT-WIRED | Full DM crypto/payment observations, provider/mailbox/status/reset cases, hostile unknown-field retention |
 | Legacy directory/broadcast federation | Legacy protobuf directory catch-up and broadcast forwarding paths are reachable | SHIPPED | Preserve only as historical migration evidence; do not treat their wire as target FRNK |
@@ -836,7 +955,9 @@ bounded authority for a pre-fence winning claim or session; exposed old-generati
 terminal/recovery handling, restore and secret erasure; fresh
 `e`/`E`/`X`/DLEQ before final type 5 and exactly-one T3; intent crashes before signing, between
 signing and journal promotion, and after flush; complete, partial and reorged payment sets including
-post-finality reconciliation; exhaustive member-index and settlement-order permutations proving
+post-finality reconciliation; destination recovery-capacity global/per-recipient count/byte and
+unconfirmed limits, atomic reservation-before-claim, retry-at-capacity with zero exposure, restart,
+overflow and confirmed-evidence non-expiry; exhaustive member-index and settlement-order permutations proving
 aggregate-state precedence and one terminal-partial obligation for every exposed subset;
 terminal-partial obligation fetch/import/ack across restart, seed restore, stamp rotation and late
 landing with one sweep/import effect; fully successful and partial child derivation/import across
@@ -846,7 +967,9 @@ followed by recipient rejection; deterministic poison quarantine in a valid/pois
 signed multi-page snapshot crash/resume/atomic swap; sender-directory partition/convergence,
 freshness-window expiry, newer-recipient-state rejection and proof that no sender-home fence or
 receipt is portable; origin structural preflight with proof of zero recipient-stamp exposure before
-a destination-signed durable claim; same-provider claim ordering; destination fence-wins
+a destination-signed durable claim; destination-sealed bundle context/key/suite/schema vectors,
+proof the origin never receives bearer bytes, unseal only after claim, and rejection of the unsafe
+raw-origin model; same-provider claim ordering; destination fence-wins
 zero-exposure and claim-wins idempotent broadcast/reconciliation; disconnect before node submission,
 disconnect after node acceptance, already-known response and restart, each preserving exact bytes,
 transaction ID, one exposure transition, member state, terminal/economic effect and claimant;
@@ -855,9 +978,14 @@ ambiguous handoff/status reconciliation, duplicate claims and accidental-exposur
 reset racing late completion;
 branch-scoped tombstone dominance, sibling forks, stale creates and object-wide deletion; permanent
 exclusion history with bounded body compaction; deletion reachability across shared references and
-payment recovery; EIP-1559 and every supported chain adapter's canonical replay-protected preimage,
-chain ID and signed T4/provider-fee mapping; cutover of a large mailbox with paginated tagging,
-page crashes and idempotent resume; marker/admission ambiguity, partial payment, unread pre-marker
+payment recovery; immutable DM identity collision/reordering and rejection of unallocated revision
+semantics; EIP-1559 and every supported chain adapter's canonical replay-protected preimage,
+chain ID and registry-selected legacy `POND || 0x02` versus target `POND || 0x03 || T4` mapping,
+route/media type and exact vectors; topic-weight bounds through `u128::MAX`; POP token restart/replay
+without double credit; legacy v1/v2 decrypt restore with sender rotation; Lotus exact-byte reply and
+payload-less augmentation; equal-time legacy cursor/page crashes; checked protobuf descriptor/AST
+inventory and runtime reachability before source deletion; cutover of a large mailbox with
+paginated tagging, page crashes and idempotent resume; marker/admission ambiguity, partial payment, unread pre-marker
 row, delayed legacy completion rejected by the target generation, rollback-reader/reconciler-only
 behavior, creation-writer quiescence and removal gates; topic
 root/revision/relation/vote migration; legacy and target federation reachability/convergence/cursor
@@ -876,6 +1004,12 @@ The following remain deliberately unresolved rather than inferred:
   authority transition/recovery and migration records;
 - target type-1/type-5 schema revisions, required context field IDs and `min_reader_version`, with
   explicit old/new compatibility and rejection rules;
+- destination-sealed payment-bundle suite, destination key/certificate, transcript, schema, unseal
+  operation and independent known-answer/hostile vectors;
+- immutable DM logical-identity encoding and any future authenticated predecessor/revision/fork
+  schema; type 6 version 1 allocates no mutable revision relation;
+- chain-adapter/transaction-family commitment registry, including route/media selection and exact
+  vectors for legacy `POND || 0x02` and target `POND || 0x03 || T4`;
 - `provider-admission` and `recipient-acceptance` operation IDs, validation contexts, error
   taxonomy, CDDL, both codecs and independent vectors;
 - `mailbox_key_generation`, `stamp_key_generation` and `mailbox_instance_generation` wire fields,
@@ -900,12 +1034,16 @@ The following remain deliberately unresolved rather than inferred:
   exceptional-reconciliation status records, and provider-fee commitment/pricing semantics;
 - recipient-private partial-recovery obligation/status/journal-fact/ack types and fields, bounded
   fetch operation and generation-bound acknowledgement;
+- recovery-capacity global/per-recipient count/byte and unconfirmed caps, reservation/accounting
+  records, retryable-at-capacity error and confirmed-versus-never-confirmed release rules;
 - recipient-owned child derivation/import/checkpoint/ack/sweep/loss-acceptance records for complete
   and partial sets, plus their restore and reachability encoding;
 - pre-operation reservation-intent and signed-ready promotion/release/retire/sweep records;
 - per-account/mailbox legacy-to-FRNK cutover epoch/fence and admission guard, paginated
   protocol/version row tags, legacy terminal/recovery evidence, constrained reconciler,
   rollback/removal state, separate keyspace and target-instance succession;
+- legacy POP request/payment/token tags and disposition; legacy decrypt derivation/version and
+  sender-key retention; historical cursor-expiry/replacement-export records where needed;
 - opaque quarantine facts and signed snapshot identity/page-chain/manifest/frontier records;
 - branch-scoped versus object-wide tombstone/frontier encoding and authenticated fork resolution;
 - directory fork resolution and recovery cryptography beyond fail-closed conflict reporting;
@@ -916,3 +1054,71 @@ The following remain deliberately unresolved rather than inferred:
 **PROPOSED.** No daemon, client, or migration may allocate these locally. Each allocation updates this index,
 the relevant CDDL, both codecs, independent vectors, production-boundary tests, and the conformance
 matrix in one reviewed sequence.
+
+## 16. Checked legacy protobuf inventory
+
+**SHIPPED.** The sources and production-role column below inventory every tracked `.proto` source
+on this branch. Backend/client copies and generated response duplicates are grouped when they
+intentionally share wire shape; grouping does not make either copy authoritative over the runtime
+that actually decodes it.
+
+**PROPOSED.** The fence-disposition column defines the clean-break migration target. It is not a
+claim that those fences or deletion gates are implemented.
+
+| Sources / family | Production role | Fence disposition |
+| --- | --- | --- |
+| `backend/cashweb/cashweb-payload/proto/payload.proto`; `packages/cashweb/signed_payload/proto/payload.proto` | Lotus signed payload, signature, payload digest and burn transactions; package copy uses older field names with the same material wrapper role | Retain exact bytes and constrained historical verifier/reader; never transcode; delete only after payload, burn, reply and federation reachability clears |
+| `backend/cashweb/cashweb-registry/proto/broadcast.proto`; `packages/cashweb/registry/proto/broadcast.proto` | Lotus topic `BroadcastMessage`/opaque entries; client copy additionally declares `ForumPost` and `parent_digest` | Historical-only exact reader; preserve immutable reply/burn evidence; no new post after fence |
+| `packages/cashweb/bip70/proto/paymentrequest.proto` | Legacy POP request/payment/ack and output contract | Disable new issuance at fence; retain exact pre-fence request/payment/token evidence through scoped terminal/expiry |
+| `backend/cashweb/cashweb-registry/proto/monad_message.proto`; `packages/cashweb/relay/proto/monad_message.proto` | Legacy Monad encrypted DM, raw stamp-payment set, stored timestamp/network and list response | Constrained migration reader/decryptor and reconciler for pre-fence rows; no new writes; remove after decrypt/payment/cursor reachability clears |
+| `backend/cashweb/cashweb-registry/proto/monad_profile.proto`; material profile messages in `backend/cashweb/cashweb-registry/proto/registry.proto` and `packages/cashweb/registry/proto/metadata.proto` | Monad/Lotus timestamp+TTL profile entries, exact signed profile discovery; peer and range/put response shapes | Exact read-only profile/directory history where referenced; target migration creates new records, never transcodes; transport responses may disappear with their route |
+| `backend/cashweb/cashweb-registry/proto/topic_message.proto`; `packages/wallet/proto/topic_message.proto` | Monad topic post/vote, stored author/tx/time/network/CBOR-origin facts, vote tally, topic page/discovery | Preserve protobuf-origin history and bounded coexistence; reject new legacy writes at fence; client copy must remain wire-compatible while reachable |
+| `packages/cashweb/relay/proto/relay.proto` | Legacy relay profile, encrypted `Message`/`Payload`, stamp/outpoints, pages and push errors | Retain exact constrained reader only for reachable legacy stores/migration; no authority in target; delete after runtime/storage reachability proof |
+| `packages/cashweb/relay/proto/filters.proto` | Legacy inbox price/notification filter (`false`/zero proto3 defaults) | Preserve only with legacy inbox projection; never reinterpret as target pricing or provider-fee policy |
+| `packages/cashweb/relay/proto/p2pkh.proto`; `packages/cashweb/relay/proto/stealth.proto` | Legacy serialized P2PKH and stealth payment/outpoint transport payloads | Opaque historical transport-only data; preserve if referenced, otherwise delete with owning legacy feature after reachability proof |
+| `backend/cashweb/cashweb-http-utils/proto/http.proto` | HTTP error code/message/user-error response | Transport-only; may be deleted with the last protobuf HTTP route; never protocol authority |
+| `backend/cashweb/cashweb-registry/proto/registry.proto` response/peer messages and client-side list/range response duplicates | Peer URL, put transaction IDs, address+signed-payload range/list envelopes | Transport/index projection only; retain while route/federation reader exists, then delete with reachability proof |
+| `backend/bitcoinsuite/bitcoinsuite-chronik-client/proto/chronik.proto` | Chronik upstream RPC schema | Third-party/non-CashWeb; excluded from CashWeb wire migration and retained according to the Chronik client dependency |
+
+### 16.1 Material legacy semantics
+
+**SHIPPED.** `SignedPayload` authority is its exact serialized bytes under the frozen verifier.
+Proto3 absent values decode as empty bytes, zero integer, empty repeated list and signature-scheme
+zero (`SCHNORR`); historical validation may derive/check an omitted payload hash only as the frozen
+reader specifies. Those defaults document reader fidelity, not permission to synthesize, normalize
+or transcode a wrapper. `BurnTx`/`BurnOutputs` retains the full serialized transaction and exact
+burn-output index. A payload-less wrapper must name an existing payload hash before adding evidence.
+
+**SHIPPED.** BIP70 is proto2: `Output.amount` defaults to zero, `PaymentDetails.network` to `main`,
+`PaymentRequest.payment_details_version` to 1 and `pki_type` to `none`; required fields and explicit
+presence remain distinguishable. Outputs/payment URL/merchant data and payment transactions carry
+economic or bearer meaning and are never inferred into recipient stamps or target provider fees.
+
+**SHIPPED.** Legacy Monad DM authority binds exact encrypted payload/hash and the repeated
+`(child_index, raw_tx)` payment set. Stored timestamp and network tag are relay facts; an absent
+network tag decodes empty for older rows and is not invented during migration. Legacy profile
+timestamp/TTL/entries and discovery raw signed bytes retain their original presence/defaults.
+Legacy topic post authority includes topic, empty-or-32-byte parent hash, exact raw burn
+transaction, ciphertext and payload hash; stored sender/transaction/time/network fields are relay
+facts. Topic vote weight has the shipped cast/saturation defect documented in section 12.
+
+**SHIPPED.** Legacy relay `Message` separately carries source/destination keys, malleable server
+time, payload digest, stamp, encryption enum/salt/HMAC/size and ciphertext. `Stamp.None`/enum zero,
+empty byte fields and zero numeric fields are protobuf defaults, not target semantics. Price-filter
+zero/false defaults, P2PKH transaction bytes and stealth ephemeral-key/outpoints remain scoped to
+their owning legacy reader.
+
+### 16.2 Inventory and deletion gate
+
+**PROPOSED.** A checked descriptor/AST inventory gate MUST enumerate every tracked `.proto` file,
+package, message, field number/type/cardinality, enum/default/presence rule and owning runtime before
+merge. Every family must map to this appendix as retained exact/constrained legacy reader, migrated
+by creation of a new authenticated record, deleted at fence, transport-only, or
+third-party/non-CashWeb. A new tracked protobuf family or field that lacks a classification fails
+the gate. Passive generated request/response duplicates may be grouped, but material authority,
+economic and default/presence semantics may not be elided.
+
+Deletion additionally requires runtime reachability proof: routes, stores, federation, app, wallet,
+bot, restore, retry and historical export must have no remaining caller or retained row. Source-file
+absence alone is not proof. Exact legacy `SignedPayload`, ciphertext, payment and broadcast bytes
+remain non-transcodable throughout the migration.

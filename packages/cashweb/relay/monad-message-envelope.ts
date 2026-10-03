@@ -14,7 +14,28 @@
  * Version 1 is retained only as an explicitly named read path for already-stored AES-CBC
  * envelopes. New builders never emit it, and the relay does not admit it on PUT.
  */
-import { hmacSha256, randomBytes } from '@frank/crypto-box'
+import {
+  createFrankStampProof,
+  verifyFrankStampProof,
+} from '@frank/adaptor-signatures/frank-stamp-dleq'
+import {
+  addressFromCompressedPubkey,
+  cborMap,
+  encodeDirectMessageCryptoContext,
+  encodeFrame,
+  parseFrame,
+  type AccountRef,
+  type DirectMessageCryptoContext,
+  type RecipientEncryptedPayloadV2,
+} from '@frank/codec'
+import {
+  hmacSha256,
+  open,
+  randomBytes,
+  seal,
+  sha256,
+  SUITE_AUTH_XCHACHA,
+} from '@frank/crypto-box'
 import { ecdh, type PrivateKey } from '@frank/nakamoto'
 import * as forge from 'node-forge'
 
@@ -24,6 +45,7 @@ import {
 } from './message-limits'
 
 const CURRENT_ENVELOPE_VERSION = 2 as const
+const FRANK_CBOR_ENVELOPE_VERSION = 3 as const
 const LEGACY_ENVELOPE_VERSION = 1 as const
 const HKDF_SALT_BYTES = 32
 const GCM_NONCE_BYTES = 12
@@ -56,6 +78,20 @@ export interface MonadMessageEnvelopeV2 {
   tag: string
 }
 
+/** Current Frank-CBOR type-5 schema-2 envelope using crypto-box suite 1. */
+export interface MonadMessageEnvelopeV3 {
+  v: 3
+  networkTag: string
+  from: string
+  to: string
+  sender: AccountRef
+  recipient: AccountRef
+  cryptoBoxEnvelope: Uint8Array
+  ephemeralPoint: Uint8Array
+  sharedPoint: Uint8Array
+  dleqProof: Uint8Array
+}
+
 /** Read-only compatibility shape for records stored before authenticated v2 envelopes. */
 export interface LegacyMonadMessageEnvelopeV1 {
   v: 1
@@ -69,6 +105,7 @@ export interface LegacyMonadMessageEnvelopeV1 {
 }
 
 export type MonadMessageEnvelope =
+  | MonadMessageEnvelopeV3
   | MonadMessageEnvelopeV2
   | LegacyMonadMessageEnvelopeV1
 
@@ -212,6 +249,61 @@ function isNetworkTag(value: unknown): value is string {
   )
 }
 
+const GENERATOR = Uint8Array.from([
+  0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95,
+  0xce, 0x87, 0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59,
+  0xf2, 0x81, 0x5b, 0x16, 0xf8, 0x17, 0x98,
+])
+
+function account(keyBytes: Uint8Array): AccountRef {
+  return { keyType: 1, keyBytes: Uint8Array.from(keyBytes) }
+}
+
+function evmAddress(keyBytes: Uint8Array): string {
+  const lower = Buffer.from(addressFromCompressedPubkey(keyBytes)).toString(
+    'hex',
+  )
+  const checksum = keccak256(textEncoder.encode(lower))
+  const body = [...lower]
+    .map((character, index) => {
+      if (/\d/.test(character)) return character
+      const byte = checksum[Math.floor(index / 2)]
+      const nibble = index % 2 === 0 ? byte >> 4 : byte & 0x0f
+      return nibble >= 8 ? character.toUpperCase() : character
+    })
+    .join('')
+  return `0x${body}`
+}
+
+/**
+ * Transitional directory binding for the demo runtime. It is deterministic and authenticated,
+ * but uses SHA-256(message key) until the live directory API exposes accepted type-4 T1 hashes.
+ */
+function transitionalContext(params: {
+  network: string
+  sender: AccountRef
+  recipient: AccountRef
+  ephemeralPoint: Uint8Array
+  sharedPoint: Uint8Array
+  dleqProof: Uint8Array
+}): DirectMessageCryptoContext {
+  return {
+    network: params.network,
+    sender: params.sender,
+    recipient: params.recipient,
+    senderDirectoryHash: sha256(params.sender.keyBytes),
+    recipientDirectoryHash: sha256(params.recipient.keyBytes),
+    senderMessageKey: params.sender,
+    recipientMessageKey: params.recipient,
+    // The legacy registry has no independent stamp key yet. Identity-as-stamp-key is permitted by
+    // S10a for migration/testing, though production wallets should derive a separate domain key.
+    stampKey: params.recipient,
+    ephemeralPoint: params.ephemeralPoint,
+    sharedPoint: params.sharedPoint,
+    dleqProof: params.dleqProof,
+  }
+}
+
 function isLowerHexBytes(
   value: unknown,
   options: { exactBytes?: number; minBytes?: number; maxBytes?: number },
@@ -346,14 +438,16 @@ function decryptLegacyCiphertext(
   return Uint8Array.from(Buffer.from(cipher.output.toHex(), 'hex'))
 }
 
-/** Builds a v2 encrypted envelope for `MonadStampedMessage.encrypted_payload`. */
+/**
+ * @deprecated Compatibility writer for tests and pre-CBOR peers. Live wallet and bot sends use
+ * {@link buildFrankCborEnvelope}; this remains only until the legacy fixture suite is migrated.
+ */
 export function buildEnvelope(params: {
   fromAddress: string
   fromPrivateKey: PrivateKey
   toAddress: string
   toPubKey: Uint8Array
   plaintext: string
-  /** Frank network tag (for example `MONT`), not an EVM chain ID. */
   networkTag: string
 }): Uint8Array {
   if (!isAddress(params.fromAddress) || !isAddress(params.toAddress)) {
@@ -368,7 +462,6 @@ export function buildEnvelope(params: {
       `Monad envelope plaintext must be 1..${MAX_V2_CIPHERTEXT_BYTES} UTF-8 bytes`,
     )
   }
-
   const salt = Buffer.from(randomBytes(HKDF_SALT_BYTES))
   const nonce = Buffer.from(randomBytes(GCM_NONCE_BYTES))
   const core = {
@@ -403,6 +496,94 @@ export function buildEnvelope(params: {
   return textEncoder.encode(JSON.stringify(envelope))
 }
 
+/** Builds the current Frank-CBOR type-5 schema-2 envelope for the relay payload. */
+export function buildFrankCborEnvelope(params: {
+  fromAddress: string
+  fromPrivateKey: PrivateKey
+  toAddress: string
+  toPubKey: Uint8Array
+  plaintext: string
+  /** Frank network tag (for example `MONT`), not an EVM chain ID. */
+  networkTag: string
+}): Uint8Array {
+  if (!isAddress(params.fromAddress) || !isAddress(params.toAddress)) {
+    throw new Error('Monad envelope addresses must be 0x-prefixed 20-byte hex')
+  }
+  if (!isNetworkTag(params.networkTag)) {
+    throw new Error('Monad envelope networkTag must be 1..32 UTF-8 bytes')
+  }
+  const plaintext = Buffer.from(params.plaintext, 'utf8')
+  if (plaintext.length === 0 || plaintext.length > MAX_V2_CIPHERTEXT_BYTES) {
+    throw new Error(
+      `Monad envelope plaintext must be 1..${MAX_V2_CIPHERTEXT_BYTES} UTF-8 bytes`,
+    )
+  }
+  const network = params.networkTag.toLowerCase()
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(network)) {
+    throw new Error('Frank-CBOR network tag does not match S1')
+  }
+
+  const senderDh = ecdh(params.fromPrivateKey, GENERATOR)
+  if (!senderDh.ok) throw new Error(`monad-envelope:${senderDh.error.code}`)
+  const sender = account(senderDh.value.point)
+  const recipient = account(params.toPubKey)
+  if (
+    evmAddress(sender.keyBytes).toLowerCase() !==
+    params.fromAddress.toLowerCase()
+  ) {
+    throw new Error(
+      'Monad envelope sender address does not match its private key',
+    )
+  }
+  if (
+    evmAddress(recipient.keyBytes).toLowerCase() !==
+    params.toAddress.toLowerCase()
+  ) {
+    throw new Error(
+      'Monad envelope recipient address does not match its public key',
+    )
+  }
+  const stamp = createFrankStampProof({
+    network,
+    stampKey: recipient.keyBytes,
+  })
+  const contextFields = transitionalContext({
+    network,
+    sender,
+    recipient,
+    ephemeralPoint: stamp.ephemeralPoint,
+    sharedPoint: stamp.sharedPoint,
+    dleqProof: stamp.proof,
+  })
+  const sealed = seal({
+    suiteId: SUITE_AUTH_XCHACHA,
+    recipientPublicKey: recipient.keyBytes,
+    senderPublicKey: sender.keyBytes,
+    senderPrivateKey: params.fromPrivateKey.bytes,
+    plaintext: Uint8Array.from(plaintext),
+    context: encodeDirectMessageCryptoContext(contextFields),
+  })
+  if (!sealed.ok) throw new Error(`monad-envelope:${sealed.error.code}`)
+  const accountMap = (value: AccountRef) =>
+    cborMap([
+      [0, value.keyType],
+      [1, value.keyBytes],
+    ])
+  return encodeFrame(
+    { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
+    cborMap([
+      [0, network],
+      [1, accountMap(sender)],
+      [2, accountMap(recipient)],
+      [3, SUITE_AUTH_XCHACHA],
+      [4, sealed.value],
+      [5, stamp.ephemeralPoint],
+      [6, stamp.sharedPoint],
+      [7, stamp.proof],
+    ]),
+  )
+}
+
 /**
  * Parses stored envelope bytes. V2 is the current authenticated format; v1 is returned only for
  * explicit read compatibility. Unsupported versions and malformed fields are rejected.
@@ -410,6 +591,44 @@ export function buildEnvelope(params: {
 export function parseEnvelope(
   bytes: Uint8Array,
 ): MonadMessageEnvelope | undefined {
+  try {
+    const frame = parseFrame(bytes)
+    if (
+      frame.kind === 'parsed' &&
+      frame.typed?.type === 5 &&
+      frame.typed.schemaVersion === 2
+    ) {
+      const typed = frame.typed as RecipientEncryptedPayloadV2
+      if (
+        typed.suite !== SUITE_AUTH_XCHACHA ||
+        typed.sender.keyType !== 1 ||
+        typed.recipient.keyType !== 1 ||
+        !verifyFrankStampProof({
+          network: typed.network,
+          stampKey: typed.recipient.keyBytes,
+          ephemeralPoint: typed.ephemeralPoint,
+          sharedPoint: typed.sharedPoint,
+          proof: typed.dleqProof,
+        })
+      ) {
+        return undefined
+      }
+      return {
+        v: FRANK_CBOR_ENVELOPE_VERSION,
+        networkTag: typed.network,
+        from: evmAddress(typed.sender.keyBytes),
+        to: evmAddress(typed.recipient.keyBytes),
+        sender: typed.sender,
+        recipient: typed.recipient,
+        cryptoBoxEnvelope: typed.cryptoBoxEnvelope,
+        ephemeralPoint: typed.ephemeralPoint,
+        sharedPoint: typed.sharedPoint,
+        dleqProof: typed.dleqProof,
+      }
+    }
+  } catch {
+    // Continue into explicitly retained legacy JSON reads.
+  }
   let parsed: unknown
   try {
     parsed = JSON.parse(textDecoder.decode(bytes))
@@ -457,6 +676,38 @@ export function decryptEnvelopeV2(params: {
   throw new Error('Monad envelope authentication failed')
 }
 
+/** Opens the current Frank-CBOR suite-1 envelope. */
+export function decryptEnvelopeV3(params: {
+  envelope: MonadMessageEnvelopeV3
+  myPrivateKey: PrivateKey
+  senderPubKey: Uint8Array
+}): string {
+  if (
+    Buffer.compare(
+      Buffer.from(params.envelope.sender.keyBytes),
+      Buffer.from(params.senderPubKey),
+    ) !== 0
+  ) {
+    throw new Error('Monad envelope sender key does not match the directory')
+  }
+  const context = transitionalContext({
+    network: params.envelope.networkTag,
+    sender: params.envelope.sender,
+    recipient: params.envelope.recipient,
+    ephemeralPoint: params.envelope.ephemeralPoint,
+    sharedPoint: params.envelope.sharedPoint,
+    dleqProof: params.envelope.dleqProof,
+  })
+  const opened = open({
+    envelope: Uint8Array.from(params.envelope.cryptoBoxEnvelope),
+    recipientPrivateKey: Uint8Array.from(params.myPrivateKey.bytes),
+    senderPublicKey: Uint8Array.from(params.senderPubKey),
+    context: encodeDirectMessageCryptoContext(context),
+  })
+  if (!opened.ok) throw new Error(`monad-envelope:${opened.error.code}`)
+  return textDecoder.decode(opened.value)
+}
+
 /**
  * Decrypts an already-stored legacy v1 record. There is deliberately no v1 builder. V1 has no
  * authentication tag, so the pre-#309 trimmed-x key is tried only when the canonical key's output
@@ -491,6 +742,13 @@ export function decryptEnvelope(params: {
   myPrivateKey: PrivateKey
   senderPubKey: Uint8Array
 }): string {
+  if (params.envelope.v === FRANK_CBOR_ENVELOPE_VERSION) {
+    return decryptEnvelopeV3({
+      envelope: params.envelope,
+      myPrivateKey: params.myPrivateKey,
+      senderPubKey: params.senderPubKey,
+    })
+  }
   if (params.envelope.v === CURRENT_ENVELOPE_VERSION) {
     return decryptEnvelopeV2({
       envelope: params.envelope,

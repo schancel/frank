@@ -8,6 +8,8 @@
     "test": "jest --passWithNoTests"
   },
   "dependencies": {
+    "@frank/adaptor-signatures": "*",
+    "@frank/codec": "*",
     "@frank/crypto-box": "*",
     "@frank/nakamoto": "*",
     "atob": "^2.1.2",

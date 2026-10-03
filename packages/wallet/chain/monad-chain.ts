@@ -141,7 +141,7 @@ import {
   fetchMonadMailboxRecoveries,
 } from "@frank/cashweb/relay/monad-mailbox-client";
 import {
-  buildEnvelope,
+  buildFrankCborEnvelope,
   decryptEnvelope,
   parseEnvelope,
 } from "@frank/cashweb/relay/monad-message-envelope";
@@ -615,7 +615,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       );
     }
 
-    const envelopeBytes = buildEnvelope({
+    const envelopeBytes = buildFrankCborEnvelope({
       fromAddress: wallet.identity.address.raw,
       fromPrivateKey: wallet.identity.toNakamotoPrivateKey(),
       toAddress: params.recipient.raw,

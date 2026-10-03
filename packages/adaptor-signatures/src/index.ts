@@ -27,3 +27,9 @@ export type {
   CompactEcdsaSignature,
   RandomBytes,
 } from './api.js'
+export {
+  createFrankStampProof,
+  frankStampDeterministicNonce,
+  verifyFrankStampProof,
+} from './frank-stamp-dleq.js'
+export type { FrankStampProofMaterial } from './frank-stamp-dleq.js'

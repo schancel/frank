@@ -97,7 +97,7 @@ import {
 import { LevelStampAttemptJournal } from '@frank/wallet/storage/stamp-attempt-journal'
 import { LevelStampPaymentJournal } from '@frank/wallet/storage/stamp-payment-journal'
 import { openPersistentStampPool } from './stamp-pool-seed'
-import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
+import { buildFrankCborEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
 import { serializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { MessageItem } from '@frank/cashweb/types/messages'
 
@@ -618,7 +618,7 @@ export async function sendDirectMessageItems(params: {
     gasReserveWei,
   })
 
-  const envelope = buildEnvelope({
+  const envelope = buildFrankCborEnvelope({
     fromAddress: params.fromIdentity.displayAddress,
     fromPrivateKey: params.fromIdentity.toNakamotoPrivateKey(),
     toAddress: params.toAddress,

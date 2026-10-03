@@ -13,6 +13,7 @@ import {
   MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES,
   MonadMessageEnvelopeV2,
   buildEnvelope,
+  buildFrankCborEnvelope,
   canonicalMonadEnvelopeAddress,
   decryptEnvelope,
   decryptEnvelopeV2,
@@ -57,13 +58,11 @@ const fixedSalt = Buffer.from(
 const fixedNonce = Buffer.from("202122232425262728292a2b", "hex");
 
 function useFixedEntropy(): void {
-  jest
-    .spyOn(cryptoBox, "randomBytes")
-    .mockImplementation((size: number) => {
-      if (size === fixedSalt.length) return Uint8Array.from(fixedSalt);
-      if (size === fixedNonce.length) return Uint8Array.from(fixedNonce);
-      throw new Error(`unexpected random byte request: ${size}`);
-    });
+  jest.spyOn(cryptoBox, "randomBytes").mockImplementation((size: number) => {
+    if (size === fixedSalt.length) return Uint8Array.from(fixedSalt);
+    if (size === fixedNonce.length) return Uint8Array.from(fixedNonce);
+    throw new Error(`unexpected random byte request: ${size}`);
+  });
 }
 
 function buildFixedV2(): MonadMessageEnvelopeV2 {
@@ -87,6 +86,63 @@ function flipFirstByte(hex: string): string {
 }
 
 afterEach(() => jest.restoreAllMocks());
+
+describe("Frank-CBOR Monad message envelope", () => {
+  const actualAliceAddress = "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A";
+  const actualBobAddress = "0x1563915e194D8CfBA1943570603F7606A3115508";
+
+  it("emits type-5 schema 2 with suite 1 and round-trips XChaCha20-Poly1305", () => {
+    const bytes = buildFrankCborEnvelope({
+      fromAddress: actualAliceAddress,
+      fromPrivateKey: alicePrivateKey,
+      toAddress: actualBobAddress,
+      toPubKey: bobPubKey,
+      plaintext: "cbor hello",
+      networkTag: "MONT",
+    });
+    expect(Buffer.from(bytes.subarray(0, 4)).toString("ascii")).toBe("FRNK");
+    const envelope = parseEnvelope(bytes);
+    expect(envelope).toMatchObject({
+      v: 3,
+      networkTag: "mont",
+      from: actualAliceAddress,
+      to: actualBobAddress,
+    });
+    expect(
+      decryptEnvelope({
+        envelope: envelope!,
+        myPrivateKey: bobPrivateKey,
+        senderPubKey: alicePubKey,
+      })
+    ).toBe("cbor hello");
+  });
+
+  it("fails closed when the suite-1 ciphertext or T3b proof is changed", () => {
+    const bytes = buildFrankCborEnvelope({
+      fromAddress: actualAliceAddress,
+      fromPrivateKey: alicePrivateKey,
+      toAddress: actualBobAddress,
+      toPubKey: bobPubKey,
+      plaintext: "authenticated",
+      networkTag: "monad",
+    });
+    const envelope = parseEnvelope(bytes);
+    if (envelope?.v !== 3) throw new Error("expected Frank-CBOR envelope");
+    const changedCiphertext = Uint8Array.from(envelope.cryptoBoxEnvelope);
+    changedCiphertext[changedCiphertext.length - 1] ^= 1;
+    expect(() =>
+      decryptEnvelope({
+        envelope: { ...envelope, cryptoBoxEnvelope: changedCiphertext },
+        myPrivateKey: bobPrivateKey,
+        senderPubKey: alicePubKey,
+      })
+    ).toThrow("monad-envelope:open-failed");
+
+    const changedFrame = Uint8Array.from(bytes);
+    changedFrame[changedFrame.length - 1] ^= 1;
+    expect(parseEnvelope(changedFrame)).toBeUndefined();
+  });
+});
 
 describe("Monad message envelope v2", () => {
   it("matches a fixed vector and round-trips sender to recipient", () => {

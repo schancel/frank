@@ -632,14 +632,24 @@ describe("createMonadChain: directMessages.send", () => {
       new Uint8Array(bob.compressedPubKey)
     );
     expect(call.stampValueWei).toBe(requestedStampValue);
-    // The envelope is real, encrypted JSON -- not the plaintext items themselves.
-    const envelopeJson = JSON.parse(
-      new TextDecoder().decode(call.encryptedPayload)
+    // The live writer emits a Frank-CBOR type-5 schema-2 frame with crypto-box suite 1.
+    const envelope = parseEnvelope(call.encryptedPayload);
+    expect(envelope).toBeDefined();
+    expect(envelope?.v).toBe(3);
+    expect(envelope?.from).toBe(alice.address.raw);
+    expect(envelope?.to).toBe(bob.address.raw);
+    expect(new TextDecoder().decode(call.encryptedPayload)).not.toContain(
+      "hi bob"
     );
-    expect(envelopeJson.from).toBe(alice.address.raw);
-    expect(envelopeJson.to).toBe(bob.address.raw);
-    expect(typeof envelopeJson.ciphertext).toBe("string");
-    expect(JSON.stringify(items)).not.toContain(envelopeJson.ciphertext);
+    expect(
+      JSON.parse(
+        decryptEnvelope({
+          envelope: envelope!,
+          myPrivateKey: bob.toNakamotoPrivateKey(),
+          senderPubKey: alice.compressedPubKey,
+        })
+      )
+    ).toEqual(items);
   });
 
   it("throws if no profile/pubkey is registered for the recipient", async () => {

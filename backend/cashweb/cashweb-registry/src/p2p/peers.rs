@@ -7,6 +7,7 @@ use bitcoinsuite_error::Result;
 use cashweb_payload::payload::SignedPayload;
 use futures::{FutureExt, StreamExt};
 use rand::Rng;
+use url::Url;
 
 use crate::{
     http::server::{PutMessageRequest, PutMetadataRequest},
@@ -37,9 +38,14 @@ impl Peers {
 
     /// Public relay origins a client may independently try for reads or transaction broadcast.
     pub fn public_origins(&self) -> Vec<String> {
-        std::iter::once(self.own_origin.clone())
-            .chain(self.peers.iter().map(|peer| peer.url().to_string()))
-            .collect()
+        let mut origins = std::iter::once(self.own_origin.parse::<Url>().ok())
+            .chain(self.peers.iter().map(|peer| Some(peer.url().clone())))
+            .flatten()
+            .filter_map(public_http_origin)
+            .collect::<Vec<_>>();
+        origins.sort();
+        origins.dedup();
+        origins
     }
 
     /// Relay the metadata to all the peers.
@@ -69,6 +75,43 @@ impl Peers {
             peer.relay_message_to(relay_info, request, &self.own_origin, &self.client)
         }))
         .await;
+    }
+}
+
+fn public_http_origin(url: Url) -> Option<String> {
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return None;
+    }
+    let origin = url.origin().ascii_serialization();
+    (origin != "null").then_some(origin)
+}
+
+#[cfg(test)]
+mod public_origin_tests {
+    use super::*;
+
+    #[test]
+    fn discovery_exposes_only_deduplicated_http_origins() {
+        let peers = Peers::new(
+            "https://owner:secret@example.test/private?token=hidden#fragment".to_string(),
+            vec![
+                Peer::new(
+                    "https://other:password@peer.test:8443/internal?key=secret"
+                        .parse()
+                        .unwrap(),
+                ),
+                Peer::new("https://example.test/another-path".parse().unwrap()),
+                Peer::new("file:///private/relay".parse().unwrap()),
+            ],
+        );
+
+        assert_eq!(
+            peers.public_origins(),
+            vec![
+                "https://example.test".to_string(),
+                "https://peer.test:8443".to_string(),
+            ]
+        );
     }
 }
 

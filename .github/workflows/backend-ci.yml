@@ -5,9 +5,9 @@ on:
     branches: [main]
     paths:
       - "backend/**"
-      - "packages/**/*.proto"
-      - "packages/**/*_pb.js"
-      - "packages/**/*_pb.d.ts"
+      - "**/*.proto"
+      - "**/*_pb.js"
+      - "**/*_pb.d.ts"
       - "docs/protocol/check-protobuf-inventory.sh"
       - "docs/protocol/protobuf-inventory.snapshot"
       - ".github/workflows/backend-ci.yml"
@@ -15,9 +15,9 @@ on:
     branches: [main]
     paths:
       - "backend/**"
-      - "packages/**/*.proto"
-      - "packages/**/*_pb.js"
-      - "packages/**/*_pb.d.ts"
+      - "**/*.proto"
+      - "**/*_pb.js"
+      - "**/*_pb.d.ts"
       - "docs/protocol/check-protobuf-inventory.sh"
       - "docs/protocol/protobuf-inventory.snapshot"
       - ".github/workflows/backend-ci.yml"

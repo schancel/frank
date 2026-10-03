@@ -436,10 +436,15 @@ topic/pubsub records enter target federation. Each family defines a canonical se
 that commits its authoritative semantic body and revision/predecessor context as that family
 requires. A domain-separated `event_id` derives only from network, stream, record family and that
 canonical `record_id`, never from alternate wrapper or signature bytes. The same `record_id` with
-different semantic bytes is a conflict. Multiple valid wrappers, signatures or authorization
-proofs merge as evidence for one event; they do not create events. Durable exact deduplication by
-`event_id` precedes append and forwarding. Bloom filters MAY avoid work but are never acceptance,
-absence or deletion authority, and false positives fall back to exact lookup.
+different semantic bytes is a conflict. Durable exact deduplication by `event_id` precedes append
+and forwarding. For an existing `event_id`, the receiver validates the record and incoming
+transport proof as needed, then returns `ALREADY_KNOWN` without another journal append, forward or
+durable-byte increase. The original acceptance retains at most one bounded sufficient transport
+proof, selected by the family's canonical deterministic rule; semantic snapshots exclude alternate
+wrapper and randomized-signature encodings. If authorization semantically requires a threshold or
+multiple proofs, the family instead defines one canonical bounded proof set and commits that set in
+`record_id`; it is not mutable transport evidence. Bloom filters MAY avoid work but are never
+acceptance, absence or deletion authority, and false positives fall back to exact lookup.
 
 A cursor and its journal state are scoped to `(remote provider identity, stream, network,
 subscription_generation)`. Pages name a fixed signed high-water mark and do not grow underneath a
@@ -1077,7 +1082,9 @@ restart/replay without double credit; frozen Monad JSON v1/v2 decrypt and trimme
 cross-family crypto-box rejection and sender rotation; Lotus normalization/merge, payload-hash
 identity, half-open boundaries and payload-less augmentation; equal-time legacy cursor/page crashes;
 checked protobuf descriptor/AST inventory, stale-snapshot rejection and runtime reachability before
-source deletion; alternate signature/wrapper cyclic federation dedup and semantic-ID conflict;
+source deletion; randomized-signature/wrapper flood and restart proving one federation journal row,
+bounded retained proof bytes, no duplicate reforward and byte-identical semantic snapshots, plus
+same-`record_id`/different-semantic-body conflict;
 deterministic three-node federation under partition, cycle, Bloom false positive, offline catch-up,
 crash, tuple-scoped expired-cursor snapshot, multi-peer head-only/empty snapshot without global
 deletion, subscription reset and hostile peer discovery;

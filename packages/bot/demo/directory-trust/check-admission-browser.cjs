@@ -377,6 +377,7 @@ async function main() {
     await assert.rejects(
       () => browser.cdp.evaluate(peer, peerOpen('no-locks')),
       /ownership unavailable/,
+      'missing WebLocks must reject before store opening',
     )
     await browser.cdp.evaluate(peer, 'delete navigator.locks')
     await browser.cdp.evaluate(
@@ -390,6 +391,7 @@ async function main() {
     await assert.rejects(
       () => browser.cdp.evaluate(peer, peerOpen('different-db')),
       /ownership unavailable/,
+      'second tab/different database must reject while first owner is active',
     )
     await browser.cdp.evaluate(
       session,
@@ -411,6 +413,7 @@ async function main() {
     await assert.rejects(
       () => browser.cdp.evaluate(peer, peerOpen('different-db')),
       /ownership unavailable/,
+      'delayed save and pending close must retain continuity ownership',
     )
     assert.equal(await browser.cdp.evaluate(session, 'closeFinished'), false)
     await browser.cdp.evaluate(session, 'delaySave=false; releaseSave(); true')
@@ -438,6 +441,7 @@ async function main() {
     await assert.rejects(
       () => browser.cdp.evaluate(session, 'store.close()'),
       /Injected store close failure/,
+      'injected native store close failure must reach the adapter caller',
     )
     await browser.cdp.evaluate(
       session,
@@ -446,6 +450,7 @@ async function main() {
     await assert.rejects(
       () => browser.cdp.evaluate(peer, peerOpen('after-close-retry')),
       /ownership unavailable/,
+      'failed store close must retain continuity ownership until retry',
     )
     await browser.cdp.evaluate(session, 'store.close()')
     await browser.cdp.evaluate(
@@ -502,6 +507,7 @@ async function main() {
     await assert.rejects(
       () => browser.cdp.evaluate(session, 'store.advance([conflict],nowNs)'),
       /fork/i,
+      'authenticated fork must reject a usable current result',
     )
     assert.deepEqual(
       JSON.parse(fs.readFileSync(continuityFile, 'utf8')).checkpoint,
@@ -518,6 +524,7 @@ async function main() {
     await assert.rejects(
       () => browser.cdp.evaluate(session, 'store.current(nowNs)'),
       /fork/i,
+      'reopened quarantined store must reject a usable current result',
     )
     await browser.cdp.evaluate(session, 'store.close()')
     console.log(

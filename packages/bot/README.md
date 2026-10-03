@@ -52,6 +52,15 @@ cap). It prints every bot address, the app URL and the exact command to start th
 `<state dir>/logs/`. Missing prerequisites (Node, `bash`, `cargo` or `CASHWEBD_BIN`, a busy port, an
 absent RPC URL or wallet file) each print one line, never a stack trace.
 
+Source builds also need a usable native `protoc` (libprotoc 3+ with proto3 support). The relay
+launcher validates `PROTOC` when set; otherwise it searches PATH, then the installed `protoc`
+npm package's native compiler. It skips npm's CLI wrapper, which can have a CRLF shebang.
+If the npm native payload is absent (for example after an install without postinstall scripts),
+install a native compiler or set `PROTOC='/path with spaces/protoc'`. An invalid override fails
+before Cargo; the launcher never downloads tools or edits dependencies. A prebuilt `CASHWEBD_BIN`
+needs no compiler. This temporary build resolver goes away with the remaining prost inputs
+(#130/#132).
+
 **The app** (started by you, in another terminal, from the repo root) must be given the relay, the
 chain and the burn address. The launcher prints the exact command; with `--fake-chain` it is
 
@@ -207,6 +216,7 @@ to skip the Cargo build.
 | `FRANK_DEMO_RELAY_PORT`               | relay            | 8098                                                                        | Port the local relay listens on (127.0.0.1).                                                                                                                                                                                                                                                                                                               |
 | `FRANK_DEMO_FAKE_RPC_PORT`            | chain            | 8545                                                                        | Port of the fake-chain RPC (only with FRANK_DEMO_FAKE_CHAIN=1).                                                                                                                                                                                                                                                                                            |
 | `CASHWEBD_BIN`                        | relay            | built with Cargo                                                            | Path of a prebuilt cashwebd-exe; skips the Cargo build in run-local-monad.sh.                                                                                                                                                                                                                                                                              |
+| `PROTOC`                              | relay build      | auto-detected                                                               | Native protoc executable path (libprotoc 3+); an invalid override fails before Cargo. Otherwise tries PATH, then the installed npm native compiler. Ignored with CASHWEBD_BIN.                                                                                                                                                                             |
 | `CARGO`                               | relay build      | cargo                                                                       | Toolchain variables (also CARGO_HOME, CARGO_TARGET_DIR, RUSTUP_HOME, RUSTUP_TOOLCHAIN) are passed to the relay build only when set. Ignored with CASHWEBD_BIN.                                                                                                                                                                                             |
 | `CARGO_HOME`                          | relay build      | unset                                                                       | See CARGO.                                                                                                                                                                                                                                                                                                                                                 |
 | `CARGO_TARGET_DIR`                    | relay build      | unset                                                                       | See CARGO. Point it at a scratch directory to keep the build out of the repo tree.                                                                                                                                                                                                                                                                         |

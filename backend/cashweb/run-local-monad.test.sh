@@ -3,6 +3,10 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "$script_dir/../.." && pwd -P)"
+# Exercise the same compiler resolution used by the production launcher.
+PROTOC="$(bash "$script_dir/protoc-tool/resolve.sh" "$repo_root")"
+export PROTOC
+node --test "$script_dir/protoc-tool/resolve.test.cjs"
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/frank-run-local-monad-test.XXXXXX")"
 
 cleanup() {
@@ -56,6 +60,7 @@ FRANK_REAL_CASHWEBD="$fixture_root/bin/real-cashwebd"
 cp "$built_cashwebd" "$FRANK_REAL_CASHWEBD"
 export FRANK_REAL_CASHWEBD
 cp "$script_dir/run-local-monad.sh" "$fixture_root/backend/cashweb/"
+cp -R "$script_dir/protoc-tool" "$fixture_root/backend/cashweb/"
 cp "$script_dir/cashwebd.local.toml" "$fixture_root/backend/cashweb/"
 cp "$repo_root/.agents/scripts/with-cargo-slot" "$fixture_root/.agents/scripts/"
 

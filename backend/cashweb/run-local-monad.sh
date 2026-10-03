@@ -155,7 +155,8 @@ artifact_parser='
 if [[ -n "${CASHWEBD_BIN:-}" ]]; then
     cashwebd="$CASHWEBD_BIN"
 else
-cashwebd="$("$repo_root/.agents/scripts/with-cargo-slot" bash -c '
+protoc="$(bash "$script_dir/protoc-tool/resolve.sh" "$repo_root")"
+cashwebd="$(PROTOC="$protoc" "$repo_root/.agents/scripts/with-cargo-slot" bash -c '
     set -euo pipefail
     "$1" build -p cashwebd-exe --bin cashwebd-exe \
         --message-format=json-render-diagnostics |

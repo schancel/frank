@@ -45,6 +45,10 @@ grep -q '^host = "127.0.0.1:8098"$' "$work/out/run.toml" || fail "default host c
 grep -q '^db_path = "data/registry.rocksdb"$' "$work/out/run.toml" || fail "default db_path changed"
 grep -q curated_defaults "$work/out/run.toml" && fail "unexpected extra toml"
 
+# A prebuilt launch never resolves a compiler (the resolver is not even copied).
+run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashwebd" \
+    PROTOC="$work/no-such-compiler"
+
 # 3. A repo-root .env is ignored when FRANK_RUN_LOCAL_SKIP_DOTENV=1 and honoured otherwise.
 printf 'FRANK_NETWORK_TAG=MON1\nMONAD_TESTNET_CHAIN_ID=143\n' >"$work/repo/.env"
 rm -f "$work/out/"*

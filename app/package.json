@@ -39,7 +39,6 @@
     "@quasar/extras": "^1.15.11",
     "axios": "^0.24.0",
     "bip39": "^3.0.2",
-    "bitcore-lib-xpi": "*",
     "chronik-client": "^0.8.2",
     "core-js": "^3.24.1",
     "dompurify": "^2.3.1",
@@ -60,6 +59,7 @@
     "worker-loader": "^3.0.8"
   },
   "devDependencies": {
+    "bitcore-lib-xpi": "*",
     "sass": "^1.105.0",
     "rollup-plugin-polyfill-node": "^0.13.0",
     "@rollup/plugin-inject": "^5.0.5",

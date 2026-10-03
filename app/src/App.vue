@@ -239,11 +239,13 @@ export default defineComponent({
             console.error(err)
             // TODO: Move specialization down error displayer
             if (err.response.status === 413) {
-              errorNotify(new Error(this.$t('profileDialog.avatarTooLarge')))
+              errorNotify(err, { fallbackKey: 'profileDialog.avatarTooLarge' })
               this.$q.loading.hide()
               throw err
             }
-            errorNotify(new Error(this.$t('profileDialog.unableContactRelay')))
+            errorNotify(err, {
+              fallbackKey: 'profileDialog.unableContactRelay',
+            })
             throw err
           })
       })

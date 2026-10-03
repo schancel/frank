@@ -609,6 +609,12 @@ export function resolveDemoConfig(params: {
         QWEN_BOT_IDENTITY_JSON: idPath('qwen'),
         QWEN_BOT_HANDOFF_JSON: join(stateDir, 'bots', 'qwen', 'handoff.json'),
         QWEN_BOT_STATE_DIR: stateOf('qwen'),
+        QWEN_BOT_WALLET_STATE_DIR: join(
+          stateDir,
+          'bots',
+          'qwen',
+          'wallet-state',
+        ),
         // The faucet funds new users; the Qwen bot must not fund them a second time.
         QWEN_BOT_FUND_VALUE_WEI: '0',
       },

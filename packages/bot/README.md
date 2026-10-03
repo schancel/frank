@@ -15,12 +15,14 @@ yarn demo                   # against Monad testnet, using your .env (below)
 ```
 
 Run either from the repo root (or packages/bot). `yarn demo` runs `node --import tsx
-packages/bot/demo/demo.ts` directly, with no second `yarn`/`tsx` process in between. Stop it with
+packages/bot/demo/demo.ts` directly with the bot tsconfig selected, with no second `yarn`/`tsx`
+process in between. Stop it with
 Ctrl-C, `kill -INT <pid>` or `kill -TERM <pid>` using the launcher pid it prints (that is the
 `node` process). Killing the top-level `yarn` process (`kill -INT <yarn pid>`: yarn exits without
 forwarding SIGINT) also stops the stack: a launcher started by yarn notices that yarn is gone
 within a second and shuts down like a closed terminal. If you script it, prefer
-`node --import tsx packages/bot/demo/demo.ts` and signal that pid.
+`TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/demo.ts` and
+signal that pid.
 
 How the parent check works: when yarn started the launcher, the launcher polls its parent pid once
 a second. Nothing changes while yarn is alive, so `nohup yarn demo &` keeps working (yarn stays the
@@ -513,10 +515,14 @@ yarn bot   # keeps running; set QWEN_BOT_MAX_REPLIES=<n> to exit after n replies
 QWEN_BOT_MODE=stub yarn bot   # still needs the relay/RPC/wallet env, but no Qwen key
 ```
 
-By default the bot only replies to messages received after that process began starting. This
-prevents a restart from paying for duplicate replies to retained mailbox history while still
-including messages that arrive during sender-account funding. Set
-`QWEN_BOT_MESSAGE_SINCE_MS=<unix milliseconds>` only when intentionally backfilling older mail.
+The bot persists its mailbox/profile cursors, greeted and processed identities, and per-user Qwen
+conversation history under `QWEN_BOT_STATE_DIR` (default `~/.frank-bots/qwen`, or under
+`$XDG_STATE_HOME`). Its HD sender seed, single-use account pools, and exact payment journals live separately under
+`QWEN_BOT_WALLET_STATE_DIR` (default `~/.frank-bots/qwen-wallet`, or under
+`$XDG_STATE_HOME`). On restart it reconciles that
+wallet authority before funding or signing anything new, then resumes the persisted mailbox
+cursor. Set `QWEN_BOT_MESSAGE_SINCE_MS=<unix milliseconds>` only for a new state root or an
+intentional historical backfill.
 
 In a separate shell, once the bot prints its address (or is already running from a prior run —
 its identity persists at `QWEN_BOT_IDENTITY_JSON`, default `/tmp/qwen-bot-identity.json`):
@@ -550,21 +556,19 @@ third-party addresses.
 Configuration (env vars, all optional):
 
 - `QWEN_BOT_MAX_GREETINGS` -- max new registrations to greet+fund per run (default `5`). Also
-  widens the bot's pre-funded stamp sub-account pool (`poolSize = maxReplies + maxGreetings`),
-  since a greeting DM consumes a disposable sub-account exactly like a Qwen reply does.
+  limits real greeting stamp payments and funding transfers. Sender inventory is prepared lazily
+  for each send instead of pre-funding a large nonce-contending batch.
 - `QWEN_BOT_GREETING_MESSAGE` -- the greeting DM's text (default: a short welcome message).
-- `QWEN_BOT_FUND_VALUE_WEI` -- wei sent to each newly-greeted address (default `1000000000000000`,
-  i.e. 0.001 MON -- a small, symbolic amount, not full burn-cost coverage).
+- `QWEN_BOT_FUND_VALUE_WEI` -- wei sent to each newly-greeted address (default
+  `50000000000000000`, i.e. 0.05 MON, enough for the preferred two-payment testnet flow under the
+  current fee assumptions).
+- `QWEN_BOT_STATE_DIR` -- durable polling, dedupe, and Qwen conversation state.
+- `QWEN_BOT_WALLET_STATE_DIR` -- durable bot sender seed, account pools, and payment journals.
 
-Idempotency: matches this script's own message-reply loop's risk tolerance -- an in-memory
-`Set` of already-greeted addresses avoids double-greeting/double-funding within a single run, but
-(like `processedPayloadHashes` for messages) isn't persisted across restarts. A restart could in
-principle re-greet an address it already greeted in a prior run; there's no persistent dedupe
-layer for this manually-run demo script, matching its existing standard.
-
-**Not live-tested in the environment this ticket was implemented in** -- no funded testnet wallet
-or live relay was available in that sandbox. Verified via `yarn jest`/`tsc --noEmit`/code review
-only; see the ticket's PR description for the exact commands run.
+The sender demo uses the equivalent `QWEN_SENDER_WALLET_STATE_DIR` (default
+`~/.frank-bots/qwen-sender-wallet`, or under `$XDG_STATE_HOME`). Keep the bot and sender roots
+distinct: opening one root in two processes fails closed rather than allowing two signers to race
+the same accounts and nonces.
 
 ## Bot loop guard (#311)
 

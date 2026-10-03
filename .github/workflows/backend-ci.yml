@@ -3,10 +3,24 @@ name: backend - build and test
 on:
   push:
     branches: [main]
-    paths: ["backend/**", ".github/workflows/backend-ci.yml"]
+    paths:
+      - "backend/**"
+      - "**/*.proto"
+      - "**/*_pb.js"
+      - "**/*_pb.d.ts"
+      - "docs/protocol/check-protobuf-inventory.sh"
+      - "docs/protocol/protobuf-inventory.snapshot"
+      - ".github/workflows/backend-ci.yml"
   pull_request:
     branches: [main]
-    paths: ["backend/**", ".github/workflows/backend-ci.yml"]
+    paths:
+      - "backend/**"
+      - "**/*.proto"
+      - "**/*_pb.js"
+      - "**/*_pb.d.ts"
+      - "docs/protocol/check-protobuf-inventory.sh"
+      - "docs/protocol/protobuf-inventory.snapshot"
+      - ".github/workflows/backend-ci.yml"
 
 # NOTE: adapted from the pre-fork `cashweb` repo's own ci.yml, which checked out `cashweb` and
 # `bitcoinsuite` as separate sibling repos. In this monorepo both are already vendored as
@@ -73,12 +87,17 @@ jobs:
           ${{ runner.os }}-flatbuffers-ninja-
 
     - name: Install Protoc
-      uses: arduino/setup-protoc@v1
+      uses: arduino/setup-protoc@v3
       with:
+        version: "36.2"
         # Without a token this calls the GitHub releases API unauthenticated (60 req/hr, shared
         # across the whole GitHub Actions runner IP pool) and was hitting "API rate limit
         # exceeded" during iteration on this workflow.
         repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Check protobuf source and generated-binding inventory
+      run: ./docs/protocol/check-protobuf-inventory.sh --check
+      shell: bash
 
     - name: Install ninja
       uses: seanmiddleditch/gha-setup-ninja@master

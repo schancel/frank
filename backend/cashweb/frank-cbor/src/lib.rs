@@ -15,8 +15,9 @@
 //! algorithms at `unsupported` before any verification). Stages 10.1-10.5 (the type-1 stamp
 //! checks: decrypted frame, T3, DLEQ, payment observations) are out of scope, matching the
 //! TypeScript reference codec. The pure-value M2/M3/M6 mappings of section 11 (lossless
-//! milliseconds, Keccak-256 address derivation) are in [`registration`]. Nothing here is
-//! wired into cashwebd or a stored record format.
+//! milliseconds, Keccak-256 address derivation) are in [`registration`]. Cashwebd consumes this
+//! crate for explicit CBOR account registration and opt-in CBOR topics. Direct-message and mailbox
+//! paths are not wired to it.
 
 mod cbor;
 mod crypto;

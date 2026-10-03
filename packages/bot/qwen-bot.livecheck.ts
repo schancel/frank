@@ -70,6 +70,8 @@
  *                                  processed-message idempotency sets, and per-user Qwen
  *                                  conversation history is kept (default ~/.frank-bots/qwen, or $XDG_STATE_HOME/frank-bots/qwen).
  *                                  Survives restarts -- delete this directory to start clean.
+ *   QWEN_BOT_WALLET_STATE_DIR   -- durable HD seed, sender/change pools, and exact stamp journals
+ *                                  (default ~/.frank-bots/qwen-wallet, or $XDG_STATE_HOME/frank-bots/qwen-wallet).
  */
 import { writeFileSync } from 'fs'
 import { resolve } from 'path'
@@ -89,11 +91,8 @@ import {
   tryDecryptEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
-import { botStateDir } from './bot-state-dir'
-import {
-  createQwenReplyGenerator,
-  qwenBotConfigFromEnv,
-} from './qwen-reply'
+import { botStateDir, persistentStateDir } from './bot-state-dir'
+import { createQwenReplyGenerator, qwenBotConfigFromEnv } from './qwen-reply'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 import { extractPromptText } from './qwen-prompt'
 import {
@@ -101,7 +100,7 @@ import {
   registerAndLog,
   requiredEnv,
   sendDirectMessageText,
-  setUpFundedStampClient,
+  setUpDurableFundedStampClient,
 } from './qwen-bot-common'
 import { botProfileFields } from './bot-directory'
 import { QwenBotStateStore } from './qwen-bot-state'
@@ -117,6 +116,9 @@ const SYSTEM_PROMPT =
     'you receive was paid for with a real, tiny MON payment from disposable funding accounts, ' +
     'and your replies are delivered back the same way. Keep replies short (2-4 sentences) since ' +
     'each one costs a real transaction.'
+
+let closeFundedSetup: (() => Promise<void>) | undefined
+let closeBotState: (() => Promise<void>) | undefined
 
 async function main() {
   // Validated first so a missing key fails immediately, naming the variable (#314).
@@ -157,6 +159,10 @@ async function main() {
   // user's Qwen conversation history across restarts -- see qwen-bot-state.ts's own header for
   // the concrete user-visible bug this fixes.
   const stateDirPath = botStateDir('qwen', 'QWEN_BOT_STATE_DIR')
+  const walletStateDirPath = persistentStateDir(
+    'qwen-wallet',
+    'QWEN_BOT_WALLET_STATE_DIR',
+  )
   const pollIntervalMs = Number(process.env.QWEN_BOT_POLL_INTERVAL_MS ?? 4000)
   // Keep running by default; QWEN_BOT_MAX_REPLIES=<n> is the explicit exit-after-n flag.
   const { maxReplies, idleTimeoutMs } = botConfig
@@ -211,15 +217,16 @@ async function main() {
   // tonight's nonce-contention pain: a fixed pool sized to `maxReplies + maxGreetings` meant a big
   // burst of near-simultaneous funding transactions from one account before the bot ever reached
   // its polling loop.
-  const { stampClient, mainAccountSigner, provider, pool, closePool } =
-    await setUpFundedStampClient({
-      rpcUrl,
-      relayBaseUrl,
-      mainWalletJsonPath,
-      stampValueWei,
-      label: 'bot',
-      stateDir: stateDirPath,
-    })
+  const fundedSetup = await setUpDurableFundedStampClient({
+    rpcUrl,
+    relayBaseUrl,
+    mainWalletJsonPath,
+    stateRoot: walletStateDirPath,
+    stampValueWei,
+    label: 'bot',
+  })
+  const { stampClient, mainAccountSigner, provider, pool } = fundedSetup
+  closeFundedSetup = fundedSetup.close
 
   // #311: never greet/reply to other bots, and cap replies per peer per window (see
   // bot-loop-guard.ts for the env knobs).
@@ -233,6 +240,7 @@ async function main() {
 
   const state = new QwenBotStateStore(stateDirPath)
   await state.Open()
+  closeBotState = () => state.Close()
   console.log(`[bot] persisted state loaded from ${stateDirPath}`)
 
   // A process restart must not replay every retained message and pay for duplicate replies.
@@ -306,9 +314,7 @@ async function main() {
           profile.signedPayload,
         )
         if (skipReason) {
-          console.log(
-            `[bot] not greeting ${profile.address} (${skipReason})`,
-          )
+          console.log(`[bot] not greeting ${profile.address} (${skipReason})`)
           continue
         }
         if (state.hasGreeted(profile.address)) continue // idempotency guard, persisted
@@ -472,10 +478,14 @@ async function main() {
       )
       const completion = await replyGenerator.reply(history)
       console.log(
-        `[bot] ${replyGenerator.mode === 'stub' ? 'STUB' : 'Qwen'} reasoning: ${completion.reasoning.slice(0, 400)}`,
+        `[bot] ${
+          replyGenerator.mode === 'stub' ? 'STUB' : 'Qwen'
+        } reasoning: ${completion.reasoning.slice(0, 400)}`,
       )
       console.log(
-        `[bot] ${replyGenerator.mode === 'stub' ? 'STUB' : 'Qwen'} reply: "${completion.content}"`,
+        `[bot] ${replyGenerator.mode === 'stub' ? 'STUB' : 'Qwen'} reply: "${
+          completion.content
+        }"`,
       )
 
       history.push({ role: 'assistant', content: completion.content })
@@ -522,10 +532,10 @@ async function main() {
     await sleep(pollIntervalMs)
   }
 
-  await state.Close()
-  await closePool()
   console.log(
-    `\nDone. Sent ${repliesSent} ${replyGenerator.mode === 'stub' ? 'STUB (canned)' : 'real Qwen-generated'} repl${
+    `\nDone. Sent ${repliesSent} ${
+      replyGenerator.mode === 'stub' ? 'STUB (canned)' : 'real Qwen-generated'
+    } repl${
       repliesSent === 1 ? 'y' : 'ies'
     } and greeted+funded ${greetingsSent} new profile registration${
       greetingsSent === 1 ? '' : 's'
@@ -533,11 +543,23 @@ async function main() {
   )
 }
 
-main().catch(err => {
-  // Message only (no stack) for the operator-facing config errors; set QWEN_BOT_DEBUG=1 for the stack.
-  console.error(
-    '\nQWEN BOT FAILED:',
-    process.env.QWEN_BOT_DEBUG ? err : err instanceof Error ? err.message : err,
-  )
-  process.exit(1)
-})
+main()
+  .finally(async () => {
+    try {
+      await closeBotState?.()
+    } finally {
+      await closeFundedSetup?.()
+    }
+  })
+  .catch(err => {
+    // Message only (no stack) for operator-facing config errors; opt into the stack for debugging.
+    console.error(
+      '\nQWEN BOT FAILED:',
+      process.env.QWEN_BOT_DEBUG
+        ? err
+        : err instanceof Error
+        ? err.message
+        : err,
+    )
+    process.exit(1)
+  })

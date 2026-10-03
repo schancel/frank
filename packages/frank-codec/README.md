@@ -1,10 +1,13 @@
 # @frank/codec
 
-Browser-safe TypeScript reference codec for Frank deterministic CBOR, version 1. The
-normative specification is `docs/protocol/cbor/` (README, `*.cddl`, `vectors.schema.json`).
-This is the prototype package for issues #131 and #183; issue #136 adds the topic-event types. No production message, profile,
-mailbox, topic or payment path uses it. Rollback is deleting this package and
-`docs/protocol/cbor/vectors/`. The Rust codec is `backend/cashweb/frank-cbor`.
+Browser-safe TypeScript reference codec for Frank deterministic CBOR, version 1. The protocol
+semantics and status front door is [`docs/CASHWEB-PROTOCOL-SPEC.md`](../../docs/CASHWEB-PROTOCOL-SPEC.md).
+`docs/protocol/cbor/README.md` owns the current encoding/validation profile, `*.cddl` owns exact
+structure, and `vectors.schema.json` plus the committed vectors are executable proof.
+This is the prototype package for issues #131 and #183; issue #136 adds the topic-event types.
+Explicit CBOR topic writers and account registration use it, but normal topic and profile writers
+still default to protobuf; no production DM or mailbox path uses it. The Rust codec is
+`backend/cashweb/frank-cbor`.
 It is not imported here. Shared vectors under `docs/protocol/cbor/vectors/` are
 the compatibility contract.
 
@@ -90,7 +93,8 @@ Entry point `src/index.ts`.
   the burn is an up-vote); the relay checks and rejects a mismatch before broadcasting. Writer
   misuse (a lone surrogate, an unknown direction, a wrong-length or non-`Uint8Array` commitment,
   or any argument of the wrong JavaScript type) throws `FrankCodecError`.
-  Nothing calls them yet; wiring them into the wallet's topic clients is a later ticket.
+  The wallet topic clients call them only when explicitly configured with
+  `topicWriteFormat: 'cbor'`; their default remains protobuf.
 
 Returned frames are views of one private copy of the input; do not mutate them.
 

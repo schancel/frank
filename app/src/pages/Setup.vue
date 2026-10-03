@@ -650,8 +650,7 @@ export default defineComponent({
           const stepper = this.$refs.stepper as QStepper
           stepper.next()
         } else {
-          const registryErr = new Error(this.$t('setup.errorContactRegistry'))
-          errorNotify(registryErr)
+          errorNotify(err, { fallbackKey: 'setup.errorContactRegistry' })
         }
       } finally {
         this.$q.loading.hide()
@@ -684,7 +683,7 @@ export default defineComponent({
         if (!err.response) {
           this.$q.loading.hide()
           // Relay URL malformed
-          errorNotify(new Error(this.$t('setup.networkErrorRelayDied')))
+          errorNotify(err, { fallbackKey: 'setup.networkErrorRelayDied' })
           throw err
         }
       } finally {
@@ -822,10 +821,10 @@ export default defineComponent({
         // TODO: ProfileDialog uses different localization for no particular reason.
         // TODO: move specialization down to errorNotify
         if (err.response?.status === 413) {
-          errorNotify(new Error(this.$t('setup.profileImageLargeError')))
+          errorNotify(err, { fallbackKey: 'setup.profileImageLargeError' })
           throw err
         }
-        errorNotify(new Error(this.$t('setup.networkErrorRelayUnexpected')))
+        errorNotify(err, { fallbackKey: 'setup.networkErrorRelayUnexpected' })
         throw err
       } finally {
         this.$q.loading.hide()

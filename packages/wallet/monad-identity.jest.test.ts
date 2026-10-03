@@ -68,6 +68,21 @@ function displayNameFixtureInput(testCase: DisplayNameFixtureCase): string {
 }
 
 describe('MonadIdentity', () => {
+  it('derives a stable identity from an isolated byte domain root', () => {
+    const root = new Uint8Array(32).fill(0x63)
+    const first = MonadIdentity.fromDomainRoot({
+      purpose: 'identity-authentication',
+      bytes: root,
+    })
+    root.fill(0)
+    const second = MonadIdentity.fromDomainRoot({
+      purpose: 'identity-authentication',
+      bytes: new Uint8Array(32).fill(0x63),
+    })
+    expect(first.address).toEqual(second.address)
+    expect(first.compressedPubKey).toEqual(second.compressedPubKey)
+  })
+
   it('derives an EIP-55 checksummed 0x address, deterministically, from a seed', () => {
     const a = MonadIdentity.fromSeed(SEED)
     const b = MonadIdentity.fromSeed(SEED)

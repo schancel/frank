@@ -8,29 +8,49 @@ const $t = (key: string) => translateMessage(key)
 
 function negativeNotify(text: string) {
   Notify.create({
-    message: '<div class="text-center"> ' + text + ' </div>',
-    html: true,
+    message: text,
+    html: false,
+    classes: 'text-center',
     color: 'negative',
   })
 }
 
-export function errorNotify(
-  err: { response?: unknown; message: string } & { shortMessage?: unknown },
-) {
+export type ErrorNotifyOptions = {
+  /** A stable i18n key for a more specific user-facing recovery message. */
+  fallbackKey?: string
+  /** An already-localized, app-authored message. Never pass provider or relay text here. */
+  safeMessage?: string
+}
+
+const genericErrorKey = 'notifications.unexpectedError'
+
+function errorMessageFor(options: ErrorNotifyOptions): string {
+  if (options.fallbackKey) {
+    const translatedFallback = $t(options.fallbackKey)
+    if (translatedFallback !== options.fallbackKey) {
+      return translatedFallback
+    }
+  }
+  if (options.safeMessage) {
+    return options.safeMessage
+  }
+  return $t(genericErrorKey)
+}
+
+export function errorNotify(err: unknown, options: ErrorNotifyOptions = {}) {
   console.error(err)
-  if (err.response) {
+  if (
+    typeof err === 'object' &&
+    err !== null &&
+    'response' in err &&
+    err.response
+  ) {
     console.error(err.response)
   }
-  // Found live testing a real failed send (ticket #53 GUI verification): a real ethers v6
-  // CALL_EXCEPTION's `.message` is a full technical dump (the exact failing tx's calldata, `to`,
-  // `code`, library version, ...) -- correctly surfaced (the notification mechanism itself
-  // works), just unreadable for an end user trying to figure out why their message didn't send.
-  // ethers v6 errors carry a separate `.shortMessage` specifically for this (a terse,
-  // human-readable summary) -- e.g. "missing revert data" here, not the whole dump. Falls back to
-  // the full `.message` for plain `Error`s (no `.shortMessage`), unchanged from before.
-  const message =
-    typeof err.shortMessage === 'string' ? err.shortMessage : err.message
-  negativeNotify(message)
+  // Provider and relay errors can contain transaction dumps, English-only text, or markup. Keep
+  // those details in diagnostics and make the user-facing recovery message an explicit app-owned
+  // translation. A missing caller key fails closed to the generic message.
+  negativeNotify(errorMessageFor(options))
 }
 
 // Info notifications

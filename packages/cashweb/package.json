@@ -12,7 +12,6 @@
     "@frank/nakamoto": "*",
     "atob": "^2.1.2",
     "axios": "^0.24.0",
-    "bitcore-lib-xpi": "*",
     "bluebird": "^3.7.2",
     "btoa": "^1.2.1",
     "chronik-client": "^0.8.2",
@@ -31,6 +30,7 @@
     "@types/jest": "^29",
     "@types/node-forge": "^0.10.10",
     "@types/vcf": "^2.0.3",
+    "bitcore-lib-xpi": "*",
     "jest": "^29",
     "ts-jest": "^29",
     "typescript": "^5.9.3"

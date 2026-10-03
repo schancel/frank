@@ -29,6 +29,10 @@ imports are issue #257. Topic CBOR that the registry verifies is decoded with
 
 `@frank/wallet` is the usual caller.
 
+The normative human semantics and status index is
+[`docs/CASHWEB-PROTOCOL-SPEC.md`](../../docs/CASHWEB-PROTOCOL-SPEC.md). This package's protobuf
+wire remains the shipped compatibility path until the indexed clean-break cutover.
+
 ## License
 
 The license of this directory is NOT GPLv3. It is MIT, so you can use it in

@@ -1,8 +1,9 @@
 //! Section 9 validation order, stages 1-9 plus stage 10.6.
 //!
-//! Stage 10.6 verifies every type-2 signature entry and key-transition authorization. Stages
-//! 10.1-10.5 (the type-1 stamp checks) are not implemented; a `full` type-1 root is a
-//! context error.
+//! Stage 10.6 verifies every type-2 signature entry and key-transition authorization.
+//! The separate DM session resumes only the structural required-child part of 10.1;
+//! it does not authenticate plaintext or perform the remaining stamp checks. Ordinary
+//! `full` type-1 validation remains a context error.
 
 use std::collections::HashMap;
 
@@ -122,6 +123,8 @@ struct Shared<'a> {
     /// Set when the prior-statement slot is unusable. That is a context error,
     /// which `process_frame` cannot return directly.
     context_error: Option<ContextError>,
+    capture_payload: bool,
+    payload_position: Option<(ParsedFrame, u32, String)>,
 }
 
 struct Envelope {
@@ -521,6 +524,13 @@ fn process_frame(
         check_semantics(&typed, prior_slot.as_ref().map(|slot| slot.as_ref())),
     )?;
     parsed.typed = Some(Box::new(typed));
+    if shared.capture_payload && parsed.type_id == TYPE_RECIPIENT_PAYLOAD {
+        shared.payload_position = Some((
+            parsed.clone(),
+            env_depth + 1,
+            format!("{location}/decrypted"),
+        ));
+    }
     if matches!(mode, Mode::Root) && stop_after == Operation::Full {
         match run_stage_10(&parsed) {
             Ok(()) => {}
@@ -1265,6 +1275,14 @@ fn resolve_prior_view(ctx: &ValidationContext) -> Result<Option<PriorView>, Erro
 /// The returned frames own a copy of the input bytes. A failure returns no
 /// partial typed value. No protobuf, JSON, or BCS fallback is attempted (F5).
 pub fn validate_frame(bytes: &[u8], ctx: &ValidationContext) -> Result<ValidationResult, Error> {
+    validate_root(bytes, ctx, false).map(|(result, _)| result)
+}
+
+fn validate_root<'a>(
+    bytes: &[u8],
+    ctx: &'a ValidationContext,
+    capture_payload: bool,
+) -> Result<(ValidationResult, Shared<'a>), Error> {
     if ctx.route_byte_limit < 1 {
         return Err(Error::Context(ContextError(
             "routeByteLimit must be a positive integer".to_string(),
@@ -1288,6 +1306,8 @@ pub fn validate_frame(bytes: &[u8], ctx: &ValidationContext) -> Result<Validatio
         counters: Counters::default(),
         items_opened: 0,
         context_error: None,
+        capture_payload,
+        payload_position: None,
     };
     let result = process_frame(
         bytes.to_vec(),
@@ -1297,8 +1317,155 @@ pub fn validate_frame(bytes: &[u8], ctx: &ValidationContext) -> Result<Validatio
         "root",
         ctx.operation,
     );
-    if let Some(context) = shared.context_error {
+    if let Some(context) = shared.context_error.take() {
         return Err(Error::Context(context));
     }
-    result.map_err(Error::Codec)
+    result.map(|result| (result, shared)).map_err(Error::Codec)
+}
+
+/// Owned structural results, not authentication, admission, or economic evidence.
+#[derive(Debug)]
+pub struct DirectMessageValidatedContent {
+    /// Original root, returned only after the required content child passes stages 1–9.
+    pub root: ParsedFrame,
+    /// Structurally validated required type-6 plaintext.
+    pub content: ParsedFrame,
+}
+
+/// Opaque, single-use structural continuation. It does not authenticate plaintext or
+/// verify S8/T1a, stamp, DLEQ, payment, or full stage 10. Not cloneable or serializable.
+///
+/// Completion consumes the session even on failure:
+/// ```compile_fail
+/// use frank_cbor::DirectMessageValidationSession;
+/// fn twice(session: DirectMessageValidationSession, bytes: &[u8]) {
+///     let _ = session.complete_authenticated_content(bytes);
+///     let _ = session.complete_authenticated_content(bytes);
+/// }
+/// ```
+pub struct DirectMessageValidationSession {
+    context: ValidationContext,
+    root: ParsedFrame,
+    payload: ParsedFrame,
+    supported: HashMap<u32, u32>,
+    counters: Counters,
+    items_opened: u32,
+    depth: u32,
+    location: String,
+}
+
+impl std::fmt::Debug for DirectMessageValidationSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DirectMessageValidationSession")
+            .finish_non_exhaustive()
+    }
+}
+
+impl DirectMessageValidationSession {
+    /// Immutable structural view; no saved bytes or counters can be mutated through it.
+    pub fn payload(&self) -> &ParsedFrame {
+        &self.payload
+    }
+
+    /// The caller MUST authenticate these bytes before calling. This resumes required
+    /// type-6 validation with the actual original graph counters and nesting depth.
+    /// The plaintext has its own MAX_FRAME_BYTES bound, not a second route-byte charge.
+    pub fn complete_authenticated_content(
+        self,
+        bytes: &[u8],
+    ) -> Result<DirectMessageValidatedContent, Error> {
+        if bytes.len() > MAX_FRAME_BYTES {
+            return Err(Error::Codec(fail(
+                ErrorCategory::Resource,
+                ErrorStage::S1,
+                "decrypted frame exceeds MAX_FRAME_BYTES",
+                &self.location,
+            )));
+        }
+        let mut shared = Shared {
+            ctx: &self.context,
+            supported: self.supported,
+            counters: self.counters,
+            items_opened: self.items_opened,
+            context_error: None,
+            capture_payload: false,
+            payload_position: None,
+        };
+        let result = open_required(bytes.to_vec(), 6, self.depth, &mut shared, &self.location);
+        if let Some(context) = shared.context_error {
+            return Err(Error::Context(context));
+        }
+        Ok(DirectMessageValidatedContent {
+            root: self.root,
+            content: result.map_err(Error::Codec)?,
+        })
+    }
+
+    /// Discard the continuation (also happens on drop). Aborted sessions cannot be reused.
+    /// ```compile_fail
+    /// use frank_cbor::DirectMessageValidationSession;
+    /// fn aborted(session: DirectMessageValidationSession) {
+    ///     session.abort();
+    ///     let _ = session.payload();
+    /// }
+    /// ```
+    pub fn abort(self) {}
+}
+
+/// Begin structural stages 1–9 for an actual type-1/type-5 root containing a production
+/// type-5 schema-2/min-reader-2/suite-1 payload. Requires [`Operation::Typed`]; ordinary
+/// parsing and its unsupported full type-1 operation are unchanged. Owns the context.
+pub fn begin_direct_message_validation(
+    bytes: &[u8],
+    ctx: &ValidationContext,
+) -> Result<DirectMessageValidationSession, Error> {
+    if ctx.route_byte_limit < 1 {
+        return Err(Error::Context(ContextError(
+            "routeByteLimit must be a positive integer".into(),
+        )));
+    }
+    if ctx.operation != Operation::Typed {
+        return Err(Error::Context(ContextError(
+            "DM validation sessions require typed operation".into(),
+        )));
+    }
+    let context = ctx.clone();
+    let (result, mut shared) = validate_root(bytes, &context, true)?;
+    let root = match result {
+        ValidationResult::Parsed(root) if root.type_id == 1 || root.type_id == 5 => root,
+        _ => {
+            return Err(Error::Context(ContextError(
+                "DM sessions require a type-1/type-5 root".into(),
+            )))
+        }
+    };
+    let (payload, depth, location) = shared.payload_position.take().ok_or_else(|| {
+        Error::Context(ContextError(
+            "DM sessions require an opened type-5 payload".into(),
+        ))
+    })?;
+    if payload.schema_version != 2
+        || payload.min_reader_version != 2
+        || !matches!(
+            payload.typed.as_deref(),
+            Some(TypedPayload::RecipientPayload { suite: 1, .. })
+        )
+    {
+        return Err(Error::Context(ContextError(
+            "DM sessions require schema-2 min-reader-2 suite-1 payload".into(),
+        )));
+    }
+    let supported = shared.supported;
+    let counters = shared.counters;
+    let items_opened = shared.items_opened;
+    Ok(DirectMessageValidationSession {
+        context,
+        root,
+        payload,
+        supported,
+        counters,
+        items_opened,
+        depth,
+        location,
+    })
 }

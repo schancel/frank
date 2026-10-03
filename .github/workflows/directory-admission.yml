@@ -1,0 +1,78 @@
+name: directory admission - client policy and durability
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/directory-admission/**'
+      - 'packages/frank-codec/**'
+      - 'backend/cashweb/cashweb-registry/src/directory_admission/**'
+      - 'backend/cashweb/cashweb-registry/src/store/directory_preview.rs'
+      - 'backend/cashweb/cashweb-registry/tests/directory_preview*'
+      - 'docs/protocol/cbor/**'
+      - 'docs/protocol/proposals/suite1-directory/**'
+      - 'docs/protocol/directory-preview*-admission.md'
+      - 'yarn.lock'
+      - '.github/workflows/directory-admission.yml'
+  pull_request:
+    paths:
+      - 'packages/directory-admission/**'
+      - 'packages/frank-codec/**'
+      - 'backend/cashweb/cashweb-registry/src/directory_admission/**'
+      - 'backend/cashweb/cashweb-registry/src/store/directory_preview.rs'
+      - 'backend/cashweb/cashweb-registry/tests/directory_preview*'
+      - 'docs/protocol/cbor/**'
+      - 'docs/protocol/proposals/suite1-directory/**'
+      - 'docs/protocol/directory-preview*-admission.md'
+      - 'yarn.lock'
+      - '.github/workflows/directory-admission.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+      - run: yarn install --frozen-lockfile
+      - name: Types, format and browser dependency boundary
+        run: |
+          yarn workspace @frank/directory-admission typecheck
+          yarn workspace @frank/directory-admission format
+          yarn workspace @frank/directory-admission check:boundary
+      - name: Shared policy and exact-byte corpus consistency
+        run: |
+          yarn workspace @frank/directory-admission test
+          node backend/cashweb/cashweb-registry/tests/directory_preview_corpus.cjs --check
+      - name: Native Level sync, restart, lock and failure boundaries
+        run: yarn workspace @frank/directory-admission test:node
+      - name: Real Chromium strict IndexedDB across tabs and restarts
+        run: yarn workspace @frank/directory-admission test:browser
+      - name: Actual signed retained histories at count and byte caps
+        run: yarn workspace @frank/directory-admission test:resources
+      - name: Existing codec evidence and browser regressions
+        run: |
+          yarn workspace @frank/codec test --runInBand test/directory-preview.jest.test.ts
+          yarn workspace @frank/codec check:browser
+  rust-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CC: gcc-12
+      CXX: g++-12
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Native build prerequisites matching the existing backend toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-12 g++-12 libclang-dev libssl-dev protobuf-compiler
+      - name: Published Rust public-facade conformance gate
+        working-directory: backend/cashweb
+        run: ../../.agents/scripts/with-cargo-slot cargo test --locked -p cashweb-registry --test directory_preview

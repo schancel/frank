@@ -220,6 +220,9 @@ export const ownershipCaseNames = [
   ...['bytes', 'depth', 'clock-order', 'evidence-order', 'resource-order'].map(
     field => `optional-${field}`,
   ),
+  ...['sparse', 'undefined', 'dense', 'array-capacity'].map(
+    field => `optional-${field}`,
+  ),
 ]
 async function optionalCase(open, field, name) {
   const store = await open(name, anchor(), { kind: 'new' })
@@ -236,6 +239,29 @@ async function optionalCase(open, field, name) {
             [100n, new Uint8Array(140000)],
             [101n, new Uint8Array(140000)],
           ])
+    let arrayReads = 0
+    if (['sparse', 'undefined', 'dense', 'array-capacity'].includes(field)) {
+      const array = new Array(field === 'array-capacity' ? 8192 : 2)
+      if (field === 'undefined') array[0] = undefined
+      if (field === 'dense') array[0] = null
+      if (field === 'array-capacity') array.fill(null)
+      Object.defineProperty(array, field === 'array-capacity' ? 0 : 1, {
+        get() {
+          arrayReads++
+          return null
+        },
+      })
+      // The sparse case is just two logical slots. The getter observes whether
+      // copying improperly advances past the hole, not an allocation/OOM effect.
+      const value =
+        field === 'array-capacity'
+          ? [
+              ...Array.from({ length: 15 }, () => new Array(8192).fill(null)),
+              array,
+            ]
+          : array
+      supplied.relay.unknownFields = new Map([[100n, value]])
+    }
     if (field === 'clock-order') supplied.now = null
     let batch = []
     if (field === 'evidence-order')
@@ -255,6 +281,12 @@ async function optionalCase(open, field, name) {
       expected,
       `optional relay ${field} public boundary`,
     )
+    if (['sparse', 'undefined', 'dense', 'array-capacity'].includes(field))
+      equal(
+        arrayReads,
+        field === 'dense' ? 1 : 0,
+        'dense positions are visited; holes and exhausted aggregate capacity stop copying',
+      )
     equal(
       await store.status(),
       before,

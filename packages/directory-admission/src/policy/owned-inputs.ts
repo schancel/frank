@@ -115,13 +115,20 @@ function ownOptionalFields(fields: UnknownFields): UnknownFields {
     )
       return input
     if (Array.isArray(input)) {
+      const length = input.length
       if (
-        input.length > MAX_ARRAY_ELEMENTS ||
+        length > MAX_ARRAY_ELEMENTS ||
+        length > MAX_ITEMS - items ||
         depth >= MAX_DEPTH ||
         ++containers > MAX_CONTAINERS
       )
         fail('binding')
-      return input.map(item => value(item, depth + 1))
+      const copied: FrankValue[] = []
+      for (let i = 0; i < length; i++) {
+        if (!Object.prototype.hasOwnProperty.call(input, i)) fail('binding')
+        copied.push(value(input[i], depth + 1))
+      }
+      return copied
     }
     if (input instanceof Map) {
       if (

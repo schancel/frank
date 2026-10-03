@@ -23,8 +23,7 @@ use crate::{
     monad_http::{Hash32, JsonRpcTransport, MonadHttpClient, MonadRpcError},
     monad_stamp_relay::PollConfig,
     monad_topic_verify::{
-        verify_topic_burn_versioned, ExpectedTopicBurn, TopicCalldataVersion,
-        TopicVoteBurnVerification, VoteDirection,
+        ExpectedTopicBurn, TopicCalldataVersion, TopicVoteBurnVerification, VoteDirection,
     },
 };
 
@@ -126,6 +125,28 @@ pub async fn broadcast_and_verify_topic_burn<T>(
 where
     T: JsonRpcTransport + Clone,
 {
+    broadcast_and_verify_topic_burn_checked(
+        transport,
+        raw_tx,
+        expected,
+        version,
+        signed_hash,
+        None,
+        poll,
+    )
+    .await
+}
+
+/// Same retry lifecycle with an optional exact recovered-sender binding for Forum.
+pub(crate) async fn broadcast_and_verify_topic_burn_checked<T: JsonRpcTransport + Clone>(
+    transport: &T,
+    raw_tx: &[u8],
+    expected: &ExpectedTopicBurn,
+    version: TopicCalldataVersion,
+    signed_hash: Option<Hash32>,
+    signed_sender: Option<crate::monad_http::Address>,
+    poll: PollConfig,
+) -> Result<TopicVoteRelayOutcome> {
     let client = MonadHttpClient::with_transport(transport.clone());
 
     let local_tx_hash = Hash32(Keccak256::digest(raw_tx).into());
@@ -156,11 +177,15 @@ where
 
     let max_attempts = poll.max_attempts.max(1);
     for attempt in 0..max_attempts {
-        let outcome = verify_topic_burn_versioned(transport, tx_hash, expected, version)
-            .await
-            .wrap_err_with(|| {
-                format!("verifying Monad topic-vote burn {tx_hash} after broadcast")
-            })?;
+        let outcome = crate::monad_topic_verify::verify_topic_burn_checked(
+            transport,
+            tx_hash,
+            expected,
+            version,
+            signed_sender,
+        )
+        .await
+        .wrap_err_with(|| format!("verifying Monad topic-vote burn {tx_hash} after broadcast"))?;
 
         match outcome {
             TopicVoteBurnVerification::TxNotConfirmed => {

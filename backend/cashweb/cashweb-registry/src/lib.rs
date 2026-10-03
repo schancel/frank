@@ -10,6 +10,7 @@
 
 pub mod directory_admission;
 pub mod disabled_chain_adapter;
+pub(crate) mod forum;
 pub mod http;
 pub mod lotus_adapter;
 pub mod monad_adapter;

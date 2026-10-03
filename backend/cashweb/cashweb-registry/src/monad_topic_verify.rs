@@ -370,6 +370,17 @@ pub async fn verify_topic_burn_versioned<T>(
 where
     T: JsonRpcTransport + Clone,
 {
+    verify_topic_burn_checked(transport, tx_hash, expected, version, None).await
+}
+
+/// Forum receipt/transaction facts must agree with the locally recovered signed sender.
+pub(crate) async fn verify_topic_burn_checked<T: JsonRpcTransport + Clone>(
+    transport: &T,
+    tx_hash: Hash32,
+    expected: &ExpectedTopicBurn,
+    version: TopicCalldataVersion,
+    signed_sender: Option<Address>,
+) -> Result<TopicVoteBurnVerification> {
     let client = MonadHttpClient::with_transport(transport.clone());
 
     let receipt = client
@@ -420,6 +431,12 @@ where
             tx.hash,
             tx_hash
         );
+    }
+
+    if let Some(sender) = signed_sender {
+        if receipt.from != sender || tx.from != sender || tx.to != Some(expected.burn_address) {
+            bail!("receipt/transaction sender or destination differs from exact signed burn");
+        }
     }
 
     let (direction, commitment) = match parse_topic_calldata_versioned(&tx.input, version) {

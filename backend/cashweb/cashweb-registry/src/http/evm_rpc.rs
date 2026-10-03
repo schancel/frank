@@ -63,6 +63,7 @@ const RPC_CAPABILITY_VERSION: u8 = 1;
 const MAX_WS_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_WS_SUBSCRIPTIONS: usize = 32;
 const MAX_WS_PENDING_REQUESTS: usize = 128;
+const MAX_STARTUP_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_WS_SUBSCRIPTION_ID_BYTES: usize = 256;
 // EVM clients batch when they can, but boot-time log scans and multi-account sweeps can still
 // legitimately exceed the mailbox's much smaller read cadence. This is replay-retention capacity,
@@ -591,7 +592,7 @@ impl EvmRpcRuntime {
             }
             let bytes = tokio::time::timeout(
                 self.timeout,
-                read_startup_response(response, self.max_response_bytes, &chain.id),
+                read_startup_response(response, MAX_STARTUP_RESPONSE_BYTES, &chain.id),
             )
             .await
             .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))??;
@@ -633,7 +634,7 @@ impl EvmRpcRuntime {
                 }
                 let bytes = tokio::time::timeout(
                     self.timeout,
-                    read_startup_response(response, self.max_response_bytes, &chain.id),
+                    read_startup_response(response, MAX_STARTUP_RESPONSE_BYTES, &chain.id),
                 )
                 .await
                 .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain.id.clone()))??;
@@ -1553,20 +1554,8 @@ struct WsPending {
 }
 
 fn valid_ws_response(value: &Value) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-    let has_result = object.contains_key("result");
-    let error = object.get("error");
-    if object
-        .keys()
-        .any(|key| !matches!(key.as_str(), "jsonrpc" | "id" | "result" | "error"))
-    {
-        return false;
-    }
-    object.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
-        && object.contains_key("id")
-        && ((has_result && error.is_none()) || (!has_result && error.is_some_and(Value::is_object)))
+    value.is_object()
+        && super::json_rpc::is_response_envelope(value, super::json_rpc::JsonRpcVersion::V2)
 }
 
 fn ws_subscription_notification(value: &Value) -> Option<&str> {
@@ -1662,7 +1651,7 @@ pub(crate) async fn handle_proxy_ws(
             let Ok(Ok((mut upstream, _response))) = connected else {
                 return;
             };
-            if verify_ws_socket(&mut upstream, &chain, expiry_deadline)
+            if verify_ws_socket(&mut upstream, &chain, connect_deadline)
                 .await
                 .is_err()
             {
@@ -1718,20 +1707,22 @@ async fn proxy_ws_connection<S>(
                 let Some((key, id)) = request else { continue; };
                 pending.remove(&key);
                 pending.clear();
+                let cleanup_deadline = (tokio::time::Instant::now() + request_timeout)
+                    .min(expiry_deadline);
                 let _ = bounded_ws_send(
                     &mut client_write,
                     ws_error(id, -32002, "upstream request timed out"),
-                    ws_write_deadline(&pending, request_timeout, expiry_deadline),
+                    cleanup_deadline,
                 ).await;
                 let _ = bounded_ws_send(
                     &mut client_write,
                     ClientWsMessage::Close(None),
-                    ws_write_deadline(&pending, request_timeout, expiry_deadline),
+                    cleanup_deadline,
                 ).await;
                 let _ = bounded_ws_send(
                     &mut upstream_write,
                     UpstreamWsMessage::Close(None),
-                    ws_write_deadline(&pending, request_timeout, expiry_deadline),
+                    cleanup_deadline,
                 ).await;
                 return;
             }
@@ -2333,6 +2324,14 @@ mod tests {
         assert!(!valid_ws_response(
             &json!({"jsonrpc":"2.0","id":1,"result":"0x1","error":null})
         ));
+        for malformed in [
+            json!({"jsonrpc":"2.0","id":1,"error":null}),
+            json!({"jsonrpc":"2.0","id":1,"error":"no"}),
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":-1}}),
+            json!({"jsonrpc":"2.0","id":1,"error":{"message":"no"}}),
+        ] {
+            assert!(!valid_ws_response(&malformed), "{malformed}");
+        }
         assert_eq!(
             ws_subscription_notification(&json!({
                 "jsonrpc":"2.0",

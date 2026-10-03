@@ -146,6 +146,7 @@ function makeRelayGetUrl(
     externalAbort?.addEventListener("abort", abortFromLifecycle, {
       once: true,
     });
+    if (externalAbort?.aborted) abortFromLifecycle();
     try {
       const response = await fetchImpl(request.url, {
         method: request.method,
@@ -521,7 +522,14 @@ export function createMonadRelayRpcConnection(
         if (destroyed) throw new Error("relay capability request cancelled");
         const retry = relayRequest.clone();
         retry.url = renewed.rpcUrl;
-        return await relayRpcTransport(retry, signal);
+        const retryResponse = await relayRpcTransport(retry, signal);
+        if (
+          retryResponse.statusCode === 401 &&
+          cachedCapability?.rpcUrl === renewed.rpcUrl
+        ) {
+          cachedCapability = null;
+        }
+        return retryResponse;
       } finally {
         activeCapabilityRequests.delete(relayRequest);
       }

@@ -590,6 +590,92 @@ describe("MonadJsonRpcProvider (#534)", () => {
     expect(rotated.statusCode).toBe(200);
   });
 
+  it("does not retain a renewed capability that is also rejected", async () => {
+    const customer = `0x${"12".repeat(20)}`;
+    let capabilityRequests = 0;
+    const rpcBearers: string[] = [];
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        if (req.url?.endsWith("/capability/auth")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              epoch: "11".repeat(32),
+              nonce: "22".repeat(32),
+              expires_at_ms: Date.now() + 60_000,
+              token: "33".repeat(32),
+              signing_domain: "frank:rpc-http-auth:v1",
+              customer,
+              chain: "monad-testnet",
+              body_sha256: createHash("sha256").update(body).digest("hex"),
+              network_tag: Buffer.from("MONT").toString("hex"),
+            })
+          );
+          return;
+        }
+        if (req.url?.endsWith("/capability")) {
+          capabilityRequests++;
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              rpc_path: `/chain-rpc/monad-testnet/cap/bearer-${capabilityRequests}/rpc`,
+              expires_at_ms: Date.now() + 60_000,
+            })
+          );
+          return;
+        }
+        const bearer = req.url?.match(/\/cap\/(bearer-\d+)\/rpc/)?.[1];
+        if (bearer) rpcBearers.push(bearer);
+        if (bearer !== "bearer-3") {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "rpc_auth_failed" }));
+          return;
+        }
+        const payload = JSON.parse(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({ jsonrpc: "2.0", id: payload.id, result: "0x2a" })
+        );
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        rpcUrl = `http://127.0.0.1:${
+          (server.address() as AddressInfo).port
+        }/chain-rpc/monad-testnet/rpc`;
+        resolve();
+      });
+    });
+
+    const connection = createMonadRelayRpcConnection(rpcUrl, {
+      chain: "monad-testnet",
+      customer,
+      networkTag: "MONT",
+      signDigest: () =>
+        Uint8Array.from([0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01]),
+    });
+    const send = (id: number) => {
+      const request = connection.clone();
+      request.body = JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "eth_getBalance",
+        params: [`0x${"34".repeat(20)}`, "latest"],
+      });
+      request.setHeader("content-type", "application/json");
+      return request.send();
+    };
+
+    expect((await send(1)).statusCode).toBe(401);
+    expect((await send(2)).statusCode).toBe(200);
+    expect(rpcBearers).toEqual(["bearer-1", "bearer-2", "bearer-3"]);
+    expect(capabilityRequests).toBe(3);
+  });
+
   it("does not issue a capability or send RPC after provider destruction", async () => {
     const customer = `0x${"12".repeat(20)}`;
     let challengeRequests = 0;

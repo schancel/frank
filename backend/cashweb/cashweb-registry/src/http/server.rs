@@ -252,10 +252,11 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
         ["chain-rpc", _, "chronik-auth", ..] => {
             Cow::Borrowed("/chain-rpc/:chain/chronik-auth/*path")
         }
-        _ if segments.iter().any(|segment| *segment == "chain-rpc")
-            && segments.iter().any(|segment| *segment == "cap") =>
-        {
-            Cow::Borrowed("/chain-rpc/:chain/cap/:capability/*")
+        // Unknown paths under this namespace are fail-closed. Routers may percent-decode
+        // or normalize segments differently than this logging middleware, so no
+        // chain-rpc-shaped miss is allowed to copy attacker-controlled path text to logs.
+        _ if segments.iter().any(|segment| *segment == "chain-rpc") => {
+            Cow::Borrowed("/chain-rpc/*redacted")
         }
         _ => Cow::Borrowed(path),
     }
@@ -289,14 +290,16 @@ mod request_log_tests {
             format!("/chain-rpc/monad-testnet/cap/{token}/unknown"),
             format!("/chain-rpc//monad-testnet/cap/{token}/rpc"),
             format!("/prefix/chain-rpc/monad-testnet/cap/{token}/rpc"),
+            format!("/chain-rpc/monad-testnet/c%61p/{token}/rpc"),
+            format!("/chain-rpc/monad-testnet/CAP/{token}/rpc"),
         ] {
             let logged = safe_log_path(&malformed);
             assert!(!logged.contains(token));
-            assert_eq!(logged, "/chain-rpc/:chain/cap/:capability/*");
+            assert_eq!(logged, "/chain-rpc/*redacted");
         }
         assert_eq!(
             safe_log_path("/chain-rpc/monad-testnet/rpc"),
-            "/chain-rpc/monad-testnet/rpc"
+            "/chain-rpc/*redacted"
         );
         for path in [
             "/chain-rpc/xec-mainnet/chronik/script/p2pkh/sentinel-wallet/history",

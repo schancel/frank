@@ -224,8 +224,9 @@ constant-size error replacements while preserving opaque success bytes. Apart fr
 transport buffers, live application allocation is therefore bounded by roughly 128 KiB plus the
 configured batch metadata and one decoded input chunk, independent of result size. Aggregate spool
 disk is bounded by `max_concurrency * max_response_bytes`; both values are finite, validated
-configuration. The hard EVM per-response configuration ceiling is 512 MiB; the Bitcoin/Chronik
-family retains its 32 MiB ceiling.
+configuration, and enabled family budgets are checked together against one 2 GiB process ceiling.
+The hard EVM per-response configuration ceiling is 512 MiB; the Bitcoin/Chronik family retains its
+32 MiB ceiling.
 
 `production_pipeline_streams_250_mib_result_without_materializing_it` is the intentionally ignored
 large-fixture proof: its upstream generator reuses a 64 KiB chunk, its client counts chunks without

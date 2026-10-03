@@ -15,6 +15,10 @@ first checks the real pinned HTTPS fixture through `checkNode`, then invokes the
 public admission facade. `enroll` requires both the separately supplied exact
 type4 and the fixture's exact signed type2. `advance` and `current` require fresh
 explicit time; results are point-in-time, not cached routing permissions.
+Both writable state paths must resolve outside the immutable trust-bundle
+directory; continuity must also remain outside the admission rollback directory.
+Invalid placements are rejected before creating either artifact, including
+placements reached through a symlinked parent.
 
 Input byte views are cumulatively bounded before copying, including shared-buffer
 views. Signed history authentication, generations, no-reuse, fork quarantine and
@@ -65,6 +69,16 @@ profile with the unique fixture leaf-SPKI exception, and reuses that profile for
 browser restart. It is not general browser PKI. Same-key recertification is
 caught by Node exact-certificate preflight, not claimed as browser detection.
 The existing #758 certificate-negative and lifecycle gates remain required.
+The browser adapter requires an exclusive Web Lock named
+`frank-demo-directory-continuity-owner:v1` for its entire lifetime. The key is
+origin-wide, independent of database name or installed trust: only one demo
+admission/continuity writer may be active at that fixture origin. Unavailable
+ownership fails closed. Close drains queued operations and external saves, then
+releases ownership only after the public store closes successfully; failed close
+retains it for explicit retry. Failed opening releases ownership. The runner is
+the sole external checkpoint-file writer. Sharing a saver across origins,
+profiles or independent controller processes is unsupported; this is not a
+general cross-process persistence or enrollment framework.
 
 The focused adapter Jest suite always runs real Node TLS and Level gates. Set
 `DIRECTORY_ADMISSION_CHROMIUM` to an absolute executable for the separately

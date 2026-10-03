@@ -239,7 +239,7 @@ async function browserTransport(installation: DemoInstallation): Promise<void> {
   })
   if (
     response.status !== 200 ||
-    response.url !== origin + '/fixture/evidence' ||
+    response.url !== new URL('/fixture/evidence', origin).href ||
     !response.body
   )
     throw new Error('Fixture transport rejected')
@@ -272,7 +272,41 @@ async function browserTransport(installation: DemoInstallation): Promise<void> {
     throw new Error('Fixture public tuple/evidence mismatch')
 }
 
-/** Only for the isolated fixture after strict Node exact-certificate preflight. */
+async function acquireContinuityOwner(): Promise<() => Promise<void>> {
+  if (typeof navigator === 'undefined' || !navigator.locks)
+    throw new Error('Exclusive demo continuity ownership unavailable')
+  let release!: () => void
+  const held = new Promise<void>(resolve => {
+    release = resolve
+  })
+  let entered!: () => void
+  let refused!: (error: unknown) => void
+  const acquired = new Promise<void>((resolve, reject) => {
+    entered = resolve
+    refused = reject
+  })
+  const finished = navigator.locks.request(
+    'frank-demo-directory-continuity-owner:v1',
+    { mode: 'exclusive', ifAvailable: true },
+    async lock => {
+      if (!lock)
+        throw new Error('Exclusive demo continuity ownership unavailable')
+      entered()
+      await held
+    },
+  )
+  void finished.catch(refused)
+  await acquired
+  return async () => {
+    release()
+    await finished
+  }
+}
+
+/** Only for the isolated fixture after strict Node exact-certificate preflight.
+ * One active owner per origin, independent of DB name/trust. Cross-origin or
+ * cross-profile/process sharing of an external saver is unsupported.
+ */
 export async function openDemoBrowserAdmission(options: {
   name: string
   installation: DemoInstallation
@@ -292,12 +326,19 @@ export async function openDemoBrowserAdmission(options: {
           checkpoint: parseContinuity(options.mode.continuity, installation),
         }
   admissionContext(installation.trustInputs, nowNs)
-  await browserTransport(installation)
-  const store = await openBrowserDirectoryStore({
-    name,
-    anchor: admissionAnchor(installation.trustInputs),
-    mode,
-  })
+  const releaseOwner = await acquireContinuityOwner()
+  let store: DirectoryStore
+  try {
+    await browserTransport(installation)
+    store = await openBrowserDirectoryStore({
+      name,
+      anchor: admissionAnchor(installation.trustInputs),
+      mode,
+    })
+  } catch (error) {
+    await releaseOwner()
+    throw error
+  }
   let closing = false,
     failed = false,
     enrolled = mode.kind === 'reopen'
@@ -360,6 +401,7 @@ export async function openDemoBrowserAdmission(options: {
       closing = true
       await queue
       await store.close()
+      await releaseOwner()
     },
   }
 }

@@ -24,6 +24,7 @@ import type { FrankValue, ParsedFrame } from '@frank/codec'
 import type { Candidate, Current } from '@frank/directory-admission'
 import {
   initBundle,
+  reopenBundle,
   startFixture,
   type TrustBundle,
   type TrustInputs,
@@ -35,6 +36,7 @@ import {
   candidateSnapshot,
   continuityJSON,
   parseContinuity,
+  openDemoBrowserAdmission,
   splitTime,
   trustJSON,
 } from './browser-admission'
@@ -217,6 +219,173 @@ const options = (mode: 'new' | 'reopen' = 'new') => ({
   mode,
   nowNs: now,
 })
+
+test.each([
+  'level-child',
+  'level-root',
+  'continuity-child',
+  'continuity-root',
+  'aliased-parent',
+] as const)(
+  'immutable bundle rejects writable %s targets before creating any admission artifacts',
+  async kind => {
+    const installedFiles = filesystem.readdirSync(bundle.runDir).sort()
+    const inside = join(bundle.runDir, 'consumer-state')
+    const input = options()
+    if (kind === 'level-child') input.location = inside
+    if (kind === 'level-root') input.location = bundle.runDir
+    if (kind === 'continuity-child') input.continuityFile = inside
+    if (kind === 'continuity-root') input.continuityFile = bundle.runDir
+    if (kind === 'aliased-parent') {
+      const alias = join(root, 'bundle-alias')
+      filesystem.symlinkSync(bundle.runDir, alias, 'dir')
+      input.continuityFile = join(alias, 'consumer-state')
+    }
+    const rejected = await openDemoNodeAdmission(input).then(
+      async store => {
+        await store.close()
+        return null
+      },
+      error => error,
+    )
+    expect(rejected).toBeInstanceOf(Error)
+    expect(rejected.message).toContain('immutable trust bundle')
+    expect(filesystem.readdirSync(bundle.runDir).sort()).toEqual(installedFiles)
+    expect(existsSync(inside)).toBe(false)
+    expect(existsSync(options().location)).toBe(false)
+    expect(existsSync(options().continuityFile)).toBe(false)
+    expect(reopenBundle(bundle, now).manifestIdentity).toBe(
+      bundle.manifestIdentity,
+    )
+    const valid = await openDemoNodeAdmission(options())
+    await valid.enroll([bootstrap], now)
+    await valid.close()
+    const reopened = await openDemoNodeAdmission(options('reopen'))
+    try {
+      expect((await reopened.current(now)).evidence.hash).toEqual(
+        hash(bootstrap),
+      )
+    } finally {
+      await reopened.close()
+    }
+    expect(reopenBundle(bundle, now).manifestIdentity).toBe(
+      bundle.manifestIdentity,
+    )
+  },
+)
+
+test('browser public transport accepts serialized default port without changing the signed tuple', async () => {
+  const explicit = { ...trust, endpoint: 'https://127.0.0.1:443' }
+  const savedLocation = Object.getOwnPropertyDescriptor(globalThis, 'location')
+  Object.defineProperty(globalThis, 'location', {
+    configurable: true,
+    value: { origin: 'https://127.0.0.1' },
+  })
+  const response = new Response(
+    JSON.stringify({
+      kind: 'synthetic-directory-evidence',
+      trustInputs: trustJSON(explicit),
+      witnessHex: bundle.witnessHex,
+    }),
+  )
+  Object.defineProperty(response, 'url', {
+    value: 'https://127.0.0.1/fixture/evidence',
+  })
+  const fetcher = jest.spyOn(globalThis, 'fetch').mockResolvedValue(response)
+  const savedNavigator = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'navigator',
+  )
+  const lockRequest = jest.fn(
+    (
+      name: string,
+      options: { mode: LockMode },
+      callback: (lock: Lock) => Promise<void>,
+    ) => callback({ name, mode: options.mode }),
+  )
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { locks: { request: lockRequest } },
+  })
+  try {
+    // This light boundary test deliberately has no IndexedDB. Reaching the
+    // public store's unavailable result proves transport normalization only;
+    // real admitted/restarted Chromium proof is separately lease-gated.
+    await expect(
+      openDemoBrowserAdmission({
+        name: 'explicit-443',
+        installation: {
+          manifestIdentity: bundle.manifestIdentity,
+          trustInputs: explicit,
+          witnessHex: bundle.witnessHex!,
+        },
+        nowNs: now,
+        mode: { kind: 'new' },
+        saveContinuity: async () => {},
+      }),
+    ).rejects.toMatchObject({ code: 'unavailable' })
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://127.0.0.1:443/fixture/evidence',
+      expect.any(Object),
+    )
+    expect(explicit.endpoint).toBe('https://127.0.0.1:443')
+    expect(lockRequest).toHaveBeenCalledWith(
+      'frank-demo-directory-continuity-owner:v1',
+      { mode: 'exclusive', ifAvailable: true },
+      expect.any(Function),
+    )
+    await expect(lockRequest.mock.results[0].value).resolves.toBeUndefined()
+  } finally {
+    if (savedLocation)
+      Object.defineProperty(globalThis, 'location', savedLocation)
+    else Reflect.deleteProperty(globalThis, 'location')
+    if (savedNavigator)
+      Object.defineProperty(globalThis, 'navigator', savedNavigator)
+    else Reflect.deleteProperty(globalThis, 'navigator')
+  }
+})
+
+test.each(['missing', 'occupied'] as const)(
+  'browser ownership fails closed when %s, before transport or opening a store',
+  async state => {
+    const savedNavigator = Object.getOwnPropertyDescriptor(
+      globalThis,
+      'navigator',
+    )
+    const request = jest.fn(
+      (
+        _name: string,
+        _options: unknown,
+        callback: (lock: null) => Promise<void>,
+      ) => callback(null),
+    )
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: state === 'missing' ? {} : { locks: { request } },
+    })
+    const fetcher = jest.spyOn(globalThis, 'fetch')
+    try {
+      await expect(
+        openDemoBrowserAdmission({
+          name: 'other-namespace',
+          installation: {
+            manifestIdentity: bundle.manifestIdentity,
+            trustInputs: trust,
+            witnessHex: bundle.witnessHex!,
+          },
+          nowNs: now,
+          mode: { kind: 'new' },
+          saveContinuity: async () => {},
+        }),
+      ).rejects.toThrow('Exclusive demo continuity ownership unavailable')
+      expect(fetcher).not.toHaveBeenCalled()
+    } finally {
+      if (savedNavigator)
+        Object.defineProperty(globalThis, 'navigator', savedNavigator)
+      else Reflect.deleteProperty(globalThis, 'navigator')
+    }
+  },
+)
 
 test('real TLS/public Node admission persists exact roles, counters and external continuity across reopen', async () => {
   let store = await openDemoNodeAdmission(options())
@@ -649,6 +818,26 @@ rustTest(
         ]),
       )
     }
+    const immutableFiles = filesystem.readdirSync(bundle.runDir).sort()
+    for (const target of [bundle.runDir, join(bundle.runDir, 'rust-state')]) {
+      await expect(probe({ ...config, location: target })).rejects.toThrow(
+        'bundle-path',
+      )
+      await expect(
+        probe({ ...config, continuityFile: target }),
+      ).rejects.toThrow('bundle-path')
+    }
+    const alias = join(root, 'rust-bundle-alias')
+    filesystem.symlinkSync(bundle.runDir, alias, 'dir')
+    await expect(
+      probe({ ...config, continuityFile: join(alias, 'state') }),
+    ).rejects.toThrow('bundle-path')
+    expect(filesystem.readdirSync(bundle.runDir).sort()).toEqual(immutableFiles)
+    expect(existsSync(config.location)).toBe(false)
+    expect(existsSync(config.continuityFile)).toBe(false)
+    expect(reopenBundle(bundle, now).manifestIdentity).toBe(
+      bundle.manifestIdentity,
+    )
     expect(await probe(config)).toEqual(expected)
     const reopen = { ...config, mode: 'reopen', candidates: [] }
     expect(await probe(reopen)).toEqual(expected)

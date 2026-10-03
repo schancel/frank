@@ -177,6 +177,7 @@ async function page(browser, bundle, script, continuityFile) {
     await new Promise(resolve => setTimeout(resolve, 50))
   }
   await cdp.evaluate(sessionId, script)
+  if (!continuityFile) return sessionId
   await cdp.send(
     'Runtime.addBinding',
     { name: 'saveDemoContinuity' },
@@ -358,17 +359,101 @@ async function main() {
       scenario.candidates,
     )}.map(c=>({statement:DemoDirectory.exactHex(c.statement,c.statement.length/2),attestation:DemoDirectory.exactHex(c.attestation,c.attestation.length/2)})); globalThis.summarize = ${summarized};`
     await browser.cdp.evaluate(session, setup)
+    const peer = await page(
+      browser,
+      bundle,
+      built.outputFiles[0].text,
+      undefined,
+    )
+    await browser.cdp.evaluate(peer, setup)
+    const peerOpen = name =>
+      `DemoDirectory.openDemoBrowserAdmission({name:${JSON.stringify(
+        name,
+      )},installation,nowNs,mode:{kind:'new'},saveContinuity:async()=>{throw new Error('Unexpected peer checkpoint writer')}})`
+    await browser.cdp.evaluate(
+      peer,
+      "Object.defineProperty(navigator,'locks',{configurable:true,value:undefined})",
+    )
+    await assert.rejects(
+      () => browser.cdp.evaluate(peer, peerOpen('no-locks')),
+      /ownership unavailable/,
+    )
+    await browser.cdp.evaluate(peer, 'delete navigator.locks')
     await browser.cdp.evaluate(
       session,
-      `globalThis.store = await DemoDirectory.openDemoBrowserAdmission({name:'explicit-demo',installation,nowNs,mode:{kind:'new'},saveContinuity:saveRecord})`,
+      `globalThis.delaySave = true;
+       globalThis.store = await DemoDirectory.openDemoBrowserAdmission({name:'explicit-demo',installation,nowNs,mode:{kind:'new'},saveContinuity:async record=>{
+         if(delaySave){globalThis.saveStarted=true;await new Promise(resolve=>{globalThis.releaseSave=resolve})}
+         await saveRecord(record)
+       }})`,
     )
+    await assert.rejects(
+      () => browser.cdp.evaluate(peer, peerOpen('different-db')),
+      /ownership unavailable/,
+    )
+    await browser.cdp.evaluate(
+      session,
+      'globalThis.pendingEnrollment=store.enroll(candidates,nowNs); pendingEnrollment.catch(()=>{}); true',
+    )
+    for (
+      let i = 0;
+      !(await browser.cdp.evaluate(session, 'globalThis.saveStarted === true'));
+      i++
+    ) {
+      if (i >= 100)
+        throw new Error('Delayed external checkpoint save did not start')
+      await new Promise(resolve => setTimeout(resolve, 25))
+    }
+    await browser.cdp.evaluate(
+      session,
+      'globalThis.closeFinished=false; globalThis.pendingClose=store.close().then(()=>{closeFinished=true}); true',
+    )
+    await assert.rejects(
+      () => browser.cdp.evaluate(peer, peerOpen('different-db')),
+      /ownership unavailable/,
+    )
+    assert.equal(await browser.cdp.evaluate(session, 'closeFinished'), false)
+    await browser.cdp.evaluate(session, 'delaySave=false; releaseSave(); true')
     const current = await browser.cdp.evaluate(
       session,
-      'summarize(await store.enroll(candidates,nowNs))',
+      'summarize(await pendingEnrollment)',
     )
     assert.deepEqual(current, scenario.expected)
+    await browser.cdp.evaluate(session, 'pendingClose')
+    await browser.cdp.evaluate(
+      peer,
+      `globalThis.peerStore=await ${peerOpen(
+        'different-db',
+      )}; await peerStore.close()`,
+    )
     const continuity = fs.readFileSync(continuityFile, 'utf8')
+    await browser.cdp.evaluate(
+      session,
+      `globalThis.store=await DemoDirectory.openDemoBrowserAdmission({name:'explicit-demo',installation,nowNs,mode:{kind:'reopen',continuity:${JSON.stringify(
+        continuity,
+      )}},saveContinuity:saveRecord});
+      globalThis.nativeClose=IDBDatabase.prototype.close;
+      IDBDatabase.prototype.close=function(){throw new Error('Injected store close failure')}`,
+    )
+    await assert.rejects(
+      () => browser.cdp.evaluate(session, 'store.close()'),
+      /Injected store close failure/,
+    )
+    await browser.cdp.evaluate(
+      session,
+      'IDBDatabase.prototype.close=nativeClose',
+    )
+    await assert.rejects(
+      () => browser.cdp.evaluate(peer, peerOpen('after-close-retry')),
+      /ownership unavailable/,
+    )
     await browser.cdp.evaluate(session, 'store.close()')
+    await browser.cdp.evaluate(
+      peer,
+      `globalThis.peerStore=await ${peerOpen(
+        'after-close-retry',
+      )}; await peerStore.close()`,
+    )
     await stop(browser)
     await facade.exports.checkNode(scenario.bundle, now)
     checkInterrupted()
@@ -444,6 +529,12 @@ async function main() {
         missingReopen: true,
         clockRollback: true,
         durableQuarantine: true,
+        exclusiveContinuityOwner: true,
+        twoTabsDifferentDatabaseNames: true,
+        delayedSaveCloseDrain: true,
+        failedCloseRetainsUntilRetry: true,
+        missingWebLocksFailClosed: true,
+        failedOpenReleases: true,
         crossLanguage: 'matches-node-signed-scenario',
       }),
     )

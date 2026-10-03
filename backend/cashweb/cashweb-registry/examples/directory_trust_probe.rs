@@ -236,6 +236,17 @@ fn resolve_path(path: &Path) -> Result<PathBuf> {
     }
 }
 
+fn check_bundle_paths(run_dir: &Path, location: &Path, continuity_file: &Path) -> Result<()> {
+    let immutable_bundle = fs::canonicalize(run_dir).map_err(|_| Error::Input("bundle-path"))?;
+    if !immutable_bundle.is_dir()
+        || location.starts_with(&immutable_bundle)
+        || continuity_file.starts_with(&immutable_bundle)
+    {
+        return Err(Error::Input("bundle-path"));
+    }
+    Ok(())
+}
+
 fn trust_context(trust: &TrustInputs, now: Timestamp) -> Result<(Anchor, RelayBinding, u16)> {
     if trust.network.is_empty()
         || trust.network.len() > 64
@@ -547,6 +558,7 @@ fn run() -> Result<Value> {
     let (anchor, relay, port) = trust_context(&installed, now)?;
     let location = resolve_path(&location)?;
     let continuity_file = resolve_path(&continuity_file)?;
+    check_bundle_paths(&bundle.run_dir, &location, &continuity_file)?;
     if continuity_file.starts_with(&location) || location.starts_with(&continuity_file) {
         return Err(Error::Input("path"));
     }
@@ -674,6 +686,25 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn immutable_bundle_excludes_canonical_writable_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = root.path().join("bundle");
+        fs::create_dir(&bundle).unwrap();
+        let outside = resolve_path(&root.path().join("admission")).unwrap();
+        let continuity = resolve_path(&root.path().join("continuity.json")).unwrap();
+        let exact = resolve_path(&bundle).unwrap();
+        let child = resolve_path(&bundle.join("state")).unwrap();
+        for target in [&exact, &child] {
+            assert!(check_bundle_paths(&bundle, target, &continuity).is_err());
+            assert!(check_bundle_paths(&bundle, &outside, target).is_err());
+        }
+        assert!(check_bundle_paths(&bundle, &outside, &continuity).is_ok());
+        assert_eq!(fs::read_dir(&bundle).unwrap().count(), 0);
+        assert!(!outside.exists());
+        assert!(!continuity.exists());
+    }
 
     #[test]
     fn canonical_clock_has_no_precision_loss_or_signed_seconds_overflow() {

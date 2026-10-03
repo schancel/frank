@@ -45,7 +45,14 @@ export interface NodeAdmissionOptions {
   mode: 'new' | 'reopen'
   nowNs: bigint
 }
-function externalPath(file: string, location: string): string {
+function within(parent: string, child: string): boolean {
+  const suffix = relative(parent, child)
+  return (
+    !suffix ||
+    (!suffix.startsWith('../') && suffix !== '..' && !isAbsolute(suffix))
+  )
+}
+function externalPath(file: string, location: string, runDir: string): string {
   if (
     !isAbsolute(file) ||
     !isAbsolute(location) ||
@@ -61,11 +68,14 @@ function externalPath(file: string, location: string): string {
   const canonicalDb = existsSync(location)
     ? realpathSync(location)
     : join(dbParent, basename(location))
-  const inside = relative(canonicalDb, canonicalFile)
+  const canonicalTarget = existsSync(file) ? realpathSync(file) : canonicalFile
+  const immutableBundle = realpathSync(runDir)
   if (
-    !inside ||
-    (!inside.startsWith('..' + '/') && inside !== '..' && !isAbsolute(inside))
+    within(immutableBundle, canonicalDb) ||
+    within(immutableBundle, canonicalTarget)
   )
+    throw new Error('Writable state must be outside the immutable trust bundle')
+  if (within(canonicalDb, canonicalTarget))
     throw new Error(
       'Continuity must be outside the admission rollback directory',
     )
@@ -138,7 +148,7 @@ export async function openDemoNodeAdmission(
     nowNs = options.nowNs
   if (intent !== 'new' && intent !== 'reopen')
     throw new Error('Explicit new/reopen intent required')
-  const file = externalPath(options.continuityFile, location)
+  const file = externalPath(options.continuityFile, location, ref.runDir)
   const bundle = reopenBundle(ref, nowNs)
   if (
     JSON.stringify(trustJSON(installed)) !==

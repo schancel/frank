@@ -1,5 +1,5 @@
 <template>
-  <q-page-container>
+  <q-page-container v-if="legacyLotusMode">
     <q-page class="q-ma-none q-pa-sm">
       <q-card>
         <q-card-section>
@@ -34,11 +34,13 @@ import { defineComponent } from 'vue'
 
 import { useChatStore } from 'src/stores/chats'
 import { errorNotify } from '../utils/notifications'
+import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
 
 export default defineComponent({
   setup() {
     const chatStore = useChatStore()
     return {
+      legacyLotusMode: legacyLotusModeEnabled(),
       deleteMessage: chatStore.deleteMessage,
     }
   },
@@ -47,20 +49,22 @@ export default defineComponent({
     return {}
   },
   methods: {
-    wipeWallet() {
+    async wipeWallet() {
+      if (!legacyLotusModeEnabled()) return
+
       this.$q.loading.show({
         delay: 100,
         message: this.$t('wipeWallet.spinnerText'),
       })
-      this.$relayClient
-        .wipeWallet(({ address, payloadDigest }) => {
+      try {
+        await this.$relayClient.wipeWallet(({ address, payloadDigest }) => {
           this.deleteMessage({ address, payloadDigest })
         })
-        .then(() => this.$q.loading.hide())
-        .catch(err => {
-          errorNotify(err)
-          this.$q.loading.hide()
-        })
+      } catch (err) {
+        errorNotify(err)
+      } finally {
+        this.$q.loading.hide()
+      }
     },
     cancel() {
       navigateBack(this.$router)

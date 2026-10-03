@@ -669,6 +669,43 @@ describe("EcashWallet", () => {
     });
   });
 
+  it("shares the unresolved guard across backend address case aliases", async () => {
+    const failedBackend = makeBackend({
+      success: false,
+      broadcasted: [],
+      errors: ["response lost"],
+    });
+    const firstWallet = await EcashWallet.fromMnemonic({
+      mnemonic: MNEMONIC,
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
+      nativeAttemptStore,
+      walletFactory: () => failedBackend,
+    });
+    await expect(
+      firstWallet.sendNative({ recipient: { raw: ADDRESS }, value: 1n })
+    ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
+
+    const aliasBackend = makeBackend();
+    aliasBackend.getReceiveAddress.mockReturnValue(ADDRESS.toUpperCase());
+    const aliasWallet = await EcashWallet.fromMnemonic({
+      mnemonic: MNEMONIC,
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
+      nativeAttemptStore,
+      walletFactory: () => aliasBackend,
+    });
+
+    expect(aliasWallet.identity.address.raw).toBe(ADDRESS);
+    expect(aliasWallet.getUnresolvedNativeTransaction()).toEqual(
+      firstWallet.getUnresolvedNativeTransaction()
+    );
+    await expect(
+      aliasWallet.sendNative({ recipient: { raw: ADDRESS }, value: 2n })
+    ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
+    expect(aliasBackend.action).not.toHaveBeenCalled();
+  });
+
   it("serializes sync, build, and broadcast across concurrent sends", async () => {
     const backend = makeBackend({
       success: true,

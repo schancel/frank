@@ -347,15 +347,13 @@ export class SolanaWallet
   static async generate(params: {
     connection: SolanaWalletConnection;
     networkId: string;
-    genesisHash?: string;
+    /** Independently configured expected genesis hash. */
+    genesisHash: string;
     nativeAttemptStore?: NativeTransactionAttemptStore;
   }): Promise<SolanaWallet> {
     await ensureEd25519Support();
-    const genesisHash =
-      params.genesisHash ?? (await params.connection.getGenesisHash());
     return new SolanaWallet({
       ...params,
-      genesisHash,
       signer: await Keypair.generate(),
     });
   }
@@ -363,19 +361,18 @@ export class SolanaWallet
   static async fromSeed(params: {
     connection: SolanaWalletConnection;
     networkId: string;
-    genesisHash?: string;
+    /** Independently configured expected genesis hash. */
+    genesisHash: string;
     seed: Uint8Array;
     nativeAttemptStore?: NativeTransactionAttemptStore;
   }): Promise<SolanaWallet> {
     const stableSeed = params.seed.slice();
     await ensureEd25519Support();
-    const genesisHash =
-      params.genesisHash ?? (await params.connection.getGenesisHash());
     return new SolanaWallet({
       connection: params.connection,
       signer: await Keypair.fromSeed(stableSeed),
       networkId: params.networkId,
-      genesisHash,
+      genesisHash: params.genesisHash,
       nativeAttemptStore: params.nativeAttemptStore,
     });
   }
@@ -396,15 +393,23 @@ export class SolanaWallet
   }
 
   protected verifyNetwork(): Promise<void> {
-    this.networkVerification ??= this.connection
-      .getGenesisHash()
-      .then((actualGenesisHash) => {
-        if (actualGenesisHash !== this.expectedGenesisHash) {
-          throw new Error(
-            `Solana RPC genesis mismatch: expected ${this.expectedGenesisHash}, got ${actualGenesisHash}`
-          );
+    if (this.networkVerification === undefined) {
+      const verification = this.connection
+        .getGenesisHash()
+        .then((actualGenesisHash) => {
+          if (actualGenesisHash !== this.expectedGenesisHash) {
+            throw new Error(
+              `Solana RPC genesis mismatch: expected ${this.expectedGenesisHash}, got ${actualGenesisHash}`
+            );
+          }
+        });
+      this.networkVerification = verification;
+      void verification.catch(() => {
+        if (this.networkVerification === verification) {
+          this.networkVerification = undefined;
         }
       });
+    }
     return this.networkVerification;
   }
 
@@ -970,15 +975,12 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
   static async generateStealth<TStealthMetadata extends {}>(params: {
     connection: SolanaWalletConnection;
     networkId: string;
-    genesisHash?: string;
+    genesisHash: string;
     stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>;
   }): Promise<SolanaStealthWallet<TStealthMetadata>> {
     await ensureEd25519Support();
-    const genesisHash =
-      params.genesisHash ?? (await params.connection.getGenesisHash());
     return new SolanaStealthWallet({
       ...params,
-      genesisHash,
       signer: await Keypair.generate(),
     });
   }
@@ -986,19 +988,17 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
   static async fromSeedWithStealth<TStealthMetadata extends {}>(params: {
     connection: SolanaWalletConnection;
     networkId: string;
-    genesisHash?: string;
+    genesisHash: string;
     seed: Uint8Array;
     stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>;
   }): Promise<SolanaStealthWallet<TStealthMetadata>> {
     const stableSeed = params.seed.slice();
     await ensureEd25519Support();
-    const genesisHash =
-      params.genesisHash ?? (await params.connection.getGenesisHash());
     return new SolanaStealthWallet({
       connection: params.connection,
       signer: await Keypair.fromSeed(stableSeed),
       networkId: params.networkId,
-      genesisHash,
+      genesisHash: params.genesisHash,
       stealthStrategy: params.stealthStrategy,
     });
   }

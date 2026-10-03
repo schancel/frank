@@ -680,6 +680,24 @@ describe("SolanaWallet", () => {
     expect(connection.sent).toHaveLength(0);
   });
 
+  it("retries network verification after a transient RPC failure", async () => {
+    const connection = new FakeConnection();
+    const getGenesisHash = jest
+      .spyOn(connection, "getGenesisHash")
+      .mockRejectedValueOnce(new Error("temporary timeout"))
+      .mockResolvedValue("solana-genesis");
+    const wallet = new SolanaWallet({
+      networkId: "solana-test",
+      genesisHash: "solana-genesis",
+      connection,
+      signer: await makeKeypair(1),
+    });
+
+    await expect(wallet.getBalance()).rejects.toThrow("temporary timeout");
+    await expect(wallet.getBalance()).resolves.toBe(123n);
+    expect(getGenesisHash).toHaveBeenCalledTimes(2);
+  });
+
   it("exposes the common identity and native-transfer API", async () => {
     const connection = new FakeConnection();
     const signer = await makeKeypair(1);

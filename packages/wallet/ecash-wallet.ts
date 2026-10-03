@@ -75,6 +75,16 @@ async function verifyEcashChronikEndpoints(params: {
   );
 }
 
+function canonicalEcashMainnetAddress(input: string): string {
+  try {
+    const parsed = Address.fromCashAddress(input.toLowerCase());
+    if (parsed.prefix !== ECASH_MAINNET_PREFIX) throw new Error("wrong prefix");
+    return parsed.toString().toLowerCase();
+  } catch {
+    throw new Error("Invalid eCash address for the configured network");
+  }
+}
+
 export interface EcashBroadcastResult {
   success: boolean;
   broadcasted: string[];
@@ -167,6 +177,7 @@ export class EcashWallet implements NativeWalletHandle {
 
   private constructor(
     private readonly backend: EcashWalletBackend,
+    private readonly primaryAddress: string,
     networkId: string,
     attemptNetworkId: string,
     private readonly nativeAttemptStore: NativeTransactionAttemptStore,
@@ -178,7 +189,7 @@ export class EcashWallet implements NativeWalletHandle {
     this.nativeAttemptKey = nativeTransactionAttemptKey({
       chainKind: "ecash",
       networkId: attemptNetworkId,
-      address: this.identity.address.raw,
+      address: this.primaryAddress,
     });
     const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey);
     if (persisted !== undefined) {
@@ -223,8 +234,12 @@ export class EcashWallet implements NativeWalletHandle {
       addressPrefix: ECASH_MAINNET_PREFIX,
     });
     await backend.syncAndDiscoverAddresses();
+    const primaryAddress = canonicalEcashMainnetAddress(
+      backend.getReceiveAddress(0)
+    );
     return new EcashWallet(
       backend,
+      primaryAddress,
       params.networkId,
       ECASH_MAINNET_CHECKPOINT_HASH,
       params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore,
@@ -233,10 +248,9 @@ export class EcashWallet implements NativeWalletHandle {
   }
 
   get identity(): NativeWalletHandle["identity"] {
-    const address = this.backend.getReceiveAddress(0);
     return {
-      address: { raw: address },
-      displayAddress: address,
+      address: { raw: this.primaryAddress },
+      displayAddress: this.primaryAddress,
     };
   }
 
@@ -245,7 +259,11 @@ export class EcashWallet implements NativeWalletHandle {
       // Discover first so receiveIndex points at the next unused address. Merely displaying an
       // address never consumes an HD index, avoiding restoration gaps from abandoned QR screens.
       await this.backend.syncAndDiscoverAddresses();
-      return { raw: this.backend.getReceiveAddress(this.backend.receiveIndex) };
+      return {
+        raw: canonicalEcashMainnetAddress(
+          this.backend.getReceiveAddress(this.backend.receiveIndex)
+        ),
+      };
     });
   }
 
@@ -383,13 +401,7 @@ export class EcashWallet implements NativeWalletHandle {
     }
     let recipient: string;
     try {
-      const parsed = Address.fromCashAddress(
-        params.recipient.raw.toLowerCase()
-      );
-      if (parsed.prefix !== ECASH_MAINNET_PREFIX) {
-        throw new Error("wrong prefix");
-      }
-      recipient = parsed.toString().toLowerCase();
+      recipient = canonicalEcashMainnetAddress(params.recipient.raw);
     } catch {
       throw new Error("Invalid eCash recipient for the configured network");
     }

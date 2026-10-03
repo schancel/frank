@@ -19,6 +19,7 @@ import {
   TYPE_MESSAGE_CONTENT_REVISION,
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
   TYPE_TEXT_MESSAGE_ITEM,
+  TYPE_BLACKJACK_MESSAGE_ITEM,
   TYPE_TOPIC_POST,
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
@@ -105,6 +106,7 @@ export const KNOWN_TYPES: readonly number[] = [
   TYPE_FORUM_OPERATION_STATUS,
   TYPE_CONTAINER_MESSAGE_ITEM,
   TYPE_TEXT_MESSAGE_ITEM,
+  TYPE_BLACKJACK_MESSAGE_ITEM,
 ]
 
 export function defaultContext(
@@ -403,7 +405,8 @@ function processFrame(
     (mode.kind === 'root' ||
       (env.typeId >= TYPE_TOPIC_POST &&
         env.typeId <= TYPE_FORUM_OPERATION_STATUS) ||
-      (env.typeId === TYPE_DIRECTORY_STATEMENT && effectiveSchema >= 4)) &&
+      (env.typeId === TYPE_DIRECTORY_STATEMENT && effectiveSchema >= 4) ||
+      env.typeId === TYPE_BLACKJACK_MESSAGE_ITEM) &&
     !checkRootFrameLimit(env.typeId, f.length, effectiveSchema)
   ) {
     throw fail(

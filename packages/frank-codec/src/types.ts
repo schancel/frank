@@ -371,6 +371,22 @@ export interface TextMessageItem {
   unknownFields: UnknownFields
 }
 
+/** The nine closed blackjack shapes. H and Q distinguish wire bytes from presentation text. */
+export type BlackjackFields<H, Q> = { gameId: string } & (
+  | { action: 'bet'; wagerTxHash: H }
+  | { action: 'deal'; serverSeedHash: H; playerCards: readonly number[]; dealerUpCard: number }
+  | { action: 'hit' }
+  | { action: 'hit'; playerCards: readonly number[] }
+  | { action: 'stand' }
+  | { action: 'double'; doubleWagerTxHash: H }
+  | { action: 'double'; playerCards: readonly number[] }
+  | { action: 'reveal'; dealerCards: readonly number[]; serverSeed: string; outcome: 'player_win' | 'dealer_win' | 'push' | 'player_blackjack' }
+  | { action: 'welcome'; minWagerWei: Q; maxWagerWei: Q; feeHintWei?: Q; rules?: string }
+)
+
+/** Closed type-18 projection; exact frame bytes remain on the enclosing ParsedFrame. */
+export type BlackjackMessageItem = { type: 18 } & BlackjackFields<Uint8Array, Uint8Array>
+
 export type TypedPayload<F, C, P = ForumContent, K = ForumCursor> =
   | DirectMessageDelivery<F>
   | DirectoryAttestation<F>
@@ -389,6 +405,7 @@ export type TypedPayload<F, C, P = ForumContent, K = ForumCursor> =
   | MessageContentRevision<C>
   | ContainerMessageItem<C>
   | TextMessageItem
+  | BlackjackMessageItem
 
 /** Why a frame was kept only as opaque bytes. */
 export type RetentionReason =

@@ -308,6 +308,18 @@ function processFrame(
       location,
     )
   }
+  if (
+    env.typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD &&
+    env.schemaVersion === 2 &&
+    env.minReaderVersion !== 2
+  ) {
+    throw fail(
+      'unsupported',
+      '7',
+      'type 5 schema 2 requires min_reader_version 2',
+      location,
+    )
+  }
   const projection = env.schemaVersion > highest ? 'newer-schema' : 'exact'
   const parsed: ParsedFrame = {
     kind: 'parsed',

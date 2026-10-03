@@ -53,7 +53,9 @@ fn exact(bytes: &[u8], length: usize, name: &str) -> Result<CborValue, UsageErro
 
 fn account(value: &AccountRef, name: &str, secp_only: bool) -> Result<CborValue, UsageError> {
     if secp_only
-        && (value.key_type != 1 || secp256k1_abc::PublicKey::from_slice(&value.key_bytes).is_err())
+        && (value.key_type != 1
+            || value.key_bytes.len() != 33
+            || secp256k1_abc::PublicKey::from_slice(&value.key_bytes).is_err())
     {
         return Err(UsageError(format!(
             "{name} must be a compressed secp256k1 account"
@@ -66,7 +68,7 @@ fn account(value: &AccountRef, name: &str, secp_only: bool) -> Result<CborValue,
 }
 
 fn point(bytes: &[u8], name: &str) -> Result<CborValue, UsageError> {
-    if secp256k1_abc::PublicKey::from_slice(bytes).is_err() {
+    if bytes.len() != 33 || secp256k1_abc::PublicKey::from_slice(bytes).is_err() {
         return Err(UsageError(format!(
             "{name} must be a compressed secp256k1 point"
         )));

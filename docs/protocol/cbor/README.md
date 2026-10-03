@@ -373,6 +373,8 @@ transferable proof of sender authorship.
 Because this context is the complete schema-2 field contract, a reader that supports type 5
 through schema 2 MUST reject a higher type-5 schema as `unsupported` at stage 7 rather than
 apply V6.3 projection. Likewise, a reader supporting only type-5 schema 1 MUST reject schema 2.
+A type-5 schema-2 frame whose `min_reader_version` is not exactly 2 is also `unsupported` at
+stage 7; the header value may not differ from the value authenticated by S2d.
 A future type-5 schema must allocate an updated authenticated context (and raise its reader
 requirement) before adding fields. This type-specific fail-closed rule prevents retained extension
 bytes from falling outside the AEAD transcript.

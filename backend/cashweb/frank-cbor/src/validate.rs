@@ -380,6 +380,17 @@ fn process_frame(
             location,
         ));
     }
+    if env.type_id == crate::limits::TYPE_RECIPIENT_PAYLOAD
+        && env.schema_version == 2
+        && env.min_reader_version != 2
+    {
+        return Err(fail(
+            ErrorCategory::Unsupported,
+            ErrorStage::S7,
+            "type 5 schema 2 requires min_reader_version 2",
+            location,
+        ));
+    }
     let projection = if env.schema_version > highest_schema {
         Projection::NewerSchema
     } else {

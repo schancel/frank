@@ -178,6 +178,16 @@ fn production_suite_one_is_typed_only_in_schema_two() {
         (7, hex_bytes(T3C_PROOF)),
         (8, CborValue::Bytes(vec![1])),
     ]);
+    let wrong_min_reader = encode_frame(
+        EnvelopeFields {
+            type_id: 5,
+            schema_version: 2,
+            min_reader_version: 1,
+        },
+        FramePayload::Value(&payload),
+    )
+    .unwrap();
+    assert_eq!(outcome(&wrong_min_reader), "Unsupported@S7");
     let future = encode_frame(
         EnvelopeFields {
             type_id: 5,

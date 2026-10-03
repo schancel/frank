@@ -35,20 +35,22 @@ fn dm_context_matches_typescript_vector() {
     let ephemeral = hex::decode(context["ephemeralPointHex"].as_str().unwrap()).unwrap();
     let shared = hex::decode(context["sharedPointHex"].as_str().unwrap()).unwrap();
     let proof = hex::decode(context["dleqProofHex"].as_str().unwrap()).unwrap();
-    let encoded = encode_direct_message_crypto_context(&DirectMessageCryptoContext {
-        network: context["network"].as_str().unwrap(),
-        sender: &sender,
-        recipient: &recipient,
-        sender_directory_hash: &sender_hash,
-        recipient_directory_hash: &recipient_hash,
-        sender_message_key: &sender_message_key,
-        recipient_message_key: &recipient_message_key,
-        stamp_key: &stamp_key,
-        ephemeral_point: &ephemeral,
-        shared_point: &shared,
-        dleq_proof: &proof,
-    })
-    .expect("context");
+    let encode_with = |message_key: &AccountRef, ephemeral_point: &[u8]| {
+        encode_direct_message_crypto_context(&DirectMessageCryptoContext {
+            network: context["network"].as_str().unwrap(),
+            sender: &sender,
+            recipient: &recipient,
+            sender_directory_hash: &sender_hash,
+            recipient_directory_hash: &recipient_hash,
+            sender_message_key: message_key,
+            recipient_message_key: &recipient_message_key,
+            stamp_key: &stamp_key,
+            ephemeral_point,
+            shared_point: &shared,
+            dleq_proof: &proof,
+        })
+    };
+    let encoded = encode_with(&sender_message_key, &ephemeral).expect("context");
 
     assert_eq!(DM_CRYPTO_CONTEXT_DOMAIN, "frank/dm-crypto-context/v1");
     assert_eq!(
@@ -57,6 +59,19 @@ fn dm_context_matches_typescript_vector() {
             .as_str()
             .expect("encodedHex")
     );
+
+    let uncompressed = hex::decode(concat!(
+        "04",
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"
+    ))
+    .unwrap();
+    let uncompressed_account = AccountRef {
+        key_type: 1,
+        key_bytes: uncompressed.clone(),
+    };
+    assert!(encode_with(&uncompressed_account, &ephemeral).is_err());
+    assert!(encode_with(&sender_message_key, &uncompressed).is_err());
 
     let payload = cbor_map(vec![
         (

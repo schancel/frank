@@ -110,6 +110,7 @@ describe('typed exposure of the stamp fields', () => {
     const proofSuite = new Map(payload)
     proofSuite.set(3, 65535)
     expect(outcome(fr(5, proofSuite, 2, 2))).toBe('unsupported@8.3')
+    expect(outcome(fr(5, payload, 2, 1))).toBe('unsupported@7')
     const future = new Map(payload)
     future.set(8, Uint8Array.of(1))
     expect(outcome(fr(5, future, 3, 2))).toBe('unsupported@7')

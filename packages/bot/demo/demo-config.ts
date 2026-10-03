@@ -10,6 +10,8 @@
 import { homedir } from 'os'
 import { join, resolve } from 'path'
 
+import { DEMO_FUNDING_AMOUNT_WEI } from './demo-funding'
+
 import { MAX_AMOUNT_WEI } from '../faucet-core'
 import {
   BET_MESSAGE_FEE_RESERVE_WEI,
@@ -38,7 +40,7 @@ export const DEMO_REAL_FAUCET_AMOUNT_WEI = '50000000000000000' // 0.05 MON
  * cheapest blackjack hand (table minimum + default stamp + the app's fee reserve = 0.07 MON), a
  * raffle entry, a shop purchase and several DMs with a wide margin. Fake funds cost nothing; the
  * per-address and daily caps still bind. */
-export const DEMO_FAKE_FAUCET_AMOUNT_WEI = '1000000000000000000' // 1 MON
+export const DEMO_FAKE_FAUCET_AMOUNT_WEI = DEMO_FUNDING_AMOUNT_WEI // 1 MON
 /** The raffle round size the demo uses (the bot's own default is unchanged). */
 export const DEMO_RAFFLE_MAX_ENTRIES = '5'
 /** Least a funded profile needs for one minimum-bet blackjack hand: the table minimum, the default

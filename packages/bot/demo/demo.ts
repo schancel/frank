@@ -421,6 +421,7 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
         port: config.fakeRpcPort,
         funded,
         stateFile: config.fakeChainLedger,
+        demoFunding: true,
       })
       print(`[demo] fake chain RPC on ${fakeRpc.url} (no real funds, no keys)`)
       print(
@@ -595,6 +596,14 @@ export function printSummary(handle: DemoHandle, print: (line: string) => void):
     }`,
   )
   print(`  Burn:    ${config.stampBurnAddress} (relay, bots and the app command below all use it)`)
+  if (config.fakeChain) {
+    print(
+      '  Typed wallet: setup may start at zero. To ensure 1 simulated MON at its EVM receive address:',
+    )
+    print(
+      `    TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/fund-demo.ts --fake-chain --port ${config.fakeRpcPort} <EVM_RECEIVE_ADDRESS>`,
+    )
+  }
   if (config.faucetAmountWei) {
     const needed = minBlackjackFundsWei()
     print(

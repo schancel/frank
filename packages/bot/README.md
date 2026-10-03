@@ -7,6 +7,9 @@ protobuf relay.
 
 ## One-command demo (`yarn demo`)
 
+Typed accounts have a separate EVM receive address. See [simulated typed-wallet funding](demo/README.md)
+for the explicit fake-chain-only operator command and client seam; zero-funds setup is valid.
+
 Starts the whole demo stack, waits until it is ready, and stops everything on Ctrl-C:
 
 ```sh

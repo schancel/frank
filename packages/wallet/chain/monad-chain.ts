@@ -106,8 +106,12 @@ import __pb_broadcast_pb from "@frank/cashweb/registry/broadcast_pb";
 const { BroadcastMessage, ForumPost: BroadcastForumPostPayload } =
   __pb_broadcast_pb;
 
-import { MonadHdKeyring } from "../monad-hd-keyring";
-import { MonadChangeKeyring } from "../monad-change-keyring";
+import { createMonadWalletMaterial } from "../monad-wallet-material";
+import type {
+  MonadRootBundle,
+  MonadWalletMaterial,
+} from "../monad-wallet-material";
+import type { HDSeed } from "./active-chain";
 import { MonadChangePool } from "../monad-change-pool";
 import { MonadSubAccountPool } from "../monad-account-pool";
 import {
@@ -274,6 +278,33 @@ export interface MonadChainWalletHandle
   readonly chainKind: "monad";
   readonly networkId: string;
   readonly identity: MonadIdentity;
+  close(): Promise<void>;
+}
+
+const closedWallets = new WeakSet<MonadChainWalletHandle>();
+const typedWallets = new WeakSet<MonadChainWalletHandle>();
+const walletMaterial = new WeakMap<
+  MonadChainWalletHandle,
+  MonadWalletMaterial
+>();
+// Facades may receive a handle created by another factory on the same configured network.
+// Its key ownership and send queue travel with that handle, not with the receiving facade.
+const walletSendQueues = new WeakMap<MonadChainWalletHandle, Promise<void>>();
+// One typed economic owner per EVM account/network in this runtime, across chain factories.
+// Repeated callers on the same factory share its handle; another auth/factory must first close it.
+const openTypedEvmAccounts = new Set<string>();
+
+function requireOpenWallet(wallet: MonadChainWalletHandle): void {
+  if (closedWallets.has(wallet)) throw new Error("Monad wallet is closed");
+}
+
+function requireLegacyMessaging(wallet: MonadChainWalletHandle): void {
+  requireOpenWallet(wallet);
+  if (typedWallets.has(wallet)) {
+    throw new Error(
+      "Typed Monad messaging is unavailable until the messaging child schedule is allocated (#696)"
+    );
+  }
 }
 
 /** Narrows a generic `WalletHandle` to `MonadChainWalletHandle`. Safe under this ticket's
@@ -286,6 +317,7 @@ function asMonadWallet(
   expectedNetworkId?: string
 ): MonadChainWalletHandle {
   const candidate = wallet as Partial<MonadChainWalletHandle>;
+  requireOpenWallet(wallet as MonadChainWalletHandle);
   if (
     (candidate.chainKind !== undefined && candidate.chainKind !== "monad") ||
     candidate.pool === undefined ||
@@ -542,15 +574,21 @@ function asNothingSent(err: unknown): never {
  * header, "Configuration", for why config is a param here (unlike the `MonadChain` singleton
  * below, which reads it from env). */
 export function createMonadChain(config: MonadChainConfig): ActiveChain {
-  const walletsByIdentity = new Map<string, Promise<MonadChainWalletHandle>>();
+  const walletsByIdentity = new Map<
+    string,
+    { fingerprint: string; pending: Promise<MonadChainWalletHandle> }
+  >();
+  const mainPrivateKey = (wallet: MonadChainWalletHandle) =>
+    walletMaterial.get(wallet)?.mainAccount.privateKey ??
+    wallet.identity.toPrivateKeyHex();
   // One queue per wallet for everything that prepares and spends sub-accounts (direct messages,
   // topic posts, votes): a burn account prepared for a topic post must not be picked up by a
   // concurrent stamp selection between preparation and lease.
-  const walletSendQueues = new WeakMap<MonadChainWalletHandle, Promise<void>>();
   const runWalletExclusive = <T>(
     wallet: MonadChainWalletHandle,
     task: () => Promise<T>
   ): Promise<T> => {
+    requireOpenWallet(wallet);
     const run = (walletSendQueues.get(wallet) ?? Promise.resolve()).then(task);
     walletSendQueues.set(
       wallet,
@@ -571,7 +609,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       | undefined
   ): Promise<number> => {
     const mainAccountSigner = new MonadAccountTxSigner({
-      privateKey: wallet.identity.toPrivateKeyHex(),
+      privateKey: mainPrivateKey(wallet),
       provider: wallet.provider,
       httpClient: wallet.httpClient,
     });
@@ -625,7 +663,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     });
 
     const mainAccountSigner = new MonadAccountTxSigner({
-      privateKey: wallet.identity.toPrivateKeyHex(),
+      privateKey: mainPrivateKey(wallet),
       provider: wallet.provider,
       httpClient: wallet.httpClient,
     });
@@ -677,6 +715,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
   const directMessages: DirectMessageClient = {
     async send(params): Promise<DirectMessageSendResult> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
+      requireLegacyMessaging(wallet);
       return runWalletExclusive(wallet, () =>
         sendDirectMessageExclusive(params, wallet)
       );
@@ -684,6 +723,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     async unattributedAttempts(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
+      requireLegacyMessaging(wallet);
       return runWalletExclusive(wallet, async () => {
         const client = new MonadStampClient(wallet);
         await client.resumePendingAttempts({ maxAttempts: 1 });
@@ -697,6 +737,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     async reconcileAttempts(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
+      requireLegacyMessaging(wallet);
       return runWalletExclusive(wallet, async () => {
         const client = new MonadStampClient(wallet);
         // Replays every journaled set byte for byte; this never signs or funds anything.
@@ -714,6 +755,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     async fetchSince(params): Promise<DirectMessageReceived[]> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
+      requireLegacyMessaging(wallet);
       const mailbox = mailboxAuthFor(wallet.identity, wallet.relayBaseUrl);
       const stored = await fetchMonadMessagesSince({
         ...mailbox,
@@ -820,6 +862,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     async listRecoveredStampPayments({ wallet }) {
       const monadWallet = asMonadWallet(wallet, config.networkId);
+      requireLegacyMessaging(monadWallet);
       return (monadWallet.stampPaymentJournal?.getAll() ?? []).map(
         (record) => ({
           payloadDigest: record.payloadHashHex,
@@ -840,6 +883,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       destination,
     }) {
       const monadWallet = asMonadWallet(wallet, config.networkId);
+      requireLegacyMessaging(monadWallet);
       const journal = monadWallet.stampPaymentJournal;
       if (journal === undefined) {
         throw new Error("Stamp-payment recovery journal is not configured");
@@ -1106,21 +1150,49 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       }
     },
 
-    async createWallet(seed): Promise<MonadChainWalletHandle> {
-      const identity = MonadIdentity.fromSeed(seed);
+    async createWallet(
+      seed: HDSeed | MonadRootBundle
+    ): Promise<MonadChainWalletHandle> {
+      const material = createMonadWalletMaterial(seed);
+      const { identity, mainAccount, keyring, changeKeyring } = material;
       const identityKey = identity.address.raw.toLowerCase();
+      const mainAccountKey = mainAccount.address.toLowerCase();
+      const economicOwnerKey =
+        material.messagingRoot === undefined
+          ? undefined
+          : `${config.chainId}:${mainAccountKey}`;
       const existing = walletsByIdentity.get(identityKey);
-      if (existing !== undefined) return existing;
+      if (existing !== undefined) {
+        material.dispose();
+        if (existing.fingerprint !== material.fingerprint)
+          throw new Error(
+            "Monad wallet root bundle does not match the cached identity"
+          );
+        const wallet = await existing.pending;
+        requireOpenWallet(wallet);
+        return wallet;
+      }
+      if (
+        economicOwnerKey !== undefined &&
+        openTypedEvmAccounts.has(economicOwnerKey)
+      ) {
+        material.dispose();
+        throw new Error(
+          "Monad EVM account is already open in another wallet handle"
+        );
+      }
+      if (economicOwnerKey !== undefined)
+        openTypedEvmAccounts.add(economicOwnerKey);
 
       const pending = (async (): Promise<MonadChainWalletHandle> => {
-        const keyring = MonadHdKeyring.fromMnemonic(
-          seed.mnemonic,
-          seed.passphrase
-        );
+        const storageKey =
+          material.messagingRoot === undefined
+            ? identityKey
+            : `evm-${mainAccount.address.toLowerCase()}`;
         const storageLocation =
           config.walletStorageLocation === false
             ? undefined
-            : `${config.walletStorageLocation}-${identityKey}`;
+            : `${config.walletStorageLocation}-${storageKey}`;
         const subAccountStore =
           storageLocation === undefined
             ? undefined
@@ -1137,293 +1209,362 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           storageLocation === undefined
             ? new InMemoryStampAttemptJournal()
             : new LevelStampAttemptJournal(storageLocation);
-        await Promise.all([
-          subAccountStore?.Open(),
-          changeStore?.Open(),
-          stampPaymentJournal instanceof LevelStampPaymentJournal
-            ? stampPaymentJournal.Open()
-            : undefined,
-          stampAttemptJournal instanceof LevelStampAttemptJournal
-            ? stampAttemptJournal.Open()
-            : undefined,
-        ]);
+        const closeStores = () =>
+          Promise.allSettled([
+            subAccountStore?.Close(),
+            changeStore?.Close(),
+            stampPaymentJournal instanceof LevelStampPaymentJournal
+              ? stampPaymentJournal.Close()
+              : undefined,
+            stampAttemptJournal instanceof LevelStampAttemptJournal
+              ? stampAttemptJournal.Close()
+              : undefined,
+          ]);
+        let destroyProvider: (() => void) | undefined;
+        try {
+          const opened = await Promise.allSettled([
+            subAccountStore?.Open(),
+            changeStore?.Open(),
+            stampPaymentJournal instanceof LevelStampPaymentJournal
+              ? stampPaymentJournal.Open()
+              : undefined,
+            stampAttemptJournal instanceof LevelStampAttemptJournal
+              ? stampAttemptJournal.Open()
+              : undefined,
+          ]);
+          const openFailure = opened.find(
+            (result) => result.status === "rejected"
+          );
+          if (openFailure?.status === "rejected") throw openFailure.reason;
 
-        const nativeAttemptStore =
-          config.nativeAttemptStore ?? defaultNativeTransactionAttemptStore;
-        const nativeAttemptKey = nativeTransactionAttemptKey({
-          chainKind: "monad",
-          networkId: config.chainId.toString(),
-          address: identityKey,
-        });
-        type SignedNativeTransfer = Awaited<
-          ReturnType<MonadAccountTxSigner["buildAndSignTransfer"]>
-        >;
-        let unresolvedNative:
-          | {
-              signed?: SignedNativeTransfer;
-              error: NativeTransactionSubmissionError;
-            }
-          | undefined;
-        let lastSubmittedNative: ChainTransaction | undefined;
-        const persistedNative = nativeAttemptStore.get(nativeAttemptKey);
-        if (persistedNative !== undefined) {
-          unresolvedNative = {
-            error: new NativeTransactionSubmissionError({
-              transaction: persistedNative,
-              reason: new Error("Recovered unresolved native transaction"),
-            }),
-          };
-        }
-
-        const pool = new MonadSubAccountPool({
-          keyring,
-          store: subAccountStore,
-        });
-        pool.ensureUnfundedSize(config.subAccountPoolSize);
-        const pendingLeaseIndices = new Set(
-          stampAttemptJournal
-            .getAll()
-            .flatMap((attempt) => attempt.leaseIndices)
-        );
-        for (const record of pool.records()) {
-          if (
-            record.status === "in-use" &&
-            !pendingLeaseIndices.has(record.index)
-          ) {
-            // A crash during signing can persist the lease before the exact raw set exists. No
-            // relay broadcast is possible in that window, but the account is conservatively
-            // retired rather than silently reused with an uncertain locally-signed nonce.
-            pool.setStatus(record.index, "retired");
-          }
-        }
-        await pool.flush();
-        const changePool = new MonadChangePool({
-          keyring: MonadChangeKeyring.fromMnemonic(
-            seed.mnemonic,
-            seed.passphrase
-          ),
-          store: changeStore,
-        });
-        const leaseManager = new SubAccountLeaseManager(pool);
-        const rpcUrl = `${config.relayBaseUrl.replace(
-          /\/$/,
-          ""
-        )}/chain-rpc/${encodeURIComponent(config.rpcChain)}/rpc`;
-        const relayAuth = {
-          chain: config.rpcChain,
-          customer: identity.address.raw,
-          networkTag: config.networkTag,
-          signDigest: (digest: Uint8Array) =>
-            identity.signHash(Buffer.from(digest)),
-        };
-        const provider = createMonadJsonRpcProvider({
-          rpcUrl,
-          chainId: config.chainId,
-          relayAuth,
-        });
-        const httpClient = new MonadHttpClient({
-          rpcUrl,
-          chainId: config.chainId,
-          relayAuth,
-        });
-        const submitNative = async (
-          signed: SignedNativeTransfer,
-          onSigned?: (transaction: ChainTransaction) => Promise<void>
-        ): Promise<ChainTransaction> => {
-          const transaction = { txHash: signed.txHash };
-          if (onSigned !== undefined) await onSigned(transaction);
-          nativeAttemptStore.put(nativeAttemptKey, transaction);
-          unresolvedNative = {
-            signed,
-            error: new NativeTransactionSubmissionError({
-              transaction,
-              reason: new Error("Native transaction submission is in progress"),
-            }),
-          };
-          const signer = new MonadAccountTxSigner({
-            privateKey: identity.toPrivateKeyHex(),
-            provider,
-            httpClient,
+          const nativeAttemptStore =
+            config.nativeAttemptStore ?? defaultNativeTransactionAttemptStore;
+          const nativeAttemptKey = nativeTransactionAttemptKey({
+            chainKind: "monad",
+            networkId: config.chainId.toString(),
+            address: mainAccount.address.toLowerCase(),
           });
-          try {
-            const submitted = { txHash: await signer.submit(signed) };
-            lastSubmittedNative = submitted;
-            unresolvedNative = undefined;
-            return submitted;
-          } catch (reason) {
-            const error = new NativeTransactionSubmissionError({
-              transaction,
-              reason,
-            });
-            unresolvedNative = { signed, error };
-            throw error;
-          }
-        };
-        const wallet: MonadChainWalletHandle = {
-          chainKind: "monad",
-          networkId: config.networkId,
-          identity,
-          async getReceiveAddress() {
-            return identity.address;
-          },
-          async getBalance() {
-            return provider.getBalance(identity.address.raw);
-          },
-          getUnresolvedNativeTransaction() {
-            return unresolvedNative?.error.transaction;
-          },
-          async retryUnresolvedNativeTransaction() {
-            return runWalletExclusive(wallet, () =>
-              runNativeTransactionExclusive(
-                nativeAttemptKey,
-                nativeAttemptStore.coordinationScope,
-                async () => {
-                  const unresolved = unresolvedNative;
-                  if (unresolved === undefined) {
-                    throw new Error(
-                      "No unresolved native transaction to retry"
-                    );
-                  }
-                  if (unresolved.signed === undefined) {
-                    throw new Error(
-                      "Recovered unresolved transaction must be reconciled by id before sending again"
-                    );
-                  }
-                  const persisted = nativeAttemptStore.get(nativeAttemptKey);
-                  if (
-                    persisted === undefined ||
-                    !sameChainTransaction(
-                      persisted,
-                      unresolved.error.transaction
-                    )
-                  ) {
-                    unresolvedNative =
-                      persisted === undefined
-                        ? undefined
-                        : {
-                            error: new NativeTransactionSubmissionError({
-                              transaction: persisted,
-                              reason: new Error(
-                                "Recovered unresolved native transaction"
-                              ),
-                            }),
-                          };
-                    throw new Error(
-                      "Unresolved native transaction changed before retry"
-                    );
-                  }
-                  return submitNative(unresolved.signed);
-                }
-              )
-            );
-          },
-          async resolveUnresolvedNativeTransaction({ transaction }) {
-            await runNativeTransactionExclusive(
-              nativeAttemptKey,
-              nativeAttemptStore.coordinationScope,
-              async () => {
-                const expected =
-                  unresolvedNative?.error.transaction ?? lastSubmittedNative;
-                const persisted = nativeAttemptStore.get(nativeAttemptKey);
-                if (
-                  expected === undefined ||
-                  !sameChainTransaction(expected, transaction) ||
-                  persisted === undefined ||
-                  !sameChainTransaction(persisted, transaction)
-                ) {
-                  throw new Error(
-                    "Transaction does not match the unresolved native attempt"
-                  );
-                }
-                nativeAttemptStore.delete(nativeAttemptKey);
-                unresolvedNative = undefined;
-                lastSubmittedNative = undefined;
+          type SignedNativeTransfer = Awaited<
+            ReturnType<MonadAccountTxSigner["buildAndSignTransfer"]>
+          >;
+          let unresolvedNative:
+            | {
+                signed?: SignedNativeTransfer;
+                error: NativeTransactionSubmissionError;
               }
-            );
-          },
-          async sendNative({ recipient, value, onSigned }) {
-            return runWalletExclusive(wallet, () =>
-              runNativeTransactionExclusive(
-                nativeAttemptKey,
-                nativeAttemptStore.coordinationScope,
-                async () => {
-                  const persisted = nativeAttemptStore.get(nativeAttemptKey);
-                  if (persisted === undefined) {
-                    unresolvedNative = undefined;
-                  } else if (
-                    persisted !== undefined &&
-                    (lastSubmittedNative === undefined ||
-                      !sameChainTransaction(persisted, lastSubmittedNative)) &&
-                    (unresolvedNative === undefined ||
-                      unresolvedNative.signed === undefined ||
+            | undefined;
+          let lastSubmittedNative: ChainTransaction | undefined;
+          const persistedNative = nativeAttemptStore.get(nativeAttemptKey);
+          if (persistedNative !== undefined) {
+            unresolvedNative = {
+              error: new NativeTransactionSubmissionError({
+                transaction: persistedNative,
+                reason: new Error("Recovered unresolved native transaction"),
+              }),
+            };
+          }
+
+          const pool = new MonadSubAccountPool({
+            keyring,
+            store: subAccountStore,
+          });
+          pool.ensureUnfundedSize(config.subAccountPoolSize);
+          const pendingLeaseIndices = new Set(
+            stampAttemptJournal
+              .getAll()
+              .flatMap((attempt) => attempt.leaseIndices)
+          );
+          for (const record of pool.records()) {
+            if (
+              record.status === "in-use" &&
+              !pendingLeaseIndices.has(record.index)
+            ) {
+              // A crash during signing can persist the lease before the exact raw set exists. No
+              // relay broadcast is possible in that window, but the account is conservatively
+              // retired rather than silently reused with an uncertain locally-signed nonce.
+              pool.setStatus(record.index, "retired");
+            }
+          }
+          await pool.flush();
+          const changePool = new MonadChangePool({
+            keyring: changeKeyring,
+            store: changeStore,
+          });
+          const leaseManager = new SubAccountLeaseManager(pool);
+          const rpcUrl = `${config.relayBaseUrl.replace(
+            /\/$/,
+            ""
+          )}/chain-rpc/${encodeURIComponent(config.rpcChain)}/rpc`;
+          const relayAuth = {
+            chain: config.rpcChain,
+            customer: identity.address.raw,
+            networkTag: config.networkTag,
+            signDigest: (digest: Uint8Array) =>
+              identity.signHash(Buffer.from(digest)),
+          };
+          const provider = createMonadJsonRpcProvider({
+            rpcUrl,
+            chainId: config.chainId,
+            relayAuth,
+          });
+          destroyProvider = () => provider.destroy();
+          const httpClient = new MonadHttpClient({
+            rpcUrl,
+            chainId: config.chainId,
+            relayAuth,
+          });
+          const submitNative = async (
+            signed: SignedNativeTransfer,
+            onSigned?: (transaction: ChainTransaction) => Promise<void>
+          ): Promise<ChainTransaction> => {
+            const transaction = { txHash: signed.txHash };
+            if (onSigned !== undefined) await onSigned(transaction);
+            nativeAttemptStore.put(nativeAttemptKey, transaction);
+            unresolvedNative = {
+              signed,
+              error: new NativeTransactionSubmissionError({
+                transaction,
+                reason: new Error(
+                  "Native transaction submission is in progress"
+                ),
+              }),
+            };
+            const signer = new MonadAccountTxSigner({
+              privateKey: mainAccount.privateKey,
+              provider,
+              httpClient,
+            });
+            try {
+              const submitted = { txHash: await signer.submit(signed) };
+              lastSubmittedNative = submitted;
+              unresolvedNative = undefined;
+              return submitted;
+            } catch (reason) {
+              const error = new NativeTransactionSubmissionError({
+                transaction,
+                reason,
+              });
+              unresolvedNative = { signed, error };
+              throw error;
+            }
+          };
+          const wallet: MonadChainWalletHandle = {
+            chainKind: "monad",
+            networkId: config.networkId,
+            identity,
+            async getReceiveAddress() {
+              requireOpenWallet(wallet);
+              return { raw: mainAccount.address };
+            },
+            async getBalance() {
+              requireOpenWallet(wallet);
+              return provider.getBalance(mainAccount.address);
+            },
+            getUnresolvedNativeTransaction() {
+              requireOpenWallet(wallet);
+              return unresolvedNative?.error.transaction;
+            },
+            async retryUnresolvedNativeTransaction() {
+              return runWalletExclusive(wallet, () =>
+                runNativeTransactionExclusive(
+                  nativeAttemptKey,
+                  nativeAttemptStore.coordinationScope,
+                  async () => {
+                    const unresolved = unresolvedNative;
+                    if (unresolved === undefined) {
+                      throw new Error(
+                        "No unresolved native transaction to retry"
+                      );
+                    }
+                    if (unresolved.signed === undefined) {
+                      throw new Error(
+                        "Recovered unresolved transaction must be reconciled by id before sending again"
+                      );
+                    }
+                    const persisted = nativeAttemptStore.get(nativeAttemptKey);
+                    if (
+                      persisted === undefined ||
                       !sameChainTransaction(
                         persisted,
-                        unresolvedNative.error.transaction
-                      ))
-                  ) {
-                    const receipt = await provider.getTransactionReceipt(
-                      persisted.txHash
-                    );
-                    if (receipt !== null && receipt !== undefined) {
-                      nativeAttemptStore.delete(nativeAttemptKey);
-                      unresolvedNative = undefined;
-                    } else {
-                      unresolvedNative ??= {
-                        error: new NativeTransactionSubmissionError({
-                          transaction: persisted,
-                          reason: new Error(
-                            "Recovered unresolved native transaction"
-                          ),
-                        }),
-                      };
+                        unresolved.error.transaction
+                      )
+                    ) {
+                      unresolvedNative =
+                        persisted === undefined
+                          ? undefined
+                          : {
+                              error: new NativeTransactionSubmissionError({
+                                transaction: persisted,
+                                reason: new Error(
+                                  "Recovered unresolved native transaction"
+                                ),
+                              }),
+                            };
+                      throw new Error(
+                        "Unresolved native transaction changed before retry"
+                      );
                     }
+                    return submitNative(unresolved.signed);
                   }
-                  if (unresolvedNative !== undefined) {
-                    throw unresolvedNative.error;
+                )
+              );
+            },
+            async resolveUnresolvedNativeTransaction({ transaction }) {
+              await runWalletExclusive(wallet, () =>
+                runNativeTransactionExclusive(
+                  nativeAttemptKey,
+                  nativeAttemptStore.coordinationScope,
+                  async () => {
+                    const expected =
+                      unresolvedNative?.error.transaction ??
+                      lastSubmittedNative;
+                    const persisted = nativeAttemptStore.get(nativeAttemptKey);
+                    if (
+                      expected === undefined ||
+                      !sameChainTransaction(expected, transaction) ||
+                      persisted === undefined ||
+                      !sameChainTransaction(persisted, transaction)
+                    ) {
+                      throw new Error(
+                        "Transaction does not match the unresolved native attempt"
+                      );
+                    }
+                    nativeAttemptStore.delete(nativeAttemptKey);
+                    unresolvedNative = undefined;
+                    lastSubmittedNative = undefined;
                   }
-                  if (value <= 0n) {
-                    throw new Error("Transfer value must be greater than zero");
-                  }
-                  if (
-                    pool.records().some((record) => record.status === "funding")
-                  ) {
-                    throw new Error(
-                      "Resolve pending Monad account funding before sending a native transfer"
+                )
+              );
+            },
+            async sendNative({ recipient, value, onSigned }) {
+              return runWalletExclusive(wallet, () =>
+                runNativeTransactionExclusive(
+                  nativeAttemptKey,
+                  nativeAttemptStore.coordinationScope,
+                  async () => {
+                    const persisted = nativeAttemptStore.get(nativeAttemptKey);
+                    if (persisted === undefined) {
+                      unresolvedNative = undefined;
+                    } else if (
+                      persisted !== undefined &&
+                      (lastSubmittedNative === undefined ||
+                        !sameChainTransaction(
+                          persisted,
+                          lastSubmittedNative
+                        )) &&
+                      (unresolvedNative === undefined ||
+                        unresolvedNative.signed === undefined ||
+                        !sameChainTransaction(
+                          persisted,
+                          unresolvedNative.error.transaction
+                        ))
+                    ) {
+                      const receipt = await provider.getTransactionReceipt(
+                        persisted.txHash
+                      );
+                      if (receipt !== null && receipt !== undefined) {
+                        nativeAttemptStore.delete(nativeAttemptKey);
+                        unresolvedNative = undefined;
+                      } else {
+                        unresolvedNative ??= {
+                          error: new NativeTransactionSubmissionError({
+                            transaction: persisted,
+                            reason: new Error(
+                              "Recovered unresolved native transaction"
+                            ),
+                          }),
+                        };
+                      }
+                    }
+                    if (unresolvedNative !== undefined) {
+                      throw unresolvedNative.error;
+                    }
+                    if (value <= 0n) {
+                      throw new Error(
+                        "Transfer value must be greater than zero"
+                      );
+                    }
+                    if (
+                      pool
+                        .records()
+                        .some((record) => record.status === "funding")
+                    ) {
+                      throw new Error(
+                        "Resolve pending Monad account funding before sending a native transfer"
+                      );
+                    }
+                    const signer = new MonadAccountTxSigner({
+                      privateKey: mainAccount.privateKey,
+                      provider,
+                      httpClient,
+                    });
+                    const signed = await signer.buildAndSignTransfer(
+                      recipient.raw,
+                      value
                     );
+                    return submitNative(signed, onSigned);
                   }
-                  const signer = new MonadAccountTxSigner({
-                    privateKey: identity.toPrivateKeyHex(),
-                    provider,
-                    httpClient,
-                  });
-                  const signed = await signer.buildAndSignTransfer(
-                    recipient.raw,
-                    value
+                )
+              );
+            },
+            pool,
+            leaseManager,
+            provider,
+            httpClient,
+            changePool,
+            stampPaymentJournal,
+            stampAttemptJournal,
+            relayBaseUrl: config.relayBaseUrl,
+            cborNetwork:
+              config.networkTag === "MON1" ? "monad-mainnet" : "monad-testnet",
+            close() {
+              if (closing !== undefined) return closing;
+              closedWallets.add(wallet);
+              closing = (async () => {
+                await walletSendQueues.get(wallet);
+                try {
+                  const results = await closeStores();
+                  const failure = results.find(
+                    (result) => result.status === "rejected"
                   );
-                  return submitNative(signed, onSigned);
+                  if (failure?.status === "rejected") throw failure.reason;
+                  walletsByIdentity.delete(identityKey);
+                  if (economicOwnerKey !== undefined)
+                    openTypedEvmAccounts.delete(economicOwnerKey);
+                } finally {
+                  provider.destroy();
+                  material.dispose();
+                  walletMaterial.delete(wallet);
                 }
-              )
-            );
-          },
-          pool,
-          leaseManager,
-          provider,
-          httpClient,
-          changePool,
-          stampPaymentJournal,
-          stampAttemptJournal,
-          relayBaseUrl: config.relayBaseUrl,
-          cborNetwork:
-            config.networkTag === "MON1" ? "monad-mainnet" : "monad-testnet",
-        };
-        await new MonadStampClient(wallet).resumePendingAttempts();
-        return wallet;
+              })();
+              return closing;
+            },
+          };
+          let closing: Promise<void> | undefined;
+          walletMaterial.set(wallet, material);
+          if (material.messagingRoot !== undefined) typedWallets.add(wallet);
+          if (material.messagingRoot === undefined) {
+            await new MonadStampClient(wallet).resumePendingAttempts();
+          }
+          return wallet;
+        } catch (error) {
+          await closeStores();
+          destroyProvider?.();
+          material.dispose();
+          throw error;
+        }
       })();
-      walletsByIdentity.set(identityKey, pending);
+      walletsByIdentity.set(identityKey, {
+        fingerprint: material.fingerprint,
+        pending,
+      });
       try {
         return await pending;
       } catch (err) {
+        material.dispose();
         walletsByIdentity.delete(identityKey);
+        if (economicOwnerKey !== undefined)
+          openTypedEvmAccounts.delete(economicOwnerKey);
         throw err;
       }
     },

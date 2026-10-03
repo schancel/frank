@@ -53,6 +53,8 @@
  */
 import { ForumMessage, ForumMessageEntry } from "@frank/cashweb/types/forum";
 import { MessageItem } from "@frank/cashweb/types/messages";
+import type { MonadRootBundle } from "../monad-wallet-material";
+export type { MonadRootBundle } from "../monad-wallet-material";
 import {
   ChainAddress,
   ChainKind,
@@ -77,9 +79,7 @@ export { NativeTransactionSubmissionError } from "./chain-wallet";
  * there is deliberately no separate "API" vs. "display" encoding the way Lotus's
  * `toAPIAddress`/`toDisplayAddress` (`../../utils/address.ts`) need, since EVM has exactly one
  * canonical address representation. */
-/** A chain-agnostic HD seed. Mirrors the only real seed-consuming primitive in this codebase today
- * (`../wallet/monad-hd-keyring.ts`'s `MonadHdKeyring.fromMnemonic(mnemonic, passphrase)`) rather
- * than inventing an abstract seed format with no real consumer yet. */
+/** @deprecated Legacy BIP39 recovery input; normal Monad creation should use MonadRootBundle. */
 export interface HDSeed {
   /** BIP-39 mnemonic phrase. */
   mnemonic: string;
@@ -373,6 +373,10 @@ export interface ActiveChain extends NativeAssetChain {
   readonly defaultStampValue: bigint;
   /** Default raw native-chain value burned for a topic post or vote. */
   readonly defaultTopicVoteValue: bigint;
+  createWallet(
+    roots: MonadRootBundle
+  ): Promise<NativeWalletHandle & WalletHandle & { close(): Promise<void> }>;
+  /** @deprecated Legacy recovery compatibility. #699 owns the app switch and deletion. */
   createWallet(seed: HDSeed): Promise<NativeWalletHandle & WalletHandle>;
   nativeTransfers: ActiveNativeTransferClient;
   /** Look up an identity's registered profile/pubkey. Returns `undefined` if nothing is

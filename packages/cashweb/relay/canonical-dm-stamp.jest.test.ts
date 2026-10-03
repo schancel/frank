@@ -4,7 +4,7 @@ import {
   toHex,
   parseFrame,
   verifyPreviewDirectoryEvidence,
-} from '../../frank-codec/src'
+} from '@frank/codec'
 import corpus from '../../../docs/protocol/cbor/vectors/dm-runtime.json'
 import {
   canonicalStampDestination,

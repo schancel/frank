@@ -8,15 +8,20 @@
   "sideEffects": false,
   "main": "src/index.ts",
   "scripts": {
+    "check:vectors": "node scripts/check-vectors.mjs",
+    "check:bundle": "node scripts/check-bundle.mjs",
     "test": "jest",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.jest.json"
   },
   "dependencies": {
     "@frank/codex32": "*",
-    "@frank/domain-roots": "*"
+    "@frank/domain-roots": "*",
+    "@frank/nakamoto": "*",
+    "@noble/hashes": "1.8.0"
   },
   "devDependencies": {
     "@types/jest": "^29",
+    "esbuild": "~0.28.0",
     "jest": "^29",
     "ts-jest": "^29",
     "typescript": "^5.9.3"

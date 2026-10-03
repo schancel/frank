@@ -3,6 +3,11 @@
   "compilerOptions": {
     "module": "commonjs",
     "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "paths": {
+      "@frank/nakamoto/bech32": ["../nakamoto/src/bech32.ts"],
+      "@frank/nakamoto/convert-bits": ["../nakamoto/src/convert-bits.ts"]
+    },
     "types": ["jest", "node"]
   },
   "include": ["src/**/*.ts"],

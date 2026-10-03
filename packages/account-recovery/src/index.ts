@@ -18,28 +18,33 @@ import {
   type DomainPurpose,
   type DomainRoot,
 } from '@frank/domain-roots'
+import { AccountRecoveryError } from './errors.js'
+import {
+  deriveRecoveryPublicMetadata,
+  snapshotBytes,
+  snapshotPublicDescriptor,
+  type PublicRecoveryDescriptor,
+  type RecoveryPublicMetadata,
+} from './public-metadata.js'
+
+export {
+  AccountRecoveryError,
+  type AccountRecoveryErrorCode,
+} from './errors.js'
+export {
+  decodeRecoveryDescriptor,
+  decodeRecoveryFingerprint,
+  deriveRecoveryPublicMetadata,
+  encodeRecoveryDescriptor,
+  encodeRecoveryFingerprint,
+  type PublicRecoveryDescriptor,
+  type RecoveryPublicMetadata,
+} from './public-metadata.js'
 
 const ACCOUNT_ROOT_LENGTH = 32
 
-export type AccountRecoveryErrorCode =
-  | Codex32ErrorCode
-  | 'ceremony-consumed'
-  | 'confirmation-mismatch'
-  | 'wrong-recovery-format'
-  | 'wrong-registry'
-  | 'wrong-ceremony-family'
-
-export class AccountRecoveryError extends Error {
-  readonly code: AccountRecoveryErrorCode
-
-  constructor(code: AccountRecoveryErrorCode) {
-    super(`Frank account recovery failed: ${code}`)
-    this.name = 'AccountRecoveryError'
-    this.code = code
-  }
-}
-
-export interface RecoveryDescriptor {
+/** Share-family metadata only; it never authenticates account identity. */
+export interface RecoveryFamilyMetadata {
   readonly recoveryFormat: typeof RECOVERY_FORMAT_ID
   readonly recoveryFormatCode: typeof RECOVERY_FORMAT_CODE
   readonly registry: typeof DERIVATION_REGISTRY_ID
@@ -48,16 +53,36 @@ export interface RecoveryDescriptor {
   readonly identifier: string
 }
 
+/** @deprecated Use RecoveryFamilyMetadata; this is not a frankdesc identity envelope. */
+export type RecoveryDescriptor = RecoveryFamilyMetadata
+
 export type AccountDomainRoots = {
   readonly [Purpose in DomainPurpose]: DomainRoot<Purpose>
 }
 
 export interface PendingCodex32Signup {
-  /** Public ceremony metadata. This is not an authenticated recovery descriptor. */
+  /** @deprecated Family metadata only. Prefer familyMetadata. */
   readonly descriptor: RecoveryDescriptor
-  /** Caller-owned immutable strings. The service does not retain this array. */
+  readonly familyMetadata: RecoveryFamilyMetadata
+  /** Public descriptor to retain independently before the caller activates an account. */
+  readonly publicDescriptor: PublicRecoveryDescriptor
+  /** Immutable strings retained until confirm/cancel; callers own any copies. */
   readonly shares: readonly string[]
   confirm(shares: readonly string[]): AccountDomainRoots
+  confirmWithMetadata(shares: readonly string[]): RecoveredCodex32Account
+  cancel(): void
+}
+
+export interface RecoveredCodex32Account {
+  readonly roots: AccountDomainRoots
+  readonly metadata: RecoveryPublicMetadata
+}
+
+export interface PendingCodex32Restore {
+  /** Immutable snapshot; selecting another descriptor requires a new ceremony. */
+  readonly descriptor: PublicRecoveryDescriptor
+  /** Invalid M can retry; a valid M with a different fingerprint consumes the ceremony. */
+  recover(shares: readonly string[]): RecoveredCodex32Account
   cancel(): void
 }
 
@@ -83,6 +108,7 @@ export function beginCodex32Signup(
   let expectedSymbols: Uint8Array | null = null
   try {
     master = unwrap(createMasterPayload(root))
+    const metadata = deriveRecoveryPublicMetadata(master)
     const shares = unwrap(
       splitCodex32({
         threshold: signup.threshold,
@@ -110,33 +136,45 @@ export function beginCodex32Signup(
       return owned
     }
 
+    const confirm = (
+      candidateShares: readonly string[],
+    ): RecoveredCodex32Account => {
+      if (!active || retainedSymbols === null) {
+        throw new AccountRecoveryError('ceremony-consumed')
+      }
+      const sharesSnapshot = snapshotShares(candidateShares)
+      if (!active || retainedSymbols === null) {
+        throw new AccountRecoveryError('ceremony-consumed')
+      }
+      assertCeremonyFamily(descriptor, sharesSnapshot)
+      const recovered = unwrap(recoverCodex32Exact(sharesSnapshot))
+      try {
+        if (!equalBytes(recovered.payloadSymbols, retainedSymbols)) {
+          throw new AccountRecoveryError('confirmation-mismatch')
+        }
+        const expected = consume()
+        expected.fill(0)
+        return Object.freeze({
+          roots: deriveValidatedRoots(recovered.secret),
+          metadata,
+        })
+      } finally {
+        recovered.secret.fill(0)
+        recovered.payloadSymbols.fill(0)
+      }
+    }
+
     return Object.freeze({
       descriptor,
+      familyMetadata: descriptor,
+      publicDescriptor: metadata.descriptor,
       get shares(): readonly string[] {
         return exportedShares
       },
       confirm(candidateShares: readonly string[]): AccountDomainRoots {
-        if (!active || retainedSymbols === null) {
-          throw new AccountRecoveryError('ceremony-consumed')
-        }
-        const sharesSnapshot = snapshotShares(candidateShares)
-        if (!active || retainedSymbols === null) {
-          throw new AccountRecoveryError('ceremony-consumed')
-        }
-        assertCeremonyFamily(descriptor, sharesSnapshot)
-        const recovered = unwrap(recoverCodex32Exact(sharesSnapshot))
-        try {
-          if (!equalBytes(recovered.payloadSymbols, retainedSymbols)) {
-            throw new AccountRecoveryError('confirmation-mismatch')
-          }
-          const expected = consume()
-          expected.fill(0)
-          return deriveValidatedRoots(recovered.secret)
-        } finally {
-          recovered.secret.fill(0)
-          recovered.payloadSymbols.fill(0)
-        }
+        return confirm(candidateShares).roots
       },
+      confirmWithMetadata: confirm,
       cancel(): void {
         if (!active) return
         const expected = consume()
@@ -151,7 +189,10 @@ export function beginCodex32Signup(
   }
 }
 
-/** Recover and validate a Frank master before deriving any resident domain material. */
+/**
+ * @deprecated Validates a master and family only; does not authenticate an expected
+ * account. Normal restore must use beginCodex32Restore with independent public authority.
+ */
 export function recoverCodex32Account(
   input: RecoverCodex32AccountInput,
 ): AccountDomainRoots {
@@ -168,6 +209,49 @@ export function recoverCodex32Account(
   }
 }
 
+/**
+ * Pin an independently trusted decoded descriptor before accepting shares.
+ * The caller owns descriptor provenance and ceremony/account binding. This API
+ * checks equality with that authority; decoding a descriptor does not authenticate it.
+ */
+export function beginCodex32Restore(
+  value: PublicRecoveryDescriptor,
+): PendingCodex32Restore {
+  const descriptor = snapshotPublicDescriptor(value)
+  const expected = descriptor.publicRecoveryFingerprint
+  let active = true
+  return Object.freeze({
+    descriptor,
+    recover(candidateShares: readonly string[]): RecoveredCodex32Account {
+      if (!active) throw new AccountRecoveryError('ceremony-consumed')
+      const shares = snapshotShares(candidateShares)
+      if (!active) throw new AccountRecoveryError('ceremony-consumed')
+      const recovered = unwrap(recoverCodex32Exact(shares))
+      try {
+        // Master validation happens inside metadata derivation before fingerprinting.
+        const metadata = deriveRecoveryPublicMetadata(recovered.secret)
+        if (
+          !equalBytes(metadata.descriptor.publicRecoveryFingerprint, expected)
+        ) {
+          active = false
+          throw new AccountRecoveryError('descriptor-mismatch')
+        }
+        active = false
+        return Object.freeze({
+          roots: deriveValidatedRoots(recovered.secret),
+          metadata,
+        })
+      } finally {
+        recovered.secret.fill(0)
+        recovered.payloadSymbols.fill(0)
+      }
+    },
+    cancel(): void {
+      active = false
+    },
+  })
+}
+
 /** Best-effort release of caller-owned derived material. */
 export function destroyAccountDomainRoots(roots: AccountDomainRoots): void {
   for (const purpose of DOMAIN_PURPOSES) roots[purpose].bytes.fill(0)
@@ -175,15 +259,16 @@ export function destroyAccountDomainRoots(roots: AccountDomainRoots): void {
 
 function deriveValidatedRoots(master: Uint8Array): AccountDomainRoots {
   const root = unwrap(validateMasterPayload(master))
+  const derived: DomainRoot[] = []
   try {
+    for (const purpose of DOMAIN_PURPOSES)
+      derived.push(deriveDomainRoot(root, purpose))
     return Object.freeze(
-      Object.fromEntries(
-        DOMAIN_PURPOSES.map(purpose => [
-          purpose,
-          deriveDomainRoot(root, purpose),
-        ]),
-      ),
+      Object.fromEntries(derived.map(value => [value.purpose, value])),
     ) as AccountDomainRoots
+  } catch (error) {
+    for (const value of derived) value.bytes.fill(0)
+    throw error
   } finally {
     root.fill(0)
   }
@@ -325,10 +410,7 @@ function secureRandom(
   }
   try {
     const supplied = randomBytes(length)
-    if (!(supplied instanceof Uint8Array) || supplied.length !== length) {
-      throw new AccountRecoveryError('rng-failed')
-    }
-    return new Uint8Array(supplied)
+    return snapshotBytes(supplied, length, 'rng-failed')
   } catch {
     throw new AccountRecoveryError('rng-failed')
   }

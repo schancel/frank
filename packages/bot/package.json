@@ -14,11 +14,13 @@
     "curated-defaults": "tsx print-curated-defaults.ts",
     "demo": "node --import tsx demo/demo.ts",
     "demo:smoke": "node --import tsx demo/smoke.ts",
+    "demo:directory-browser": "node demo/directory-trust/check-admission-browser.cjs",
     "send-demo": "tsx qwen-bot-send-demo.livecheck.ts",
     "ui-verify": "tsx monad-ui-verify.livecheck.ts",
     "test": "jest"
   },
   "dependencies": {
+    "@frank/directory-admission": "*",
     "@frank/cashweb": "*",
     "@frank/wallet": "*",
     "axios": "^0.24.0",
@@ -27,6 +29,7 @@
     "level": "^7.0.0"
   },
   "devDependencies": {
+    "esbuild": "~0.28.0",
     "@types/jest": "^29",
     "@types/node": "^16.11.11",
     "jest": "^29",

@@ -4,6 +4,7 @@
 pub mod db;
 pub(crate) mod directory_preview;
 mod directory_preview_owner;
+pub(crate) mod forum;
 pub mod metadata;
 pub mod monad_messages;
 pub mod monad_outbox;

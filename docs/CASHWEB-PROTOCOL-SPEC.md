@@ -973,7 +973,7 @@ For bounded version 1, topic post/vote admission MUST reject a transaction value
 future wider unsigned weight requires a new allocated schema and arithmetic rules; it is not an
 implicit relaxation of version 1.
 
-**IMPLEMENTED-NOT-WIRED.** The accepted Forum allocation is now active in both pure codec
+**IMPLEMENTED CODECS.** The accepted Forum allocation is now active in both pure codec
 facades and [normative topic CDDL](protocol/cbor/topic.cddl): type9 schema2/min-reader2 contains
 authored timestamp0 and ordered 1–64 entries1, with kind1/title1/URL2/message3. It preserves exact
 Unicode, optional-field bytes, full original frames and T1/T7. Authored time contributes to identity
@@ -1003,6 +1003,18 @@ opt-in schema1 writers remain reachable until the named normal-path successor re
 Preserve exact CBOR-origin authority and constrained historical protobuf storage/export until the
 sections11/16 deletion gates pass; never transcode one origin into the other's identity.
 First-confirmed-burn authorship and public front-running remain unchanged.
+
+**SERVER STAGE (#769).** Canonical Forum submissions retain exact type-10/11 authority in a
+lazy private sibling store, with synchronous pending admission before broadcast and atomic
+receipt-observed publication. Types12–15 are served through the explicit
+[HTTP boundary](protocol/cbor/topic-http-coexistence.md); actual retained snapshots bind
+epoch/incarnation and expire without recreation fallback. The
+[private storage contract](protocol/forum-runtime-storage.md) fixes operation/pending records,
+resource bounds, rebuild and predecessor rollback. Confirmation records an exact successful
+receipt observed by the relay, not a new finality policy. Legacy column families, schema1 and
+protobuf replay authority remain intact. #770 owns the immediate whole normal-client switch,
+bounded complete-page publication and independently approved predecessor retirement; this
+server stage does not complete #675 or authorize deletion of pending signed operations.
 
 ## 13. Replay, restart, fork, and clock rules
 

@@ -42,7 +42,7 @@ use crate::{
     },
     monad_http::{Address, Hash32, JsonRpcTransport},
     monad_stamp_relay::PollConfig,
-    monad_topic_relay::{broadcast_and_verify_topic_burn, TopicVoteRelayOutcome},
+    monad_topic_relay::TopicVoteRelayOutcome,
     monad_topic_verify::{
         parse_topic_calldata_versioned, ExpectedTopicBurn, TopicCalldataError,
         TopicCalldataVersion, VoteDirection,
@@ -60,6 +60,8 @@ const TYPE_TOPIC_VOTE_SUBMISSION: u32 = 11;
 /// A validated type-10 post submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopicPostEvent {
+    /// Validated nested post schema, used to select the explicit Forum boundary.
+    pub schema_version: u32,
     /// Network identifier carried by the post and submission.
     pub network: String,
     /// The exact submitted type-10 frame.
@@ -169,7 +171,7 @@ fn topic_context() -> ValidationContext {
     ValidationContext {
         operation: Operation::Typed,
         route_byte_limit: MAX_TOPIC_EVENT_FRAME_BYTES,
-        reader_version: 1,
+        reader_version: 2,
         supported_schemas: [
             TYPE_TOPIC_POST,
             TYPE_TOPIC_POST_SUBMISSION,
@@ -178,7 +180,7 @@ fn topic_context() -> ValidationContext {
         .into_iter()
         .map(|type_id| SupportedSchema {
             type_id,
-            schema_version: 1,
+            schema_version: if type_id == TYPE_TOPIC_POST { 2 } else { 1 },
         })
         .collect(),
         opaque_retention_allowed: false,
@@ -258,6 +260,7 @@ pub fn parse_topic_event(
                 .map(|parent| array32(parent, "the parent hash"))
                 .transpose()?;
             Ok(TopicEvent::Post(TopicPostEvent {
+                schema_version: post_frame.schema_version,
                 network: network.clone(),
                 frame: bytes.to_vec(),
                 post_frame: post_frame.frame.clone(),
@@ -474,17 +477,37 @@ pub async fn broadcast_and_verify_topic_event<T: JsonRpcTransport + Clone>(
     policy: &TopicBurnPolicy,
     poll: PollConfig,
 ) -> Result<VerifiedTopicBurn, TopicBurnError> {
+    broadcast_topic_event(transport, event, policy, poll, false).await
+}
+
+pub(crate) async fn broadcast_and_verify_forum_event<T: JsonRpcTransport + Clone>(
+    transport: &T,
+    event: &TopicEvent,
+    policy: &TopicBurnPolicy,
+    poll: PollConfig,
+) -> Result<VerifiedTopicBurn, TopicBurnError> {
+    broadcast_topic_event(transport, event, policy, poll, true).await
+}
+
+async fn broadcast_topic_event<T: JsonRpcTransport + Clone>(
+    transport: &T,
+    event: &TopicEvent,
+    policy: &TopicBurnPolicy,
+    poll: PollConfig,
+    exact_rpc: bool,
+) -> Result<VerifiedTopicBurn, TopicBurnError> {
     let checked = check_topic_burn_before_broadcast(event, policy)?;
     let expected = ExpectedTopicBurn {
         commitment: Sha256::new(*event.commitment()),
         burn_address: policy.burn_address,
     };
-    let outcome = broadcast_and_verify_topic_burn(
+    let outcome = crate::monad_topic_relay::broadcast_and_verify_topic_burn_checked(
         transport,
         event.burn_tx(),
         &expected,
         TopicCalldataVersion::Cbor,
         Some(checked.decoded.tx_hash),
+        exact_rpc.then_some(checked.decoded.sender),
         poll,
     )
     .await

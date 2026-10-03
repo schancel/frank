@@ -175,7 +175,7 @@ pub struct EvmRpcConf {
     pub anonymous_units_per_hour: u32,
     /// Lifetime of an authenticated customer capability URL. Capability URLs are bearer
     /// credentials and should be renewed rather than stored permanently.
-    #[serde(default = "default_evm_capability_ttl_ms")]
+    #[serde(default = "default_rpc_capability_ttl_ms")]
     pub capability_ttl_ms: u64,
 }
 
@@ -191,7 +191,7 @@ impl Default for EvmRpcConf {
             timeout_ms: default_rpc_timeout_ms(),
             customer_units_per_hour: default_evm_customer_units_per_hour(),
             anonymous_units_per_hour: default_evm_anonymous_units_per_hour(),
-            capability_ttl_ms: default_evm_capability_ttl_ms(),
+            capability_ttl_ms: default_rpc_capability_ttl_ms(),
         }
     }
 }
@@ -204,7 +204,7 @@ const fn default_evm_anonymous_units_per_hour() -> u32 {
     500
 }
 
-const fn default_evm_capability_ttl_ms() -> u64 {
+const fn default_rpc_capability_ttl_ms() -> u64 {
     60 * 60 * 1000
 }
 
@@ -422,6 +422,9 @@ pub struct BitcoinProxyConf {
     /// Small, burstable fixed-hour raw-transaction broadcast allowance per source IP.
     #[serde(default = "default_anonymous_broadcasts_per_hour")]
     pub anonymous_broadcasts_per_hour: u32,
+    /// Lifetime of a registered-customer bearer capability URL.
+    #[serde(default = "default_rpc_capability_ttl_ms")]
+    pub capability_ttl_ms: u64,
 }
 
 impl Default for BitcoinProxyConf {
@@ -435,6 +438,7 @@ impl Default for BitcoinProxyConf {
             timeout_ms: default_rpc_timeout_ms(),
             anonymous_chronik_requests_per_hour: default_chronik_anonymous_requests_per_hour(),
             anonymous_broadcasts_per_hour: default_anonymous_broadcasts_per_hour(),
+            capability_ttl_ms: default_rpc_capability_ttl_ms(),
         }
     }
 }
@@ -515,6 +519,9 @@ impl BitcoinProxyConf {
             || self.timeout_ms > 120_000
         {
             return Err(BitcoinProxyConfigError::InvalidLimit("runtime limit"));
+        }
+        if self.capability_ttl_ms < 60_000 || self.capability_ttl_ms > 24 * 60 * 60 * 1000 {
+            return Err(BitcoinProxyConfigError::InvalidLimit("capability_ttl_ms"));
         }
         let mut ids = HashSet::new();
         for chain in &self.chains {
@@ -863,7 +870,7 @@ mod tests {
             ))
         );
 
-        let bitcoin = BitcoinProxyConf {
+        let mut bitcoin = BitcoinProxyConf {
             enabled: true,
             chains: vec![BitcoinProxyChainConf {
                 id: "xec-mainnet".to_string(),
@@ -875,6 +882,20 @@ mod tests {
             ..BitcoinProxyConf::default()
         };
         assert_eq!(bitcoin.validate(), Ok(()));
+        bitcoin.capability_ttl_ms = 59_999;
+        assert_eq!(
+            bitcoin.validate(),
+            Err(crate::BitcoinProxyConfigError::InvalidLimit(
+                "capability_ttl_ms"
+            ))
+        );
+        bitcoin.capability_ttl_ms = 24 * 60 * 60 * 1000 + 1;
+        assert_eq!(
+            bitcoin.validate(),
+            Err(crate::BitcoinProxyConfigError::InvalidLimit(
+                "capability_ttl_ms"
+            ))
+        );
         assert!(registry
             .chains
             .iter()

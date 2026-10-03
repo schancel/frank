@@ -2,7 +2,8 @@
 
 use crate::{
     http::bitcoin_proxy::{
-        issue_chronik_challenge, proxy_chronik, BitcoinProxyRuntime, BITCOIN_PROXY_CORS_HEADERS,
+        issue_chronik_challenge, proxy_chronik, proxy_chronik_capability, BitcoinProxyRuntime,
+        BITCOIN_PROXY_CORS_HEADERS,
     },
     http::curated_defaults::{handle_get_curated_default_contacts, CuratedDefaultContact},
     http::error::HttpRegistryError,
@@ -240,23 +241,13 @@ async fn log_request<B>(
 }
 
 fn safe_log_path(path: &str) -> Cow<'_, str> {
-    let mut segments = path.trim_matches('/').split('/');
-    let capability_transport = match (
-        segments.next(),
-        segments.next(),
-        segments.next(),
-        segments.next(),
-        segments.next(),
-        segments.next(),
-    ) {
-        (Some("chain-rpc"), Some(_), Some("cap"), Some(_), Some(transport), None) => {
-            Some(transport)
+    let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
+    match segments.as_slice() {
+        ["chain-rpc", _, "cap", _, "rpc"] => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/rpc"),
+        ["chain-rpc", _, "cap", _, "ws"] => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/ws"),
+        ["chain-rpc", _, "cap", _, "chronik", ..] => {
+            Cow::Borrowed("/chain-rpc/:chain/cap/:capability/chronik/*path")
         }
-        _ => None,
-    };
-    match capability_transport {
-        Some("rpc") => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/rpc"),
-        Some("ws") => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/ws"),
         _ => Cow::Borrowed(path),
     }
 }
@@ -277,6 +268,12 @@ mod request_log_tests {
                 format!("/chain-rpc/:chain/cap/:capability/{transport}")
             );
         }
+        let chronik_path =
+            format!("/chain-rpc/xec-mainnet/cap/{token}/chronik/script/p2pkh/sensitive/utxos");
+        let logged = safe_log_path(&chronik_path);
+        assert!(!logged.contains(token));
+        assert!(!logged.contains("sensitive"));
+        assert_eq!(logged, "/chain-rpc/:chain/cap/:capability/chronik/*path");
         assert_eq!(
             safe_log_path("/chain-rpc/monad-testnet/rpc"),
             "/chain-rpc/monad-testnet/rpc"
@@ -402,6 +399,10 @@ impl RegistryServer {
                 .route(
                     "/chain-rpc/:chain/chronik-auth/*path",
                     routing::post(issue_chronik_challenge),
+                )
+                .route(
+                    "/chain-rpc/:chain/cap/:capability/chronik/*path",
+                    routing::any(proxy_chronik_capability),
                 )
         } else {
             router

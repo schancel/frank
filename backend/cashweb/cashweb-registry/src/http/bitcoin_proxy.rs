@@ -26,7 +26,8 @@ use crate::{
     http::{
         evm_rpc::{
             authenticate, body_hash, now_ms, rpc_error, BoundedRpcBody, RpcAuthState, RpcBinding,
-            RpcChallengeBody, RpcRejection, RpcResource, RPC_AUTH_DOMAIN, RPC_CUSTOMER_HEADER,
+            RpcCapabilityBody, RpcChallengeBody, RpcRejection, RpcResource, RPC_AUTH_DOMAIN,
+            RPC_CUSTOMER_HEADER,
         },
         hourly_quota::{normalize_quota_ip, FixedHourQuota},
         server::RegistryServer,
@@ -75,6 +76,7 @@ pub struct BitcoinProxyRuntime {
     timeout: Duration,
     chronik_quota: FixedHourQuota<IpAddr>,
     broadcast_quota: FixedHourQuota<IpAddr>,
+    capability_ttl: Duration,
 }
 
 impl fmt::Debug for BitcoinProxyRuntime {
@@ -112,6 +114,10 @@ pub enum BitcoinProxyStartError {
 }
 
 impl BitcoinProxyRuntime {
+    pub(crate) fn has_chain(&self, id: &str) -> bool {
+        self.chains.contains_key(id)
+    }
+
     pub(crate) fn has_chronik_chain(&self, id: &str) -> bool {
         self.chains
             .get(id)
@@ -193,6 +199,7 @@ impl BitcoinProxyRuntime {
             timeout: Duration::from_millis(conf.timeout_ms),
             chronik_quota: FixedHourQuota::new(conf.anonymous_chronik_requests_per_hour),
             broadcast_quota: FixedHourQuota::new(conf.anonymous_broadcasts_per_hour),
+            capability_ttl: Duration::from_millis(conf.capability_ttl_ms),
         });
         runtime.verify_checkpoints().await?;
         Ok(Some(runtime))
@@ -450,12 +457,124 @@ fn challenge(
     }))
 }
 
+pub(crate) fn issue_capability_challenge(
+    chain_id: String,
+    headers: HeaderMap,
+    server: RegistryServer,
+    body: Bytes,
+) -> Result<Json<RpcChallengeBody>, RpcRejection> {
+    if !body.is_empty() {
+        return Err(rpc_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_capability_request",
+        ));
+    }
+    let runtime = server
+        .bitcoin_proxy
+        .as_deref()
+        .filter(|runtime| runtime.has_chain(&chain_id))
+        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
+    let customer = parse_customer(&headers)?
+        .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
+    let binding = RpcBinding {
+        customer,
+        chain: chain_id.clone(),
+        body_sha256: body_hash(&body),
+        resource: RpcResource::Capability,
+    };
+    let issued = runtime.auth.issue(&binding, now_ms());
+    Ok(Json(RpcChallengeBody {
+        epoch: hex::encode(issued.epoch),
+        nonce: hex::encode(issued.nonce),
+        expires_at_ms: issued.expires_at_ms,
+        token: hex::encode(issued.token),
+        signing_domain: RPC_AUTH_DOMAIN,
+        customer: customer.to_hex(),
+        chain: chain_id,
+        body_sha256: hex::encode(binding.body_sha256),
+        network_tag: hex::encode(&runtime.network_tag),
+    }))
+}
+
+pub(crate) fn issue_capability(
+    chain_id: String,
+    headers: HeaderMap,
+    server: RegistryServer,
+    body: Bytes,
+) -> Result<Json<RpcCapabilityBody>, RpcRejection> {
+    if !body.is_empty() {
+        return Err(rpc_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_capability_request",
+        ));
+    }
+    let runtime = server
+        .bitcoin_proxy
+        .as_deref()
+        .filter(|runtime| runtime.has_chain(&chain_id))
+        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
+    let customer = parse_customer(&headers)?
+        .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
+    let binding = RpcBinding {
+        customer,
+        chain: chain_id.clone(),
+        body_sha256: body_hash(&body),
+        resource: RpcResource::Capability,
+    };
+    authenticate(
+        &headers,
+        &server,
+        &runtime.auth,
+        &runtime.network_tag,
+        &binding,
+    )?;
+    let ttl_ms = i64::try_from(runtime.capability_ttl.as_millis()).unwrap_or(i64::MAX);
+    let (token, expires_at_ms) =
+        runtime
+            .auth
+            .issue_capability(customer, &chain_id, now_ms(), ttl_ms);
+    let chain = &runtime.chains[&chain_id];
+    Ok(Json(RpcCapabilityBody {
+        rpc_path: chain
+            .rpc
+            .as_ref()
+            .map(|_| format!("/chain-rpc/{chain_id}/cap/{token}/rpc")),
+        chronik_path: chain
+            .chronik
+            .as_ref()
+            .map(|_| format!("/chain-rpc/{chain_id}/cap/{token}/chronik")),
+        ws_path: None,
+        expires_at_ms,
+    }))
+}
+
 pub(crate) async fn proxy_rpc(
     chain_id: String,
     peer: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
     server: RegistryServer,
     body: Bytes,
+) -> Result<Response, RpcRejection> {
+    proxy_rpc_inner(chain_id, peer, headers, server, body, None).await
+}
+
+pub(crate) async fn proxy_rpc_capability(
+    chain_id: String,
+    capability: String,
+    headers: HeaderMap,
+    server: RegistryServer,
+    body: Bytes,
+) -> Result<Response, RpcRejection> {
+    proxy_rpc_inner(chain_id, None, headers, server, body, Some(capability)).await
+}
+
+async fn proxy_rpc_inner(
+    chain_id: String,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    server: RegistryServer,
+    body: Bytes,
+    capability: Option<String>,
 ) -> Result<Response, RpcRejection> {
     let runtime = server
         .bitcoin_proxy
@@ -469,7 +588,19 @@ pub(crate) async fn proxy_rpc(
     let (_units, send_only, version) = validate_rpc(&body, runtime.max_request_bytes)?;
     let expected_ids = super::json_rpc::request_ids(&body)
         .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"))?;
-    let anonymous_ip = if let Some(customer) = parse_customer(&headers)? {
+    let capability_customer = capability
+        .as_deref()
+        .map(|capability| {
+            runtime
+                .auth
+                .verify_capability(capability, &chain_id, now_ms())
+                .map(|verified| verified.0)
+                .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))
+        })
+        .transpose()?;
+    let anonymous_ip = if capability_customer.is_some() {
+        None
+    } else if let Some(customer) = parse_customer(&headers)? {
         authenticate(
             &headers,
             &server,
@@ -477,7 +608,7 @@ pub(crate) async fn proxy_rpc(
             &runtime.network_tag,
             &RpcBinding {
                 customer,
-                chain: chain_id,
+                chain: chain_id.clone(),
                 body_sha256: body_hash(&body),
                 resource: RpcResource::Rpc,
             },
@@ -697,6 +828,49 @@ pub(crate) async fn proxy_chronik(
         _permit: _ingress_permit,
     }: BoundedRpcBody,
 ) -> Result<Response, RpcRejection> {
+    proxy_chronik_inner(
+        chain_id, path, uri, method, peer, headers, server, body, None,
+    )
+    .await
+}
+
+pub(crate) async fn proxy_chronik_capability(
+    Path((chain_id, capability, path)): Path<(String, String, String)>,
+    OriginalUri(uri): OriginalUri,
+    method: Method,
+    headers: HeaderMap,
+    Extension(server): Extension<RegistryServer>,
+    BoundedRpcBody {
+        bytes: body,
+        _permit: _ingress_permit,
+    }: BoundedRpcBody,
+) -> Result<Response, RpcRejection> {
+    proxy_chronik_inner(
+        chain_id,
+        path,
+        uri,
+        method,
+        None,
+        headers,
+        server,
+        body,
+        Some(capability),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn proxy_chronik_inner(
+    chain_id: String,
+    path: String,
+    uri: axum::http::Uri,
+    method: Method,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    server: RegistryServer,
+    body: Bytes,
+    capability: Option<String>,
+) -> Result<Response, RpcRejection> {
     let runtime = server
         .bitcoin_proxy
         .as_deref()
@@ -714,7 +888,19 @@ pub(crate) async fn proxy_chronik(
             "rpc_request_too_large",
         ));
     }
-    let anonymous_charge = if let Some(customer) = parse_customer(&headers)? {
+    let capability_customer = capability
+        .as_deref()
+        .map(|capability| {
+            runtime
+                .auth
+                .verify_capability(capability, &chain_id, now_ms())
+                .map(|verified| verified.0)
+                .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))
+        })
+        .transpose()?;
+    let anonymous_charge = if capability_customer.is_some() {
+        None
+    } else if let Some(customer) = parse_customer(&headers)? {
         authenticate(
             &headers,
             &server,
@@ -756,7 +942,10 @@ pub(crate) async fn proxy_chronik(
         .path_and_query()
         .map(|v| v.as_str())
         .unwrap_or(uri.path());
-    let prefix = format!("/chain-rpc/{chain_id}/chronik/");
+    let prefix = capability.as_ref().map_or_else(
+        || format!("/chain-rpc/{chain_id}/chronik/"),
+        |capability| format!("/chain-rpc/{chain_id}/cap/{capability}/chronik/"),
+    );
     let upstream_path = suffix
         .strip_prefix(&prefix)
         .ok_or_else(|| rpc_error(StatusCode::BAD_REQUEST, "invalid_indexer_path"))?;
@@ -800,8 +989,18 @@ pub const BITCOIN_PROXY_CORS_HEADERS: [&str; 1] = [PROXY_METHOD_HEADER];
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{routing, Router};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use axum::{body::Body, http::Request, routing, Router};
+    use bitcoinsuite_core::Net;
     use cashweb_config::BitcoinProxyChainConf;
+    use tempdir::TempDir;
+    use tower::ServiceExt;
+
+    use crate::{
+        disabled_chain_adapter::DisabledChainAdapter, http::pop_protection::PopGate,
+        p2p::peers::Peers, registry::Registry, store::db::Db, test_instance::placeholder_pop_conf,
+    };
 
     #[test]
     fn node_rpc_allows_only_bounded_reads_and_anonymous_single_broadcast() {
@@ -918,6 +1117,7 @@ mod tests {
             timeout: Duration::from_secs(1),
             chronik_quota: FixedHourQuota::new(100),
             broadcast_quota: FixedHourQuota::new(10),
+            capability_ttl: Duration::from_secs(60 * 60),
         };
         let debug = format!("{runtime:?}");
         assert!(!debug.contains("secret"));
@@ -977,5 +1177,177 @@ mod tests {
             BitcoinProxyRuntime::from_conf_with_env(&conf, vec![], |_| Some(url.clone())).await,
             Err(BitcoinProxyStartError::CheckpointMismatch { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn capability_routes_forward_bitcoin_rpc_and_protected_chronik() {
+        let upstream_calls = Arc::new(AtomicUsize::new(0));
+        let rpc_calls = Arc::clone(&upstream_calls);
+        let chronik_calls = Arc::clone(&upstream_calls);
+        let chronik_body = proto::Block::default().encode_to_vec();
+        let expected_chronik_body = chronik_body.clone();
+        let upstream = Router::new()
+            .route(
+                "/",
+                routing::post(move || {
+                    let calls = Arc::clone(&rpc_calls);
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        Json(json!({"result": "00", "error": null, "id": 1}))
+                    }
+                }),
+            )
+            .route(
+                "/block/:id",
+                routing::get(move || {
+                    let calls = Arc::clone(&chronik_calls);
+                    let body = chronik_body.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        body
+                    }
+                }),
+            );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(
+            axum::Server::from_tcp(listener)
+                .unwrap()
+                .serve(upstream.into_make_service()),
+        );
+
+        let upstream_url: Url = format!("http://{address}").parse().unwrap();
+        let runtime = Arc::new(BitcoinProxyRuntime {
+            chains: HashMap::from([
+                (
+                    "xec-mainnet".to_string(),
+                    Chain {
+                        id: "xec-mainnet".to_string(),
+                        rpc: Some(upstream_url.clone()),
+                        chronik: Some(upstream_url.clone()),
+                        checkpoint_height: 1,
+                        checkpoint_hash: "00".repeat(32),
+                    },
+                ),
+                (
+                    "bch-mainnet".to_string(),
+                    Chain {
+                        id: "bch-mainnet".to_string(),
+                        rpc: None,
+                        chronik: Some(upstream_url),
+                        checkpoint_height: 1,
+                        checkpoint_hash: "00".repeat(32),
+                    },
+                ),
+            ]),
+            client: reqwest::Client::new(),
+            auth: RpcAuthState::new(),
+            network_tag: vec![],
+            permits: Arc::new(Semaphore::new(4)),
+            ingress_permits: Arc::new(Semaphore::new(4)),
+            max_request_bytes: 1024,
+            max_response_bytes: 1024,
+            timeout: Duration::from_secs(1),
+            chronik_quota: FixedHourQuota::new(100),
+            broadcast_quota: FixedHourQuota::new(10),
+            capability_ttl: Duration::from_secs(60 * 60),
+        });
+        let (capability, _) = runtime.auth.issue_capability(
+            Address([7; 20]),
+            "xec-mainnet",
+            now_ms(),
+            60 * 60 * 1000,
+        );
+        let (chronik_only_capability, _) = runtime.auth.issue_capability(
+            Address([7; 20]),
+            "bch-mainnet",
+            now_ms(),
+            60 * 60 * 1000,
+        );
+        let tempdir = TempDir::new("cashweb-registry--bitcoin-capability").unwrap();
+        let registry = Registry::new(
+            Db::open(tempdir.path().join("db.rocksdb")).unwrap(),
+            Arc::new(DisabledChainAdapter),
+            Net::Regtest,
+        );
+        let server = RegistryServer {
+            registry: Arc::new(registry),
+            peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
+            pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
+            curated_defaults: Arc::new(vec![]),
+            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_rpc: None,
+            bitcoin_proxy: Some(runtime),
+        };
+        let router = server.into_router();
+        let rpc_body = br#"{"jsonrpc":"1.0","id":1,"method":"getblockhash","params":[1]}"#;
+
+        let rpc_response = router
+            .clone()
+            .oneshot(
+                Request::post(format!("/chain-rpc/xec-mainnet/cap/{capability}/rpc"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(rpc_body.as_slice()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rpc_response.status(), StatusCode::OK);
+
+        let chronik_response = router
+            .clone()
+            .oneshot(
+                Request::get(format!(
+                    "/chain-rpc/xec-mainnet/cap/{capability}/chronik/block/abc"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(chronik_response.status(), StatusCode::OK);
+        assert_eq!(
+            hyper::body::to_bytes(chronik_response.into_body())
+                .await
+                .unwrap(),
+            expected_chronik_body
+        );
+
+        let chronik_only_response = router
+            .clone()
+            .oneshot(
+                Request::get(format!(
+                    "/chain-rpc/bch-mainnet/cap/{chronik_only_capability}/chronik/block/abc"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(chronik_only_response.status(), StatusCode::OK);
+
+        let anonymous_protected = router
+            .clone()
+            .oneshot(
+                Request::get("/chain-rpc/xec-mainnet/chronik/block/abc")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(anonymous_protected.status(), StatusCode::UNAUTHORIZED);
+
+        let modified = router
+            .oneshot(
+                Request::post(format!("/chain-rpc/xec-mainnet/cap/{capability}0/rpc"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(rpc_body.as_slice()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(modified.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 3);
     }
 }

@@ -46,13 +46,16 @@ RPC access uses the same customer authority source as private mailbox reads: con
 currently registered Monad profile key. A client sends an empty body and an
 `x-frank-rpc-customer` header to `POST /chain-rpc/:chain/capability/auth`, signs the returned
 one-minute challenge, and exchanges it at `POST /chain-rpc/:chain/capability` for an expiring
-`/chain-rpc/:chain/cap/:token/rpc` URL. That URL is an ordinary JSON-RPC endpoint: the bearer is in
-the path because browser WebSockets cannot set an Authorization header. If the chain config names
-an `upstream_ws_env`, issuance also returns `/chain-rpc/:chain/cap/:token/ws`; the TypeScript
-`issueMonadRelayRpcCapability` helper resolves both into standard-client-compatible absolute URLs.
-Treat capability URLs as secrets, and configure access logs to redact their token path segment.
-Their lifetime defaults to one hour and is configured with `capability_ttl_ms` (one minute through
-24 hours).
+chain-scoped capability. EVM issuance returns `/chain-rpc/:chain/cap/:token/rpc` and, when the
+chain config names an `upstream_ws_env`, `/chain-rpc/:chain/cap/:token/ws`. Bitcoin-family
+issuance returns the same `rpc_path` when a node RPC is configured and
+`/chain-rpc/:chain/cap/:token/chronik` as `chronik_path` when Chronik is configured; append the
+normal Chronik endpoint path to that base. These are ordinary client-compatible endpoints: the
+bearer is in the path because browser WebSockets cannot set an Authorization header. The
+TypeScript `issueMonadRelayRpcCapability` helper resolves the EVM paths into absolute URLs.
+Treat every capability URL as a secret. The built-in request logger replaces the token and, for
+Chronik, the full endpoint suffix with route templates. Their lifetime defaults to one hour and is
+configured independently under each proxy with `capability_ttl_ms` (one minute through 24 hours).
 
 The two capability-issuance requests use these headers:
 
@@ -68,10 +71,12 @@ The signature digest is SHA-256 over `signing_domain || 0x00 || epoch || nonce |
 "\0capability" ||
 customer (20 bytes) || body_sha256 || network_tag_length (u32 big-endian) || network_tag`. The
 challenge is single-use and bound to the customer, chain, and empty issuance body. The returned
-capability is HMAC authenticated, chain/customer scoped, reusable until its expiry, and charged to
-the same fixed-hour customer quota. Anonymous, expired, replayed-challenge, modified, or
-wrong-chain requests fail before any provider call. The older per-request `/rpc/auth` proof remains
-accepted during migration.
+capability is HMAC authenticated, chain/customer scoped, and reusable until its expiry. EVM calls
+continue to consume the customer's fixed-hour quota. Bitcoin-family capability calls remain
+bounded by method allowlists, request/response limits, timeouts, and concurrency; the fixed-hour
+Chronik/bootstrap and transaction-broadcast quotas apply only to anonymous callers. Anonymous,
+expired, replayed-challenge, modified, or wrong-chain requests fail before any provider call. The
+older per-request `/rpc/auth` and `/chronik-auth/*` proofs remain accepted during migration.
 
 The EVM handler accepts only the configured allowlist. It rejects notifications, oversized or
 over-count batches, full-transaction block reads, and `eth_getLogs` without a bounded explicit

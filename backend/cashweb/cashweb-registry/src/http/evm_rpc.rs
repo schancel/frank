@@ -99,28 +99,36 @@ impl axum::extract::FromRequest<axum::body::Body> for BoundedRpcBody {
             .get(1)
             .filter(|_| segments.first() == Some(&"chain-rpc"))
             .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
-        let (permits, max_bytes, timeout) =
-            if segments.get(2) == Some(&"chronik") || segments.get(2) == Some(&"chronik-auth") {
-                server
-                    .bitcoin_proxy
-                    .as_deref()
-                    .filter(|runtime| runtime.has_chronik_chain(chain_id))
-                    .map(BitcoinProxyRuntime::body_admission)
-            } else {
-                server
-                    .evm_rpc
-                    .as_deref()
-                    .filter(|runtime| runtime.has_chain(chain_id))
-                    .map(EvmRpcRuntime::body_admission)
-                    .or_else(|| {
-                        server
-                            .bitcoin_proxy
-                            .as_deref()
-                            .filter(|runtime| runtime.has_rpc_chain(chain_id))
-                            .map(BitcoinProxyRuntime::body_admission)
-                    })
-            }
-            .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
+        let chronik_route = segments.get(2) == Some(&"chronik")
+            || segments.get(2) == Some(&"chronik-auth")
+            || (segments.get(2) == Some(&"cap") && segments.get(4) == Some(&"chronik"));
+        let (permits, max_bytes, timeout) = if chronik_route {
+            server
+                .bitcoin_proxy
+                .as_deref()
+                .filter(|runtime| runtime.has_chronik_chain(chain_id))
+                .map(BitcoinProxyRuntime::body_admission)
+        } else {
+            server
+                .evm_rpc
+                .as_deref()
+                .filter(|runtime| runtime.has_chain(chain_id))
+                .map(EvmRpcRuntime::body_admission)
+                .or_else(|| {
+                    server
+                        .bitcoin_proxy
+                        .as_deref()
+                        .filter(|runtime| {
+                            if segments.get(2) == Some(&"capability") {
+                                runtime.has_chain(chain_id)
+                            } else {
+                                runtime.has_rpc_chain(chain_id)
+                            }
+                        })
+                        .map(BitcoinProxyRuntime::body_admission)
+                })
+        }
+        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
         let permit = permits
             .try_acquire_owned()
             .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_ingress_busy"))?;
@@ -287,7 +295,7 @@ impl RpcAuthState {
         mac.verify_slice(&challenge.token).is_ok()
     }
 
-    fn issue_capability(
+    pub(crate) fn issue_capability(
         &self,
         customer: Address,
         chain: &str,
@@ -318,7 +326,12 @@ impl RpcAuthState {
         (hex::encode(bytes), expires_at_ms)
     }
 
-    fn verify_capability(&self, token: &str, chain: &str, now_ms: i64) -> Option<(Address, i64)> {
+    pub(crate) fn verify_capability(
+        &self,
+        token: &str,
+        chain: &str,
+        now_ms: i64,
+    ) -> Option<(Address, i64)> {
         if token.len() != RPC_CAPABILITY_BYTES * 2 {
             return None;
         }
@@ -996,11 +1009,15 @@ pub(crate) async fn handle_issue_rpc_capability_challenge(
             "invalid_capability_request",
         ));
     }
-    let runtime = server
+    let Some(runtime) = server
         .evm_rpc
         .as_deref()
         .filter(|runtime| runtime.has_chain(&chain_id))
-        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
+    else {
+        return crate::http::bitcoin_proxy::issue_capability_challenge(
+            chain_id, headers, server, body,
+        );
+    };
     let customer = headers
         .get(RPC_CUSTOMER_HEADER)
         .and_then(|value| value.to_str().ok())
@@ -1028,10 +1045,13 @@ pub(crate) async fn handle_issue_rpc_capability_challenge(
 
 #[derive(Serialize)]
 pub(crate) struct RpcCapabilityBody {
-    rpc_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    ws_path: Option<String>,
-    expires_at_ms: i64,
+    pub(crate) rpc_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) chronik_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) ws_path: Option<String>,
+    pub(crate) expires_at_ms: i64,
 }
 
 /// Exchange one valid profile signature for a URL bearer capability. The bearer is deliberately
@@ -1051,11 +1071,13 @@ pub(crate) async fn handle_issue_rpc_capability(
             "invalid_capability_request",
         ));
     }
-    let runtime = server
+    let Some(runtime) = server
         .evm_rpc
         .as_deref()
         .filter(|runtime| runtime.has_chain(&chain_id))
-        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
+    else {
+        return crate::http::bitcoin_proxy::issue_capability(chain_id, headers, server, body);
+    };
     let customer = headers
         .get(RPC_CUSTOMER_HEADER)
         .and_then(|value| value.to_str().ok())
@@ -1080,7 +1102,8 @@ pub(crate) async fn handle_issue_rpc_capability(
             .auth
             .issue_capability(customer, &chain_id, now_ms(), ttl_ms);
     Ok(Json(RpcCapabilityBody {
-        rpc_path: format!("/chain-rpc/{chain_id}/cap/{token}/rpc"),
+        rpc_path: Some(format!("/chain-rpc/{chain_id}/cap/{token}/rpc")),
+        chronik_path: None,
         ws_path: runtime.chains[&chain_id]
             .upstream_ws_url
             .as_ref()
@@ -1113,6 +1136,16 @@ pub(crate) async fn handle_proxy_rpc_capability(
         _permit: _ingress_permit,
     }: BoundedRpcBody,
 ) -> Result<Response, RpcRejection> {
+    if server
+        .evm_rpc
+        .as_deref()
+        .is_none_or(|runtime| !runtime.has_chain(&chain_id))
+    {
+        return crate::http::bitcoin_proxy::proxy_rpc_capability(
+            chain_id, capability, headers, server, body,
+        )
+        .await;
+    }
     proxy_rpc_inner(chain_id, peer, headers, server, body, Some(capability)).await
 }
 

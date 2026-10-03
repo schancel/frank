@@ -2166,71 +2166,88 @@
   ],
   "cursors": [
     {
-      "expected": "a7006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff",
+      "expected": "a8006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff0701",
       "cases": [
         {
           "id": "topic-cursor",
-          "hex": "a7006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff",
-          "transport": "pwBtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_w",
+          "hex": "a8006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff0701",
+          "transport": "qABtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_wcB",
           "valid": true,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "forged-field-0",
-          "hex": "a70066666f72676564010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff",
-          "transport": "pwBmZm9yZ2VkAQ0CG___________A1AHBwcHBwcHBwcHBwcHBwcHBKIAogAaZVPxAAEaO5rJ_wFYIBAx83s9JuYgWZ27cz1_Qf8owt5kdb7C_pN1R3sIry-OBWhGb3J1bS_DqQaiABplU_EAARo7msn_",
+          "hex": "a80066666f72676564010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff0701",
+          "transport": "qABmZm9yZ2VkAQ0CG___________A1AHBwcHBwcHBwcHBwcHBwcHBKIAogAaZVPxAAEaO5rJ_wFYIBAx83s9JuYgWZ27cz1_Qf8owt5kdb7C_pN1R3sIry-OBWhGb3J1bS_DqQaiABplU_EAARo7msn_BwE",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "forged-field-1",
-          "hex": "a7006d6d6f6e61642d746573746e65740166666f72676564021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff",
-          "transport": "pwBtbW9uYWQtdGVzdG5ldAFmZm9yZ2VkAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_w",
+          "hex": "a8006d6d6f6e61642d746573746e65740166666f72676564021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff0701",
+          "transport": "qABtbW9uYWQtdGVzdG5ldAFmZm9yZ2VkAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_wcB",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "forged-field-2",
-          "hex": "a7006d6d6f6e61642d746573746e6574010d0266666f7267656403500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff",
-          "transport": "pwBtbW9uYWQtdGVzdG5ldAENAmZmb3JnZWQDUAcHBwcHBwcHBwcHBwcHBwcEogCiABplU_EAARo7msn_AVggEDHzez0m5iBZnbtzPX9B_yjC3mR1vsL-k3VHewivL44FaEZvcnVtL8OpBqIAGmVT8QABGjuayf8",
+          "hex": "a8006d6d6f6e61642d746573746e6574010d0266666f7267656403500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff0701",
+          "transport": "qABtbW9uYWQtdGVzdG5ldAENAmZmb3JnZWQDUAcHBwcHBwcHBwcHBwcHBwcEogCiABplU_EAARo7msn_AVggEDHzez0m5iBZnbtzPX9B_yjC3mR1vsL-k3VHewivL44FaEZvcnVtL8OpBqIAGmVT8QABGjuayf8HAQ",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "forged-field-3",
-          "hex": "a7006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500000000000000000000000000000000004a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff",
-          "transport": "pwBtbW9uYWQtdGVzdG5ldAENAhv__________wNQAAAAAAAAAAAAAAAAAAAAAASiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_w",
+          "hex": "a8006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500000000000000000000000000000000004a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff0701",
+          "transport": "qABtbW9uYWQtdGVzdG5ldAENAhv__________wNQAAAAAAAAAAAAAAAAAAAAAASiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_wcB",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "forged-field-4",
-          "hex": "a7006d6d6f6e61642d746573746e6574010d021bffffffffffffffff0350070707070707070707070707070707070466666f726765640568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff",
-          "transport": "pwBtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRmZm9yZ2VkBWhGb3J1bS_DqQaiABplU_EAARo7msn_",
+          "hex": "a8006d6d6f6e61642d746573746e6574010d021bffffffffffffffff0350070707070707070707070707070707070466666f726765640568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff0701",
+          "transport": "qABtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRmZm9yZ2VkBWhGb3J1bS_DqQaiABplU_EAARo7msn_BwE",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "forged-field-5",
-          "hex": "a7006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0566666f7267656406a2001a6553f100011a3b9ac9ff",
-          "transport": "pwBtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVmZm9yZ2VkBqIAGmVT8QABGjuayf8",
+          "hex": "a8006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0566666f7267656406a2001a6553f100011a3b9ac9ff0701",
+          "transport": "qABtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVmZm9yZ2VkBqIAGmVT8QABGjuayf8HAQ",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "forged-field-6",
-          "hex": "a7006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a90666666f72676564",
-          "transport": "pwBtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGZmZvcmdlZA",
+          "hex": "a8006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a90666666f726765640701",
+          "transport": "qABtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGZmZvcmdlZAcB",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
+        },
+        {
+          "id": "forged-field-7",
+          "hex": "a8006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff0766666f72676564",
+          "transport": "qABtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_wdmZm9yZ2Vk",
+          "valid": false,
+          "active": true,
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "duplicate",
@@ -2238,7 +2255,8 @@
           "transport": "ogABAAE",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "nonshortest",
@@ -2246,7 +2264,8 @@
           "transport": "oQAYAQ",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "utf8",
@@ -2254,39 +2273,80 @@
           "transport": "oQBh_w",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "trailing",
-          "hex": "a7006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff00",
-          "transport": "pwBtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_wA",
+          "hex": "a8006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff070100",
+          "transport": "qABtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_wcBAA",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "restart-expired",
-          "hex": "a7006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff",
-          "transport": "pwBtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_w",
+          "hex": "a8006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff0701",
+          "transport": "qABtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_wcB",
           "valid": false,
           "active": false,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "ttl-expired",
+          "hex": "a8006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff0701",
+          "transport": "qABtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_wcB",
+          "valid": false,
+          "active": true,
+          "age": 120000,
+          "retainedIncarnation": "1"
+        },
+        {
+          "id": "expired-recreated-original-cursor",
+          "hex": "a8006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff0701",
+          "transport": "qABtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_wcB",
+          "valid": false,
+          "active": true,
+          "age": 0,
+          "retainedIncarnation": "2"
+        },
+        {
+          "id": "recreated-current-cursor",
+          "hex": "a8006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff0702",
+          "transport": "qABtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_wcC",
+          "valid": true,
+          "active": true,
+          "age": 0,
+          "retainedIncarnation": "2"
+        },
+        {
+          "id": "missing-incarnation",
           "hex": "a7006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff",
           "transport": "pwBtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_w",
           "valid": false,
           "active": true,
-          "age": 120000
+          "age": 0,
+          "retainedIncarnation": "1"
+        },
+        {
+          "id": "u64-incarnation",
+          "hex": "a8006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff071bffffffffffffffff",
+          "transport": "qABtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_wcb__________8",
+          "valid": true,
+          "active": true,
+          "age": 0,
+          "retainedIncarnation": "18446744073709551615"
         },
         {
           "id": "padded-transport",
-          "hex": "a7006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff",
-          "transport": "pwBtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_w=",
+          "hex": "a8006d6d6f6e61642d746573746e6574010d021bffffffffffffffff03500707070707070707070707070707070704a200a2001a6553f100011a3b9ac9ff0158201031f37b3d26e620599dbb733d7f41ff28c2de6475bec2fe9375477b08af2f8e0568466f72756d2fc3a906a2001a6553f100011a3b9ac9ff0701",
+          "transport": "qABtbW9uYWQtdGVzdG5ldAENAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwSiAKIAGmVT8QABGjuayf8BWCAQMfN7PSbmIFmdu3M9f0H_KMLeZHW-wv6TdUd7CK8vjgVoRm9ydW0vw6kGogAaZVPxAAEaO5rJ_wcB=",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "oversized",
@@ -2294,7 +2354,8 @@
           "transport": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "invalid-base64",
@@ -2302,60 +2363,76 @@
           "transport": "a",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         }
       ]
     },
     {
-      "expected": "a5006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a9",
+      "expected": "a6006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a90701",
       "cases": [
         {
           "id": "discovery-cursor",
-          "hex": "a5006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a9",
-          "transport": "pQBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6k",
+          "hex": "a6006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a90701",
+          "transport": "pgBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6kHAQ",
           "valid": true,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "forged-field-0",
-          "hex": "a50066666f72676564010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a9",
-          "transport": "pQBmZm9yZ2VkAQ4CG___________A1AHBwcHBwcHBwcHBwcHBwcHBGhGb3J1bS_DqQ",
+          "hex": "a60066666f72676564010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a90701",
+          "transport": "pgBmZm9yZ2VkAQ4CG___________A1AHBwcHBwcHBwcHBwcHBwcHBGhGb3J1bS_DqQcB",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "forged-field-1",
-          "hex": "a5006d6d6f6e61642d746573746e65740166666f72676564021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a9",
-          "transport": "pQBtbW9uYWQtdGVzdG5ldAFmZm9yZ2VkAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6k",
+          "hex": "a6006d6d6f6e61642d746573746e65740166666f72676564021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a90701",
+          "transport": "pgBtbW9uYWQtdGVzdG5ldAFmZm9yZ2VkAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6kHAQ",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "forged-field-2",
-          "hex": "a5006d6d6f6e61642d746573746e6574010e0266666f726765640350070707070707070707070707070707070468466f72756d2fc3a9",
-          "transport": "pQBtbW9uYWQtdGVzdG5ldAEOAmZmb3JnZWQDUAcHBwcHBwcHBwcHBwcHBwcEaEZvcnVtL8Op",
+          "hex": "a6006d6d6f6e61642d746573746e6574010e0266666f726765640350070707070707070707070707070707070468466f72756d2fc3a90701",
+          "transport": "pgBtbW9uYWQtdGVzdG5ldAEOAmZmb3JnZWQDUAcHBwcHBwcHBwcHBwcHBwcEaEZvcnVtL8OpBwE",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "forged-field-3",
-          "hex": "a5006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350000000000000000000000000000000000468466f72756d2fc3a9",
-          "transport": "pQBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQAAAAAAAAAAAAAAAAAAAAAARoRm9ydW0vw6k",
+          "hex": "a6006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350000000000000000000000000000000000468466f72756d2fc3a90701",
+          "transport": "pgBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQAAAAAAAAAAAAAAAAAAAAAARoRm9ydW0vw6kHAQ",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "forged-field-4",
-          "hex": "a5006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070466666f72676564",
-          "transport": "pQBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRmZm9yZ2Vk",
+          "hex": "a6006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070466666f726765640701",
+          "transport": "pgBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRmZm9yZ2VkBwE",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
+        },
+        {
+          "id": "forged-field-7",
+          "hex": "a6006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a90766666f72676564",
+          "transport": "pgBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6kHZmZvcmdlZA",
+          "valid": false,
+          "active": true,
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "duplicate",
@@ -2363,7 +2440,8 @@
           "transport": "ogABAAE",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "nonshortest",
@@ -2371,7 +2449,8 @@
           "transport": "oQAYAQ",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "utf8",
@@ -2379,39 +2458,80 @@
           "transport": "oQBh_w",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "trailing",
-          "hex": "a5006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a900",
-          "transport": "pQBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6kA",
+          "hex": "a6006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a9070100",
+          "transport": "pgBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6kHAQA",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "restart-expired",
-          "hex": "a5006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a9",
-          "transport": "pQBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6k",
+          "hex": "a6006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a90701",
+          "transport": "pgBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6kHAQ",
           "valid": false,
           "active": false,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "ttl-expired",
+          "hex": "a6006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a90701",
+          "transport": "pgBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6kHAQ",
+          "valid": false,
+          "active": true,
+          "age": 120000,
+          "retainedIncarnation": "1"
+        },
+        {
+          "id": "expired-recreated-original-cursor",
+          "hex": "a6006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a90701",
+          "transport": "pgBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6kHAQ",
+          "valid": false,
+          "active": true,
+          "age": 0,
+          "retainedIncarnation": "2"
+        },
+        {
+          "id": "recreated-current-cursor",
+          "hex": "a6006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a90702",
+          "transport": "pgBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6kHAg",
+          "valid": true,
+          "active": true,
+          "age": 0,
+          "retainedIncarnation": "2"
+        },
+        {
+          "id": "missing-incarnation",
           "hex": "a5006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a9",
           "transport": "pQBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6k",
           "valid": false,
           "active": true,
-          "age": 120000
+          "age": 0,
+          "retainedIncarnation": "1"
+        },
+        {
+          "id": "u64-incarnation",
+          "hex": "a6006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a9071bffffffffffffffff",
+          "transport": "pgBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6kHG___________",
+          "valid": true,
+          "active": true,
+          "age": 0,
+          "retainedIncarnation": "18446744073709551615"
         },
         {
           "id": "padded-transport",
-          "hex": "a5006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a9",
-          "transport": "pQBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6k=",
+          "hex": "a6006d6d6f6e61642d746573746e6574010e021bffffffffffffffff0350070707070707070707070707070707070468466f72756d2fc3a90701",
+          "transport": "pgBtbW9uYWQtdGVzdG5ldAEOAhv__________wNQBwcHBwcHBwcHBwcHBwcHBwRoRm9ydW0vw6kHAQ=",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "oversized",
@@ -2419,7 +2539,8 @@
           "transport": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         },
         {
           "id": "invalid-base64",
@@ -2427,7 +2548,8 @@
           "transport": "a",
           "valid": false,
           "active": true,
-          "age": 0
+          "age": 0,
+          "retainedIncarnation": "1"
         }
       ]
     }

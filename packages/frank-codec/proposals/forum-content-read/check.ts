@@ -821,6 +821,7 @@ function cursorFixtures(all: Fixture[], family = 13) {
     ],
     [5, TOPIC],
     [6, stamp()],
+    [7, 1n],
   ])
   if (family === 14) {
     cursor.set(1, 14)
@@ -836,6 +837,7 @@ function cursorFixtures(all: Fixture[], family = 13) {
     valid: boolean
     active: boolean
     age: number
+    retainedIncarnation: string
   }[] = []
   const add = (
     id: string,
@@ -844,6 +846,7 @@ function cursorFixtures(all: Fixture[], family = 13) {
     active = true,
     age = 0,
     spelling?: string,
+    retainedIncarnation = '1',
   ) =>
     out.push({
       id,
@@ -852,6 +855,7 @@ function cursorFixtures(all: Fixture[], family = 13) {
       valid,
       active,
       age,
+      retainedIncarnation,
     })
   const raw = fromHex(expected)
   add(family === 13 ? 'topic-cursor' : 'discovery-cursor', raw, true)
@@ -869,6 +873,34 @@ function cursorFixtures(all: Fixture[], family = 13) {
     add(id, fromHex(hex), false)
   add('restart-expired', raw, false, false)
   add('ttl-expired', raw, false, true, 120000)
+  // The preceding TTL case expires incarnation 1. A fresh matching snapshot
+  // starts at age zero; its original cursor must stay expired.
+  add('expired-recreated-original-cursor', raw, false, true, 0, undefined, '2')
+  const recreated = new Map(cursor)
+  recreated.set(7, 2n)
+  add(
+    'recreated-current-cursor',
+    encodeCanonical(recreated),
+    true,
+    true,
+    0,
+    undefined,
+    '2',
+  )
+  const missingIncarnation = new Map(cursor)
+  missingIncarnation.delete(7)
+  add('missing-incarnation', encodeCanonical(missingIncarnation), false)
+  const lastIncarnation = new Map(cursor)
+  lastIncarnation.set(7, U64)
+  add(
+    'u64-incarnation',
+    encodeCanonical(lastIncarnation),
+    true,
+    true,
+    0,
+    undefined,
+    String(U64),
+  )
   add(
     'padded-transport',
     raw,
@@ -895,15 +927,16 @@ function checkCursors(shared: ReturnType<typeof cursorFixtures>) {
       )
       assert.equal(toHex(raw), f.hex)
       const c = decodeCanonical(raw)
-      keys(
-        c,
-        [...map(decodeCanonical(fromHex(shared.expected))).keys()].map(Number),
-      )
-      requireThat(
-        equal(c, decodeCanonical(fromHex(shared.expected))),
-        'cursor binding/tuple membership',
-      )
-      requireThat(f.active && f.age < 120000, 'cursor-expired')
+      const retained = new Map(map(decodeCanonical(fromHex(shared.expected))))
+      retained.set(7n, BigInt(f.retainedIncarnation))
+      keys(c, [...retained.keys()].map(Number))
+      const lookupKey = (cursor: FrankValue) =>
+        `${toHex(bytes(get(cursor, 3), 16))}:${uint(get(cursor, 7))}`
+      // The retained store is keyed by lifetime identity, never query/revision.
+      const snapshots = new Map([[lookupKey(retained), retained]])
+      const snapshot = snapshots.get(lookupKey(c))
+      requireThat(snapshot && f.active && f.age < 120000, 'cursor-expired')
+      requireThat(equal(c, snapshot), 'cursor binding/tuple membership')
     }
     if (f.valid) run()
     else rejects(run)

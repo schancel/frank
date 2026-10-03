@@ -504,11 +504,25 @@ fn cursors(shared: &J) {
             let c = decode(&raw)?;
             let allowed: Vec<u64> = map(&expected)?.iter().map(|(k, _)| *k).collect();
             keys(&c, &allowed, false)?;
-            need(c == expected, "cursor binding/tuple membership")?;
+            let retained = replace(
+                &expected,
+                7,
+                n(f["retainedIncarnation"].as_str().unwrap().parse().unwrap()),
+            );
+            let lookup_key = |cursor: &V| -> Check<(Vec<u8>, u64)> {
+                Ok((
+                    bytes(get(cursor, 3)?, 16, 16)?.to_vec(),
+                    uint(get(cursor, 7)?, MAX)? as u64,
+                ))
+            };
+            // Bind lookup to the original lifetime, before query/tuple checks.
+            let snapshots = std::collections::BTreeMap::from([(lookup_key(&retained)?, &retained)]);
+            let snapshot = snapshots.get(&lookup_key(&c)?).ok_or("cursor-expired")?;
             need(
                 f["active"] == true && f["age"].as_u64().unwrap() < 120000,
                 "cursor-expired",
-            )
+            )?;
+            need(c == **snapshot, "cursor binding/tuple membership")
         };
         assert_eq!(
             run().is_ok(),

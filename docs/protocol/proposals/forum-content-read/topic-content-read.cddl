@@ -37,6 +37,7 @@ operation-status = { ; candidate15; complete frame <=2MiB
 ; States1/2: transaction-derived observed facts; value 1..i64::MAX.
 
 topic-cursor = { 0: network-tag, 1: 13, 2: u64, 3: epoch,
-  4: { 0: timestamp, 1: digest-32 }, 5: tstr .size (1..512), 6: timestamp }
+  4: { 0: timestamp, 1: digest-32 }, 5: tstr .size (1..512), 6: timestamp,
+  7: u64 } ; non-reused snapshot incarnation within epoch; not revision
 discovery-cursor = { 0: network-tag, 1: 14, 2: u64, 3: epoch,
-  4: tstr .size (1..512) }
+  4: tstr .size (1..512), 7: u64 }

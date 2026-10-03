@@ -13,6 +13,7 @@ export {
 export type { EnvelopeFields } from './frame'
 export { encodeFrame, wrapFrame } from './frame'
 export * from './types'
+export * from './directory-preview'
 export type { Operation, SupportedSchema, ValidationContext } from './validate'
 export {
   KNOWN_TYPES,

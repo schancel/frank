@@ -295,6 +295,8 @@ pub enum TypedPayload {
         stamp_key: Option<AccountRef>,
         /// Field 9, the migrated profile entries (M4): absent when empty. Schema 3 only.
         profile_entries: Option<Vec<ProfileEntry>>,
+        /// Provisional schema-4 role fields, absent in schemas 1–3.
+        preview: Option<PreviewDirectoryRoles>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
@@ -409,4 +411,17 @@ pub enum TypedPayload {
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
+}
+
+/// Required role fields in the provisional directory schema-4 projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewDirectoryRoles {
+    /// Field 10, distinct message-DH key M.
+    pub message_dh_key: AccountRef,
+    /// Field 11, exact uint64 sequence, not a derivation index.
+    pub mailbox_key_generation: u64,
+    /// Field 12, exact uint64 sequence.
+    pub stamp_key_generation: u64,
+    /// Field 13, exact predecessor type-4 T1, null only at revision zero.
+    pub predecessor: Option<Vec<u8>>,
 }

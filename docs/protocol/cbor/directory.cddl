@@ -100,3 +100,35 @@ profile-header = {
   1: tstr, ; value
   * uint => frank-value,
 }
+
+; Provisional preview allocation (#742 accepting reviewed #719 C1–C14).
+; Type 4 schema 4 / min_reader 4; separate from schemas 1–3 above.
+; Exact schema 4 rejects undeclared fields (C12); future compatible schemas
+; retain optional bytes under V6.3. Fields 5, 7 and 9 remain unsupported.
+; README "Provisional directory preview" owns semantics and admission boundary.
+directory-statement-v4 = {
+  0: network-tag,
+  1: directory-preview-key, ; subject/directory authority P
+  2: uint .le 18446744073709551615, ; revision, zero at bootstrap
+  3: timestamp,
+  4: [directory-preview-relay],
+  6: timestamp, ; mandatory expiry, positive validity <= 3600 seconds
+  8: directory-preview-key, ; stamp P'
+  10: directory-preview-key, ; distinct message-DH M, never profile field 9
+  11: uint .le 18446744073709551615, ; mailbox_key_generation
+  12: uint .le 18446744073709551615, ; stamp_key_generation
+  13: null / bstr .size 32, ; exact predecessor type-4 T1; null at rev0
+  * uint => frank-value,
+}
+
+directory-preview-key = { 0: 1, 1: bstr .size 33 }
+directory-preview-relay = {
+  0: bstr .size (16..64),
+  1: tstr .size (1..2048), ; S4 plus HTTPS only; exact bytes, no normalization
+  2: directory-preview-key,
+  3: timestamp, ; covers statement expiry
+  * uint => frank-value,
+}
+; The existing type-2 schema1/min1 envelope is unchanged. For a v4 child it
+; contains exactly one algorithm-1 strict-DER low-S signature by field 1.
+; Complete bare v4 and enclosing type-2 frames each have a 262144-byte limit.

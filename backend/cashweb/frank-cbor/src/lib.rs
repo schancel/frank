@@ -18,9 +18,13 @@
 //! milliseconds, Keccak-256 address derivation) are in [`registration`]. Cashwebd consumes this
 //! crate for explicit CBOR account registration and opt-in CBOR topics. Direct-message and mailbox
 //! paths are not wired to it.
+//! Provisional directory schema4/min4 is opt-in via [`preview_directory_context`].
+//! [`verify_preview_directory_evidence`] verifies bounded signed evidence only; full trusted
+//! directory admission requires a separately reviewed stateful runtime successor.
 
 mod cbor;
 mod crypto;
+mod directory_preview;
 mod dm;
 mod error;
 mod frame;
@@ -35,6 +39,9 @@ mod validate;
 
 pub use cbor::{cbor_map, decode_canonical, encode_canonical, is_valid_canonical, CborValue};
 pub use crypto::{has_low_s, parse_strict_der, verify_algorithm_1};
+pub use directory_preview::{
+    preview_directory_context, verify_preview_directory_evidence, PreviewDirectoryEvidence,
+};
 pub use dm::{
     encode_direct_message_crypto_context, DirectMessageCryptoContext, DM_CRYPTO_CONTEXT_DOMAIN,
     DM_CRYPTO_MIN_READER_VERSION, DM_CRYPTO_SCHEMA_VERSION, DM_CRYPTO_SUITE, DM_CRYPTO_TYPE,
@@ -54,8 +61,8 @@ pub use limits::{
 };
 pub use model::{
     AccountRef, ChildFrame, FrameOnly, JournalFact, KeyTransition, OpaqueSection, ParsedFrame,
-    PaymentMember, ProfileEntry, ProfileHeader, Projection, RelayBinding, RetainedFrame,
-    RetentionReason, SignatureEntry, Timestamp, TypedPayload, ValidationResult,
+    PaymentMember, PreviewDirectoryRoles, ProfileEntry, ProfileHeader, Projection, RelayBinding,
+    RetainedFrame, RetentionReason, SignatureEntry, Timestamp, TypedPayload, ValidationResult,
 };
 pub use registration::{
     address_from_compressed_pubkey, address_from_uncompressed_pubkey, expiry_timestamp, join_ms,

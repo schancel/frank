@@ -234,6 +234,15 @@ pub(crate) fn check_semantics(
                     &format!("{path}.1"),
                 ));
             }
+            if crate::directory_preview::is_preview(opened(statement)) {
+                if signatures.len() != 1 || signatures[0].algorithm != 1 {
+                    return Err(semantic(
+                        "directory preview requires exactly one algorithm-1 subject signature",
+                        &format!("{path}.1"),
+                    ));
+                }
+                return Ok(());
+            }
             let prior = prior_slot.expect("internal: type-2 semantics need the prior slot");
             check_directory_update(
                 st_network,
@@ -288,6 +297,7 @@ pub(crate) fn check_semantics(
             profile_entries,
             ..
         } => {
+            crate::directory_preview::check_statement(typed)?;
             require_ordered(
                 relays,
                 |a, b| {

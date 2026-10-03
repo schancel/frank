@@ -529,13 +529,15 @@ Qwen responses have a separate input-keyed record (`response:v1:<inbound payload
 `QWEN_BOT_STATE_DIR/qwen-bot-state`. The bot fsyncs the generated response and proposed history
 before sending, then fsyncs a `send-started` boundary before entering the ordinary send builder.
 Only a confirmed send commits the response receipt, conversation and processed marker together.
+Confirmed response rows keep only bounded input/context/receipt metadata; cumulative history
+lives once in the conversation record. Pending responses retain their proposed history until commit.
 Existing processed markers remain terminal. The database contains private conversation text;
 keep it local and do not paste its contents into diagnostic logs or tickets.
 
 | Durable response phase | Restart behavior |
 | --- | --- |
 | `model-started` | Held: the provider may have completed, but no result was durably accepted. No automatic model retry. |
-| `response-ready` | Reuses the saved response/history without a model call, subject to peer policy and matching bot/funding/network/relay/stamp context. |
+| `response-ready` | Reuses the saved response/history without a model call, subject to peer policy and matching bot/funding/network/relay/stamp context. A transient policy lookup failure or exhausted budget is reconsidered on later polls. |
 | `send-started` | Held: delivery or payment may have happened. No rebuilt envelope, new signature, or automatic resend. |
 | `confirmed` | Terminal: duplicates do not generate or send again. |
 
@@ -553,7 +555,9 @@ and could repeat a paid send. Preserve the rows and keep the bot stopped until a
 version or reviewed reconciliation is available. Never delete the state root to clear a held turn.
 
 Credential-free regression fixtures run the real CLI in stub mode with local Level state and
-mock relay/payment boundaries, including interrupted response persistence and restart:
+mock relay/payment boundaries. The CLI interruption fixture rejects the send-start transition
+after saving the response, then runs normal cleanup and reopens. Separate state-store child
+process tests use SIGKILL after durable writes without Close/flush; they do not kill the full CLI.
 
 ```sh
 yarn workspace @frank/bot test --runInBand qwen-bot-loop qwen-response-workflow

@@ -67,6 +67,7 @@ async function boot(
     sendError?: boolean
     modelError?: boolean
     profileError?: boolean
+    transientProfileError?: boolean
     emptyFeed?: boolean
   } = {},
 ) {
@@ -79,6 +80,10 @@ async function boot(
   if (options.profileError)
     identity.fetchMonadProfile.mockRejectedValue(
       new Error('PROFILE_PROVIDER_BODY_SENTINEL'),
+    )
+  if (options.transientProfileError)
+    identity.fetchMonadProfile.mockRejectedValueOnce(
+      new Error('TRANSIENT_PROFILE_SENTINEL'),
     )
   const reply = require('./qwen-reply') as typeof import('./qwen-reply')
   const logs: unknown[][] = []
@@ -272,4 +277,23 @@ it('CLI uses the shared guard and keeps its profile-provider error body out of l
   )
   expect(result.logs).not.toContain('PROFILE_PROVIDER_BODY_SENTINEL')
   expect((await stored()).processed).toBe(false)
+})
+
+it('CLI retries a saved response after a transient profile failure on the next poll without another model call', async () => {
+  await boot({ interruptBeforeSend: true })
+  const ready = await stored()
+  const restart = await boot({ transientProfileError: true, emptyFeed: true })
+  expect(restart.modelCalls).toBe(0)
+  expect(restart.sends).toEqual([
+    {
+      processed: false,
+      history: undefined,
+      text: (ready.row as { response: string }).response,
+    },
+  ])
+  expect(restart.logs).not.toContain('TRANSIENT_PROFILE_SENTINEL')
+  expect((await stored()).history).toEqual(
+    (ready.row as { proposedHistory: unknown }).proposedHistory,
+  )
+  expect((await stored()).row?.phase).toBe('confirmed')
 })

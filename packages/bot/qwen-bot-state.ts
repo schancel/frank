@@ -65,7 +65,14 @@ export interface QwenResponseReceipt {
 export type QwenResponseRow =
   | (QwenResponseBase & { phase: 'model-started' })
   | (QwenSavedResponse & { phase: 'response-ready' | 'send-started' })
-  | (QwenSavedResponse & { phase: 'confirmed'; receipt: QwenResponseReceipt })
+  | (QwenResponseBase & { phase: 'confirmed'; receipt: QwenResponseReceipt })
+
+type QwenResponseWrite =
+  | { row: Exclude<QwenResponseRow, { phase: 'confirmed' }> }
+  | {
+      row: Extract<QwenResponseRow, { phase: 'confirmed' }>
+      conversation: QwenChatMessage[]
+    }
 
 function copy<T>(value: T): T {
   return JSON.parse(JSON.stringify(value))
@@ -100,7 +107,7 @@ function parseResponseRow(raw: string): QwenResponseRow {
     !['model-started', 'response-ready', 'send-started', 'confirmed'].includes(
       row.phase,
     ) ||
-    (row.phase !== 'model-started' &&
+    ((row.phase === 'response-ready' || row.phase === 'send-started') &&
       (typeof row.response !== 'string' ||
         !historyValid(row.proposedHistory))) ||
     (row.phase === 'confirmed' &&
@@ -257,7 +264,8 @@ export class QwenBotStateStore {
     return this.pendingResponses().find(row => row.senderAddress === sender)
   }
 
-  private async writeResponse(row: QwenResponseRow): Promise<void> {
+  private async writeResponse(update: QwenResponseWrite): Promise<void> {
+    const { row } = update
     if (this.responseWriteFailed)
       throw new Error('Qwen response storage unavailable; restart required')
     const operations = [
@@ -267,12 +275,12 @@ export class QwenBotStateStore {
         value: JSON.stringify(row),
       },
     ]
-    if (row.phase === 'confirmed') {
+    if ('conversation' in update) {
       operations.push(
         {
           type: 'put',
           key: CONVERSATION_PREFIX + row.senderAddress,
-          value: JSON.stringify(row.proposedHistory),
+          value: JSON.stringify(update.conversation),
         },
         { type: 'put', key: PROCESSED_PREFIX + row.payloadHashHex, value: '1' },
       )
@@ -287,8 +295,8 @@ export class QwenBotStateStore {
       )
     }
     this.responses.set(row.payloadHashHex, copy(row))
-    if (row.phase === 'confirmed') {
-      this.conversations.set(row.senderAddress, copy(row.proposedHistory))
+    if ('conversation' in update) {
+      this.conversations.set(row.senderAddress, copy(update.conversation))
       this.processedPayloadHashes.add(row.payloadHashHex)
     }
   }
@@ -301,10 +309,12 @@ export class QwenBotStateStore {
     )
       throw new Error('Qwen turn already owned')
     await this.writeResponse({
-      ...copy(input),
-      senderAddress: canonicalMonadEnvelopeAddress(input.senderAddress),
-      version: 1,
-      phase: 'model-started',
+      row: {
+        ...copy(input),
+        senderAddress: canonicalMonadEnvelopeAddress(input.senderAddress),
+        version: 1,
+        phase: 'model-started',
+      },
     })
   }
 
@@ -317,10 +327,12 @@ export class QwenBotStateStore {
     if (row?.phase !== 'model-started')
       throw new Error('Invalid Qwen response transition')
     await this.writeResponse({
-      ...row,
-      phase: 'response-ready',
-      response,
-      proposedHistory: copy(proposedHistory),
+      row: {
+        ...row,
+        phase: 'response-ready',
+        response,
+        proposedHistory: copy(proposedHistory),
+      },
     })
   }
 
@@ -328,7 +340,7 @@ export class QwenBotStateStore {
     const row = this.responses.get(payloadHashHex)
     if (row?.phase !== 'response-ready')
       throw new Error('Invalid Qwen response transition')
-    await this.writeResponse({ ...row, phase: 'send-started' })
+    await this.writeResponse({ row: { ...row, phase: 'send-started' } })
   }
 
   async confirmResponse(
@@ -338,10 +350,19 @@ export class QwenBotStateStore {
     const row = this.responses.get(payloadHashHex)
     if (row?.phase !== 'send-started')
       throw new Error('Invalid Qwen response transition')
+    // Terminal rows retain only bounded identity/context and delivery proof. The cumulative
+    // conversation has one durable home; retaining every old snapshot would grow quadratically.
     await this.writeResponse({
-      ...row,
-      phase: 'confirmed',
-      receipt: copy(receipt),
+      row: {
+        version: row.version,
+        payloadHashHex: row.payloadHashHex,
+        senderAddress: row.senderAddress,
+        senderPubKeyHex: row.senderPubKeyHex,
+        context: row.context,
+        phase: 'confirmed',
+        receipt: copy(receipt),
+      },
+      conversation: row.proposedHistory,
     })
   }
 

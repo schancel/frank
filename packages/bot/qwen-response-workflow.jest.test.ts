@@ -77,6 +77,42 @@ function workflow(overrides: Partial<QwenResponseContext> = {}) {
   }
 }
 
+it('retains one conversation and bounded terminal records across 32/64 turns and reopen', async () => {
+  for (const total of [32, 64]) {
+    const current = workflow()
+    for (let turn = total - 32; turn < total; turn++) {
+      await current.run.respond({
+        ...input,
+        payloadHashHex: turn.toString(16).padStart(4, '0'),
+      })
+    }
+    await reopen()
+    const rows = Array.from(
+      { length: total },
+      (_, turn) => state.getResponse(turn.toString(16).padStart(4, '0'))!,
+    )
+    const retainedHistory = rows.reduce(
+      (count, row) =>
+        count +
+        ((row as unknown as { proposedHistory?: unknown[] }).proposedHistory
+          ?.length ?? 0),
+      0,
+    )
+    expect(retainedHistory).toBe(0)
+    expect(state.getConversation(PEER)).toHaveLength(2 * total + 1)
+    const firstSize = JSON.stringify(rows[0]).length
+    const replay = workflow()
+    for (const row of rows) {
+      expect(row).not.toHaveProperty('response')
+      expect(JSON.stringify(row)).toHaveLength(firstSize)
+      expect(await replay.run.resume(row.payloadHashHex)).toBe('duplicate')
+      expect(state.hasProcessed(row.payloadHashHex)).toBe(true)
+    }
+    expect(replay.reply).not.toHaveBeenCalled()
+    expect(replay.send).not.toHaveBeenCalled()
+  }
+})
+
 it.each([
   'model-started',
   'response-ready',
@@ -154,7 +190,9 @@ it('commits receipt, history and processed marker in one fsynced batch; replay h
     QwenResponseRow,
     { phase: 'confirmed' }
   >
-  saved.proposedHistory[0].content = 'mutation'
+  saved.receipt.txHashes.push('mutation')
+  expect(state.getResponse('01')).toMatchObject({ receipt })
+  expect(saved).not.toHaveProperty('proposedHistory')
   expect(state.getConversation(PEER)?.[0].content).toBe('SYSTEM_SENTINEL')
   await reopen()
   const restart = workflow()

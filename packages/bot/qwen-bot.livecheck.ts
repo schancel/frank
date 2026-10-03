@@ -282,17 +282,10 @@ async function main() {
       }),
   })
 
-  // Recovery is driven by durable rows, independent of the mailbox cursor or relay retention.
+  // Surface nonretryable ambiguity once on startup. Only ready rows enter periodic recovery.
   for (const row of state.pendingResponses()) {
-    if (repliesSent >= maxReplies) break
-    if (
-      row.phase === 'response-ready' &&
-      ((await guard.peerBlockReason(row.senderAddress)) ||
-        !guard.reserveReply(row.senderAddress))
-    )
-      continue
-    if ((await responses.resume(row.payloadHashHex)) === 'confirmed')
-      repliesSent++
+    if (row.phase !== 'response-ready')
+      await responses.resume(row.payloadHashHex)
   }
 
   // Ticket #77's own sketch used `sinceProfiles = 0` (every historical registration). Deliberately
@@ -325,6 +318,24 @@ async function main() {
       )
       break
     }
+
+    // Recovery does not depend on a mailbox entry or operator restart. A transient profile
+    // lookup failure/budget limit leaves ready rows eligible for the next poll; held sends
+    // never enter this retry path. Each row is reconsidered at most once per poll.
+    for (const row of state.pendingResponses()) {
+      if (repliesSent >= maxReplies) break
+      if (
+        row.phase !== 'response-ready' ||
+        (await guard.peerBlockReason(row.senderAddress)) ||
+        !guard.reserveReply(row.senderAddress)
+      )
+        continue
+      if ((await responses.resume(row.payloadHashHex)) === 'confirmed') {
+        repliesSent++
+        lastActivityAt = Date.now()
+      }
+    }
+    if (repliesSent >= maxReplies && greetingsSent >= maxGreetings) break
 
     if (greetingsSent < maxGreetings) {
       const newProfiles = await fetchMonadProfilesSince({
@@ -433,6 +444,7 @@ async function main() {
     let maxSeenTimestamp = since - 1
 
     for (const message of stored) {
+      if (repliesSent >= maxReplies) break
       maxSeenTimestamp = Math.max(maxSeenTimestamp, message.timestamp)
       if (!message.message) continue
 

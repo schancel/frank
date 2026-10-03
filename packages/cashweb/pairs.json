@@ -1,0 +1,37 @@
+[
+ {
+  "privA": "51e687cebcf28ad4bb0ae69aa50b69fb0a549e82a282c818c8bd8bb08881b497",
+  "privB": "0c2f63daf91db77239db1d6982e9f07ac40b04cedf5f3a5533944771c5c8b65e",
+  "pubA": "0355b3fc96471d0e0a3fd76d3a9036fe4158d62b8515dae1e5193e2e5a35c3c0fb",
+  "pubB": "029f8446e17b7a816e2e24c1dcb2216f3af7c94ae61b40e8856098cb71d8dc473c",
+  "legacyKinds": "issue",
+  "aToB": {
+   "plaintext": "pre-fix message 0",
+   "envelope": {
+    "v": 2,
+    "networkTag": "MONT",
+    "from": "0x1111111111111111111111111111111111111111",
+    "to": "0x2222222222222222222222222222222222222222",
+    "salt": "cadb22e0783182116c6219d62a5db281f4105d37e6ea1cf82e60404346fa3a82",
+    "nonce": "53cb9071ceaec55f2edeb55a",
+    "ciphertext": "a6d9cfcf678d5f28c840c77a501d408e1d",
+    "tag": "ecf4fbcc6ac1cb07a016011584b21ca1"
+   },
+   "preFixDecrypts": false
+  },
+  "bToA": {
+   "plaintext": "pre-fix message 0",
+   "envelope": {
+    "v": 2,
+    "networkTag": "MONT",
+    "from": "0x2222222222222222222222222222222222222222",
+    "to": "0x1111111111111111111111111111111111111111",
+    "salt": "7ef5abab5a31f66c6dd2169f00cbb6d53cb0a34bd5436be8e6984891b1872dd2",
+    "nonce": "9c81e77ac746f8e3b44cd2ff",
+    "ciphertext": "a9c11659270f1376406150a497da706779",
+    "tag": "a7e6beb6a4754c04cce91bef7a039f1b"
+   },
+   "preFixDecrypts": false
+  }
+ }
+]

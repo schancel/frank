@@ -170,4 +170,35 @@ describe('Point', function() {
 
   });
 
+  describe('#pointToCompressed / PublicKey#toBuffer with a leading-zero coordinate', function() {
+
+    // ECDH of these keys has x = 00bc906d... (frank #309). Multiplying the decompressed peer key
+    // yields a point whose x is a BN of elliptic's own bn.js, whose toBuffer({size: 32}) does not
+    // pad, so the serialization used to drop the zero byte for roughly half of such pairs.
+    var privateKey = bitcore.PrivateKey.fromBuffer(Buffer.from(
+      '0c2f63daf91db77239db1d6982e9f07ac40b04cedf5f3a5533944771c5c8b65e', 'hex'));
+    var peer = bitcore.PublicKey.fromBuffer(Buffer.from(
+      '0355b3fc96471d0e0a3fd76d3a9036fe4158d62b8515dae1e5193e2e5a35c3c0fb', 'hex'));
+    var expected = '0300bc906d18c156917ce52c48a2970927a2f11de554704d53d7e226ad632ab4c8';
+
+    it('pads x to 32 bytes in Point.pointToCompressed', function() {
+      var point = peer.point.mul(privateKey.toBigNumber());
+      Point.pointToCompressed(point).toString('hex').should.equal(expected);
+    });
+
+    it('pads x to 32 bytes in PublicKey#toBuffer', function() {
+      var shared = bitcore.PublicKey.fromPoint(peer.point.mul(privateKey.toBigNumber()));
+      shared.toBuffer().toString('hex').should.equal(expected);
+    });
+
+    it('coordinateToBuffer pads and rejects oversize values', function() {
+      Point.coordinateToBuffer(new BN(1)).toString('hex').should.equal('00'.repeat(31) + '01');
+      Point.coordinateToBuffer(new BN(0)).length.should.equal(32);
+      (function() {
+        Point.coordinateToBuffer(new BN('01' + '00'.repeat(32), 16));
+      }).should.throw();
+    });
+
+  });
+
 });

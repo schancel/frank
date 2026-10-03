@@ -366,6 +366,18 @@ async function main() {
       undefined,
     )
     await browser.cdp.evaluate(peer, setup)
+    // REPL-mode bare rejected promises are console values, not exceptionDetails.
+    // Every operation awaited below must use explicit top-level await, including
+    // negative tests, so rejection reaches this controlling process.
+    await assert.rejects(
+      () =>
+        browser.cdp.evaluate(
+          peer,
+          "await Promise.reject(new Error('Owned CDP rejection control'))",
+        ),
+      /Owned CDP rejection control/,
+      'CDP must preserve explicitly awaited promise rejection',
+    )
     const peerOpen = name =>
       `DemoDirectory.openDemoBrowserAdmission({name:${JSON.stringify(
         name,
@@ -375,7 +387,7 @@ async function main() {
       "Object.defineProperty(navigator,'locks',{configurable:true,value:undefined})",
     )
     await assert.rejects(
-      () => browser.cdp.evaluate(peer, peerOpen('no-locks')),
+      () => browser.cdp.evaluate(peer, `await ${peerOpen('no-locks')}`),
       /ownership unavailable/,
       'missing WebLocks must reject before store opening',
     )
@@ -389,7 +401,7 @@ async function main() {
        }})`,
     )
     await assert.rejects(
-      () => browser.cdp.evaluate(peer, peerOpen('different-db')),
+      () => browser.cdp.evaluate(peer, `await ${peerOpen('different-db')}`),
       /ownership unavailable/,
       'second tab/different database must reject while first owner is active',
     )
@@ -411,7 +423,7 @@ async function main() {
       'globalThis.closeFinished=false; globalThis.pendingClose=store.close().then(()=>{closeFinished=true}); true',
     )
     await assert.rejects(
-      () => browser.cdp.evaluate(peer, peerOpen('different-db')),
+      () => browser.cdp.evaluate(peer, `await ${peerOpen('different-db')}`),
       /ownership unavailable/,
       'delayed save and pending close must retain continuity ownership',
     )
@@ -422,7 +434,7 @@ async function main() {
       'summarize(await pendingEnrollment)',
     )
     assert.deepEqual(current, scenario.expected)
-    await browser.cdp.evaluate(session, 'pendingClose')
+    await browser.cdp.evaluate(session, 'await pendingClose')
     await browser.cdp.evaluate(
       peer,
       `globalThis.peerStore=await ${peerOpen(
@@ -439,7 +451,7 @@ async function main() {
       IDBDatabase.prototype.close=function(){throw new Error('Injected store close failure')}`,
     )
     await assert.rejects(
-      () => browser.cdp.evaluate(session, 'store.close()'),
+      () => browser.cdp.evaluate(session, 'await store.close()'),
       /Injected store close failure/,
       'injected native store close failure must reach the adapter caller',
     )
@@ -448,11 +460,12 @@ async function main() {
       'IDBDatabase.prototype.close=nativeClose',
     )
     await assert.rejects(
-      () => browser.cdp.evaluate(peer, peerOpen('after-close-retry')),
+      () =>
+        browser.cdp.evaluate(peer, `await ${peerOpen('after-close-retry')}`),
       /ownership unavailable/,
       'failed store close must retain continuity ownership until retry',
     )
-    await browser.cdp.evaluate(session, 'store.close()')
+    await browser.cdp.evaluate(session, 'await store.close()')
     await browser.cdp.evaluate(
       peer,
       `globalThis.peerStore=await ${peerOpen(
@@ -485,13 +498,13 @@ async function main() {
       scenario.expected,
     )
     await assert.rejects(() =>
-      browser.cdp.evaluate(session, 'store.current(nowNs-1n)'),
+      browser.cdp.evaluate(session, 'await store.current(nowNs-1n)'),
     )
-    await browser.cdp.evaluate(session, 'store.close()')
+    await browser.cdp.evaluate(session, 'await store.close()')
     await assert.rejects(() =>
       browser.cdp.evaluate(
         session,
-        `DemoDirectory.openDemoBrowserAdmission({name:'absent-store',installation,nowNs,mode:{kind:'reopen',continuity:${JSON.stringify(
+        `await DemoDirectory.openDemoBrowserAdmission({name:'absent-store',installation,nowNs,mode:{kind:'reopen',continuity:${JSON.stringify(
           continuity,
         )}},saveContinuity:saveRecord})`,
       ),
@@ -505,7 +518,8 @@ async function main() {
        conflict = {statement:DemoDirectory.exactHex(conflict.statement, conflict.statement.length/2),attestation:DemoDirectory.exactHex(conflict.attestation,conflict.attestation.length/2)};`,
     )
     await assert.rejects(
-      () => browser.cdp.evaluate(session, 'store.advance([conflict],nowNs)'),
+      () =>
+        browser.cdp.evaluate(session, 'await store.advance([conflict],nowNs)'),
       /fork/i,
       'authenticated fork must reject a usable current result',
     )
@@ -513,7 +527,7 @@ async function main() {
       JSON.parse(fs.readFileSync(continuityFile, 'utf8')).checkpoint,
       scenario.expectedFork,
     )
-    await browser.cdp.evaluate(session, 'store.close()')
+    await browser.cdp.evaluate(session, 'await store.close()')
     const forkContinuity = fs.readFileSync(continuityFile, 'utf8')
     await browser.cdp.evaluate(
       session,
@@ -522,11 +536,11 @@ async function main() {
       )}},saveContinuity:saveRecord})`,
     )
     await assert.rejects(
-      () => browser.cdp.evaluate(session, 'store.current(nowNs)'),
+      () => browser.cdp.evaluate(session, 'await store.current(nowNs)'),
       /fork/i,
       'reopened quarantined store must reject a usable current result',
     )
-    await browser.cdp.evaluate(session, 'store.close()')
+    await browser.cdp.evaluate(session, 'await store.close()')
     console.log(
       JSON.stringify({
         ok: true,

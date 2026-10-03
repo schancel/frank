@@ -6,6 +6,7 @@ import {
   MonadJsonRpcProvider,
   createMonadJsonRpcProvider,
   createMonadRelayRpcConnection,
+  issueMonadRelayRpcCapability,
   monadProtocolIdentity,
 } from "./monad-provider";
 
@@ -717,6 +718,191 @@ describe("MonadJsonRpcProvider (#534)", () => {
       challengeAborted,
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error("challenge socket stayed open")), 200)
+      ),
+    ]);
+  });
+
+  it("cancels the standalone capability helper while signing", async () => {
+    const customer = `0x${"12".repeat(20)}`;
+    let cancelled = false;
+    let signingResolve!: () => void;
+    const signing = new Promise<void>((resolve) => {
+      signingResolve = resolve;
+    });
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            epoch: "11".repeat(32),
+            nonce: "22".repeat(32),
+            expires_at_ms: Date.now() + 60_000,
+            token: "33".repeat(32),
+            signing_domain: "frank:rpc-http-auth:v1",
+            customer,
+            chain: "monad-testnet",
+            body_sha256: createHash("sha256").update(body).digest("hex"),
+            network_tag: Buffer.from("MONT").toString("hex"),
+          })
+        );
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        rpcUrl = `http://127.0.0.1:${
+          (server.address() as AddressInfo).port
+        }/chain-rpc/monad-testnet/rpc`;
+        resolve();
+      });
+    });
+
+    const issuing = issueMonadRelayRpcCapability(
+      rpcUrl,
+      {
+        chain: "monad-testnet",
+        customer,
+        networkTag: "MONT",
+        signDigest: () => {
+          signingResolve();
+          return new Promise<Uint8Array>(() => {});
+        },
+      },
+      30_000,
+      () => cancelled
+    );
+    await signing;
+    cancelled = true;
+    await expect(
+      Promise.race([
+        issuing,
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("cancellation was not prompt")),
+            200
+          )
+        ),
+      ])
+    ).rejects.toThrow(/cancel/i);
+  });
+
+  it("rejects an oversized streamed capability response", async () => {
+    const customer = `0x${"12".repeat(20)}`;
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.write("{" + " ".repeat(40 * 1024));
+      res.end(" ".repeat(40 * 1024) + "}");
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        rpcUrl = `http://127.0.0.1:${
+          (server.address() as AddressInfo).port
+        }/chain-rpc/monad-testnet/rpc`;
+        resolve();
+      });
+    });
+
+    await expect(
+      issueMonadRelayRpcCapability(rpcUrl, {
+        chain: "monad-testnet",
+        customer,
+        networkTag: "MONT",
+        signDigest: () =>
+          Uint8Array.from([0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01]),
+      })
+    ).rejects.toThrow(/too large/i);
+  });
+
+  it("promptly aborts a stalled bearer RPC on destruction", async () => {
+    const customer = `0x${"12".repeat(20)}`;
+    let rpcStartedResolve!: () => void;
+    let rpcClosedResolve!: () => void;
+    const rpcStarted = new Promise<void>((resolve) => {
+      rpcStartedResolve = resolve;
+    });
+    const rpcClosed = new Promise<void>((resolve) => {
+      rpcClosedResolve = resolve;
+    });
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        if (req.url?.endsWith("/capability/auth")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              epoch: "11".repeat(32),
+              nonce: "22".repeat(32),
+              expires_at_ms: Date.now() + 60_000,
+              token: "33".repeat(32),
+              signing_domain: "frank:rpc-http-auth:v1",
+              customer,
+              chain: "monad-testnet",
+              body_sha256: createHash("sha256").update(body).digest("hex"),
+              network_tag: Buffer.from("MONT").toString("hex"),
+            })
+          );
+          return;
+        }
+        if (req.url?.endsWith("/capability")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              rpc_path: "/chain-rpc/monad-testnet/cap/bearer/rpc",
+              expires_at_ms: Date.now() + 60_000,
+            })
+          );
+          return;
+        }
+        rpcStartedResolve();
+        req.on("aborted", rpcClosedResolve);
+        req.socket.on("close", rpcClosedResolve);
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        rpcUrl = `http://127.0.0.1:${
+          (server.address() as AddressInfo).port
+        }/chain-rpc/monad-testnet/rpc`;
+        resolve();
+      });
+    });
+
+    const provider = createMonadJsonRpcProvider({
+      rpcUrl,
+      relayAuth: {
+        chain: "monad-testnet",
+        customer,
+        networkTag: "MONT",
+        signDigest: () =>
+          Uint8Array.from([0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01]),
+      },
+    });
+    const sending = provider.send("eth_blockNumber", []);
+    await rpcStarted;
+    provider.destroy();
+    await expect(
+      Promise.race([
+        sending,
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("cancellation was not prompt")),
+            200
+          )
+        ),
+      ])
+    ).rejects.toThrow(/cancel|destroy/i);
+    await Promise.race([
+      rpcClosed,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("RPC socket stayed open")), 200)
       ),
     ]);
   });

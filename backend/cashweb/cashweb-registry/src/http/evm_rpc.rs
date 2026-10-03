@@ -9,7 +9,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
     net::{IpAddr, SocketAddr},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -91,16 +91,29 @@ impl axum::extract::FromRequest<axum::body::Body> for BoundedRpcBody {
     async fn from_request(
         req: &mut axum::extract::RequestParts<axum::body::Body>,
     ) -> Result<Self, Self::Rejection> {
+        let path = req.uri().path();
+        let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
+        let chronik_path_start = if segments.get(2) == Some(&"chronik") {
+            Some(3)
+        } else if segments.get(2) == Some(&"cap") && segments.get(4) == Some(&"chronik") {
+            Some(5)
+        } else {
+            None
+        };
+        let broadcast_route = req.method() == axum::http::Method::POST
+            && chronik_path_start
+                .and_then(|index| segments.get(index))
+                .is_some_and(|segment| matches!(*segment, "broadcast-tx" | "broadcast-txs"));
         let server = req
             .extensions()
             .get::<RegistryServer>()
-            .ok_or_else(|| rpc_error(StatusCode::INTERNAL_SERVER_ERROR, "rpc_unavailable"))?;
-        let path = req.uri().path();
-        let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
+            .ok_or_else(|| rpc_error(StatusCode::INTERNAL_SERVER_ERROR, "rpc_unavailable"))
+            .map_err(|error| preflight_broadcast_error(error, broadcast_route))?;
         let chain_id = segments
             .get(1)
             .filter(|_| segments.first() == Some(&"chain-rpc"))
-            .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
+            .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))
+            .map_err(|error| preflight_broadcast_error(error, broadcast_route))?;
         let chronik_route = segments.get(2) == Some(&"chronik")
             || segments.get(2) == Some(&"chronik-auth")
             || (segments.get(2) == Some(&"cap") && segments.get(4) == Some(&"chronik"));
@@ -130,28 +143,33 @@ impl axum::extract::FromRequest<axum::body::Body> for BoundedRpcBody {
                         .map(BitcoinProxyRuntime::body_admission)
                 })
         }
-        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
+        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))
+        .map_err(|error| preflight_broadcast_error(error, broadcast_route))?;
         let permit = permits
             .try_acquire_owned()
-            .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_ingress_busy"))?;
+            .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_ingress_busy"))
+            .map_err(|error| preflight_broadcast_error(error, broadcast_route))?;
         let mut body = req
             .take_body()
-            .ok_or_else(|| rpc_error(StatusCode::INTERNAL_SERVER_ERROR, "rpc_body_unavailable"))?;
+            .ok_or_else(|| rpc_error(StatusCode::INTERNAL_SERVER_ERROR, "rpc_body_unavailable"))
+            .map_err(|error| preflight_broadcast_error(error, broadcast_route))?;
         let read_body = async {
             let mut bytes = Vec::new();
             loop {
                 let chunk = tokio::time::timeout(timeout, body.data())
                     .await
-                    .map_err(|_| rpc_error(StatusCode::REQUEST_TIMEOUT, "rpc_body_timeout"))?;
+                    .map_err(|_| rpc_error(StatusCode::REQUEST_TIMEOUT, "rpc_body_timeout"))
+                    .map_err(|error| preflight_broadcast_error(error, broadcast_route))?;
                 let Some(chunk) = chunk else {
                     break;
                 };
-                let chunk =
-                    chunk.map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_rpc_body"))?;
+                let chunk = chunk
+                    .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_rpc_body"))
+                    .map_err(|error| preflight_broadcast_error(error, broadcast_route))?;
                 if bytes.len().saturating_add(chunk.len()) > max_bytes {
-                    return Err(rpc_error(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "rpc_request_too_large",
+                    return Err(preflight_broadcast_error(
+                        rpc_error(StatusCode::PAYLOAD_TOO_LARGE, "rpc_request_too_large"),
+                        broadcast_route,
                     ));
                 }
                 bytes.extend_from_slice(&chunk);
@@ -160,7 +178,8 @@ impl axum::extract::FromRequest<axum::body::Body> for BoundedRpcBody {
         };
         let bytes = tokio::time::timeout(timeout, read_body)
             .await
-            .map_err(|_| rpc_error(StatusCode::REQUEST_TIMEOUT, "rpc_body_timeout"))??;
+            .map_err(|_| rpc_error(StatusCode::REQUEST_TIMEOUT, "rpc_body_timeout"))
+            .map_err(|error| preflight_broadcast_error(error, broadcast_route))??;
         Ok(Self {
             bytes: bytes.into(),
             _permit: permit,
@@ -378,6 +397,27 @@ pub struct EvmRpcRuntime {
     anonymous_quota: FixedHourQuota<IpAddr>,
     capability_ttl: Duration,
     ws_permits: Arc<Semaphore>,
+    ws_customers: Arc<Mutex<HashMap<Address, usize>>>,
+    ws_per_customer_limit: usize,
+}
+
+struct WsCustomerAdmission {
+    customers: Arc<Mutex<HashMap<Address, usize>>>,
+    customer: Address,
+}
+
+impl Drop for WsCustomerAdmission {
+    fn drop(&mut self) {
+        let Ok(mut customers) = self.customers.lock() else {
+            return;
+        };
+        if let Some(count) = customers.get_mut(&self.customer) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                customers.remove(&self.customer);
+            }
+        }
+    }
 }
 
 impl fmt::Debug for EvmRpcRuntime {
@@ -441,6 +481,22 @@ impl EvmRpcRuntime {
         self.chains.keys().cloned().collect()
     }
 
+    fn admit_ws_customer(&self, customer: Address) -> Result<WsCustomerAdmission, RpcRejection> {
+        let mut customers = self
+            .ws_customers
+            .lock()
+            .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_busy"))?;
+        let count = customers.entry(customer).or_default();
+        if *count >= self.ws_per_customer_limit {
+            return Err(rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_busy"));
+        }
+        *count += 1;
+        Ok(WsCustomerAdmission {
+            customers: Arc::clone(&self.ws_customers),
+            customer,
+        })
+    }
+
     /// Resolve secret URLs from the environment and verify every upstream before readiness.
     pub async fn from_conf_with_env(
         conf: &EvmRpcConf,
@@ -465,10 +521,9 @@ impl EvmRpcRuntime {
             let upstream_ws_url = chain
                 .upstream_ws_env
                 .as_deref()
-                .map(|name| {
-                    let raw = env(name)
-                        .filter(|value| !value.trim().is_empty())
-                        .ok_or_else(|| EvmRpcStartError::MissingUpstream(name.to_string()))?;
+                .and_then(|name| env(name).map(|raw| (name, raw)))
+                .filter(|(_, raw)| !raw.trim().is_empty())
+                .map(|(name, raw)| {
                     raw.trim()
                         .parse::<Url>()
                         .ok()
@@ -511,6 +566,8 @@ impl EvmRpcRuntime {
             anonymous_quota: FixedHourQuota::new(conf.anonymous_units_per_hour),
             capability_ttl: Duration::from_millis(conf.capability_ttl_ms),
             ws_permits: Arc::new(Semaphore::new(conf.max_concurrency)),
+            ws_customers: Arc::new(Mutex::new(HashMap::new())),
+            ws_per_customer_limit: (conf.max_concurrency / 4).max(1),
         });
         runtime.verify_chain_identities().await?;
         Ok(Some(runtime))
@@ -807,6 +864,16 @@ pub(crate) fn broadcast_error(
         }),
         quota_reset_unix_seconds: None,
     }
+}
+
+pub(crate) fn preflight_broadcast_error(
+    mut rejection: RpcRejection,
+    broadcast: bool,
+) -> RpcRejection {
+    if broadcast {
+        rejection.broadcast_state = Some("not-attempted");
+    }
+    rejection
 }
 
 pub(crate) fn quota_error(
@@ -1553,6 +1620,7 @@ pub(crate) async fn handle_proxy_ws(
         .auth
         .verify_capability(&capability, &chain_id, now_ms())
         .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
+    let customer_admission = runtime.admit_ws_customer(customer)?;
     let permit = Arc::clone(&runtime.ws_permits)
         .try_acquire_owned()
         .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_busy"))?;
@@ -1569,39 +1637,39 @@ pub(crate) async fn handle_proxy_ws(
         .max_frame_size(max_client_bytes)
         .on_upgrade(move |socket| async move {
             let _permit = permit;
-            let _ = tokio::time::timeout_at(expiry_deadline, async move {
-                let config = WebSocketConfig {
-                    max_send_queue: Some(32),
-                    max_message_size: Some(max_upstream_bytes),
-                    max_frame_size: Some(max_upstream_bytes),
-                    accept_unmasked_frames: false,
-                };
-                let connected = tokio::time::timeout(
-                    timeout,
-                    connect_async_with_config(upstream_url.as_str(), Some(config)),
-                )
-                .await;
-                let Ok(Ok((mut upstream, _response))) = connected else {
-                    return;
-                };
-                if verify_ws_socket(&mut upstream, &chain, timeout)
-                    .await
-                    .is_err()
-                {
-                    let _ = tokio::time::timeout(timeout, upstream.close(None)).await;
-                    return;
-                }
-                proxy_ws_connection(
-                    socket,
-                    upstream,
-                    chain,
-                    customer,
-                    quota,
-                    request_permits,
-                    timeout,
-                )
-                .await;
-            })
+            let _customer_admission = customer_admission;
+            let config = WebSocketConfig {
+                max_send_queue: Some(32),
+                max_message_size: Some(max_upstream_bytes),
+                max_frame_size: Some(max_upstream_bytes),
+                accept_unmasked_frames: false,
+            };
+            let connect_deadline = expiry_deadline.min(tokio::time::Instant::now() + timeout);
+            let connected = tokio::time::timeout_at(
+                connect_deadline,
+                connect_async_with_config(upstream_url.as_str(), Some(config)),
+            )
+            .await;
+            let Ok(Ok((mut upstream, _response))) = connected else {
+                return;
+            };
+            if verify_ws_socket(&mut upstream, &chain, timeout)
+                .await
+                .is_err()
+            {
+                let _ = tokio::time::timeout(timeout, upstream.close(None)).await;
+                return;
+            }
+            proxy_ws_connection(
+                socket,
+                upstream,
+                chain,
+                customer,
+                quota,
+                request_permits,
+                timeout,
+                expiry_deadline,
+            )
             .await;
         })
         .into_response())
@@ -1615,6 +1683,7 @@ async fn proxy_ws_connection<S>(
     quota: Arc<FixedHourQuota<Address>>,
     request_permits: Arc<Semaphore>,
     request_timeout: Duration,
+    expiry_deadline: tokio::time::Instant,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -1628,6 +1697,7 @@ async fn proxy_ws_connection<S>(
         let deadline = next_deadline
             .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(86_400));
         tokio::select! {
+            _ = tokio::time::sleep_until(expiry_deadline) => break,
             _ = tokio::time::sleep_until(deadline), if next_deadline.is_some() => {
                 let request = pending
                     .iter()
@@ -1773,6 +1843,14 @@ async fn proxy_ws_connection<S>(
                             if !active_subscriptions.contains(subscription) {
                                 break;
                             }
+                            if quota.charge(customer, 1, now_seconds()).is_err() {
+                                let _ = bounded_ws_send(
+                                    &mut client_write,
+                                    ClientWsMessage::Close(None),
+                                    ws_write_deadline(&pending, request_timeout),
+                                ).await;
+                                break;
+                            }
                         }
                         super::json_rpc::sanitize_response_errors(&mut value);
                         if !bounded_ws_send(&mut client_write, ClientWsMessage::Text(value.to_string()), delivery_deadline).await { break; }
@@ -1787,6 +1865,20 @@ async fn proxy_ws_connection<S>(
             }
         }
     }
+    pending.clear();
+    let close_deadline = tokio::time::Instant::now() + request_timeout;
+    let _ = bounded_ws_send(
+        &mut client_write,
+        ClientWsMessage::Close(None),
+        close_deadline,
+    )
+    .await;
+    let _ = bounded_ws_send(
+        &mut upstream_write,
+        UpstreamWsMessage::Close(None),
+        close_deadline,
+    )
+    .await;
 }
 
 async fn proxy_rpc_inner(
@@ -1804,14 +1896,19 @@ async fn proxy_rpc_inner(
         return crate::http::bitcoin_proxy::proxy_rpc(chain_id, peer, headers, server, body).await;
     };
     let cost = validate_body(runtime, chain, &body)?;
-    let correlation = super::json_rpc::request_correlation(&body)
-        .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"))?;
+    let correlation = super::json_rpc::request_correlation(&body).map_err(|_| {
+        preflight_broadcast_error(
+            rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"),
+            cost.broadcast,
+        )
+    })?;
     let customer = if let Some(capability) = capability.as_deref() {
         Some(
             runtime
                 .auth
                 .verify_capability(capability, &chain_id, now_ms())
-                .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?
+                .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))
+                .map_err(|error| preflight_broadcast_error(error, cost.broadcast))?
                 .0,
         )
     } else {
@@ -1820,7 +1917,8 @@ async fn proxy_rpc_inner(
             .and_then(|value| value.to_str().ok())
             .map(Address::from_hex)
             .transpose()
-            .map_err(|_| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?
+            .map_err(|_| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))
+            .map_err(|error| preflight_broadcast_error(error, cost.broadcast))?
     };
     let permit = Arc::clone(&runtime.permits)
         .try_acquire_owned()
@@ -1846,7 +1944,8 @@ async fn proxy_rpc_inner(
                 &runtime.auth,
                 &runtime.network_tag,
                 &binding,
-            )?;
+            )
+            .map_err(|error| preflight_broadcast_error(error, cost.broadcast))?;
         }
         runtime
             .customer_quota
@@ -1854,10 +1953,14 @@ async fn proxy_rpc_inner(
             .map_err(|denial| quota_error("rpc_hourly_quota", cost.broadcast, denial))?;
     } else {
         if !cost.anonymous {
-            return Err(rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_required"));
+            return Err(preflight_broadcast_error(
+                rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_required"),
+                cost.broadcast,
+            ));
         }
-        let peer =
-            peer.ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_source_required"))?;
+        let peer = peer
+            .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_source_required"))
+            .map_err(|error| preflight_broadcast_error(error, cost.broadcast))?;
         runtime
             .anonymous_quota
             .charge(quota_ip(peer.0), cost.units, now_seconds())
@@ -2041,7 +2144,23 @@ mod tests {
             anonymous_quota: FixedHourQuota::new(500),
             capability_ttl: Duration::from_secs(60 * 60),
             ws_permits: Arc::new(Semaphore::new(1)),
+            ws_customers: Arc::new(Mutex::new(HashMap::new())),
+            ws_per_customer_limit: 1,
         }
+    }
+
+    #[test]
+    fn websocket_admission_is_fair_per_customer_and_releases_on_drop() {
+        let runtime = runtime();
+        let customer = customer_address();
+        let other = Address([0x22; 20]);
+
+        let admission = runtime.admit_ws_customer(customer).unwrap();
+        assert!(runtime.admit_ws_customer(customer).is_err());
+        let other_admission = runtime.admit_ws_customer(other).unwrap();
+        drop(admission);
+        assert!(runtime.admit_ws_customer(customer).is_ok());
+        drop(other_admission);
     }
 
     #[test]

@@ -107,7 +107,8 @@ holds a shared upstream-concurrency permit, and responses and subscription notif
 forwarded only when their IDs match an outstanding call or active subscription.
 
 Bitcoin-family configuration names optional node JSON-RPC and Chronik upstream environment
-variables plus a required checkpoint height/hash. Startup checks `getblockhash` and Chronik's
+variables plus the registry-pinned checkpoint height/hash (regtest rows use an operator
+checkpoint). Startup checks `getblockhash` and Chronik's
 `GET /block/<height>` before readiness. Anonymous Chronik wallet-bootstrap reads use a high,
 burstable fixed-hour IP quota; anonymous `sendrawtransaction`, `broadcast-tx`, and bounded
 `broadcast-txs` use a separate small fixed-hour broadcast quota. Other node RPC and indexer
@@ -127,11 +128,12 @@ anonymous_broadcasts_per_hour = 20
 id = "xec-mainnet"
 rpc_upstream_env = "XEC_NODE_RPC_URL"       # optional
 chronik_upstream_env = "XEC_CHRONIK_URL"   # optional; at least one upstream is required
-checkpoint_height = 900000
-checkpoint_hash = "<64 lowercase or uppercase hex characters>"
+checkpoint_height = 661648
+checkpoint_hash = "000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d"
 ```
 
-`GET /peers` publicly returns this relay and its configured peers so clients can select independent
-relays for reads or identical transaction rebroadcast. Bitcoin-family duplicate broadcast is
+`GET /peers` publicly returns this relay and only the separate `public_relay_urls` allowlist; private
+federation peers are never inferred to be public. Clients can select independent relays for reads
+or identical transaction rebroadcast. Bitcoin-family duplicate broadcast is
 normally idempotent. EVM provider behavior varies, so clients reconcile by locally derived
 transaction hash rather than assuming an error proves rejection.

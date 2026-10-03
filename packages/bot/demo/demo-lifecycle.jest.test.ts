@@ -112,6 +112,9 @@ process.stdin.on('end', () => {
   fs.writeFileSync(${JSON.stringify(
     pidFile + '.env',
   )}, process.env.MONAD_STAMP_BURN_ADDRESS || 'unset')
+  fs.writeFileSync(${JSON.stringify(
+    pidFile + '.checkpoint',
+  )}, process.env.FRANK_EVM_CHECKPOINT_HASH || 'unset')
   if (${kind === 'stubborn'}) process.on('SIGTERM', () => {})
   if (${kind === 'http'}) {
     const [host, port] = /host = "([^"]+)"/.exec(input)[1].split(':')
@@ -381,6 +384,7 @@ process.stdin.on('end', () => {
     it('the relay is started with the burn address the bots and the app command use (#364)', async () => {
       const { handle, c } = await running()
       expect(readFileSync(pidFile + '.env', 'utf8')).toBe(c.stampBurnAddress)
+      expect(readFileSync(pidFile + '.checkpoint', 'utf8')).toBe(`0x${'11'.repeat(32)}`)
       expect(c.stampBurnAddress).toBe('0x000000000000000000000000000000000000dEaD')
       await handle.stop()
       await handle.done

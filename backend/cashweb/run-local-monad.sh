@@ -47,12 +47,30 @@ case "$rpc_url" in
 esac
 
 case "$network_tag" in
-    MONT | MON1) ;;
+    MONT)
+        rpc_chain="monad-testnet"
+        canonical_chain_id="10143"
+        canonical_checkpoint_hash="0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
+        ;;
+    MON1)
+        rpc_chain="monad-mainnet"
+        canonical_chain_id="143"
+        canonical_checkpoint_hash="0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9"
+        ;;
     *)
         echo "run-local-monad: FRANK_NETWORK_TAG must be MONT (Monad testnet) or MON1 (Monad mainnet); the relay maps only these to a Frank-CBOR network and refuses to start otherwise" >&2
         exit 64
         ;;
 esac
+if [[ "$expected_chain_id" != "$canonical_chain_id" ]]; then
+    echo "run-local-monad: MONAD_TESTNET_CHAIN_ID must be $canonical_chain_id when FRANK_NETWORK_TAG=$network_tag" >&2
+    exit 64
+fi
+evm_checkpoint_hash="${FRANK_EVM_CHECKPOINT_HASH:-$canonical_checkpoint_hash}"
+if [[ ! "$evm_checkpoint_hash" =~ ^0x[0-9a-fA-F]{64}$ ]]; then
+    echo "run-local-monad: FRANK_EVM_CHECKPOINT_HASH must be 0x followed by 64 hex characters" >&2
+    exit 64
+fi
 
 # The topic (forum) routes read MONAD_STAMP_BURN_ADDRESS at request time and answer HTTP 500 without
 # it, while direct messages keep working: a silent half-broken relay. Warn loudly at startup, and
@@ -150,7 +168,9 @@ if [[ ! -x "$cashwebd" ]]; then
 fi
 
 runtime_config="$(LAUNCHER_MIN_VALUE_WEI="$min_value_wei" \
-    LAUNCHER_EXPECTED_CHAIN_ID="$expected_chain_id" awk '
+    LAUNCHER_EXPECTED_CHAIN_ID="$expected_chain_id" \
+    LAUNCHER_RPC_CHAIN="$rpc_chain" \
+    LAUNCHER_EVM_CHECKPOINT_HASH="$evm_checkpoint_hash" awk '
     /^\[registry\.monad_mailbox\]$/ { in_monad_mailbox = 1 }
     in_monad_mailbox && /^\[/ && !/^\[registry\.monad_mailbox\]$/ { in_monad_mailbox = 0 }
     in_monad_mailbox && /^min_value_wei[[:space:]]*=/ {
@@ -159,6 +179,20 @@ runtime_config="$(LAUNCHER_MIN_VALUE_WEI="$min_value_wei" \
     }
     in_monad_mailbox && /^expected_chain_id[[:space:]]*=/ {
         print "expected_chain_id = " ENVIRON["LAUNCHER_EXPECTED_CHAIN_ID"]
+        next
+    }
+    /^\[\[registry\.evm_rpc\.chains\]\]$/ { in_evm_chain = 1 }
+    in_evm_chain && /^\[/ && !/^\[\[registry\.evm_rpc\.chains\]\]$/ { in_evm_chain = 0 }
+    in_evm_chain && /^id[[:space:]]*=/ {
+        print "id = \"" ENVIRON["LAUNCHER_RPC_CHAIN"] "\""
+        next
+    }
+    in_evm_chain && /^expected_chain_id[[:space:]]*=/ {
+        print "expected_chain_id = " ENVIRON["LAUNCHER_EXPECTED_CHAIN_ID"]
+        next
+    }
+    in_evm_chain && /^checkpoint_block_hash[[:space:]]*=/ {
+        print "checkpoint_block_hash = \"" ENVIRON["LAUNCHER_EVM_CHECKPOINT_HASH"] "\""
         next
     }
     { print }
@@ -179,6 +213,7 @@ rpc_origin="$(printf '%s' "$rpc_url" | sed -E 's#^([a-z]+://[^/?\#]*).*#\1#')"
     echo "  FRANK_NETWORK_TAG:      $network_tag"
     echo "  min_value_wei:          $min_value_wei"
     echo "  expected_chain_id:      $expected_chain_id"
+    echo "  rpc_chain:              $rpc_chain"
     echo "  MONAD_STAMP_BURN_ADDRESS: ${burn_address:-NOT SET}"
     if [[ -z "$burn_address" ]]; then
         echo "run-local-monad: WARNING: MONAD_STAMP_BURN_ADDRESS is not set: every forum topic post and vote will fail with HTTP 500 (direct messages still work). Set it (see .env.example)." >&2

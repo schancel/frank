@@ -160,7 +160,7 @@ diff -u <(printf '%s\n' -) "$args_file"
 # The launcher must run `--check-config` itself, before starting the daemon.
 [[ "$(cat "$fixture_root/check.log")" == "check-config" ]] || exit 1
 [[ "$(grep -c '^\[registry\.monad_mailbox\]$' "$config_file")" -eq 1 ]] || exit 1
-[[ "$(grep -c '^enabled = true$' "$config_file")" -eq 1 ]] || exit 1
+[[ "$(grep -c '^enabled = true$' "$config_file")" -eq 2 ]] || exit 1
 # The endpoint is secret-bearing: it reaches the daemon only through its environment, never the
 # generated config, and the network tag defaults to Monad testnet's MONT.
 [[ "$(grep -c '^rpc_url' "$config_file")" -eq 0 ]] || exit 1
@@ -174,7 +174,7 @@ grep -Fq 'origin https://rpc.invalid.example' "$fixture_root/effective.err" || e
 ! grep -Fq 'test-only' "$fixture_root/effective.err" || exit 1
 # Enabled mode requires an explicit minimum and chain ID; local defaults are Monad testnet's.
 [[ "$(grep -Fxc 'min_value_wei = "1000000000000"' "$config_file")" -eq 1 ]] || exit 1
-[[ "$(grep -Fxc 'expected_chain_id = 10143' "$config_file")" -eq 1 ]] || exit 1
+[[ "$(grep -Fxc 'expected_chain_id = 10143' "$config_file")" -eq 2 ]] || exit 1
 # Guard against the harness silently weakening: an enabled mailbox without its minimum/chain ID
 # is rejected by the real parser even with the RPC URL and tag supplied.
 old_style="$(sed '/^min_value_wei/d;/^expected_chain_id/d' "$script_dir/cashwebd.local.toml")"
@@ -229,6 +229,7 @@ done
 rm -f -- "$args_file" "$config_file"
 CASHWEB_STAMP_MIN_BURN_VALUE_WEI=340282366920938463463374607431768211455 \
     MONAD_TESTNET_CHAIN_ID=143 \
+    FRANK_NETWORK_TAG=MON1 \
     MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
     CARGO="$fixture_root/bin/fake-cargo" \
     FRANK_LAUNCHER_ARGS="$args_file" \
@@ -236,6 +237,8 @@ CASHWEB_STAMP_MIN_BURN_VALUE_WEI=340282366920938463463374607431768211455 \
     "$launcher"
 grep -Fxq 'min_value_wei = "340282366920938463463374607431768211455"' "$config_file"
 grep -Fxq 'expected_chain_id = 143' "$config_file"
+grep -Fxq 'id = "monad-mainnet"' "$config_file"
+grep -Fxq 'checkpoint_block_hash = "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9"' "$config_file"
 
 configured_target="fixture-host-target"
 rm -f -- "$args_file" "$config_file"

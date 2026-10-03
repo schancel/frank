@@ -25,9 +25,9 @@ use url::Url;
 use crate::{
     http::{
         evm_rpc::{
-            authenticate, body_hash, broadcast_error, now_ms, quota_error, rpc_error,
-            BoundedRpcBody, RpcAuthState, RpcBinding, RpcCapabilityBody, RpcChallengeBody,
-            RpcRejection, RpcResource, RPC_AUTH_DOMAIN, RPC_CUSTOMER_HEADER,
+            authenticate, body_hash, broadcast_error, now_ms, preflight_broadcast_error,
+            quota_error, rpc_error, BoundedRpcBody, RpcAuthState, RpcBinding, RpcCapabilityBody,
+            RpcChallengeBody, RpcRejection, RpcResource, RPC_AUTH_DOMAIN, RPC_CUSTOMER_HEADER,
         },
         hourly_quota::{normalize_quota_ip, FixedHourQuota},
         server::RegistryServer,
@@ -434,7 +434,7 @@ fn parse_customer(headers: &HeaderMap) -> Result<Option<Address>, RpcRejection> 
 fn validate_rpc(
     body: &[u8],
     max: usize,
-) -> Result<(u32, bool, super::json_rpc::JsonRpcVersion), RpcRejection> {
+) -> Result<(u32, bool, bool, super::json_rpc::JsonRpcVersion), RpcRejection> {
     if body.is_empty() || body.len() > max {
         return Err(rpc_error(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -450,6 +450,7 @@ fn validate_rpc(
     };
     let mut units = 0u32;
     let mut only_send = calls.len() == 1;
+    let mut contains_send = false;
     let mut version = None;
     for call in calls {
         let obj = call
@@ -491,6 +492,7 @@ fn validate_rpc(
             return Err(rpc_error(StatusCode::FORBIDDEN, "rpc_method_denied"));
         }
         only_send &= method == "sendrawtransaction";
+        contains_send |= method == "sendrawtransaction";
         units = units.saturating_add(if method == "sendrawtransaction" {
             10
         } else if matches!(method, "getblock" | "getrawtransaction") {
@@ -499,7 +501,12 @@ fn validate_rpc(
             1
         });
     }
-    Ok((units, only_send, version.expect("non-empty calls")))
+    Ok((
+        units,
+        only_send,
+        contains_send,
+        version.expect("non-empty calls"),
+    ))
 }
 
 fn peer_ip(peer: Option<ConnectInfo<SocketAddr>>) -> Result<IpAddr, RpcRejection> {
@@ -690,9 +697,14 @@ async fn proxy_rpc_inner(
         .get(&chain_id)
         .filter(|c| c.rpc.is_some())
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
-    let (_units, send_only, version) = validate_rpc(&body, runtime.max_request_bytes)?;
-    let correlation = super::json_rpc::request_correlation(&body)
-        .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"))?;
+    let (_units, send_only, contains_broadcast, version) =
+        validate_rpc(&body, runtime.max_request_bytes)?;
+    let correlation = super::json_rpc::request_correlation(&body).map_err(|_| {
+        preflight_broadcast_error(
+            rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"),
+            contains_broadcast,
+        )
+    })?;
     let capability_customer = capability
         .as_deref()
         .map(|capability| {
@@ -701,11 +713,14 @@ async fn proxy_rpc_inner(
                 .verify_capability(capability, &chain_id, now_ms())
                 .map(|verified| verified.0)
                 .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))
+                .map_err(|error| preflight_broadcast_error(error, contains_broadcast))
         })
         .transpose()?;
     let anonymous_ip = if capability_customer.is_some() {
         None
-    } else if let Some(customer) = parse_customer(&headers)? {
+    } else if let Some(customer) = parse_customer(&headers)
+        .map_err(|error| preflight_broadcast_error(error, contains_broadcast))?
+    {
         authenticate(
             &headers,
             &server,
@@ -717,13 +732,19 @@ async fn proxy_rpc_inner(
                 body_sha256: body_hash(&body),
                 resource: RpcResource::Rpc,
             },
-        )?;
+        )
+        .map_err(|error| preflight_broadcast_error(error, contains_broadcast))?;
         None
     } else {
         if !send_only {
-            return Err(rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_required"));
+            return Err(broadcast_error(
+                StatusCode::UNAUTHORIZED,
+                "rpc_auth_required",
+                contains_broadcast,
+                false,
+            ));
         }
-        Some(peer_ip(peer)?)
+        Some(peer_ip(peer).map_err(|error| preflight_broadcast_error(error, contains_broadcast))?)
     };
     let permit = Arc::clone(&runtime.permits)
         .try_acquire_owned()
@@ -731,7 +752,7 @@ async fn proxy_rpc_inner(
             broadcast_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "rpc_busy",
-                send_only,
+                contains_broadcast,
                 false,
             )
         })?;
@@ -753,7 +774,7 @@ async fn proxy_rpc_inner(
         broadcast_error(
             StatusCode::GATEWAY_TIMEOUT,
             "rpc_upstream_timeout",
-            send_only,
+            contains_broadcast,
             true,
         )
     })?
@@ -761,7 +782,7 @@ async fn proxy_rpc_inner(
         broadcast_error(
             StatusCode::BAD_GATEWAY,
             "rpc_upstream_unavailable",
-            send_only,
+            contains_broadcast,
             true,
         )
     })?;
@@ -775,7 +796,7 @@ async fn proxy_rpc_inner(
         broadcast_error(
             StatusCode::GATEWAY_TIMEOUT,
             "rpc_upstream_timeout",
-            send_only,
+            contains_broadcast,
             true,
         )
     })?
@@ -783,19 +804,19 @@ async fn proxy_rpc_inner(
         super::json_rpc::SpoolError::TooLarge => broadcast_error(
             StatusCode::BAD_GATEWAY,
             "rpc_upstream_response_too_large",
-            send_only,
+            contains_broadcast,
             true,
         ),
         super::json_rpc::SpoolError::Timeout => broadcast_error(
             StatusCode::GATEWAY_TIMEOUT,
             "rpc_upstream_timeout",
-            send_only,
+            contains_broadcast,
             true,
         ),
         super::json_rpc::SpoolError::Io => broadcast_error(
             StatusCode::BAD_GATEWAY,
             "rpc_upstream_unavailable",
-            send_only,
+            contains_broadcast,
             true,
         ),
     })?;
@@ -805,7 +826,7 @@ async fn proxy_rpc_inner(
             broadcast_error(
                 StatusCode::GATEWAY_TIMEOUT,
                 "rpc_upstream_timeout",
-                send_only,
+                contains_broadcast,
                 true,
             )
         })?
@@ -813,7 +834,7 @@ async fn proxy_rpc_inner(
             broadcast_error(
                 StatusCode::BAD_GATEWAY,
                 "invalid_rpc_upstream_response",
-                send_only,
+                contains_broadcast,
                 true,
             )
         })?;
@@ -824,7 +845,7 @@ async fn proxy_rpc_inner(
             broadcast_error(
                 StatusCode::BAD_GATEWAY,
                 "rpc_upstream_unavailable",
-                send_only,
+                contains_broadcast,
                 true,
             )
         })?;
@@ -1230,9 +1251,9 @@ async fn proxy_chronik_inner(
     let (public, broadcast) = chronik_policy(&method, &path)
         .ok_or_else(|| rpc_error(StatusCode::FORBIDDEN, "indexer_endpoint_denied"))?;
     if body.len() > runtime.max_request_bytes {
-        return Err(rpc_error(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "rpc_request_too_large",
+        return Err(preflight_broadcast_error(
+            rpc_error(StatusCode::PAYLOAD_TOO_LARGE, "rpc_request_too_large"),
+            broadcast,
         ));
     }
     let capability_customer = capability
@@ -1243,11 +1264,14 @@ async fn proxy_chronik_inner(
                 .verify_capability(capability, &chain_id, now_ms())
                 .map(|verified| verified.0)
                 .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))
+                .map_err(|error| preflight_broadcast_error(error, broadcast))
         })
         .transpose()?;
     let anonymous_charge = if capability_customer.is_some() {
         None
-    } else if let Some(customer) = parse_customer(&headers)? {
+    } else if let Some(customer) =
+        parse_customer(&headers).map_err(|error| preflight_broadcast_error(error, broadcast))?
+    {
         authenticate(
             &headers,
             &server,
@@ -1259,18 +1283,26 @@ async fn proxy_chronik_inner(
                 body_sha256: body_hash(&body),
                 resource: RpcResource::Rpc,
             },
-        )?;
+        )
+        .map_err(|error| preflight_broadcast_error(error, broadcast))?;
         None
     } else {
         if !public && !broadcast {
-            return Err(rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_required"));
+            return Err(preflight_broadcast_error(
+                rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_required"),
+                broadcast,
+            ));
         }
         let units = if broadcast {
-            broadcast_units(&path, &body)?
+            broadcast_units(&path, &body).map_err(|error| preflight_broadcast_error(error, true))?
         } else {
             anonymous_chronik_units(&method, &path, uri.query(), &body)?
         };
-        Some((broadcast, peer_ip(peer)?, units))
+        Some((
+            broadcast,
+            peer_ip(peer).map_err(|error| preflight_broadcast_error(error, broadcast))?,
+            units,
+        ))
     };
     let permit = Arc::clone(&runtime.permits)
         .try_acquire_owned()
@@ -1377,17 +1409,27 @@ mod tests {
         let read = br#"{"jsonrpc":"1.0","id":1,"method":"getblockhash","params":[1]}"#;
         assert_eq!(
             validate_rpc(read, 1024).unwrap(),
-            (1, false, crate::http::json_rpc::JsonRpcVersion::Legacy)
+            (
+                1,
+                false,
+                false,
+                crate::http::json_rpc::JsonRpcVersion::Legacy
+            )
         );
         let send = br#"{"jsonrpc":"1.0","id":1,"method":"sendrawtransaction","params":["00"]}"#;
         assert_eq!(
             validate_rpc(send, 1024).unwrap(),
-            (10, true, crate::http::json_rpc::JsonRpcVersion::Legacy)
+            (
+                10,
+                true,
+                true,
+                crate::http::json_rpc::JsonRpcVersion::Legacy
+            )
         );
         let v2 = br#"{"jsonrpc":"2.0","id":1,"method":"getblockhash","params":[1]}"#;
         assert_eq!(
             validate_rpc(v2, 1024).unwrap(),
-            (1, false, crate::http::json_rpc::JsonRpcVersion::V2)
+            (1, false, false, crate::http::json_rpc::JsonRpcVersion::V2)
         );
         let denied = br#"{"jsonrpc":"1.0","id":1,"method":"dumpprivkey","params":[]}"#;
         assert!(validate_rpc(denied, 1024).is_err());
@@ -1397,6 +1439,16 @@ mod tests {
             String::from_utf8_lossy(send)
         );
         assert!(!validate_rpc(anonymous_batch.as_bytes(), 1024).unwrap().1);
+        assert!(validate_rpc(anonymous_batch.as_bytes(), 1024).unwrap().2);
+        let mixed_broadcast = format!(
+            "[{},{}]",
+            String::from_utf8_lossy(read),
+            String::from_utf8_lossy(send)
+        );
+        let (_, send_only, contains_send, _) =
+            validate_rpc(mixed_broadcast.as_bytes(), 1024).unwrap();
+        assert!(!send_only);
+        assert!(contains_send);
         let mixed_versions = format!(
             "[{},{}]",
             String::from_utf8_lossy(read),
@@ -1635,7 +1687,7 @@ mod tests {
         let mut conf = BitcoinProxyConf {
             enabled: true,
             chains: vec![BitcoinProxyChainConf {
-                id: "xec-mainnet".to_string(),
+                id: "xec-regtest".to_string(),
                 rpc_upstream_env: None,
                 chronik_upstream_env: Some("CHRONIK_URL".to_string()),
                 checkpoint_height: 42,

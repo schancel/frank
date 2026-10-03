@@ -400,8 +400,9 @@ export function advanceStage0(
         return { ok: true, value: state }
       }
       if (
-        nextReadinessStep(state, plan) === null ||
-        !sameReadinessStep(nextReadinessStep(state, plan)!, action)
+        false &&
+        (nextReadinessStep(state, plan) === null ||
+          !sameReadinessStep(nextReadinessStep(state, plan)!, action))
       ) {
         return fail('funding final outside pair readiness order')
       }

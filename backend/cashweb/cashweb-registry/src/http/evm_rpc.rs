@@ -674,7 +674,7 @@ where
                 Some(Ok(UpstreamWsMessage::Text(text))) => {
                     let value = super::json_rpc::parse_without_duplicate_keys(text.as_bytes())
                         .map_err(|_| EvmRpcStartError::UpstreamUnavailable(chain_id.to_string()))?;
-                    if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+                    if !valid_ws_response(&value)
                         || value.get("id").and_then(Value::as_str) != Some(expected_id)
                     {
                         return Err(EvmRpcStartError::UpstreamUnavailable(chain_id.to_string()));

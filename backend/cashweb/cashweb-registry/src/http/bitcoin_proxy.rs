@@ -343,7 +343,7 @@ fn chronik_endpoint_url(base: &Url, path: &str, query: Option<&str>) -> Result<U
     Ok(url)
 }
 
-fn chronik_error_contains_secret(message: &str, upstream: &Url) -> bool {
+fn chronik_error_contains_secret(body: &[u8], message: &str, upstream: &Url) -> bool {
     let mut needles = Vec::new();
     needles.push(upstream.as_str());
     if !upstream.username().is_empty() {
@@ -362,7 +362,12 @@ fn chronik_error_contains_secret(message: &str, upstream: &Url) -> bool {
     needles
         .into_iter()
         .filter(|needle| needle.len() >= 4)
-        .any(|needle| message.contains(needle))
+        .any(|needle| {
+            message.contains(needle)
+                || body
+                    .windows(needle.len())
+                    .any(|window| window == needle.as_bytes())
+        })
 }
 
 async fn read_response(mut response: reqwest::Response, max: usize) -> Result<Bytes, ()> {
@@ -1084,7 +1089,11 @@ async fn proxy_chronik_inner(
     } else {
         let error = proto::Error::decode(upstream.body.as_ref())
             .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
-        if chronik_error_contains_secret(&error.msg, chain.chronik.as_ref().unwrap()) {
+        if chronik_error_contains_secret(
+            upstream.body.as_ref(),
+            &error.msg,
+            chain.chronik.as_ref().unwrap(),
+        ) {
             proto::Error {
                 msg: "upstream Chronik error".to_string(),
             }
@@ -1239,10 +1248,15 @@ mod tests {
         assert_eq!(url.path(), "/private/blocks/1/2");
         assert_eq!(url.query(), Some("api_key=hidden&page=0"));
         assert!(chronik_error_contains_secret(
-            "request to api_key=hidden failed",
+            b"unknown-field:api_key=hidden",
+            "txn-invalid",
             &base
         ));
-        assert!(!chronik_error_contains_secret("txn-invalid", &base));
+        assert!(!chronik_error_contains_secret(
+            b"txn-invalid",
+            "txn-invalid",
+            &base
+        ));
     }
 
     #[test]

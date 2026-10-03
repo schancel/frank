@@ -7,6 +7,7 @@ url = "http://127.0.0.1:8098"
 db_path = "data/registry.rocksdb"
 net = "mainnet"
 peers = []
+public_relay_urls = []
 
 # The RPC URL is deliberately NOT in this file: `cashwebd-exe` reads it from the
 # MONAD_TESTNET_HTTP_RPC_URL environment variable (and refuses to start with a clear message when

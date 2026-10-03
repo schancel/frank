@@ -371,6 +371,9 @@ fn chronik_error_contains_secret(body: &[u8], upstream: &Url) -> bool {
         needles.push(upstream.username().as_bytes().to_vec());
         let username = percent_decode_component(upstream.username());
         needles.push(username.clone());
+    }
+    if !upstream.username().is_empty() || upstream.password().is_some() {
+        let username = percent_decode_component(upstream.username());
         let password = upstream
             .password()
             .map(percent_decode_component)
@@ -784,7 +787,9 @@ async fn proxy_rpc_inner(
         axum::http::HeaderValue::from_static("application/json"),
     );
     Ok(crate::http::json_rpc::hold_response_permit(
-        response, permit,
+        response,
+        permit,
+        runtime.timeout,
     ))
 }
 
@@ -1265,7 +1270,9 @@ async fn proxy_chronik_inner(
     )
         .into_response();
     Ok(crate::http::json_rpc::hold_response_permit(
-        response, permit,
+        response,
+        permit,
+        runtime.timeout,
     ))
 }
 
@@ -1455,6 +1462,11 @@ mod tests {
         assert!(chronik_error_contains_secret(
             b"bad Authorization: Basic enl4dzpxdmtq",
             &basic
+        ));
+        let password_only: Url = "https://:secret@example.test/".parse().unwrap();
+        assert!(chronik_error_contains_secret(
+            b"bad Authorization: Basic OnNlY3JldA==",
+            &password_only
         ));
     }
 

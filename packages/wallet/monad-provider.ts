@@ -29,6 +29,8 @@ export interface MonadRelayRpcAuth {
   signDigest: (digest: Uint8Array) => Uint8Array | Promise<Uint8Array>;
 }
 
+const relayConnectionDestroy = new WeakMap<FetchRequest, () => void>();
+
 interface RelayRpcChallenge {
   epoch: string;
   nonce: string;
@@ -124,8 +126,13 @@ function rpcAuthDigest(
 export async function issueMonadRelayRpcCapability(
   rpcUrl: string,
   auth: MonadRelayRpcAuth,
-  timeout = 30_000
+  timeout = 30_000,
+  isCancelled: () => boolean = () => false
 ): Promise<MonadRelayRpcCapability> {
+  const ensureActive = () => {
+    if (isCancelled()) throw new Error("relay capability request cancelled");
+  };
+  ensureActive();
   const relayBaseUrl = rpcUrl.replace(/\/rpc\/?$/, "");
   const emptyBody = new Uint8Array(0);
   const bodyHash = bareHex(getBytes(sha256(emptyBody)));
@@ -136,12 +143,14 @@ export async function issueMonadRelayRpcCapability(
   challengeRequest.setHeader("content-type", "application/octet-stream");
   challengeRequest.setHeader("x-frank-rpc-customer", auth.customer);
   const challengeResponse = await challengeRequest.send();
+  ensureActive();
   challengeResponse.assertOk();
   const challenge = challengeResponse.bodyJson as RelayRpcChallenge;
   validateChallenge(challenge, auth, bodyHash);
   const signature = await auth.signDigest(
     rpcAuthDigest(challenge, auth, bodyHash, "capability")
   );
+  ensureActive();
 
   const issueRequest = new FetchRequest(`${relayBaseUrl}/capability`);
   issueRequest.body = emptyBody;
@@ -155,6 +164,7 @@ export async function issueMonadRelayRpcCapability(
   issueRequest.setHeader("x-frank-rpc-token", challenge.token);
   issueRequest.setHeader("x-frank-rpc-signature", bareHex(signature));
   const issueResponse = await issueRequest.send();
+  ensureActive();
   issueResponse.assertOk();
   const capability = issueResponse.bodyJson as RelayRpcCapability;
   if (
@@ -191,10 +201,16 @@ export function createMonadRelayRpcConnection(
   connection.retryFunc = async () => false;
   let cachedCapability: MonadRelayRpcCapability | null = null;
   let capabilityInFlight: Promise<MonadRelayRpcCapability> | null = null;
+  let destroyed = false;
+  relayConnectionDestroy.set(connection, () => {
+    destroyed = true;
+    cachedCapability = null;
+  });
 
   const capabilityFor = async (
     timeout: number
   ): Promise<MonadRelayRpcCapability> => {
+    if (destroyed) throw new Error("relay capability request cancelled");
     if (
       cachedCapability !== null &&
       cachedCapability.expiresAtMs > Date.now() + 30_000
@@ -203,7 +219,12 @@ export function createMonadRelayRpcConnection(
     }
     if (capabilityInFlight !== null) return capabilityInFlight;
 
-    const issuance = issueMonadRelayRpcCapability(rpcUrl, auth, timeout);
+    const issuance = issueMonadRelayRpcCapability(
+      rpcUrl,
+      auth,
+      timeout,
+      () => destroyed
+    );
     capabilityInFlight = issuance;
     try {
       const capability = await issuance;
@@ -221,6 +242,7 @@ export function createMonadRelayRpcConnection(
     const body = request.body;
     if (body === null) return request;
     const capability = await capabilityFor(request.timeout);
+    if (destroyed) throw new Error("relay capability request cancelled");
     const authorized = new FetchRequest(capability.rpcUrl);
     authorized.body = body;
     authorized.timeout = request.timeout;
@@ -262,6 +284,7 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
   readonly expectedChainId: bigint;
   #verifiedNetwork: Network | null = null;
   #pendingDetectNetwork: Promise<Network> | null = null;
+  #destroyRelayConnection: (() => void) | null = null;
 
   constructor(
     url: string | FetchRequest,
@@ -288,6 +311,10 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
     });
 
     this.expectedChainId = chainId;
+    if (connection instanceof FetchRequest) {
+      this.#destroyRelayConnection =
+        relayConnectionDestroy.get(connection) ?? null;
+    }
   }
 
   override async _detectNetwork(): Promise<Network> {
@@ -334,6 +361,8 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
   }
 
   override destroy(): void {
+    this.#destroyRelayConnection?.();
+    this.#destroyRelayConnection = null;
     this.#verifiedNetwork = null;
     this.#pendingDetectNetwork = null;
     super.destroy();

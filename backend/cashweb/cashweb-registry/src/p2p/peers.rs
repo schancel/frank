@@ -22,6 +22,7 @@ use crate::{
 pub struct Peers {
     client: reqwest::Client,
     own_origin: String,
+    public_relay_urls: Vec<Url>,
     /// List of [`Peer`] instances connected to the registry server.
     pub peers: Vec<Peer>,
 }
@@ -29,9 +30,19 @@ pub struct Peers {
 impl Peers {
     /// Create [`Peers`] from a fixed list of peers.
     pub fn new(own_origin: String, peers: Vec<Peer>) -> Self {
+        Self::new_with_public_relays(own_origin, peers, Vec::new())
+    }
+
+    /// Create peers with a separate, explicit client-facing relay allowlist.
+    pub fn new_with_public_relays(
+        own_origin: String,
+        peers: Vec<Peer>,
+        public_relay_urls: Vec<Url>,
+    ) -> Self {
         Peers {
             client: reqwest::Client::new(),
             own_origin,
+            public_relay_urls,
             peers,
         }
     }
@@ -39,7 +50,7 @@ impl Peers {
     /// Public relay origins a client may independently try for reads or transaction broadcast.
     pub fn public_origins(&self) -> Vec<String> {
         let mut origins = std::iter::once(self.own_origin.parse::<Url>().ok())
-            .chain(self.peers.iter().map(|peer| Some(peer.url().clone())))
+            .chain(self.public_relay_urls.iter().cloned().map(Some))
             .flatten()
             .filter_map(public_http_origin)
             .collect::<Vec<_>>();
@@ -94,14 +105,19 @@ mod public_origin_tests {
     fn discovery_exposes_only_deduplicated_http_origins() {
         let peers = Peers::new(
             "https://owner:secret@example.test/private?token=hidden#fragment".to_string(),
+            vec![Peer::new(
+                "https://internal.service.local/sync".parse().unwrap(),
+            )],
+        );
+        let peers = Peers::new_with_public_relays(
+            peers.own_origin,
+            peers.peers,
             vec![
-                Peer::new(
-                    "https://other:password@peer.test:8443/internal?key=secret"
-                        .parse()
-                        .unwrap(),
-                ),
-                Peer::new("https://example.test/another-path".parse().unwrap()),
-                Peer::new("file:///private/relay".parse().unwrap()),
+                "https://other:password@peer.test:8443/internal?key=secret"
+                    .parse()
+                    .unwrap(),
+                "https://example.test/another-path".parse().unwrap(),
+                "file:///private/relay".parse().unwrap(),
             ],
         );
 
@@ -112,6 +128,10 @@ mod public_origin_tests {
                 "https://peer.test:8443".to_string(),
             ]
         );
+        assert!(!peers
+            .public_origins()
+            .iter()
+            .any(|origin| origin.contains("internal.service.local")));
     }
 }
 

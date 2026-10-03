@@ -120,6 +120,10 @@ pub struct RegistryConf {
     pub net: Net,
     /// Peers this registry it connected to.
     pub peers: Vec<url::Url>,
+    /// Explicit public relay origins advertised to unauthenticated clients. Operational peers are
+    /// never inferred to be public.
+    #[serde(default)]
+    pub public_relay_urls: Vec<url::Url>,
     /// How to initally download metadata from peers
     #[serde(default)]
     pub imd: InitialMetadataDownloadConf,
@@ -952,6 +956,7 @@ mod tests {
                         "https://example.com".parse()?,
                         "http://123.45.67.89".parse()?,
                     ],
+                    public_relay_urls: vec![],
                     imd: InitialMetadataDownloadConf {
                         num_sampled_peers: 3,
                         timeout_peer_ms: 1500,
@@ -1027,6 +1032,7 @@ mod tests {
                         "https://example.com".parse()?,
                         "http://123.45.67.89".parse()?,
                     ],
+                    public_relay_urls: vec![],
                     imd: InitialMetadataDownloadConf {
                         num_sampled_peers: 2,
                         timeout_peer_ms: 1500,

@@ -16,11 +16,11 @@ ENV CC=gcc-12
 ENV CXX=g++-12
 
 WORKDIR /build
-COPY backend/bitcoinsuite ./bitcoinsuite
-COPY backend/cashweb ./cashweb
+COPY backend/bitcoinsuite ./backend/bitcoinsuite
+COPY backend/cashweb ./backend/cashweb
 COPY docs ./docs
 
-WORKDIR /build/cashweb
+WORKDIR /build/backend/cashweb
 RUN cargo build --release -p cashwebd-exe
 
 # Slim runtime image: just the compiled binary, no Rust toolchain.
@@ -30,7 +30,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/cashweb/target/release/cashwebd-exe /usr/local/bin/cashwebd-exe
+COPY --from=builder /build/backend/cashweb/target/release/cashwebd-exe /usr/local/bin/cashwebd-exe
 
 # Config is static (see docker/cashwebd.toml's own header comment for why it needs no
 # templating/secrets) -- the genuinely-variable, secret-bearing config (the real Alchemy RPC URL,

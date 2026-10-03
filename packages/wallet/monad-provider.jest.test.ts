@@ -571,6 +571,81 @@ describe("MonadJsonRpcProvider (#534)", () => {
     expect(capabilityRequests).toBe(2);
   });
 
+  it("does not issue a capability or send RPC after provider destruction", async () => {
+    const customer = `0x${"12".repeat(20)}`;
+    let challengeRequests = 0;
+    let capabilityRequests = 0;
+    let rpcRequests = 0;
+    let challengeStartedResolve!: () => void;
+    const challengeStarted = new Promise<void>((resolve) => {
+      challengeStartedResolve = resolve;
+    });
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        if (req.url?.endsWith("/capability/auth")) {
+          challengeRequests++;
+          challengeStartedResolve();
+          setTimeout(() => {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({
+                epoch: "11".repeat(32),
+                nonce: "22".repeat(32),
+                expires_at_ms: Date.now() + 60_000,
+                token: "33".repeat(32),
+                signing_domain: "frank:rpc-http-auth:v1",
+                customer,
+                chain: "monad-testnet",
+                body_sha256: createHash("sha256").update(body).digest("hex"),
+                network_tag: Buffer.from("MONT").toString("hex"),
+              })
+            );
+          }, 50);
+          return;
+        }
+        if (req.url?.endsWith("/capability")) {
+          capabilityRequests++;
+        } else {
+          rpcRequests++;
+        }
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "unexpected request" }));
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        rpcUrl = `http://127.0.0.1:${
+          (server.address() as AddressInfo).port
+        }/chain-rpc/monad-testnet/rpc`;
+        resolve();
+      });
+    });
+
+    const provider = createMonadJsonRpcProvider({
+      rpcUrl,
+      relayAuth: {
+        chain: "monad-testnet",
+        customer,
+        networkTag: "MONT",
+        signDigest: () =>
+          Uint8Array.from([0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01]),
+      },
+    });
+    const sending = provider.send("eth_sendRawTransaction", ["0x01"]);
+    await challengeStarted;
+    provider.destroy();
+
+    await expect(sending).rejects.toThrow(/cancel|destroy/i);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    expect(challengeRequests).toBe(1);
+    expect(capabilityRequests).toBe(0);
+    expect(rpcRequests).toBe(0);
+  });
+
   it("recovers promptly when RPC becomes healthy", async () => {
     statusCode = 503;
     const provider = createMonadJsonRpcProvider({ rpcUrl });

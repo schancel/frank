@@ -1,0 +1,3250 @@
+{
+  "format": "PROPOSED-blackjack-items-v1",
+  "status": "proposal-only; expected typed18 verdicts are normative until #782, not executed active codec results",
+  "authority": {
+    "issue": 771,
+    "approvedArtifactSha256": "f58473a93079048315d85f3250fb45b0418614568de6edd40e4b17bbbb02b139",
+    "approval": "https://github.com/schancel/frank/issues/771#issuecomment-5972003520",
+    "auditBase": "7e666213eb2093adfccfbc23fef7343094b3adfb",
+    "materializationBase": "dc443d68d97b1c20135257b898c22a9db9206c7c"
+  },
+  "allocation": {
+    "typeId": 18,
+    "schemaVersion": 1,
+    "minReaderVersion": 1,
+    "maximumFrameBytes": 4096,
+    "closedPayload": true
+  },
+  "owners": {
+    "allocation": 771,
+    "activeCodec": 782,
+    "canonicalRuntime": 780,
+    "parent": 696,
+    "vendor": 784,
+    "raffle": 785,
+    "responsible": "@schancel / overnight coordinator"
+  },
+  "provenance": {
+    "frozen": "Nine review-authored bytes from the approved artifact, checked against the existing generic TypeScript encoder.",
+    "additional": "typescript means existing generic encodeFrame/encodeCanonical, not a typed blackjack implementation; review-authored malformed mutations name their source.",
+    "rustOrigin": "not claimed; independent Rust-origin and TS-origin typed facade cross-consumption required in #782 before activation",
+    "synthetic": "All hashes/seeds/amounts are public fixtures, not verified transactions, payment receipts or spending authority."
+  },
+  "contexts": {
+    "type18-reader1": {
+      "readerVersion": 1,
+      "supportedSchemas": [
+        {
+          "typeId": 18,
+          "schemaVersion": 1
+        }
+      ],
+      "opaqueRetentionAllowed": false,
+      "routeByteLimit": 8388617
+    },
+    "without-type18-reject": {
+      "readerVersion": 99,
+      "supportedSchemas": [
+        {
+          "typeId": 16,
+          "schemaVersion": 1
+        },
+        {
+          "typeId": 17,
+          "schemaVersion": 1
+        }
+      ],
+      "opaqueRetentionAllowed": false,
+      "routeByteLimit": 8388617
+    },
+    "without-type18-retain": {
+      "readerVersion": 99,
+      "supportedSchemas": [
+        {
+          "typeId": 16,
+          "schemaVersion": 1
+        },
+        {
+          "typeId": 17,
+          "schemaVersion": 1
+        }
+      ],
+      "opaqueRetentionAllowed": true,
+      "routeByteLimit": 8388617
+    }
+  },
+  "transcript": {
+    "serverSeed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "seedEncoding": "64 ASCII characters; never hex-decode for commitment or HMAC key",
+    "clientSeed": "0x202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "nonce": 0,
+    "commitmentHex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b",
+    "wrongBinarySeedCommitmentHex": "630dcd2966c4336691125448bbb25b4ff412a49c732db2c8abc1b8581bd710dd",
+    "deck": [
+      5, 3, 35, 25, 6, 7, 8, 28, 4, 19, 10, 29, 48, 31, 51, 16, 9, 22, 13, 23,
+      49, 12, 47, 50, 30, 1, 44, 42, 46, 33, 2, 26, 43, 14, 45, 20, 32, 34, 21,
+      41, 39, 15, 11, 37, 18, 24, 27, 38, 40, 0, 17, 36
+    ]
+  },
+  "frames": [
+    {
+      "id": "bet",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000036a400120101020103582ca30064626a2d310100025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "expected": {
+        "result": "accept"
+      },
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 0],
+          [
+            2,
+            {
+              "hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+            }
+          ]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "bj-1",
+        "action": "bet",
+        "wagerTxHash": "0x202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      "note": "Frozen accepted example; re-encoded with the existing generic TypeScript encoder without changing bytes.",
+      "frozen": true
+    },
+    {
+      "id": "deal",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000003da4001201010201035833a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b05820518230603",
+      "expected": {
+        "result": "accept"
+      },
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 1],
+          [
+            4,
+            {
+              "hex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b"
+            }
+          ],
+          [5, [5, 35]],
+          [6, 3]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "bj-1",
+        "action": "deal",
+        "serverSeedHash": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b",
+        "playerCards": [5, 35],
+        "dealerUpCard": 3
+      },
+      "note": "Frozen accepted example; re-encoded with the existing generic TypeScript encoder without changing bytes.",
+      "frozen": true
+    },
+    {
+      "id": "hit-request",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310102",
+      "expected": {
+        "result": "accept"
+      },
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 2]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "bj-1",
+        "action": "hit"
+      },
+      "note": "Frozen accepted example; re-encoded with the existing generic TypeScript encoder without changing bytes.",
+      "frozen": true
+    },
+    {
+      "id": "hit-response",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000018a4001201010201034fa30064626a2d310102058305182306",
+      "expected": {
+        "result": "accept"
+      },
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 2],
+          [5, [5, 35, 6]]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "bj-1",
+        "action": "hit",
+        "playerCards": [5, 35, 6]
+      },
+      "note": "Frozen accepted example; re-encoded with the existing generic TypeScript encoder without changing bytes.",
+      "frozen": true
+    },
+    {
+      "id": "stand",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310103",
+      "expected": {
+        "result": "accept"
+      },
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 3]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "bj-1",
+        "action": "stand"
+      },
+      "note": "Frozen accepted example; re-encoded with the existing generic TypeScript encoder without changing bytes.",
+      "frozen": true
+    },
+    {
+      "id": "double-request",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000036a400120101020103582ca30064626a2d3101040358204040404040404040404040404040404040404040404040404040404040404040",
+      "expected": {
+        "result": "accept"
+      },
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 4],
+          [
+            3,
+            {
+              "hex": "4040404040404040404040404040404040404040404040404040404040404040"
+            }
+          ]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "bj-1",
+        "action": "double",
+        "doubleWagerTxHash": "0x4040404040404040404040404040404040404040404040404040404040404040"
+      },
+      "note": "Frozen accepted example; re-encoded with the existing generic TypeScript encoder without changing bytes.",
+      "frozen": true
+    },
+    {
+      "id": "double-response",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000018a4001201010201034fa30064626a2d310104058305182306",
+      "expected": {
+        "result": "accept"
+      },
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 4],
+          [5, [5, 35, 6]]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "bj-1",
+        "action": "double",
+        "playerCards": [5, 35, 6]
+      },
+      "note": "Frozen accepted example; re-encoded with the existing generic TypeScript encoder without changing bytes.",
+      "frozen": true
+    },
+    {
+      "id": "reveal",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000005da4001201010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660901",
+      "expected": {
+        "result": "accept"
+      },
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 5],
+          [7, [3, 25]],
+          [
+            8,
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+          ],
+          [9, 1]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "bj-1",
+        "action": "reveal",
+        "dealerCards": [3, 25],
+        "serverSeed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "outcome": "dealer_win"
+      },
+      "note": "Frozen accepted example; re-encoded with the existing generic TypeScript encoder without changing bytes.",
+      "frozen": true
+    },
+    {
+      "id": "welcome",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000086a400120101020103587ca6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
+      "expected": {
+        "result": "accept"
+      },
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ],
+          [
+            12,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          [13, "Rules"]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "welcome",
+        "action": "welcome",
+        "minWagerWei": "1",
+        "maxWagerWei": "10",
+        "feeHintWei": "0",
+        "rules": "Rules"
+      },
+      "note": "Frozen accepted example; re-encoded with the existing generic TypeScript encoder without changing bytes.",
+      "frozen": true
+    },
+    {
+      "id": "welcome-neither",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000005ca4001201010201035852a4006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "welcome",
+        "action": "welcome",
+        "minWagerWei": "1",
+        "maxWagerWei": "10"
+      }
+    },
+    {
+      "id": "welcome-fee-only-zero",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000007fa4001201010201035875a5006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c58200000000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ],
+          [
+            12,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "welcome",
+        "action": "welcome",
+        "minWagerWei": "1",
+        "maxWagerWei": "10",
+        "feeHintWei": "0"
+      }
+    },
+    {
+      "id": "welcome-rules-only-empty",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000005ea4001201010201035854a5006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0d60",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ],
+          [13, ""]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "welcome",
+        "action": "welcome",
+        "minWagerWei": "1",
+        "maxWagerWei": "10",
+        "rules": ""
+      }
+    },
+    {
+      "id": "welcome-both-empty-rules",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000081a4001201010201035877a6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d60",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ],
+          [
+            12,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          [13, ""]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "welcome",
+        "action": "welcome",
+        "minWagerWei": "1",
+        "maxWagerWei": "10",
+        "feeHintWei": "0",
+        "rules": ""
+      }
+    },
+    {
+      "id": "reveal-outcome-player_win",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000005da4001201010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660900",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 5],
+          [7, [3, 25]],
+          [
+            8,
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+          ],
+          [9, 0]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "bj-1",
+        "action": "reveal",
+        "dealerCards": [3, 25],
+        "serverSeed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "outcome": "player_win"
+      },
+      "note": "Structural outcome case only; no claim that this outcome matches the synthetic hand."
+    },
+    {
+      "id": "reveal-outcome-push",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000005da4001201010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660902",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 5],
+          [7, [3, 25]],
+          [
+            8,
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+          ],
+          [9, 2]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "bj-1",
+        "action": "reveal",
+        "dealerCards": [3, 25],
+        "serverSeed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "outcome": "push"
+      },
+      "note": "Structural outcome case only; no claim that this outcome matches the synthetic hand."
+    },
+    {
+      "id": "reveal-outcome-player_blackjack",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000005da4001201010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660903",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 5],
+          [7, [3, 25]],
+          [
+            8,
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+          ],
+          [9, 3]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "bj-1",
+        "action": "reveal",
+        "dealerCards": [3, 25],
+        "serverSeed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "outcome": "player_blackjack"
+      },
+      "note": "Structural outcome case only; no claim that this outcome matches the synthetic hand."
+    },
+    {
+      "id": "game-id-128-ascii",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000090a4001201010201035886a200788067676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767670103",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [
+            0,
+            "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+          ],
+          [1, 3]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+        "action": "stand"
+      }
+    },
+    {
+      "id": "game-id-128-utf8",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000090a4001201010201035886a2007880c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a90103",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [
+            0,
+            "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+          ],
+          [1, 3]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+        "action": "stand"
+      }
+    },
+    {
+      "id": "game-id-one-byte-space",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000000fa40012010102010346a20061200103",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, " "],
+          [1, 3]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": " ",
+        "action": "stand"
+      }
+    },
+    {
+      "id": "game-id-composed",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000010a40012010102010347a20062c3a90103",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "é"],
+          [1, 3]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "é",
+        "action": "stand"
+      }
+    },
+    {
+      "id": "game-id-decomposed",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000011a40012010102010348a2006365cc810103",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "é"],
+          [1, 3]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "é",
+        "action": "stand"
+      }
+    },
+    {
+      "id": "rules-400-units-1200-bytes",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000534a400120101020103590529a6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d7904b0e4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ad",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ],
+          [
+            12,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          [
+            13,
+            "中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中"
+          ]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "welcome",
+        "action": "welcome",
+        "minWagerWei": "1",
+        "maxWagerWei": "10",
+        "feeHintWei": "0",
+        "rules": "中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中"
+      }
+    },
+    {
+      "id": "rules-400-units-200-astral",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b01000003a4a400120101020103590399a6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d790320f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ],
+          [
+            12,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          [
+            13,
+            "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+          ]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "welcome",
+        "action": "welcome",
+        "minWagerWei": "1",
+        "maxWagerWei": "10",
+        "feeHintWei": "0",
+        "rules": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+      }
+    },
+    {
+      "id": "hint-max-40-digits",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000086a400120101020103587ca6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b58200000000000000000000000000000001d6329f1c35ca4bfabb9f560ffffffffff0c58200000000000000000000000000000001d6329f1c35ca4bfabb9f560ffffffffff0d6552756c6573",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "0000000000000000000000000000001d6329f1c35ca4bfabb9f560ffffffffff"
+            }
+          ],
+          [
+            12,
+            {
+              "hex": "0000000000000000000000000000001d6329f1c35ca4bfabb9f560ffffffffff"
+            }
+          ],
+          [13, "Rules"]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "welcome",
+        "action": "welcome",
+        "minWagerWei": "1",
+        "maxWagerWei": "9999999999999999999999999999999999999999",
+        "feeHintWei": "9999999999999999999999999999999999999999",
+        "rules": "Rules"
+      }
+    },
+    {
+      "id": "hint-above-safe-integer",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000086a400120101020103587ca6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000200000000000010b582000000000000000000000000000000000000000000000000080000000000000000c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000020000000000001"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "0000000000000000000000000000000000000000000000008000000000000000"
+            }
+          ],
+          [
+            12,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          [13, "Rules"]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "welcome",
+        "action": "welcome",
+        "minWagerWei": "9007199254740993",
+        "maxWagerWei": "9223372036854775808",
+        "feeHintWei": "0",
+        "rules": "Rules"
+      }
+    },
+    {
+      "id": "hit-52-distinct-cards",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000066a400120101020103585ca30064626a2d310102059834000102030405060708090a0b0c0d0e0f101112131415161718181819181a181b181c181d181e181f1820182118221823182418251826182718281829182a182b182c182d182e182f1830183118321833",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 2],
+          [
+            5,
+            [
+              0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+              19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+              35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51
+            ]
+          ]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "bj-1",
+        "action": "hit",
+        "playerCards": [
+          0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+          20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
+          37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51
+        ]
+      },
+      "note": "Codec shape boundary, not a reachable blackjack hand claim."
+    },
+    {
+      "id": "bet-missing-action",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000034a400120101020103582aa20064626a2d31025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [
+            2,
+            {
+              "hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "deal-missing-action",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000003ba4001201010201035831a40064626a2d310458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b05820518230603",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [
+            4,
+            {
+              "hex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b"
+            }
+          ],
+          [5, [5, 35]],
+          [6, 3]
+        ]
+      }
+    },
+    {
+      "id": "hit-request-missing-action",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000010a40012010102010347a10064626a2d31",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [[0, "bj-1"]]
+      }
+    },
+    {
+      "id": "hit-response-missing-action",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000016a4001201010201034da20064626a2d31058305182306",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [5, [5, 35, 6]]
+        ]
+      }
+    },
+    {
+      "id": "stand-missing-action",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000010a40012010102010347a10064626a2d31",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [[0, "bj-1"]]
+      }
+    },
+    {
+      "id": "double-request-missing-action",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000034a400120101020103582aa20064626a2d310358204040404040404040404040404040404040404040404040404040404040404040",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [
+            3,
+            {
+              "hex": "4040404040404040404040404040404040404040404040404040404040404040"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "double-response-missing-action",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000016a4001201010201034da20064626a2d31058305182306",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [5, [5, 35, 6]]
+        ]
+      }
+    },
+    {
+      "id": "reveal-missing-action",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000005ba4001201010201035851a40064626a2d310782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660901",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [7, [3, 25]],
+          [
+            8,
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+          ],
+          [9, 1]
+        ]
+      }
+    },
+    {
+      "id": "welcome-missing-action",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000084a400120101020103587aa5006777656c636f6d650a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ],
+          [
+            12,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          [13, "Rules"]
+        ]
+      }
+    },
+    {
+      "id": "bet-missing-required-2",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310100",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 0]
+        ]
+      }
+    },
+    {
+      "id": "deal-missing-required-4",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000019a40012010102010350a40064626a2d31010105820518230603",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 1],
+          [5, [5, 35]],
+          [6, 3]
+        ]
+      }
+    },
+    {
+      "id": "double-request-missing-required-3",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310104",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 4]
+        ]
+      }
+    },
+    {
+      "id": "reveal-missing-required-8",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000019a40012010102010350a40064626a2d31010507820318190901",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 5],
+          [7, [3, 25]],
+          [9, 1]
+        ]
+      }
+    },
+    {
+      "id": "welcome-missing-required-10",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000063a4001201010201035859a5006777656c636f6d6501060b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ],
+          [
+            12,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          [13, "Rules"]
+        ]
+      }
+    },
+    {
+      "id": "closed-extra-key14",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000014a4001201010201034ba30064626a2d3101030e00",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 3],
+          [14, 0]
+        ]
+      }
+    },
+    {
+      "id": "future-closed-extra-key14",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000014a4001201020201034ba30064626a2d3101030e00",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 3],
+          [14, 0]
+        ]
+      }
+    },
+    {
+      "id": "double-both-request-response",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000003ca4001201010201035832a40064626a2d3101040358204040404040404040404040404040404040404040404040404040404040404040058305182306",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 4],
+          [
+            3,
+            {
+              "hex": "4040404040404040404040404040404040404040404040404040404040404040"
+            }
+          ],
+          [5, [5, 35, 6]]
+        ]
+      }
+    },
+    {
+      "id": "double-neither-request-response",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310104",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 4]
+        ]
+      }
+    },
+    {
+      "id": "stand-forbidden-dealer-cards",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000017a4001201010201034ea30064626a2d3101030782031819",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 3],
+          [7, [3, 25]]
+        ]
+      }
+    },
+    {
+      "id": "welcome-null-fee",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000065a400120101020103585ba6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0cf60d6552756c6573",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ],
+          [12, null],
+          [13, "Rules"]
+        ]
+      }
+    },
+    {
+      "id": "unknown-action7",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310107",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 7]
+        ]
+      }
+    },
+    {
+      "id": "action-text",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000017a4001201010201034ea20064626a2d3101657374616e64",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, "stand"]
+        ]
+      }
+    },
+    {
+      "id": "action-negative",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310120",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, -1]
+        ]
+      }
+    },
+    {
+      "id": "outcome4",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000005da4001201010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660904",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 5],
+          [7, [3, 25]],
+          [
+            8,
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+          ],
+          [9, 4]
+        ]
+      }
+    },
+    {
+      "id": "empty-game-id",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000000ea40012010102010345a200600103",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, ""],
+          [1, 3]
+        ]
+      }
+    },
+    {
+      "id": "game-id129",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000091a4001201010201035887a20078816767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767670103",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [
+            0,
+            "ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+          ],
+          [1, 3]
+        ]
+      }
+    },
+    {
+      "id": "hash31",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000035a400120101020103582ba30064626a2d31010002581f00000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 0],
+          [
+            2,
+            {
+              "hex": "00000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "hash33",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000037a400120101020103582da30064626a2d310100025821000000000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 0],
+          [
+            2,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "hash-text-not-bytes",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000058a400120101020103584ea30064626a2d310100027842307832303231323232333234323532363237323832393261326232633264326532663330333133323333333433353336333733383339336133623363336433653366",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 0],
+          [
+            2,
+            "0x202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "deal-one-card",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000003ba4001201010201035831a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b0581050603",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 1],
+          [
+            4,
+            {
+              "hex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b"
+            }
+          ],
+          [5, [5]],
+          [6, 3]
+        ]
+      }
+    },
+    {
+      "id": "hit-two-cards-response",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000017a4001201010201034ea30064626a2d3101020582051823",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 2],
+          [5, [5, 35]]
+        ]
+      }
+    },
+    {
+      "id": "hit53",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000067a400120101020103585da30064626a2d310102059835000102030405060708090a0b0c0d0e0f101112131415161718181819181a181b181c181d181e181f1820182118221823182418251826182718281829182a182b182c182d182e182f183018311832183300",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 2],
+          [
+            5,
+            [
+              0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+              19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+              35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+              51, 0
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "id": "double-four-cards",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000019a40012010102010350a30064626a2d31010405840518230607",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 4],
+          [5, [5, 35, 6, 7]]
+        ]
+      }
+    },
+    {
+      "id": "card52",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000003ea4001201010201035834a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b0582051823061834",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 1],
+          [
+            4,
+            {
+              "hex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b"
+            }
+          ],
+          [5, [5, 35]],
+          [6, 52]
+        ]
+      }
+    },
+    {
+      "id": "card-negative",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000003da4001201010201035833a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b05820518230620",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 1],
+          [
+            4,
+            {
+              "hex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b"
+            }
+          ],
+          [5, [5, 35]],
+          [6, -1]
+        ]
+      }
+    },
+    {
+      "id": "rules401-bmp",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000215a40012010102010359020aa6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d7901916161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ],
+          [
+            12,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          [
+            13,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "rules401-utf16-astral",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b01000003a5a40012010102010359039aa6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d790321f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f988061",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ],
+          [
+            12,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          [
+            13,
+            "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀a"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "seed-binary",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000003da4001201010201035833a50064626a2d3101050782031819085820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0901",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 5],
+          [7, [3, 25]],
+          [
+            8,
+            {
+              "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+            }
+          ],
+          [9, 1]
+        ]
+      }
+    },
+    {
+      "id": "seed-uppercase",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000005da4001201010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930413042304330443045304631303131313231333134313531363137313831393141314231433144314531460901",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 5],
+          [7, [3, 25]],
+          [
+            8,
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+          ],
+          [9, 1]
+        ]
+      }
+    },
+    {
+      "id": "seed63",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000005ca4001201010201035852a50064626a2d310105078203181908783f3030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660901",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 5],
+          [7, [3, 25]],
+          [
+            8,
+            "00102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+          ],
+          [9, 1]
+        ]
+      }
+    },
+    {
+      "id": "seed-nonhex",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000005da4001201010201035853a50064626a2d31010507820318190878407a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a0901",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 5],
+          [7, [3, 25]],
+          [
+            8,
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+          ],
+          [9, 1]
+        ]
+      }
+    },
+    {
+      "id": "hand-reserved-welcome-id",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000015a4001201010201034ca2006777656c636f6d650103",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 3]
+        ]
+      }
+    },
+    {
+      "id": "welcome-wrong-game-id",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000083a4001201010201035879a60064626a2d3101060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ],
+          [
+            12,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          [13, "Rules"]
+        ]
+      }
+    },
+    {
+      "id": "duplicate-player-cards",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000003ca4001201010201035832a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b058205050603",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 1],
+          [
+            4,
+            {
+              "hex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b"
+            }
+          ],
+          [5, [5, 5]],
+          [6, 3]
+        ]
+      }
+    },
+    {
+      "id": "duplicate-dealer-up-card",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000003da4001201010201035833a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b05820518230605",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 1],
+          [
+            4,
+            {
+              "hex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b"
+            }
+          ],
+          [5, [5, 35]],
+          [6, 5]
+        ]
+      }
+    },
+    {
+      "id": "duplicate-reveal-cards",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000005ca4001201010201035852a50064626a2d31010507820303087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660901",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 5],
+          [7, [3, 3]],
+          [
+            8,
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+          ],
+          [9, 1]
+        ]
+      }
+    },
+    {
+      "id": "min-zero",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000086a400120101020103587ca6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000000b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ],
+          [
+            12,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          [13, "Rules"]
+        ]
+      }
+    },
+    {
+      "id": "min-greater-than-max",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000086a400120101020103587ca6006777656c636f6d6501060a5820000000000000000000000000000000000000000000000000000000000000000b0b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000b"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ],
+          [
+            12,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ],
+          [13, "Rules"]
+        ]
+      }
+    },
+    {
+      "id": "hint41-numeric-digits",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000086a400120101020103587ca6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c58200000000000000000000000000000001d6329f1c35ca4bfabb9f56100000000000d6552756c6573",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "welcome"],
+          [1, 6],
+          [
+            10,
+            {
+              "hex": "0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          ],
+          [
+            11,
+            {
+              "hex": "000000000000000000000000000000000000000000000000000000000000000a"
+            }
+          ],
+          [
+            12,
+            {
+              "hex": "0000000000000000000000000000001d6329f1c35ca4bfabb9f5610000000000"
+            }
+          ],
+          [13, "Rules"]
+        ]
+      }
+    },
+    {
+      "id": "unknown-root-reject",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "without-type18-reject",
+      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310103",
+      "expected": {
+        "result": "reject",
+        "stage": "7",
+        "category": "unsupported"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 3]
+        ]
+      }
+    },
+    {
+      "id": "unknown-root-retain",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "without-type18-retain",
+      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310103",
+      "expected": {
+        "result": "retain",
+        "reason": "unknown-type"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 3]
+        ]
+      }
+    },
+    {
+      "id": "higher-min-reader-reject",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000012a40012010202020349a20064626a2d310103",
+      "expected": {
+        "result": "reject",
+        "stage": "7",
+        "category": "unsupported"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 3]
+        ]
+      }
+    },
+    {
+      "id": "future-compatible-same-shape",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000012a40012010202010349a20064626a2d310103",
+      "expected": {
+        "result": "accept"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [0, "bj-1"],
+          [1, 3]
+        ]
+      },
+      "application": {
+        "type": "blackjack-move",
+        "gameId": "bj-1",
+        "action": "stand"
+      }
+    },
+    {
+      "id": "duplicate-key",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000014a4001201010201034ba30064626a2d3101030103",
+      "mutationOf": "stand",
+      "payloadHex": "a30064626a2d3101030103",
+      "expected": {
+        "result": "reject",
+        "stage": "7",
+        "category": "noncanonical"
+      }
+    },
+    {
+      "id": "out-of-order-key",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000012a40012010102010349a201030064626a2d31",
+      "mutationOf": "stand",
+      "payloadHex": "a201030064626a2d31",
+      "expected": {
+        "result": "reject",
+        "stage": "7",
+        "category": "noncanonical"
+      }
+    },
+    {
+      "id": "nonshortest-action",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000013a4001201010201034aa20064626a2d31011803",
+      "mutationOf": "stand",
+      "payloadHex": "a20064626a2d31011803",
+      "expected": {
+        "result": "reject",
+        "stage": "7",
+        "category": "noncanonical"
+      }
+    },
+    {
+      "id": "indefinite-map",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000013a4001201010201034abf0064626a2d310103ff",
+      "mutationOf": "stand",
+      "payloadHex": "bf0064626a2d310103ff",
+      "expected": {
+        "result": "reject",
+        "stage": "7",
+        "category": "noncanonical"
+      }
+    },
+    {
+      "id": "invalid-utf8",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b010000000fa40012010102010346a20061ff0103",
+      "mutationOf": "stand",
+      "payloadHex": "a20061ff0103",
+      "expected": {
+        "result": "reject",
+        "stage": "7",
+        "category": "malformed"
+      }
+    },
+    {
+      "id": "float-action",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000014a4001201010201034ba20064626a2d3101f93c00",
+      "mutationOf": "stand",
+      "payloadHex": "a20064626a2d3101f93c00",
+      "expected": {
+        "result": "reject",
+        "stage": "7",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "tag-action",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000013a4001201010201034aa20064626a2d3101c003",
+      "mutationOf": "stand",
+      "payloadHex": "a20064626a2d3101c003",
+      "expected": {
+        "result": "reject",
+        "stage": "7",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "trailing-payload",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000013a4001201010201034aa20064626a2d31010300",
+      "mutationOf": "stand",
+      "payloadHex": "a20064626a2d31010300",
+      "expected": {
+        "result": "reject",
+        "stage": "7",
+        "category": "malformed"
+      }
+    },
+    {
+      "id": "truncated-payload",
+      "origin": "review-authored",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000011a40012010102010348a20064626a2d3101",
+      "mutationOf": "stand",
+      "payloadHex": "a20064626a2d3101",
+      "expected": {
+        "result": "reject",
+        "stage": "7",
+        "category": "malformed"
+      }
+    },
+    {
+      "id": "minimum-exceeds-schema",
+      "origin": "typescript",
+      "encoder": "generic wrapFrame/encodeCanonical; deliberately invalid envelope",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000012a40012010102020349a20064626a2d310103",
+      "expected": {
+        "result": "reject",
+        "stage": "6",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "trailing-frame",
+      "origin": "review-authored",
+      "mutationOf": "stand",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d31010300",
+      "expected": {
+        "result": "reject",
+        "stage": "4",
+        "category": "frame"
+      }
+    }
+  ],
+  "writerInputs": [
+    {
+      "id": "wagerTxHash-lower",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "wagerTxHash",
+      "input": "0xabababababababababababababababababababababababababababababababab",
+      "expected": {
+        "result": "accept",
+        "projected": "0xabababababababababababababababababababababababababababababababab",
+        "bytesHex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "wagerTxHash-upper",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "wagerTxHash",
+      "input": "0xABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+      "expected": {
+        "result": "accept",
+        "projected": "0xabababababababababababababababababababababababababababababababab",
+        "bytesHex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "wagerTxHash-mixed",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "wagerTxHash",
+      "input": "0xaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaB",
+      "expected": {
+        "result": "accept",
+        "projected": "0xabababababababababababababababababababababababababababababababab",
+        "bytesHex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "wagerTxHash-reject-bare",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "wagerTxHash",
+      "input": "abababababababababababababababababababababababababababababababab",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "wagerTxHash-reject-upper-prefix",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "wagerTxHash",
+      "input": "0Xabababababababababababababababababababababababababababababababab",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "wagerTxHash-reject-63-digits",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "wagerTxHash",
+      "input": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "wagerTxHash-reject-65-digits",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "wagerTxHash",
+      "input": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "wagerTxHash-reject-nonhex",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "wagerTxHash",
+      "input": "0xzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "wagerTxHash-reject-space",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "wagerTxHash",
+      "input": " 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "wagerTxHash-reject-newline",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "wagerTxHash",
+      "input": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "wagerTxHash-reject-number",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "wagerTxHash",
+      "input": 18,
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "wagerTxHash-reject-null",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "wagerTxHash",
+      "input": null,
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "doubleWagerTxHash-lower",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "doubleWagerTxHash",
+      "input": "0xabababababababababababababababababababababababababababababababab",
+      "expected": {
+        "result": "accept",
+        "projected": "0xabababababababababababababababababababababababababababababababab",
+        "bytesHex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "doubleWagerTxHash-upper",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "doubleWagerTxHash",
+      "input": "0xABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+      "expected": {
+        "result": "accept",
+        "projected": "0xabababababababababababababababababababababababababababababababab",
+        "bytesHex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "doubleWagerTxHash-mixed",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "doubleWagerTxHash",
+      "input": "0xaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaB",
+      "expected": {
+        "result": "accept",
+        "projected": "0xabababababababababababababababababababababababababababababababab",
+        "bytesHex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "doubleWagerTxHash-reject-bare",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "doubleWagerTxHash",
+      "input": "abababababababababababababababababababababababababababababababab",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "doubleWagerTxHash-reject-upper-prefix",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "doubleWagerTxHash",
+      "input": "0Xabababababababababababababababababababababababababababababababab",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "doubleWagerTxHash-reject-63-digits",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "doubleWagerTxHash",
+      "input": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "doubleWagerTxHash-reject-65-digits",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "doubleWagerTxHash",
+      "input": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "doubleWagerTxHash-reject-nonhex",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "doubleWagerTxHash",
+      "input": "0xzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "doubleWagerTxHash-reject-space",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "doubleWagerTxHash",
+      "input": " 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "doubleWagerTxHash-reject-newline",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "doubleWagerTxHash",
+      "input": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "doubleWagerTxHash-reject-number",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "doubleWagerTxHash",
+      "input": 18,
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "doubleWagerTxHash-reject-null",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "doubleWagerTxHash",
+      "input": null,
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "commitment-lower",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "serverSeedHash",
+      "input": "abababababababababababababababababababababababababababababababab",
+      "expected": {
+        "result": "accept",
+        "projected": "abababababababababababababababababababababababababababababababab",
+        "bytesHex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "commitment-reject-upper",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "serverSeedHash",
+      "input": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "commitment-reject-mixed",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "serverSeedHash",
+      "input": "aBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaB",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "commitment-reject-prefix",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "serverSeedHash",
+      "input": "0xabababababababababababababababababababababababababababababababab",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "commitment-reject-upper-prefix",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "serverSeedHash",
+      "input": "0Xabababababababababababababababababababababababababababababababab",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "commitment-reject-63-digits",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "serverSeedHash",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "commitment-reject-65-digits",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "serverSeedHash",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "commitment-reject-nonhex",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "serverSeedHash",
+      "input": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "commitment-reject-space",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "serverSeedHash",
+      "input": " aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "commitment-reject-newline",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "serverSeedHash",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "commitment-reject-number",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "serverSeedHash",
+      "input": 18,
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "commitment-reject-null",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "serverSeedHash",
+      "input": null,
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "minWagerWei-40-leading-zeroes",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "minWagerWei",
+      "input": "0000000000000000000000000000000000000001",
+      "expected": {
+        "result": "accept",
+        "projected": "1",
+        "bytesHex": "0000000000000000000000000000000000000000000000000000000000000001"
+      }
+    },
+    {
+      "id": "minWagerWei-reject-41-leading-zeroes",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "minWagerWei",
+      "input": "00000000000000000000000000000000000000001",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "minWagerWei-reject-empty",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "minWagerWei",
+      "input": "",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "minWagerWei-reject-plus",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "minWagerWei",
+      "input": "+1",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "minWagerWei-reject-negative",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "minWagerWei",
+      "input": "-1",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "minWagerWei-reject-space",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "minWagerWei",
+      "input": " 1",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "minWagerWei-reject-newline",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "minWagerWei",
+      "input": "1\n",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "minWagerWei-reject-decimal",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "minWagerWei",
+      "input": "1.0",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "minWagerWei-reject-exponent",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "minWagerWei",
+      "input": "1e3",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "minWagerWei-reject-hex",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "minWagerWei",
+      "input": "0x1",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "minWagerWei-reject-unicode",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "minWagerWei",
+      "input": "１",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "minWagerWei-reject-number",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "minWagerWei",
+      "input": 1,
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "minWagerWei-reject-null",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "minWagerWei",
+      "input": null,
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "maxWagerWei-40-leading-zeroes",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "maxWagerWei",
+      "input": "0000000000000000000000000000000000000001",
+      "expected": {
+        "result": "accept",
+        "projected": "1",
+        "bytesHex": "0000000000000000000000000000000000000000000000000000000000000001"
+      }
+    },
+    {
+      "id": "maxWagerWei-reject-41-leading-zeroes",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "maxWagerWei",
+      "input": "00000000000000000000000000000000000000001",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "maxWagerWei-reject-empty",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "maxWagerWei",
+      "input": "",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "maxWagerWei-reject-plus",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "maxWagerWei",
+      "input": "+1",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "maxWagerWei-reject-negative",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "maxWagerWei",
+      "input": "-1",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "maxWagerWei-reject-space",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "maxWagerWei",
+      "input": " 1",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "maxWagerWei-reject-newline",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "maxWagerWei",
+      "input": "1\n",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "maxWagerWei-reject-decimal",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "maxWagerWei",
+      "input": "1.0",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "maxWagerWei-reject-exponent",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "maxWagerWei",
+      "input": "1e3",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "maxWagerWei-reject-hex",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "maxWagerWei",
+      "input": "0x1",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "maxWagerWei-reject-unicode",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "maxWagerWei",
+      "input": "１",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "maxWagerWei-reject-number",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "maxWagerWei",
+      "input": 1,
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "maxWagerWei-reject-null",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "maxWagerWei",
+      "input": null,
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "feeHintWei-40-leading-zeroes",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "feeHintWei",
+      "input": "0000000000000000000000000000000000000001",
+      "expected": {
+        "result": "accept",
+        "projected": "1",
+        "bytesHex": "0000000000000000000000000000000000000000000000000000000000000001"
+      }
+    },
+    {
+      "id": "feeHintWei-reject-41-leading-zeroes",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "feeHintWei",
+      "input": "00000000000000000000000000000000000000001",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "feeHintWei-reject-empty",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "feeHintWei",
+      "input": "",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "feeHintWei-reject-plus",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "feeHintWei",
+      "input": "+1",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "feeHintWei-reject-negative",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "feeHintWei",
+      "input": "-1",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "feeHintWei-reject-space",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "feeHintWei",
+      "input": " 1",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "feeHintWei-reject-newline",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "feeHintWei",
+      "input": "1\n",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "feeHintWei-reject-decimal",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "feeHintWei",
+      "input": "1.0",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "feeHintWei-reject-exponent",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "feeHintWei",
+      "input": "1e3",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "feeHintWei-reject-hex",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "feeHintWei",
+      "input": "0x1",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "feeHintWei-reject-unicode",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "feeHintWei",
+      "input": "１",
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "feeHintWei-reject-number",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "feeHintWei",
+      "input": 1,
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "feeHintWei-reject-null",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "feeHintWei",
+      "input": null,
+      "expected": {
+        "result": "reject"
+      }
+    },
+    {
+      "id": "fee40-zeroes",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "feeHintWei",
+      "input": "0000000000000000000000000000000000000000",
+      "expected": {
+        "result": "accept",
+        "projected": "0",
+        "bytesHex": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "id": "fee41-zeroes",
+      "origin": "review-authored",
+      "boundary": "application-to-wire-before-conversion",
+      "field": "feeHintWei",
+      "input": "00000000000000000000000000000000000000000",
+      "expected": {
+        "result": "reject"
+      }
+    }
+  ],
+  "requiredFollowupProof": [
+    {
+      "owner": 782,
+      "boundary": "active-codec",
+      "obligation": "Run the full README section6 matrix through independent TS/Rust public facades, including every required/forbidden key and all supported version/retention contexts; the finite cases here do not replace quantified variants."
+    },
+    {
+      "owner": 782,
+      "boundary": "shared-traversal",
+      "obligation": "Open nested type16/type18 with cumulative item/container/depth budgets, 256/257 slots and 4096 frame limit; exact open-item/required-child mismatch/retention rules, preserving welcome18 then text17 order."
+    },
+    {
+      "owner": 782,
+      "boundary": "independent-provenance",
+      "obligation": "Add genuine independently encoded TS-origin and Rust-origin nontrivial typed vectors and consume each in both languages; preserve the frozen nine bytes."
+    },
+    {
+      "owner": 782,
+      "boundary": "redundant-rules-cap",
+      "obligation": "Retain1200 UTF8 cap and document that400 UTF16 units already imply it; do not claim independent byte-cap guard-mutation coverage."
+    },
+    {
+      "owner": 780,
+      "boundary": "application-writer",
+      "obligation": "Exercise writerInputs through the actual message-item adapter before funding/serialization; no trimming, permissive hex parse or numeric conversion before grammar and length validation."
+    },
+    {
+      "owner": 780,
+      "boundary": "authenticated-runtime",
+      "obligation": "Wrong game/chat/sender/recipient/network, duplicate bet/double, consumed/refund ownership, exact textual fairness transcript and existing payout recovery are runtime checks, not codec verdicts."
+    },
+    {
+      "owner": 780,
+      "boundary": "funded-demo",
+      "obligation": "Actual typed UI-created hand, greeting order, reply/restart/two-relay evidence and predecessor deletion under separately authorized disposable-chain execution; no mock/proposal claim of full #696 completion."
+    }
+  ]
+}

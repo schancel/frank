@@ -1,7 +1,7 @@
 {
   "name": "@frank/codec",
   "version": "0.0.1",
-  "description": "Browser-safe TypeScript reference codec for Frank deterministic CBOR v1 (docs/protocol/cbor): FRNK frame encode/parse, restricted canonical-CBOR encode/validate, section 9 stages 1-10 (stage 10.6: algorithm-1 directory signatures), T1/T1a content hashes. Prototype for #131/#183; no production path uses it.",
+  "description": "Browser-safe TypeScript reference codec for Frank deterministic CBOR v1 (docs/protocol/cbor): FRNK frame encode/parse, restricted canonical-CBOR encode/validate, section 9 stages 1-10 (stage 10.6: algorithm-1 directory signatures), T1/T1a content hashes. Used by explicit CBOR registration and opt-in topics; other record families are not wired to normal production paths.",
   "license": "MIT",
   "private": true,
   "sideEffects": false,

@@ -1,5 +1,12 @@
 # Frank public federation, directory, and profile plan
 
+> [!IMPORTANT]
+> [`CASHWEB-PROTOCOL-SPEC.md`](CASHWEB-PROTOCOL-SPEC.md) supersedes this document for human protocol
+> semantics and wire allocation. The protobuf messages, digest recipes, routes, record layouts and
+> other exact-wire sketches below are historical transition inputs and are non-wire; they MUST NOT
+> allocate or drive target implementation. The directory/profile/pubsub/mailbox topology and
+> public/private reachability constraints remain required inputs subordinate to that specification.
+
 Status: reviewed architecture plan; production protobuf and storage migrations require the
 ticketed, staged implementation described below.
 

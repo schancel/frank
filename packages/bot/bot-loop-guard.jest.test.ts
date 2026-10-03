@@ -52,15 +52,63 @@ describe('BotLoopGuard.peerBlockReason', () => {
     expect(await guard.peerBlockReason(HUMAN)).toBeUndefined()
   })
 
-  it('fails closed when the profile lookup errors', async () => {
-    const guard = guardFor(A, {
-      lookupIsBot: async () => {
-        throw new Error('relay down')
-      },
-    })
-    jest.spyOn(console, 'warn').mockImplementation(() => undefined)
-    expect(await guard.peerBlockReason(HUMAN)).toBe('lookup-failed')
-  })
+  it.each(['Error', 'object'])(
+    'fails closed with only a safe diagnostic when lookup rejects with an %s',
+    async rejectionKind => {
+      const peer = `0x${'711abcde'.repeat(5)}`
+      const secret = 'LOOKUP_BODY_PROMPT_REASONING_KEY_TOKEN_SENTINEL_711'
+      const rejection =
+        rejectionKind === 'Error'
+          ? new Error(secret)
+          : { message: secret, response: { body: secret } }
+      const lookup = jest
+        .fn()
+        .mockRejectedValueOnce(rejection)
+        .mockResolvedValue(false)
+      const guard = guardFor(A, { lookupIsBot: lookup })
+      const output = (
+        [
+          'log',
+          'info',
+          'warn',
+          'error',
+          'debug',
+          'trace',
+          'dir',
+          'dirxml',
+          'table',
+          'assert',
+          'count',
+          'countReset',
+          'group',
+          'groupCollapsed',
+          'groupEnd',
+          'time',
+          'timeLog',
+          'timeEnd',
+          'clear',
+        ] as const
+      ).map(method =>
+        jest.spyOn(console, method).mockImplementation(() => undefined),
+      )
+      try {
+        expect(await guard.peerBlockReason(peer)).toBe('lookup-failed')
+        expect(lookup).toHaveBeenCalledWith(peer)
+        const calls = output.flatMap(spy => spy.mock.calls)
+        expect(JSON.stringify(calls)).not.toContain(peer)
+        expect(JSON.stringify(calls)).not.toContain(secret)
+        expect(calls).toEqual([
+          ['[loop-guard] profile lookup failed -- treating as automated'],
+        ])
+        expect(console.warn).toHaveBeenCalledTimes(1)
+        // A failed lookup is not cached; the next message can recover normally.
+        expect(await guard.peerBlockReason(peer)).toBeUndefined()
+        expect(lookup).toHaveBeenCalledTimes(2)
+      } finally {
+        output.forEach(spy => spy.mockRestore())
+      }
+    },
+  )
 
   it('caches the lookup for a while, then re-checks', async () => {
     let now = 1_000

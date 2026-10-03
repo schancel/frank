@@ -122,10 +122,9 @@ export class BotLoopGuard {
     let isBot: boolean
     try {
       isBot = await this.lookupIsBot(address)
-    } catch (err) {
+    } catch {
       console.warn(
-        `[loop-guard] profile lookup for ${address} failed -- treating as automated:`,
-        err instanceof Error ? err.message : err,
+        '[loop-guard] profile lookup failed -- treating as automated',
       )
       return 'lookup-failed'
     }

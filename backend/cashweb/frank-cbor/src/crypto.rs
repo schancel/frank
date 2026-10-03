@@ -25,7 +25,7 @@ fn scalar_be(bytes: &[u8]) -> Result<[u8; 32], UsageError> {
         return Err(usage("negative DER integer"));
     }
     if bytes.len() > 1 && bytes[0] == 0 && bytes[1] & 0x80 == 0 {
-        return Err(usage("non-minimal DER integer"));
+        // MUTANT d2: non-minimal DER integer guard removed
     }
     let mut out = [0u8; 32];
     if bytes.len() == 33 {

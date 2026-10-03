@@ -26,6 +26,8 @@ const FILE = resolve(
 const NETWORK = 'monad-testnet'
 const NOW = 1700000100n
 const MAX = (1n << 64n) - 1n
+const HISTORY_MAX_RECORDS = 4096n
+const HISTORY_MAX_BYTES = 16777216n
 function present<T>(value: T | undefined): T {
   assert(value !== undefined, 'missing fixture value')
   return value
@@ -73,7 +75,13 @@ interface RecordVector {
 }
 interface Case {
   id: string
-  operation: 'directory' | 'stamp' | 'message' | 'counter'
+  operation:
+    | 'directory'
+    | 'stamp'
+    | 'message'
+    | 'counter'
+    | 'advance'
+    | 'history-budget'
   record?: string
   history: string[]
   expected: string
@@ -90,6 +98,14 @@ interface Case {
   prior_value?: string
   next_value?: string
   increment?: boolean
+  candidates?: string[]
+  committed_history?: string[]
+  previous_stamp?: string | null
+  in_flight?: boolean
+  stored_count?: string
+  stored_bytes?: string
+  incoming_count?: string
+  incoming_bytes?: string
 }
 interface Corpus {
   format: string
@@ -297,6 +313,34 @@ function generate(): Corpus {
     [10, key(5)],
     [11, MAX],
   ])
+  next('short-head', 'bootstrap', [[6, time(1700000150n)]])
+  next('expired-middle', 'bootstrap', [
+    [3, time(1700003601n)],
+    [6, time(1700007201n)],
+    [4, [new Map(relay).set(3, time(1700007300n))]],
+    [8, key(6)],
+    [12, 1n],
+  ])
+  const freshRelay = new Map(relay).set(3, time(1700020000n))
+  next('fresh-head', 'expired-middle', [
+    [3, time(1700007202n)],
+    [6, time(1700010802n)],
+    [4, [freshRelay]],
+    [8, key(7)],
+    [12, 2n],
+  ])
+  add(
+    'expired-middle-bad-signature',
+    new Map(present(payloads.get('expired-middle'))),
+    4,
+    4,
+    1,
+    true,
+  )
+  add(
+    'expired-middle-bad-generation',
+    new Map(present(payloads.get('expired-middle'))).set(12, 0n),
+  )
   const cases: Case[] = []
   const directory = (
     id: string,
@@ -452,6 +496,190 @@ function generate(): Corpus {
       archive,
       expected,
     })
+  cases.push(
+    {
+      id: 'message-two-rotations-old-stamp',
+      operation: 'message',
+      history: chain.slice(0, 5),
+      record: 'bootstrap',
+      in_flight: true,
+      expected: 'stamp-binding',
+    },
+    {
+      id: 'message-previous-stamp-in-flight',
+      operation: 'message',
+      history: chain.slice(0, 5),
+      record: 'rotate-stamp',
+      in_flight: true,
+      expected: 'accept',
+    },
+    {
+      id: 'message-previous-stamp-lost-pair',
+      operation: 'message',
+      history: chain.slice(0, 5),
+      record: 'rotate-stamp',
+      in_flight: true,
+      restart: 'pair-lost',
+      expected: 'stamp-binding',
+    },
+    {
+      id: 'message-old-unchanged-new',
+      operation: 'message',
+      history: chain.slice(0, 2),
+      record: 'bootstrap',
+      expected: 'message-head',
+    },
+    {
+      id: 'message-old-unchanged-in-flight',
+      operation: 'message',
+      history: chain.slice(0, 2),
+      record: 'bootstrap',
+      in_flight: true,
+      expected: 'accept',
+    },
+    {
+      id: 'message-expired-current-head',
+      operation: 'message',
+      history: ['bootstrap', 'short-head'],
+      record: 'bootstrap',
+      clock: '1700000200',
+      in_flight: true,
+      expected: 'head-expired',
+    },
+    {
+      id: 'message-expired-head-archive',
+      operation: 'message',
+      history: ['bootstrap', 'short-head'],
+      record: 'bootstrap',
+      clock: '1700000200',
+      archive: true,
+      expected: 'archive-only',
+    },
+    {
+      id: 'stamp-expired-current-head',
+      operation: 'stamp',
+      history: ['bootstrap', 'short-head'],
+      candidate_key: toHex(secp256k1.getPublicKey(scalar(3), true)),
+      clock: '1700000200',
+      expected: 'head-expired',
+    },
+  )
+  const catchUp = (
+    id: string,
+    history: string[],
+    candidates: string[],
+    expected: string,
+    extras: Partial<Case> = {},
+  ): void => {
+    cases.push({
+      id,
+      operation: 'advance',
+      history,
+      candidates,
+      clock: '1700007500',
+      anchor: bootstrap.t1,
+      relay: toHex(encodeCanonical(freshRelay)),
+      expected,
+      committed_history:
+        expected === 'accept' ? [...history, ...candidates] : history,
+      previous_stamp:
+        expected === 'accept'
+          ? toHex(secp256k1.getPublicKey(scalar(6), true))
+          : null,
+      ...extras,
+    })
+  }
+  catchUp(
+    'offline-catch-up',
+    ['bootstrap'],
+    ['expired-middle', 'fresh-head'],
+    'accept',
+  )
+  catchUp(
+    'late-contact-bootstrap',
+    [],
+    ['bootstrap', 'expired-middle', 'fresh-head'],
+    'accept',
+  )
+  catchUp('catch-up-missing-link', ['bootstrap'], ['fresh-head'], 'revision')
+  catchUp(
+    'catch-up-bad-historical-signature',
+    ['bootstrap'],
+    ['expired-middle-bad-signature', 'fresh-head'],
+    'signature',
+  )
+  catchUp(
+    'catch-up-bad-historical-generation',
+    ['bootstrap'],
+    ['expired-middle-bad-generation', 'fresh-head'],
+    'generation',
+  )
+  catchUp(
+    'catch-up-expired-terminal',
+    ['bootstrap'],
+    ['expired-middle'],
+    'validity',
+  )
+  catchUp('catch-up-empty-cannot-revive', ['bootstrap'], [], 'validity')
+  catchUp(
+    'late-contact-wrong-anchor',
+    [],
+    ['bootstrap', 'expired-middle', 'fresh-head'],
+    'anchor',
+    { anchor: '00'.repeat(32) },
+  )
+  catchUp(
+    'catch-up-untrusted-head-binding',
+    ['bootstrap'],
+    ['expired-middle', 'fresh-head'],
+    'binding',
+    { relay: null },
+  )
+  catchUp(
+    'failed-catch-up-preserves-existing-pair',
+    chain.slice(0, 3),
+    ['renew-after-rotation'],
+    'validity',
+    { previous_stamp: toHex(secp256k1.getPublicKey(scalar(3), true)) },
+  )
+  for (const [
+    id,
+    storedCount,
+    storedBytes,
+    incomingCount,
+    incomingBytes,
+    expected,
+  ] of [
+    ['history-count-at-bound', 4095n, 100n, 1n, 100n, 'accept'],
+    ['history-count-over-bound', 4096n, 100n, 1n, 100n, 'history-resource'],
+    ['history-batch-over-bound', 0n, 0n, 4097n, 100n, 'history-resource'],
+    [
+      'history-bytes-at-bound',
+      1n,
+      HISTORY_MAX_BYTES - 100n,
+      1n,
+      100n,
+      'accept',
+    ],
+    [
+      'history-bytes-over-bound',
+      1n,
+      HISTORY_MAX_BYTES,
+      1n,
+      1n,
+      'history-resource',
+    ],
+  ] as const)
+    cases.push({
+      id,
+      operation: 'history-budget',
+      history: [],
+      expected,
+      stored_count: storedCount.toString(),
+      stored_bytes: storedBytes.toString(),
+      incoming_count: incomingCount.toString(),
+      incoming_bytes: incomingBytes.toString(),
+    })
   for (const [id, prior, nextValue, increment, expected] of [
     ['counter-last-increment', MAX - 1n, MAX, true, 'accept'],
     ['counter-overflow-wrap', MAX, 0n, true, 'counter'],
@@ -552,7 +780,94 @@ function open(hex: string): {
   assert.equal(env.size, 4)
   return { frame, env, payload: decodeCanonical(b(present(env.get(3n)))) }
 }
-function outcome(c: Case, corpus: Corpus): string {
+function stampPair(
+  history: Value[],
+  lost = false,
+): { current: Value; previous: Value } {
+  let current: Value = null,
+    previous: Value = null
+  for (const h of history)
+    if (!eq(at(h, 8), current)) {
+      previous = current
+      current = at(h, 8)
+    }
+  return { current, previous: lost ? null : previous }
+}
+function historyFits(
+  storedCount: bigint,
+  storedBytes: bigint,
+  incomingCount: bigint,
+  incomingBytes: bigint,
+): boolean {
+  return (
+    [storedCount, storedBytes, incomingCount, incomingBytes].every(
+      v => v >= 0n,
+    ) &&
+    storedCount + incomingCount <= HISTORY_MAX_RECORDS &&
+    storedBytes + incomingBytes <= HISTORY_MAX_BYTES
+  )
+}
+function chargedBytes(ids: string[], corpus: Corpus): bigint {
+  return ids.reduce((total, id) => {
+    const r = present(corpus.records.find(r => r.id === id))
+    return total + BigInt((r.type4_hex.length + r.type2_hex.length) / 2)
+  }, 0n)
+}
+function advance(
+  c: Case,
+  corpus: Corpus,
+): { result: string; history: string[]; previous_stamp: string | null } {
+  const candidates = c.candidates ?? []
+  const previousStamp = (ids: string[]): string | null => {
+    const pair = stampPair(
+      ids.map(
+        id =>
+          open(present(corpus.records.find(r => r.id === id)).type4_hex)
+            .payload,
+      ),
+    )
+    return pair.previous === null ? null : toHex(b(at(pair.previous, 1)))
+  }
+  const unchanged = (result: string): ReturnType<typeof advance> => ({
+    result,
+    history: [...c.history],
+    previous_stamp: previousStamp(c.history),
+  })
+  // Charge the entire transaction before opening any candidate or doing curve work.
+  if (
+    !historyFits(
+      BigInt(c.history.length),
+      chargedBytes(c.history, corpus),
+      BigInt(candidates.length),
+      chargedBytes(candidates, corpus),
+    )
+  )
+    return unchanged('history-resource')
+  if (!candidates.length) {
+    const id = c.history[c.history.length - 1]
+    return unchanged(
+      id
+        ? outcome({ ...c, operation: 'directory', record: id }, corpus)
+        : 'bootstrap',
+    )
+  }
+  const staged = [...c.history]
+  for (let i = 0; i < candidates.length; i++) {
+    const result = outcome(
+      { ...c, operation: 'directory', record: candidates[i], history: staged },
+      corpus,
+      i < candidates.length - 1,
+    )
+    if (result !== 'accept' && result !== 'duplicate') return unchanged(result)
+    if (result === 'accept') staged.push(candidates[i])
+  }
+  return {
+    result: 'accept',
+    history: staged,
+    previous_stamp: previousStamp(staged),
+  }
+}
+function outcome(c: Case, corpus: Corpus, historicalLink = false): string {
   const byId = (id: string): RecordVector => {
     const r = corpus.records.find(r => r.id === id)
     assert(r, id)
@@ -561,6 +876,16 @@ function outcome(c: Case, corpus: Corpus): string {
   const history = c.history.map(id => open(byId(id).type4_hex).payload)
   const head = history[history.length - 1]
   try {
+    if (c.operation === 'history-budget')
+      return historyFits(
+        BigInt(present(c.stored_count)),
+        BigInt(present(c.stored_bytes)),
+        BigInt(present(c.incoming_count)),
+        BigInt(present(c.incoming_bytes)),
+      )
+        ? 'accept'
+        : 'history-resource'
+    if (c.operation === 'advance') return advance(c, corpus).result
     if (c.operation === 'counter') {
       const prior = BigInt(present(c.prior_value)),
         nextValue = BigInt(present(c.next_value))
@@ -582,14 +907,12 @@ function outcome(c: Case, corpus: Corpus): string {
     const now = BigInt(c.clock ?? NOW) * 1000000000n
     if (c.operation === 'stamp') {
       assert(head)
-      let current: Value = null,
-        previous: Value = null
-      for (const h of history)
-        if (!eq(at(h, 8), current)) {
-          previous = current
-          current = at(h, 8)
-        }
-      if (c.restart === 'pair-lost') previous = null
+      if (timestamp(at(head, 3)) > now || now >= timestamp(at(head, 6)))
+        return 'head-expired'
+      const { current, previous } = stampPair(
+        history,
+        c.restart === 'pair-lost',
+      )
       const matches = (p: Value): boolean =>
         p !== null && toHex(b(at(p, 1))) === c.candidate_key
       return matches(current) || matches(previous) ? 'accept' : 'stamp-binding'
@@ -600,15 +923,39 @@ function outcome(c: Case, corpus: Corpus): string {
     if (c.operation === 'message') {
       if (!c.history.includes(r.id)) return 'unverified-history'
       if (c.archive) return 'archive-only'
-      return head && eq(at(head, 10), at(p, 10)) && timestamp(at(p, 6)) > now
+      if (
+        !head ||
+        timestamp(at(head, 3)) > now ||
+        now >= timestamp(at(head, 6))
+      )
+        return 'head-expired'
+      if (!eq(at(head, 10), at(p, 10))) return 'message-retired'
+      if (!c.in_flight && r.id !== c.history[c.history.length - 1])
+        return 'message-head'
+      if (timestamp(at(p, 3)) > now || now >= timestamp(at(p, 6)))
+        return 'validity'
+      const { current, previous } = stampPair(
+        history,
+        c.restart === 'pair-lost',
+      )
+      return eq(at(p, 8), current) || eq(at(p, 8), previous)
         ? 'accept'
-        : 'message-retired'
+        : 'stamp-binding'
     }
     const fail = (condition: boolean, reason: string): void => {
       if (!condition) throw Error(reason)
     }
     const schema = n(present(opened.env.get(1n))),
       floor = n(present(opened.env.get(2n)))
+    fail(
+      historyFits(
+        BigInt(c.history.length),
+        chargedBytes(c.history, corpus),
+        1n,
+        chargedBytes([r.id], corpus),
+      ),
+      'history-resource',
+    )
     fail(
       schema >= 4n && floor === 4n && BigInt(c.reader ?? 4) >= floor,
       'unsupported-version',
@@ -635,7 +982,7 @@ function outcome(c: Case, corpus: Corpus): string {
       expiry = timestamp(at(p, 6))
     fail(
       issued <= now &&
-        now < expiry &&
+        (historicalLink || now < expiry) &&
         expiry > issued &&
         expiry - issued <= 3600000000000n,
       'validity',
@@ -644,11 +991,24 @@ function outcome(c: Case, corpus: Corpus): string {
     fail(Array.isArray(bindings) && bindings.length === 1, 'shape')
     const binding = (bindings as Value[])[0]
     point(at(binding, 2))
+    const endpoint = at(binding, 1),
+      relayId = b(at(binding, 0))
+    fail(
+      typeof endpoint === 'string' &&
+        endpoint.startsWith('https:') &&
+        endpoint.length <= 2048 &&
+        /^[\x21-\x7e]+$/.test(endpoint) &&
+        !/["<>\\^`{|}]/.test(endpoint) &&
+        relayId.length >= 16 &&
+        relayId.length <= 64,
+      'binding',
+    )
     fail(timestamp(at(binding, 3)) >= expiry, 'binding-expiry')
     fail(
-      c.relay !== null &&
-        toHex(encodeCanonical(binding)) ===
-          (c.relay ?? corpus.synthetic_relay_cbor_hex),
+      historicalLink ||
+        (c.relay !== null &&
+          toHex(encodeCanonical(binding)) ===
+            (c.relay ?? corpus.synthetic_relay_cbor_hex)),
       'binding',
     )
     const wrapper = open(r.type2_hex)
@@ -776,6 +1136,25 @@ for (const c of corpus.cases) {
     assert.equal(outcome(h, corpus), 'accept', `${c.id}: invalid history`)
   }
   assert.equal(outcome(c, corpus), c.expected, c.id)
+  if (c.operation === 'advance') {
+    const before = JSON.stringify(c.history)
+    const transaction = advance(c, corpus)
+    assert.deepEqual(
+      transaction.history,
+      c.committed_history,
+      `${c.id}: atomic history`,
+    )
+    assert.equal(
+      transaction.previous_stamp,
+      c.previous_stamp,
+      `${c.id}: atomic stamp pair`,
+    )
+    assert.equal(
+      JSON.stringify(c.history),
+      before,
+      `${c.id}: input state mutated`,
+    )
+  }
 }
 for (const s of corpus.frozen_sha256)
   assert.equal(sha(readFileSync(resolve(ROOT, s.path))), s.sha256, s.path)

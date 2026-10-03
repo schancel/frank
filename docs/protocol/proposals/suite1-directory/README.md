@@ -1,7 +1,8 @@
 # Suite-1 directory preview allocation proposal
 
 Status: **PROPOSED — NOT ALLOCATED, NOT ACTIVE**. Issue [#719](https://github.com/schancel/frank/issues/719).
-Base: `6a8cbdf7cb44296f646d233474afc9784323f63b`. All choices below need independent
+Repair base: `2f2ae5bfda5b23b48d2b42fcac6fdf0802ecaeb4` (original frozen-artifact
+base `6a8cbdf7cb44296f646d233474afc9784323f63b`). All choices below need independent
 protocol/security review and coordinator approval. None authorizes a production writer.
 
 This proposes the smallest self-contained directory statement that can supply
@@ -82,12 +83,13 @@ The accepted S10a proof-of-possession gap for P' remains; likewise M publication
 does not prove decryptability. Writers must possess and safely retain their
 own independent secrets before publishing. No derivation schedule is allocated:
 [#696](https://github.com/schancel/frank/issues/696) is a predecessor to wallet
-activation. The frozen domain-root registry has no stamp-purpose row; inventing
-one or borrowing an auth/message/EVM root is outside this directory proposal.
-The later owner authorization to finish provisional derivation constants is
-captured in the [dispatchable successor contract](derivation-successor.md).
-It preserves the initial directory review boundary and requires its own exact
-derivation vectors, independent review, and metadata/version decision.
+activation. The frozen registry has no **dedicated stamp domain-root purpose**.
+The owner has selected the existing `evm-wallet` purpose 2 as the preview stamp
+root, with a separate fully hardened S10a child branch; P and M retain distinct
+auth/message roots. This selects a root mapping, not identity/EVM public-key
+reuse. The [successor contract](derivation-successor.md) requires explicit child
+allocation and exact vectors without a new purpose or registry/recovery-format
+migration. Those child constants still need review before activation.
 
 ## Proposed preview state machine
 
@@ -100,8 +102,11 @@ stamp state together before acknowledging it.
 
 1. **Bootstrap:** require a trusted, caller-installed `(network, P, exact T1)`
    anchor; self-signature, relay response, URL and highest timestamp are not
-   anchors. Require revision 0, both generations 0, predecessor null, and a
-   fresh valid record. Initial previous stamp is null. A missing anchor,
+   anchors. The pinned revision-0 record requires both generations 0 and
+   predecessor null. It may be expired when first encountered: authenticate it
+   as a historical link and verify every successor through a fresh head under
+   the atomic catch-up rule below. A revision-0 record used directly as the
+   head must itself be fresh. Initial previous stamp is null. A missing anchor,
    missing trusted clock or missing trusted relay tuple fails closed. A reset
    is not a bootstrap opportunity: if any durable state existed, restore and
    verify it or require explicit operator re-anchoring outside this profile.
@@ -114,6 +119,8 @@ stamp state together before acknowledging it.
    conflict evidence, disable new routing for that subject and require external
    resolution. Never select by arrival, timestamp, hash or largest revision.
    Missing intermediate revisions must be fetched and verified, not skipped.
+   The last durable head remains the authority anchor even after expiry; expiry
+   blocks its use for new messages, not P's ability to sign linked successors.
 3. **Independent generations:** an unchanged point requires an unchanged
    generation. A changed point requires exactly +1 of its own generation and
    the no-reuse checks above. Rotating M does not rotate P', and conversely.
@@ -127,24 +134,67 @@ stamp state together before acknowledging it.
    type-7 proof is not sufficient to enable that missing policy. No recovery
    authority can be introduced and consumed in the same update.
 5. **Validity:** trusted Unix time with nanosecond precision is caller input.
-   Require `issue <= now < expiry`, `0 < expiry-issue <= 3600 seconds`, and
-   every binding expiry >= statement expiry. No implicit clock-skew allowance.
+   Every record requires `issue <= now`, `0 < expiry-issue <= 3600 seconds`, and
+   every binding expiry >= statement expiry. The final head additionally
+   requires `now < expiry`; expired intermediate links are allowed only inside
+   atomic catch-up or archive verification. No implicit clock-skew allowance.
    Persist last accepted/check time; rollback of that clock, unknown clock or
-   expired state disables new use. Validate predecessor history at its recorded
-   acceptance times; expired historical bytes may verify linkage and archives,
-   but cannot become a fresh routing record. A renewal is a new revision and
+   expired state disables new use. Historical signature/link verification does
+   not assert that a client observed or accepted the record before it expired;
+   no invented historical clock or acceptance timestamp is needed. Expired
+   historical bytes cannot become a fresh routing record. A renewal is a new revision and
    signature; an unchanged key does not reset its generation or previous stamp.
 6. **Binding:** caller supplies a previously authenticated real relay tuple
-   `(relay_id, exact endpoint, relay identity, binding expiry)` and the statement
-   must match it byte-for-byte. The key is a valid key-type-1 point. S4 URI
+   `(relay_id, exact endpoint, relay identity, binding expiry)` and the final
+   head must match it byte-for-byte. The key is a valid key-type-1 point. S4 URI
    syntax applies; this preview additionally permits HTTPS only. No placeholder,
    ambient default, fallback URL, or hash-of-URL identity. The relay ID's
    registered derivation/provisioning must be validated by that caller. This
    proposal does not allocate an ID algorithm or a provider descriptor.
-   Changing the tuple needs a newly authenticated caller configuration and a
+   Changing the head's tuple needs a newly authenticated caller configuration and a
    signed directory successor. Its expiry cannot be extended by directory
    signature alone. Fixture tuples are explicitly synthetic offline inputs;
    they do not demonstrate contact with a real relay.
+
+**Atomic historical catch-up:** start with the last durable verified head and
+history, or the caller-pinned revision-0 anchor for a genuinely new contact.
+Accept an ordered, bounded list of complete type-2 attestations. Authenticate
+each exact type-4/T2 signature and enforce network/P, schema order, contiguous
+revision, exact predecessor, monotonic issue time, internal validity window,
+generation and no-reuse rules on a private staged history. Intermediate
+bindings need valid signed structure, point/URI syntax and binding expiry >=
+their statement expiry; they need not match today's caller relay tuple, and
+neither their bindings nor their expired keys may authorize new use. This
+explicitly permits a client at rev0 to verify an expired rev1 and reach fresh
+rev2, or a late contact to reach rev2 from an expired pinned rev0.
+
+Only after the terminal head is fresh and matches today's authenticated relay
+tuple may the consumer atomically commit the entire verified history, terminal
+head, both generations, current/previous stamp pair and current checked clock.
+Process all rotations in order, including intermediate rotations, to compute
+the S10a pair. Any invalid/missing link, bad signature, exhausted budget,
+untrusted terminal binding or expired terminal head leaves head and stamp
+state unchanged. A verified fork is retained as bounded conflict evidence and
+disables routing; failure does not authorize a partial head or pick a winner.
+Staged/historical validation is an internal proof step, never an independently
+usable directory acceptance result. An empty batch cannot revive an expired
+head. Freshness/convergence limitations below still apply.
+
+**Cumulative preview bound:** per `(network, P)`, retain at most **4096 accepted
+statements** and **16,777,216 charged bytes** across the entire history. Charge
+each statement's exact type-4 bytes plus one validating type-2 wrapper, even
+though the wrapper contains the statement. Keep that wrapper stable; alternate
+wrappers are not extra authority and cannot replace the accounting baseline.
+Before parsing or signature verification, apply both limits to retained state
+plus the complete presented candidate batch; duplicate/replayed inputs also
+consume the batch budget until rejected or recognized. Bound conflict-evidence
+storage by the same byte budget. Per-frame 256 KiB and frozen decoder budgets
+still apply. Commit counters atomically with history. At either cap, reject
+extensions; never prune no-reuse/predecessor evidence, reset counters or treat
+an existing account as a new bootstrap to continue. A separately reviewed
+compaction/migration is required before operating past the bound. With hourly
+renewals the count bound permits roughly 170 days from bootstrap; this is an
+intentional preview limit, not a permanent directory design.
 
 Bootstrap pins prevent undetected stale bootstrap only to the extent that the
 caller obtained a fresh anchor. The 1-hour validity is a proposed preview bound,
@@ -212,15 +262,16 @@ choices; @schancel / coordinator owns their disposition.
 | C2 | Fields10–13; explicit null predecessor; exact T1 identity | No profile smuggling or type2-hash identity |
 | C3 | All roles type1, valid points, x-coordinate separation and history no-reuse | No proof of M/P' possession or independent derivation; #696 owns schedules |
 | C4 | Frozen algorithm1/T1/T2; exactly one subject signature | No new crypto or arbitrary algorithm negotiation |
-| C5 | Zero-based, contiguous uint64 generations and revisions | History cost is accepted for bounded preview; target compaction deferred |
-| C6 | Exact externally pinned bootstrap; durable predecessor/fork state | Anchor provisioning and fork resolution remain external; no TOFU |
-| C7 | One-hour validity, trusted clock, no skew, no rollback | Preview availability tradeoff; not target global freshness |
+| C5 | Zero-based, contiguous uint64 generations and revisions | 4096-statement / 16 MiB cumulative history cap; target compaction deferred |
+| C6 | Exact pinned rev0 or durable head; authenticated historical links commit only with a fresh terminal head | Owner selected atomic catch-up; anchor provisioning/fork resolution remain external |
+| C7 | One-hour validity, trusted clock, no skew/rollback; expired intermediates never authorize use | Owner selected historical verification; not target global freshness |
 | C8 | One caller-authenticated HTTPS relay tuple and expiry | Descriptor/ID-algorithm allocation, federation and multi-provider use deferred |
 | C9 | Frozen S10a pair persists; restart current-only degradation | Target current-only capability policy explicitly deferred |
 | C10 | Current M for new use; old M only for explicit archives | Mailbox capabilities, sessions, compromise fencing deferred |
 | C11 | No type7/authority/recovery/cross-schema transitions | Validity of an old type7 signature does not decide new lifecycle policy |
 | C12 | V6 optional retention; exact-version unknowns reject | Unsupported required semantics never authorize projection |
-| C13 | 256 KiB frames, one binding/signature, frozen aggregate limits | No new resource framework; harness is not a production validator |
+| C13 | 256 KiB frames plus cumulative 4096-statement / 16 MiB cap, one binding/signature | Exact cap proposed for approval; no eviction/reset bypass; harness is not a production validator |
+| C14 | Stamp preview root is existing purpose2 `evm-wallet`, separate fully hardened S10a child branch | Owner-selected mapping; child allocation/vectors remain #696 successor; no new root purpose or format migration |
 
 Current durable shape is registration schema3 with P/P' and optional profile.
 The proposed shape adds explicit M, independent generations and predecessor;

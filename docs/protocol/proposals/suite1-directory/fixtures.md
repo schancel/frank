@@ -48,11 +48,37 @@ a new frozen validation-stage order.
 `stamp` cases supply a candidate point and history-derived current/previous
 pair. `restart: pair-lost` deliberately reconstructs current only; `head-lost`
 disables use. These model S10a state policy, not persistent storage crash tests.
-`message` cases select an exact verified historical tuple and distinguish new
-use from `archive: true`. They do not encrypt, route, open a mailbox, or verify
+`message` cases select an exact verified tuple. New authoring requires the
+current exact head; `in_flight: true` permits a still-valid historical tuple
+only if M is current and P' is in the current/previous S10a pair. Both message
+admission and `stamp` checks require the current head to be fresh, even when
+the selected older record has a later expiry. `archive: true` is separate from
+new admission. These cases do not encrypt, route, open a mailbox, or verify
 a real delivery; `archive-only` grants no admission. `counter` cases are pure
 uint64 terminal-boundary examples, not a claim to have generated 2^64 updates.
 The last value can be retained unchanged; an increment at max is rejected.
+
+`advance` cases pass an ordered `candidates` list and explicit current clock
+to the atomic catch-up reference. Expired intermediates receive complete
+historical-link authentication but no standalone acceptance. Only a fresh,
+currently trusted terminal head commits. `committed_history` and
+`previous_stamp` assert exact success/failure state: a failed transaction must
+leave both unchanged, including an already populated previous-stamp slot.
+The first contact still requires the separately supplied exact rev0 anchor.
+Cases cover offline rev0 → expired rev1 → fresh rev2, late first contact,
+missing links, bad historical signatures/generations, expired or untrusted
+terminal state, and failed-state preservation. No historical acceptance time
+is invented to make an expired intermediate pass.
+
+`history-budget` cases exercise the exact cumulative cap using previously
+validated accounting inputs `stored_count`/`stored_bytes` and batch inputs
+`incoming_count`/`incoming_bytes` (decimal strings). The same budget function
+guards the whole `advance` batch before candidate decoding and each directory
+extension. Caps are 4096 statements and 16777216 bytes; charged bytes include
+both the exact type4 frame and its type2 wrapper. Boundary probes do not claim
+to construct thousands of accepted revisions; normal catch-up fixtures charge
+their actual retained/candidate bytes. Real persistence and conflict-evidence
+accounting remain production-boundary obligations for the allocation stage.
 
 The Rust `rust-origin.json` is a separately constructed complete bootstrap
 wrapper. Type-4 bytes and T1 are identical to TS; the libraries' deterministic
@@ -63,13 +89,15 @@ the wire; strict DER, low-S, and valid ECDSA are the frozen requirements.
 
 | Coverage | Concrete cases | TS | Rust |
 | --- | --- | --- | --- |
-| Exact canonical type4/type2, T1/T2, complete signatures | All 50 frame pairs; independently built bootstrap wrapper | Generate + check | Independent codec/hash/signature + bootstrap generation |
+| Exact canonical type4/type2, T1/T2, complete signatures | All 55 frame pairs; independently built bootstrap wrapper | Generate + check | Independent codec/hash/signature + bootstrap generation |
 | Required-key, type/point and role separation | missing auth/M/stamp, wrong type, invalid point, equal/negated roles, historical swaps | Policy outcomes | Bytes/crypto only |
 | Network, commitment, signer and signature | wrong network/hash/signer/signature, type2-hash predecessor | Policy outcomes | Hash/signature independently checked |
 | Updates, generations, predecessor, clock, fork and bootstrap | renewals, independent rotations, skipped/unchanged generation, historical fork, rollback, missing anchor/clock | Policy outcomes | Bytes/crypto only |
+| Atomic historical catch-up | offline and late-contact acceptance; missing/invalid links, terminal freshness/binding and unchanged failure state | 10 transaction outcomes | Every supplied frame's bytes/crypto |
+| Cumulative history budgets | count and byte boundary acceptance/rejection, oversize batch | 5 budget probes + actual transaction charging | Not implemented |
 | uint64 terminal behavior | last increment, wrap, increment at max, unchanged max | Boundary outcomes | Not implemented |
 | S10a grace and restart | current, previous, two rotations, renewal, recovered/lost pair/head | State outcomes | Not implemented |
-| Message retirement | current new use, retired new use rejected, historical archive only | Tuple policy | Not implemented |
+| Message retirement and grace | current new use, retired M, old P' after two rotations, immediate previous P', stale head, archive-only | Tuple policy | Not implemented |
 | Version/cross-schema behavior | old schemas2/3, reader2, wrong floor, future required, optional projection, schema downgrade | Old reader + proposal outcomes | Independent old reader |
 | Retained optional bytes | future field100, tamper retaining original signature, exact full-frame checks | Bytes + signature rejection | Canonical bytes + signature rejection |
 | Frozen baseline | Seven active artifact SHA-256 values | Check | Independent check |
@@ -92,7 +120,7 @@ cargo fmt --manifest-path backend/cashweb/frank-cbor/proposals/suite1-directory/
 
 # Scope/whitespace check; only the three proposal directories may differ
 git diff --check
-git diff --name-only 6a8cbdf7cb44296f646d233474afc9784323f63b
+git diff --name-only 2f2ae5bfda5b23b48d2b42fcac6fdf0802ecaeb4
 ```
 
 To deliberately regenerate reviewed fixtures: run the TS command with `--write`,

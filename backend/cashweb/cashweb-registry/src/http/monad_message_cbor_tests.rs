@@ -224,6 +224,51 @@ impl NativeDirectoryFixture {
         self.directory.begin_shutdown();
         self.directory.wait_stopped().await;
     }
+    async fn reopen(self) -> Self {
+        self.stop().await;
+        let Self {
+            root,
+            registry,
+            directory,
+            mut config,
+        } = self;
+        let previous = Arc::downgrade(&registry);
+        drop(directory);
+        drop(registry);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while previous.upgrade().is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("old native/registry owner must release the database before reopen");
+        let registry = Arc::new(crate::registry::Registry::new(
+            crate::store::db::Db::open(root.path().join("db")).unwrap(),
+            Arc::new(crate::disabled_chain_adapter::DisabledChainAdapter),
+            bitcoinsuite_core::Net::Regtest,
+        ));
+        for principal in &mut config.principals {
+            principal.mode = "reopen".into();
+        }
+        let (directory, ready) = crate::directory_runtime::DirectoryRuntime::start(
+            registry.clone(),
+            root.path().join("db"),
+            config.clone(),
+        )
+        .unwrap();
+        ready.await.unwrap().unwrap();
+        let directory = Arc::new(directory);
+        registry
+            .canonical_dm()
+            .attach_directory(directory.clone())
+            .unwrap();
+        Self {
+            root,
+            registry,
+            directory,
+            config,
+        }
+    }
 }
 
 #[tokio::test]
@@ -900,40 +945,7 @@ async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reop
             std::panic::resume_unwind(panic);
         }
     };
-    let NativeDirectoryFixture {
-        root,
-        registry,
-        directory,
-        mut config,
-    } = fixture;
-    drop(directory);
-    drop(registry);
-    let registry = Arc::new(crate::registry::Registry::new(
-        crate::store::db::Db::open(root.path().join("db")).unwrap(),
-        Arc::new(crate::disabled_chain_adapter::DisabledChainAdapter),
-        bitcoinsuite_core::Net::Regtest,
-    ));
-    for principal in &mut config.principals {
-        principal.mode = "reopen".into();
-    }
-    let (directory, ready) = crate::directory_runtime::DirectoryRuntime::start(
-        registry.clone(),
-        root.path().join("db"),
-        config.clone(),
-    )
-    .unwrap();
-    ready.await.unwrap().unwrap();
-    let directory = Arc::new(directory);
-    registry
-        .canonical_dm()
-        .attach_directory(directory.clone())
-        .unwrap();
-    let reopened = NativeDirectoryFixture {
-        root,
-        registry,
-        directory,
-        config,
-    };
+    let reopened = fixture.reopen().await;
     let runtime_server = server(&reopened, &rpc_url);
     let (url, http_stop, http_task) = serve_http(
         runtime_server
@@ -1002,6 +1014,213 @@ async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reop
             .recovery(recipient, None, 1)
             .unwrap()
             .is_empty());
+    })
+    .catch_unwind()
+    .await;
+    http_stop.send(()).unwrap();
+    http_task.await.unwrap();
+    rpc_stop.send(()).unwrap();
+    rpc_task.await.unwrap();
+    reopened.stop().await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[tokio::test]
+async fn actual_http_exposure_only_terminal_exact_age_release_and_native_reopen() {
+    use crate::monad_http::Hash32;
+    use crate::monad_mailbox::{MailboxRequestBinding, MailboxResource};
+    use crate::store::monad_dm_cbor::Phase;
+    use crate::store::monad_outbox::{MonadOutboxLimits, MonadOutboxMemberState};
+    use axum::Json;
+    use futures::FutureExt;
+    let fixture = NativeDirectoryFixture::new().await;
+    let request = genuine_fixture();
+    let transaction =
+        crate::monad_evm_tx::decode_signed_transaction(request.raw_transactions().next().unwrap())
+            .unwrap();
+    let reverted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let rpc_reverted = reverted.clone();
+    let rpc = axum::Router::new().route("/",axum::routing::post(move |Json(query):Json<serde_json::Value>| {
+        let transaction = transaction.clone(); let reverted = rpc_reverted.clone();
+        async move {
+            let hash = transaction.tx_hash.to_hex();
+            assert_eq!(query["params"][0].as_str(),Some(hash.as_str()));
+            let result = match query["method"].as_str().unwrap() {
+                "eth_getTransactionByHash" => serde_json::json!({"hash":hash,"from":transaction.sender.to_hex(),"to":transaction.destination.unwrap().to_hex(),"value":"0x1","input":format!("0x{}",hex::encode(&transaction.input))}),
+                "eth_getTransactionReceipt" if !reverted.load(std::sync::atomic::Ordering::SeqCst) => serde_json::Value::Null,
+                "eth_getTransactionReceipt" => serde_json::json!({"transactionHash":hash,"blockHash":Hash32([1;32]).to_hex(),"blockNumber":"0x1","transactionIndex":"0x0","from":transaction.sender.to_hex(),"to":transaction.destination.unwrap().to_hex(),"gasUsed":"0x5208","status":"0x0","logs":[]}),
+                other => panic!("unexpected financial RPC {other}"),
+            };
+            Json(serde_json::json!({"jsonrpc":"2.0","id":query["id"],"result":result}))
+        }
+    }));
+    let (rpc_url, rpc_stop, rpc_task) = serve_http(rpc).await;
+    let runtime_server = server(&fixture, &rpc_url);
+    let (url, http_stop, http_task) = serve_http(
+        runtime_server
+            .clone()
+            .into_router_with_directory(Some(fixture.directory.clone())),
+    )
+    .await;
+    let hash =
+        hash_hex("9f688f51d6a798d62f4b14a8b1958b14d22916ca0cb8108b91b017f238f7f2d2").unwrap();
+    let recipient = Address::from_hex("0x8dc3750a7789544eb239029b1eb0eaaddebdfe9d").unwrap();
+    let point = fixture.config.principals[1].subject.clone();
+    let outcome = std::panic::AssertUnwindSafe(async {
+        let client = reqwest::Client::new();
+        let put = || {
+            client
+                .put(format!("{url}/message/monad/cbor"))
+                .header("content-type", request.content_type())
+                .body(request.body().to_vec())
+        };
+        assert_eq!(put().send().await.unwrap().status(), StatusCode::ACCEPTED);
+        let pending = fixture.registry.canonical_dm().get(&hash).unwrap().unwrap();
+        assert_eq!(pending.phase, Phase::Pending);
+        assert!(pending.members[0].exposed);
+        reverted.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(put().send().await.unwrap().status(), StatusCode::OK);
+        let terminal = fixture.registry.canonical_dm().get(&hash).unwrap().unwrap();
+        assert!(matches!(terminal.phase, Phase::Terminal(_)));
+        assert!(terminal.recoverable() && !terminal.acknowledged);
+        assert!(terminal
+            .members
+            .iter()
+            .all(|member| !matches!(member.state, MonadOutboxMemberState::Confirmed { .. })));
+        let limits = MonadOutboxLimits::default();
+        let boundary = terminal.updated
+            + i64::try_from(limits.max_unconfirmed_recovery_age.as_millis()).unwrap();
+        assert_eq!(
+            fixture
+                .registry
+                .canonical_dm()
+                .expire_unconfirmed_recovery_after(None, 1, boundary, &limits)
+                .unwrap(),
+            None
+        );
+        assert!(
+            fixture
+                .registry
+                .canonical_dm()
+                .get(&hash)
+                .unwrap()
+                .unwrap()
+                .reservation
+        );
+        assert_eq!(
+            fixture
+                .registry
+                .canonical_dm()
+                .expire_unconfirmed_recovery_after(None, 1, boundary + 1, &limits)
+                .unwrap(),
+            None
+        );
+        let expired = fixture.registry.canonical_dm().get(&hash).unwrap().unwrap();
+        assert!(!expired.reservation && !expired.acknowledged);
+        assert_eq!(expired.phase, terminal.phase);
+        assert_eq!(expired.obligation_id, terminal.obligation_id);
+        assert_eq!(expired.request.body(), request.body());
+        assert_eq!(expired.reserved_charge, terminal.reserved_charge);
+        assert!(fixture
+            .registry
+            .canonical_dm()
+            .recovery(recipient, None, 1)
+            .unwrap()
+            .is_empty());
+        let usage = fixture
+            .registry
+            .canonical_dm()
+            .financial_usage(recipient)
+            .unwrap();
+        assert_eq!(
+            (
+                usage.active,
+                usage.global_records,
+                usage.global_bytes,
+                usage.unconfirmed
+            ),
+            (0, 0, 0, 0)
+        );
+        terminal.obligation_id
+    })
+    .catch_unwind()
+    .await;
+    http_stop.send(()).unwrap();
+    http_task.await.unwrap();
+    fixture.stop().await;
+    drop(runtime_server);
+    let obligation = match outcome {
+        Ok(obligation) => obligation,
+        Err(panic) => {
+            rpc_stop.send(()).unwrap();
+            rpc_task.await.unwrap();
+            std::panic::resume_unwind(panic);
+        }
+    };
+    let reopened = fixture.reopen().await;
+    let runtime_server = server(&reopened, &rpc_url);
+    let (url, http_stop, http_task) =
+        serve_http(runtime_server.into_router_with_directory(Some(reopened.directory.clone())))
+            .await;
+    let outcome = std::panic::AssertUnwindSafe(async {
+        let retained = reopened
+            .registry
+            .canonical_dm()
+            .get(&hash)
+            .unwrap()
+            .unwrap();
+        assert!(!retained.reservation && !retained.acknowledged);
+        assert_eq!(retained.obligation_id, obligation);
+        assert_eq!(retained.request.body(), request.body());
+        assert!(reopened
+            .registry
+            .canonical_dm()
+            .recovery(recipient, None, 1)
+            .unwrap()
+            .is_empty());
+        let usage = reopened
+            .registry
+            .canonical_dm()
+            .financial_usage(recipient)
+            .unwrap();
+        assert_eq!(
+            (
+                usage.active,
+                usage.global_records,
+                usage.global_bytes,
+                usage.unconfirmed
+            ),
+            (0, 0, 0, 0)
+        );
+        let client = reqwest::Client::new();
+        let binding = MailboxRequestBinding {
+            resource: MailboxResource::RecoveryAck,
+            recipient,
+            since: 0,
+            cursor: None,
+            limit: 1,
+            max_bytes: 0,
+            recovery_payload_hash: Some(hash),
+            recovery_obligation_id: Some(obligation),
+        };
+        let headers = private_headers(&client, &url, reopened.root.path(), &point, &binding).await;
+        assert_eq!(
+            client
+                .post(format!(
+                    "{url}/message/monad/cbor/recovery/{}/{}/{}/ack",
+                    recipient.to_hex(),
+                    hex::encode(hash),
+                    hex::encode(obligation)
+                ))
+                .headers(headers)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
     })
     .catch_unwind()
     .await;

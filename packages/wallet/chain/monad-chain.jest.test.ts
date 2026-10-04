@@ -2097,7 +2097,7 @@ it("public revision-zero bridge rejects a valid foreign network descriptor witho
     authentication: { registry: "frank-domain-roots-v1", purpose: "identity-authentication", bytes: new Uint8Array(32).fill(52) },
     messaging: { registry: "frank-domain-roots-v1", purpose: "messaging-encryption", bytes: new Uint8Array(32).fill(53) },
   };
-  const chain = createMonadChain(TEST_CONFIG), wallet = await chain.createWallet(roots);
+  const chain = createMonadChain(TEST_CONFIG), wallet = await chain.createWallet(roots) as MonadChainWalletHandle;
   const operator = createMonadWalletMaterial(roots);
   const point = operator.canonicalRoles!.publicGenerationZeroPoints().auth;
   const process = (label: string) => ({ processId: label, origin: `https://${label}.example`, tuple: {

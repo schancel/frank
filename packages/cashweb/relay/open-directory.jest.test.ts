@@ -336,6 +336,71 @@ describe('one signature per revision', () => {
   })
 })
 
+describe('what the relay says about itself is not trusted blindly', () => {
+  it('signs nothing when the relay names another host as its endpoint', async () => {
+    const alice = testAccount(1)
+    const { directory, signed } = device(alice, 'alice')
+    relay.infoOverride = { endpoint: 'https://somewhere-else.example' }
+    expect(await code(directory.publish())).toBe('relay-info')
+    expect(signed).toEqual([])
+    expect(puts()).toBe(0)
+  })
+
+  it('signs nothing when the relay binding lasts less than thirty days', async () => {
+    const alice = testAccount(1)
+    const { directory, signed } = device(alice, 'alice')
+    relay.infoOverride = { bindingExpiry: (clock + 29n * DAY).toString() }
+    expect(await code(directory.publish())).toBe('relay-info')
+    expect(signed).toEqual([])
+    relay.infoOverride = { bindingExpiry: (clock + 31n * DAY).toString() }
+    await directory.publish()
+    expect(signed).toEqual([0n])
+  })
+
+  it('signs at most one move per day however often the relay changes its tuple', async () => {
+    const alice = testAccount(1)
+    const { directory, signed } = device(alice, 'alice')
+    await directory.publish()
+    relay.infoOverride = { relayId: '01'.repeat(16) }
+    await directory.publish()
+    expect(signed).toEqual([0n, 1n])
+    for (const id of ['02', '03', '04']) {
+      relay.infoOverride = { relayId: id.repeat(16) }
+      clock += 3600n * SECOND
+      expect(await code(directory.publish())).toBe('relay-info')
+    }
+    expect(signed).toEqual([0n, 1n])
+    clock += DAY
+    await directory.publish()
+    expect(signed).toEqual([0n, 1n, 2n])
+  })
+
+  it('does not report a move as done when the relay did not take it', async () => {
+    const alice = testAccount(1)
+    const { directory } = device(alice, 'alice')
+    await directory.publish()
+    relay.infoOverride = { relayId: '01'.repeat(16) }
+    relay.putFault = 'lose'
+    expect(await code(directory.publish())).toBe('unreachable')
+    relay.putFault = undefined
+    const entry = await directory.publish()
+    expect(entry.current.revision).toBe(1n)
+  })
+
+  it('reads whether the relay forwards, and treats silence as no', async () => {
+    const alice = testAccount(1)
+    const { directory } = device(alice, 'alice')
+    await directory.publish()
+    expect(await directory.forwarding()).toBe(false)
+    relay.infoOverride = { forwarding: true }
+    wall += 61_000
+    expect(await directory.forwarding()).toBe(true)
+    relay.down = true
+    wall += 61_000
+    expect(await directory.forwarding()).toBe(false)
+  })
+})
+
 describe('other accounts', () => {
   it('finds any published address and pins it; an unpublished one is a typed error', async () => {
     const alice = testAccount(1),

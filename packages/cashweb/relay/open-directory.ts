@@ -50,6 +50,13 @@ export const RENEW_BEFORE_NS = 30n * DAY
 /** Issue time is set this far in the past so a slightly slow clock elsewhere still accepts it. */
 const ISSUE_BACKDATE_NS = 600n * SECOND
 const RENEW_RETRY_MS = 600_000
+/** A relay must describe a binding that lasts at least this long, or nothing is signed for it. */
+export const MIN_BINDING_LIFE_NS = 30n * DAY
+/** At most one renewal or move is signed per this period, whatever the relay says or how often
+ * the entry is read. A chain holds 4096 statements; this makes that many days. */
+export const RESIGN_INTERVAL_NS = DAY
+/** How long the relay's answer about forwarding is reused. */
+const FORWARDING_REFRESH_MS = 60_000
 
 export type OpenDirectoryErrorCode =
   /** The relay (and its peers) hold no entry for this address. */
@@ -66,7 +73,8 @@ export type OpenDirectoryErrorCode =
   | 'fork'
   /** The relay refused to store this account's entry. */
   | 'rejected'
-  /** `/relay/v1/info` is missing, malformed, for another network, or its binding has expired. */
+  /** `/relay/v1/info` is missing or malformed, is for another network, names another host than
+   * the configured relay, offers a binding shorter than 30 days, or keeps changing. */
   | 'relay-info'
   /** Local directory storage failed. */
   | 'storage'
@@ -83,7 +91,8 @@ const MESSAGES: Record<OpenDirectoryErrorCode, string> = {
     'The relay served an older directory entry than one already accepted for this address.',
   'fork': 'Two conflicting directory entries exist for this address.',
   'rejected': 'The relay refused to store this account’s directory entry.',
-  'relay-info': 'The relay did not describe itself correctly.',
+  'relay-info':
+    'The relay is misconfigured: it did not describe itself correctly, so nothing was signed for it.',
   'storage': 'Local directory storage is unavailable.',
   'unpublished': 'This account’s directory entry has not been published yet.',
 }
@@ -178,6 +187,11 @@ export interface OpenDirectory {
   peerCurrent(
     peer: { address: string } | { subject: string },
   ): Promise<DirectoryEntry | undefined>
+  /**
+   * Whether the configured relay says it delivers to accounts that live on other relays
+   * (`forwarding: true` in `/relay/v1/info`). Absent or unreadable counts as no.
+   */
+  forwarding(): Promise<boolean>
   /** Like `peerCurrent({ address })` but an unpublished address is a typed error. */
   lookup(address: string): Promise<DirectoryEntry>
   close(): Promise<void>
@@ -272,6 +286,8 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
   let publishing: Promise<DirectoryEntry> | undefined
   let renewTriedAt = 0
   let published = false
+  let forwarding = false
+  let forwardingReadAt = 0
 
   const now = () => timestamp(deps.nowNs())
   /** One operation at a time per account, so a store never sees interleaved admissions. */
@@ -691,13 +707,19 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         typeof info.relayId !== 'string' ||
         !/^([0-9a-f]{2}){16,64}$/.test(info.relayId) ||
         typeof info.endpoint !== 'string' ||
+        // The relay may only describe itself: an entry is never signed for some other host.
         new URL(info.endpoint).protocol !== 'https:' ||
+        info.endpoint.replace(/\/$/, '') !== origin ||
         typeof info.relayKey !== 'string' ||
         !directoryAddress(info.relayKey) ||
         typeof info.bindingExpiry !== 'string' ||
-        !/^[0-9]{1,20}$/.test(info.bindingExpiry)
+        !/^[0-9]{1,20}$/.test(info.bindingExpiry) ||
+        // A binding about to expire would force a new signed revision again and again.
+        BigInt(info.bindingExpiry) < deps.nowNs() + MIN_BINDING_LIFE_NS
       )
         throw new Error('shape')
+      forwarding = info.forwarding === true
+      forwardingReadAt = Date.now()
       return {
         relayId: fromHex(info.relayId),
         endpoint: info.endpoint,
@@ -774,6 +796,7 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
   // statement is never signed for the same revision: two would be a fork that every peer
   // refuses for good.
   const pendingKey = `pending:${network}:${selfAddress}`
+  const resignedKey = `resigned:${network}:${selfAddress}`
   async function loadPending(): Promise<Evidence | undefined> {
     let saved: string | null
     try {
@@ -898,6 +921,32 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         nanos(input.expiresAt) > nanos(head.expiry) + 3600n * SECOND
       ) {
         renewTriedAt = Date.now()
+        const signedAt = deps.nowNs()
+        let last = 0n
+        try {
+          last = BigInt((await deps.pins.load(resignedKey)) || '0')
+        } catch {
+          throw new OpenDirectoryError('storage', selfAddress)
+        }
+        if (
+          last > 0n &&
+          signedAt >= last &&
+          signedAt - last < RESIGN_INTERVAL_NS
+        ) {
+          // Already signed one renewal or move this period. A relay that keeps changing what it
+          // says about itself, or a short-lived entry, cannot make this account sign more.
+          if (admitted && !relocating)
+            return entry(admitted.handle, admitted.current)
+          throw new OpenDirectoryError(
+            relocating ? 'relay-info' : 'expired',
+            selfAddress,
+          )
+        }
+        try {
+          await deps.pins.save(resignedKey, signedAt.toString())
+        } catch {
+          throw new OpenDirectoryError('storage', selfAddress)
+        }
         const attestation = await deps.self.signNextRevision({
           ...input,
           revision: head.revision + 1n,
@@ -956,6 +1005,16 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
       }
     },
     peerCurrent: peer,
+    async forwarding() {
+      if (Date.now() - forwardingReadAt > FORWARDING_REFRESH_MS)
+        try {
+          await relayBinding()
+        } catch {
+          // Unknown right now: treated as "cannot forward", which only refuses a send.
+          forwarding = false
+        }
+      return forwarding
+    },
     async lookup(address) {
       const found = await peer({ address })
       if (!found)

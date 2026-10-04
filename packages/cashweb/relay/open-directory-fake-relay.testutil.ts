@@ -33,6 +33,8 @@ export interface FakeRelayOptions {
   /** Unix nanoseconds; defaults to far in the future. */
   bindingExpiryNs?: bigint
   relayId?: string
+  /** The `forwarding` flag of `/relay/v1/info`; left out when undefined. */
+  forwarding?: boolean
 }
 export interface FakeRelay {
   readonly endpoint: string
@@ -43,6 +45,8 @@ export interface FakeRelay {
   readonly requests: { method: string; path: string; body?: string }[]
   /** Make PUTs answer 503: `lose` stores nothing, `keep` stores the entry and still answers 503. */
   putFault?: 'lose' | 'keep'
+  /** Fields merged over what `/relay/v1/info` answers, to make the relay misdescribe itself. */
+  infoOverride?: Record<string, unknown>
   /** Every key this relay holds an entry for. */
   subjects(): IterableIterator<string>
   /** Stored attestation chain of a key, oldest first. */
@@ -250,6 +254,10 @@ export function createFakeRelay(options: FakeRelayOptions = {}): FakeRelay {
               endpoint,
               relayKey,
               bindingExpiry: expiryNs.toString(),
+              ...(options.forwarding === undefined
+                ? {}
+                : { forwarding: options.forwarding }),
+              ...relay.infoOverride,
             }),
           ),
           { 'content-type': 'application/json' },

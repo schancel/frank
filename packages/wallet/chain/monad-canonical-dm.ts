@@ -460,8 +460,9 @@ function mailboxAuth(
     installedCanonicalOrigin(new URL(directory.homeEndpoint).origin) !==
     installedCanonicalOrigin(new URL(owner.relayBaseUrl).origin)
   )
+    // Two configured values that must agree; this is a wiring error, not a state of the entry.
     throw new CanonicalMessagingPendingError(
-      'This account’s directory entry is being moved to the configured relay.',
+      'This wallet and its directory are configured for different relays.',
     )
   return {
     relayBaseUrl: directory.homeEndpoint,

@@ -406,14 +406,32 @@ fn uint64_generations_and_nanosecond_window_are_exact() {
     };
     assert_eq!(roles.mailbox_key_generation, u64::MAX);
     assert_eq!(roles.stamp_key_generation, u64::MAX);
-    set(
-        &mut p,
-        6,
+    // Exactly 366 days is accepted and one nanosecond more is refused. The relay binding is
+    // extended to cover both, so only the validity cap decides.
+    let time = |seconds: i128, nanoseconds: i128| {
         frank_cbor::cbor_map(vec![
-            (0, CborValue::Int(1_700_003_600)),
-            (1, CborValue::Int(1)),
-        ]),
-    );
+            (0, CborValue::Int(seconds)),
+            (1, CborValue::Int(nanoseconds)),
+        ])
+    };
+    let CborValue::Map(fields) = &p else {
+        panic!("map")
+    };
+    let Some((_, CborValue::Array(relays))) = fields.iter().find(|(key, _)| *key == 4) else {
+        panic!("relays")
+    };
+    let CborValue::Map(mut relay) = relays[0].clone() else {
+        panic!("relay")
+    };
+    for (key, value) in &mut relay {
+        if *key == 3 {
+            *value = time(1_700_000_000 + 31_626_000, 0);
+        }
+    }
+    set(&mut p, 4, CborValue::Array(vec![CborValue::Map(relay)]));
+    set(&mut p, 6, time(1_700_000_000 + 31_622_400, 0));
+    parse(&statement(&p, 4, 4));
+    set(&mut p, 6, time(1_700_000_000 + 31_622_400, 1));
     let Error::Codec(err) =
         validate_frame(&statement(&p, 4, 4), &preview_directory_context()).unwrap_err()
     else {

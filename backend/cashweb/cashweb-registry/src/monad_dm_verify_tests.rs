@@ -60,6 +60,13 @@ fn fixture_current_evidence(evidence: HistoricalEvidence, now: Timestamp) -> Cur
         message_key: value.message,
         stamp_key: value.stamp,
         previous_stamp: None,
+        relay: frank_cbor::RelayBinding {
+            relay_id: vec![],
+            endpoint: String::new(),
+            identity: value.subject.clone(),
+            expiry: now,
+            unknown: vec![],
+        },
         revision: value.revision,
         generations: value.generations,
         status,

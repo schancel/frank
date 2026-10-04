@@ -462,6 +462,29 @@ impl<'a> Directory<'a> {
     /// stay private; a failed terminal check cannot advance the durable head or stamp pair.
     /// A verified competing child is the sole rejection that durably retains a fork proof.
     pub fn advance(&self, candidates: &[Candidate<'_>], context: Context<'_>) -> Result<Current> {
+        self.advance_with(candidates, context.now, BindingPolicy::Exact(context.relay))
+    }
+
+    /// As [`Self::advance`], for a relay's routing table: the head may name any relay.
+    pub fn advance_declared(
+        &self,
+        candidates: &[Candidate<'_>],
+        now: Option<Timestamp>,
+    ) -> Result<Current> {
+        self.advance_with(candidates, now, BindingPolicy::Declared)
+    }
+
+    /// As [`Self::current`], for a relay's routing table: the head may name any relay.
+    pub fn current_declared(&self, now: Option<Timestamp>) -> Result<Current> {
+        self.advance_with(&[], now, BindingPolicy::Declared)
+    }
+
+    fn advance_with(
+        &self,
+        candidates: &[Candidate<'_>],
+        now: Option<Timestamp>,
+        binding: BindingPolicy<'_>,
+    ) -> Result<Current> {
         self.ensure_available()?;
         let _guard = self
             .db
@@ -479,9 +502,9 @@ impl<'a> Directory<'a> {
             }
         }
         let loaded = self.storage(self.load(meta.as_ref()))?;
-        let now = policy::clock(context.now, loaded.as_ref().map(|s| s.checked))?;
+        let now = policy::clock(now, loaded.as_ref().map(|s| s.checked))?;
         // Missing trust input never poisons a subject, including with a valid signed competitor.
-        if context.relay.is_none() {
+        if matches!(binding, BindingPolicy::Exact(None)) {
             return Err(AdmissionError::Binding);
         }
         let mut state = loaded.unwrap_or(State {
@@ -526,7 +549,7 @@ impl<'a> Directory<'a> {
                 }
             }
         }
-        state.history.head()?.fresh(now, context.relay)?;
+        state.history.head()?.fresh(now, binding)?;
         state.checked = now;
         let committed = self.storage(self.commit(&mut state, meta.as_ref()))?;
         Self::current_result(&state, committed.status()?)
@@ -558,7 +581,10 @@ impl<'a> Directory<'a> {
         if !state.proof.is_empty() {
             return Err(AdmissionError::Fork);
         }
-        state.history.head()?.fresh(now, context.relay)
+        state
+            .history
+            .head()?
+            .fresh(now, BindingPolicy::Exact(context.relay))
     }
 
     /// Recheck the durable head against freshly supplied trust inputs; successful checked-time
@@ -574,6 +600,7 @@ impl<'a> Directory<'a> {
             message_key: h.message.clone(),
             stamp_key: h.stamp.clone(),
             previous_stamp: state.history.previous.clone(),
+            relay: h.relay.clone(),
             revision: h.revision,
             generations: h.generations,
             status,

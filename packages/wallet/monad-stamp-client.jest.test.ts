@@ -1852,7 +1852,6 @@ async function makeCanonicalConsumerFixture() {
         maxPriorityFeePerGas: 1n,
         value: 32n,
         to: '0x' + toHex(destination.address),
-        data: '0x504f4e4402' + toHex(paymentCommitment(digest, 0)),
       },
     )
     const tx = Transaction.from(raw)
@@ -2158,6 +2157,14 @@ describe('canonical durable consumer barriers', () => {
       expect(record.lifecycle?.spend?.rawTx).toBe(
         `0x${toHex(attempt.request.parts.transactions[0])}`,
       )
+      // #826: a canonical stamp payment is a plain value transfer. No calldata, and in
+      // particular no constant `POND` tag, may appear in any signed member.
+      expect(attempt.request.parts.transactions.length).toBeGreaterThan(0)
+      for (const raw of attempt.request.parts.transactions) {
+        const signed = Transaction.from(`0x${toHex(raw)}`)
+        expect(signed.data).toBe('0x')
+        expect(toHex(raw)).not.toContain('504f4e44')
+      }
       expect(() => f.state.assertSemanticallyValid()).not.toThrow()
       expect(f.client.terminalOutcomes()).toHaveLength(1)
       await f.client.acknowledgeWorkflow(link.attemptRef, link.consumerId)

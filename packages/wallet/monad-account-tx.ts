@@ -158,6 +158,26 @@ export class MonadAccountTxSigner {
   ): Promise<FrozenUnsignedMonadTx> {
     if (!data || data === '0x')
       throw new Error('Canonical call requires calldata')
+    return this.populateUnsigned(to, value, data, overrides)
+  }
+
+  /** Resolve quotes for a plain value transfer with empty calldata, without signing or
+   * submitting. A canonical direct-message stamp payment is exactly this: nothing in the
+   * transaction marks it as a Frank payment. */
+  async populateUnsignedTransfer(
+    to: string,
+    value: bigint,
+    overrides: MonadTxOverrides = {},
+  ): Promise<FrozenUnsignedMonadTx> {
+    return this.populateUnsigned(to, value, '0x', overrides)
+  }
+
+  private async populateUnsigned(
+    to: string,
+    value: bigint,
+    data: string,
+    overrides: MonadTxOverrides,
+  ): Promise<FrozenUnsignedMonadTx> {
     const populated = await this.wallet.populateTransaction({
       to,
       value,
@@ -172,6 +192,7 @@ export class MonadAccountTxSigner {
       throw new Error('Canonical populated sender mismatch')
     const transaction = Transaction.from(unsignedFields)
     if (
+      transaction.data.toLowerCase() !== data.toLowerCase() ||
       transaction.to === null ||
       transaction.chainId <= 0n ||
       transaction.gasLimit <= 0n ||

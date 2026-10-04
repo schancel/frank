@@ -40,6 +40,7 @@ import {
   refundBetStep,
   roleOf,
   seedFromBytes,
+  totalStakeWei,
   DEALER_COVER_MULTIPLE,
   type HandEvent,
   type HandItem,
@@ -186,8 +187,17 @@ export class FileBotStore implements BotStore {
 }
 
 export interface BotConfig {
-  /** The max bet the bot offers when it challenges, and the most it bets as a player. */
+  /** The max bet the bot offers when it challenges or accepts as dealer. */
   maxBetWei: bigint
+  /** The most the bot bets in one hand as player. Default: ten ordinary stamps. A dealer the bot
+   * does not know can keep this, so it is small unless configured. */
+  playerBetWei?: bigint
+  /** The most the bot has at stake as player across all its open hands. Default: three bets. */
+  maxPlayerRiskWei?: bigint
+  /** How many hands with money at stake the bot holds at once, in either role. A silent
+   * opponent keeps a hand open for good, so this bounds what silence can tie up. Default 20.
+   * Independently of it, the bot holds at most one such hand per account. */
+  maxOpenHands?: number
   /** The ordinary stamp of a message that carries no money. */
   stampWei: bigint
   /** What the bot keeps back for the fees of its own messages. */
@@ -242,6 +252,14 @@ export class BlackjackP2pBot {
     const log = (games[event.item.gameId] ??= [])
     if (log.some(e => e.digest === event.digest)) return
     log.push({ ...event, stampWei: event.stampWei.toString() })
+  }
+
+  /** Logs a refusal once per run, not once per round. */
+  private readonly logged = new Set<string>()
+  private logOnce(key: string, line: string): void {
+    if (this.logged.has(key)) return
+    this.logged.add(key)
+    this.log(line)
   }
 
   private save(): void {
@@ -434,6 +452,38 @@ export class BlackjackP2pBot {
     return total
   }
 
+  /** The hands that have money at stake now, counting a bet or a deal the bot has queued. */
+  private openHands(): { peers: Set<string>; count: number; playerRiskWei: bigint } {
+    const open = { peers: new Set<string>(), count: 0, playerRiskWei: 0n }
+    const queued = (key: string) =>
+      this.state.outbox.find(row => row.key === key && row.phase !== 'dead')
+    for (const [peer, games] of Object.entries(this.state.hands))
+      for (const gameId of Object.keys(games)) {
+        const state = this.hand(peer, gameId)
+        if (!state) continue
+        const hand = `${peer}|${gameId}`
+        const role = roleOf(state, this.account.address)
+        const staked = ['player_turn', 'awaiting_card', 'dealer_turn'].includes(
+          state.phase,
+        )
+        if (role === 'player') {
+          const bet = state.phase === 'open' ? queued(`bet|${hand}`) : undefined
+          if (!staked && state.phase !== 'awaiting_deal' && !bet) continue
+          open.playerRiskWei += bet ? BigInt(bet.stampWei) : totalStakeWei(state)
+        } else if (role === 'dealer') {
+          // A bet the bot has not decided to deal is not open yet: it may still be returned.
+          if (
+            !staked &&
+            !(state.phase === 'awaiting_deal' && queued(`deal|${hand}`))
+          )
+            continue
+        } else continue
+        open.peers.add(peer)
+        open.count++
+      }
+    return open
+  }
+
   private newSeed(peer: string, gameId: string): string {
     const seed = seedFromBytes(this.random(32))
     this.state.seeds[`${lower(peer)}|${gameId}`] = seed
@@ -483,6 +533,17 @@ export class BlackjackP2pBot {
     let balance: bigint | undefined
     const spendableWei = async () =>
       (balance ??= await this.account.spendableWei())
+    const open = this.openHands()
+    const maxOpen = this.config.maxOpenHands ?? 20
+    const playerBet = this.config.playerBetWei ?? 10n * this.config.stampWei
+    const maxRisk = this.config.maxPlayerRiskWei ?? 3n * playerBet
+    /** Why the bot may not put money into one more hand with `peer`, if it may not. */
+    const closedTo = (peer: string): string | undefined =>
+      open.peers.has(peer)
+        ? 'another hand with this account is still open'
+        : open.count >= maxOpen
+        ? `${maxOpen} hands are already open`
+        : undefined
     for (const [peer, games] of Object.entries(this.state.hands))
       for (const gameId of Object.keys(games)) {
         const events = this.events(peer, gameId)
@@ -514,10 +575,30 @@ export class BlackjackP2pBot {
           continue
         const spendable = await spendableWei()
         if (role === 'dealer') {
+          const seed = this.state.seeds[`${peer}|${gameId}`] ?? ''
+          // Money the hand did not accept goes back first, whatever state the hand is in.
+          const owed = dealerStep(state, seed)
+          if (owed?.item.action === 'refund') {
+            queue(owed.item, owed.payWei ?? this.config.stampWei)
+            continue
+          }
           if (state.phase === 'challenged') {
+            const closed = closedTo(peer)
+            if (closed) {
+              this.logOnce(`accept|${hand}`, `not accepting ${gameId}: ${closed}`)
+              continue
+            }
+            const free = spendable - this.committedWei()
+            // The lowest of the challenge's max bet, the bot's own and what it can cover.
+            const wanted = [
+              state.maxBetWei,
+              this.config.maxBetWei,
+              maxDealerBetWei(free, this.reserveWei),
+            ].reduce((a, b) => (a < b ? a : b))
             const built = buildAccept({
               state,
-              spendableWei: spendable - this.committedWei(),
+              wantedMaxBetWei: wanted,
+              spendableWei: free,
               reserveWei: this.reserveWei,
               seed:
                 this.state.seeds[`${peer}|${gameId}`] ??
@@ -528,15 +609,25 @@ export class BlackjackP2pBot {
             else this.log(`cannot cover the challenge ${gameId} from ${peer}`)
             continue
           }
-          const seed = this.state.seeds[`${peer}|${gameId}`] ?? ''
-          let step = dealerStep(state, seed)
-          // A bet the bot can no longer cover (other hands took the money) goes back.
-          if (
-            step?.item.action === 'deal' &&
-            spendable - this.reserveWei <
+          let step = owed
+          if (step?.item.action === 'deal') {
+            // A bet goes back instead of being dealt when the bot can no longer cover it (other
+            // hands took the money), when this account already has an open hand, or when the
+            // bot holds as many open hands as it may.
+            const closed =
+              closedTo(peer) ??
+              (spendable - this.reserveWei <
               this.committedWei() + state.wagerWei * DEALER_COVER_MULTIPLE
-          )
-            step = refundBetStep(state)
+                ? 'the bot cannot cover it'
+                : undefined)
+            if (closed) {
+              this.log(`returning the bet of ${gameId}: ${closed}`)
+              step = refundBetStep(state)
+            } else {
+              open.peers.add(peer)
+              open.count++
+            }
+          }
           if (step)
             queue(step.item, step.payWei ?? this.config.stampWei)
           continue
@@ -545,13 +636,25 @@ export class BlackjackP2pBot {
         const moves = playerMoves(state)
         const base = { type: 'blackjack-hand' as const, gameId }
         if (moves.includes('bet')) {
+          // The challenger picked the roles, so the bot plays. What it risks is bounded: one
+          // open hand per account, a small bet, and a limit on its total at stake as player.
+          const closed = closedTo(peer)
           const own = maxPlayerBetWei(spendable, this.reserveWei)
-          const wager = [state.maxBetWei, this.config.maxBetWei, own].reduce((a, b) =>
+          const wager = [state.maxBetWei, playerBet, own].reduce((a, b) =>
             a < b ? a : b,
           )
-          if (wager >= this.config.stampWei)
+          if (closed) this.logOnce(`bet|${hand}`, `not betting in ${gameId}: ${closed}`)
+          else if (open.playerRiskWei + wager > maxRisk)
+            this.logOnce(
+              `bet|${hand}`,
+              `not betting in ${gameId}: at most ${maxRisk} wei at stake as player`,
+            )
+          else if (wager >= this.config.stampWei) {
             queue({ ...base, action: 'bet' }, wager)
-          else this.log(`cannot afford a bet in ${gameId}`)
+            open.peers.add(peer)
+            open.count++
+            open.playerRiskWei += wager
+          } else this.logOnce(`bet|${hand}`, `cannot afford a bet in ${gameId}`)
         } else if (moves.length) {
           // The player's choices are few: draw below 17, otherwise stand.
           const action = handValue(state.playerCards).total < 17 ? 'hit' : 'stand'

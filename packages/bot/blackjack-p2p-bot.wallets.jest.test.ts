@@ -69,6 +69,7 @@ describe('the bot is an ordinary account on a real typed wallet', () => {
     }
     bot = new BlackjackP2pBot(account, new MemoryBotStore(), {
       maxBetWei: MAX_BET,
+      playerBetWei: MAX_BET,
       stampWei: STAMP,
       reserveWei: RESERVE,
     })

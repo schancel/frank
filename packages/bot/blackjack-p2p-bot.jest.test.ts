@@ -505,6 +505,13 @@ const dealerChallenge = (user: User, name: string, maxBetWei = '2000') =>
 const bets = (net: Net) => net.paidBy(BOT).filter(d => (d.item as HandItem).action === 'bet')
 
 describe('what the bot risks is bounded', () => {
+  it('accepts as dealer at most its own configured max bet, whatever the challenge names', async () => {
+    const { bot, user } = setup(RESERVE + 10_000_000n)
+    user.send({ gameId: gid('big'), action: 'challenge', role: 'player', maxBetWei: '1000000' })
+    await settle(bot)
+    expect(user.hand(gid('big')).state).toMatchObject({ phase: 'open', maxBetWei: 500n })
+  })
+
   it('bets on one hand per account, however many dealer challenges that account sends', async () => {
     const { net, bot, user } = setup()
     for (let i = 0; i < 20; i++) dealerChallenge(user, `spam-${i}`)
@@ -572,9 +579,15 @@ describe('what the bot risks is bounded', () => {
       user.send({ gameId: gid(`open-${i}`), action: 'bet' }, 300n, sha(`silent-${i}`))
       await settle(bot)
     }
-    const phases = users.map((user, i) => user.hand(gid(`open-${i}`)).state?.phase)
-    expect(phases.slice(0, 2).every(p => p === 'player_turn' || p === 'dealer_turn')).toBe(true)
-    expect(phases[2]).toBe('refunded')
+    const hands = users.map((user, i) => user.hand(gid(`open-${i}`)).state)
+    expect(
+      hands.slice(0, 2).every(h => h?.phase === 'player_turn' || h?.phase === 'dealer_turn'),
+    ).toBe(true)
+    // The third is not accepted, and the money it sent anyway comes back in full.
+    expect(hands[2]).toMatchObject({
+      phase: 'challenged',
+      rejected: [{ stampWei: 300n, refundedWei: 300n }],
+    })
   })
 })
 

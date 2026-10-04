@@ -3,7 +3,10 @@
  *
  *   BLACKJACK_P2P_ACCOUNT_ROOT_HEX=<64 hex>  the bot account's root secret (keep it private)
  *   BLACKJACK_P2P_STATE_DIR=<dir>            bot state and wallet storage (default ./.blackjack-p2p)
- *   BLACKJACK_P2P_MAX_BET_WEI=<wei>          max bet it offers and bets (default 0.1 MON)
+ *   BLACKJACK_P2P_MAX_BET_WEI=<wei>          max bet it offers or accepts as dealer (default 0.1 MON)
+ *   BLACKJACK_P2P_PLAYER_BET_WEI=<wei>       most it bets in one hand as player (default 10 stamps)
+ *   BLACKJACK_P2P_PLAYER_RISK_WEI=<wei>      most it has at stake as player in total (default 3 bets)
+ *   BLACKJACK_P2P_MAX_OPEN_HANDS=<n>         hands with money at stake at once (default 20)
  *   BLACKJACK_P2P_INTERVAL_MS=<ms>           poll interval (default 3000)
  *   plus the usual MONAD_* / relay variables read by `loadMonadChainConfigFromEnv`.
  *
@@ -45,6 +48,9 @@ async function installDirectory(_wallet: MonadChainWalletHandle): Promise<void> 
   )
 }
 
+const optionalWei = (name: string): bigint | undefined =>
+  process.env[name] ? BigInt(process.env[name] as string) : undefined
+
 async function main() {
   const stateDir = process.env.BLACKJACK_P2P_STATE_DIR ?? './.blackjack-p2p'
   const rootHex = requiredEnv('BLACKJACK_P2P_ACCOUNT_ROOT_HEX')
@@ -70,6 +76,11 @@ async function main() {
     new FileBotStore(join(stateDir, 'bot-state.json')),
     {
       maxBetWei: BigInt(process.env.BLACKJACK_P2P_MAX_BET_WEI ?? 10n ** 17n),
+      playerBetWei: optionalWei('BLACKJACK_P2P_PLAYER_BET_WEI'),
+      maxPlayerRiskWei: optionalWei('BLACKJACK_P2P_PLAYER_RISK_WEI'),
+      maxOpenHands: process.env.BLACKJACK_P2P_MAX_OPEN_HANDS
+        ? Number(process.env.BLACKJACK_P2P_MAX_OPEN_HANDS)
+        : undefined,
       stampWei: config.defaultStampValueWei,
       reserveWei: BET_MESSAGE_FEE_RESERVE_WEI,
       log,

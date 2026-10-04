@@ -1,0 +1,4 @@
+7f23a35362d3694b7ef0c39be0888bfa725f07885d314be4eab1e0921f95c7ca  /private/tmp/frank-770-browser-be8e16f.log
+2c07ff84a4c190cafcc882cd6e2c27ee3f889c733f907bb94b7059a69e23c2de  /private/tmp/frank-770-full-app-final.log
+64a470c3b35c5ae205738d78a996e55fad9002f453c4a614ef4e8f385d23a3e2  /private/tmp/frank-770-app-build-be8e16f.log
+b37bd4a5d564576eda49179ed03426e062961d7ab2a6d20fdb3cabf788786fa9  /private/tmp/frank-770-paired-app-be8e16f.json

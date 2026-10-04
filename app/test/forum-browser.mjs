@@ -141,8 +141,22 @@ async function openTab() {
       const response=await originalFetch.apply(this,arguments);
       row.status=response.status; row.contentType=response.headers.get('content-type');row.contentLength=response.headers.get('content-length');row.captureResponse=!window.__forumSkipResponseCapture;
       if(!window.__forumSkipResponseCapture){
+        if(row.method==='GET'&&response.body){
+          const getReader=response.body.getReader.bind(response.body);
+          response.body.getReader=function(...args){
+            const reader=getReader(...args),read=reader.read.bind(reader);let chunks=[],length=0;
+            reader.read=async function(){
+              try{const result=await read();
+                if(result.done){const body=new Uint8Array(length);let offset=0;for(const chunk of chunks){body.set(chunk,offset);offset+=chunk.length;}row.response=Array.from(body);chunks=[];}
+                else if(result.value){length+=result.value.byteLength;if(length<=4194304)chunks.push(result.value.slice());else throw Error('observer capture limit');}
+                return result;
+              }catch(error){row.captureError={name:error.name,message:error.message};throw error;}
+            };return reader;
+          };
+        }else{
         const capture=response.clone().arrayBuffer().then(body=>row.response=Array.from(new Uint8Array(body))).catch(error=>{row.captureError={name:error.name,message:error.message};});
         window.__forumResponseCaptures.push(capture);
+        }
       }
       return response;
     };

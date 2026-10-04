@@ -1229,8 +1229,32 @@ describe('canonical private mailbox', () => {
     pageHeaders['x-frank-mailbox-next-cursor'] = 'opaque'
     await expect(
       fetchCanonicalInboxPage({ ...auth, maxBytes: page.length + 5 }),
-    ).rejects.toThrow(/byte limit/)
+    ).rejects.toThrow(/byte limit|byte budget/)
   })
+  test.each([false, true])(
+    'complete %s page charges full cursor header: exact fit or one byte over',
+    async recovery => {
+      page = canonicalPage(recovery)
+      const cursor = 'opaque',
+        budget = page.length + 31 + cursor.length
+      pageHeaders['x-frank-mailbox-next-cursor'] = cursor
+      const fetchPage = recovery
+        ? fetchCanonicalRecoveryPage
+        : fetchCanonicalInboxPage
+      const exact = await fetchPage({ ...auth, maxBytes: budget })
+      expect(exact.records).toHaveLength(1)
+      expect(exact.nextCursor).toBe(cursor)
+      const publish = jest.fn()
+      await expect(
+        fetchPage({ ...auth, maxBytes: budget - 1 }).then(publish),
+      ).rejects.toThrow(/byte limit/)
+      expect(publish).not.toHaveBeenCalled()
+      delete pageHeaders['x-frank-mailbox-next-cursor']
+      const absent = await fetchPage({ ...auth, maxBytes: page.length })
+      expect(absent.records).toHaveLength(1)
+      expect(absent.nextCursor).toBeUndefined()
+    },
+  )
   test('truncated or over-cardinality page yields no partial record/cursor', async () => {
     page = page.slice(0, -3)
     pageHeaders['x-frank-mailbox-next-cursor'] = 'next'

@@ -155,6 +155,7 @@ impl Db {
         DbMonadTopicPosts::add_cfs(&mut cfs);
         DbMonadTopicVotes::add_cfs(&mut cfs);
         DbMonadProfiles::add_cfs(&mut cfs);
+        super::directory_subjects::DbDirectorySubjects::add_cfs(&mut cfs);
         let db = Self::open_with_cfs(path, cfs)?;
         db.monad_outbox()
             .migrate_legacy_delivered_ownership(limits)?;
@@ -177,6 +178,13 @@ impl Db {
         crate::directory_admission::AdmissionError,
     > {
         super::directory_preview::Directory::open(self, anchor, mode)
+    }
+
+    /// Continuity rows and the address index of self-published directory subjects.
+    pub(crate) fn directory_subjects(
+        &self,
+    ) -> Result<super::directory_subjects::DbDirectorySubjects<'_>> {
+        super::directory_subjects::DbDirectorySubjects::new(self)
     }
 
     /// Returns `DbTopics`, allowing access to registry metadata.

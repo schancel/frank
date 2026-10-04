@@ -1,13 +1,21 @@
 //! Exact CBOR directory routes. Capacity is reserved before request-body collection.
+//!
+//! Publishing is open: any key may PUT its own signed entry. The only gates are the signature,
+//! the chain rules, a relay-wide subject cap and a per-source limit on first publications.
+use super::hourly_quota::{normalize_quota_ip, FixedHourQuota};
 use crate::directory_runtime::{DirectoryRuntime, Evidence, Operation, RuntimeError};
 use axum::{
     body::HttpBody,
-    extract::{Extension, Path, RawBody},
+    extract::{connect_info::ConnectInfo, Extension, Path, RawBody},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing, Router,
+    routing, Json, Router,
 };
-use std::{sync::Arc, time::Duration};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
 const MEDIA: &str = "application/vnd.frank.cbor";
 pub(crate) fn error(e: RuntimeError) -> Response {
     let (status, text) = match e {
@@ -62,19 +70,68 @@ fn evidence(result: std::result::Result<Evidence, RuntimeError>) -> Response {
             .into_response(),
     }
 }
-async fn current(
-    Extension(runtime): Extension<Arc<DirectoryRuntime>>,
-    Path((network, subject)): Path<(String, String)>,
+/// Shared state of the directory routes.
+#[derive(Debug)]
+pub(crate) struct Routes {
+    pub(crate) runtime: Arc<DirectoryRuntime>,
+    enrollments: FixedHourQuota<IpAddr>,
+}
+/// The address a first publication is charged to. A request that reaches the relay through a
+/// reverse proxy on the same host is charged to the client the proxy reports.
+fn source(peer: Option<ConnectInfo<SocketAddr>>, headers: &HeaderMap) -> IpAddr {
+    let peer = peer.map_or(IpAddr::V4(Ipv4Addr::LOCALHOST), |peer| peer.0.ip());
+    let forwarded = if peer.is_loopback() {
+        headers
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.rsplit(',').next())
+            .and_then(|value| value.trim().parse::<IpAddr>().ok())
+    } else {
+        None
+    };
+    normalize_quota_ip(forwarded.unwrap_or(peer))
+}
+fn now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+async fn current(routes: &Routes, network: &str, subject: &str) -> Result<Evidence, RuntimeError> {
+    let slot = routes.runtime.reserve(network, subject)?;
+    routes.runtime.submit(slot, Operation::Current).wait().await
+}
+/// `GET …/{P}/head` and `GET …/address/{0x-address}` share one route shape.
+async fn lookup(
+    Extension(routes): Extension<Arc<Routes>>,
+    Path((network, first, second)): Path<(String, String, String)>,
 ) -> Response {
-    match runtime.reserve(&network, &subject) {
-        Err(e) => error(e),
-        Ok(slot) => evidence(runtime.submit(slot, Operation::Current).wait().await),
+    if first == "address" {
+        let Ok(address) = crate::monad_http::Address::from_hex(&second) else {
+            return error(RuntimeError::Invalid);
+        };
+        let Some(subject) = routes.runtime.subject_for_address(&network, &address.0) else {
+            return error(RuntimeError::NotFound);
+        };
+        let mut response = evidence(current(&routes, &network, &subject).await);
+        if response.status() == StatusCode::OK {
+            response.headers_mut().insert(
+                header::HeaderName::from_static("x-frank-directory-subject"),
+                subject.parse().expect("hex"),
+            );
+        }
+        return response;
     }
+    if second != "head" {
+        return error(RuntimeError::NotFound);
+    }
+    evidence(current(&routes, &network, &first).await)
 }
 async fn historical(
-    Extension(runtime): Extension<Arc<DirectoryRuntime>>,
+    Extension(routes): Extension<Arc<Routes>>,
     Path((network, subject, t1)): Path<(String, String, String)>,
 ) -> Response {
+    let runtime = &routes.runtime;
     if t1.len() != 64
         || !t1
             .bytes()
@@ -94,11 +151,16 @@ async fn historical(
     }
 }
 async fn put(
-    Extension(runtime): Extension<Arc<DirectoryRuntime>>,
-    Path((network, subject)): Path<(String, String)>,
+    Extension(routes): Extension<Arc<Routes>>,
+    Path((network, subject, leaf)): Path<(String, String, String)>,
+    peer: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
     RawBody(mut body): RawBody,
 ) -> Response {
+    let runtime = &routes.runtime;
+    if leaf != "head" || subject == "address" {
+        return error(RuntimeError::NotFound);
+    }
     if headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -110,6 +172,15 @@ async fn put(
         Ok(s) => s,
         Err(e) => return error(e),
     };
+    // Publishing is free, so a key this relay has never seen is charged to its source.
+    if !runtime.is_published(&network, &subject)
+        && routes
+            .enrollments
+            .charge(source(peer, &headers), 1, now_seconds())
+            .is_err()
+    {
+        return error(RuntimeError::Resource);
+    }
     let collect = async {
         let mut bytes = Vec::new();
         while let Some(chunk) = body.data().await {
@@ -127,53 +198,41 @@ async fn put(
         Ok(Ok(bytes)) => evidence(runtime.submit(slot, Operation::Put(bytes)).wait().await),
     }
 }
-/// Read-only public description of what this process actually installed (#778). It is not
-/// authenticated by the request, installs nothing, and never states readiness or a Current.
-async fn installation(
-    Extension(runtime): Extension<Arc<DirectoryRuntime>>,
-    Path(manifest): Path<String>,
-) -> Response {
-    if manifest.len() != 64
-        || !manifest
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return error(RuntimeError::Invalid);
-    }
-    let manifest = hex::decode(manifest).unwrap().try_into().unwrap();
-    let slot = match runtime.reserve_installation() {
-        Ok(slot) => slot,
-        Err(e) => return error(e),
-    };
-    match runtime.submit_installation(slot, manifest).wait().await {
-        Err(e) => error(e),
-        Ok(body) => (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "application/json"),
-                (header::CACHE_CONTROL, "no-store"),
-            ],
-            body,
-        )
-            .into_response(),
-    }
+/// The relay-wide tuple an account embeds in its own entry.
+async fn info(Extension(routes): Extension<Arc<Routes>>) -> Response {
+    let info = routes.runtime.info();
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({
+            "network": info.network,
+            "relayId": hex::encode(&info.binding.relay_id),
+            "endpoint": info.binding.endpoint,
+            "relayKey": hex::encode(&info.binding.identity.key_bytes),
+            "bindingExpiry": info.binding_expiry_ns(),
+            // Whether this relay accepts a message for a recipient whose entry names another
+            // relay and forwards it there. While false such a message is answered as undeliverable.
+            "forwarding": false,
+        })),
+    )
+        .into_response()
 }
-/// Mount only when an explicit operator runtime exists; no implicit enrollment surface.
+/// Mount the open directory. Present whenever the relay has a `[registry.directory]` tuple.
 pub fn router(runtime: Arc<DirectoryRuntime>) -> Router {
+    let routes = Arc::new(Routes {
+        enrollments: FixedHourQuota::new(runtime.enrollments_per_source_per_hour()),
+        runtime,
+    });
     Router::new()
         .route(
-            "/directory/v1/:network/:subject/head",
-            routing::get(current).put(put),
+            "/directory/v1/:network/:subject/:leaf",
+            routing::get(lookup).put(put),
         )
         .route(
             "/directory/v1/:network/:subject/statements/:t1",
             routing::get(historical),
         )
-        .route(
-            "/directory-installation/:manifest_identity",
-            routing::get(installation),
-        )
-        .layer(Extension(runtime))
+        .route("/relay/v1/info", routing::get(info))
+        .layer(Extension(routes))
 }
 #[cfg(test)]
 #[path = "directory_tests.rs"]

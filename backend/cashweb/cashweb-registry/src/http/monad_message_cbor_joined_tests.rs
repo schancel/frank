@@ -3,7 +3,8 @@
 //!
 //! Nothing here is a captured fixture. `packages/wallet/canonical-relay-joined-driver.ts` runs
 //! one wallet phase per Node process against this test's live listeners. The only shared inputs
-//! are the checked-in public domain-root vectors and the admitted Directory attestations.
+//! are the checked-in public domain-root vectors and the two accounts' own signed directory
+//! entries, which each account publishes itself over HTTP. No account is configured on the relay.
 //! The chain is an owned in-process JSON-RPC fake: no funded-chain finality is claimed.
 use super::*;
 use crate::monad_evm_tx::DecodedSignedTransaction;
@@ -206,13 +207,35 @@ struct Joined {
 }
 impl Joined {
     async fn start(mode: ChainMode) -> Self {
-        let fixture = NativeDirectoryFixture::new().await;
+        // The relay starts knowing no account at all: its configuration is only its own tuple.
+        let fixture = NativeDirectoryFixture::publishing(|_| false).await;
         let chain = JoinedChain::new(mode);
         let (rpc_url, rpc_stop, rpc_task) = serve_http(chain.router()).await;
         let (url, http_stop, http_task) = serve_http(
             server(&fixture, &rpc_url).into_router_with_directory(Some(fixture.directory.clone())),
         )
         .await;
+        // Each account publishes its own signed entry over the public route, as a wallet does.
+        let attestations =
+            &admitted_source()["canonical_facade_final_http_case"]["wire"]["http_attestations"];
+        let client = reqwest::Client::new();
+        for (index, account) in fixture.accounts.iter().enumerate() {
+            let head = format!(
+                "{url}/directory/v1/{}/{}/head",
+                account.network, account.subject
+            );
+            assert_eq!(client.get(&head).send().await.unwrap().status(), 404);
+            let entry = hex::decode(attestations[index].as_str().unwrap()).unwrap();
+            let published = client
+                .put(&head)
+                .header("content-type", "application/vnd.frank.cbor")
+                .body(entry.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(published.status(), 200, "account {index} publishes itself");
+            assert_eq!(published.bytes().await.unwrap().as_ref(), entry);
+        }
         let work = fixture.root.path().join("joined-wallet");
         std::fs::create_dir(&work).unwrap();
         let source = admitted_source();
@@ -263,7 +286,9 @@ impl Joined {
             freeze["identity"]["submission_identity"].as_str().unwrap()
         );
         let owner = self.fixture.registry.canonical_dm();
-        let (sender, recipient, _) = request_principals(&request, "monad-testnet").unwrap();
+        let Principals {
+            sender, recipient, ..
+        } = request_principals(&request, "monad-testnet").unwrap();
         let sender = current(owner, "monad-testnet", &sender).await.unwrap();
         let recipient = current(owner, "monad-testnet", &recipient).await.unwrap();
         crate::monad_dm_verify::verify_canonical_stamp(

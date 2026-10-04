@@ -1148,9 +1148,14 @@ mod cap_tests {
         };
         &values.iter().find(|(k, _)| *k == key).unwrap().1
     }
-    #[tokio::test]
-    #[ignore = "real 4096-record public-facade route proof; run under the exclusive heavy lease"]
-    async fn exact_duplicate_at_cap_returns_actual_head_without_readvancing() {
+    struct AtCap {
+        _root: tempfile::TempDir,
+        runtime: DirectoryRuntime,
+        principal: DirectoryPrincipalConf,
+        frames: Vec<(Vec<u8>, Vec<u8>)>,
+        head: [u8; 32],
+    }
+    async fn at_cap() -> AtCap {
         let root = tempfile::tempdir().unwrap();
         let (registry, mut config) = setup(root.path());
         let original = hex::decode(record("bootstrap")["type4_hex"].as_str().unwrap()).unwrap();
@@ -1286,6 +1291,24 @@ mod cap_tests {
         let (runtime, ready) =
             DirectoryRuntime::start(registry, root.path().join("db"), config).unwrap();
         ready.await.unwrap().unwrap();
+        AtCap {
+            _root: root,
+            runtime,
+            principal: c,
+            frames,
+            head: previous.unwrap().try_into().unwrap(),
+        }
+    }
+    #[tokio::test]
+    #[ignore = "4096-record terminal algorithm proof; requires the exclusive heavy lease"]
+    async fn exact_duplicate_at_cap_returns_actual_head_without_readvancing() {
+        let AtCap {
+            _root,
+            runtime,
+            principal: c,
+            frames,
+            head,
+        } = at_cap().await;
         let mut submission = runtime.submit(
             runtime.reserve(&c.network, &c.subject).unwrap(),
             Operation::Put(frames[0].1.clone()),
@@ -1299,11 +1322,65 @@ mod cap_tests {
         let floor: Continuity =
             serde_json::from_slice(&bounded_file(&c.continuity_file, 8192).unwrap()).unwrap();
         assert_eq!(floor.checkpoint.accepted, MAX_STATEMENTS);
-        assert_eq!(
-            floor.checkpoint.head,
-            Some(previous.unwrap().try_into().unwrap())
-        );
+        assert_eq!(floor.checkpoint.head, Some(head));
         runtime.begin_shutdown();
         runtime.wait_stopped().await;
+    }
+    #[tokio::test]
+    #[ignore = "mandatory real HTTP4096 cap proof with the production60s waiter; run release under exclusive lease"]
+    async fn actual_http_exact_duplicate_at_cap_completes_with_production_waiter() {
+        let AtCap {
+            _root,
+            runtime,
+            principal: c,
+            frames,
+            head,
+        } = at_cap().await;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, stopped) = oneshot::channel::<()>();
+        let server = axum::Server::from_tcp(listener)
+            .unwrap()
+            .http1_header_read_timeout(Duration::from_secs(70))
+            .serve(crate::http::directory::router(Arc::new(runtime.clone())).into_make_service())
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            });
+        let server = tokio::spawn(server);
+        let result = async {
+            let response = reqwest::Client::builder()
+                .timeout(Duration::from_secs(70))
+                .build()
+                .unwrap()
+                .put(format!(
+                    "http://{address}/directory/v1/{}/{}/head",
+                    c.network, c.subject
+                ))
+                .header("content-type", "application/vnd.frank.cbor")
+                .body(frames[0].1.clone())
+                .send()
+                .await?;
+            let status = response.status();
+            let headers = response.headers().clone();
+            let body = response.bytes().await?;
+            Ok::<_, reqwest::Error>((status, headers, body))
+        }
+        .await;
+        stop.send(()).unwrap();
+        server.await.unwrap().unwrap();
+        runtime.begin_shutdown();
+        runtime.wait_stopped().await;
+        let (status, headers, bytes) = result.unwrap();
+        assert_eq!(status, reqwest::StatusCode::OK);
+        assert_eq!(headers["content-type"], "application/vnd.frank.cbor");
+        assert_eq!(headers["x-frank-directory-evidence"], "fresh-current");
+        assert_eq!(bytes.as_ref(), frames.last().unwrap().1);
+        let floor: Continuity =
+            serde_json::from_slice(&bounded_file(&c.continuity_file, 8192).unwrap()).unwrap();
+        assert_eq!(floor.checkpoint.accepted, MAX_STATEMENTS);
+        assert_eq!(floor.checkpoint.retained, MAX_STATEMENTS);
+        assert_eq!(floor.checkpoint.head, Some(head));
+        assert!(!floor.checkpoint.forked);
     }
 }

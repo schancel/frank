@@ -295,6 +295,13 @@ function isInsufficientFundsError(error: unknown): boolean {
   )
 }
 
+/** The original failure a `CanonicalMessagingHoldError` was raised for, if it carries one. */
+function heldCause(error: unknown): unknown {
+  return error instanceof Error && error.name === 'CanonicalMessagingHoldError'
+    ? (error as { cause?: unknown }).cause
+    : undefined
+}
+
 /** Maps a failed send to the reason class shown to the user, and says whether the message must
  * keep its payment attempt (so a later retry asks the wallet about it instead of paying again). */
 function classifySendFailure(
@@ -320,8 +327,17 @@ function classifySendFailure(
   if (isInsufficientFundsError(error)) {
     return { reason: 'insufficient-funds' }
   }
+  // An earlier payment that could not be finished holds this send. Show why it could not be
+  // finished; whatever payment set this message already has stays on it.
+  const held = heldCause(error)
+  if (isInsufficientFundsError(held)) {
+    return { reason: 'insufficient-funds', keepDigest: ownDigest }
+  }
   return {
-    reason: isNoResponseError(error) ? 'unreachable' : 'error',
+    reason:
+      isNoResponseError(error) || isNoResponseError(held)
+        ? 'unreachable'
+        : 'error',
     // Any failure after the payment set was journaled leaves that set on the message.
     keepDigest: ownDigest,
   }

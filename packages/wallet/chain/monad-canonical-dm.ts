@@ -83,6 +83,8 @@ export class CanonicalMessagingPendingError extends Error {
 
 /** A durable canonical payment record exists that no saved message accounts for. */
 export class CanonicalMessagingHoldError extends Error {
+  /** The original failure, unchanged, when an earlier payment could not be finished. Callers
+   * read its class (not enough funds, no response) from here to tell the user why. */
   readonly cause?: unknown
   constructor(
     message = 'An earlier canonical payment record cannot be matched to a saved message. Sending is held so nothing is paid twice.',

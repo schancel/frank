@@ -529,9 +529,12 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       f.alice,
       await f.directoryFor('alice', f.alice, f.bob),
     )
+    const failure = Object.assign(new Error('signer unavailable'), {
+      kind: 'insufficient-funds',
+    })
     const finish = jest
       .spyOn(MonadCanonicalStampClient.prototype, 'finishIntent')
-      .mockRejectedValue(new Error('signer unavailable'))
+      .mockRejectedValue(failure)
     let digest = ''
     try {
       await expect(
@@ -549,6 +552,19 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       expect((held as { cause?: Error }).cause?.message).toBe(
         'signer unavailable',
       )
+      // The next Send is held by the same earlier payment and is told the original failure
+      // itself, so the app can still say "not enough funds" or "unreachable".
+      const next = await f.chain.directMessages
+        .send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('behind the hold'),
+        })
+        .catch((error: unknown) => error)
+      expect(next).toBeInstanceOf(CanonicalMessagingHoldError)
+      expect((next as Error).name).toBe('CanonicalMessagingHoldError')
+      expect((next as { cause?: unknown }).cause).toBe(failure)
+      expect((held as { cause?: unknown }).cause).toBe(failure)
       expect(f.requests).toHaveLength(0)
     } finally {
       finish.mockRestore()

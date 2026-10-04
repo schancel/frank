@@ -26,6 +26,8 @@ import {
   MonadStampRecoveredAttemptError,
   MonadStampTerminalError,
 } from '@frank/wallet/monad-stamp-client'
+import { MonadRpcError } from '@frank/wallet/monad-http'
+import { CanonicalMessagingHoldError } from '@frank/wallet/chain/monad-canonical-dm'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { MessageWrapper } from '@frank/cashweb/types/messages'
 import {
@@ -968,6 +970,69 @@ describe('outgoing direct messages (#269, #270)', () => {
         }),
       ).resolves.toEqual({ state: 'needs-confirmation', reason: 'unverified' })
       expect(send).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('F5: an earlier payment that cannot be finished keeps its failure reason', () => {
+    const held = (cause?: unknown) =>
+      new CanonicalMessagingHoldError(
+        'An earlier payment could not be finished yet.',
+        cause,
+      )
+    it.each([
+      [
+        'not enough funds',
+        new MonadRpcError('insufficient-funds', 'rejected by node', undefined),
+        'insufficient-funds',
+      ],
+      [
+        'no response',
+        Object.assign(new Error('no response'), { isAxiosError: true }),
+        'unreachable',
+      ],
+      ['anything else', new Error('signer unavailable'), 'error'],
+      ['no cause', undefined, 'error'],
+    ])(
+      '%s behind the hold is shown as that reason',
+      async (_, cause, reason) => {
+        jest
+          .spyOn(activeChain.directMessages, 'send')
+          .mockRejectedValue(held(cause))
+        const chats = useChatStore()
+        await expect(
+          chats.sendMessage({ wallet, address: PEER, items: TEXT }),
+        ).resolves.toEqual({ state: 'failed', reason })
+        expect(only(chats)[0].delivery).toEqual(
+          expect.objectContaining({ failureReason: reason }),
+        )
+        // This message never got a payment of its own.
+        expect(only(chats)[0].delivery?.attemptDigest).toBeUndefined()
+      },
+    )
+
+    it('keeps this message’s own payment attempt when the hold comes after it was journaled', async () => {
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async (params: SendParams) => {
+          await params.onAttemptCreated?.(HASH)
+          throw held(
+            new MonadRpcError(
+              'insufficient-funds',
+              'rejected by node',
+              undefined,
+            ),
+          )
+        })
+      const chats = useChatStore()
+      await expect(
+        chats.sendMessage({ wallet, address: PEER, items: TEXT }),
+      ).resolves.toEqual({ state: 'failed', reason: 'insufficient-funds' })
+      expect(only(chats)[0].delivery).toEqual(
+        expect.objectContaining({
+          failureReason: 'insufficient-funds',
+          attemptDigest: HASH,
+        }),
+      )
     })
   })
 

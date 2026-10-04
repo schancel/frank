@@ -14,6 +14,7 @@ export type { EnvelopeFields } from './frame'
 export { encodeFrame, wrapFrame } from './frame'
 export * from './types'
 export * from './forum'
+export * from './blackjack'
 export * from './directory-preview'
 export type {
   DirectMessageValidationSession,

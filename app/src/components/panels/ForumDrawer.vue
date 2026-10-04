@@ -75,6 +75,12 @@
           @click="setTopic(name)"
         >
           <q-item-section>{{ name }}</q-item-section>
+          <q-item-section side v-if="discoveredTopics[name]">
+            <span data-test="forum-topic-count" :data-topic="name">{{
+              discoveredTopics[name].postCount
+            }}</span>
+            <span class="text-caption">posts</span>
+          </q-item-section>
         </q-item>
         <q-item v-if="discoveredTopicNames.length === 0">
           <q-item-section class="text-grey"
@@ -123,6 +129,7 @@ export default defineComponent({
     return {
       topics,
       discoveredTopicNames,
+      discoveredTopics: computed(() => topicStore.discoveryStatus === 'verified' ? topicStore.discoveredTopics : ({} as typeof topicStore.discoveredTopics)),
       storeSelectedTopic: selectedTopic,
       storeSortMode: sortMode,
       storeDuration: duration,

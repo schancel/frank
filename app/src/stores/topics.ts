@@ -7,7 +7,7 @@ import { DEFAULT_TOPIC_NAMES } from 'src/stores/default-topics'
 
 import { activeChain, WalletHandle } from '@frank/wallet/chain'
 
-import type { ForumMessage, ForumMessageEntry } from '@frank/wallet/forum-model'
+import type { DiscoveredTopic, ForumMessage, ForumMessageEntry } from '@frank/wallet/forum-model'
 
 export type MessageWithReplies = ForumMessage & {
   replies: MessageWithReplies[]
@@ -35,6 +35,7 @@ export type TopicData = {
 }
 
 export interface State {
+  discoveredTopics: Record<string, DiscoveredTopic>
   discoveryStatus: 'unverified' | 'verified' | 'error'
   discoveryError: string | null
   topics: Record<Topic, TopicData>
@@ -63,6 +64,7 @@ const discoveryRequests = new WeakMap<object, object>()
 
 export const useTopicStore = defineStore('topics', {
   state: (): State => ({
+    discoveredTopics: {},
     discoveryStatus: 'unverified',
     discoveryError: null,
     topics: {},
@@ -208,7 +210,14 @@ export const useTopicStore = defineStore('topics', {
       const token = {}
       discoveryRequests.set(this, token)
       let discovered
-      try { discovered = await stageForumQuery(() => activeChain.topics.discoverTopics(), () => discoveryRequests.get(this) === token && revision === accountStatus.revision && status === accountStatus.status && activeChain === chain) }
+      try {
+        discovered = await stageForumQuery(() => activeChain.topics.discoverTopics(), () => discoveryRequests.get(this) === token && revision === accountStatus.revision && status === accountStatus.status && activeChain === chain)
+        for (const row of discovered ?? []) {
+          if (typeof row.postCount !== 'string' || !/^(0|[1-9][0-9]*)$/.test(row.postCount) || row.postCount.length > 20 || BigInt(row.postCount) > 18446744073709551615n) {
+            throw new Error('Invalid canonical topic post count')
+          }
+        }
+      }
       catch (error) {
         if (discoveryRequests.get(this) !== token || revision !== accountStatus.revision || status !== accountStatus.status || activeChain !== chain) return false
         this.$patch({discoveryStatus: 'error', discoveryError: error instanceof Error ? error.message : String(error)})
@@ -222,8 +231,10 @@ export const useTopicStore = defineStore('topics', {
           topics[topic] = { topic, threshold: '0', offering: defaultOffering, messages: [] }
         }
       }
+      const discoveredTopics = Object.fromEntries(discovered.map(row => [row.topic, { ...row }]))
       this.$patch(state => {
         state.topics = topics
+        state.discoveredTopics = discoveredTopics
         state.discoveryStatus = 'verified'
         state.discoveryError = null
       })
@@ -278,6 +289,7 @@ export const useTopicStore = defineStore('topics', {
         deserializedState: Partial<ReducedState>,
       ): State => {
         const hydratedState: State = {
+          discoveredTopics: {},
           discoveryStatus: 'unverified',
           discoveryError: null,
           messageIndex: {},

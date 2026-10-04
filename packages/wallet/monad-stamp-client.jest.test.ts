@@ -1579,7 +1579,10 @@ import {
   type MonadRootBundle,
 } from './monad-wallet-material'
 import domainVectors from '../domain-roots/vectors/domain-roots-v1.json'
-import { openExistingPoolMonadTopicOwner } from './storage/monad-wallet-bundle'
+import {
+  openExistingPoolMonadTopicOwner,
+  MonadWalletOperationAdmission,
+} from './storage/monad-wallet-bundle'
 import { LevelSubAccountPoolStore } from './storage/level-sub-account-pool-store'
 import { LevelChangePoolStore } from './storage/level-change-pool-store'
 import {
@@ -1737,7 +1740,9 @@ async function makeCanonicalConsumerFixture() {
   await pool.flush()
   const leaseManager = new SubAccountLeaseManager(pool)
   let enclosed = false
+  let queue = Promise.resolve()
   const state = await openExistingPoolMonadTopicOwner({
+    encloseFinancialOperation: operation => exclusive(operation, false),
     location,
     pool,
     changePool,
@@ -1766,12 +1771,16 @@ async function makeCanonicalConsumerFixture() {
   })
   ;(provider as unknown as { _perform: typeof providerCalls })._perform =
     providerCalls
-  let queue = Promise.resolve()
-  const exclusive = <T>(operation: () => Promise<T>): Promise<T> => {
+  const exclusive = <T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+    canonical = true,
+  ): Promise<T> => {
     const result = queue.then(async () => {
       enclosed = true
       try {
-        return await state.runCanonicalOperation(operation)
+        return await (canonical
+          ? state.runCanonicalOperation(operation)
+          : state.runOperation(operation))
       } finally {
         enclosed = false
       }
@@ -1950,6 +1959,77 @@ describe('canonical durable consumer barriers', () => {
       expect(sign).not.toHaveBeenCalled()
       sign.mockRestore()
       expect(f.state.canonicalJournal!.getIntents()).toHaveLength(1)
+    })
+  }, 20000)
+  it('holds canonical intent persistence behind a direct legacy quote admission', async () => {
+    await withCanonicalConsumer(async f => {
+      let releaseQuote!: () => void
+      let observedQuote!: () => void
+      const held = new Promise<void>(resolve => {
+        releaseQuote = resolve
+      })
+      const observed = new Promise<void>(resolve => {
+        observedQuote = resolve
+      })
+      f.providerCalls.mockImplementation(async req => {
+        if (req.method === 'getBalance') {
+          observedQuote()
+          await held
+          throw new Error('held legacy quote rejected')
+        }
+        throw new Error(`unexpected held quote ${req.method}`)
+      })
+      const legacy = new MonadStampClient({
+        pool: f.pool,
+        leaseManager: f.leaseManager,
+        provider: f.provider,
+        httpClient: f.httpClient,
+        relayBaseUrl: 'https://a.example',
+      })
+      const write = jest.spyOn(f.subStore, 'putMany')
+      const sign = jest.spyOn(
+        MonadAccountTxSigner.prototype,
+        'buildAndSignTransfer',
+      )
+      const legacyResult = legacy
+        .submitStampedMessage({
+          encryptedPayload: Uint8Array.of(1),
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          stampValueWei: 32n,
+        })
+        .catch(error => error)
+      await observed
+      const callback = jest.fn(async () => {
+        throw new Error('link was not synced')
+      })
+      const canonicalResult = f.prepare(1, callback).catch(error => error)
+      await new Promise(resolve => setImmediate(resolve))
+      expect(f.state.canonicalJournal!.getIntents()).toHaveLength(0)
+      expect(callback).not.toHaveBeenCalled()
+      expect(write).not.toHaveBeenCalled()
+      expect(sign).not.toHaveBeenCalled()
+      f.providerCalls.mockImplementation(async req => {
+        if (req.method === 'getBalance') return 1000000000n
+        if (req.method === 'getTransactionCount') return 0
+        if (req.method === 'estimateGas') return 50000n
+        throw new Error(`unexpected canonical quote ${req.method}`)
+      })
+      releaseQuote()
+      expect(await legacyResult).toBeInstanceOf(Error)
+      expect(await canonicalResult).toBeInstanceOf(Error)
+      expect(callback).toHaveBeenCalledTimes(1)
+      expect(f.state.canonicalJournal!.getIntents()).toHaveLength(1)
+      expect(write).not.toHaveBeenCalled()
+      expect(sign).not.toHaveBeenCalled()
+      await expect(
+        legacy.submitStampedMessage({
+          encryptedPayload: Uint8Array.of(1),
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          stampValueWei: 32n,
+        }),
+      ).rejects.toThrow('Canonical pre-sign intent')
+      write.mockRestore()
+      sign.mockRestore()
     })
   }, 20000)
   it('rejects a foreign live lease before signing the correlated intent', async () => {

@@ -90,7 +90,12 @@ export interface MonadWalletPersistenceBundle {
   readonly canonicalJournal?: LevelCanonicalStampAttemptJournal
   readonly canonicalBinding?: { readonly tuple: string; readonly id: string }
   assertOpen(): void
-  runCanonicalOperation<T>(operation: () => Promise<T>): Promise<T>
+  runCanonicalOperation<T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+  ): Promise<T>
+  delegateAdmission(
+    admission: MonadWalletOperationAdmission,
+  ): MonadWalletPersistenceBundle
   /** Admits one complete stateful wallet operation. Close stops admission immediately and waits
    * for every admitted operation before closing stores or releasing root ownership. */
   runOperation<T>(
@@ -107,6 +112,29 @@ export interface MonadWalletPersistenceBundle {
 }
 
 const trustedPersistentBundles = new WeakSet<object>()
+const poolFinancialOperations = new WeakMap<
+  MonadSubAccountPool,
+  {
+    run<T>(
+      operation: (admission?: MonadWalletOperationAdmission) => Promise<T>,
+      admission?: MonadWalletOperationAdmission,
+    ): Promise<T>
+  }
+>()
+/** Every actual owner operation uses the same financial queue, including direct legacy clients. */
+export function runMonadPoolFinancialOperation<T>(
+  pool: MonadSubAccountPool,
+  operation: (admission?: MonadWalletOperationAdmission) => Promise<T>,
+  admission?: MonadWalletOperationAdmission,
+): Promise<T> {
+  const owner = poolFinancialOperations.get(pool)
+  if (!owner) {
+    if (admission !== undefined)
+      throw new Error('Foreign Monad financial admission')
+    return operation()
+  }
+  return owner.run(operation, admission)
+}
 const ordinaryPoolSelectionGuards = new WeakMap<
   MonadSubAccountPool,
   () => void
@@ -215,6 +243,9 @@ function makeBundle(params: {
   ownerToken?: object
   canonicalJournal?: LevelCanonicalStampAttemptJournal
   canonicalBinding?: { readonly tuple: string; readonly id: string }
+  encloseFinancialOperation?: <T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+  ) => Promise<T>
 }): MonadWalletPersistenceBundle {
   const ownerToken = params.ownerToken ?? {}
   const existingOwner = poolOwners.get(params.pool)
@@ -343,8 +374,37 @@ function makeBundle(params: {
       }
     },
     runOperation,
-    runCanonicalOperation<T>(operation: () => Promise<T>): Promise<T> {
+    runCanonicalOperation<T>(
+      operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+    ): Promise<T> {
       return runOperationImpl(operation, undefined, true)
+    },
+    delegateAdmission(
+      admission: MonadWalletOperationAdmission,
+    ): MonadWalletPersistenceBundle {
+      if (!activeAdmissions.has(admission))
+        throw new Error('Expired or foreign Monad financial admission')
+      const delegated = Object.freeze({
+        ...bundle,
+        assertOpen() {
+          bundle.assertOpen()
+          if (!activeAdmissions.has(admission))
+            throw new Error('Expired Monad financial admission')
+        },
+        runOperation: <T>(
+          operation: (token: MonadWalletOperationAdmission) => Promise<T>,
+          nested?: MonadWalletOperationAdmission,
+        ) => runOperationImpl(operation, nested ?? admission),
+        runCanonicalOperation: <T>(
+          operation: (token: MonadWalletOperationAdmission) => Promise<T>,
+        ) => runOperationImpl(operation, admission, true),
+        close: async () => {
+          throw new Error('Delegated admission cannot close the wallet owner')
+        },
+      })
+      if (params.durability === 'persistent')
+        trustedPersistentBundles.add(delegated)
+      return delegated
     },
     assertSemanticallyValid: () =>
       validateMonadWalletState({
@@ -384,12 +444,24 @@ function makeBundle(params: {
         if (poolOwners.get(params.pool) === ownerToken) {
           poolOwners.delete(params.pool)
           ordinaryPoolSelectionGuards.delete(params.pool)
+          poolFinancialOperations.delete(params.pool)
         }
       })()
       return closePromise
     },
   })
 
+  poolFinancialOperations.set(params.pool, {
+    run: <T>(
+      operation: (admission?: MonadWalletOperationAdmission) => Promise<T>,
+      admission?: MonadWalletOperationAdmission,
+    ): Promise<T> => {
+      if (admission !== undefined) return runOperationImpl(operation, admission)
+      if (params.encloseFinancialOperation)
+        return params.encloseFinancialOperation(operation)
+      return runOperation(operation)
+    },
+  })
   if (params.durability === 'persistent') {
     trustedPersistentBundles.add(bundle as object)
   }
@@ -407,6 +479,9 @@ export async function openExistingPoolMonadTopicOwner(params: {
   changeKeyring: MonadChangeKeyring
   stampReferencesLeaseIndex: (index: number) => boolean
   canonicalBinding?: { readonly tuple: string; readonly id: string }
+  encloseFinancialOperation?: <T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+  ) => Promise<T>
   assertEnclosingAdmission: () => void
 }): Promise<MonadWalletPersistenceBundle> {
   if (poolOwners.has(params.pool))
@@ -473,6 +548,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
       subKeyring: params.subKeyring,
       changeKeyring: params.changeKeyring,
       canonicalJournal,
+      encloseFinancialOperation: params.encloseFinancialOperation,
       canonicalBinding:
         canonicalJournal === undefined ? undefined : params.canonicalBinding,
       additionalLeaseReference: index =>

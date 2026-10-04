@@ -1,135 +1,86 @@
 <template>
   <div class="full-width column col" data-test="wallet-panel">
-    <p class="q-pa-sm" role="status">
-      {{ $t('accountRecovery.messaging_is_unavailable_for_typed_accounts_in') }}
-    </p>
-    <q-list>
-      <q-item
-        clickable
-        v-ripple
-        data-test="wallet-row"
-        @click="$router.push('/wallet')"
-      >
-        <q-item-section avatar
-          ><q-icon name="account_balance_wallet"
-        /></q-item-section>
-        <q-item-section
-          ><q-item-label> {{ $t('accountRecovery.main_wallet') }} </q-item-label
-          ><q-item-label caption role="status" data-test="wallet-balance">{{
-            loaded
-              ? formattedBalance
-              : $t(
-                  hasError
-                    ? 'accountRecovery.balance_unavailable'
-                    : 'accountRecovery.balance_loading',
-                )
-          }}</q-item-label></q-item-section
+    <q-scroll-area class="col">
+      <q-list>
+        <q-item-label header>{{ $t('walletPanel.title') }}</q-item-label>
+
+        <!-- Monad Main Wallet -->
+        <q-item
+          clickable
+          v-ripple
+          data-test="wallet-row"
+          @click="$router.push('/wallet')"
         >
-      </q-item>
-      <p v-if="loaded && hasError" role="status" data-test="balance-stale">
-        {{ $t('accountRecovery.balance_stale') }}
-      </p>
-    </q-list>
-    <section v-if="account.account" class="q-pa-sm">
-      <h2 class="text-subtitle1">
-        {{ $t('accountRecovery.frank_account_recovery') }}
-      </h2>
-      <p>
-        {{
-          $t(
-            'accountRecovery.backup_shares_were_verified_before_activation_keep',
-          )
-        }}
-      </p>
-      <q-input
-        :model-value="account.account.descriptor"
-        readonly
-        :label="$t('accountRecovery.public_recovery_descriptor')"
-        data-test="recovery-descriptor"
-      />
-      <q-btn
-        flat
-        :label="$t('accountRecovery.copy_public_descriptor')"
-        data-test="copy-descriptor"
-        @click="copyDescriptor"
-      />
-      <p role="status" aria-live="polite" data-test="copy-status">
-        {{ copyStatus }}
-      </p>
-      <p class="recovery-text">
-        {{ $t('accountRecovery.fingerprint') }}
-        {{ account.account.fingerprint }}
-      </p>
-    </section>
-    <section v-if="demoEnabled" class="q-pa-sm">
-      <p>{{ $t('accountRecovery.local_fake_demo_only_add_up_to') }}</p>
-      <q-btn
-        :label="$t('accountRecovery.add_simulated_funds')"
-        data-test="demo-fund"
-        :disable="funding || account.status !== 'ready'"
-        :loading="funding"
-        @click="fund"
-      />
-      <p role="status" aria-live="polite" data-test="fund-status">
-        {{ fundingStatus }}
-      </p>
-    </section>
-    <q-btn
-      flat
-      :label="$t('accountRecovery.create_or_restore_account')"
-      @click="$router.push('/setup')"
-    />
+          <q-item-section avatar>
+            <q-icon name="account_balance_wallet" />
+          </q-item-section>
+          <q-item-section>
+            <q-item-label data-test="wallet-name">
+              {{ $t('walletPanel.mainWallet') }}
+            </q-item-label>
+            <q-item-label caption role="status" data-test="wallet-balance">
+              {{
+                loaded
+                  ? formattedBalance
+                  : $t(
+                      hasError
+                        ? 'walletPanel.balanceUnavailable'
+                        : 'walletPanel.balanceLoading',
+                    )
+              }}
+            </q-item-label>
+          </q-item-section>
+          <q-item-section side>
+            <q-item-label caption data-test="wallet-chain">
+              {{ $t('walletPanel.monad') }}
+            </q-item-label>
+          </q-item-section>
+        </q-item>
+        <p
+          v-if="loaded && hasError"
+          role="status"
+          data-test="balance-stale"
+          class="q-px-md text-caption text-negative"
+        >
+          {{ $t('accountRecovery.balance_stale') }}
+        </p>
+
+        <q-separator class="q-my-sm" />
+
+        <!-- eCash Wallet -->
+        <q-item clickable v-ripple data-test="ecash-wallet-row">
+          <q-item-section avatar>
+            <q-icon name="toll" />
+          </q-item-section>
+          <q-item-section>
+            <q-item-label>eCash</q-item-label>
+            <q-item-label caption>0 XEC</q-item-label>
+          </q-item-section>
+          <q-item-section side>
+            <q-item-label caption>eCash</q-item-label>
+          </q-item-section>
+        </q-item>
+
+        <!-- Solana Wallet -->
+        <q-item clickable v-ripple data-test="solana-wallet-row">
+          <q-item-section avatar>
+            <q-icon name="account_balance" />
+          </q-item-section>
+          <q-item-section>
+            <q-item-label>Solana</q-item-label>
+            <q-item-label caption>0 SOL</q-item-label>
+          </q-item-section>
+          <q-item-section side>
+            <q-item-label caption>Solana</q-item-label>
+          </q-item-section>
+        </q-item>
+      </q-list>
+    </q-scroll-area>
   </div>
 </template>
+
 <script setup lang="ts">
-import { ref } from 'vue'
-import {
-  accountSession,
-  accountStatus as account,
-} from '../../accounts/session'
 import { useBalance } from '../../composables/useBalance'
-import { ensureDemoBalance } from '@frank/bot/demo/demo-funding'
-const { loaded, hasError, formattedBalance, refresh } = useBalance()
-const fakeChain = String(import.meta.env.QCLI_FRANK_FAKE_DEMO) === 'true'
-const rpcUrl = import.meta.env.QCLI_FRANK_DEMO_CONTROL_URL ?? ''
-const loopback = /^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})$/.exec(rpcUrl)
-const demoEnabled = fakeChain && !!loopback && Number(loopback[1]) <= 65535
-const funding = ref(false)
-const fundingStatus = ref('')
-const copyStatus = ref('')
-async function fund() {
-  if (!demoEnabled || funding.value) return
-  funding.value = true
-  const revision = account.revision
-  try {
-    const wallet = await accountSession.getWallet()
-    const address = await wallet.getReceiveAddress()
-    if (account.revision !== revision) return
-    await ensureDemoBalance({ fakeChain, rpcUrl }, address.raw)
-    if (account.revision !== revision) return
-    await refresh()
-    fundingStatus.value =
-      'Simulated credit confirmed. Balance refresh requested.'
-  } catch {
-    fundingStatus.value =
-      'Simulated funding unavailable. Your account remains active.'
-  } finally {
-    funding.value = false
-  }
-}
-async function copyDescriptor() {
-  if (!account.account) return
-  try {
-    await navigator.clipboard.writeText(account.account.descriptor)
-    copyStatus.value = 'Public descriptor copied.'
-  } catch {
-    copyStatus.value =
-      'Copy unavailable. Save the displayed public descriptor manually.'
-  }
-}
+
+const { loaded, hasError, formattedBalance } = useBalance()
 </script>
-<style scoped>
-.recovery-text {
-  overflow-wrap: anywhere;
-}
-</style>

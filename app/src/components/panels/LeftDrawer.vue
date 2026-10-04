@@ -159,7 +159,7 @@
 
       <!-- Keep the legacy-relay reconnect affordance while that runtime mode exists. The Wallet
       panel is the primary balance surface; this compatibility footer is not shown in Monad mode. -->
-      <q-list v-if="$status.setup && legacyRelayEnabled">
+      <q-list v-if="$status.setup">
         <q-separator />
         <q-item clickable>
           <q-item-section @click="openReceive">

@@ -1,3 +1,6 @@
+import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
+import { inspectCanonicalPreparedEnvelope } from '../monad-stamp-stealth'
+import { paymentCommitment } from '@frank/codec'
 import {
   LevelStampAttemptJournal,
   OutgoingStampAttempt,
@@ -737,6 +740,89 @@ async function unsignedIntentFixture(
   return { fixture, input, raw: tx.serialized }
 }
 
+async function recoveryStorageFixture(
+  journal: LevelCanonicalStampAttemptJournal,
+  count = 1,
+) {
+  const fixture = await canonicalFixture()
+  const envelope = inspectCanonicalPreparedEnvelope(
+    fixture.prepared.payload,
+    fixture.prepared.context,
+  )
+  const digest = fromHex(wire.t3)
+  const payments = [],
+    transactions = []
+  for (let childIndex = 0; childIndex < count; childIndex++) {
+    const destination = canonicalStampDestination({
+      network: wire.network,
+      stampKey: envelope.stampKey,
+      sharedPoint: envelope.payload.sharedPoint,
+      childIndex,
+    })
+    const commitment = paymentCommitment(digest, childIndex)
+    const raw = await new Wallet('0x' + '19'.repeat(32)).signTransaction({
+      type: 2,
+      chainId: 10143n,
+      nonce: childIndex,
+      value: 1n,
+      to: '0x' + toHex(destination.address),
+      gasLimit: 100000n,
+      maxFeePerGas: 2n,
+      maxPriorityFeePerGas: 1n,
+      data: '0x504f4e4401' + toHex(commitment),
+    })
+    const tx = Transaction.from(raw)
+    transactions.push(getBytes(raw))
+    payments.push(
+      cborMap([
+        [0, childIndex],
+        [1, getBytes(tx.hash!)],
+        [2, getBytes('0x' + '00'.repeat(31) + '01')],
+        [3, destination.address],
+        [4, commitment],
+      ]),
+    )
+  }
+  const delivery = encodeFrame(
+    { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+    cborMap([
+      [0, wire.network],
+      [
+        1,
+        cborMap([
+          [0, 1],
+          [1, envelope.stampKey.keyBytes],
+        ]),
+      ],
+      [2, fixture.prepared.payload],
+      [3, digest],
+      [4, payments],
+    ]),
+  )
+  const obligationId = 'cd'.repeat(32)
+  const request = freezeCanonicalRequest(
+    { delivery, context: fixture.prepared.context, transactions },
+    `frank-recovery-${obligationId.slice(0, 32)}`,
+  )
+  const tuple = JSON.stringify({
+    version: 1,
+    domain: 'frank-canonical-wallet-binding-v1',
+    network: wire.network,
+    chainId: '10143',
+    auth: '0x' + fixture.prepared.recipientSubject,
+    main: '0x' + '11'.repeat(20),
+  })
+  await journal.bindPublicTuple(tuple)
+  return {
+    obligationId,
+    request,
+    walletBindingId: sha256(toUtf8Bytes(tuple)).slice(2),
+    confirmedChildren: transactions.map((_, i) => i),
+    lifecycle: 'terminal:expired',
+    stampGeneration: '0',
+  }
+}
+
 describe('durable unsigned canonical intent', () => {
   it.each(['release', 'reject'] as const)(
     'waits for actual database intent completion before caller can acquire or sign: %s',
@@ -989,6 +1075,242 @@ describe('durable unsigned canonical intent', () => {
         if (phase === 'promoted')
           expect(journal.reconcile([])[0].state).toBe('hold')
         else expect(journal.lookup(input.prepared)).toBeUndefined()
+      })
+    },
+    20000,
+  )
+})
+
+describe('retained canonical recovery durability', () => {
+  it.each(['release', 'reject'] as const)(
+    'waits for the actual import put completion before an ACK caller: %s',
+    async outcome => {
+      await withCanonicalJournal(async journal => {
+        const input = await recoveryStorageFixture(journal)
+        const db = database(journal),
+          original = db.put.bind(db),
+          entered = barrier(),
+          gate = barrier()
+        const spy = jest.spyOn(db, 'put').mockImplementation((async (
+          ...args: unknown[]
+        ) => {
+          entered.resolve()
+          await gate.promise
+          return (original as (...args: unknown[]) => Promise<void>)(...args)
+        }) as never)
+        const ack = jest.fn()
+        const importing = journal.importRecovery(input).then(ack)
+        const observed = importing.then(
+          () => null,
+          error => error,
+        )
+        await entered.promise
+        expect(journal.getImportedRecoveries()).toEqual([])
+        expect(ack).not.toHaveBeenCalled()
+        if (outcome === 'release') gate.resolve()
+        else gate.reject(new Error('real import put rejected'))
+        const error = await observed
+        spy.mockRestore()
+        if (outcome === 'release') {
+          expect(error).toBeNull()
+          expect(ack).toHaveBeenCalledTimes(1)
+        } else {
+          expect(error?.message).toBe('real import put rejected')
+          expect(ack).not.toHaveBeenCalled()
+        }
+        await journal.Close()
+        await journal.Open()
+        expect(journal.getImportedRecoveries()).toHaveLength(
+          outcome === 'release' ? 1 : 0,
+        )
+      })
+    },
+  )
+  it('retains a committed-but-rejected import and exact recipient ACK fact across reopen', async () => {
+    await withCanonicalJournal(async journal => {
+      const input = await recoveryStorageFixture(journal),
+        db = database(journal),
+        original = db.put.bind(db)
+      const spy = jest.spyOn(db, 'put').mockImplementation((async (
+        ...args: unknown[]
+      ) => {
+        await (original as (...args: unknown[]) => Promise<void>)(...args)
+        throw new Error('import committed but callback uncertain')
+      }) as never)
+      await expect(journal.importRecovery(input)).rejects.toThrow(
+        'callback uncertain',
+      )
+      expect(() => journal.getImportedRecoveries()).toThrow('corrupt')
+      spy.mockRestore()
+      await journal.Close()
+      await journal.Open()
+      const retained = journal.importedRecovery(input.obligationId)!
+      expect(retained.request.body).toEqual(input.request.body)
+      expect(retained.accounts).toHaveLength(1)
+      expect(retained.recipientAcknowledged).toBe(false)
+      await journal.markRecoveryAcknowledged(input.obligationId)
+      await journal.Close()
+      await journal.Open()
+      expect(journal.importedRecovery(input.obligationId)).toEqual({
+        ...retained,
+        recipientAcknowledged: true,
+      })
+      expect(journal.getAll()).toEqual([])
+      expect(journal.getIntents()).toEqual([])
+    })
+  })
+  it('retains all 64 verified members and applies shared record backpressure without eviction', async () => {
+    await withCanonicalJournal(
+      async journal => {
+        const input = await recoveryStorageFixture(journal, 64)
+        await journal.importRecovery({
+          ...input,
+          lifecycle: 'pending',
+          confirmedChildren: input.confirmedChildren.slice(0, 32),
+        })
+        const imported = await journal.importRecovery(input)
+        expect(imported.accounts).toHaveLength(64)
+        await expect(
+          journal.importRecovery({
+            ...input,
+            confirmedChildren: input.confirmedChildren.slice(0, 63),
+          }),
+        ).rejects.toThrow('conflict')
+        await expect(journal.prepare(await canonicalFixture())).rejects.toThrow(
+          'capacity',
+        )
+        expect(journal.getImportedRecoveries()).toHaveLength(1)
+        expect(await journal.importRecovery(input)).toEqual(imported)
+        await journal.Close()
+        await journal.Open()
+        expect(journal.importedRecovery(input.obligationId)!.accounts).toEqual(
+          imported.accounts,
+        )
+      },
+      { maxRecords: 1 },
+    )
+  }, 20000)
+  it.each(['imported', 'acknowledged'] as const)(
+    'retains exact recipient funds and ACK state after %s SIGKILL without clean Close',
+    async phase => {
+      await withCanonicalJournal(async (journal, location) => {
+        const input = await recoveryStorageFixture(journal)
+        const fixture = {
+          request: input.request,
+          prepared: (await canonicalFixture()).prepared,
+          reservations: [],
+          consumerId: 'unused-storage-fixture',
+        }
+        await journal.Close()
+        const moduleUrl = pathToFileURL(
+          join(__dirname, 'stamp-attempt-journal.ts'),
+        ).href
+        const child = spawn(
+          process.execPath,
+          [
+            '--import',
+            'tsx',
+            '--input-type=module',
+            '-e',
+            `
+        import { LevelCanonicalStampAttemptJournal } from ${JSON.stringify(
+          moduleUrl,
+        )};
+        import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport';
+        const input=JSON.parse(process.env.CANONICAL_JOURNAL_FIXTURE);
+        const prepared={...input.prepared};
+        for(const k of ['payload','context','economicBinding']) prepared[k]=new Uint8Array(Buffer.from(prepared[k],'base64'));
+        const request=restoreCanonicalRequest({body:new Uint8Array(Buffer.from(input.body,'base64')),contentType:input.contentType});
+        const journal=new LevelCanonicalStampAttemptJournal(process.env.CANONICAL_JOURNAL_LOCATION);
+        await journal.Open();
+        const row=await journal.importRecovery({request,walletBindingId:input.walletBindingId,obligationId:input.obligationId,confirmedChildren:input.confirmedChildren,lifecycle:input.lifecycle,stampGeneration:input.stampGeneration});
+        if(process.env.CANONICAL_JOURNAL_PHASE==='acknowledged') await journal.markRecoveryAcknowledged(row.obligationId);
+        console.log('DURABLE '+row.obligationId); setInterval(()=>{},1000);
+      `,
+          ],
+          {
+            cwd: join(__dirname, '../../..'),
+            env: {
+              ...process.env,
+              TSX_TSCONFIG_PATH: join(__dirname, '../../bot/tsconfig.json'),
+              CANONICAL_JOURNAL_LOCATION: location,
+              CANONICAL_JOURNAL_PHASE: phase,
+              CANONICAL_JOURNAL_FIXTURE: JSON.stringify({
+                prepared: {
+                  ...fixture.prepared,
+                  payload: Buffer.from(fixture.prepared.payload).toString(
+                    'base64',
+                  ),
+                  context: Buffer.from(fixture.prepared.context).toString(
+                    'base64',
+                  ),
+                  economicBinding: Buffer.from(
+                    fixture.prepared.economicBinding,
+                  ).toString('base64'),
+                },
+                body: Buffer.from(fixture.request.body).toString('base64'),
+                contentType: fixture.request.contentType,
+                reservations: fixture.reservations,
+                consumerId: fixture.consumerId,
+                walletBindingId: input.walletBindingId,
+                obligationId: input.obligationId,
+                confirmedChildren: input.confirmedChildren,
+                lifecycle: input.lifecycle,
+                stampGeneration: input.stampGeneration,
+              }),
+            },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        )
+        let stderr = '',
+          output = ''
+        child.stderr!.on('data', chunk => {
+          stderr += chunk.toString()
+        })
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(
+              () =>
+                reject(new Error(`child durable barrier timeout: ${stderr}`)),
+              10000,
+            )
+            child.on('error', error => {
+              clearTimeout(timer)
+              reject(error)
+            })
+            child.on('exit', code => {
+              clearTimeout(timer)
+              reject(new Error(`child exited ${code}: ${stderr}`))
+            })
+            child.stdout!.on('data', chunk => {
+              output += chunk.toString()
+              if (output.includes('DURABLE ')) {
+                clearTimeout(timer)
+                resolve()
+              }
+            })
+          })
+        } finally {
+          const exit = new Promise<void>(resolve => {
+            if (child.exitCode !== null || child.signalCode !== null) resolve()
+            else child.once('exit', () => resolve())
+          })
+          if (child.exitCode === null && child.signalCode === null)
+            child.kill('SIGKILL')
+          await exit
+          await journal.Open()
+        }
+        expect(child.signalCode).toBe('SIGKILL')
+        expect(child.exitCode).toBeNull()
+        const retained = journal.importedRecovery(input.obligationId)!
+        expect(retained.request.body).toEqual(input.request.body)
+        expect(retained.request.contentType).toBe(input.request.contentType)
+        expect(retained.accounts).toHaveLength(1)
+        expect(retained.confirmedChildren).toEqual(input.confirmedChildren)
+        expect(retained.lifecycle).toBe(input.lifecycle)
+        expect(retained.recipientAcknowledged).toBe(phase === 'acknowledged')
+        expect(journal.getAll()).toEqual([])
+        expect(journal.getIntents()).toEqual([])
       })
     },
     20000,

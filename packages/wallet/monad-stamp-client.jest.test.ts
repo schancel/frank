@@ -1,3 +1,4 @@
+import { deriveRoleLeaves } from '../role-keys/src'
 import * as canonicalMailboxModule from '@frank/cashweb/relay/monad-mailbox-client'
 import { freezeCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
 import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
@@ -1602,6 +1603,7 @@ import {
   decodeCanonical,
   encodeCanonical,
   encodeFrame,
+  directorySignatureDigest,
   paymentCommitment,
   recipientPayloadDigest,
   cborMap,
@@ -1737,6 +1739,89 @@ async function makeCanonicalConsumerFixture() {
       items: [directMessageText('exact frozen text')],
       roles: material.canonicalRoles!.create('monad-testnet', senderCurrent),
     })
+  const rotateOwnStamp = async (
+    prior: typeof senderCurrent,
+    generation: bigint,
+  ) => {
+    const roots = canonicalTestRoots(0)
+    const leaves = deriveRoleLeaves({
+      authRoot: roots.authentication,
+      messageRoot: roots.messaging,
+      stampRoot: roots.evm,
+      messageGeneration: 0n,
+      stampGeneration: generation,
+    })
+    try {
+      const account = (point: Uint8Array) =>
+        cborMap([
+          [0, 1],
+          [1, point],
+        ])
+      const timestamp = (seconds: bigint) =>
+        cborMap([
+          [0, seconds],
+          [1, 0],
+        ])
+      const tuple = senderExport.configuration.relayA.tuple
+      const statement = encodeFrame(
+        { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+        cborMap([
+          [0, 'monad-testnet'],
+          [1, account(leaves.auth.public.compressedPoint)],
+          [2, generation],
+          [3, timestamp(100n + generation)],
+          [
+            4,
+            [
+              cborMap([
+                [0, tuple.relayId],
+                [1, tuple.endpoint],
+                [2, account(tuple.identity.keyBytes)],
+                [3, timestamp(tuple.expiry.seconds)],
+              ]),
+            ],
+          ],
+          [6, timestamp(3700n)],
+          [8, account(leaves.stamp.public.compressedPoint)],
+          [10, account(leaves.message.public.compressedPoint)],
+          [11, 0],
+          [12, generation],
+          [13, prior.evidence.hash],
+        ]),
+      )
+      const attestation = encodeFrame(
+        { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+        cborMap([
+          [0, statement],
+          [
+            1,
+            [
+              cborMap([
+                [0, 1],
+                [1, account(leaves.auth.public.compressedPoint)],
+                [
+                  2,
+                  new Uint8Array(
+                    material.identity.signHash(
+                      Buffer.from(
+                        directorySignatureDigest('monad-testnet', statement),
+                      ),
+                    ),
+                  ),
+                ],
+              ]),
+            ],
+          ],
+        ]),
+      )
+      return senderDirectory.advance([{ statement, attestation }], {
+        now: { seconds: 100n + generation, nanoseconds: 0 },
+        relay: tuple,
+      })
+    } finally {
+      leaves.dispose()
+    }
+  }
   const incomingRecovery = async (
     lifecycle = 'terminal:expired',
     confirmedChildren = [0],
@@ -1938,6 +2023,7 @@ async function makeCanonicalConsumerFixture() {
     client,
     state,
     incomingRecovery,
+    rotateOwnStamp,
     material,
     senderDirectory,
     senderExport,
@@ -2284,7 +2370,8 @@ describe('canonical durable consumer barriers', () => {
         recipient: input.record.identity.recipient,
         relayBaseUrl: 'https://a.example',
         getCurrent: async () => f.senderCurrent,
-        signDigest: async () => new Uint8Array(65),
+        signDigest: async (digest: Uint8Array) =>
+          new Uint8Array(f.material.identity.signHash(Buffer.from(digest))),
       }
       const acknowledging = f.client.ackImportedRecovery(
         input.record.obligationId,
@@ -2317,7 +2404,8 @@ describe('canonical durable consumer barriers', () => {
         recipient: input.record.identity.recipient,
         relayBaseUrl: 'https://a.example',
         getCurrent: async () => f.senderCurrent,
-        signDigest: async () => new Uint8Array(65),
+        signDigest: async (digest: Uint8Array) =>
+          new Uint8Array(f.material.identity.signHash(Buffer.from(digest))),
       }
       const ack = jest
         .spyOn(canonicalMailboxModule, 'ackCanonicalRecovery')
@@ -2348,4 +2436,165 @@ describe('canonical durable consumer barriers', () => {
       ack.mockRestore()
     })
   }, 20000)
+  it('settles only the exact retained obligation after two actual stamp rotations', async () => {
+    await withCanonicalConsumer(async f => {
+      const input = await f.incomingRecovery('pending', [])
+      await f.client.importRecovery(input)
+      const first = await f.rotateOwnStamp(f.senderCurrent, 1n)
+      const second = await f.rotateOwnStamp(first, 2n)
+      expect(second.generations[1]).toBe(2n)
+      expect(second.previousStamp!.keyBytes).not.toEqual(
+        f.senderCurrent.stampKey.keyBytes,
+      )
+      expect(() =>
+        f.client.verifyImportedRecoveryCustody(input.record.obligationId),
+      ).not.toThrow()
+      const terminal = {
+        ...input.record,
+        lifecycle: 'terminal:expired',
+        confirmedChildren: [0],
+      }
+      const imported = await f.client.importRecovery({ record: terminal })
+      expect(imported.stampGeneration).toBe('0')
+      expect(imported.accounts).toHaveLength(1)
+      expect(() =>
+        f.client.importRecovery({
+          record: { ...terminal, obligationId: 'ef'.repeat(32) },
+        }),
+      ).toThrow('new-import-admission')
+      await expect(
+        Promise.resolve().then(() =>
+          f.client.importRecovery({
+            record: { ...terminal, confirmedChildren: [] },
+          }),
+        ),
+      ).rejects.toThrow('conflict')
+      const changedRaw = terminal.parts.transactions[0].slice()
+      changedRaw[changedRaw.length - 1] ^= 1
+      await expect(
+        Promise.resolve().then(() =>
+          f.client.importRecovery({
+            record: {
+              ...terminal,
+              parts: { ...terminal.parts, transactions: [changedRaw] },
+            },
+          }),
+        ),
+      ).rejects.toThrow()
+      const changedContext = terminal.context.slice()
+      changedContext[changedContext.length - 1] ^= 1
+      await expect(
+        Promise.resolve().then(() =>
+          f.client.importRecovery({
+            record: {
+              ...terminal,
+              context: changedContext,
+              parts: { ...terminal.parts, context: changedContext },
+            },
+          }),
+        ),
+      ).rejects.toThrow()
+      expect(f.client.importedRecoveries()[0].request.body).toEqual(
+        imported.request.body,
+      )
+      expect(f.client.importedRecoveries()[0].accounts).toEqual(
+        imported.accounts,
+      )
+    })
+  }, 20000)
+  it('retains uncertain remote ACK and repeats the exact obligation after reopen', async () => {
+    await withCanonicalConsumer(async f => {
+      const input = await f.incomingRecovery()
+      const imported = await f.client.importRecovery(input)
+      const auth = {
+        expectedNetworkTag: 'MONT' as const,
+        subject: toHex(f.senderExport.auth.compressedPoint),
+        recipient: input.record.identity.recipient,
+        relayBaseUrl: 'https://a.example',
+        getCurrent: async () => f.senderCurrent,
+        signDigest: async (digest: Uint8Array) =>
+          new Uint8Array(f.material.identity.signHash(Buffer.from(digest))),
+      }
+      const ack = jest
+        .spyOn(canonicalMailboxModule, 'ackCanonicalRecovery')
+        .mockRejectedValueOnce(new Error('remote result lost'))
+        .mockResolvedValue(undefined)
+      await expect(
+        f.client.ackImportedRecovery(input.record.obligationId, auth),
+      ).rejects.toThrow('result lost')
+      expect(f.client.importedRecoveries()[0].recipientAcknowledged).toBe(false)
+      await f.state.canonicalJournal!.Close()
+      await f.state.canonicalJournal!.Open()
+      expect(f.client.importedRecoveries()[0].accounts).toEqual(
+        imported.accounts,
+      )
+      await f.client.ackImportedRecovery(input.record.obligationId, auth)
+      expect(ack).toHaveBeenCalledTimes(2)
+      expect(ack.mock.calls[0][0].payloadHashHex).toBe(
+        ack.mock.calls[1][0].payloadHashHex,
+      )
+      expect(ack.mock.calls[0][0].obligationIdHex).toBe(
+        ack.mock.calls[1][0].obligationIdHex,
+      )
+      expect(f.client.importedRecoveries()[0].recipientAcknowledged).toBe(true)
+      ack.mockRestore()
+    })
+  }, 20000)
+  it.each(['before', 'after'] as const)(
+    'preserves custody through an uncertain local ACK marker: %s commit',
+    async phase => {
+      await withCanonicalConsumer(async f => {
+        const input = await f.incomingRecovery(),
+          imported = await f.client.importRecovery(input)
+        const auth = {
+          expectedNetworkTag: 'MONT' as const,
+          subject: toHex(f.senderExport.auth.compressedPoint),
+          recipient: input.record.identity.recipient,
+          relayBaseUrl: 'https://a.example',
+          getCurrent: async () => f.senderCurrent,
+          signDigest: async (digest: Uint8Array) =>
+            new Uint8Array(f.material.identity.signHash(Buffer.from(digest))),
+        }
+        const journal = f.state.canonicalJournal!
+        const db = (
+          journal as unknown as {
+            database: { put: (...args: unknown[]) => Promise<void> }
+          }
+        ).database
+        const original = db.put.bind(db)
+        const write = jest
+          .spyOn(db, 'put')
+          .mockImplementation(async (...args) => {
+            if (phase === 'after') await original(...args)
+            throw new Error('local acknowledged marker uncertain')
+          })
+        const ack = jest
+          .spyOn(canonicalMailboxModule, 'ackCanonicalRecovery')
+          .mockResolvedValue(undefined)
+        await expect(
+          f.client.ackImportedRecovery(input.record.obligationId, auth),
+        ).rejects.toThrow('marker uncertain')
+        expect(() => f.client.importedRecoveries()).toThrow('corrupt')
+        write.mockRestore()
+        await journal.Close()
+        await journal.Open()
+        expect(f.client.importedRecoveries()[0].accounts).toEqual(
+          imported.accounts,
+        )
+        expect(f.client.importedRecoveries()[0].recipientAcknowledged).toBe(
+          phase === 'after',
+        )
+        expect(() =>
+          f.client.verifyImportedRecoveryCustody(input.record.obligationId),
+        ).not.toThrow()
+        await f.client.ackImportedRecovery(input.record.obligationId, auth)
+        expect(ack).toHaveBeenCalledTimes(phase === 'after' ? 1 : 2)
+        expect(f.client.importedRecoveries()[0].recipientAcknowledged).toBe(
+          true,
+        )
+        ack.mockRestore()
+      })
+    },
+    20000,
+  )
 })

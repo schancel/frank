@@ -69,6 +69,13 @@ describe('peer-to-peer blackjack hand items (type 18, schema 2)', () => {
     expect(() => projectBlackjackItem(frame)).toThrow('schema-1')
   })
 
+  it('reads a game id only when it is exactly 32 lowercase hex characters', () => {
+    const rejected = corpus.frames.filter(f => f.id.startsWith('reject-game-'))
+    expect(rejected).toHaveLength(5)
+    for (const f of rejected)
+      expect(f.expected).toEqual({ result: 'reject', stage: '8.2', category: 'schema' })
+  })
+
   it('does not project a schema-1 item as a hand item', () => {
     const stand = parsed(
       encodeBlackjackItem({ type: 'blackjack-move', gameId: 'g', action: 'stand' }),
@@ -85,7 +92,7 @@ describe('peer-to-peer blackjack hand items (type 18, schema 2)', () => {
     expect(projectBlackjackHandItem(frame).item).toEqual(BLACKJACK_HAND_ITEMS[4].item)
   })
 
-  const base = { type: 'blackjack-hand', gameId: 'g' }
+  const base = { type: 'blackjack-hand', gameId: '0'.repeat(32) }
   it.each([
     ['no amount on a bet', { ...base, action: 'bet', wagerWei: '5' }],
     ['no amount on a double', { ...base, action: 'double', amountWei: '5' }],
@@ -136,7 +143,10 @@ describe('peer-to-peer blackjack hand items (type 18, schema 2)', () => {
       seed: 'a'.repeat(64),
       outcome: 'tie',
     }],
-    ['schema-1 type name', { type: 'blackjack-move', gameId: 'g', action: 'bet' }],
+    ['game id __proto__', { type: 'blackjack-hand', gameId: '__proto__', action: 'bet' }],
+    ['game id of another length', { type: 'blackjack-hand', gameId: 'ab', action: 'bet' }],
+    ['uppercase game id', { type: 'blackjack-hand', gameId: 'A'.repeat(32), action: 'bet' }],
+    ['schema-1 type name', { type: 'blackjack-move', gameId: '0'.repeat(32), action: 'bet' }],
     ['missing game', { type: 'blackjack-hand', action: 'bet' }],
     ['duplicate cards', { ...base, action: 'card', playerCards: [1, 1, 2] }],
     ['not an object', null],

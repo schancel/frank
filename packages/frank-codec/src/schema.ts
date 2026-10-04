@@ -416,13 +416,13 @@ function blackjackHandPayload(payload: FrankValue): BlackjackHandMessageItem {
     )
   const read = (required: number[]) => {
     const m = fields(payload, P, [0, 1, ...required], [], false, false)
+    // Fixed form, so a game id is always safe to use as a key: 32 lowercase hex characters.
+    const gameId = tstr(m.get(0), `${P}.0`, 32, 32)
+    if (!/^[0-9a-f]{32}$/.test(gameId))
+      throw bad(`${P}.0`, 'game id must be 32 lowercase ASCII hex characters')
     return {
       m,
-      base: {
-        type: 18 as const,
-        schema: 2 as const,
-        gameId: tstr(m.get(0), `${P}.0`, 1, 128),
-      },
+      base: { type: 18 as const, schema: 2 as const, gameId },
     }
   }
   const hash = (m: MapView, key: number) => bstr(m.get(key), `${P}.${key}`, 32, 32)

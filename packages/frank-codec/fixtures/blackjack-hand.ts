@@ -12,7 +12,8 @@ import {
   type Encodable,
 } from '../src'
 
-const GAME = 'hand-1'
+/** A game id is exactly 32 lowercase hex characters. */
+const GAME = '00112233445566778899aabbccddeeff'
 const COMMITMENT = 'c0'.repeat(32)
 const SEED = '0123456789abcdef'.repeat(4)
 const REF = 'ab'.repeat(32)
@@ -55,7 +56,7 @@ export const BLACKJACK_HAND_ITEMS: readonly { id: string; item: BlackjackHandIte
     id: 'reveal',
     item: {
       ...base,
-      gameId: 'hand-🎴-é',
+      gameId: 'ffffffffffffffffffffffffffffffff',
       action: 'reveal',
       dealerCards: [13, 26, 39],
       seed: SEED,
@@ -82,6 +83,11 @@ const MALFORMED: readonly { id: string; frame: Uint8Array; context?: 'schema1' }
   { id: 'reject-action-out-of-range', frame: raw([g, [1, 26]]) },
   { id: 'reject-missing-game', frame: raw([[1, 18]]) },
   { id: 'reject-empty-game', frame: raw([[0, ''], [1, 18]]) },
+  { id: 'reject-game-proto', frame: raw([[0, '__proto__'], [1, 18]]) },
+  { id: 'reject-game-short', frame: raw([[0, GAME.slice(1)], [1, 18]]) },
+  { id: 'reject-game-long', frame: raw([[0, GAME + '0'], [1, 18]]) },
+  { id: 'reject-game-uppercase', frame: raw([[0, GAME.toUpperCase()], [1, 18]]) },
+  { id: 'reject-game-not-hex', frame: raw([[0, 'g'.repeat(32)], [1, 18]]) },
   { id: 'reject-bet-with-amount-field', frame: raw([g, [1, 18], [3, quantity(5n)]]) },
   {
     id: 'reject-challenge-player-with-commitment',

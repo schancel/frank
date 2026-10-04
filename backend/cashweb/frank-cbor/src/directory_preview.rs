@@ -65,7 +65,7 @@ fn valid_point(key: &AccountRef) -> bool {
 }
 
 /// Longest signed validity of one directory entry: 366 days, in nanoseconds.
-pub const MAX_DIRECTORY_VALIDITY_NS: i128 = 31_622_400_000_000_000;
+const MAX_DIRECTORY_VALIDITY_NS: i128 = 31_622_400_000_000_000;
 
 fn nanos(t: &Timestamp) -> i128 {
     i128::from(t.seconds) * 1_000_000_000 + i128::from(t.nanoseconds)
@@ -110,9 +110,7 @@ pub(crate) fn check_statement(typed: &TypedPayload) -> Result<(), CodecError> {
         ));
     }
     let duration = nanos(expiry) - nanos(timestamp);
-    if duration <= 0
-        || duration > MAX_DIRECTORY_VALIDITY_NS
-        || nanos(&relay.expiry) < nanos(expiry)
+    if duration <= 0 || duration > MAX_DIRECTORY_VALIDITY_NS || nanos(&relay.expiry) < nanos(expiry)
     {
         return Err(semantic("directory preview validity must be positive, at most 366 days and covered by relay expiry"));
     }

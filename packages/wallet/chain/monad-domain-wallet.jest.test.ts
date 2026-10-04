@@ -302,7 +302,7 @@ test('snapshots caller bytes, reuses exact bundles, rejects mismatches, wipes me
   await reopened.close()
 })
 
-test('typed DM entrypoints fail closed before plaintext, payment, or network access', async () => {
+test('typed DM entrypoints stay pending without a verified directory, before plaintext, payment, or network access', async () => {
   const chain = createMonadChain(config)
   const wallet = await chain.createWallet(roots())
   const items: import('@frank/cashweb/types/messages').MessageItem[] = []
@@ -324,19 +324,19 @@ test('typed DM entrypoints fail closed before plaintext, payment, or network acc
       recipient: { raw: expected[1].auth },
       items,
     }),
-  ).rejects.toThrow('#696')
+  ).rejects.toMatchObject({ name: 'CanonicalMessagingPendingError' })
   await expect(
     chain.directMessages.fetchSince({ wallet, sinceMs: 0 }),
-  ).rejects.toThrow('#696')
+  ).rejects.toMatchObject({ name: 'CanonicalMessagingPendingError' })
   await expect(
     chain.directMessages.reconcileAttempts({ wallet, payloadDigests: [] }),
-  ).rejects.toThrow('#696')
+  ).rejects.toMatchObject({ name: 'CanonicalMessagingPendingError' })
   await expect(
     chain.directMessages.unattributedAttempts({ wallet, knownDigests: [] }),
-  ).rejects.toThrow('#696')
+  ).rejects.toMatchObject({ name: 'CanonicalMessagingPendingError' })
   await expect(
     chain.directMessages.listRecoveredStampPayments({ wallet }),
-  ).rejects.toThrow('#696')
+  ).rejects.toThrow('legacy stamp-payment journal')
   await expect(
     chain.directMessages.sweepRecoveredStampPayment({
       wallet,
@@ -344,7 +344,7 @@ test('typed DM entrypoints fail closed before plaintext, payment, or network acc
       childIndex: 0,
       destination: { raw: expected[0].main },
     }),
-  ).rejects.toThrow('#696')
+  ).rejects.toThrow('legacy stamp-payment journal')
   expect(plaintextRead).not.toHaveBeenCalled()
   expect(network).not.toHaveBeenCalled()
   expect(signer).not.toHaveBeenCalled()

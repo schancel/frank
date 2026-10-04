@@ -1,4 +1,4 @@
-import type { BlackjackItem } from '@frank/codec'
+import type { BlackjackHandItem, BlackjackItem } from '@frank/codec'
 
 import { Utxo } from './utxo'
 
@@ -29,6 +29,10 @@ export interface ImageItem {
   type: 'image'
   image: string
 }
+
+/** One message of a peer-to-peer blackjack hand (type 18, schema 2). It carries no amount: a
+ * wager, payout or refund is the stamp of the message. See docs/protocol/blackjack-p2p.md. */
+export type { BlackjackHandItem }
 
 /** Closed type18 shapes for explicit canonical consumers; no payment or actor authority. */
 export type CanonicalBlackjackMoveItem = BlackjackItem
@@ -174,6 +178,7 @@ export type MessageItem =
   | ReplyItem
   | ImageItem
   | BlackjackMoveItem
+  | BlackjackHandItem
   | DigitalGoodsItem
   | RaffleItem
 

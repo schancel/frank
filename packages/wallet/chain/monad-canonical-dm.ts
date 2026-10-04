@@ -15,8 +15,11 @@ import { Transaction, computeAddress, getAddress, hexlify } from 'ethers'
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
 import {
+  encodeBlackjackHandItem,
   fromHex,
+  isBlackjackHandFrame,
   parseFrame,
+  projectBlackjackHandItem,
   recipientPayloadDigest,
   toHex,
 } from '@frank/codec'
@@ -222,6 +225,7 @@ function requireDirectory(owner: CanonicalMessagingOwner): CanonicalDirectory {
 function textItems(items: readonly MessageItem[]): Uint8Array[] {
   if (items.length === 0) throw new Error('A direct message needs content')
   return items.map(item => {
+    if (item.type === 'blackjack-hand') return encodeBlackjackHandItem(item)
     if (item.type !== 'text')
       throw new Error(
         `Canonical direct messages cannot carry '${item.type}' items yet; nothing was paid or sent.`,
@@ -558,6 +562,8 @@ async function fetchSince(
         items = opened.items.map(item =>
           item.kind === 'parsed' && item.typed?.type === 17
             ? { type: 'text' as const, text: item.typed.text }
+            : item.kind === 'parsed' && isBlackjackHandFrame(item)
+            ? projectBlackjackHandItem(item).item
             : {
                 type: 'text' as const,
                 text: '[This message item is not supported yet]',

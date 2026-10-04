@@ -2,6 +2,11 @@ import { deriveDeck, handValue } from './deck'
 import { playOutDealer, type BlackjackOutcome } from './game'
 import {
   applyHandEvent,
+  buildAccept,
+  buildChallenge,
+  challengeLimitWei,
+  checkWager,
+  handEventsOf,
   commitmentOf,
   dealerStep,
   DEALER_COVER_MULTIPLE,
@@ -717,4 +722,76 @@ it('has a preview line for every action', () => {
   ])
     expect(handPreviewText(item({ action }))).toMatch(/\S/)
   expect(handPreviewText(item({ action: 'future' }))).toBe('Blackjack')
+})
+
+describe('what a wallet may send', () => {
+  const RESERVE = 200n
+  it('refuses a challenge above what the challenger can cover in its role', () => {
+    const challenge = (role: 'dealer' | 'player', maxBetWei: bigint, spendableWei: bigint) =>
+      buildChallenge({ gameId: GAME, role, maxBetWei, spendableWei, reserveWei: RESERVE, seed: seeds.win })
+    expect(challengeLimitWei('dealer', 1_000n, RESERVE)).toBe(200n)
+    expect(challengeLimitWei('player', 1_000n, RESERVE)).toBe(800n)
+    expect(challenge('dealer', 201n, 1_000n)).toEqual({ error: 'above-own-limit' })
+    expect(challenge('player', 801n, 1_000n)).toEqual({ error: 'above-own-limit' })
+    expect(challenge('player', 0n, 1_000n)).toEqual({ error: 'not-positive' })
+    expect(challenge('player', 1n, RESERVE)).toEqual({ error: 'above-own-limit' })
+    expect(challenge('dealer', 200n, 1_000n)).toEqual({
+      item: {
+        type: 'blackjack-hand',
+        gameId: GAME,
+        action: 'challenge',
+        role: 'dealer',
+        maxBetWei: '200',
+        commitment: commitmentOf(seeds.win),
+      },
+    })
+    expect(challenge('player', 800n, 1_000n)).toEqual({
+      item: { type: 'blackjack-hand', gameId: GAME, action: 'challenge', role: 'player', maxBetWei: '800' },
+    })
+    expect(() =>
+      buildChallenge({ gameId: GAME, role: 'dealer', maxBetWei: 1n, spendableWei: 1_000n, reserveWei: 0n }),
+    ).toThrow('seed')
+  })
+
+  it('accepts at the lower of the challenge and what the dealer can cover', () => {
+    const table = new Table(BOB, ALICE, seeds.win)
+    table.send(ALICE, { action: 'challenge', role: 'player', maxBetWei: '500' })
+    const accept = (spendableWei: bigint, wantedMaxBetWei?: bigint) =>
+      buildAccept({ state: table.state!, spendableWei, reserveWei: RESERVE, seed: seeds.win, wantedMaxBetWei })
+    expect(accept(100_000n)).toMatchObject({ item: { action: 'accept', maxBetWei: '500' } })
+    expect(accept(1_000n)).toMatchObject({ item: { maxBetWei: '200' } })
+    expect(accept(RESERVE)).toEqual({ error: 'above-own-limit' })
+    expect(accept(100_000n, 300n)).toMatchObject({ item: { maxBetWei: '300' } })
+    expect(accept(100_000n, 501n)).toEqual({ error: 'above-max-bet' })
+    expect(accept(1_000n, 300n)).toEqual({ error: 'above-own-limit' })
+    expect(accept(1_000n, 0n)).toEqual({ error: 'not-positive' })
+    const built = accept(1_000n) as { item: HandItem }
+    expect(table.send(BOB, built.item).error).toBeUndefined()
+    expect(table.state).toMatchObject({ phase: 'open', maxBetWei: 200n })
+  })
+
+  it('checks a wager against the hand and the wallet', () => {
+    const state = { maxBetWei: 500n }
+    expect(checkWager(state, 0n, 10_000n, RESERVE)).toBe('not-positive')
+    expect(checkWager(state, 501n, 10_000n, RESERVE)).toBe('above-max-bet')
+    expect(checkWager(state, 500n, 699n, RESERVE)).toBe('above-own-limit')
+    expect(checkWager(state, 500n, 700n, RESERVE)).toBeUndefined()
+  })
+
+  it('reads hand events from a message and nothing from other items', () => {
+    const bet = item({ action: 'bet' })
+    expect(
+      handEventsOf({
+        items: [{ type: 'text' }, bet],
+        senderAddress: BOB,
+        recipientAddress: ALICE,
+        stampValueWei: 7n,
+        payloadDigest: 'd1',
+      }),
+    ).toEqual([{ item: bet, from: BOB, to: ALICE, stampWei: 7n, digest: 'd1' }])
+    expect(
+      handEventsOf({ items: [bet], senderAddress: BOB, recipientAddress: ALICE, payloadDigest: 'd2' })[0]
+        .stampWei,
+    ).toBe(0n)
+  })
 })

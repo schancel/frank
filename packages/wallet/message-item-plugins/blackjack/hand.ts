@@ -10,36 +10,15 @@
  * `playOutDealer` in `./game.ts`). The dealer commits to its seed before the bet exists; the
  * player's contribution to the shuffle is the payload digest of the bet message.
  */
+import type { BlackjackHandItem } from '@frank/codec'
+
 import { Card, deriveDeck, handValue, sha256Hex } from './deck'
 import { BlackjackOutcome, dealInitialCards, playOutDealer } from './game'
 
 export type HandRole = 'dealer' | 'player'
 
-/** The application shape of a type-18 schema-2 item (`@frank/codec` `BlackjackHandItem`). */
-export type HandItem = { type: 'blackjack-hand'; gameId: string } & (
-  | {
-      action: 'challenge'
-      /** The role the CHALLENGER takes. */
-      role: 'dealer'
-      maxBetWei: string
-      commitment: string
-    }
-  | { action: 'challenge'; role: 'player'; maxBetWei: string }
-  | { action: 'accept'; maxBetWei: string; commitment: string }
-  | { action: 'bet' }
-  | { action: 'deal'; playerCards: readonly number[]; dealerUpCard: number }
-  | { action: 'hit' }
-  | { action: 'stand' }
-  | { action: 'double' }
-  | { action: 'card'; playerCards: readonly number[] }
-  | {
-      action: 'reveal'
-      dealerCards: readonly number[]
-      seed: string
-      outcome: BlackjackOutcome
-    }
-  | { action: 'refund'; ref: string }
-)
+/** The application shape of a type-18 schema-2 item. */
+export type HandItem = BlackjackHandItem
 export type HandAction = HandItem['action']
 
 /** One message of a hand, as either side sees it. */
@@ -525,4 +504,120 @@ export function handPreviewText(item: HandItem): string {
     default:
       return 'Blackjack'
   }
+}
+
+/** Why a challenge, an accept or a bet may not be sent. */
+export type HandMoneyError =
+  /** Zero, negative or not a whole amount. */
+  | 'not-positive'
+  /** More than this wallet can cover from its spendable balance. */
+  | 'above-own-limit'
+  /** More than the hand's max bet. */
+  | 'above-max-bet'
+
+/** The largest max bet this wallet may name when challenging in `role`. */
+export function challengeLimitWei(
+  role: HandRole,
+  spendableWei: bigint,
+  reserveWei: bigint,
+): bigint {
+  return role === 'dealer'
+    ? maxDealerBetWei(spendableWei, reserveWei)
+    : maxPlayerBetWei(spendableWei, reserveWei)
+}
+
+/** The challenge item, or why this wallet may not send it. A dealer's seed stays with the dealer;
+ * only its commitment goes into the item. */
+export function buildChallenge(input: {
+  gameId: string
+  role: HandRole
+  maxBetWei: bigint
+  spendableWei: bigint
+  reserveWei: bigint
+  /** Required when `role` is dealer. */
+  seed?: string
+}): { item: HandItem } | { error: HandMoneyError } {
+  if (input.maxBetWei <= 0n) return { error: 'not-positive' }
+  if (
+    input.maxBetWei >
+    challengeLimitWei(input.role, input.spendableWei, input.reserveWei)
+  )
+    return { error: 'above-own-limit' }
+  const base = {
+    type: 'blackjack-hand' as const,
+    gameId: input.gameId,
+    action: 'challenge' as const,
+    maxBetWei: input.maxBetWei.toString(),
+  }
+  if (input.role === 'player') return { item: { ...base, role: 'player' } }
+  if (!input.seed) throw new Error('a dealer challenge needs a seed')
+  return {
+    item: { ...base, role: 'dealer', commitment: commitmentOf(input.seed) },
+  }
+}
+
+/** The dealer's accept of a player's challenge: the challenge's max bet, lowered to what the
+ * dealer can cover (and to `wantedMaxBetWei` if the dealer names less). */
+export function buildAccept(input: {
+  state: HandState
+  spendableWei: bigint
+  reserveWei: bigint
+  seed: string
+  wantedMaxBetWei?: bigint
+}): { item: HandItem } | { error: HandMoneyError } {
+  const own = maxDealerBetWei(input.spendableWei, input.reserveWei)
+  let max = input.state.maxBetWei < own ? input.state.maxBetWei : own
+  if (input.wantedMaxBetWei !== undefined) {
+    if (input.wantedMaxBetWei <= 0n) return { error: 'not-positive' }
+    if (input.wantedMaxBetWei > input.state.maxBetWei)
+      return { error: 'above-max-bet' }
+    if (input.wantedMaxBetWei > own) return { error: 'above-own-limit' }
+    max = input.wantedMaxBetWei
+  }
+  if (max <= 0n) return { error: 'above-own-limit' }
+  return {
+    item: {
+      type: 'blackjack-hand',
+      gameId: input.state.gameId,
+      action: 'accept',
+      maxBetWei: max.toString(),
+      commitment: commitmentOf(input.seed),
+    },
+  }
+}
+
+/** Why the player may not send `wagerWei` as a bet (or as the equal second wager of a double). */
+export function checkWager(
+  state: Pick<HandState, 'maxBetWei'>,
+  wagerWei: bigint,
+  spendableWei: bigint,
+  reserveWei: bigint,
+): HandMoneyError | undefined {
+  if (wagerWei <= 0n) return 'not-positive'
+  if (wagerWei > state.maxBetWei) return 'above-max-bet'
+  if (wagerWei > maxPlayerBetWei(spendableWei, reserveWei))
+    return 'above-own-limit'
+  return undefined
+}
+
+/** A message as a wallet reports it, sent or received. */
+export interface HandMessage {
+  items: readonly { type: string }[]
+  senderAddress: string
+  recipientAddress: string
+  stampValueWei?: bigint
+  payloadDigest: string
+}
+
+/** The hand events a message carries (normally one). */
+export function handEventsOf(message: HandMessage): HandEvent[] {
+  return message.items
+    .filter((item): item is HandItem => item.type === 'blackjack-hand')
+    .map(item => ({
+      item,
+      from: message.senderAddress,
+      to: message.recipientAddress,
+      stampWei: message.stampValueWei ?? 0n,
+      digest: message.payloadDigest,
+    }))
 }

@@ -175,3 +175,20 @@ Owner agreed #843 design (optional stamps; three limits; threshold counts what t
   code). Inbound peer requests are unauthenticated but nothing inbound is trusted (verified copies,
   re-admitted forwards). Queue-full answers 429 instead of 503. INTERFACE.md still says "quarantined"
   for conflicting chains; code converges by lowest hash. Independent review dispatched.
+
+## 2026-10-04 ~16:25 PDT — FULL E2E PASS; site popped open for user manual testing
+
+- `integration-open` tip `e0201ee` (pushed to origin):
+  - Fixed stuck dealer step + multi-tab lock protection (Web Lock held per message id + durable store re-read under lock to prevent stale tab double sends).
+  - Qwen bot switched from local Ollama to Alibaba Cloud API (`~/.frank-demo-qwen.env`), verified answering in ~3.2 s.
+  - Unit tests: 143 passed, 0 failed across all blackjack and outgoing store suites.
+- Full E2E test `node demo/local-stack/stack.mjs e2e live` executed cleanly in 1104 s (`exit=0`):
+  - Disposable accounts onboard without operator approval or settings steps.
+  - Alice <-> Bob encrypted P2P messaging verified.
+  - Unpublished address refused with 0 MON cost.
+  - Qwen bot answers live.
+  - Blackjack bot auto-challenges fresh account; play and on-chain payout verified.
+  - Blackjack human vs human (both roles) verified.
+  - Interrupted human dealer (Chrome killed mid-deal) safely recovered and delivered once.
+- Stack brought live (`node demo/local-stack/stack.mjs up live`) and Chrome popped open for user testing with `stack.mjs chrome alice`.
+- Rewrote `MANUAL-TEST.md` with exact instructions for the open design.

@@ -1150,19 +1150,19 @@
     },
     {
       "path": "packages/wallet/monad-wallet-material.ts",
-      "sha256": "2fc9ee69558d8165ebc638511fcc9f64111b1644cd4d792067c0bd7adb81eb7e"
+      "sha256": "65e335ba68620b97d5e6bd54a68d8c7314b052b364768e4188eaac09df67d168"
     },
     {
       "path": "packages/wallet/monad-hd-keyring.ts",
-      "sha256": "0a61ef7baf5659a70cf486cf687d7ede4d68914c287307f7cfd27041325541c3"
+      "sha256": "8ae0bf31e3e00a2f30c7899b067856b9dc3b8a1b4b07b1545373d8854f405b90"
     },
     {
       "path": "packages/wallet/monad-change-keyring.ts",
-      "sha256": "a6e7100b8396c7dfb908446e899c58d5e4f86a1f2d093bdef297bee09bb51005"
+      "sha256": "ba0ce25c75055dd8a435363819398de3f72cfb2533930d134fc7a6cb03189e73"
     },
     {
       "path": "packages/wallet/chain/monad-domain-wallet.jest.test.ts",
-      "sha256": "042149410a72bf7cd76f3397ff2f2cf23f4f90f027d6203c296e85520bc317f0"
+      "sha256": "d10c48ad7981120045e80599b82b0745de498c139078347c25bc7fc94366591b"
     },
     {
       "path": "docs/protocol/proposals/suite1-directory/README.md",

@@ -12,7 +12,7 @@ import { openChat } from 'src/utils/routes'
 import AddContact from './AddContact.vue'
 
 const mockAddContactToStore = jest.fn()
-import { setDirectoryPeer } from 'src/utils/directory-peer'
+import { setDirectoryLookup } from 'src/utils/directory-peer'
 jest.mock('src/stores/contacts', () => ({
   defaultRelayData: { profile: { name: '', bio: '', avatar: '' } },
   useContactStore: () => ({ addContact: mockAddContactToStore }),
@@ -225,9 +225,14 @@ describe('AddContact latest lookup', () => {
     expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
   })
 
-  it('offers the operator-installed directory peer even though it has no display profile', async () => {
+  it('offers any address with a published directory entry even though it has no display profile', async () => {
     chain.fetchProfile.mockResolvedValue(undefined)
-    setDirectoryPeer({ address: ADDRESS_A, pubKey: new Uint8Array(33).fill(2) })
+    const published = new Set([ADDRESS_A, ADDRESS_B])
+    setDirectoryLookup(async address => {
+      if (!published.has(address))
+        throw Object.assign(new Error('unknown'), { code: 'not-published' })
+      return { subject: '02' + '02'.repeat(32) }
+    })
     try {
       await typeAndFire(wrapper, 'a')
       expect(addButton(wrapper).attributes('disabled')).toBeUndefined()
@@ -235,15 +240,24 @@ describe('AddContact latest lookup', () => {
       expect(mockAddContactToStore).toHaveBeenCalledTimes(1)
       expect(mockAddContactToStore.mock.calls[0][0].address).toBe(ADDRESS_A)
       expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+
+      // Not one special peer: another published address is offered just the same.
+      wrapper.unmount()
+      wrapper = mountPage()
+      await typeAndFire(wrapper, 'b')
+      expect(addButton(wrapper).attributes('disabled')).toBeUndefined()
+
+      // An address that has not published is not offered, and the page says why.
+      wrapper.unmount()
+      wrapper = mountPage()
+      await typeAndFire(wrapper, 'c')
+      expect(addButton(wrapper).attributes('disabled')).toBeDefined()
+      expect(
+        wrapper.get('[data-test="contact-lookup-reason"]').text(),
+      ).toContain('has not published itself yet')
     } finally {
-      setDirectoryPeer(null)
+      setDirectoryLookup(null)
     }
-    // Without the installed peer, an unknown address is still not offered.
-    wrapper.unmount()
-    wrapper = mountPage()
-    mockAddContactToStore.mockClear()
-    await typeAndFire(wrapper, 'a')
-    expect(addButton(wrapper).attributes('disabled')).toBeDefined()
   })
 
   it('commits dealer signed-name provenance from the first validated fetch', async () => {

@@ -4,74 +4,6 @@
 import { en as accountRecovery } from '../account-recovery'
 
 export default {
-  directoryProvisioning: {
-    title: 'Directory installation',
-    pending: 'Pending operator installation',
-    checking: 'Checking the installed configuration…',
-    ready:
-      'Ready: local demo installation verified. Encrypted messaging is enabled.',
-    explanation:
-      'Both relays and the bot must have the same approved public account bundle. Fresh directory admission is checked separately.',
-    policyUnavailable:
-      'Authenticated operator policy is not available in this app yet. Public export is unavailable until it is installed.',
-    exportPublic: 'Export public directory evidence',
-    check: 'Check installation',
-    exportLabel: 'Public export for the operator',
-    download: 'Download public export',
-    peerAddress: 'Installed bot address:',
-    stepExport:
-      'Export this account’s public evidence and give the file to the operator.',
-    stepInstall:
-      'The operator checks the account, network and relay tuples, then installs the complete public bundle into both relays, the bot and this app.',
-    stepCheck:
-      'Check installation. Messaging stays off until every participant reports the same approved bundle.',
-    participants: {
-      'relay-a': 'Relay A',
-      'relay-b': 'Relay B',
-      'bot': 'Bot',
-    },
-    participant: {
-      unchecked: 'not checked',
-      matched: 'approved bundle installed',
-      unavailable: 'no installation status available',
-      mismatch: 'different or incomplete installation',
-    },
-    reasons: {
-      'account-unavailable': 'Unlock or finish setting up this account first.',
-      'policy-missing':
-        'The operator has not installed a network policy in this app. Public export is unavailable until it is installed.',
-      'policy-invalid':
-        'The installed operator policy is not valid. Ask the operator to reinstall it.',
-      'policy-expired':
-        'The operator policy is outside its validity period. Ask the operator for a current policy.',
-      'relay-not-in-policy':
-        'This app’s relay is not one of the relays in the operator policy.',
-      'bundle-missing':
-        'The operator has not installed an approved bundle in this app yet. Export, hand over the file, then check again.',
-      'bundle-invalid':
-        'The installed approved bundle is not valid. Ask the operator to reinstall it.',
-      'bundle-foreign-policy':
-        'The approved bundle was made for a different operator policy.',
-      'bundle-not-this-account':
-        'The approved bundle does not contain this account’s exact public evidence. Export again and ask the operator to reinstall.',
-      'forwarding-unavailable':
-        'This account and the bot must use the relay this app is configured for. Relay forwarding is not available yet.',
-      'participant-unavailable':
-        'At least one relay or the bot did not report its installation. Nothing was sent or paid.',
-      'participant-mismatch':
-        'At least one relay or the bot reports a different installation. Nothing was sent or paid.',
-      'enrollment-required':
-        'Press Check installation to finish joining the directory on this device.',
-      'admission-failed':
-        'The directory evidence could not be admitted. Nothing was sent or paid.',
-      'changed-during-check':
-        'A relay or the bot changed while it was being checked. Check again.',
-      'account-changed': 'The account changed during the check. Check again.',
-    },
-    publicOnly:
-      'The export contains public evidence only. Checking may publish this account’s signed public directory record to its relay; it never sends a message or spends funds.',
-  },
-
   accountRecovery,
   agree: 'Agree',
   chat: {
@@ -371,6 +303,20 @@ export default {
     sendAgain: 'Send again',
   },
   mailboxStatus: {
+    directory: {
+      'account-unavailable':
+        'Messaging is off: this account could not be opened for messaging. Retrying.',
+      'relay-unreachable':
+        "Messaging is off: can't reach the server to publish your account. Retrying.",
+      'relay-rejected':
+        'Messaging is off: the server refused to store your account’s address entry. Retrying.',
+      'relay-misconfigured':
+        'Messaging is off: the server did not describe itself correctly, so your account could not be published. Retrying.',
+      'entry-refused':
+        'Messaging is off: the server holds a conflicting or invalid entry for your account. Retrying.',
+      'storage':
+        'Messaging is off: this device could not save its address book records. Retrying.',
+    },
     unavailable:
       'Messaging service unavailable: this relay does not offer messaging, so you will not receive messages.',
     unreachable:
@@ -535,6 +481,16 @@ export default {
     replace: 'Replace this account',
   },
   newContactDialog: {
+    lookup: {
+      'not-published':
+        'This address has not published itself yet, so it cannot receive messages. Ask its owner to open the app once.',
+      'unreachable':
+        "Can't reach the server to look this address up. Try again in a moment.",
+      'refused':
+        'The server returned an entry for this address that is not signed by it, has expired or conflicts with one seen before. It was not used.',
+      'messaging-off':
+        'Your own account is still being published. Contacts can be added once messaging is on.',
+    },
     newContact: 'New Contact',
     enterBitcoinCashAddress: 'Enter address (0x...)',
     loading: 'Looking up contact',

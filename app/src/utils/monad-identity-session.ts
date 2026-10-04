@@ -1,98 +1,106 @@
 /**
- * Account and messaging session (#778).
+ * Account and messaging session.
  *
- * Custody owns the one typed runtime wallet. Direct messaging is a separate, visibly pending state:
- * it starts only after `checkDirectoryReadiness` verified the operator-installed public
- * configuration at every participant and the browser admitted fresh directory evidence. It never
- * uses display-profile keys or the legacy envelope, and it stops as soon as the account changes.
+ * Custody owns the one typed runtime wallet. As soon as an account is ready, this module publishes
+ * the account's own signed directory entry to the configured relay (or adopts the entry the relay
+ * already holds, when the account was restored on this device) and turns direct messaging on. No
+ * user action, no operator file, no peer list: any address with a published entry can be messaged
+ * and any sender whose entry verifies is shown.
+ *
+ * If publishing fails, messaging stays off with a plain reason and is retried with backoff. It
+ * never falls back to display-profile keys or the legacy envelope, and it stops as soon as the
+ * account changes.
  */
-import { reactive, readonly, watch } from 'vue'
-import type { WalletHandle } from '@frank/wallet/chain'
+import { watch } from 'vue'
+import type { NativeWalletHandle, WalletHandle } from '@frank/wallet/chain'
 import {
   installCanonicalDirectory,
   loadMonadChainConfigFromEnv,
+  prepareMonadNextRevisionExport,
+  prepareMonadRevisionZeroExport,
 } from '@frank/wallet/chain/monad-chain'
 import { openBrowserDirectoryStore } from '@frank/directory-admission/browser'
 import type { DirectoryFetch } from '@frank/cashweb/relay/directory-client'
-import { fromHex } from '@frank/codec'
+import {
+  OpenDirectoryError,
+  openDirectory,
+  parseCheckpoint,
+  serializeCheckpoint,
+  type OpenDirectory,
+  type OpenDirectoryDeps,
+} from '@frank/cashweb/relay/open-directory'
+import { toHex } from '@frank/codec'
 import { accountSession, accountStatus } from '../accounts/session'
-import { setDirectoryPeer } from './directory-peer'
+import { setDirectoryLookup } from './directory-peer'
+import {
+  messagingState,
+  messagingStateOwner,
+  type MessagingReason,
+  type MessagingState,
+} from './messaging-state'
 import { discardUnenrolledDirectoryStore } from './directory-store-reset'
 import {
   startDirectMessagePolling,
   startOutgoingReconciliation,
 } from '../adapters/pinia-chain-adapter'
-import {
-  PROVISIONING_BODY_LIMIT,
-  fetchInstallationSnapshot,
-} from './directory-provisioning'
-import {
-  checkDirectoryReadiness,
-  parseCheckpoint,
-  preparePublicExport,
-  serializeCheckpoint,
-  type DirectoryActivation,
-  type ParticipantStatuses,
-  type PublicExportFile,
-  type ReadinessDeps,
-  type ReadinessReason,
-} from './directory-readiness'
 
-export interface MessagingState {
-  status: 'pending' | 'checking' | 'ready'
-  /** Why messaging is pending; `null` before the first check and while ready. */
-  reason: ReadinessReason | null
-  participants: ParticipantStatuses
-  /** Address of the installed bot, shown once messaging is ready. */
-  peerAddress: string | null
-}
 type Stoppable = { stop: () => void }
 interface Live {
-  activation: DirectoryActivation
+  wallet: NativeWalletHandle
+  directory: OpenDirectory
+  revision: number
   accountId: string | undefined
   uninstall: () => void
   polling: Stoppable
   reconcile: Stoppable
 }
 export interface MessagingDeps {
-  readiness: ReadinessDeps
+  session: {
+    state: { status: string; revision: number; account: unknown }
+    getWallet(): Promise<NativeWalletHandle>
+  }
+  /** The relay this app build publishes to, submits to and reads its mailbox from. */
+  relayBaseUrl: string
+  networkTag: 'MONT' | 'MON1'
+  chainId: bigint
+  directory: Pick<
+    OpenDirectoryDeps,
+    | 'nowNs'
+    | 'fetch'
+    | 'openStore'
+    | 'discardUnenrolled'
+    | 'checkpoints'
+    | 'pins'
+  >
   install: typeof installCanonicalDirectory
   startPolling: (options: { wallet: WalletHandle }) => Stoppable
   startReconcile: (options: { wallet: WalletHandle }) => Stoppable
+  /** Delay before the n-th retry (1-based) of a failed publish. */
+  retryDelayMs(attempt: number): number
 }
 
 const CHECKPOINT_PREFIX = 'frank-directory-checkpoint:'
-const EXPORT_PREFIX = 'frank-directory-export:'
+const PIN_PREFIX = 'frank-directory-pin:'
 const accountIdOf = (account: unknown): string | undefined =>
   (account as { receipt?: { context?: { accountId?: string } } } | null)
     ?.receipt?.context?.accountId
+const networkOf = (tag: 'MONT' | 'MON1') =>
+  tag === 'MONT' ? 'monad-testnet' : 'monad-mainnet'
 
 function productionDeps(): MessagingDeps {
+  const config = loadMonadChainConfigFromEnv()
+  if (config.networkTag !== 'MONT' && config.networkTag !== 'MON1')
+    throw new Error('Direct messages need a Monad network')
   return {
-    readiness: {
-      session: accountSession,
-      relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
+    session: accountSession,
+    relayBaseUrl: config.relayBaseUrl,
+    networkTag: config.networkTag,
+    chainId: BigInt(config.chainId),
+    directory: {
       nowNs: () => BigInt(Date.now()) * 1_000_000n,
-      async loadDeployed(name, signal) {
-        // Installed by the operator beside the app; a missing file is served as the SPA page.
-        const response = await fetch(
-          new URL(`directory/${name}`, document.baseURI).toString(),
-          { cache: 'no-store', credentials: 'omit', redirect: 'error', signal },
-        )
-        if (
-          response.status !== 200 ||
-          response.headers.get('content-type')?.split(';')[0].trim() !==
-            'application/json'
-        )
-          return null
-        const bytes = new Uint8Array(await response.arrayBuffer())
-        if (bytes.length > PROVISIONING_BODY_LIMIT)
-          throw new Error('Operator file exceeds the public bundle limit')
-        return bytes
-      },
-      fetchSnapshot: (participant, manifest, signal) =>
-        fetchInstallationSnapshot(participant, manifest, signal),
+      fetch: ((url, init) => fetch(url, init as RequestInit)) as DirectoryFetch,
       openStore: options => openBrowserDirectoryStore(options),
+      discardUnenrolled: discardUnenrolledDirectoryStore,
       checkpoints: {
         load(key) {
           const saved = window.localStorage.getItem(CHECKPOINT_PREFIX + key)
@@ -105,37 +113,30 @@ function productionDeps(): MessagingDeps {
           )
         },
       },
-      directoryFetch: ((url, init) =>
-        fetch(url, init as RequestInit)) as DirectoryFetch,
-      discardUnenrolled: discardUnenrolledDirectoryStore,
-      exports: {
-        load: key => window.localStorage.getItem(EXPORT_PREFIX + key),
+      pins: {
+        load: key => window.localStorage.getItem(PIN_PREFIX + key),
         save: (key, value) =>
-          window.localStorage.setItem(EXPORT_PREFIX + key, value),
+          window.localStorage.setItem(PIN_PREFIX + key, value),
       },
     },
     install: installCanonicalDirectory,
     startPolling: startDirectMessagePolling,
     startReconcile: startOutgoingReconciliation,
+    // 5 s, 10 s, 20 s ... capped at 5 minutes.
+    retryDelayMs: attempt => Math.min(5_000 * 2 ** (attempt - 1), 300_000),
   }
 }
 
-const idle = (): ParticipantStatuses => ({
-  'relay-a': 'unchecked',
-  'relay-b': 'unchecked',
-  'bot': 'unchecked',
-})
-const state = reactive<MessagingState>({
-  status: 'pending',
-  reason: null,
-  participants: idle(),
-  peerAddress: null,
-})
-export const messagingState = readonly(state)
+const state = messagingStateOwner
+export { messagingState }
+export type { MessagingReason, MessagingState }
 
 let deps: MessagingDeps | undefined
 let live: Live | undefined
-let running: AbortController | undefined
+/** Identity of the attempt in flight; anything older must publish no result. */
+let attempt: object | undefined
+let retryTimer: ReturnType<typeof setTimeout> | undefined
+let failures = 0
 let watching = false
 const dependencies = () => (deps ??= productionDeps())
 
@@ -147,98 +148,147 @@ export async function configureMessagingForTest(
   deps = replacement
   state.status = 'pending'
   state.reason = null
-  state.participants = idle()
 }
 
-/** The live wallet for direct messages, only while messaging is verified ready. */
+/** The live wallet for direct messages, only while this account's entry is published. */
 export function messagingWallet(): WalletHandle | undefined {
-  return live ? (live.activation.wallet as unknown as WalletHandle) : undefined
+  return live ? (live.wallet as unknown as WalletHandle) : undefined
 }
 
 export async function stopMessaging(): Promise<void> {
-  running?.abort()
-  running = undefined
+  attempt = undefined
+  if (retryTimer !== undefined) clearTimeout(retryTimer)
+  retryTimer = undefined
+  failures = 0
   const previous = live
   live = undefined
-  state.peerAddress = null
-  setDirectoryPeer(null)
-  if (state.status === 'ready') state.status = 'pending'
+  setDirectoryLookup(accountStatus.status === 'ready' ? 'pending' : null)
+  if (state.status !== 'pending') state.status = 'pending'
   if (!previous) return
   previous.polling.stop()
   previous.reconcile.stop()
   previous.uninstall()
-  await previous.activation.close()
+  await previous.directory.close()
+}
+
+function reasonOf(error: unknown): MessagingReason {
+  if (!(error instanceof OpenDirectoryError)) return 'account-unavailable'
+  switch (error.code) {
+    case 'unreachable':
+      return 'relay-unreachable'
+    case 'rejected':
+      return 'relay-rejected'
+    case 'relay-info':
+      return 'relay-misconfigured'
+    case 'storage':
+      return 'storage'
+    default:
+      return 'entry-refused'
+  }
 }
 
 /**
- * Run the readiness barrier. `explicit` is the user's own Settings action and is the only path
- * that may publish this account's revision-zero evidence; automatic runs only reopen.
+ * Publish (or adopt) this account's entry and turn messaging on. Runs by itself whenever an
+ * account becomes ready, and again with backoff after a failure.
  */
-export async function refreshMessaging(explicit: boolean): Promise<void> {
-  const d = dependencies()
-  await stopMessaging()
-  const controller = new AbortController()
-  running = controller
-  state.status = 'checking'
-  let result
+export async function startMessaging(): Promise<void> {
+  let d: MessagingDeps
   try {
-    result = await checkDirectoryReadiness(d.readiness, {
-      allowEnrollment: explicit,
-      signal: controller.signal,
-    })
+    d = dependencies()
   } catch {
-    result = {
-      status: 'pending' as const,
-      reason: 'admission-failed' as const,
-      participants: idle(),
-    }
-  }
-  if (running !== controller) {
-    // Superseded by a newer check or an account change: publish nothing from this one.
-    if (result.status === 'ready') await result.activation.close()
-    return
-  }
-  running = undefined
-  state.participants = result.participants
-  if (result.status !== 'ready') {
-    state.status = 'pending'
-    state.reason = result.reason
-    return
-  }
-  const { activation } = result
-  let uninstall: () => void
-  try {
-    uninstall = d.install(activation.wallet, activation.directory)
-  } catch {
-    await activation.close()
+    // This build has no Monad network: there is no directory to publish to.
     state.status = 'pending'
     state.reason = 'account-unavailable'
     return
   }
-  const wallet = activation.wallet as unknown as WalletHandle
-  live = {
-    activation,
-    accountId: accountIdOf(activation.account),
-    uninstall,
-    polling: d.startPolling({ wallet }),
-    reconcile: d.startReconcile({ wallet }),
+  const retries = failures
+  await stopMessaging()
+  failures = retries
+  const mine = {}
+  attempt = mine
+  state.status = 'publishing'
+  setDirectoryLookup('pending')
+  const revision = d.session.state.revision,
+    account = d.session.state.account
+  const sameAccount = () =>
+    attempt === mine &&
+    d.session.state.status === 'ready' &&
+    d.session.state.revision === revision &&
+    d.session.state.account === account
+  let directory: OpenDirectory | undefined
+  let failure: MessagingReason | undefined
+  let wallet: NativeWalletHandle | undefined
+  try {
+    if (d.session.state.status !== 'ready') throw new Error('no account')
+    wallet = await d.session.getWallet()
+    const owner = wallet
+    const descriptor = {
+      networkTag: d.networkTag,
+      network: networkOf(d.networkTag),
+      chainId: d.chainId,
+    }
+    directory = openDirectory({
+      network: descriptor.network,
+      relayBaseUrl: d.relayBaseUrl,
+      ...d.directory,
+      self: {
+        subject: toHex(
+          (
+            owner as unknown as {
+              identity: { compressedPubKey: Uint8Array }
+            }
+          ).identity.compressedPubKey,
+        ),
+        signRevisionZero: input =>
+          prepareMonadRevisionZeroExport(owner, { ...descriptor, ...input })
+            .attestation,
+        signNextRevision: input =>
+          prepareMonadNextRevisionExport(owner, { ...descriptor, ...input })
+            .attestation,
+      },
+    })
+    await directory.publish()
+  } catch (error) {
+    failure = reasonOf(error)
   }
-  state.peerAddress = activation.peerAddress
-  setDirectoryPeer({
-    address: activation.peerAddress,
-    pubKey: fromHex(activation.peerSubject),
-  })
-  state.status = 'ready'
-  state.reason = null
-}
-
-/** Explicit user action: this account's public export for the operator. Sends nothing. */
-export async function exportPublicIdentity(): Promise<
-  { ok: true; file: PublicExportFile } | { ok: false; reason: ReadinessReason }
-> {
-  return preparePublicExport(
-    dependencies().readiness,
-    new AbortController().signal,
+  if (!failure && directory && wallet && sameAccount()) {
+    try {
+      const uninstall = d.install(wallet, directory)
+      const handle = wallet as unknown as WalletHandle
+      const found = directory
+      live = {
+        wallet,
+        directory,
+        revision,
+        accountId: accountIdOf(account),
+        uninstall,
+        polling: d.startPolling({ wallet: handle }),
+        reconcile: d.startReconcile({ wallet: handle }),
+      }
+      setDirectoryLookup(address => found.lookup(address))
+      failures = 0
+      state.status = 'ready'
+      state.reason = null
+      return
+    } catch {
+      failure = 'account-unavailable'
+    }
+  }
+  await directory?.close().catch(() => undefined)
+  // Superseded by a newer attempt or an account change: publish nothing from this one.
+  if (attempt !== mine) return
+  attempt = undefined
+  state.status = 'pending'
+  state.reason = failure ?? 'account-unavailable'
+  if (d.session.state.status !== 'ready') return
+  // An account change during the attempt is not a failure: start over at once for the new one.
+  if (failure) failures += 1
+  retryTimer = setTimeout(
+    () => {
+      retryTimer = undefined
+      if (!live && d.session.state.status === 'ready') void startMessaging()
+    },
+    failure ? d.retryDelayMs(failures) : 0,
   )
 }
 
@@ -256,17 +306,20 @@ function watchAccount(): void {
       if (
         live &&
         (status !== 'ready' ||
-          revision !== live.activation.revision ||
+          revision !== live.revision ||
           accountId !== live.accountId)
       )
-        void stopMessaging()
-      else if (!live && status === 'ready' && state.status !== 'checking')
-        void refreshMessaging(false)
+        void stopMessaging().then(() => {
+          if (accountStatus.status === 'ready') void startMessaging()
+        })
+      else if (!live && status === 'ready' && state.status !== 'publishing')
+        void startMessaging()
+      else if (status !== 'ready') void stopMessaging()
     },
   )
 }
 
-/** Opens custody, then tries to resume already-admitted messaging. Never enrolls on its own. */
+/** Opens custody, then publishes the account's entry and starts messaging in the background. */
 export async function initializeMonadIdentity(): Promise<
   'started' | 'skipped'
 > {
@@ -274,6 +327,6 @@ export async function initializeMonadIdentity(): Promise<
   watchAccount()
   if (accountStatus.status !== 'ready') return 'skipped'
   // Not awaited: a slow or absent relay must not block entering the app.
-  void refreshMessaging(false)
+  void startMessaging()
   return 'started'
 }

@@ -66,7 +66,6 @@
                     ref="contactRefreshInterval"
                   />
                 </div>
-                <directory-provisioning-panel />
               </q-tab-panel>
               <q-tab-panel name="appearance">
                 <div class="row">
@@ -127,11 +126,10 @@ import { useAppearanceStore } from 'src/stores/appearance'
 import { useContactStore } from 'src/stores/contacts'
 import { storeToRefs } from 'pinia'
 import PersistentStoragePanel from 'src/components/settings/PersistentStoragePanel.vue'
-import DirectoryProvisioningPanel from 'src/components/settings/DirectoryProvisioningPanel.vue'
 const msToMinutes = 60000
 
 export default defineComponent({
-  components: { PersistentStoragePanel, DirectoryProvisioningPanel },
+  components: { PersistentStoragePanel },
   emits: ['toggleMyDrawerOpen'],
   setup() {
     const appearanceStore = useAppearanceStore()

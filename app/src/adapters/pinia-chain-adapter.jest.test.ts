@@ -25,7 +25,7 @@ import { activeChain } from '@frank/wallet/chain'
 import type { DirectMessageReceived, WalletHandle } from '@frank/wallet/chain'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 
-import { setDirectoryPeer } from '../utils/directory-peer'
+import { setDirectoryLookup } from '../utils/directory-peer'
 jest.mock('../utils/notifications', () => ({
   desktopNotify: jest.fn(),
 }))
@@ -152,7 +152,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
     })
   })
 
-  describe('canonical receive from a directory-admitted sender without a display profile (#778)', () => {
+  describe('canonical receive from a sender never seen before, without a display profile', () => {
     const BOT_ADDRESS = '0x00000000000000000000000000000000000000B0'
     const wallet: WalletHandle = {
       identity: {
@@ -166,7 +166,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         senderPublicKey: PUB_KEY_BYTES,
         payloadDigest: 'canonical-digest',
       })
-    afterEach(() => setDirectoryPeer(null))
+    afterEach(() => setDirectoryLookup(null))
 
     it('adapts the record using the directory key and never asks for a display profile', async () => {
       const fetchProfile = jest
@@ -190,7 +190,12 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       jest.useFakeTimers({
         doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
       })
-      setDirectoryPeer({ address: BOT_ADDRESS, pubKey: PUB_KEY_BYTES })
+      // The sender is any account whose own directory entry verifies; no peer list exists.
+      setDirectoryLookup(async address => {
+        if (address.toLowerCase() !== BOT_ADDRESS.toLowerCase())
+          throw Object.assign(new Error('unknown'), { code: 'not-published' })
+        return { subject: PUB_KEY_HEX }
+      })
       jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue(undefined)
       jest.spyOn(console, 'error').mockImplementation(() => undefined)
       const fetchSince = jest

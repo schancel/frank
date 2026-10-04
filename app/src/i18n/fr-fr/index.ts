@@ -4,76 +4,6 @@
 import { fr as accountRecovery } from '../account-recovery'
 
 export default {
-  directoryProvisioning: {
-    title: 'Installation de l’annuaire',
-    pending: 'Installation par l’opérateur en attente',
-    checking: 'Vérification de la configuration installée…',
-    ready:
-      'Prêt : installation de démonstration locale vérifiée. La messagerie chiffrée est activée.',
-    explanation:
-      'Les deux relais et le bot doivent disposer du même ensemble approuvé de comptes publics. L’admission récente dans l’annuaire est vérifiée séparément.',
-    policyUnavailable:
-      'La politique authentifiée de l’opérateur n’est pas encore disponible dans cette application. L’export public reste indisponible avant son installation.',
-    exportPublic: 'Exporter les preuves publiques de l’annuaire',
-    check: 'Vérifier l’installation',
-    exportLabel: 'Export public pour l’opérateur',
-    download: 'Télécharger l’export public',
-    peerAddress: 'Adresse du bot installé :',
-    stepExport:
-      'Exportez les preuves publiques de ce compte et remettez le fichier à l’opérateur.',
-    stepInstall:
-      'L’opérateur vérifie le compte, le réseau et les relais, puis installe l’ensemble public complet dans les deux relais, le bot et cette application.',
-    stepCheck:
-      'Vérifiez l’installation. La messagerie reste désactivée tant que tous les participants ne signalent pas le même ensemble approuvé.',
-    participants: {
-      'relay-a': 'Relais A',
-      'relay-b': 'Relais B',
-      'bot': 'Robot',
-    },
-    participant: {
-      unchecked: 'non vérifié',
-      matched: 'ensemble approuvé installé',
-      unavailable: 'aucun état d’installation disponible',
-      mismatch: 'installation différente ou incomplète',
-    },
-    reasons: {
-      'account-unavailable':
-        'Déverrouillez ce compte ou terminez d’abord sa configuration.',
-      'policy-missing':
-        'L’opérateur n’a pas installé de politique réseau dans cette application. L’export public reste indisponible avant son installation.',
-      'policy-invalid':
-        'La politique installée par l’opérateur n’est pas valide. Demandez-lui de la réinstaller.',
-      'policy-expired':
-        'La politique de l’opérateur est hors de sa période de validité. Demandez-lui une politique à jour.',
-      'relay-not-in-policy':
-        'Le relais de cette application ne figure pas dans la politique de l’opérateur.',
-      'bundle-missing':
-        'L’opérateur n’a pas encore installé d’ensemble approuvé dans cette application. Exportez, remettez le fichier, puis vérifiez de nouveau.',
-      'bundle-invalid':
-        'L’ensemble approuvé installé n’est pas valide. Demandez à l’opérateur de le réinstaller.',
-      'bundle-foreign-policy':
-        'L’ensemble approuvé a été créé pour une autre politique d’opérateur.',
-      'bundle-not-this-account':
-        'L’ensemble approuvé ne contient pas les preuves publiques exactes de ce compte. Exportez de nouveau et demandez une réinstallation.',
-      'forwarding-unavailable':
-        'Ce compte et le bot doivent utiliser le relais configuré pour cette application. Le transfert entre relais n’est pas encore disponible.',
-      'participant-unavailable':
-        'Au moins un relais ou le bot n’a pas signalé son installation. Rien n’a été envoyé ni payé.',
-      'participant-mismatch':
-        'Au moins un relais ou le bot signale une installation différente. Rien n’a été envoyé ni payé.',
-      'enrollment-required':
-        'Appuyez sur Vérifier l’installation pour terminer l’inscription à l’annuaire sur cet appareil.',
-      'admission-failed':
-        'Les preuves de l’annuaire n’ont pas pu être admises. Rien n’a été envoyé ni payé.',
-      'changed-during-check':
-        'Un relais ou le bot a changé pendant la vérification. Vérifiez de nouveau.',
-      'account-changed':
-        'Le compte a changé pendant la vérification. Vérifiez de nouveau.',
-    },
-    publicOnly:
-      'L’export contient uniquement des preuves publiques. La vérification peut publier la fiche publique signée de ce compte auprès de son relais ; elle n’envoie aucun message et ne dépense aucuns fonds.',
-  },
-
   accountRecovery,
   forum: {
     postsLabel: 'messages',
@@ -379,6 +309,20 @@ export default {
     sendAgain: 'Renvoyer',
   },
   mailboxStatus: {
+    directory: {
+      'account-unavailable':
+        'Messagerie désactivée : ce compte n’a pas pu être ouvert pour la messagerie. Nouvelle tentative en cours.',
+      'relay-unreachable':
+        'Messagerie désactivée : impossible de joindre le serveur pour publier votre compte. Nouvelle tentative en cours.',
+      'relay-rejected':
+        'Messagerie désactivée : le serveur a refusé d’enregistrer l’adresse de votre compte. Nouvelle tentative en cours.',
+      'relay-misconfigured':
+        'Messagerie désactivée : le serveur ne s’est pas décrit correctement, votre compte n’a donc pas pu être publié. Nouvelle tentative en cours.',
+      'entry-refused':
+        'Messagerie désactivée : le serveur détient une entrée invalide ou contradictoire pour votre compte. Nouvelle tentative en cours.',
+      'storage':
+        'Messagerie désactivée : cet appareil n’a pas pu enregistrer ses données d’annuaire. Nouvelle tentative en cours.',
+    },
     unavailable:
       'Service de messagerie indisponible : ce relais ne propose pas la messagerie, vous ne recevrez donc pas de messages.',
     unreachable:
@@ -556,6 +500,16 @@ export default {
     replace: 'Remplacer ce compte',
   },
   newContactDialog: {
+    lookup: {
+      'not-published':
+        'Cette adresse ne s’est pas encore publiée et ne peut donc pas recevoir de messages. Demandez à son propriétaire d’ouvrir l’application une fois.',
+      'unreachable':
+        'Impossible de joindre le serveur pour rechercher cette adresse. Réessayez dans un instant.',
+      'refused':
+        'Le serveur a renvoyé pour cette adresse une entrée qui n’est pas signée par elle, qui a expiré ou qui contredit une entrée déjà vue. Elle n’a pas été utilisée.',
+      'messaging-off':
+        'Votre propre compte est encore en cours de publication. Les contacts pourront être ajoutés une fois la messagerie activée.',
+    },
     newContact: 'Nouveau contact',
     enterBitcoinCashAddress: 'Entrez une adresse Lotus...',
     loading: 'Recherche du contact',

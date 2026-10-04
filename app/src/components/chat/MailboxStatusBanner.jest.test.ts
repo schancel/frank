@@ -5,6 +5,10 @@ import { mount } from '@vue/test-utils'
 
 import MailboxStatusBanner from './MailboxStatusBanner.vue'
 import { useMailboxStatusStore } from '../../stores/mailbox-status'
+import {
+  messagingStateOwner,
+  type MessagingReason,
+} from '../../utils/messaging-state'
 import enUS from '../../i18n/en-us'
 import frFR from '../../i18n/fr-fr'
 
@@ -104,5 +108,53 @@ describe('MailboxStatusBanner (ticket #271)', () => {
     expect(fr.text()).toBe(
       'Le serveur a refusé votre connexion à la messagerie. Nouvelle tentative en cours.',
     )
+  })
+
+  describe('messaging that could not start', () => {
+    afterEach(() => {
+      messagingStateOwner.status = 'pending'
+      messagingStateOwner.reason = null
+    })
+    const reasons: MessagingReason[] = [
+      'account-unavailable',
+      'relay-unreachable',
+      'relay-rejected',
+      'relay-misconfigured',
+      'entry-refused',
+      'storage',
+    ]
+    it.each(reasons)(
+      'says in plain words that messaging is off for "%s", in both languages',
+      async reason => {
+        for (const messages of [enUS, frFR]) {
+          const wrapper = mountBanner(messages)
+          messagingStateOwner.status = 'pending'
+          messagingStateOwner.reason = reason
+          await wrapper.vm.$nextTick()
+          const text = wrapper.get('[data-testid="mailbox-status"]').text()
+          expect(text).not.toMatch(/^mailboxStatus\./)
+          expect(text).toMatch(/^(Messaging is off|Messagerie désactivée)/)
+        }
+      },
+    )
+    it('shows nothing once messaging is on, and nothing before the first attempt', async () => {
+      const wrapper = mountBanner()
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="mailbox-status"]').exists()).toBe(
+        false,
+      )
+      messagingStateOwner.status = 'ready'
+      messagingStateOwner.reason = null
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="mailbox-status"]').exists()).toBe(
+        false,
+      )
+    })
+    it('no string mentions an operator installation, an approved bundle or a check button', () => {
+      for (const messages of [enUS, frFR])
+        expect(JSON.stringify(messages)).not.toMatch(
+          /operator installation|Check installation|directoryProvisioning|approved (public )?bundle|installation par l/i,
+        )
+    })
   })
 })

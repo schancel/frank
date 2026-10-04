@@ -22,12 +22,12 @@ export function useRelayClient(newRelayClient?: RelayClient) {
   return relayClient
 }
 
-/** The live typed wallet, available only while canonical messaging is verified ready (#778). */
+/** The live typed wallet, available once this account's directory entry is published. */
 export function useMonadWallet(_newWallet?: WalletHandle): WalletHandle {
   const wallet = messagingWallet()
   if (!wallet)
     throw new Error(
-      'Messaging is pending operator directory installation. Open Settings > Networking.',
+      'Messaging is not available yet: your account is still being published to the server.',
     )
   return wallet
 }

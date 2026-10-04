@@ -1,44 +1,81 @@
 /**
- * The one peer admitted through the operator-installed directory (#778), if messaging is ready.
+ * Contact lookup through the open directory.
  *
- * A canonical peer's identity and key come from the directory, never from a relay-served display
- * profile. A display profile, when one exists, only contributes its name, bio and avatar.
+ * For a typed account, a contact's identity and key come only from that contact's own signed
+ * directory entry: the entry is fetched for the address, and it is used only if the key that
+ * signed it hashes to that address. A relay-served display profile, when one exists, contributes
+ * its name, bio and avatar and nothing else. Any address with a published entry can be added.
  */
 import { activeChain } from '@frank/wallet/chain'
+import { fromHex } from '@frank/codec'
 
 type ChainAddress = Parameters<typeof activeChain.fetchProfile>[0]
 type ProfileInfo = NonNullable<
   Awaited<ReturnType<typeof activeChain.fetchProfile>>
 >
+export type DirectoryLookup = (address: string) => Promise<{ subject: string }>
 
-let peer: { address: string; pubKey: Uint8Array } | null = null
+/**
+ * `null`: no typed account in this session, the chain's own profile lookup applies.
+ * `'pending'`: a typed account exists but its entry is not published yet; nothing is looked up.
+ */
+let lookup: DirectoryLookup | 'pending' | null = null
 
-/** Set by the messaging session while a verified directory is installed; cleared when it stops. */
-export function setDirectoryPeer(
-  value: { address: string; pubKey: Uint8Array } | null,
+/** Set by the messaging session. */
+export function setDirectoryLookup(
+  value: DirectoryLookup | 'pending' | null,
 ): void {
-  peer = value
-    ? { address: value.address.toLowerCase(), pubKey: value.pubKey.slice() }
+  lookup = value
+}
+
+/** Why the last directory lookup of an address found nothing, for a plain message to the user. */
+export type ContactLookupFailure =
+  | 'not-published'
+  | 'unreachable'
+  | 'refused'
+  | 'messaging-off'
+let lastFailure: { address: string; reason: ContactLookupFailure } | null = null
+export function contactLookupFailure(
+  address: ChainAddress,
+): ContactLookupFailure | null {
+  return lastFailure?.address === address.raw.toLowerCase()
+    ? lastFailure.reason
     : null
 }
 
-function directoryKey(address: ChainAddress): Uint8Array | undefined {
-  return peer !== null && address.raw.toLowerCase() === peer.address
-    ? peer.pubKey.slice()
-    : undefined
-}
-
-/** Profile used to create or refresh a contact. */
+/** Profile used to create or refresh a contact. `undefined` when the address cannot be used. */
 export async function fetchContactProfile(
   address: ChainAddress,
 ): Promise<ProfileInfo | undefined> {
-  const pubKey = directoryKey(address)
-  if (!pubKey) return activeChain.fetchProfile(address)
+  if (lookup === null) return activeChain.fetchProfile(address)
+  const key = address.raw.toLowerCase()
+  if (lookup === 'pending') {
+    lastFailure = { address: key, reason: 'messaging-off' }
+    return undefined
+  }
+  let pubKey: Uint8Array
+  try {
+    pubKey = fromHex((await lookup(address.raw)).subject)
+  } catch (error) {
+    const code = (error as { code?: string } | null)?.code
+    lastFailure = {
+      address: key,
+      reason:
+        code === 'not-published'
+          ? 'not-published'
+          : code === 'unreachable' || code === 'storage'
+          ? 'unreachable'
+          : 'refused',
+    }
+    return undefined
+  }
+  if (lastFailure?.address === key) lastFailure = null
   let display: ProfileInfo | undefined
   try {
     display = await activeChain.fetchProfile(address)
   } catch {
     display = undefined
   }
+  // The key is the directory's, whatever a display profile claims.
   return { ...(display ?? {}), address, pubKey }
 }

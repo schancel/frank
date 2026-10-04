@@ -120,7 +120,7 @@
         </div>
         <q-btn
           v-if="outcomeUnknown"
-          label="Refresh status"
+          :label="$t('stampPreparation.refreshStatus')"
           data-test="post-status-refresh"
           :loading="refreshingStatus"
           :disable="refreshingStatus"

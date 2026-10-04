@@ -79,7 +79,7 @@
             <span data-test="forum-topic-count" :data-topic="name">{{
               discoveredTopics[name].postCount
             }}</span>
-            <span class="text-caption">posts</span>
+            <span class="text-caption">{{ $t('forum.postsLabel') }}</span>
           </q-item-section>
         </q-item>
         <q-item v-if="discoveredTopicNames.length === 0">

@@ -13,6 +13,7 @@ const mockDiscoverTopics = jest.fn()
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
+    defaultTopicVoteValue: 100_000_000n,
     unit: 'MON',
     toDisplayAmount: (amount: bigint) => String(amount),
     fromDisplayAmount: (amount: string) => BigInt(amount),

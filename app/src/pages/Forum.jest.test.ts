@@ -7,7 +7,7 @@ import Forum from './Forum.vue'
 import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import type { WalletHandle } from '@frank/wallet/chain'
-import type { ForumMessage } from '@frank/cashweb/types/forum'
+import type { ForumMessage } from '@frank/wallet/forum-model'
 import enUS from '../i18n/en-us'
 import frFR from '../i18n/fr-fr'
 
@@ -16,6 +16,7 @@ const mockDiscoverTopics = jest.fn()
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
+    defaultTopicVoteValue: 100_000_000n,
     unit: 'MON',
     toDisplayAmount: (amount: bigint) => String(amount),
     fromDisplayAmount: (amount: string) => BigInt(amount),
@@ -44,7 +45,14 @@ function makeMessage(overrides: Partial<ForumMessage> = {}): ForumMessage {
   return {
     poster: '0xposter',
     topic: 'stamp',
-    satoshis: 10_000_000,
+    voteWeightWei: '10000000',
+    visibleTimestamp: { seconds: '1', nanoseconds: 0 },
+    epoch: '00'.repeat(16),
+    revision: '1',
+    transactionHash: '11'.repeat(32),
+    authorBurnTx: '0x01',
+    blockNumber: '1',
+    transactionIndex: '0',
     entries: [{ kind: 'post', message: 'test post content' }],
     payloadDigest: 'msg-digest-1',
     timestamp: new Date(),

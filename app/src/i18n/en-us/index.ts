@@ -15,6 +15,7 @@ export default {
       'Thank you for participating in our vision of the future of online communications. Please consider donating to our efforts by sending real BCH to bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a',
   },
   stampPreparation: {
+    refreshStatus: 'Refresh status',
     posting: 'Posting…',
     postCreated: 'Post created in {topic}.',
     replyParentLoading: 'Loading the post you are replying to…',
@@ -29,6 +30,7 @@ export default {
       'Your vote was sent, but refreshing failed. Reload to see it. Do not vote again.',
   },
   forum: {
+    postsLabel: 'posts',
     noPosts: 'No posts yet.',
     outageTitle: 'Forum unavailable',
     outageDescription:

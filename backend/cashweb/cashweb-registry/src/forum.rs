@@ -378,6 +378,15 @@ impl State {
             charge: 4096,
         };
         let occupied: usize = self.snapshots.iter().map(|s| s.charge).sum();
+        // Empty queries still retain their snapshot/index overhead. Reserve it
+        // before construction, just as every later row reserves its capacity.
+        if occupied
+            .checked_add(snapshot.charge)
+            .ok_or(ForumError::SnapshotTooLarge)?
+            > 256 * 1024 * 1024
+        {
+            return Err(ForumError::SnapshotTooLarge);
+        }
         let mut push = |row: Row| -> Result<()> {
             let next = snapshot
                 .charge

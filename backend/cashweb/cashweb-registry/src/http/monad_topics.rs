@@ -1867,6 +1867,47 @@ mod tests {
         std::env::set_var("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1/");
         std::env::set_var("MONAD_STAMP_BURN_ADDRESS", burn_address().to_hex());
         std::env::set_var("FRANK_NETWORK_TAG", "MONT");
+        let (healthy_directory, healthy_registry) = test_registry();
+        let healthy = test_server(healthy_registry).into_router();
+        let unknown = observation(3, Some([0xaa; 32]), false);
+        for (method, path, bytes) in [
+            (
+                "GET",
+                format!("/message/monad/topics/{}", hex::encode([0xaa; 32])),
+                Vec::new(),
+            ),
+            (
+                "PUT",
+                "/message/monad/topics/vote".into(),
+                unknown.frame().to_vec(),
+            ),
+        ] {
+            let response = healthy
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .header(CONTENT_TYPE, "application/cbor")
+                        .header(ACCEPT, "application/cbor")
+                        .body(axum::body::Body::from(bytes))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "healthy unknown target remains 404 before RPC"
+            );
+        }
+        assert!(
+            !Store::path(&healthy_directory.path().join("db.rocksdb"))
+                .unwrap()
+                .exists(),
+            "unknown targets must not create Forum obligations"
+        );
+        drop(healthy);
         let (directory, registry) = test_registry();
         let legacy = directory.path().join("db.rocksdb");
         let policy = crate::forum::policy(10143, burn_address());

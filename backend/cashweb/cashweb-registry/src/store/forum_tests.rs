@@ -534,3 +534,68 @@ fn actual_pending_limit_survives_rebuild_and_permits_only_exact_retry() {
     store.admit(observation(4096, None, false)).unwrap();
     assert_eq!(store.pending_count, 4096);
 }
+
+#[test]
+fn actual_pending_byte_ceiling_is_durable_and_preserves_exact_retry() {
+    let root = tempdir::TempDir::new("forum-real-byte-capacity").unwrap();
+    let legacy = root.path().join("db.rocksdb");
+    let mut store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
+    let title = "x".repeat(262_000);
+    let first = observation_fields(0, None, false, 7, "test.topic", &title);
+    let mut refused = None;
+    for nonce in 0..4096 {
+        let op = observation_fields(nonce, None, false, 7, "test.topic", &title);
+        match store.admit(op.clone()) {
+            Ok(_) => (),
+            Err(ForumError::Capacity) => {
+                refused = Some(op);
+                break;
+            }
+            Err(error) => panic!("unexpected admission failure: {error}"),
+        }
+    }
+    let refused = refused.expect("byte ceiling must precede record ceiling");
+    assert!(store.pending_count > 0 && store.pending_count < 4096);
+    assert!(store.pending_bytes <= 64 * 1024 * 1024);
+    assert!(store.pending_bytes + refused.charge().unwrap() > 64 * 1024 * 1024);
+    assert!(store
+        .operation(&refused.checked.decoded.tx_hash.0)
+        .unwrap()
+        .is_none());
+    let count = store.pending_count;
+    let bytes = store.pending_bytes;
+    store.admit(first.clone()).unwrap();
+    assert_eq!((store.pending_count, store.pending_bytes), (count, bytes));
+    drop(store);
+    let mut store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
+    assert_eq!((store.pending_count, store.pending_bytes), (count, bytes));
+    store.admit(first).unwrap();
+    assert!(matches!(store.admit(refused), Err(ForumError::Capacity)));
+    assert_eq!((store.pending_count, store.pending_bytes), (count, bytes));
+}
+
+#[test]
+fn same_direction_headroom_never_assumes_opposite_pending_cancellation() {
+    let root = tempdir::TempDir::new("forum-reservation-headroom").unwrap();
+    let legacy = root.path().join("db.rocksdb");
+    let store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
+    let op = observation(0, None, false);
+    let mut post = store.pending_post(&op).unwrap();
+    post.aggregate = Aggregate {
+        negative: false,
+        magnitude: Magnitude([0xff; 32]).sub(Magnitude::from_u64(7)).unwrap(),
+    };
+    let post = store.reserve(&op, post).unwrap();
+    assert_eq!(post.reserved_up, Magnitude::from_u64(7));
+    let down = observation(1, Some(*op.event.target_hash()), true);
+    let post = store.reserve(&down, post).unwrap();
+    assert_eq!(post.reserved_down, Magnitude::from_u64(7));
+    // One more up would overflow in a permitted receipt ordering, even with a
+    // currently pending opposite burn. Neither reservation can cancel the other.
+    assert!(store
+        .reserve(
+            &observation_with_amount(2, Some(*op.event.target_hash()), false, 1),
+            post
+        )
+        .is_err());
+}

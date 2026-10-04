@@ -1807,6 +1807,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forum_retained_vote_missing_post_is_unavailable() {
+        const CHILD: &str = "FRANK_FORUM_CORRUPT_REBUILD_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .env(CHILD, "1")
+                .args(["--exact", "http::monad_topics::tests::forum_retained_vote_missing_post_is_unavailable", "--nocapture"])
+                .output().unwrap();
+            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        use crate::store::forum::{tests::{observation, facts}, Store};
+        use frank_cbor::Timestamp;
+        use tower::ServiceExt;
+        std::env::set_var("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1/");
+        std::env::set_var("MONAD_STAMP_BURN_ADDRESS", burn_address().to_hex());
+        std::env::set_var("FRANK_NETWORK_TAG", "MONT");
+        let (directory, registry) = test_registry();
+        let legacy = directory.path().join("db.rocksdb");
+        let policy = crate::forum::policy(10143, burn_address());
+        let post = observation(0, None, false);
+        let vote = observation(1, Some(*post.event.target_hash()), true);
+        let at = Timestamp { seconds: 200, nanoseconds: 0 };
+        let mut store = Store::open(&legacy, "monad-testnet", policy).unwrap();
+        for op in [&post, &vote] {
+            store.admit(op.clone()).unwrap();
+            store.confirm(&op.checked.decoded.tx_hash.0, &facts(op, 10, 0), at).unwrap();
+        }
+        drop(store);
+        let mut vote_key = vec![b'e'];
+        vote_key.extend(vote.checked.decoded.tx_hash.0);
+        let retained;
+        {
+            let db = rocksdb::DB::open_default(Store::path(&legacy).unwrap()).unwrap();
+            retained = db.get(&vote_key).unwrap().unwrap();
+            let mut key = vec![b'e'];
+            key.extend(post.checked.decoded.tx_hash.0);
+            db.delete(key).unwrap();
+            db.flush().unwrap();
+        }
+        let router = test_server(registry).into_router();
+        let response = router.clone().oneshot(axum::http::Request::builder()
+            .uri(format!("/message/monad/topics/{}", hex::encode(post.event.target_hash())))
+            .header(ACCEPT, "application/cbor")
+            .body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        let status = response.status();
+        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        drop(router);
+        let db = rocksdb::DB::open_default(Store::path(&legacy).unwrap()).unwrap();
+        assert_eq!(db.get(&vote_key).unwrap().unwrap(), retained, "retained authority must not be rewritten");
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{}", String::from_utf8_lossy(&body));
+        assert!(String::from_utf8_lossy(&body).contains("forum_unavailable"));
+    }
+
+    #[tokio::test]
     async fn forum_actual_router_post_vote_read_status_and_restart() {
         // A fresh process isolates the existing process-wide environment gate. No
         // other test sees a changed RPC URL, and no external chain is contacted.

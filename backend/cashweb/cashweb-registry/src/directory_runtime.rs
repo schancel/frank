@@ -1349,33 +1349,55 @@ mod cap_tests {
             });
         let server = tokio::spawn(server);
         let result = async {
-            let response = reqwest::Client::builder()
+            let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(70))
                 .build()
-                .unwrap()
-                .put(format!(
-                    "http://{address}/directory/v1/{}/{}/head",
-                    c.network, c.subject
-                ))
-                .header("content-type", "application/vnd.frank.cbor")
-                .body(frames[0].1.clone())
-                .send()
-                .await?;
-            let status = response.status();
-            let headers = response.headers().clone();
-            let body = response.bytes().await?;
-            Ok::<_, reqwest::Error>((status, headers, body))
+                .unwrap();
+            let base = format!("http://{address}/directory/v1/{}/{}", c.network, c.subject);
+            let mut results = Vec::new();
+            for (method, path, body) in [
+                (
+                    reqwest::Method::PUT,
+                    "/head".to_owned(),
+                    Some(frames[0].1.clone()),
+                ),
+                (
+                    reqwest::Method::GET,
+                    format!("/statements/{}", c.revision_zero),
+                    None,
+                ),
+                (reqwest::Method::GET, "/head".to_owned(), None),
+            ] {
+                let mut request = client
+                    .request(method, format!("{base}{path}"))
+                    .header("content-type", "application/vnd.frank.cbor");
+                if let Some(body) = body {
+                    request = request.body(body);
+                }
+                let response = request.send().await?;
+                let status = response.status();
+                let headers = response.headers().clone();
+                let body = response.bytes().await?;
+                results.push((status, headers, body));
+            }
+            Ok::<_, reqwest::Error>(results)
         }
         .await;
         stop.send(()).unwrap();
         server.await.unwrap().unwrap();
         runtime.begin_shutdown();
         runtime.wait_stopped().await;
-        let (status, headers, bytes) = result.unwrap();
-        assert_eq!(status, reqwest::StatusCode::OK);
-        assert_eq!(headers["content-type"], "application/vnd.frank.cbor");
-        assert_eq!(headers["x-frank-directory-evidence"], "fresh-current");
-        assert_eq!(bytes.as_ref(), frames.last().unwrap().1);
+        let results = result.unwrap();
+        for ((status, headers, bytes), (kind, exact)) in results.iter().zip([
+            ("fresh-current", &frames.last().unwrap().1),
+            ("historical", &frames[0].1),
+            ("fresh-current", &frames.last().unwrap().1),
+        ]) {
+            assert_eq!(*status, reqwest::StatusCode::OK);
+            assert_eq!(headers["content-type"], "application/vnd.frank.cbor");
+            assert_eq!(headers["x-frank-directory-evidence"], kind);
+            assert_eq!(bytes.as_ref(), exact);
+        }
         let floor: Continuity =
             serde_json::from_slice(&bounded_file(&c.continuity_file, 8192).unwrap()).unwrap();
         assert_eq!(floor.checkpoint.accepted, MAX_STATEMENTS);

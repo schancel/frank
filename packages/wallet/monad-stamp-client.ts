@@ -1995,7 +1995,8 @@ export class MonadCanonicalStampClient {
       const result = results.find(r => r.attemptRef === attempt.attemptRef)
       if (!result || result.state !== 'ready')
         throw new Error('canonical-wallet:replay-hold')
-      this.journal.beginReplay(result.eligibility)
+      // Admission must be durable-owner confirmed before any byte reaches the relay.
+      await this.journal.beginReplay(result.eligibility)
       try {
         const accepted = await submitCanonicalRequest({
           installedRelayOrigin: this.wallet.relayBaseUrl,

@@ -763,7 +763,7 @@ async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reop
             recovery_obligation_id: Some(pending.obligation_id),
         };
         let ack_url = format!(
-            "{url}/message/monad/cbor/recovery-ack/{}/{}/{}",
+            "{url}/message/monad/cbor/recovery/{}/{}/{}/ack",
             recipient.to_hex(),
             hex::encode(hash),
             hex::encode(pending.obligation_id)
@@ -954,7 +954,7 @@ async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reop
             recovery_obligation_id: Some(obligation),
         };
         let ack_url = format!(
-            "{url}/message/monad/cbor/recovery-ack/{}/{}/{}",
+            "{url}/message/monad/cbor/recovery/{}/{}/{}/ack",
             recipient.to_hex(),
             hex::encode(hash),
             hex::encode(obligation)
@@ -971,7 +971,7 @@ async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reop
         assert_eq!(
             client
                 .post(format!(
-                    "{url}/message/monad/cbor/recovery-ack/{}/{}/{}",
+                    "{url}/message/monad/cbor/recovery/{}/{}/{}/ack",
                     recipient.to_hex(),
                     hex::encode(hash),
                     hex::encode([0; 32])

@@ -1,3 +1,4 @@
+import { computeAddress } from 'ethers'
 import { inspectCanonicalPreparedEnvelope } from './monad-stamp-stealth'
 /**
  * Client-side Stamp-over-Monad message submission (ticket #13).
@@ -1394,7 +1395,13 @@ import {
   type CanonicalFetch,
   type CanonicalAcceptedBody,
 } from '@frank/cashweb/relay/canonical-dm-transport'
-import type { Current } from '../directory-admission/src'
+import type { Current, HistoricalEvidence } from '../directory-admission/src'
+import { openDirectMessage } from '@frank/cashweb/relay/canonical-dm'
+import {
+  ackCanonicalRecovery,
+  type CanonicalMailboxAuthParams,
+  type CanonicalRecoveryRecord,
+} from '@frank/cashweb/relay/monad-mailbox-client'
 import type { MonadCanonicalWalletHandle } from './monad-wallet-handle'
 import {
   type CanonicalPreparedAttempt,
@@ -2055,6 +2062,150 @@ export class MonadCanonicalStampClient {
   wasAcknowledged(attemptRef: string): boolean {
     return this.journal.wasAcknowledged(attemptRef)
   }
+  /** Admission verifies new imports; retained custody later uses the durable obligation only. */
+  importRecovery(input: {
+    record: CanonicalRecoveryRecord
+    senderCurrent: Current
+    recipientCurrent: Current
+    recipientEvidence?: HistoricalEvidence
+  }) {
+    this.assertOwner()
+    const record = input.record
+    if (
+      !/^[0-9a-f]{64}$/.test(record.obligationId) ||
+      !Number.isSafeInteger(record.timestampMs) ||
+      record.timestampMs < 0
+    )
+      throw new Error('canonical-wallet:recovery-record-required')
+    const request = freezeCanonicalRequest(
+      record.parts,
+      `frank-recovery-${record.obligationId.slice(0, 32)}`,
+    )
+    const identity = request.identity
+    if (
+      Object.keys(record.identity).length !== Object.keys(identity).length ||
+      Object.keys(identity).some(
+        key =>
+          JSON.stringify(record.identity[key as keyof typeof identity]) !==
+          JSON.stringify(identity[key as keyof typeof identity]),
+      ) ||
+      compareBytes(record.delivery, request.parts.delivery) !== 0 ||
+      compareBytes(record.context, request.parts.context) !== 0 ||
+      record.submissionIdentity !== identity.submission_identity
+    )
+      throw new Error('canonical-wallet:recovery-full-identity-conflict')
+    const bound = JSON.parse(this.wallet.walletState.canonicalBinding!.tuple)
+    const delivery = parseFrame(request.parts.delivery)
+    if (
+      delivery.kind !== 'parsed' ||
+      delivery.typed?.type !== 1 ||
+      identity.network !== bound.network ||
+      identity.recipient !== computeAddress(bound.auth).toLowerCase()
+    )
+      throw new Error('canonical-wallet:recovery-recipient-conflict')
+    const payload = delivery.typed.payloadFrame.frame
+    const envelope = inspectCanonicalPreparedEnvelope(
+      payload,
+      request.parts.context,
+    )
+    const roles = this.wallet.canonicalRoles.create(
+      bound.network,
+      input.recipientCurrent,
+    )
+    let stampGeneration: string
+    try {
+      openDirectMessage({
+        mode: 'receive',
+        network: bound.network,
+        payload,
+        context: request.parts.context,
+        roles,
+        senderCurrent: input.senderCurrent,
+        recipientCurrent: input.recipientCurrent,
+        recipientEvidence: input.recipientEvidence,
+      })
+      const evidence = verifyPreviewDirectoryEvidence(
+        input.recipientEvidence?.attestation ??
+          input.recipientCurrent.evidence.attestation,
+        bound.network,
+      )
+      if (
+        compareBytes(
+          envelope.stampKey.keyBytes,
+          evidence.statement.stampKey.keyBytes,
+        ) !== 0 ||
+        (compareBytes(
+          envelope.stampKey.keyBytes,
+          roles.stamp.compressedPoint,
+        ) !== 0 &&
+          (!roles.previousStamp ||
+            compareBytes(
+              envelope.stampKey.keyBytes,
+              roles.previousStamp.compressedPoint,
+            ) !== 0))
+      )
+        throw new Error('canonical-wallet:recovery-stamp-custody-conflict')
+      stampGeneration = evidence.statement.preview.stampKeyGeneration.toString()
+    } finally {
+      roles.dispose()
+    }
+    const frozen = {
+      obligationId: record.obligationId,
+      walletBindingId: this.wallet.walletState.canonicalBinding!.id,
+      request,
+      confirmedChildren: [...record.confirmedChildren],
+      lifecycle: record.lifecycle,
+      stampGeneration,
+    }
+    return this.wallet.runCanonicalExclusive(async () => {
+      this.assertOwner()
+      const imported = await this.journal.importRecovery(frozen)
+      this.wallet.canonicalRoles.verifyRetainedRecoveryCustody(
+        this.journal.retainedRecoveryCustody(imported.obligationId),
+      )
+      return imported
+    })
+  }
+  importedRecoveries() {
+    this.assertOwner()
+    return this.journal.getImportedRecoveries()
+  }
+  /** No Current lookup: verifies only already retained funds under the original bound root. */
+  verifyImportedRecoveryCustody(obligationId: string): void {
+    this.assertOwner()
+    this.wallet.canonicalRoles.verifyRetainedRecoveryCustody(
+      this.journal.retainedRecoveryCustody(obligationId),
+    )
+  }
+  ackImportedRecovery(
+    obligationId: string,
+    auth: CanonicalMailboxAuthParams,
+  ): Promise<void> {
+    return this.wallet.runCanonicalExclusive(async () => {
+      this.assertOwner()
+      const imported = this.journal.importedRecovery(obligationId)
+      const bound = JSON.parse(this.wallet.walletState.canonicalBinding!.tuple)
+      if (
+        !imported ||
+        !imported.lifecycle.startsWith('terminal:') ||
+        auth.expectedNetworkTag !== this.wallet.installedNetworkTag ||
+        auth.subject !== bound.auth.slice(2) ||
+        auth.recipient !== imported.request.identity.recipient ||
+        new URL(auth.relayBaseUrl).origin !==
+          new URL(this.wallet.relayBaseUrl).origin
+      )
+        throw new Error('canonical-wallet:durable-terminal-import-required')
+      this.verifyImportedRecoveryCustody(obligationId)
+      if (imported.recipientAcknowledged) return
+      await ackCanonicalRecovery({
+        ...auth,
+        payloadHashHex: imported.request.identity.payload_hash,
+        obligationIdHex: obligationId,
+      })
+      await this.journal.markRecoveryAcknowledged(obligationId)
+    })
+  }
+
   terminalOutcomes(): readonly CanonicalJournalAttempt[] {
     this.assertOwner()
     return this.journal.getAll().filter(a => a.terminal !== null)

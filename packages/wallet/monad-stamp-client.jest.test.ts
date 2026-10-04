@@ -1,3 +1,7 @@
+import * as canonicalMailboxModule from '@frank/cashweb/relay/monad-mailbox-client'
+import { freezeCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
+import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
+import { inspectCanonicalPreparedEnvelope } from './monad-stamp-stealth'
 /**
  * Unit tests for `monad-stamp-client.ts` (ticket #13).
  *
@@ -13,6 +17,7 @@
  */
 import {
   JsonRpcProvider,
+  Wallet,
   SigningKey,
   Transaction,
   computeAddress,
@@ -1593,7 +1598,15 @@ import {
   prepareDirectMessage,
   directMessageText,
 } from '@frank/cashweb/relay/canonical-dm'
-import { decodeCanonical, encodeCanonical, cborMap, toHex } from '@frank/codec'
+import {
+  decodeCanonical,
+  encodeCanonical,
+  encodeFrame,
+  paymentCommitment,
+  recipientPayloadDigest,
+  cborMap,
+  toHex,
+} from '@frank/codec'
 import type { PublicRevisionZeroInput } from './monad-wallet-handle'
 
 function canonicalTestRoots(index: number): MonadRootBundle {
@@ -1724,6 +1737,95 @@ async function makeCanonicalConsumerFixture() {
       items: [directMessageText('exact frozen text')],
       roles: material.canonicalRoles!.create('monad-testnet', senderCurrent),
     })
+  const incomingRecovery = async (
+    lifecycle = 'terminal:expired',
+    confirmedChildren = [0],
+  ) => {
+    const saved = prepareDirectMessage({
+      network: 'monad-testnet',
+      senderCurrent: recipientCurrent,
+      recipientCurrent: senderCurrent,
+      messageId: new Uint8Array(16).fill(9),
+      items: [directMessageText('incoming funds remain recoverable')],
+      roles: recipient.canonicalRoles!.create(
+        'monad-testnet',
+        recipientCurrent,
+      ),
+    })
+    const envelope = inspectCanonicalPreparedEnvelope(
+      saved.payload,
+      saved.context,
+    )
+    const digest = recipientPayloadDigest('monad-testnet', saved.payload)
+    const destination = canonicalStampDestination({
+      network: 'monad-testnet',
+      stampKey: envelope.stampKey,
+      sharedPoint: envelope.payload.sharedPoint,
+      childIndex: 0,
+    })
+    const raw = await new Wallet('0x' + '00'.repeat(31) + '01').signTransaction(
+      {
+        type: 2,
+        chainId: 10143n,
+        nonce: 0,
+        gasLimit: 50000n,
+        maxFeePerGas: 2n,
+        maxPriorityFeePerGas: 1n,
+        value: 32n,
+        to: '0x' + toHex(destination.address),
+        data: '0x504f4e4401' + toHex(paymentCommitment(digest, 0)),
+      },
+    )
+    const tx = Transaction.from(raw)
+    const delivery = encodeFrame(
+      { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+      cborMap([
+        [0, 'monad-testnet'],
+        [
+          1,
+          cborMap([
+            [0, 1],
+            [1, envelope.stampKey.keyBytes],
+          ]),
+        ],
+        [2, saved.payload],
+        [3, digest],
+        [
+          4,
+          [
+            cborMap([
+              [0, 0],
+              [1, getBytes(tx.hash!)],
+              [2, getBytes('0x' + tx.value.toString(16).padStart(64, '0'))],
+              [3, destination.address],
+              [4, paymentCommitment(digest, 0)],
+            ]),
+          ],
+        ],
+      ]),
+    )
+    const parts = {
+      delivery,
+      context: saved.context,
+      transactions: [getBytes(raw)],
+    }
+    const request = freezeCanonicalRequest(parts)
+    return {
+      record: {
+        delivery,
+        context: saved.context,
+        parts,
+        identity: request.identity,
+        submissionIdentity: request.identity.submission_identity,
+        timestampMs: 100000,
+        obligationId: 'ab'.repeat(32),
+        confirmedChildren,
+        lifecycle,
+      },
+      senderCurrent: recipientCurrent,
+      recipientCurrent: senderCurrent,
+    }
+  }
   const subStore = new LevelSubAccountPoolStore(location),
     changeStore = new LevelChangePoolStore(location)
   await subStore.Open()
@@ -1835,6 +1937,10 @@ async function makeCanonicalConsumerFixture() {
     location,
     client,
     state,
+    incomingRecovery,
+    material,
+    senderDirectory,
+    senderExport,
     subStore,
     pool,
     leaseManager,
@@ -2093,6 +2199,153 @@ describe('canonical durable consumer barriers', () => {
       expect(callback).not.toHaveBeenCalled()
       write.mockRestore()
       sign.mockRestore()
+    })
+  }, 20000)
+  it('retains public recovery accounts and verifies original custody after directory freshness expires', async () => {
+    await withCanonicalConsumer(async f => {
+      const input = await f.incomingRecovery()
+      const imported = await f.client.importRecovery(input)
+      expect(imported.accounts).toHaveLength(1)
+      expect(imported.accounts[0].valueWei).toBe('32')
+      expect(imported.recipientAcknowledged).toBe(false)
+      expect(Object.keys(imported.accounts[0])).toEqual([
+        'childIndex',
+        'transactionHash',
+        'address',
+        'valueWei',
+      ])
+      await expect(
+        f.senderDirectory.current({
+          now: { seconds: 3701n, nanoseconds: 0 },
+          relay: f.senderExport.configuration.relayA.tuple,
+        }),
+      ).rejects.toThrow()
+      expect(() =>
+        f.client.verifyImportedRecoveryCustody(imported.obligationId),
+      ).not.toThrow()
+      const reopenedMaterial = createMonadWalletMaterial(canonicalTestRoots(0))
+      try {
+        expect(() =>
+          reopenedMaterial.canonicalRoles!.verifyRetainedRecoveryCustody(
+            f.state.canonicalJournal!.retainedRecoveryCustody(
+              imported.obligationId,
+            ),
+          ),
+        ).not.toThrow()
+        expect(() =>
+          reopenedMaterial.canonicalRoles!.verifyRetainedRecoveryCustody({
+            obligationId: imported.obligationId,
+          }),
+        ).toThrow()
+      } finally {
+        reopenedMaterial.dispose()
+      }
+      const foreign = createMonadWalletMaterial(canonicalTestRoots(1))
+      try {
+        expect(() =>
+          foreign.canonicalRoles!.verifyRetainedRecoveryCustody(
+            f.state.canonicalJournal!.retainedRecoveryCustody(
+              imported.obligationId,
+            ),
+          ),
+        ).toThrow('retained-custody')
+      } finally {
+        foreign.dispose()
+      }
+    })
+  }, 20000)
+  it('holds ACK behind real import completion and retains the exact acknowledged row', async () => {
+    await withCanonicalConsumer(async f => {
+      const input = await f.incomingRecovery()
+      const journal = f.state.canonicalJournal!
+      const db = (
+        journal as unknown as {
+          database: { put: (...args: unknown[]) => Promise<void> }
+        }
+      ).database
+      const original = db.put.bind(db),
+        entered = canonicalBarrier(),
+        gate = canonicalBarrier()
+      const write = jest
+        .spyOn(db, 'put')
+        .mockImplementation(async (...args) => {
+          entered.resolve()
+          await gate.promise
+          return original(...args)
+        })
+      const ack = jest
+        .spyOn(canonicalMailboxModule, 'ackCanonicalRecovery')
+        .mockResolvedValue(undefined)
+      const importing = f.client.importRecovery(input)
+      await entered.promise
+      const auth = {
+        expectedNetworkTag: 'MONT' as const,
+        subject: toHex(f.senderExport.auth.compressedPoint),
+        recipient: input.record.identity.recipient,
+        relayBaseUrl: 'https://a.example',
+        getCurrent: async () => f.senderCurrent,
+        signDigest: async () => new Uint8Array(65),
+      }
+      const acknowledging = f.client.ackImportedRecovery(
+        input.record.obligationId,
+        auth,
+      )
+      expect(journal.getImportedRecoveries()).toEqual([])
+      expect(ack).not.toHaveBeenCalled()
+      gate.resolve()
+      await importing
+      await acknowledging
+      expect(ack).toHaveBeenCalledTimes(1)
+      const row = journal.importedRecovery(input.record.obligationId)!
+      expect(row.recipientAcknowledged).toBe(true)
+      await f.client.ackImportedRecovery(input.record.obligationId, auth)
+      expect(ack).toHaveBeenCalledTimes(1)
+      expect(
+        journal.importedRecovery(input.record.obligationId)!.accounts,
+      ).toEqual(row.accounts)
+      write.mockRestore()
+      ack.mockRestore()
+    })
+  }, 20000)
+  it('retains a pending prefix without ACK and rejects changed terminal account sets', async () => {
+    await withCanonicalConsumer(async f => {
+      const input = await f.incomingRecovery('pending', [])
+      await f.client.importRecovery(input)
+      const auth = {
+        expectedNetworkTag: 'MONT' as const,
+        subject: toHex(f.senderExport.auth.compressedPoint),
+        recipient: input.record.identity.recipient,
+        relayBaseUrl: 'https://a.example',
+        getCurrent: async () => f.senderCurrent,
+        signDigest: async () => new Uint8Array(65),
+      }
+      const ack = jest
+        .spyOn(canonicalMailboxModule, 'ackCanonicalRecovery')
+        .mockResolvedValue(undefined)
+      await expect(
+        f.client.ackImportedRecovery(input.record.obligationId, auth),
+      ).rejects.toThrow('durable-terminal-import')
+      expect(ack).not.toHaveBeenCalled()
+      await f.client.importRecovery({
+        ...input,
+        record: {
+          ...input.record,
+          lifecycle: 'terminal:expired',
+          confirmedChildren: [0],
+        },
+      })
+      await expect(
+        f.client.importRecovery({
+          ...input,
+          record: {
+            ...input.record,
+            lifecycle: 'terminal:expired',
+            confirmedChildren: [],
+          },
+        }),
+      ).rejects.toThrow('conflict')
+      expect(f.client.importedRecoveries()[0].accounts).toHaveLength(1)
+      ack.mockRestore()
     })
   }, 20000)
 })

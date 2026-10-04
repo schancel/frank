@@ -427,6 +427,12 @@ try {
   console.log('Canonical normal flow witnesses:', audit)
   await evaluate(`location.hash='#/forum'`)
   await until(`document.querySelector('a.post-title') && ${forumState}.isRefreshing===false`)
+  await evaluate(`(async()=>{
+    const m=await import('/src/stores/forum.ts');
+    const session=await import(performance.getEntriesByType('resource').find(e=>e.name.includes('/src/accounts/session.ts')).name);
+    const pinia=document.querySelector('#q-app').__vue_app__.config.globalProperties.$pinia;
+    await m.useForumStore(pinia).refreshMessages({wallet:await session.accountSession.getWallet(),topic:'news'});
+  })()`)
   // Alter relay observation fields only; immutable post bytes and signed author proof remain exact.
   // The single read slot queues the newer generation behind the old HTTP response.
   let held,

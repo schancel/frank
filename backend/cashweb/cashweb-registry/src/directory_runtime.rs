@@ -60,6 +60,8 @@ pub enum Operation {
     Current,
     /// Retrieve exact accepted history without granting current authority.
     Historical([u8; 32]),
+    /// Every retained record as one canonical CBOR array of byte strings, for another relay.
+    Chain,
     /// Test-only gate for observing started ownership without blocking Tokio.
     #[cfg(test)]
     Barrier {
@@ -203,12 +205,15 @@ struct Shared {
     closed: AtomicBool,
     ready: AtomicBool,
     subjects: AtomicU64,
+    replicated: AtomicU64,
     stopped: watch::Sender<bool>,
 }
 struct Owner {
     shared: Arc<Shared>,
     info: RelayInfo,
     enrollments_per_source_per_hour: u32,
+    sync_interval: Duration,
+    federation: OnceLock<Arc<crate::directory_federation::Federation>>,
     registry: Arc<Registry>,
     sender: Mutex<Option<mpsc::Sender<Job>>>,
     join: Mutex<Option<thread::JoinHandle<()>>>,
@@ -348,6 +353,7 @@ struct Worker<'a> {
     registry: &'a Registry,
     info: RelayInfo,
     max_subjects: u64,
+    max_replicated_subjects: u64,
     clock: Clock,
     last: Timestamp,
     handles: HashMap<Key, Principal<'a>>,
@@ -449,6 +455,7 @@ impl<'a> Worker<'a> {
         let Some(frank_cbor::TypedPayload::DirectoryStatement {
             subject: signer,
             revision,
+            relays,
             ..
         }) = verified.statement_frame().typed.as_deref()
         else {
@@ -461,7 +468,15 @@ impl<'a> Worker<'a> {
         if *revision != 0 {
             return Err(RuntimeError::Trust);
         }
-        if self.shared.subjects.load(Ordering::Acquire) >= self.max_subjects {
+        // Accounts that live here and copies of accounts that live elsewhere have separate
+        // budgets, so entries arriving from peers cannot block sign-ups on this relay.
+        let local = relays.first().is_some_and(|relay| self.info.is_local(relay));
+        let (counter, budget) = if local {
+            (&self.shared.subjects, self.max_subjects)
+        } else {
+            (&self.shared.replicated, self.max_replicated_subjects)
+        };
+        if counter.load(Ordering::Acquire) >= budget {
             return Err(RuntimeError::Resource);
         }
         let anchor = Anchor {
@@ -482,6 +497,7 @@ impl<'a> Worker<'a> {
             version: 1,
             anchor: anchor.revision_zero,
             checkpoint: prospective,
+            local,
         };
         let rows = self.rows()?;
         rows.put(&key.0, &subject, Some(&address), &row)
@@ -514,7 +530,11 @@ impl<'a> Worker<'a> {
             rows.put(&key.0, &subject, None, &row)
                 .map_err(|_| RuntimeError::OutcomeUnknown)?;
         }
-        self.shared.subjects.fetch_add(1, Ordering::AcqRel);
+        if local {
+            self.shared.subjects.fetch_add(1, Ordering::AcqRel);
+        } else {
+            self.shared.replicated.fetch_add(1, Ordering::AcqRel);
+        }
         self.evict();
         self.tick += 1;
         self.handles.insert(
@@ -606,6 +626,21 @@ impl<'a> Worker<'a> {
                 .map(AdmittedSnapshot::Historical)
                 .ok_or(RuntimeError::NotFound);
         }
+        if matches!(op, Operation::Chain) {
+            let records = p
+                .directory
+                .retained()?
+                .into_iter()
+                .map(|record| frank_cbor::CborValue::Bytes(record.attestation))
+                .collect();
+            let chain = frank_cbor::encode_canonical(&frank_cbor::CborValue::Array(records))
+                .map_err(|_| RuntimeError::Resource)?;
+            return Ok(AdmittedSnapshot::Historical(HistoricalEvidence {
+                statement: vec![],
+                attestation: chain,
+                hash: [0; 32],
+            }));
+        }
         // Persist a changed head, length or quarantine. A later checked time alone is not
         // rewritten: an older floor still reopens the same history.
         let remember = |p: &mut Principal<'_>, checkpoint: Checkpoint| -> Result<()> {
@@ -618,6 +653,7 @@ impl<'a> Worker<'a> {
                 version: 1,
                 anchor: p.row.anchor,
                 checkpoint,
+                local: p.row.local,
             };
             if rows
                 .put(&p.anchor.network, &p.anchor.subject.key_bytes, None, &row)
@@ -655,7 +691,7 @@ impl<'a> Worker<'a> {
                     p.directory.advance_declared(&[candidate], Some(now))
                 }
             }
-            Operation::Historical(_) => unreachable!(),
+            Operation::Historical(_) | Operation::Chain => unreachable!(),
             #[cfg(test)]
             Operation::Barrier { .. } => unreachable!(),
         };
@@ -694,6 +730,7 @@ impl DirectoryRuntime {
     ) -> Result<(Self, oneshot::Receiver<Result<()>>)> {
         let info = RelayInfo::from_config(&config)?;
         let enrollments_per_source_per_hour = config.enrollments_per_source_per_hour;
+        let config_sync_interval_s = config.sync_interval_s;
         static OWNERS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
         let address = Arc::as_ptr(&registry) as usize;
         if !OWNERS
@@ -718,6 +755,7 @@ impl DirectoryRuntime {
             closed: AtomicBool::new(false),
             ready: AtomicBool::new(false),
             subjects: AtomicU64::new(0),
+            replicated: AtomicU64::new(0),
             stopped,
         });
         let worker_shared = shared.clone();
@@ -740,11 +778,13 @@ impl DirectoryRuntime {
                         let _ = ready_send.send(Err(RuntimeError::NotStarted));
                         return;
                     }
-                    worker_shared.subjects.store(count, Ordering::Release);
+                    worker_shared.subjects.store(count.0, Ordering::Release);
+                    worker_shared.replicated.store(count.1, Ordering::Release);
                     let mut worker = Worker {
                         registry: &registry,
                         info: worker_info,
                         max_subjects: config.max_subjects,
+                        max_replicated_subjects: config.max_replicated_subjects,
                         clock,
                         last: started,
                         handles: HashMap::new(),
@@ -817,6 +857,8 @@ impl DirectoryRuntime {
                     shared,
                     info,
                     enrollments_per_source_per_hour,
+                    sync_interval: Duration::from_secs(config_sync_interval_s.max(1)),
+                    federation: OnceLock::new(),
                     registry,
                     sender: Mutex::new(Some(sender)),
                     join: Mutex::new(Some(join)),
@@ -833,6 +875,28 @@ impl DirectoryRuntime {
     pub fn info(&self) -> &RelayInfo {
         &self.owner.info
     }
+    /// Turn on talking to other relays: copying entries with `peers` and, when `forwarding`,
+    /// passing messages on to the relay a recipient's entry names. Once per runtime.
+    pub fn enable_federation(&self, peers: Vec<url::Url>, forwarding: bool) {
+        let _ = self.owner.federation.set(Arc::new(
+            crate::directory_federation::Federation::new(peers, forwarding),
+        ));
+    }
+    /// Present once [`Self::enable_federation`] was called.
+    pub fn federation(&self) -> Option<&Arc<crate::directory_federation::Federation>> {
+        self.owner.federation.get()
+    }
+    /// Pause between rounds of comparing entries with peers and retrying forwards.
+    pub fn sync_interval(&self) -> Duration {
+        self.owner.sync_interval
+    }
+    /// Whether shutdown has begun.
+    pub fn is_closed(&self) -> bool {
+        self.owner.shared.closed.load(Ordering::Acquire)
+    }
+    pub(crate) fn registry(&self) -> &Arc<Registry> {
+        &self.owner.registry
+    }
     /// First-time publications one source may make per clock hour.
     pub fn enrollments_per_source_per_hour(&self) -> u32 {
         self.owner.enrollments_per_source_per_hour
@@ -847,6 +911,51 @@ impl DirectoryRuntime {
             .directory_subjects()
             .and_then(|rows| rows.get(network, &subject))
             .is_ok_and(|row| row.is_some())
+    }
+    /// What this relay would list for `subject`: head hash, retained record count, quarantine.
+    pub fn listed(&self, network: &str, subject: &str) -> Option<(Option<String>, u64, bool)> {
+        let subject = exact(subject, 33).ok()?;
+        let row = self
+            .owner
+            .registry
+            .directory_subjects()
+            .and_then(|rows| rows.get(network, &subject))
+            .ok()??;
+        Some((
+            row.checkpoint.head.map(hex::encode),
+            row.checkpoint.retained as u64,
+            row.checkpoint.forked,
+        ))
+    }
+    /// One page of the keys this relay holds, in key order after `after`, for a peer to compare.
+    pub fn list(
+        &self,
+        network: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Option<Vec<(String, Option<String>, u64, bool)>> {
+        let after = match after {
+            Some(after) => Some(exact(after, 33).ok()?),
+            None => None,
+        };
+        let rows = self
+            .owner
+            .registry
+            .directory_subjects()
+            .and_then(|rows| rows.list(network, after.as_deref(), limit))
+            .ok()?;
+        Some(
+            rows.into_iter()
+                .map(|(subject, row)| {
+                    (
+                        hex::encode(subject),
+                        row.checkpoint.head.map(hex::encode),
+                        row.checkpoint.retained as u64,
+                        row.checkpoint.forked,
+                    )
+                })
+                .collect(),
+        )
     }
     /// The published key whose address is `address`, as lowercase hex. Callers must still ask
     /// for its current entry; the index alone proves nothing.

@@ -296,9 +296,19 @@ pub struct DirectoryConf {
     /// cannot outlive it, so set it comfortably in the future.
     #[serde(default)]
     pub binding_expiry_ns: String,
-    /// Most keys this relay will hold entries for, local and replicated together.
+    /// Most accounts that live on this relay.
     #[serde(default = "default_directory_max_subjects")]
     pub max_subjects: u64,
+    /// Most keys of accounts that live on other relays this relay will hold copies of. A
+    /// separate budget, so copies from peers cannot block sign-ups here.
+    #[serde(default = "default_directory_max_subjects")]
+    pub max_replicated_subjects: u64,
+    /// Accept a message for a recipient on another relay and forward it there.
+    #[serde(default = "default_true")]
+    pub forwarding: bool,
+    /// Seconds between rounds of comparing entries with peers and retrying forwards.
+    #[serde(default = "default_directory_sync_interval_s")]
+    pub sync_interval_s: u64,
     /// First-time publications accepted from one source address per clock hour.
     #[serde(default = "default_directory_enrollments_per_source_per_hour")]
     pub enrollments_per_source_per_hour: u32,
@@ -312,6 +322,14 @@ pub struct DirectoryConf {
 
 const fn default_directory_max_subjects() -> u64 {
     1_000_000
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_directory_sync_interval_s() -> u64 {
+    30
 }
 
 const fn default_directory_enrollments_per_source_per_hour() -> u32 {

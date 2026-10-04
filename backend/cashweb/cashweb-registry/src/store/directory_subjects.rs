@@ -15,6 +15,30 @@ use crate::directory_admission::Checkpoint;
 pub(crate) const STORE: &str = "directory-subjects-v1.rocksdb";
 pub(crate) const CF_DIRECTORY_SUBJECTS_V1: &str = "directory_subjects_v1";
 pub(crate) const CF_DIRECTORY_ADDRESSES_V1: &str = "directory_addresses_v1";
+/// Messages accepted for a recipient on another relay: state by submission identity.
+pub(crate) const CF_FORWARDS_V1: &str = "forwards_v1";
+/// The exact request bytes of each forward, written once.
+pub(crate) const CF_FORWARD_BODIES_V1: &str = "forward_bodies_v1";
+
+/// One message this relay accepted for a recipient whose mailbox is on another relay.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ForwardRow {
+    /// Relay endpoint named by the recipient's entry.
+    pub(crate) endpoint: String,
+    pub(crate) content_type: String,
+    /// Sender key, so its entry can be offered to the recipient's relay.
+    pub(crate) sender: String,
+    pub(crate) network: String,
+    pub(crate) created_ms: i64,
+    pub(crate) attempts: u32,
+    pub(crate) next_ms: i64,
+    /// Set once the recipient's relay gave a final answer; that answer is then repeated.
+    pub(crate) done: bool,
+    pub(crate) status: u16,
+    pub(crate) response: String,
+    /// Identity echo for answering "retained" before the recipient's relay was reached.
+    pub(crate) echo: serde_json::Value,
+}
 
 /// Durable per-subject continuity. `anchor` never changes once written.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +47,13 @@ pub(crate) struct SubjectRow {
     pub(crate) version: u32,
     pub(crate) anchor: [u8; 32],
     pub(crate) checkpoint: Checkpoint,
+    /// Whether the account's first entry named this relay. Accounts that live elsewhere are
+    /// counted against a separate budget so copies from peers cannot crowd out sign-ups here.
+    #[serde(default = "local_by_default")]
+    pub(crate) local: bool,
+}
+fn local_by_default() -> bool {
+    true
 }
 
 /// Open the store, creating it on first use.
@@ -30,7 +61,12 @@ pub(crate) fn open(path: &std::path::Path) -> Result<rocksdb::DB> {
     let mut options = rocksdb::Options::default();
     options.create_if_missing(true);
     options.create_missing_column_families(true);
-    let cfs = [CF_DIRECTORY_SUBJECTS_V1, CF_DIRECTORY_ADDRESSES_V1]
+    let cfs = [
+        CF_DIRECTORY_SUBJECTS_V1,
+        CF_DIRECTORY_ADDRESSES_V1,
+        CF_FORWARDS_V1,
+        CF_FORWARD_BODIES_V1,
+    ]
         .iter()
         .map(|name| ColumnFamilyDescriptor::new(*name, rocksdb::Options::default()));
     Ok(rocksdb::DB::open_cf_descriptors(&options, path, cfs)?)
@@ -40,6 +76,8 @@ pub(crate) struct DbDirectorySubjects<'a> {
     db: &'a rocksdb::DB,
     subjects: &'a CF,
     addresses: &'a CF,
+    forwards: &'a CF,
+    forward_bodies: &'a CF,
 }
 
 fn prefix(network: &str) -> Vec<u8> {
@@ -64,6 +102,8 @@ impl<'a> DbDirectorySubjects<'a> {
             db,
             subjects: cf(CF_DIRECTORY_SUBJECTS_V1)?,
             addresses: cf(CF_DIRECTORY_ADDRESSES_V1)?,
+            forwards: cf(CF_FORWARDS_V1)?,
+            forward_bodies: cf(CF_FORWARD_BODIES_V1)?,
         })
     }
 
@@ -123,12 +163,16 @@ impl<'a> DbDirectorySubjects<'a> {
             .filter(|bytes| bytes.len() == 33))
     }
 
-    /// Number of subjects across all networks. One bounded key scan at startup.
-    pub(crate) fn count(&self) -> Result<u64> {
-        let mut count = 0u64;
+    /// Number of (local, replicated) subjects across all networks. One scan at startup.
+    pub(crate) fn count(&self) -> Result<(u64, u64)> {
+        let mut count = (0u64, 0u64);
         for row in self.db.iterator_cf(self.subjects, IteratorMode::Start) {
-            row?;
-            count += 1;
+            let (_, value) = row?;
+            if serde_json::from_slice::<SubjectRow>(&value)?.local {
+                count.0 += 1;
+            } else {
+                count.1 += 1;
+            }
         }
         Ok(count)
     }
@@ -158,6 +202,61 @@ impl<'a> DbDirectorySubjects<'a> {
             out.push((subject.to_vec(), serde_json::from_slice(&value)?));
             if out.len() >= limit {
                 break;
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn forward(&self, identity: &[u8; 32]) -> Result<Option<ForwardRow>> {
+        match self.db.get_pinned_cf(self.forwards, identity)? {
+            Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) fn forward_body(&self, identity: &[u8; 32]) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .db
+            .get_pinned_cf(self.forward_bodies, identity)?
+            .map(|bytes| bytes.to_vec()))
+    }
+
+    /// Durably write the forward state and, the first time, the exact request bytes.
+    pub(crate) fn put_forward(
+        &self,
+        identity: &[u8; 32],
+        row: &ForwardRow,
+        body: Option<&[u8]>,
+    ) -> Result<()> {
+        let mut batch = WriteBatch::default();
+        batch.put_cf(self.forwards, identity, serde_json::to_vec(row)?);
+        if let Some(body) = body {
+            batch.put_cf(self.forward_bodies, identity, body);
+        }
+        if row.done {
+            batch.delete_cf(self.forward_bodies, identity);
+        }
+        let mut options = WriteOptions::default();
+        options.set_sync(true);
+        self.db.write_opt(batch, &options)?;
+        Ok(())
+    }
+
+    pub(crate) fn delete_forward(&self, identity: &[u8; 32]) -> Result<()> {
+        let mut batch = WriteBatch::default();
+        batch.delete_cf(self.forwards, identity);
+        batch.delete_cf(self.forward_bodies, identity);
+        self.db.write(batch)?;
+        Ok(())
+    }
+
+    /// Every forward this relay remembers. Bounded by the pending and history limits.
+    pub(crate) fn forwards(&self) -> Result<Vec<([u8; 32], ForwardRow)>> {
+        let mut out = Vec::new();
+        for row in self.db.iterator_cf(self.forwards, IteratorMode::Start) {
+            let (key, value) = row?;
+            if let Ok(identity) = <[u8; 32]>::try_from(&key[..]) {
+                out.push((identity, serde_json::from_slice(&value)?));
             }
         }
         Ok(out)

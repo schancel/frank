@@ -143,6 +143,22 @@ describe("MonadJsonRpcProvider (#534)", () => {
     }
   });
 
+  it("does not serve a repeated account read from a short-lived cache", async () => {
+    const provider = createMonadJsonRpcProvider({ rpcUrl });
+    const account = "0x0000000000000000000000000000000000000001";
+    try {
+      expect(await provider.getBalance(account)).toBe(42n);
+      balanceHex = "0x2b";
+      // Immediately after: well inside ethers' default 250 ms identical-request window.
+      expect(await provider.getBalance(account)).toBe(43n);
+      expect(
+        requestMethods.filter((method) => method === "eth_getBalance")
+      ).toHaveLength(2);
+    } finally {
+      provider.destroy();
+    }
+  });
+
   it("coalesces concurrent network detection and caches verified network", async () => {
     const provider = createMonadJsonRpcProvider({ rpcUrl });
 

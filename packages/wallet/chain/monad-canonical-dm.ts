@@ -36,7 +36,15 @@ import {
   fetchCanonicalRecoveryPage,
   type CanonicalMailboxAuthParams,
 } from '@frank/cashweb/relay/monad-mailbox-client'
-import type { MessageItem } from '@frank/cashweb/types/messages'
+import type {
+  BlackjackMoveItem,
+  CanonicalBlackjackMoveItem,
+  MessageItem,
+} from '@frank/cashweb/types/messages'
+import {
+  encodeCanonicalBlackjackItem,
+  projectCanonicalBlackjackItem,
+} from '../message-item-plugins/blackjack/plugin'
 import type {
   ChainAddress,
   DirectMessageAttemptStatus,
@@ -221,14 +229,18 @@ function requireDirectory(owner: CanonicalMessagingOwner): CanonicalDirectory {
   return directory
 }
 
-function textItems(items: readonly MessageItem[]): Uint8Array[] {
+/** Text (type 17) and the closed blackjack item (type 18, #771/#780) only. Every item is fully
+ * encoded here, before the directory, inventory or any payment is touched. */
+function canonicalItems(items: readonly MessageItem[]): Uint8Array[] {
   if (items.length === 0) throw new Error('A direct message needs content')
   return items.map(item => {
-    if (item.type !== 'text')
-      throw new Error(
-        `Canonical direct messages cannot carry '${item.type}' items yet; nothing was paid or sent.`,
-      )
-    return directMessageText(item.text)
+    if (item.type === 'text') return directMessageText(item.text)
+    // The closed writer rejects a missing, extra or malformed field; nothing is stringified.
+    if (item.type === 'blackjack-move')
+      return encodeCanonicalBlackjackItem(item as CanonicalBlackjackMoveItem)
+    throw new Error(
+      `Canonical direct messages cannot carry '${item.type}' items yet; nothing was paid or sent.`,
+    )
   })
 }
 
@@ -329,7 +341,7 @@ async function send(
   defaultStampValueWei: bigint,
 ): Promise<DirectMessageSendResult> {
   const directory = requireDirectory(owner)
-  const items = textItems(params.items)
+  const items = canonicalItems(params.items)
   const stampValueWei = params.stampValue ?? defaultStampValueWei
   const peer = await directory.peerCurrent({ address: params.recipient.raw })
   if (!peer)
@@ -547,14 +559,18 @@ async function fetchSince(
           senderCurrent: sender.current,
           recipientCurrent: self,
         })
-        items = opened.items.map(item =>
-          item.kind === 'parsed' && item.typed?.type === 17
-            ? { type: 'text' as const, text: item.typed.text }
-            : {
-                type: 'text' as const,
-                text: '[This message item is not supported yet]',
-              },
-        )
+        items = opened.items.map((item): MessageItem => {
+          if (item.kind === 'parsed' && item.typed?.type === 17)
+            return { type: 'text', text: item.typed.text }
+          // An authenticated, already validated type-18 child; syntax only, no game authority.
+          if (item.kind === 'parsed' && item.typed?.type === 18)
+            return projectCanonicalBlackjackItem(item)
+              .item as unknown as BlackjackMoveItem
+          return {
+            type: 'text',
+            text: '[This message item is not supported yet]',
+          }
+        })
       } catch {
         // Tampered, stale-keyed or foreign ciphertext never reaches display or payment import.
         continue

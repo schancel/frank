@@ -18,12 +18,17 @@ import { MonadChangePool } from './monad-change-pool'
 import type { StampPaymentJournal } from './storage/stamp-payment-journal'
 import type { StampAttemptJournal } from './storage/stamp-attempt-journal'
 import type { TopicOperationJournal } from './storage/topic-operation-journal'
-import type { MonadWalletPersistenceBundle } from './storage/monad-wallet-bundle'
+import type {
+  MonadWalletPersistenceBundle,
+  MonadWalletOperationAdmission,
+} from './storage/monad-wallet-bundle'
 import type { MonadCanonicalRoleOwner } from './monad-wallet-material'
 
 export interface MonadWalletHandle {
   /** Explicit typed-root capability; absent until canonical composition is activated. */
   canonicalRoles?: MonadCanonicalRoleOwner
+  /** Private active delegation from the existing owner; structural values are rejected. */
+  walletOperationAdmission?: MonadWalletOperationAdmission
   pool: MonadSubAccountPool
   leaseManager: SubAccountLeaseManager
   provider: Provider

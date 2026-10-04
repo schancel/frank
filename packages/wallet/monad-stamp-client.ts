@@ -762,11 +762,13 @@ export class MonadStampClient {
   private readonly httpClient: MonadTxSubmitter
   private readonly changePool: MonadChangePool | undefined
   private readonly attemptJournal: MonadWalletHandle['stampAttemptJournal']
+  private readonly walletAdmission: MonadWalletHandle['walletOperationAdmission']
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` — no trailing
    * slash. `/message/monad` (`PUT`) is appended to it. */
   private readonly relayBaseUrl: string
 
   constructor(params: MonadWalletHandle) {
+    this.walletAdmission = params.walletOperationAdmission
     this.pool = params.pool
     this.leaseManager = params.leaseManager
     this.provider = params.provider
@@ -856,6 +858,16 @@ export class MonadStampClient {
   async submitStampedMessage(
     params: StampMonadMessageParams,
   ): Promise<StampMonadMessageResult> {
+    return runMonadPoolFinancialOperation(
+      this.pool,
+      () => this.submitStampedMessageOwned(params),
+      this.walletAdmission,
+    )
+  }
+
+  private async submitStampedMessageOwned(
+    params: StampMonadMessageParams,
+  ): Promise<StampMonadMessageResult> {
     assertOrdinaryMonadPoolSelection(this.pool)
     if (params.encryptedPayload.length === 0) {
       throw new Error('encryptedPayload must not be empty')
@@ -869,7 +881,7 @@ export class MonadStampClient {
       this.attemptJournal !== undefined &&
       this.attemptJournal.getAll().length > 0
     ) {
-      const recovered = await this.resumePendingAttempts(params.putRetry)
+      const recovered = await this.resumePendingAttemptsOwned(params.putRetry)
       if (recovered.length > 0) {
         throw new MonadStampRecoveredAttemptError(recovered)
       }
@@ -1274,6 +1286,16 @@ export class MonadStampClient {
   /** Replay crash-surviving attempts byte-for-byte. Exact-set relay binding makes this safe when
    * only a prefix of the transactions landed before the previous process stopped. */
   async resumePendingAttempts(retry?: PutRetryOptions): Promise<string[]> {
+    return runMonadPoolFinancialOperation(
+      this.pool,
+      () => this.resumePendingAttemptsOwned(retry),
+      this.walletAdmission,
+    )
+  }
+
+  private async resumePendingAttemptsOwned(
+    retry?: PutRetryOptions,
+  ): Promise<string[]> {
     if (this.attemptJournal === undefined) return []
     const completed: string[] = []
     for (const attempt of this.attemptJournal.getAll()) {
@@ -1382,6 +1404,7 @@ import {
 import {
   assertMonadWalletBundleProvenance,
   assertOrdinaryMonadPoolSelection,
+  runMonadPoolFinancialOperation,
 } from './storage/monad-wallet-bundle'
 
 export interface CanonicalWorkflowLink {

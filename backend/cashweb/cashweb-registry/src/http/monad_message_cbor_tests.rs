@@ -495,6 +495,8 @@ async fn actual_http_canonical_public_admission_p_authenticated_inbox_and_nonce_
             .into_router_with_directory(Some(fixture.directory.clone())),
     )
     .await;
+    use futures::FutureExt;
+    let outcome = std::panic::AssertUnwindSafe(async {
     let client = reqwest::Client::new();
     let response = client
         .put(format!("{url}/message/monad/cbor"))
@@ -512,10 +514,11 @@ async fn actual_http_canonical_public_admission_p_authenticated_inbox_and_nonce_
         hex::encode(request.submission_identity())
     );
     assert!(accepted["mailbox_committed_at_ms"].as_i64().unwrap() > 0);
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     let recipient = accepted["identity"]["recipient"].as_str().unwrap();
     let point = &fixture.config.principals[1].subject;
-    let challenge_response = client.get(format!("{url}/message/monad/cbor/auth/{recipient}?resource=inbox&since=0&limit=50&max_bytes=8388608")).header("x-frank-mailbox-subject", point).send().await.unwrap().error_for_status().unwrap().bytes().await.unwrap();
+    assert_eq!(client.get(format!("{url}/message/monad/cbor/auth/{recipient}?resource=inbox&since=0&limit=50&max_bytes=8388608")).header("x-frank-mailbox-subject", point).send().await.unwrap().status(), StatusCode::METHOD_NOT_ALLOWED);
+    let challenge_response = client.post(format!("{url}/message/monad/cbor/auth/{recipient}?resource=inbox&since=0&limit=50&max_bytes=8388608")).header("x-frank-mailbox-subject", point).send().await.unwrap().error_for_status().unwrap().bytes().await.unwrap();
     let challenge: serde_json::Value = serde_json::from_slice(&challenge_response).unwrap();
     assert_eq!(challenge["network_tag"], "4d4f4e54");
     let token = MailboxChallenge {
@@ -591,11 +594,15 @@ async fn actual_http_canonical_public_admission_p_authenticated_inbox_and_nonce_
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     drop(client);
+    }).catch_unwind().await;
     http_stop.send(()).unwrap();
     http_task.await.unwrap();
     rpc_stop.send(()).unwrap();
     rpc_task.await.unwrap();
     fixture.stop().await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
 }

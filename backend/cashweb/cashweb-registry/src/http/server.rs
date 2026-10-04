@@ -527,7 +527,7 @@ impl RegistryServer {
                 .route("/message/monad/cbor", routing::put(handle_put))
                 .route(
                     "/message/monad/cbor/auth/:recipient",
-                    routing::get(handle_challenge),
+                    routing::post(handle_challenge),
                 )
                 .route(
                     "/message/monad/cbor/inbox/:recipient",

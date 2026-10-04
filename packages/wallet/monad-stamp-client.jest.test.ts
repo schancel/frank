@@ -1654,39 +1654,30 @@ async function makeCanonicalConsumerFixture() {
     recipient = createMonadWalletMaterial(canonicalTestRoots(1))
   const publicInput = (
     m: typeof material,
-    subjectBinding: 'A' | 'B',
-  ): PublicRevisionZeroInput => {
-    const tuple = (label: string) => ({
-      processId: label,
-      origin: `https://${label}.example`,
-      tuple: {
-        relayId: new Uint8Array(16).fill(label === 'a' ? 1 : 2),
-        endpoint: `https://${label}.example`,
-        identity: {
-          keyType: 1,
-          keyBytes: m.canonicalRoles!.publicGenerationZeroPoints().auth,
-        },
-        expiry: { seconds: 3700n, nanoseconds: 0 },
-        unknownFields: new Map(),
+    label: 'a' | 'b',
+  ): PublicRevisionZeroInput => ({
+    networkTag: 'MONT',
+    network: 'monad-testnet',
+    chainId: 10143n,
+    issuedAt: { seconds: 100n, nanoseconds: 0 },
+    expiresAt: { seconds: 3700n, nanoseconds: 0 },
+    now: { seconds: 100n, nanoseconds: 0 },
+    relay: {
+      relayId: new Uint8Array(16).fill(label === 'a' ? 1 : 2),
+      endpoint: `https://${label}.example`,
+      identity: {
+        keyType: 1,
+        keyBytes: m.canonicalRoles!.publicGenerationZeroPoints().auth,
       },
-    })
-    return {
-      networkTag: 'MONT',
-      network: 'monad-testnet',
-      chainId: 10143n,
-      issuedAt: { seconds: 100n, nanoseconds: 0 },
-      expiresAt: { seconds: 3700n, nanoseconds: 0 },
-      now: { seconds: 100n, nanoseconds: 0 },
-      relayA: tuple('a'),
-      relayB: tuple('b'),
-      subjectBinding,
-    }
-  }
+      expiry: { seconds: 3700n, nanoseconds: 0 },
+      unknownFields: new Map(),
+    },
+  })
   const senderExport = material.canonicalRoles!.prepareRevisionZero(
-      publicInput(material, 'A'),
+      publicInput(material, 'a'),
     ),
     recipientExport = recipient.canonicalRoles!.prepareRevisionZero(
-      publicInput(recipient, 'B'),
+      publicInput(recipient, 'b'),
     )
   const senderDirectory = await openNodeDirectoryStore({
       location: join(location, 'sender-directory'),
@@ -1715,7 +1706,7 @@ async function makeCanonicalConsumerFixture() {
       ],
       {
         now: senderExport.configuration.now,
-        relay: senderExport.configuration.relayA.tuple,
+        relay: senderExport.configuration.relay,
       },
     ),
     recipientCurrent = await recipientDirectory.enroll(
@@ -1727,7 +1718,7 @@ async function makeCanonicalConsumerFixture() {
       ],
       {
         now: recipientExport.configuration.now,
-        relay: recipientExport.configuration.relayB.tuple,
+        relay: recipientExport.configuration.relay,
       },
     )
   const seal = (id = 1) =>
@@ -1762,7 +1753,7 @@ async function makeCanonicalConsumerFixture() {
           [0, seconds],
           [1, 0],
         ])
-      const tuple = senderExport.configuration.relayA.tuple
+      const tuple = senderExport.configuration.relay
       const statement = encodeFrame(
         { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
         cborMap([
@@ -2384,7 +2375,7 @@ describe('canonical durable consumer barriers', () => {
       await expect(
         f.senderDirectory.current({
           now: { seconds: 3701n, nanoseconds: 0 },
-          relay: f.senderExport.configuration.relayA.tuple,
+          relay: f.senderExport.configuration.relay,
         }),
       ).rejects.toThrow()
       expect(() =>

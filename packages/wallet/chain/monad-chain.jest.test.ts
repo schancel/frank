@@ -2100,12 +2100,11 @@ it("public revision-zero bridge rejects a valid foreign network descriptor witho
   const chain = createMonadChain(TEST_CONFIG), wallet = await chain.createWallet(roots) as MonadChainWalletHandle;
   const operator = createMonadWalletMaterial(roots);
   const point = operator.canonicalRoles!.publicGenerationZeroPoints().auth;
-  const process = (label: string) => ({ processId: label, origin: `https://${label}.example`, tuple: {
-    relayId: new Uint8Array(16).fill(1), endpoint: `https://${label}.example`, identity: { keyType: 1, keyBytes: point },
-    expiry: { seconds: 3700n, nanoseconds: 0 }, unknownFields: new Map() } });
+  const relay = { relayId: new Uint8Array(16).fill(1), endpoint: "https://a.example", identity: { keyType: 1, keyBytes: point },
+    expiry: { seconds: 3700n, nanoseconds: 0 }, unknownFields: new Map() };
   const input = { networkTag: "MONT" as const, network: "monad-testnet", chainId: 10143n,
     issuedAt: { seconds: 100n, nanoseconds: 0 }, expiresAt: { seconds: 3700n, nanoseconds: 0 }, now: { seconds: 100n, nanoseconds: 0 },
-    relayA: process("a"), relayB: process("b"), subjectBinding: "A" as const };
+    relay };
   const statuses = wallet.pool.records();
   jest.clearAllMocks();
   try {

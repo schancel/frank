@@ -1,5 +1,5 @@
 import type { MonadWalletOperationAdmission } from '../storage/monad-wallet-bundle';
-import type { PublicRevisionZeroInput, PublicRevisionZeroExport } from '../monad-wallet-handle';
+import type { PublicRevisionZeroInput, PublicRevisionZeroExport, PublicNextRevisionInput, PublicNextRevisionExport } from '../monad-wallet-handle';
 /**
  * `MonadChain`: the real `ActiveChain` implementation (ticket #41 -- see `PLAN.md`'s M9 section)
  * over the already-merged Monad wallet clients (`../wallet/monad-stamp-client.ts`,
@@ -328,6 +328,19 @@ export function prepareMonadRevisionZeroExport(wallet: NativeWalletHandle, input
   if (!installed || installed.networkTag !== input.networkTag || installed.network !== input.network || installed.chainId !== input.chainId)
     throw new Error("Revision-zero export differs from actual installed wallet descriptor");
   return material.canonicalRoles.prepareRevisionZero(input);
+}
+/** The next revision of this account's own entry: a renewal or a move to another relay. Public
+ * local evidence only, signed by the same live typed wallet; no Current, provider or financial effects. */
+export function prepareMonadNextRevisionExport(wallet: NativeWalletHandle, input: PublicNextRevisionInput): PublicNextRevisionExport {
+  const live = wallet as MonadChainWalletHandle;
+  const material = walletMaterial.get(live);
+  if (!material?.canonicalRoles || !typedWallets.has(live) || closedWallets.has(live)) throw new Error("Directory entry renewal requires live typed wallet custody");
+  const unavailable = canonicalUnavailableWallets.get(wallet);
+  if (unavailable) throw unavailable;
+  const installed = installedCanonicalWalletDescriptors.get(wallet);
+  if (!installed || installed.networkTag !== input.networkTag || installed.network !== input.network || installed.chainId !== input.chainId)
+    throw new Error("Directory entry renewal differs from actual installed wallet descriptor");
+  return material.canonicalRoles.prepareNextRevision(input);
 }
 const canonicalClientFactories = new WeakMap<object, () => MonadCanonicalStampClient>();
 // Live handles whose storage holds a canonical journal bound to a different identity tuple.

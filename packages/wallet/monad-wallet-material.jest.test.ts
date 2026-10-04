@@ -303,31 +303,25 @@ import { verifyPreviewDirectoryEvidence, toHex } from '@frank/codec'
 import { canonicalWalletPublicBinding } from './monad-wallet-material'
 import type { PublicRevisionZeroInput } from './monad-wallet-handle'
 
+const YEAR = 366n * 86400n
 function revisionZeroInput(
   material: ReturnType<typeof createMonadWalletMaterial>,
 ): PublicRevisionZeroInput {
   const point = material.canonicalRoles!.publicGenerationZeroPoints().auth
-  const process = (label: string) => ({
-    processId: label,
-    origin: `https://${label}.example`,
-    tuple: {
-      relayId: new Uint8Array(16).fill(label === 'a' ? 1 : 2),
-      endpoint: `https://${label}.example`,
-      identity: { keyType: 1, keyBytes: point },
-      expiry: { seconds: 3700n, nanoseconds: 0 },
-      unknownFields: new Map(),
-    },
-  })
   return {
     networkTag: 'MONT',
     network: 'monad-testnet',
     chainId: 10143n,
     issuedAt: { seconds: 100n, nanoseconds: 1 },
-    expiresAt: { seconds: 3700n, nanoseconds: 1 },
+    expiresAt: { seconds: 100n + YEAR, nanoseconds: 1 },
     now: { seconds: 100n, nanoseconds: 1 },
-    relayA: process('a'),
-    relayB: process('b'),
-    subjectBinding: 'A',
+    relay: {
+      relayId: new Uint8Array(16).fill(1),
+      endpoint: 'https://a.example',
+      identity: { keyType: 1, keyBytes: point },
+      expiry: { seconds: 100n + YEAR, nanoseconds: 0 },
+      unknownFields: new Map(),
+    },
   }
 }
 
@@ -336,8 +330,7 @@ describe('effect-free typed public preparation', () => {
     const material = createMonadWalletMaterial(roots())
     const input = revisionZeroInput(material)
     // Tuple coverage uses exact nanosecond timestamp, not rounded seconds.
-    input.relayA.tuple.expiry.nanoseconds = 1
-    input.relayB.tuple.expiry.nanoseconds = 1
+    input.relay.expiry.nanoseconds = 1
     try {
       const exported = material.canonicalRoles!.prepareRevisionZero(input)
       const repeat = material.canonicalRoles!.prepareRevisionZero(input)
@@ -369,11 +362,11 @@ describe('effect-free typed public preparation', () => {
       expect(Object.keys(exported)).not.toContain('fingerprint')
       const bytes = exported.statement
       bytes.fill(0)
-      exported.configuration.relayA.tuple.identity.keyBytes.fill(0)
+      exported.configuration.relay.identity.keyBytes.fill(0)
       exported.auth.compressedPoint.fill(0)
       expect(exported.statement).toEqual(repeat.statement)
-      expect(exported.configuration.relayA.tuple.identity.keyBytes).toEqual(
-        input.relayA.tuple.identity.keyBytes,
+      expect(exported.configuration.relay.identity.keyBytes).toEqual(
+        input.relay.identity.keyBytes,
       )
       const recovered = createMonadWalletMaterial(roots())
       try {
@@ -423,8 +416,7 @@ describe('effect-free typed public preparation', () => {
         'tuple-expiry',
       )
       const covered = revisionZeroInput(material)
-      covered.relayA.tuple.expiry.nanoseconds = 1
-      covered.relayB.tuple.expiry.nanoseconds = 1
+      covered.relay.expiry = { seconds: 200n + YEAR, nanoseconds: 0 }
       expect(() =>
         material.canonicalRoles!.prepareRevisionZero({
           ...covered,
@@ -440,7 +432,8 @@ describe('effect-free typed public preparation', () => {
       expect(() =>
         material.canonicalRoles!.prepareRevisionZero({
           ...covered,
-          expiresAt: { seconds: 3701n, nanoseconds: 1 },
+          // One nanosecond past the 366-day cap.
+          expiresAt: { seconds: 100n + YEAR, nanoseconds: 2 },
         }),
       ).toThrow('validity')
     } finally {
@@ -449,27 +442,96 @@ describe('effect-free typed public preparation', () => {
   })
 })
 
-it('rejects a process origin inconsistent with its advertised home tuple before returning public evidence', () => {
+it('refuses a relay tuple that is not an https endpoint before returning public evidence', () => {
   const material = createMonadWalletMaterial(roots())
   const input = revisionZeroInput(material)
-  input.relayA.tuple.expiry.nanoseconds = 1
-  input.relayB.tuple.expiry.nanoseconds = 1
+  input.relay.expiry.nanoseconds = 1
   try {
     expect(() =>
       material.canonicalRoles!.prepareRevisionZero({
         ...input,
-        relayA: { ...input.relayA, origin: 'https://wrong-home.example' },
+        relay: { ...input.relay, endpoint: 'http://a.example' },
       }),
     ).toThrow('endpoint')
-    // A shared authority key is valid: process route consistency does not require distinct roots.
-    expect(
-      material.canonicalRoles!.prepareRevisionZero(input).configuration.relayA
-        .tuple.identity.keyBytes,
-    ).toEqual(
-      material.canonicalRoles!.prepareRevisionZero(input).configuration.relayB
-        .tuple.identity.keyBytes,
-    )
+    expect(() =>
+      material.canonicalRoles!.prepareRevisionZero({
+        ...input,
+        relayA: input.relay,
+      } as never),
+    ).toThrow('shape')
   } finally {
     material.dispose()
   }
+})
+
+describe('next revision of the account entry', () => {
+  it('signs a renewal that chains from the current head with the same keys and generations', () => {
+    const material = createMonadWalletMaterial(roots())
+    const input = revisionZeroInput(material)
+    input.relay.expiry = { seconds: 1000n + YEAR, nanoseconds: 0 }
+    try {
+      const zero = material.canonicalRoles!.prepareRevisionZero(input)
+      const moved = {
+        ...input.relay,
+        relayId: new Uint8Array(16).fill(9),
+        endpoint: 'https://b.example',
+      }
+      const next = material.canonicalRoles!.prepareNextRevision({
+        ...input,
+        issuedAt: { seconds: 500n, nanoseconds: 0 },
+        now: { seconds: 500n, nanoseconds: 0 },
+        expiresAt: { seconds: 500n + YEAR, nanoseconds: 0 },
+        relay: moved,
+        revision: 1n,
+        predecessor: zero.t1,
+      })
+      const verified = verifyPreviewDirectoryEvidence(
+        next.attestation,
+        input.network,
+      )
+      expect(next.kind).toBe('public-next-revision-preparation')
+      expect(verified.statement.revision).toBe(1n)
+      expect(verified.statement.preview.predecessor).toEqual(zero.t1)
+      expect(verified.statement.preview.mailboxKeyGeneration).toBe(0n)
+      expect(verified.statement.preview.stampKeyGeneration).toBe(0n)
+      expect(verified.statement.relays[0].endpoint).toBe('https://b.example')
+      expect(toHex(verified.statement.subject.keyBytes)).toBe(
+        toHex(zero.auth.compressedPoint),
+      )
+      expect(toHex(verified.statement.preview.messageDhKey.keyBytes)).toBe(
+        toHex(zero.message.compressedPoint),
+      )
+      expect(toHex(verified.statement.stampKey.keyBytes)).toBe(
+        toHex(zero.stamp.compressedPoint),
+      )
+      expect(next.t1).not.toEqual(zero.t1)
+    } finally {
+      material.dispose()
+    }
+  })
+  it('refuses revision zero, a missing predecessor and an over-long validity', () => {
+    const material = createMonadWalletMaterial(roots())
+    const input = revisionZeroInput(material)
+    input.relay.expiry.nanoseconds = 1
+    const next = { ...input, revision: 1n, predecessor: new Uint8Array(32) }
+    try {
+      expect(() =>
+        material.canonicalRoles!.prepareNextRevision({ ...next, revision: 0n }),
+      ).toThrow('revision')
+      expect(() =>
+        material.canonicalRoles!.prepareNextRevision({
+          ...next,
+          predecessor: new Uint8Array(31),
+        }),
+      ).toThrow('revision')
+      expect(() =>
+        material.canonicalRoles!.prepareNextRevision({
+          ...next,
+          expiresAt: { seconds: 100n + YEAR, nanoseconds: 2 },
+        }),
+      ).toThrow('validity')
+    } finally {
+      material.dispose()
+    }
+  })
 })

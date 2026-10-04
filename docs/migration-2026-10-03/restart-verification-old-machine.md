@@ -1,6 +1,6 @@
 # Old-machine restart verification — 2026-10-03
 
-The user resumed the original goal. The goal tool still reports paused and provides no resume setter; work proceeds under the explicit renewed instruction. This record contains no full runtime-integration claim.
+The user resumed the original goal. The latest goal-tool read confirms status active. Earlier paused-state observations are historical; this record contains no full runtime-integration claim.
 
 ## Environment
 
@@ -66,3 +66,5 @@ Forum resumed claim48573312-e519-47ea-ae44-9141b230c6aa, authority5976645080, fr
 Fresh775 PacketA authority5977104222 and claim4c8f9a1b-eea2-4b48-8c34-a7c9d8582fc0/comment5977108335 cover .worktrees/dm-foundation-final-20261003 at base5ceed. Old A and successor B claims released5977108000/5977108189; all preserved sources/PRs remain intact. Transport is source-identical A foundation only. Fresh frozen install,52 scopedTS, boundary40inputs/5consumers, stamp strict types and formatting passed. Handle-inclusive focused types fail with exactly the same validator TS2339 pair as genuine archived base5ceed; no suppressions or source changes. Native seven-test cold owned build is active under the sole heavy lease. Separate reviewed A then B landings remain mandatory before C0 dispatch.
 
 Primary dirty checkout and both branding snapshots remain untouched. Held258, production payment activation, synthetic authority and legacy CBC compatibility remain unauthorized. The encrypted UI-to-Qwen manual-test milestone is still ahead of these foundation landings.
+
+Draft integrated Forum PR810 is published at exact1b46f08c6f8f3cf7ff2d24d4b8f371e003cdb5a5; hosted checks are running. Independent integration-delta review is source SAFE, preserving directory ownership and actual predecessor applicability. Local integrated native gates remain queued behind775. Latest goal-tool read confirms the original goal is active.

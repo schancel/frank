@@ -43,14 +43,20 @@ export interface OpenedLink {
 
 /** The whole chain of a seed: `chain[0]` is the commitment, `chain[k + 1]` opens draw `k`. */
 export function entropyChain(seed: string): string[] {
+  const held = chains.get(seed)
+  if (held) return held
   const chain = new Array<string>(CHAIN_LENGTH + 1)
   let link = sha256OfText(`frank/blackjack/entropy/v1|${seed}`)
   for (let k = CHAIN_LENGTH; k >= 0; k--) {
     chain[k] = link
     link = sha256OfHex(link)
   }
+  // The chains of the few hands in play are asked for on every fold.
+  if (chains.size >= 64) chains.delete(chains.keys().next().value as string)
+  chains.set(seed, Object.freeze(chain) as string[])
   return chain
 }
+const chains = new Map<string, string[]>()
 
 /** Link `index` of the chain an opened link belongs to, for any `index` at or below it. */
 export function linkAt(opened: OpenedLink, index: number): string | undefined {

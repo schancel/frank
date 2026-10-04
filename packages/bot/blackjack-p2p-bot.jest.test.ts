@@ -11,13 +11,20 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-import { deriveDeck, handValue } from '@frank/wallet/message-item-plugins/blackjack/deck'
-import { playOutDealer } from '@frank/wallet/message-item-plugins/blackjack/game'
+import { handValue } from '@frank/wallet/message-item-plugins/blackjack/deck'
 import {
+  CHAIN_LENGTH,
+  entropyChain,
+} from '@frank/wallet/message-item-plugins/blackjack/entropy'
+import {
+  applyHandEvent,
+  buildBet,
   commitmentOf,
   dealerStep,
   foldHand,
   handEventsOf,
+  handView,
+  playerStep,
   type HandEvent,
   type HandItem,
   type HandRejection,
@@ -200,14 +207,54 @@ class User {
     readonly address: string,
     private readonly peer = BOT,
   ) {}
+  /** The seed this user plays each game with. A bet tagged `WIN_BET` or `LOSS_BET` picks a seed
+   * whose first two cards, stood on, win or lose against the bot's fixed seed. */
+  readonly seeds = new Map<string, string>()
+  private seedFor(gameId: string, tag?: string): string {
+    let seed = this.seeds.get(gameId)
+    if (!seed) {
+      seed =
+        tag === WIN_BET || tag === LOSS_BET
+          ? playerSeedFor(gameId, tag === WIN_BET ? 'player_win' : 'dealer_win')
+          : sha(`seed:${this.address}:${gameId}`)
+      this.seeds.set(gameId, seed)
+    }
+    return seed
+  }
+  /** Sends a hand item. The fields a real client derives (the message's place in the hand's
+   * chain, the bet's commitment, a move's link) are filled in from this user's own fold of the
+   * hand unless the item names them. */
   send(item: Record<string, unknown> | { type: string }, stampWei = STAMP, digest?: string) {
-    const full = { type: 'blackjack-hand', ...item } as { type: string }
+    const fields = item as Record<string, unknown>
+    const gameId = fields.gameId as string
+    const state = typeof gameId === 'string' ? this.hand(gameId).state : undefined
+    const action = fields.action
+    const derived: Record<string, unknown> = {}
+    if (fields.type === undefined || fields.type === 'blackjack-hand') {
+      if (action === 'challenge') derived.seq = 0
+      else {
+        derived.seq = state?.count ?? 1
+        derived.prev = state?.head ?? '0'.repeat(64)
+      }
+      if (action === 'bet')
+        derived.commitment = commitmentOf(this.seedFor(gameId, digest))
+      if (action === 'hit' || action === 'stand' || action === 'double') {
+        const seed = this.seedFor(gameId)
+        derived.link =
+          (playerStep(state, action, seed) as { link?: string } | undefined)?.link ??
+          entropyChain(seed)[CHAIN_LENGTH]
+      }
+    }
+    const full = { type: 'blackjack-hand', ...derived, ...item } as { type: string }
     this.net.deliver({
       from: this.address,
       to: this.peer,
       item: full,
       stampWei,
-      digest: digest ?? sha(`${this.address}:${++this.counter}`),
+      digest:
+        digest === undefined || digest === WIN_BET || digest === LOSS_BET
+          ? sha(`${this.address}:${++this.counter}`)
+          : digest,
     })
   }
   /** Reads everything exchanged with the peer, in relay order. */
@@ -250,20 +297,39 @@ const config = (over: Partial<BotConfig> = {}): BotConfig => ({
   randomBytes: n => SEED_BYTES.slice(0, n),
   ...over,
 })
-/** A bet digest for which the player's first two cards, stood on, give `want` against the bot's
- * fixed seed. */
-function betDigestFor(want: (deck: number[]) => boolean, seed = BOT_SEED): string {
+/** Tags for a scripted bet: the user picks a seed that wins, or loses, when it stands. */
+const WIN_BET = 'bet that wins'
+const LOSS_BET = 'bet that loses'
+/** A player seed whose first two cards, stood on, give `want` against the bot's fixed dealer
+ * seed in this game. Found by playing the hand through the shared state machine. */
+function playerSeedFor(gameId: string, want: 'player_win' | 'dealer_win'): string {
+  const base = { type: 'blackjack-hand' as const, gameId }
   for (let i = 0; i < 5000; i++) {
-    const digest = sha(`bet:${i}`)
-    if (want(deriveDeck(seed, digest, 0))) return digest
+    const seed = sha(`player-seed:${i}`)
+    let state: HandState | undefined
+    let n = 0
+    const step = (from: string, item: HandItem | undefined, stampWei = STAMP) => {
+      if (!item) throw new Error('no step')
+      const result = applyHandEvent(state, {
+        item,
+        from,
+        to: from === BOT ? USER : BOT,
+        stampWei,
+        digest: sha(`sim:${gameId}:${i}:${n++}`),
+      })
+      if (result.error) throw new Error(result.error)
+      state = result.state
+    }
+    step(BOT, { ...base, action: 'challenge', seq: 0, role: 'dealer', maxBetWei: '500', commitment: commitmentOf(BOT_SEED) })
+    step(USER, buildBet(state, seed), 100n)
+    step(BOT, dealerStep(state, BOT_SEED)?.item)
+    if (handValue(handView(state, seed).playerCards).blackjack) continue
+    step(USER, playerStep(state, 'stand', seed))
+    step(BOT, dealerStep(state, BOT_SEED)?.item, 1_000n)
+    if ((state as HandState | undefined)?.outcome === want) return seed
   }
-  throw new Error('no digest')
+  throw new Error('no seed')
 }
-const firstTwo = (d: number[]) => [d[0], d[2]]
-const standOutcome = (d: number[]) => playOutDealer(d, firstTwo(d), 4).outcome
-const plain = (d: number[]) => !handValue(firstTwo(d)).blackjack
-const WIN_BET = betDigestFor(d => plain(d) && standOutcome(d) === 'player_win')
-const LOSS_BET = betDigestFor(d => plain(d) && standOutcome(d) === 'dealer_win')
 
 function setup(balance = RESERVE + 100_000n) {
   const net = new Net()

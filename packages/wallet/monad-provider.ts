@@ -635,6 +635,10 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
     }
     super(connection, chainId, {
       ...providerOptions,
+      // Ethers shares the result of identical requests made within 250 ms. A wallet that reads
+      // an account's nonce, broadcasts, and reads the nonce again inside that window would get
+      // the stale value and sign a second transaction with the nonce it just used.
+      cacheTimeout: providerOptions.cacheTimeout ?? -1,
       batchMaxCount: providerOptions.batchMaxCount ?? 20,
       batchMaxSize: providerOptions.batchMaxSize ?? 256 * 1024,
       staticNetwork: true,

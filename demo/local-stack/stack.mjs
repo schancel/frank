@@ -13,6 +13,7 @@
 //   node demo/local-stack/stack.mjs restart-relays
 //   node demo/local-stack/stack.mjs fund <0xaddress> [MON]
 //   node demo/local-stack/stack.mjs chrome           open a throwaway-profile Chrome on the app
+//   node demo/local-stack/stack.mjs e2e [live|stub] ["message"]   everything, driven in headless Chrome
 //   node demo/local-stack/stack.mjs down
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash, randomBytes, X509Certificate } from 'node:crypto'
@@ -305,6 +306,7 @@ function botExport() {
   process.stdout.write(done.stdout)
   if (done.status !== 0 || !existsSync(out)) die(`bot export failed:\n${done.stderr}`)
   say(`bot export -> ${out}`)
+  return /canonical stamp account to fund: (0x[0-9a-fA-F]{40})/.exec(done.stdout)?.[1]
 }
 async function botStart(mode = 'live') {
   if (!['live', 'stub'].includes(mode)) die('usage: bot-start [live|stub]')
@@ -378,6 +380,29 @@ function chrome() {
   say('Quit that Chrome window when finished; "up" does not reuse this profile after a restart of the stack.')
 }
 
+// The whole flow from clean state, with the browser steps driven in headless Chrome.
+async function e2e(mode = 'live', message) {
+  const started = Date.now()
+  const drive = (...phase) => {
+    say(`\n== drive ${phase[0]}`)
+    const done = spawnSync(process.execPath, [join(HERE, 'drive.cjs'), ...phase], { stdio: 'inherit', env: process.env })
+    if (done.status !== 0) die(`driver phase "${phase[0]}" failed; see ${join(P.logs, `drive-${phase[0]}.json`)} and ${P.shots}`)
+  }
+  await up()
+  drive('export')
+  const stampAccount = botExport()
+  if (!stampAccount) die('the bot did not print its stamp account')
+  await install()
+  await fund(stampAccount)
+  await botStart(mode)
+  await waitFor('bot installation status', async () => spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--cacert', P.ca, `${ORIGINS.bot}/directory-installation/${JSON.parse(readFileSync(join(P.operatorOut, 'approved-bundle.json'), 'utf8')).bundleIdentity}`], { encoding: 'utf8' }).stdout === '200', 90)
+  drive('check')
+  drive('address')
+  await fund(readFileSync(join(P.operator, 'ui-wallet-address.txt'), 'utf8').trim())
+  drive('chat', ...(message ? [message] : []))
+  say(`\ne2e finished in ${Math.round((Date.now() - started) / 1000)} s; the stack is still up (policy valid one hour from "up")`)
+}
+
 const [command, ...args] = process.argv.slice(2)
 mkdirSync(P.logs, { recursive: true })
 mkdirSync(P.run, { recursive: true })
@@ -398,6 +423,7 @@ const commands = {
   'restart-relays': restartRelays,
   'fund': () => (/^0x[0-9a-fA-F]{40}$/.test(args[0] ?? '') ? fund(args[0], args[1]) : die('usage: fund <0xaddress> [MON]')),
   chrome,
+  'e2e': () => e2e(args[0], args[1]),
   'chrome-args': () => say(JSON.stringify(chromeArgs(args[0] ?? P.chromeProfile))),
 }
 if (!commands[command]) die(`usage: stack.mjs ${Object.keys(commands).join('|')}`)

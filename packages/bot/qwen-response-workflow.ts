@@ -10,6 +10,8 @@ import type { CanonicalJournalAttempt } from '@frank/wallet/storage/stamp-attemp
 import { QwenChatMessage } from './qwen-client'
 import { QwenReplyGenerator } from './qwen-reply'
 import {
+  QWEN_COUPLING_MAX_CONTEXT_BYTES,
+  QWEN_COUPLING_MAX_PAYLOAD_BYTES,
   QwenBotStateStore,
   QwenCouplingRow,
   QwenCouplingTerminal,
@@ -318,6 +320,13 @@ export class QwenResponseWorkflow {
         // Nothing is durable and no wallet effect ran; a later pass may seal once.
         return this.held(row, 'envelope-preparation-failed')
       }
+      // A reply too large for the bounded coupling store is held here, before any durable
+      // or wallet effect, instead of failing the store's validation and stopping the bot.
+      if (
+        sealed.payload.length > QWEN_COUPLING_MAX_PAYLOAD_BYTES ||
+        sealed.context.length > QWEN_COUPLING_MAX_CONTEXT_BYTES
+      )
+        return this.held(row, 'reply-exceeds-coupling-bounds')
       const hexOf = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex')
       // Synced before the first wallet effect. A failed write fails closed until reopen.
       const saved = await state.saveCoupling(

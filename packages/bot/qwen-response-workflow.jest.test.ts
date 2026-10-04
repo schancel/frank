@@ -401,6 +401,7 @@ import domainVectors from '../domain-roots/vectors/domain-roots-v1.json'
 import type { QwenCanonicalSender } from './qwen-response-workflow'
 import {
   QWEN_COUPLING_MAX_COUNT,
+  QWEN_COUPLING_MAX_PAYLOAD_BYTES,
   qwenCouplingPrepared,
   type QwenCouplingRow,
 } from './qwen-bot-state'
@@ -1097,6 +1098,33 @@ describe('#703 canonical outbound coupling', () => {
     expect(count(events, 'put:')).toBe(1)
     expect(logs.join()).toContain('inventory-unavailable')
     expect(logs.join()).not.toContain('SENTINEL')
+  }, 30000)
+
+  it('holds an oversize sealed reply before any durable or wallet effect instead of throwing', async () => {
+    const f = await open()
+    await f.state.beginResponse({ ...input, context: canonicalContext })
+    await f.state.saveResponse(
+      '01',
+      // Within the producer's text limit, but its sealed frame exceeds the coupling bound.
+      'A'.repeat(QWEN_COUPLING_MAX_PAYLOAD_BYTES - 100),
+      [],
+    )
+    expect(await f.run.resume('01')).toBe('held')
+    expect(await f.run.resume('01')).toBe('held')
+    expect(f.state.getCoupling('01')).toBeUndefined()
+    expect(f.state.getResponse('01')?.phase).toBe('response-ready')
+    expect(f.journal.getIntents()).toEqual([])
+    expect(count(f.events(), 'put:')).toBe(0)
+    expect(count(f.events(), 'sign:')).toBe(0)
+    // The store itself is still usable for other turns.
+    expect(
+      await f.run.respond({
+        ...input,
+        payloadHashHex: '06',
+        senderAddress: 'other',
+      }),
+    ).toBe('confirmed')
+    expect(logs.join()).toContain('reply-exceeds-coupling-bounds')
   }, 30000)
 
   it('applies backpressure instead of evicting a retained envelope when the coupling store is full', async () => {

@@ -124,7 +124,7 @@ const onlyKeys = (row: object, keys: string[]) =>
 // capacity is backpressure on new envelopes, never eviction of a linked workflow.
 export const QWEN_COUPLING_MAX_COUNT = 64
 export const QWEN_COUPLING_MAX_PAYLOAD_BYTES = 256 * 1024
-const COUPLING_MAX_CONTEXT_BYTES = 4096
+export const QWEN_COUPLING_MAX_CONTEXT_BYTES = 4096
 const COUPLING_MAX_ECONOMIC_BYTES = 16384
 
 /** The wallet's exact public prepared binding with opaque bytes as lowercase hex. The payload is
@@ -354,7 +354,7 @@ function validateCouplingRow(row: QwenCouplingRow): QwenCouplingRow {
       !hex32(binding.senderT1) ||
       !hex32(binding.recipientT1) ||
       !boundedHex(binding.payloadHex, QWEN_COUPLING_MAX_PAYLOAD_BYTES) ||
-      !boundedHex(binding.contextHex, COUPLING_MAX_CONTEXT_BYTES) ||
+      !boundedHex(binding.contextHex, QWEN_COUPLING_MAX_CONTEXT_BYTES) ||
       !boundedHex(binding.economicBindingHex, COUPLING_MAX_ECONOMIC_BYTES)
     )
       throw invalidCoupling()

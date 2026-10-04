@@ -1391,6 +1391,7 @@ import {
 } from '@frank/cashweb/relay/canonical-dm-stamp'
 import {
   freezeCanonicalRequest,
+  equalCanonicalRequests,
   submitCanonicalRequest,
   type CanonicalFetch,
   type CanonicalAcceptedBody,
@@ -2065,8 +2066,8 @@ export class MonadCanonicalStampClient {
   /** Admission verifies new imports; retained custody later uses the durable obligation only. */
   importRecovery(input: {
     record: CanonicalRecoveryRecord
-    senderCurrent: Current
-    recipientCurrent: Current
+    senderCurrent?: Current
+    recipientCurrent?: Current
     recipientEvidence?: HistoricalEvidence
   }) {
     this.assertOwner()
@@ -2108,46 +2109,57 @@ export class MonadCanonicalStampClient {
       payload,
       request.parts.context,
     )
-    const roles = this.wallet.canonicalRoles.create(
-      bound.network,
-      input.recipientCurrent,
-    )
     let stampGeneration: string
-    try {
-      openDirectMessage({
-        mode: 'receive',
-        network: bound.network,
-        payload,
-        context: request.parts.context,
-        roles,
-        senderCurrent: input.senderCurrent,
-        recipientCurrent: input.recipientCurrent,
-        recipientEvidence: input.recipientEvidence,
-      })
-      const evidence = verifyPreviewDirectoryEvidence(
-        input.recipientEvidence?.attestation ??
-          input.recipientCurrent.evidence.attestation,
+    const retained = this.journal.importedRecovery(record.obligationId)
+    if (retained) {
+      if (!equalCanonicalRequests(retained.request, request))
+        throw new Error('canonical-wallet:retained-obligation-conflict')
+      this.verifyImportedRecoveryCustody(retained.obligationId)
+      stampGeneration = retained.stampGeneration
+    } else {
+      if (!input.senderCurrent || !input.recipientCurrent)
+        throw new Error('canonical-wallet:new-import-admission-required')
+      const roles = this.wallet.canonicalRoles.create(
         bound.network,
+        input.recipientCurrent,
       )
-      if (
-        compareBytes(
-          envelope.stampKey.keyBytes,
-          evidence.statement.stampKey.keyBytes,
-        ) !== 0 ||
-        (compareBytes(
-          envelope.stampKey.keyBytes,
-          roles.stamp.compressedPoint,
-        ) !== 0 &&
-          (!roles.previousStamp ||
-            compareBytes(
-              envelope.stampKey.keyBytes,
-              roles.previousStamp.compressedPoint,
-            ) !== 0))
-      )
-        throw new Error('canonical-wallet:recovery-stamp-custody-conflict')
-      stampGeneration = evidence.statement.preview.stampKeyGeneration.toString()
-    } finally {
-      roles.dispose()
+      try {
+        openDirectMessage({
+          mode: 'receive',
+          network: bound.network,
+          payload,
+          context: request.parts.context,
+          roles,
+          senderCurrent: input.senderCurrent,
+          recipientCurrent: input.recipientCurrent,
+          recipientEvidence: input.recipientEvidence,
+        })
+        const evidence = verifyPreviewDirectoryEvidence(
+          input.recipientEvidence?.attestation ??
+            input.recipientCurrent.evidence.attestation,
+          bound.network,
+        )
+        if (
+          compareBytes(
+            envelope.stampKey.keyBytes,
+            evidence.statement.stampKey.keyBytes,
+          ) !== 0 ||
+          (compareBytes(
+            envelope.stampKey.keyBytes,
+            roles.stamp.compressedPoint,
+          ) !== 0 &&
+            (!roles.previousStamp ||
+              compareBytes(
+                envelope.stampKey.keyBytes,
+                roles.previousStamp.compressedPoint,
+              ) !== 0))
+        )
+          throw new Error('canonical-wallet:recovery-stamp-custody-conflict')
+        stampGeneration =
+          evidence.statement.preview.stampKeyGeneration.toString()
+      } finally {
+        roles.dispose()
+      }
     }
     const frozen = {
       obligationId: record.obligationId,

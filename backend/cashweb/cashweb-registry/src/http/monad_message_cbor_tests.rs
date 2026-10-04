@@ -694,6 +694,7 @@ async fn private_headers(
 
 #[tokio::test]
 async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reopen() {
+    use crate::monad_http::Hash32;
     use crate::monad_mailbox::{MailboxRequestBinding, MailboxResource};
     use crate::store::monad_dm_cbor::Phase;
     use crate::store::monad_outbox::MonadOutboxMemberState;

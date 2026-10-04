@@ -743,6 +743,7 @@ async function unsignedIntentFixture(
 async function recoveryStorageFixture(
   journal: LevelCanonicalStampAttemptJournal,
   count = 1,
+  valueWei = 1n,
 ) {
   const fixture = await canonicalFixture()
   const envelope = inspectCanonicalPreparedEnvelope(
@@ -764,7 +765,7 @@ async function recoveryStorageFixture(
       type: 2,
       chainId: 10143n,
       nonce: childIndex,
-      value: 1n,
+      value: valueWei,
       to: '0x' + toHex(destination.address),
       gasLimit: 100000n,
       maxFeePerGas: 2n,
@@ -777,7 +778,7 @@ async function recoveryStorageFixture(
       cborMap([
         [0, childIndex],
         [1, getBytes(tx.hash!)],
-        [2, getBytes('0x' + '00'.repeat(31) + '01')],
+        [2, getBytes('0x' + valueWei.toString(16).padStart(64, '0'))],
         [3, destination.address],
         [4, commitment],
       ]),
@@ -1315,4 +1316,75 @@ describe('retained canonical recovery durability', () => {
     },
     20000,
   )
+  it('reserves the real 64-member uint256 JSON maximum before prefix growth at an exact byte budget', async () => {
+    const location = await mkdtemp(join(tmpdir(), 'canonical-recovery-budget-'))
+    let journal = new LevelCanonicalStampAttemptJournal(location)
+    await journal.Open()
+    try {
+      const input = await recoveryStorageFixture(journal, 64, (1n << 256n) - 1n)
+      await journal.importRecovery({
+        ...input,
+        lifecycle: 'pending',
+        confirmedChildren: [],
+      })
+      const encoded = await database(journal).get(
+        `recovery:${input.obligationId}`,
+      )
+      const initial = JSON.parse(encoded)
+      const maximum = {
+        ...initial,
+        confirmedChildren: input.confirmedChildren,
+        accounts: input.request.parts.transactions.map((raw, childIndex) => {
+          const tx = Transaction.from(hexlify(raw))
+          return {
+            childIndex,
+            transactionHash: tx.hash!.toLowerCase(),
+            address: tx.to!.toLowerCase(),
+            valueWei: tx.value.toString(),
+          }
+        }),
+        lifecycle: 'terminal:verification_failed',
+        recipientAcknowledged: false,
+      }
+      const actualMaximumBytes = Buffer.byteLength(JSON.stringify(maximum))
+      expect(initial.reservedBytes).toBe(actualMaximumBytes)
+      expect(actualMaximumBytes).toBeGreaterThan(Buffer.byteLength(encoded))
+      expect(maximum.accounts).toHaveLength(64)
+      expect(maximum.confirmedChildren).toHaveLength(64)
+      expect(maximum.accounts[63].valueWei).toHaveLength(78)
+      await journal.Close()
+      journal = new LevelCanonicalStampAttemptJournal(location, {
+        maxBytes: actualMaximumBytes,
+        maxRecords: 1,
+      })
+      await journal.Open()
+      expect(journal.getImportedRecoveries()[0].accounts).toEqual([])
+      await journal.importRecovery({
+        ...input,
+        lifecycle: 'terminal:verification_failed',
+      })
+      expect(journal.getImportedRecoveries()[0].accounts).toHaveLength(64)
+      await journal.markRecoveryAcknowledged(input.obligationId)
+      const finalEncoded = await database(journal).get(
+        `recovery:${input.obligationId}`,
+      )
+      expect(JSON.parse(finalEncoded).reservedBytes).toBe(actualMaximumBytes)
+      expect(Buffer.byteLength(finalEncoded)).toBeLessThanOrEqual(
+        actualMaximumBytes,
+      )
+      await journal.Close()
+      await journal.Open()
+      expect(journal.getImportedRecoveries()[0].accounts).toHaveLength(64)
+      expect(journal.getImportedRecoveries()[0].recipientAcknowledged).toBe(
+        true,
+      )
+      await expect(journal.prepare(await canonicalFixture())).rejects.toThrow(
+        'capacity',
+      )
+      expect(journal.getImportedRecoveries()).toHaveLength(1)
+    } finally {
+      await journal.Close()
+      await rm(location, { recursive: true, force: true })
+    }
+  }, 20000)
 })

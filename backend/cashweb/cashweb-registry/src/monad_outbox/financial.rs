@@ -338,7 +338,7 @@ pub(crate) fn validate_monad_recovery_record(
     Ok(())
 }
 
-fn validate_persisted_message(
+pub(super) fn validate_persisted_message(
     message: &proto::MonadStampedMessage,
     payload_hash: &[u8],
     expected_chain_id: u64,

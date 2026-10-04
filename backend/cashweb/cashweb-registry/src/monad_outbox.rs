@@ -20,6 +20,8 @@ use bitcoinsuite_error::{Result, WrapErr};
 #[cfg(test)]
 use cashweb_payload::verify::BROADCAST_MESSAGE_LOKAD_ID;
 use futures::{stream, StreamExt};
+#[cfg(test)]
+use prost::Message;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{
@@ -44,8 +46,8 @@ use crate::{
 use financial::payment_commitment;
 pub(crate) use financial::validate_monad_recovery_record;
 use financial::{
-    check_exact_bounded, expected_payment, replay_member, validate_persisted_record, ExactCheck,
-    MemberOutcome,
+    check_exact_bounded, expected_payment, replay_member, validate_persisted_message,
+    validate_persisted_record, ExactCheck, MemberOutcome,
 };
 
 const STARTUP_MIGRATION_PAGE_CLAIMS: usize = 16;

@@ -84,7 +84,10 @@
  *   QWEN_BOT_CANONICAL_BUNDLE_JSON  -- operator-installed public approved-bundle.json.
  *   QWEN_BOT_CANONICAL_EXPORT_JSON  -- if set, write this bot's public revision-zero export
  *                                      there (home relay from QWEN_BOT_CANONICAL_HOME, relay-a or
- *                                      relay-b) and exit without opening any wallet.
+ *                                      relay-b) and exit.
+ *   QWEN_BOT_CANONICAL_STATUS_PORT  -- serve GET /directory-installation/<bundle identity>
+ *                                      (plain HTTP, QWEN_BOT_CANONICAL_STATUS_HOST or loopback)
+ *                                      for the operator readiness check.
  */
 import { writeFileSync } from 'fs'
 import { join, resolve } from 'path'
@@ -103,8 +106,9 @@ import { botLoopGuardFromEnv } from './bot-loop-guard'
 import {
   loadOrCreateIdentity,
   loadQwenCanonicalRoots,
+  openQwenCanonicalWallet,
   openQwenInstalledDirectory,
-  prepareQwenPublicExport,
+  startQwenInstallationServer,
   readQwenApprovedBundle,
   readQwenBootstrapPolicy,
   qwenCanonicalChainConfig,
@@ -514,8 +518,8 @@ async function main() {
  * Canonical mode. Order matters and is fixed:
  *  1. public configuration is read and checked; the export-only path ends here;
  *  2. Qwen's response and inbox state opens;
- *  3. the installed directory opens (own revision zero published/enrolled, peers read lazily);
- *  4. the typed wallet owner opens, which signs, funds, replays and sends nothing;
+ *  3. the typed wallet owner opens, which signs, funds, replays and sends nothing;
+ *  4. the installed directory opens (own attestation published, peers read lazily);
  *  5. every retained wallet record is correlated with a saved turn;
  *  6. only then are pending turns resumed and the canonical inbox imported and drained.
  */
@@ -525,29 +529,6 @@ async function mainCanonical(
   const path = (name: string) => resolve(process.cwd(), requiredEnv(name))
   const roots = loadQwenCanonicalRoots(path('QWEN_BOT_CANONICAL_ROOTS_JSON'))
   const policy = readQwenBootstrapPolicy(path('QWEN_BOT_CANONICAL_POLICY_JSON'))
-
-  const exportPath = process.env.QWEN_BOT_CANONICAL_EXPORT_JSON
-  if (exportPath) {
-    const home = requiredEnv('QWEN_BOT_CANONICAL_HOME')
-    if (home !== 'relay-a' && home !== 'relay-b')
-      throw new Error('QWEN_BOT_CANONICAL_HOME must be relay-a or relay-b')
-    const exported = prepareQwenPublicExport({
-      roots,
-      policy,
-      home,
-      nowNs: BigInt(Date.now()) * 1_000_000n,
-    })
-    writeFileSync(
-      resolve(process.cwd(), exportPath),
-      JSON.stringify(exported, null, 2),
-    )
-    console.log(
-      `[bot] public revision-zero export written for ${exported.authAddress} (home ${home}); give it to the operator`,
-    )
-    return
-  }
-
-  const bundle = readQwenApprovedBundle(path('QWEN_BOT_CANONICAL_BUNDLE_JSON'))
   const stampValueWei = BigInt(
     process.env.QWEN_BOT_STAMP_VALUE_WEI ??
       process.env.FRANK_DM_DEFAULT_STAMP_VALUE_WEI ??
@@ -558,6 +539,61 @@ async function mainCanonical(
     'qwen-wallet',
     'QWEN_BOT_WALLET_STATE_DIR',
   )
+  const openWallet = async (relayBaseUrl: string) => {
+    const chain = qwenCanonicalChainConfig({
+      relayBaseUrl,
+      walletStorageLocation: join(walletStateDirPath, 'canonical'),
+      stampValueWei,
+    })
+    if (chain.networkTag !== policy.networkTag)
+      throw new Error(
+        'Configured chain differs from the installed network; refusing to start',
+      )
+    const wallet = await openQwenCanonicalWallet({ chain, roots })
+    closeCanonicalSetup = () => wallet.close()
+    return wallet
+  }
+
+  const exportPath = process.env.QWEN_BOT_CANONICAL_EXPORT_JSON
+  if (exportPath) {
+    const home = requiredEnv('QWEN_BOT_CANONICAL_HOME')
+    if (home !== 'relay-a' && home !== 'relay-b')
+      throw new Error('QWEN_BOT_CANONICAL_HOME must be relay-a or relay-b')
+    // Opening the typed wallet signs, funds and sends nothing; the export is one public
+    // statement signed with the identity key.
+    const wallet = await openWallet(
+      policy.relayTuples.find(tuple => tuple.processId === home)!.endpoint,
+    )
+    const exported = wallet.publicExport({
+      policy,
+      home,
+      nowNs: BigInt(Date.now()) * 1_000_000n,
+    })
+    writeFileSync(
+      resolve(process.cwd(), exportPath),
+      JSON.stringify(exported, null, 2) + '\n',
+    )
+    console.log(
+      `[bot] public revision-zero export written for ${exported.authAddress} (home ${home}); give it to the operator`,
+    )
+    console.log(
+      `[bot] canonical stamp account to fund: ${wallet.accountAddress}`,
+    )
+    return
+  }
+
+  const bundle = readQwenApprovedBundle(path('QWEN_BOT_CANONICAL_BUNDLE_JSON'))
+  const installedSelf = bundle.subjects.find(subject => subject.role === 'bot')
+  if (!installedSelf) throw new Error('Approved bundle installs no bot subject')
+  const relayBaseUrl = installedSelf.relay.endpoint
+  const configuredRelay = process.env.E2E_DEMO_RELAY_URL
+  if (
+    configuredRelay &&
+    new URL(configuredRelay).origin !== new URL(relayBaseUrl).origin
+  )
+    throw new Error(
+      'E2E_DEMO_RELAY_URL differs from the installed home relay; refusing to start',
+    )
   const pollIntervalMs = Number(process.env.QWEN_BOT_POLL_INTERVAL_MS ?? 4000)
   const { maxReplies, idleTimeoutMs } = botConfig
   const replyGenerator = createQwenReplyGenerator(botConfig)
@@ -569,8 +605,9 @@ async function mainCanonical(
   closeBotState = () => state.Close()
   console.log(`[bot] persisted state loaded from ${stateDirPath}`)
 
+  const wallet = await openWallet(relayBaseUrl)
   const directory = await openQwenInstalledDirectory({
-    roots,
+    wallet,
     policy,
     bundle,
     location: join(stateDirPath, 'canonical-directory'),
@@ -582,32 +619,12 @@ async function mainCanonical(
       ).fetch(url, init),
   })
   closeCanonicalDirectory = () => directory.close()
-  const relayBaseUrl = directory.homeEndpoint
-  const configuredRelay = process.env.E2E_DEMO_RELAY_URL
-  if (
-    configuredRelay &&
-    new URL(configuredRelay).origin !== new URL(relayBaseUrl).origin
-  )
-    throw new Error(
-      'E2E_DEMO_RELAY_URL differs from the installed home relay; refusing to start',
-    )
-
-  const chain = qwenCanonicalChainConfig({
-    relayBaseUrl,
-    walletStorageLocation: join(walletStateDirPath, 'canonical'),
-    stampValueWei,
-  })
-  if (chain.networkTag !== policy.networkTag)
-    throw new Error(
-      'Configured chain differs from the installed network; refusing to start',
-    )
-  const canonical = await setUpCanonicalQwenSender({
-    chain,
-    roots,
+  const canonical = setUpCanonicalQwenSender({
+    wallet,
+    networkTag: policy.networkTag,
     directory,
     label: 'bot',
   })
-  closeCanonicalSetup = canonical.close
   console.log(`Relay:        ${relayBaseUrl}`)
   console.log(`Bot Frank identity address: ${canonical.identityAddress}`)
   writeFileSync(
@@ -617,6 +634,23 @@ async function mainCanonical(
     ),
     JSON.stringify({ address: canonical.identityAddress }, null, 2),
   )
+  // The readiness check reads this process's installed public configuration from here.
+  const statusPort = process.env.QWEN_BOT_CANONICAL_STATUS_PORT
+  if (statusPort) {
+    const status = await startQwenInstallationServer({
+      directory,
+      port: Number(statusPort),
+      host: process.env.QWEN_BOT_CANONICAL_STATUS_HOST,
+    })
+    const closeDirectory = closeCanonicalDirectory
+    closeCanonicalDirectory = async () => {
+      await status.close()
+      await closeDirectory?.()
+    }
+    console.log(
+      `[bot] installed configuration ${directory.bundleIdentity} served on port ${status.port}`,
+    )
+  }
 
   const inboxContext = {
     botAddress: canonical.identityAddress,

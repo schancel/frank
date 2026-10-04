@@ -282,8 +282,11 @@ import {
 } from '@frank/wallet/monad-wallet-material'
 import domainVectors from '../domain-roots/vectors/domain-roots-v1.json'
 import {
-  prepareQwenPublicExport,
-  readQwenBootstrapPolicy,
+  buildApprovedBundle,
+  buildBootstrapPolicy,
+} from '../../app/src/utils/directory-operator'
+import {
+  openQwenCanonicalWallet,
   type QwenPublicExportFile,
 } from './qwen-bot-common'
 
@@ -449,34 +452,33 @@ describe('#703/#778 production CLI in canonical mode', () => {
       ).canonicalRoles!.publicGenerationZeroPoints().auth,
     ).toString('hex')
     const tuple = (label: 'a' | 'b') => ({
-      processId: `relay-${label}`,
+      processId: `relay-${label}` as 'relay-a' | 'relay-b',
       id: (label === 'a' ? '01' : '02').repeat(16),
       endpoint: `https://${label}.example`,
       key: relayKey,
       expiryNs: (now + 7_200_000_000_000n).toString(),
     })
+    // Both public files come from the operator tool's own builders.
+    const policy = buildBootstrapPolicy({
+      networkTag: 'MONT',
+      network: NETWORK,
+      chainId: '10143',
+      participants: (['relay-a', 'relay-b', 'bot'] as const).map(processId => ({
+        processId,
+        origin: `https://${
+          processId === 'bot' ? 'bot' : processId.slice(-1)
+        }.example`,
+        trustReference: processId,
+      })),
+      relayTuples: [tuple('a'), tuple('b')],
+      exportValidity: {
+        issuedAtNs: (now - 60_000_000_000n).toString(),
+        expiresAtNs: (now + 3_000_000_000_000n).toString(),
+      },
+    })
     writeFileSync(
       join(location, 'bootstrap-policy.json'),
-      JSON.stringify({
-        version: 1,
-        kind: 'directory-bootstrap-process-policy',
-        networkTag: 'MONT',
-        network: NETWORK,
-        chainId: '10143',
-        participants: ['relay-a', 'relay-b', 'bot'].map(processId => ({
-          processId,
-          origin: `https://${
-            processId.slice(-1) === 't' ? 'bot' : processId.slice(-1)
-          }.example`,
-          trustReference: processId,
-        })),
-        relayTuples: [tuple('a'), tuple('b')],
-        exportValidity: {
-          issuedAtNs: (now - 60_000_000_000n).toString(),
-          expiresAtNs: (now + 3_000_000_000_000n).toString(),
-        },
-        policyIdentity: 'aa'.repeat(32),
-      }),
+      JSON.stringify(policy),
     )
     // The bot's export comes from the real CLI export path, as the operator would run it.
     const exported = run({
@@ -490,38 +492,27 @@ describe('#703/#778 production CLI in canonical mode', () => {
     expect(exported.child.status).toBe(0)
     secrets(exported.child.stdout + exported.child.stderr)
     bot = JSON.parse(readFileSync(join(location, 'bot-export.json'), 'utf8'))
-    const policy = readQwenBootstrapPolicy(
-      join(location, 'bootstrap-policy.json'),
-    )
-    ui = prepareQwenPublicExport({
+    const uiWallet = await openQwenCanonicalWallet({
+      chain: {
+        networkId: 'monad-testnet',
+        rpcChain: 'monad-testnet',
+        chainId: 10143,
+        relayBaseUrl: 'https://a.example',
+        networkTag: 'MONT',
+        stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
+        defaultStampValueWei: 32n,
+        defaultTopicVoteValueWei: 1n,
+        subAccountPoolSize: 2,
+        walletStorageLocation: join(location, 'ui-wallet'),
+      },
       roots: roots(1),
-      policy,
-      home: 'relay-a',
-      nowNs: now,
     })
-    const { processId: _process, ...relay } = tuple('a')
+    ui = uiWallet.publicExport({ policy, home: 'relay-a', nowNs: now })
+    await uiWallet.close()
+    const relay = tuple('a')
     writeFileSync(
       join(location, 'approved-bundle.json'),
-      JSON.stringify({
-        version: 1,
-        kind: 'operator-approved-directory-bundle',
-        bootstrapPolicyIdentity: policy.policyIdentity,
-        participants: [],
-        subjects: [['bot', bot] as const, ['ui', ui] as const].map(
-          ([role, file]) => ({
-            role,
-            network: file.network,
-            subjectP: file.subjectP,
-            revisionZeroT1: file.revisionZeroT1,
-            statement: file.statement,
-            attestation: file.attestation,
-            homeProcessId: file.homeProcessId,
-            relay,
-          }),
-        ),
-        bundleIdentity: 'bb'.repeat(32),
-        expectedConfigurationIdentity: 'cc'.repeat(32),
-      }),
+      JSON.stringify(buildApprovedBundle(policy, { ui, bot })),
     )
     // The typed UI account has published its own revision zero to the relay.
     writeFileSync(
@@ -646,30 +637,33 @@ describe('#703/#778 production CLI in canonical mode', () => {
   }, 60000)
   afterEach(() => rmSync(location, { recursive: true, force: true }))
 
-  it('writes a public-only export without opening state, a wallet or the relay', () => {
+  it('writes a public-only export without opening Qwen state or contacting the relay', () => {
     expect(Object.keys(bot).sort()).toEqual(Object.keys(ui).sort())
     expect(bot.kind).toBe('public-revision-zero-export')
     for (const root of Object.values(domainVectors.vectors[0].outputs))
       expect(JSON.stringify(bot)).not.toContain(root)
+    // The export step never opens Qwen state, the directory or the relay.
     expect(existsSync(join(location, 'state'))).toBe(false)
-    expect(existsSync(join(location, 'wallet'))).toBe(false)
   })
 
-  it('opens state, then the directory, then the wallet, correlates, then answers one canonical text from the installed account with one inference and one retained envelope', async () => {
+  it('opens state, then the wallet and directory, correlates, then answers one canonical text from the installed account with one inference and one retained envelope', async () => {
     const first = run()
     const output = first.child.stdout + first.child.stderr
     expect({ status: first.child.status, ...first.summary }).toMatchObject({
       status: 0,
       generations: 1,
-      // The bot published its own revision zero and read its peer; nothing else was contacted.
-      other: [],
     })
+    // Besides the Directory routes, the only requests are the wallet funding its own inventory
+    // through the relay's RPC proxy, which is down here: no message was submitted.
+    expect(first.summary.other.length).toBeGreaterThan(0)
+    for (const request of first.summary.other)
+      expect(request).toContain('https://a.example/chain-rpc/')
     expect(first.summary.directory[0]).toBe('PUT')
     const order = [
       '[bot] persisted state loaded',
       '[bot] canonical stamp account',
       '[bot] canonical wallet correlation complete',
-      `[bot] response ${turn} held: intent-preparation-failed`,
+      `[bot] response ${turn} held: inventory-unavailable`,
     ].map(line => output.indexOf(line))
     expect(order.every(index => index >= 0)).toBe(true)
     expect([...order].sort((a, b) => a - b)).toEqual(order)
@@ -703,7 +697,6 @@ describe('#703/#778 production CLI in canonical mode', () => {
     expect({ status: restart.child.status, ...restart.summary }).toMatchObject({
       status: 0,
       generations: 0,
-      other: [],
     })
     secrets(restart.child.stdout + restart.child.stderr)
     expect(restart.child.stdout).toContain(
@@ -721,7 +714,6 @@ describe('#703/#778 production CLI in canonical mode', () => {
     expect({ status: restart.child.status, ...restart.summary }).toMatchObject({
       status: 0,
       generations: 0,
-      other: [],
     })
     secrets(restart.child.stdout + restart.child.stderr)
     expect(await withState(state => state.getCoupling(turn))).toEqual(saved)
@@ -733,6 +725,5 @@ describe('#703/#778 production CLI in canonical mode', () => {
     expect(refused.child.status).toBe(1)
     expect(refused.summary).toMatchObject({ generations: 0, pages: 0 })
     expect(existsSync(join(location, 'state'))).toBe(false)
-    expect(existsSync(join(location, 'wallet'))).toBe(false)
   }, 60000)
 })

@@ -62,7 +62,10 @@ export interface QwenCanonicalSender {
   /** Seals the saved text once through the shared producer. Called only when no envelope exists. */
   seal(row: QwenSavedResponse, currents: QwenCanonicalCurrents): QwenSealedReply
   /** Optional funding of spendable inventory; never a reply payment and never retried blindly. */
-  prepareInventory?(): Promise<void>
+  prepareInventory?(input: {
+    stampValueWei: bigint
+    recipientStampKey: Uint8Array
+  }): Promise<void>
   overrides?: MonadTxOverrides
   fetch?: CanonicalFetch
 }
@@ -392,7 +395,10 @@ export class QwenResponseWorkflow {
       }
       if (!currents) return this.held(row, 'peer-directory-unavailable')
       try {
-        await canonical.prepareInventory?.()
+        await canonical.prepareInventory?.({
+          stampValueWei,
+          recipientStampKey: currents.recipientCurrent.stampKey.keyBytes,
+        })
       } catch {
         return this.held(row, 'inventory-unavailable')
       }

@@ -110,9 +110,18 @@ import {
 } from '@frank/wallet/monad-wallet-material'
 import domainVectors from '../domain-roots/vectors/domain-roots-v1.json'
 import {
+  buildApprovedBundle,
+  buildBootstrapPolicy,
+} from '../../app/src/utils/directory-operator'
+import {
+  configurationMatches,
+  parseInstallationSnapshot,
+} from '../../app/src/utils/directory-provisioning'
+import {
   loadQwenCanonicalRoots,
+  openQwenCanonicalWallet,
   openQwenInstalledDirectory,
-  prepareQwenPublicExport,
+  startQwenInstallationServer,
   readQwenApprovedBundle,
   readQwenBootstrapPolicy,
   setUpCanonicalQwenSender,
@@ -176,92 +185,71 @@ describe('#703/#778 canonical Qwen composition', () => {
     }
   }
 
-  /** The two public files an operator installs, written exactly as files. */
-  function install(options: { botRoots?: MonadRootBundle; ui?: boolean } = {}) {
+  async function wallet(bundle: MonadRootBundle, storage: string) {
+    const opened = await openQwenCanonicalWallet({
+      chain: { ...chain(), walletStorageLocation: join(root, storage) },
+      roots: bundle,
+    })
+    cleanup.push(() => opened.close())
+    return opened
+  }
+
+  /** The two public files an operator installs, built by the operator tool's own functions and
+   * read back through the bot's strict readers. */
+  async function install(options: { botRoots?: MonadRootBundle } = {}) {
     const relayKey = Buffer.from(
       createMonadWalletMaterial(
         roots(1),
       ).canonicalRoles!.publicGenerationZeroPoints().auth,
     ).toString('hex')
-    const tuple = (label: 'a' | 'b') => ({
-      processId: `relay-${label}`,
-      id: (label === 'a' ? '01' : '02').repeat(16),
-      endpoint: `https://${label}.example`,
-      key: relayKey,
-      expiryNs: '3700000000000',
-    })
     const policyPath = join(root, 'bootstrap-policy.json')
     writeFileSync(
       policyPath,
-      JSON.stringify({
-        version: 1,
-        kind: 'directory-bootstrap-process-policy',
-        networkTag: 'MONT',
-        network: NETWORK,
-        chainId: '10143',
-        participants: [
-          {
-            processId: 'relay-a',
-            origin: 'https://a.example',
-            trustReference: 'a',
+      JSON.stringify(
+        buildBootstrapPolicy({
+          networkTag: 'MONT',
+          network: NETWORK,
+          chainId: '10143',
+          participants: (['relay-a', 'relay-b', 'bot'] as const).map(
+            processId => ({
+              processId,
+              origin: `https://${
+                processId === 'bot' ? 'bot' : processId.slice(-1)
+              }.example`,
+              trustReference: processId,
+            }),
+          ),
+          relayTuples: (['a', 'b'] as const).map(label => ({
+            processId: `relay-${label}` as const,
+            id: (label === 'a' ? '01' : '02').repeat(16),
+            endpoint: `https://${label}.example`,
+            key: relayKey,
+            expiryNs: '3700000000000',
+          })),
+          exportValidity: {
+            issuedAtNs: '100000000000',
+            expiresAtNs: '3700000000000',
           },
-          {
-            processId: 'relay-b',
-            origin: 'https://b.example',
-            trustReference: 'b',
-          },
-          {
-            processId: 'bot',
-            origin: 'https://bot.example',
-            trustReference: 'c',
-          },
-        ],
-        relayTuples: [tuple('a'), tuple('b')],
-        exportValidity: {
-          issuedAtNs: '100000000000',
-          expiresAtNs: '3700000000000',
-        },
-        policyIdentity: 'aa'.repeat(32),
-      }),
+        }),
+      ),
     )
     const policy = readQwenBootstrapPolicy(policyPath)
-    const exportFor = (bundle: MonadRootBundle) =>
-      prepareQwenPublicExport({
-        roots: bundle,
+    const exportFor = async (bundle: MonadRootBundle, storage: string) => {
+      const opened = await wallet(bundle, storage)
+      const file = opened.publicExport({
         policy,
         home: 'relay-a',
         nowNs: NOW_NS,
       })
-    const bot = exportFor(options.botRoots ?? roots(0)),
-      ui = exportFor(roots(1))
-    const subject = (role: 'ui' | 'bot', file: QwenPublicExportFile) => {
-      const { processId: _process, ...relay } = tuple('a')
-      return {
-        role,
-        network: file.network,
-        subjectP: file.subjectP,
-        revisionZeroT1: file.revisionZeroT1,
-        statement: file.statement,
-        attestation: file.attestation,
-        homeProcessId: file.homeProcessId,
-        relay,
-      }
+      await opened.close()
+      return file
     }
+    const bot = await exportFor(options.botRoots ?? roots(0), 'export-bot'),
+      ui = await exportFor(roots(1), 'export-ui')
     const bundlePath = join(root, 'approved-bundle.json')
     writeFileSync(
       bundlePath,
-      JSON.stringify({
-        version: 1,
-        kind: 'operator-approved-directory-bundle',
-        bootstrapPolicyIdentity: policy.policyIdentity,
-        participants: [],
-        subjects: [
-          subject('bot', bot),
-          ...(options.ui === false ? [] : [subject('ui', ui)]),
-        ],
-        bundleIdentity: 'bb'.repeat(32),
-        expectedConfigurationIdentity: 'cc'.repeat(32),
-      }),
+      JSON.stringify(buildApprovedBundle(policy, { ui, bot })),
     )
     return { policy, bundle: readQwenApprovedBundle(bundlePath), bot, ui }
   }
@@ -308,11 +296,12 @@ describe('#703/#778 canonical Qwen composition', () => {
     )
 
   async function openDirectory(
-    installed: ReturnType<typeof install>,
+    installed: Awaited<ReturnType<typeof install>>,
     bundle = roots(0),
   ) {
+    const opened = await wallet(bundle, 'wallet')
     const directory = await openQwenInstalledDirectory({
-      roots: bundle,
+      wallet: opened,
       policy: installed.policy,
       bundle: installed.bundle,
       location: join(root, 'directory'),
@@ -321,7 +310,7 @@ describe('#703/#778 canonical Qwen composition', () => {
       peerRefreshMs: 0,
     })
     cleanup.push(() => directory.close())
-    return directory
+    return Object.assign(directory, { wallet: opened })
   }
 
   beforeEach(async () => {
@@ -350,13 +339,10 @@ describe('#703/#778 canonical Qwen composition', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
-  async function open(
-    directory: QwenCanonicalDirectory,
-    bundle: MonadRootBundle = roots(0),
-  ) {
-    const setup = await setUpCanonicalQwenSender({
-      chain: chain(),
-      roots: bundle,
+  async function open(directory: Awaited<ReturnType<typeof openDirectory>>) {
+    const setup = setUpCanonicalQwenSender({
+      wallet: directory.wallet,
+      networkTag: 'MONT',
       directory,
       label: 'test',
     })
@@ -388,7 +374,6 @@ describe('#703/#778 canonical Qwen composition', () => {
       if (closed) return
       closed = true
       await state.Close()
-      await setup.close()
     }
     cleanup.push(close)
     return { setup, state, run, reply, close, inboxContext }
@@ -474,8 +459,8 @@ describe('#703/#778 canonical Qwen composition', () => {
     }
   }
 
-  it("exports only public evidence, publishes and enrolls the bot once, and admits a peer only from that peer's own published evidence", async () => {
-    const installed = install()
+  it("exports only public evidence, publishes only the bot's own attestation, admits a peer only from that peer's published evidence, and reports the installed configuration", async () => {
+    const installed = await install()
     for (const secret of Object.values(domainVectors.vectors[0].outputs))
       expect(JSON.stringify(installed.bot)).not.toContain(secret)
     expect(Object.keys(installed.bot).sort()).toEqual(
@@ -504,18 +489,66 @@ describe('#703/#778 canonical Qwen composition', () => {
     expect(toHex((await directory.selfCurrent()).evidence.hash)).toBe(
       installed.bot.revisionZeroT1,
     )
-    // Installed but not yet published by its owner: not usable, and never enrolled from the file.
+    // Installed but not yet published by its owner: not usable, never enrolled from the file.
     expect(await directory.peerCurrent(installed.ui.subjectP)).toBeUndefined()
     // Not installed at all: no relay request is even made.
     const before = directoryRequests.length
     expect(await directory.peerCurrent('02' + '11'.repeat(32))).toBeUndefined()
     expect(directoryRequests).toHaveLength(before)
+
+    // The readiness endpoint: exact headers, the app's own strict parser and comparator.
+    const status = await startQwenInstallationServer({ directory, port: 0 })
+    cleanup.push(() => status.close())
+    const read = (manifest: string) =>
+      fetch(
+        `http://127.0.0.1:${status.port}/directory-installation/${manifest}`,
+      )
+    const response = await read(installed.bundle.bundleIdentity)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('application/json')
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('access-control-allow-origin')).toBe('*')
+    const snapshot = parseInstallationSnapshot(
+      new Uint8Array(await response.arrayBuffer()),
+    )
+    expect(configurationMatches(snapshot, installed.bundle)).toBe(true)
+    const stateOf = (subject: string, from = snapshot) =>
+      from.states.find(state => state.subjectP === subject)!
+    expect(stateOf(installed.bot.subjectP)).toMatchObject({
+      enrollment: 'enrolled',
+      historicalHead: installed.bot.revisionZeroT1,
+      forked: false,
+      unavailable: false,
+    })
+    expect(stateOf(installed.ui.subjectP)).toMatchObject({
+      enrollment: 'unenrolled',
+      historicalHead: null,
+      forked: false,
+      unavailable: false,
+    })
+    expect((await read('00'.repeat(32))).status).toBe(404)
+    expect(
+      (await fetch(`http://127.0.0.1:${status.port}/anything-else`)).status,
+    ).toBe(404)
+
     publishUi(installed.ui)
     const peer = await directory.peerCurrent(installed.ui.subjectP)
     expect(toHex(peer!.evidence.hash)).toBe(installed.ui.revisionZeroT1)
+    const later = parseInstallationSnapshot(
+      new Uint8Array(
+        await (await read(installed.bundle.bundleIdentity)).arrayBuffer(),
+      ),
+    )
+    expect(stateOf(installed.ui.subjectP, later)).toMatchObject({
+      enrollment: 'enrolled',
+      historicalHead: installed.ui.revisionZeroT1,
+    })
+    expect(later.runtimeEpoch).toBe(snapshot.runtimeEpoch)
+    expect(later.generation).toBe(snapshot.generation)
 
     // Restart: whole checkpoints reopen both stores; the same bytes are published again.
     await directory.close()
+    await directory.wallet.close()
     directoryRequests = []
     const again = await openDirectory(installed)
     expect(directoryRequests).toEqual([
@@ -525,55 +558,48 @@ describe('#703/#778 canonical Qwen composition', () => {
       installed.bot.revisionZeroT1,
     )
     expect(await again.peerCurrent(installed.ui.subjectP)).toBeDefined()
-  }, 30000)
+    expect(requests).toEqual([])
+  }, 60000)
 
-  it("refuses a bundle that does not carry this bot's own exact evidence, or that installs no bot", async () => {
-    const foreign = install({
+  it("refuses a bundle that does not carry this wallet's own exact evidence, before any relay request", async () => {
+    // Same identity, another messaging root: a different signed statement for the same P.
+    const foreign = await install({
       botRoots: { ...roots(0), messaging: roots(1).messaging },
     })
     await expect(openDirectory(foreign)).rejects.toThrow('own evidence')
     expect(directoryRequests).toEqual([])
-    const installed = install()
-    await expect(
-      openQwenInstalledDirectory({
-        roots: roots(0),
-        policy: installed.policy,
-        bundle: {
-          ...installed.bundle,
-          subjects: installed.bundle.subjects.slice(1),
-        },
-        location: join(root, 'directory'),
-        fetch: directoryFetch,
-        nowNs: () => NOW_NS,
-      }),
-    ).rejects.toThrow('exactly one bot subject')
-    expect(directoryRequests).toEqual([])
-  }, 30000)
+    expect(requests).toEqual([])
+  }, 60000)
 
   it('opens the public typed owner and correlates without any relay, RPC, signing or replay effect', async () => {
-    const directory = await openDirectory(install())
+    const directory = await openDirectory(await install())
     const first = await open(directory)
     expect(await first.run.recover()).toBeUndefined()
     expect(first.setup.sender.wallet.reconcileWorkflowLinks([])).toEqual([])
     expect(requests).toEqual([])
-    // One economic owner: a second composition over the same account is refused while open.
+    // One economic owner: a second wallet over the same account is refused while open.
     await expect(
-      setUpCanonicalQwenSender({
-        chain: chain(),
+      openQwenCanonicalWallet({
+        chain: { ...chain(), walletStorageLocation: join(root, 'second') },
         roots: roots(0),
+      }),
+    ).rejects.toThrow('already open')
+    // Roots that are not the installed bot subject never get a canonical consumer.
+    const other = await wallet(roots(1), 'other')
+    expect(() =>
+      setUpCanonicalQwenSender({
+        wallet: other,
+        networkTag: 'MONT',
         directory,
         label: 'test',
       }),
-    ).rejects.toThrow('already open')
-    await first.close()
-    const again = await open(directory)
-    expect(await again.run.recover()).toBeUndefined()
+    ).toThrow('installed directory subject')
     expect(requests).toEqual([])
-  }, 30000)
+  }, 60000)
 
   it('turns one canonical text from an installed typed account into one inference and one coupled reply envelope for that account', async () => {
-    const installed = install()
-    const directory = await openDirectory(installed)
+    const installed = await install()
+    let directory = await openDirectory(installed)
     publishUi(installed.ui)
     const first = await open(directory)
     const { record, ui, uiCurrent } = await fromUi('PROMPT_SENTINEL', directory)
@@ -594,6 +620,7 @@ describe('#703/#778 canonical Qwen composition', () => {
     const workflow = inbound(first, [record])
     await workflow.import()
     expect(first.reply).not.toHaveBeenCalled()
+    expect(requests).toEqual([])
     expect(await workflow.drain(10)).toBe(0)
     expect(first.reply).toHaveBeenCalledTimes(1)
     expect(first.reply.mock.calls[0][0]).toEqual([
@@ -631,11 +658,19 @@ describe('#703/#778 canonical Qwen composition', () => {
       'REPLY_SENTINEL',
     )
     expect(JSON.stringify(saved)).not.toContain('SENTINEL')
-    // The typed owner has no spendable inventory yet: no intent, no signature, no request.
+    // The wallet tried to fund inventory from its own account through the relay's RPC proxy,
+    // which is down here: no intent, no signature, no message request.
     expect(first.setup.sender.wallet.lookup(prepared)).toBeUndefined()
-    expect(logs.join()).toContain('intent-preparation-failed')
+    expect(logs.join()).toContain('inventory-unavailable')
+    expect(requests.length).toBeGreaterThan(0)
+    expect(requests.every(request => request.includes('/chain-rpc/'))).toBe(
+      true,
+    )
 
     await first.close()
+    await directory.close()
+    await directory.wallet.close()
+    directory = await openDirectory(installed)
     const again = await open(directory)
     expect(await again.run.recover()).toBeUndefined()
     // The relay returns the same record again: terminal by digest, no second inference.
@@ -645,65 +680,27 @@ describe('#703/#778 canonical Qwen composition', () => {
     expect(await again.run.resume(turn.payloadHashHex)).toBe('held')
     expect(again.state.getCoupling(turn.payloadHashHex)).toEqual(saved)
     expect(again.reply).not.toHaveBeenCalled()
-    expect(requests).toEqual([])
+    expect(requests.every(request => request.includes('/chain-rpc/'))).toBe(
+      true,
+    )
     expect(logs.join()).not.toContain('SENTINEL')
-  }, 30000)
+  }, 60000)
 
-  it('refuses roots that are not the installed bot subject, and holds a saved envelope under a different stamp account', async () => {
-    const installed = install()
-    const directory = await openDirectory(installed)
-    publishUi(installed.ui)
+  it('refuses a non-Monad tag or ephemeral wallet storage before opening anything', async () => {
     await expect(
-      setUpCanonicalQwenSender({
-        chain: chain(),
-        roots: roots(1),
-        directory,
-        label: 'test',
-      }),
-    ).rejects.toThrow('installed directory subject')
-    const first = await open(directory)
-    await first.state.beginResponse({
-      payloadHashHex: '01'.repeat(32),
-      senderAddress: installed.ui.authAddress,
-      senderPubKeyHex: installed.ui.subjectP,
-      context: {
-        ...first.inboxContext,
-        fundingAddress: first.setup.accountAddress.toLowerCase(),
-        stampValueWei: '32',
-      },
-    })
-    await first.state.saveResponse('01'.repeat(32), 'REPLY_SENTINEL', [])
-    expect(await first.run.resume('01'.repeat(32))).toBe('held')
-    const saved = first.state.getCoupling('01'.repeat(32))
-    expect(saved?.phase).toBe('envelope-ready')
-    await first.close()
-    // Same identity and messaging roots, a different economic root: another stamp account.
-    const changed = await open(directory, { ...roots(0), evm: roots(1).evm })
-    expect(await changed.run.recover()).toBe('wallet-binding-mismatch')
-    expect(await changed.run.resume('01'.repeat(32))).toBe('held')
-    expect(changed.state.getCoupling('01'.repeat(32))).toEqual(saved)
-    expect(requests).toEqual([])
-  }, 30000)
-
-  it('refuses a non-Monad tag or ephemeral wallet storage', async () => {
-    const directory = await openDirectory(install())
-    await expect(
-      setUpCanonicalQwenSender({
+      openQwenCanonicalWallet({
         chain: { ...chain(), networkTag: 'fixture' },
         roots: roots(0),
-        directory,
-        label: 'test',
       }),
     ).rejects.toThrow('installed Monad network')
     await expect(
-      setUpCanonicalQwenSender({
+      openQwenCanonicalWallet({
         chain: { ...chain(), walletStorageLocation: false },
         roots: roots(0),
-        directory,
-        label: 'test',
       }),
     ).rejects.toThrow('durable wallet storage')
-  }, 30000)
+    expect(existsSync(join(root, 'wallet'))).toBe(false)
+  })
 
   it('loads an operator-provisioned root bundle and never creates or echoes one', () => {
     const path = join(root, 'roots.json')

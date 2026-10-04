@@ -41,12 +41,18 @@ pub enum RuntimeError {
     Trust,
     /// Frame, history or relay-wide subject capacity exceeded.
     Resource,
+    /// The entry, or the relay binding inside it, has expired or is not yet valid.
+    Expired,
+    /// The subject's history holds two conflicting signed branches.
+    Forked,
 }
 impl From<AdmissionError> for RuntimeError {
     fn from(e: AdmissionError) -> Self {
         match e {
             AdmissionError::Resource => Self::Resource,
             AdmissionError::Evidence => Self::Invalid,
+            AdmissionError::Validity | AdmissionError::Binding => Self::Expired,
+            AdmissionError::Fork => Self::Forked,
             _ => Self::Trust,
         }
     }
@@ -578,7 +584,7 @@ impl<'a> Worker<'a> {
             || tuple(finished) >= tuple(*expiry)
             || tuple(finished) >= tuple(current.relay.expiry)
         {
-            return Err(RuntimeError::Trust);
+            return Err(RuntimeError::Expired);
         }
         Ok(AdmittedSnapshot::Current(current))
     }

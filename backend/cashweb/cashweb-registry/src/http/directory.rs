@@ -27,7 +27,8 @@ pub(crate) fn error(e: RuntimeError) -> Response {
         ),
         RuntimeError::NotFound => (StatusCode::NOT_FOUND, "not-found"),
         RuntimeError::Invalid => (StatusCode::BAD_REQUEST, "invalid"),
-        RuntimeError::Trust => (StatusCode::CONFLICT, "trust/continuity"),
+        RuntimeError::Trust | RuntimeError::Forked => (StatusCode::CONFLICT, "trust/continuity"),
+        RuntimeError::Expired => (StatusCode::CONFLICT, "expired"),
         RuntimeError::Resource => (StatusCode::TOO_MANY_REQUESTS, "capacity"),
     };
     (

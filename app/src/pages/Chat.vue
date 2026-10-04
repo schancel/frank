@@ -623,7 +623,7 @@ export default defineComponent({
         errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')))
         return
       }
-      if (seed) saveSeed(gameId, seed)
+      if (seed) saveSeed(this.address, gameId, seed)
       this.blackjackDialog = false
       await this.sendFollowUpItems({ items: [built.item] })
     },

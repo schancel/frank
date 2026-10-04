@@ -383,7 +383,7 @@ describe('the player', () => {
 
 describe('the dealer', () => {
   beforeEach(() => {
-    saveSeed(GAME, WIN)
+    saveSeed(PEER, GAME, WIN)
   })
 
   it('accepts a player’s challenge with a max bet it can cover, and keeps the seed', async () => {
@@ -410,7 +410,7 @@ describe('the dealer', () => {
     const [sent] = followUp(wrapper)
     expect(sent.stampValueWei).toBeUndefined()
     expect(sent.items[0]).toMatchObject({ action: 'accept', maxBetWei: '300' })
-    expect(commitmentOf(loadSeed(GAME)!)).toBe(sent.items[0].commitment)
+    expect(commitmentOf(loadSeed(PEER, GAME)!)).toBe(sent.items[0].commitment)
   })
 
   it('confirms a payout: the reveal’s stamp is exactly what is owed', async () => {
@@ -425,7 +425,7 @@ describe('the dealer', () => {
   })
 
   it('has no pay button when the player lost (that reveal is sent automatically)', async () => {
-    saveSeed(GAME, LOSS)
+    saveSeed(PEER, GAME, LOSS)
     const wrapper = await mountLast(hand(true, LOSS, 400n, ['stand']))
     expect(button(wrapper, 'pay').exists()).toBe(false)
   })

@@ -93,8 +93,8 @@ describe('a chat as blackjack hand events', () => {
 
 describe('dealer seeds on this device', () => {
   it('keeps a seed for the page session when storage is unavailable', () => {
-    saveSeed('session-only', SEED)
-    expect(loadSeed('session-only')).toBe(SEED)
+    saveSeed(PEER, 'session-only', SEED)
+    expect(loadSeed(PEER, 'session-only')).toBe(SEED)
   })
 
   it('saves and loads a seed, and makes fresh ones', () => {
@@ -106,10 +106,12 @@ describe('dealer seeds on this device', () => {
         setItem: (key: string, value: string) => void stored.set(key, value),
       },
     })
-    expect(loadSeed('nope')).toBeUndefined()
-    saveSeed('g-seed', SEED)
-    expect(loadSeed('g-seed')).toBe(SEED)
-    expect(stored.get('frank.blackjack.seed.g-seed')).toBe(SEED)
+    expect(loadSeed(PEER, 'nope')).toBeUndefined()
+    saveSeed(PEER, 'g-seed', SEED)
+    expect(loadSeed(PEER, 'g-seed')).toBe(SEED)
+    expect(stored.get(`frank.blackjack.seed.${PEER}|g-seed`)).toBe(SEED)
+    // Another chat with the same game id does not get this seed.
+    expect(loadSeed(ME, 'g-seed')).toBeUndefined()
     expect(newSeed()).toMatch(/^[0-9a-f]{64}$/)
     expect(newSeed()).not.toBe(newSeed())
     expect(newGameId()).toMatch(/^[0-9a-f]{32}$/)
@@ -133,7 +135,7 @@ describe('automatic dealer steps', () => {
   ]
 
   it('deals without asking when this user is the dealer and holds the seed', () => {
-    saveSeed('auto', SEED)
+    saveSeed(PEER, 'auto', SEED)
     const messages = opened('auto')
     const steps = automaticDealerSteps(messages, ME, PEER)
     expect(steps).toHaveLength(1)
@@ -148,7 +150,7 @@ describe('automatic dealer steps', () => {
   })
 
   it('never sends a paying message automatically', () => {
-    saveSeed('pay', SEED)
+    saveSeed(PEER, 'pay', SEED)
     // A bet above the max: the dealer owes a refund, which needs the dealer's confirmation.
     const messages = [
       opened('pay')[0],
@@ -163,7 +165,7 @@ describe('automatic dealer steps', () => {
   })
 
   it('does nothing as the player, or as a dealer without the seed', () => {
-    saveSeed('mine', SEED)
+    saveSeed(PEER, 'mine', SEED)
     const asPlayer = [
       message(
         false,

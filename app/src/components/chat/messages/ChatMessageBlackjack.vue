@@ -284,7 +284,7 @@ export default defineComponent({
       return this.sending || messages.some(m => m.status === 'pending')
     },
     seed(): string | undefined {
-      return this.state ? loadSeed(this.state.gameId) : undefined
+      return this.state ? loadSeed(this.address, this.state.gameId) : undefined
     },
     stake(): bigint {
       return this.state ? totalStakeWei(this.state) : 0n
@@ -536,7 +536,7 @@ export default defineComponent({
       })
       if ('error' in built) return
       // The seed is kept before its commitment leaves this device.
-      saveSeed(state.gameId, seed)
+      saveSeed(this.address, state.gameId, seed)
       this.send(built.item)
     },
     onBet() {

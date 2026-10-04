@@ -86,22 +86,27 @@ export function chatHands(
 const SEED_PREFIX = 'frank.blackjack.seed.'
 const memorySeeds = new Map<string, string>()
 
-/** Keeps a dealer's seed for a hand on this device. Without it the dealer cannot deal or reveal
- * (it can still refund the bet). */
-export function saveSeed(gameId: string, seed: string): void {
-  memorySeeds.set(gameId, seed)
+const seedKey = (peer: string, gameId: string) =>
+  `${peer.toLowerCase()}|${gameId}`
+
+/** Keeps a dealer's seed for a hand on this device, per chat and game, so a seed is never shared
+ * between two hands. Without it the dealer cannot deal or reveal (it can still refund the bet). */
+export function saveSeed(peer: string, gameId: string, seed: string): void {
+  const key = seedKey(peer, gameId)
+  memorySeeds.set(key, seed)
   try {
-    localStorage.setItem(SEED_PREFIX + gameId, seed)
+    localStorage.setItem(SEED_PREFIX + key, seed)
   } catch {
     // Storage unavailable: the seed lives for this page session only.
   }
 }
 
-export function loadSeed(gameId: string): string | undefined {
-  const held = memorySeeds.get(gameId)
+export function loadSeed(peer: string, gameId: string): string | undefined {
+  const key = seedKey(peer, gameId)
+  const held = memorySeeds.get(key)
   if (held) return held
   try {
-    return localStorage.getItem(SEED_PREFIX + gameId) ?? undefined
+    return localStorage.getItem(SEED_PREFIX + key) ?? undefined
   } catch {
     return undefined
   }
@@ -134,7 +139,7 @@ export function automaticDealerSteps(
   const steps: { key: string; item: BlackjackHandItem }[] = []
   for (const { state } of chatHands(messages, own, peer)) {
     if (roleOf(state, own) !== 'dealer') continue
-    const seed = loadSeed(state.gameId)
+    const seed = loadSeed(peer, state.gameId)
     if (!seed) continue
     const step: DealerStep | undefined = dealerStep(state, seed)
     if (step && step.payWei === undefined)

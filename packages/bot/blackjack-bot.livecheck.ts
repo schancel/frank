@@ -67,6 +67,13 @@
  *   BLACKJACK_BOT_GREETING_MAX_AGE_MS   -- skip registrations older than this (default 24 h)
  *   BLACKJACK_BOT_PROFILE_SINCE_MS  -- first-run start of the registration watch (default: now)
  *
+ * ## Canonical mode (#780)
+ *
+ * Selected by BLACKJACK_BOT_CANONICAL_ROOTS_JSON: a typed account, type-18 items in sealed
+ * canonical envelopes, replies through a durable outbox (`blackjack-canonical.ts`), payouts from a
+ * separate bankroll key through the unchanged payout journal. See `mainCanonical` below and
+ * README "Blackjack canonical mode" for the variables and the operator steps.
+ *
  * ## Welcome greeting (#395)
  *
  * The dealer greets each NEW registration once with a `blackjack-move` `welcome` item (table limits

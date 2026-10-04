@@ -751,6 +751,110 @@ npx tsx qwen-bot.livecheck.ts
   the directory stores and their checkpoint files) and `QWEN_BOT_WALLET_STATE_DIR/canonical-*`
   (typed wallet pool and journals). Back up and restore them together.
 
+## Blackjack canonical mode (#780)
+
+Setting `BLACKJACK_BOT_CANONICAL_ROOTS_JSON` runs the dealer with a typed account over the
+canonical path: type-18 blackjack items inside the same sealed envelopes the app and the Qwen bot
+use. It is the Qwen bot's canonical mode with a different consumer: the roots file, policy, bundle,
+export, own-attestation publication and status endpoint are the same helpers
+(`qwen-bot-common.ts`) and behave exactly as described in "Canonical mode" above, with
+`BLACKJACK_BOT_` in place of `QWEN_BOT_` in every variable name.
+
+**One bot per installation.** The approved bundle holds exactly one `ui` and one `bot` subject and
+the app can only message that bot. To play blackjack locally, the installed bot must be this
+dealer: export it, approve it as the `bot`, and serve its status endpoint on the policy's `bot`
+origin. It cannot run next to a canonical Qwen bot in the same installation.
+
+What moves value, and from where (unchanged game rules; see the file header for the scheme):
+
+| What | From | To |
+| --- | --- | --- |
+| Wager, double-down | the player's typed wallet account (a plain transfer the app sends) | the dealer's identity address (the chat address) |
+| Payout, refund | the **bankroll** key (`BLACKJACK_BOT_BANKROLL_WALLET_JSON`) | the account the wager came from |
+| Stamp of each dealer reply | the dealer's typed wallet account ("canonical stamp account") | the player's stamp key |
+
+The bankroll is a separate operator-funded `{ "address", "privateKey" }` file (the same file
+format legacy mode reads from `E2E_DEMO_MAIN_WALLET_JSON`, which is the fallback). It keeps the
+existing payout journal (`owed -> submitting -> submitted -> confirmed`, exact signed bytes
+re-broadcast, never re-signed) and signs through the typed wallet's relay RPC. It must not be the
+typed wallet's own account; the dealer refuses to start if it is.
+
+**Who may act.** A canonical sender is authenticated as a directory-admitted identity point, which
+never sends transactions; the wager comes from that wallet's separate EVM account, and nothing
+public ties the two together. So, unlike legacy mode, the dealer cannot check "the authenticated
+sender paid this wager". Instead: the first authenticated installed subject to reference a
+confirmed transfer to the dealer opens the game and is the only one who may hit, stand or double
+it; the payout and any refund go only to the account the transfer came from; a double must come
+from that same account. With one installed `ui` subject this is the same player. With several, a
+subject could claim another player's unclaimed transfer and play it, but never be paid for it.
+This needs an owner decision before any multi-player use.
+
+**Replies are saved, then delivered once.** Each dealer reply is written to a durable outbox
+(`<state dir>/blackjack-canonical-state`) and sent in order through the wallet's canonical
+message client: one sealed envelope and one payment set per reply. A crash or an unknown relay
+outcome re-sends the same journaled bytes. A set the relay ended is reported and never replaced.
+Inbound messages are handled at most once (as in legacy mode), and only after their envelope has
+opened under the installed directory; a tampered envelope or an uninstalled sender never reaches
+the game.
+
+**1. Export** (opens the typed wallet, sends nothing, prints the stamp account to fund):
+
+```sh
+cd packages/bot
+BLACKJACK_BOT_CANONICAL_ROOTS_JSON=/abs/bot-roots.json \
+BLACKJACK_BOT_CANONICAL_POLICY_JSON=/abs/bootstrap-policy.json \
+BLACKJACK_BOT_CANONICAL_HOME=relay-a \
+BLACKJACK_BOT_CANONICAL_EXPORT_JSON=/abs/bot-export.json \
+BLACKJACK_BOT_STATE_DIR=/abs/blackjack-state BLACKJACK_BOT_WALLET_STATE_DIR=/abs/blackjack-wallet \
+npx tsx blackjack-bot.livecheck.ts
+```
+
+**2. Operator approves** the UI export and this export exactly as for Qwen
+(`app/scripts/directory-operator.mts approve ...`) and installs the relay TOML.
+
+**3. Fund** three things with native MON: the printed canonical stamp account (reply stamps), the
+bankroll address (payouts; it must cover 2.5x every open wager or bets are refused and refunded),
+and the player's own account in the app.
+
+**4. Run:**
+
+```sh
+cd packages/bot
+BLACKJACK_BOT_CANONICAL_ROOTS_JSON=/abs/bot-roots.json \
+BLACKJACK_BOT_CANONICAL_POLICY_JSON=/abs/bootstrap-policy.json \
+BLACKJACK_BOT_CANONICAL_BUNDLE_JSON=/abs/out/approved-bundle.json \
+BLACKJACK_BOT_BANKROLL_WALLET_JSON=/abs/bankroll.json \
+BLACKJACK_BOT_CANONICAL_STATUS_PORT=8455 \
+BLACKJACK_BOT_STATE_DIR=/abs/blackjack-state BLACKJACK_BOT_WALLET_STATE_DIR=/abs/blackjack-wallet \
+BLACKJACK_BOT_STAMP_VALUE_WEI=10000000000000000 \
+NODE_EXTRA_CA_CERTS=/abs/local-ca.pem \
+npx tsx blackjack-bot.livecheck.ts
+```
+
+- The dealer's chat address is printed and written to `BLACKJACK_BOT_HANDOFF_JSON` (default
+  `/tmp/blackjack-bot-handoff.json`). Add it as a contact in the app.
+- The app shows its bet box only for the relay-curated dealer whose signed profile is named
+  "Blackjack Dealer" (#422/#425). The dealer therefore registers that public profile on start
+  (one statement signed by its identity key; set `BLACKJACK_BOT_CANONICAL_PROFILE=0` to skip),
+  and the relay must list the chat address under `[[registry.curated_defaults]]` with
+  `name = "Blackjack Dealer"`. Without both, hit/stand/double on a dealt hand still work but the
+  app offers no way to place a bet.
+- Once the `ui` subject has published its own directory entry, the dealer sends it one welcome
+  (table limits). `BLACKJACK_BOT_MAX_GREETINGS=0` turns that off.
+- `BLACKJACK_BOT_MIN_WAGER_WEI`, `BLACKJACK_BOT_MAX_WAGER_WEI`, `BLACKJACK_BOT_MAX_HANDS`,
+  `BLACKJACK_BOT_POLL_INTERVAL_MS`, `BLACKJACK_BOT_IDLE_TIMEOUT_MS` and `FRANK_BOT_PEER_DENYLIST`
+  apply as in legacy mode.
+- A configuration the dealer will not start with prints
+  `BLACKJACK BOT REFUSING TO START: <reason>`. Beyond the Qwen reasons: `bankroll-wallet-unreadable`,
+  `bankroll-is-the-typed-wallet`, `wallet-has-unaccounted-payment-sets` (the wallet state holds
+  payment sets this outbox never made: the two state directories do not belong together) and
+  `wallet-correlation-held`.
+- Use a fresh `BLACKJACK_BOT_STATE_DIR`. A legacy state's pending seed that is not 64 lowercase
+  hex characters cannot be revealed in a type-18 item. Back up and restore
+  `BLACKJACK_BOT_STATE_DIR` and `BLACKJACK_BOT_WALLET_STATE_DIR` together.
+- Wagers accumulate on the dealer's identity address, as in legacy mode. The typed wallet does
+  not spend from that address; sweeping it is a manual operator step.
+
 ## Auto-greet / auto-fund new signups (ticket #77)
 
 Alongside its Qwen-reply behavior, `qwen-bot.livecheck.ts` also polls the live

@@ -204,7 +204,7 @@ impl NativeDirectoryFixture {
         }
     }
     async fn stop(&self) {
-        self.directory.shutdown();
+        self.directory.begin_shutdown();
         self.directory.wait_stopped().await;
     }
 }
@@ -305,7 +305,7 @@ async fn weak_directory_hook_preserves_same_owner_rejects_other_live_owner_and_o
         .directory()
         .unwrap()
         .same_owner(&reopened));
-    reopened.shutdown();
+    reopened.begin_shutdown();
     reopened.wait_stopped().await;
 }
 
@@ -340,7 +340,7 @@ async fn ordinary_directory_drop_releases_registry_before_reopen() {
         crate::directory_runtime::DirectoryRuntime::start(registry, root.path().join("db"), config)
             .unwrap();
     ready.await.unwrap().unwrap();
-    directory.shutdown();
+    directory.begin_shutdown();
     directory.wait_stopped().await;
 }
 
@@ -475,7 +475,8 @@ async fn actual_http_canonical_public_admission_p_authenticated_inbox_and_nonce_
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let accepted: serde_json::Value = response.json().await.unwrap();
+    let accepted: serde_json::Value =
+        serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(accepted["phase"], "delivered");
     assert_eq!(
         accepted["identity"]["submission_identity"],
@@ -485,7 +486,8 @@ async fn actual_http_canonical_public_admission_p_authenticated_inbox_and_nonce_
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
     let recipient = accepted["identity"]["recipient"].as_str().unwrap();
     let point = &fixture.config.principals[1].subject;
-    let challenge:serde_json::Value = client.get(format!("{url}/message/monad/cbor/auth/{recipient}?resource=inbox&since=0&limit=50&max_bytes=8388608")).header("x-frank-mailbox-subject", point).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+    let challenge_response = client.get(format!("{url}/message/monad/cbor/auth/{recipient}?resource=inbox&since=0&limit=50&max_bytes=8388608")).header("x-frank-mailbox-subject", point).send().await.unwrap().error_for_status().unwrap().bytes().await.unwrap();
+    let challenge: serde_json::Value = serde_json::from_slice(&challenge_response).unwrap();
     assert_eq!(challenge["network_tag"], "4d4f4e54");
     let token = MailboxChallenge {
         epoch: hash_hex(challenge["epoch"].as_str().unwrap()).unwrap(),

@@ -1288,9 +1288,69 @@ describe('canonical private mailbox', () => {
     { submission_identity: '00'.repeat(32) },
     { payload_hash: '00'.repeat(32) },
     { lifecycle: 'terminal:new_authority' },
+    { lifecycle: ['pending'] },
+    { lifecycle: [['pending']] },
+    { lifecycle: ['fully_confirmed'] },
+    { lifecycle: [['delivered']] },
+    { lifecycle: [] },
   ])('recovery rejects invalid import metadata %j', async overrides => {
     page = canonicalPage(true, overrides)
     await expect(fetchCanonicalRecoveryPage(auth)).rejects.toThrow()
+  })
+  test('oversized recovery context rejects before delivery/context ownership copies', async () => {
+    const original = canonicalPage(true),
+      contextBytes = fromHex(canonicalWire.context),
+      delivery = canonicalDelivery()
+    const at = Buffer.from(original).indexOf(contextBytes)
+    if (at < 0) throw new Error('Fixture exact context location')
+    page = canonicalConcat(
+      original.subarray(0, at),
+      new Uint8Array(7 * 1024 * 1024),
+      original.subarray(at + contextBytes.length),
+    )
+    const originalFetch = auth.fetch!
+    auth.fetch = async (url, input) => {
+      if (input.method !== 'GET') return originalFetch(url, input)
+      let sent = false
+      return {
+        url,
+        status: 200,
+        headers: { get: name => pageHeaders[name] ?? null },
+        body: {
+          getReader: () => ({
+            read: async () =>
+              sent
+                ? { done: true }
+                : ((sent = true), { done: false, value: page }),
+            cancel: async () => undefined,
+            releaseLock: () => undefined,
+          }),
+        },
+      }
+    }
+    let largeCopies = 0,
+      deliveryCopies = 0
+    const originalFrom = Uint8Array.from
+    const spy = jest.spyOn(Uint8Array, 'from').mockImplementation(((
+      source: ArrayLike<number>,
+    ) => {
+      if (source.length > 4096) largeCopies++
+      if (
+        source.length === delivery.length &&
+        delivery.every((byte, i) => source[i] === byte)
+      )
+        deliveryCopies++
+      return originalFrom.call(Uint8Array, source as Uint8Array)
+    }) as typeof Uint8Array.from)
+    try {
+      await expect(fetchCanonicalRecoveryPage(auth)).rejects.toThrow(
+        /Canonical part limits/,
+      )
+      expect(largeCopies).toBe(0)
+      expect(deliveryCopies).toBe(0)
+    } finally {
+      spy.mockRestore()
+    }
   })
   test('ack is distinct exact T3/generation identity with original zero-byte signing binding', async () => {
     const payloadHashHex = canonicalWire.t3,

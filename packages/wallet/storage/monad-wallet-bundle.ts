@@ -107,6 +107,16 @@ export interface MonadWalletPersistenceBundle {
 }
 
 const trustedPersistentBundles = new WeakSet<object>()
+const ordinaryPoolSelectionGuards = new WeakMap<
+  MonadSubAccountPool,
+  () => void
+>()
+/** Retained intent references protect the same pool even for a legacy client lacking a bundle field. */
+export function assertOrdinaryMonadPoolSelection(
+  pool: MonadSubAccountPool,
+): void {
+  ordinaryPoolSelectionGuards.get(pool)?.()
+}
 const poolOwners = new WeakMap<MonadSubAccountPool, object>()
 const manifestOwners = new Map<string, object>()
 
@@ -212,6 +222,22 @@ function makeBundle(params: {
     throw new Error('Monad wallet pool already has an owner')
   }
   poolOwners.set(params.pool, ownerToken)
+  ordinaryPoolSelectionGuards.set(params.pool, () => {
+    if (
+      params.canonicalJournal
+        ?.getIntents()
+        .some(intent =>
+          intent.members.some(
+            m =>
+              params.pool.getRecord(m.reservation.index)?.status ===
+              'available',
+          ),
+        )
+    )
+      throw new Error(
+        'Canonical pre-sign intent requires explicit correlation before ordinary pool operations',
+      )
+  })
   let lifecycle: 'open' | 'closing' | 'closed' = 'open'
   let activeOperations = 0
   let resolveDrained: (() => void) | undefined
@@ -355,8 +381,10 @@ function makeBundle(params: {
         }
         await params.close()
         lifecycle = 'closed'
-        if (poolOwners.get(params.pool) === ownerToken)
+        if (poolOwners.get(params.pool) === ownerToken) {
           poolOwners.delete(params.pool)
+          ordinaryPoolSelectionGuards.delete(params.pool)
+        }
       })()
       return closePromise
     },

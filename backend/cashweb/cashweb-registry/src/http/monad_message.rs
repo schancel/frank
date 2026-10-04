@@ -86,7 +86,7 @@ const MAX_PRIVATE_RECOVERY_SCAN: usize = 512;
 // inspected RocksDB work is independently capped at the full requested response-byte ceiling.
 const PRIVATE_RECOVERY_CANONICAL_BUDGET_DIVISOR: usize = 2;
 const PRIVATE_RECOVERY_WORK_BUDGET_DIVISOR: usize = 1;
-const MAILBOX_AUTH_DOMAIN: &str = "frank:mailbox-http-auth:v2";
+pub(crate) const MAILBOX_AUTH_DOMAIN: &str = "frank:mailbox-http-auth:v2";
 const MAILBOX_EPOCH_HEADER: &str = "x-frank-mailbox-epoch";
 const MAILBOX_NONCE_HEADER: &str = "x-frank-mailbox-nonce";
 const MAILBOX_EXPIRY_HEADER: &str = "x-frank-mailbox-expires-at-ms";

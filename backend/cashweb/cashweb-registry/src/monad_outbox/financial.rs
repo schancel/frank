@@ -329,17 +329,126 @@ pub(crate) fn validate_canonical_retained(
     if claim.members.len() != payments.len() {
         return Err(Error::Invalid);
     }
+    let mut prefix_ended = false;
     for (index, (member, signed)) in claim.members.iter().zip(payments).enumerate() {
         if member.child_index as usize != index || member.tx_hash != signed.tx_hash {
             return Err(Error::Invalid);
         }
         if let MonadOutboxMemberState::Confirmed { value_wei, .. } = member.state {
-            if value_wei != signed.value_wei {
+            if prefix_ended || value_wei != signed.value_wei {
                 return Err(Error::Invalid);
             }
+        } else {
+            prefix_ended = true;
+        }
+    }
+    use crate::store::monad_dm_cbor::Phase;
+    if (matches!(claim.phase, Phase::FullyConfirmed | Phase::Delivered(_)) && prefix_ended)
+        || (claim.phase == Phase::Pending && !prefix_ended)
+    {
+        return Err(Error::Invalid);
+    }
+    Ok(())
+}
+
+/// Retained economic work uses accepted historical facts, never a synthesized live head.
+pub(super) async fn validate_canonical_admitted_history(
+    owner: &crate::store::monad_dm_cbor::Owner,
+    claim: &crate::store::monad_dm_cbor::Claim,
+) -> crate::http::monad_message_cbor::Result<()> {
+    use crate::{
+        directory_runtime::{AdmittedSnapshot, SnapshotOperation},
+        http::monad_message_cbor::CanonicalError as Error,
+    };
+    let directory = owner.directory().ok_or(Error::Unavailable)?;
+    for (subject, message, hash, recipient) in [
+        (
+            &claim.policy.sender_p,
+            &claim.policy.sender_m,
+            claim.policy.sender_t1,
+            false,
+        ),
+        (
+            &claim.policy.recipient_p,
+            &claim.policy.recipient_m,
+            claim.policy.recipient_t1,
+            true,
+        ),
+    ] {
+        let reservation = directory
+            .reserve(&claim.policy.network, &hex::encode(subject))
+            .map_err(|_| Error::Unavailable)?;
+        let AdmittedSnapshot::Historical(evidence) = directory
+            .submit_snapshot(reservation, SnapshotOperation::Historical(hash))
+            .wait()
+            .await
+            .map_err(|_| Error::Unavailable)?
+        else {
+            return Err(Error::Unavailable);
+        };
+        let verified = frank_cbor::verify_preview_directory_evidence(
+            &evidence.attestation,
+            &claim.policy.network,
+        )
+        .map_err(|_| Error::Unavailable)?;
+        if evidence.hash != hash
+            || verified.statement_hash != hash
+            || verified.statement_frame().frame != evidence.statement
+        {
+            return Err(Error::Unavailable);
+        }
+        let Some(frank_cbor::TypedPayload::DirectoryStatement {
+            subject: actual,
+            stamp_key,
+            preview: Some(roles),
+            ..
+        }) = verified.statement_frame().typed.as_deref()
+        else {
+            return Err(Error::Unavailable);
+        };
+        if actual.key_type != 1
+            || actual.key_bytes != *subject
+            || roles.message_dh_key.key_type != 1
+            || roles.message_dh_key.key_bytes != *message
+            || (recipient
+                && stamp_key
+                    .as_ref()
+                    .map(|key| (key.key_type, key.key_bytes.as_slice()))
+                    != Some((1, claim.policy.stamp.as_slice())))
+        {
+            return Err(Error::Unavailable);
         }
     }
     Ok(())
+}
+
+/// Reuse the existing exact receipt/replay primitive with canonical signed-member expectations.
+pub(super) fn canonical_expected_payments(
+    claim: &crate::store::monad_dm_cbor::Claim,
+) -> crate::http::monad_message_cbor::Result<
+    Vec<(DecodedSignedTransaction, ExpectedStampTransaction)>,
+> {
+    canonical_signed_set(&claim.request, &claim.policy)?
+        .into_iter()
+        .enumerate()
+        .map(|(index, signed)| {
+            let commitment =
+                frank_cbor::payment_commitment(&claim.policy.payload_hash, index as u32);
+            let destination_address = signed
+                .destination
+                .ok_or(crate::http::monad_message_cbor::CanonicalError::Invalid)?;
+            Ok((
+                signed,
+                ExpectedStampTransaction {
+                    commitment_id: BROADCAST_MESSAGE_LOKAD_ID,
+                    commitment: Sha256::from_slice(&commitment)
+                        .expect("32-byte canonical commitment"),
+                    destination_address,
+                    min_value_wei: 1,
+                },
+            ))
+        })
+        .collect()
 }
 
 pub(crate) fn verify_canonical_confirmed(

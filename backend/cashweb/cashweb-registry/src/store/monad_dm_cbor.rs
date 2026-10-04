@@ -227,7 +227,11 @@ impl Owner {
         })?
         .ok_or(CanonicalError::Unavailable)
     }
-    pub(crate) fn active(&self, limit: usize) -> Result<Vec<[u8; 32]>> {
+    pub(crate) fn active_after(
+        &self,
+        after: Option<[u8; 32]>,
+        limit: usize,
+    ) -> Result<Vec<[u8; 32]>> {
         self.with(false, |db| {
             let mut result = Vec::new();
             for item in db.iterator(IteratorMode::Start) {
@@ -239,10 +243,13 @@ impl Owner {
                     .get(1..)
                     .and_then(|b| b.try_into().ok())
                     .ok_or(CanonicalError::Unavailable)?;
+                if after.is_some_and(|previous| hash <= previous) {
+                    continue;
+                }
                 let claim = load(db, &hash)?.ok_or(CanonicalError::Unavailable)?;
                 if matches!(claim.phase, Phase::Pending | Phase::FullyConfirmed) {
                     result.push(hash);
-                    if result.len() == limit {
+                    if result.len() == limit.max(1) {
                         break;
                     }
                 }
@@ -250,6 +257,61 @@ impl Owner {
             Ok(result)
         })
         .map(|rows| rows.unwrap_or_default())
+    }
+    /// Cancellation only pushes replay forward; it never erases a lease or tentative exposure.
+    pub(crate) fn backoff_after_cancelled(&self, hash: &[u8; 32], now: i64) -> Result<()> {
+        self.with(false, |db| {
+            let Some(claim) = load(db, hash)? else {
+                return Ok(());
+            };
+            if claim.phase != Phase::Pending {
+                return Ok(());
+            }
+            for mut member in claim.members {
+                if member.state != MonadOutboxMemberState::Pending {
+                    continue;
+                }
+                if member.attempts == 0 {
+                    break;
+                }
+                let delay = claim
+                    .backoff_base_ms
+                    .saturating_mul(1u64 << member.attempts.saturating_sub(1).min(31))
+                    .min(claim.max_backoff_ms);
+                let earliest = now.saturating_add(delay.min(i64::MAX as u64) as i64);
+                if earliest > member.next_replay_at_ms {
+                    member.next_replay_at_ms = earliest;
+                    member.updated_at_ms = now;
+                    put_member(db, hash, &member)?;
+                }
+                break;
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+    pub(crate) fn release_lease(&self, hash: &[u8; 32], index: u32, generation: u64) -> Result<()> {
+        self.with(false, |db| {
+            let Some(claim) = load(db, hash)? else {
+                return Ok(());
+            };
+            if claim.phase != Phase::Pending {
+                return Ok(());
+            }
+            let mut member = claim
+                .members
+                .into_iter()
+                .find(|m| m.child_index == index)
+                .ok_or(CanonicalError::Unavailable)?;
+            if member.state == MonadOutboxMemberState::Pending
+                && member.lease_generation == generation
+            {
+                member.lease_until_ms = 0;
+                put_member(db, hash, &member)?;
+            }
+            Ok(())
+        })?;
+        Ok(())
     }
     pub(crate) fn acquire(
         &self,
@@ -361,7 +423,7 @@ impl Owner {
                 end -= 1;
             }
             member.last_error = error[..end].to_owned();
-            let exponent = member.attempts.saturating_sub(1).min(63);
+            let exponent = member.attempts.saturating_sub(1).min(31);
             let delay = claim
                 .backoff_base_ms
                 .saturating_mul(1u64 << exponent)

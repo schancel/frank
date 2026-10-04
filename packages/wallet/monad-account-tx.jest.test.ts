@@ -366,6 +366,22 @@ describe('canonical unsigned preparation', () => {
       )
       expect(sign).not.toHaveBeenCalled()
       expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
+      await expect(
+        signer.populateUnsignedCall(RECIPIENT, 32n, '0x'),
+      ).rejects.toThrow('requires calldata')
+      const transfer = await signer.populateUnsignedTransfer(RECIPIENT, 32n, {
+        nonce: 0,
+        chainId: BigInt(CHAIN_ID),
+        gasLimit: 21000n,
+        maxFeePerGas: 2n,
+        maxPriorityFeePerGas: 1n,
+      })
+      const plain = Transaction.from(transfer.unsignedSerialized)
+      expect(plain.data).toBe('0x')
+      expect(plain.gasLimit).toBe(21000n)
+      expect(plain.value).toBe(32n)
+      expect(plain.to?.toLowerCase()).toBe(RECIPIENT.toLowerCase())
+      expect(sign).not.toHaveBeenCalled()
       const first = await signer.signFrozenUnsigned(frozen)
       const repeat = await signer.signFrozenUnsigned({ ...frozen })
       expect(first.rawTx).toBe(repeat.rawTx)

@@ -147,6 +147,48 @@ describe('canonical reply outbox', () => {
     ).toHaveLength(1)
   })
 
+  it('does not seal a second envelope when recording the digest fails after the wallet made its set durable', async () => {
+    const f = await open()
+    await f.outbox.enqueue('m1:0', PEER, text('deal'))
+    const advance = store.advance.bind(store)
+    let failed = false
+    jest.spyOn(store, 'advance').mockImplementation((seq, phase, digest) => {
+      if (phase === 'attempt' && !failed) {
+        failed = true
+        return Promise.reject(new Error('disk full'))
+      }
+      return advance(seq, phase, digest)
+    })
+    expect(await f.outbox.drive()).toBe(0)
+    // The wallet holds one durable set; the row does not claim that nothing was started.
+    expect(count(f.wallet.events(), 'link')).toBe(1)
+    expect(store.all()[0].phase).toBe('sending')
+    expect(await f.outbox.drive()).toBe(1)
+    await f.outbox.drive()
+    const events = f.wallet.events()
+    expect(count(events, 'seal')).toBe(1)
+    expect(distinct(events, 'link')).toBe(1)
+    expect(count(events, 'delivered')).toBe(1)
+    expect(store.all()[0]).toMatchObject({
+      phase: 'delivered',
+      digest: events[1].split(':')[1],
+    })
+  })
+
+  it('sends once after a failure that left no payment set behind', async () => {
+    const f = await open()
+    await f.outbox.enqueue('m1:0', PEER, text('deal'))
+    const send = f.wallet.messages.send
+    f.wallet.messages.send = async () => {
+      throw new Error('directory unavailable')
+    }
+    expect(await f.outbox.drive()).toBe(0)
+    expect(store.all()[0].phase).toBe('sending')
+    f.wallet.messages.send = send
+    expect(await f.outbox.drive()).toBe(1)
+    expect(count(f.wallet.events(), 'seal')).toBe(1)
+  })
+
   it('holds everything when the wallet retains more than one payment set no reply accounts for', async () => {
     const f = await open()
     await f.outbox.enqueue('m1:0', PEER, text('deal'))

@@ -41,8 +41,8 @@ const MAX_KEY_BYTES = 256
 
 /**
  * `queued`    saved; no send was started, or one failed before any payment record existed.
- * `sending`   a send was started and this process has not yet learned its outcome. Only a
- *             process death leaves a row here.
+ * `sending`   a send was started and its outcome is not known to this store (the process died,
+ *             or the send failed). The wallet is asked before anything is sent again.
  * `attempt`   the wallet journaled exactly one payment set for this row (`digest`). Only those
  *             bytes are ever sent for it again.
  * `delivered` the relay committed it. Final.
@@ -424,11 +424,15 @@ export class BlackjackCanonicalOutbox {
         delivered++
       } catch {
         const after = store.all().find(r => r.seq === seq)!
-        if (after.phase === 'sending') {
-          // The wallet never reported a durable payment set for this call.
-          await store.advance(seq, 'queued')
-          this.note(after, 'send-not-started')
-        } else this.note(after, 'delivery-pending')
+        // A row still `sending` stays there. The failure may have come after the wallet made a
+        // payment set durable (for example this store failing to record its digest), so only
+        // the wallet's own answer on the next pass may return it to `queued`.
+        this.note(
+          after,
+          after.phase === 'sending'
+            ? 'send-outcome-unknown'
+            : 'delivery-pending',
+        )
         return delivered
       }
     }

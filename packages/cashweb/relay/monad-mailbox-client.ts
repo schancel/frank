@@ -1460,16 +1460,12 @@ export async function fetchCanonicalRecoveryPage(
   const seen = new Set<string>()
   const records = canonicalPageRecords(response, binding.limit!).map(outer => {
     const parts = canonicalRecordParts(outer, 4)
-    const exact: CanonicalExactParts = {
-      delivery: Uint8Array.from(parts[0].bytes),
-      context: Uint8Array.from(parts[1].bytes),
-      transactions: Object.freeze(
-        decodeCanonicalTransactions(parts[2].bytes).map(raw =>
-          Uint8Array.from(raw),
-        ),
-      ),
+    const ranges: CanonicalExactParts = {
+      delivery: parts[0].bytes,
+      context: parts[1].bytes,
+      transactions: decodeCanonicalTransactions(parts[2].bytes),
     }
-    const identity = describeCanonicalParts(exact)
+    const identity = describeCanonicalParts(ranges)
     const metadata = canonicalObject(parseCanonicalJSON(parts[3].bytes), [
       'version',
       'submission_identity',
@@ -1501,18 +1497,25 @@ export async function fetchCanonicalRecoveryPage(
         (index, i) =>
           !Number.isSafeInteger(index) ||
           index < 0 ||
-          index >= exact.transactions.length ||
+          index >= ranges.transactions.length ||
           (i > 0 && index <= indices[i - 1]),
       ) ||
+      typeof lifecycle !== 'string' ||
       !(
-        ['pending', 'fully_confirmed', 'delivered'].includes(
-          String(lifecycle),
-        ) || terminal
+        ['pending', 'fully_confirmed', 'delivered'].includes(lifecycle) ||
+        terminal
       ) ||
       seen.has(metadata.obligation_id)
     )
       canonicalProtocol('Canonical recovery identity/metadata mismatch')
     seen.add(metadata.obligation_id)
+    const exact: CanonicalExactParts = {
+      delivery: Uint8Array.from(ranges.delivery),
+      context: Uint8Array.from(ranges.context),
+      transactions: Object.freeze(
+        ranges.transactions.map(raw => Uint8Array.from(raw)),
+      ),
+    }
     return Object.freeze({
       delivery: exact.delivery,
       context: exact.context,
@@ -1522,7 +1525,7 @@ export async function fetchCanonicalRecoveryPage(
       timestampMs: Number(outer.headers['x-frank-mailbox-timestamp-ms']),
       obligationId: metadata.obligation_id,
       confirmedChildren: Object.freeze([...indices]) as readonly number[],
-      lifecycle: lifecycle as string,
+      lifecycle,
     })
   })
   canonicalCheckAbort(params.signal)

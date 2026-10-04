@@ -1004,7 +1004,7 @@ rustTest(
       const served = certificates.get(kind === 'wrong-ca' ? 'valid' : kind)!
       const pinned = kind === 'same-key' ? certificates.get('valid')! : served
       let requests = 0
-      const sockets = new Set<import('node:net').Socket>()
+      const sockets = new Set<import('node:stream').Duplex>()
       const server = createHttpsServer(
         { key: readFileSync(leafKey), cert: served },
         (request, response) => {

@@ -1,6 +1,6 @@
 import { randomBytes, X509Certificate } from 'node:crypto'
 import { Agent, createServer, get } from 'node:https'
-import type { Socket } from 'node:net'
+import type { Duplex } from 'node:stream'
 import { checkServerIdentity } from 'node:tls'
 import type { BundleRef, TrustBundle } from './provision'
 import {
@@ -50,7 +50,7 @@ export async function startFixture(
 ): Promise<{ stop: () => Promise<void> }> {
   const { bundle, key, cert, release } = listenerMaterial(ref, nowNs)
   const origin = bundle.trustInputs.endpoint
-  const sockets = new Set<Socket>()
+  const sockets = new Set<Duplex>()
   const nonce = randomBytes(16).toString('base64')
   const evidence = announcement(bundle)
   const server = createServer({ key, cert }, (req, res) => {
@@ -86,7 +86,8 @@ export async function startFixture(
   })
   server.headersTimeout = 3000
   server.requestTimeout = 3000
-  server.setTimeout(3000, socket => socket.destroy())
+  server.setTimeout(3000)
+  server.on('timeout', socket => socket.destroy())
   server.on('connection', socket => {
     sockets.add(socket)
     socket.once('close', () => sockets.delete(socket))

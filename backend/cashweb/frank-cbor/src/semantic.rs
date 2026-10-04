@@ -242,6 +242,70 @@ fn transition_parts(frame: &ParsedFrame) -> TransitionParts<'_> {
     }
 }
 
+/// 10^40 - 1 as a fixed 32-byte unsigned big-endian value. Comparing such values bytewise
+/// preserves every quantity without an i64/f64 cast.
+fn blackjack_quantity_limit() -> Vec<u8> {
+    let mut limit = vec![0u8; 32];
+    let mut n = 10u128.pow(38); // 10^40 exceeds u128; multiply bytes twice below.
+    for b in limit.iter_mut().rev() {
+        *b = (n & 255) as u8;
+        n >>= 8;
+    }
+    for _ in 0..2 {
+        let mut carry = 0u16;
+        for b in limit.iter_mut().rev() {
+            let v = u16::from(*b) * 10 + carry;
+            *b = v as u8;
+            carry = v >> 8;
+        }
+    }
+    for b in limit.iter_mut().rev() {
+        if *b > 0 {
+            *b -= 1;
+            break;
+        }
+        *b = 255;
+    }
+    limit
+}
+
+/// Stage 9 of the schema-2 hand shapes: unique cards, a distinct up-card, a positive bounded
+/// maximum bet. The schema-1 welcome game ID reservation does not apply.
+fn check_blackjack_hand(
+    item: &crate::model::BlackjackHandMessageItem,
+    path: &str,
+) -> Result<(), CodecError> {
+    use crate::model::BlackjackHandAction;
+    let cards = match &item.action {
+        BlackjackHandAction::Deal { player_cards, .. }
+        | BlackjackHandAction::Card { player_cards } => Some(player_cards),
+        BlackjackHandAction::Reveal { dealer_cards, .. } => Some(dealer_cards),
+        _ => None,
+    };
+    if let Some(cards) = cards {
+        if cards.iter().collect::<HashSet<_>>().len() != cards.len() {
+            return Err(semantic("blackjack hand contains duplicate cards", path));
+        }
+    }
+    if let BlackjackHandAction::Deal {
+        player_cards,
+        dealer_up_card,
+    } = &item.action
+    {
+        if player_cards.contains(dealer_up_card) {
+            return Err(semantic("deal up-card duplicates a player card", path));
+        }
+    }
+    if let BlackjackHandAction::ChallengeDealer { max_bet_wei, .. }
+    | BlackjackHandAction::ChallengePlayer { max_bet_wei }
+    | BlackjackHandAction::Accept { max_bet_wei, .. } = &item.action
+    {
+        if max_bet_wei.iter().all(|b| *b == 0) || max_bet_wei > &blackjack_quantity_limit() {
+            return Err(semantic("blackjack max bet range", path));
+        }
+    }
+    Ok(())
+}
 /// Stage 9 for one frame after its children have finished.
 ///
 /// `prior_slot` is `Some` only for a type-2 frame. `Some(None)` is bootstrap.
@@ -253,6 +317,7 @@ pub(crate) fn check_semantics(
     let path = "root/payload";
     match typed {
         TypedPayload::BlackjackItem(item) => check_blackjack(item, path),
+        TypedPayload::BlackjackHandItem(item) => check_blackjack_hand(item, path),
         TypedPayload::DirectMessage {
             network,
             destination,
@@ -688,28 +753,7 @@ fn check_blackjack(
         ..
     } = &item.action
     {
-        // Fixed32 unsigned big-endian comparisons preserve all values without an i64/f64 cast.
-        let mut limit = vec![0u8; 32];
-        let mut n = 10u128.pow(38); // 10^40 exceeds u128; multiply bytes twice below.
-        for b in limit.iter_mut().rev() {
-            *b = (n & 255) as u8;
-            n >>= 8;
-        }
-        for _ in 0..2 {
-            let mut carry = 0u16;
-            for b in limit.iter_mut().rev() {
-                let v = u16::from(*b) * 10 + carry;
-                *b = v as u8;
-                carry = v >> 8;
-            }
-        }
-        for b in limit.iter_mut().rev() {
-            if *b > 0 {
-                *b -= 1;
-                break;
-            }
-            *b = 255;
-        }
+        let limit = blackjack_quantity_limit();
         if min_wager_wei.iter().all(|b| *b == 0)
             || max_wager_wei.iter().all(|b| *b == 0)
             || min_wager_wei > max_wager_wei

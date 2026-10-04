@@ -97,7 +97,10 @@ pub fn default_context() -> ValidationContext {
                 type_id,
                 schema_version: if type_id == TYPE_DIRECTORY_STATEMENT {
                     3
-                } else if type_id == TYPE_RECIPIENT_PAYLOAD || type_id == TYPE_TOPIC_POST {
+                } else if type_id == TYPE_RECIPIENT_PAYLOAD
+                    || type_id == TYPE_TOPIC_POST
+                    || type_id == crate::limits::TYPE_BLACKJACK_ITEM
+                {
                     2
                 } else {
                     1
@@ -397,6 +400,22 @@ fn process_frame(
             );
         }
     }
+    // A blackjack frame that requires reader 2 carries the schema-2 hand shapes. A reader without
+    // per-type schema-2 support must not read it as schema 1.
+    if env.type_id == crate::limits::TYPE_BLACKJACK_ITEM
+        && env.min_reader_version >= 2
+        && highest_schema < 2
+    {
+        return keep_or_reject(
+            shared,
+            &mode,
+            RetentionReason::UnsupportedMinReader,
+            "blackjack hand items require per-type schema-2 support".to_string(),
+            frame,
+            Some(&env),
+            location,
+        );
+    }
     // Suite 1 authenticates the complete schema-2 field set. A future type-5 schema needs an
     // updated authenticated context before this reader may project or retain its extensions.
     if env.type_id == crate::limits::TYPE_RECIPIENT_PAYLOAD && env.schema_version > highest_schema {
@@ -487,6 +506,7 @@ fn process_frame(
             SchemaVersions {
                 envelope: parsed.schema_version,
                 effective: parsed.schema_version.min(highest_schema),
+                min_reader: parsed.min_reader_version,
             },
         )?;
         check_allocated(&draft)?;
@@ -1215,6 +1235,7 @@ fn open_children(
             unknown,
         }),
         Draft::Blackjack(item) => Ok(TypedPayload::BlackjackItem(item)),
+        Draft::BlackjackHand(item) => Ok(TypedPayload::BlackjackHandItem(item)),
         Draft::Text { text, unknown } => Ok(TypedPayload::TextItem { text, unknown }),
     }
 }

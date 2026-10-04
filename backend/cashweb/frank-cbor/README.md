@@ -66,3 +66,16 @@ strings. Optional zero fee/empty rules remain distinct from absence. The active
 corpus preserves90 proposal frames/79 writer inputs and genuine typed Rust/TS origins.
 Root/nested4096 and existing item/depth/aggregate counters apply through the public
 #789 continuation. #780 owns actual authenticated runtime/economic adoption.
+
+Type18/schema2/min-reader2 is a second closed set, the peer-to-peer hand items of
+`docs/protocol/blackjack-p2p.md`, also supported by default. A frame that requires
+reader2 is read only as a `BlackjackHandItem`: an exact game ID with one closed
+`BlackjackHandAction` (challenge as dealer or player, accept, bet, deal, hit, stand,
+double, card, reveal, refund; wire action codes16..25). A schema-2 frame that still
+allows reader1 keeps the schema-1 shapes. A reader without per-type schema-2 support
+does not read a hand item (stage7 `unsupported`, or retained when allowed).
+`encode_blackjack_hand_item`, `project_blackjack_hand_item` and
+`is_blackjack_hand_frame` mirror the schema-1 facade; commitment/ref are64 bare
+lowercase hex, the maximum bet a decimal string in1..10^40-1. No shape carries an
+amount of money. Active TS/Rust conformance uses
+`docs/protocol/cbor/vectors/blackjack-hand.json`.

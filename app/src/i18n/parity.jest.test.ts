@@ -57,9 +57,9 @@ describe('setup i18n parity', () => {
   })
 })
 
-describe('blackjackBet i18n parity', () => {
-  const en = flatten((enUS as Record<string, unknown>).blackjackBet).sort()
-  const fr = flatten((frFR as Record<string, unknown>).blackjackBet).sort()
+describe('blackjackP2p i18n parity', () => {
+  const en = flatten((enUS as Record<string, unknown>).blackjackP2p).sort()
+  const fr = flatten((frFR as Record<string, unknown>).blackjackP2p).sort()
 
   it('is non-empty and has the same keys in en-us and fr-fr', () => {
     expect(en.length).toBeGreaterThan(0)

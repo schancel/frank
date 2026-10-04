@@ -66,6 +66,7 @@ import type {
   ForumAggregate,
   TopicPost,
   BlackjackMessageItem,
+  BlackjackHandMessageItem,
 } from './types'
 
 function fail(
@@ -398,6 +399,103 @@ function blackjackPayload(payload: FrankValue): BlackjackMessageItem {
   }
 }
 
+/** Closed schema-2 shapes: one peer-to-peer hand. No shape carries an amount of money. */
+function blackjackHandPayload(payload: FrankValue): BlackjackHandMessageItem {
+  const P = 'root/payload'
+  if (!isMap(payload)) throw bad(P, 'blackjack payload must be a map')
+  // Codes 16..25: disjoint from schema 1's 0..6, so no reader can take one for the other.
+  const action = u32ish(payload.get(1n), `${P}.1`, 16, 25) - 16
+  const hand = (
+    v: FrankValue | undefined,
+    key: number,
+    min: number,
+    max: number,
+  ) =>
+    asList(v, `${P}.${key}`, min, max).map((c, i) =>
+      u32ish(c, `${P}.${key}[${i}]`, 0, 51),
+    )
+  const read = (required: number[]) => {
+    const m = fields(payload, P, [0, 1, ...required], [], false, false)
+    // Fixed form, so a game id is always safe to use as a key: 32 lowercase hex characters.
+    const gameId = tstr(m.get(0), `${P}.0`, 32, 32)
+    if (!/^[0-9a-f]{32}$/.test(gameId))
+      throw bad(`${P}.0`, 'game id must be 32 lowercase ASCII hex characters')
+    return {
+      m,
+      base: { type: 18 as const, schema: 2 as const, gameId },
+    }
+  }
+  const hash = (m: MapView, key: number) => bstr(m.get(key), `${P}.${key}`, 32, 32)
+  switch (action) {
+    case 0: {
+      const dealer = u32ish(payload.get(2n), `${P}.2`, 0, 1) === 0
+      const { m, base } = read(dealer ? [2, 3, 4] : [2, 3])
+      return dealer
+        ? {
+            ...base,
+            action: 'challenge',
+            role: 'dealer',
+            maxBetWei: hash(m, 3),
+            commitment: hash(m, 4),
+          }
+        : { ...base, action: 'challenge', role: 'player', maxBetWei: hash(m, 3) }
+    }
+    case 1: {
+      const { m, base } = read([3, 4])
+      return {
+        ...base,
+        action: 'accept',
+        maxBetWei: hash(m, 3),
+        commitment: hash(m, 4),
+      }
+    }
+    case 2:
+      return { ...read([]).base, action: 'bet' }
+    case 3: {
+      const { m, base } = read([5, 6])
+      return {
+        ...base,
+        action: 'deal',
+        playerCards: hand(m.get(5), 5, 2, 2),
+        dealerUpCard: u32ish(m.get(6), `${P}.6`, 0, 51),
+      }
+    }
+    case 4:
+      return { ...read([]).base, action: 'hit' }
+    case 5:
+      return { ...read([]).base, action: 'stand' }
+    case 6:
+      return { ...read([]).base, action: 'double' }
+    case 7: {
+      const { m, base } = read([5])
+      return { ...base, action: 'card', playerCards: hand(m.get(5), 5, 3, 52) }
+    }
+    case 8: {
+      const { m, base } = read([7, 8, 9])
+      const seed = tstr(m.get(8), `${P}.8`, 64, 64)
+      if (seed.length !== 64 || !/^[0-9a-f]+$/.test(seed))
+        throw bad(`${P}.8`, 'seed must be 64 lowercase ASCII hex characters')
+      const outcome = [
+        'player_win',
+        'dealer_win',
+        'push',
+        'player_blackjack',
+      ] as const
+      return {
+        ...base,
+        action: 'reveal',
+        dealerCards: hand(m.get(7), 7, 2, 52),
+        seed,
+        outcome: outcome[u32ish(m.get(9), `${P}.9`, 0, 3)],
+      }
+    }
+    default: {
+      const { m, base } = read([10])
+      return { ...base, action: 'refund', ref: hash(m, 10) }
+    }
+  }
+}
+
 /** Reads R2-R4 counts from the decoded fields, before typed conversion. */
 export function checkTypeLimits(
   typeId: number,
@@ -689,7 +787,7 @@ export function parseDraft(
   typeId: number,
   payload: FrankValue,
   allow: boolean,
-  schema: { envelope: number; effective: number } = {
+  schema: { envelope: number; effective: number; minReader?: number } = {
     envelope: 1,
     effective: 1,
   },
@@ -1060,8 +1158,19 @@ export function parseDraft(
         unknownFields: m.unknown,
       }
     }
-    case TYPE_BLACKJACK_MESSAGE_ITEM:
-      return blackjackPayload(payload)
+    case TYPE_BLACKJACK_MESSAGE_ITEM: {
+      // Schema 2 adds the ten hand shapes to the schema-1 shapes. Their action codes (16..25)
+      // are disjoint from schema 1's (0..6), so the code alone says which closed map applies.
+      // A hand shape is read only from a frame that requires reader 2; anywhere else its action
+      // code is simply out of range for the schema-1 shapes.
+      const code = isMap(payload) ? payload.get(1n) : undefined
+      return typeof code === 'bigint' &&
+        code >= 16n &&
+        schema.effective >= 2 &&
+        (schema.minReader ?? 1) >= 2
+        ? blackjackHandPayload(payload)
+        : blackjackPayload(payload)
+    }
     default:
       throw new Error(`parseDraft: type ${typeId} has no schema`)
   }

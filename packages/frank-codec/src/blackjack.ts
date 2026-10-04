@@ -4,7 +4,11 @@ import { TYPE_BLACKJACK_MESSAGE_ITEM } from './constants'
 import { FrankCodecError, FrankContextError } from './errors'
 import { encodeFrame } from './frame'
 import { fromHex, toHex } from './hash'
-import type { BlackjackFields, ParsedFrame } from './types'
+import type {
+  BlackjackFields,
+  BlackjackHandFields,
+  ParsedFrame,
+} from './types'
 import { defaultContext, validateFrame } from './validate'
 
 /** Nine closed application-facing shapes; quantities remain exact decimal strings. */
@@ -144,8 +148,8 @@ export function projectBlackjackItem(parsed: ParsedFrame): {
   item: BlackjackItem
 } {
   const wire = parsed.typed
-  if (wire?.type !== TYPE_BLACKJACK_MESSAGE_ITEM)
-    throw new FrankContextError('expected a typed blackjack frame')
+  if (wire?.type !== TYPE_BLACKJACK_MESSAGE_ITEM || wire.schema === 2)
+    throw new FrankContextError('expected a typed schema-1 blackjack frame')
   const base = { type: 'blackjack-move' as const, gameId: wire.gameId }
   let item: BlackjackItem
   switch (wire.action) {
@@ -207,6 +211,167 @@ export function projectBlackjackItem(parsed: ParsedFrame): {
       if (wire.rules !== undefined) item.rules = wire.rules
       break
     }
+  }
+  return { frame: new Uint8Array(parsed.frame), item }
+}
+
+/** The ten closed peer-to-peer hand shapes (type 18, schema 2). Hashes are 64 bare lowercase hex
+ * characters, quantities exact decimal strings. No shape carries an amount of money: a wager,
+ * payout or refund is the stamp of the message that carries the item. */
+export type BlackjackHandItem = { type: 'blackjack-hand' } & BlackjackHandFields<
+  string,
+  string
+>
+
+const HAND_ACTIONS = [
+  'challenge',
+  'accept',
+  'bet',
+  'deal',
+  'hit',
+  'stand',
+  'double',
+  'card',
+  'reveal',
+  'refund',
+] as const
+const OUTCOMES = ['player_win', 'dealer_win', 'push', 'player_blackjack']
+
+/** Deterministic writer for one hand item; the typed validator then enforces every wire rule. */
+export function encodeBlackjackHandItem(item: BlackjackHandItem): Uint8Array {
+  if (item === null || typeof item !== 'object' || Array.isArray(item))
+    throw bad('expected an item object')
+  const input = item as unknown as Record<string, unknown>
+  const action = HAND_ACTIONS.indexOf(input.action as typeof HAND_ACTIONS[number])
+  if (action < 0) throw bad('unknown blackjack action')
+  const fields: [number, string][] = [[0, 'gameId']]
+  switch (input.action) {
+    case 'challenge':
+      if (input.role !== 'dealer' && input.role !== 'player')
+        throw bad('unknown blackjack role')
+      fields.push([2, 'role'], [3, 'maxBetWei'])
+      if (input.role === 'dealer') fields.push([4, 'commitment'])
+      break
+    case 'accept':
+      fields.push([3, 'maxBetWei'], [4, 'commitment'])
+      break
+    case 'deal':
+      fields.push([5, 'playerCards'], [6, 'dealerUpCard'])
+      break
+    case 'card':
+      fields.push([5, 'playerCards'])
+      break
+    case 'reveal':
+      fields.push([7, 'dealerCards'], [8, 'seed'], [9, 'outcome'])
+      break
+    case 'refund':
+      fields.push([10, 'ref'])
+      break
+  }
+  const names = ['type', 'action', ...fields.map(([, name]) => name)]
+  if (
+    input.type !== 'blackjack-hand' ||
+    names.some(name => !own(input, name)) ||
+    Reflect.ownKeys(input).some(
+      key => typeof key !== 'string' || !names.includes(key),
+    )
+  )
+    throw bad('closed blackjack item fields required')
+  const payload = new Map<number, Encodable>([[1, action + 16]])
+  for (const [key, name] of fields) {
+    const value = input[name]
+    if (key === 2) payload.set(key, value === 'dealer' ? 0 : 1)
+    else if (key === 3) payload.set(key, quantity(value))
+    else if (key === 4 || key === 10) payload.set(key, hash(value, false))
+    else if (key === 9) {
+      if (typeof value !== 'string' || !OUTCOMES.includes(value))
+        throw bad('unknown blackjack outcome')
+      payload.set(key, OUTCOMES.indexOf(value))
+    } else payload.set(key, value as Encodable)
+  }
+  const frame = encodeFrame(
+    {
+      typeId: TYPE_BLACKJACK_MESSAGE_ITEM,
+      schemaVersion: 2,
+      minReaderVersion: 2,
+    },
+    payload,
+  )
+  validateFrame(frame, defaultContext())
+  return frame
+}
+
+/** True for a parsed type-18 child that is a schema-2 hand item. */
+export function isBlackjackHandFrame(parsed: ParsedFrame): boolean {
+  return (
+    parsed.typed?.type === TYPE_BLACKJACK_MESSAGE_ITEM &&
+    parsed.typed.schema === 2
+  )
+}
+
+/** Project an already typed schema-2 child. Arrays and the frame are copied. */
+export function projectBlackjackHandItem(parsed: ParsedFrame): {
+  frame: Uint8Array
+  item: BlackjackHandItem
+} {
+  const wire = parsed.typed
+  if (wire?.type !== TYPE_BLACKJACK_MESSAGE_ITEM || wire.schema !== 2)
+    throw new FrankContextError('expected a typed schema-2 blackjack frame')
+  const base = { type: 'blackjack-hand' as const, gameId: wire.gameId }
+  const decimal = (b: Uint8Array) =>
+    b.reduce((n, byte) => (n << 8n) | BigInt(byte), 0n).toString(10)
+  let item: BlackjackHandItem
+  switch (wire.action) {
+    case 'challenge':
+      item =
+        wire.role === 'dealer'
+          ? {
+              ...base,
+              action: 'challenge',
+              role: 'dealer',
+              maxBetWei: decimal(wire.maxBetWei),
+              commitment: toHex(wire.commitment),
+            }
+          : {
+              ...base,
+              action: 'challenge',
+              role: 'player',
+              maxBetWei: decimal(wire.maxBetWei),
+            }
+      break
+    case 'accept':
+      item = {
+        ...base,
+        action: 'accept',
+        maxBetWei: decimal(wire.maxBetWei),
+        commitment: toHex(wire.commitment),
+      }
+      break
+    case 'deal':
+      item = {
+        ...base,
+        action: 'deal',
+        playerCards: [...wire.playerCards],
+        dealerUpCard: wire.dealerUpCard,
+      }
+      break
+    case 'card':
+      item = { ...base, action: 'card', playerCards: [...wire.playerCards] }
+      break
+    case 'reveal':
+      item = {
+        ...base,
+        action: 'reveal',
+        dealerCards: [...wire.dealerCards],
+        seed: wire.seed,
+        outcome: wire.outcome,
+      }
+      break
+    case 'refund':
+      item = { ...base, action: 'refund', ref: toHex(wire.ref) }
+      break
+    default:
+      item = { ...base, action: wire.action }
   }
   return { frame: new Uint8Array(parsed.frame), item }
 }

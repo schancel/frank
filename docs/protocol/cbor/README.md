@@ -215,7 +215,8 @@ profile of section 11, is `directory-statement-v3`); 5
 `key-transition-statement`; 8 `message-content-revision`; 9 `topic-post`; 10 `topic-post-submission`; 11
 `topic-vote-submission`; 12 `forum-single-view`; 13 `forum-topic-page`;
 14 `forum-discovery-page`; 15 `forum-operation-status`; 16 `container-message-item`;
-17 `text-message-item`; 18 `blackjack-message-item` (schema1/min-reader1). Type 9 schema 2/min-reader 2 opens field 3 as
+17 `text-message-item`; 18 `blackjack-message-item` (schema1/min-reader1) and `blackjack-hand-item` (schema2/min-reader2, the peer-to-peer
+hand of [../blackjack-p2p.md](../blackjack-p2p.md); vectors in `vectors/blackjack-hand.json`). Type 9 schema 2/min-reader 2 opens field 3 as
 `forum-content`; schema 1 remains the explicitly historical opaque-body schema.
 
 Unassigned identifiers remain reserved and MUST NOT be emitted. The proof-only

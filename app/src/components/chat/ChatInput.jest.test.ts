@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
-// ChatInput after #395: the compose bar has NO blackjack control (the toolbar "Play blackjack"
-// button and its bot-marker gating are gone; the dealer's bubble carries the bet control now), and
-// the compose box no longer steals focus back (#405), so controls inside a bubble stay usable.
+// ChatInput: a blackjack challenge is an entry in the existing message-type menu, in every chat,
+// with no dealer or bot gate (there is no separate toolbar button), and the compose box does not
+// steal focus back (#405), so controls inside a bubble stay usable.
 import { mount } from '@vue/test-utils'
 import { defineComponent, h, ref } from 'vue'
 
@@ -73,7 +73,24 @@ const globalOptions = {
   },
 }
 
-describe('ChatInput has no blackjack control (#395)', () => {
+describe('ChatInput offers a blackjack challenge in the message-type menu', () => {
+  it.each([
+    ['no extra props', {}],
+    ['a chat that is being sent to', { disable: true }],
+  ])(
+    'has the menu entry next to Attach Image for %s, and it asks the page for the form',
+    async (_n, props) => {
+      const w = mount(ChatInput, { props, global: globalOptions })
+      const entry = w.find('[data-testid="blackjack-menu-item"]')
+      expect(entry.exists()).toBe(true)
+      expect(entry.text()).toBe(enUS.chatInput.blackjackChallenge)
+      await entry.trigger('click')
+      expect(w.emitted('blackjackClicked')).toHaveLength(1)
+    },
+  )
+})
+
+describe('ChatInput has no separate blackjack toolbar button (#395)', () => {
   it.each([
     ['no extra props', {}],
     [

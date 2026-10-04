@@ -7,7 +7,6 @@ import { defineComponent, h, nextTick } from 'vue'
 import enUS from 'src/i18n/en-us'
 import frFR from 'src/i18n/fr-fr'
 import { activeChain } from '@frank/wallet/chain'
-import { peerOffersDealerTable } from 'src/utils/blackjack-bet'
 import { openChat } from 'src/utils/routes'
 import AddContact from './AddContact.vue'
 
@@ -272,14 +271,9 @@ describe('AddContact latest lookup', () => {
     expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
     const storedProfile = mockAddContactToStore.mock.calls[0][0].contact.profile
     expect(storedProfile.signedName).toBe('Blackjack Dealer')
-    expect(
-      peerOffersDealerTable(storedProfile, ADDRESS_A, [
-        { address: ADDRESS_A, name: 'Blackjack Dealer' },
-      ]),
-    ).toBe(true)
   })
 
-  it('exercises an already-canonical address input and validates dealer eligibility (#434)', async () => {
+  it('exercises an already-canonical address input (#434)', async () => {
     chain.fetchProfile.mockResolvedValue({
       ...profile(ADDRESS_A, 'Blackjack Dealer'),
       bot: true,
@@ -307,16 +301,6 @@ describe('AddContact latest lookup', () => {
     })
     const storedProfile = mockAddContactToStore.mock.calls[0][0].contact.profile
     expect(storedProfile.signedName).toBe('Blackjack Dealer')
-    expect(
-      peerOffersDealerTable(storedProfile, ADDRESS_A, [
-        { address: ADDRESS_A, name: 'Blackjack Dealer' },
-      ]),
-    ).toBe(true)
-    expect(
-      peerOffersDealerTable(storedProfile, ADDRESS_B, [
-        { address: ADDRESS_B, name: 'Blackjack Dealer' },
-      ]),
-    ).toBe(false)
     expect(mockOpenChat).toHaveBeenCalledTimes(1)
     expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
   })
@@ -341,11 +325,6 @@ describe('AddContact latest lookup', () => {
       const storedProfile =
         mockAddContactToStore.mock.calls[0][0].contact.profile
       expect(storedProfile.signedName).toBe(name ?? null)
-      expect(
-        peerOffersDealerTable(storedProfile, ADDRESS_A, [
-          { address: ADDRESS_A, name: 'Blackjack Dealer' },
-        ]),
-      ).toBe(false)
     },
   )
 

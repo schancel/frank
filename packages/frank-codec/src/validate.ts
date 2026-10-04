@@ -123,7 +123,8 @@ export function defaultContext(
         typeId === TYPE_DIRECTORY_STATEMENT
           ? 3
           : typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
-            typeId === TYPE_TOPIC_POST
+            typeId === TYPE_TOPIC_POST ||
+            typeId === TYPE_BLACKJACK_MESSAGE_ITEM
           ? 2
           : 1,
     })),
@@ -422,6 +423,7 @@ function processFrame(
     const d = parseDraft(env.typeId, payload, projection === 'newer-schema', {
       envelope: env.schemaVersion,
       effective: Math.min(env.schemaVersion, highest),
+      minReader: env.minReaderVersion,
     })
     checkAllocated(d)
     return d

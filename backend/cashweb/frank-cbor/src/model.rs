@@ -624,6 +624,8 @@ pub enum TypedPayload {
     },
     /// Type 18, nine closed blackjack item shapes.
     BlackjackItem(BlackjackMessageItem),
+    /// Type 18 schema 2 with min reader 2, the closed peer-to-peer hand item shapes.
+    BlackjackHandItem(BlackjackHandMessageItem),
     /// Type 17.
     TextItem {
         /// Field 0.
@@ -728,3 +730,75 @@ pub enum BlackjackOutcome {
 
 /// Closed type-18 wire projection; exact frame bytes stay on ParsedFrame.
 pub type BlackjackMessageItem = BlackjackFields<Vec<u8>, Vec<u8>>;
+
+/// Codec-owned closed schema-2 shapes of one peer-to-peer hand: ten actions, the challenge in
+/// its two role forms. H and Q distinguish bytes from text. No shape carries an amount of money:
+/// a wager, payout or refund is the stamp of the message that carries the item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlackjackHandAction<H, Q> {
+    /// Challenge by the dealer (role 0), with the seed commitment.
+    ChallengeDealer {
+        /// Positive maximum bet.
+        max_bet_wei: Q,
+        /// Exact seed commitment hash.
+        commitment: H,
+    },
+    /// Challenge by the player (role 1); it carries no commitment.
+    ChallengePlayer {
+        /// Positive maximum bet.
+        max_bet_wei: Q,
+    },
+    /// Acceptance of a challenge.
+    Accept {
+        /// Positive maximum bet.
+        max_bet_wei: Q,
+        /// Exact seed commitment hash.
+        commitment: H,
+    },
+    /// Bet; the amount is the carrying message's stamp.
+    Bet,
+    /// Initial two-card hand and dealer up-card.
+    Deal {
+        /// Ordered initial two-card hand.
+        player_cards: Vec<u32>,
+        /// Dealer's distinct visible card.
+        dealer_up_card: u32,
+    },
+    /// Hit request.
+    Hit,
+    /// Stand request.
+    Stand,
+    /// Double request; the amount is the carrying message's stamp.
+    Double,
+    /// Updated player hand of three or more cards.
+    Card {
+        /// Ordered updated hand.
+        player_cards: Vec<u32>,
+    },
+    /// Reveal; seed is lowercase ASCII text, never decoded binary.
+    Reveal {
+        /// Ordered final dealer hand.
+        dealer_cards: Vec<u32>,
+        /// Exactly64 lowercase ASCII hex characters as text.
+        seed: String,
+        /// Allocated result, without economic verification.
+        outcome: BlackjackOutcome,
+    },
+    /// Refund notice; the amount is the carrying message's stamp.
+    Refund {
+        /// Exact 32-byte reference.
+        reference: H,
+    },
+}
+
+/// Common game ID plus one closed schema-2 hand action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlackjackHandFields<H, Q> {
+    /// Game ID: exactly 32 lowercase ASCII hex characters.
+    pub game_id: String,
+    /// The complete selected action shape.
+    pub action: BlackjackHandAction<H, Q>,
+}
+
+/// Closed type-18 schema-2 wire projection; exact frame bytes stay on ParsedFrame.
+pub type BlackjackHandMessageItem = BlackjackHandFields<Vec<u8>, Vec<u8>>;

@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
-// Wiring tests for Chat.vue's blackjack bet delivery (#310): the real component methods run
-// against a minimal `this`, so removing the idle wait or the chat-change guard fails here.
+// Wiring tests for Chat.vue's follow-up sends and its blackjack methods: the real component
+// methods run against a minimal `this`.
 
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
@@ -22,6 +22,7 @@ jest.mock('@frank/wallet/chain', () => ({
     fromDisplayAmount: (s: string) => BigInt(Math.round(Number(s) * 1e18)),
     unit: 'MON',
     defaultStampValue: 1n,
+    nativeTransfers: { getBalance: jest.fn() },
     toDisplayAmount: (n: bigint) => n.toString(),
   },
 }))
@@ -29,14 +30,28 @@ jest.mock('../composables/useActiveWallet', () => ({
   useActiveWallet: jest.fn(),
 }))
 
+jest.mock('../utils/own-address', () => ({
+  getOwnCanonicalAddress: async () => '0xMe',
+  sameCanonicalAddress: (a: string, b: string) => a === b,
+}))
+
 import ChatPage from './Chat.vue'
 import { errorNotify } from '../utils/notifications'
+import { activeChain } from '@frank/wallet/chain'
+import {
+  commitmentOf,
+  dealerStep,
+  foldHand,
+} from '@frank/wallet/message-item-plugins/blackjack/hand'
+import {
+  HAND_FEE_RESERVE_WEI,
+  loadSeed,
+  saveSeed,
+} from '../utils/blackjack-hand'
 
 const methods = (ChatPage as unknown as { methods: Record<string, any> })
   .methods
-const items = [
-  { type: 'blackjack-move', gameId: 'g', action: 'bet', wagerTxHash: '0xh' },
-]
+const items = [{ type: 'blackjack-hand', gameId: 'g', action: 'bet' }]
 
 function fakeThis(over: Record<string, unknown> = {}) {
   const self: Record<string, any> = {
@@ -141,48 +156,6 @@ describe('Chat.vue sendFollowUpItems settled callback (#368)', () => {
   })
 })
 
-describe('Chat.vue sendFollowUpWhenIdle wiring (#310)', () => {
-  it('waits while the chat is sending, then sends once', async () => {
-    const self = fakeThis({ sendingMessage: true })
-    const done = methods.sendFollowUpWhenIdle.call(self, {
-      items,
-      address: '0xDealer',
-    })
-    await new Promise(r => setTimeout(r, 250))
-    expect(self.sendDirectMessage).not.toHaveBeenCalled()
-    self.sendingMessage = false
-    await done
-    expect(self.sendDirectMessage).toHaveBeenCalledTimes(1)
-  })
-
-  it('refuses to deliver to a different chat than the one paid, before and while waiting', async () => {
-    const before = fakeThis({ address: '0xOther' })
-    await expect(
-      methods.sendFollowUpWhenIdle.call(before, { items, address: '0xDealer' }),
-    ).rejects.toThrow(/chat changed/)
-    expect(before.sendDirectMessage).not.toHaveBeenCalled()
-
-    const during = fakeThis({ sendingMessage: true })
-    const p = methods.sendFollowUpWhenIdle.call(during, {
-      items,
-      address: '0xDealer',
-    })
-    during.address = '0xOther'
-    during.sendingMessage = false
-    await expect(p).rejects.toThrow(/chat changed/)
-    expect(during.sendDirectMessage).not.toHaveBeenCalled()
-  })
-
-  it('throws (not delivered) when the underlying send fails', async () => {
-    const self = fakeThis({
-      sendDirectMessage: jest.fn().mockRejectedValue(new Error('relay down')),
-    })
-    await expect(
-      methods.sendFollowUpWhenIdle.call(self, { items, address: '0xDealer' }),
-    ).rejects.toThrow(/could not be sent/)
-  })
-})
-
 describe('Chat.vue sendFollowUpItems vs the no-throw send outcome (#269/#270)', () => {
   beforeEach(() => jest.mocked(errorNotify).mockReset())
 
@@ -206,21 +179,281 @@ describe('Chat.vue sendFollowUpItems vs the no-throw send outcome (#269/#270)', 
     expect(settled).toHaveBeenCalledTimes(1)
     expect(settled).toHaveBeenCalledWith(expected)
   })
+})
 
-  it('a bet whose message failed is not delivered: deliverBetWhenReady throws so the wager record stays', async () => {
-    const { deliverBetWhenReady } = jest.requireActual('../utils/blackjack-bet')
-    const self = fakeThis({
-      sendDirectMessage: jest
-        .fn()
-        .mockResolvedValue({ state: 'failed', reason: 'unreachable' }),
+describe('Chat.vue blackjack challenge', () => {
+  const balance = jest.mocked(activeChain.nativeTransfers.getBalance)
+  const challengeThis = (over: Record<string, unknown> = {}) => {
+    const self = fakeThis({ blackjackDialog: true, ...over })
+    self.sendFollowUpItems = jest.fn().mockResolvedValue(true)
+    return self
+  }
+  beforeEach(() => {
+    jest.mocked(errorNotify).mockReset()
+    balance.mockReset()
+  })
+
+  it('sends a dealer challenge with a commitment, keeps the seed, and pays only the ordinary stamp', async () => {
+    balance.mockResolvedValue(HAND_FEE_RESERVE_WEI + 4_000n)
+    const self = challengeThis()
+    await methods.sendBlackjackChallenge.call(self, {
+      role: 'dealer',
+      maxBetWei: 1_000n,
     })
+    expect(self.sendFollowUpItems).toHaveBeenCalledTimes(1)
+    const sent = self.sendFollowUpItems.mock.calls[0][0]
+    // No stamp override: a challenge carries no money.
+    expect(sent.stampValueWei).toBeUndefined()
+    const [item] = sent.items
+    expect(item).toMatchObject({
+      type: 'blackjack-hand',
+      action: 'challenge',
+      role: 'dealer',
+      maxBetWei: '1000',
+    })
+    // The seed behind the commitment is on this device and never in the message.
+    const seed = loadSeed('0xMe', '0xDealer', item.gameId)!
+    expect(commitmentOf(seed)).toBe(item.commitment)
+    expect(JSON.stringify(item)).not.toContain(seed)
+    expect(self.blackjackDialog).toBe(false)
+  })
+
+  it('sends a player challenge with no commitment and no seed', async () => {
+    balance.mockResolvedValue(HAND_FEE_RESERVE_WEI + 1_000n)
+    const self = challengeThis()
+    await methods.sendBlackjackChallenge.call(self, {
+      role: 'player',
+      maxBetWei: 1_000n,
+    })
+    const [item] = self.sendFollowUpItems.mock.calls[0][0].items
+    expect(item).toEqual({
+      type: 'blackjack-hand',
+      gameId: item.gameId,
+      action: 'challenge',
+      role: 'player',
+      maxBetWei: '1000',
+    })
+    expect(loadSeed('0xMe', '0xDealer', item.gameId)).toBeUndefined()
+  })
+
+  it.each([
+    ['dealer', 1_001n, HAND_FEE_RESERVE_WEI + 4_000n],
+    ['player', 1_001n, HAND_FEE_RESERVE_WEI + 1_000n],
+    ['dealer', 1n, HAND_FEE_RESERVE_WEI],
+  ] as const)(
+    'refuses a %s challenge of %s that the balance does not cover, and sends nothing',
+    async (role, maxBetWei, spendable) => {
+      balance.mockResolvedValue(spendable)
+      const self = challengeThis()
+      await methods.sendBlackjackChallenge.call(self, { role, maxBetWei })
+      expect(self.sendFollowUpItems).not.toHaveBeenCalled()
+      expect(errorNotify).toHaveBeenCalled()
+    },
+  )
+
+  it('sends nothing when the balance cannot be read', async () => {
+    balance.mockRejectedValue(new Error('rpc down'))
+    const self = challengeThis()
+    await methods.sendBlackjackChallenge.call(self, {
+      role: 'player',
+      maxBetWei: 1n,
+    })
+    expect(self.sendFollowUpItems).not.toHaveBeenCalled()
+  })
+})
+
+describe('Chat.vue sends a hand message only while it is still the next one', () => {
+  const GAME = 'feedfacefeedfacefeedfacefeedface'
+  const challenge = {
+    outbound: false,
+    items: [
+      {
+        type: 'blackjack-hand',
+        gameId: GAME,
+        action: 'challenge',
+        role: 'dealer',
+        maxBetWei: '500',
+        commitment: 'c'.repeat(64),
+      },
+    ],
+    stampValueWei: 1n,
+    payloadDigest: 'challenge',
+  }
+  const bet = { type: 'blackjack-hand', gameId: GAME, action: 'bet' }
+  beforeEach(() => jest.mocked(errorNotify).mockReset())
+
+  it('sends a bet once: with the bet already in the chat a second click sends nothing', async () => {
+    const self = fakeThis({ address: '0xPeer', messages: [challenge] })
     await expect(
-      deliverBetWhenReady({
-        betAddress: '0xDealer',
-        currentAddress: () => '0xDealer',
-        isBusy: () => false,
-        send: () => methods.sendFollowUpItems.call(self, { items }),
+      methods.sendFollowUpItems.call(self, {
+        items: [bet],
+        stampValueWei: 300n,
       }),
-    ).rejects.toThrow(/could not be sent/)
+    ).resolves.toBe(true)
+    expect(self.sendDirectMessage).toHaveBeenCalledTimes(1)
+
+    const again = fakeThis({
+      address: '0xPeer',
+      messages: [
+        challenge,
+        {
+          outbound: true,
+          items: [bet],
+          stampValueWei: 300n,
+          payloadDigest: 'pending:1',
+          status: 'error',
+        },
+      ],
+    })
+    const settled = jest.fn()
+    await expect(
+      methods.sendFollowUpItems.call(again, {
+        items: [bet],
+        stampValueWei: 300n,
+        settled,
+      }),
+    ).resolves.toBe(false)
+    expect(again.sendDirectMessage).not.toHaveBeenCalled()
+    expect(settled).toHaveBeenCalledWith(false)
+    expect(errorNotify).toHaveBeenCalled()
+  })
+
+  it('sends nothing for a move that is not legal in the hand as saved', async () => {
+    const self = fakeThis({ address: '0xPeer', messages: [challenge] })
+    await expect(
+      methods.sendFollowUpItems.call(self, {
+        items: [{ type: 'blackjack-hand', gameId: GAME, action: 'stand' }],
+      }),
+    ).resolves.toBe(false)
+    expect(self.sendDirectMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe('Chat.vue automatic dealer steps', () => {
+  const SEED = 'cd'.repeat(32)
+  const GAME = '0123456789abcdef0123456789abcdef'
+  const hand = (...fields: [boolean, Record<string, unknown>, bigint][]) =>
+    fields.map(([outbound, item, stampValueWei], i) => ({
+      outbound,
+      items: [{ type: 'blackjack-hand', gameId: GAME, ...item }],
+      stampValueWei,
+      payloadDigest: `${i}`.padStart(64, 'a'),
+    }))
+  const challenge: [boolean, Record<string, unknown>, bigint] = [
+    true,
+    {
+      action: 'challenge',
+      role: 'dealer',
+      maxBetWei: '500',
+      commitment: commitmentOf(SEED),
+    },
+    1n,
+  ]
+  const dealerThis = (
+    messages: unknown[],
+    over: Record<string, unknown> = {},
+  ) => {
+    const self = fakeThis({
+      address: '0xPeer',
+      messages,
+      blackjackAttempted: new Set<string>(),
+      ...over,
+    })
+    self.sendFollowUpItems = jest.fn().mockResolvedValue(true)
+    return self
+  }
+  beforeAll(() => saveSeed('0xMe', '0xPeer', GAME, SEED))
+
+  it('deals as soon as the bet is in, once', async () => {
+    const self = dealerThis(hand(challenge, [false, { action: 'bet' }, 300n]))
+    await methods.runBlackjackDealer.call(self)
+    expect(self.sendFollowUpItems).toHaveBeenCalledTimes(1)
+    const sent = self.sendFollowUpItems.mock.calls[0][0]
+    expect(sent.items[0].action).toBe('deal')
+    expect(sent.stampValueWei).toBeUndefined()
+    // The same position is never attempted twice, even if the send left no message behind.
+    await methods.runBlackjackDealer.call(self)
+    expect(self.sendFollowUpItems).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not send while another message is being sent', async () => {
+    const self = dealerThis(hand(challenge, [false, { action: 'bet' }, 300n]), {
+      sendingMessage: true,
+    })
+    await methods.runBlackjackDealer.call(self)
+    expect(self.sendFollowUpItems).not.toHaveBeenCalled()
+  })
+
+  it('never pays without the dealer: a refund and a paying reveal wait for a button', async () => {
+    // A bet above the max is owed back.
+    const refundOwed = dealerThis(
+      hand(challenge, [false, { action: 'bet' }, 501n]),
+    )
+    await methods.runBlackjackDealer.call(refundOwed)
+    expect(refundOwed.sendFollowUpItems).not.toHaveBeenCalled()
+
+    // Play a hand to the reveal; if the player is owed anything the reveal is not automatic.
+    const events = [
+      {
+        item: { type: 'blackjack-hand', gameId: GAME, ...challenge[1] },
+        from: '0xMe',
+        to: '0xPeer',
+        stampWei: 1n,
+        digest: 'c',
+      },
+      {
+        item: { type: 'blackjack-hand', gameId: GAME, action: 'bet' },
+        from: '0xPeer',
+        to: '0xMe',
+        stampWei: 300n,
+        digest: 'b',
+      },
+    ] as Parameters<typeof foldHand>[0]
+    const rows: [boolean, Record<string, unknown>, bigint][] = [
+      challenge,
+      [false, { action: 'bet' }, 300n],
+    ]
+    for (;;) {
+      const state = foldHand(events).state
+      const step = dealerStep(state, SEED)
+      if (!step && state?.phase === 'player_turn') {
+        events.push({
+          item: { type: 'blackjack-hand', gameId: GAME, action: 'stand' },
+          from: '0xPeer',
+          to: '0xMe',
+          stampWei: 1n,
+          digest: 's',
+        })
+        rows.push([false, { action: 'stand' }, 1n])
+        continue
+      }
+      if (!step || step.item.action === 'reveal') break
+      events.push({
+        item: step.item,
+        from: '0xMe',
+        to: '0xPeer',
+        stampWei: 1n,
+        digest: `d${events.length}`,
+      })
+      rows.push([true, step.item as unknown as Record<string, unknown>, 1n])
+    }
+    // The digests must match those the events used.
+    const messages = rows.map(([outbound, item, stampValueWei], i) => ({
+      outbound,
+      items: [{ type: 'blackjack-hand', gameId: GAME, ...item }],
+      stampValueWei,
+      payloadDigest: events[i].digest,
+    }))
+    const reveal = dealerStep(foldHand(events).state, SEED)!
+    expect(reveal.item.action).toBe('reveal')
+    const self = dealerThis(messages)
+    await methods.runBlackjackDealer.call(self)
+    if (reveal.payWei === undefined) {
+      expect(self.sendFollowUpItems.mock.calls[0][0].items[0].action).toBe(
+        'reveal',
+      )
+    } else {
+      expect(self.sendFollowUpItems).not.toHaveBeenCalled()
+    }
   })
 })

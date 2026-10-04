@@ -20,6 +20,21 @@
               </q-item-section>
             </q-item>
 
+            <!-- A blackjack challenge is one more message type, offered in every chat. -->
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="blackjack-menu-item"
+              @click="blackjackClicked"
+            >
+              <q-item-section avatar side>
+                <q-icon name="casino" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('chatInput.blackjackChallenge') }}
+              </q-item-section>
+            </q-item>
+
             <!-- <q-item clickable>
               <q-item-section avatar>
                 <q-icon name="insert_emoticon" />
@@ -143,6 +158,7 @@ export default defineComponent({
     'update:stampAmount',
     'sendMessage',
     'sendFileClicked',
+    'blackjackClicked',
   ],
   methods: {
     /** Public focus target for chat-level focus handoffs. */
@@ -174,6 +190,9 @@ export default defineComponent({
     },
     sendFileClicked() {
       this.$emit('sendFileClicked')
+    },
+    blackjackClicked() {
+      this.$emit('blackjackClicked')
     },
     addEmoji(value: { id: string }) {
       // TODO: This needs to be cursor position aware

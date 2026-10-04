@@ -39,7 +39,6 @@ import {
 } from './contacts'
 import type { ContactState } from './contacts'
 import { activeChain } from '@frank/wallet/chain'
-import { peerOffersDealerTable } from '../utils/blackjack-bet'
 
 import { toChainDisplayAddress as toDisplay } from '../utils/chain-address'
 
@@ -77,11 +76,6 @@ describe('stores/contacts.ts (ticket #42)', () => {
 
       const profile = contacts.getContactProfile(ADDRESS)
       expect(profile.signedName).toBeUndefined()
-      expect(
-        peerOffersDealerTable(profile, ADDRESS, [
-          { address: ADDRESS, name: 'Blackjack Dealer' },
-        ]),
-      ).toBe(false)
     })
 
     it('resolves a profile via activeChain.fetchProfile and stores it under the canonical address', async () => {
@@ -319,9 +313,6 @@ describe('stores/contacts.ts (ticket #42)', () => {
         const profile = contacts.getContactProfile(ADDRESS)
         expect(profile.name).toBe('Blackjack Dealer')
         expect(profile.signedName).toBe(signedName ?? null)
-        expect(
-          peerOffersDealerTable(profile, ADDRESS, contacts.curatedDefaults),
-        ).toBe(false)
       },
     )
 
@@ -358,12 +349,9 @@ describe('stores/contacts.ts (ticket #42)', () => {
       expect(fetchProfileSpy).toHaveBeenCalled()
       const profile = contacts.getContactProfile(ADDRESS)
       expect(profile.signedName).toBe('Blackjack Dealer')
-      expect(
-        peerOffersDealerTable(profile, ADDRESS, contacts.curatedDefaults),
-      ).toBe(true)
     })
 
-    it('a warm curated label still fails the wager gate when the signed name is blank (#422)', async () => {
+    it('a warm curated label keeps a blank signed name (#422)', async () => {
       const contacts = useContactStore()
       contacts.addContact({
         address: ADDRESS,
@@ -394,9 +382,6 @@ describe('stores/contacts.ts (ticket #42)', () => {
       const profile = contacts.getContactProfile(ADDRESS)
       expect(profile.name).toBe('Blackjack Dealer')
       expect(profile.signedName).toBe('')
-      expect(
-        peerOffersDealerTable(profile, ADDRESS, contacts.curatedDefaults),
-      ).toBe(false)
     })
 
     it('does not refetch a warm contact whose signed name is already known blank (#422)', async () => {
@@ -420,11 +405,6 @@ describe('stores/contacts.ts (ticket #42)', () => {
       await contacts.refresh(ADDRESS)
 
       expect(fetchProfileSpy).not.toHaveBeenCalled()
-      expect(
-        peerOffersDealerTable(contacts.getContactProfile(ADDRESS), ADDRESS, [
-          { address: ADDRESS, name: 'Blackjack Dealer' },
-        ]),
-      ).toBe(false)
     })
 
     it.each([
@@ -668,13 +648,6 @@ describe('stores/contacts.ts (ticket #42)', () => {
       const refreshedProfile = contacts.getContactProfile(ADDRESS)
       expect(refreshedProfile.name).toBe('Blackjack Dealer')
       expect(isBlankName(refreshedProfile.signedName)).toBe(true)
-      expect(
-        peerOffersDealerTable(
-          refreshedProfile,
-          ADDRESS,
-          contacts.curatedDefaults,
-        ),
-      ).toBe(false)
     })
 
     it('rehydrates an old persisted state that has no dismissed list', async () => {

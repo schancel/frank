@@ -1,0 +1,27 @@
+{
+  "name": "@frank/threshold-ecdsa",
+  "version": "0.0.1",
+  "description": "Two-party threshold ECDSA and two-party ECDSA adaptor signatures over secp256k1 (Lindell 2017). Experimental: not externally audited and not for real funds.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "jest",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.tests.json"
+  },
+  "dependencies": {
+    "@frank/adaptor-signatures": "0.0.1",
+    "@noble/curves": "1.9.1",
+    "@noble/hashes": "1.8.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29",
+    "@types/node": "^16.11.11",
+    "ethers": "^6.17.0",
+    "jest": "^29",
+    "ts-jest": "^29",
+    "typescript": "^5.9.3"
+  }
+}

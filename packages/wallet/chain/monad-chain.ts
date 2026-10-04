@@ -113,6 +113,7 @@ import { MonadAccountTxSigner } from "../monad-account-tx";
 import { MonadWalletHandle } from "../monad-wallet-handle";
 import {
   openExistingPoolMonadTopicOwner,
+  type CanonicalWalletBindingMismatchError,
   type MonadWalletPersistenceBundle,
 } from "../storage/monad-wallet-bundle";
 import {
@@ -309,14 +310,20 @@ export function prepareMonadRevisionZeroExport(wallet: NativeWalletHandle, input
   const live = wallet as MonadChainWalletHandle;
   const material = walletMaterial.get(live);
   if (!material?.canonicalRoles || !typedWallets.has(live) || closedWallets.has(live)) throw new Error("Revision-zero export requires live typed wallet custody");
+  const unavailable = canonicalUnavailableWallets.get(wallet);
+  if (unavailable) throw unavailable;
   const installed = installedCanonicalWalletDescriptors.get(wallet);
   if (!installed || installed.networkTag !== input.networkTag || installed.network !== input.network || installed.chainId !== input.chainId)
     throw new Error("Revision-zero export differs from actual installed wallet descriptor");
   return material.canonicalRoles.prepareRevisionZero(input);
 }
 const canonicalClientFactories = new WeakMap<object, () => MonadCanonicalStampClient>();
+// Live handles whose storage holds a canonical journal bound to a different identity tuple.
+const canonicalUnavailableWallets = new WeakMap<object, CanonicalWalletBindingMismatchError>();
 /** Opt-in bridge verifies the actual registered live typed wallet; no caller-supplied owner. */
 export function canonicalMonadStampClient(wallet: NativeWalletHandle): MonadCanonicalStampClient {
+  const unavailable = canonicalUnavailableWallets.get(wallet);
+  if (unavailable) throw unavailable;
   const create = canonicalClientFactories.get(wallet);
   if (!create) throw new Error("Canonical wallet requires live typed persistent custody");
   return create();
@@ -635,7 +642,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     requireOpenWallet(wallet);
     const run = (walletSendQueues.get(wallet) ?? Promise.resolve()).then(async () => {
       const owner = privateTopicWallets.get(wallet)?.walletState;
-      if (!canonical && owner?.canonicalJournal?.getIntents().some(intent => intent.members.some(m => wallet.pool.getRecord(m.reservation.index)?.status === "available")))
+      if (!canonical && owner?.canonicalRetained?.getIntents().some(intent => intent.members.some(m => wallet.pool.getRecord(m.reservation.index)?.status === "available")))
         throw new Error("Canonical pre-sign intent requires explicit correlation before ordinary pool operations");
       if (!owner) return task();
       enclosingTopicAdmissions.add(wallet);
@@ -1482,8 +1489,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           pool.ensureUnfundedSize(config.subAccountPoolSize);
           // Classification is deliberately irrelevant here: every old obligation pins its lease.
           const pendingLeaseIndices = new Set([
-            ...(topicOwner.canonicalJournal?.getIntents().flatMap(intent => intent.members.map(m => m.reservation.index)) ?? []),
-            ...(topicOwner.canonicalJournal?.getAll().filter(attempt => !attempt.cleanupComplete).flatMap(attempt => attempt.reservations.map(r => r.index)) ?? []),
+            ...(topicOwner.canonicalRetained?.getIntents().flatMap(intent => intent.members.map(m => m.reservation.index)) ?? []),
+            ...(topicOwner.canonicalRetained?.getAll().filter(attempt => !attempt.cleanupComplete).flatMap(attempt => attempt.reservations.map(r => r.index)) ?? []),
             ...stampAttemptJournal
               .getAll()
               .flatMap((attempt) => attempt.leaseIndices),
@@ -1717,6 +1724,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                   httpClient.destroy();
                   material.dispose();
                   canonicalClientFactories.delete(wallet);
+                  canonicalUnavailableWallets.delete(wallet);
                   installedCanonicalWalletDescriptors.delete(wallet);
                   privateTopicWallets.delete(wallet);
                   walletMaterial.delete(wallet);
@@ -1732,7 +1740,9 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             walletState: topicOwner,
             topicOperationJournal: topicOwner.topicOperationJournal,
           });
-          if (material.canonicalRoles !== undefined && (config.networkTag === "MONT" || config.networkTag === "MON1"))
+          if (topicOwner.canonicalUnavailable !== undefined)
+            canonicalUnavailableWallets.set(wallet, topicOwner.canonicalUnavailable);
+          else if (material.canonicalRoles !== undefined && (config.networkTag === "MONT" || config.networkTag === "MON1"))
             installedCanonicalWalletDescriptors.set(wallet, { networkTag: config.networkTag, network: forumPolicy.network, chainId: BigInt(config.chainId) });
           if (material.canonicalRoles !== undefined && topicOwner.canonicalJournal !== undefined &&
               (config.networkTag === "MONT" || config.networkTag === "MON1")) {

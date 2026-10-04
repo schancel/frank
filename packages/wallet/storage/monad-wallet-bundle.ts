@@ -1,4 +1,9 @@
-import { LevelCanonicalStampAttemptJournal } from './stamp-attempt-journal'
+import {
+  CanonicalAttemptJournalError,
+  LevelCanonicalStampAttemptJournal,
+  type CanonicalJournalAttempt,
+  type CanonicalJournalIntent,
+} from './stamp-attempt-journal'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import level, { type LevelDB } from 'level'
 import { join, resolve } from 'path'
@@ -75,6 +80,27 @@ export class MonadWalletOrphanedAccountError extends Error {
   }
 }
 
+/** The canonical journal at this custody location is durably bound to a different public identity
+ * tuple. The existing EVM inventory stays usable, but canonical messaging is refused for this
+ * session: the journal is never rebound, rewritten or replaced, because it may retain the other
+ * identity's payment obligations. Reopening with the originally bound roots restores it. */
+export class CanonicalWalletBindingMismatchError extends Error {
+  readonly code = 'canonical-wallet:foreign-journal-binding'
+  constructor() {
+    super(
+      'canonical-wallet:foreign-journal-binding: canonical messaging is unavailable because the canonical journal in this wallet storage is bound to a different identity; reopen with the originally bound roots',
+    )
+    this.name = 'CanonicalWalletBindingMismatchError'
+  }
+}
+
+/** Read-only obligations that pin pool accounts. For a foreign-bound journal this is an immutable
+ * snapshot taken at open; the journal itself is closed again without any mutation. */
+export interface CanonicalRetainedObligations {
+  getIntents(): CanonicalJournalIntent[]
+  getAll(): CanonicalJournalAttempt[]
+}
+
 /** Opaque proof that a complete high-level operation was admitted before close began. */
 export interface MonadWalletOperationAdmission {
   readonly walletBindingId: string
@@ -89,6 +115,12 @@ export interface MonadWalletPersistenceBundle {
   readonly topicOperationJournal: TopicOperationJournal
   readonly canonicalJournal?: LevelCanonicalStampAttemptJournal
   readonly canonicalBinding?: { readonly tuple: string; readonly id: string }
+  /** Set instead of `canonicalJournal`/`canonicalBinding` when the on-disk journal belongs to a
+   * different public identity tuple. Canonical consumers must refuse with this error. */
+  readonly canonicalUnavailable?: CanonicalWalletBindingMismatchError
+  /** Pool-pinning obligations of whichever canonical journal exists at this location, including a
+   * foreign-bound one. Protection only; it grants no canonical authority. */
+  readonly canonicalRetained?: CanonicalRetainedObligations
   assertOpen(): void
   runCanonicalOperation<T>(
     operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
@@ -243,11 +275,15 @@ function makeBundle(params: {
   ownerToken?: object
   canonicalJournal?: LevelCanonicalStampAttemptJournal
   canonicalBinding?: { readonly tuple: string; readonly id: string }
+  canonicalUnavailable?: CanonicalWalletBindingMismatchError
+  canonicalRetained?: CanonicalRetainedObligations
   encloseFinancialOperation?: <T>(
     operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
   ) => Promise<T>
 }): MonadWalletPersistenceBundle {
   const ownerToken = params.ownerToken ?? {}
+  const canonicalRetained: CanonicalRetainedObligations | undefined =
+    params.canonicalRetained ?? params.canonicalJournal
   const existingOwner = poolOwners.get(params.pool)
   if (existingOwner !== undefined && existingOwner !== params.ownerToken) {
     throw new Error('Monad wallet pool already has an owner')
@@ -255,7 +291,7 @@ function makeBundle(params: {
   poolOwners.set(params.pool, ownerToken)
   ordinaryPoolSelectionGuards.set(params.pool, () => {
     if (
-      params.canonicalJournal
+      canonicalRetained
         ?.getIntents()
         .some(intent =>
           intent.members.some(
@@ -301,7 +337,7 @@ function makeBundle(params: {
       params.assertEnclosingAdmission?.()
       if (
         !canonical &&
-        params.canonicalJournal
+        canonicalRetained
           ?.getIntents()
           .some(intent =>
             intent.members.some(
@@ -368,6 +404,8 @@ function makeBundle(params: {
     topicOperationJournal: params.topicJournal,
     canonicalJournal: params.canonicalJournal,
     canonicalBinding: params.canonicalBinding,
+    canonicalUnavailable: params.canonicalUnavailable,
+    canonicalRetained,
     assertOpen(): void {
       if (lifecycle !== 'open') {
         throw new Error('Monad wallet bundle is closing or closed')
@@ -492,6 +530,8 @@ export async function openExistingPoolMonadTopicOwner(params: {
   let manifestClaim: ReturnType<typeof claimManifest> | undefined
   let journalOpen = true
   let canonicalJournal: LevelCanonicalStampAttemptJournal | undefined
+  let canonicalUnavailable: CanonicalWalletBindingMismatchError | undefined
+  let canonicalRetained: CanonicalRetainedObligations | undefined
   try {
     let topicJournal: TopicOperationJournal
     const assertJournalMutation = () => {
@@ -534,7 +574,30 @@ export async function openExistingPoolMonadTopicOwner(params: {
     ) {
       canonicalJournal = new LevelCanonicalStampAttemptJournal(params.location)
       await canonicalJournal.Open()
-      await canonicalJournal.bindPublicTuple(params.canonicalBinding.tuple)
+      try {
+        // First bind persists the tuple; an equal tuple is a no-op. Both conflict outcomes (a
+        // different bound tuple, or unbound retained rows) are decided before any write.
+        await canonicalJournal.bindPublicTuple(params.canonicalBinding.tuple)
+      } catch (error) {
+        if (
+          !(error instanceof CanonicalAttemptJournalError) ||
+          error.code !== 'conflict'
+        )
+          throw error
+        // Same custody, different identity (#716/#722): keep the EVM inventory reachable. The
+        // foreign journal is never rebound, written or replaced. Its retained obligations still
+        // pin their pool accounts through an immutable snapshot, then the handle is released.
+        const foreign = canonicalJournal
+        const intents = foreign.getIntents()
+        const attempts = foreign.getAll()
+        canonicalRetained = Object.freeze({
+          getIntents: () => intents.slice(),
+          getAll: () => attempts.slice(),
+        })
+        canonicalUnavailable = new CanonicalWalletBindingMismatchError()
+        canonicalJournal = undefined
+        await foreign.Close()
+      }
     }
     return makeBundle({
       durability:
@@ -548,18 +611,20 @@ export async function openExistingPoolMonadTopicOwner(params: {
       subKeyring: params.subKeyring,
       changeKeyring: params.changeKeyring,
       canonicalJournal,
+      canonicalUnavailable,
+      canonicalRetained,
       encloseFinancialOperation: params.encloseFinancialOperation,
       canonicalBinding:
         canonicalJournal === undefined ? undefined : params.canonicalBinding,
       additionalLeaseReference: index =>
         params.stampReferencesLeaseIndex(index) ||
-        (canonicalJournal
+        ((canonicalRetained ?? canonicalJournal)
           ?.getIntents()
           .some(intent =>
             intent.members.some(m => m.reservation.index === index),
           ) ??
           false) ||
-        (canonicalJournal
+        ((canonicalRetained ?? canonicalJournal)
           ?.getAll()
           .some(
             attempt =>

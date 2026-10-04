@@ -1440,6 +1440,8 @@ export class MonadCanonicalStampClient {
   >()
   constructor(private readonly wallet: MonadCanonicalWalletHandle) {
     assertMonadWalletBundleProvenance(wallet.walletState)
+    if (wallet.walletState.canonicalUnavailable)
+      throw wallet.walletState.canonicalUnavailable
     if (
       !wallet.walletState.canonicalJournal ||
       !wallet.walletState.canonicalBinding ||

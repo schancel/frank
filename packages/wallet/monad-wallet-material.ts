@@ -1,4 +1,17 @@
-import { Wallet, sha256, hexlify, toUtf8Bytes } from 'ethers'
+import { privateKeyFromSecretBytes, signEcdsa } from '@frank/nakamoto'
+import type {
+  PublicRevisionZeroInput,
+  PublicRevisionZeroExport,
+  PublicRevisionZeroProcess,
+} from './monad-wallet-handle'
+import {
+  Wallet,
+  sha256,
+  hexlify,
+  toUtf8Bytes,
+  computeAddress,
+  SigningKey,
+} from 'ethers'
 import { DERIVATION_REGISTRY_ID } from '../domain-roots/src'
 import type { DomainRoot, DomainPurpose } from '../domain-roots/src'
 import type { HDSeed } from './chain/active-chain'
@@ -9,7 +22,13 @@ import { monadMasterFromDomainRoot } from './monad-domain-root'
 import { deriveRoleLeaves, matchLocalRolePoints } from '../role-keys/src'
 import type { RolePoint } from '../role-keys/src'
 import type { Current } from '../directory-admission/src'
-import { decodeCanonical, verifyPreviewDirectoryEvidence } from '@frank/codec'
+import {
+  decodeCanonical,
+  verifyPreviewDirectoryEvidence,
+  cborMap,
+  encodeFrame,
+  directorySignatureDigest,
+} from '@frank/codec'
 import { seal, open, SUITE_AUTH_XCHACHA } from '@frank/crypto-box'
 import type { SuiteResult } from '@frank/crypto-box'
 
@@ -35,6 +54,7 @@ export interface MonadCanonicalRoles {
 /** Caller must obtain Current from fresh admission; this owner never grants that authority. */
 export interface MonadCanonicalRoleOwner {
   create(network: string, current: Current): MonadCanonicalRoles
+  prepareRevisionZero(input: PublicRevisionZeroInput): PublicRevisionZeroExport
   publicGenerationZeroPoints(): {
     auth: Uint8Array
     message: Uint8Array
@@ -59,6 +79,141 @@ function roleOwner(
   const sessions = new Set<MonadCanonicalRoles>()
   let disposed = false
   return Object.freeze({
+    prepareRevisionZero(
+      input: PublicRevisionZeroInput,
+    ): PublicRevisionZeroExport {
+      if (disposed) throw new Error('canonical-roles:disposed')
+      const owned = copyRevisionZeroInput(input)
+      const leaves = deriveRoleLeaves({
+        authRoot,
+        messageRoot,
+        stampRoot,
+        messageGeneration: 0n,
+        stampGeneration: 0n,
+      })
+      try {
+        const auth = leaves.auth.public,
+          message = leaves.message.public,
+          stamp = leaves.stamp.public
+        if (!sameBytes(auth.compressedPoint, ownedIdentity))
+          throw new Error('canonical-roles:identity-mismatch')
+        const account = (key: Uint8Array) =>
+          cborMap([
+            [0, 1],
+            [1, key],
+          ])
+        const time = (t: { seconds: bigint; nanoseconds: number }) =>
+          cborMap([
+            [0, t.seconds],
+            [1, t.nanoseconds],
+          ])
+        const tuple = (
+          owned.subjectBinding === 'A' ? owned.relayA : owned.relayB
+        ).tuple
+        const statement = encodeFrame(
+          { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+          cborMap([
+            [0, owned.network],
+            [1, account(auth.compressedPoint)],
+            [2, 0],
+            [3, time(owned.issuedAt)],
+            [
+              4,
+              [
+                cborMap([
+                  [0, tuple.relayId],
+                  [1, tuple.endpoint],
+                  [2, account(tuple.identity.keyBytes)],
+                  [3, time(tuple.expiry)],
+                ]),
+              ],
+            ],
+            [6, time(owned.expiresAt)],
+            [8, account(stamp.compressedPoint)],
+            [10, account(message.compressedPoint)],
+            [11, 0],
+            [12, 0],
+            [13, null],
+          ]),
+        )
+        const digest = directorySignatureDigest(owned.network, statement)
+        const signature = leaves.auth.useSecret(secret => {
+          const key = privateKeyFromSecretBytes(secret, true)
+          if (!key.ok) throw new Error('canonical-rev0:auth-key')
+          try {
+            const signed = signEcdsa(key.value, digest)
+            if (!signed.ok) throw new Error('canonical-rev0:signature')
+            return new Uint8Array(signed.value)
+          } finally {
+            key.value.bytes.fill(0)
+          }
+        })
+        const attestation = encodeFrame(
+          { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+          cborMap([
+            [0, statement],
+            [
+              1,
+              [
+                cborMap([
+                  [0, 1],
+                  [1, account(auth.compressedPoint)],
+                  [2, signature],
+                ]),
+              ],
+            ],
+          ]),
+        )
+        const evidence = verifyPreviewDirectoryEvidence(
+          attestation,
+          owned.network,
+        )
+        if (
+          !sameBytes(evidence.statementFrame.frame, statement) ||
+          evidence.statement.revision !== 0n ||
+          !sameBytes(
+            evidence.statement.subject.keyBytes,
+            auth.compressedPoint,
+          ) ||
+          !sameBytes(
+            evidence.statement.stampKey.keyBytes,
+            stamp.compressedPoint,
+          ) ||
+          !sameBytes(
+            evidence.statement.preview.messageDhKey.keyBytes,
+            message.compressedPoint,
+          )
+        )
+          throw new Error('canonical-rev0:evidence-mismatch')
+        return Object.freeze({
+          kind: 'public-revision-zero-preparation' as const,
+          registry: DERIVATION_REGISTRY_ID,
+          networkTag: owned.networkTag,
+          network: owned.network,
+          chainId: owned.chainId,
+          authAddress: computeAddress(
+            hexlify(auth.compressedPoint),
+          ).toLowerCase(),
+          auth,
+          message,
+          stamp,
+          get statement() {
+            return new Uint8Array(statement)
+          },
+          get attestation() {
+            return new Uint8Array(attestation)
+          },
+          get t1() {
+            return new Uint8Array(evidence.statementHash)
+          },
+          get configuration() {
+            return copyRevisionZeroInput(owned)
+          },
+        })
+      } finally {
+        leaves.dispose()
+      }
+    },
     publicGenerationZeroPoints() {
       if (disposed) throw new Error('canonical-roles:disposed')
       const leaves = deriveRoleLeaves({
@@ -385,4 +540,162 @@ export function canonicalWalletPublicBinding(
     change: branch(material.changeKeyring.publicBranchDescriptor()),
   })
   return Object.freeze({ tuple, id: sha256(toUtf8Bytes(tuple)).slice(2) })
+}
+
+function revisionZeroObject(value: unknown, keys: readonly string[]): void {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== keys.length ||
+    Object.keys(value).some(k => !keys.includes(k))
+  )
+    throw new Error('canonical-rev0:shape')
+}
+function revisionZeroTime(input: { seconds: bigint; nanoseconds: number }): {
+  seconds: bigint
+  nanoseconds: number
+} {
+  revisionZeroObject(input, ['seconds', 'nanoseconds'])
+  if (
+    typeof input.seconds !== 'bigint' ||
+    input.seconds < 0n ||
+    input.seconds > (1n << 64n) - 1n ||
+    !Number.isInteger(input.nanoseconds) ||
+    input.nanoseconds < 0 ||
+    input.nanoseconds >= 1000000000
+  )
+    throw new Error('canonical-rev0:timestamp')
+  return Object.freeze({
+    seconds: input.seconds,
+    nanoseconds: input.nanoseconds,
+  })
+}
+function revisionZeroNanos(input: {
+  seconds: bigint
+  nanoseconds: number
+}): bigint {
+  return input.seconds * 1000000000n + BigInt(input.nanoseconds)
+}
+function copyRevisionZeroInput(
+  input: PublicRevisionZeroInput,
+): PublicRevisionZeroInput {
+  revisionZeroObject(input, [
+    'networkTag',
+    'network',
+    'chainId',
+    'issuedAt',
+    'expiresAt',
+    'now',
+    'relayA',
+    'relayB',
+    'subjectBinding',
+  ])
+  if (
+    !(
+      (input.networkTag === 'MONT' &&
+        input.network === 'monad-testnet' &&
+        input.chainId === 10143n) ||
+      (input.networkTag === 'MON1' &&
+        input.network === 'monad-mainnet' &&
+        input.chainId === 143n)
+    ) ||
+    (input.subjectBinding !== 'A' && input.subjectBinding !== 'B')
+  )
+    throw new Error('canonical-rev0:network')
+  const issuedAt = revisionZeroTime(input.issuedAt),
+    expiresAt = revisionZeroTime(input.expiresAt),
+    now = revisionZeroTime(input.now)
+  const start = revisionZeroNanos(issuedAt),
+    end = revisionZeroNanos(expiresAt),
+    current = revisionZeroNanos(now)
+  if (
+    end <= start ||
+    end - start > 3600000000000n ||
+    current < start ||
+    current >= end
+  )
+    throw new Error('canonical-rev0:validity')
+  const process = (p: PublicRevisionZeroProcess): PublicRevisionZeroProcess => {
+    revisionZeroObject(p, ['processId', 'origin', 'tuple'])
+    if (
+      typeof p.processId !== 'string' ||
+      !/^[a-zA-Z0-9._-]{1,128}$/.test(p.processId) ||
+      typeof p.origin !== 'string' ||
+      p.origin.length > 2048
+    )
+      throw new Error('canonical-rev0:process')
+    const origin = new URL(p.origin)
+    if (
+      origin.protocol !== 'https:' ||
+      origin.origin !== p.origin ||
+      origin.username ||
+      origin.password
+    )
+      throw new Error('canonical-rev0:origin')
+    revisionZeroObject(p.tuple, [
+      'relayId',
+      'endpoint',
+      'identity',
+      'expiry',
+      'unknownFields',
+    ])
+    revisionZeroObject(p.tuple.identity, ['keyType', 'keyBytes'])
+    const tuple = p.tuple
+    if (
+      !(tuple.relayId instanceof Uint8Array) ||
+      tuple.relayId.length < 16 ||
+      tuple.relayId.length > 64 ||
+      typeof tuple.endpoint !== 'string' ||
+      tuple.endpoint.length < 1 ||
+      tuple.endpoint.length > 2048 ||
+      tuple.identity.keyType !== 1 ||
+      !(tuple.identity.keyBytes instanceof Uint8Array) ||
+      tuple.identity.keyBytes.length !== 33 ||
+      !(tuple.unknownFields instanceof Map) ||
+      tuple.unknownFields.size !== 0
+    )
+      throw new Error('canonical-rev0:tuple')
+    const endpoint = new URL(tuple.endpoint)
+    if (
+      endpoint.protocol !== 'https:' ||
+      endpoint.username ||
+      endpoint.password ||
+      endpoint.hash
+    )
+      throw new Error('canonical-rev0:endpoint')
+    if (
+      hexlify(tuple.identity.keyBytes) !==
+      SigningKey.computePublicKey(tuple.identity.keyBytes, true)
+    )
+      throw new Error('canonical-rev0:tuple-point')
+    const expiry = revisionZeroTime(tuple.expiry)
+    if (revisionZeroNanos(expiry) < end)
+      throw new Error('canonical-rev0:tuple-expiry')
+    return Object.freeze({
+      processId: p.processId,
+      origin: p.origin,
+      tuple: {
+        relayId: new Uint8Array(tuple.relayId),
+        endpoint: tuple.endpoint,
+        identity: {
+          keyType: 1,
+          keyBytes: new Uint8Array(tuple.identity.keyBytes),
+        },
+        expiry,
+        unknownFields: new Map(),
+      },
+    })
+  }
+  return Object.freeze({
+    networkTag: input.networkTag,
+    network: input.network,
+    chainId: input.chainId,
+    issuedAt,
+    expiresAt,
+    now,
+    relayA: process(input.relayA),
+    relayB: process(input.relayB),
+    subjectBinding: input.subjectBinding,
+  })
 }

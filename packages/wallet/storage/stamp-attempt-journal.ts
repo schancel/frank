@@ -1,8 +1,16 @@
+import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
+import { CANONICAL_TERMINAL_REASONS } from '@frank/cashweb/relay/canonical-dm-transport'
 import { inspectCanonicalPreparedEnvelope } from '../monad-stamp-stealth'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
-import { compareBytes, decodeCanonical, parseFrame, toHex } from '@frank/codec'
+import {
+  compareBytes,
+  decodeCanonical,
+  parseFrame,
+  toHex,
+  paymentCommitment,
+} from '@frank/codec'
 import { hexlify, Transaction, sha256, toUtf8Bytes } from 'ethers'
 import {
   restoreCanonicalRequest,
@@ -142,6 +150,200 @@ interface StoredCanonicalIntent {
   members: CanonicalUnsignedMember[]
   construction: string
   reservedBytes: number
+}
+
+/** Public funds bookkeeping; relay prefix metadata is not chain finality authority. */
+export interface CanonicalImportedRecoveryAccount {
+  readonly childIndex: number
+  readonly transactionHash: string
+  readonly address: string
+  readonly valueWei: string
+}
+export interface CanonicalImportedRecovery {
+  readonly version: 1
+  readonly obligationId: string
+  readonly walletBindingId: string
+  readonly request: CanonicalExactRequest
+  readonly confirmedChildren: readonly number[]
+  readonly lifecycle: string
+  readonly stampGeneration: string
+  readonly stampKeyHex: string
+  readonly sharedPointHex: string
+  readonly recipientT1: string
+  readonly accounts: readonly CanonicalImportedRecoveryAccount[]
+  readonly recipientAcknowledged: boolean
+}
+interface StoredCanonicalRecovery {
+  version: 1
+  obligationId: string
+  walletBindingId: string
+  body: string
+  contentType: string
+  confirmedChildren: number[]
+  lifecycle: string
+  stampGeneration: string
+  accounts: CanonicalImportedRecoveryAccount[]
+  recipientAcknowledged: boolean
+}
+/** Opaque, live-owner proof of an already durable imported obligation. */
+export interface CanonicalRecoveryCustody {
+  readonly obligationId: string
+}
+const retainedRecoveryCustody = new WeakMap<
+  object,
+  () => CanonicalImportedRecovery
+>()
+export function inspectRetainedCanonicalRecovery(
+  proof: CanonicalRecoveryCustody,
+): CanonicalImportedRecovery {
+  const read = retainedRecoveryCustody.get(proof)
+  if (!read) canonicalFail('conflict')
+  return read()
+}
+function terminalRecovery(lifecycle: string): boolean {
+  return CANONICAL_TERMINAL_REASONS.some(
+    reason => lifecycle === `terminal:${reason}`,
+  )
+}
+function publicRecovery(
+  row: StoredCanonicalRecovery,
+): CanonicalImportedRecovery {
+  const request = restoreCanonicalRequest({
+    body: fromBase64(row.body, CANONICAL_MAX_BODY),
+    contentType: row.contentType,
+  })
+  const delivery = parseFrame(request.parts.delivery)
+  if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+    canonicalFail('invalid')
+  const envelope = inspectCanonicalPreparedEnvelope(
+    delivery.typed.payloadFrame.frame,
+    request.parts.context,
+  )
+  const chain =
+    request.identity.network === 'monad-testnet'
+      ? 10143n
+      : request.identity.network === 'monad-mainnet'
+      ? 143n
+      : 0n
+  if (
+    !chain ||
+    row.confirmedChildren.some(
+      (i, n) =>
+        !Number.isSafeInteger(i) ||
+        i < 0 ||
+        i >= request.parts.transactions.length ||
+        (n > 0 && i <= row.confirmedChildren[n - 1]),
+    )
+  )
+    canonicalFail('invalid')
+  // Every retained raw member is checked, including an as-yet unconfirmed prefix suffix.
+  const all = delivery.typed.payments.map((payment, childIndex) => {
+    const tx = Transaction.from(hexlify(request.parts.transactions[childIndex]))
+    const destination = canonicalStampDestination({
+      network: request.identity.network,
+      stampKey: envelope.stampKey,
+      sharedPoint: envelope.payload.sharedPoint,
+      childIndex,
+    })
+    const address = '0x' + toHex(destination.address)
+    if (
+      tx.chainId !== chain ||
+      tx.to?.toLowerCase() !== address ||
+      tx.value <= 0n ||
+      tx.value !== BigInt('0x' + toHex(payment.value)) ||
+      tx.hash?.toLowerCase() !== '0x' + toHex(payment.transactionId) ||
+      toHex(payment.address) !== toHex(destination.address) ||
+      toHex(payment.commitment) !==
+        toHex(
+          paymentCommitment(
+            delivery.typed!.type === 1
+              ? delivery.typed.payloadDigest
+              : new Uint8Array(),
+            childIndex,
+          ),
+        ) ||
+      tx.data.toLowerCase() !== '0x504f4e4401' + toHex(payment.commitment)
+    )
+      canonicalFail('invalid')
+    return {
+      childIndex,
+      transactionHash: tx.hash!.toLowerCase(),
+      address,
+      valueWei: tx.value.toString(),
+    }
+  })
+  const accounts = row.confirmedChildren.map(i => all[i])
+  if (JSON.stringify(accounts) !== JSON.stringify(row.accounts))
+    canonicalFail('invalid')
+  return {
+    version: 1,
+    obligationId: row.obligationId,
+    walletBindingId: row.walletBindingId,
+    request,
+    confirmedChildren: [...row.confirmedChildren],
+    lifecycle: row.lifecycle,
+    stampGeneration: row.stampGeneration,
+    stampKeyHex: toHex(envelope.stampKey.keyBytes),
+    sharedPointHex: toHex(envelope.payload.sharedPoint),
+    recipientT1: request.identity.recipient_t1,
+    accounts,
+    recipientAcknowledged: row.recipientAcknowledged,
+  }
+}
+function validateRecovery(value: unknown): StoredCanonicalRecovery {
+  exactObject(value, [
+    'version',
+    'obligationId',
+    'walletBindingId',
+    'body',
+    'contentType',
+    'confirmedChildren',
+    'lifecycle',
+    'stampGeneration',
+    'accounts',
+    'recipientAcknowledged',
+  ])
+  const row = value as unknown as StoredCanonicalRecovery
+  if (
+    row.version !== 1 ||
+    !/^[0-9a-f]{64}$/.test(row.obligationId) ||
+    !/^[0-9a-f]{64}$/.test(row.walletBindingId) ||
+    typeof row.contentType !== 'string' ||
+    row.contentType !==
+      `multipart/form-data; boundary=frank-recovery-${row.obligationId.slice(
+        0,
+        32,
+      )}` ||
+    !Array.isArray(row.confirmedChildren) ||
+    row.confirmedChildren.length > 64 ||
+    !Array.isArray(row.accounts) ||
+    row.accounts.length !== row.confirmedChildren.length ||
+    typeof row.lifecycle !== 'string' ||
+    !(
+      ['pending', 'fully_confirmed', 'delivered'].includes(row.lifecycle) ||
+      terminalRecovery(row.lifecycle)
+    ) ||
+    typeof row.stampGeneration !== 'string' ||
+    !/^(0|[1-9][0-9]{0,9})$/.test(row.stampGeneration) ||
+    BigInt(row.stampGeneration) > 0x7fffffffn ||
+    typeof row.recipientAcknowledged !== 'boolean' ||
+    (row.recipientAcknowledged && !terminalRecovery(row.lifecycle))
+  )
+    canonicalFail('invalid')
+  for (const account of row.accounts)
+    exactObject(account, [
+      'childIndex',
+      'transactionHash',
+      'address',
+      'valueWei',
+    ])
+  const view = publicRecovery(row)
+  if (
+    (row.lifecycle === 'fully_confirmed' || row.lifecycle === 'delivered') &&
+    row.confirmedChildren.length !== view.request.parts.transactions.length
+  )
+    canonicalFail('invalid')
+  return row
 }
 
 export interface CanonicalAttemptCorrelation {
@@ -496,6 +698,7 @@ export class LevelCanonicalStampAttemptJournal {
   }
   private readonly rows = new Map<string, StoredCanonicalAttempt>()
   private readonly intents = new Map<string, StoredCanonicalIntent>()
+  private readonly recoveries = new Map<string, StoredCanonicalRecovery>()
   private publicBinding: string | undefined
   private readonly eligibility = new WeakMap<
     CanonicalReplayEligibility,
@@ -535,6 +738,7 @@ export class LevelCanonicalStampAttemptJournal {
       let manifest: CanonicalManifest | undefined
       const rows = new Map<string, StoredCanonicalAttempt>()
       const intents = new Map<string, StoredCanonicalIntent>()
+      const recoveries = new Map<string, StoredCanonicalRecovery>()
       let publicBinding: string | undefined
       for await (const [key, encoded] of database.iterator({}) as any) {
         if (
@@ -552,6 +756,14 @@ export class LevelCanonicalStampAttemptJournal {
           )
             canonicalFail('corrupt')
           publicBinding = value.tuple
+        } else if (typeof key === 'string' && key.startsWith('recovery:')) {
+          const row = validateRecovery(value)
+          if (
+            key !== `recovery:${row.obligationId}` ||
+            recoveries.has(row.obligationId)
+          )
+            canonicalFail('corrupt')
+          recoveries.set(row.obligationId, row)
         } else if (typeof key === 'string' && key.startsWith('intent:')) {
           const intent = this.validateIntent(value)
           if (
@@ -581,7 +793,8 @@ export class LevelCanonicalStampAttemptJournal {
         }
       }
       if (manifest === undefined) {
-        if (rows.size !== 0 || intents.size !== 0) canonicalFail('corrupt')
+        if (rows.size !== 0 || intents.size !== 0 || recoveries.size !== 0)
+          canonicalFail('corrupt')
         manifest = { version: 1, nextSequence: 1, acknowledgedThrough: 0 }
         await durablePut(database, CANONICAL_MANIFEST, JSON.stringify(manifest))
       }
@@ -645,6 +858,25 @@ export class LevelCanonicalStampAttemptJournal {
           )
             canonicalFail('corrupt')
       }
+      for (const row of recoveries.values())
+        this.assertRecoveryBinding(row, publicBinding)
+      const retainedBytes =
+        [...rows.values()].reduce(
+          (n, row) => n + Buffer.byteLength(JSON.stringify(row)) + 16384,
+          0,
+        ) +
+        [...intents.values()].reduce((n, row) => n + row.reservedBytes, 0) +
+        [...recoveries.values()].reduce(
+          (n, row) => n + Buffer.byteLength(JSON.stringify(row)) + 16384,
+          0,
+        )
+      if (
+        rows.size + intents.size + recoveries.size > this.maxRecords ||
+        retainedBytes > this.maxBytes
+      )
+        canonicalFail('corrupt')
+      this.recoveries.clear()
+      for (const [id, row] of recoveries) this.recoveries.set(id, row)
       this.database = database
       this.manifest = manifest
       this.publicBinding = publicBinding
@@ -680,6 +912,7 @@ export class LevelCanonicalStampAttemptJournal {
       this.database = undefined
       this.rows.clear()
       this.intents.clear()
+      this.recoveries.clear()
       this.publicBinding = undefined
       this.replaying.clear()
       this.epoch++
@@ -811,7 +1044,8 @@ export class LevelCanonicalStampAttemptJournal {
         if (this.publicBinding !== tuple) canonicalFail('conflict')
         return
       }
-      if (this.rows.size || this.intents.size) canonicalFail('conflict')
+      if (this.rows.size || this.intents.size || this.recoveries.size)
+        canonicalFail('conflict')
       await this.persist(() =>
         durablePut(
           this.database!,
@@ -947,6 +1181,213 @@ export class LevelCanonicalStampAttemptJournal {
     return row
   }
 
+  private recoveryBytes(): number {
+    return [...this.recoveries.values()].reduce(
+      (n, row) => n + Buffer.byteLength(JSON.stringify(row)) + 16384,
+      0,
+    )
+  }
+  private assertRecoveryBinding(
+    row: StoredCanonicalRecovery,
+    tuple = this.publicBinding,
+  ): void {
+    if (!tuple) canonicalFail('conflict')
+    const bound = JSON.parse(tuple),
+      view = publicRecovery(row)
+    const delivery = parseFrame(view.request.parts.delivery)
+    if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+      canonicalFail('conflict')
+    const payload = parseFrame(delivery.typed.payloadFrame.frame)
+    if (
+      row.walletBindingId !== sha256(toUtf8Bytes(tuple)).slice(2) ||
+      view.request.identity.network !== bound.network ||
+      payload.kind !== 'parsed' ||
+      payload.typed?.type !== 5 ||
+      '0x' + toHex(payload.typed.recipient.keyBytes) !== bound.auth
+    )
+      canonicalFail('conflict')
+  }
+  getImportedRecoveries(): CanonicalImportedRecovery[] {
+    this.assertOpen()
+    return [...this.recoveries.values()].map(publicRecovery)
+  }
+  importedRecovery(
+    obligationId: string,
+  ): CanonicalImportedRecovery | undefined {
+    this.assertOpen()
+    const row = this.recoveries.get(obligationId)
+    return row && publicRecovery(row)
+  }
+  retainedRecoveryCustody(obligationId: string): CanonicalRecoveryCustody {
+    this.assertOpen()
+    const row = this.recoveries.get(obligationId)
+    if (!row) canonicalFail('conflict')
+    const snapshot = JSON.stringify({
+      body: row.body,
+      stampGeneration: row.stampGeneration,
+      walletBindingId: row.walletBindingId,
+    })
+    const proof = Object.freeze({ obligationId })
+    retainedRecoveryCustody.set(proof, () => {
+      this.assertOpen()
+      const current = this.recoveries.get(obligationId)
+      if (
+        !current ||
+        snapshot !==
+          JSON.stringify({
+            body: current.body,
+            stampGeneration: current.stampGeneration,
+            walletBindingId: current.walletBindingId,
+          })
+      )
+        canonicalFail('conflict')
+      this.assertRecoveryBinding(current)
+      return publicRecovery(current)
+    })
+    return proof
+  }
+  importRecovery(
+    input: Omit<
+      CanonicalImportedRecovery,
+      | 'version'
+      | 'stampKeyHex'
+      | 'sharedPointHex'
+      | 'recipientT1'
+      | 'accounts'
+      | 'recipientAcknowledged'
+    >,
+  ): Promise<CanonicalImportedRecovery> {
+    const request = restoreCanonicalRequest({
+      body: input.request.body,
+      contentType: input.request.contentType,
+    })
+    if (!equalCanonicalRequests(request, input.request))
+      canonicalFail('conflict')
+    const delivery = parseFrame(request.parts.delivery)
+    if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+      canonicalFail('invalid')
+    // Compute public accounts from the complete raw set, then strictly compare on every reopen.
+    if (
+      !Array.isArray(input.confirmedChildren) ||
+      input.confirmedChildren.length > 64 ||
+      input.confirmedChildren.some(
+        (i, n) =>
+          !Number.isSafeInteger(i) ||
+          i < 0 ||
+          i >= request.parts.transactions.length ||
+          (n > 0 && i <= input.confirmedChildren[n - 1]),
+      )
+    )
+      canonicalFail('invalid')
+    const accounts = input.confirmedChildren.map(childIndex => {
+      const tx = Transaction.from(
+        hexlify(request.parts.transactions[childIndex]),
+      )
+      return {
+        childIndex,
+        transactionHash: tx.hash!.toLowerCase(),
+        address: tx.to!.toLowerCase(),
+        valueWei: tx.value.toString(),
+      }
+    })
+    const row = validateRecovery({
+      version: 1,
+      obligationId: input.obligationId,
+      walletBindingId: input.walletBindingId,
+      body: Buffer.from(request.body).toString('base64'),
+      contentType: request.contentType,
+      confirmedChildren: [...input.confirmedChildren],
+      lifecycle: input.lifecycle,
+      stampGeneration: input.stampGeneration,
+      accounts,
+      recipientAcknowledged: false,
+    })
+    this.assertRecoveryBinding(row)
+    return this.serialize(async () => {
+      for (const other of this.recoveries.values()) {
+        if (other.obligationId === row.obligationId) continue
+        const retained = publicRecovery(other),
+          next = publicRecovery(row)
+        if (
+          retained.request.identity.submission_identity ===
+            next.request.identity.submission_identity ||
+          (retained.request.identity.network ===
+            next.request.identity.network &&
+            retained.request.identity.recipient ===
+              next.request.identity.recipient &&
+            retained.request.identity.payload_hash ===
+              next.request.identity.payload_hash)
+        )
+          canonicalFail('conflict')
+      }
+      const prior = this.recoveries.get(row.obligationId)
+      if (prior) {
+        if (
+          prior.body !== row.body ||
+          prior.contentType !== row.contentType ||
+          prior.walletBindingId !== row.walletBindingId ||
+          prior.stampGeneration !== row.stampGeneration ||
+          prior.confirmedChildren.some(
+            i => !row.confirmedChildren.includes(i),
+          ) ||
+          (terminalRecovery(prior.lifecycle) &&
+            (prior.lifecycle !== row.lifecycle ||
+              JSON.stringify(prior.confirmedChildren) !==
+                JSON.stringify(row.confirmedChildren))) ||
+          (prior.lifecycle === 'fully_confirmed' &&
+            row.lifecycle === 'pending') ||
+          (prior.lifecycle === 'delivered' && row.lifecycle !== 'delivered')
+        )
+          canonicalFail('conflict')
+        row.recipientAcknowledged = prior.recipientAcknowledged
+        if (JSON.stringify(row) === JSON.stringify(prior))
+          return publicRecovery(prior)
+      }
+      const bytes =
+        [...this.rows.values()].reduce(
+          (n, item) => n + Buffer.byteLength(JSON.stringify(item)) + 16384,
+          0,
+        ) +
+        this.intentBytes() +
+        this.recoveryBytes() -
+        (prior ? Buffer.byteLength(JSON.stringify(prior)) + 16384 : 0) +
+        Buffer.byteLength(JSON.stringify(row)) +
+        16384
+      if (
+        (!prior &&
+          this.rows.size + this.intents.size + this.recoveries.size >=
+            this.maxRecords) ||
+        bytes > this.maxBytes
+      )
+        canonicalFail('capacity')
+      await this.persist(() =>
+        durablePut(
+          this.database!,
+          `recovery:${row.obligationId}`,
+          JSON.stringify(row),
+        ),
+      )
+      this.recoveries.set(row.obligationId, row)
+      return publicRecovery(row)
+    })
+  }
+  markRecoveryAcknowledged(obligationId: string): Promise<void> {
+    return this.serialize(async () => {
+      const prior = this.recoveries.get(obligationId)
+      if (!prior || !terminalRecovery(prior.lifecycle))
+        canonicalFail('conflict')
+      if (prior.recipientAcknowledged) return
+      const row = { ...prior, recipientAcknowledged: true }
+      await this.persist(() =>
+        durablePut(
+          this.database!,
+          `recovery:${obligationId}`,
+          JSON.stringify(row),
+        ),
+      )
+      this.recoveries.set(obligationId, row)
+    })
+  }
   private intentBytes(): number {
     return Array.from(this.intents.values()).reduce(
       (n, row) => n + row.reservedBytes,
@@ -1045,8 +1486,13 @@ export class LevelCanonicalStampAttemptJournal {
         0,
       )
       if (
-        this.rows.size + this.intents.size >= this.maxRecords ||
-        bytes + this.intentBytes() + snapshot.reservedBytes > this.maxBytes ||
+        this.rows.size + this.intents.size + this.recoveries.size >=
+          this.maxRecords ||
+        bytes +
+          this.intentBytes() +
+          this.recoveryBytes() +
+          snapshot.reservedBytes >
+          this.maxBytes ||
         this.manifest.nextSequence >= Number.MAX_SAFE_INTEGER
       )
         canonicalFail('capacity')
@@ -1295,8 +1741,9 @@ export class LevelCanonicalStampAttemptJournal {
           0,
         )
       if (
-        this.rows.size + this.intents.size >= this.maxRecords ||
-        bytes + this.intentBytes() > this.maxBytes
+        this.rows.size + this.intents.size + this.recoveries.size >=
+          this.maxRecords ||
+        bytes + this.intentBytes() + this.recoveryBytes() > this.maxBytes
       )
         canonicalFail('capacity')
       const manifest = { ...this.manifest, nextSequence: sequence + 1 }

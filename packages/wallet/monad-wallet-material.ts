@@ -1,4 +1,13 @@
-import { privateKeyFromSecretBytes, signEcdsa } from '@frank/nakamoto'
+import {
+  inspectRetainedCanonicalRecovery,
+  type CanonicalRecoveryCustody,
+} from './storage/stamp-attempt-journal'
+import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
+import {
+  bytesToBigint,
+  privateKeyFromSecretBytes,
+  signEcdsa,
+} from '@frank/nakamoto'
 import type {
   PublicRevisionZeroInput,
   PublicRevisionZeroExport,
@@ -11,6 +20,8 @@ import {
   toUtf8Bytes,
   computeAddress,
   SigningKey,
+  getBytes,
+  concat,
 } from 'ethers'
 import { DERIVATION_REGISTRY_ID } from '../domain-roots/src'
 import type { DomainRoot, DomainPurpose } from '../domain-roots/src'
@@ -54,6 +65,7 @@ export interface MonadCanonicalRoles {
 /** Caller must obtain Current from fresh admission; this owner never grants that authority. */
 export interface MonadCanonicalRoleOwner {
   create(network: string, current: Current): MonadCanonicalRoles
+  verifyRetainedRecoveryCustody(proof: CanonicalRecoveryCustody): void
   prepareRevisionZero(input: PublicRevisionZeroInput): PublicRevisionZeroExport
   publicGenerationZeroPoints(): {
     auth: Uint8Array
@@ -79,6 +91,88 @@ function roleOwner(
   const sessions = new Set<MonadCanonicalRoles>()
   let disposed = false
   return Object.freeze({
+    verifyRetainedRecoveryCustody(proof: CanonicalRecoveryCustody): void {
+      if (disposed) throw new Error('canonical-roles:disposed')
+      const recovery = inspectRetainedCanonicalRecovery(proof)
+      const leaves = deriveRoleLeaves({
+        authRoot,
+        messageRoot,
+        stampRoot,
+        messageGeneration: 0n,
+        stampGeneration: BigInt(recovery.stampGeneration),
+      })
+      try {
+        if (
+          !sameBytes(leaves.auth.public.compressedPoint, ownedIdentity) ||
+          !sameBytes(
+            leaves.stamp.public.compressedPoint,
+            getBytes('0x' + recovery.stampKeyHex),
+          )
+        )
+          throw new Error('canonical-roles:retained-custody-mismatch')
+        for (const account of recovery.accounts) {
+          const domain = 'frank/stamp-child/v1',
+            network = recovery.request.identity.network
+          const prefix = Uint8Array.from([
+            0,
+            domain.length,
+            ...Array.from(domain, c => c.charCodeAt(0)),
+            0,
+            network.length,
+            ...Array.from(network, c => c.charCodeAt(0)),
+          ])
+          const index = account.childIndex,
+            sharedPoint = getBytes('0x' + recovery.sharedPointHex)
+          const tweak = bytesToBigint(
+            getBytes(
+              sha256(
+                concat([
+                  prefix,
+                  sharedPoint,
+                  Uint8Array.of(index >>> 24, index >>> 16, index >>> 8, index),
+                ]),
+              ),
+            ),
+          )
+          const order =
+            0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
+          if (tweak <= 0n || tweak >= order)
+            throw new Error('canonical-roles:retained-tweak')
+          const expected = canonicalStampDestination({
+            network,
+            stampKey: {
+              keyType: 1,
+              keyBytes: leaves.stamp.public.compressedPoint,
+            },
+            sharedPoint,
+            childIndex: index,
+          })
+          leaves.stamp.useSecret(secret => {
+            const child = getBytes(
+              '0x' +
+                ((bytesToBigint(secret) * tweak) % order)
+                  .toString(16)
+                  .padStart(64, '0'),
+            )
+            try {
+              if (
+                computeAddress(hexlify(child)).toLowerCase() !==
+                  account.address ||
+                !sameBytes(
+                  getBytes(SigningKey.computePublicKey(hexlify(child), true)),
+                  expected.publicKey,
+                )
+              )
+                throw new Error('canonical-roles:retained-child-mismatch')
+            } finally {
+              child.fill(0)
+            }
+          })
+        }
+      } finally {
+        leaves.dispose()
+      }
+    },
     prepareRevisionZero(
       input: PublicRevisionZeroInput,
     ): PublicRevisionZeroExport {

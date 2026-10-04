@@ -155,6 +155,10 @@ export default configure(ctx => {
     // https://quasar.dev/quasar-cli/cli-documentation/supporting-ie
     supportIE: false,
 
+    sourceFiles: {
+      pwaRegisterServiceWorker: 'src-pwa/register-service-worker.js',
+    },
+
     // default values:
     // sourceFiles: {
     //   rootComponent: 'src/App.vue',
@@ -335,46 +339,12 @@ export default configure(ctx => {
     // https://quasar.dev/quasar-cli/developing-pwa/configuring-pwa
     pwa: {
       workboxMode: 'GenerateSW', // 'GenerateSW' or 'InjectManifest'
-      workboxOptions: {
-        skipWaiting: true,
-        clientsClaim: true,
-        cleanupOutdatedCaches: true,
-      },
-      manifest: {
-        name: 'Frank',
-        short_name: 'Frank',
-        description: ' A Lotus powered internet cryptomessenger',
-        display: 'standalone',
-        orientation: 'portrait',
-        background_color: '#f7f7f2',
-        theme_color: '#121218',
-        icons: [
-          {
-            src: 'icons/icon-128x128.png',
-            sizes: '128x128',
-            type: 'image/png',
-          },
-          {
-            src: 'icons/icon-192x192.png',
-            sizes: '192x192',
-            type: 'image/png',
-          },
-          {
-            src: 'icons/icon-256x256.png',
-            sizes: '256x256',
-            type: 'image/png',
-          },
-          {
-            src: 'icons/icon-384x384.png',
-            sizes: '384x384',
-            type: 'image/png',
-          },
-          {
-            src: 'icons/icon-512x512.png',
-            sizes: '512x512',
-            type: 'image/png',
-          },
-        ],
+      extendPWAGenerateSWOptions() {
+        return {
+          skipWaiting: true,
+          clientsClaim: true,
+          cleanupOutdatedCaches: true,
+        }
       },
     },
 

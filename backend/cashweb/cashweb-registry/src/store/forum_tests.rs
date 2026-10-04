@@ -599,3 +599,171 @@ fn same_direction_headroom_never_assumes_opposite_pending_cancellation() {
         )
         .is_err());
 }
+
+/// A compatible newer-schema post and event, with real commitments and a signed burn.
+pub(crate) fn optional_observation(nonce: u64) -> Observation {
+    use bitcoinsuite_core::ecc::Ecc;
+    use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
+    use frank_cbor::{encode_frame, EnvelopeFields, FramePayload, ValidationResult};
+    let base = observation(nonce, None, false);
+    let TopicEvent::Post(base_post) = &base.event else {
+        panic!()
+    };
+    let ValidationResult::Parsed(parsed) =
+        frank_cbor::validate_frame(&base_post.post_frame, &frank_cbor::default_context()).unwrap()
+    else {
+        panic!()
+    };
+    let CborValue::Map(mut fields) = parsed.payload else {
+        panic!()
+    };
+    fields.push((99, CborValue::Bytes(vec![0, 0xff, 0x81, 0x42])));
+    let post = encode_frame(
+        EnvelopeFields {
+            type_id: 9,
+            schema_version: 3,
+            min_reader_version: 2,
+        },
+        FramePayload::Value(&cbor_map(fields)),
+    )
+    .unwrap();
+    let make = |raw| {
+        encode_frame(
+            EnvelopeFields {
+                type_id: 10,
+                schema_version: 2,
+                min_reader_version: 1,
+            },
+            FramePayload::Value(&cbor_map(vec![
+                (0, CborValue::Text("monad-testnet".into())),
+                (1, CborValue::Bytes(post.clone())),
+                (2, CborValue::Bytes(raw)),
+                (99, CborValue::Bytes(vec![0xfe, 0, 0x7f])),
+            ])),
+        )
+        .unwrap()
+    };
+    let preliminary = parse_topic_event(&make(vec![1]), "monad-testnet").unwrap();
+    let mut calldata = b"TPIC".to_vec();
+    calldata.extend([2, 1]);
+    calldata.extend(preliminary.commitment());
+    let secret = EccSecp256k1::default().seckey_from_array([3; 32]).unwrap();
+    let (raw, _) = crate::monad_evm_tx::test_support::signed_eip1559_tx(
+        &secret,
+        10143,
+        nonce,
+        policy().burn_address,
+        7,
+        &calldata,
+    );
+    let event = parse_topic_event(&make(raw), "monad-testnet").unwrap();
+    let checked = check_topic_burn_before_broadcast(&event, &policy()).unwrap();
+    Observation {
+        event,
+        checked,
+        first_seen: base.first_seen,
+        confirmed: None,
+    }
+}
+
+#[test]
+fn proof_optional_exact_authority_rebuilds_missing_and_corrupt_derived_records() {
+    use frank_cbor::{TypedPayload, ValidationResult};
+    let root = tempdir::TempDir::new("forum-proof-derived").unwrap();
+    let legacy = root.path().join("db.rocksdb");
+    let original = optional_observation(811);
+    let hash = original.checked.decoded.tx_hash.0;
+    let target = *original.event.target_hash();
+    let TopicEvent::Post(post) = &original.event else {
+        panic!()
+    };
+    let nested = post.post_frame.clone();
+    let ValidationResult::Parsed(parsed) =
+        frank_cbor::validate_frame(&nested, &frank_cbor::default_context()).unwrap()
+    else {
+        panic!()
+    };
+    let TypedPayload::TopicPost { unknown, .. } = parsed.typed.as_deref().unwrap() else {
+        panic!()
+    };
+    assert_eq!(
+        unknown,
+        &vec![(99, CborValue::Bytes(vec![0, 0xff, 0x81, 0x42]))]
+    );
+    let mut store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
+    store.admit(original.clone()).unwrap();
+    store
+        .confirm(&hash, &facts(&original, 1, 0), original.first_seen)
+        .unwrap();
+    let pending = observation(812, Some(target), true);
+    store.admit(pending.clone()).unwrap();
+    let authority = store
+        .db
+        .iterator(IteratorMode::Start)
+        .map(|row| row.unwrap())
+        .filter(|(k, _)| k.first() == Some(&b'e'))
+        .map(|(k, v)| (k.to_vec(), v.to_vec()))
+        .collect::<Vec<_>>();
+    let expected_post = store.post(&target).unwrap().unwrap().value();
+    let expected_count = store.pending_count;
+    let expected_bytes = store.pending_bytes;
+    drop(store);
+    for corrupt in [false, true] {
+        let db = rocksdb::DB::open_default(Store::path(&legacy).unwrap()).unwrap();
+        let derived = db
+            .iterator(IteratorMode::Start)
+            .map(|row| row.unwrap().0.to_vec())
+            .filter(|k| matches!(k.first(), Some(b'p' | b't' | b'd' | b'q')))
+            .collect::<Vec<_>>();
+        assert!(!derived.is_empty());
+        for k in derived {
+            if corrupt {
+                db.put(k, [0xff]).unwrap();
+            } else {
+                db.delete(k).unwrap();
+            }
+        }
+        db.flush().unwrap();
+        drop(db);
+        let store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
+        assert_eq!(store.pending_count, expected_count);
+        assert_eq!(store.pending_bytes, expected_bytes);
+        assert_eq!(store.post(&target).unwrap().unwrap().value(), expected_post);
+        assert_eq!(store.post(&target).unwrap().unwrap().frame, nested);
+        assert_eq!(
+            store.operation(&hash).unwrap().unwrap().frame(),
+            original.frame()
+        );
+        for (k, v) in &authority {
+            assert_eq!(store.db.get(k).unwrap().unwrap(), *v);
+        }
+        drop(store);
+    }
+    let db = rocksdb::DB::open_default(Store::path(&legacy).unwrap()).unwrap();
+    let authoritative_key = key(b'e', &hash);
+    db.put(&authoritative_key, [0xff]).unwrap();
+    db.flush().unwrap();
+    drop(db);
+    assert!(matches!(
+        Store::open(&legacy, "monad-testnet", policy()),
+        Err(ForumError::Unavailable)
+    ));
+    let db = rocksdb::DB::open_default(Store::path(&legacy).unwrap()).unwrap();
+    assert_eq!(db.get(&authoritative_key).unwrap().unwrap(), vec![0xff]);
+    let pending_key = key(b'e', &pending.checked.decoded.tx_hash.0);
+    assert_eq!(
+        db.get(&pending_key).unwrap().unwrap(),
+        authority.iter().find(|(k, _)| k == &pending_key).unwrap().1
+    );
+}
+
+pub(crate) fn proof_retained_records(store: &Store) -> Vec<(Vec<u8>, Vec<u8>)> {
+    store
+        .db
+        .iterator(IteratorMode::Start)
+        .map(|row| {
+            let (key, value) = row.unwrap();
+            (key.to_vec(), value.to_vec())
+        })
+        .collect()
+}

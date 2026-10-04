@@ -471,6 +471,22 @@ export function refundBetStep(state: HandState | undefined): DealerStep | undefi
   }
 }
 
+/** What the dealer still owes back: money the hand did not accept, and a bet returned instead of
+ * dealt, each counted by what the refund's stamp actually paid. A short refund leaves the rest
+ * owed, the same way a short payout shows as owed more than paid. */
+export function refundShortfallWei(state: HandState): bigint {
+  let owed = 0n
+  for (const r of state.rejected) {
+    const paid = r.refundedWei ?? 0n
+    if (paid < r.stampWei) owed += r.stampWei - paid
+  }
+  if (state.phase === 'refunded') {
+    const paid = state.refundedWei ?? 0n
+    if (paid < state.wagerWei) owed += state.wagerWei - paid
+  }
+  return owed
+}
+
 /** The role an address plays in a hand, if any. */
 export function roleOf(state: HandState, address: string): HandRole | undefined {
   if (same(state.dealer, address)) return 'dealer'

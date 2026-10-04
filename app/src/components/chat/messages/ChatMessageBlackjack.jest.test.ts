@@ -351,6 +351,51 @@ describe('the player', () => {
     )
   })
 
+  it('still sees a refund as owed when the dealer sent only part of it', async () => {
+    const messages = hand(false, WIN, 0n, [])
+    messages.push(
+      toMessage({
+        outbound: true,
+        item: { action: 'bet' },
+        stamp: 1001n,
+        digest: 'over',
+      }),
+      toMessage({
+        outbound: false,
+        item: { action: 'refund', ref: 'over' },
+        stamp: 1n,
+      }),
+    )
+    const wrapper = await mountLast(messages)
+    expect(wrapper.find('[data-testid="blackjack-problem"]').text()).toContain(
+      '1000 MON',
+    )
+  })
+
+  it('sees a bet that was returned short as short', async () => {
+    const messages = hand(false, WIN, 0n, [])
+    messages.push(
+      toMessage({
+        outbound: true,
+        item: { action: 'bet' },
+        stamp: 400n,
+        digest: BET_DIGEST,
+      }),
+      toMessage({
+        outbound: false,
+        item: { action: 'refund', ref: BET_DIGEST },
+        stamp: 3n,
+      }),
+    )
+    const wrapper = await mountLast(messages)
+    expect(wrapper.find('[data-testid="blackjack-refunded"]').text()).toBe(
+      'The dealer returned the bet (3 MON).',
+    )
+    expect(wrapper.find('[data-testid="blackjack-problem"]').text()).toContain(
+      '397 MON',
+    )
+  })
+
   it('is told when the dealer’s reveal does not match its commitment', async () => {
     const messages = hand(false, WIN, 400n, ['stand'])
     const honest = dealerStep(

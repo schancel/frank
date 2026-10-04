@@ -18,6 +18,7 @@ import {
   payoutWei,
   playerMoves,
   refundBetStep,
+  refundShortfallWei,
   roleOf,
   seedFromBytes,
   totalStakeWei,
@@ -608,6 +609,36 @@ describe('amounts', () => {
     expect(table.send(BOB, { action: 'refund', ref: BET_DIGEST }, WAGER).error).toBe(
       'wrong-sender',
     )
+  })
+
+  it('counts a short refund as still owed', () => {
+    // A rejected bet answered with a dust refund.
+    const table = new Table(ALICE, BOB, seeds.win)
+    table.send(ALICE, {
+      action: 'challenge',
+      role: 'dealer',
+      maxBetWei: '1000',
+      commitment: commitmentOf(seeds.win),
+    })
+    expect(refundShortfallWei(table.state!)).toBe(0n)
+    table.send(BOB, { action: 'bet' }, 1_001n, 'aa'.repeat(32))
+    expect(refundShortfallWei(table.state!)).toBe(1_001n)
+    table.send(ALICE, { action: 'refund', ref: 'aa'.repeat(32) }, 1n)
+    expect(table.state?.rejected).toEqual([
+      { digest: 'aa'.repeat(32), stampWei: 1_001n, refundedWei: 1n },
+    ])
+    expect(refundShortfallWei(table.state!)).toBe(1_000n)
+
+    // An accepted bet returned short instead of being dealt.
+    const returned = open('dealer', seeds.win, BET_DIGEST)
+    const step = refundBetStep(returned.state)!
+    returned.send(returned.dealer, step.item, 5n)
+    expect(returned.state).toMatchObject({ phase: 'refunded', refundedWei: 5n })
+    expect(refundShortfallWei(returned.state!)).toBe(WAGER - 5n)
+    // A full refund leaves nothing owed.
+    const full = open('dealer', seeds.win, BET_DIGEST)
+    full.send(full.dealer, step.item, WAGER)
+    expect(refundShortfallWei(full.state!)).toBe(0n)
   })
 
   it('records a short payout as owed more than paid', () => {

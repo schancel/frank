@@ -186,6 +186,7 @@ import {
   maxDealerBetWei,
   playerMoves,
   refundBetStep,
+  refundShortfallWei,
   roleOf,
   totalStakeWei,
   type DealerStep,
@@ -448,10 +449,11 @@ export default defineComponent({
         ['awaiting_deal', 'awaiting_card', 'dealer_turn'].includes(state.phase)
       )
         return this.$t('blackjackP2p.noSeed')
-      const owed = state.rejected.filter(r => r.refundedWei === undefined)
-      if (this.role === 'player' && owed.length)
+      // Counted by what refunds actually paid: a short refund leaves the rest owed.
+      const owed = refundShortfallWei(state)
+      if (this.role === 'player' && owed > 0n)
         return this.$t('blackjackP2p.refundOwed', {
-          amount: this.display(owed.reduce((n, r) => n + r.stampWei, 0n)),
+          amount: this.display(owed),
         })
       return ''
     },

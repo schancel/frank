@@ -71,10 +71,28 @@ describe('a chat as blackjack hand events', () => {
 
   it('credits nothing when one message carries more than one hand item', () => {
     const challenge = (gameId: string) =>
-      message(false, { action: 'challenge', role: 'dealer', maxBetWei: '500', commitment: commitmentOf(SEED) }, 10n, gameId)
+      message(
+        false,
+        {
+          action: 'challenge',
+          role: 'dealer',
+          maxBetWei: '500',
+          commitment: commitmentOf(SEED),
+        },
+        10n,
+        gameId,
+      )
     const double = message(true, { action: 'bet' }, 500n, gid('x'))
-    double.items.push({ type: 'blackjack-hand', gameId: gid('y'), action: 'bet' } as MessageItem)
-    const hands = chatHands([challenge(gid('x')), challenge(gid('y')), double], ME, PEER)
+    double.items.push({
+      type: 'blackjack-hand',
+      gameId: gid('y'),
+      action: 'bet',
+    } as MessageItem)
+    const hands = chatHands(
+      [challenge(gid('x')), challenge(gid('y')), double],
+      ME,
+      PEER,
+    )
     expect(hands.map(h => [h.state.phase, h.state.wagerWei])).toEqual([
       ['open', 0n],
       ['open', 0n],
@@ -127,7 +145,9 @@ describe('dealer seeds on this device', () => {
     expect(loadSeed(PEER, gid('nope'))).toBeUndefined()
     saveSeed(PEER, gid('g-seed'), SEED)
     expect(loadSeed(PEER, gid('g-seed'))).toBe(SEED)
-    expect(stored.get(`frank.blackjack.seed.${PEER}|${gid('g-seed')}`)).toBe(SEED)
+    expect(stored.get(`frank.blackjack.seed.${PEER}|${gid('g-seed')}`)).toBe(
+      SEED,
+    )
     // Another chat with the same game id does not get this seed.
     expect(loadSeed(ME, gid('g-seed'))).toBeUndefined()
     expect(newSeed()).toMatch(/^[0-9a-f]{64}$/)

@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import level, { type LevelDB } from 'level'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import { hexlify, keccak256, randomBytes, toUtf8Bytes } from 'ethers'
 
 import { MonadSubAccountPool } from '../monad-account-pool'
@@ -103,6 +103,22 @@ export interface MonadWalletPersistenceBundle {
 }
 
 const trustedPersistentBundles = new WeakSet<object>()
+const poolOwners = new WeakMap<MonadSubAccountPool, object>()
+const manifestOwners = new Map<string, object>()
+
+function claimManifest(location: string): { token: object; release(): void } {
+  const key = resolve(location, 'wallet-manifest')
+  if (manifestOwners.has(key))
+    throw new Error('Monad wallet manifest already has an owner')
+  const token = {}
+  manifestOwners.set(key, token)
+  return {
+    token,
+    release() {
+      if (manifestOwners.get(key) === token) manifestOwners.delete(key)
+    },
+  }
+}
 
 export function assertMonadWalletBundleProvenance(
   bundle: MonadWalletPersistenceBundle,
@@ -178,7 +194,18 @@ function makeBundle(params: {
   subKeyring: MonadHdKeyring
   changeKeyring: MonadChangeKeyring
   close: () => Promise<void>
+  leaseManager?: SubAccountLeaseManager
+  additionalLeaseReference?: (index: number) => boolean
+  attachSharedPoolGates?: boolean
+  assertEnclosingAdmission?: () => void
+  ownerToken?: object
 }): MonadWalletPersistenceBundle {
+  const ownerToken = params.ownerToken ?? {}
+  const existingOwner = poolOwners.get(params.pool)
+  if (existingOwner !== undefined && existingOwner !== params.ownerToken) {
+    throw new Error('Monad wallet pool already has an owner')
+  }
+  poolOwners.set(params.pool, ownerToken)
   let lifecycle: 'open' | 'closing' | 'closed' = 'open'
   let activeOperations = 0
   let resolveDrained: (() => void) | undefined
@@ -189,6 +216,7 @@ function makeBundle(params: {
     operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
     admission?: MonadWalletOperationAdmission,
   ): Promise<T> => {
+    params.assertEnclosingAdmission?.()
     if (admission !== undefined) {
       if (!activeAdmissions.has(admission)) {
         throw new Error(
@@ -205,7 +233,10 @@ function makeBundle(params: {
     }) satisfies MonadWalletOperationAdmission
     activeAdmissions.add(admitted)
     activeOperations++
-    const run = operationTail.then(() => operation(admitted))
+    const run = operationTail.then(() => {
+      params.assertEnclosingAdmission?.()
+      return operation(admitted)
+    })
     operationTail = run.then(
       () => undefined,
       () => undefined,
@@ -219,9 +250,12 @@ function makeBundle(params: {
     }
   }
 
-  params.pool.attachWalletOperationGate(runOperation)
-  params.changePool.attachWalletOperationGate(runOperation)
-  const leaseManager = new SubAccountLeaseManager(params.pool)
+  if (params.attachSharedPoolGates !== false) {
+    params.pool.attachWalletOperationGate(runOperation)
+    params.changePool.attachWalletOperationGate(runOperation)
+  }
+  const leaseManager =
+    params.leaseManager ?? new SubAccountLeaseManager(params.pool)
 
   const assertNoOrphanedLeases = (): void => {
     const referenced = new Set(
@@ -230,7 +264,10 @@ function makeBundle(params: {
     const orphaned = params.pool
       .records()
       .filter(
-        record => record.status === 'in-use' && !referenced.has(record.index),
+        record =>
+          record.status === 'in-use' &&
+          !referenced.has(record.index) &&
+          !params.additionalLeaseReference?.(record.index),
       )
       .map(record => record.index)
     if (orphaned.length > 0) throw new MonadWalletOrphanedAccountError(orphaned)
@@ -270,7 +307,8 @@ function makeBundle(params: {
           limit,
           isReferenced: index =>
             index === pendingChange ||
-            params.topicJournal.referencesLeaseIndex(index),
+            params.topicJournal.referencesLeaseIndex(index) ||
+            (params.additionalLeaseReference?.(index) ?? false),
         })
       }, admission)
     },
@@ -286,6 +324,8 @@ function makeBundle(params: {
         }
         await params.close()
         lifecycle = 'closed'
+        if (poolOwners.get(params.pool) === ownerToken)
+          poolOwners.delete(params.pool)
       })()
       return closePromise
     },
@@ -295,6 +335,96 @@ function makeBundle(params: {
     trustedPersistentBundles.add(bundle as object)
   }
   return bundle
+}
+
+/** Owns the existing topic namespace and only topic admission. The caller must enclose every
+ * operation in its wallet queue; neither this owner nor its journal is exposed to DM clients. */
+export async function openExistingPoolMonadTopicOwner(params: {
+  location?: string
+  pool: MonadSubAccountPool
+  changePool: MonadChangePool
+  leaseManager: SubAccountLeaseManager
+  subKeyring: MonadHdKeyring
+  changeKeyring: MonadChangeKeyring
+  stampReferencesLeaseIndex: (index: number) => boolean
+  assertEnclosingAdmission: () => void
+}): Promise<MonadWalletPersistenceBundle> {
+  if (poolOwners.has(params.pool))
+    throw new Error('Monad wallet pool already has an owner')
+  const ownerToken = {}
+  poolOwners.set(params.pool, ownerToken)
+  let database: LevelDB | undefined
+  let manifestClaim: ReturnType<typeof claimManifest> | undefined
+  let journalOpen = true
+  try {
+    let topicJournal: TopicOperationJournal
+    const assertJournalMutation = () => {
+      if (!journalOpen) throw new Error('Monad topic journal is closed')
+      params.assertEnclosingAdmission()
+    }
+    if (params.location === undefined) {
+      const memory = new InMemoryTopicOperationJournal()
+      topicJournal = {
+        put: async operation => {
+          assertJournalMutation()
+          await memory.put(operation)
+        },
+        delete: async operation => {
+          assertJournalMutation()
+          await memory.delete(operation)
+        },
+        getAll: () => memory.getAll(),
+        referencesLeaseIndex: index => memory.referencesLeaseIndex(index),
+      }
+    } else {
+      manifestClaim = claimManifest(params.location)
+      try {
+        const fs = require('fs') as typeof import('fs')
+        fs.mkdirSync(params.location, { recursive: true })
+      } catch {
+        /* browser runtimes have no filesystem */
+      }
+      database = level(join(params.location, 'wallet-manifest'))
+      await openDurableLevel(database, params.location, 'wallet-manifest')
+      topicJournal = new LevelTopicOperationJournal(
+        database,
+        assertJournalMutation,
+      )
+      await (topicJournal as LevelTopicOperationJournal).Open()
+    }
+    return makeBundle({
+      durability:
+        params.location === undefined ? 'test-only-ephemeral' : 'persistent',
+      // This identifier is session-local: existing manifest/root/binding bytes are never rewritten.
+      bindingId: newBindingId(),
+      pool: params.pool,
+      changePool: params.changePool,
+      leaseManager: params.leaseManager,
+      topicJournal,
+      subKeyring: params.subKeyring,
+      changeKeyring: params.changeKeyring,
+      additionalLeaseReference: params.stampReferencesLeaseIndex,
+      attachSharedPoolGates: false,
+      assertEnclosingAdmission: params.assertEnclosingAdmission,
+      ownerToken,
+      close: async () => {
+        await database?.close()
+        journalOpen = false
+        manifestClaim?.release()
+      },
+    })
+  } catch (error) {
+    // Never close another owner's handles. These were all created by this invocation.
+    try {
+      await database?.close()
+      manifestClaim?.release()
+      if (poolOwners.get(params.pool) === ownerToken)
+        poolOwners.delete(params.pool)
+    } catch {
+      // Uncertain close retains ownership and prevents a second opener.
+    }
+    throw error
+  }
 }
 
 export function createInMemoryMonadWalletBundle(params: {
@@ -365,6 +495,8 @@ export async function openMonadWalletBundle(
     throw new Error('Invalid Monad wallet creation/restore mode')
   }
 
+  const manifestClaim = claimManifest(params.location)
+
   // Ensure location directory exists on Node
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -375,10 +507,25 @@ export async function openMonadWalletBundle(
   }
 
   const manifestDbLocation = join(params.location, 'wallet-manifest')
-  const manifestDb: LevelDB = level(manifestDbLocation)
-  await openDurableLevel(manifestDb, params.location, 'wallet-manifest')
+  let manifestDb: LevelDB | undefined
+  try {
+    manifestDb = level(manifestDbLocation)
+    await openDurableLevel(manifestDb, params.location, 'wallet-manifest')
+  } catch (error) {
+    try {
+      await manifestDb?.close()
+      manifestClaim.release()
+    } catch {
+      /* uncertain close keeps the claim */
+    }
+    throw error
+  }
+  if (manifestDb === undefined)
+    throw new Error('Monad wallet manifest did not open')
+  const ownedManifestDb = manifestDb
 
   const openedStores: Array<{ Close(): Promise<void> }> = []
+  let ownedBundle: MonadWalletPersistenceBundle | undefined
   try {
     const entries = new Map<string, string>()
     for await (const [key, value] of manifestDb.iterator({}) as any) {
@@ -527,13 +674,23 @@ export async function openMonadWalletBundle(
       close: async () => {
         await changePoolStore.Close()
         await subAccountStore.Close()
-        await manifestDb.close()
+        await ownedManifestDb.close()
+        manifestClaim.release()
       },
     })
 
+    ownedBundle = bundle
     bundle.assertSemanticallyValid()
     return bundle
   } catch (error) {
+    if (ownedBundle !== undefined) {
+      try {
+        await ownedBundle.close()
+      } catch {
+        /* preserve the original validation error */
+      }
+      throw error
+    }
     for (const store of openedStores.reverse()) {
       try {
         await store.Close()
@@ -542,7 +699,8 @@ export async function openMonadWalletBundle(
       }
     }
     try {
-      await manifestDb.close()
+      await ownedManifestDb.close()
+      manifestClaim.release()
     } catch {
       // preserve original error
     }

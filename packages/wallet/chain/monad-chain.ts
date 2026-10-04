@@ -110,6 +110,10 @@ import {
 import { MonadAccountTxSigner } from "../monad-account-tx";
 import { MonadWalletHandle } from "../monad-wallet-handle";
 import {
+  openExistingPoolMonadTopicOwner,
+  type MonadWalletPersistenceBundle,
+} from "../storage/monad-wallet-bundle";
+import {
   MonadIdentity,
   fetchMonadProfile,
   mailboxAuthFor,
@@ -1073,6 +1077,29 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     },
   };
 
+  // The normal handle stays unchanged for DM callers. Only topic code receives this owner.
+  const privateTopicWallets = new WeakMap<
+    MonadChainWalletHandle,
+    MonadWalletHandle
+  >();
+  const enclosingTopicAdmissions = new WeakSet<MonadChainWalletHandle>();
+  const runTopicExclusive = <T>(
+    wallet: MonadChainWalletHandle,
+    task: (topicWallet: MonadWalletHandle) => Promise<T>
+  ): Promise<T> =>
+    runWalletExclusive(wallet, async () => {
+      enclosingTopicAdmissions.add(wallet);
+      try {
+        const topicWallet = privateTopicWallets.get(wallet) ?? wallet;
+        if (!topicWallet.walletState)
+          throw new Error(
+            "Canonical topics require coherent wallet persistence"
+          );
+        return await task(topicWallet);
+      } finally {
+        enclosingTopicAdmissions.delete(wallet);
+      }
+    });
   const forumPolicy: ForumReadPolicy = {
     network:
       config.networkTag === "MON1"
@@ -1084,7 +1111,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     burnAddress: config.stampBurnAddress,
   };
   const reconcileTopicOperations = async (
-    wallet: MonadChainWalletHandle,
+    wallet: MonadWalletHandle,
     admission?: import("../storage/monad-wallet-bundle").MonadWalletOperationAdmission
   ) => {
     await new MonadTopicPostClient(wallet).resumePendingOperations(admission);
@@ -1093,26 +1120,18 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
   const topics: TopicBroadcastClient = {
     async reconcileOperations(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      await runWalletExclusive(wallet, async () => {
-        if (!wallet.walletState)
-          throw new Error(
-            "Canonical topics require coherent wallet persistence"
-          );
-        await wallet.walletState.runOperation((admission) =>
-          reconcileTopicOperations(wallet, admission)
+      await runTopicExclusive(wallet, async (topicWallet) => {
+        await topicWallet.walletState!.runOperation((admission) =>
+          reconcileTopicOperations(topicWallet, admission)
         );
       });
     },
     async post(params): Promise<{ payloadDigest: string }> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      const client = new MonadTopicPostClient(wallet);
-      return runWalletExclusive(wallet, async () => {
-        if (!wallet.walletState)
-          throw new Error(
-            "Canonical topics require coherent wallet persistence"
-          );
-        return wallet.walletState.runOperation(async (admission) => {
-          await reconcileTopicOperations(wallet, admission);
+      return runTopicExclusive(wallet, async (topicWallet) => {
+        const client = new MonadTopicPostClient(topicWallet);
+        return topicWallet.walletState!.runOperation(async (admission) => {
+          await reconcileTopicOperations(topicWallet, admission);
           if (
             params.direction !== "up" ||
             params.voteWeightWei < 1n ||
@@ -1168,14 +1187,10 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     async vote(params): Promise<void> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      const client = new MonadTopicVoteClient(wallet);
-      await runWalletExclusive(wallet, async () => {
-        if (!wallet.walletState)
-          throw new Error(
-            "Canonical topics require coherent wallet persistence"
-          );
-        await wallet.walletState.runOperation(async (admission) => {
-          await reconcileTopicOperations(wallet, admission);
+      await runTopicExclusive(wallet, async (topicWallet) => {
+        const client = new MonadTopicVoteClient(topicWallet);
+        await topicWallet.walletState!.runOperation(async (admission) => {
+          await reconcileTopicOperations(topicWallet, admission);
           if (
             (params.direction !== "up" && params.direction !== "down") ||
             params.voteWeightWei < 1n ||
@@ -1341,9 +1356,42 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               ? stampAttemptJournal.Close()
               : undefined,
           ]);
+        const pool = new MonadSubAccountPool({
+          keyring,
+          store: subAccountStore,
+        });
+        const changePool = new MonadChangePool({
+          keyring: changeKeyring,
+          store: changeStore,
+        });
+        const leaseManager = new SubAccountLeaseManager(pool);
+        let topicOwner: MonadWalletPersistenceBundle | undefined;
+        let topicOwnerWallet: MonadChainWalletHandle | undefined;
         let destroyProvider: (() => void) | undefined;
         let destroyHttpClient: (() => void) | undefined;
         try {
+          topicOwner = await openExistingPoolMonadTopicOwner({
+            location: storageLocation,
+            pool,
+            changePool,
+            leaseManager,
+            subKeyring: keyring,
+            changeKeyring,
+            stampReferencesLeaseIndex: (index) =>
+              stampAttemptJournal
+                .getAll()
+                .some((attempt) => attempt.leaseIndices.includes(index)),
+            assertEnclosingAdmission: () => {
+              if (
+                topicOwnerWallet === undefined ||
+                !enclosingTopicAdmissions.has(topicOwnerWallet)
+              ) {
+                throw new Error(
+                  "Topic operations require enclosing wallet admission"
+                );
+              }
+            },
+          });
           const demoRpcUrl = await discoverFakeDemoRpc(config);
           const opened = await Promise.allSettled([
             subAccountStore?.Open(),
@@ -1381,16 +1429,16 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             };
           }
 
-          const pool = new MonadSubAccountPool({
-            keyring,
-            store: subAccountStore,
-          });
           pool.ensureUnfundedSize(config.subAccountPoolSize);
-          const pendingLeaseIndices = new Set(
-            stampAttemptJournal
+          // Classification is deliberately irrelevant here: every old obligation pins its lease.
+          const pendingLeaseIndices = new Set([
+            ...stampAttemptJournal
               .getAll()
-              .flatMap((attempt) => attempt.leaseIndices)
-          );
+              .flatMap((attempt) => attempt.leaseIndices),
+            ...topicOwner.topicOperationJournal
+              .getAll()
+              .map((operation) => operation.leaseIndex),
+          ]);
           for (const record of pool.records()) {
             if (
               record.status === "in-use" &&
@@ -1403,11 +1451,6 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             }
           }
           await pool.flush();
-          const changePool = new MonadChangePool({
-            keyring: changeKeyring,
-            store: changeStore,
-          });
-          const leaseManager = new SubAccountLeaseManager(pool);
           const rpcUrl =
             demoRpcUrl ??
             `${config.relayBaseUrl.replace(
@@ -1608,6 +1651,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               closing = (async () => {
                 await walletSendQueues.get(wallet);
                 try {
+                  await topicOwner!.close();
                   const results = await closeStores();
                   const failure = results.find(
                     (result) => result.status === "rejected"
@@ -1620,6 +1664,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                   provider.destroy();
                   httpClient.destroy();
                   material.dispose();
+                  privateTopicWallets.delete(wallet);
                   walletMaterial.delete(wallet);
                 }
               })();
@@ -1627,6 +1672,12 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             },
           };
           let closing: Promise<void> | undefined;
+          topicOwnerWallet = wallet;
+          privateTopicWallets.set(wallet, {
+            ...wallet,
+            walletState: topicOwner,
+            topicOperationJournal: topicOwner.topicOperationJournal,
+          });
           walletMaterial.set(wallet, material);
           mainAccountAdmissions.set(wallet, admission);
           if (material.messagingRoot !== undefined) typedWallets.add(wallet);
@@ -1635,6 +1686,11 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           }
           return wallet;
         } catch (error) {
+          try {
+            await topicOwner?.close();
+          } catch {
+            /* preserve the original opening error */
+          }
           await closeStores();
           destroyProvider?.();
           destroyHttpClient?.();

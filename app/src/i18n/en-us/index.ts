@@ -7,13 +7,69 @@ export default {
   directoryProvisioning: {
     title: 'Directory installation',
     pending: 'Pending operator installation',
+    checking: 'Checking the installed configuration…',
+    ready:
+      'Ready: local demo installation verified. Encrypted messaging is enabled.',
     explanation:
       'Both relays and the bot must have the same approved public account bundle. Fresh directory admission is checked separately.',
     policyUnavailable:
       'Authenticated operator policy is not available in this app yet. Public export is unavailable until it is installed.',
     exportPublic: 'Export public directory evidence',
+    check: 'Check installation',
+    exportLabel: 'Public export for the operator',
+    download: 'Download public export',
+    peerAddress: 'Installed bot address:',
+    stepExport:
+      'Export this account’s public evidence and give the file to the operator.',
+    stepInstall:
+      'The operator checks the account, network and relay tuples, then installs the complete public bundle into both relays, the bot and this app.',
+    stepCheck:
+      'Check installation. Messaging stays off until every participant reports the same approved bundle.',
+    participants: {
+      'relay-a': 'Relay A',
+      'relay-b': 'Relay B',
+      'bot': 'Bot',
+    },
+    participant: {
+      unchecked: 'not checked',
+      matched: 'approved bundle installed',
+      unavailable: 'no installation status available',
+      mismatch: 'different or incomplete installation',
+    },
+    reasons: {
+      'account-unavailable': 'Unlock or finish setting up this account first.',
+      'policy-missing':
+        'The operator has not installed a network policy in this app. Public export is unavailable until it is installed.',
+      'policy-invalid':
+        'The installed operator policy is not valid. Ask the operator to reinstall it.',
+      'policy-expired':
+        'The operator policy is outside its validity period. Ask the operator for a current policy.',
+      'relay-not-in-policy':
+        'This app’s relay is not one of the relays in the operator policy.',
+      'bundle-missing':
+        'The operator has not installed an approved bundle in this app yet. Export, hand over the file, then check again.',
+      'bundle-invalid':
+        'The installed approved bundle is not valid. Ask the operator to reinstall it.',
+      'bundle-foreign-policy':
+        'The approved bundle was made for a different operator policy.',
+      'bundle-not-this-account':
+        'The approved bundle does not contain this account’s exact public evidence. Export again and ask the operator to reinstall.',
+      'forwarding-unavailable':
+        'This account and the bot must use the relay this app is configured for. Relay forwarding is not available yet.',
+      'participant-unavailable':
+        'At least one relay or the bot did not report its installation. Nothing was sent or paid.',
+      'participant-mismatch':
+        'At least one relay or the bot reports a different installation. Nothing was sent or paid.',
+      'enrollment-required':
+        'Press Check installation to finish joining the directory on this device.',
+      'admission-failed':
+        'The directory evidence could not be admitted. Nothing was sent or paid.',
+      'changed-during-check':
+        'A relay or the bot changed while it was being checked. Check again.',
+      'account-changed': 'The account changed during the check. Check again.',
+    },
     publicOnly:
-      'This exports public evidence only. It does not enroll an account, send a message, or spend funds.',
+      'The export contains public evidence only. Checking may publish this account’s signed public directory record to its relay; it never sends a message or spends funds.',
   },
 
   accountRecovery,

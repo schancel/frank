@@ -342,6 +342,9 @@ async fn joined_real_wallet_request_is_admitted_delivered_and_opened_by_recipien
                 tx.tx_hash.to_hex(),
                 freeze["members"][index]["hash"].as_str().unwrap()
             );
+            // #826: what the real wallet signed and the relay broadcast is a plain value
+            // transfer; no calldata reaches the chain.
+            assert!(tx.input.is_empty());
         }
         // Recipient sees the exposed-but-undelivered obligation, imports it, and cannot ACK it.
         let early = wallet_phase(&joined.work, "recipient-read").await;

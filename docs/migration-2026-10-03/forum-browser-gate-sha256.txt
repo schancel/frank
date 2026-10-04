@@ -1,0 +1,13 @@
+9197a8414d4fe8d216369bd950ede8f84f701720c07442299ba9cde8c8c294f7  /private/tmp/frank-770-browser.log
+ff9f8f0095917e2958ca7aaa801c3b24a0acab24e7810e8149904654931ddf23  /private/tmp/frank-770-app-final-jest.log
+45cd504ca31849ff1b9cf75a33ea72f5d17c69d81c9469336a95023f80f95964  /private/tmp/frank-770-wallet-jest.log
+ed442b633bf7ff0d4e6560b83490653f3094a91c1ef7e92c20018c5a850df98a  /private/tmp/frank-770-bot-jest.log
+e91c1574064510c721bd3c4ff3cab7a1fd05fd1fb40e8e6ac5f42e2a08f32e8f  /private/tmp/frank-770-native-http.log
+8a397a29d858cf786a659c21f17c2b044d13d5b7982ab271a1158e9aa577cb49  /private/tmp/frank-770-native-clippy.log
+1ac388397c7bffb0bc60d3f03f2ad341203b22b90d38432bb7f56039ca65b42b  /private/tmp/frank-770-sorting-jest.log
+7c698d3147cccca5e43c84d7fcd2e729de470e54be659aab87fedb476811f1de  /private/tmp/frank-770-tally-final-jest.log
+8755765823e105ae43dd9d36f8f15a347610419972473f0f5fb7ef7fef6b0720  /private/tmp/frank-770-app-build-ddaf576.log
+a550f333484fbb8e66e3b91a486797ffc751f4051657135b42888f7694e261fd  /private/tmp/frank-770-paired-tsc-diagnostics.json
+b37bd4a5d564576eda49179ed03426e062961d7ab2a6d20fdb3cabf788786fa9  /private/tmp/frank-770-paired-app-ddaf576.json
+bcbd426ee1c8521671f78a23d81f12ac62d1787880455a11936eef1d4a62536a  /private/tmp/frank-770-app-ddaf576-tsc.log
+dc36e11becb27675234ab004b4458eb39361ce3efff13d184e1b0ab3747bd27f  /private/tmp/frank-770-app-baseline-tsc.log

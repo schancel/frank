@@ -2,12 +2,20 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import level from 'level'
+import { Wallet, Transaction } from 'ethers'
 
 import { MonadHdKeyring } from '../monad-hd-keyring'
 import { MonadChangeKeyring } from '../monad-change-keyring'
+import { MonadSubAccountPool } from '../monad-account-pool'
+import { MonadChangePool } from '../monad-change-pool'
+import { SubAccountLeaseManager } from '../monad-account-lease'
+import { LevelSubAccountPoolStore } from './level-sub-account-pool-store'
+import { LevelChangePoolStore } from './level-change-pool-store'
+import { type OutgoingTopicOperation } from './topic-operation-journal'
 import {
   createInMemoryMonadWalletBundle,
   openMonadWalletBundle,
+  openExistingPoolMonadTopicOwner,
   assertMonadWalletBundleProvenance,
   MonadWalletPersistenceBundle,
 } from './monad-wallet-bundle'
@@ -284,5 +292,213 @@ describe('MonadWalletPersistenceBundle', () => {
         'Wallet has 1 in-use funding account(s) without a local exact-set attempt: 0',
       )
     })
+  })
+})
+
+// Historical topic authority is a reference even when no runtime supports its request bytes.
+describe('Forum retention-only journal obligations', () => {
+  it('preserves old rows through actual reopen, orphan checking and terminal compaction', async () => {
+    const location = mkdtempSync(join(tmpdir(), 'forum-retained-bundle-'))
+    let bundle: MonadWalletPersistenceBundle | undefined
+    try {
+      bundle = await openMonadWalletBundle({ location, seed: { mnemonic: TEST_MNEMONIC }, mode: 'create' })
+      bundle.pool.ensureSize(4)
+      const formats = [undefined, 'protobuf', 'cbor'] as const
+      const rows = formats.map((writeFormat, index) => ({
+        version: 1 as const, kind: 'post' as const, requestBytes: [255, index],
+        ...(writeFormat ? { writeFormat } : {}), leaseIndex: index,
+        senderAddress: bundle!.pool.getRecord(index)!.address, rawTx: 'old signed authority',
+        txHash: '0x' + index.toString(16).padStart(64, '0'), valueWei: '7', direction: 'up' as const,
+        payloadHashHex: 'ab'.repeat(32),
+      }))
+      for (const row of rows) {
+        bundle.leaseManager.acquireForIndex(row.leaseIndex)
+        await bundle.topicOperationJournal.put(row)
+      }
+      await bundle.pool.flush()
+      const prior = JSON.stringify(bundle.topicOperationJournal.getAll())
+      await bundle.close()
+      bundle = await openMonadWalletBundle({ location, seed: { mnemonic: TEST_MNEMONIC } })
+      expect(JSON.stringify(bundle.topicOperationJournal.getAll())).toBe(prior)
+      expect(() => bundle!.assertNoOrphanedLeases()).not.toThrow()
+      // All three historical formats pin their indices even when already terminal.
+      for (let index = 0; index < 4; index++) {
+        const key = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC).deriveSubAccount(index)
+        const signer = new Wallet(key.privateKey)
+        const fields = { chainId: 10143n, value: 7n, nonce: 0, gasLimit: 21000n, gasPrice: 1n }
+        const fundingRaw = await signer.signTransaction({ ...fields, to: key.address })
+        const spendRaw = await signer.signTransaction({ ...fields, to: '0x000000000000000000000000000000000000dEaD', nonce: 1 })
+        bundle.pool.recordFundingTransaction(index, { rawTx: fundingRaw, txHash: Transaction.from(fundingRaw).hash!, valueWei: '7' })
+        bundle.pool.recordSpendTransaction(index, { rawTx: spendRaw, txHash: Transaction.from(spendRaw).hash!, valueWei: '7' })
+        bundle.pool.recordRecoveryDisposition(index, { kind: 'none', valueWei: '0' })
+        bundle.pool.setStatus(index, 'retired')
+      }
+      await bundle.pool.flush()
+      expect(await bundle.compactTerminalAccounts(8)).toBe(1)
+      expect(bundle.pool.getRecord(3)).toBeUndefined()
+      expect(JSON.stringify(bundle.topicOperationJournal.getAll())).toBe(prior)
+      expect(bundle.pool.records().map(r => r.status)).toEqual(['retired', 'retired', 'retired'])
+      await bundle.close()
+      bundle = await openMonadWalletBundle({ location, seed: { mnemonic: TEST_MNEMONIC } })
+      expect(JSON.stringify(bundle.topicOperationJournal.getAll())).toBe(prior)
+      expect(bundle.pool.records().map(r => r.status)).toEqual(['retired', 'retired', 'retired'])
+    } finally { await bundle?.close(); rmSync(location, { recursive: true, force: true }) }
+  })
+})
+
+describe('existing-pool private topic owner', () => {
+  const keyrings = () => ({
+    subKeyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
+    changeKeyring: MonadChangeKeyring.fromMnemonic(TEST_MNEMONIC),
+  })
+  function existingPools() {
+    const keys = keyrings()
+    const pool = new MonadSubAccountPool({ keyring: keys.subKeyring })
+    const changePool = new MonadChangePool({ keyring: keys.changeKeyring })
+    const leaseManager = new SubAccountLeaseManager(pool)
+    return { ...keys, pool, changePool, leaseManager }
+  }
+  it('preserves pool, lease and role identities, refuses competing owners, and guards enclosing admission', async () => {
+    const original = existingPools()
+    original.pool.ensureSize(1)
+    let enclosed = false
+    const attachPool = jest.spyOn(original.pool,'attachWalletOperationGate')
+    const attachChange = jest.spyOn(original.changePool,'attachWalletOperationGate')
+    const params = { ...original, stampReferencesLeaseIndex: () => false,
+      assertEnclosingAdmission: () => { if (!enclosed) throw Error('outside wallet queue') } }
+    const owner = await openExistingPoolMonadTopicOwner(params)
+    try {
+      expect(owner.pool).toBe(original.pool)
+      expect(owner.changePool).toBe(original.changePool)
+      expect(owner.leaseManager).toBe(original.leaseManager)
+      expect(attachPool).not.toHaveBeenCalled()
+      expect(attachChange).not.toHaveBeenCalled()
+      expect(original.pool.getRecord(0)!.address).toBe(original.subKeyring.deriveSubAccount(0).address)
+      owner.assertSemanticallyValid()
+      await expect(owner.runOperation(async () => undefined)).rejects.toThrow('outside wallet queue')
+      await expect(openExistingPoolMonadTopicOwner(params)).rejects.toThrow('already has an owner')
+      enclosed = true
+      await owner.runOperation(async admission => {
+        await owner.runOperation(async () => undefined, admission)
+      })
+      // No shared pool gate was attached: close must not change normal DM pool admission.
+      await owner.close()
+      original.pool.ensureUnfundedSize(2)
+      expect(original.pool.records()).toHaveLength(2)
+      const next = await openExistingPoolMonadTopicOwner(params)
+      await next.close()
+    } finally { await owner.close() }
+  })
+  it('also refuses pools owned by a real original bundle without touching that owner', async () => {
+    const original = createInMemoryMonadWalletBundle({ mnemonic: TEST_MNEMONIC })
+    try {
+      await expect(openExistingPoolMonadTopicOwner({
+        ...keyrings(), pool: original.pool, changePool: original.changePool,
+        leaseManager: original.leaseManager,
+        stampReferencesLeaseIndex: () => false, assertEnclosingAdmission: () => {},
+      })).rejects.toThrow('already has an owner')
+      original.assertOpen()
+      await original.runOperation(async () => undefined)
+    } finally { await original.close() }
+  })
+  it('close rejects new admissions and drains a complete admitted journal operation once', async () => {
+    const location = mkdtempSync(join(tmpdir(),'topic-owner-drain-'))
+    const original = existingPools()
+    original.pool.ensureSize(1)
+    const owner = await openExistingPoolMonadTopicOwner({ location, ...original,
+      stampReferencesLeaseIndex: () => false, assertEnclosingAdmission: () => {} })
+    let started!: () => void, finish!: () => void
+    const entered = new Promise<void>(resolve => { started = resolve })
+    const paused = new Promise<void>(resolve => { finish = resolve })
+    const row: OutgoingTopicOperation = { version: 1, kind: 'post', requestBytes: [255], leaseIndex: 0,
+      senderAddress: original.pool.getRecord(0)!.address, rawTx: 'retained', txHash: '0x' + 'ab'.repeat(32),
+      valueWei: '7', direction: 'up', payloadHashHex: 'cd'.repeat(32) }
+    const operation = owner.runOperation(async () => {
+      started()
+      await paused
+      await owner.topicOperationJournal.put(row)
+    })
+    await entered
+    let closed = false
+    const ownerClose = owner.close()
+    const close = ownerClose.then(() => { closed = true })
+    expect(owner.close()).toBe(ownerClose)
+    await expect(owner.runOperation(async () => undefined)).rejects.toThrow('closing or closed')
+    expect(closed).toBe(false)
+    finish()
+    await operation
+    await close
+    expect(owner.topicOperationJournal.getAll()).toEqual([row])
+    await expect(owner.topicOperationJournal.put(row)).rejects.toThrow('journal is closed')
+    const next = await openExistingPoolMonadTopicOwner({ location, ...original,
+      stampReferencesLeaseIndex: () => false, assertEnclosingAdmission: () => {} })
+    try { expect(next.topicOperationJournal.getAll()).toEqual([row]) } finally { await next.close();rmSync(location,{recursive:true,force:true}) }
+  })
+  it('opens the existing Level namespace without header/root rewrites and preserves topic plus stamp references', async () => {
+    const location = mkdtempSync(join(tmpdir(), 'existing-topic-owner-'))
+    let owner: MonadWalletPersistenceBundle | undefined
+    let store: LevelSubAccountPoolStore | undefined, changeStore: LevelChangePoolStore | undefined
+    const stamp = new Set([3])
+    const readNamespace = async () => {
+      const database = level(join(location, 'wallet-manifest'))
+      try {
+        const entries: Array<[string,string]> = []
+        for await (const entry of database.iterator({}) as any) entries.push(entry)
+        return entries
+      } finally { await database.close() }
+    }
+    try {
+      const old = await openMonadWalletBundle({ location, seed: { mnemonic: TEST_MNEMONIC }, mode: 'create' })
+      old.pool.ensureSize(5)
+      const rows: OutgoingTopicOperation[] = [undefined, 'protobuf', 'cbor'].map((format, index) => ({
+        version: 1, kind: 'post', requestBytes: [255,index], ...(format ? { writeFormat: format as 'protobuf'|'cbor' } : {}),
+        leaseIndex: index, senderAddress: old.pool.getRecord(index)!.address, rawTx: 'retained old authority',
+        txHash: '0x'+String(index).padStart(64,'0'), valueWei: '7', direction: 'up', payloadHashHex: 'ab'.repeat(32),
+      }))
+      for (const row of rows) { old.pool.setStatus(row.leaseIndex,'in-use'); await old.topicOperationJournal.put(row) }
+      old.pool.setStatus(3,'in-use')
+      await old.pool.flush()
+      const records = old.pool.records(), highWater = old.pool.nextUnusedIndex()
+      await old.close()
+      const prior = await readNamespace()
+      store = new LevelSubAccountPoolStore(location)
+      changeStore = new LevelChangePoolStore(location)
+      await store.Open(); await changeStore.Open()
+      const keys = keyrings()
+      const pool = new MonadSubAccountPool({ keyring: keys.subKeyring, store })
+      const changePool = new MonadChangePool({ keyring: keys.changeKeyring, store: changeStore })
+      const leaseManager = new SubAccountLeaseManager(pool)
+      const params = { location, ...keys, pool, changePool, leaseManager,
+        stampReferencesLeaseIndex: (index:number) => stamp.has(index), assertEnclosingAdmission: () => {} }
+      owner = await openExistingPoolMonadTopicOwner(params)
+      expect(pool.records()).toEqual(records)
+      expect(pool.nextUnusedIndex()).toBe(highWater)
+      expect(owner.topicOperationJournal.getAll()).toEqual(rows)
+      expect(() => owner!.assertNoOrphanedLeases()).not.toThrow()
+      await expect(openExistingPoolMonadTopicOwner({ ...params, ...existingPools() })).rejects.toThrow('manifest already has an owner')
+      await expect(openMonadWalletBundle({location,seed:{mnemonic:TEST_MNEMONIC}})).rejects.toThrow('manifest already has an owner')
+      owner.assertOpen()
+      for (let index=0;index<5;index++) {
+        const signer = new Wallet(keys.subKeyring.deriveSubAccount(index).privateKey)
+        const fundingRaw = await signer.signTransaction({chainId:10143n,to:signer.address,value:7n,nonce:0,gasLimit:21000n,gasPrice:1n})
+        const spendRaw = await signer.signTransaction({chainId:10143n,to:'0x000000000000000000000000000000000000dEaD',value:7n,nonce:1,gasLimit:21000n,gasPrice:1n})
+        pool.recordFundingTransaction(index,{rawTx:fundingRaw,txHash:Transaction.from(fundingRaw).hash!,valueWei:'7'})
+        pool.recordSpendTransaction(index,{rawTx:spendRaw,txHash:Transaction.from(spendRaw).hash!,valueWei:'7'})
+        pool.recordRecoveryDisposition(index,{kind:'none',valueWei:'0'})
+        pool.setStatus(index,'retired')
+      }
+      await pool.flush()
+      expect(await owner.compactTerminalAccounts(8)).toBe(1)
+      expect(pool.getRecord(4)).toBeUndefined()
+      expect(pool.nextUnusedIndex()).toBe(highWater)
+      expect(owner.topicOperationJournal.getAll()).toEqual(rows)
+      await owner.close()
+      expect(await readNamespace()).toEqual(prior)
+      owner = await openExistingPoolMonadTopicOwner(params)
+      expect(owner.topicOperationJournal.getAll()).toEqual(rows)
+    } finally {
+      await owner?.close(); await changeStore?.Close(); await store?.Close()
+      rmSync(location,{recursive:true,force:true})
+    }
   })
 })

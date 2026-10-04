@@ -13,6 +13,14 @@
  * `directMessages.send`/`fetchSince` actually encrypt/decrypt, not merely pass a plaintext through.
  */
 import { Wallet, getBytes, hexlify } from "ethers";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import level from "level";
+import { LevelTopicOperationJournal, type OutgoingTopicOperation } from "../storage/topic-operation-journal";
+import { LevelStampAttemptJournal } from "../storage/stamp-attempt-journal";
+import { createMonadWalletMaterial, type MonadRootBundle } from "../monad-wallet-material";
+import type { MonadWalletHandle } from "../monad-wallet-handle";
 import * as viteEnv from "./vite-env";
 import { verifyEcdsa } from "@frank/nakamoto";
 
@@ -1827,3 +1835,97 @@ describe("asMonadWallet guard (exercised indirectly via directMessages/topics)",
     ).rejects.toThrow(/MonadChainWalletHandle/);
   });
 });
+
+describe('canonical topic owner production composition', () => {
+  const seed = {mnemonic:'test test test test test test test test test test test junk'}
+  it('retains old topic and stamp leases before factory orphan retirement and rejects a distinct same-root opener', async () => {
+    const directory = mkdtempSync(join(tmpdir(),'chain-topic-owner-'))
+    const config = {...TEST_CONFIG,walletStorageLocation:join(directory,'wallet'),subAccountPoolSize:5}
+    let wallet: MonadChainWalletHandle | undefined
+    try {
+      const firstChain = createMonadChain(config)
+      wallet = await firstChain.createWallet(seed)
+      const original = wallet.pool.records()
+      for(let index=0;index<5;index++) wallet.pool.setStatus(index,'in-use')
+      await wallet.pool.flush()
+      const highWater = wallet.pool.nextUnusedIndex()
+      const location = `${config.walletStorageLocation}-${wallet.identity.address.raw.toLowerCase()}`
+      await wallet.close()
+      const database = level(join(location,'wallet-manifest'))
+      const journal = new LevelTopicOperationJournal(database,()=>{})
+      const rows: OutgoingTopicOperation[] = [undefined,'protobuf','cbor'].map((format,index)=>({
+        version:1,kind:'post',requestBytes:[255,index],...(format?{writeFormat:format as 'protobuf'|'cbor'}:{}),leaseIndex:index,
+        senderAddress:original[index].address,rawTx:'immutable old authority',txHash:'0x'+String(index).padStart(64,'0'),
+        valueWei:'7',direction:'up',payloadHashHex:'ab'.repeat(32),
+      }))
+      try { for(const row of rows) await journal.put(row) } finally { await database.close() }
+      const stamp = new LevelStampAttemptJournal(location)
+      await stamp.Open()
+      try { await stamp.put({payloadHashHex:'de'.repeat(32),messageBytes:[1],leaseIndices:[3]}) } finally { await stamp.Close() }
+      jest.clearAllMocks()
+      const chain = createMonadChain(config)
+      wallet = await chain.createWallet(seed)
+      expect(wallet.pool.records().map(record=>record.status)).toEqual(['in-use','in-use','in-use','in-use','retired'])
+      expect(wallet.pool.records().map(record=>record.address)).toEqual(original.map(record=>record.address))
+      expect(wallet.pool.nextUnusedIndex()).toBe(highWater)
+      expect(wallet.walletState).toBeUndefined()
+      expect(wallet.topicOperationJournal).toBeUndefined()
+      expect(MonadAccountTxSigner).not.toHaveBeenCalled()
+      expect(MonadTopicPostClient).not.toHaveBeenCalled()
+      expect(MonadTopicVoteClient).not.toHaveBeenCalled()
+      await expect(createMonadChain(config).createWallet(seed)).rejects.toThrow('manifest already has an owner')
+      // A rejected second opener must leave all original stores and the owner usable.
+      expect(wallet.pool.records()).toHaveLength(5)
+      await chain.topics.reconcileOperations({wallet})
+      const privateHandle = (MonadTopicPostClient as jest.Mock).mock.calls[0][0] as MonadWalletHandle
+      expect(privateHandle.topicOperationJournal!.getAll()).toEqual(rows)
+      await wallet.close()
+      const reopened = level(join(location,'wallet-manifest'))
+      const reopenedJournal = new LevelTopicOperationJournal(reopened,()=>{})
+      try { await reopenedJournal.Open();expect(reopenedJournal.getAll()).toEqual(rows) } finally { await reopened.close() }
+    } finally { await wallet?.close();rmSync(directory,{recursive:true,force:true}) }
+  })
+  it('preserves typed material identities in a private topic copy and drains an admitted action on close', async () => {
+    const roots: MonadRootBundle = {
+      evm:{registry:'frank-domain-roots-v1',purpose:'evm-wallet',bytes:new Uint8Array(32).fill(31)},
+      authentication:{registry:'frank-domain-roots-v1',purpose:'identity-authentication',bytes:new Uint8Array(32).fill(32)},
+      messaging:{registry:'frank-domain-roots-v1',purpose:'messaging-encryption',bytes:new Uint8Array(32).fill(33)},
+    }
+    const expected = createMonadWalletMaterial(roots)
+    const chain = createMonadChain(TEST_CONFIG)
+    const wallet = await chain.createWallet(roots)
+    let privateHandle: MonadWalletHandle | undefined
+    let entered!:()=>void,finish!:()=>void
+    const started = new Promise<void>(resolve=>{entered=resolve})
+    const paused = new Promise<void>(resolve=>{finish=resolve})
+    ;(MonadTopicPostClient as jest.Mock).mockImplementation((handle:MonadWalletHandle)=>{
+      privateHandle=handle
+      return {resumePendingOperations:async()=>{entered();await paused}}
+    })
+    ;(MonadTopicVoteClient as jest.Mock).mockImplementation(()=>({resumePendingOperations:jest.fn().mockResolvedValue(undefined)}))
+    try {
+      expect(wallet.identity.address.raw).toBe(expected.identity.address.raw)
+      expect((await wallet.getReceiveAddress()).raw).toBe(expected.mainAccount.address)
+      expect(wallet.pool.getRecord(0)!.address).toBe(expected.keyring.deriveSubAccount(0).address)
+      const action = chain.topics.reconcileOperations({wallet})
+      await started
+      expect(privateHandle).not.toBe(wallet)
+      expect(privateHandle!.pool).toBe(wallet.pool)
+      expect(privateHandle!.changePool).toBe(wallet.changePool)
+      expect(privateHandle!.leaseManager).toBe(wallet.leaseManager)
+      expect(privateHandle!.provider).toBe(wallet.provider)
+      expect(wallet.walletState).toBeUndefined()
+      const close = wallet.close()
+      expect(wallet.close()).toBe(close)
+      let closed = false
+      void close.then(()=>{closed=true})
+      await expect(chain.topics.reconcileOperations({wallet})).rejects.toThrow()
+      expect(closed).toBe(false)
+      finish()
+      await action
+      await close
+      await expect(privateHandle!.walletState!.runOperation(async()=>undefined)).rejects.toThrow('enclosing wallet admission')
+      expect(()=>privateHandle!.walletState!.assertOpen()).toThrow('closing or closed')
+    } finally {finish();await wallet.close();expected.dispose()}
+  })
+})

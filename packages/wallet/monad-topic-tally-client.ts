@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { compareBytes, contentHash, defaultContext, validateFrame, matchForumPage, forumCursorToTransport, toHex, type Timestamp, type ForumCursor } from '@frank/codec'
+import { compareBytes, contentHash, defaultContext, validateFrame, matchForumPage, forumCursorToTransport, toHex, type Timestamp, type ForumCursor, type ForumTopicPage, type ForumDiscoveryPage, type ParsedFrame } from '@frank/codec'
 import { projectForumView, type ForumReadPolicy, type ForumMessage, type DiscoveredTopic } from './forum-model'
 export type { DiscoveredTopic } from './forum-model'
 
@@ -17,6 +17,72 @@ function timestamp(ms: number): Timestamp {
   return { seconds: BigInt(seconds), nanoseconds: (ms - seconds * 1000) * 1000000 }
 }
 function compareTime(a: Timestamp,b: Timestamp): number { return a.seconds < b.seconds ? -1 : a.seconds > b.seconds ? 1 : a.nanoseconds - b.nanoseconds }
+interface BrowserForumResponse {
+  ok: boolean
+  status: number
+  headers: { get(name: string): string | null }
+  body: null | {
+    cancel(): Promise<void>
+    getReader(): {
+      read(): Promise<{ done: boolean; value?: Uint8Array }>
+      cancel(): Promise<void>
+      releaseLock(): void
+    }
+  }
+}
+function browserTransport() {
+  return globalThis as unknown as {
+    window?: unknown
+    fetch?: (url: string, init: { method: string; headers: Record<string,string>; signal: AbortSignal; credentials: 'omit' }) => Promise<BrowserForumResponse>
+  }
+}
+async function browserRequest(url: string, params: Record<string,unknown>, controller: AbortController, remaining: number): Promise<Uint8Array> {
+  const fetch = browserTransport().fetch
+  if (!fetch) throw new Error('Browser Forum streaming is unavailable')
+  const query = Object.entries(params).filter(([,value]) => value !== undefined)
+    .map(([key,value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`).join('&')
+  const started = clock()
+  let timedOut = false
+  const timeout = setTimeout(() => { timedOut = true; controller.abort() }, Math.max(1,remaining))
+  let response: BrowserForumResponse | undefined
+  let reader: ReturnType<NonNullable<BrowserForumResponse['body']>['getReader']> | undefined
+  try {
+    response = await fetch(url + (query ? (url.includes('?') ? '&' : '?') + query : ''), {
+      method:'GET', headers:{Accept:'application/cbor'}, signal:controller.signal, credentials:'omit',
+    })
+    if (!response.ok) throw Object.assign(new Error(`Forum HTTP ${response.status}`), {isAxiosError:true,response:{status:response.status}})
+    if ((response.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase() !== 'application/cbor') throw new Error('Expected application/cbor')
+    const declared = response.headers.get('content-length')
+    if (declared !== null && /^\d+$/.test(declared) && BigInt(declared) > BigInt(RESPONSE_BYTES)) throw new Error('Forum response byte limit')
+    if (!response.body || typeof response.body.getReader !== 'function') throw new Error('Browser Forum streaming is unavailable')
+    reader = response.body.getReader()
+    // One fixed scratch buffer bounds overhead even when a hostile stream sends one-byte chunks.
+    const scratch = new Uint8Array(RESPONSE_BYTES)
+    let length = 0
+    for (;;) {
+      if (timedOut || clock()-started >= remaining) throw new Error('Forum snapshot lifetime limit')
+      const chunk = await reader.read()
+      if (timedOut || clock()-started >= remaining) throw new Error('Forum snapshot lifetime limit')
+      if (chunk.done) break
+      if (!chunk.value) throw new Error('Invalid Forum response stream')
+      if (length + chunk.value.byteLength > RESPONSE_BYTES) throw new Error('Forum response byte limit')
+      if (chunk.value.byteLength === 0) continue
+      scratch.set(chunk.value,length)
+      length += chunk.value.byteLength
+    }
+    return scratch.slice(0,length)
+  } catch (error) {
+    if (timedOut) throw new Error('Forum snapshot lifetime limit')
+    throw error
+  } finally {
+    clearTimeout(timeout)
+    controller.abort()
+    try {
+      if (reader) { try { await reader.cancel() } finally { reader.releaseLock() } }
+      else await response?.body?.cancel()
+    } catch { /* cancellation must not hide the original response error */ }
+  }
+}
 async function request(url: string, params: Record<string, unknown>, signal?: AbortSignal, remaining = LIFETIME): Promise<Uint8Array> {
   const controller = new AbortController()
   const abort = () => controller.abort()
@@ -24,6 +90,7 @@ async function request(url: string, params: Record<string, unknown>, signal?: Ab
   if (signal?.aborted) controller.abort()
   let oversize = false
   try {
+    if (browserTransport().window !== undefined) return await browserRequest(url,params,controller,remaining)
     const response = await axios({
       method: 'get', url, params, headers: { Accept: 'application/cbor' },
       responseType: 'arraybuffer', maxContentLength: RESPONSE_BYTES,
@@ -53,10 +120,24 @@ function parsed(bytes: Uint8Array) {
   if(result.kind !== 'parsed') throw new Error('Invalid Forum frame')
   return result
 }
+/** A valid relay page may belong to a newly retained incarnation of exactly the same query.
+ * Only metadata changes with the same last tuple are races; malformed frames remain permanent. */
+function racedCursorEcho(page: ForumTopicPage<ParsedFrame> | ForumDiscoveryPage, sent?: ForumCursor): boolean {
+  const echo = page.requestCursor
+  if (!sent || !echo || echo.family !== sent.family || echo.network !== sent.network) return false
+  if (echo.family === 13 && sent.family === 13) {
+    if (echo.topic !== sent.topic || compareTime(echo.since, sent.since) ||
+        compareTime(echo.last.timestamp, sent.last.timestamp) || compareBytes(echo.last.hash, sent.last.hash)) return false
+  } else if (echo.family === 14 && sent.family === 14) {
+    if (echo.last !== sent.last) return false
+  } else return false
+  return echo.revision !== sent.revision || compareBytes(echo.epoch, sent.epoch) !== 0 || echo.incarnation !== sent.incarnation
+}
 async function traverse(params: {relayBaseUrl:string;policy:ForumReadPolicy;topic?:string;sinceMs?:number;signal?:AbortSignal}, family:13|14): Promise<ForumMessage[]|DiscoveredTopic[]> {
   return exclusive(async () => {
     for (let attempt = 0; ; attempt++) {
-      const started = clock(); let charged = 0, count = 0, cursor: ForumCursor|undefined
+      // Reserve fixed browser response scratch/final assembly; the rest is staged retained data.
+      const started = clock(); let charged = RESPONSE_BYTES * 2, count = 0, cursor: ForumCursor|undefined
       let epoch: string|undefined, revision: bigint|undefined, incarnation: bigint|undefined
       let last: {timestamp:Timestamp;hash:Uint8Array}|string|undefined
       const seen = new Set<string>(), output: (ForumMessage|DiscoveredTopic)[] = []
@@ -67,6 +148,13 @@ async function traverse(params: {relayBaseUrl:string;policy:ForumReadPolicy;topi
           const bytes = await request(params.relayBaseUrl.replace(/\/+$/,'')+'/message/monad/topics'+(family===14?'/discover':''),
             family===13?{topic:params.topic,since:params.sinceMs ?? 0,cursor:cursor && forumCursorToTransport(cursor.bytes)}:{cursor:cursor && forumCursorToTransport(cursor.bytes)}, params.signal, LIFETIME-(clock()-started))
           if (clock()-started >= LIFETIME) throw new Error('Forum snapshot lifetime limit')
+          charged += bytes.byteLength * 4
+          if (charged > STAGING_BYTES) throw new Error('Forum staging limit')
+          const validated = parsed(bytes).typed
+          if (!validated || (validated.type !== 13 && validated.type !== 14) ||
+              validated.type !== family || validated.network !== params.policy.network) throw new Error('Page network/family binding')
+          if (validated.type === 13 && (validated.topic !== params.topic || compareTime(validated.since, since))) throw new Error('Page query binding')
+          if (racedCursorEcho(validated, cursor)) throw new SnapshotRace('Valid snapshot cursor identity changed')
           const page = matchForumPage(bytes,{network:params.policy.network,family,topic:params.topic,since,requestCursor:cursor?.bytes}).typed
           if (!page || (page.type!==13 && page.type!==14)) throw new Error('Expected Forum page')
           const pageEpoch = toHex(page.epoch)
@@ -74,8 +162,6 @@ async function traverse(params: {relayBaseUrl:string;policy:ForumReadPolicy;topi
           epoch=pageEpoch;revision=page.revision
           const rows = page.type===13?page.rows:page.entries
           if(rows.length>128 || (rows.length===0 && page.nextCursor)) throw new Error('Invalid page row count')
-          // Reserve encoded buffer and parsed nested-frame/container overhead conservatively.
-          charged += bytes.byteLength * 4
           for (const row of rows) {
             let key:string, projected:ForumMessage|DiscoveredTopic
             if(page.type===13) {

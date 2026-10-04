@@ -115,13 +115,91 @@ it('charges projection and bookkeeping toward the 64 MiB attempt bound',async()=
  await expect(fetchDiscoveredTopics(params)).rejects.toThrow('staging limit')
  expect(pageIndex).toBeLessThan(257)
 })
-it('starts expiry retries without old cursors and rejects an old incarnation echo',async()=>{
- ;(axios.isAxiosError as unknown as jest.Mock).mockImplementation((e:any)=>e?.isAxiosError===true)
+it('retries a fully validated same-query incarnation race from a fresh first page',async()=>{
  const old=encodeForumCursor({family:14,network:policy.network,epoch,revision,incarnation:1n,last:'a'})
  const fresh=encodeForumCursor({family:14,network:policy.network,epoch,revision,incarnation:2n,last:'a'})
- http.mockResolvedValueOnce(response(discovery(['a'],old))).mockRejectedValueOnce({isAxiosError:true,response:{status:410}})
-   .mockResolvedValueOnce(response(discovery(['a'],fresh))).mockResolvedValueOnce(response(discovery(['b'],undefined,old)))
- await expect(fetchDiscoveredTopics(params)).rejects.toThrow('cursor echo')
+ http.mockResolvedValueOnce(response(discovery(['a'],old)))
+   .mockResolvedValueOnce(response(discovery(['b'],undefined,fresh)))
+   .mockResolvedValueOnce(response(discovery(['complete'])))
+ expect((await fetchDiscoveredTopics(params)).map(row=>row.topic)).toEqual(['complete'])
  expect((http.mock.calls[2][0] as any).params.cursor).toBeUndefined()
- expect(http).toHaveBeenCalledTimes(4)
+ expect(http).toHaveBeenCalledTimes(3)
+})
+it('does not retry an intrinsically malformed cursor/page revision binding',async()=>{
+ const cursor=encodeForumCursor({family:14,network:policy.network,epoch,revision:revision-1n,incarnation:1n,last:'a'})
+ http.mockResolvedValueOnce(response(discovery(['a'],cursor)))
+ await expect(fetchDiscoveredTopics(params)).rejects.toThrow('cursor page binding')
+ expect(http).toHaveBeenCalledTimes(1)
+})
+it('does not retry valid pages whose echo changed the last tuple',async()=>{
+ const old=encodeForumCursor({family:14,network:policy.network,epoch,revision,incarnation:1n,last:'a'})
+ const forged=encodeForumCursor({family:14,network:policy.network,epoch,revision,incarnation:2n,last:'changed'})
+ http.mockResolvedValueOnce(response(discovery(['a'],old))).mockResolvedValueOnce(response(discovery(['z'],undefined,forged)))
+ await expect(fetchDiscoveredTopics(params)).rejects.toThrow('cursor echo')
+ expect(http).toHaveBeenCalledTimes(2)
+})
+
+describe('bounded browser Forum streaming',()=>{
+ let previousWindow: PropertyDescriptor | undefined, previousFetch: PropertyDescriptor | undefined
+ beforeEach(()=>{
+  previousWindow=Object.getOwnPropertyDescriptor(globalThis,'window')
+  previousFetch=Object.getOwnPropertyDescriptor(globalThis,'fetch')
+  Object.defineProperty(globalThis,'window',{configurable:true,value:{}})
+ })
+ afterEach(()=>{
+  if(previousWindow) Object.defineProperty(globalThis,'window',previousWindow)
+  else Reflect.deleteProperty(globalThis,'window')
+  if(previousFetch) Object.defineProperty(globalThis,'fetch',previousFetch)
+  else Reflect.deleteProperty(globalThis,'fetch')
+ })
+ function responseStream(chunks:Uint8Array[],declared:string|null=null) {
+  const read=jest.fn().mockImplementation(async()=>chunks.length?{done:false,value:chunks.shift()}:{done:true})
+  const cancel=jest.fn().mockResolvedValue(undefined),releaseLock=jest.fn()
+  const bodyCancel=jest.fn().mockResolvedValue(undefined)
+  const getReader=jest.fn(()=>({read,cancel,releaseLock}))
+  const response={ok:true,status:200,headers:{get:(name:string)=>name==='content-type'?'application/cbor':declared},body:{getReader,cancel:bodyCancel}}
+  return {response,read,cancel,releaseLock,getReader,bodyCancel}
+ }
+ it('rejects announced oversize before reading and cancels the response',async()=>{
+  const stream=responseStream([],String(4*1024*1024+1)),fetch=jest.fn().mockResolvedValue(stream.response)
+  Object.defineProperty(globalThis,'fetch',{configurable:true,value:fetch})
+  await expect(fetchDiscoveredTopics(params)).rejects.toThrow('byte limit')
+  expect(stream.getReader).not.toHaveBeenCalled();expect(stream.bodyCancel).toHaveBeenCalledTimes(1)
+  expect(fetch.mock.calls[0][1]).toMatchObject({credentials:'omit',headers:{Accept:'application/cbor'}})
+  expect(fetch.mock.calls[0][1].signal.aborted).toBe(true);expect(http).not.toHaveBeenCalled()
+ })
+ it('caps unknown-length chunks before assembly and never publishes a prefix',async()=>{
+  const stream=responseStream(Array.from({length:66},()=>new Uint8Array(65536)))
+  Object.defineProperty(globalThis,'fetch',{configurable:true,value:jest.fn().mockResolvedValue(stream.response)})
+  await expect(fetchDiscoveredTopics(params)).rejects.toThrow('byte limit')
+  expect(stream.read).toHaveBeenCalledTimes(65)
+  expect(stream.cancel).toHaveBeenCalledTimes(1);expect(stream.releaseLock).toHaveBeenCalledTimes(1)
+ })
+ it('publishes a complete streamed snapshot and refuses unsupported streaming without XHR fallback',async()=>{
+  const bytes=discovery(['complete']),stream=responseStream([bytes.slice(0,5),bytes.slice(5)])
+  Object.defineProperty(globalThis,'fetch',{configurable:true,value:jest.fn().mockResolvedValue(stream.response)})
+  expect((await fetchDiscoveredTopics(params))[0].topic).toBe('complete')
+  Object.defineProperty(globalThis,'fetch',{configurable:true,value:undefined})
+  await expect(fetchDiscoveredTopics(params)).rejects.toThrow('streaming is unavailable')
+  expect(http).not.toHaveBeenCalled()
+ })
+})
+it('browser streaming handles many one-byte chunks with a single bounded response buffer',async()=>{
+ const windowDescriptor=Object.getOwnPropertyDescriptor(globalThis,'window'),fetchDescriptor=Object.getOwnPropertyDescriptor(globalThis,'fetch')
+ const bytes=discovery(Array.from({length:128},(_,i)=>String(i).padStart(6,'0')+'x'.repeat(256)))
+ let offset=0,readCount=0,cancelled=false
+ const reader={
+   read:async()=>{readCount++;return offset<bytes.length?{done:false,value:bytes.subarray(offset,++offset)}:{done:true}},
+   cancel:async()=>{cancelled=true},releaseLock:()=>{},
+ }
+ Object.defineProperty(globalThis,'window',{configurable:true,value:{}})
+ Object.defineProperty(globalThis,'fetch',{configurable:true,value:async()=>({ok:true,status:200,
+   headers:{get:(name:string)=>name==='content-type'?'application/cbor':null},body:{getReader:()=>reader,cancel:async()=>{}}})})
+ try {
+   expect(await fetchDiscoveredTopics(params)).toHaveLength(128)
+   expect(readCount).toBe(bytes.length+1);expect(cancelled).toBe(true)
+ } finally {
+   if(windowDescriptor)Object.defineProperty(globalThis,'window',windowDescriptor);else Reflect.deleteProperty(globalThis,'window')
+   if(fetchDescriptor)Object.defineProperty(globalThis,'fetch',fetchDescriptor);else Reflect.deleteProperty(globalThis,'fetch')
+ }
 })

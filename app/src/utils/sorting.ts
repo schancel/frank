@@ -23,7 +23,14 @@ export function halfLifeSort(posts: MessageWithReplies[]) {
   })
 }
 export function timeSort(posts: MessageWithReplies[]) {
-  return posts.slice().sort((a, b) => new Date(b.timestamp).valueOf() - new Date(a.timestamp).valueOf() || tie(a, b))
+  return posts.slice().sort((a, b) => {
+    const secondsA = BigInt(a.visibleTimestamp.seconds)
+    const secondsB = BigInt(b.visibleTimestamp.seconds)
+    if (secondsA !== secondsB) return secondsA > secondsB ? -1 : 1
+    const nanosA = a.visibleTimestamp.nanoseconds
+    const nanosB = b.visibleTimestamp.nanoseconds
+    return nanosA === nanosB ? tie(a, b) : nanosA > nanosB ? -1 : 1
+  })
 }
 export function voteSort(posts: MessageWithReplies[]) {
   return posts.slice().sort(compareWeight)

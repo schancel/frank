@@ -3,7 +3,7 @@
  * (`Forum.vue`'s `sortPostsByMode` call, ticket #61). Pure functions over `MessageWithReplies[]`,
  * no store/wallet/network dependencies, so no mocking is needed here.
  */
-import { MessageWithReplies } from 'src/stores/forum'
+import type { MessageWithReplies } from 'src/stores/forum'
 import {
   halfLife,
   halfLifeSort,
@@ -15,14 +15,21 @@ import {
 function makePost(
   overrides: Partial<MessageWithReplies> = {},
 ): MessageWithReplies {
+  const timestamp = overrides.timestamp ?? new Date()
+  const milliseconds = new Date(timestamp).valueOf()
+  const seconds = Math.floor(milliseconds / 1000)
+  const visibleTimestamp = overrides.visibleTimestamp ?? {
+    seconds: String(seconds),
+    nanoseconds: (milliseconds - seconds * 1000) * 1_000_000,
+  }
   return {
     poster: '0xposter',
     topic: 'stamp',
     voteWeightWei: '0',
-    visibleTimestamp: { seconds: '1', nanoseconds: 0 }, epoch: '00'.repeat(16), revision: '1', transactionHash: '11'.repeat(32), authorBurnTx: '0x01', blockNumber: '1', transactionIndex: '0',
+    visibleTimestamp, epoch: '00'.repeat(16), revision: '1', transactionHash: '11'.repeat(32), authorBurnTx: '0x01', blockNumber: '1', transactionIndex: '0',
     entries: [{ kind: 'post', message: 'hello' }],
     payloadDigest: 'deadbeef',
-    timestamp: new Date(),
+    timestamp,
     replies: [],
     ...overrides,
   }
@@ -199,4 +206,31 @@ it('hot ranking uses deterministic exact ties without modifying stored amounts',
   const rows = [makePost({payloadDigest:'b',voteWeightWei:'9007199254740992',timestamp:'2026-01-01'}), makePost({payloadDigest:'a',voteWeightWei:'9007199254740993',timestamp:'2026-01-01'})]
   expect(halfLifeSort(rows)[0].payloadDigest).toBe('a')
   expect(rows[1].voteWeightWei).toBe('9007199254740993')
+})
+
+it('orders canonical nanoseconds within one display millisecond', () => {
+  const timestamp = '2026-01-01T00:00:00.000Z'
+  const older = makePost({payloadDigest:'a',timestamp,visibleTimestamp:{seconds:'1767225600',nanoseconds:1}})
+  const newer = makePost({payloadDigest:'b',timestamp,visibleTimestamp:{seconds:'1767225600',nanoseconds:999999}})
+  expect(new Date(older.timestamp).valueOf()).toBe(new Date(newer.timestamp).valueOf())
+  expect(timeSort([older,newer]).map(row => row.payloadDigest)).toEqual(['b','a'])
+})
+it('orders wide signed canonical seconds exactly with stable digest ties', () => {
+  const timestamp = '2026-01-01T00:00:00.000Z'
+  const rows = [
+    makePost({payloadDigest:'c',timestamp,visibleTimestamp:{seconds:'9223372036854775806',nanoseconds:999999999}}),
+    makePost({payloadDigest:'b',timestamp,visibleTimestamp:{seconds:'9223372036854775807',nanoseconds:0}}),
+    makePost({payloadDigest:'a',timestamp,visibleTimestamp:{seconds:'9223372036854775807',nanoseconds:0}}),
+    makePost({payloadDigest:'e',timestamp,visibleTimestamp:{seconds:'-9223372036854775808',nanoseconds:999999999}}),
+    makePost({payloadDigest:'d',timestamp,visibleTimestamp:{seconds:'-9223372036854775807',nanoseconds:0}}),
+  ]
+  expect(timeSort(rows).map(row => row.payloadDigest)).toEqual(['a','b','c','d','e'])
+  expect(timeSort([...rows].reverse())).toEqual(timeSort(rows))
+  expect(rows[0].visibleTimestamp.seconds).toBe('9223372036854775806')
+  expect(rows[3].visibleTimestamp.seconds).toBe('-9223372036854775808')
+  expect(JSON.parse(JSON.stringify(rows))[0].visibleTimestamp.seconds).toBe('9223372036854775806')
+})
+it('does not fall back to a display Date when canonical timestamp data is missing', () => {
+  const malformed = makePost({visibleTimestamp:undefined})
+  expect(() => timeSort([makePost(),malformed])).toThrow()
 })

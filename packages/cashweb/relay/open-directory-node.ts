@@ -1,17 +1,12 @@
 /**
  * Node storage for the open directory (bots, and tests that use real admission stores):
- * one Level admission store per account under `root`, and one small JSON file beside them that
- * holds the first-contact pins and the whole checkpoints outside the stores.
+ * one Level admission store per account under `root`, and beside them one small file per pin and
+ * per checkpoint (kept outside the stores). Each write replaces only its own small file, off the
+ * event loop; nothing is rewritten in full when one account is admitted.
  */
 import level from 'level'
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { openNodeDirectoryStore } from '@frank/directory-admission/node'
@@ -25,28 +20,35 @@ type Storage = Pick<
   OpenDirectoryDeps,
   'openStore' | 'discardUnenrolled' | 'checkpoints' | 'pins'
 >
-interface State {
-  version: 1
-  pins: Record<string, string>
-  checkpoints: Record<string, string>
-}
-
 /** `root` is created if missing. It holds only public directory evidence, no secrets. */
 export function nodeDirectoryStorage(root: string): Storage {
-  mkdirSync(root, { recursive: true })
-  const file = join(root, 'directory-state.json')
-  const state: State = existsSync(file)
-    ? (JSON.parse(readFileSync(file, 'utf8')) as State)
-    : { version: 1, pins: {}, checkpoints: {} }
-  if (state.version !== 1) throw new Error('Unknown directory state version')
-  const save = () => {
-    const temporary = `${file}.${process.pid}.tmp`
-    writeFileSync(temporary, JSON.stringify(state))
-    renameSync(temporary, file)
+  mkdirSync(join(root, 'state'), { recursive: true })
+  const digest = (value: string) =>
+    createHash('sha256').update(value).digest('hex')
+  // Store names and pin keys contain ':'; a hash keeps every path portable and bounded.
+  const location = (name: string) => join(root, digest(name))
+  const file = (kind: 'pin' | 'checkpoint', key: string) =>
+    join(root, 'state', `${kind}-${digest(key)}`)
+  // The single-file layout of the first version of this helper, read if it is still there.
+  const legacyFile = join(root, 'directory-state.json')
+  const legacy: {
+    pins?: Record<string, string>
+    checkpoints?: Record<string, string>
+  } = existsSync(legacyFile) ? JSON.parse(readFileSync(legacyFile, 'utf8')) : {}
+  let sequence = 0
+  const read = async (path: string): Promise<string | null> => {
+    try {
+      return await readFile(path, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
   }
-  // Store names contain ':'; a hash keeps every path portable and bounded.
-  const location = (name: string) =>
-    join(root, createHash('sha256').update(name).digest('hex'))
+  const write = async (path: string, value: string): Promise<void> => {
+    const temporary = `${path}.${process.pid}.${sequence++}.tmp`
+    await writeFile(temporary, value)
+    await rename(temporary, path)
+  }
   return {
     openStore: ({ name, anchor, mode }) =>
       openNodeDirectoryStore({ location: location(name), anchor, mode }),
@@ -70,21 +72,20 @@ export function nodeDirectoryStorage(root: string): Storage {
       return 'discarded'
     },
     checkpoints: {
-      load: name =>
-        name in state.checkpoints
-          ? parseCheckpoint(state.checkpoints[name])
-          : null,
-      save(name, checkpoint) {
-        state.checkpoints[name] = serializeCheckpoint(checkpoint)
-        save()
+      async load(name) {
+        const saved =
+          (await read(file('checkpoint', name))) ??
+          legacy.checkpoints?.[name] ??
+          null
+        return saved === null ? null : parseCheckpoint(saved)
       },
+      save: (name, checkpoint) =>
+        write(file('checkpoint', name), serializeCheckpoint(checkpoint)),
     },
     pins: {
-      load: key => state.pins[key] ?? null,
-      save(key, revisionZero) {
-        state.pins[key] = revisionZero
-        save()
-      },
+      load: async key =>
+        (await read(file('pin', key))) ?? legacy.pins?.[key] ?? null,
+      save: (key, value) => write(file('pin', key), value),
     },
   }
 }

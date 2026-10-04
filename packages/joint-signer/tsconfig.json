@@ -18,6 +18,7 @@
     // Resolve sibling packages from this checkout's source rather than through node_modules.
     "paths": {
       "@frank/threshold-ecdsa": ["../threshold-ecdsa/src/index.ts"],
+      "@frank/threshold-ecdsa/src/*": ["../threshold-ecdsa/src/*"],
       "@frank/adaptor-signatures": ["../adaptor-signatures/src/index.ts"],
       "@frank/adaptor-signatures/src/*": ["../adaptor-signatures/src/*"]
     }
@@ -27,6 +28,8 @@
     "node_modules",
     "**/*.jest.spec.ts",
     "**/*.jest.test.ts",
-    "src/conformance.ts"
+    "src/conformance.ts",
+    // Imports the web build of the wasm glue, which needs DOM types.
+    "src/silence-dkls/load-web.ts"
   ]
 }

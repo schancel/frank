@@ -42,6 +42,8 @@ export type JointSignerErrorCode =
   | 'invalid-key'
   /** Stored session bytes failed validation or do not match the key. */
   | 'invalid-state'
+  /** The lock's holder did not pass an opening that opens the lock. */
+  | 'lock-not-owned'
   /** The backend fixes roles per key and this role is not this key's role. */
   | 'role-fixed'
   /** The backend does not have this capability. Check `capabilities` first. */
@@ -253,8 +255,35 @@ export interface JointPreSignature {
   readonly address: Uint8Array
 }
 
+/**
+ * The secret material of a lock, as `createPointLock` and
+ * `createCommitmentLock` return it in `opening`. For a commitment, `value` is
+ * the committed value, not a candidate index.
+ */
+export type JointLockOpening =
+  | { readonly kind: 'point'; readonly secret: Uint8Array }
+  | {
+      readonly kind: 'commitment'
+      readonly secret: Uint8Array
+      readonly value: number
+    }
+
 export interface StartPreSignInput extends StartSignInput {
+  /** The public lock. Both parties pass the same one. */
   readonly lock: JointLock
+  /**
+   * The holder's own opening of `lock`.
+   *
+   * The party that holds the lock's secret (`locks.lockCreator`) MUST pass
+   * it and is refused (`lock-not-owned`) without one that opens exactly
+   * this lock. A lock's
+   * public proofs only show that someone knows its secret; without this
+   * check the other party could present a lock made from a secret of its
+   * own as "the holder's lock" and later complete the pre-signature alone.
+   * The other party (who extracts the secret later) must not pass it
+   * (`invalid-input`).
+   */
+  readonly lockOpening?: JointLockOpening
 }
 
 /**
@@ -271,6 +300,8 @@ export interface LockFeature {
   }): JointSignerResult<{
     readonly secret: Uint8Array
     readonly lock: JointLock & { readonly kind: 'point' }
+    /** What the holder passes as `lockOpening` when it pre-signs. */
+    readonly opening: JointLockOpening & { readonly kind: 'point' }
   }>
   createCommitmentLock(input: {
     readonly key: JointKey
@@ -280,6 +311,8 @@ export interface LockFeature {
     readonly secret: Uint8Array
     readonly commitment: Uint8Array
     readonly proof: Uint8Array
+    /** One opening serves every candidate index of this commitment. */
+    readonly opening: JointLockOpening & { readonly kind: 'commitment' }
   }>
   commitmentLockPoint(
     commitment: Uint8Array,

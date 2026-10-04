@@ -9,6 +9,7 @@ import { randomBytes as nodeRandomBytes } from 'crypto'
 import { performance } from 'perf_hooks'
 import { getAddress, Signature, Transaction } from 'ethers'
 
+import { createCommitmentLock } from './locks.js'
 import type {
   JointKey,
   JointSignature,
@@ -782,6 +783,107 @@ export function runConformance(name: string, create: () => JointSigner): void {
         if (!started.ok) expect(started.error.code).toBe('unsupported')
       })
 
+      it('lets the holder pre-sign only under a lock it can open', () => {
+        const locks = signer.locks
+        if (locks === undefined) return
+        const holder = locks.lockCreator
+        const other: Role = holder === 'initiator' ? 'responder' : 'initiator'
+        const { digest } = transfer(12)
+        const value = 3
+        const material = must(
+          locks.createCommitmentLock({
+            key: keys[holder],
+            value,
+            randomBytes: rng,
+          }),
+        )
+        const lock = {
+          kind: 'commitment' as const,
+          commitment: material.commitment,
+          proof: material.proof,
+          index: value,
+        }
+        const opening = material.opening
+        const start = (
+          role: Role,
+          withOpening: Parameters<typeof locks.startPreSign>[0]['lockOpening'],
+        ) =>
+          locks.startPreSign({
+            key: keys[role],
+            role,
+            sessionId: rng(32),
+            digest,
+            lock,
+            ...(withOpening === undefined ? {} : { lockOpening: withOpening }),
+            randomBytes: rng,
+          })
+        // A lock whose proofs verify but which the holder cannot open is
+        // exactly what the other party would hand it to cheat: refused.
+        for (const bad of [
+          undefined,
+          { ...opening, value: value + 1 },
+          { ...opening, secret: flip(material.secret, 31) },
+        ]) {
+          const refused = start(holder, bad)
+          expect(refused.ok).toBe(false)
+          if (!refused.ok) expect(refused.error.code).toBe('lock-not-owned')
+        }
+        // An opening of the wrong kind is refused too (a backend may call it
+        // malformed rather than not owned).
+        const wrongKind = start(holder, {
+          kind: 'point' as const,
+          secret: material.secret,
+        })
+        expect(wrongKind.ok).toBe(false)
+        if (!wrongKind.ok) {
+          expect(['lock-not-owned', 'invalid-input']).toContain(
+            wrongKind.error.code,
+          )
+        }
+        // The attack itself: the other party picks its own secret and makes a
+        // lock whose proofs name the holder. Every public proof verifies, so
+        // the other party can start; the holder cannot open it and does not.
+        const info = must(signer.describeKey(keys[holder]))
+        const forged = must(
+          createCommitmentLock({
+            keyId: info.keyId,
+            holderId: info.localId,
+            value,
+            randomBytes: rng,
+          }),
+        )
+        const forgedLock = {
+          ...lock,
+          commitment: forged.commitment,
+          proof: forged.proof,
+        }
+        const startForged = (role: Role, withOpening?: typeof opening) =>
+          locks.startPreSign({
+            key: keys[role],
+            role,
+            sessionId: rng(32),
+            digest,
+            lock: forgedLock,
+            ...(withOpening === undefined ? {} : { lockOpening: withOpening }),
+            randomBytes: rng,
+          })
+        const attacker = startForged(other)
+        expect(attacker.ok).toBe(true)
+        if (attacker.ok) locks.abortPreSign(attacker.value.session)
+        for (const own of [undefined, opening]) {
+          const victim = startForged(holder, own)
+          expect(victim.ok).toBe(false)
+          if (!victim.ok) expect(victim.error.code).toBe('lock-not-owned')
+        }
+        // The other party never brings an opening.
+        const refused = start(other, opening)
+        expect(refused.ok).toBe(false)
+        if (!refused.ok) expect(refused.error.code).toBe('invalid-input')
+        const accepted = start(holder, opening)
+        expect(accepted.ok).toBe(true)
+        if (accepted.ok) locks.abortPreSign(accepted.value.session)
+      })
+
       it('pre-signs, completes and extracts where the backend has locks', () => {
         const locks = signer.locks
         if (locks === undefined) return
@@ -798,6 +900,7 @@ export function runConformance(name: string, create: () => JointSigner): void {
           proof: material.proof,
           index: value,
         }
+        const opening = material.opening
         const sessionId = rng(32)
         const trace = drive(
           role =>
@@ -807,6 +910,8 @@ export function runConformance(name: string, create: () => JointSigner): void {
               sessionId,
               digest,
               lock,
+              // Only the lock's holder brings its opening.
+              ...(role === locks.lockCreator ? { lockOpening: opening } : {}),
               randomBytes: rng,
             }),
           (session, message) => locks.preSignStep(session, message),

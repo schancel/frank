@@ -2,6 +2,7 @@ export type {
   ImportSignSessionInput,
   JointKey,
   JointLock,
+  JointLockOpening,
   JointPreSignature,
   JointSignature,
   JointSigner,

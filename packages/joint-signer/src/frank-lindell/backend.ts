@@ -19,6 +19,7 @@ import type {
   ImportSignSessionInput,
   JointKey,
   JointLock,
+  JointLockOpening,
   JointPreSignature,
   JointSignature,
   JointSignerCapabilities,
@@ -63,6 +64,7 @@ const CODES: Readonly<Record<ThresholdErrorCode, JointSignerErrorCode>> = {
   'invalid-commitment': 'peer-check-failed',
   'invalid-proof': 'peer-check-failed',
   'invalid-paillier': 'peer-check-failed',
+  'lock-not-owned': 'lock-not-owned',
   'invalid-signature': 'invalid-signature',
   'unusable-nonce': 'peer-check-failed',
   'session-finished': 'session-finished',
@@ -257,6 +259,7 @@ export function createFrankLindellBackend(): LockingJointSigner {
     lock: AdaptorLock | undefined,
     tag: 'sign-session' | 'pre-sign-session',
     kind: SignKind,
+    lockOpening?: JointLockOpening,
   ): JointSignerResult<Step<Session, Result>> {
     const key = checkedKey(input)
     if (!key.ok) return key
@@ -268,6 +271,9 @@ export function createFrankLindellBackend(): LockingJointSigner {
           digest: input.digest,
           tweakCommitment: input.tweakCommitment,
           lock,
+          // The package itself refuses a holder that cannot open the lock
+          // (`lock-not-owned`) and an initiator that passes an opening.
+          lockOpening,
           randomBytes: input.randomBytes,
         }),
         step => signStepOutput<Session, Result>(step, tag, kind),
@@ -340,7 +346,13 @@ export function createFrankLindellBackend(): LockingJointSigner {
           keyShare: key.inner,
           randomBytes: input.randomBytes,
         }),
-        material => ({ secret: material.secret, lock: material.lock }),
+        material => ({
+          secret: material.secret,
+          lock: material.lock,
+          opening: material.opening as JointLockOpening & {
+            readonly kind: 'point'
+          },
+        }),
       )
     },
     createCommitmentLock(input) {
@@ -352,7 +364,14 @@ export function createFrankLindellBackend(): LockingJointSigner {
           value: input.value,
           randomBytes: input.randomBytes,
         }),
-        material => material,
+        material => ({
+          secret: material.secret,
+          commitment: material.commitment,
+          proof: material.proof,
+          opening: material.opening as JointLockOpening & {
+            readonly kind: 'commitment'
+          },
+        }),
       )
     },
     commitmentLockPoint(commitment, index) {
@@ -376,6 +395,7 @@ export function createFrankLindellBackend(): LockingJointSigner {
         lock as unknown as AdaptorLock,
         'pre-sign-session',
         'adaptor-signature',
+        input.lockOpening,
       )
     },
     preSignStep(session, message) {

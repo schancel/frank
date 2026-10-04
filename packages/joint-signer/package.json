@@ -1,7 +1,7 @@
 {
   "name": "@frank/joint-signer",
   "version": "0.0.1",
-  "description": "Backend-neutral two-party signing interface for a jointly held secp256k1 (EVM) key, with replaceable backends. Experimental and testnet-only: not for real funds. One backend wraps third-party code under a non-commercial licence; see README.",
+  "description": "Backend-neutral two-party signing interface for a jointly held secp256k1 (EVM) key, with replaceable backends. Experimental and testnet-only: not for real funds. One backend loads third-party WebAssembly (third_party/silent-shard-dkls23-ll) under a non-commercial licence; see README.",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -12,11 +12,10 @@
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.tests.json"
   },
   "dependencies": {
+    "@frank/adaptor-signatures": "0.0.1",
     "@frank/threshold-ecdsa": "0.0.1",
     "@noble/curves": "1.9.1",
-    "@noble/hashes": "1.8.0",
-    "@silencelaboratories/dkls-wasm-ll-node": "1.2.0",
-    "@silencelaboratories/dkls-wasm-ll-web": "1.2.0"
+    "@noble/hashes": "1.8.0"
   },
   "devDependencies": {
     "@types/jest": "^29",

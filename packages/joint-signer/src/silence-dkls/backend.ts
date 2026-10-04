@@ -1,35 +1,44 @@
 /**
- * The `silence-dkls` backend: two-party DKLs23 from Silence Laboratories'
- * WebAssembly build (`@silencelaboratories/dkls-wasm-ll-*`, non-commercial
- * licence; see the package README).
+ * The `silence-dkls` backend: two-party DKLs23 from OUR FORK of Silence
+ * Laboratories' library (`third_party/silent-shard-dkls23-ll`, built to
+ * WebAssembly; non-commercial licence, see that directory and this package's
+ * README). The fork adds sessions bound to one digest and adaptor
+ * pre-signing; this file is the MIT-licensed wrapper around the built module.
  *
- * What this file adds around the third-party code, all of it OURS and
- * unreviewed:
+ * What this file adds around the wasm, all of it ours and unreviewed:
  *
  *  - A frame around every message: backend, protocol, round and a 32-byte
- *    binding of the session (and, for signing, the key and the digest). The
- *    wasm has no caller-chosen session id and reports a malformed message by
- *    trapping, which leaves its session object unusable; the frame check
- *    rejects stray messages before the wasm sees them.
+ *    binding of the session (key, digest, initiator and, for pre-signing,
+ *    the lock). Stray messages are rejected before the wasm sees them. The
+ *    same binding is handed to the wasm, which mixes it into its own session
+ *    id.
  *  - Turn-taking. DKLs23 is written as rounds in which both parties send at
  *    once. Here the parties alternate, five frames per protocol, and a frame
  *    carries every wasm message its sender can already compute. Each wasm
  *    message is still computed from exactly the inputs the protocol gives it.
- *  - No pre-signatures. The wasm can stop after three rounds with a
- *    message-independent pre-signature, and using one twice gives away the
- *    key. Here the digest is fixed when the session starts, is bound into
- *    every frame, and the pre-signature is consumed in the same step that
- *    creates it; it is never returned or exported.
  *  - Sessions as values. The wasm session lives only inside one step call:
- *    it is rebuilt from bytes, advanced, serialised and freed. That gives
- *    export and import for free and keeps a failed step from poisoning
- *    anything but itself.
+ *    it is rebuilt from bytes, advanced, serialised and freed.
  *  - Caller-supplied randomness: every wasm call that draws randomness gets a
  *    32-byte seed from the caller's `randomBytes`.
+ *  - Integrity of stored keys and stored signing sessions: a MAC keyed from
+ *    the key share, checked before anything else is parsed.
+ *  - Locks: creation, the holder's check that it can open a lock before it
+ *    pre-signs under it, completion and extraction (`../locks.ts`). The wasm
+ *    verifies every lock proof and repeats the holder's check itself.
  *
  * Party numbers: the key-generation initiator is party 0, the responder
- * party 1. Signing roles are free per session.
+ * party 1. Signing roles are free per session. In a pre-signing session the
+ * lock's holder is always the responder: the initiator gets the
+ * pre-signature first and is the party that later extracts the secret.
  */
+import { pointFromBytes } from '@frank/adaptor-signatures/src/curve.js'
+import {
+  decodeAdaptorSignature,
+  verifyEncryptedSignature,
+} from '@frank/adaptor-signatures/src/ecdsa-adaptor.js'
+import { hmac } from '@noble/hashes/hmac.js'
+import { sha256 } from '@noble/hashes/sha256.js'
+
 import {
   concat,
   draw,
@@ -41,24 +50,39 @@ import {
   snapshot,
   transcriptHash,
 } from '../bytes.js'
+import {
+  commitmentLockPoint,
+  completeCommitmentLock,
+  createCommitmentLock,
+  createPointLock,
+  encodeLock,
+  encodeOpening,
+  extractCommitmentLockSecret,
+  lockOpenedBy,
+} from '../locks.js'
 import { fail, Failure, failure, success } from '../result.js'
 import type {
   ImportSignSessionInput,
   JointKey,
+  JointPreSignature,
   JointSignature,
   JointSignerCapabilities,
   JointSignerResult,
   KeygenSession,
   KeyInfo,
-  PlainJointSigner,
+  LockFeature,
+  LockingJointSigner,
+  PreSignSession,
   RandomBytes,
   Role,
   SignSession,
   StartKeygenInput,
+  StartPreSignInput,
   StartSignInput,
   Step,
 } from '../types.js'
 import type {
+  DklsAdaptorSignSession,
   DklsMessage,
   DklsSignSession,
   SilenceDklsModule,
@@ -73,6 +97,8 @@ const STATE_MAGIC = Uint8Array.of(0x46, 0x4a, 0x54, 0x31) // "FJT1"
 const BACKEND_BYTE = 0x01
 const PROTOCOL_KEYGEN = 1
 const PROTOCOL_SIGN = 2
+const PROTOCOL_PRESIGN = 3
+const MAC_BYTES = 32
 const HEADER_BYTES = 4 + 1 + 1 + 1 + 32 + 1
 /** Largest wasm message measured is about 95 KB (signing message 3). */
 const MAX_PART_BYTES = 130_000
@@ -82,11 +108,11 @@ const MAX_WASM_STATE_BYTES = 400_000
 const MAX_ID_BYTES = 64
 const LAST_ROUND = 5
 
-const CAPABILITIES: JointSignerCapabilities & { readonly adaptorLocks: false } =
+const CAPABILITIES: JointSignerCapabilities & { readonly adaptorLocks: true } =
   {
     backend: SILENCE_DKLS_BACKEND,
     roles: 'symmetric',
-    adaptorLocks: false,
+    adaptorLocks: true,
     keyTweak: false,
     keygenSessionExport: true,
     keygenMessages: 5,
@@ -132,10 +158,25 @@ interface KeygenInternal extends KeygenSession, SessionCore {
   readonly commitments: [Uint8Array, Uint8Array]
 }
 
-interface SignInternal extends SignSession, SessionCore {
+interface LockBinding {
+  /** Canonical lock encoding, as the wasm verifies it. */
+  readonly encoded: Uint8Array
+  /** The lock point T, 33 bytes, as the wasm computed it. */
+  readonly point: Uint8Array
+  /** Identity of the lock's holder: the responder of the session. */
+  readonly holderId: Uint8Array
+  readonly otherId: Uint8Array
+}
+
+/** A signing session, or (with `lock`) a pre-signing session. */
+interface SignInternal extends SessionCore {
+  readonly __jointSigner: 'sign-session' | 'pre-sign-session'
   readonly key: KeyInternal
   readonly digest: Uint8Array
+  readonly lock: LockBinding | null
 }
+
+type SignOutput = JointSignature | JointPreSignature
 
 function roleByte(role: Role): number {
   return role === 'initiator' ? 0 : 1
@@ -240,7 +281,11 @@ function openFrame(
   const frameBinding = reader.take(32)
   const count = reader.byte()
   if (frameBinding === null || count === null) return malformed
-  if (frameProtocol !== PROTOCOL_KEYGEN && frameProtocol !== PROTOCOL_SIGN) {
+  if (
+    frameProtocol !== PROTOCOL_KEYGEN &&
+    frameProtocol !== PROTOCOL_SIGN &&
+    frameProtocol !== PROTOCOL_PRESIGN
+  ) {
     return malformed
   }
   if (frameRound === null || frameRound < 1 || frameRound > LAST_ROUND) {
@@ -320,9 +365,42 @@ function describeFailure<T>(error: unknown): JointSignerResult<T> {
   return failure('internal-error')
 }
 
+function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
+  return equalBytes(a, b)
+}
+
+/** Key of the storage MAC: a hash of the secret key share. */
+function storageMacKey(share: Uint8Array): Uint8Array {
+  return transcriptHash(`${DOMAIN}/storage-mac-key`, share)
+}
+
+function seal(share: Uint8Array, kind: string, body: Uint8Array): Uint8Array {
+  const key = storageMacKey(share)
+  const tag = hmac(
+    sha256,
+    key,
+    concat(transcriptHash(`${DOMAIN}/${kind}`), body),
+  )
+  key.fill(0)
+  return concat(body, tag)
+}
+
+/** The body of sealed bytes, or null if the MAC does not verify. */
+function unseal(
+  share: Uint8Array,
+  kind: string,
+  sealed: Uint8Array,
+): Uint8Array | null {
+  if (sealed.length < MAC_BYTES) return null
+  const body = sealed.subarray(0, sealed.length - MAC_BYTES)
+  const expected = seal(share, kind, body).subarray(body.length)
+  if (!constantTimeEqual(expected, sealed.subarray(body.length))) return null
+  return body.slice()
+}
+
 export function createSilenceDklsBackend(
   dkls: SilenceDklsModule,
-): PlainJointSigner {
+): LockingJointSigner {
   const seed = (randomBytes: RandomBytes): Uint8Array => draw(randomBytes, 32)
 
   /** Takes a wasm message's bytes and frees it. */
@@ -668,13 +746,17 @@ export function createSilenceDklsBackend(
     if (internal === null) return failure('invalid-input')
     if (!internal.usable) return failure('key-unusable', { keyUnusable: true })
     return success(
-      concat(
-        KEY_MAGIC,
-        Uint8Array.of(BACKEND_BYTE, roleByte(internal.keygenRole)),
-        field(internal.localId),
-        field(internal.peerId),
-        field(internal.publicKey),
-        field(internal.share),
+      seal(
+        internal.share,
+        'stored-key',
+        concat(
+          KEY_MAGIC,
+          Uint8Array.of(BACKEND_BYTE, roleByte(internal.keygenRole)),
+          field(internal.localId),
+          field(internal.peerId),
+          field(internal.publicKey),
+          field(internal.share),
+        ),
       ),
     )
   }
@@ -682,7 +764,8 @@ export function createSilenceDklsBackend(
   function importKey(bytes: Uint8Array): JointSignerResult<JointKey> {
     const copy = snapshot(bytes)
     if (copy === null) return failure('invalid-input')
-    const reader = new Reader(copy)
+    if (copy.length < MAC_BYTES) return failure('invalid-key')
+    const reader = new Reader(copy.subarray(0, copy.length - MAC_BYTES))
     const magic = reader.take(4)
     if (magic === null || !equalBytes(magic, KEY_MAGIC)) {
       return failure('invalid-key')
@@ -697,6 +780,12 @@ export function createSilenceDklsBackend(
       return failure('invalid-key')
     }
     if (publicKey === null || share === null || !reader.finished) {
+      return failure('invalid-key')
+    }
+    // The MAC is keyed from the share inside. It is checked before the share
+    // or anything else in the envelope is used: someone who can write
+    // storage but cannot read the share cannot alter any field.
+    if (unseal(share, 'stored-key', copy) === null) {
       return failure('invalid-key')
     }
     if (
@@ -737,79 +826,201 @@ export function createSilenceDklsBackend(
 
   // --- signing -------------------------------------------------------------
 
+  /** What a session is bound to. The same bytes go into the wasm. */
   function signBinding(
     key: KeyInternal,
     sessionId: Uint8Array,
     digest: Uint8Array,
     role: Role,
+    lock: LockBinding | null,
   ): Uint8Array {
     // The party number of whoever initiates this session.
     const me = roleByte(key.keygenRole)
     const initiatorParty = role === 'initiator' ? me : 1 - me
     return transcriptHash(
-      `${DOMAIN}/sign`,
+      lock === null ? `${DOMAIN}/sign` : `${DOMAIN}/pre-sign`,
       sessionId,
       key.keyId,
       digest,
       Uint8Array.of(initiatorParty),
+      lock === null ? new Uint8Array(0) : lock.encoded,
     )
+  }
+
+  type WasmSession = DklsSignSession | DklsAdaptorSignSession
+
+  function restoreWasm(state: SignInternal): WasmSession {
+    return state.lock === null
+      ? dkls.SignSession.fromBytes(state.wasm)
+      : dkls.AdaptorSignSession.fromBytes(state.wasm)
+  }
+
+  interface Common {
+    readonly key: KeyInternal
+    readonly role: Role
+    readonly sessionId: Uint8Array
+    readonly digest: Uint8Array
+    readonly randomBytes: RandomBytes
+  }
+
+  function commonInput(input: StartSignInput): JointSignerResult<Common> {
+    if (input === null || typeof input !== 'object') {
+      return failure('invalid-input')
+    }
+    if (input.tweakCommitment !== undefined) return failure('unsupported')
+    const key = keyInternal(input.key)
+    const role = input.role
+    const sessionId = snapshot(input.sessionId, 32)
+    const digest = snapshot(input.digest, 32)
+    const randomBytes = input.randomBytes
+    if (key === null || !isRole(role)) return failure('invalid-input')
+    if (sessionId === null || digest === null) return failure('invalid-input')
+    if (typeof randomBytes !== 'function') return failure('rng-failed')
+    if (!key.usable) return failure('key-unusable', { keyUnusable: true })
+    return success({ key, role, sessionId, digest, randomBytes })
+  }
+
+  /** Creates the wasm session, takes its first message and serialises it. */
+  function begin<Session, Result>(
+    common: Common,
+    lock: LockBinding | null,
+    create: (binding: Uint8Array, first: Uint8Array) => WasmSession,
+  ): Step<Session, Result> {
+    const { key, role, sessionId, digest, randomBytes } = common
+    const initiator = role === 'initiator'
+    const binding = signBinding(key, sessionId, digest, role, lock)
+    const first = seed(randomBytes)
+    const session = create(binding, first)
+    let message1: Uint8Array
+    let wasm: Uint8Array
+    try {
+      message1 = localCall(() => payload(session.createFirstMessage()))
+      wasm = localCall(() => session.toBytes())
+    } finally {
+      release(session)
+    }
+    const state: SignInternal = {
+      __jointSigner: lock === null ? 'sign-session' : 'pre-sign-session',
+      backend: SILENCE_DKLS_BACKEND,
+      status: 'active',
+      role,
+      expectedRound: initiator ? 2 : 1,
+      sessionId,
+      binding,
+      wasm,
+      pending: initiator ? [] : [message1],
+      key,
+      digest,
+      lock,
+      randomBytes,
+    }
+    const protocol = lock === null ? PROTOCOL_SIGN : PROTOCOL_PRESIGN
+    return {
+      session: state as unknown as Session,
+      outgoing: initiator
+        ? encodeFrame(protocol, 1, binding, [message1])
+        : null,
+      result: null,
+    }
   }
 
   function startSign(
     input: StartSignInput,
   ): JointSignerResult<Step<SignSession, JointSignature>> {
     try {
-      if (input === null || typeof input !== 'object') {
+      const common = commonInput(input)
+      if (!common.ok) return common
+      const { key, digest } = common.value
+      return success(
+        begin<SignSession, JointSignature>(
+          common.value,
+          null,
+          (binding, first) =>
+            localCall(() => {
+              // The constructor consumes the key share object.
+              const keyshare = dkls.Keyshare.fromBytes(key.share)
+              return new dkls.SignSession(keyshare, 'm', digest, binding, first)
+            }),
+        ),
+      )
+    } catch (error) {
+      return describeFailure(error)
+    }
+  }
+
+  function startPreSign(
+    input: StartPreSignInput,
+  ): JointSignerResult<Step<PreSignSession, JointPreSignature>> {
+    try {
+      const common = commonInput(input)
+      if (!common.ok) return common
+      const { key, role, digest } = common.value
+      const encoded = encodeLock(input.lock)
+      if (encoded === null) return failure('invalid-input')
+
+      // The lock's holder is the responder. It must be able to open the
+      // lock itself; the initiator brings no opening.
+      const holder = role === 'responder'
+      let opening: Uint8Array | undefined
+      if (holder) {
+        if (
+          input.lockOpening === undefined ||
+          !lockOpenedBy(input.lock, input.lockOpening)
+        ) {
+          return failure('lock-not-owned')
+        }
+        const bytes = encodeOpening(input.lockOpening)
+        if (bytes === null) return failure('lock-not-owned')
+        opening = bytes
+      } else if (input.lockOpening !== undefined) {
         return failure('invalid-input')
       }
-      if (input.tweakCommitment !== undefined) return failure('unsupported')
-      const key = keyInternal(input.key)
-      const role = input.role
-      const sessionId = snapshot(input.sessionId, 32)
-      const digest = snapshot(input.digest, 32)
-      const randomBytes = input.randomBytes
-      if (key === null || !isRole(role)) return failure('invalid-input')
-      if (sessionId === null || digest === null) return failure('invalid-input')
-      if (typeof randomBytes !== 'function') return failure('rng-failed')
-      if (!key.usable) return failure('key-unusable', { keyUnusable: true })
+      const holderId = holder ? key.localId : key.peerId
+      const otherId = holder ? key.peerId : key.localId
 
-      const initiator = role === 'initiator'
-      const binding = signBinding(key, sessionId, digest, role)
-      const first = seed(randomBytes)
-      const session = localCall(() => {
-        // The constructor consumes the key share object.
-        const keyshare = dkls.Keyshare.fromBytes(key.share)
-        return new dkls.SignSession(keyshare, 'm', first)
-      })
-      let message1: Uint8Array
-      let wasm: Uint8Array
+      // Verifies every proof of the lock for this key and this holder.
+      let point: Uint8Array
       try {
-        message1 = localCall(() => payload(session.createFirstMessage()))
-        wasm = localCall(() => session.toBytes())
+        point = Uint8Array.from(dkls.verifyLock(encoded, key.keyId, holderId))
+      } catch (error) {
+        return failure('invalid-input', { backendCode: wasmCode(error) })
+      }
+      const lock: LockBinding = { encoded, point, holderId, otherId }
+
+      try {
+        return success(
+          begin<PreSignSession, JointPreSignature>(
+            common.value,
+            lock,
+            (_binding, first) => {
+              const keyshare = localCall(() =>
+                dkls.Keyshare.fromBytes(key.share),
+              )
+              try {
+                // Consumes the key share object. The wasm binds key id, both
+                // identities, lock, lock point, digest and public key itself
+                // and repeats the holder's opening check.
+                return dkls.AdaptorSignSession.create(
+                  keyshare,
+                  'm',
+                  digest,
+                  encoded,
+                  key.keyId,
+                  holderId,
+                  otherId,
+                  key.localId,
+                  opening,
+                  first,
+                )
+              } catch (error) {
+                throw new Failure('invalid-input', false, wasmCode(error))
+              }
+            },
+          ),
+        )
       } finally {
-        release(session)
+        opening?.fill(0)
       }
-      const state: SignInternal = {
-        __jointSigner: 'sign-session',
-        backend: SILENCE_DKLS_BACKEND,
-        status: 'active',
-        role,
-        expectedRound: initiator ? 2 : 1,
-        sessionId,
-        binding,
-        wasm,
-        pending: initiator ? [] : [message1],
-        key,
-        digest,
-        randomBytes,
-      }
-      return success({
-        session: state,
-        outgoing: initiator
-          ? encodeFrame(PROTOCOL_SIGN, 1, binding, [message1])
-          : null,
-        result: null,
-      })
     } catch (error) {
       return describeFailure(error)
     }
@@ -848,15 +1059,58 @@ export function createSilenceDklsBackend(
     }
   }
 
+  function finishPreSignature(
+    state: SignInternal,
+    lock: LockBinding,
+    session: DklsAdaptorSignSession,
+    partial: Uint8Array,
+    peer: number,
+  ): JointPreSignature {
+    let combined: Uint8Array
+    try {
+      combined = session.combine([incoming(partial, peer)])
+    } catch (error) {
+      // The wasm checks the peer's proof response and verifies the whole
+      // encrypted signature; a bad last message ends here.
+      throw new Failure('invalid-signature', true, wasmCode(error))
+    }
+    if (!(combined instanceof Uint8Array) || combined.length !== 162) {
+      return fail('internal-error', false, 'signature-shape')
+    }
+    const adaptorSignature = Uint8Array.from(combined)
+    // A second, independent check with our own verifier: what the game layer
+    // will hold must verify the way a third party verifies it.
+    let verified = false
+    try {
+      verified = verifyEncryptedSignature(
+        pointFromBytes(state.key.publicKey),
+        pointFromBytes(lock.point),
+        state.digest,
+        decodeAdaptorSignature(adaptorSignature),
+      )
+    } catch {
+      verified = false
+    }
+    if (!verified) return fail('invalid-signature', true, 'second-verifier')
+    return {
+      kind: 'adaptor-signature',
+      adaptorSignature,
+      publicKey: state.key.publicKey.slice(),
+      address: state.key.address.slice(),
+    }
+  }
+
   function handleSign(
     state: SignInternal,
     parts: Uint8Array[],
-  ): Step<SignInternal, JointSignature> {
+  ): Step<SignInternal, SignOutput> {
     if (!state.key.usable) return fail('key-unusable')
     const me = roleByte(state.key.keygenRole)
     const peer = 1 - me
     const round = state.expectedRound
-    const session = localCall(() => dkls.SignSession.fromBytes(state.wasm))
+    const lock = state.lock
+    const protocol = lock === null ? PROTOCOL_SIGN : PROTOCOL_PRESIGN
+    const session = localCall(() => restoreWasm(state))
     let consumed = false
     try {
       const reply = (
@@ -872,7 +1126,7 @@ export function createSilenceDklsBackend(
         expectedRound: number,
         sendRound: number,
         send: Uint8Array[],
-      ): Step<SignInternal, JointSignature> => ({
+      ): Step<SignInternal, SignOutput> => ({
         session: {
           ...state,
           status: 'active',
@@ -880,13 +1134,13 @@ export function createSilenceDklsBackend(
           wasm: localCall(() => session.toBytes()),
           pending: [],
         },
-        outgoing: encodeFrame(PROTOCOL_SIGN, sendRound, state.binding, send),
+        outgoing: encodeFrame(protocol, sendRound, state.binding, send),
         result: null,
       })
       const done = (
         send: Uint8Array[] | null,
-        result: JointSignature,
-      ): Step<SignInternal, JointSignature> => ({
+        result: SignOutput,
+      ): Step<SignInternal, SignOutput> => ({
         session: {
           ...state,
           status: 'finished',
@@ -897,12 +1151,25 @@ export function createSilenceDklsBackend(
         outgoing:
           send === null
             ? null
-            : encodeFrame(PROTOCOL_SIGN, LAST_ROUND, state.binding, send),
+            : encodeFrame(protocol, LAST_ROUND, state.binding, send),
         result,
       })
-      /** Consumes the pre-signature: one digest, fixed at `startSign`. */
-      const partialFor = (): Uint8Array =>
-        localCall(() => payload(session.lastMessage(state.digest)))
+      /** This party's last message, for the digest (and lock) of the session. */
+      const partialOf = (): Uint8Array =>
+        localCall(() => payload(session.lastMessage()))
+      /** Consumes the wasm session. */
+      const finish = (partial: Uint8Array): SignOutput => {
+        consumed = true
+        return lock === null
+          ? finishSignature(state, session as DklsSignSession, partial, peer)
+          : finishPreSignature(
+              state,
+              lock,
+              session as DklsAdaptorSignSession,
+              partial,
+              peer,
+            )
+      }
 
       if (round === 1) {
         // Responder: [I.m1] -> [R.m1, R.m2]
@@ -924,30 +1191,19 @@ export function createSilenceDklsBackend(
         expectParts(parts, 2)
         const m3 = single(reply(parts[0] as Uint8Array, me))
         reply(parts[1] as Uint8Array, me).forEach(release)
-        return next(5, 4, [m3, partialFor()])
+        return next(5, 4, [m3, partialOf()])
       }
       if (round === 4) {
         // Initiator: [R.m3, R.partial] -> [I.partial], done
         expectParts(parts, 2)
         reply(parts[0] as Uint8Array, me).forEach(release)
-        const partial = partialFor()
-        consumed = true
-        const result = finishSignature(
-          state,
-          session,
-          parts[1] as Uint8Array,
-          peer,
-        )
-        return done([partial], result)
+        const partial = partialOf()
+        return done([partial], finish(parts[1] as Uint8Array))
       }
       if (round === 5) {
         // Responder: [I.partial] -> done
         expectParts(parts, 1)
-        consumed = true
-        return done(
-          null,
-          finishSignature(state, session, parts[0] as Uint8Array, peer),
-        )
+        return done(null, finish(parts[0] as Uint8Array))
       }
       return fail('internal-error')
     } finally {
@@ -955,19 +1211,24 @@ export function createSilenceDklsBackend(
     }
   }
 
-  function signInternal(session: unknown): SignInternal | null {
+  function signInternal(
+    session: unknown,
+    kind: 'sign-session' | 'pre-sign-session',
+  ): SignInternal | null {
     const state = session as SignInternal | null
     if (state === null || typeof state !== 'object') return null
-    if (state.__jointSigner !== 'sign-session') return null
+    if (state.__jointSigner !== kind) return null
     if (state.backend !== SILENCE_DKLS_BACKEND) return null
+    if ((state.lock === null) !== (kind === 'sign-session')) return null
     return state
   }
 
-  function signStep(
-    session: SignSession,
+  function stepSigning<Session, Result>(
+    session: unknown,
     message: Uint8Array,
-  ): JointSignerResult<Step<SignSession, JointSignature>> {
-    const state = signInternal(session)
+    kind: 'sign-session' | 'pre-sign-session',
+  ): JointSignerResult<Step<Session, Result>> {
+    const state = signInternal(session, kind)
     if (state === null) return failure('invalid-input')
     if (state.status === 'active' && !state.key.usable) {
       state.wasm.fill(0)
@@ -977,14 +1238,68 @@ export function createSilenceDklsBackend(
         keyUnusable: true,
       })
     }
-    return advance(state, message, PROTOCOL_SIGN, handleSign)
+    return advance(
+      state,
+      message,
+      kind === 'sign-session' ? PROTOCOL_SIGN : PROTOCOL_PRESIGN,
+      handleSign,
+    ) as unknown as JointSignerResult<Step<Session, Result>>
   }
 
-  function abortSign(session: SignSession): void {
-    const state = signInternal(session)
+  function signStep(
+    session: SignSession,
+    message: Uint8Array,
+  ): JointSignerResult<Step<SignSession, JointSignature>> {
+    return stepSigning(session, message, 'sign-session')
+  }
+
+  function abortSigning(
+    session: unknown,
+    kind: 'sign-session' | 'pre-sign-session',
+  ): void {
+    const state = signInternal(session, kind)
     if (state === null || state.status === 'finished') return
     state.wasm.fill(0)
     state.status = 'aborted'
+  }
+
+  function abortSign(session: SignSession): void {
+    abortSigning(session, 'sign-session')
+  }
+
+  const locks: LockFeature = {
+    lockCreator: 'responder',
+    createPointLock(input) {
+      const key = keyInternal(input?.key)
+      if (key === null) return failure('invalid-input')
+      if (!key.usable) return failure('key-unusable', { keyUnusable: true })
+      return createPointLock({
+        keyId: key.keyId,
+        holderId: key.localId,
+        randomBytes: input.randomBytes,
+      })
+    },
+    createCommitmentLock(input) {
+      const key = keyInternal(input?.key)
+      if (key === null) return failure('invalid-input')
+      if (!key.usable) return failure('key-unusable', { keyUnusable: true })
+      return createCommitmentLock({
+        keyId: key.keyId,
+        holderId: key.localId,
+        value: input.value,
+        randomBytes: input.randomBytes,
+      })
+    },
+    commitmentLockPoint,
+    startPreSign,
+    preSignStep(session, message) {
+      return stepSigning(session, message, 'pre-sign-session')
+    },
+    abortPreSign(session) {
+      abortSigning(session, 'pre-sign-session')
+    },
+    completeCommitmentLock,
+    extractCommitmentLockSecret,
   }
 
   // --- stored sessions -----------------------------------------------------
@@ -1062,19 +1377,23 @@ export function createSilenceDklsBackend(
   function exportSignSession(
     session: SignSession,
   ): JointSignerResult<Uint8Array> {
-    const state = signInternal(session)
+    const state = signInternal(session, 'sign-session')
     if (state === null) return failure('invalid-input')
     if (state.status === 'finished') return failure('session-finished')
     if (state.status === 'aborted') return failure('session-aborted')
     if (state.status === 'used') return failure('state-already-used')
     if (!state.key.usable) return failure('key-unusable', { keyUnusable: true })
     return success(
-      encodeState(PROTOCOL_SIGN, state, [
-        state.key.keyId,
-        state.digest,
-        // Both parties share the key id; this says whose share is inside.
-        Uint8Array.of(roleByte(state.key.keygenRole)),
-      ]),
+      seal(
+        state.key.share,
+        'stored-sign-session',
+        encodeState(PROTOCOL_SIGN, state, [
+          state.key.keyId,
+          state.digest,
+          // Both parties share the key id; this says whose share is inside.
+          Uint8Array.of(roleByte(state.key.keygenRole)),
+        ]),
+      ),
     )
   }
 
@@ -1088,7 +1407,15 @@ export function createSilenceDklsBackend(
     if (key === null) return failure('invalid-input')
     if (typeof input.randomBytes !== 'function') return failure('rng-failed')
     if (!key.usable) return failure('key-unusable', { keyUnusable: true })
-    const decoded = decodeState(input.state, PROTOCOL_SIGN)
+    // Authenticate before parsing anything: the MAC key comes from this
+    // party's key share, so stored state that was written or altered by
+    // someone without the share (for example to pair the stored nonce with
+    // another digest) is refused here.
+    const sealed = snapshot(input.state)
+    if (sealed === null) return failure('invalid-state')
+    const body = unseal(key.share, 'stored-sign-session', sealed)
+    if (body === null) return failure('invalid-state')
+    const decoded = decodeState(body, PROTOCOL_SIGN)
     if (decoded === null || decoded.extra.length !== 3) {
       return failure('invalid-state')
     }
@@ -1113,14 +1440,15 @@ export function createSilenceDklsBackend(
       role: decoded.role,
       expectedRound: decoded.expectedRound,
       sessionId: decoded.sessionId,
-      binding: signBinding(key, decoded.sessionId, digest, decoded.role),
+      binding: signBinding(key, decoded.sessionId, digest, decoded.role, null),
       wasm: decoded.wasm,
       pending: decoded.pending,
       key,
       digest,
+      lock: null,
       randomBytes: input.randomBytes,
     }
-    return success(state)
+    return success(state as unknown as SignSession)
   }
 
   function exportKeygenSession(
@@ -1214,5 +1542,6 @@ export function createSilenceDklsBackend(
     exportSignSession,
     importSignSession,
     keygenSessions: { exportKeygenSession, importKeygenSession },
+    locks,
   }
 }

@@ -4,9 +4,11 @@ One interface for a key that two players hold together, with replaceable
 implementations ("backends") behind it. The game layer talks to a
 `JointSigner` and never to a backend.
 
-**Experimental. Testnet only. Not for real funds.** The wrapper code in this
-package has had no outside review. One backend runs third-party code under a
-**non-commercial licence**; read [Licence of the silence-dkls backend](#licence-of-the-silence-dkls-backend)
+**Experimental. Testnet only. Not for real funds.** Nothing in this package
+has had an outside review. One backend runs a WebAssembly module built from
+our modified copy of third-party code (`third_party/silent-shard-dkls23-ll`)
+under a **non-commercial licence**; read
+[Licence of the silence-dkls backend](#licence-of-the-silence-dkls-backend)
 before shipping anything that includes it.
 
 ## In plain words
@@ -15,25 +17,29 @@ before shipping anything that includes it.
   belongs to both. Neither can sign alone.
 - To sign a transfer they exchange five messages and both end up with a normal
   signature (64 bytes, low-s, plus the recovery bit) that any EVM node accepts.
+- They can instead make a _pre-signature_ locked to a secret one of them
+  holds: whoever knows the secret turns it into a real signature, and doing so
+  reveals the secret to the other.
 - Which implementation does the work is a choice made in one place. Two exist:
 
-|                                    | `silence-dkls`                            | `frank-lindell`                                         |
-| ---------------------------------- | ----------------------------------------- | ------------------------------------------------------- |
-| What it is                         | Silence Laboratories' DKLs23, WebAssembly | `@frank/threshold-ecdsa`, our TypeScript (Lindell 2017) |
-| Key generation, per party          | about 0.5 to 0.6 s                        | about 7 s                                               |
-| Signature, per party               | about 0.06 to 0.1 s                       | about 0.07 s                                            |
-| Messages: key generation / signing | 5 / 5                                     | 8 / 5                                                   |
-| Largest message                    | about 112 KB                              | about 46 KB (signing: 550 bytes)                        |
-| Stored key share                   | about 124 KB                              | about 1.3 KB                                            |
-| Roles                              | either party, either role, every session  | fixed per key                                           |
-| Adaptor pre-signatures ("locks")   | **no**                                    | yes                                                     |
-| Key tweak                          | no                                        | yes                                                     |
-| A new key per hand                 | run key generation again                  | tweak the pair's key                                    |
-| Licence                            | non-commercial only                       | MIT                                                     |
-| Outside review                     | see below; our wrapper has none           | none                                                    |
+|                                    | `silence-dkls`                                        | `frank-lindell`                                         |
+| ---------------------------------- | ----------------------------------------------------- | ------------------------------------------------------- |
+| What it is                         | our fork of Silence Laboratories' DKLs23, WebAssembly | `@frank/threshold-ecdsa`, our TypeScript (Lindell 2017) |
+| Key generation, per party          | about 0.5 to 1.1 s                                    | about 7 to 20 s                                         |
+| Signature, per party               | about 0.05 to 0.2 s                                   | about 0.07 to 0.3 s                                     |
+| Pre-signature, per party           | about 0.09 to 0.25 s                                  | about 0.14 to 0.6 s                                     |
+| Messages: key generation / signing | 5 / 5                                                 | 8 / 5                                                   |
+| Largest message                    | about 113 KB                                          | about 46 KB (signing: 550 bytes)                        |
+| Stored key share                   | about 124 KB                                          | about 1.3 KB                                            |
+| Roles                              | either party, either role, every session              | fixed per key                                           |
+| Pre-signatures ("locks")           | yes (added by our fork)                               | yes                                                     |
+| Key tweak                          | no                                                    | yes                                                     |
+| A new key per hand                 | run key generation again                              | tweak the pair's key                                    |
+| Licence                            | non-commercial only                                   | MIT                                                     |
+| Outside review                     | none of our changes; see "Audit status" below         | none                                                    |
 
-Times were measured under jest on a busy Apple M4 (load average about 18 to
-20 on 10 cores); see the numbers the conformance suite prints.
+Times were measured under jest on a busy Apple M4 (load average 27 to 55 on
+10 cores; the lower figures at the lower load). The suites print them.
 
 ## Using it
 
@@ -61,7 +67,8 @@ while (step.result === null) {
 ```
 
 Key generation is the same loop with `startKeygen` / `keygenStep`; its result
-is a `JointKey`.
+is a `JointKey`. Pre-signing is the same loop with `signer.locks.startPreSign`
+/ `preSignStep`; its result is a 162-byte pre-signature.
 
 ## The interface
 
@@ -139,6 +146,92 @@ interface JointSignature {
 type JointSigner = LockingJointSigner | PlainJointSigner
 ```
 
+### Locks and pre-signing (`signer.locks`)
+
+```ts
+type JointLock =
+  | {
+      kind: 'point'
+      point: Uint8Array
+      proof: Uint8Array
+      ownerProof: Uint8Array
+    }
+  | {
+      kind: 'commitment'
+      commitment: Uint8Array
+      proof: Uint8Array
+      index: number
+    }
+
+type JointLockOpening =
+  | { kind: 'point'; secret: Uint8Array }
+  | { kind: 'commitment'; secret: Uint8Array; value: number } // value: the committed value
+
+interface LockFeature {
+  lockCreator: Role // who holds lock secrets; the other party extracts them
+  createPointLock(input: {
+    key
+    randomBytes
+  }): Result<{ secret; lock; opening }>
+  createCommitmentLock(input: {
+    key
+    value
+    randomBytes
+  }): Result<{ secret; commitment; proof; opening }>
+  commitmentLockPoint(commitment, index): Result<Uint8Array>
+  startPreSign(input: {
+    key: JointKey
+    role: Role
+    sessionId: Uint8Array
+    digest: Uint8Array
+    lock: JointLock // public; both parties pass the same one
+    lockOpening?: JointLockOpening // the HOLDER only
+    randomBytes: RandomBytes
+  }): Result<Step<PreSignSession, JointPreSignature>>
+  preSignStep(session, message): Result<Step<PreSignSession, JointPreSignature>>
+  abortPreSign(session): void
+  completeCommitmentLock(input: {
+    publicKey
+    commitment
+    index
+    digest
+    adaptorSignature
+    secret
+  }): Result<{ signature; recovery }>
+  extractCommitmentLockSecret(input: {
+    publicKey
+    commitment
+    index
+    digest
+    adaptorSignature
+    completedSignature
+  }): Result<Uint8Array>
+}
+// JointPreSignature = { kind: 'adaptor-signature', adaptorSignature (162 bytes), publicKey, address }
+```
+
+- Two kinds of lock, in the format of `@frank/threshold-ecdsa`, byte for
+  byte, on both backends. A _point lock_ is `T = t*G` with proofs that someone
+  knows `t`. A _commitment lock_ is a commitment `C = s*G + v*H` to a value `v`
+  (a card, say) with a proof that someone knows `(s, v)`; pre-sign once per
+  candidate value `index`, and only the pre-signature for `index = v` can be
+  completed, with `s`.
+- **The holder must be able to open the lock.** The party that holds the
+  secret (`lockCreator`; on both backends the responder of the pre-signing
+  session) passes `lockOpening`, the `opening` it got from `createPointLock`
+  or `createCommitmentLock`, and is refused with `lock-not-owned` if it does
+  not open exactly this lock. The other party must not pass one
+  (`invalid-input`). Without this rule the other party could build a lock from
+  a secret of its own, name the holder in its proofs, and later complete the
+  pre-signature alone; the public proofs cannot tell the difference.
+- A caller-chosen point without proofs is never accepted.
+- Point locks are completed and extracted with `completeAdaptorSignature` and
+  `extractAdaptorSecret` from `@frank/adaptor-signatures`; commitment locks
+  with the two functions above.
+- The initiator receives the pre-signature first. That is why the holder is
+  the responder: a withholding initiator has a pre-signature it cannot
+  complete.
+
 ### Capabilities
 
 ```ts
@@ -160,14 +253,12 @@ interface JointSignerCapabilities {
   secrets); `startSign` with the other role fails with `role-fixed`. Two
   players who need both assignments generate two keys. With `symmetric`, any
   role in any session. Portable game code reads `describeKey(key).signRoles`.
-- **Adaptor pre-signing cannot be called on a backend without it.** It lives
-  only on `signer.locks` (`createPointLock`, `createCommitmentLock`,
-  `commitmentLockPoint`, `startPreSign`, `preSignStep`, `abortPreSign`,
-  `completeCommitmentLock`, `extractCommitmentLockSecret`). A backend without
-  the capability has no `locks` property: the type is `undefined`, so
-  `signer.locks.startPreSign(...)` does not compile until the caller has
-  checked `signer.locks !== undefined`, and at run time there is nothing to
-  call. `startSign` never pre-signs.
+- **Pre-signing cannot be called on a backend without it.** It lives only on
+  `signer.locks`. A backend without the capability has no `locks` property:
+  the type is `undefined`, so `signer.locks.startPreSign(...)` does not compile
+  until the caller has checked `signer.locks !== undefined`, and at run time
+  there is nothing to call. `startSign` never pre-signs, and a pre-signing
+  session never returns an ordinary signature.
 - **Key tweak** (`signer.tweak`, and `tweakCommitment` in `startSign`) and
   **stored key-generation sessions** (`signer.keygenSessions`) follow the same
   rule. `tweakCommitment` on a backend without tweaks fails with `unsupported`.
@@ -191,111 +282,121 @@ They hold for every backend. Breaking them can leak or lose the key.
    never load one state twice or an old state once a newer exists. Feeding one
    stored state two different messages reuses a nonce and can give the other
    party the key. If you cannot guarantee this, do not store sessions: start a
-   new one, signing is cheap.
+   new one, signing is cheap. Stored states carry a MAC keyed from the key
+   share and are refused if altered; the MAC cannot tell an old state from the
+   newest. Pre-signing sessions cannot be stored.
 5. **`keyUnusable` is forever.** Record it, delete stored copies.
-6. **Stored keys are secret** and, on `silence-dkls`, carry no integrity
-   check of their own: store them encrypted and authenticated.
-7. **Who initiates.** The initiator learns the signature first and can
-   withhold the last message. Make the initiator the party for whom that is
-   harmless.
+6. **Stored keys are secret.** They carry a MAC against alteration by someone
+   who cannot read them; store them encrypted all the same.
+7. **Who initiates.** The initiator learns the result first and can withhold
+   the last message. For plain signing make the initiator the party for whom
+   that is harmless; for pre-signing the backend fixes it (the holder
+   responds).
+8. **A lock secret is used once.** Every commitment needs its own fresh
+   secret; completing one pre-signature publishes it.
 
 ## The `silence-dkls` backend
 
-`src/silence-dkls/backend.ts` wraps the low-level message API of
-`@silencelaboratories/dkls-wasm-ll-{node,web}` 1.2.0. The backend takes the
-loaded module as a value (`createSilenceDklsBackend(module)`); `load-node.ts`
-and `load-web.ts` are the two loaders. What the wrapper adds, all of it ours
-and unreviewed:
+`src/silence-dkls/backend.ts` wraps the WebAssembly build of
+`third_party/silent-shard-dkls23-ll`: Silence Laboratories' DKLs23 library at
+its 1.2.0 release, **modified by us** (that directory's `CHANGES` lists what
+and when). The backend takes the loaded module as a value
+(`createSilenceDklsBackend(module)`); `load-node.ts` and `load-web.ts` are the
+two loaders. No npm package is involved.
+
+What our fork changes in the library:
+
+- **A session signs one digest.** The original can stop after three rounds
+  with a message-independent pre-signature and then sign any digest with it;
+  using one for two digests gives away the key. In the fork the digest is
+  given when the session is created, mixed into the session id, and round 3
+  goes straight to the partial signature; the one-time secrets are wiped in
+  the same call.
+- **Adaptor pre-signing**, described at the top of
+  `third_party/silent-shard-dkls23-ll/src/adaptor.rs`. Lock proofs are
+  verified inside the wasm, which also repeats the holder's opening check, and
+  the result is verified as a third party would verify it.
+
+What this wrapper adds around the wasm, all of it ours:
 
 - **A frame around every message**: backend, protocol, round and a 32-byte
-  binding of the session id (for signing also the key and the digest). The
-  wasm has no caller-chosen session id, and it reports a malformed message by
-  trapping, which leaves its session object unusable. Stray, duplicated and
-  out-of-order messages are refused by the frame check and never reach it.
+  binding of the session id, key, digest, initiator and (for pre-signing) the
+  lock. Stray, duplicated and out-of-order messages are refused by the frame
+  check. The same binding is given to the wasm.
 - **Turn-taking.** DKLs23 is written as rounds in which both parties send at
   once. Here the parties alternate, five messages per protocol, each carrying
   every wasm message its sender can already compute. _Review item:_ each wasm
   message is still computed from exactly its specified inputs, but this
-  ordering is ours, not the library's examples'.
-- **No pre-signatures.** The wasm can stop after three rounds with a
-  message-independent pre-signature; using one for two digests gives away the
-  key. Here the digest is fixed at `startSign`, bound into every frame, and
-  the pre-signature is consumed in the step that creates it. It is never
-  returned or stored.
+  ordering is ours.
 - **Sessions as bytes.** The wasm session exists only inside one step call:
-  rebuilt from bytes, advanced, serialised, freed. That is what makes
-  `exportSignSession` and stored key generation possible, and it keeps a
-  failed step from poisoning anything else. A wasm object whose call trapped
-  cannot be freed and is leaked (one per aborted session).
+  rebuilt from bytes, advanced, serialised, freed.
 - **Caller-supplied randomness.** Every wasm call that draws randomness is
   given a 32-byte seed from `randomBytes`; the wasm expands it with ChaCha20.
-  (Left alone the wasm would use the platform CSPRNG.)
+- **Integrity of stored keys and signing sessions** (HMAC-SHA256 keyed from
+  the key share, checked before anything is parsed).
+- **Locks** (`src/locks.ts`): creation, the holder's opening check, completion
+  and extraction. A second, independent verification of every pre-signature
+  with the verifier of `@frank/adaptor-signatures`.
+
+Not provided by this backend: key tweak, an explicit key confirmation round,
+and a durable "this share is burned" rule (DKLs23 has no equivalent of the
+Lindell abort rule; a failed session just aborts).
 
 **Audit status, precisely.** Trail of Bits reviewed Silence Laboratories'
 `dkls23-rs` and `sl-crypto` repositories (report dated February 9, 2024, in
-`github.com/silence-laboratories/dkls23`, `docs/`). The npm packages used here
-are built from a different repository, `silent-shard-dkls23-ll`, which that
-report does not list as a target; it shares the `sl-crypto` primitives at a
-different revision. Treat the wasm as "from an audited family", not as the
-audited artefact.
-
-Not provided by this backend: adaptor pre-signing, key tweak, an explicit key
-confirmation round, an integrity check on stored keys, and a durable
-"this share is burned" rule (DKLs23 has no equivalent of the Lindell abort
-rule; a failed session just aborts).
-
-An experiment (`experiments/dkls-adaptor-feasibility.experiment.ts`) shows
-that an adaptor pre-signature in our format _can_ be built on the unmodified
-wasm, but only by reading secrets out of its serialised session and replacing
-its last step with our own arithmetic. That is not a supported use of the
-library and is not offered here.
+`github.com/silence-laboratories/dkls23`, `docs/`). The library forked here
+comes from a different repository, `silent-shard-dkls23-ll`, which that report
+does not list as a target, and we have changed it. Nothing we added was
+reviewed by anyone.
 
 ### Licence of the silence-dkls backend
 
-The two `@silencelaboratories/*` dependencies are **not** MIT. They are under
-the "Silence Laboratories' Non-Commercial Use License Agreement" (`LICENSE.md`
-inside each npm package; the same text is `LICENSE.md` in
-`github.com/silence-laboratories/silent-shard-dkls23-ll`). This package's own
-source is MIT; it does not contain their code, it depends on it.
+Everything under `third_party/silent-shard-dkls23-ll`, including our changes
+and the built WebAssembly, is under the "Silence Laboratories' Non-Commercial
+Use License Agreement" (`LICENSE.md` there), **not** MIT. This package's own
+source is MIT and contains none of that code; it loads the built module.
 
-Before distributing anything that contains the wasm (for example the built
-web app), the licence asks, among other things, that recipients get a copy of
-the licence and a notice with this sentence, the licence's list of conditions
-and its disclaimer:
+The licence asks, among other things, that everyone who receives the software
+gets the licence text and a prominent notice that the library is used, that
+it was modified (what, when, independently of Silence Laboratories), and this
+sentence:
 
 > This software library is licensed under the Silence Laboratories License
 > Agreement, Copyright © Silence Laboratories Pte. Ltd. All Rights Reserved.
 
-Whether a given use is "non-commercial" is, in the licence's words, "determined
-by Silence Laboratories in its sole discretion". That is the owner's call, not
-this README's. The backend can be removed without touching the game layer:
-delete `src/silence-dkls/`, the two dependencies, and the one line that
-chooses the backend.
+In the repository that is `third_party/silent-shard-dkls23-ll/CHANGES`; in the
+app it is the About screen (`app/src/pages/About.vue`). Whether a given use is
+"non-commercial" is, in the licence's words, "determined by Silence
+Laboratories in its sole discretion".
 
-## Installing the third-party packages
+The backend can be removed without touching the game layer: delete
+`src/silence-dkls/`, `third_party/silent-shard-dkls23-ll/`, the About notices
+and the one line that chooses the backend.
 
-`package.json` pins `@silencelaboratories/dkls-wasm-ll-node` and
-`@silencelaboratories/dkls-wasm-ll-web` at `1.2.0`, and `yarn.lock` has their
-registry entries. Until `yarn install` has been run with them, tests can use a
-copy installed elsewhere:
+## Building the wasm
+
+The built node and web modules are committed
+(`third_party/silent-shard-dkls23-ll/pkg/`, hashes in `pkg/SHA256SUMS`), so
+tests and the app need no Rust. To rebuild after changing the Rust source:
 
 ```sh
-JOINT_SIGNER_DKLS_NODE_PATH=/path/to/node_modules/@silencelaboratories/dkls-wasm-ll-node \
-  yarn test --runInBand
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.92 --locked
+third_party/silent-shard-dkls23-ll/build-wasm.sh
 ```
 
 ## In the browser
 
-Not run in a browser yet. From reading the packages:
+Not run in a browser yet. From reading the generated glue:
 
-- Use the `-web` build through `load-web.ts`. It needs one asynchronous
-  `init()` before first use, which fetches and instantiates a 642 KB `.wasm`
-  (about 224 KB gzipped). Under Vite pass the asset URL explicitly:
-  `import wasmUrl from '@silencelaboratories/dkls-wasm-ll-web/dkls-wasm-ll-web_bg.wasm?url'`.
+- Use `load-web.ts`. It needs one asynchronous `init()` before first use,
+  which fetches and instantiates a 931 KB `.wasm` (about 260 KB gzipped; the
+  build does not run `wasm-opt`). Under Vite pass the asset URL explicitly:
+  `import wasmUrl from '<repo>/third_party/silent-shard-dkls23-ll/pkg/web/dkls-wasm-ll-web_bg.wasm?url'`.
 - No `SharedArrayBuffer`, no threads, no cross-origin isolation headers, no
   top-level await. A Content-Security-Policy, if the app adds one, must allow
   WebAssembly (`'wasm-unsafe-eval'`).
-- It works in a Web Worker the same way (the build uses `fetch`,
+- It works in a Web Worker the same way (the glue uses `fetch`,
   `WebAssembly` and `crypto.getRandomValues`, nothing from `window`). Key
   generation blocks for about half a second per party in total; a worker is
   advisable but not required.
@@ -311,15 +412,31 @@ existing one with no change to the game layer when:
    uses locks needs `adaptorLocks`; one that swaps signing roles needs
    `roles: 'symmetric'`.
 
+A backend with locks must accept and produce locks in the format above;
+`src/locks.ts` implements that format without any backend and can be reused.
+
 Keys and stored sessions do not carry over between backends: a stored key
-names its backend and another backend refuses it (`invalid-key`). Swapping
-means new keys, so do it between hands, with no funds at old joint addresses.
+names its backend and another backend refuses it (`invalid-key`). Lock proofs
+are bound to a key, so locks do not carry over either. Swapping means new
+keys, so do it between hands, with no funds at old joint addresses.
 
 ## Tests
 
-`yarn test --runInBand` runs one conformance suite, unchanged, against both
-backends: key generation, an EIP-1559 transfer signature that ethers recovers
-to the joint address, refusal of garbage, duplicated, out-of-order,
-other-session and altered messages, stored keys and sessions across a
-simulated restart, the capability rules, and (where the backend has locks)
-pre-sign, complete and extract.
+`yarn test --runInBand` runs:
+
+- `src/conformance.jest.test.ts`: one suite, unchanged, against both
+  backends: key generation, an EIP-1559 transfer signature that ethers
+  recovers to the joint address, refusal of garbage, duplicated, out-of-order,
+  other-session and altered messages, stored keys and sessions across a
+  simulated restart, the capability rules, and locks: pre-sign, complete and
+  extract; a holder without an opening is refused; a lock forged by the other
+  party in the holder's name cannot be pre-signed.
+- `src/silence-dkls/locks.jest.test.ts`: the lock format matches
+  `@frank/threshold-ecdsa` byte for byte; point locks with
+  `@frank/adaptor-signatures`; only the committed candidate of a commitment
+  can be completed; locks without valid proofs; parties that differ on lock,
+  candidate or digest stop before any partial signature; altered pre-signing
+  messages; altered stored keys and sessions.
+
+The Rust tests of the fork run with `cargo test -p dkls23-ll` in
+`third_party/silent-shard-dkls23-ll`.

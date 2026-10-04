@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "esModuleInterop": true,
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "isolatedModules": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "target": "es2020",
+    "lib": ["es2020", "dom"],
+    "types": ["jest", "node"],
+    "baseUrl": ".",
+    "paths": {
+      "@frank/adaptor-signatures": ["../../packages/adaptor-signatures/src/index.ts"],
+      "@frank/adaptor-signatures/*": ["../../packages/adaptor-signatures/src/*"]
+    }
+  },
+  "include": ["**/*.ts"]
+}

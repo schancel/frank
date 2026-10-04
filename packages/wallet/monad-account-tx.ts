@@ -84,6 +84,12 @@ export interface SignedMonadTx {
   chainId: bigint
 }
 
+/** Fully resolved ordinary Ethereum bytes. Public identity is checked again at signing. */
+export interface FrozenUnsignedMonadTx {
+  readonly from: string
+  readonly unsignedSerialized: string
+}
+
 export type MonadTxStatus = 'pending' | 'confirmed' | 'failed'
 
 /**
@@ -141,6 +147,81 @@ export class MonadAccountTxSigner {
       )
     }
     return this.buildAndSign(to, value, data, overrides)
+  }
+
+  /** Resolve quotes without creating a signature or submitting any transaction. */
+  async populateUnsignedCall(
+    to: string,
+    value: bigint,
+    data: string,
+    overrides: MonadTxOverrides = {},
+  ): Promise<FrozenUnsignedMonadTx> {
+    if (!data || data === '0x')
+      throw new Error('Canonical call requires calldata')
+    const populated = await this.wallet.populateTransaction({
+      to,
+      value,
+      data,
+      ...overrides,
+    })
+    const transaction = Transaction.from(populated)
+    if (
+      transaction.to === null ||
+      transaction.chainId <= 0n ||
+      transaction.gasLimit <= 0n ||
+      transaction.value <= 0n ||
+      (transaction.type !== 0 && transaction.type !== 2) ||
+      (transaction.type === 0
+        ? transaction.gasPrice === null
+        : transaction.maxFeePerGas === null ||
+          transaction.maxPriorityFeePerGas === null)
+    )
+      throw new Error('Incomplete canonical unsigned transaction')
+    return Object.freeze({
+      from: this.address.toLowerCase(),
+      unsignedSerialized: transaction.unsignedSerialized,
+    })
+  }
+
+  /** Sign exactly previously persisted unsigned bytes; never reads nonce, fees or gas. */
+  async signFrozenUnsigned(
+    input: FrozenUnsignedMonadTx,
+  ): Promise<SignedMonadTx> {
+    if (input.from !== this.address.toLowerCase())
+      throw new Error('Canonical unsigned sender mismatch')
+    const transaction = Transaction.from(input.unsignedSerialized)
+    if (
+      transaction.signature !== null ||
+      transaction.unsignedSerialized !== input.unsignedSerialized ||
+      transaction.to === null ||
+      transaction.chainId <= 0n ||
+      transaction.gasLimit <= 0n ||
+      transaction.value <= 0n ||
+      (transaction.type !== 0 && transaction.type !== 2)
+    )
+      throw new Error('Invalid canonical unsigned transaction')
+    const rawTx = await this.wallet.signTransaction(transaction)
+    const parsed = Transaction.from(rawTx)
+    if (
+      parsed.unsignedSerialized !== input.unsignedSerialized ||
+      parsed.from?.toLowerCase() !== input.from ||
+      parsed.hash === null
+    )
+      throw new Error('Canonical signed transaction mismatch')
+    return {
+      rawTx,
+      txHash: parsed.hash,
+      from: parsed.from!,
+      to: parsed.to!,
+      value: parsed.value,
+      data: parsed.data,
+      nonce: parsed.nonce,
+      gasLimit: parsed.gasLimit,
+      maxFeePerGas: parsed.maxFeePerGas ?? undefined,
+      maxPriorityFeePerGas: parsed.maxPriorityFeePerGas ?? undefined,
+      gasPrice: parsed.gasPrice ?? undefined,
+      chainId: parsed.chainId,
+    }
   }
 
   private async buildAndSign(

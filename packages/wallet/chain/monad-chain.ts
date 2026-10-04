@@ -88,7 +88,7 @@ import { MessageItem } from "@frank/cashweb/types/messages";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
 
-import { createMonadWalletMaterial } from "../monad-wallet-material";
+import { createMonadWalletMaterial, canonicalWalletPublicBinding } from "../monad-wallet-material";
 import type {
   MonadRootBundle,
   MonadWalletMaterial,
@@ -120,6 +120,7 @@ import {
 } from "../monad-identity";
 import {
   MonadStampClient,
+  MonadCanonicalStampClient,
   quoteMonadStampPaymentGasReserve,
   recoverMonadStampPayments,
   sweepRecoveredMonadStampPayment,
@@ -300,6 +301,13 @@ const privateTopicWallets = new WeakMap<
   MonadChainWalletHandle,
   MonadWalletHandle
 >();
+const canonicalClientFactories = new WeakMap<object, () => MonadCanonicalStampClient>();
+/** Opt-in bridge verifies the actual registered live typed wallet; no caller-supplied owner. */
+export function canonicalMonadStampClient(wallet: NativeWalletHandle): MonadCanonicalStampClient {
+  const create = canonicalClientFactories.get(wallet);
+  if (!create) throw new Error("Canonical wallet requires live typed persistent custody");
+  return create();
+}
 const enclosingTopicAdmissions = new WeakSet<MonadChainWalletHandle>();
 type SignedNativeTransfer = Awaited<
   ReturnType<MonadAccountTxSigner["buildAndSignTransfer"]>
@@ -1382,6 +1390,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         try {
           topicOwner = await openExistingPoolMonadTopicOwner({
             location: storageLocation,
+            canonicalBinding: material.canonicalRoles === undefined ? undefined : canonicalWalletPublicBinding(material, forumPolicy.network, BigInt(config.chainId)),
             pool,
             changePool,
             leaseManager,
@@ -1442,6 +1451,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           pool.ensureUnfundedSize(config.subAccountPoolSize);
           // Classification is deliberately irrelevant here: every old obligation pins its lease.
           const pendingLeaseIndices = new Set([
+            ...(topicOwner.canonicalJournal?.getIntents().flatMap(intent => intent.members.map(m => m.reservation.index)) ?? []),
+            ...(topicOwner.canonicalJournal?.getAll().filter(attempt => !attempt.cleanupComplete).flatMap(attempt => attempt.reservations.map(r => r.index)) ?? []),
             ...stampAttemptJournal
               .getAll()
               .flatMap((attempt) => attempt.leaseIndices),
@@ -1674,6 +1685,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                   provider.destroy();
                   httpClient.destroy();
                   material.dispose();
+                  canonicalClientFactories.delete(wallet);
                   privateTopicWallets.delete(wallet);
                   walletMaterial.delete(wallet);
                 }
@@ -1688,6 +1700,20 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             walletState: topicOwner,
             topicOperationJournal: topicOwner.topicOperationJournal,
           });
+          if (material.canonicalRoles !== undefined && topicOwner.canonicalJournal !== undefined &&
+              (config.networkTag === "MONT" || config.networkTag === "MON1")) {
+            const canonicalRoles = material.canonicalRoles;
+            const installedNetworkTag = config.networkTag;
+            canonicalClientFactories.set(wallet, () => {
+              requireOpenWallet(wallet);
+              return new MonadCanonicalStampClient({ ...wallet, walletState: topicOwner!, canonicalRoles, installedNetworkTag,
+                runCanonicalExclusive: task => runWalletExclusive(wallet, async () => {
+                  enclosingTopicAdmissions.add(wallet);
+                  try { return await topicOwner!.runOperation(task); }
+                  finally { enclosingTopicAdmissions.delete(wallet); }
+                }) });
+            });
+          }
           walletMaterial.set(wallet, material);
           mainAccountAdmissions.set(wallet, admission);
           if (material.messagingRoot !== undefined) typedWallets.add(wallet);

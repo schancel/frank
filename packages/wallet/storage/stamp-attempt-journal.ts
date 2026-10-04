@@ -2,7 +2,7 @@
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
 import { compareBytes, decodeCanonical, parseFrame, toHex } from '@frank/codec'
-import { hexlify, Transaction } from 'ethers'
+import { hexlify, Transaction, sha256, toUtf8Bytes } from 'ethers'
 import {
   restoreCanonicalRequest,
   equalCanonicalRequests,
@@ -112,6 +112,35 @@ export interface CanonicalJournalAttempt {
   readonly terminal: CanonicalAttemptTerminal | null
   readonly cleanupComplete: boolean
   readonly acknowledged: boolean
+}
+
+/** Durable pre-sign owner. These public bytes confer neither custody nor admission. */
+export interface CanonicalUnsignedMember {
+  readonly reservation: CanonicalAttemptReservation
+  readonly from: string
+  readonly unsignedSerialized: string
+  readonly rawTx: string | null
+}
+export interface CanonicalJournalIntent {
+  readonly version: 1
+  readonly attemptRef: string
+  readonly prepared: CanonicalPreparedAttempt
+  readonly consumerId: string
+  readonly boundary: string
+  readonly members: readonly CanonicalUnsignedMember[]
+  /** Exact public-only stamp construction inputs, never a private scalar or Current. */
+  readonly construction: Uint8Array
+}
+interface StoredCanonicalIntent {
+  version: 1
+  attemptRef: string
+  sequence: number
+  prepared: StoredBinding & { payload: string; context: string }
+  consumerId: string
+  boundary: string
+  members: CanonicalUnsignedMember[]
+  construction: string
+  reservedBytes: number
 }
 
 export interface CanonicalAttemptCorrelation {
@@ -464,6 +493,8 @@ export class LevelCanonicalStampAttemptJournal {
     acknowledgedThrough: 0,
   }
   private readonly rows = new Map<string, StoredCanonicalAttempt>()
+  private readonly intents = new Map<string, StoredCanonicalIntent>()
+  private publicBinding: string | undefined
   private readonly eligibility = new WeakMap<
     CanonicalReplayEligibility,
     { row: StoredCanonicalAttempt; epoch: number }
@@ -501,6 +532,8 @@ export class LevelCanonicalStampAttemptJournal {
       await openDurableLevel(database, this.location, CANONICAL_NAMESPACE)
       let manifest: CanonicalManifest | undefined
       const rows = new Map<string, StoredCanonicalAttempt>()
+      const intents = new Map<string, StoredCanonicalIntent>()
+      let publicBinding: string | undefined
       for await (const [key, encoded] of database.iterator({}) as any) {
         if (
           typeof encoded !== 'string' ||
@@ -508,7 +541,24 @@ export class LevelCanonicalStampAttemptJournal {
         )
           canonicalFail('corrupt')
         const value: unknown = JSON.parse(encoded)
-        if (key === CANONICAL_MANIFEST) {
+        if (key === 'metadata:binding') {
+          exactObject(value, ['version', 'tuple'])
+          if (
+            value.version !== 1 ||
+            typeof value.tuple !== 'string' ||
+            value.tuple.length > 8192
+          )
+            canonicalFail('corrupt')
+          publicBinding = value.tuple
+        } else if (typeof key === 'string' && key.startsWith('intent:')) {
+          const intent = this.validateIntent(value)
+          if (
+            key !== `intent:${intent.sequence.toString().padStart(16, '0')}` ||
+            intents.has(intent.attemptRef)
+          )
+            canonicalFail('corrupt')
+          intents.set(intent.attemptRef, intent)
+        } else if (key === CANONICAL_MANIFEST) {
           exactObject(value, ['version', 'nextSequence', 'acknowledgedThrough'])
           if (
             value.version !== 1 ||
@@ -529,12 +579,12 @@ export class LevelCanonicalStampAttemptJournal {
         }
       }
       if (manifest === undefined) {
-        if (rows.size !== 0) canonicalFail('corrupt')
+        if (rows.size !== 0 || intents.size !== 0) canonicalFail('corrupt')
         manifest = { version: 1, nextSequence: 1, acknowledgedThrough: 0 }
         await durablePut(database, CANONICAL_MANIFEST, JSON.stringify(manifest))
       }
       if (
-        rows.size !==
+        rows.size + intents.size !==
         manifest.nextSequence - manifest.acknowledgedThrough - 1
       )
         canonicalFail('corrupt')
@@ -568,8 +618,36 @@ export class LevelCanonicalStampAttemptJournal {
             leaseIndices.add(reservation.index)
           }
       }
+      for (const intent of intents.values()) {
+        if (
+          rows.has(intent.attemptRef) ||
+          intent.sequence <= manifest.acknowledgedThrough ||
+          intent.sequence >= manifest.nextSequence
+        )
+          canonicalFail('corrupt')
+        for (const member of intent.members) {
+          if (
+            reservationIds.has(member.reservation.id) ||
+            leaseIndices.has(member.reservation.index)
+          )
+            canonicalFail('corrupt')
+          reservationIds.add(member.reservation.id)
+          leaseIndices.add(member.reservation.index)
+        }
+        for (const other of rows.values())
+          if (
+            compareBytes(
+              this.publicRow(other).prepared.payload,
+              this.publicIntent(intent).prepared.payload,
+            ) === 0
+          )
+            canonicalFail('corrupt')
+      }
       this.database = database
       this.manifest = manifest
+      this.publicBinding = publicBinding
+      this.intents.clear()
+      for (const [ref, row] of intents) this.intents.set(ref, row)
       this.rows.clear()
       for (const [ref, row] of rows) this.rows.set(ref, row)
       this.replaying.clear()
@@ -599,6 +677,8 @@ export class LevelCanonicalStampAttemptJournal {
     } finally {
       this.database = undefined
       this.rows.clear()
+      this.intents.clear()
+      this.publicBinding = undefined
       this.replaying.clear()
       this.epoch++
       this.generation++
@@ -713,6 +793,389 @@ export class LevelCanonicalStampAttemptJournal {
     return row
   }
 
+  /** Public identity supplements the real pool owner; it does not grant custody. */
+  bindPublicTuple(tuple: string): Promise<void> {
+    if (typeof tuple !== 'string' || tuple.length === 0 || tuple.length > 8192)
+      canonicalFail('invalid')
+    const parsed = JSON.parse(tuple)
+    if (
+      parsed.version !== 1 ||
+      parsed.domain !== 'frank-canonical-wallet-binding-v1' ||
+      JSON.stringify(parsed) !== tuple
+    )
+      canonicalFail('invalid')
+    return this.serialize(async () => {
+      if (this.publicBinding !== undefined) {
+        if (this.publicBinding !== tuple) canonicalFail('conflict')
+        return
+      }
+      if (this.rows.size || this.intents.size) canonicalFail('conflict')
+      await this.persist(() =>
+        durablePut(
+          this.database!,
+          'metadata:binding',
+          JSON.stringify({ version: 1, tuple }),
+        ),
+      )
+      this.publicBinding = tuple
+    })
+  }
+
+  private publicIntent(row: StoredCanonicalIntent): CanonicalJournalIntent {
+    return {
+      version: 1,
+      attemptRef: row.attemptRef,
+      prepared: {
+        ...row.prepared,
+        payload: fromBase64(row.prepared.payload, CANONICAL_MAX_BODY),
+        context: fromBase64(row.prepared.context, 4096),
+        economicBinding: fromBase64(row.prepared.economicBinding, 16384),
+      },
+      consumerId: row.consumerId,
+      boundary: row.boundary,
+      members: row.members.map(m => ({
+        ...m,
+        reservation: { ...m.reservation },
+      })),
+      construction: fromBase64(row.construction, 16384),
+    }
+  }
+
+  private validateIntent(value: unknown): StoredCanonicalIntent {
+    exactObject(value, [
+      'version',
+      'attemptRef',
+      'sequence',
+      'prepared',
+      'consumerId',
+      'boundary',
+      'members',
+      'construction',
+      'reservedBytes',
+    ])
+    if (
+      value.version !== 1 ||
+      !Number.isSafeInteger(value.sequence) ||
+      (value.sequence as number) < 1 ||
+      value.attemptRef !== refForSequence(value.sequence as number)
+    )
+      canonicalFail('invalid')
+    exactObject(value.prepared, [
+      'walletBindingId',
+      'accountId',
+      'chainId',
+      'network',
+      'senderSubject',
+      'recipientSubject',
+      'senderT1',
+      'recipientT1',
+      'economicBinding',
+      'payload',
+      'context',
+    ])
+    boundedName(value.consumerId)
+    if (
+      typeof value.boundary !== 'string' ||
+      !/^[a-zA-Z0-9._-]{16,70}$/.test(value.boundary) ||
+      !Array.isArray(value.members) ||
+      value.members.length < 1 ||
+      value.members.length > 64
+    )
+      canonicalFail('invalid')
+    const row = value as unknown as StoredCanonicalIntent
+    const publicRow = this.publicIntent(row)
+    assertPrepared(publicRow.prepared)
+    assertReservations(
+      publicRow.members.map(m => m.reservation),
+      publicRow.members.length,
+    )
+    const senders = new Set<string>(),
+      nonces = new Set<string>()
+    for (const member of row.members) {
+      exactObject(member, [
+        'reservation',
+        'from',
+        'unsignedSerialized',
+        'rawTx',
+      ])
+      if (
+        !/^0x[0-9a-f]{40}$/.test(member.from) ||
+        typeof member.unsignedSerialized !== 'string' ||
+        member.unsignedSerialized.length > 65536
+      )
+        canonicalFail('invalid')
+      const tx = Transaction.from(member.unsignedSerialized)
+      if (
+        tx.signature !== null ||
+        tx.unsignedSerialized !== member.unsignedSerialized ||
+        tx.chainId.toString() !== publicRow.prepared.chainId ||
+        tx.to === null ||
+        tx.value <= 0n ||
+        tx.gasLimit <= 0n ||
+        (tx.type !== 0 && tx.type !== 2)
+      )
+        canonicalFail('invalid')
+      const nonce = `${tx.chainId}:${member.from}:${tx.nonce}`
+      if (senders.has(member.from) || nonces.has(nonce))
+        canonicalFail('invalid')
+      senders.add(member.from)
+      nonces.add(nonce)
+      if (member.rawTx !== null) {
+        if (typeof member.rawTx !== 'string' || member.rawTx.length > 66000)
+          canonicalFail('invalid')
+        const signed = Transaction.from(member.rawTx)
+        if (
+          signed.signature === null ||
+          signed.from?.toLowerCase() !== member.from ||
+          signed.unsignedSerialized !== member.unsignedSerialized
+        )
+          canonicalFail('invalid')
+      }
+    }
+    const minimum =
+      Buffer.byteLength(JSON.stringify(row)) +
+      (CANONICAL_MAX_BODY * 4) / 3 +
+      65536
+    if (
+      !Number.isSafeInteger(row.reservedBytes) ||
+      row.reservedBytes < minimum ||
+      row.reservedBytes > 16 * 1024 * 1024
+    )
+      canonicalFail('invalid')
+    return row
+  }
+
+  private intentBytes(): number {
+    return Array.from(this.intents.values()).reduce(
+      (n, row) => n + row.reservedBytes,
+      0,
+    )
+  }
+  getIntents(): CanonicalJournalIntent[] {
+    this.assertOpen()
+    return Array.from(this.intents.values()).map(row => this.publicIntent(row))
+  }
+  lookupIntent(
+    prepared: CanonicalPreparedAttempt,
+  ): CanonicalJournalIntent | undefined {
+    this.assertOpen()
+    assertPrepared(prepared)
+    for (const row of this.intents.values()) {
+      const intent = this.publicIntent(row)
+      if (samePrepared(intent.prepared, prepared)) return intent
+      if (compareBytes(intent.prepared.payload, prepared.payload) === 0)
+        canonicalFail('conflict')
+    }
+    this.lookup(prepared)
+    return undefined
+  }
+
+  prepareIntent(
+    input: Omit<CanonicalJournalIntent, 'version' | 'attemptRef'>,
+  ): Promise<CanonicalJournalIntent> {
+    assertPrepared(input.prepared)
+    const snapshot = {
+      version: 1 as const,
+      attemptRef: refForSequence(1),
+      sequence: 1,
+      prepared: {
+        ...bindingOf(input.prepared),
+        payload: base64(input.prepared.payload),
+        context: base64(input.prepared.context),
+      },
+      consumerId: input.consumerId,
+      boundary: input.boundary,
+      members: input.members.map(m => ({
+        ...m,
+        reservation: { ...m.reservation },
+      })),
+      construction: base64(input.construction),
+      reservedBytes: 0,
+    }
+    if (snapshot.members.some(m => m.rawTx !== null)) canonicalFail('invalid')
+    snapshot.reservedBytes = Math.ceil(
+      Buffer.byteLength(JSON.stringify(snapshot)) +
+        (CANONICAL_MAX_BODY * 4) / 3 +
+        131072,
+    )
+    this.validateIntent(snapshot)
+    const prepared = this.publicIntent(snapshot).prepared
+    return this.serialize(async () => {
+      if (this.publicBinding === undefined) canonicalFail('conflict')
+      const bound = JSON.parse(this.publicBinding)
+      if (
+        sha256(toUtf8Bytes(this.publicBinding)).slice(2) !==
+          prepared.walletBindingId ||
+        bound.network !== prepared.network ||
+        bound.chainId !== prepared.chainId ||
+        bound.auth !== `0x${prepared.senderSubject}` ||
+        bound.main !== prepared.accountId
+      )
+        canonicalFail('conflict')
+      const prior = this.lookupIntent(prepared)
+      if (prior !== undefined) {
+        if (
+          prior.consumerId !== snapshot.consumerId ||
+          prior.boundary !== snapshot.boundary ||
+          JSON.stringify(prior.members.map(m => ({ ...m, rawTx: null }))) !==
+            JSON.stringify(snapshot.members) ||
+          base64(prior.construction) !== snapshot.construction
+        )
+          canonicalFail('conflict')
+        return prior
+      }
+      if (this.lookup(prepared) !== undefined) canonicalFail('conflict')
+      const reservations = snapshot.members.map(m => m.reservation)
+      for (const other of [
+        ...this.getAll()
+          .filter(a => !a.cleanupComplete)
+          .map(a => a.reservations),
+        ...this.getIntents().map(a => a.members.map(m => m.reservation)),
+      ])
+        if (
+          other.some(a =>
+            reservations.some(b => a.id === b.id || a.index === b.index),
+          )
+        )
+          canonicalFail('conflict')
+      const bytes = Array.from(this.rows.values()).reduce(
+        (n, row) => n + Buffer.byteLength(JSON.stringify(row)) + 16384,
+        0,
+      )
+      if (
+        this.rows.size + this.intents.size >= this.maxRecords ||
+        bytes + this.intentBytes() + snapshot.reservedBytes > this.maxBytes ||
+        this.manifest.nextSequence >= Number.MAX_SAFE_INTEGER
+      )
+        canonicalFail('capacity')
+      const sequence = this.manifest.nextSequence
+      const row = {
+        ...snapshot,
+        sequence,
+        attemptRef: refForSequence(sequence),
+      }
+      const manifest = { ...this.manifest, nextSequence: sequence + 1 }
+      await this.persist(() =>
+        durableBatch(this.database!, [
+          {
+            type: 'put',
+            key: `intent:${sequence.toString().padStart(16, '0')}`,
+            value: JSON.stringify(row),
+          },
+          {
+            type: 'put',
+            key: CANONICAL_MANIFEST,
+            value: JSON.stringify(manifest),
+          },
+        ]),
+      )
+      this.intents.set(row.attemptRef, row)
+      this.manifest = manifest
+      this.epoch++
+      return this.publicIntent(row)
+    })
+  }
+
+  checkpointSignedMember(
+    attemptRef: string,
+    index: number,
+    rawTx: string,
+  ): Promise<CanonicalJournalIntent> {
+    return this.serialize(async () => {
+      const old = this.intents.get(attemptRef)
+      if (
+        old === undefined ||
+        !Number.isSafeInteger(index) ||
+        index < 0 ||
+        index >= old.members.length
+      )
+        canonicalFail('conflict')
+      if (
+        old.members[index].rawTx !== null &&
+        old.members[index].rawTx !== rawTx
+      )
+        canonicalFail('conflict')
+      const row = {
+        ...old,
+        members: old.members.map((m, i) => (i === index ? { ...m, rawTx } : m)),
+      }
+      this.validateIntent(row)
+      await this.persist(() =>
+        durablePut(
+          this.database!,
+          `intent:${row.sequence.toString().padStart(16, '0')}`,
+          JSON.stringify(row),
+        ),
+      )
+      this.intents.set(attemptRef, row)
+      this.epoch++
+      return this.publicIntent(row)
+    })
+  }
+
+  promoteIntent(
+    attemptRef: string,
+    input: CanonicalExactRequest,
+  ): Promise<CanonicalJournalAttempt> {
+    const request = restoreCanonicalRequest({
+      body: new Uint8Array(input.body),
+      contentType: input.contentType,
+    })
+    if (!equalCanonicalRequests(input, request)) canonicalFail('conflict')
+    return this.serialize(async () => {
+      const old = this.intents.get(attemptRef)
+      if (old === undefined) canonicalFail('conflict')
+      const intent = this.publicIntent(old)
+      assertPrepared(intent.prepared, request)
+      if (
+        request.contentType !==
+          `multipart/form-data; boundary=${intent.boundary}` ||
+        intent.members.length !== request.parts.transactions.length ||
+        intent.members.some(
+          (m, i) =>
+            m.rawTx === null ||
+            hexlify(request.parts.transactions[i]) !== m.rawTx,
+        )
+      )
+        canonicalFail('conflict')
+      const row: StoredCanonicalAttempt = {
+        version: 1,
+        attemptRef,
+        sequence: old.sequence,
+        binding: bindingOf(intent.prepared),
+        request: {
+          body: base64(request.body),
+          contentType: request.contentType,
+        },
+        reservations: intent.members.map(m => ({ ...m.reservation })),
+        consumerId: intent.consumerId,
+        terminal: null,
+        cleanupComplete: false,
+        acknowledged: false,
+      }
+      this.validateRow(row)
+      if (Buffer.byteLength(JSON.stringify(row)) + 16384 > old.reservedBytes)
+        canonicalFail('capacity')
+      await this.persist(() =>
+        durableBatch(this.database!, [
+          {
+            type: 'put',
+            key: attemptKey(row.sequence),
+            value: JSON.stringify(row),
+          },
+          {
+            type: 'del',
+            key: `intent:${old.sequence.toString().padStart(16, '0')}`,
+          },
+        ]),
+      )
+      this.intents.delete(attemptRef)
+      this.rows.set(attemptRef, row)
+      this.epoch++
+      return this.publicRow(row)
+    })
+  }
+
   /** Effect-free full prepared identity lookup, including immutable policy and exact bytes. */
   lookup(
     prepared: CanonicalPreparedAttempt,
@@ -786,6 +1249,22 @@ export class LevelCanonicalStampAttemptJournal {
         )
           canonicalFail('conflict')
       }
+      if (this.intents.size > 0) {
+        for (const intent of this.intents.values()) {
+          const prior = this.publicIntent(intent)
+          if (
+            compareBytes(prior.prepared.payload, candidatePrepared.payload) ===
+              0 ||
+            prior.members.some(a =>
+              reservations.some(
+                b =>
+                  a.reservation.id === b.id || a.reservation.index === b.index,
+              ),
+            )
+          )
+            canonicalFail('conflict')
+        }
+      }
       const sequence = this.manifest.nextSequence
       if (sequence >= Number.MAX_SAFE_INTEGER) canonicalFail('capacity')
       const row: StoredCanonicalAttempt = {
@@ -813,7 +1292,10 @@ export class LevelCanonicalStampAttemptJournal {
           (n, item) => n + retainedBytes(item),
           0,
         )
-      if (this.rows.size >= this.maxRecords || bytes > this.maxBytes)
+      if (
+        this.rows.size + this.intents.size >= this.maxRecords ||
+        bytes + this.intentBytes() > this.maxBytes
+      )
         canonicalFail('capacity')
       const manifest = { ...this.manifest, nextSequence: sequence + 1 }
       await this.persist(() =>
@@ -973,6 +1455,21 @@ export class LevelCanonicalStampAttemptJournal {
       this.rows.set(attemptRef, row)
       this.epoch++
     })
+  }
+
+  /** Frontier proof only; it makes no delivered/consumer inference for an arbitrary missing row. */
+  wasAcknowledged(attemptRef: string): boolean {
+    this.assertOpen()
+    const match = /^canonical-v1:([0-9]{16})$/.exec(attemptRef)
+    if (match === null) canonicalFail('invalid')
+    const sequence = Number(match[1])
+    if (
+      !Number.isSafeInteger(sequence) ||
+      sequence < 1 ||
+      refForSequence(sequence) !== attemptRef
+    )
+      canonicalFail('invalid')
+    return sequence <= this.manifest.acknowledgedThrough
   }
 
   /** Only this linked consumer's durable acknowledgement advances the contiguous frontier.

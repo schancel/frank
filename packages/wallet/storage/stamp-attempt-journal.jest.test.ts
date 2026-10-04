@@ -75,7 +75,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
-import { Wallet, Transaction, getBytes } from 'ethers'
+import {
+  Wallet,
+  Transaction,
+  getBytes,
+  sha256,
+  toUtf8Bytes,
+  hexlify,
+} from 'ethers'
 import {
   cborMap,
   decodeCanonical,
@@ -690,4 +697,155 @@ describe('canonical exact-attempt storage', () => {
     },
     20000,
   )
+})
+
+async function unsignedIntentFixture(
+  journal: LevelCanonicalStampAttemptJournal,
+) {
+  const fixture = await canonicalFixture()
+  const tx = Transaction.from(hexlify(fixture.request.parts.transactions[0]))
+  const tuple = JSON.stringify({
+    version: 1,
+    domain: 'frank-canonical-wallet-binding-v1',
+    network: fixture.prepared.network,
+    chainId: fixture.prepared.chainId,
+    auth: `0x${fixture.prepared.senderSubject}`,
+    main: '0x' + '11'.repeat(20),
+  })
+  await journal.bindPublicTuple(tuple)
+  const prepared = {
+    ...fixture.prepared,
+    walletBindingId: sha256(toUtf8Bytes(tuple)).slice(2),
+    accountId: JSON.parse(tuple).main,
+  }
+  const input = {
+    prepared,
+    consumerId: fixture.consumerId,
+    boundary: fixture.request.contentType.slice(
+      'multipart/form-data; boundary='.length,
+    ),
+    construction: Uint8Array.of(1),
+    members: [
+      {
+        reservation: fixture.reservations[0],
+        from: tx.from!.toLowerCase(),
+        unsignedSerialized: tx.unsignedSerialized,
+        rawTx: null,
+      },
+    ],
+  }
+  return { fixture, input, raw: tx.serialized }
+}
+
+describe('durable unsigned canonical intent', () => {
+  it.each(['release', 'reject'] as const)(
+    'waits for actual database intent completion before caller can acquire or sign: %s',
+    async outcome => {
+      await withCanonicalJournal(async journal => {
+        const { input } = await unsignedIntentFixture(journal)
+        const db = database(journal),
+          original = db.batch.bind(db),
+          entered = barrier(),
+          gate = barrier()
+        const spy = jest.spyOn(db, 'batch').mockImplementation(((
+          ...args: unknown[]
+        ) => {
+          entered.resolve()
+          return gate.promise.then(() =>
+            (original as (...args: unknown[]) => Promise<unknown>)(...args),
+          )
+        }) as never)
+        const poolWrite = jest.fn(),
+          sign = jest.fn()
+        const started = journal.prepareIntent(input).then(() => {
+          poolWrite()
+          sign()
+        })
+        const observed = started.then(
+          () => null,
+          error => error,
+        )
+        await entered.promise
+        expect(journal.getIntents()).toEqual([])
+        expect(poolWrite).not.toHaveBeenCalled()
+        expect(sign).not.toHaveBeenCalled()
+        if (outcome === 'release') gate.resolve()
+        else gate.reject(new Error('intent write rejected'))
+        const error = await observed
+        spy.mockRestore()
+        if (outcome === 'reject') {
+          expect(error.message).toBe('intent write rejected')
+          expect(poolWrite).not.toHaveBeenCalled()
+          expect(sign).not.toHaveBeenCalled()
+        } else {
+          expect(error).toBeNull()
+          expect(poolWrite).toHaveBeenCalledTimes(1)
+        }
+        await journal.Close()
+        await journal.Open()
+        expect(journal.getIntents()).toHaveLength(outcome === 'release' ? 1 : 0)
+      })
+    },
+  )
+  it('reopens unsigned and partial member state then atomically promotes the identical full body', async () => {
+    await withCanonicalJournal(async journal => {
+      const { fixture, input, raw } = await unsignedIntentFixture(journal)
+      const intent = await journal.prepareIntent(input)
+      await journal.Close()
+      await journal.Open()
+      expect(journal.lookupIntent(input.prepared)).toEqual(intent)
+      expect(journal.getAll()).toEqual([])
+      await expect(
+        journal.promoteIntent(intent.attemptRef, fixture.request),
+      ).rejects.toThrow('conflict')
+      await journal.checkpointSignedMember(intent.attemptRef, 0, raw)
+      await journal.Close()
+      await journal.Open()
+      expect(journal.lookupIntent(input.prepared)!.members[0].rawTx).toBe(raw)
+      const attempt = await journal.promoteIntent(
+        intent.attemptRef,
+        fixture.request,
+      )
+      expect(attempt.request.body).toEqual(fixture.request.body)
+      expect(attempt.attemptRef).toBe(intent.attemptRef)
+      expect(journal.getIntents()).toEqual([])
+      await journal.Close()
+      await journal.Open()
+      expect(journal.lookup(input.prepared)!.request.body).toEqual(
+        fixture.request.body,
+      )
+      expect(journal.getIntents()).toEqual([])
+      expect(journal.reconcile([])[0].state).toBe('hold')
+      expect(journal.wasAcknowledged(intent.attemptRef)).toBe(false)
+    })
+  })
+  it('committed-but-rejected intent completion faults owner and preserves exact selection on reopen', async () => {
+    await withCanonicalJournal(async journal => {
+      const { input } = await unsignedIntentFixture(journal)
+      const db = database(journal),
+        original = db.batch.bind(db)
+      const spy = jest.spyOn(db, 'batch').mockImplementation((async (
+        ...args: unknown[]
+      ) => {
+        await (original as (...args: unknown[]) => Promise<unknown>)(...args)
+        throw new Error('intent callback uncertain')
+      }) as never)
+      await expect(journal.prepareIntent(input)).rejects.toThrow(
+        'intent callback uncertain',
+      )
+      expect(() => journal.getIntents()).toThrow('corrupt')
+      spy.mockRestore()
+      await journal.Close()
+      await journal.Open()
+      expect(journal.lookupIntent(input.prepared)!.members).toEqual(
+        input.members,
+      )
+      expect(await journal.prepareIntent(input)).toEqual(
+        journal.lookupIntent(input.prepared),
+      )
+      await expect(
+        journal.prepareIntent({ ...input, consumerId: 'different-workflow' }),
+      ).rejects.toThrow('conflict')
+    })
+  })
 })

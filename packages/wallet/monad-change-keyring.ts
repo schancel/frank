@@ -12,7 +12,7 @@
  * spend addresses through the wrong branch. Both consume the same EVM wallet-domain root.
  */
 import * as bip39 from 'bip39'
-import { HDNodeWallet, Mnemonic } from 'ethers'
+import { HDNodeWallet, Mnemonic, getBytes } from 'ethers'
 import { MonadDomainRoot, monadMasterFromDomainRoot } from './monad-domain-root'
 
 /** BIP-44 path prefix for Monad (coin type 60) **change** accounts -- branch `1`, as opposed to
@@ -75,6 +75,22 @@ export class MonadChangeKeyring {
     const seed = Mnemonic.fromPhrase(mnemonic, passphrase).computeSeed()
     const masterNode = HDNodeWallet.fromSeed(seed)
     return new MonadChangeKeyring(masterNode)
+  }
+
+  /** Public-only copy of the actual existing branch; no custody or signing authority. */
+  publicBranchDescriptor(): {
+    path: string
+    publicKey: Uint8Array
+    chainCode: Uint8Array
+  } {
+    const branch = this.masterNode
+      .derivePath(CHANGE_DERIVATION_PATH_PREFIX)
+      .neuter()
+    return {
+      path: CHANGE_DERIVATION_PATH_PREFIX,
+      publicKey: getBytes(branch.publicKey),
+      chainCode: getBytes(branch.chainCode),
+    }
   }
 
   /** Deterministically derives the change account at `m/44'/60'/0'/1/{index}`. */

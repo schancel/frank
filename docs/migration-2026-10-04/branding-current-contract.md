@@ -167,3 +167,15 @@ Cost of reversal is a source revert/rebuild. No user database or wire migration.
 No README/package identity rewrite, old LeftDrawer/Setup/Changelog transplant, Forum/Topic work, funding, runtime/default activation, held258/CBC, system trust mutation, push/merge/tracker writes/claim termination or cleanup. No agent attribution trailers. Any source path beyond the exact sets needs finite parent amendment before editing.
 
 Freeze brand source tip for independent source review first. Handoff exact base/tip/files, source-equality/conflict evidence, actual gate matrix, failed attempts and explicit pending gates. Later PWA candidate receives its own source assessment; neither source-only handoff nor preserved older component evidence constitutes current-main UI/PWA gate completion.
+
+## PWA feature ownership activation
+
+Local direct-request PWA ownership ID: `607ef91b-6858-44de-846f-3a48e6213f45`.
+Owner: same parent-authorized branding/PWA stream, `codex-resume-pwa-branding-current-20261004`.
+Branch: `repair/pwa-branding-current-20261004`.
+Worktree: `/Users/shammah/repos/frank/.worktrees/pwa-branding-current-20261004`.
+Exact feature base: `b864b3978db31d3120a4e05c41ea6e80131db588` (frozen branding candidate on current mainc8f8915).
+Recorded: 2026-10-04T07:55:14.397912+00:00.
+Branding worktree remains immutable for independent review. Exact four source paths and gate/non-goal boundaries above remain unchanged.
+
+Read-only framework inspection before edits: installed preserved-worktree `@quasar/app-vite`3.10.0 matches current frozen yarn.lock/app manifest. Its quasar-config-file.js1369–1383 selects root sourceFiles.pwaManifestFile and pwaRegisterServiceWorker;1536 defines import.meta.env.QUASAR_SERVICE_WORKER_FILE. pwa-utils.js52 directly reads JSON native manifest. pwa-config.js118–123 merges returned extendPWAGenerateSWOptions overrides. No installed files or dependency output copied; current-base dependencies will be independently installed only after an explicit heavy lease. Transport the reviewed four-path minimal patch, not an entire historical config.

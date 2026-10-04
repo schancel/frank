@@ -640,6 +640,21 @@ impl<'a> Directory<'a> {
             .transpose()
     }
 
+    /// Every retained record in stored order: the accepted chain, then any fork proof. This is
+    /// what one relay hands another; the receiver verifies each record itself.
+    pub fn retained(&self) -> Result<Vec<HistoricalEvidence>> {
+        self.ensure_available()?;
+        let _guard = self
+            .db
+            .lock_directory_preview()
+            .map_err(|_| AdmissionError::Unavailable)?;
+        let meta = self.storage(self.header())?;
+        let state = self
+            .storage(self.load(meta.as_ref()))?
+            .ok_or(AdmissionError::Unenrolled)?;
+        Ok(state.records().map(|r| r.evidence.clone()).collect())
+    }
+
     /// Bounded exact fork proof for external investigation. These are not accepted history.
     pub fn conflict_evidence(&self) -> Result<Vec<HistoricalEvidence>> {
         self.ensure_available()?;

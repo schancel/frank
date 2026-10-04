@@ -78,20 +78,28 @@ pub(crate) struct Routes {
     pub(crate) runtime: Arc<DirectoryRuntime>,
     enrollments: FixedHourQuota<IpAddr>,
 }
-/// The address a first publication is charged to. A request that reaches the relay through a
-/// reverse proxy on the same host is charged to the client the proxy reports.
-fn source(peer: Option<ConnectInfo<SocketAddr>>, headers: &HeaderMap) -> IpAddr {
-    let peer = peer.map_or(IpAddr::V4(Ipv4Addr::LOCALHOST), |peer| peer.0.ip());
-    let forwarded = if peer.is_loopback() {
-        headers
-            .get("x-forwarded-for")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.rsplit(',').next())
-            .and_then(|value| value.trim().parse::<IpAddr>().ok())
-    } else {
-        None
-    };
-    normalize_quota_ip(forwarded.unwrap_or(peer))
+/// Largest directory entry accepted over HTTP. An ordinary entry is under 600 bytes.
+pub(crate) const MAX_ENTRY_BYTES: usize = 8 * 1024;
+impl Routes {
+    /// The address a first publication is charged to: the connecting address, or, only when
+    /// that address is a reverse proxy the operator listed, the client that proxy reports.
+    fn source(&self, peer: Option<ConnectInfo<SocketAddr>>, headers: &HeaderMap) -> IpAddr {
+        let peer = peer.map_or(IpAddr::V4(Ipv4Addr::LOCALHOST), |peer| peer.0.ip());
+        let forwarded = if self
+            .runtime
+            .trusted_proxies()
+            .contains(&normalize_quota_ip(peer))
+        {
+            headers
+                .get("x-forwarded-for")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.rsplit(',').next())
+                .and_then(|value| value.trim().parse::<IpAddr>().ok())
+        } else {
+            None
+        };
+        normalize_quota_ip(forwarded.unwrap_or(peer))
+    }
 }
 fn now_seconds() -> u64 {
     std::time::SystemTime::now()
@@ -170,35 +178,56 @@ async fn put(
     {
         return (StatusCode::UNSUPPORTED_MEDIA_TYPE, "media").into_response();
     }
-    let slot = match runtime.reserve(&network, &subject) {
-        Ok(s) => s,
-        Err(e) => return error(e),
-    };
-    // Publishing is free, so a key this relay has never seen is charged to its source.
-    if !runtime.is_published(&network, &subject)
-        && routes
-            .enrollments
-            .charge(source(peer, &headers), 1, now_seconds())
-            .is_err()
-    {
-        return error(RuntimeError::Resource);
-    }
+    // The whole body is read before any of the directory's few queue slots is taken, so a slow
+    // or stalled upload cannot hold one.
     let collect = async {
         let mut bytes = Vec::new();
         while let Some(chunk) = body.data().await {
             let chunk = chunk.map_err(|_| RuntimeError::Invalid)?;
-            if bytes.len() + chunk.len() > crate::directory_admission::MAX_FRAME_BYTES {
+            if bytes.len() + chunk.len() > MAX_ENTRY_BYTES {
                 return Err(RuntimeError::Resource);
             }
             bytes.extend_from_slice(&chunk);
         }
         Ok(bytes)
     };
-    match tokio::time::timeout(Duration::from_secs(5), collect).await {
-        Err(_) => error(RuntimeError::NotStarted),
-        Ok(Err(e)) => error(e),
-        Ok(Ok(bytes)) => evidence(runtime.submit(slot, Operation::Put(bytes)).wait().await),
+    let bytes = match tokio::time::timeout(Duration::from_secs(5), collect).await {
+        Err(_) => return error(RuntimeError::NotStarted),
+        Ok(Err(e)) => return error(e),
+        Ok(Ok(bytes)) => bytes,
+    };
+    if !crate::directory_runtime::valid_key(&network, &subject) {
+        return error(RuntimeError::Invalid);
     }
+    // Publishing is free, so a key this relay has never seen is charged to its source, and only
+    // once the entry is known to be signed by that key: a forgery costs its sender nothing here
+    // and cannot use up anyone's allowance.
+    if !runtime.is_published(&network, &subject) {
+        let signed_by_subject = frank_cbor::verify_preview_directory_evidence(&bytes, &network)
+            .ok()
+            .is_some_and(|verified| {
+                matches!(
+                    verified.statement_frame().typed.as_deref(),
+                    Some(frank_cbor::TypedPayload::DirectoryStatement { subject: signer, .. })
+                        if hex::encode(&signer.key_bytes) == subject
+                )
+            });
+        if !signed_by_subject {
+            return error(RuntimeError::Invalid);
+        }
+        if routes
+            .enrollments
+            .charge(routes.source(peer, &headers), 1, now_seconds())
+            .is_err()
+        {
+            return error(RuntimeError::Resource);
+        }
+    }
+    let slot = match runtime.reserve(&network, &subject) {
+        Ok(s) => s,
+        Err(e) => return error(e),
+    };
+    evidence(runtime.submit(slot, Operation::Put(bytes)).wait().await)
 }
 /// The relay-wide tuple an account embeds in its own entry.
 async fn info(Extension(routes): Extension<Arc<Routes>>) -> Response {

@@ -99,6 +99,9 @@
           </div>
         </q-menu>
       </q-btn>
+      <!-- Sends on click, which a mouse press, Enter/Space on the focused button and assistive
+      technology all produce exactly once. Mousedown only has its default prevented, so pressing
+      Send with a pointer does not take focus (and the caret) out of the text box. -->
       <q-btn
         dense
         flat
@@ -106,7 +109,8 @@
         class="q-btn"
         :aria-label="$t('a11y.sendMessage')"
         :disable="disable"
-        @mousedown.prevent="sendMessage"
+        @mousedown.prevent
+        @click="sendMessage"
       />
     </q-toolbar>
   </div>

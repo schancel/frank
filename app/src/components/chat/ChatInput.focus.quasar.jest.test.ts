@@ -195,6 +195,7 @@ describe('ChatInput compose box focus and first character (#396)', () => {
     send?.dispatchEvent(
       new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
     )
+    send?.click()
     await flushPromises()
     expect(w.emitted('sendMessage')).toBeUndefined()
     await w.setProps({ disable: false })
@@ -342,22 +343,82 @@ describe('ChatInput compose box focus and first character (#396)', () => {
     expect(document.activeElement).toBe(other)
   })
 
-  it('emits the typed text on Enter and via the send button', async () => {
-    const c = mountCompose()
-    c.box().focus()
-    await typeAll('hello')
-    const send = Array.from(
-      c.wrapper.element.querySelectorAll<HTMLElement>('button'),
-    ).find(b => b.textContent?.includes('send'))
-    expect(send).toBeDefined()
+  const sendButton = (root: Element) => {
+    const send = Array.from(root.querySelectorAll<HTMLElement>('button')).find(
+      b => b.textContent?.includes('send'),
+    )
+    if (!send) throw new Error('no send button')
+    return send
+  }
+  /** A real pointer press as the browser delivers it: mousedown, mouseup, then click. */
+  const press = (el: HTMLElement) => {
     const down = new MouseEvent('mousedown', {
       bubbles: true,
       cancelable: true,
     })
-    send?.dispatchEvent(down)
+    el.dispatchEvent(down)
+    el.dispatchEvent(
+      new MouseEvent('mouseup', { bubbles: true, cancelable: true }),
+    )
+    el.dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true }),
+    )
+    return down
+  }
+  /** A key pressed and released on the focused element, with the legacy keyCode Quasar reads. */
+  const pressKey = (key: 'Enter' | ' ') => {
+    const init = {
+      key,
+      keyCode: key === 'Enter' ? 13 : 32,
+      bubbles: true,
+      cancelable: true,
+    }
+    const target = document.activeElement as HTMLElement
+    target.dispatchEvent(new KeyboardEvent('keydown', init))
+    target.dispatchEvent(new KeyboardEvent('keyup', init))
+  }
+
+  it('a real mouse press on Send (mousedown then click) sends once and keeps focus in the box', async () => {
+    const c = mountCompose()
+    c.box().focus()
+    await typeAll('hello')
+    const down = press(sendButton(c.wrapper.element))
     await flushPromises()
     expect(c.sent).toEqual(['hello'])
     // Pressing Send must not move focus out of the box (mousedown default is prevented).
     expect(down.defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(c.box())
+  })
+
+  it.each([
+    ['Enter', 'Enter' as const],
+    ['Space', ' ' as const],
+  ])('%s on the focused Send button sends once', async (_name, key) => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const w = mount(ChatInput, {
+      attachTo: host,
+      props: { message: 'hello' },
+      global: { plugins: [loadQuasar()], mocks: { $t: translate } },
+    })
+    mounted.push(w as unknown as VueWrapper)
+    sendButton(w.element).focus()
+    pressKey(key)
+    await flushPromises()
+    expect(w.emitted('sendMessage')).toEqual([['hello']])
+  })
+
+  it('a synthetic click (assistive technology) on Send sends once', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const w = mount(ChatInput, {
+      attachTo: host,
+      props: { message: 'hello' },
+      global: { plugins: [loadQuasar()], mocks: { $t: translate } },
+    })
+    mounted.push(w as unknown as VueWrapper)
+    sendButton(w.element).click()
+    await flushPromises()
+    expect(w.emitted('sendMessage')).toEqual([['hello']])
   })
 })

@@ -244,7 +244,10 @@ function policy() {
     ...NETWORK,
     validSeconds: 3600,
     participants: ['relay-a', 'relay-b', 'bot'].map(processId => ({ processId, origin: ORIGINS[processId], trustReference: `local-stack-leaf-sha256:${certFingerprint(processId)}` })),
-    relayTuples: JSON.parse(readFileSync(tuples, 'utf8')).map(t => ({ ...t, endpoint: `${ORIGINS[t.processId]}/`, expirySeconds: 7 * 24 * 3600 })),
+    // The endpoint is the bare origin. The policy parser also admits a trailing slash, but the
+    // canonical mailbox client compares the signed endpoint with the slashless origin, so a
+    // trailing-slash tuple can never authenticate to its inbox.
+    relayTuples: JSON.parse(readFileSync(tuples, 'utf8')).map(t => ({ ...t, endpoint: ORIGINS[t.processId], expirySeconds: 7 * 24 * 3600 })),
   }
   writeFileSync(join(P.operator, 'policy-input.json'), JSON.stringify(input, null, 2))
   operatorCli(['policy', join(P.operator, 'policy-input.json'), join(P.operator, 'bootstrap-policy.json')])
@@ -273,7 +276,7 @@ async function restartRelays() {
 // ---------------------------------------------------------------- bot
 // The bot runs from a checkout that contains its canonical mode (packages/bot/README.md,
 // "Canonical mode"). Its roots are disposable and generated here; nothing else creates them.
-const BOT_SRC = process.env.FRANK_BOT_SRC ?? join(STATE, 'bot-src')
+const BOT_SRC = process.env.FRANK_BOT_SRC ?? REPO
 const BOT = join(STATE, 'bot')
 function botEnv(extra) {
   const roots = join(BOT, 'roots.json')
@@ -307,7 +310,7 @@ async function botStart(mode = 'live') {
   if (!['live', 'stub'].includes(mode)) die('usage: bot-start [live|stub]')
   const [tsx, args, cwd] = botCommand()
   const model = mode === 'live' ? { QWEN_BOT_MODE: 'live', QWEN_API_KEY: 'local-ollama-placeholder', QWEN_OPENAI_COMPATIBLE_ENDPOINT: 'http://127.0.0.1:11434/v1', QWEN_MODEL: process.env.QWEN_MODEL ?? 'qwen2.5:7b' } : { QWEN_BOT_MODE: 'stub' }
-  start('bot', tsx, args, botEnv({ ...model, QWEN_BOT_CANONICAL_BUNDLE_JSON: join(P.operatorOut, 'approved-bundle.json'), QWEN_BOT_CANONICAL_STATUS_PORT: String(PORTS.bot), QWEN_BOT_STAMP_VALUE_WEI: '10000000000000000', QWEN_BOT_POLL_INTERVAL_MS: '2000' }), cwd)
+  start('bot', tsx, args, botEnv({ ...model, QWEN_BOT_CANONICAL_BUNDLE_JSON: join(P.operatorOut, 'approved-bundle.json'), QWEN_BOT_CANONICAL_STATUS_PORT: String(PORTS.bot), QWEN_BOT_STAMP_VALUE_WEI: '10000000000000000', QWEN_BOT_POLL_INTERVAL_MS: '2000', ...(process.env.LOCAL_STACK_DEBUG_FATAL ? { LOCAL_STACK_DEBUG_FATAL: '1' } : {}) }), cwd)
   say(`bot started (${mode}); log ${join(P.logs, 'bot.log')}`)
 }
 
@@ -388,6 +391,10 @@ const commands = {
   'bot-export': botExport,
   'bot-start': () => botStart(args[0]),
   'bot-stop': () => stop('bot'),
+  'restart-shim': async () => {
+    await stop('chain-shim')
+    start('chain-shim', process.execPath, [join(HERE, 'chain-shim.mjs')])
+  },
   'restart-relays': restartRelays,
   'fund': () => (/^0x[0-9a-fA-F]{40}$/.test(args[0] ?? '') ? fund(args[0], args[1]) : die('usage: fund <0xaddress> [MON]')),
   chrome,

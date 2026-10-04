@@ -193,6 +193,7 @@ const panel = () =>
     bot:q('[data-test=directory-participant-bot]'),
     peerAddress:q('[data-test=directory-peer-address]'),
     exportError:q('[data-test=directory-export-error]')}})()`)
+const walletAddress = () => ev(`(()=>{const b=document.querySelector('[data-testid=wallet-copy-address]');const f=b?.closest('.q-field');return (f?.querySelector('textarea,input')?.value ?? '').trim()})()`)
 const showPanel = async name => {
   await ev('document.querySelector("[data-test=directory-provisioning]").scrollIntoView({block:"start"})')
   await delay(250)
@@ -245,10 +246,63 @@ const phases = {
   async address() {
     await launch()
     await resume()
-    await click('#rail-tab-wallet')
+    await ev('location.hash = "#/wallet"')
+    await wait(() => has('[data-testid=wallet-copy-address]'), 'wallet page')
+    await wait(async () => /^0x[0-9a-fA-F]{40}$/.test(await walletAddress()), 'wallet address')
     await delay(1500)
+    const shown = await walletAddress()
+    const balance = await text('[data-testid=wallet-balance]')
     await shot('07-wallet')
-    note('wallet panel text', (await text('#rail-panel-wallet')).slice(0, 1500))
+    // The Wallet page shows the identity address; the account that holds and spends funds is the
+    // one the Receive page shows. Fund that one.
+    await ev('location.hash = "#/receive"')
+    const receive = () => ev(`(()=>{const b=document.querySelector('[data-testid=receive-copy-address]');const f=b?.closest('.q-field');return (f?.querySelector('textarea,input')?.value ?? '').trim()})()`)
+    await wait(async () => /^0x[0-9a-fA-F]{40}$/.test(await receive()), 'receive address')
+    const address = await receive()
+    await shot('07b-receive')
+    fs.writeFileSync(path.join(STATE, 'operator', 'ui-wallet-address.txt'), address + '\n')
+    note('wallet addresses (public)', { fundThis: address, walletPageShows: shown, balance })
+  },
+  async chat(message = 'Hello from the local stack. Reply with one short sentence.') {
+    await launch()
+    await resume()
+    await openNetworking()
+    // App start does not enroll or re-check with authority; the explicit action enables messaging.
+    await click('[data-test=directory-check]')
+    await delay(300)
+    await wait(async () => !(await ev('document.querySelector("[data-test=directory-check]").disabled')), 'check to finish', 90000)
+    const state = await panel()
+    note('panel before chat', state)
+    const peer = /0x[0-9a-fA-F]{40}/.exec(state.peerAddress ?? '')?.[0]
+    if (!peer) throw Error('messaging is not ready: ' + JSON.stringify(state))
+    await ev(`location.hash = ${JSON.stringify('#/chat/' + peer)}`)
+    const composer = '.q-footer textarea, textarea[placeholder]'
+    await wait(() => has(composer), 'chat composer')
+    await delay(1000)
+    await shot('08-chat-open')
+    const bubbles = () => ev(`[...document.querySelectorAll('.q-message')].map(e=>({sent:e.classList.contains('q-message-sent'),text:e.innerText.trim().slice(0,400)}))`)
+    const before = await bubbles()
+    const since = Date.now()
+    await traceExceptions()
+    await ev(`document.querySelector(${JSON.stringify(composer)}).focus()`)
+    await rpc('Input.insertText', { text: message })
+    await delay(300)
+    await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+    await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+    await delay(4000)
+    await shot('09-chat-sent')
+    note('bubbles shortly after send', await bubbles())
+    let replied = true
+    await wait(async () => (await bubbles()).filter(b => !b.sent).length > before.filter(b => !b.sent).length, 'a reply bubble', Number(process.env.REPLY_TIMEOUT_MS ?? 180000)).catch(() => (replied = false))
+    await delay(3000)
+    const after = await bubbles()
+    await shot('10-chat-after-wait')
+    note('bubbles at the end', after)
+    note('page text at the end', (await ev('document.querySelector(".q-page-container")?.innerText ?? ""')).slice(0, 1200))
+    note('requests to relay/bot fronts during chat', stackRequests(since).filter(r => !/topics|chain-rpc\/.*\/cap\//.test(r.url)))
+    report.replied = replied
+    report.replyCount = after.filter(b => !b.sent).length - before.filter(b => !b.sent).length
+    if (!replied) throw Error('no reply bubble appeared')
   },
 }
 

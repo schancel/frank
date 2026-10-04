@@ -81,8 +81,14 @@ createServer((req, res) => {
     try {
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
       const out = Array.isArray(body) ? await Promise.all(body.map(one)) : await one(body)
-      const methods = (Array.isArray(body) ? body : [body]).map(c => c.method).join(',')
-      console.log(`${new Date().toISOString()} ${methods}`)
+      const calls = Array.isArray(body) ? body : [body]
+      const replies = Array.isArray(out) ? out : [out]
+      const line = calls.map((c, i) => {
+        const subject = /^eth_(getBalance|getTransactionCount)$/.test(c.method) ? `(${c.params?.[0]})` : /^eth_(estimateGas|call)$/.test(c.method) ? `(from ${c.params?.[0]?.from} to ${c.params?.[0]?.to} value ${c.params?.[0]?.value ?? '0x0'})` : ''
+        const result = replies[i]?.error ? ` ERROR ${replies[i].error.message}` : /^eth_(getBalance|getTransactionCount|sendRawTransaction)$/.test(c.method) ? ` = ${replies[i]?.result}` : ''
+        return c.method + subject + result
+      })
+      console.log(`${new Date().toISOString()} ${line.join(', ')}`)
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out))
     } catch (e) {
       console.log(`${new Date().toISOString()} ERROR ${e?.message}`)

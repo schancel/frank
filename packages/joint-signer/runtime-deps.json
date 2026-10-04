@@ -1,0 +1,13 @@
+{
+  "allowed": [
+    "@frank/threshold-ecdsa",
+    "@noble/curves",
+    "@noble/hashes",
+    "@silencelaboratories/dkls-wasm-ll-node",
+    "@silencelaboratories/dkls-wasm-ll-web"
+  ],
+  "optional": [],
+  "planned": [],
+  "plannedOptional": [],
+  "note": "The two @silencelaboratories packages are third-party WebAssembly under the Silence Laboratories Non-Commercial Use License (not MIT); they are used only by the silence-dkls backend and its loaders. Noble versions match @frank/threshold-ecdsa. ethers is a test-only dependency."
+}

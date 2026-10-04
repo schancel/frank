@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "isolatedModules": true,
+    // @noble/curves and @noble/hashes ship pure ESM even in their .js files. Jest runs as
+    // CommonJS, so ts-jest must also transform those node_modules files down to CommonJS
+    // (see jest.config.cjs's transformIgnorePatterns override).
+    "module": "commonjs"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules"]
+}

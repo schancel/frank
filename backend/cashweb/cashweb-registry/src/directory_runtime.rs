@@ -1008,6 +1008,17 @@ impl DirectoryRuntime {
         Arc::ptr_eq(&self.owner, &other.owner)
     }
     /// Reserve pending capacity after cheap route/media/allowlist checks, before body collection.
+    /// Lowercase compressed subject keys the operator installed for `network`. Public
+    /// configuration only: installation is not admission and grants nothing by itself.
+    pub fn installed_subjects(&self, network: &str) -> Vec<String> {
+        let published = self.owner.shared.published.read().unwrap();
+        published
+            .keys
+            .iter()
+            .filter(|(installed, _)| installed == network)
+            .map(|(_, subject)| subject.clone())
+            .collect()
+    }
     pub fn reserve(&self, network: &str, subject: &str) -> Result<Reservation> {
         if !valid_key(network, subject) {
             return Err(RuntimeError::Invalid);

@@ -192,3 +192,25 @@ Owner agreed #843 design (optional stamps; three limits; threshold counts what t
   - Interrupted human dealer (Chrome killed mid-deal) safely recovered and delivered once.
 - Stack brought live (`node demo/local-stack/stack.mjs up live`) and Chrome popped open for user testing with `stack.mjs chrome alice`.
 - Rewrote `MANUAL-TEST.md` with exact instructions for the open design.
+
+## 2026-10-04 ~16:40 PDT — UI Polish & Tickets Filed
+
+- **UI & Panel Updates** (committed and pushed to `integration-open` `9fc45a2`):
+  - `WalletPanel.vue`: removed informative warning text ("Messaging is unavailable for typed accounts in this preview"), Codex32 recovery descriptors, and fake demo funding buttons. Restored clean list of wallets (Monad Main Wallet with live formatted balance, eCash, Solana).
+  - `LeftDrawer.vue`: restored the active stamp balance at the bottom of the left sidebar by removing obsolete `&& legacyRelayEnabled` guard.
+  - `Settings.vue`: added "Account Recovery" tab containing the Codex32 public recovery descriptor, backup shares guidance, copy button with status, and public fingerprint.
+  - `forum.ts`: bucketed `since` query timestamps to 1 minute to prevent rapid topic switching from exhausting the relay's in-memory 16-snapshot limit.
+  - App bundle rebuilt and live on `https://127.0.0.1:18440/`.
+
+- **Relay Phase 2 Review Resolution** (committed and pushed to `open-directory-relay` `47f7eac`):
+  - Addressed all independent review findings (202 persistence across retries, atomic chain replacements, per-sender forward caps, retryable 503s on unavailable peers).
+  - All 4 review test suites passed.
+
+- **Tickets Filed**:
+  1. **Ticket: Public Forum as Default Landing Page**:
+     - The forum requires no read authentication or account.
+     - New visitors should land directly on the Forum (`/forum` or `/`) instead of an onboarding blocker.
+     - Add prominent Login / Sign-up affordance in the top-left / header for unauthenticated users, letting visitors inspect public discussions before creating or importing an account.
+  2. **Ticket: Stateless Topic Paging in Relay**:
+     - Deprecate in-memory 16-slot `Snapshot` allocation in `cashweb-registry/src/forum.rs`.
+     - Replace with stateless `(since_timestamp_ns, last_hash)` cursor streaming directly over RocksDB's `t || SHA256(topic) || ordered_time || T1` index. Eliminates memory caps, 503 capacity errors, and restart invalidations.

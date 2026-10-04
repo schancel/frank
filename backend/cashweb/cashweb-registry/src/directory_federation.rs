@@ -8,8 +8,9 @@
 //! Entries: whole chains are copied, never only heads. A relay tells its peers when a key's
 //! chain changed, and each relay periodically compares its list of keys with every peer's. A
 //! relay asked for a key or address it does not hold asks its peers before answering "unknown".
-//! Conflicting chains are never resolved by timestamp and never quarantined: every relay keeps
-//! the branch whose record at the first difference has the lower hash, so all relays converge.
+//! Conflicting chains are never resolved by timestamp and never quarantined: every relay
+//! applies one total rule (an unexpired chain beats an expired one, then the higher latest
+//! revision wins, then the lower hash at the first difference), so all relays converge.
 //!
 //! Messages: a submission for a recipient whose entry names another relay is checked, written
 //! durably, and re-sent to that relay until it gives a final answer. Re-sending the same bytes is
@@ -20,7 +21,7 @@ use crate::{
     store::directory_subjects::ForwardRow,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -35,11 +36,57 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_CHAIN_BYTES: usize = crate::directory_admission::MAX_CHARGED_BYTES + 1024 * 1024;
 const NEGATIVE_TTL: Duration = Duration::from_secs(3);
 const LIST_PAGE: usize = 256;
-/// Forwards waiting for the recipient's relay. More are refused as "busy, retry".
+/// Forwards waiting for the recipient's relay, in total. More are refused as "busy, retry".
 pub(crate) const MAX_PENDING_FORWARDS: usize = 1024;
-/// A forward the recipient's relay never accepted is given up after this long.
+/// Forwards waiting from one sender, so one account cannot take the whole queue.
+pub(crate) const MAX_PENDING_PER_SENDER: usize = 32;
+/// Forwards waiting for one recipient.
+pub(crate) const MAX_PENDING_PER_RECIPIENT: usize = 128;
+/// A forward that no relay ever took is given up after this long.
 const FORWARD_LIFETIME_MS: i64 = 24 * 3600 * 1000;
 const MAX_BACKOFF_MS: i64 = 300_000;
+/// Forwards retried at once by the timer.
+const RETRY_CONCURRENCY: usize = 8;
+/// Shortest pause between two rounds of asking every peer which relay it is.
+const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// What asking the peers about a key found out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Learned {
+    /// This relay holds the key's chain now.
+    Held,
+    /// Every peer answered and none has it.
+    Unknown,
+    /// Some peer could not be asked (down, slow, busy) or this relay is busy: nothing is known.
+    Unavailable,
+}
+
+/// What one attempt at passing a retained message on came to.
+#[derive(Debug)]
+pub(crate) enum Forwarded {
+    /// Tell the sender this.
+    Answer(u16, String),
+    /// The recipient lives on this relay now and the message was never handed to another relay:
+    /// the forward is gone and the message is to be delivered here.
+    Local,
+}
+
+/// Outcome of writing down a new forward.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Admission {
+    Stored,
+    /// The same bytes were already written down.
+    Exists,
+    /// Too many forwards wait already, in total, from this sender or for this recipient.
+    Full,
+}
+
+#[derive(Debug, Default)]
+struct Pending {
+    loaded: bool,
+    /// Forwards not yet finished: identity to (sender, recipient).
+    rows: HashMap<[u8; 32], (String, String)>,
+}
 
 /// Peers and outgoing HTTP of one relay.
 #[derive(Debug)]
@@ -54,6 +101,21 @@ pub struct Federation {
     /// Keys and addresses peers recently did not know.
     unknown: Mutex<HashMap<String, Instant>>,
     announcements: Arc<tokio::sync::Semaphore>,
+    /// Forwards with an attempt under way. One attempt per message at a time.
+    in_flight: Mutex<HashSet<[u8; 32]>>,
+    pending: Mutex<Pending>,
+    refreshed: Mutex<Option<Instant>>,
+}
+
+/// Held while one attempt at a forward runs.
+struct Attempt<'a> {
+    set: &'a Mutex<HashSet<[u8; 32]>>,
+    identity: [u8; 32],
+}
+impl Drop for Attempt<'_> {
+    fn drop(&mut self) {
+        self.set.lock().unwrap().remove(&self.identity);
+    }
 }
 
 fn now_ms() -> i64 {
@@ -64,6 +126,9 @@ fn now_ms() -> i64 {
 }
 fn join(base: &Url, path: &str) -> String {
     format!("{}{path}", base.as_str().trim_end_matches('/'))
+}
+fn retained(row: &ForwardRow) -> String {
+    serde_json::json!({"version":1,"phase":"retained","identity":row.echo}).to_string()
 }
 impl Federation {
     /// `peers` are the base URLs of the relays this one copies entries with.
@@ -79,6 +144,9 @@ impl Federation {
             unknown: Mutex::new(HashMap::new()),
             announcements: Arc::new(tokio::sync::Semaphore::new(8)),
             lookups: tokio::sync::Semaphore::new(8),
+            in_flight: Mutex::new(HashSet::new()),
+            pending: Mutex::new(Pending::default()),
+            refreshed: Mutex::new(None),
         }
     }
     /// Whether this relay accepts messages for recipients on other relays.
@@ -119,70 +187,111 @@ impl Federation {
         Some(bytes)
     }
     /// Copy `subject`'s whole chain from one peer and verify it into this relay's directory.
-    async fn pull(&self, runtime: &DirectoryRuntime, peer: &Url, network: &str, subject: &str) {
+    async fn pull(
+        &self,
+        runtime: &DirectoryRuntime,
+        peer: &Url,
+        network: &str,
+        subject: &str,
+    ) -> Learned {
         let url = join(peer, &format!("/directory/v1/{network}/{subject}/chain"));
         let Some(response) = self.fetch(url).await else {
-            return;
+            return Learned::Unavailable;
         };
-        if response.status() != reqwest::StatusCode::OK {
-            return;
+        match response.status() {
+            reqwest::StatusCode::OK => (),
+            reqwest::StatusCode::NOT_FOUND => return Learned::Unknown,
+            _ => return Learned::Unavailable,
         }
         let Some(chain) = Self::body(response, MAX_CHAIN_BYTES).await else {
-            return;
+            return Learned::Unavailable;
         };
-        let _ = runtime.replicate(network, subject, records(&chain)).await;
+        match runtime.replicate(network, subject, records(&chain)).await {
+            // Copied, kept, or a copy this relay never takes (forged, broken, expired, or an
+            // account that must publish here itself): what is held now is the answer.
+            Ok(())
+            | Err(
+                RuntimeError::Invalid
+                | RuntimeError::Trust
+                | RuntimeError::NotFound
+                | RuntimeError::Forked
+                | RuntimeError::Expired,
+            ) => (),
+            // Busy, full or a storage fault here: nothing is known.
+            Err(_) => return Learned::Unavailable,
+        }
+        if runtime.is_published(network, subject) {
+            Learned::Held
+        } else {
+            Learned::Unknown
+        }
     }
-    /// Ask peers for a key this relay does not hold. True when it is held afterwards.
+    /// Ask peers for a key this relay does not hold.
     pub(crate) async fn learn(
         &self,
         runtime: &DirectoryRuntime,
         network: &str,
         subject: &str,
-    ) -> bool {
+    ) -> Learned {
         if runtime.is_published(network, subject) {
-            return true;
+            return Learned::Held;
         }
         let key = format!("s:{network}:{subject}");
         if self.peers.is_empty() || self.recently_unknown(&key) {
-            return false;
+            return Learned::Unknown;
         }
-        // At most a few peer lookups at a time; the rest are answered from what is held.
+        // At most a few peer lookups at a time; past that the answer is "busy", never "unknown".
         let Ok(_lookup) = self.lookups.try_acquire() else {
-            return false;
+            return Learned::Unavailable;
         };
+        let mut outcome = Learned::Unknown;
         for peer in &self.peers {
-            self.pull(runtime, peer, network, subject).await;
-            if runtime.is_published(network, subject) {
-                return true;
+            match self.pull(runtime, peer, network, subject).await {
+                Learned::Held => return Learned::Held,
+                Learned::Unavailable => outcome = Learned::Unavailable,
+                Learned::Unknown => (),
             }
         }
-        self.remember_unknown(key);
-        false
+        if outcome == Learned::Unknown {
+            self.remember_unknown(key);
+        }
+        outcome
     }
-    /// Ask peers which key has `address`, and copy that key's chain. The key returned was
-    /// checked against the address; its entry is still verified by the directory itself.
+    /// Ask peers which key has `address`, and copy that key's chain. `Ok(None)`: every peer
+    /// answered and none knows it. `Err(())`: some peer could not be asked, or this relay is
+    /// busy. The key returned was checked against the address; its entry is still verified by
+    /// the directory itself.
     pub(crate) async fn learn_address(
         &self,
         runtime: &DirectoryRuntime,
         network: &str,
         address: crate::monad_http::Address,
-    ) -> Option<String> {
+    ) -> Result<Option<String>, ()> {
         let key = format!("a:{network}:{}", address.to_hex());
         if self.peers.is_empty() || self.recently_unknown(&key) {
-            return None;
+            return Ok(None);
         }
-        // At most a few peer lookups at a time; the rest are answered from what is held.
         let Ok(_lookup) = self.lookups.try_acquire() else {
-            return None;
+            return Err(());
         };
+        let mut unavailable = false;
         for peer in &self.peers {
             let url = join(
                 peer,
                 &format!("/directory/v1/{network}/address/{}", address.to_hex()),
             );
             let Some(response) = self.fetch(url).await else {
+                unavailable = true;
                 continue;
             };
+            match response.status() {
+                reqwest::StatusCode::OK => (),
+                reqwest::StatusCode::NOT_FOUND => continue,
+                _ => {
+                    unavailable = true;
+                    continue;
+                }
+            }
             let Some(subject) = response
                 .headers()
                 .get("x-frank-directory-subject")
@@ -198,13 +307,17 @@ impl Federation {
             if !matches || !crate::directory_runtime::valid_key(network, &subject) {
                 continue;
             }
-            self.pull(runtime, peer, network, &subject).await;
-            if runtime.is_published(network, &subject) {
-                return Some(subject);
+            match self.pull(runtime, peer, network, &subject).await {
+                Learned::Held => return Ok(Some(subject)),
+                Learned::Unavailable => unavailable = true,
+                Learned::Unknown => (),
             }
         }
+        if unavailable {
+            return Err(());
+        }
         self.remember_unknown(key);
-        None
+        Ok(None)
     }
     /// Tell every peer that `subject`'s chain changed here. Peers then copy it from their own
     /// configured peers, so an announcement carries no content anyone has to trust.
@@ -290,30 +403,42 @@ impl Federation {
     /// The configured peer that is the relay named by `relay`, if any. The endpoint in an
     /// entry is text an account chose; it is only ever used to pick among configured peers.
     pub(crate) fn peer_for(&self, relay: &frank_cbor::RelayBinding) -> Option<Url> {
+        self.peer_named(&relay.endpoint, &hex::encode(&relay.relay_id))
+    }
+    fn peer_named(&self, endpoint: &str, relay_id: &str) -> Option<Url> {
         self.endpoints
             .lock()
             .unwrap()
-            .get(&(relay.endpoint.clone(), hex::encode(&relay.relay_id)))
+            .get(&(endpoint.to_owned(), relay_id.to_owned()))
             .cloned()
     }
-    /// Ask each configured peer which relay it is. Needed before anything can be forwarded.
+    /// Ask every configured peer, at once, which relay it is. Needed before anything can be
+    /// forwarded. At most one round per second.
     pub(crate) async fn refresh_peers(&self) {
-        for peer in &self.peers {
-            let Some(response) = self.fetch(join(peer, "/relay/v1/info")).await else {
-                continue;
-            };
+        {
+            let mut last = self.refreshed.lock().unwrap();
+            if last.is_some_and(|at| at.elapsed() < REFRESH_INTERVAL) {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        let answers = futures::future::join_all(self.peers.iter().map(|peer| async move {
+            let response = self.fetch(join(peer, "/relay/v1/info")).await?;
             let info = Self::body(response, 16 * 1024)
                 .await
-                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-            if let Some((endpoint, id)) = info
-                .as_ref()
-                .and_then(|info| Some((info["endpoint"].as_str()?, info["relayId"].as_str()?)))
-            {
-                self.endpoints
-                    .lock()
-                    .unwrap()
-                    .insert((endpoint.to_owned(), id.to_owned()), peer.clone());
-            }
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())?;
+            Some((
+                (
+                    info["endpoint"].as_str()?.to_owned(),
+                    info["relayId"].as_str()?.to_owned(),
+                ),
+                peer.clone(),
+            ))
+        }))
+        .await;
+        let mut endpoints = self.endpoints.lock().unwrap();
+        for (name, peer) in answers.into_iter().flatten() {
+            endpoints.insert(name, peer);
         }
     }
     /// Whether every configured peer has said which relay it is. Until then "no peer is that
@@ -324,132 +449,241 @@ impl Federation {
             .iter()
             .all(|peer| endpoints.values().any(|known| known == peer))
     }
-    /// Try once to hand a retained message to the relay its recipient lives on now. Returns
-    /// what the sender should be told: that relay's own answer, or "retained".
+    /// Write down a new forward with its exact bytes, unless too many already wait in total,
+    /// from this sender or for this recipient. One writer at a time, so two submissions of the
+    /// same bytes cannot both write.
+    pub(crate) fn admit(
+        &self,
+        runtime: &DirectoryRuntime,
+        identity: &[u8; 32],
+        row: &ForwardRow,
+        body: &[u8],
+    ) -> Result<Admission, ()> {
+        let rows = runtime.registry().directory_subjects().map_err(|_| ())?;
+        let mut pending = self.pending.lock().unwrap();
+        if !pending.loaded {
+            for (identity, stored) in rows.forwards().map_err(|_| ())? {
+                if !stored.done {
+                    pending
+                        .rows
+                        .insert(identity, (stored.sender, stored.recipient));
+                }
+            }
+            pending.loaded = true;
+        }
+        if rows.forward(identity).map_err(|_| ())?.is_some() {
+            return Ok(Admission::Exists);
+        }
+        let from_sender = pending
+            .rows
+            .values()
+            .filter(|(sender, _)| *sender == row.sender)
+            .count();
+        let for_recipient = pending
+            .rows
+            .values()
+            .filter(|(_, recipient)| *recipient == row.recipient)
+            .count();
+        if pending.rows.len() >= MAX_PENDING_FORWARDS
+            || from_sender >= MAX_PENDING_PER_SENDER
+            || for_recipient >= MAX_PENDING_PER_RECIPIENT
+        {
+            return Ok(Admission::Full);
+        }
+        rows.put_forward(identity, row, Some(body)).map_err(|_| ())?;
+        pending
+            .rows
+            .insert(*identity, (row.sender.clone(), row.recipient.clone()));
+        Ok(Admission::Stored)
+    }
+    /// A forward is finished (or gone): it no longer counts against any limit.
+    fn settle(&self, identity: &[u8; 32]) {
+        self.pending.lock().unwrap().rows.remove(identity);
+    }
+    /// Where the recipient of a forward lives now, from its current entry here. `Ok(None)`:
+    /// it has no current entry. `Err(())`: the directory could not answer.
+    async fn home(
+        &self,
+        runtime: &DirectoryRuntime,
+        row: &ForwardRow,
+    ) -> Result<Option<frank_cbor::RelayBinding>, ()> {
+        use crate::directory_runtime::{AdmittedSnapshot, SnapshotOperation};
+        let slot = runtime.reserve(&row.network, &row.recipient).map_err(|_| ())?;
+        match runtime
+            .submit_snapshot(slot, SnapshotOperation::Current)
+            .wait()
+            .await
+        {
+            Ok(AdmittedSnapshot::Current(current)) => Ok(Some(current.relay)),
+            Err(RuntimeError::NotFound | RuntimeError::Expired | RuntimeError::Forked) => Ok(None),
+            _ => Err(()),
+        }
+    }
+    /// Try once to hand a retained message to the relay its recipient lives on. Only one
+    /// attempt per message runs at a time; a concurrent caller is told what is known so far.
+    ///
+    /// Until some relay may have taken the message, the recipient's home is read again on each
+    /// attempt (it may have moved), and this relay may end the forward itself as
+    /// `undeliverable`: nothing was broadcast. Once a relay answered "retained" or "delivered",
+    /// or a request reached it without an answer, the forward is pinned to that relay and only
+    /// that relay's final answer ends it. With `local_ok`, a recipient that moved onto this
+    /// relay before anything was handed on gets [`Forwarded::Local`].
     pub(crate) async fn forward(
         self: &Arc<Self>,
         runtime: &DirectoryRuntime,
         identity: &[u8; 32],
-    ) -> Option<(u16, String)> {
-        use crate::directory_runtime::{AdmittedSnapshot, SnapshotOperation};
+        local_ok: bool,
+    ) -> Option<Forwarded> {
         let registry = runtime.registry().clone();
-        let save = |row: &ForwardRow| {
-            registry
-                .directory_subjects()
-                .and_then(|rows| rows.put_forward(identity, row, None))
-                .ok()
+        // The store handle is not held across a wait: it is taken again for each read or write.
+        let load = || registry.directory_subjects().ok()?.forward(identity).ok()?;
+        if !self.in_flight.lock().unwrap().insert(*identity) {
+            let row = load()?;
+            return Some(if row.done {
+                Forwarded::Answer(row.status, row.response)
+            } else {
+                Forwarded::Answer(202, retained(&row))
+            });
+        }
+        let _attempt = Attempt {
+            set: &self.in_flight,
+            identity: *identity,
         };
-        let mut row = registry
-            .directory_subjects()
-            .ok()?
-            .forward(identity)
-            .ok()??;
+        let mut row = load()?;
         if row.done {
-            return Some((row.status, row.response));
+            return Some(Forwarded::Answer(row.status, row.response));
         }
-        let retained =
-            serde_json::json!({"version":1,"phase":"retained","identity":row.echo}).to_string();
-        let now = now_ms();
-        // Where the recipient lives is read again on every attempt, so a recipient that moved
-        // relay after the message was accepted is followed to its new home.
-        let home = match runtime.reserve(&row.network, &row.recipient) {
-            Ok(slot) => match runtime
-                .submit_snapshot(slot, SnapshotOperation::Current)
-                .wait()
-                .await
-            {
-                Ok(AdmittedSnapshot::Current(current)) => Ok(Some(current.relay)),
-                Err(RuntimeError::NotFound | RuntimeError::Expired | RuntimeError::Forked) => {
-                    Ok(None)
-                }
-                _ => Err(()),
-            },
-            Err(_) => Err(()),
-        };
-        let mut target = None;
-        let mut permanent = now.saturating_sub(row.created_ms) >= FORWARD_LIFETIME_MS;
-        match &home {
-            Ok(Some(relay)) => {
-                target = self.peer_for(relay);
-                if target.is_none() && !runtime.info().is_local(relay) {
-                    if !self.peers_known() {
-                        self.refresh_peers().await;
-                        target = self.peer_for(relay);
-                    }
-                    permanent |= target.is_none() && self.peers_known();
-                }
+        // Never turns a finished forward back into a waiting one.
+        let save = |row: &ForwardRow| -> Option<()> {
+            let rows = registry.directory_subjects().ok()?;
+            if rows.forward(identity).ok()?.is_some_and(|stored| stored.done) {
+                return Some(());
             }
-            Ok(None) => permanent = true,
-            Err(()) => (),
+            rows.put_forward(identity, row, None).ok()?;
+            if row.done {
+                self.settle(identity);
+            }
+            Some(())
+        };
+        let now = now_ms();
+        let mut permanent = false;
+        let mut target: Option<(Url, (String, String))> = None;
+        if let Some(pin) = row.pinned.clone() {
+            let mut url = self.peer_named(&pin.0, &pin.1);
+            if url.is_none() {
+                self.refresh_peers().await;
+                url = self.peer_named(&pin.0, &pin.1);
+            }
+            target = url.map(|url| (url, pin));
+        } else {
+            match self.home(runtime, &row).await {
+                Ok(Some(relay)) if runtime.info().is_local(&relay) => {
+                    if local_ok {
+                        registry
+                            .directory_subjects()
+                            .ok()?
+                            .delete_forward(identity)
+                            .ok()?;
+                        self.settle(identity);
+                        return Some(Forwarded::Local);
+                    }
+                }
+                Ok(Some(relay)) => {
+                    let pin = (relay.endpoint.clone(), hex::encode(&relay.relay_id));
+                    let mut url = self.peer_named(&pin.0, &pin.1);
+                    if url.is_none() && !self.peers_known() {
+                        self.refresh_peers().await;
+                        url = self.peer_named(&pin.0, &pin.1);
+                    }
+                    permanent = url.is_none() && self.peers_known();
+                    target = url.map(|url| (url, pin));
+                }
+                Ok(None) => permanent = true,
+                Err(()) => (),
+            }
+            permanent |= now.saturating_sub(row.created_ms) >= FORWARD_LIFETIME_MS;
         }
-        let body = registry
-            .directory_subjects()
-            .ok()?
-            .forward_body(identity)
-            .ok()?;
-        if permanent || body.is_none() {
+        if permanent {
+            // No relay ever took it, so no payment was broadcast: a final "undeliverable".
             row.done = true;
             row.status = 200;
             row.response = serde_json::json!({"version":1,"phase":"dead","identity":row.echo,
                 "reason":"undeliverable"})
             .to_string();
             save(&row)?;
-            return Some((row.status, row.response));
+            return Some(Forwarded::Answer(row.status, row.response));
         }
-        let answer = match (target, body) {
-            (Some(target), Some(body)) => {
-                match self
-                    .client
-                    .put(join(&target, "/message/monad/cbor"))
-                    .header("content-type", &row.content_type)
-                    // The receiving relay delivers or refuses; it never forwards again.
-                    .header(FORWARDED_HEADER, "1")
-                    .body(body)
-                    .send()
-                    .await
-                {
-                    Ok(response) => {
-                        let status = response.status().as_u16();
-                        Self::body(response, 64 * 1024)
-                            .await
-                            .and_then(|bytes| String::from_utf8(bytes).ok())
-                            .map(|text| (status, text))
-                    }
-                    Err(_) => None,
-                }
-            }
-            _ => None,
-        };
         row.attempts = row.attempts.saturating_add(1);
         row.next_ms = now + (1000i64 << row.attempts.min(9)).min(MAX_BACKOFF_MS);
+        let body = registry
+            .directory_subjects()
+            .ok()?
+            .forward_body(identity)
+            .ok()?;
+        let (Some((url, pin)), Some(body)) = (target, body) else {
+            // No relay to try right now, or the bytes are missing: not a final answer.
+            save(&row)?;
+            return Some(Forwarded::Answer(202, retained(&row)));
+        };
+        let sent = self
+            .client
+            .put(join(&url, "/message/monad/cbor"))
+            .header("content-type", &row.content_type)
+            // The receiving relay delivers or refuses; it never forwards again.
+            .header(FORWARDED_HEADER, "1")
+            .body(body)
+            .send()
+            .await;
+        let answer = match sent {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let text = Self::body(response, 64 * 1024)
+                    .await
+                    .and_then(|bytes| String::from_utf8(bytes).ok());
+                Ok((status, text))
+            }
+            // A connection that was never made cannot have delivered anything.
+            Err(error) => Err(error.is_connect()),
+        };
         let reply = match answer {
-            // A final answer from the recipient's relay: delivered, dead, or a request it will
+            // A final answer from the recipient's relay: delivered or dead, or bytes it will
             // never accept. It is remembered and repeated; the bytes are no longer needed.
-            Some((status @ (200 | 400 | 409 | 413), text)) => {
+            Ok((status @ (200 | 400 | 413), Some(text))) => {
                 row.done = true;
                 row.status = status;
                 row.response = text.clone();
                 (status, text)
             }
-            // Held by the recipient's relay but not delivered yet: keep asking.
-            Some((202, text)) => {
+            // Held by the recipient's relay but not delivered yet: from now on only that relay
+            // decides.
+            Ok((202, Some(text))) => {
+                row.pinned = Some(pin);
                 row.status = 202;
                 (202, text)
             }
-            Some((status, _)) => {
-                row.status = status;
-                (202, retained)
-            }
-            None => {
+            // An answer that may mean it was taken, but could not be read; or a request that
+            // reached the relay and got no answer at all. Either way that relay may hold it.
+            Ok((200 | 202 | 400 | 413, None)) | Err(false) => {
+                row.pinned = Some(pin);
                 row.status = 0;
-                (202, retained)
+                (202, retained(&row))
+            }
+            // Any other answer is that relay not taking the message, for now: try again later.
+            Ok((status, _)) => {
+                row.status = status;
+                (202, retained(&row))
+            }
+            Err(true) => {
+                row.status = 0;
+                (202, retained(&row))
             }
         };
         save(&row)?;
-        Some(reply)
+        Some(Forwarded::Answer(reply.0, reply.1))
     }
-    /// Retry every forward that is due and drop finished ones after a day.
+    /// Retry every forward that is due, a few at a time, and drop finished ones after a day.
     pub async fn retry_forwards(self: &Arc<Self>, runtime: &DirectoryRuntime) {
+        use futures::StreamExt;
         let registry = runtime.registry().clone();
         let Ok(forwards) = registry
             .directory_subjects()
@@ -458,6 +692,7 @@ impl Federation {
             return;
         };
         let now = now_ms();
+        let mut due = Vec::new();
         for (identity, row) in forwards {
             if row.done {
                 if now.saturating_sub(row.created_ms) > 2 * FORWARD_LIFETIME_MS {
@@ -466,16 +701,23 @@ impl Federation {
                     }
                 }
             } else if row.next_ms <= now {
-                self.forward(runtime, &identity).await;
+                due.push(identity);
             }
         }
+        futures::stream::iter(due)
+            .for_each_concurrent(RETRY_CONCURRENCY, |identity| async move {
+                let _ = self.forward(runtime, &identity, false).await;
+            })
+            .await;
     }
-    /// One round of everything this relay does on a timer.
+    /// One round of everything this relay does on a timer. Copying entries and retrying
+    /// forwards run side by side, so a peer that is down slows neither down for the other.
     pub async fn tick(self: &Arc<Self>, runtime: &DirectoryRuntime) {
-        self.sync(runtime).await;
-        if self.forwarding {
-            self.retry_forwards(runtime).await;
-        }
+        tokio::join!(self.sync(runtime), async {
+            if self.forwarding {
+                self.retry_forwards(runtime).await;
+            }
+        });
     }
     /// Run [`Self::tick`] on the configured interval until the directory shuts down.
     pub fn spawn(runtime: DirectoryRuntime) -> tokio::task::JoinHandle<()> {

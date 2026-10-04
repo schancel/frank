@@ -241,6 +241,14 @@ impl Registry {
         self.db.directory_preview(anchor, mode)
     }
 
+    pub(crate) fn erase_directory_preview(
+        &self,
+        network: &str,
+        subject: &[u8],
+    ) -> std::result::Result<(), crate::directory_admission::AdmissionError> {
+        self.db.erase_directory_preview(network, subject)
+    }
+
     pub(crate) fn directory_subjects(
         &self,
     ) -> Result<crate::store::directory_subjects::DbDirectorySubjects<'_>> {

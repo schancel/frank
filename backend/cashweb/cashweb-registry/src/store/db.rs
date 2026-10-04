@@ -183,6 +183,15 @@ impl Db {
         super::directory_preview::Directory::open(self, anchor, mode)
     }
 
+    /// Remove everything the preview sidecar holds for one subject, whatever state it is in.
+    pub(crate) fn erase_directory_preview(
+        &self,
+        network: &str,
+        subject: &[u8],
+    ) -> std::result::Result<(), crate::directory_admission::AdmissionError> {
+        super::directory_preview::erase_subject(self, network, subject)
+    }
+
     /// Continuity rows and the address index of self-published directory subjects.
     pub(crate) fn directory_subjects(
         &self,

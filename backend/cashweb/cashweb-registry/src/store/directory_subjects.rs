@@ -19,6 +19,9 @@ pub(crate) const CF_DIRECTORY_ADDRESSES_V1: &str = "directory_addresses_v1";
 pub(crate) const CF_FORWARDS_V1: &str = "forwards_v1";
 /// The exact request bytes of each forward, written once.
 pub(crate) const CF_FORWARD_BODIES_V1: &str = "forward_bodies_v1";
+/// A chain replacement in progress: the old and the new chain, written before anything is
+/// erased, so a stopped process finishes (or undoes) the swap when it starts again.
+pub(crate) const CF_REPLACEMENTS_V1: &str = "directory_replacements_v1";
 
 /// One message this relay accepted for a recipient whose mailbox is on another relay.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +39,20 @@ pub(crate) struct ForwardRow {
     pub(crate) response: String,
     /// Identity echo for answering "retained" before the recipient's relay was reached.
     pub(crate) echo: serde_json::Value,
+    /// Sender key, for the per-sender limit on waiting forwards.
+    #[serde(default)]
+    pub(crate) sender: String,
+    /// The relay (endpoint, relay id in hex) that accepted the message, or may have: once set,
+    /// every later attempt goes there and only that relay's final answer ends the forward.
+    #[serde(default)]
+    pub(crate) pinned: Option<(String, String)>,
+}
+
+/// Both chains of a replacement in progress, as the exact signed records.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Replacement {
+    pub(crate) old: Vec<Vec<u8>>,
+    pub(crate) new: Vec<Vec<u8>>,
 }
 
 /// Durable per-subject continuity. `anchor` never changes once written.
@@ -64,6 +81,7 @@ pub(crate) fn open(path: &std::path::Path) -> Result<rocksdb::DB> {
         CF_DIRECTORY_ADDRESSES_V1,
         CF_FORWARDS_V1,
         CF_FORWARD_BODIES_V1,
+        CF_REPLACEMENTS_V1,
     ]
     .iter()
     .map(|name| ColumnFamilyDescriptor::new(*name, rocksdb::Options::default()));
@@ -76,6 +94,7 @@ pub(crate) struct DbDirectorySubjects<'a> {
     addresses: &'a CF,
     forwards: &'a CF,
     forward_bodies: &'a CF,
+    replacements: &'a CF,
 }
 
 fn prefix(network: &str) -> Vec<u8> {
@@ -102,6 +121,7 @@ impl<'a> DbDirectorySubjects<'a> {
             addresses: cf(CF_DIRECTORY_ADDRESSES_V1)?,
             forwards: cf(CF_FORWARDS_V1)?,
             forward_bodies: cf(CF_FORWARD_BODIES_V1)?,
+            replacements: cf(CF_REPLACEMENTS_V1)?,
         })
     }
 
@@ -256,6 +276,53 @@ impl<'a> DbDirectorySubjects<'a> {
             if let Ok(identity) = <[u8; 32]>::try_from(&key[..]) {
                 out.push((identity, serde_json::from_slice(&value)?));
             }
+        }
+        Ok(out)
+    }
+
+    /// Durably record a replacement before any of it is carried out.
+    pub(crate) fn put_replacement(
+        &self,
+        network: &str,
+        subject: &[u8],
+        replacement: &Replacement,
+    ) -> Result<()> {
+        let mut options = WriteOptions::default();
+        options.set_sync(true);
+        self.db.put_cf_opt(
+            self.replacements,
+            key(network, subject),
+            serde_json::to_vec(replacement)?,
+            &options,
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn delete_replacement(&self, network: &str, subject: &[u8]) -> Result<()> {
+        let mut options = WriteOptions::default();
+        options.set_sync(true);
+        self.db
+            .delete_cf_opt(self.replacements, key(network, subject), &options)?;
+        Ok(())
+    }
+
+    /// Every unfinished replacement as (network, subject, chains).
+    pub(crate) fn replacements(&self) -> Result<Vec<(String, Vec<u8>, Replacement)>> {
+        let mut out = Vec::new();
+        for row in self.db.iterator_cf(self.replacements, IteratorMode::Start) {
+            let (key, value) = row?;
+            let length = *key.first().unwrap_or(&0) as usize;
+            if key.len() != 1 + length + 33 {
+                continue;
+            }
+            let Ok(network) = std::str::from_utf8(&key[1..1 + length]) else {
+                continue;
+            };
+            out.push((
+                network.to_owned(),
+                key[1 + length..].to_vec(),
+                serde_json::from_slice(&value)?,
+            ));
         }
         Ok(out)
     }

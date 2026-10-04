@@ -1428,3 +1428,389 @@ async fn conflicting_chains_on_two_relays_converge_on_one_without_quarantine() {
     a.stop().await;
     b.stop().await;
 }
+
+/// A first entry of the account of `secret` that expires at `expiry` (Unix seconds).
+fn first_expiring(secret: u32, expiry: i128) -> Entry {
+    entry(secret, |fields| {
+        for (key, value) in fields.iter_mut() {
+            if *key == 6 {
+                *value = cbor_map(vec![(0, CborValue::Int(expiry)), (1, CborValue::Int(0))]);
+            }
+        }
+    })
+}
+
+#[tokio::test]
+async fn conflicting_chains_prefer_unexpired_then_the_higher_revision() {
+    let clock = TestClock::at(1700000100);
+    let mut nodes = network(vec![relay_config(), relay_b_config()], &clock).await;
+    let (b, a) = (nodes.pop().unwrap(), nodes.pop().unwrap());
+    // A renewed chain beats a shorter one whatever the hashes: two devices renewed the same
+    // account on different relays, and one of them renewed again.
+    let shared = entry(132, |_| ());
+    a.publish_unchecked(&shared).await;
+    b.sync().await;
+    let (x, y) = (revision(132, 1, shared.hash, 1), revision(132, 1, shared.hash, 2));
+    // The longer chain is the one whose first differing record has the HIGHER hash, so the old
+    // lowest-hash rule would have picked the other.
+    let (long, short) = if x.hash > y.hash { (x, y) } else { (y, x) };
+    let longer = revision(132, 2, long.hash, 0);
+    a.publish_unchecked(&long).await;
+    a.publish_unchecked(&longer).await;
+    b.publish_unchecked(&short).await;
+    // An unexpired chain beats an expired one, even a longer one with a lower hash.
+    let stale = first_expiring(133, 1700000200);
+    let stale_next = revision(133, 1, stale.hash, 3400);
+    let live = first_expiring(133, 1700003000);
+    a.publish_unchecked(&stale).await;
+    a.publish_unchecked(&stale_next).await;
+    b.publish_unchecked(&live).await;
+    clock.set(1700000300);
+    for _ in 0..2 {
+        a.sync().await;
+        b.sync().await;
+    }
+    for node in [&a, &b] {
+        let current = node.get(&head(&shared.subject)).await;
+        assert_eq!(current.0, 200);
+        assert_eq!(current.2, longer.attestation);
+        let current = node.get(&head(&live.subject)).await;
+        assert_eq!(current.0, 200);
+        assert_eq!(current.2, live.attestation);
+    }
+    a.stop().await;
+    b.stop().await;
+}
+
+#[tokio::test]
+async fn a_replacement_that_fails_or_stops_half_way_never_loses_the_account() {
+    let root = tempfile::tempdir().unwrap();
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry.clone(), config.clone(), &clock).await;
+    // The account lives on this relay: a peer could never make this relay take it on again.
+    let held = entry(140, |_| ());
+    let put = |entry: &Entry| {
+        let runtime = runtime.clone();
+        let bytes = entry.attestation.clone();
+        let subject = entry.subject.clone();
+        async move {
+            runtime
+                .submit(runtime.reserve(NETWORK, &subject).unwrap(), Operation::Put(bytes))
+                .wait()
+                .await
+        }
+    };
+    put(&held).await.unwrap();
+    // A conflicting chain that wins (it is longer) arrives from a peer.
+    let other = first_expiring(140, 1700003001);
+    let other_next = revision(140, 1, other.hash, 1);
+    let chain = vec![other.attestation.clone(), other_next.attestation.clone()];
+    let routes = router(Arc::new(runtime.clone()));
+    // The new chain is refused while being enrolled: the old one is enrolled again.
+    runtime.set_replace_fault(REPLACE_FAULT_REFUSE);
+    runtime
+        .replicate(NETWORK, &held.subject, chain.clone())
+        .await
+        .unwrap();
+    assert_eq!(get(&routes, &head(&held.subject)).await.2, held.attestation);
+    // The process stops right after the old chain was cleared.
+    runtime.set_replace_fault(REPLACE_FAULT_STOP);
+    assert!(runtime
+        .replicate(NETWORK, &held.subject, chain.clone())
+        .await
+        .is_err());
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+    drop(routes);
+    drop(runtime);
+    let released = Arc::downgrade(&registry);
+    drop(registry);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while released.upgrade().is_some() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // On the next start the swap is finished before anything is served.
+    let reopened = start(self::registry(root.path()), config, &clock).await;
+    let routes = router(Arc::new(reopened.clone()));
+    let current = get(&routes, &head(&held.subject)).await;
+    assert_eq!(current.0, StatusCode::OK);
+    assert_eq!(current.2, other_next.attestation);
+    let found = get(&routes, &by_address(&held.address)).await;
+    assert_eq!(found.2, other_next.attestation);
+    reopened.begin_shutdown();
+    reopened.wait_stopped().await;
+}
+
+/// A stand-in for relay B: says who it is, answers message PUTs from a script, and answers
+/// directory reads with a chosen status.
+#[derive(Default)]
+struct ScriptedPeer {
+    answers: std::sync::Mutex<std::collections::VecDeque<(u16, String, u64)>>,
+    puts: std::sync::atomic::AtomicUsize,
+    directory_status: std::sync::atomic::AtomicU16,
+}
+async fn scripted_peer(peer: Arc<ScriptedPeer>) -> String {
+    use std::sync::atomic::Ordering::SeqCst;
+    let info = || async {
+        axum::Json(serde_json::json!({"endpoint": RELAY_B_ENDPOINT, "relayId": RELAY_B_ID}))
+    };
+    let messages = {
+        let peer = peer.clone();
+        move || {
+            let peer = peer.clone();
+            async move {
+                peer.puts.fetch_add(1, SeqCst);
+                let answer = peer.answers.lock().unwrap().pop_front();
+                let (status, body, delay) = answer.unwrap_or((503, String::new(), 0));
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                (StatusCode::from_u16(status).unwrap(), body)
+            }
+        }
+    };
+    let directory = move || {
+        let peer = peer.clone();
+        async move { StatusCode::from_u16(peer.directory_status.load(SeqCst)).unwrap() }
+    };
+    let app = axum::Router::new()
+        .route("/relay/v1/info", axum::routing::get(info))
+        .route("/message/monad/cbor", axum::routing::put(messages))
+        .route("/directory/v1/:network/:subject/:leaf", axum::routing::get(directory));
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::Server::from_tcp(listener)
+            .unwrap()
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
+    });
+    url
+}
+fn waiting_forward(recipient: &str, sender: &str) -> crate::store::directory_subjects::ForwardRow {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    crate::store::directory_subjects::ForwardRow {
+        recipient: recipient.into(),
+        content_type: "multipart/form-data; boundary=x".into(),
+        network: NETWORK.into(),
+        created_ms: now,
+        attempts: 0,
+        next_ms: 0,
+        done: false,
+        status: 0,
+        response: String::new(),
+        echo: serde_json::json!({"echo": 1}),
+        sender: sender.into(),
+        pinned: None,
+    }
+}
+fn answer(result: Option<crate::directory_federation::Forwarded>) -> (u16, String) {
+    match result {
+        Some(crate::directory_federation::Forwarded::Answer(status, body)) => (status, body),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_forward_ends_only_on_the_recipient_relays_final_answer() {
+    let root = tempfile::tempdir().unwrap();
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry.clone(), config, &clock).await;
+    let peer = Arc::new(ScriptedPeer::default());
+    runtime.enable_federation(vec![scripted_peer(peer.clone()).await.parse().unwrap()], true);
+    let federation = runtime.federation().unwrap().clone();
+    // A recipient that lives on relay B, and one that lives here.
+    let remote = entry(150, homed_on_b);
+    let local = entry(151, |_| ());
+    for account in [&remote, &local] {
+        runtime
+            .submit(
+                runtime.reserve(NETWORK, &account.subject).unwrap(),
+                Operation::Put(account.attestation.clone()),
+            )
+            .wait()
+            .await
+            .unwrap();
+    }
+    let rows = || registry.directory_subjects().unwrap();
+    let write = |identity: [u8; 32], row: &crate::store::directory_subjects::ForwardRow| {
+        rows().put_forward(&identity, row, Some(b"exact bytes")).unwrap();
+    };
+    let retained = serde_json::json!({"version":1,"phase":"retained","identity":{"echo":1}})
+        .to_string();
+    use std::sync::atomic::Ordering::SeqCst;
+
+    // 1a/1c: relay B took the message (202). Afterwards the forward is more than a day old, but
+    // this relay no longer decides: B is asked again, and its transient answers keep the
+    // forward waiting.
+    write([1; 32], &waiting_forward(&remote.subject, "s1"));
+    peer.answers.lock().unwrap().push_back((202, "held by b".into(), 0));
+    assert_eq!(
+        answer(federation.forward(&runtime, &[1; 32], false).await),
+        (202, "held by b".into())
+    );
+    let mut row = rows().forward(&[1; 32]).unwrap().unwrap();
+    assert_eq!(
+        row.pinned,
+        Some((RELAY_B_ENDPOINT.to_owned(), RELAY_B_ID.to_owned()))
+    );
+    row.created_ms = 0;
+    rows().put_forward(&[1; 32], &row, None).unwrap();
+    peer.answers.lock().unwrap().push_back((503, String::new(), 0));
+    assert_eq!(
+        answer(federation.forward(&runtime, &[1; 32], false).await),
+        (202, retained.clone())
+    );
+    assert!(!rows().forward(&[1; 32]).unwrap().unwrap().done);
+    peer.answers.lock().unwrap().push_back((200, "delivered by b".into(), 0));
+    assert_eq!(
+        answer(federation.forward(&runtime, &[1; 32], false).await),
+        (200, "delivered by b".into())
+    );
+    assert!(rows().forward(&[1; 32]).unwrap().unwrap().done);
+
+    // 1e: a 409 from relay B is not final; the same bytes are tried again.
+    write([2; 32], &waiting_forward(&remote.subject, "s1"));
+    peer.answers
+        .lock()
+        .unwrap()
+        .push_back((409, "recovery_obligation_is_active".into(), 0));
+    assert_eq!(
+        answer(federation.forward(&runtime, &[2; 32], false).await),
+        (202, retained.clone())
+    );
+    let row = rows().forward(&[2; 32]).unwrap().unwrap();
+    assert!(!row.done && row.pinned.is_none());
+
+    // 1b: two attempts at once. The second does not send again and does not overwrite what
+    // the first records; the finished answer is repeated, never turned into "undeliverable"
+    // although the bytes are gone.
+    write([3; 32], &waiting_forward(&remote.subject, "s1"));
+    let before = peer.puts.load(SeqCst);
+    peer.answers
+        .lock()
+        .unwrap()
+        .push_back((200, "delivered once".into(), 500));
+    let slow = tokio::spawn({
+        let (federation, runtime) = (federation.clone(), runtime.clone());
+        async move { answer(federation.forward(&runtime, &[3; 32], false).await) }
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        answer(federation.forward(&runtime, &[3; 32], true).await),
+        (202, retained.clone())
+    );
+    assert_eq!(slow.await.unwrap(), (200, "delivered once".into()));
+    for _ in 0..2 {
+        assert_eq!(
+            answer(federation.forward(&runtime, &[3; 32], false).await),
+            (200, "delivered once".into())
+        );
+    }
+    assert_eq!(peer.puts.load(SeqCst), before + 1);
+    assert!(rows().forward_body(&[3; 32]).unwrap().is_none());
+
+    // 1d: a recipient that lives here now, and the message was never handed on: it is
+    // delivered here instead (the forward is gone), never left waiting.
+    write([4; 32], &waiting_forward(&local.subject, "s1"));
+    assert!(matches!(
+        federation.forward(&runtime, &[4; 32], true).await,
+        Some(crate::directory_federation::Forwarded::Local)
+    ));
+    assert!(rows().forward(&[4; 32]).unwrap().is_none());
+
+    // 4a: one sender cannot fill the queue; another sender still gets in.
+    let body = b"bytes";
+    let mut stored = 0;
+    for n in 0..crate::directory_federation::MAX_PENDING_PER_SENDER as u8 + 5 {
+        let identity = [100 + n; 32];
+        match federation
+            .admit(&runtime, &identity, &waiting_forward(&remote.subject, "greedy"), body)
+            .unwrap()
+        {
+            crate::directory_federation::Admission::Stored => stored += 1,
+            crate::directory_federation::Admission::Full => break,
+            crate::directory_federation::Admission::Exists => panic!("exists"),
+        }
+    }
+    assert_eq!(stored, crate::directory_federation::MAX_PENDING_PER_SENDER);
+    assert_eq!(
+        federation
+            .admit(&runtime, &[99; 32], &waiting_forward(&remote.subject, "other"), body)
+            .unwrap(),
+        crate::directory_federation::Admission::Stored
+    );
+    assert_eq!(
+        federation
+            .admit(&runtime, &[99; 32], &waiting_forward(&remote.subject, "other"), body)
+            .unwrap(),
+        crate::directory_federation::Admission::Exists
+    );
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
+#[tokio::test]
+async fn a_peer_that_cannot_be_asked_is_not_an_unknown_account() {
+    use crate::directory_federation::Learned;
+    use std::sync::atomic::Ordering::SeqCst;
+    let root = tempfile::tempdir().unwrap();
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry, config, &clock).await;
+    let peer = Arc::new(ScriptedPeer::default());
+    runtime.enable_federation(vec![scripted_peer(peer.clone()).await.parse().unwrap()], true);
+    let federation = runtime.federation().unwrap().clone();
+    let subject = entry(160, |_| ()).subject;
+    // The peer is busy: nothing is known, and nothing is remembered as unknown.
+    peer.directory_status.store(503, SeqCst);
+    assert_eq!(
+        federation.learn(&runtime, NETWORK, &subject).await,
+        Learned::Unavailable
+    );
+    // It answers that it does not have the key: that is final (and remembered briefly).
+    peer.directory_status.store(404, SeqCst);
+    assert_eq!(
+        federation.learn(&runtime, NETWORK, &subject).await,
+        Learned::Unknown
+    );
+    peer.directory_status.store(503, SeqCst);
+    assert_eq!(
+        federation.learn(&runtime, NETWORK, &subject).await,
+        Learned::Unknown
+    );
+    // Addresses alike: a busy peer makes a lookup a retryable 503, never a 404.
+    let routes = router(Arc::new(runtime.clone()));
+    let address = format!("0x{}", "33".repeat(20));
+    assert_eq!(
+        get(&routes, &by_address(&address)).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    peer.directory_status.store(404, SeqCst);
+    assert_eq!(get(&routes, &by_address(&address)).await.0, StatusCode::NOT_FOUND);
+    // A peer that is not there at all is not an answer either.
+    let gone = tempfile::tempdir().unwrap();
+    let (registry, config, clock) = setup(gone.path());
+    let lonely = start(registry, config, &clock).await;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", closed.local_addr().unwrap());
+    drop(closed);
+    lonely.enable_federation(vec![url.parse().unwrap()], true);
+    assert_eq!(
+        lonely
+            .federation()
+            .unwrap()
+            .clone()
+            .learn(&lonely, NETWORK, &subject)
+            .await,
+        Learned::Unavailable
+    );
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+    lonely.begin_shutdown();
+    lonely.wait_stopped().await;
+}

@@ -221,6 +221,9 @@ struct Shared {
     subjects: AtomicU64,
     replicated: AtomicU64,
     stopped: watch::Sender<bool>,
+    /// Test-only: make the next chain replacement stop half way or refuse the new chain.
+    #[cfg(test)]
+    replace_fault: AtomicU8,
 }
 struct Owner {
     shared: Arc<Shared>,
@@ -372,6 +375,49 @@ pub fn valid_key(network: &str, subject: &str) -> bool {
 fn tuple(t: Timestamp) -> (i64, u32) {
     (t.seconds, t.nanoseconds)
 }
+/// When a signed record stops being current: its own expiry or its relay binding's, whichever
+/// is earlier.
+fn chain_until(record: &[u8], network: &str) -> Option<Timestamp> {
+    let verified = frank_cbor::verify_preview_directory_evidence(record, network).ok()?;
+    let Some(frank_cbor::TypedPayload::DirectoryStatement {
+        relays,
+        expiry: Some(expiry),
+        ..
+    }) = verified.statement_frame().typed.as_deref()
+    else {
+        return None;
+    };
+    let relay = relays.first()?;
+    Some(if tuple(*expiry) < tuple(relay.expiry) {
+        *expiry
+    } else {
+        relay.expiry
+    })
+}
+/// The rule every relay applies to two conflicting chains of one account, each given as (when
+/// its head stops being current, number of records, hash of its record at the first
+/// difference). True when `theirs` wins. Deterministic and total: an unexpired chain beats an
+/// expired one; then the higher latest revision; then the lower hash at the first difference.
+fn replaces(
+    now: Timestamp,
+    theirs: (Option<Timestamp>, usize, [u8; 32]),
+    ours: (Option<Timestamp>, usize, [u8; 32]),
+) -> bool {
+    let live = |until: Option<Timestamp>| until.is_some_and(|until| tuple(now) < tuple(until));
+    match (live(theirs.0), live(ours.0)) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => match theirs.1.cmp(&ours.1) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Equal => theirs.2 < ours.2,
+        },
+    }
+}
+#[cfg(test)]
+pub(crate) const REPLACE_FAULT_STOP: u8 = 1;
+#[cfg(test)]
+pub(crate) const REPLACE_FAULT_REFUSE: u8 = 2;
 /// Everything the single worker thread owns.
 struct Worker<'a> {
     registry: &'a Registry,
@@ -403,6 +449,18 @@ impl<'a> Worker<'a> {
     /// Reopen a published subject from its continuity row. `None` means it never published.
     fn open(&mut self, key: &Key) -> Result<Option<Principal<'a>>> {
         let subject = exact(&key.1, 33)?;
+        // A replacement of this key that could not be finished earlier is finished first.
+        if let Some((_, _, replacement)) = self
+            .rows()?
+            .replacements()
+            .map_err(|_| RuntimeError::NotStarted)?
+            .into_iter()
+            .find(|(network, held, _)| *network == key.0 && *held == subject)
+        {
+            let now = self.now()?;
+            self.finish_replacement(key, &replacement, now)?;
+            self.handles.remove(key);
+        }
         let Some(row) = self
             .rows()?
             .get(&key.0, &subject)
@@ -685,12 +743,11 @@ impl<'a> Worker<'a> {
             let result = self.enroll(key, chain, now);
             return result.and_then(|_| done());
         };
-        let held: Vec<[u8; 32]> = p
-            .directory
-            .retained()?
-            .into_iter()
-            .map(|record| record.hash)
-            .collect();
+        // Only the accepted chain counts; a fork proof held after it is not part of it.
+        let accepted = p.directory.status()?.map_or(0, |status| status.accepted);
+        let mut held_records = p.directory.retained()?;
+        held_records.truncate(accepted);
+        let held: Vec<[u8; 32]> = held_records.iter().map(|record| record.hash).collect();
         let common = held
             .iter()
             .zip(&hashes)
@@ -733,30 +790,118 @@ impl<'a> Worker<'a> {
             return done();
         }
         // Two different signed records at the same revision: the account's key signed both, so
-        // neither relay is wrong. Every relay keeps the branch whose record at the first
-        // difference has the lower hash, so all relays end on the same branch without anyone
-        // deciding. A branch that has already expired never replaces a held one.
-        if hashes[common] >= held[common]
-            || current_until.is_none_or(|until| tuple(now) >= tuple(until))
-        {
+        // neither relay is wrong. Every relay applies the same total rule, so all end on the
+        // same chain whatever order copies arrive in: an unexpired chain beats an expired one;
+        // then the chain with the higher latest revision; then the lower hash at the first
+        // difference.
+        let ours_until = held_records
+            .last()
+            .and_then(|record| chain_until(&record.attestation, &key.0));
+        if !replaces(now, (current_until, hashes.len(), hashes[common]), (ours_until, held.len(), held[common])) {
             return done();
         }
-        let was_local = p.row.local;
-        p.directory.erase()?;
+        let replacement = crate::store::directory_subjects::Replacement {
+            old: held_records.into_iter().map(|record| record.attestation).collect(),
+            new: chain,
+        };
+        self.replace(key, replacement, now).and_then(|_| done())
+    }
+    /// Swap one held chain for another without ever leaving the account absent: both chains
+    /// are written down first, and the record is removed only once one of them is held again.
+    fn replace(
+        &mut self,
+        key: &Key,
+        replacement: crate::store::directory_subjects::Replacement,
+        now: Timestamp,
+    ) -> Result<()> {
+        let subject = exact(&key.1, 33)?;
+        self.rows()?
+            .put_replacement(&key.0, &subject, &replacement)
+            .map_err(|_| RuntimeError::OutcomeUnknown)?;
+        self.finish_replacement(key, &replacement, now)
+    }
+    /// Carry out a recorded replacement from whatever state a stopped process left: clear the
+    /// subject, enrol the new chain, and if that is refused enrol the old chain again.
+    fn finish_replacement(
+        &mut self,
+        key: &Key,
+        replacement: &crate::store::directory_subjects::Replacement,
+        now: Timestamp,
+    ) -> Result<()> {
+        let subject = exact(&key.1, 33)?;
+        for (attempt, chain) in [&replacement.new, &replacement.old].into_iter().enumerate() {
+            let Some(head) = chain
+                .last()
+                .and_then(|record| frank_cbor::verify_preview_directory_evidence(record, &key.0).ok())
+                .map(|verified| verified.statement_hash)
+            else {
+                continue;
+            };
+            self.clear(key, &subject)?;
+            #[cfg(test)]
+            {
+                let fault = self.shared.replace_fault.load(Ordering::Acquire);
+                if attempt == 0 && fault == REPLACE_FAULT_STOP {
+                    return Err(RuntimeError::OutcomeUnknown);
+                }
+                if attempt == 0 && fault == REPLACE_FAULT_REFUSE {
+                    continue;
+                }
+            }
+            let _ = attempt;
+            let _ = self.enroll(key, chain.clone(), now);
+            let held = self
+                .rows()?
+                .get(&key.0, &subject)
+                .map_err(|_| RuntimeError::NotStarted)?
+                .is_some_and(|row| {
+                    row.checkpoint.kind == CheckpointKind::CommittedPrefix
+                        && row.checkpoint.head == Some(head)
+                });
+            if held {
+                self.rows()?
+                    .delete_replacement(&key.0, &subject)
+                    .map_err(|_| RuntimeError::OutcomeUnknown)?;
+                return Ok(());
+            }
+        }
+        // Neither chain could be enrolled now; the record stays and the next start or lookup
+        // of this key tries again.
+        Err(RuntimeError::OutcomeUnknown)
+    }
+    /// Remove every trace of a subject, whatever state it is in, keeping the counts right.
+    fn clear(&mut self, key: &Key, subject: &[u8]) -> Result<()> {
         self.handles.remove(key);
-        let address = crate::monad_stamp_stealth::recipient_address_from_public_key(&subject)
+        let rows = self.rows()?;
+        if let Some(row) = rows.get(&key.0, subject).map_err(|_| RuntimeError::NotStarted)? {
+            let counter = if row.local {
+                &self.shared.subjects
+            } else {
+                &self.shared.replicated
+            };
+            let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+        }
+        self.registry
+            .erase_directory_preview(&key.0, subject)
+            .map_err(|_| RuntimeError::OutcomeUnknown)?;
+        let address = crate::monad_stamp_stealth::recipient_address_from_public_key(subject)
             .map_err(|_| RuntimeError::Invalid)?
             .0;
-        self.rows()?
-            .delete(&key.0, &subject, &address)
-            .map_err(|_| RuntimeError::OutcomeUnknown)?;
-        if was_local {
-            self.shared.subjects.fetch_sub(1, Ordering::AcqRel);
-        } else {
-            self.shared.replicated.fetch_sub(1, Ordering::AcqRel);
+        rows.delete(&key.0, subject, &address)
+            .map_err(|_| RuntimeError::OutcomeUnknown)
+    }
+    /// Finish every replacement a stopped process left unfinished. Runs once at start.
+    fn recover_replacements(&mut self) -> Result<()> {
+        let pending = self
+            .rows()?
+            .replacements()
+            .map_err(|_| RuntimeError::NotStarted)?;
+        let now = self.now()?;
+        for (network, subject, replacement) in pending {
+            let key = (network, hex::encode(&subject));
+            let _ = self.finish_replacement(&key, &replacement, now);
         }
-        let result = self.enroll(key, chain, now);
-        result.and_then(|_| done())
+        Ok(())
     }
     /// The entry and its relay binding must still be unexpired when the answer leaves.
     fn finish(&mut self, current: Current) -> Result<(Current, Timestamp)> {
@@ -999,6 +1144,8 @@ impl DirectoryRuntime {
             subjects: AtomicU64::new(0),
             replicated: AtomicU64::new(0),
             stopped,
+            #[cfg(test)]
+            replace_fault: AtomicU8::new(0),
         });
         let worker_shared = shared.clone();
         let worker_registry = registry.clone();
@@ -1035,6 +1182,12 @@ impl DirectoryRuntime {
                         tick: 0,
                         shared: worker_shared.clone(),
                     };
+                    // A chain replacement cut short by a stop is finished before anything is
+                    // served, so no account is ever left absent.
+                    if worker.recover_replacements().is_err() {
+                        let _ = ready_send.send(Err(RuntimeError::NotStarted));
+                        return;
+                    }
                     worker_shared.ready.store(true, Ordering::Release);
                     let _ = ready_send.send(Ok(()));
                     // Users' operations first; copied chains when no user is waiting.
@@ -1144,6 +1297,11 @@ impl DirectoryRuntime {
     /// Present once [`Self::enable_federation`] was called.
     pub fn federation(&self) -> Option<&Arc<crate::directory_federation::Federation>> {
         self.owner.federation.get()
+    }
+    /// Test-only: make chain replacements stop half way or refuse the new chain.
+    #[cfg(test)]
+    pub(crate) fn set_replace_fault(&self, fault: u8) {
+        self.owner.shared.replace_fault.store(fault, Ordering::Release);
     }
     /// Pause between rounds of comparing entries with peers and retrying forwards.
     pub fn sync_interval(&self) -> Duration {

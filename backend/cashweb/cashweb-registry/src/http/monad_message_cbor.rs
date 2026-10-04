@@ -1,6 +1,7 @@
 //! Exact canonical DM transport. No legacy protobuf projection or implicit admission.
 use std::{ops::Range, sync::Arc};
 
+use crate::directory_federation::{Admission, Forwarded, Learned};
 use crate::monad_http::Address;
 use axum::{
     extract::RawBody,
@@ -28,9 +29,13 @@ pub(crate) async fn handle_put(
         .monad_mailbox
         .as_enabled()
         .ok_or(CanonicalError::Unavailable)?;
-    let _cpu = runtime
-        .try_acquire_private_read()
-        .ok_or(CanonicalError::Capacity)?;
+    // Bounds CPU work across message submissions and inbox reads. It is given up while this
+    // request waits on another relay, and taken again before more checking.
+    let mut cpu = Some(
+        runtime
+            .try_acquire_private_read()
+            .ok_or(CanonicalError::Capacity)?,
+    );
     let descriptor = crate::network_tag::monad_network(runtime.network_tag())
         .ok_or(CanonicalError::Unavailable)?;
     if descriptor.evm_chain_id != runtime.expected_chain_id() {
@@ -78,6 +83,7 @@ pub(crate) async fn handle_put(
         let principals = request_principals(&request, descriptor.cbor_identifier)?;
         let directory = owner.directory().ok_or(CanonicalError::Unavailable)?;
         let federation = directory.federation().cloned();
+        let network = descriptor.cbor_identifier;
         let identity = request.submission_identity();
         let forwarded = headers.contains_key(crate::directory_federation::FORWARDED_HEADER);
         // A message this relay already accepted for another relay: the same bytes get the same
@@ -85,45 +91,56 @@ pub(crate) async fn handle_put(
         // a forwarded message is delivered here or refused, never sent on again, even if this
         // relay also holds it for forwarding (two relays that disagree about where the
         // recipient lives would otherwise hand it back and forth).
-        if let Some(federation) = &federation {
+        if let Some(federation) = federation.as_ref().filter(|_| !forwarded) {
             let known = server
                 .registry
                 .directory_subjects()
                 .and_then(|rows| rows.forward(&identity))
                 .map_err(|_| CanonicalError::Unavailable)?;
-            if known.is_some() && !forwarded {
-                let (status, body) = federation
-                    .forward(&directory, &identity)
+            if known.is_some() {
+                cpu.take();
+                match federation
+                    .forward(&directory, &identity, true)
                     .await
-                    .ok_or(CanonicalError::Unavailable)?;
-                return Ok(relayed_response(status, body));
+                    .ok_or(CanonicalError::Unavailable)?
+                {
+                    Forwarded::Answer(status, body) => return Ok(relayed_response(status, body)),
+                    // The recipient lives here now and the message was never handed on: it is
+                    // judged below exactly like a fresh local submission.
+                    Forwarded::Local => (),
+                }
             }
-            // Entries of accounts that live on a peer relay are copied here on first need.
-            for subject in [&principals.recipient, &principals.sender] {
-                federation
-                    .learn(
-                        &directory,
-                        descriptor.cbor_identifier,
-                        &hex::encode(subject),
-                    )
-                    .await;
+        }
+        // Cheap checks before any peer is asked about these keys.
+        let recipient_key = hex::encode(&principals.recipient);
+        let sender_key = hex::encode(&principals.sender);
+        if !crate::directory_runtime::valid_key(network, &recipient_key)
+            || !crate::directory_runtime::valid_key(network, &sender_key)
+        {
+            return Err(CanonicalError::Invalid);
+        }
+        // Entries of accounts that live on a peer relay are copied here on first need. Only a
+        // definite "no relay has it" is final; a peer that could not be asked, or a busy relay,
+        // is a retryable 503.
+        let mut recipient_learned = Learned::Held;
+        if let Some(federation) = &federation {
+            if !directory.is_published(network, &recipient_key) {
+                cpu.take();
+                recipient_learned = federation.learn(&directory, network, &recipient_key).await;
             }
         }
         // The recipient's own entry says which relay holds its mailbox. When this relay can
         // neither deliver nor forward, say so as a final answer: nothing is retained, no payment
         // is broadcast.
-        let undeliverable = || {
-            undeliverable_response(
-                &request,
-                descriptor.cbor_identifier,
-                &principals,
-                "undeliverable",
-            )
-        };
-        let Some(recipient_current) =
-            recipient_entry(owner, descriptor.cbor_identifier, &principals.recipient).await?
+        let undeliverable =
+            || undeliverable_response(&request, network, &principals, "undeliverable");
+        let Some(recipient_current) = recipient_entry(owner, network, &principals.recipient).await?
         else {
-            return undeliverable();
+            return if recipient_learned == Learned::Unavailable {
+                Err(CanonicalError::Unavailable)
+            } else {
+                undeliverable()
+            };
         };
         let elsewhere = !directory.info().is_local(&recipient_current.relay);
         if elsewhere {
@@ -138,6 +155,7 @@ pub(crate) async fn handle_put(
             };
             if federation.peer_for(&recipient_current.relay).is_none() {
                 if !federation.peers_known() {
+                    cpu.take();
                     federation.refresh_peers().await;
                 }
                 if federation.peer_for(&recipient_current.relay).is_none() {
@@ -151,18 +169,30 @@ pub(crate) async fn handle_put(
                 }
             }
         }
+        let mut sender_learned = Learned::Held;
+        if let Some(federation) = &federation {
+            if !directory.is_published(network, &sender_key) {
+                cpu.take();
+                sender_learned = federation.learn(&directory, network, &sender_key).await;
+            }
+        }
         // A sender whose own entry is missing or expired can republish and send a new message;
         // this one can never be verified.
-        let Some(sender_current) =
-            sender_entry(owner, descriptor.cbor_identifier, &principals.sender).await?
-        else {
-            return undeliverable_response(
-                &request,
-                descriptor.cbor_identifier,
-                &principals,
-                "sender_unpublished",
-            );
+        let Some(sender_current) = sender_entry(owner, network, &principals.sender).await? else {
+            return if sender_learned == Learned::Unavailable {
+                Err(CanonicalError::Unavailable)
+            } else {
+                undeliverable_response(&request, network, &principals, "sender_unpublished")
+            };
         };
+        // The rest is CPU work again.
+        if cpu.is_none() {
+            cpu = Some(
+                runtime
+                    .try_acquire_private_read()
+                    .ok_or(CanonicalError::Capacity)?,
+            );
+        }
         let Principals {
             recipient,
             sender_t1,
@@ -173,12 +203,12 @@ pub(crate) async fn handle_put(
         let historical = if recipient_current.evidence.hash == recipient_t1 {
             None
         } else {
-            Some(history(owner, descriptor.cbor_identifier, &recipient, recipient_t1).await?)
+            Some(history(owner, network, &recipient, recipient_t1).await?)
         };
         let retained_request = elsewhere.then(|| request.clone());
         let echo = SubmissionEcho::new(
             &request,
-            descriptor.cbor_identifier,
+            network,
             crate::monad_stamp_stealth::recipient_address_from_public_key(&recipient)
                 .map_err(|_| CanonicalError::Invalid)?,
             &payload_hash,
@@ -190,7 +220,7 @@ pub(crate) async fn handle_put(
             &sender_current,
             &recipient_current,
             historical.as_ref(),
-            descriptor.cbor_identifier,
+            network,
             descriptor.evm_chain_id,
             runtime.min_value_wei(),
         )?;
@@ -199,37 +229,35 @@ pub(crate) async fn handle_put(
             // is sent. The recipient's relay verifies it all again and broadcasts the payments;
             // this relay never does.
             drop(input);
-            let now = now_ms();
+            cpu.take();
             let row = crate::store::directory_subjects::ForwardRow {
-                recipient: hex::encode(&recipient),
+                recipient: recipient_key,
                 content_type: request.content_type().to_owned(),
-                network: descriptor.cbor_identifier.to_owned(),
-                created_ms: now,
+                network: network.to_owned(),
+                created_ms: now_ms(),
                 attempts: 0,
-                next_ms: now,
+                next_ms: now_ms(),
                 done: false,
                 status: 0,
                 response: String::new(),
                 echo: serde_json::to_value(&echo).map_err(|_| CanonicalError::Unavailable)?,
+                sender: sender_key,
+                pinned: None,
             };
-            let stored = server.registry.directory_subjects().and_then(|rows| {
-                let pending = rows.forwards()?.iter().filter(|(_, row)| !row.done).count();
-                if pending >= crate::directory_federation::MAX_PENDING_FORWARDS {
-                    return Ok(false);
-                }
-                rows.put_forward(&identity, &row, Some(request.body()))?;
-                Ok(true)
-            });
-            match stored {
-                Ok(true) => (),
-                Ok(false) => return Err(CanonicalError::Capacity),
-                Err(_) => return Err(CanonicalError::Unavailable),
+            match federation.admit(&directory, &identity, &row, request.body()) {
+                Ok(Admission::Stored | Admission::Exists) => (),
+                // Too many messages already wait for other relays, in total, from this sender or
+                // for this recipient: busy, retry later.
+                Ok(Admission::Full) | Err(()) => return Err(CanonicalError::Unavailable),
             }
-            let (status, body) = federation
-                .forward(&directory, &identity)
+            return match federation
+                .forward(&directory, &identity, false)
                 .await
-                .ok_or(CanonicalError::Unavailable)?;
-            return Ok(relayed_response(status, body));
+                .ok_or(CanonicalError::Unavailable)?
+            {
+                Forwarded::Answer(status, body) => Ok(relayed_response(status, body)),
+                Forwarded::Local => Err(CanonicalError::Unavailable),
+            };
         }
         server
             .registry

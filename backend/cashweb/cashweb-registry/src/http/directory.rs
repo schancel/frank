@@ -131,7 +131,11 @@ async fn lookup(
         };
         let mut subject = runtime.subject_for_address(&network, &address.0);
         if let (None, Some(peers)) = (&subject, peers) {
-            subject = peers.learn_address(runtime, &network, address).await;
+            match peers.learn_address(runtime, &network, address).await {
+                Ok(found) => subject = found,
+                // A peer could not be asked: not known to be unknown.
+                Err(()) => return error(RuntimeError::NotStarted),
+            }
         }
         let Some(subject) = subject else {
             return error(RuntimeError::NotFound);
@@ -150,6 +154,8 @@ async fn lookup(
     }
     match second.as_str() {
         "head" => {
+            // An account's own device reads its head before signing a first entry, so a peer
+            // that cannot be asked still ends in "not found" here: sign-up never waits on peers.
             if let Some(peers) = peers {
                 peers.learn(runtime, &network, &first).await;
             }
@@ -285,15 +291,9 @@ async fn put(
     if !crate::directory_runtime::valid_key(&network, &subject) {
         return error(RuntimeError::Invalid);
     }
-    // Before a first entry for a key is accepted here, peers are asked whether the key already
-    // has a chain. If it has, that chain is copied first, so an account restored on this relay
-    // gets 409 for a fresh revision 0 and adopts its existing entry instead of forking itself.
-    if let Some(peers) = runtime.federation().filter(|_| !from_relay(&headers)) {
-        peers.learn(runtime, &network, &subject).await;
-    }
     // Publishing is free, so a key this relay has never seen is charged to its source, and only
     // once the entry is known to be signed by that key: a forgery costs its sender nothing here
-    // and cannot use up anyone's allowance.
+    // and cannot use up anyone's allowance, and asks no peer anything.
     if !runtime.is_published(&network, &subject) {
         let signed_by_subject = frank_cbor::verify_preview_directory_evidence(&bytes, &network)
             .ok()
@@ -307,6 +307,15 @@ async fn put(
         if !signed_by_subject {
             return error(RuntimeError::Invalid);
         }
+        // Before a first entry for a key is accepted here, peers are asked whether the key
+        // already has a chain. If it has, that chain is copied first, so an account restored on
+        // this relay gets 409 for a fresh revision 0 and adopts its existing entry instead of
+        // forking itself.
+        if let Some(peers) = runtime.federation().filter(|_| !from_relay(&headers)) {
+            peers.learn(runtime, &network, &subject).await;
+        }
+    }
+    if !runtime.is_published(&network, &subject) {
         if routes
             .enrollments
             .charge(routes.source(peer, &headers), 1, now_seconds())

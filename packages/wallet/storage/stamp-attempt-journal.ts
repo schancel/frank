@@ -184,6 +184,7 @@ interface StoredCanonicalRecovery {
   stampGeneration: string
   accounts: CanonicalImportedRecoveryAccount[]
   recipientAcknowledged: boolean
+  reservedBytes: number
 }
 /** Opaque, live-owner proof of an already durable imported obligation. */
 export interface CanonicalRecoveryCustody {
@@ -290,6 +291,47 @@ function publicRecovery(
     recipientAcknowledged: row.recipientAcknowledged,
   }
 }
+/** Fixed logical reservation, distinct from the current encoded prefix footprint. All raw
+ * members and values are immutable already: reserve their exact complete public account set,
+ * complete child prefix, longest accepted lifecycle, longest ACK boolean, and charge digits. */
+function recoveryMaximumCharge(row: StoredCanonicalRecovery): number {
+  const request = restoreCanonicalRequest({
+    body: fromBase64(row.body, CANONICAL_MAX_BODY),
+    contentType: row.contentType,
+  })
+  const accounts = request.parts.transactions.map((raw, childIndex) => {
+    const tx = Transaction.from(hexlify(raw))
+    return {
+      childIndex,
+      transactionHash: tx.hash!.toLowerCase(),
+      address: tx.to!.toLowerCase(),
+      valueWei: tx.value.toString(),
+    }
+  })
+  const lifecycle = [
+    'pending',
+    'fully_confirmed',
+    'delivered',
+    ...CANONICAL_TERMINAL_REASONS.map(reason => `terminal:${reason}`),
+  ].reduce(
+    (longest, next) => (next.length > longest.length ? next : longest),
+    '',
+  )
+  const maximum = {
+    ...row,
+    confirmedChildren: accounts.map(a => a.childIndex),
+    accounts,
+    lifecycle,
+    recipientAcknowledged: false,
+    reservedBytes: 0,
+  }
+  for (let iteration = 0; iteration < 8; iteration++) {
+    const encodedBytes = Buffer.byteLength(JSON.stringify(maximum))
+    if (encodedBytes === maximum.reservedBytes) return encodedBytes
+    maximum.reservedBytes = encodedBytes
+  }
+  canonicalFail('invalid')
+}
 function validateRecovery(value: unknown): StoredCanonicalRecovery {
   exactObject(value, [
     'version',
@@ -302,6 +344,7 @@ function validateRecovery(value: unknown): StoredCanonicalRecovery {
     'stampGeneration',
     'accounts',
     'recipientAcknowledged',
+    'reservedBytes',
   ])
   const row = value as unknown as StoredCanonicalRecovery
   if (
@@ -338,6 +381,12 @@ function validateRecovery(value: unknown): StoredCanonicalRecovery {
       'valueWei',
     ])
   const view = publicRecovery(row)
+  if (
+    !Number.isSafeInteger(row.reservedBytes) ||
+    row.reservedBytes !== recoveryMaximumCharge(row) ||
+    Buffer.byteLength(JSON.stringify(row)) > row.reservedBytes
+  )
+    canonicalFail('invalid')
   if (
     (row.lifecycle === 'fully_confirmed' || row.lifecycle === 'delivered') &&
     row.confirmedChildren.length !== view.request.parts.transactions.length
@@ -862,14 +911,14 @@ export class LevelCanonicalStampAttemptJournal {
         this.assertRecoveryBinding(row, publicBinding)
       const retainedBytes =
         [...rows.values()].reduce(
-          (n, row) => n + Buffer.byteLength(JSON.stringify(row)) + 16384,
+          (n, row) =>
+            n +
+            Buffer.byteLength(JSON.stringify(row)) +
+            (row.terminal === null ? 16384 : 0),
           0,
         ) +
         [...intents.values()].reduce((n, row) => n + row.reservedBytes, 0) +
-        [...recoveries.values()].reduce(
-          (n, row) => n + Buffer.byteLength(JSON.stringify(row)) + 16384,
-          0,
-        )
+        [...recoveries.values()].reduce((n, row) => n + row.reservedBytes, 0)
       if (
         rows.size + intents.size + recoveries.size > this.maxRecords ||
         retainedBytes > this.maxBytes
@@ -1183,7 +1232,7 @@ export class LevelCanonicalStampAttemptJournal {
 
   private recoveryBytes(): number {
     return [...this.recoveries.values()].reduce(
-      (n, row) => n + Buffer.byteLength(JSON.stringify(row)) + 16384,
+      (n, row) => n + row.reservedBytes,
       0,
     )
   }
@@ -1290,7 +1339,7 @@ export class LevelCanonicalStampAttemptJournal {
         valueWei: tx.value.toString(),
       }
     })
-    const row = validateRecovery({
+    const candidate: StoredCanonicalRecovery = {
       version: 1,
       obligationId: input.obligationId,
       walletBindingId: input.walletBindingId,
@@ -1301,7 +1350,10 @@ export class LevelCanonicalStampAttemptJournal {
       stampGeneration: input.stampGeneration,
       accounts,
       recipientAcknowledged: false,
-    })
+      reservedBytes: 0,
+    }
+    candidate.reservedBytes = recoveryMaximumCharge(candidate)
+    const row = validateRecovery(candidate)
     this.assertRecoveryBinding(row)
     return this.serialize(async () => {
       for (const other of this.recoveries.values()) {
@@ -1345,14 +1397,16 @@ export class LevelCanonicalStampAttemptJournal {
       }
       const bytes =
         [...this.rows.values()].reduce(
-          (n, item) => n + Buffer.byteLength(JSON.stringify(item)) + 16384,
+          (n, item) =>
+            n +
+            Buffer.byteLength(JSON.stringify(item)) +
+            (item.terminal === null ? 16384 : 0),
           0,
         ) +
         this.intentBytes() +
         this.recoveryBytes() -
-        (prior ? Buffer.byteLength(JSON.stringify(prior)) + 16384 : 0) +
-        Buffer.byteLength(JSON.stringify(row)) +
-        16384
+        (prior ? prior.reservedBytes : 0) +
+        row.reservedBytes
       if (
         (!prior &&
           this.rows.size + this.intents.size + this.recoveries.size >=
@@ -1482,7 +1536,10 @@ export class LevelCanonicalStampAttemptJournal {
         )
           canonicalFail('conflict')
       const bytes = Array.from(this.rows.values()).reduce(
-        (n, row) => n + Buffer.byteLength(JSON.stringify(row)) + 16384,
+        (n, row) =>
+          n +
+          Buffer.byteLength(JSON.stringify(row)) +
+          (row.terminal === null ? 16384 : 0),
         0,
       )
       if (

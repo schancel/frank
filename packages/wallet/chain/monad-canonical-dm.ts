@@ -83,11 +83,14 @@ export class CanonicalMessagingPendingError extends Error {
 
 /** A durable canonical payment record exists that no saved message accounts for. */
 export class CanonicalMessagingHoldError extends Error {
-  constructor() {
-    super(
-      'An earlier canonical payment record cannot be matched to a saved message. Sending is held so nothing is paid twice.',
-    )
+  readonly cause?: unknown
+  constructor(
+    message = 'An earlier canonical payment record cannot be matched to a saved message. Sending is held so nothing is paid twice.',
+    cause?: unknown,
+  ) {
+    super(message)
     this.name = 'CanonicalMessagingHoldError'
+    if (cause !== undefined) this.cause = cause
   }
 }
 
@@ -193,6 +196,13 @@ const MAX_INBOX_PAGES = 8
 const queues = new WeakMap<object, Promise<unknown>>()
 const lastRecoverySync = new WeakMap<object, number>()
 
+const resolved = new WeakMap<object, Set<string>>()
+function resolvedNow(owner: CanonicalMessagingOwner): Set<string> {
+  let digests = resolved.get(owner.links)
+  if (!digests) resolved.set(owner.links, (digests = new Set()))
+  return digests
+}
+
 function serial<T>(owner: object, task: () => Promise<T>): Promise<T> {
   const run = (queues.get(owner) ?? Promise.resolve()).then(task, task)
   queues.set(
@@ -266,6 +276,7 @@ async function settle(
         ...row,
         outcome: attempt.terminal.phase === 'delivered' ? 'delivered' : 'dead',
       })
+      resolvedNow(owner).add(row.digest)
       await client.cleanupTerminal(row.attemptRef, row.consumerId)
       await client.acknowledgeWorkflow(row.attemptRef, row.consumerId)
       await owner.links.put({
@@ -283,7 +294,15 @@ async function settle(
     const row = rows.find(r => r.attemptRef === ready.attemptRef)!
     const found = client.lookup(restoreLink(row).prepared)
     if (found?.kind === 'intent') {
-      await client.finishIntent(ready.eligibility)
+      try {
+        await client.finishIntent(ready.eligibility)
+      } catch (error) {
+        // The frozen intent stays journaled; only these exact payments may ever be finished.
+        throw new CanonicalMessagingHoldError(
+          'An earlier payment could not be finished yet. Its exact payment set is kept and nothing new is paid.',
+          error,
+        )
+      }
       continue
     }
     submitted.set(ready.attemptRef, (submitted.get(ready.attemptRef) ?? 0) + 1)
@@ -551,6 +570,7 @@ async function fetchSince(
         senderAddress: {
           raw: getAddress(computeAddress('0x' + sender.subject)),
         },
+        senderPublicKey: fromHex(sender.subject),
         recipientAddress: own,
         items,
         payloadDigest: digest,
@@ -594,10 +614,19 @@ export function canonicalDirectMessages(
         const directory = requireDirectory(owner)
         await settle(owner, directory.fetch, 1)
         const known = new Set(params.knownDigests)
-        return owner.links
-          .all()
-          .filter(row => row.outcome !== 'dead' && !known.has(row.digest))
-          .map(row => row.digest)
+        return (
+          owner.links
+            .all()
+            // Live in the journal, or delivered in this process: the interface's own contract.
+            .filter(
+              row =>
+                !known.has(row.digest) &&
+                (!row.outcome ||
+                  (row.outcome === 'delivered' &&
+                    resolvedNow(owner).has(row.digest))),
+            )
+            .map(row => row.digest)
+        )
       }),
     fetchSince: (params: Parameters<DirectMessageClient['fetchSince']>[0]) =>
       fetchSince(owner, params),

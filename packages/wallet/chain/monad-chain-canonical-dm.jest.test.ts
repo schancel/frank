@@ -22,8 +22,12 @@ import type { DirectoryStore } from '../../directory-admission/src'
 import domainVectors from '../../domain-roots/vectors/domain-roots-v1.json'
 import type { MonadRootBundle } from '../monad-wallet-material'
 import type { PublicRevisionZeroInput } from '../monad-wallet-handle'
-import { MonadStampPendingAttemptError } from '../monad-stamp-client'
 import {
+  MonadCanonicalStampClient,
+  MonadStampPendingAttemptError,
+} from '../monad-stamp-client'
+import {
+  CanonicalMessagingHoldError,
   CanonicalMessagingPendingError,
   createMonadChain,
   installCanonicalDirectory,
@@ -390,6 +394,10 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     expect(received[0].items).toEqual(text('hello bob'))
     expect(received[0].payloadDigest).toBe(sent.payloadDigest)
     expect(received[0].senderAddress.raw).toBe(f.alice.identity.address.raw)
+    // The sender's key comes from the admitted directory, never from a display profile.
+    expect(toHex(received[0].senderPublicKey!)).toBe(
+      toHex(f.alice.identity.compressedPubKey),
+    )
     expect(received[0].recipientAddress.raw).toBe(f.bob.identity.address.raw)
     expect(received[0].stampValueWei).toBe(1_000n)
     expect(received[0].receivedTime).toBe(1234)
@@ -514,6 +522,84 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     expect(restoreCanonicalRequest(f.requests[0]).identity.payload_hash).toBe(
       digest,
     )
+  })
+
+  it('holds with a typed error when a frozen intent cannot be finished, then finishes the same intent', async () => {
+    installCanonicalDirectory(
+      f.alice,
+      await f.directoryFor('alice', f.alice, f.bob),
+    )
+    const finish = jest
+      .spyOn(MonadCanonicalStampClient.prototype, 'finishIntent')
+      .mockRejectedValue(new Error('signer unavailable'))
+    let digest = ''
+    try {
+      await expect(
+        f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('frozen'),
+          onAttemptCreated: created => void (digest = created),
+        }),
+      ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+      const held = await f.chain.directMessages
+        .reconcileAttempts({ wallet: f.alice, payloadDigests: [digest] })
+        .catch((error: unknown) => error)
+      expect(held).toBeInstanceOf(CanonicalMessagingHoldError)
+      expect((held as { cause?: Error }).cause?.message).toBe(
+        'signer unavailable',
+      )
+      expect(f.requests).toHaveLength(0)
+    } finally {
+      finish.mockRestore()
+    }
+    expect(
+      await f.chain.directMessages.reconcileAttempts({
+        wallet: f.alice,
+        payloadDigests: [digest],
+      }),
+    ).toEqual({ [digest]: 'delivered' })
+    expect(restoreCanonicalRequest(f.requests[0]).identity.payload_hash).toBe(
+      digest,
+    )
+  })
+
+  it('reports a delivered attempt nobody points at only until the wallet is reopened', async () => {
+    const directory = await f.directoryFor('alice', f.alice, f.bob)
+    installCanonicalDirectory(f.alice, directory)
+    const sent = await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('orphan'),
+    })
+    expect(
+      await f.chain.directMessages.unattributedAttempts({
+        wallet: f.alice,
+        knownDigests: [],
+      }),
+    ).toEqual([sent.payloadDigest])
+    await f.alice.close()
+    const reopened = (await f.chain.createWallet(
+      roots(0),
+    )) as MonadChainWalletHandle
+    try {
+      installCanonicalDirectory(reopened, directory)
+      expect(
+        await f.chain.directMessages.unattributedAttempts({
+          wallet: reopened,
+          knownDigests: [],
+        }),
+      ).toEqual([])
+      // The durable outcome itself is still answerable.
+      expect(
+        await f.chain.directMessages.reconcileAttempts({
+          wallet: reopened,
+          payloadDigests: [sent.payloadDigest],
+        }),
+      ).toEqual({ [sent.payloadDigest]: 'delivered' })
+    } finally {
+      await reopened.close()
+    }
   })
 
   it('funds an unfunded typed wallet through the public bridge so a canonical intent can be paid', async () => {

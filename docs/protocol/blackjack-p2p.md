@@ -105,6 +105,15 @@ There are no timeouts and no claims. Until escrow exists:
 - The player goes silent mid-hand: the dealer keeps the stake and owes nothing.
 - A dealer that owes a refund and does not send it keeps the money.
 
+## The headless bot
+
+`packages/bot/blackjack-p2p-bot.ts` is an ordinary account driving this same state machine with
+these same messages. It accepts any challenge in the opposite role, and it challenges, as dealer,
+each account it meets for the first time: an account that sends it any message, or an address from
+an optional feed of new accounts (for example a relay's list of new registrations). Each address
+is challenged once. Its payouts, refunds and bets go through a durable outbox, one message per
+hand position, so a crash or a lost relay answer never pays twice.
+
 ## Later: adaptor-signature escrow
 
 Not part of this work. The states and messages above stay as they are. Only what a money-carrying

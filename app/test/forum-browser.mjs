@@ -1,0 +1,357 @@
+import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+// Run only against a coordinator-owned built-in fake demo. No account is reused.
+assert.equal(process.env.FORUM_FAKE_DEMO, 'true', 'set FORUM_FAKE_DEMO=true for the local synthetic fixture')
+const origin = process.env.FORUM_APP_ORIGIN ?? 'http://127.0.0.1:9699'
+assert.ok(['localhost', '127.0.0.1', '[::1]'].includes(new URL(origin).hostname))
+const directory = await mkdtemp(join(tmpdir(), 'frank-forum-browser-'))
+const executable = process.env.FORUM_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+const codecPath = resolve(fileURLToPath(new URL('../../packages/frank-codec/src/index.ts', import.meta.url)))
+let child, socket, call, sessionId
+let interceptResponse = async event => call('Fetch.continueRequest', {requestId:event.params.requestId})
+let events = []
+const allEvents = []
+async function stop() {
+  socket?.close()
+  if (child && child.exitCode === null && child.signalCode === null) {
+    const ended = new Promise(resolve => child.once('exit', resolve))
+    child.kill('SIGTERM')
+    await Promise.race([ended,new Promise(resolve=>setTimeout(()=>{if(child.exitCode===null)child.kill('SIGKILL');resolve()},5000))])
+  }
+}
+async function launch(profile = 'first') {
+  events = []
+  child = spawn(
+    executable,
+    [
+      '--headless=new',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-background-networking',
+      '--disable-component-update',
+      '--remote-debugging-port=0',
+      `--user-data-dir=${join(directory, profile)}`,
+      'about:blank',
+    ],
+    { stdio: ['ignore', 'ignore', 'pipe'] },
+  )
+  const endpoint = await new Promise((resolve, reject) => {
+    let output = ''
+    const timer = setTimeout(
+      () => reject(new Error('Chrome startup timeout')),
+      20000,
+    )
+    child.once('error', reject)
+    child.stderr.on('data', data => {
+      output += data
+      const match = /DevTools listening on (ws:\/\/\S+)/.exec(output)
+      if (match) {
+        clearTimeout(timer)
+        resolve(match[1])
+      }
+    })
+  })
+  socket = new WebSocket(endpoint)
+  await new Promise((resolve, reject) => {
+    socket.onopen = resolve
+    socket.onerror = reject
+  })
+  let sequence = 0
+  const pending = new Map()
+  socket.onmessage = event => {
+    const message = JSON.parse(event.data)
+    if (!message.id) {
+      events.push(message)
+      allEvents.push(message)
+      if(message.method==='Fetch.requestPaused')interceptResponse(message).catch(error=>{console.error(error);process.exitCode=1})
+      return
+    }
+    const handler = pending.get(message.id)
+    pending.delete(message.id)
+    if (message.error) handler?.reject(new Error(message.error.message))
+    else handler?.resolve(message.result)
+  }
+  call = (method, params = {}, tab = sessionId) =>
+    new Promise((resolve, reject) => {
+      const id = ++sequence
+      pending.set(id, { resolve, reject })
+      socket.send(JSON.stringify({ id, method, params, sessionId: tab }))
+    })
+  await openTab()
+}
+async function openTab() {
+  const { targetId } = await call(
+    'Target.createTarget',
+    { url: 'about:blank' },
+    undefined,
+  )
+  sessionId = (
+    await call('Target.attachToTarget', { targetId, flatten: true }, undefined)
+  ).sessionId
+  await call('Runtime.enable')
+  await call('Emulation.setDeviceMetricsOverride', {
+    width: 1440,
+    height: 1000,
+    deviceScaleFactor: 1,
+    mobile: false,
+  })
+  await call('Network.enable')
+  await call('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.__forumWire=[];
+    const bytes=async value=>value==null?[]:Array.from(value instanceof Blob?new Uint8Array(await value.arrayBuffer()):value instanceof ArrayBuffer?new Uint8Array(value):ArrayBuffer.isView(value)?new Uint8Array(value.buffer,value.byteOffset,value.byteLength):new TextEncoder().encode(value));
+    const originalFetch=window.fetch;
+    window.fetch=async function(input,init={}) {
+      const url=typeof input==='string'?input:input.url;
+      if(!url.includes('/message/monad/topics'))return originalFetch.apply(this,arguments);
+      const row={url,method:init.method??'GET',headers:Object.fromEntries(new Headers(init.headers)),request:await bytes(init.body)};
+      window.__forumWire.push(row);
+      const response=await originalFetch.apply(this,arguments);
+      row.status=response.status; row.contentType=response.headers.get('content-type'); row.response=Array.from(new Uint8Array(await response.clone().arrayBuffer()));
+      return response;
+    };
+    const open=XMLHttpRequest.prototype.open,send=XMLHttpRequest.prototype.send,setHeader=XMLHttpRequest.prototype.setRequestHeader;
+    XMLHttpRequest.prototype.open=function(method,url){this.__forum={url:String(url),method,headers:{}};return open.apply(this,arguments)};
+    XMLHttpRequest.prototype.setRequestHeader=function(k,v){this.__forum.headers[k.toLowerCase()]=v;return setHeader.apply(this,arguments)};
+    XMLHttpRequest.prototype.send=function(body){const row=this.__forum;if(row.url.includes('/message/monad/topics')){window.__forumWire.push(row);bytes(body).then(v=>row.request=v);this.addEventListener('loadend',()=>{row.status=this.status;row.contentType=this.getResponseHeader('content-type');bytes(this.response).then(v=>row.response=v)})}return send.apply(this,arguments)};
+  ` })
+  await call('Page.navigate', { url: origin + '/#/setup' })
+  await until(
+    `document.querySelector('[data-test="new-account"]') || document.querySelector('[data-test="activate-account"]') || document.querySelector('[data-test="account-error"]')`,
+  )
+}
+async function evaluate(expression) {
+  const result = await call('Runtime.evaluate', {
+    expression: `(async () => (${expression}))()`,
+    awaitPromise: true,
+    returnByValue: true,
+  })
+  if (result.exceptionDetails)
+    throw new Error(
+      result.exceptionDetails.exception?.description ??
+        result.exceptionDetails.text,
+    )
+  return result.result.value
+}
+async function until(expression) {
+  for (let n = 0; n < 200; n++) {
+    if (await evaluate(expression)) return
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  const errors = events
+    .filter(e => e.method === 'Runtime.exceptionThrown')
+    .map(e => e.params.exceptionDetails.exception?.description)
+  errors.push(
+    ...events
+      .filter(
+        e =>
+          e.method === 'Runtime.consoleAPICalled' && e.params.type === 'error',
+      )
+      .flatMap(e => e.params.args.map(a => a.description ?? a.value)),
+  )
+  throw new Error(
+    'Browser condition timed out: ' +
+      expression +
+      '\n' +
+      errors.join('\n') +
+      '\n' +
+      (await evaluate('document.body.innerText.slice(0,1500)')),
+  )
+}
+const selector = name => `[data-test="${name}"]`
+async function click(name) {
+  await evaluate(
+    `document.querySelector(${JSON.stringify(selector(name))}).click()`,
+  )
+  await new Promise(resolve => setTimeout(resolve, 30))
+}
+async function input(name, value) {
+  await evaluate(
+    `(() => { const root = document.querySelector(${JSON.stringify(
+      selector(name),
+    )}); const el = root.matches('input,textarea') ? root : root.querySelector('input,textarea'); const setter = Object.getOwnPropertyDescriptor(el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value').set; setter.call(el, ${JSON.stringify(
+      value,
+    )}); el.dispatchEvent(new Event('input', {bubbles:true})); })()`,
+  )
+}
+
+async function pressEnter(selector) {
+  await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`)
+  await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+  await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+}
+const forumState = `document.querySelector('#q-app').__vue_app__.config.globalProperties.$pinia.state.value.forum`
+async function createPost(title, body, parent) {
+  await evaluate(`location.hash=${JSON.stringify(parent ? '#/new-post/'+parent : '#/new-post')}`)
+  await until(`document.querySelector('[data-test="post-title"]')`)
+  if (parent) await until(`!document.querySelector('[data-test="parent-resolution-status"]')`)
+  await input('post-offering', '0.000000000000000001')
+  await input('post-title', title)
+  await input('post-message', body)
+  await evaluate(`document.querySelector('form').requestSubmit()`)
+  await until(`!location.hash.includes('new-post')`)
+  await until(`document.body.innerText.includes(${JSON.stringify(title)})`)
+}
+try {
+  await launch()
+  await click('new-account')
+  await until(`document.querySelector('[data-test="backup-policy"]')`)
+  await evaluate(`document.querySelector('[data-test="backup-policy"] [role="radio"]').click()`)
+  await click('generate-backups')
+  await until(`document.querySelector('[data-test="backup-share"]')`)
+  const shares=[]
+  for(let i=0;i<3;i++){shares.push(await evaluate(`document.querySelector('[data-test="backup-share"]').value`));await click('next-share')}
+  await click('descriptor-saved')
+  await click('confirm-backups')
+  await input('confirm-shares', shares.slice(0,2).join('\n'))
+  await input('display-name', 'Synthetic Forum proof')
+  await click('verify-backups')
+  await until(`document.querySelector('[data-test="activate-account"]')`)
+  await click('activate-account')
+  await until(`location.hash==='#/wallet'`)
+  await until(`document.querySelector('[data-test="demo-fund"]')`)
+  await click('demo-fund')
+  await until(`document.querySelector('[data-test="fund-status"]').textContent.includes('Simulated credit confirmed')`)
+  await evaluate(`location.hash='#/forum'`)
+  await until(`document.querySelector('[data-test="forum-threshold"]')`)
+  await input('forum-topic','news')
+  await pressEnter('[data-test="forum-topic"] input')
+  await until(`${forumState}.selectedTopic==='news'`)
+  // Drive the real drawer's QInput. One wei above Number's precise integer range.
+  const threshold='0.009007199254740993'
+  await input('forum-threshold',threshold)
+  await until(`${forumState}.voteThreshold==='9007199254740993'`)
+  assert.equal(await evaluate(`${forumState}.voteThreshold`),'9007199254740993')
+  await input('forum-threshold','0')
+  await until(`${forumState}.voteThreshold==='0'`)
+  const title='Forum browser '+Date.now()
+  const body='Exact rendered schema-2 body'
+  await createPost(title,body)
+  const digest=await evaluate(`${forumState}.messages.find(m=>m.entries.some(e=>e.title===${JSON.stringify(title)})).payloadDigest`)
+  assert.match(digest,/^[0-9a-f]{64}$/)
+  await evaluate(`location.hash=${JSON.stringify('#/forum/'+digest)}`)
+  await until(`document.body.innerText.includes(${JSON.stringify(body)})`)
+  await createPost(title+' reply','Exact rendered reply',digest)
+  await evaluate(`location.hash=${JSON.stringify('#/forum/'+digest)}`)
+  await until(`document.body.innerText.includes('Exact rendered reply')`)
+  for(const direction of ['up','down']){
+    await until(`document.querySelector('[data-test="forum-vote-${direction}"]')`)
+    const before=await evaluate(`window.__forumWire.filter(r=>r.method==='PUT'&&r.url.endsWith('/vote')).length`)
+    await click('forum-vote-'+direction)
+    await until(`window.__forumWire.filter(r=>r.method==='PUT'&&r.url.endsWith('/vote')&&r.status>=200&&r.status<300).length>${before}`)
+  }
+  // Explicit normal status refresh, without constructing replacement signed operations.
+  const status = await evaluate(`(async()=>{
+    const chain=await import('/@fs'+${JSON.stringify(resolve(fileURLToPath(new URL('../../packages/wallet/chain/index.ts',import.meta.url))))});
+    const session=await import(performance.getEntriesByType('resource').find(e=>e.name.includes('/src/accounts/session.ts')).name);
+    await chain.activeChain.topics.reconcileOperations({wallet:await session.accountSession.getWallet()});
+    const request=window.__forumWire.find(r=>r.method==='PUT'&&!r.url.endsWith('/vote'));
+    const response=await fetch(request.url+'/status',{method:'POST',headers:{'content-type':'application/cbor',accept:'application/cbor'},body:new Uint8Array(request.request)});
+    return response.status;
+  })()`)
+  assert.equal(status,200)
+  const audit=await evaluate(`(async()=>{
+    const c=await import('/@fs'+${JSON.stringify(codecPath)});
+    const seen=new Set(),directions=new Set();
+    for(const row of window.__forumWire){
+      if(!row.status||row.status<200||row.status>=300)continue;
+      if(row.headers.accept!=='application/cbor')throw Error('non-CBOR Accept '+row.url);
+      if(row.method==='PUT'||row.method==='POST'){
+        if(row.headers['content-type']!=='application/cbor')throw Error('non-CBOR Content-Type');
+        const p=c.validateFrame(new Uint8Array(row.request),c.defaultContext());
+        if(p.kind!=='parsed'||![10,11].includes(p.typeId))throw Error('noncanonical request');
+        seen.add(p.typeId);
+        if(p.typeId===10){
+          const post=p.typed.postFrame;
+          if(post.schemaVersion!==2)throw Error('schema-1 post');
+          const entry=post.typed.content.entries[0];
+          if(entry.title===${JSON.stringify(title)}){
+            if(entry.message!==${JSON.stringify(body)}||c.toHex(c.contentHash(post))!==${JSON.stringify(digest)}||post.typed.parentHash)throw Error('root title/body/T1 changed');
+          }else if(entry.title===${JSON.stringify(title+' reply')}){
+            if(entry.message!=='Exact rendered reply'||c.toHex(post.typed.parentHash)!==${JSON.stringify(digest)})throw Error('reply parent/body changed');
+          }else throw Error('unexpected fixture post');
+          seen.add(9);
+        }
+
+      }
+      if(row.contentType?.split(';')[0]!=='application/cbor')throw Error('non-CBOR response');
+      const p=c.validateFrame(new Uint8Array(row.response),c.defaultContext());
+      if(p.kind!=='parsed'||![12,13,14,15].includes(p.typeId))throw Error('unexpected canonical response');
+      seen.add(p.typeId);
+      if(p.typeId===15 && p.typed.submittedFrame.typeId===11)directions.add(p.typed.direction);
+    }
+    if(!directions.has(0)||!directions.has(1))throw Error('missing exact up/down operation statuses');
+    return {seen:[...seen].sort((a,b)=>a-b),wireCount:window.__forumWire.length};
+  })()`)
+  assert.deepEqual(audit.seen,[9,10,11,12,13,14,15])
+  // Alter relay observation fields only; immutable post bytes and signed author proof remain exact.
+  // Pause the older real HTTP response while a newer whole snapshot is published.
+  let held, holding=true, weight=(1n<<255n)+1n
+  const transformed = async event => {
+    const {body,base64Encoded}=await call('Fetch.getResponseBody',{requestId:event.params.requestId})
+    const bytes=base64Encoded?Buffer.from(body,'base64'):Buffer.from(body)
+    const encoded=await evaluate(`(async()=>{
+      const c=await import('/@fs'+${JSON.stringify(codecPath)});
+      const p=c.validateFrame(new Uint8Array(${JSON.stringify([...bytes])}),c.defaultContext());
+      if(p.kind!=='parsed'||p.typeId!==13)throw Error('fixture requires exact type13');
+      const payload=p.payload;
+      payload.set(3n,18446744073709551615n);
+      const magnitude=c.fromHex(${JSON.stringify((weight<0n?-weight:weight).toString(16).padStart(64,'0'))});
+      payload.set(4n,payload.get(4n).map(raw=>{
+        const view=c.validateFrame(raw,c.defaultContext());
+        view.payload.set(8n,new Map([[0n,${weight<0n}],[1n,magnitude]]));
+        view.payload.set(9n,18446744073709551615n);
+        return c.encodeForumReadFrame(12,view.payload);
+      }));
+      return Array.from(c.encodeForumReadFrame(13,payload));
+    })()`)
+    await call('Fetch.fulfillRequest',{requestId:event.params.requestId,responseCode:200,
+      responseHeaders:[...event.params.responseHeaders.filter(h=>!['content-length','content-encoding'].includes(h.name.toLowerCase())),{name:'content-length',value:String(encoded.length)}],body:Buffer.from(encoded).toString('base64')})
+  }
+  interceptResponse=async event=>{
+    if(holding){holding=false;held=event;return}
+    await transformed(event)
+  }
+  await call('Fetch.enable',{patterns:[{urlPattern:'*/message/monad/topics?*',requestStage:'Response'}]})
+  const refresh=`(async()=>{
+    const m=await import('/src/stores/forum.ts');
+    const session=await import(performance.getEntriesByType('resource').find(e=>e.name.includes('/src/accounts/session.ts')).name);
+    const pinia=document.querySelector('#q-app').__vue_app__.config.globalProperties.$pinia;
+    return m.useForumStore(pinia).refreshMessages({wallet:await session.accountSession.getWallet(),topic:'news'});
+  })()`
+  const oldSnapshot=await evaluate(`JSON.stringify(${forumState}.messages)`)
+  await evaluate(`(()=>{window.__olderRefresh=${refresh}.then(()=>true);return true})()`)
+  for(let n=0;!held&&n<200;n++)await new Promise(resolve=>setTimeout(resolve,50))
+  assert.ok(held,'older HTTP response reached interception')
+  assert.equal(await evaluate(`JSON.stringify(${forumState}.messages)`),oldSnapshot,'staged response has not published')
+  await evaluate(refresh)
+  await until(`${forumState}.messages.some(m=>m.payloadDigest===${JSON.stringify(digest)}&&m.voteWeightWei===${JSON.stringify(weight.toString())})`)
+  const newerSnapshot=await evaluate(`JSON.stringify(${forumState})`)
+  await call('Fetch.continueRequest',{requestId:held.params.requestId})
+  await evaluate(`window.__olderRefresh`)
+  assert.equal(await evaluate(`JSON.stringify(${forumState})`),newerSnapshot,'older result/finally cannot overwrite newer snapshot')
+  await input('forum-threshold','0.009007199254740993')
+  await evaluate(`location.hash='#/forum'`)
+  await until(`Array.from(document.querySelectorAll('a.post-title')).some(e=>e.textContent===${JSON.stringify(title)}&&e.getClientRects().length>0)`)
+  assert.equal(await evaluate(`${forumState}.index[${JSON.stringify(digest)}].revision`),'18446744073709551615')
+  weight=-weight
+  await evaluate(refresh)
+  await until(`${forumState}.index[${JSON.stringify(digest)}].voteWeightWei===${JSON.stringify(weight.toString())}`)
+  assert.equal(await evaluate(`Array.from(document.querySelectorAll('a.post-title')).some(e=>e.textContent===${JSON.stringify(title)}&&e.getClientRects().length>0)`),false,'negative wide amount is filtered by exact positive threshold')
+  weight=0n
+  await input('forum-threshold','0')
+  await evaluate(refresh)
+  await until(`${forumState}.index[${JSON.stringify(digest)}].voteWeightWei==='0'`)
+  assert.ok(await evaluate(`Array.from(document.querySelectorAll('a.post-title')).some(e=>e.textContent===${JSON.stringify(title)}&&e.getClientRects().length>0)`),'zero aggregate renders at zero threshold')
+  await call('Fetch.disable')
+  assert.ok(await evaluate(`JSON.stringify(${forumState}).includes(${JSON.stringify(digest)})`))
+  assert.equal(allEvents.some(e=>e.method==='Runtime.exceptionThrown'),false)
+  console.log('Rendered CreatePost → list → single → reply → up/down → status; schema-2 and types 10–15 media/bytes; exact drawer threshold:',audit)
+} finally {
+  await stop()
+  await rm(directory,{recursive:true,force:true})
+}

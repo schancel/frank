@@ -85,12 +85,12 @@ Frank is a port of a deeper protocol, not a finished security product. This tabl
 | Local account creation without required PII                      | Working                                                                                                    |
 | Signed Monad-native profile registration                         | Working                                                                                                    |
 | Encrypted direct-message content                                 | Working; legacy CBC construction needs an authenticated-encryption redesign                                |
-| Direct-message stamp pays the recipient                          | Working; currently one transaction to the recipient's known EOA                                            |
+| Direct-message stamp pays the recipient                          | Working; paid to one-time stamp-child destinations rather than the recipient's known EOA                   |
 | Topic posts and votes burn MON                                   | Working                                                                                                    |
 | Relay-side transaction broadcast, confirmation, and verification | Working                                                                                                    |
 | Single-use sender funding accounts and change handling           | Working                                                                                                    |
-| Recipient one-time stamp-child destinations                      | Designed in original Stamp; not yet restored on Monad ([#60](https://github.com/schancel/frank/issues/60)) |
-| Greedy multi-transaction stamp construction                      | Designed in original Stamp; not yet restored on Monad ([#60](https://github.com/schancel/frank/issues/60)) |
+| Recipient one-time stamp-child destinations                      | Working; restored on Monad in [#60](https://github.com/schancel/frank/issues/60)                           |
+| Split multi-transaction stamp construction                       | Working; restored on Monad in [#60](https://github.com/schancel/frank/issues/60); one payment is permitted |
 | Per-profile relay discovery and mailbox migration                | Original Stamp behavior; not yet restored on Monad                                                         |
 | Cross-device checkpoints and safe state compaction               | Design work ([#58](https://github.com/schancel/frank/issues/58))                                           |
 | True simultaneous multichain operation                           | Design work ([#59](https://github.com/schancel/frank/issues/59))                                           |
@@ -109,7 +109,7 @@ The recipient reconstructs the matching private key:
 stamp private key = H(payload digest) + recipient private key  (mod n)
 ```
 
-Stamp then derives child destinations and greedily builds at least two transactions from distinct funding sources. No single transaction or address needs to reveal the complete stamp amount. Frank's current Monad path restores the essential payment semantics first; [#60](https://github.com/schancel/frank/issues/60) tracks the byte-exact EVM derivation, multi-transaction wire format, relay verification, and recipient spending lifecycle.
+Stamp then derives child destinations and greedily builds at least two transactions from distinct funding sources. No single transaction or address needs to reveal the complete stamp amount. Frank's Monad path restores this construction: [#60](https://github.com/schancel/frank/issues/60) delivered the EVM stamp-child derivation, the split-payment wire format, and relay verification of each payment.
 
 For EVM, a derived secp256k1 public key becomes an address through:
 
@@ -270,7 +270,6 @@ The longer-term multichain direction separates the network that supplies the man
 
 The immediate goal is correctness, not expansive claims:
 
-- Restore recipient stamp-child derivation and greedy multi-transaction payments.
 - Replace the legacy encryption envelope with reviewed deniable authenticated encryption.
 - Restore federated per-profile relay routing and migration.
 - Separate logical message IDs from recipient-specific payload digests.

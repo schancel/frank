@@ -174,6 +174,23 @@ describe('canonical reply outbox', () => {
       'not an address',
     )
     await expect(f.outbox.enqueue('k', PEER, [])).rejects.toThrow('empty')
+    // A reply the closed type-18 writer would refuse (a seed that is not 64 lowercase hex, an
+    // extra field) or any other structured kind is refused here, not left to block the queue.
+    for (const item of [
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'reveal',
+        dealerCards: [1, 2],
+        serverSeed: 'initial-seed',
+        outcome: 'push',
+      },
+      { type: 'blackjack-move', gameId: 'g', action: 'stand', amount: '1' },
+      { type: 'raffle', raffleId: 'r', action: 'announce' },
+    ])
+      await expect(
+        f.outbox.enqueue('k', PEER, [item as never]),
+      ).rejects.toThrow()
     expect(store.all()).toEqual([])
     await f.outbox.enqueue('k', PEER, text('x'))
     // A payment set can never be dropped or swapped once recorded.

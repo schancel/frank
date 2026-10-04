@@ -19,7 +19,12 @@ import { join } from 'path'
 import { computeAddress } from 'ethers'
 import level, { LevelDB } from 'level'
 
-import type { MessageItem } from '@frank/cashweb/types/messages'
+import { directMessageText } from '@frank/cashweb/relay/canonical-dm'
+import type {
+  CanonicalBlackjackMoveItem,
+  MessageItem,
+} from '@frank/cashweb/types/messages'
+import { encodeCanonicalBlackjackItem } from '@frank/wallet/message-item-plugins/blackjack/plugin'
 import type {
   DirectMessageClient,
   DirectMessageReceived,
@@ -311,11 +316,20 @@ export class BlackjackCanonicalOutbox {
     )
   }
 
-  enqueue(
+  /** Saves one reply. Every item is encoded once here with the same closed writers the wallet
+   * uses, so a reply that could never be sealed is refused now instead of blocking the queue. */
+  async enqueue(
     key: string,
     recipient: string,
     items: MessageItem[],
   ): Promise<'saved' | 'duplicate'> {
+    for (const item of items) {
+      if (item.type === 'text') directMessageText(item.text)
+      else if (item.type === 'blackjack-move')
+        encodeCanonicalBlackjackItem(item as CanonicalBlackjackMoveItem)
+      else
+        throw new Error(`the canonical dealer cannot send '${item.type}' items`)
+    }
     return this.options.store.enqueue(key, recipient, items)
   }
 

@@ -12,7 +12,9 @@ payload digest)` events and nothing else.
 ## Messages
 
 Type 18, schema 2, min reader 2 (`blackjack-hand` in the app). Schema 1 (the old dealer-only
-shapes) is still read but no longer written by the app. Every item carries `gameId`.
+shapes) is still read but no longer written by the app. Every item carries `gameId`, exactly 32
+lowercase hex characters. A message may carry at most one hand item: its stamp is one amount of
+money, so a message with two or more counts for no hand and credits nothing.
 
 | action      | sender     | fields                              | what the message's stamp means |
 | ----------- | ---------- | ----------------------------------- | ------------------------------ |
@@ -71,13 +73,19 @@ from their bet, and the reveal lets the player check the deck.
   the commitment and the player's cards, the up card, the dealer's cards and the outcome are exactly
   what the deck gives.
 
-The dealer knows the deck during the hand but has no decisions to make with it. This detects a
-dealer that deals false cards; it does not stop one from walking away (see below).
+This detects a dealer that deals false cards. It does not make the dealer blind: the dealer knows
+its seed and sees the bet's digest, so **it can work out the whole hand after the bet and before
+dealing**, and it may refund the bet instead of dealing. Until escrow exists, a dealer can therefore
+decline hands it would lose. It also does not stop a dealer from walking away (see below).
 
 ## Money rules
 
 `spendable` is the balance of the wallet's own account. Stamps a wallet has **received** cannot be
 spent yet (#837), so they never count.
+
+The amount credited for a message is what the relay's delivery says was paid as its stamp. The
+recipient does not yet check the chain itself, so a dishonest relay could credit a bet that was
+never paid.
 
 1. **Dealer's limit.** A dealer may offer or accept a max bet of at most
    `(spendable − fee reserve) / 4`. Worst case is a doubled win: the dealer sends back 4× the bet
@@ -92,7 +100,8 @@ spent yet (#837), so they never count.
    is the wager, or twice it after a double. The payout is the stamp of the `reveal`. The hand
    records what was owed and what was paid; a short payment shows as such.
 5. **Refund.** A refund is a reply whose stamp equals the money being returned. Before dealing, the
-   dealer may refund the accepted bet instead of dealing (`refunded`).
+   dealer may refund the accepted bet instead of dealing (`refunded`). A refund whose stamp is less
+   than what was owed leaves the rest owed, and is shown as such.
 6. **Exactly once.** The bot writes each payout or refund to a durable outbox keyed by hand and
    message before sending and never builds a second payment for the same key.
 
@@ -104,15 +113,23 @@ There are no timeouts and no claims. Until escrow exists:
 - The dealer goes silent after the bet, or reveals without paying: **the player loses the stake.**
 - The player goes silent mid-hand: the dealer keeps the stake and owes nothing.
 - A dealer that owes a refund and does not send it keeps the money.
+- A human dealer keeps its seed on one device. If it loses the seed after dealing, it can neither
+  deal further nor reveal, and the game cannot return the player's stake.
 
 ## The headless bot
 
 `packages/bot/blackjack-p2p-bot.ts` is an ordinary account driving this same state machine with
 these same messages. It accepts any challenge in the opposite role, and it challenges, as dealer,
 each account it meets for the first time: an account that sends it any message, or an address from
-an optional feed of new accounts (for example a relay's list of new registrations). Each address
-is challenged once. Its payouts, refunds and bets go through a durable outbox, one message per
-hand position, so a crash or a lost relay answer never pays twice.
+a feed of new accounts. Each address is challenged once.
+
+What it puts at risk is bounded by configuration: one hand with money at stake per account at a
+time, a small bet when it plays, a limit on its total stake as player, its own max bet when it
+deals, and a limit on how many hands are open at once (a silent opponent keeps a hand open for
+good). Money sent to a hand it does not take is returned.
+
+Its payouts, refunds and bets go through a durable outbox with one row per debt or move, so a crash
+or a lost relay answer never pays twice, and a message that cannot be sent does not hold up others.
 
 ## Later: adaptor-signature escrow
 

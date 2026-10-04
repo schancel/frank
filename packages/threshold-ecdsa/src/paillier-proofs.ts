@@ -8,18 +8,16 @@
  * The third key-generation proof (the ciphertext encrypts the discrete log of
  * a given point) is interactive and lives in `keygen.ts`.
  */
-import { bytesToInt, concat, intToBytes, Reader } from './bytes.js'
+import { bytesToInt, concat, equalBytes, intToBytes, Reader } from './bytes.js'
 import { hasSmallPrimeFactor, modInverse, modPow } from './bigint.js'
-import { SHARE_HIGH, SHARE_LOW, transcript } from './group.js'
+import { HASH_BYTES, SHARE_HIGH, SHARE_LOW, transcript } from './group.js'
 import {
-  addCiphertexts,
-  CIPHERTEXT_BYTES,
   ciphertextBytes,
   drawUnit,
   encrypt,
+  encryptAsOwner,
   MODULUS_BYTES,
   modulusBytes,
-  parseCiphertext,
   parseUnit,
   unitBytes,
   type PaillierPublicKey,
@@ -126,8 +124,8 @@ export function requireModulusProof(
 // c_key - Enc(l), so an honest share x in [l, 2l) is accepted and any accepted
 // c_key encrypts a value in (0, 3l), a subset of [0, n).
 //
-//   Commit:    for each round i, pick u in [l, 2l), set v = u - l, post
-//              (c1, c2) = encryptions of (u, v) in a random order.
+//   Commit:    for each round i, pick u in [l, 2l), set v = u - l, and let
+//              (c1, c2) be encryptions of (u, v) in a random order.
 //   Challenge: one bit per round.
 //   Respond:   bit 0: open both ciphertexts.
 //              bit 1: open c + c_j for the j with x' + w_j in [l, 2l).
@@ -137,26 +135,39 @@ export function requireModulusProof(
 //
 // A prover whose x' is outside (-l, 2l) can answer at most one of the two
 // challenges per round, so cheating succeeds with probability 2^-ROUNDS.
-// The proof is interactive here: the verifier commits to its challenge before
-// seeing the prover's commitments (keygen.ts), which gives soundness 2^-40
-// per key-generation attempt and zero knowledge against a malicious verifier.
+//
+// Two things differ from the text of the paper, neither changing the proof:
+//
+//  - ROUNDS is 80, not 40.
+//  - The prover does not send the 2 * ROUNDS ciphertexts (82 KB). It sends
+//    one hash over a per-ciphertext hash ("leaf") of each. The verifier
+//    recomputes every leaf it can from the response (both leaves of a bit-0
+//    round; for a bit-1 round the leaf of c_j = Enc(sum; r) - c), takes the
+//    one remaining leaf of a bit-1 round from the response, and compares the
+//    hash. By collision resistance the prover is bound to all ciphertexts
+//    before it sees the challenge, exactly as if it had sent them.
+//
+// The proof is interactive: the verifier commits to its challenge before the
+// prover's commitment is sent (keygen.ts), which gives soundness 2^-80 per
+// key-generation attempt and zero knowledge against a malicious verifier.
 
-export const RANGE_ROUNDS = 40
+export const RANGE_ROUNDS = 80
 export const RANGE_CHALLENGE_BYTES = RANGE_ROUNDS / 8
-export const RANGE_COMMIT_BYTES = RANGE_ROUNDS * 2 * CIPHERTEXT_BYTES
+export const RANGE_COMMIT_BYTES = HASH_BYTES
 const VALUE_BYTES = 32
-const RANGE_SECRET_ROUND_BYTES = 2 * VALUE_BYTES + 2 * MODULUS_BYTES
+const RANGE_SECRET_ROUND_BYTES =
+  2 * VALUE_BYTES + 2 * MODULUS_BYTES + 2 * HASH_BYTES
 const OPEN_BOTH_BYTES = 1 + 2 * VALUE_BYTES + 2 * MODULUS_BYTES
-const OPEN_SUM_BYTES = 1 + VALUE_BYTES + MODULUS_BYTES
+const OPEN_SUM_BYTES = 1 + VALUE_BYTES + MODULUS_BYTES + HASH_BYTES
 /** Largest possible response: every round opens both ciphertexts. */
 export const RANGE_RESPONSE_MAX_BYTES = RANGE_ROUNDS * OPEN_BOTH_BYTES
 /** Smallest possible response: every round opens one sum. */
 export const RANGE_RESPONSE_MIN_BYTES = RANGE_ROUNDS * OPEN_SUM_BYTES
 
 export interface RangeCommitment {
-  /** `c1_0 || c2_0 || c1_1 || ...`, sent to the verifier. */
+  /** Hash over all ciphertext leaves, sent to the verifier. */
   readonly wire: Uint8Array
-  /** Per round `w1 || w2 || r1 || r2`. Secret until (partly) opened. */
+  /** Per round `w1 || w2 || r1 || r2 || leaf1 || leaf2`. Secret. */
   readonly secret: Uint8Array
 }
 
@@ -164,11 +175,20 @@ function challengeBit(challenge: Uint8Array, round: number): number {
   return ((challenge[round >> 3] ?? 0) >> (round & 7)) & 1
 }
 
+function leaf(ciphertext: bigint): Uint8Array {
+  return transcript('proof/range/leaf', ciphertextBytes(ciphertext))
+}
+
+function commitmentDigest(leaves: readonly Uint8Array[]): Uint8Array {
+  return transcript('proof/range/commit', ...leaves)
+}
+
+/** The prover's first message. Uses the key owner's fast encryption. */
 export function rangeCommit(
-  key: PaillierPublicKey,
+  key: PaillierSecretKey,
   rng: RandomBytes,
 ): RangeCommitment {
-  const wire: Uint8Array[] = []
+  const leaves: Uint8Array[] = []
   const secret: Uint8Array[] = []
   for (let round = 0; round < RANGE_ROUNDS; round += 1) {
     const upper = drawInRange(rng, SHARE_LOW, SHARE_HIGH)
@@ -178,18 +198,19 @@ export function rangeCommit(
     const w2 = swap ? upper : lower
     const r1 = drawUnit(key, rng)
     const r2 = drawUnit(key, rng)
-    wire.push(
-      ciphertextBytes(encrypt(key, w1, r1)),
-      ciphertextBytes(encrypt(key, w2, r2)),
-    )
+    const leaf1 = leaf(encryptAsOwner(key, w1, r1))
+    const leaf2 = leaf(encryptAsOwner(key, w2, r2))
+    leaves.push(leaf1, leaf2)
     secret.push(
       intToBytes(w1, VALUE_BYTES),
       intToBytes(w2, VALUE_BYTES),
       unitBytes(r1),
       unitBytes(r2),
+      leaf1,
+      leaf2,
     )
   }
-  return { wire: concat(...wire), secret: concat(...secret) }
+  return { wire: commitmentDigest(leaves), secret: concat(...secret) }
 }
 
 /**
@@ -218,6 +239,8 @@ export function rangeRespond(
     const w2 = reader.take(VALUE_BYTES)
     const r1 = reader.take(MODULUS_BYTES)
     const r2 = reader.take(MODULUS_BYTES)
+    const leaf1 = reader.take(HASH_BYTES)
+    const leaf2 = reader.take(HASH_BYTES)
     if (challengeBit(challenge, round) === 0) {
       out.push(Uint8Array.of(0), w1, w2, r1, r2)
       continue
@@ -233,6 +256,7 @@ export function rangeRespond(
       Uint8Array.of(firstFits ? 1 : 2),
       intToBytes(sum, VALUE_BYTES),
       unitBytes(randomness),
+      firstFits ? leaf2 : leaf1,
     )
     w1.fill(0)
     w2.fill(0)
@@ -241,21 +265,6 @@ export function rangeRespond(
   }
   reader.finish()
   return concat(...out)
-}
-
-/** Validates every commitment ciphertext and returns them in wire order. */
-export function parseRangeCommitments(
-  key: PaillierPublicKey,
-  wire: Uint8Array,
-): bigint[] {
-  if (wire.length !== RANGE_COMMIT_BYTES) fail('malformed-message')
-  const reader = new Reader(wire)
-  const out: bigint[] = []
-  for (let index = 0; index < 2 * RANGE_ROUNDS; index += 1) {
-    out.push(parseCiphertext(key, reader.take(CIPHERTEXT_BYTES)))
-  }
-  reader.finish()
-  return out
 }
 
 function inUpper(value: bigint): boolean {
@@ -268,24 +277,24 @@ function inLower(value: bigint): boolean {
 
 /**
  * Verifier. `statement` is the validated ciphertext being proven (already
- * shifted by the caller), `commitmentWire` the prover's commitments and
+ * shifted by the caller), `commitment` the prover's first message and
  * `challenge` the verifier's own challenge. `response` must be consumed
  * exactly.
  */
 export function requireRangeProof(
   key: PaillierPublicKey,
   statement: bigint,
-  commitmentWire: Uint8Array,
+  commitment: Uint8Array,
   challenge: Uint8Array,
   response: Uint8Array,
 ): void {
   if (challenge.length !== RANGE_CHALLENGE_BYTES) fail('internal-error')
-  const commitments = parseRangeCommitments(key, commitmentWire)
+  if (commitment.length !== RANGE_COMMIT_BYTES) fail('malformed-message')
+  const statementInverse = modInverse(statement, key.nn)
+  if (statementInverse === null) fail('invalid-paillier')
   const reader = new Reader(response)
+  const leaves: Uint8Array[] = []
   for (let round = 0; round < RANGE_ROUNDS; round += 1) {
-    const c1 = commitments[2 * round]
-    const c2 = commitments[2 * round + 1]
-    if (c1 === undefined || c2 === undefined) fail('internal-error')
     const kind = reader.byte()
     if (challengeBit(challenge, round) === 0) {
       if (kind !== 0) fail('invalid-proof')
@@ -296,16 +305,21 @@ export function requireRangeProof(
       const ordered =
         (inUpper(w1) && inLower(w2)) || (inLower(w1) && inUpper(w2))
       if (!ordered) fail('invalid-proof')
-      if (encrypt(key, w1, r1) !== c1) fail('invalid-proof')
-      if (encrypt(key, w2, r2) !== c2) fail('invalid-proof')
+      leaves.push(leaf(encrypt(key, w1, r1)), leaf(encrypt(key, w2, r2)))
     } else {
       if (kind !== 1 && kind !== 2) fail('invalid-proof')
       const sum = bytesToInt(reader.take(VALUE_BYTES))
       const randomness = parseUnit(key, reader.take(MODULUS_BYTES))
+      const otherLeaf = reader.take(HASH_BYTES)
       if (!inUpper(sum)) fail('invalid-proof')
-      const masked = addCiphertexts(key, statement, kind === 1 ? c1 : c2)
-      if (encrypt(key, sum, randomness) !== masked) fail('invalid-proof')
+      // statement + c_j = Enc(sum; randomness), so c_j is determined.
+      const opened = leaf(
+        (encrypt(key, sum, randomness) * statementInverse) % key.nn,
+      )
+      if (kind === 1) leaves.push(opened, otherLeaf)
+      else leaves.push(otherLeaf, opened)
     }
   }
   reader.finish()
+  if (!equalBytes(commitmentDigest(leaves), commitment)) fail('invalid-proof')
 }

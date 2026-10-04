@@ -42,6 +42,7 @@ import {
   decrypt,
   drawUnit,
   encrypt,
+  encryptAsOwner,
   generatePaillierKey,
   modulusBytes,
   paillierPublicKey,
@@ -340,6 +341,15 @@ describe('Paillier', () => {
     expect(encrypt(key, 5n, r1)).not.toBe(encrypt(key, 5n, r2))
   })
 
+  it("the owner's CRT encryption equals ordinary encryption", () => {
+    for (const message of [0n, 1n, 1234567n, key.n - 1n]) {
+      const randomness = drawUnit(key, rng)
+      expect(encryptAsOwner(key, message, randomness)).toBe(
+        encrypt(key, message, randomness),
+      )
+    }
+  })
+
   it('rejects out-of-range moduli, units and ciphertexts', () => {
     const modulus = modulusBytes(key)
     expect(parseModulus(modulus).n).toBe(key.n)
@@ -435,6 +445,9 @@ describe('Paillier', () => {
           q,
           phi: (p - 1n) * (q - 1n),
           phiInverse: 0n,
+          pp: p * p,
+          qq: q * q,
+          ppInverse: 0n,
         }),
       ),
     ).toBe('invalid-paillier')
@@ -454,37 +467,80 @@ describe('Paillier', () => {
   })
 
   describe('range proof', () => {
-    const challenge = Uint8Array.of(0b10110010, 0x0f, 0xa5, 0x00, 0xff)
+    // The range proof does not depend on the modulus size, so these tests use
+    // a 1024-bit key built by hand (the protocol itself only ever accepts
+    // 2048-bit keys; see the key-generation suite for the proof at full size).
+    let small: PaillierSecretKey
+    const challenge = Uint8Array.of(
+      0b10110010,
+      0x0f,
+      0xa5,
+      0x00,
+      0xff,
+      0x3c,
+      0x81,
+      0x7e,
+      0x55,
+      0xaa,
+    )
+
+    beforeAll(() => {
+      const stream = seededRandom('small-paillier')
+      const p = generatePrime(512, stream)
+      const q = generatePrime(512, stream)
+      const n = p * q
+      const phi = (p - 1n) * (q - 1n)
+      small = {
+        n,
+        nn: n * n,
+        p,
+        q,
+        phi,
+        phiInverse: modInverse(phi, n)!,
+        pp: p * p,
+        qq: q * q,
+        ppInverse: modInverse(p * p, q * q)!,
+      }
+      expect(RANGE_ROUNDS).toBe(80)
+      expect(challenge).toHaveLength(RANGE_ROUNDS / 8)
+    })
 
     function statementFor(witness: bigint): {
       statement: bigint
       randomness: bigint
     } {
-      const randomness = drawUnit(key, rng)
-      return { statement: encrypt(key, witness, randomness), randomness }
+      const randomness = drawUnit(small, rng)
+      return { statement: encrypt(small, witness, randomness), randomness }
     }
 
-    it('accepts an honest proof at both ends of the range', () => {
-      for (const witness of [0n, SHARE_LOW - 1n]) {
+    it('accepts an honest proof at both ends of the range, with a 32-byte commitment', () => {
+      for (const witness of [0n, SHARE_LOW / 2n, SHARE_LOW - 1n]) {
         const { statement, randomness } = statementFor(witness)
-        const commitment = rangeCommit(key, rng)
+        const commitment = rangeCommit(small, rng)
+        expect(commitment.wire).toHaveLength(32)
         const response = rangeRespond(
-          key,
+          small,
           commitment.secret,
           witness,
           randomness,
           challenge,
         )
-        requireRangeProof(key, statement, commitment.wire, challenge, response)
+        requireRangeProof(
+          small,
+          statement,
+          commitment.wire,
+          challenge,
+          response,
+        )
       }
     })
 
     it('refuses to respond for a witness outside the range', () => {
-      const commitment = rangeCommit(key, rng)
+      const commitment = rangeCommit(small, rng)
       for (const witness of [-1n, SHARE_LOW, CURVE_ORDER]) {
         expect(
           code(() =>
-            rangeRespond(key, commitment.secret, witness, 3n, challenge),
+            rangeRespond(small, commitment.secret, witness, 3n, challenge),
           ),
         ).toBe('internal-error')
       }
@@ -493,29 +549,28 @@ describe('Paillier', () => {
     it('rejects a response for another challenge, statement or commitment', () => {
       const witness = 424242n
       const { statement, randomness } = statementFor(witness)
-      const commitment = rangeCommit(key, rng)
+      const commitment = rangeCommit(small, rng)
       const response = rangeRespond(
-        key,
+        small,
         commitment.secret,
         witness,
         randomness,
         challenge,
       )
-      const otherChallenge = flip(challenge, 2)
       const bad = (run: () => void) =>
         expect(['invalid-proof', 'malformed-message']).toContain(code(run))
       bad(() =>
         requireRangeProof(
-          key,
+          small,
           statement,
           commitment.wire,
-          otherChallenge,
+          flip(challenge, 2),
           response,
         ),
       )
       bad(() =>
         requireRangeProof(
-          key,
+          small,
           statementFor(witness).statement,
           commitment.wire,
           challenge,
@@ -524,25 +579,28 @@ describe('Paillier', () => {
       )
       bad(() =>
         requireRangeProof(
-          key,
+          small,
           statement,
-          rangeCommit(key, rng).wire,
+          rangeCommit(small, rng).wire,
           challenge,
           response,
         ),
       )
+      // A flipped bit anywhere: value, randomness, or the unopened leaf.
+      for (const index of [3, 40, 300, response.length - 1]) {
+        bad(() =>
+          requireRangeProof(
+            small,
+            statement,
+            commitment.wire,
+            challenge,
+            flip(response, index),
+          ),
+        )
+      }
       bad(() =>
         requireRangeProof(
-          key,
-          statement,
-          commitment.wire,
-          challenge,
-          flip(response, 40),
-        ),
-      )
-      bad(() =>
-        requireRangeProof(
-          key,
+          small,
           statement,
           commitment.wire,
           challenge,
@@ -551,7 +609,7 @@ describe('Paillier', () => {
       )
       bad(() =>
         requireRangeProof(
-          key,
+          small,
           statement,
           commitment.wire,
           challenge,
@@ -562,26 +620,42 @@ describe('Paillier', () => {
 
     it('a prover whose value is out of range passes only by guessing the whole challenge', () => {
       // Encrypt n + 5: far outside [0, l). A cheating prover prepares, per
-      // round, commitments that answer exactly one challenge bit, chosen in
-      // advance. It is accepted if and only if every guess was right, which
-      // has probability 2^-40 because the verifier's challenge is committed
-      // before the prover's commitments are sent.
+      // round, ciphertexts that answer exactly one challenge bit, chosen in
+      // advance, and commits to their hashes. It is accepted if and only if
+      // every guess was right, which has probability 2^-80 because the
+      // verifier's challenge is committed before the prover's commitment.
+      const { transcript } = jest.requireActual(
+        './group',
+      ) as typeof import('./group.js')
+      const leaf = (ciphertext: bigint) =>
+        transcript('proof/range/leaf', ciphertextBytes(ciphertext))
       const witness = CURVE_ORDER + 5n
-      const randomness = drawUnit(key, rng)
-      const statement = encrypt(key, witness, randomness)
-      const guess = Uint8Array.of(0x5a, 0xc3, 0x0f, 0x99, 0x71)
-      const commitments: Uint8Array[] = []
+      const randomness = drawUnit(small, rng)
+      const statement = encrypt(small, witness, randomness)
+      const guess = Uint8Array.of(
+        0x5a,
+        0xc3,
+        0x0f,
+        0x99,
+        0x71,
+        0x12,
+        0xfe,
+        0x08,
+        0x64,
+        0xb7,
+      )
+      const leaves: Uint8Array[] = []
       const responses: Uint8Array[] = []
       for (let round = 0; round < RANGE_ROUNDS; round += 1) {
         const bit = ((guess[round >> 3] ?? 0) >> (round & 7)) & 1
-        const r1 = drawUnit(key, rng)
-        const r2 = drawUnit(key, rng)
+        const r1 = drawUnit(small, rng)
+        const r2 = drawUnit(small, rng)
         if (bit === 0) {
-          // Honest-looking pair, which can be opened.
+          // An honest-looking pair, which can be opened.
           const upper = drawInRange(rng, SHARE_LOW, SHARE_HIGH)
-          commitments.push(
-            ciphertextBytes(encrypt(key, upper, r1)),
-            ciphertextBytes(encrypt(key, upper - SHARE_LOW, r2)),
+          leaves.push(
+            leaf(encrypt(small, upper, r1)),
+            leaf(encrypt(small, upper - SHARE_LOW, r2)),
           )
           responses.push(
             Uint8Array.of(0),
@@ -593,24 +667,23 @@ describe('Paillier', () => {
         } else {
           // c1 encrypts (target - witness) mod N, so c + c1 opens in range.
           const target = SHARE_LOW + 1n
-          const mask = (((target - witness) % key.n) + key.n) % key.n
-          commitments.push(
-            ciphertextBytes(encrypt(key, mask, r1)),
-            ciphertextBytes(encrypt(key, 0n, r2)),
-          )
+          const mask = (((target - witness) % small.n) + small.n) % small.n
+          const other = leaf(encrypt(small, 0n, r2))
+          leaves.push(leaf(encrypt(small, mask, r1)), other)
           responses.push(
             Uint8Array.of(1),
             intToBytes(target, 32),
-            intToBytes((randomness * r1) % key.n, 256),
+            intToBytes((randomness * r1) % small.n, 256),
+            other,
           )
         }
       }
-      const wire = new Uint8Array(commitments.flatMap(part => [...part]))
+      const wire = transcript('proof/range/commit', ...leaves)
       const response = new Uint8Array(responses.flatMap(part => [...part]))
-      // Right guess: accepted (this is the 2^-40 event).
-      requireRangeProof(key, statement, wire, guess, response)
+      // Right guess: accepted (this is the 2^-80 event).
+      requireRangeProof(small, statement, wire, guess, response)
       // Any other challenge: rejected, whichever single bit differs.
-      for (let bit = 0; bit < RANGE_ROUNDS; bit += 7) {
+      for (let bit = 0; bit < RANGE_ROUNDS; bit += 11) {
         const other = guess.slice()
         other[bit >> 3] = (other[bit >> 3] ?? 0) ^ (1 << (bit & 7))
         expect([
@@ -618,7 +691,9 @@ describe('Paillier', () => {
           'malformed-message',
           'invalid-paillier',
         ]).toContain(
-          code(() => requireRangeProof(key, statement, wire, other, response)),
+          code(() =>
+            requireRangeProof(small, statement, wire, other, response),
+          ),
         )
       }
     })

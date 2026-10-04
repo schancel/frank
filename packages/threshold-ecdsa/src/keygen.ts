@@ -1,47 +1,50 @@
 /**
- * Two-party key generation.
+ * Two-party key generation: Protocol 3.1 of Lindell, "Fast Secure Two-Party
+ * ECDSA Signing" (CRYPTO 2017, ePrint 2017/552), in one direction with fixed
+ * roles, exactly as in the paper. The initiator is P1, the responder P2.
  *
- * This is Protocol 3.1 of Lindell, "Fast Secure Two-Party ECDSA Signing"
- * (CRYPTO 2017, ePrint 2017/552), run in BOTH directions at once: in the
- * paper only P1 owns a Paillier key and sends an encryption of its share; here
- * each party does that for the other, so that later either party can take the
- * decrypting role of a signing session. Each direction is the paper's
- * protocol unchanged.
+ * With n the curve order and l = floor(n / 3):
  *
- * Per direction (prover P, verifier V), with n the curve order and
- * l = floor(n / 3):
- *
- *  - P picks its share x in [l, 2l) and proves knowledge of x for Q = x*G
- *    (Protocol 3.1 steps 1-3; the initiator commits to its Q first, exactly
- *    as P1 does in the paper, so neither party can choose its point as a
- *    function of the other's).
- *  - P generates a Paillier key N, sends c_key = Enc_N(x) and proves:
+ *  - P1 picks x1 in [l, 2l), P2 picks x2 in [1, n). Each proves knowledge of
+ *    its share for Q_i = x_i * G; P1 commits to (Q1, proof) first so neither
+ *    point can depend on the other (Protocol 3.1 steps 1-3).
+ *  - P1 generates a Paillier key N, sends c_key = Enc_N(x1) and proves
  *      (a) gcd(N, phi(N)) = 1                      (modulus proof)
  *      (b) c_key encrypts a value in [0, n)        (range proof, Appendix A)
- *      (c) c_key encrypts the discrete log of Q    (proof for L_PDL, Section 6)
+ *      (c) c_key encrypts the discrete log of Q1   (proof for L_PDL, Section 6)
  *    (Protocol 3.1 steps 3-5.)
  *
- * The joint public key is X = x_A * Q_B = x_B * Q_A.
+ * The joint public key is X = x1 * Q2 = x2 * Q1.
  *
- * Messages (I = initiator, R = responder). Bodies are fixed-layout:
+ * Messages (I = initiator / P1, R = responder / P2), fixed-layout bodies:
  *
- *  1 I->R  commit(Q_I, pok_I) || commit(e_I)
- *  2 R->I  Q_R || pok_R || commit(e_R) || bundle_R
- *  3 I->R  Q_I || pok_I || nonce || bundle_I || e_I || nonce || c'_I || c''_I
- *  4 R->I  hat_R || e_R || nonce || c'_R || c''_R || rangeResponse_R
- *  5 I->R  a_I || b_I || nonce || hat_I || rangeResponse_I
- *  6 R->I  Qhat_R || nonce || a_R || b_R || nonce
- *  7 I->R  Qhat_I || nonce
+ *  1 I->R  salt_I || commit(Q_I, pok_I)
+ *  2 R->I  salt_R || Q_R || pok_R || commit(e)
+ *  3 I->R  Q_I || pok_I || nonce || N || modulusProof || c_key || rangeCommit
+ *  4 R->I  e || nonce || c' || c''
+ *  5 I->R  hat || rangeResponse
+ *  6 R->I  a || b || nonce
+ *  7 I->R  Qhat || nonce || confirm_I
+ *  8 R->I  confirm_R
  *
- * where bundle = N || modulusProof || c_key || rangeCommitments, e is the
- * verifier's range challenge (committed before the prover's range
- * commitments are seen), (c', c'') is the verifier's L_PDL challenge and its
- * commitment to (a, b), and hat is the prover's commitment to Qhat.
+ * e is the verifier's range challenge, committed before the prover's range
+ * commitment is sent; (c', c'') is the verifier's L_PDL challenge and its
+ * commitment to (a, b); hat is the prover's commitment to Qhat.
  *
- * Order of release: a party opens its L_PDL challenge (a, b) only after the
- * other side's range proof verified (Section 6 assumes a range-proven
- * ciphertext), and reveals Qhat only after checking that the decrypted
- * challenge equals a*x + b.
+ * Two additions to the paper, neither touching its proofs:
+ *
+ *  - Each party contributes 32 fresh random bytes (salt). Every proof and
+ *    commitment after message 1 is bound to both salts, and a seeded share is
+ *    derived from the party's own salt, so a peer that repeats a session id
+ *    cannot make this party reuse a share, a Paillier key or a transcript.
+ *  - Key confirmation (messages 7 and 8): each party sends a hash of the key
+ *    id, which covers every public value exchanged. The initiator outputs its
+ *    share only after the responder confirmed, the responder only after the
+ *    initiator did, so both know the other finished with the same key.
+ *
+ * Order of release: R opens its L_PDL challenge (a, b) only after I's range
+ * proof verified (Section 6 assumes a range-proven ciphertext), and I reveals
+ * Qhat only after checking that the decrypted challenge equals a*x1 + b.
  */
 import {
   bytesToInt,
@@ -70,12 +73,14 @@ import {
   SCALAR_BYTES,
   SHARE_HIGH,
   SHARE_LOW,
+  transcript,
 } from './group.js'
 import {
   assembleKeyShare,
   computeKeyId,
   derivePaillierKey,
   deriveShare,
+  shareContextOf,
   type KeyShare,
 } from './key-share.js'
 import {
@@ -85,6 +90,7 @@ import {
   decrypt,
   drawUnit,
   encrypt,
+  encryptAsOwner,
   generatePaillierKey,
   MODULUS_BYTES,
   modulusBytes,
@@ -95,12 +101,9 @@ import {
   scaleCiphertext,
   subtractConstant,
   unitBytes,
-  type PaillierPublicKey,
-  type PaillierSecretKey,
 } from './paillier.js'
 import {
   MODULUS_PROOF_BYTES,
-  parseRangeCommitments,
   proveModulus,
   RANGE_CHALLENGE_BYTES,
   RANGE_COMMIT_BYTES,
@@ -127,7 +130,9 @@ import {
 } from './session.js'
 import {
   encodeMessage,
-  keygenBinding,
+  keygenFrameBinding,
+  keygenFullBinding,
+  keygenInitiatorBinding,
   MAX_IDENTITY_BYTES,
   MIN_IDENTITY_BYTES,
   PROTOCOL_KEYGEN,
@@ -135,51 +140,47 @@ import {
 } from './wire.js'
 
 const NONCE_BYTES = 32
+const SALT_BYTES = 32
 const PDL_B_BYTES = 2 * SCALAR_BYTES
-const BUNDLE_BYTES =
-  MODULUS_BYTES + MODULUS_PROOF_BYTES + CIPHERTEXT_BYTES + RANGE_COMMIT_BYTES
 const ORDER_SQUARED = CURVE_ORDER * CURVE_ORDER
 /** Stand-in encoding of the identity inside the Qhat commitment only. */
 const IDENTITY_BYTES = new Uint8Array(POINT_BYTES)
+const EMPTY = new Uint8Array(0)
 
-const ROUND_1_BYTES = 2 * HASH_BYTES
-const ROUND_2_BYTES = POINT_BYTES + DLOG_PROOF_BYTES + HASH_BYTES + BUNDLE_BYTES
+const ROUND_1_BYTES = SALT_BYTES + HASH_BYTES
+const ROUND_2_BYTES = SALT_BYTES + POINT_BYTES + DLOG_PROOF_BYTES + HASH_BYTES
 const ROUND_3_BYTES =
   POINT_BYTES +
   DLOG_PROOF_BYTES +
   NONCE_BYTES +
-  BUNDLE_BYTES +
-  RANGE_CHALLENGE_BYTES +
-  NONCE_BYTES +
+  MODULUS_BYTES +
+  MODULUS_PROOF_BYTES +
   CIPHERTEXT_BYTES +
-  HASH_BYTES
-const ROUND_4_FIXED_BYTES =
-  HASH_BYTES +
-  RANGE_CHALLENGE_BYTES +
-  NONCE_BYTES +
-  CIPHERTEXT_BYTES +
-  HASH_BYTES
-const ROUND_5_FIXED_BYTES =
-  SCALAR_BYTES + PDL_B_BYTES + NONCE_BYTES + HASH_BYTES
-const ROUND_6_BYTES =
-  POINT_BYTES + NONCE_BYTES + SCALAR_BYTES + PDL_B_BYTES + NONCE_BYTES
-const ROUND_7_BYTES = POINT_BYTES + NONCE_BYTES
+  RANGE_COMMIT_BYTES
+const ROUND_4_BYTES =
+  RANGE_CHALLENGE_BYTES + NONCE_BYTES + CIPHERTEXT_BYTES + HASH_BYTES
+const ROUND_5_FIXED_BYTES = HASH_BYTES
+const ROUND_6_BYTES = SCALAR_BYTES + PDL_B_BYTES + NONCE_BYTES
+const ROUND_7_BYTES = POINT_BYTES + NONCE_BYTES + HASH_BYTES
+const ROUND_8_BYTES = HASH_BYTES
+
+function exact(length: number): BodyBounds {
+  return { minBody: length, maxBody: length }
+}
 
 /** Exact or bounded body size of each key-generation message, by round. */
 export const KEYGEN_BODY_BOUNDS: Readonly<Record<number, BodyBounds>> = {
-  1: { minBody: ROUND_1_BYTES, maxBody: ROUND_1_BYTES },
-  2: { minBody: ROUND_2_BYTES, maxBody: ROUND_2_BYTES },
-  3: { minBody: ROUND_3_BYTES, maxBody: ROUND_3_BYTES },
-  4: {
-    minBody: ROUND_4_FIXED_BYTES + RANGE_RESPONSE_MIN_BYTES,
-    maxBody: ROUND_4_FIXED_BYTES + RANGE_RESPONSE_MAX_BYTES,
-  },
+  1: exact(ROUND_1_BYTES),
+  2: exact(ROUND_2_BYTES),
+  3: exact(ROUND_3_BYTES),
+  4: exact(ROUND_4_BYTES),
   5: {
     minBody: ROUND_5_FIXED_BYTES + RANGE_RESPONSE_MIN_BYTES,
     maxBody: ROUND_5_FIXED_BYTES + RANGE_RESPONSE_MAX_BYTES,
   },
-  6: { minBody: ROUND_6_BYTES, maxBody: ROUND_6_BYTES },
-  7: { minBody: ROUND_7_BYTES, maxBody: ROUND_7_BYTES },
+  6: exact(ROUND_6_BYTES),
+  7: exact(ROUND_7_BYTES),
+  8: exact(ROUND_8_BYTES),
 }
 
 /** Opaque key-generation state. Pass it to `keygenStep` exactly once. */
@@ -192,42 +193,46 @@ interface KeygenState extends SessionCore, KeygenSession {
   readonly rng: RandomBytes
   readonly localId: Uint8Array
   readonly peerId: Uint8Array
-  /** Secret: seed for deterministic share and Paillier derivation, or null. */
+  readonly localSalt: Uint8Array
+  /** Context a seeded share is derived from; stored in the key share. */
+  readonly shareContext: Uint8Array
+  /** Full binding (both salts); null until message 2 is processed. */
+  readonly binding: Uint8Array | null
+  /** Secret: seed for deterministic derivation, or null. */
   readonly seed: Uint8Array | null
-  /** Secret: this party's share x. */
+  /** Secret: this party's share. */
   readonly share: Uint8Array
   readonly localPoint: Uint8Array
-  /** Initiator only: opening of its commitment to (Q, pok). */
+  readonly peerPoint: Uint8Array | null
+  readonly modulus: Uint8Array | null
+  readonly ciphertext: Uint8Array | null
+  // --- initiator (prover) ---
+  /** Opening of the message-1 commitment: Q || pok || nonce. */
   readonly pointOpening: Uint8Array | null
-  /** This party's range challenge (as verifier) and its commitment nonce. */
-  readonly challenge: Uint8Array
-  readonly challengeNonce: Uint8Array
-  /** Responder only: the initiator's commitment to (Q, pok). */
-  readonly peerPointCommit: Uint8Array | null
   readonly peerChallengeCommit: Uint8Array | null
-  /** Secret: own Paillier primes, own c_key randomness, own range secrets. */
+  /** Secret: Paillier primes, c_key randomness, range-proof secrets. */
   readonly primeP: Uint8Array | null
   readonly primeQ: Uint8Array | null
   readonly keyRandomness: Uint8Array | null
   readonly rangeSecret: Uint8Array | null
-  readonly localModulus: Uint8Array | null
-  readonly localCiphertext: Uint8Array | null
-  /** The other party's validated public material. */
-  readonly peerPoint: Uint8Array | null
-  readonly peerModulus: Uint8Array | null
-  readonly peerCiphertext: Uint8Array | null
-  readonly peerRangeCommit: Uint8Array | null
-  /** Secret until opened: this party's L_PDL challenge (a, b) as verifier. */
-  readonly pdlA: Uint8Array | null
-  readonly pdlB: Uint8Array | null
-  readonly pdlNonce: Uint8Array | null
-  /** As L_PDL prover: the peer's commitment to its (a, b). */
-  readonly peerPdlCommit: Uint8Array | null
-  /** Secret: decryption alpha of the peer's challenge, and Qhat's opening. */
+  /** Secret: decryption of the L_PDL challenge, and the opening of Qhat. */
   readonly pdlAlpha: Uint8Array | null
   readonly pdlHat: Uint8Array | null
   readonly pdlHatNonce: Uint8Array | null
-  /** As L_PDL verifier: the peer's commitment to its Qhat. */
+  readonly peerPdlCommit: Uint8Array | null
+  /** The finished share, held back until the responder confirms. */
+  readonly pending: KeyShare | null
+  // --- responder (verifier) ---
+  readonly peerSalt: Uint8Array | null
+  readonly peerPointCommit: Uint8Array | null
+  /** Range challenge and its commitment nonce. */
+  readonly challenge: Uint8Array | null
+  readonly challengeNonce: Uint8Array | null
+  readonly peerRangeCommit: Uint8Array | null
+  /** Secret until opened: the L_PDL challenge (a, b). */
+  readonly pdlA: Uint8Array | null
+  readonly pdlB: Uint8Array | null
+  readonly pdlNonce: Uint8Array | null
   readonly peerHatCommit: Uint8Array | null
 }
 
@@ -263,7 +268,7 @@ function next(
 }
 
 function finished(state: KeygenState): KeygenState {
-  return { ...state, status: 'finished', expectedRound: 0 }
+  return { ...state, pending: null, status: 'finished', expectedRound: 0 }
 }
 
 function send(
@@ -274,211 +279,314 @@ function send(
   return encodeMessage(PROTOCOL_KEYGEN, round, state.session, concat(...parts))
 }
 
-// --- The prover's Paillier bundle ------------------------------------------
-
-interface LocalBundle {
-  readonly wire: Uint8Array
-  readonly changes: Partial<KeygenState>
+function confirmation(keyId: Uint8Array, party: Uint8Array): Uint8Array {
+  return transcript('key-confirm', keyId, party)
 }
 
-function localPaillier(state: KeygenState): PaillierSecretKey {
-  return paillierSecretKey(
-    bytesToInt(need(state.primeP)),
-    bytesToInt(need(state.primeQ)),
+/** Builds this party's key share from the session state. */
+function buildShare(state: KeygenState): {
+  share: KeyShare
+  keyId: Uint8Array
+} {
+  const secret = bytesToInt(state.share)
+  const peerPoint = need(state.peerPoint)
+  const fields = {
+    role: state.initiator ? ('initiator' as const) : ('responder' as const),
+    keygenSession: need(state.binding).slice(),
+    shareContext: state.shareContext.slice(),
+    localId: state.localId.slice(),
+    peerId: state.peerId.slice(),
+    localPoint: state.localPoint.slice(),
+    peerPoint: peerPoint.slice(),
+    publicKey: pointBytes(multiply(parsePoint(peerPoint), secret)),
+    modulus: need(state.modulus).slice(),
+    ciphertext: need(state.ciphertext).slice(),
+  }
+  const keyId = computeKeyId(fields)
+  const share = assembleKeyShare(
+    { ...fields, keyId },
+    state.share.slice(),
+    state.initiator ? need(state.primeP).slice() : EMPTY.slice(),
+    state.initiator ? need(state.primeQ).slice() : EMPTY.slice(),
   )
+  return { share, keyId }
+}
+
+// --- Round handlers --------------------------------------------------------
+
+type KeygenStep = Step<KeygenState, KeyShare>
+
+/** Responder, message 1: Protocol 3.1 step 2. */
+function responderRound1(state: KeygenState, body: Uint8Array): KeygenStep {
+  const reader = new Reader(body)
+  const peerSalt = reader.take(SALT_BYTES)
+  const peerPointCommit = reader.take(HASH_BYTES)
+  reader.finish()
+  const binding = keygenFullBinding(state.session, peerSalt, state.localSalt)
+  const proof = proveDlog(
+    state.rng,
+    binding,
+    state.localId,
+    bytesToInt(state.share),
+    parsePoint(state.localPoint),
+  )
+  // Commit to the range challenge before the prover's commitment exists.
+  const challenge = draw(state.rng, RANGE_CHALLENGE_BYTES)
+  const challengeNonce = draw(state.rng, NONCE_BYTES)
+  return {
+    session: next(state, 3, {
+      binding,
+      peerSalt,
+      peerPointCommit,
+      challenge,
+      challengeNonce,
+    }),
+    outgoing: send(
+      state,
+      2,
+      state.localSalt,
+      state.localPoint,
+      proof,
+      commit(
+        'range-challenge',
+        binding,
+        state.localId,
+        challenge,
+        challengeNonce,
+      ),
+    ),
+    result: null,
+  }
 }
 
 /**
- * Protocol 3.1 step 3, P1's side: Paillier key, c_key = Enc(x), the modulus
- * proof, and the first message of the range proof.
+ * Initiator, message 2: Protocol 3.1 step 3. Verify P2's proof, open the
+ * commitment, generate the Paillier key, send c_key with the modulus proof
+ * and the first message of the range proof.
  */
-function buildBundle(state: KeygenState): LocalBundle {
+function initiatorRound2(state: KeygenState, body: Uint8Array): KeygenStep {
+  const reader = new Reader(body)
+  const peerSalt = reader.take(SALT_BYTES)
+  const peerPoint = reader.take(POINT_BYTES)
+  const peerProof = reader.take(DLOG_PROOF_BYTES)
+  const peerChallengeCommit = reader.take(HASH_BYTES)
+  reader.finish()
+  const binding = keygenFullBinding(state.session, state.localSalt, peerSalt)
+  requireDlogProof(binding, state.peerId, parsePoint(peerPoint), peerProof)
   const key =
     state.seed === null
       ? generatePaillierKey(state.rng)
-      : derivePaillierKey(state.seed, state.session, state.localId)
+      : derivePaillierKey(state.seed, state.shareContext)
   const randomness = drawUnit(key, state.rng)
-  const ciphertext = encrypt(key, bytesToInt(state.share), randomness)
-  const proof = proveModulus(state.session, state.localId, key)
-  const range = rangeCommit(key, state.rng)
+  const ciphertext = ciphertextBytes(
+    encryptAsOwner(key, bytesToInt(state.share), randomness),
+  )
   const modulus = modulusBytes(key)
-  const encrypted = ciphertextBytes(ciphertext)
+  const proof = proveModulus(binding, state.localId, key)
+  const range = rangeCommit(key, state.rng)
   return {
-    wire: concat(modulus, proof, encrypted, range.wire),
-    changes: {
+    session: next(state, 4, {
+      binding,
+      peerPoint,
+      peerChallengeCommit,
       primeP: intToBytes(key.p, PRIME_BYTES),
       primeQ: intToBytes(key.q, PRIME_BYTES),
       keyRandomness: unitBytes(randomness),
       rangeSecret: range.secret,
-      localModulus: modulus,
-      localCiphertext: encrypted,
-    },
+      modulus,
+      ciphertext,
+    }),
+    outgoing: send(
+      state,
+      3,
+      need(state.pointOpening),
+      modulus,
+      proof,
+      ciphertext,
+      range.wire,
+    ),
+    result: null,
   }
 }
 
 /**
- * Protocol 3.1 step 4, P2's side: validate the modulus (length, parity, no
- * small factor, modulus proof), then the ciphertext and the range
- * commitments. The modulus proof is checked before any ciphertext is parsed
- * under that modulus.
+ * Responder, message 3: Protocol 3.1 step 4. Verify the opening and P1's
+ * proof of knowledge, validate the modulus (length, parity, no small factor,
+ * modulus proof) BEFORE parsing anything under it, then open the range
+ * challenge and send the L_PDL challenge (Section 6):
+ *   a <- [1, n), b <- [0, n^2), c' = a (*) c_key (+) Enc(b), c'' = commit(a, b).
  */
-function acceptBundle(
-  state: KeygenState,
-  reader: Reader,
-): Partial<KeygenState> {
+function responderRound3(state: KeygenState, body: Uint8Array): KeygenStep {
+  const binding = need(state.binding)
+  const reader = new Reader(body)
+  const peerPoint = reader.take(POINT_BYTES)
+  const peerProof = reader.take(DLOG_PROOF_BYTES)
+  const pointNonce = reader.take(NONCE_BYTES)
   const modulus = reader.take(MODULUS_BYTES)
-  const proof = reader.take(MODULUS_PROOF_BYTES)
+  const modulusProof = reader.take(MODULUS_PROOF_BYTES)
   const ciphertext = reader.take(CIPHERTEXT_BYTES)
-  const rangeCommitments = reader.take(RANGE_COMMIT_BYTES)
+  const peerRangeCommit = reader.take(RANGE_COMMIT_BYTES)
+  reader.finish()
+  const initiatorBinding = keygenInitiatorBinding(
+    state.session,
+    need(state.peerSalt),
+  )
+  requireOpening(
+    need(state.peerPointCommit),
+    'keygen-point',
+    initiatorBinding,
+    state.peerId,
+    concat(peerPoint, peerProof),
+    pointNonce,
+  )
+  requireDlogProof(
+    initiatorBinding,
+    state.peerId,
+    parsePoint(peerPoint),
+    peerProof,
+  )
   const key = parseModulus(modulus)
-  requireModulusProof(state.session, state.peerId, key, proof)
-  parseCiphertext(key, ciphertext)
-  parseRangeCommitments(key, rangeCommitments)
+  requireModulusProof(binding, state.peerId, key, modulusProof)
+  const encryptedShare = parseCiphertext(key, ciphertext)
+  const a = drawInRange(state.rng, 1n, CURVE_ORDER)
+  const b = drawBelow(state.rng, ORDER_SQUARED)
+  const masked = addCiphertexts(
+    key,
+    scaleCiphertext(key, encryptedShare, a),
+    encrypt(key, b, drawUnit(key, state.rng)),
+  )
+  const pdlA = intToBytes(a, SCALAR_BYTES)
+  const pdlB = intToBytes(b, PDL_B_BYTES)
+  const pdlNonce = draw(state.rng, NONCE_BYTES)
   return {
-    peerModulus: modulus,
-    peerCiphertext: ciphertext,
-    peerRangeCommit: rangeCommitments,
+    session: next(state, 5, {
+      peerPoint,
+      modulus,
+      ciphertext,
+      peerRangeCommit,
+      pdlA,
+      pdlB,
+      pdlNonce,
+    }),
+    outgoing: send(
+      state,
+      4,
+      need(state.challenge),
+      need(state.challengeNonce),
+      ciphertextBytes(masked),
+      commit(
+        'pdl-challenge',
+        binding,
+        state.localId,
+        concat(pdlA, pdlB),
+        pdlNonce,
+      ),
+    ),
+    result: null,
   }
 }
 
-function peerPaillier(state: KeygenState): PaillierPublicKey {
-  return parseModulus(need(state.peerModulus))
-}
-
-// --- Range proof glue ------------------------------------------------------
-
-/** Appendix A applied to c_key - Enc(l): the witness is x - l in [0, l). */
-function respondRange(state: KeygenState, challenge: Uint8Array): Uint8Array {
-  const key = localPaillier(state)
-  return rangeRespond(
+/**
+ * Initiator, message 4: answer the range challenge (Appendix A applied to
+ * c_key - Enc(l), witness x1 - l in [0, l)) and commit to Qhat = alpha * G
+ * for alpha = Dec(c'). Nothing about alpha is revealed yet.
+ */
+function initiatorRound4(state: KeygenState, body: Uint8Array): KeygenStep {
+  const binding = need(state.binding)
+  const reader = new Reader(body)
+  const challenge = reader.take(RANGE_CHALLENGE_BYTES)
+  const challengeNonce = reader.take(NONCE_BYTES)
+  const pdlCiphertext = reader.take(CIPHERTEXT_BYTES)
+  const peerPdlCommit = reader.take(HASH_BYTES)
+  reader.finish()
+  requireOpening(
+    need(state.peerChallengeCommit),
+    'range-challenge',
+    binding,
+    state.peerId,
+    challenge,
+    challengeNonce,
+  )
+  const key = paillierSecretKey(
+    bytesToInt(need(state.primeP)),
+    bytesToInt(need(state.primeQ)),
+  )
+  const rangeResponse = rangeRespond(
     key,
     need(state.rangeSecret),
     bytesToInt(state.share) - SHARE_LOW,
     bytesToInt(need(state.keyRandomness)),
     challenge,
   )
-}
-
-function verifyPeerRange(state: KeygenState, response: Uint8Array): void {
-  const key = peerPaillier(state)
-  const ciphertext = parseCiphertext(key, need(state.peerCiphertext))
-  requireRangeProof(
-    key,
-    subtractConstant(key, ciphertext, SHARE_LOW),
-    need(state.peerRangeCommit),
-    state.challenge,
-    response,
-  )
-}
-
-function openPeerChallenge(
-  state: KeygenState,
-  challenge: Uint8Array,
-  nonce: Uint8Array,
-): void {
-  requireOpening(
-    need(state.peerChallengeCommit),
-    'range-challenge',
-    state.session,
-    state.peerId,
-    challenge,
-    nonce,
-  )
-}
-
-// --- L_PDL (Lindell 2017, Section 6) ---------------------------------------
-//
-// Verifier V holds (c_key, Q) of prover P.
-//   V: a <- [1, n), b <- [0, n^2), c' = a (*) c_key (+) Enc(b; r),
-//      c'' = commit(a, b); sends (c', c'').
-//   P: alpha = Dec(c'), Qhat = alpha * G; sends commit(Qhat).
-//   V: opens (a, b).
-//   P: checks alpha = a * x + b over the integers, then opens Qhat.
-//   V: accepts iff Qhat = a * Q + b * G.
-
-interface PdlChallenge {
-  readonly wire: Uint8Array
-  readonly changes: Partial<KeygenState>
-}
-
-function pdlChallenge(state: KeygenState): PdlChallenge {
-  const key = peerPaillier(state)
-  const ciphertext = parseCiphertext(key, need(state.peerCiphertext))
-  const a = drawInRange(state.rng, 1n, CURVE_ORDER)
-  const b = drawBelow(state.rng, ORDER_SQUARED)
-  const masked = addCiphertexts(
-    key,
-    scaleCiphertext(key, ciphertext, a),
-    encrypt(key, b, drawUnit(key, state.rng)),
-  )
-  const pdlA = intToBytes(a, SCALAR_BYTES)
-  const pdlB = intToBytes(b, PDL_B_BYTES)
-  const pdlNonce = draw(state.rng, NONCE_BYTES)
-  const commitment = commit(
-    'pdl-challenge',
-    state.session,
-    state.localId,
-    concat(pdlA, pdlB),
-    pdlNonce,
-  )
-  return {
-    wire: concat(ciphertextBytes(masked), commitment),
-    changes: { pdlA, pdlB, pdlNonce },
-  }
-}
-
-interface PdlHat {
-  readonly commitment: Uint8Array
-  readonly changes: Partial<KeygenState>
-}
-
-/** P decrypts c' and commits to Qhat. Nothing about alpha is revealed yet. */
-function pdlCommitHat(
-  state: KeygenState,
-  challengeCiphertext: Uint8Array,
-  peerPdlCommit: Uint8Array,
-): PdlHat {
-  const key = localPaillier(state)
-  const alpha = decrypt(key, parseCiphertext(key, challengeCiphertext))
+  const alpha = decrypt(key, parseCiphertext(key, pdlCiphertext))
   const reduced = alpha % CURVE_ORDER
-  // alpha = 0 mod n cannot be told apart here from any other value: the
-  // commitment is sent either way and the check happens after V opens (a, b).
+  // alpha = 0 mod n is not told apart here from any other value: the
+  // commitment is sent either way and the check happens after (a, b) opens.
   const pdlHat =
     reduced === 0n ? IDENTITY_BYTES.slice() : pointBytes(multiply(G, reduced))
   const pdlHatNonce = draw(state.rng, NONCE_BYTES)
   return {
-    commitment: commit(
-      'pdl-hat',
-      state.session,
-      state.localId,
-      pdlHat,
-      pdlHatNonce,
-    ),
-    changes: {
+    session: next(state, 6, {
       pdlAlpha: intToBytes(alpha, MODULUS_BYTES),
       pdlHat,
       pdlHatNonce,
       peerPdlCommit,
-    },
+    }),
+    outgoing: send(
+      state,
+      5,
+      commit('pdl-hat', binding, state.localId, pdlHat, pdlHatNonce),
+      rangeResponse,
+    ),
+    result: null,
+  }
+}
+
+/** Responder, message 5: verify the range proof, THEN open (a, b). */
+function responderRound5(state: KeygenState, body: Uint8Array): KeygenStep {
+  const reader = new Reader(body)
+  const peerHatCommit = reader.take(HASH_BYTES)
+  const rangeResponse = reader.take(reader.remaining())
+  const key = parseModulus(need(state.modulus))
+  const encryptedShare = parseCiphertext(key, need(state.ciphertext))
+  requireRangeProof(
+    key,
+    subtractConstant(key, encryptedShare, SHARE_LOW),
+    need(state.peerRangeCommit),
+    need(state.challenge),
+    rangeResponse,
+  )
+  return {
+    session: next(state, 7, { peerHatCommit }),
+    outgoing: send(
+      state,
+      6,
+      need(state.pdlA),
+      need(state.pdlB),
+      need(state.pdlNonce),
+    ),
+    result: null,
   }
 }
 
 /**
- * P checks V's opening and that alpha = a*x + b. A mismatch means V sent a
- * malformed challenge; P aborts WITHOUT revealing Qhat. That abort still
- * tells V one bit about x, which is why an aborted key generation must never
- * be retried with the same share (README, "Rules for callers").
+ * Initiator, message 6: check the opening and that alpha = a*x1 + b over the
+ * integers, then reveal Qhat. A mismatch means the responder sent a malformed
+ * challenge; the initiator aborts WITHOUT revealing Qhat. That abort still
+ * tells the responder one bit about x1, which is why a share is never reused
+ * across key generations (the local salt guarantees it for seeded shares).
  */
-function pdlCheckOpening(
-  state: KeygenState,
-  aBytes: Uint8Array,
-  bBytes: Uint8Array,
-  nonce: Uint8Array,
-): Uint8Array {
+function initiatorRound6(state: KeygenState, body: Uint8Array): KeygenStep {
+  const binding = need(state.binding)
+  const reader = new Reader(body)
+  const aBytes = reader.take(SCALAR_BYTES)
+  const bBytes = reader.take(PDL_B_BYTES)
+  const nonce = reader.take(NONCE_BYTES)
+  reader.finish()
   requireOpening(
     need(state.peerPdlCommit),
     'pdl-challenge',
-    state.session,
+    binding,
     state.peerId,
     concat(aBytes, bBytes),
     nonce,
@@ -490,22 +598,41 @@ function pdlCheckOpening(
   if (alpha !== a * bytesToInt(state.share) + b) fail('invalid-proof')
   const hat = need(state.pdlHat)
   if (equalBytes(hat, IDENTITY_BYTES)) fail('invalid-proof')
-  return concat(hat, need(state.pdlHatNonce))
+  const built = buildShare(state)
+  const outgoing = send(
+    state,
+    7,
+    hat,
+    need(state.pdlHatNonce),
+    confirmation(built.keyId, state.localId),
+  )
+  // Session secrets now live in the pending share only.
+  wipeKeygen(state)
+  return {
+    session: next(state, 8, { pending: built.share }),
+    outgoing,
+    result: null,
+  }
 }
 
-/** V checks P's opening and that Qhat = a*Q + b*G. */
-function pdlVerifyHat(
-  state: KeygenState,
-  hat: Uint8Array,
-  nonce: Uint8Array,
-): void {
+/**
+ * Responder, message 7: accept iff Qhat = a*Q1 + b*G (Section 6), check the
+ * initiator's key confirmation, output the share and confirm back.
+ */
+function responderRound7(state: KeygenState, body: Uint8Array): KeygenStep {
+  const binding = need(state.binding)
+  const reader = new Reader(body)
+  const hat = reader.take(POINT_BYTES)
+  const hatNonce = reader.take(NONCE_BYTES)
+  const peerConfirmation = reader.take(HASH_BYTES)
+  reader.finish()
   requireOpening(
     need(state.peerHatCommit),
     'pdl-hat',
-    state.session,
+    binding,
     state.peerId,
     hat,
-    nonce,
+    hatNonce,
   )
   const claimed = parsePoint(hat)
   const a = bytesToInt(need(state.pdlA))
@@ -513,254 +640,23 @@ function pdlVerifyHat(
   let expected = multiply(parsePoint(need(state.peerPoint)), a)
   if (b !== 0n) expected = expected.add(multiply(G, b))
   if (!claimed.equals(expected)) fail('invalid-proof')
-}
-
-// --- Output ----------------------------------------------------------------
-
-function finish(state: KeygenState): KeyShare {
-  const share = bytesToInt(state.share)
-  const peerPoint = need(state.peerPoint)
-  const publicKey = pointBytes(multiply(parsePoint(peerPoint), share))
-  const fields = {
-    localIsInitiator: state.initiator,
-    keygenSession: state.session.slice(),
-    localId: state.localId.slice(),
-    peerId: state.peerId.slice(),
-    localPoint: state.localPoint.slice(),
-    peerPoint: peerPoint.slice(),
-    publicKey,
-    localModulus: need(state.localModulus).slice(),
-    localCiphertext: need(state.localCiphertext).slice(),
-    peerModulus: need(state.peerModulus).slice(),
-    peerCiphertext: need(state.peerCiphertext).slice(),
+  const built = buildShare(state)
+  if (!equalBytes(peerConfirmation, confirmation(built.keyId, state.peerId))) {
+    fail('invalid-commitment')
   }
-  const keyShare = assembleKeyShare(
-    { ...fields, keyId: computeKeyId(fields) },
-    state.share.slice(),
-    need(state.primeP).slice(),
-    need(state.primeQ).slice(),
-  )
+  const outgoing = send(state, 8, confirmation(built.keyId, state.localId))
   wipeKeygen(state)
-  return keyShare
+  return { session: finished(state), outgoing, result: built.share }
 }
 
-// --- Round handlers --------------------------------------------------------
-
-type KeygenStep = Step<KeygenState, KeyShare>
-
-/** Responder, message 1: store both commitments, answer with its own half. */
-function responderRound1(state: KeygenState, body: Uint8Array): KeygenStep {
-  const reader = new Reader(body)
-  const peerPointCommit = reader.take(HASH_BYTES)
-  const peerChallengeCommit = reader.take(HASH_BYTES)
-  reader.finish()
-  const proof = proveDlog(
-    state.rng,
-    state.session,
-    state.localId,
-    bytesToInt(state.share),
-    parsePoint(state.localPoint),
-  )
-  const bundle = buildBundle(state)
-  const challengeCommit = commit(
-    'range-challenge',
-    state.session,
-    state.localId,
-    state.challenge,
-    state.challengeNonce,
-  )
-  return {
-    session: next(state, 3, {
-      ...bundle.changes,
-      peerPointCommit,
-      peerChallengeCommit,
-    }),
-    outgoing: send(
-      state,
-      2,
-      state.localPoint,
-      proof,
-      challengeCommit,
-      bundle.wire,
-    ),
-    result: null,
+/** Initiator, message 8: the responder confirmed the same key. */
+function initiatorRound8(state: KeygenState, body: Uint8Array): KeygenStep {
+  const pending = need(state.pending)
+  const keyId = (pending as unknown as { keyId: Uint8Array }).keyId
+  if (!equalBytes(body, confirmation(keyId, state.peerId))) {
+    fail('invalid-commitment')
   }
-}
-
-/** Initiator, message 2: verify R's point and bundle, open own point. */
-function initiatorRound2(state: KeygenState, body: Uint8Array): KeygenStep {
-  const reader = new Reader(body)
-  const peerPoint = reader.take(POINT_BYTES)
-  const peerProof = reader.take(DLOG_PROOF_BYTES)
-  const peerChallengeCommit = reader.take(HASH_BYTES)
-  requireDlogProof(
-    state.session,
-    state.peerId,
-    parsePoint(peerPoint),
-    peerProof,
-  )
-  const accepted = acceptBundle(state, reader)
-  reader.finish()
-  const bundle = buildBundle(state)
-  const withPeer = { ...state, ...accepted, peerPoint }
-  const pdl = pdlChallenge(withPeer)
-  return {
-    session: next(state, 4, {
-      ...accepted,
-      ...bundle.changes,
-      ...pdl.changes,
-      peerPoint,
-      peerChallengeCommit,
-    }),
-    outgoing: send(
-      state,
-      3,
-      need(state.pointOpening),
-      bundle.wire,
-      state.challenge,
-      state.challengeNonce,
-      pdl.wire,
-    ),
-    result: null,
-  }
-}
-
-/** Responder, message 3: verify I's opening, proofs and bundle. */
-function responderRound3(state: KeygenState, body: Uint8Array): KeygenStep {
-  const reader = new Reader(body)
-  const peerPoint = reader.take(POINT_BYTES)
-  const peerProof = reader.take(DLOG_PROOF_BYTES)
-  const pointNonce = reader.take(NONCE_BYTES)
-  requireOpening(
-    need(state.peerPointCommit),
-    'keygen-point',
-    state.session,
-    state.peerId,
-    concat(peerPoint, peerProof),
-    pointNonce,
-  )
-  requireDlogProof(
-    state.session,
-    state.peerId,
-    parsePoint(peerPoint),
-    peerProof,
-  )
-  const accepted = acceptBundle(state, reader)
-  const peerChallenge = reader.take(RANGE_CHALLENGE_BYTES)
-  const peerChallengeNonce = reader.take(NONCE_BYTES)
-  const pdlCiphertext = reader.take(CIPHERTEXT_BYTES)
-  const peerPdlCommit = reader.take(HASH_BYTES)
-  reader.finish()
-  openPeerChallenge(state, peerChallenge, peerChallengeNonce)
-  const rangeResponse = respondRange(state, peerChallenge)
-  const hat = pdlCommitHat(state, pdlCiphertext, peerPdlCommit)
-  const withPeer = { ...state, ...accepted, peerPoint }
-  const pdl = pdlChallenge(withPeer)
-  return {
-    session: next(state, 5, {
-      ...accepted,
-      ...hat.changes,
-      ...pdl.changes,
-      peerPoint,
-    }),
-    outgoing: send(
-      state,
-      4,
-      hat.commitment,
-      state.challenge,
-      state.challengeNonce,
-      pdl.wire,
-      rangeResponse,
-    ),
-    result: null,
-  }
-}
-
-/** Initiator, message 4: verify R's range proof, then open (a, b). */
-function initiatorRound4(state: KeygenState, body: Uint8Array): KeygenStep {
-  const reader = new Reader(body)
-  const peerHatCommit = reader.take(HASH_BYTES)
-  const peerChallenge = reader.take(RANGE_CHALLENGE_BYTES)
-  const peerChallengeNonce = reader.take(NONCE_BYTES)
-  const pdlCiphertext = reader.take(CIPHERTEXT_BYTES)
-  const peerPdlCommit = reader.take(HASH_BYTES)
-  const peerRangeResponse = reader.take(reader.remaining())
-  openPeerChallenge(state, peerChallenge, peerChallengeNonce)
-  verifyPeerRange(state, peerRangeResponse)
-  const rangeResponse = respondRange(state, peerChallenge)
-  const hat = pdlCommitHat(state, pdlCiphertext, peerPdlCommit)
-  return {
-    session: next(state, 6, { ...hat.changes, peerHatCommit }),
-    outgoing: send(
-      state,
-      5,
-      need(state.pdlA),
-      need(state.pdlB),
-      need(state.pdlNonce),
-      hat.commitment,
-      rangeResponse,
-    ),
-    result: null,
-  }
-}
-
-/** Responder, message 5: verify I's range proof, answer I's L_PDL challenge. */
-function responderRound5(state: KeygenState, body: Uint8Array): KeygenStep {
-  const reader = new Reader(body)
-  const peerA = reader.take(SCALAR_BYTES)
-  const peerB = reader.take(PDL_B_BYTES)
-  const peerNonce = reader.take(NONCE_BYTES)
-  const peerHatCommit = reader.take(HASH_BYTES)
-  const peerRangeResponse = reader.take(reader.remaining())
-  verifyPeerRange(state, peerRangeResponse)
-  const hatOpening = pdlCheckOpening(state, peerA, peerB, peerNonce)
-  return {
-    session: next(state, 7, { peerHatCommit }),
-    outgoing: send(
-      state,
-      6,
-      hatOpening,
-      need(state.pdlA),
-      need(state.pdlB),
-      need(state.pdlNonce),
-    ),
-    result: null,
-  }
-}
-
-/** Initiator, message 6: accept R's share, answer R's challenge, finish. */
-function initiatorRound6(state: KeygenState, body: Uint8Array): KeygenStep {
-  const reader = new Reader(body)
-  const peerHat = reader.take(POINT_BYTES)
-  const peerHatNonce = reader.take(NONCE_BYTES)
-  const peerA = reader.take(SCALAR_BYTES)
-  const peerB = reader.take(PDL_B_BYTES)
-  const peerNonce = reader.take(NONCE_BYTES)
-  reader.finish()
-  pdlVerifyHat(state, peerHat, peerHatNonce)
-  const hatOpening = pdlCheckOpening(state, peerA, peerB, peerNonce)
-  const outgoing = send(state, 7, hatOpening)
-  const result = finish(state)
-  return {
-    session: finished(state),
-    outgoing,
-    result,
-  }
-}
-
-/** Responder, message 7: accept I's share and finish. */
-function responderRound7(state: KeygenState, body: Uint8Array): KeygenStep {
-  const reader = new Reader(body)
-  const peerHat = reader.take(POINT_BYTES)
-  const peerHatNonce = reader.take(NONCE_BYTES)
-  reader.finish()
-  pdlVerifyHat(state, peerHat, peerHatNonce)
-  const result = finish(state)
-  return {
-    session: finished(state),
-    outgoing: null,
-    result,
-  }
+  return { session: finished(state), outgoing: null, result: pending }
 }
 
 function handle(state: KeygenState, body: Uint8Array): KeygenStep {
@@ -779,6 +675,8 @@ function handle(state: KeygenState, body: Uint8Array): KeygenStep {
       return initiatorRound6(state, body)
     case 7:
       return responderRound7(state, body)
+    case 8:
+      return initiatorRound8(state, body)
     default:
       return fail('internal-error')
   }
@@ -787,24 +685,28 @@ function handle(state: KeygenState, body: Uint8Array): KeygenStep {
 // --- Public API ------------------------------------------------------------
 
 export interface StartKeygenInput {
-  /** The initiator sends the first message. The parties must pick opposite roles. */
-  readonly role: 'initiator' | 'responder'
   /**
-   * 32 bytes both parties agree on and have never used for key generation
-   * before. A retry after any abort MUST use a new value.
+   * Fixed for the life of the key. The initiator owns the Paillier key and
+   * is the initiator of every signing session: it decrypts, learns each
+   * result first, and is the party that can extract adaptor secrets. If two
+   * users need both assignments they run two key generations and get two
+   * independent joint keys.
    */
+  readonly role: 'initiator' | 'responder'
+  /** 32 bytes both parties agree on. Use a new value for every attempt. */
   readonly sessionId: Uint8Array
   /** This party's identity (1 to 64 bytes), for example its chat public key. */
   readonly localId: Uint8Array
   /** The other party's identity. Must differ from `localId`. */
   readonly peerId: Uint8Array
   /**
-   * Optional 32-byte secret. When given, the share and the Paillier primes
-   * are derived from it, the session and `localId`, so `restoreKeyShare` can
-   * rebuild the share later. When omitted they come from `randomBytes`.
+   * Optional 32-byte secret. When given, the share (and the initiator's
+   * Paillier primes) are derived from it, the session, both identities and
+   * this party's fresh salt, so `restoreKeyShare` can rebuild the share from
+   * the seed and the public record. When omitted they come from `randomBytes`.
    */
   readonly secretSeed?: Uint8Array
-  /** Caller's CSPRNG. Always needed, also with a seed (proof randomness). */
+  /** Caller's CSPRNG. Always needed, also with a seed (salt, proofs). */
   readonly randomBytes: RandomBytes
 }
 
@@ -853,61 +755,68 @@ export function startKeygen(
       return failure('rng-failed')
     }
     const initiator = role === 'initiator'
-    const session = initiator
-      ? keygenBinding(sessionId, localId, peerId)
-      : keygenBinding(sessionId, peerId, localId)
-    // Protocol 3.1 step 1: the share is uniform in [l, 2l).
+    const frame = initiator
+      ? keygenFrameBinding(sessionId, localId, peerId)
+      : keygenFrameBinding(sessionId, peerId, localId)
+    const localSalt = draw(rng, SALT_BYTES)
+    const shareContext = shareContextOf(frame, localSalt, localId)
+    // Protocol 3.1 step 1: x1 uniform in [l, 2l); step 2: x2 uniform in [1, n).
     const shareValue =
-      seed === null
+      seed !== null
+        ? deriveShare(seed, shareContext, role)
+        : initiator
         ? drawInRange(rng, SHARE_LOW, SHARE_HIGH)
-        : deriveShare(seed, session, localId)
+        : drawInRange(rng, 1n, CURVE_ORDER)
     share = intToBytes(shareValue, SCALAR_BYTES)
     const localPoint = pointBytes(multiply(G, shareValue))
-    const challenge = draw(rng, RANGE_CHALLENGE_BYTES)
-    const challengeNonce = draw(rng, NONCE_BYTES)
     const base: KeygenState = {
       __thresholdEcdsa: 'keygen-session',
       status: 'active',
       protocol: PROTOCOL_KEYGEN,
       expectedRound: initiator ? 2 : 1,
-      session,
+      session: frame,
       initiator,
       rng,
       localId,
       peerId,
+      localSalt,
+      shareContext,
+      binding: null,
       seed,
       share,
       localPoint,
+      peerPoint: null,
+      modulus: null,
+      ciphertext: null,
       pointOpening: null,
-      challenge,
-      challengeNonce,
-      peerPointCommit: null,
       peerChallengeCommit: null,
       primeP: null,
       primeQ: null,
       keyRandomness: null,
       rangeSecret: null,
-      localModulus: null,
-      localCiphertext: null,
-      peerPoint: null,
-      peerModulus: null,
-      peerCiphertext: null,
+      pdlAlpha: null,
+      pdlHat: null,
+      pdlHatNonce: null,
+      peerPdlCommit: null,
+      pending: null,
+      peerSalt: null,
+      peerPointCommit: null,
+      challenge: null,
+      challengeNonce: null,
       peerRangeCommit: null,
       pdlA: null,
       pdlB: null,
       pdlNonce: null,
-      peerPdlCommit: null,
-      pdlAlpha: null,
-      pdlHat: null,
-      pdlHatNonce: null,
       peerHatCommit: null,
     }
-    if (!initiator)
+    if (!initiator) {
       return success({ session: base, outgoing: null, result: null })
+    }
     // Protocol 3.1 step 1: P1 commits to its point and proof of knowledge.
+    const initiatorBinding = keygenInitiatorBinding(frame, localSalt)
     const proof = proveDlog(
       rng,
-      session,
+      initiatorBinding,
       localId,
       shareValue,
       parsePoint(localPoint),
@@ -921,8 +830,8 @@ export function startKeygen(
     const outgoing = send(
       state,
       1,
-      commit('keygen-point', session, localId, payload, pointNonce),
-      commit('range-challenge', session, localId, challenge, challengeNonce),
+      localSalt,
+      commit('keygen-point', initiatorBinding, localId, payload, pointNonce),
     )
     return success({ session: state, outgoing, result: null })
   } catch (error) {
@@ -931,45 +840,53 @@ export function startKeygen(
   }
 }
 
-/**
- * Advances key generation by one incoming message. See `Step` for the
- * output. On an error with `sessionAborted`, start over with a NEW session
- * id; never retry the same one.
- */
-export function keygenStep(
-  session: KeygenSession,
-  message: Uint8Array,
-): ThresholdResult<KeygenStepOutput> {
+function asState(session: KeygenSession): KeygenState | null {
   const state = session as KeygenState
   if (
     typeof state !== 'object' ||
     state === null ||
     state.__thresholdEcdsa !== 'keygen-session'
   ) {
-    return failure('invalid-input')
+    return null
   }
+  return state
+}
+
+function discardPending(state: KeygenState): void {
+  wipeKeygen(state)
+  if (state.pending !== null) {
+    const pending = state.pending as unknown as Record<string, Uint8Array>
+    wipe(pending.secretShare, pending.primeP, pending.primeQ)
+  }
+}
+
+/**
+ * Advances key generation by one incoming message. See `Step` for the
+ * output. On an error with `sessionAborted`, start over with a NEW session
+ * id. On an error with `peerFault`, the other party sent something that
+ * failed a check.
+ */
+export function keygenStep(
+  session: KeygenSession,
+  message: Uint8Array,
+): ThresholdResult<KeygenStepOutput> {
+  const state = asState(session)
+  if (state === null) return failure('invalid-input')
   return advance<KeygenState, KeyShare>(
     state,
     message,
     current =>
       KEYGEN_BODY_BOUNDS[current.expectedRound] ?? { minBody: 0, maxBody: 0 },
     handle,
-    wipeKeygen,
+    discardPending,
     () => undefined,
   )
 }
 
 /** Aborts a key-generation session and wipes its secrets. */
 export function abortKeygen(session: KeygenSession): void {
-  const state = session as KeygenState
-  if (
-    typeof state !== 'object' ||
-    state === null ||
-    state.__thresholdEcdsa !== 'keygen-session' ||
-    state.status === 'finished'
-  ) {
-    return
-  }
-  wipeKeygen(state)
+  const state = asState(session)
+  if (state === null || state.status === 'finished') return
+  discardPending(state)
   state.status = 'aborted'
 }

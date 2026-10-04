@@ -21,6 +21,27 @@ export function ascii(text: string): Uint8Array {
   return Uint8Array.from(text, character => character.charCodeAt(0))
 }
 
+/** The error object of a rejection that leaves the session usable. */
+export function frameError(code: string) {
+  return {
+    ok: false,
+    error: {
+      code,
+      sessionAborted: false,
+      keyShareBurned: false,
+      peerFault: false,
+    },
+  }
+}
+
+/** The error object of an abort caused by the other party's message. */
+export function peerAbort(code: string, keyShareBurned = false) {
+  return {
+    ok: false,
+    error: { code, sessionAborted: true, keyShareBurned, peerFault: true },
+  }
+}
+
 /** A reproducible stand-in for a CSPRNG, keyed by a label. */
 export function seededRandom(label: string): RandomBytes {
   return deterministicStream('test-vector-rng', sha256(ascii(label)))
@@ -133,6 +154,8 @@ interface RecordedShares {
   readonly keygen: {
     readonly initiatorShare: string
     readonly responderShare: string
+    readonly responderRecord: string
+    readonly responderSeed: string
     readonly publicKey: string
     readonly address: string
     readonly messages: string[]

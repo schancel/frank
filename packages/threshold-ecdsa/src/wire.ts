@@ -21,7 +21,7 @@ export const PROTOCOL_SIGN = 2
 export const PROTOCOL_ADAPTOR_SIGN = 3
 
 /** Upper bound on any message of this package, checked before parsing. */
-export const MAX_MESSAGE_BYTES = 46000
+export const MAX_MESSAGE_BYTES = 47000
 
 export const SESSION_ID_BYTES = 32
 export const MIN_IDENTITY_BYTES = 1
@@ -87,8 +87,12 @@ export function openMessage(message: unknown, expected: Expected): Opened {
   return { ok: true, body }
 }
 
-/** Binding of a key-generation session: session id and both identities. */
-export function keygenBinding(
+/**
+ * Frame binding of a key-generation session: session id and both identities.
+ * It is all that is known when the first message is sent, so it is what the
+ * message header carries.
+ */
+export function keygenFrameBinding(
   sessionId: Uint8Array,
   initiatorId: Uint8Array,
   responderId: Uint8Array,
@@ -96,11 +100,31 @@ export function keygenBinding(
   return transcript('session/keygen', sessionId, initiatorId, responderId)
 }
 
+/** Binding of the initiator's first message: frame plus its fresh salt. */
+export function keygenInitiatorBinding(
+  frame: Uint8Array,
+  initiatorSalt: Uint8Array,
+): Uint8Array {
+  return transcript('session/keygen-initiator', frame, initiatorSalt)
+}
+
+/**
+ * Full binding, used by every proof and commitment after message 1: the
+ * frame plus 32 fresh random bytes from EACH party. Neither party can make
+ * the other run two key generations under the same binding.
+ */
+export function keygenFullBinding(
+  frame: Uint8Array,
+  initiatorSalt: Uint8Array,
+  responderSalt: Uint8Array,
+): Uint8Array {
+  return transcript('session/keygen-full', frame, initiatorSalt, responderSalt)
+}
+
 /**
  * Binding of a signing session: everything both parties must agree on before
- * a nonce is used. `tweakCommitment`, `adaptorPoint` and `adaptorProof` are
- * empty strings when absent; the protocol byte separates plain from adaptor
- * signing.
+ * a nonce is used. `tweakCommitment` and `lock` are empty strings when
+ * absent; the protocol byte separates plain from adaptor signing.
  */
 export function signBinding(input: {
   readonly protocol: number
@@ -111,8 +135,8 @@ export function signBinding(input: {
   readonly publicKey: Uint8Array
   readonly tweakCommitment: Uint8Array
   readonly digest: Uint8Array
-  readonly adaptorPoint: Uint8Array
-  readonly adaptorProof: Uint8Array
+  /** Empty for plain signing, else the encoded lock (see lock.ts). */
+  readonly lock: Uint8Array
 }): Uint8Array {
   return transcript(
     'session/sign',
@@ -124,7 +148,6 @@ export function signBinding(input: {
     input.publicKey,
     input.tweakCommitment,
     input.digest,
-    input.adaptorPoint,
-    input.adaptorProof,
+    input.lock,
   )
 }

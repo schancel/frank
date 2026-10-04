@@ -56,6 +56,14 @@ export interface ThresholdError {
    * The caller must persist this fact; see the README.
    */
   readonly keyShareBurned: boolean
+  /**
+   * True when the session aborted because of the CONTENT of a message that
+   * passed the frame check: a proof, commitment, range or signature check
+   * failed. Over an authenticated transport that means the other party
+   * misbehaved (or is broken), and the application may refuse to deal with it
+   * again. False for local failures and for frame rejections.
+   */
+  readonly peerFault: boolean
 }
 
 export type ThresholdResult<T> =
@@ -70,8 +78,12 @@ export function failure<T>(
   code: ThresholdErrorCode,
   sessionAborted = false,
   keyShareBurned = false,
+  peerFault = false,
 ): ThresholdResult<T> {
-  return { ok: false, error: { code, sessionAborted, keyShareBurned } }
+  return {
+    ok: false,
+    error: { code, sessionAborted, keyShareBurned, peerFault },
+  }
 }
 
 /**

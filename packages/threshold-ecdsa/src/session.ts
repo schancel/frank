@@ -74,9 +74,14 @@ export function advance<State extends SessionCore, Result>(
     return success(handle(state, opened.body))
   } catch (error) {
     const burned = failureBurns(error)
+    const code = failureCode(error)
     if (burned) burn(state)
     wipeState(state)
     state.status = 'aborted'
-    return failure(failureCode(error), true, burned)
+    const local =
+      code === 'internal-error' ||
+      code === 'rng-failed' ||
+      code === 'key-share-burned'
+    return failure(code, true, burned, !local)
   }
 }

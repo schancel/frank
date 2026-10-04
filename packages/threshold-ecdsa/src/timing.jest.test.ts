@@ -2,10 +2,10 @@
  * Prints how long each party spends in key generation and signing. The
  * numbers are informational; the only assertion is that the protocols finish.
  */
-import { generateAdaptorSecret } from '@frank/adaptor-signatures'
 import { randomBytes } from 'crypto'
 
 import {
+  createPointLock,
   keygenStep,
   signStep,
   startKeygen,
@@ -81,22 +81,23 @@ it('reports key generation and signing time per party', () => {
   const [a, b] = keygen.results
   expect(a).not.toBeNull()
   expect(b).not.toBeNull()
-  const runs = 10
+  const runs = 5
   const totals = { plainI: 0, plainR: 0, adaptorI: 0, adaptorR: 0 }
   for (let run = 0; run < runs; run += 1) {
     for (const adaptor of [false, true]) {
       const sessionId = rng(32)
       const digest = rng(32)
-      const material = adaptor ? must(generateAdaptorSecret(rng)) : undefined
+      const lock = adaptor
+        ? must(createPointLock({ keyShare: b!, randomBytes: rng })).lock
+        : undefined
       const signed = timed(
         role =>
           must(
             startSign({
               keyShare: role === 'initiator' ? a! : b!,
-              role,
               sessionId,
               digest,
-              adaptor: material,
+              lock,
               randomBytes: rng,
             }),
           ),

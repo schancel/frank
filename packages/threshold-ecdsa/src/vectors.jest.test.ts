@@ -12,13 +12,15 @@ import { join } from 'path'
 
 import {
   completeAdaptorSignature,
-  generateAdaptorSecret,
   type AdaptorPoint,
   type AdaptorSecret,
   type AdaptorSecretProof,
 } from '@frank/adaptor-signatures'
 
 import {
+  completeCommitmentLock,
+  createCommitmentLock,
+  createPointLock,
   describeKeyShare,
   exportKeyShare,
   exportKeyShareRecord,
@@ -27,8 +29,10 @@ import {
   startKeygen,
   startSign,
   tweakPublicKey,
+  type AdaptorLock,
   type KeyShare,
 } from './index.js'
+import { PEDERSEN_H } from './lock.js'
 import {
   ascii,
   drive,
@@ -45,13 +49,25 @@ const VECTOR_PATH = join(
   'threshold_ecdsa.json',
 )
 
+interface LockVector {
+  kind: 'point' | 'commitment'
+  secret: string
+  // point lock
+  point?: string
+  proof: string
+  ownerProof?: string
+  // commitment lock
+  commitment?: string
+  value?: number
+  index?: number
+}
+
 interface SignCase {
   name: string
-  initiator: 'keygen-initiator' | 'keygen-responder'
   sessionId: string
   digest: string
   tweakCommitment: string | null
-  adaptor: { secret: string; point: string; proof: string } | null
+  lock: LockVector | null
   initiatorRng: string
   responderRng: string
   messages: string[]
@@ -66,6 +82,7 @@ interface SignCase {
 interface Vectors {
   description: string
   rng: string
+  pedersenH: string
   keygen: {
     sessionId: string
     initiatorId: string
@@ -151,99 +168,123 @@ function runKeygen(): { vector: Vectors['keygen']; a: KeyShare; b: KeyShare } {
 
 interface SignPlan {
   name: string
-  initiator: SignCase['initiator']
   sessionByte: number
   digestByte: number
   tweakByte: number | null
-  adaptor: boolean
+  lock: 'point' | 'commitment' | null
 }
 
 const PLANS: SignPlan[] = [
   {
     name: 'plain',
-    initiator: 'keygen-initiator',
     sessionByte: 0x21,
     digestByte: 0x31,
     tweakByte: null,
-    adaptor: false,
+    lock: null,
   },
   {
-    name: 'plain, roles swapped, tweaked key',
-    initiator: 'keygen-responder',
+    name: 'plain, tweaked key',
     sessionByte: 0x22,
     digestByte: 0x32,
     tweakByte: 0x42,
-    adaptor: false,
+    lock: null,
   },
   {
-    name: 'adaptor',
-    initiator: 'keygen-initiator',
+    name: 'adaptor, point lock',
     sessionByte: 0x23,
     digestByte: 0x33,
     tweakByte: null,
-    adaptor: true,
+    lock: 'point',
   },
   {
-    name: 'adaptor, roles swapped, tweaked key',
-    initiator: 'keygen-responder',
+    name: 'adaptor, commitment lock, tweaked key',
     sessionByte: 0x24,
     digestByte: 0x34,
     tweakByte: 0x44,
-    adaptor: true,
+    lock: 'commitment',
   },
 ]
+
+function makeLock(plan: SignPlan, responder: KeyShare): LockVector | null {
+  if (plan.lock === 'point') {
+    // The proof of knowledge in @frank/adaptor-signatures uses ambient
+    // randomness, so a point lock is an input of the vector, not an output.
+    const made = must(
+      createPointLock({
+        keyShare: responder,
+        randomBytes: seededRandom(`lock/${plan.name}`),
+      }),
+    )
+    return {
+      kind: 'point',
+      secret: hex(made.secret),
+      point: hex(made.lock.point),
+      proof: hex(made.lock.proof),
+      ownerProof: hex(made.lock.ownerProof),
+    }
+  }
+  if (plan.lock === 'commitment') {
+    const made = must(
+      createCommitmentLock({
+        keyShare: responder,
+        value: 7,
+        randomBytes: seededRandom(`lock/${plan.name}`),
+      }),
+    )
+    return {
+      kind: 'commitment',
+      secret: hex(made.secret),
+      commitment: hex(made.commitment),
+      proof: hex(made.proof),
+      value: 7,
+      index: 7,
+    }
+  }
+  return null
+}
+
+function lockInput(vector: LockVector | null): AdaptorLock | undefined {
+  if (vector === null) return undefined
+  if (vector.kind === 'point') {
+    return {
+      kind: 'point',
+      point: fromHex(vector.point!) as AdaptorPoint,
+      proof: fromHex(vector.proof) as AdaptorSecretProof,
+      ownerProof: fromHex(vector.ownerProof!),
+    }
+  }
+  return {
+    kind: 'commitment',
+    commitment: fromHex(vector.commitment!),
+    proof: fromHex(vector.proof),
+    index: vector.index!,
+  }
+}
 
 function runSign(
   plan: SignPlan,
   a: KeyShare,
   b: KeyShare,
-  recorded: SignCase['adaptor'],
+  recorded: LockVector | null,
 ): SignCase {
   const sessionId = filled(plan.sessionByte)
   const digest = filled(plan.digestByte)
   const tweakCommitment =
     plan.tweakByte === null ? undefined : filled(plan.tweakByte)
-  let adaptor = recorded
-  if (plan.adaptor && adaptor === null) {
-    // The proof of knowledge in @frank/adaptor-signatures uses ambient
-    // randomness, so the triple is an input of the vector, not an output.
-    const material = must(
-      generateAdaptorSecret(seededRandom(`adaptor/${plan.name}`)),
-    )
-    adaptor = {
-      secret: hex(material.secret),
-      point: hex(material.point),
-      proof: hex(material.proof),
-    }
-  }
-  const adaptorInput =
-    adaptor === null
-      ? undefined
-      : {
-          point: fromHex(adaptor.point) as AdaptorPoint,
-          proof: fromHex(adaptor.proof) as AdaptorSecretProof,
-        }
-  const initiatorShare = plan.initiator === 'keygen-initiator' ? a : b
-  const responderShare = plan.initiator === 'keygen-initiator' ? b : a
+  const lock =
+    plan.lock === 'point' && recorded !== null ? recorded : makeLock(plan, b)
   const initiatorRng = `sign/${plan.name}/initiator`
   const responderRng = `sign/${plan.name}/responder`
+  const common = { sessionId, digest, tweakCommitment, lock: lockInput(lock) }
   const trace = drive(
     startSign({
-      keyShare: initiatorShare,
-      role: 'initiator',
-      sessionId,
-      digest,
-      tweakCommitment,
-      adaptor: adaptorInput,
+      ...common,
+      keyShare: a,
       randomBytes: seededRandom(initiatorRng),
     }),
     startSign({
-      keyShare: responderShare,
-      role: 'responder',
-      sessionId,
-      digest,
-      tweakCommitment,
-      adaptor: adaptorInput,
+      ...common,
+      keyShare: b,
       randomBytes: seededRandom(responderRng),
     }),
     signStep,
@@ -254,27 +295,41 @@ function runSign(
   }
   expect(trace.responderResult).toEqual(result)
   let completed: string | null = null
-  if (result.kind === 'adaptor-signature' && adaptor !== null) {
-    completed = hex(
-      must(
-        completeAdaptorSignature({
-          publicKey: result.publicKey,
-          adaptorPoint: fromHex(adaptor.point) as AdaptorPoint,
-          adaptorProof: fromHex(adaptor.proof) as AdaptorSecretProof,
-          digest,
-          signature: result.adaptorSignature,
-          secret: fromHex(adaptor.secret) as AdaptorSecret,
-        }),
-      ),
-    )
+  if (result.kind === 'adaptor-signature' && lock !== null) {
+    if (lock.kind === 'point') {
+      completed = hex(
+        must(
+          completeAdaptorSignature({
+            publicKey: result.publicKey,
+            adaptorPoint: fromHex(lock.point!) as AdaptorPoint,
+            adaptorProof: fromHex(lock.proof) as AdaptorSecretProof,
+            digest,
+            signature: result.adaptorSignature,
+            secret: fromHex(lock.secret) as AdaptorSecret,
+          }),
+        ),
+      )
+    } else {
+      completed = hex(
+        must(
+          completeCommitmentLock({
+            publicKey: result.publicKey,
+            commitment: fromHex(lock.commitment!),
+            index: lock.index!,
+            digest,
+            adaptorSignature: result.adaptorSignature,
+            secret: fromHex(lock.secret),
+          }),
+        ).signature,
+      )
+    }
   }
   return {
     name: plan.name,
-    initiator: plan.initiator,
     sessionId: hex(sessionId),
     digest: hex(digest),
     tweakCommitment: tweakCommitment ? hex(tweakCommitment) : null,
-    adaptor,
+    lock,
     initiatorRng,
     responderRng,
     messages: trace.messages.map(hex),
@@ -307,14 +362,14 @@ function build(previous: Vectors | null): Vectors {
       plan,
       keygen.a,
       keygen.b,
-      previous?.signing.find(entry => entry.name === plan.name)?.adaptor ??
-        null,
+      previous?.signing.find(entry => entry.name === plan.name)?.lock ?? null,
     ),
   )
   return {
     description:
-      'Two-party threshold ECDSA transcripts for @frank/threshold-ecdsa. All keys here are public test material.',
+      'Two-party threshold ECDSA transcripts for @frank/threshold-ecdsa. All keys here are public test material. The initiator of key generation (alice) is the initiator of every signing session.',
     rng: 'Each party draws from the stream SHA256(SHA256("test-vector-rng") || SHA256(label) || counter32be), blocks concatenated, consumed in call order.',
+    pedersenH: hex(PEDERSEN_H.toRawBytes(true)),
     keygen: keygen.vector,
     tweaks,
     signing,
@@ -328,10 +383,11 @@ describe('fixed test vectors', () => {
     }
     const recorded = JSON.parse(readFileSync(VECTOR_PATH, 'utf8')) as Vectors
     const rebuilt = build(recorded)
+    expect(rebuilt.pedersenH).toBe(recorded.pedersenH)
     expect(rebuilt.keygen).toEqual(recorded.keygen)
     expect(rebuilt.tweaks).toEqual(recorded.tweaks)
     expect(rebuilt.signing).toEqual(recorded.signing)
-    expect(recorded.keygen.messages).toHaveLength(7)
+    expect(recorded.keygen.messages).toHaveLength(8)
     for (const entry of recorded.signing) {
       expect(entry.messages).toHaveLength(5)
     }

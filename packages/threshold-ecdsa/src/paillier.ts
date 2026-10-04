@@ -37,6 +37,11 @@ export interface PaillierSecretKey extends PaillierPublicKey {
   readonly phi: bigint
   /** `phi^-1 mod n`. */
   readonly phiInverse: bigint
+  /** `p * p` and `q * q`, for the key owner's faster encryption. */
+  readonly pp: bigint
+  readonly qq: bigint
+  /** `(p * p)^-1 mod q * q`. */
+  readonly ppInverse: bigint
 }
 
 export function paillierPublicKey(n: bigint): PaillierPublicKey {
@@ -65,10 +70,17 @@ export function paillierSecretKey(p: bigint, q: bigint): PaillierSecretKey {
   const n = p * q
   const phi = (p - 1n) * (q - 1n)
   const phiInverse = modInverse(phi, n)
-  if (bitLength(n) !== PAILLIER_MODULUS_BITS || phiInverse === null) {
+  const pp = p * p
+  const qq = q * q
+  const ppInverse = modInverse(pp, qq)
+  if (
+    bitLength(n) !== PAILLIER_MODULUS_BITS ||
+    phiInverse === null ||
+    ppInverse === null
+  ) {
     fail('invalid-paillier')
   }
-  return { n, nn: n * n, p, q, phi, phiInverse }
+  return { n, nn: n * n, p, q, phi, phiInverse, pp, qq, ppInverse }
 }
 
 /**
@@ -105,6 +117,27 @@ export function encrypt(
   if (message < 0n || message >= key.n) fail('internal-error')
   if (randomness <= 0n || randomness >= key.n) fail('internal-error')
   const mask = modPow(randomness, key.n, key.nn)
+  return ((1n + message * key.n) * mask) % key.nn
+}
+
+/**
+ * The same value as `encrypt`, computed by the key owner with the Chinese
+ * remainder theorem: `randomness^N` is raised separately modulo `p^2` and
+ * `q^2` (with the exponent reduced modulo the group orders `p(p-1)` and
+ * `q(q-1)`) and recombined. About twice as fast; used only for the owner's
+ * own encryptions in key generation.
+ */
+export function encryptAsOwner(
+  key: PaillierSecretKey,
+  message: bigint,
+  randomness: bigint,
+): bigint {
+  if (message < 0n || message >= key.n) fail('internal-error')
+  if (randomness <= 0n || randomness >= key.n) fail('internal-error')
+  const maskP = modPow(randomness, key.n % (key.p * (key.p - 1n)), key.pp)
+  const maskQ = modPow(randomness, key.n % (key.q * (key.q - 1n)), key.qq)
+  const lift = ((((maskQ - maskP) * key.ppInverse) % key.qq) + key.qq) % key.qq
+  const mask = maskP + key.pp * lift
   return ((1n + message * key.n) * mask) % key.nn
 }
 

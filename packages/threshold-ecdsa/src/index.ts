@@ -13,10 +13,25 @@ export {
   restoreKeyShare,
 } from './key-share.js'
 export type {
+  KeyRole,
   KeyShare,
   KeyShareInfo,
   RestoreKeyShareInput,
 } from './key-share.js'
+export {
+  commitmentLockPoint,
+  completeCommitmentLock,
+  createCommitmentLock,
+  createPointLock,
+  extractCommitmentLockSecret,
+  recoveryBit,
+} from './lock.js'
+export type {
+  AdaptorLock,
+  CommitmentLockMaterial,
+  CompletedSignature,
+  PointLockMaterial,
+} from './lock.js'
 export {
   abortSign,
   exportSignSession,

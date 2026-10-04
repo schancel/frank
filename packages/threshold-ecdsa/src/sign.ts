@@ -2,9 +2,9 @@
  * Two-party signing and two-party adaptor pre-signing.
  *
  * PLAIN SIGNING is Protocol 3.2 of Lindell, "Fast Secure Two-Party ECDSA
- * Signing" (CRYPTO 2017, ePrint 2017/552). The session's initiator plays P1
- * (it owns the Paillier key used and learns the signature first), the
- * responder plays P2. With n the curve order, m the digest as a scalar, h the
+ * Signing" (CRYPTO 2017, ePrint 2017/552). Roles are fixed by key
+ * generation: the key's initiator is P1 (it owns the Paillier key and learns
+ * the signature first), the key's responder is P2. With n the curve order, m the digest as a scalar, h the
  * public key tweak (0 if none), x_I and x_R the shares:
  *
  *  1 I->R  commit(R1, pok)                  R1 = k1*G
@@ -28,8 +28,20 @@
  * share in that case and reports `keyShareBurned`.
  *
  * ADAPTOR PRE-SIGNING produces the 162-byte encrypted signature of
- * `@frank/adaptor-signatures` for the joint key, locked to an adaptor point
- * T: (R, R_a, s_a, b, c) with R_a = k*G, R = k*T, r = R.x,
+ * `@frank/adaptor-signatures` for the joint key, locked to the point T of a
+ * validated lock (lock.ts). The published two-party ECDSA lock on Lindell
+ * 2017 is Malavolta, Moreno-Sanchez, Schneidewind, Kate, Maffei, "Anonymous
+ * Multi-Hop Locks for Blockchain Scalability and Interoperability" (NDSS
+ * 2019), Section on ECDSA-based locks: both parties send their nonce share
+ * over G and over the lock point with a proof that the two have the same
+ * discrete log, the Paillier step uses r = (k1*k2*T).x, and P1 outputs
+ * s' = k1^-1 * Dec(c3), which completes to a signature by dividing by the
+ * lock secret. This file follows that structure. It differs in one place:
+ * AMHL's pre-signature is checked by the two parties themselves, each using
+ * its own nonce share; here the output must also be the self-contained
+ * dlcspecs encoding, which carries one equality proof for the JOINT nonce.
+ * The joint-proof step below produces that proof and is this package's own
+ * construction. The output is: (R, R_a, s_a, b, c) with R_a = k*G, R = k*T, r = R.x,
  * s_a = k^-1*(m + r*x), and a discrete-log-equality proof (b, c) for
  * (R_a, R) over bases (G, T), where k = k1*k2. Each party also sends its
  * nonce share over base T with a proof, and the two build the final proof
@@ -44,16 +56,12 @@
  * with proof commitments A_G = A1 + k1*A2 = A1 + a2*R1 and
  * A_T = A1T + k1*A2T = A1T + a2*R1T and b the dlcspecs DLEQ challenge over
  * (R_a, T, R, A_G, A_T). Then c*G = A_G + b*R_a and c*T = A_T + b*R, which
- * is exactly what the single-signer verifier checks. The joint proof step is
- * this package's own construction, not taken from a paper; the README states
- * the argument for it and lists it first among the points to review.
+ * is exactly what the single-signer verifier checks. The README states the
+ * argument for the joint proof and lists it first among the points to
+ * review.
  */
 import {
   adaptorSignatureFromBytes,
-  verifyAdaptorSecret,
-  verifyAdaptorSignature,
-  type AdaptorPoint,
-  type AdaptorSecretProof,
   type AdaptorSignatureBytes,
 } from '@frank/adaptor-signatures'
 import {
@@ -103,9 +111,16 @@ import {
   addressOfPoint,
   burnShare,
   internalShare,
+  shareIsBurned,
   type KeyShare,
   type KeyShareInternal,
 } from './key-share.js'
+import {
+  decodeLock,
+  isLockedSignature,
+  resolveLock,
+  type AdaptorLock,
+} from './lock.js'
 import {
   addCiphertexts,
   CIPHERTEXT_BYTES,
@@ -144,8 +159,6 @@ import {
 const NONCE_BYTES = 32
 const HALF_ORDER = CURVE_ORDER >> 1n
 const ORDER_SQUARED = CURVE_ORDER * CURVE_ORDER
-const ADAPTOR_POINT_BYTES = 33
-const ADAPTOR_PROOF_BYTES = 65
 const ADAPTOR_SIGNATURE_BYTES = 162
 const COMPACT_SIGNATURE_BYTES = 64
 const EMPTY = new Uint8Array(0)
@@ -192,9 +205,13 @@ interface SignState extends SessionCore, SignSession {
   readonly publicKey: Uint8Array
   /** The public tweak scalar h, zero when the key is not tweaked. */
   readonly tweak: Uint8Array
+  /** The caller's inputs, kept so exported state can be re-validated. */
+  readonly sessionId: Uint8Array
+  readonly tweakCommitment: Uint8Array
   readonly digest: Uint8Array
+  /** Adaptor only: the lock point T and the lock's canonical encoding. */
   readonly adaptorPoint: Uint8Array | null
-  readonly adaptorProof: Uint8Array | null
+  readonly lock: Uint8Array
   /** Secret: this party's nonce share k_i. */
   readonly nonce: Uint8Array
   /** Secret, adaptor only: this party's proof nonce a_i. */
@@ -499,8 +516,8 @@ function responderRound3(state: SignState, body: Uint8Array): InternalStep {
   }
   // Protocol 3.2 step 4. All three values below are secret.
   const share = state.keyShare
-  const peerKey = parseModulus(share.peerModulus)
-  const peerCiphertext = parseCiphertext(peerKey, share.peerCiphertext)
+  const peerKey = parseModulus(share.modulus)
+  const peerCiphertext = parseCiphertext(peerKey, share.ciphertext)
   const kInverse = modInv(k)
   const m = hashToScalar(state.digest)
   const tweak = bytesToInt(state.tweak)
@@ -623,21 +640,23 @@ function adaptorResult(state: SignState, signature: Uint8Array): SignResult {
   }
 }
 
-/** Runs the single-signer verifier of `@frank/adaptor-signatures`. */
+/**
+ * Runs the single-signer verifier of `@frank/adaptor-signatures` on a
+ * canonically encoded pre-signature. The lock point was validated, with its
+ * proofs, when the session started.
+ */
 function isValidAdaptorSignature(
   state: SignState,
   signature: Uint8Array,
 ): boolean {
   const parsed = adaptorSignatureFromBytes(signature)
   if (!parsed.ok) return false
-  const verified = verifyAdaptorSignature({
-    publicKey: state.publicKey,
-    adaptorPoint: need(state.adaptorPoint) as AdaptorPoint,
-    adaptorProof: need(state.adaptorProof) as AdaptorSecretProof,
-    digest: state.digest,
-    signature: parsed.value,
-  })
-  return verified.ok && verified.value
+  return isLockedSignature(
+    parsePoint(state.publicKey),
+    parsePoint(need(state.adaptorPoint)),
+    state.digest,
+    parsed.value,
+  )
 }
 
 /**
@@ -747,7 +766,7 @@ function responderRound5(state: SignState, body: Uint8Array): InternalStep {
 }
 
 function handle(state: SignState, body: Uint8Array): InternalStep {
-  if (state.keyShare.burned) fail('key-share-burned')
+  if (shareIsBurned(state.keyShare)) fail('key-share-burned')
   switch (state.expectedRound) {
     case 1:
       return responderRound1(state, body)
@@ -769,14 +788,12 @@ function handle(state: SignState, body: Uint8Array): InternalStep {
 // --- Public API ------------------------------------------------------------
 
 export interface StartSignInput {
-  readonly keyShare: KeyShare
   /**
-   * The initiator sends the first message, decrypts, and learns the result
-   * first; the responder receives it in the last message. For adaptor
-   * signing the party that must be able to extract the secret later should
-   * be the initiator (README, "Who should initiate").
+   * The key share. Its role decides this party's role in the session: the
+   * key's initiator sends the first message, decrypts, and learns the result
+   * first; the key's responder receives the result in the last message.
    */
-  readonly role: 'initiator' | 'responder'
+  readonly keyShare: KeyShare
   /**
    * 32 bytes both parties agree on, never used before with this key. A
    * retry after any failure MUST use a new value.
@@ -786,13 +803,68 @@ export interface StartSignInput {
   readonly digest: Uint8Array
   /** Sign for `P + H(tag, P, commitment)*G` instead of the joint key `P`. */
   readonly tweakCommitment?: Uint8Array
-  /** Produce an adaptor pre-signature locked to this point instead. */
-  readonly adaptor?: {
-    readonly point: AdaptorPoint
-    /** Proof of knowledge for `point` from `@frank/adaptor-signatures`. */
-    readonly proof: AdaptorSecretProof
-  }
+  /**
+   * Produce an adaptor pre-signature locked to this lock instead of a
+   * signature. Locks are created by the key's responder (lock.ts).
+   */
+  readonly lock?: AdaptorLock
   readonly randomBytes: RandomBytes
+}
+
+interface Resolved {
+  readonly protocol: number
+  readonly session: Uint8Array
+  readonly publicKey: Uint8Array
+  readonly tweak: Uint8Array
+  readonly adaptorPoint: Uint8Array | null
+  readonly lock: Uint8Array
+}
+
+/**
+ * Derives everything a session's messages depend on from the key share and
+ * the caller's inputs, verifying the lock's proofs. Used when a session
+ * starts and again when one is imported, so imported state can never pair a
+ * session binding with a different key, tweak, digest or lock.
+ */
+function resolve(
+  keyShare: KeyShareInternal,
+  sessionId: Uint8Array,
+  digest: Uint8Array,
+  tweakCommitment: Uint8Array,
+  lock: AdaptorLock | null,
+): Resolved {
+  let publicKey: Uint8Array = keyShare.publicKey.slice()
+  let tweak: Uint8Array = new Uint8Array(SCALAR_BYTES)
+  if (tweakCommitment.length !== 0) {
+    const tweaked = computeTweak(keyShare.publicKey, tweakCommitment)
+    publicKey = pointBytes(tweaked.point)
+    tweak = scalarBytes(tweaked.tweak)
+  }
+  const initiator = keyShare.role === 'initiator'
+  const initiatorId = initiator ? keyShare.localId : keyShare.peerId
+  const responderId = initiator ? keyShare.peerId : keyShare.localId
+  const resolved =
+    lock === null ? null : resolveLock(lock, keyShare.keyId, responderId)
+  const protocol = resolved === null ? PROTOCOL_SIGN : PROTOCOL_ADAPTOR_SIGN
+  const encoded = resolved === null ? EMPTY : resolved.encoded
+  return {
+    protocol,
+    session: signBinding({
+      protocol,
+      sessionId,
+      initiatorId,
+      responderId,
+      keyId: keyShare.keyId,
+      publicKey,
+      tweakCommitment,
+      digest,
+      lock: encoded,
+    }),
+    publicKey,
+    tweak,
+    adaptorPoint: resolved === null ? null : resolved.point,
+    lock: encoded,
+  }
 }
 
 /**
@@ -804,78 +876,50 @@ export function startSign(
 ): ThresholdResult<SignStepOutput> {
   try {
     const keyShare = internalShare(input.keyShare)
-    const role = input.role
     const sessionId = snapshot(input.sessionId, SESSION_ID_BYTES)
     const digest = snapshot(input.digest, 32)
     const rawCommitment = input.tweakCommitment
-    const rawAdaptor = input.adaptor
+    const rawLock = input.lock
     const rng = input.randomBytes
-    if (keyShare.burned) return failure('key-share-burned')
-    if (
-      (role !== 'initiator' && role !== 'responder') ||
-      sessionId === null ||
-      digest === null
-    ) {
-      return failure('invalid-input')
-    }
+    if (shareIsBurned(keyShare)) return failure('key-share-burned')
+    if (sessionId === null || digest === null) return failure('invalid-input')
     if (typeof rng !== 'function') return failure('rng-failed')
-    let publicKey: Uint8Array = keyShare.publicKey.slice()
-    let tweak: Uint8Array = new Uint8Array(SCALAR_BYTES)
     let tweakCommitment: Uint8Array = EMPTY
     if (rawCommitment !== undefined) {
       const copied = snapshot(rawCommitment, 32)
       if (copied === null) return failure('invalid-input')
-      const tweaked = computeTweak(keyShare.publicKey, copied)
-      publicKey = pointBytes(tweaked.point)
-      tweak = scalarBytes(tweaked.tweak)
       tweakCommitment = copied
     }
-    let adaptorPoint: Uint8Array | null = null
-    let adaptorProof: Uint8Array | null = null
-    if (rawAdaptor !== undefined) {
-      adaptorPoint = snapshot(rawAdaptor.point, ADAPTOR_POINT_BYTES)
-      adaptorProof = snapshot(rawAdaptor.proof, ADAPTOR_PROOF_BYTES)
-      if (adaptorPoint === null || adaptorProof === null) {
-        return failure('invalid-input')
-      }
-      parsePoint(adaptorPoint)
-      // The adaptor construction is only safe for a point whose discrete log
-      // someone provably knows (see @frank/adaptor-signatures).
-      const known = verifyAdaptorSecret(
-        adaptorPoint as AdaptorPoint,
-        adaptorProof as AdaptorSecretProof,
-      )
-      if (!known.ok || !known.value) return failure('invalid-proof')
+    if (
+      rawLock !== undefined &&
+      (typeof rawLock !== 'object' || rawLock === null)
+    ) {
+      return failure('invalid-input')
     }
-    const initiator = role === 'initiator'
-    const protocol =
-      adaptorPoint === null ? PROTOCOL_SIGN : PROTOCOL_ADAPTOR_SIGN
-    const session = signBinding({
-      protocol,
+    const resolved = resolve(
+      keyShare,
       sessionId,
-      initiatorId: initiator ? keyShare.localId : keyShare.peerId,
-      responderId: initiator ? keyShare.peerId : keyShare.localId,
-      keyId: keyShare.keyId,
-      publicKey,
-      tweakCommitment,
       digest,
-      adaptorPoint: adaptorPoint ?? EMPTY,
-      adaptorProof: adaptorProof ?? EMPTY,
-    })
+      tweakCommitment,
+      rawLock ?? null,
+    )
+    const initiator = keyShare.role === 'initiator'
     const base: SignState = {
       __thresholdEcdsa: 'sign-session',
       status: 'active',
-      protocol,
+      protocol: resolved.protocol,
       expectedRound: initiator ? 2 : 1,
-      session,
+      session: resolved.session,
       initiator,
       rng,
       keyShare,
-      publicKey,
-      tweak,
+      publicKey: resolved.publicKey,
+      tweak: resolved.tweak,
+      sessionId,
+      tweakCommitment,
       digest,
-      adaptorPoint,
-      adaptorProof,
+      adaptorPoint: resolved.adaptorPoint,
+      lock: resolved.lock,
       nonce: new Uint8Array(SCALAR_BYTES),
       proofNonce: null,
       opening: null,
@@ -883,8 +927,9 @@ export function startSign(
       peerShare: null,
       jointNonce: null,
     }
-    if (!initiator)
+    if (!initiator) {
       return success({ session: base, outgoing: null, result: null })
+    }
     // Protocol 3.2 step 1: P1 commits to its nonce share and proof.
     const local = makeLocalShare(base)
     const openingNonce = draw(rng, NONCE_BYTES)
@@ -899,7 +944,7 @@ export function startSign(
       1,
       commit(
         'sign-nonce',
-        session,
+        resolved.session,
         keyShare.localId,
         local.payload,
         openingNonce,
@@ -955,10 +1000,19 @@ export function abortSign(session: SignSession): void {
 }
 
 // --- Crash recovery --------------------------------------------------------
+//
+//   "FTES" || version || expectedRound || keyId || sessionId || digest
+//   || field(tweakCommitment) || field(lock) || session || nonce
+//   || field(proofNonce) || field(opening) || field(peerCommit)
+//   || field(peerShare) || field(jointNonce)
+//
+// Import recomputes the session binding, public key, tweak and lock point
+// from the key share and the stored inputs and requires the stored binding
+// to match, so the parts of an imported state are always mutually consistent.
 
 const STATE_MAGIC = asciiBytes('FTES')
-const STATE_VERSION = 1
-const MAX_STATE_BYTES = 1024
+const STATE_VERSION = 2
+const MAX_STATE_BYTES = 1280
 
 function field(value: Uint8Array | null): Uint8Array {
   const bytes = value ?? EMPTY
@@ -987,19 +1041,13 @@ export function exportSignSession(
     return success(
       concat(
         STATE_MAGIC,
-        Uint8Array.of(
-          STATE_VERSION,
-          state.protocol,
-          state.expectedRound,
-          state.initiator ? 1 : 0,
-        ),
+        Uint8Array.of(STATE_VERSION, state.expectedRound),
         state.keyShare.keyId,
-        state.session,
-        state.publicKey,
-        state.tweak,
+        state.sessionId,
         state.digest,
-        field(state.adaptorPoint),
-        field(state.adaptorProof),
+        field(state.tweakCommitment),
+        field(state.lock),
+        state.session,
         state.nonce,
         field(state.proofNonce),
         field(state.opening),
@@ -1030,62 +1078,98 @@ export function importSignSession(
     const keyShare = internalShare(input.keyShare)
     const rng = input.randomBytes
     copied = snapshotBounded(input.state, 0, MAX_STATE_BYTES)
-    if (keyShare.burned) return failure('key-share-burned')
+    if (shareIsBurned(keyShare)) return failure('key-share-burned')
     if (typeof rng !== 'function') return failure('rng-failed')
     if (copied === null) return failure('invalid-input')
     const reader = new Reader(copied)
     if (!equalBytes(reader.take(4), STATE_MAGIC)) fail('invalid-input')
-    const version = reader.byte()
-    const protocol = reader.byte()
+    if (reader.byte() !== STATE_VERSION) fail('invalid-input')
     const expectedRound = reader.byte()
-    const role = reader.byte()
-    if (
-      version !== STATE_VERSION ||
-      (protocol !== PROTOCOL_SIGN && protocol !== PROTOCOL_ADAPTOR_SIGN) ||
-      (role !== 0 && role !== 1)
-    ) {
-      fail('invalid-input')
-    }
-    const initiator = role === 1
-    // The initiator waits for rounds 2 and 4, the responder for 1, 3 and 5.
-    const allowed = initiator ? [2, 4] : [1, 3, 5]
-    if (!allowed.includes(expectedRound)) fail('invalid-input')
     if (!equalBytes(reader.take(HASH_BYTES), keyShare.keyId)) {
       fail('invalid-input')
+    }
+    const sessionId = reader.take(SESSION_ID_BYTES)
+    const digest = reader.take(32)
+    const tweakCommitment = readField(reader) ?? EMPTY
+    const lock = readField(reader)
+    const session = reader.take(HASH_BYTES)
+    const nonce = reader.take(SCALAR_BYTES)
+    const proofNonce = readField(reader)
+    const opening = readField(reader)
+    const peerCommit = readField(reader)
+    const peerShare = readField(reader)
+    const jointNonce = readField(reader)
+    reader.finish()
+    if (tweakCommitment.length !== 0 && tweakCommitment.length !== 32) {
+      fail('invalid-input')
+    }
+    // Recompute everything derivable and require the stored binding to match.
+    const resolved = resolve(
+      keyShare,
+      sessionId,
+      digest,
+      tweakCommitment,
+      lock === null ? null : decodeLock(lock),
+    )
+    if (!equalBytes(resolved.session, session)) fail('invalid-input')
+    const adaptor = resolved.protocol === PROTOCOL_ADAPTOR_SIGN
+    const shareBytes = adaptor ? ADAPTOR_SHARE_BYTES : PLAIN_SHARE_BYTES
+    const initiator = keyShare.role === 'initiator'
+    // Each waiting point has exactly one shape of stored fields.
+    const shape = [
+      expectedRound,
+      proofNonce === null ? 0 : proofNonce.length,
+      opening === null ? 0 : opening.length,
+      peerCommit === null ? 0 : peerCommit.length,
+      peerShare === null ? 0 : peerShare.length,
+      jointNonce === null ? 0 : jointNonce.length,
+    ].join(',')
+    const proofLength = adaptor ? SCALAR_BYTES : 0
+    const jointLength = adaptor ? 2 * POINT_BYTES : POINT_BYTES
+    const allowed = initiator
+      ? [
+          [2, proofLength, shareBytes + NONCE_BYTES, 0, 0, 0].join(','),
+          [4, proofLength, shareBytes + NONCE_BYTES, 0, shareBytes, 0].join(
+            ',',
+          ),
+        ]
+      : [
+          [1, 0, 0, 0, 0, 0].join(','),
+          [3, proofLength, 0, HASH_BYTES, 0, 0].join(','),
+          [5, proofLength, 0, HASH_BYTES, 0, jointLength].join(','),
+        ]
+    if (!allowed.includes(shape)) fail('invalid-input')
+    if (jointNonce !== null) {
+      parsePoint(jointNonce.subarray(0, POINT_BYTES))
+      if (adaptor) parsePoint(jointNonce.subarray(POINT_BYTES))
     }
     const state: SignState = {
       __thresholdEcdsa: 'sign-session',
       status: 'active',
-      protocol,
+      protocol: resolved.protocol,
       expectedRound,
-      session: reader.take(HASH_BYTES),
+      session: resolved.session,
       initiator,
       rng,
       keyShare,
-      publicKey: reader.take(POINT_BYTES),
-      tweak: reader.take(SCALAR_BYTES),
-      digest: reader.take(32),
-      adaptorPoint: readField(reader),
-      adaptorProof: readField(reader),
-      nonce: reader.take(SCALAR_BYTES),
-      proofNonce: readField(reader),
-      opening: readField(reader),
-      peerCommit: readField(reader),
-      peerShare: readField(reader),
-      jointNonce: readField(reader),
-    }
-    reader.finish()
-    parsePoint(state.publicKey)
-    if (
-      (protocol === PROTOCOL_ADAPTOR_SIGN) !==
-      (state.adaptorPoint !== null)
-    ) {
-      fail('invalid-input')
+      publicKey: resolved.publicKey,
+      tweak: resolved.tweak,
+      sessionId,
+      tweakCommitment,
+      digest,
+      adaptorPoint: resolved.adaptorPoint,
+      lock: resolved.lock,
+      nonce,
+      proofNonce,
+      opening,
+      peerCommit,
+      peerShare,
+      jointNonce,
     }
     return success(state)
   } catch (error) {
     const code = failureCode(error)
-    return failure(code === 'malformed-message' ? 'invalid-input' : code)
+    return failure(code === 'key-share-burned' ? code : 'invalid-input')
   } finally {
     copied?.fill(0)
   }

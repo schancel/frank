@@ -20,15 +20,18 @@ import {
 } from './index.js'
 import { bytesToInt, intToBytes } from './bytes.js'
 import { CURVE_ORDER } from './group.js'
+import { forgetBurnedSharesForTests } from './key-share.js'
 import { ciphertextBytes, encrypt, paillierPublicKey } from './paillier.js'
 import { HEADER_BYTES } from './wire.js'
 import {
   cloneState,
   drive,
   flip,
+  frameError,
   fromHex,
   hex,
   must,
+  peerAbort,
   recordedVectors,
   replace,
   seededRandom,
@@ -56,6 +59,10 @@ type Options = Partial<
   >
 >
 
+afterEach(() => {
+  forgetBurnedSharesForTests()
+})
+
 function sign(
   initiator: KeyShare,
   responder: KeyShare,
@@ -70,13 +77,11 @@ function sign(
     startSign({
       ...common,
       keyShare: initiator,
-      role: 'initiator',
       randomBytes: options.randomBytes ?? rng,
     }),
     startSign({
       ...common,
       keyShare: responder,
-      role: 'responder',
       randomBytes: options.randomBytes ?? rng,
     }),
     signStep,
@@ -115,15 +120,12 @@ function message(
 }
 
 describe('two-party signing', () => {
-  it('produces a low-s signature that @noble/curves verifies, in both role assignments', () => {
+  it('produces a low-s signature that @noble/curves verifies, held by both parties', () => {
     const { a, b } = shares()
     const publicKey = fromHex(recorded.keygen.publicKey)
-    for (const [initiator, responder] of [
-      [a, b],
-      [b, a],
-    ] as const) {
+    for (let run = 0; run < 3; run += 1) {
       const digest = rng(32)
-      const trace = sign(initiator, responder, { digest })
+      const trace = sign(a, b, { digest })
       const first = signature(trace.initiatorResult)
       const second = signature(trace.responderResult)
       expect(second).toEqual(first)
@@ -188,13 +190,9 @@ describe('two-party signing', () => {
       .toRawBytes(true)
     expect(hex(tweaked.publicKey)).toBe(hex(expected))
     const digest = rng(32)
-    for (const [initiator, responder] of [
-      [a, b],
-      [b, a],
-    ] as const) {
+    {
       const result = signature(
-        sign(initiator, responder, { digest, tweakCommitment: commitment })
-          .initiatorResult,
+        sign(a, b, { digest, tweakCommitment: commitment }).initiatorResult,
       )
       expect(hex(result.publicKey)).toBe(hex(tweaked.publicKey))
       expect(
@@ -243,7 +241,6 @@ describe('two-party signing', () => {
     const initiator = must(
       startSign({
         keyShare: a,
-        role: 'initiator',
         sessionId,
         digest,
         tweakCommitment: filled(1),
@@ -253,7 +250,6 @@ describe('two-party signing', () => {
     const responder = must(
       startSign({
         keyShare: b,
-        role: 'responder',
         sessionId,
         digest,
         tweakCommitment: filled(2),
@@ -261,14 +257,7 @@ describe('two-party signing', () => {
       }),
     )
     const rejected = signStep(responder.session, initiator.outgoing!)
-    expect(rejected).toEqual({
-      ok: false,
-      error: {
-        code: 'wrong-session',
-        sessionAborted: false,
-        keyShareBurned: false,
-      },
-    })
+    expect(rejected).toEqual(frameError('wrong-session'))
   })
 })
 
@@ -307,7 +296,6 @@ describe('nonce handling', () => {
     const initiator = must(
       startSign({
         keyShare: a,
-        role: 'initiator',
         sessionId,
         digest,
         randomBytes: rng,
@@ -316,7 +304,6 @@ describe('nonce handling', () => {
     const responder = must(
       startSign({
         keyShare: b,
-        role: 'responder',
         sessionId,
         digest,
         randomBytes: rng,
@@ -326,14 +313,9 @@ describe('nonce handling', () => {
     const advanced = must(signStep(initiator.session, reply.outgoing!))
     expect(advanced.outgoing).not.toBeNull()
     // The old initiator state must not accept a second message 2.
-    expect(signStep(initiator.session, reply.outgoing!)).toEqual({
-      ok: false,
-      error: {
-        code: 'state-already-used',
-        sessionAborted: false,
-        keyShareBurned: false,
-      },
-    })
+    expect(signStep(initiator.session, reply.outgoing!)).toEqual(
+      frameError('state-already-used'),
+    )
   })
 
   it('makes an aborted session unusable and wipes its nonce', () => {
@@ -348,14 +330,9 @@ describe('nonce handling', () => {
     if (rejected.ok) return
     expect(rejected.error.sessionAborted).toBe(true)
     expect(nonce.every(byte => byte === 0)).toBe(true)
-    expect(signStep(state, message(trace, 2))).toEqual({
-      ok: false,
-      error: {
-        code: 'session-aborted',
-        sessionAborted: false,
-        keyShareBurned: false,
-      },
-    })
+    expect(signStep(state, message(trace, 2))).toEqual(
+      frameError('session-aborted'),
+    )
     expect(exportSignSession(state).ok).toBe(false)
   })
 
@@ -365,19 +342,13 @@ describe('nonce handling', () => {
     for (const session of [trace.initiatorSession, trace.responderSession]) {
       const nonce = (session as unknown as { nonce: Uint8Array }).nonce
       expect(nonce.every(byte => byte === 0)).toBe(true)
-      expect(signStep(session, message(trace, 0))).toEqual({
-        ok: false,
-        error: {
-          code: 'session-finished',
-          sessionAborted: false,
-          keyShareBurned: false,
-        },
-      })
+      expect(signStep(session, message(trace, 0))).toEqual(
+        frameError('session-finished'),
+      )
     }
     const pending = must(
       startSign({
         keyShare: a,
-        role: 'initiator',
         sessionId: rng(32),
         digest: rng(32),
         randomBytes: rng,
@@ -398,24 +369,15 @@ describe('malicious counterpart: plain signing', () => {
     for (let index = 0; index < 5; index += 1) {
       const state = cloneState(trace.before[index]!)
       // Replay of the same round from another session.
-      expect(signStep(state, message(other, index))).toEqual({
-        ok: false,
-        error: {
-          code: 'wrong-session',
-          sessionAborted: false,
-          keyShareBurned: false,
-        },
-      })
+      expect(signStep(state, message(other, index))).toEqual(
+        frameError('wrong-session'),
+      )
       // Out-of-order message of this session.
       const wrongRound = message(trace, (index + 1) % 5)
       const outOfOrder = signStep(state, wrongRound)
       expect(outOfOrder.ok).toBe(false)
       if (!outOfOrder.ok) {
-        expect(outOfOrder.error).toEqual({
-          code: 'unexpected-message',
-          sessionAborted: false,
-          keyShareBurned: false,
-        })
+        expect(outOfOrder).toEqual(frameError('unexpected-message'))
       }
       // Truncated, extended, wrong magic, wrong type.
       const good = message(trace, index)
@@ -446,14 +408,7 @@ describe('malicious counterpart: plain signing', () => {
       1,
       flip(message(trace, 1), HEADER_BYTES + 33 + 40),
     )
-    expect(tampered).toEqual({
-      ok: false,
-      error: {
-        code: 'invalid-proof',
-        sessionAborted: true,
-        keyShareBurned: false,
-      },
-    })
+    expect(tampered).toEqual(peerAbort('invalid-proof'))
     // A point that is not on the curve (x = 5 has no square root for y).
     const offCurve = new Uint8Array(33)
     offCurve[0] = 0x02
@@ -469,14 +424,7 @@ describe('malicious counterpart: plain signing', () => {
         1,
         replace(message(trace, 1), HEADER_BYTES, bad),
       )
-      expect(rejected).toEqual({
-        ok: false,
-        error: {
-          code: 'invalid-point',
-          sessionAborted: true,
-          keyShareBurned: false,
-        },
-      })
+      expect(rejected).toEqual(peerAbort('invalid-point'))
     }
     // A valid (R2, proof) from another session, re-framed for this one: the
     // proof is bound to the session, so it does not verify here.
@@ -486,14 +434,7 @@ describe('malicious counterpart: plain signing', () => {
       HEADER_BYTES,
       message(other, 1).subarray(HEADER_BYTES),
     )
-    expect(deliver(trace, 1, spliced)).toEqual({
-      ok: false,
-      error: {
-        code: 'invalid-proof',
-        sessionAborted: true,
-        keyShareBurned: false,
-      },
-    })
+    expect(deliver(trace, 1, spliced)).toEqual(peerAbort('invalid-proof'))
   })
 
   it('message 3: rejects an opening that does not match the commitment, and a bad proof', () => {
@@ -504,25 +445,11 @@ describe('malicious counterpart: plain signing', () => {
       HEADER_BYTES,
       message(other, 2).subarray(HEADER_BYTES),
     )
-    expect(deliver(trace, 2, spliced)).toEqual({
-      ok: false,
-      error: {
-        code: 'invalid-commitment',
-        sessionAborted: true,
-        keyShareBurned: false,
-      },
-    })
+    expect(deliver(trace, 2, spliced)).toEqual(peerAbort('invalid-commitment'))
     // Wrong commitment nonce.
     expect(
       deliver(trace, 2, flip(message(trace, 2), message(trace, 2).length - 1)),
-    ).toEqual({
-      ok: false,
-      error: {
-        code: 'invalid-commitment',
-        sessionAborted: true,
-        keyShareBurned: false,
-      },
-    })
+    ).toEqual(peerAbort('invalid-commitment'))
     // A responder whose stored commitment matches a share with a bad proof:
     // the proof is still checked after the commitment opens.
     const state = cloneState(trace.before[2]!) as unknown as {
@@ -543,21 +470,16 @@ describe('malicious counterpart: plain signing', () => {
       body.subarray(98),
     )
     const forged = replace(message(trace, 2), HEADER_BYTES, badPayload)
-    expect(signStep(state as unknown as SignSession, forged)).toEqual({
-      ok: false,
-      error: {
-        code: 'invalid-proof',
-        sessionAborted: true,
-        keyShareBurned: false,
-      },
-    })
+    expect(signStep(state as unknown as SignSession, forged)).toEqual(
+      peerAbort('invalid-proof'),
+    )
   })
 
   it('message 4: rejects out-of-range Paillier values without burning the share', () => {
     const fresh = shares()
     const local = sign(fresh.a, fresh.b)
     const modulus = bytesToInt(
-      (fresh.a as unknown as { localModulus: Uint8Array }).localModulus,
+      (fresh.a as unknown as { modulus: Uint8Array }).modulus,
     )
     const prime = bytesToInt(
       (fresh.a as unknown as { primeP: Uint8Array }).primeP,
@@ -573,14 +495,7 @@ describe('malicious counterpart: plain signing', () => {
         3,
         replace(message(local, 3), HEADER_BYTES, intToBytes(bad, 512)),
       )
-      expect(rejected).toEqual({
-        ok: false,
-        error: {
-          code: 'invalid-paillier',
-          sessionAborted: true,
-          keyShareBurned: false,
-        },
-      })
+      expect(rejected).toEqual(peerAbort('invalid-paillier'))
     }
     expect(must(describeKeyShare(fresh.a)).burned).toBe(false)
   })
@@ -589,7 +504,7 @@ describe('malicious counterpart: plain signing', () => {
     const fresh = shares()
     const local = sign(fresh.a, fresh.b)
     const modulus = bytesToInt(
-      (fresh.a as unknown as { localModulus: Uint8Array }).localModulus,
+      (fresh.a as unknown as { modulus: Uint8Array }).modulus,
     )
     const key = paillierPublicKey(modulus)
     // A valid encryption of an arbitrary value, as a cheating responder that
@@ -600,32 +515,17 @@ describe('malicious counterpart: plain signing', () => {
       3,
       replace(message(local, 3), HEADER_BYTES, probe),
     )
-    expect(rejected).toEqual({
-      ok: false,
-      error: {
-        code: 'invalid-signature',
-        sessionAborted: true,
-        keyShareBurned: true,
-      },
-    })
+    expect(rejected).toEqual(peerAbort('invalid-signature', true))
     // The share is dead: no new session, no export, secrets wiped.
     expect(must(describeKeyShare(fresh.a)).burned).toBe(true)
     expect(
       startSign({
         keyShare: fresh.a,
-        role: 'initiator',
         sessionId: rng(32),
         digest: rng(32),
         randomBytes: rng,
       }),
-    ).toEqual({
-      ok: false,
-      error: {
-        code: 'key-share-burned',
-        sessionAborted: false,
-        keyShareBurned: false,
-      },
-    })
+    ).toEqual(frameError('key-share-burned'))
     expect(exportKeyShare(fresh.a).ok).toBe(false)
     const internal = fresh.a as unknown as {
       secretShare: Uint8Array
@@ -644,6 +544,33 @@ describe('malicious counterpart: plain signing', () => {
     const refused = signStep(stale, message(local, 1))
     expect(refused.ok).toBe(false)
     if (!refused.ok) expect(refused.error.code).toBe('key-share-burned')
+  })
+
+  it('a burn reaches every handle and every stored copy of the share in this process', () => {
+    const bytes = fromHex(recorded.keygen.initiatorShare)
+    const first = must(importKeyShare(bytes))
+    const second = must(importKeyShare(bytes))
+    const responder = shares().b
+    const local = sign(first, responder)
+    const key = paillierPublicKey(
+      bytesToInt((first as unknown as { modulus: Uint8Array }).modulus),
+    )
+    const probe = ciphertextBytes(encrypt(key, 5n, 7n))
+    expect(
+      deliver(local, 3, replace(message(local, 3), HEADER_BYTES, probe)),
+    ).toEqual(peerAbort('invalid-signature', true))
+    // `first` was the handle inside the cloned state; `second` is another.
+    expect(must(describeKeyShare(second)).burned).toBe(true)
+    const viaSecond = startSign({
+      keyShare: second,
+      sessionId: rng(32),
+      digest: rng(32),
+      randomBytes: rng,
+    })
+    expect(viaSecond).toEqual(frameError('key-share-burned'))
+    expect(exportKeyShare(second)).toEqual(frameError('key-share-burned'))
+    // Loading the stored bytes again is refused as well.
+    expect(importKeyShare(bytes)).toEqual(frameError('key-share-burned'))
   })
 
   it('message 5: rejects a signature that is invalid, high-s, for another nonce, or has the wrong recovery bit', () => {
@@ -668,14 +595,7 @@ describe('malicious counterpart: plain signing', () => {
       flip(good, good.length - 1),
       replace(good, good.length - 1, Uint8Array.of(2)),
     ]) {
-      expect(deliver(trace, 4, bad)).toEqual({
-        ok: false,
-        error: {
-          code: 'invalid-signature',
-          sessionAborted: true,
-          keyShareBurned: false,
-        },
-      })
+      expect(deliver(trace, 4, bad)).toEqual(peerAbort('invalid-signature'))
     }
   })
 
@@ -707,7 +627,6 @@ describe('inputs and persistence', () => {
     const { a } = shares()
     const base = {
       keyShare: a,
-      role: 'initiator' as const,
       sessionId: rng(32),
       digest: rng(32),
       randomBytes: rng,
@@ -720,7 +639,6 @@ describe('inputs and persistence', () => {
     invalid({ ...base, digest: rng(31) })
     invalid({ ...base, sessionId: rng(33) })
     invalid({ ...base, tweakCommitment: rng(31) })
-    invalid({ ...base, role: 'both' as unknown as 'initiator' })
     invalid({ ...base, keyShare: {} as KeyShare })
     invalid(
       { ...base, randomBytes: undefined as unknown as typeof rng },
@@ -738,23 +656,15 @@ describe('inputs and persistence', () => {
     )
   })
 
-  it('errors carry only a code and two flags', () => {
+  it('errors carry only a code and three flags', () => {
     const { a } = shares()
     const result = startSign({
       keyShare: a,
-      role: 'initiator',
       sessionId: rng(32),
       digest: rng(31),
       randomBytes: rng,
     })
-    expect(result).toEqual({
-      ok: false,
-      error: {
-        code: 'invalid-input',
-        sessionAborted: false,
-        keyShareBurned: false,
-      },
-    })
+    expect(result).toEqual(frameError('invalid-input'))
   })
 
   it('resumes a session from exported state at every waiting point', () => {
@@ -764,7 +674,6 @@ describe('inputs and persistence', () => {
     let initiator = must(
       startSign({
         keyShare: a,
-        role: 'initiator',
         sessionId,
         digest,
         randomBytes: rng,
@@ -773,7 +682,6 @@ describe('inputs and persistence', () => {
     let responder = must(
       startSign({
         keyShare: b,
-        role: 'responder',
         sessionId,
         digest,
         randomBytes: rng,
@@ -811,40 +719,56 @@ describe('inputs and persistence', () => {
     expect(exportSignSession(initiator.session).ok).toBe(false)
   })
 
-  it('refuses to import state for another key, or malformed state', () => {
+  it('refuses to import malformed or internally inconsistent state', () => {
     const { a, b } = shares()
     const started = must(
       startSign({
         keyShare: a,
-        role: 'initiator',
         sessionId: rng(32),
         digest: rng(32),
+        tweakCommitment: rng(32),
         randomBytes: rng,
       }),
     )
     const state = must(exportSignSession(started.session))
-    // Same key id on both shares, so tamper with the id instead.
-    for (const bad of [
-      flip(state, 10),
-      flip(state, 0),
-      state.subarray(0, state.length - 1),
-      new Uint8Array([...state, 0]),
-      replace(state, 6, Uint8Array.of(3)),
-    ]) {
+    // Layout: magic 4, version 1, round 1, keyId 32, sessionId 32, digest 32,
+    // tweak field 2+32, lock field 2, binding 32, nonce 32, ...
+    const offsets = {
+      magic: 0,
+      round: 5,
+      keyId: 10,
+      sessionId: 40,
+      digest: 80,
+      tweak: 110,
+      binding: 150,
+    }
+    for (const offset of Object.values(offsets)) {
       const result = importSignSession({
-        state: bad,
+        state: flip(state, offset),
         keyShare: a,
         randomBytes: rng,
       })
-      expect(result.ok).toBe(false)
-      if (!result.ok) expect(result.error.code).toBe('invalid-input')
+      expect(result).toEqual(frameError('invalid-input'))
     }
-    expect(importSignSession({ state, keyShare: b, randomBytes: rng }).ok).toBe(
+    for (const bad of [
+      state.subarray(0, state.length - 1),
+      new Uint8Array([...state, 0]),
+    ]) {
+      expect(
+        importSignSession({ state: bad, keyShare: a, randomBytes: rng }),
+      ).toEqual(frameError('invalid-input'))
+    }
+    // The initiator's state cannot be loaded with the responder's share:
+    // the waiting round does not exist for that role.
+    expect(importSignSession({ state, keyShare: b, randomBytes: rng })).toEqual(
+      frameError('invalid-input'),
+    )
+    expect(importSignSession({ state, keyShare: a, randomBytes: rng }).ok).toBe(
       true,
     )
     destroyKeyShare(a)
-    const dead = importSignSession({ state, keyShare: a, randomBytes: rng })
-    expect(dead.ok).toBe(false)
-    if (!dead.ok) expect(dead.error.code).toBe('key-share-burned')
+    expect(importSignSession({ state, keyShare: a, randomBytes: rng })).toEqual(
+      frameError('key-share-burned'),
+    )
   })
 })

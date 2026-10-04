@@ -407,6 +407,9 @@ import {
 } from './qwen-bot-state'
 
 const NETWORK = 'monad-testnet'
+/** Coupled turns are keyed by a real 32-byte inbound payload digest. */
+const h = (short: string) => short.padStart(64, '0')
+const turn = { ...input, payloadHashHex: h('01') }
 const CANONICAL_STAMP_WEI = 32n
 const canonicalContext: QwenResponseContext = {
   ...context,
@@ -780,10 +783,48 @@ export async function runCanonicalChild(): Promise<void> {
   })
   fixture.relay.mode = (process.env.QWEN_CANONICAL_RELAY ??
     'delivered') as RelayMode
-  const outcome = await fixture.run.respond(input)
+  const outcome = await fixture.run.respond(turn)
   console.log(`CHILD_OUTCOME ${outcome}`)
   // No Close: the parent reopens whatever a killed or abandoned process left behind.
   process.kill(process.pid, 'SIGKILL')
+}
+
+/** Runs one production respond() in a child that SIGKILLs itself at `kill`, with no Close. */
+function killedChild(
+  root: string,
+  kill: string,
+  relay: RelayMode = 'delivered',
+) {
+  return spawnSync(
+    process.execPath,
+    [
+      '--require',
+      require.resolve('tsx/cjs'),
+      '-e',
+      `
+      const noop = () => {};
+      for (const name of ['it','test','describe','beforeEach','afterEach'])
+        globalThis[name] = Object.assign(() => {}, { each: () => noop });
+      require(${JSON.stringify(
+        __filename,
+      )}).runCanonicalChild().catch(error => {
+        console.error(String(error && error.message));
+        process.exit(2);
+      });
+    `,
+    ],
+    {
+      encoding: 'utf8',
+      timeout: 30000,
+      env: {
+        PATH: process.env.PATH,
+        TSX_TSCONFIG_PATH: join(__dirname, 'tsconfig.json'),
+        QWEN_CANONICAL_ROOT: root,
+        QWEN_CANONICAL_KILL: kill,
+        QWEN_CANONICAL_RELAY: relay,
+      },
+    },
+  )
 }
 
 function count(events: string[], prefix: string): number {
@@ -829,28 +870,34 @@ describe('#703 canonical outbound coupling', () => {
         sealedText = f.openAsRecipient(f.state.getCoupling(hash)!)
         return commit(hash, terminal)
       })
-    expect(await f.run.respond(input)).toBe('confirmed')
+    expect(await f.run.respond(turn)).toBe('confirmed')
     expect(sealedText).toContain('REPLY_SENTINEL')
     const terminalBatch = batchSpy.mock.calls.find(([operations]) =>
-      operations.some(operation => operation.key === 'processed:01'),
+      operations.some(operation => operation.key === `processed:${h(h('01'))}`),
     )!
     expect(terminalBatch).toEqual([
       [
-        expect.objectContaining({ type: 'put', key: 'response:v1:01' }),
+        expect.objectContaining({
+          type: 'put',
+          key: `response:v1:${h(h('01'))}`,
+        }),
         expect.objectContaining({
           type: 'put',
           key: `conversation:${PEER.toLowerCase()}`,
         }),
-        { type: 'put', key: 'processed:01', value: '1' },
-        expect.objectContaining({ type: 'put', key: 'coupling:v1:01' }),
+        { type: 'put', key: `processed:${h(h('01'))}`, value: '1' },
+        expect.objectContaining({
+          type: 'put',
+          key: `coupling:v1:${h(h('01'))}`,
+        }),
       ],
       { sync: true },
     ])
-    const row = f.state.getResponse('01') as Extract<
+    const row = f.state.getResponse(h('01')) as Extract<
       QwenResponseRow,
       { phase: 'confirmed' }
     >
-    const coupling = f.state.getCoupling('01')!
+    const coupling = f.state.getCoupling(h('01'))!
     expect(coupling.phase).toBe('settled')
     expect(coupling).not.toHaveProperty('binding')
     if (coupling.phase !== 'settled') throw new Error('expected settled')
@@ -889,8 +936,8 @@ describe('#703 canonical outbound coupling', () => {
 
     const again = await reopenAll()
     expect(await again.run.recover()).toBeUndefined()
-    expect(await again.run.respond(input)).toBe('duplicate')
-    expect(await again.run.resume('01')).toBe('duplicate')
+    expect(await again.run.respond(turn)).toBe('duplicate')
+    expect(await again.run.resume(h('01'))).toBe('duplicate')
     expect(again.events()).toEqual(events)
   }, 30000)
 
@@ -899,19 +946,19 @@ describe('#703 canonical outbound coupling', () => {
     async mode => {
       let f = await open()
       f.relay.mode = mode
-      expect(await f.run.respond(input)).toBe('held')
+      expect(await f.run.respond(turn)).toBe('held')
       const first = f.relay.bodies[0]
-      const saved = f.state.getCoupling('01')!
+      const saved = f.state.getCoupling(h('01'))!
       expect(saved.phase).toBe('intent-linked')
       expect(f.journal.getAll()[0].terminal).toBeNull()
-      expect(f.state.getResponse('01')?.phase).toBe('response-ready')
-      expect(f.state.hasProcessed('01')).toBe(false)
-      expect(await f.run.resume('01')).toBe('held')
+      expect(f.state.getResponse(h('01'))?.phase).toBe('response-ready')
+      expect(f.state.hasProcessed(h('01'))).toBe(false)
+      expect(await f.run.resume(h('01'))).toBe('held')
       f = await reopenAll()
       expect(await f.run.recover()).toBeUndefined()
-      expect(f.state.getCoupling('01')).toEqual(saved)
+      expect(f.state.getCoupling(h('01'))).toEqual(saved)
       f.relay.mode = 'delivered'
-      expect(await f.run.resume('01')).toBe('confirmed')
+      expect(await f.run.resume(h('01'))).toBe('confirmed')
       expect(f.relay.bodies).toHaveLength(1)
       expect(Buffer.from(f.relay.bodies[0]).equals(Buffer.from(first))).toBe(
         true,
@@ -935,20 +982,22 @@ describe('#703 canonical outbound coupling', () => {
   it('keeps a dead outcome held and never builds a replacement envelope or payment', async () => {
     let f = await open()
     f.relay.mode = 'dead'
-    expect(await f.run.respond(input)).toBe('held')
-    expect(f.state.getResponse('01')?.phase).toBe('response-ready')
-    expect(f.state.hasProcessed('01')).toBe(false)
+    expect(await f.run.respond(turn)).toBe('held')
+    expect(f.state.getResponse(h('01'))?.phase).toBe('response-ready')
+    expect(f.state.hasProcessed(h('01'))).toBe(false)
     expect(f.state.getConversation(PEER)).toBeUndefined()
-    expect(f.state.getCoupling('01')).toMatchObject({
+    expect(f.state.getCoupling(h('01'))).toMatchObject({
       terminal: { outcome: 'dead', reason: 'expired' },
     })
     f = await reopenAll()
     f.relay.mode = 'delivered'
     expect(await f.run.recover()).toBeUndefined()
-    expect(await f.run.resume('01')).toBe('held')
-    expect(await f.run.respond(input)).toBe('held')
+    expect(await f.run.resume(h('01'))).toBe('held')
+    expect(await f.run.respond(turn)).toBe('held')
     // The peer stays ordered behind the dead turn.
-    expect(await f.run.respond({ ...input, payloadHashHex: '04' })).toBe('held')
+    expect(await f.run.respond({ ...turn, payloadHashHex: h('04') })).toBe(
+      'held',
+    )
     const events = f.events()
     expect(count(events, 'seal')).toBe(1)
     expect(count(events, 'put:')).toBe(1)
@@ -962,10 +1011,10 @@ describe('#703 canonical outbound coupling', () => {
     expect(logs.join()).toContain('delivery-dead')
     expect(logs.join()).toContain('earlier-turn-unresolved')
     // A dead turn is final for the poll loop and is reported once, not on every retry.
-    expect(f.run.pollDisposition('01')).toBe('final-hold')
+    expect(f.run.pollDisposition(h('01'))).toBe('final-hold')
     const reported = logs.filter(line => line.includes('delivery-dead')).length
     for (let poll = 0; poll < 3; poll++)
-      expect(await f.run.resume('01')).toBe('held')
+      expect(await f.run.resume(h('01'))).toBe('held')
     // Once per process: the first run and this reopened one.
     expect(reported).toBe(2)
     expect(logs.filter(line => line.includes('delivery-dead'))).toHaveLength(
@@ -975,41 +1024,41 @@ describe('#703 canonical outbound coupling', () => {
 
   it('classifies pending turns for the poll loop and reports a repeated hold once per reason', async () => {
     const f = await open()
-    await f.state.beginResponse({ ...input, context: canonicalContext })
-    await f.state.saveResponse('01', 'REPLY_SENTINEL', [])
-    expect(f.run.pollDisposition('01')).toBe('new-effect')
+    await f.state.beginResponse({ ...turn, context: canonicalContext })
+    await f.state.saveResponse(h('01'), 'REPLY_SENTINEL', [])
+    expect(f.run.pollDisposition(h('01'))).toBe('new-effect')
     f.canonical.prepareInventory = async () => {
       throw new Error('no inventory yet')
     }
     for (let poll = 0; poll < 3; poll++)
-      expect(await f.run.resume('01')).toBe('held')
+      expect(await f.run.resume(h('01'))).toBe('held')
     // A sealed but unlinked envelope has paid nothing: it is still a new effect.
-    expect(f.run.pollDisposition('01')).toBe('new-effect')
+    expect(f.run.pollDisposition(h('01'))).toBe('new-effect')
     expect(
       logs.filter(line => line.includes('inventory-unavailable')),
     ).toHaveLength(1)
     f.canonical.prepareInventory = async () => undefined
     f.relay.mode = 'retained'
     for (let poll = 0; poll < 3; poll++)
-      expect(await f.run.resume('01')).toBe('held')
-    expect(f.run.pollDisposition('01')).toBe('continue-linked')
+      expect(await f.run.resume(h('01'))).toBe('held')
+    expect(f.run.pollDisposition(h('01'))).toBe('continue-linked')
     expect(
       logs.filter(line => line.includes('relay-retained-delivery-pending')),
     ).toHaveLength(1)
     f.relay.mode = 'delivered'
-    expect(await f.run.resume('01')).toBe('confirmed')
+    expect(await f.run.resume(h('01'))).toBe('confirmed')
   }, 30000)
 
   it('serializes concurrent resumes into one envelope, one attempt and one terminal batch', async () => {
     const f = await open()
-    await f.state.beginResponse({ ...input, context: canonicalContext })
-    await f.state.saveResponse('01', 'REPLY_SENTINEL', [
+    await f.state.beginResponse({ ...turn, context: canonicalContext })
+    await f.state.saveResponse(h('01'), 'REPLY_SENTINEL', [
       { role: 'assistant', content: 'REPLY_SENTINEL' },
     ])
     const outcomes = await Promise.all([
-      f.run.resume('01'),
-      f.run.resume('01'),
-      f.run.resume('01'),
+      f.run.resume(h('01')),
+      f.run.resume(h('01')),
+      f.run.resume(h('01')),
     ])
     expect(outcomes.sort()).toEqual(['confirmed', 'duplicate', 'duplicate'])
     const events = f.events()
@@ -1031,23 +1080,23 @@ describe('#703 canonical outbound coupling', () => {
         return Promise.reject(new Error('DISK_ERROR_BODY_SENTINEL'))
       return batch(operations, options)
     }) as typeof db.batch)
-    await expect(f.run.respond(input)).rejects.toThrow('persistence failed')
+    await expect(f.run.respond(turn)).rejects.toThrow('persistence failed')
     batchSpy.mockRestore()
     // The wallet retains the pre-sign intent; nothing was leased, signed or sent.
     expect(f.journal.getIntents()).toHaveLength(1)
     expect(f.pool.getRecord(0)?.status).toBe('available')
-    expect(f.state.getCoupling('01')?.phase).toBe('envelope-ready')
-    await expect(f.run.resume('01')).rejects.toThrow('storage unavailable')
+    expect(f.state.getCoupling(h('01'))?.phase).toBe('envelope-ready')
+    await expect(f.run.resume(h('01'))).rejects.toThrow('storage unavailable')
     expect(count(f.events(), 'sign:')).toBe(0)
     const attemptRef = f.journal.getIntents()[0].attemptRef
     f = await reopenAll()
     expect(await f.run.recover()).toBeUndefined()
-    expect(f.state.getCoupling('01')).toMatchObject({
+    expect(f.state.getCoupling(h('01'))).toMatchObject({
       phase: 'intent-linked',
       attemptRef,
     })
     expect(count(f.events(), 'put:')).toBe(0)
-    expect(await f.run.resume('01')).toBe('confirmed')
+    expect(await f.run.resume(h('01'))).toBe('confirmed')
     const events = f.events()
     expect(count(events, 'seal')).toBe(1)
     expect(count(events, 'reply')).toBe(1)
@@ -1075,9 +1124,9 @@ describe('#703 canonical outbound coupling', () => {
     })
     const before = f.events()
     expect(await f.run.recover()).toBe('wallet-correlation-hold')
-    expect(await f.run.respond(input)).toBe('held')
-    expect(f.state.getResponse('01')?.phase).toBe('response-ready')
-    expect(f.state.getCoupling('01')).toBeUndefined()
+    expect(await f.run.respond(turn)).toBe('held')
+    expect(f.state.getResponse(h('01'))?.phase).toBe('response-ready')
+    expect(f.state.getCoupling(h('01'))).toBeUndefined()
     // The model result is saved once; no envelope, signature or request followed.
     expect(f.events()).toEqual([...before, 'reply'])
     expect(logs.join()).toContain('wallet-correlation-hold')
@@ -1086,17 +1135,17 @@ describe('#703 canonical outbound coupling', () => {
   it('holds a linked turn whose wallet attempt is missing instead of preparing another', async () => {
     let f = await open()
     f.relay.mode = 'retained'
-    expect(await f.run.respond(input)).toBe('held')
+    expect(await f.run.respond(turn)).toBe('held')
     const before = f.events()
     // Same account and bot state, but a wallet root that never recorded the attempt.
     f = await reopenAll({ walletRoot: join(root, 'other-wallet') })
     f.relay.mode = 'delivered'
     expect(await f.run.recover()).toBe('wallet-attempt-missing')
-    expect(await f.run.resume('01')).toBe('held')
+    expect(await f.run.resume(h('01'))).toBe('held')
     expect(f.events()).toEqual(before)
     expect(f.journal.getIntents()).toEqual([])
     expect(f.journal.getAll()).toEqual([])
-    expect(f.state.getCoupling('01')?.phase).toBe('intent-linked')
+    expect(f.state.getCoupling(h('01'))?.phase).toBe('intent-linked')
     expect(logs.join()).toContain('wallet-attempt-missing')
   }, 30000)
 
@@ -1105,8 +1154,8 @@ describe('#703 canonical outbound coupling', () => {
     f.canonical.prepareInventory = async () => {
       throw new Error('no inventory yet')
     }
-    expect(await f.run.respond(input)).toBe('held')
-    expect(f.state.getCoupling('01')?.phase).toBe('envelope-ready')
+    expect(await f.run.respond(turn)).toBe('held')
+    expect(f.state.getCoupling(h('01'))?.phase).toBe('envelope-ready')
     const before = f.events()
     f = await reopenAll()
     const changed = new QwenResponseWorkflow({
@@ -1116,18 +1165,18 @@ describe('#703 canonical outbound coupling', () => {
       generator: { reply: jest.fn() },
       canonical: f.canonical,
     })
-    expect(await changed.resume('01')).toBe('held')
+    expect(await changed.resume(h('01'))).toBe('held')
     expect(f.events()).toEqual(before)
     expect(f.journal.getIntents()).toEqual([])
-    expect(f.state.getCoupling('01')?.phase).toBe('envelope-ready')
+    expect(f.state.getCoupling(h('01'))?.phase).toBe('envelope-ready')
     expect(logs.join()).toContain('account-or-send-context-changed')
   }, 30000)
 
   it('still collects the outcome of an already linked attempt after the configuration changes', async () => {
     let f = await open()
     f.relay.mode = 'retained'
-    expect(await f.run.respond(input)).toBe('held')
-    expect(f.state.getCoupling('01')?.phase).toBe('intent-linked')
+    expect(await f.run.respond(turn)).toBe('held')
+    expect(f.state.getCoupling(h('01'))?.phase).toBe('intent-linked')
     f = await reopenAll()
     // The relay accepted the original request; a changed stamp value and relay URL must not
     // strand its delivery, and must not produce a second envelope, signature or request body.
@@ -1142,13 +1191,13 @@ describe('#703 canonical outbound coupling', () => {
       generator: { reply: jest.fn() },
       canonical: f.canonical,
     })
-    expect(await changed.resume('01')).toBe('confirmed')
+    expect(await changed.resume(h('01'))).toBe('confirmed')
     const events = f.events()
     expect(count(events, 'seal')).toBe(1)
     expect(distinct(events, 'sign:')).toBe(1)
     expect(distinct(events, 'put:')).toBe(1)
-    expect(f.state.getResponse('01')?.phase).toBe('confirmed')
-    expect(f.state.getCoupling('01')?.phase).toBe('settled')
+    expect(f.state.getResponse(h('01'))?.phase).toBe('confirmed')
+    expect(f.state.getCoupling(h('01'))?.phase).toBe('settled')
     // A new turn under the changed context is an ordinary new effect.
     expect(logs.join()).not.toContain('account-or-send-context-changed')
   }, 30000)
@@ -1158,12 +1207,12 @@ describe('#703 canonical outbound coupling', () => {
     f.canonical.prepareInventory = async () => {
       throw new Error('FUNDING_ERROR_SENTINEL')
     }
-    expect(await f.run.respond(input)).toBe('held')
-    const saved = f.state.getCoupling('01')
+    expect(await f.run.respond(turn)).toBe('held')
+    const saved = f.state.getCoupling(h('01'))
     expect(saved?.phase).toBe('envelope-ready')
     expect(f.journal.getIntents()).toEqual([])
     f.canonical.prepareInventory = async () => undefined
-    expect(await f.run.resume('01')).toBe('confirmed')
+    expect(await f.run.resume(h('01'))).toBe('confirmed')
     const events = f.events()
     expect(count(events, 'seal')).toBe(1)
     expect(count(events, 'reply')).toBe(1)
@@ -1174,17 +1223,17 @@ describe('#703 canonical outbound coupling', () => {
 
   it('holds an oversize sealed reply before any durable or wallet effect instead of throwing', async () => {
     const f = await open()
-    await f.state.beginResponse({ ...input, context: canonicalContext })
+    await f.state.beginResponse({ ...turn, context: canonicalContext })
     await f.state.saveResponse(
-      '01',
+      h('01'),
       // Within the producer's text limit, but its sealed frame exceeds the coupling bound.
       'A'.repeat(QWEN_COUPLING_MAX_PAYLOAD_BYTES - 100),
       [],
     )
-    expect(await f.run.resume('01')).toBe('held')
-    expect(await f.run.resume('01')).toBe('held')
-    expect(f.state.getCoupling('01')).toBeUndefined()
-    expect(f.state.getResponse('01')?.phase).toBe('response-ready')
+    expect(await f.run.resume(h('01'))).toBe('held')
+    expect(await f.run.resume(h('01'))).toBe('held')
+    expect(f.state.getCoupling(h('01'))).toBeUndefined()
+    expect(f.state.getResponse(h('01'))?.phase).toBe('response-ready')
     expect(f.journal.getIntents()).toEqual([])
     expect(count(f.events(), 'put:')).toBe(0)
     expect(count(f.events(), 'sign:')).toBe(0)
@@ -1192,7 +1241,7 @@ describe('#703 canonical outbound coupling', () => {
     expect(
       await f.run.respond({
         ...input,
-        payloadHashHex: '06',
+        payloadHashHex: h('06'),
         senderAddress: 'other',
       }),
     ).toBe('confirmed')
@@ -1202,9 +1251,9 @@ describe('#703 canonical outbound coupling', () => {
   it('applies backpressure instead of evicting a retained envelope when the coupling store is full', async () => {
     const f = await open()
     f.relay.mode = 'retained'
-    expect(await f.run.respond(input)).toBe('held')
+    expect(await f.run.respond(turn)).toBe('held')
     const binding = (
-      f.state.getCoupling('01') as Extract<
+      f.state.getCoupling(h('01')) as Extract<
         QwenCouplingRow,
         { phase: 'intent-linked' }
       >
@@ -1216,7 +1265,7 @@ describe('#703 canonical outbound coupling', () => {
       stampValueWei: '32',
     }
     const seed = async (index: number) => {
-      const hash = (0x1000 + index).toString(16)
+      const hash = h((0x1000 + index).toString(16))
       await f.state.beginResponse({
         payloadHashHex: hash,
         senderAddress: `peer-${index}`,
@@ -1233,33 +1282,33 @@ describe('#703 canonical outbound coupling', () => {
       expect(await seed(index)).toBe('saved')
     expect(await seed(QWEN_COUPLING_MAX_COUNT)).toBe('capacity')
     expect(f.state.allCouplings()).toHaveLength(QWEN_COUPLING_MAX_COUNT)
-    expect(f.state.getCoupling('01')?.phase).toBe('intent-linked')
+    expect(f.state.getCoupling(h('01'))?.phase).toBe('intent-linked')
     // The same exact bytes can never be claimed by a second turn.
     await f.state.beginResponse({
-      payloadHashHex: '2000',
+      payloadHashHex: h('2000'),
       senderAddress: 'peer-duplicate',
       senderPubKeyHex: '02',
       context: canonicalContext,
     })
-    await f.state.saveResponse('2000', 'REPLY_SENTINEL', [])
+    await f.state.saveResponse(h('2000'), 'REPLY_SENTINEL', [])
     await expect(
-      f.state.saveCoupling('2000', envelope, binding),
+      f.state.saveCoupling(h('2000'), envelope, binding),
     ).rejects.toThrow('Invalid Qwen coupling transition')
   }, 30000)
 
   it('leaves legacy model-started and send-started rows held and never couples them', async () => {
     const f = await open()
-    await f.state.beginResponse({ ...input, context: canonicalContext })
+    await f.state.beginResponse({ ...turn, context: canonicalContext })
     await f.state.beginResponse({
       ...input,
-      payloadHashHex: '02',
+      payloadHashHex: h('02'),
       senderAddress: 'other',
       context: canonicalContext,
     })
-    await f.state.saveResponse('02', 'REPLY_SENTINEL', [])
-    await f.state.startResponseSend('02')
-    expect(await f.run.resume('01')).toBe('held')
-    expect(await f.run.resume('02')).toBe('held')
+    await f.state.saveResponse(h('02'), 'REPLY_SENTINEL', [])
+    await f.state.startResponseSend(h('02'))
+    expect(await f.run.resume(h('01'))).toBe('held')
+    expect(await f.run.resume(h('02'))).toBe('held')
     expect(await f.run.recover()).toBeUndefined()
     expect(f.state.allCouplings()).toEqual([])
     expect(f.events()).toEqual([])
@@ -1270,25 +1319,25 @@ describe('#703 canonical outbound coupling', () => {
   it('retains an acknowledged turn behind an earlier unresolved attempt until the wallet frontier passes it', async () => {
     const f = await open()
     f.relay.mode = 'retained'
-    expect(await f.run.respond(input)).toBe('held')
+    expect(await f.run.respond(turn)).toBe('held')
     f.relay.mode = 'delivered'
     await f.state.beginResponse({
-      payloadHashHex: '05',
+      payloadHashHex: h('05'),
       senderAddress: 'other',
       senderPubKeyHex: '02',
       context: canonicalContext,
     })
-    await f.state.saveResponse('05', 'REPLY_SENTINEL', [])
+    await f.state.saveResponse(h('05'), 'REPLY_SENTINEL', [])
     // Only the second turn is resumed, so the first stays unresolved in the wallet.
-    expect(await f.run.resume('05')).toBe('confirmed')
+    expect(await f.run.resume(h('05'))).toBe('confirmed')
     // Acknowledged out of order: the wallet still retains it, so Qwen keeps the exact link.
-    const second = f.state.getCoupling('05')!
+    const second = f.state.getCoupling(h('05'))!
     expect(second.phase).toBe('terminal')
     expect(f.journal.getAll().map(a => a.acknowledged)).toEqual([false, true])
     expect(await f.run.recover()).toBeUndefined()
-    expect(f.state.getCoupling('05')?.phase).toBe('terminal')
+    expect(f.state.getCoupling(h('05'))?.phase).toBe('terminal')
     f.relay.mode = 'delivered'
-    expect(await f.run.resume('01')).toBe('confirmed')
+    expect(await f.run.resume(h('01'))).toBe('confirmed')
     expect(await f.run.recover()).toBeUndefined()
     expect(f.state.allCouplings().map(c => c.phase)).toEqual([
       'settled',
@@ -1299,8 +1348,8 @@ describe('#703 canonical outbound coupling', () => {
 
   it('keeps terminal records bounded across turns and reopen', async () => {
     let f = await open()
-    for (const hash of ['0a', '0b', '0c'])
-      expect(await f.run.respond({ ...input, payloadHashHex: hash })).toBe(
+    for (const hash of [h('0a'), h('0b'), h('0c')])
+      expect(await f.run.respond({ ...turn, payloadHashHex: hash })).toBe(
         'confirmed',
       )
     f = await reopenAll()
@@ -1329,6 +1378,10 @@ describe('#703 canonical outbound coupling', () => {
       (row: Record<string, unknown>) => ({ ...row, consumerId: 'other' }),
     ],
     [
+      'a stamp value other than its turn was saved with',
+      (row: Record<string, unknown>) => ({ ...row, stampValueWei: '33' }),
+    ],
+    [
       'unknown phase',
       (row: Record<string, unknown>) => ({ ...row, phase: 'sent' }),
     ],
@@ -1344,7 +1397,7 @@ describe('#703 canonical outbound coupling', () => {
     async (_name, corrupt) => {
       let f = await open()
       f.relay.mode = 'retained'
-      expect(await f.run.respond(input)).toBe('held')
+      expect(await f.run.respond(turn)).toBe('held')
       const db = (
         f.state as unknown as {
           openedDb: {
@@ -1354,8 +1407,10 @@ describe('#703 canonical outbound coupling', () => {
         }
       ).openedDb
       await db.put(
-        'coupling:v1:01',
-        JSON.stringify(corrupt(JSON.parse(await db.get('coupling:v1:01')))),
+        `coupling:v1:${h(h('01'))}`,
+        JSON.stringify(
+          corrupt(JSON.parse(await db.get(`coupling:v1:${h(h('01'))}`))),
+        ),
       )
       await f.close()
       fixture = undefined
@@ -1370,13 +1425,13 @@ describe('#703 canonical outbound coupling', () => {
   it('refuses a coupling whose response row is absent or in a different phase', async () => {
     const f = await open()
     f.relay.mode = 'retained'
-    expect(await f.run.respond(input)).toBe('held')
+    expect(await f.run.respond(turn)).toBe('held')
     const db = (
       f.state as unknown as {
         openedDb: { del(key: string): Promise<void> }
       }
     ).openedDb
-    await db.del('response:v1:01')
+    await db.del(`response:v1:${h(h('01'))}`)
     await f.close()
     fixture = undefined
     await expect(
@@ -1387,7 +1442,7 @@ describe('#703 canonical outbound coupling', () => {
   it('never lets the legacy send boundary claim a coupled turn', async () => {
     const f = await open()
     f.relay.mode = 'retained'
-    expect(await f.run.respond(input)).toBe('held')
+    expect(await f.run.respond(turn)).toBe('held')
     const send = jest.fn(async () => receipt)
     const legacy = new QwenResponseWorkflow({
       state: f.state,
@@ -1396,12 +1451,12 @@ describe('#703 canonical outbound coupling', () => {
       generator: { reply: jest.fn() },
       send,
     })
-    expect(await legacy.resume('01')).toBe('held')
+    expect(await legacy.resume(h('01'))).toBe('held')
     expect(send).not.toHaveBeenCalled()
-    await expect(f.state.startResponseSend('01')).rejects.toThrow(
+    await expect(f.state.startResponseSend(h('01'))).rejects.toThrow(
       'Invalid Qwen response transition',
     )
-    expect(f.state.getResponse('01')?.phase).toBe('response-ready')
+    expect(f.state.getResponse(h('01'))?.phase).toBe('response-ready')
   }, 30000)
 
   // Real child termination without Close at each durable barrier, then both Level roots are
@@ -1422,35 +1477,7 @@ describe('#703 canonical outbound coupling', () => {
   ] as const)(
     'SIGKILL after %s converges to one model result, one reply and one signed set',
     async (kill, responsePhase, couplingPhase) => {
-      const child = spawnSync(
-        process.execPath,
-        [
-          '--require',
-          require.resolve('tsx/cjs'),
-          '-e',
-          `
-          const noop = () => {};
-          for (const name of ['it','test','describe','beforeEach','afterEach'])
-            globalThis[name] = Object.assign(() => {}, { each: () => noop });
-          require(${JSON.stringify(
-            __filename,
-          )}).runCanonicalChild().catch(error => {
-            console.error(String(error && error.message));
-            process.exit(2);
-          });
-        `,
-        ],
-        {
-          encoding: 'utf8',
-          timeout: 30000,
-          env: {
-            PATH: process.env.PATH,
-            TSX_TSCONFIG_PATH: join(__dirname, 'tsconfig.json'),
-            QWEN_CANONICAL_ROOT: root,
-            QWEN_CANONICAL_KILL: kill,
-          },
-        },
-      )
+      const child = killedChild(root, kill)
       expect({
         status: child.status,
         signal: child.signal,
@@ -1465,22 +1492,22 @@ describe('#703 canonical outbound coupling', () => {
       expect(child.stdout + child.stderr).not.toContain('SENTINEL')
 
       const f = await open()
-      expect(f.state.getResponse('01')?.phase).toBe(responsePhase)
-      expect(f.state.getCoupling('01')?.phase).toBe(couplingPhase)
+      expect(f.state.getResponse(h('01'))?.phase).toBe(responsePhase)
+      expect(f.state.getCoupling(h('01'))?.phase).toBe(couplingPhase)
       const killed = f.events()
       // Startup correlation has no relay, signing, sealing or model effect.
       expect(await f.run.recover()).toBeUndefined()
       expect(f.events()).toEqual(killed)
       if (kill === 'intent-durable')
-        expect(f.state.getCoupling('01')?.phase).toBe('intent-linked')
+        expect(f.state.getCoupling(h('01'))?.phase).toBe('intent-linked')
       const outcome =
         responsePhase === 'confirmed'
-          ? await f.run.respond(input)
-          : await f.run.resume('01')
+          ? await f.run.respond(turn)
+          : await f.run.resume(h('01'))
       expect(outcome).toBe(
         responsePhase === 'confirmed' ? 'duplicate' : 'confirmed',
       )
-      expect(await f.run.respond(input)).toBe('duplicate')
+      expect(await f.run.respond(turn)).toBe('duplicate')
 
       const events = f.events()
       expect(count(events, 'reply')).toBe(1)
@@ -1489,18 +1516,18 @@ describe('#703 canonical outbound coupling', () => {
       expect(distinct(events, 'put:')).toBe(1)
       // The relay sees a second PUT only when the first acceptance was never recorded.
       expect(count(events, 'put:')).toBe(kill === 'network-accepted' ? 2 : 1)
-      const row = f.state.getResponse('01') as Extract<
+      const row = f.state.getResponse(h('01')) as Extract<
         QwenResponseRow,
         { phase: 'confirmed' }
       >
-      const coupling = f.state.getCoupling('01')!
+      const coupling = f.state.getCoupling(h('01'))!
       if (coupling.phase !== 'settled') throw new Error('expected settled')
       expect(row.receipt).toEqual({
         payloadHashHex: coupling.terminal.payloadHashHex,
         txHashes: coupling.terminal.txHashes,
       })
       expect(coupling.terminal.txHashes).toHaveLength(1)
-      expect(f.state.hasProcessed('01')).toBe(true)
+      expect(f.state.hasProcessed(h('01'))).toBe(true)
       expect(f.state.getConversation(PEER)).toEqual([
         { role: 'system', content: 'SYSTEM_SENTINEL' },
         { role: 'user', content: 'PROMPT_SENTINEL' },
@@ -1510,6 +1537,54 @@ describe('#703 canonical outbound coupling', () => {
       expect(f.journal.getAll()).toEqual([])
       expect(f.pool.records().map(record => record.status)).toEqual([
         'spent',
+        'available',
+        'available',
+        'available',
+      ])
+      expect(logs.join()).not.toContain('SENTINEL')
+    },
+    60000,
+  )
+  // The same barriers for a dead outcome: it must end held, once, with no replacement.
+  it.each([
+    ['terminal-recorded', 'intent-linked'],
+    ['final-batch', 'terminal'],
+    ['cleanup', 'terminal'],
+    ['acknowledged', 'terminal'],
+  ] as const)(
+    'SIGKILL after %s of a dead outcome reopens to one held turn and no second envelope or payment',
+    async (kill, couplingPhase) => {
+      const child = killedChild(root, kill, 'dead')
+      expect({
+        signal: child.signal,
+        stderr: child.stderr,
+        outcome: child.stdout.includes('CHILD_OUTCOME'),
+      }).toEqual({ signal: 'SIGKILL', stderr: '', outcome: false })
+      const f = await open()
+      f.relay.mode = 'delivered'
+      expect(f.state.getResponse(h('01'))?.phase).toBe('response-ready')
+      expect(f.state.getCoupling(h('01'))?.phase).toBe(couplingPhase)
+      const killed = f.events()
+      expect(await f.run.recover()).toBeUndefined()
+      expect(await f.run.resume(h('01'))).toBe('held')
+      expect(await f.run.respond(turn)).toBe('held')
+      // Nothing was sealed, signed or sent again, even with a relay that would now deliver.
+      expect(f.events()).toEqual(killed)
+      expect(count(killed, 'reply')).toBe(1)
+      expect(count(killed, 'seal')).toBe(1)
+      expect(count(killed, 'put:')).toBe(1)
+      expect(f.state.getCoupling(h('01'))).toMatchObject({
+        phase: 'settled',
+        terminal: { outcome: 'dead', reason: 'expired' },
+      })
+      expect(f.run.pollDisposition(h('01'))).toBe('final-hold')
+      expect(f.state.getResponse(h('01'))?.phase).toBe('response-ready')
+      expect(f.state.hasProcessed(h('01'))).toBe(false)
+      expect(f.state.getConversation(PEER)).toBeUndefined()
+      expect(f.journal.getIntents()).toEqual([])
+      expect(f.journal.getAll()).toEqual([])
+      expect(f.pool.records().map(record => record.status)).toEqual([
+        'retired',
         'available',
         'available',
         'available',

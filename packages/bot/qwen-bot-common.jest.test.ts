@@ -291,7 +291,7 @@ describe('#703 canonical Qwen sender composition', () => {
   }
 
   const turn = {
-    payloadHashHex: '01',
+    payloadHashHex: '01'.padStart(64, '0'),
     senderAddress: PEER,
     senderPubKeyHex: '02',
     prompt: 'PROMPT_SENTINEL',
@@ -323,7 +323,7 @@ describe('#703 canonical Qwen sender composition', () => {
     const { installed, sender, recipient } = await directory()
     const first = await open(installed)
     expect(await first.run.respond(turn)).toBe('held')
-    const saved = first.state.getCoupling('01')!
+    const saved = first.state.getCoupling(turn.payloadHashHex)!
     expect(saved.phase).toBe('envelope-ready')
     if (saved.phase !== 'envelope-ready') throw new Error('expected envelope')
     expect(saved.binding.accountId).toBe(
@@ -349,14 +349,16 @@ describe('#703 canonical Qwen sender composition', () => {
     )
     expect(JSON.stringify(saved)).not.toContain('SENTINEL')
     expect(first.setup.sender.wallet.lookup(prepared)).toBeUndefined()
-    expect(first.state.getResponse('01')?.phase).toBe('response-ready')
+    expect(first.state.getResponse(turn.payloadHashHex)?.phase).toBe(
+      'response-ready',
+    )
 
     await first.close()
     const again = await open(installed)
     expect(await again.run.recover()).toBeUndefined()
-    expect(await again.run.resume('01')).toBe('held')
+    expect(await again.run.resume(turn.payloadHashHex)).toBe('held')
     // The retained envelope is reused byte for byte; the model is not asked again.
-    expect(again.state.getCoupling('01')).toEqual(saved)
+    expect(again.state.getCoupling(turn.payloadHashHex)).toEqual(saved)
     expect(again.reply).not.toHaveBeenCalled()
     expect(first.reply).toHaveBeenCalledTimes(1)
     expect(again.setup.sender.wallet.lookup(prepared)).toBeUndefined()
@@ -374,8 +376,10 @@ describe('#703 canonical Qwen sender composition', () => {
         senderAddress: '0x' + 'ef'.repeat(20),
       }),
     ).toBe('held')
-    expect(first.state.getCoupling('01')).toBeUndefined()
-    expect(first.state.getResponse('01')?.phase).toBe('response-ready')
+    expect(first.state.getCoupling(turn.payloadHashHex)).toBeUndefined()
+    expect(first.state.getResponse(turn.payloadHashHex)?.phase).toBe(
+      'response-ready',
+    )
     expect(requests).toEqual([])
     expect(logs.join()).toContain('peer-directory-unavailable')
   }, 30000)
@@ -384,15 +388,15 @@ describe('#703 canonical Qwen sender composition', () => {
     const original = await directory()
     const first = await open(original.installed)
     expect(await first.run.respond(turn)).toBe('held')
-    const saved = first.state.getCoupling('01')
+    const saved = first.state.getCoupling(turn.payloadHashHex)
     await first.close()
     // Same identity roots, a different economic root: another stamp account and pool.
     const moved = { ...roots(0), evm: roots(1).evm }
     const other = await directory(moved)
     const changed = await open(other.installed, moved)
     expect(await changed.run.recover()).toBe('wallet-binding-mismatch')
-    expect(await changed.run.resume('01')).toBe('held')
-    expect(changed.state.getCoupling('01')).toEqual(saved)
+    expect(await changed.run.resume(turn.payloadHashHex)).toBe('held')
+    expect(changed.state.getCoupling(turn.payloadHashHex)).toEqual(saved)
     expect(requests).toEqual([])
   }, 30000)
 

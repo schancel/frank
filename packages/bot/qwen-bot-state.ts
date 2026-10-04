@@ -321,7 +321,7 @@ function validateCouplingRow(row: QwenCouplingRow): QwenCouplingRow {
       ...(hasRef ? ['attemptRef'] : []),
       ...(hasTerminal ? ['terminal'] : []),
     ]) ||
-    !boundedHex(row.payloadHashHex, 32) ||
+    !hex32(row.payloadHashHex) ||
     row.consumerId !== qwenCouplingConsumerId(row.payloadHashHex) ||
     !boundedHex(row.messageIdHex, 16) ||
     row.messageIdHex.length !== 32 ||
@@ -1044,6 +1044,8 @@ export class QwenBotStateStore {
         'terminal' in row && row.terminal.outcome === 'delivered'
       if (
         !response ||
+        // The envelope was sealed and bound for exactly this turn's stamp policy.
+        row.stampValueWei !== response.context.stampValueWei ||
         (delivered
           ? response.phase !== 'confirmed' ||
             !this.hasProcessed(row.payloadHashHex)

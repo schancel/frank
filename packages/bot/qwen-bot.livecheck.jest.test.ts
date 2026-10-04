@@ -1,5 +1,5 @@
 import { spawnSync } from 'child_process'
-import { mkdtempSync, rmSync } from 'fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { createHash } from 'crypto'
@@ -255,190 +255,181 @@ it('a competing CLI process cannot open the same Level root or run another drain
   }
 })
 
-// #703: the real CLI in canonical reply mode. The existing process fixture still supplies the
-// local mailbox/identity/prompt stand-ins, but the canonical composition, typed wallet owner,
-// shared producer, directory admission, workflow and both Level roots are the production ones.
-// The typed owner has no funded inventory here, so no payment is signed or sent: this proves
-// startup sequencing, one inference, one retained envelope and secret-free output, not delivery.
+// #703/#778: the real CLI in canonical mode. Production code runs unmodified: configuration
+// readers, installed directory (real Node stores behind the real directory client), typed wallet
+// owner through the public bridge, shared producer and opener, both workflows and both Level
+// roots. Only the relay is local: its Directory routes are a responder that stores and returns
+// published heads, and the canonical inbox page read returns one prepared record. The typed
+// owner has no funded inventory, so no payment is signed or sent: this proves sequencing, one
+// inference, one retained envelope for the admitted sender and secret-free output, not delivery.
 import { writeFileSync } from 'fs'
+import { Transaction, Wallet, getBytes } from 'ethers'
+import {
+  cborMap,
+  encodeFrame,
+  paymentCommitment,
+  recipientPayloadDigest,
+  toHex,
+} from '@frank/codec'
+import {
+  directMessageText,
+  prepareDirectMessage,
+} from '@frank/cashweb/relay/canonical-dm'
+import { openNodeDirectoryStore } from '@frank/directory-admission/node'
+import {
+  createMonadWalletMaterial,
+  type MonadRootBundle,
+} from '@frank/wallet/monad-wallet-material'
 import domainVectors from '../domain-roots/vectors/domain-roots-v1.json'
+import {
+  prepareQwenPublicExport,
+  readQwenBootstrapPolicy,
+  type QwenPublicExportFile,
+} from './qwen-bot-common'
 
-const CANONICAL_BOT = '0x' + 'ab'.repeat(20)
-const CANONICAL_PEER = '0x' + 'cd'.repeat(20)
-const CANONICAL_RELAY = 'http://127.0.0.1:8098'
-const packages = join(__dirname, '..')
-
-function directoryModuleSource(): string {
-  const abs = (path: string) => JSON.stringify(join(packages, path))
+function canonicalPreload(): string {
+  const at = (file: string) => JSON.stringify(join(__dirname, file))
+  const mailbox = JSON.stringify(
+    join(__dirname, '../cashweb/relay/monad-mailbox-client.ts'),
+  )
   return `
-    const { mkdtempSync, rmSync } = require('fs')
-    const { tmpdir } = require('os')
-    const { join } = require('path')
-    const { createMonadWalletMaterial } = require(${abs(
-      'wallet/monad-wallet-material.ts',
-    )})
-    const { openNodeDirectoryStore } = require(${abs(
-      'directory-admission/src/node.ts',
-    )})
-    const vectors = require(${abs('domain-roots/vectors/domain-roots-v1.json')})
-    const roots = index => {
-      const one = purpose => ({
-        registry: 'frank-domain-roots-v1',
-        purpose,
-        bytes: new Uint8Array(Buffer.from(vectors.vectors[index].outputs[purpose], 'hex')),
-      })
+    const { readFileSync, existsSync } = require('fs')
+    const counters = { generations: 0, pages: 0, directory: [], other: [] }
+    process.on('exit', () =>
+      console.log('QWEN_PROCESS_FIXTURE ' + JSON.stringify(counters)))
+    // Local relay Directory routes: store and return published heads only.
+    const heads = new Map(Object.entries(JSON.parse(
+      readFileSync(process.env.QWEN_FIXTURE_HEADS, 'utf8'))))
+    globalThis.fetch = async (url, init) => {
+      const match = /^https:\\/\\/a\\.example\\/directory\\/v1\\/([^/]+)\\/([^/]+)\\/head$/.exec(url)
+      if (!match) { counters.other.push(init.method + ' ' + url); throw new Error('unreachable') }
+      counters.directory.push(init.method)
+      const key = match[1] + '/' + match[2]
+      if (init.method === 'PUT') heads.set(key, Buffer.from(init.body).toString('hex'))
+      const head = heads.get(key)
+      let sent = false
       return {
-        evm: one('evm-wallet'),
-        authentication: one('identity-authentication'),
-        messaging: one('messaging-encryption'),
+        url, status: head ? 200 : 404,
+        headers: { get: name => name.toLowerCase() === 'content-type'
+          ? 'application/vnd.frank.cbor'
+          : name.toLowerCase() === 'x-frank-directory-evidence' ? 'fresh-current' : null },
+        body: { getReader: () => ({
+          read: async () => sent || !head ? { done: true }
+            : ((sent = true), { done: false, value: new Uint8Array(Buffer.from(head, 'hex')) }),
+          cancel: async () => undefined, releaseLock: () => undefined }) },
       }
     }
-    exports.openQwenCanonicalDirectory = async () => {
-      const scratch = mkdtempSync(join(tmpdir(), 'qwen-cli-directory-'))
-      const enroll = async (index, binding) => {
-        const material = createMonadWalletMaterial(roots(index))
-        const tuple = label => ({
-          processId: label,
-          origin: 'https://' + label + '.example',
-          tuple: {
-            relayId: new Uint8Array(16).fill(label === 'a' ? 1 : 2),
-            endpoint: 'https://' + label + '.example',
-            identity: {
-              keyType: 1,
-              keyBytes: material.canonicalRoles.publicGenerationZeroPoints().auth,
-            },
-            expiry: { seconds: 3700n, nanoseconds: 0 },
-            unknownFields: new Map(),
-          },
-        })
-        const input = {
-          networkTag: 'MONT',
-          network: 'monad-testnet',
-          chainId: 10143n,
-          issuedAt: { seconds: 100n, nanoseconds: 0 },
-          expiresAt: { seconds: 3700n, nanoseconds: 0 },
-          now: { seconds: 100n, nanoseconds: 0 },
-          relayA: tuple('a'),
-          relayB: tuple('b'),
-          subjectBinding: binding,
-        }
-        const exported = material.canonicalRoles.prepareRevisionZero(input)
-        const store = await openNodeDirectoryStore({
-          location: join(scratch, binding),
-          anchor: {
-            network: 'monad-testnet',
-            subject: { keyType: 1, keyBytes: exported.auth.compressedPoint },
-            revisionZero: exported.t1,
-          },
-          mode: { kind: 'new' },
-        })
-        const current = await store.enroll(
-          [{ statement: exported.statement, attestation: exported.attestation }],
-          { now: input.now, relay: binding === 'A' ? input.relayA.tuple : input.relayB.tuple },
-        )
-        material.dispose()
-        return { store, current }
-      }
-      const sender = await enroll(0, 'A'), recipient = await enroll(1, 'B')
-      return {
-        currents: async peer =>
-          peer.toLowerCase() === ${JSON.stringify(CANONICAL_PEER)}
-            ? { senderCurrent: sender.current, recipientCurrent: recipient.current }
-            : undefined,
-        close: async () => {
-          await sender.store.close()
-          await recipient.store.close()
-          rmSync(scratch, { recursive: true, force: true })
-        },
+    // The canonical inbox page read is the only replaced production function.
+    const realMailbox = require(${mailbox})
+    require.cache[require.resolve(${mailbox})].exports = {
+      ...realMailbox,
+      fetchCanonicalInboxPage: async () => {
+        counters.pages++
+        const file = process.env.QWEN_FIXTURE_INBOX
+        if (!file || !existsSync(file)) return { records: [] }
+        return { records: JSON.parse(readFileSync(file, 'utf8')).map(r => ({
+          delivery: new Uint8Array(Buffer.from(r.delivery, 'hex')),
+          context: new Uint8Array(Buffer.from(r.context, 'hex')),
+          submissionIdentity: 'ab'.repeat(32),
+          timestampMs: 1000,
+        })) }
+      },
+    }
+    const reply = require(${at('qwen-reply.ts')})
+    require.cache[require.resolve(${at('qwen-reply.ts')})].exports = {
+      ...reply,
+      createQwenReplyGenerator: config => {
+        const generator = reply.createQwenReplyGenerator(config)
+        return { ...generator, reply: async history => {
+          counters.generations++
+          return generator.reply(history)
+        } }
+      },
+    }
+    if (process.env.QWEN_CANONICAL_CRASH === 'envelope') {
+      const { QwenBotStateStore } = require(${at('qwen-bot-state.ts')})
+      const save = QwenBotStateStore.prototype.saveCoupling
+      QwenBotStateStore.prototype.saveCoupling = async function (...args) {
+        const result = await save.apply(this, args)
+        process.kill(process.pid, 'SIGKILL')
+        return result
       }
     }
+    require(${at('qwen-bot.livecheck.ts')})
   `
 }
 
-function runCanonical(location: string, crash?: string) {
-  const common = JSON.stringify(join(__dirname, 'qwen-bot-common.ts'))
-  const child = spawnSync(
-    process.execPath,
-    [
-      '--require',
-      require.resolve('tsx/cjs'),
-      '-e',
-      `
-      // Load the production composition (and its real wallet dependencies) first, then let the
-      // unchanged process fixture overlay only its own legacy stand-ins on top of it.
-      const real = require(${common})
-      const filename = require.resolve(${common})
-      let entry = require.cache[filename]
-      Object.defineProperty(require.cache, filename, {
-        configurable: true,
-        enumerable: true,
-        get: () => entry,
-        set: value => {
-          entry = { ...value, exports: { ...real, ...value.exports } }
-        },
-      })
-      require(${JSON.stringify(join(__dirname, 'qwen-bot-process.fixture.ts'))})
-      if (process.env.QWEN_CANONICAL_CRASH === 'envelope') {
-        const { QwenBotStateStore } = require(${JSON.stringify(
-          join(__dirname, 'qwen-bot-state.ts'),
-        )})
-        const save = QwenBotStateStore.prototype.saveCoupling
-        QwenBotStateStore.prototype.saveCoupling = async function (...args) {
-          const result = await save.apply(this, args)
-          process.kill(process.pid, 'SIGKILL')
-          return result
-        }
-      }
-      `,
-    ],
-    {
-      encoding: 'utf8',
-      timeout: 30000,
-      env: {
-        PATH: process.env.PATH,
-        TSX_TSCONFIG_PATH: join(__dirname, 'tsconfig.json'),
-        QWEN_BOT_MODE: 'stub',
-        QWEN_BOT_MAX_REPLIES: '1',
-        QWEN_BOT_MAX_GREETINGS: '0',
-        QWEN_BOT_IDLE_TIMEOUT_MS: '300',
-        QWEN_BOT_POLL_INTERVAL_MS: '1',
-        QWEN_BOT_MESSAGE_SINCE_MS: '0',
-        QWEN_BOT_STATE_DIR: location,
-        QWEN_BOT_WALLET_STATE_DIR: join(location, 'wallet'),
-        QWEN_BOT_HANDOFF_JSON: join(location, 'handoff.json'),
-        QWEN_BOT_CANONICAL_ROOTS_JSON: join(location, 'roots.json'),
-        QWEN_BOT_CANONICAL_DIRECTORY_MODULE: join(location, 'directory.cjs'),
-        E2E_DEMO_RELAY_URL: CANONICAL_RELAY,
-        MONAD_RPC_CHAIN: 'monad-testnet',
-        MONAD_TESTNET_HTTP_RPC_URL: 'http://127.0.0.1:1',
-        FRANK_NETWORK_TAG: 'MONT',
-        CASHWEB_STAMP_MIN_BURN_VALUE_WEI: '1',
-        QWEN_PROCESS_SCENARIO: 'empty',
-        QWEN_CANONICAL_CRASH: crash,
-      },
-    },
-  )
-  return { child, summary: counters(child) }
-}
-
-describe('#703 production CLI in canonical reply mode', () => {
+describe('#703/#778 production CLI in canonical mode', () => {
+  const NETWORK = 'monad-testnet'
   let location: string
-  const turn = fixtureHash('canonical-turn')
-  const inbox = {
-    botAddress: CANONICAL_BOT,
-    networkTag: 'MONT',
-    relayBaseUrl: CANONICAL_RELAY,
+  let bot: QwenPublicExportFile
+  let ui: QwenPublicExportFile
+  let turn: string
+
+  const roots = (index: number): MonadRootBundle => {
+    const outputs = domainVectors.vectors[index].outputs
+    const one = <
+      P extends
+        | 'evm-wallet'
+        | 'identity-authentication'
+        | 'messaging-encryption',
+    >(
+      purpose: P,
+    ) => ({
+      registry: 'frank-domain-roots-v1' as const,
+      purpose,
+      bytes: getBytes(`0x${outputs[purpose]}`),
+    })
+    return {
+      evm: one('evm-wallet'),
+      authentication: one('identity-authentication'),
+      messaging: one('messaging-encryption'),
+    }
+  }
+  const env = (extra: Record<string, string | undefined> = {}) => ({
+    PATH: process.env.PATH,
+    TSX_TSCONFIG_PATH: join(__dirname, 'tsconfig.json'),
+    QWEN_BOT_MODE: 'stub',
+    QWEN_BOT_MAX_REPLIES: '1',
+    QWEN_BOT_IDLE_TIMEOUT_MS: '300',
+    QWEN_BOT_POLL_INTERVAL_MS: '1',
+    QWEN_BOT_MESSAGE_SINCE_MS: '0',
+    QWEN_BOT_STATE_DIR: join(location, 'state'),
+    QWEN_BOT_WALLET_STATE_DIR: join(location, 'wallet'),
+    QWEN_BOT_HANDOFF_JSON: join(location, 'handoff.json'),
+    QWEN_BOT_CANONICAL_ROOTS_JSON: join(location, 'roots.json'),
+    QWEN_BOT_CANONICAL_POLICY_JSON: join(location, 'bootstrap-policy.json'),
+    QWEN_BOT_CANONICAL_BUNDLE_JSON: join(location, 'approved-bundle.json'),
+    MONAD_RPC_CHAIN: 'monad-testnet',
+    QWEN_FIXTURE_HEADS: join(location, 'heads.json'),
+    QWEN_FIXTURE_INBOX: join(location, 'inbox.json'),
+    ...extra,
+  })
+  const run = (extra: Record<string, string | undefined> = {}) => {
+    const child = spawnSync(
+      process.execPath,
+      ['--require', require.resolve('tsx/cjs'), '-e', canonicalPreload()],
+      { encoding: 'utf8', timeout: 30000, env: env(extra) },
+    )
+    return { child, summary: counters(child) }
   }
   const withState = async <T>(
     use: (state: QwenBotStateStore) => Promise<T> | T,
   ): Promise<T> => {
-    const state = new QwenBotStateStore(location)
+    const state = new QwenBotStateStore(join(location, 'state'))
     await state.Open()
     try {
       return await use(state)
     } finally {
       await state.Close()
     }
+  }
+  const secrets = (output: string) => {
+    expect(output).not.toContain('PROCESS_PROMPT_SENTINEL')
+    for (const index of [0, 1])
+      for (const root of Object.values(domainVectors.vectors[index].outputs))
+        expect(output).not.toContain(root)
+    expect(output).not.toContain('QWEN BOT FAILED')
   }
 
   beforeEach(async () => {
@@ -451,43 +442,229 @@ describe('#703 production CLI in canonical reply mode', () => {
       }),
       { mode: 0o600 },
     )
-    writeFileSync(join(location, 'directory.cjs'), directoryModuleSource())
-    // One admitted inbound turn, already durably imported (#704 owns import itself).
-    await withState(async state => {
-      await state.initializeInbox(inbox, 0)
-      expect(
-        await state.importInboxPage(inbox, 0, [
-          {
-            payloadHashHex: turn,
-            encryptedPayloadHex: Buffer.from(
-              `ciphertext:${CANONICAL_PEER}`,
-            ).toString('hex'),
-            timestamp: 1,
-            networkTagHex: Buffer.from('MONT').toString('hex'),
-          },
-        ]),
-      ).toBe('committed')
+    const now = BigInt(Date.now()) * 1_000_000n
+    const relayKey = Buffer.from(
+      createMonadWalletMaterial(
+        roots(1),
+      ).canonicalRoles!.publicGenerationZeroPoints().auth,
+    ).toString('hex')
+    const tuple = (label: 'a' | 'b') => ({
+      processId: `relay-${label}`,
+      id: (label === 'a' ? '01' : '02').repeat(16),
+      endpoint: `https://${label}.example`,
+      key: relayKey,
+      expiryNs: (now + 7_200_000_000_000n).toString(),
     })
-  })
+    writeFileSync(
+      join(location, 'bootstrap-policy.json'),
+      JSON.stringify({
+        version: 1,
+        kind: 'directory-bootstrap-process-policy',
+        networkTag: 'MONT',
+        network: NETWORK,
+        chainId: '10143',
+        participants: ['relay-a', 'relay-b', 'bot'].map(processId => ({
+          processId,
+          origin: `https://${
+            processId.slice(-1) === 't' ? 'bot' : processId.slice(-1)
+          }.example`,
+          trustReference: processId,
+        })),
+        relayTuples: [tuple('a'), tuple('b')],
+        exportValidity: {
+          issuedAtNs: (now - 60_000_000_000n).toString(),
+          expiresAtNs: (now + 3_000_000_000_000n).toString(),
+        },
+        policyIdentity: 'aa'.repeat(32),
+      }),
+    )
+    // The bot's export comes from the real CLI export path, as the operator would run it.
+    const exported = run({
+      QWEN_BOT_CANONICAL_EXPORT_JSON: join(location, 'bot-export.json'),
+      QWEN_BOT_CANONICAL_HOME: 'relay-a',
+      QWEN_FIXTURE_HEADS: (() => {
+        writeFileSync(join(location, 'heads.json'), '{}')
+        return join(location, 'heads.json')
+      })(),
+    })
+    expect(exported.child.status).toBe(0)
+    secrets(exported.child.stdout + exported.child.stderr)
+    bot = JSON.parse(readFileSync(join(location, 'bot-export.json'), 'utf8'))
+    const policy = readQwenBootstrapPolicy(
+      join(location, 'bootstrap-policy.json'),
+    )
+    ui = prepareQwenPublicExport({
+      roots: roots(1),
+      policy,
+      home: 'relay-a',
+      nowNs: now,
+    })
+    const { processId: _process, ...relay } = tuple('a')
+    writeFileSync(
+      join(location, 'approved-bundle.json'),
+      JSON.stringify({
+        version: 1,
+        kind: 'operator-approved-directory-bundle',
+        bootstrapPolicyIdentity: policy.policyIdentity,
+        participants: [],
+        subjects: [['bot', bot] as const, ['ui', ui] as const].map(
+          ([role, file]) => ({
+            role,
+            network: file.network,
+            subjectP: file.subjectP,
+            revisionZeroT1: file.revisionZeroT1,
+            statement: file.statement,
+            attestation: file.attestation,
+            homeProcessId: file.homeProcessId,
+            relay,
+          }),
+        ),
+        bundleIdentity: 'bb'.repeat(32),
+        expectedConfigurationIdentity: 'cc'.repeat(32),
+      }),
+    )
+    // The typed UI account has published its own revision zero to the relay.
+    writeFileSync(
+      join(location, 'heads.json'),
+      JSON.stringify({
+        [`${NETWORK}/${ui.subjectP}`]: Buffer.from(
+          ui.attestation,
+          'base64url',
+        ).toString('hex'),
+      }),
+    )
+    // One canonical text from that account, sealed by the real producer for the bot.
+    const stamp = (ns: bigint) => ({
+      seconds: ns / 1_000_000_000n,
+      nanoseconds: Number(ns % 1_000_000_000n),
+    })
+    const context = {
+      now: stamp(now),
+      relay: {
+        relayId: new Uint8Array(Buffer.from(relay.id, 'hex')),
+        endpoint: relay.endpoint,
+        identity: {
+          keyType: 1,
+          keyBytes: new Uint8Array(Buffer.from(relay.key, 'hex')),
+        },
+        expiry: stamp(BigInt(relay.expiryNs)),
+        unknownFields: new Map(),
+      },
+    }
+    const current = async (file: QwenPublicExportFile, label: string) => {
+      const store = await openNodeDirectoryStore({
+        location: join(location, `scratch-${label}`),
+        anchor: {
+          network: NETWORK,
+          subject: {
+            keyType: 1,
+            keyBytes: new Uint8Array(Buffer.from(file.subjectP, 'hex')),
+          },
+          revisionZero: new Uint8Array(Buffer.from(file.revisionZeroT1, 'hex')),
+        },
+        mode: { kind: 'new' },
+      })
+      try {
+        return await store.enroll(
+          [
+            {
+              statement: new Uint8Array(
+                Buffer.from(file.statement, 'base64url'),
+              ),
+              attestation: new Uint8Array(
+                Buffer.from(file.attestation, 'base64url'),
+              ),
+            },
+          ],
+          context,
+        )
+      } finally {
+        await store.close()
+      }
+    }
+    const botCurrent = await current(bot, 'bot'),
+      uiCurrent = await current(ui, 'ui')
+    const uiMaterial = createMonadWalletMaterial(roots(1))
+    const sealed = prepareDirectMessage({
+      network: NETWORK,
+      senderCurrent: uiCurrent,
+      recipientCurrent: botCurrent,
+      messageId: new Uint8Array(16).fill(7),
+      items: [directMessageText('PROCESS_PROMPT_SENTINEL')],
+      roles: uiMaterial.canonicalRoles!.create(NETWORK, uiCurrent),
+    })
+    uiMaterial.dispose()
+    const digest = recipientPayloadDigest(NETWORK, sealed.payload)
+    turn = toHex(digest)
+    const raw = await new Wallet('0x' + '00'.repeat(31) + '01').signTransaction(
+      {
+        type: 2,
+        chainId: 10143n,
+        nonce: 0,
+        gasLimit: 50000n,
+        maxFeePerGas: 2n,
+        maxPriorityFeePerGas: 1n,
+        value: 32n,
+        to: '0x' + '11'.repeat(20),
+        data: '0x504f4e4402' + toHex(paymentCommitment(digest, 0)),
+      },
+    )
+    const tx = Transaction.from(raw)
+    const delivery = encodeFrame(
+      { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+      cborMap([
+        [0, NETWORK],
+        [
+          1,
+          cborMap([
+            [0, 1],
+            [1, botCurrent.stampKey.keyBytes],
+          ]),
+        ],
+        [2, sealed.payload],
+        [3, digest],
+        [
+          4,
+          [
+            cborMap([
+              [0, 0],
+              [1, getBytes(tx.hash!)],
+              [2, getBytes('0x' + tx.value.toString(16).padStart(64, '0'))],
+              [3, getBytes('0x' + '11'.repeat(20))],
+              [4, paymentCommitment(digest, 0)],
+            ]),
+          ],
+        ],
+      ]),
+    )
+    writeFileSync(
+      join(location, 'inbox.json'),
+      JSON.stringify([
+        { delivery: toHex(delivery), context: toHex(sealed.context) },
+      ]),
+    )
+  }, 60000)
   afterEach(() => rmSync(location, { recursive: true, force: true }))
 
-  const secrets = (output: string) => {
-    expect(output).not.toContain('PROCESS_PROMPT_SENTINEL')
+  it('writes a public-only export without opening state, a wallet or the relay', () => {
+    expect(Object.keys(bot).sort()).toEqual(Object.keys(ui).sort())
+    expect(bot.kind).toBe('public-revision-zero-export')
     for (const root of Object.values(domainVectors.vectors[0].outputs))
-      expect(output).not.toContain(root)
-    expect(output).not.toContain('QWEN BOT FAILED')
-  }
+      expect(JSON.stringify(bot)).not.toContain(root)
+    expect(existsSync(join(location, 'state'))).toBe(false)
+    expect(existsSync(join(location, 'wallet'))).toBe(false)
+  })
 
-  it('opens Qwen state before the canonical wallet, correlates before any reply effect, infers once and reuses the one retained envelope after restart', async () => {
-    const first = runCanonical(location)
+  it('opens state, then the directory, then the wallet, correlates, then answers one canonical text from the installed account with one inference and one retained envelope', async () => {
+    const first = run()
     const output = first.child.stdout + first.child.stderr
     expect({ status: first.child.status, ...first.summary }).toMatchObject({
       status: 0,
       generations: 1,
-      // The legacy combined randomized send is never invoked for a canonical reply.
-      sends: 0,
-      closed: 1,
+      // The bot published its own revision zero and read its peer; nothing else was contacted.
+      other: [],
     })
+    expect(first.summary.directory[0]).toBe('PUT')
     const order = [
       '[bot] persisted state loaded',
       '[bot] canonical stamp account',
@@ -496,24 +673,37 @@ describe('#703 production CLI in canonical reply mode', () => {
     ].map(line => output.indexOf(line))
     expect(order.every(index => index >= 0)).toBe(true)
     expect([...order].sort((a, b) => a - b)).toEqual(order)
+    expect(output).toContain(
+      `Bot Frank identity address: ${bot.authAddress.toLowerCase()}`,
+    )
     secrets(output)
     const saved = await withState(state => {
-      expect(state.getResponse(turn)?.phase).toBe('response-ready')
+      expect(state.getResponse(turn)).toMatchObject({
+        phase: 'response-ready',
+        senderAddress: ui.authAddress.toLowerCase(),
+        senderPubKeyHex: ui.subjectP,
+      })
       expect(state.pendingInbox()).toEqual([])
       expect(state.hasProcessed(turn)).toBe(false)
       return state.getCoupling(turn)
     })
     expect(saved).toMatchObject({
       phase: 'envelope-ready',
-      binding: { network: 'monad-testnet', chainId: '10143' },
+      binding: {
+        network: NETWORK,
+        chainId: '10143',
+        senderSubject: bot.subjectP,
+        recipientSubject: ui.subjectP,
+        recipientT1: ui.revisionZeroT1,
+      },
     })
 
-    const restart = runCanonical(location)
+    // Restart with the same record still in the relay inbox: no second inference or envelope.
+    const restart = run()
     expect({ status: restart.child.status, ...restart.summary }).toMatchObject({
       status: 0,
       generations: 0,
-      sends: 0,
-      closed: 1,
+      other: [],
     })
     secrets(restart.child.stdout + restart.child.stderr)
     expect(restart.child.stdout).toContain(
@@ -523,17 +713,26 @@ describe('#703 production CLI in canonical reply mode', () => {
   }, 90000)
 
   it('SIGKILL right after the envelope is saved leaves one envelope that the restarted CLI reuses without inference', async () => {
-    const killed = runCanonical(location, 'envelope')
+    const killed = run({ QWEN_CANONICAL_CRASH: 'envelope' })
     expect(killed.child.signal).toBe('SIGKILL')
     const saved = await withState(state => state.getCoupling(turn))
     expect(saved?.phase).toBe('envelope-ready')
-    const restart = runCanonical(location)
+    const restart = run()
     expect({ status: restart.child.status, ...restart.summary }).toMatchObject({
       status: 0,
       generations: 0,
-      sends: 0,
+      other: [],
     })
     secrets(restart.child.stdout + restart.child.stderr)
     expect(await withState(state => state.getCoupling(turn))).toEqual(saved)
   }, 90000)
+
+  it('refuses to start when the approved bundle is missing, before opening any state', () => {
+    rmSync(join(location, 'approved-bundle.json'))
+    const refused = run()
+    expect(refused.child.status).toBe(1)
+    expect(refused.summary).toMatchObject({ generations: 0, pages: 0 })
+    expect(existsSync(join(location, 'state'))).toBe(false)
+    expect(existsSync(join(location, 'wallet'))).toBe(false)
+  }, 60000)
 })

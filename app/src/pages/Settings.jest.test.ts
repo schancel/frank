@@ -128,3 +128,12 @@ describe('Settings header (ticket #369)', () => {
     expect(wrapper.emitted('toggleMyDrawerOpen')).toHaveLength(1)
   })
 })
+
+it('adds pending directory configuration to Networking and retains storage controls', async () => {
+  const router = await openDirectly('#/settings')
+  const wrapper = mountSettings(router)
+  expect(wrapper.find('persistent-storage-panel-stub').exists()).toBe(true)
+  expect(wrapper.find('directory-provisioning-panel-stub').exists()).toBe(true)
+  expect(wrapper.find('directory-provisioning-panel-stub').element.closest('[name="networking"]')).not.toBeNull()
+  expect(wrapper.find('[data-test="settings-back"]').exists()).toBe(true)
+})

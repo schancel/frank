@@ -432,6 +432,12 @@ try {
     const session=await import(performance.getEntriesByType('resource').find(e=>e.name.includes('/src/accounts/session.ts')).name);
     const pinia=document.querySelector('#q-app').__vue_app__.config.globalProperties.$pinia;
     await m.useForumStore(pinia).refreshMessages({wallet:await session.accountSession.getWallet(),topic:'news'});
+    window.__forumActions=[];
+    m.useForumStore(pinia).$onAction(({name,args,after})=>{
+      if(['invalidateRefresh','setSelectedTopic','setDuration','refreshMessages'].includes(name)){
+        const row={name,args:args.map(a=>typeof a==='object'?'object':a),stack:new Error().stack};window.__forumActions.push(row);after(()=>{row.finished=true});
+      }
+    });
   })()`)
   // Alter relay observation fields only; immutable post bytes and signed author proof remain exact.
   // The single read slot queues the newer generation behind the old HTTP response.
@@ -543,6 +549,7 @@ try {
     oldSnapshot,
     'old result and staged current response cannot publish',
   )
+  console.log('Held generation lifecycle:', await evaluate(`window.__forumActions`))
   assert.equal(
     await evaluate(`${forumState}.isRefreshing`),
     true,

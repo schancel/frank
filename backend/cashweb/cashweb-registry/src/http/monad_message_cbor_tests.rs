@@ -541,6 +541,31 @@ async fn message_for_a_recipient_this_relay_cannot_deliver_to_is_dead_without_an
     undeliverable(NativeDirectoryFixture::homed(1, |index| index == 0).await).await;
 }
 async fn undeliverable(fixture: NativeDirectoryFixture) {
+    assert_eq!(
+        final_answer(fixture, false).await,
+        (200, "undeliverable".to_owned())
+    );
+}
+#[tokio::test]
+async fn message_from_a_sender_with_no_entry_here_gets_a_final_explanatory_answer() {
+    let fixture = NativeDirectoryFixture::homed(1, |index| index == 1).await;
+    assert_eq!(
+        final_answer(fixture, false).await,
+        (200, "sender_unpublished".to_owned())
+    );
+}
+#[tokio::test]
+async fn a_busy_directory_is_a_retryable_answer_never_a_final_one() {
+    // Both accounts are fine; the relay itself cannot look them up right now.
+    let fixture = NativeDirectoryFixture::homed(1, |_| true).await;
+    assert_eq!(
+        final_answer(fixture, true).await,
+        (503, "canonical_mailbox_unavailable".to_owned())
+    );
+}
+/// Submit the genuine request and return the status with the dead reason or error code. Checks
+/// that nothing was retained and the chain was never contacted.
+async fn final_answer(fixture: NativeDirectoryFixture, busy: bool) -> (u16, String) {
     let request = genuine_fixture();
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = calls.clone();
@@ -556,7 +581,34 @@ async fn undeliverable(fixture: NativeDirectoryFixture) {
         server(&fixture, &rpc_url).into_router_with_directory(Some(fixture.directory.clone())),
     )
     .await;
-    let response = reqwest::Client::new()
+    let account = &fixture.accounts[1];
+    let held: Vec<_> = (0..if busy { 8 } else { 0 })
+        .map(|_| {
+            fixture
+                .directory
+                .reserve(&account.network, &account.subject)
+                .unwrap()
+        })
+        .collect();
+    let client = reqwest::Client::new();
+    if busy {
+        // Mailbox authentication under the same condition is "retry", not "who are you".
+        let recipient = crate::monad_stamp_stealth::recipient_address_from_public_key(
+            &hex::decode(&account.subject).unwrap(),
+        )
+        .unwrap()
+        .to_hex();
+        let challenge = client
+            .post(format!(
+                "{url}/message/monad/cbor/auth/{recipient}?resource=inbox&since=0&limit=50&max_bytes=8388608"
+            ))
+            .header("x-frank-mailbox-subject", &account.subject)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(challenge.status().as_u16(), 503);
+    }
+    let response = client
         .put(format!("{url}/message/monad/cbor"))
         .header("content-type", request.content_type())
         .body(request.body().to_vec())
@@ -565,28 +617,29 @@ async fn undeliverable(fixture: NativeDirectoryFixture) {
         .unwrap();
     let status = response.status().as_u16();
     let body: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    drop(held);
     http_stop.send(()).unwrap();
     http_task.await.unwrap();
     rpc_stop.send(()).unwrap();
     rpc_task.await.unwrap();
-    assert_eq!(status, 200);
     assert_eq!(body["version"], 1);
-    assert_eq!(body["phase"], "dead");
-    assert_eq!(body["reason"], "undeliverable");
-    // The identity is the same echo a delivered submission would carry.
-    assert_eq!(
-        body["identity"]["submission_identity"],
-        hex::encode(request.submission_identity())
-    );
-    assert_eq!(
-        body["identity"]["sender_t1"],
-        fixture.accounts[0].revision_zero.as_str()
-    );
-    assert_eq!(
-        body["identity"]["recipient_t1"],
-        fixture.accounts[1].revision_zero.as_str()
-    );
-    assert_eq!(body["identity"]["payload_hash"].as_str().unwrap().len(), 64);
+    if status == 200 {
+        assert_eq!(body["phase"], "dead");
+        // The identity is the same echo a delivered submission would carry.
+        assert_eq!(
+            body["identity"]["submission_identity"],
+            hex::encode(request.submission_identity())
+        );
+        assert_eq!(
+            body["identity"]["sender_t1"],
+            fixture.accounts[0].revision_zero.as_str()
+        );
+        assert_eq!(
+            body["identity"]["recipient_t1"],
+            fixture.accounts[1].revision_zero.as_str()
+        );
+        assert_eq!(body["identity"]["payload_hash"].as_str().unwrap().len(), 64);
+    }
     // Nothing was retained and the chain was never contacted.
     assert!(fixture
         .registry
@@ -596,6 +649,12 @@ async fn undeliverable(fixture: NativeDirectoryFixture) {
         .is_none());
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     fixture.stop().await;
+    let detail = if status == 200 {
+        &body["reason"]
+    } else {
+        &body["error"]
+    };
+    (status, detail.as_str().unwrap().to_owned())
 }
 
 #[tokio::test]

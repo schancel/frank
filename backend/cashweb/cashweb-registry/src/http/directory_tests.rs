@@ -598,7 +598,7 @@ async fn forged_entries_are_refused_and_publish_nothing() {
 }
 
 #[tokio::test]
-async fn conflicting_first_entry_is_refused_and_a_forked_chain_is_quarantined() {
+async fn conflicting_first_entry_and_a_second_renewal_of_the_same_revision_are_refused_first_wins() {
     let root = tempfile::tempdir().unwrap();
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry, config, &clock).await;
@@ -613,19 +613,21 @@ async fn conflicting_first_entry_is_refused_and_a_forked_chain_is_quarantined() 
     assert_eq!(conflicting.0, StatusCode::CONFLICT);
     assert_eq!(conflicting.1["x-frank-directory-disposition"], "rejected");
     assert_eq!(get(&routes, &head(SUBJECT)).await.2, original);
-    // Two different signed successors of one revision: the chain is quarantined, not resolved
-    // by picking the newer timestamp.
+    // Two devices renew the same revision. The first renewal accepted wins; the second is
+    // refused and nothing about it is kept, so the account keeps working.
     let renew = vector("renew");
-    assert_eq!(put(&routes, SUBJECT, renew).await.0, StatusCode::OK);
-    assert_eq!(
-        put(&routes, SUBJECT, vector("fork-of-renew")).await.0,
-        StatusCode::CONFLICT
-    );
-    assert_eq!(get(&routes, &head(SUBJECT)).await.0, StatusCode::CONFLICT);
-    let history = head(SUBJECT).trim_end_matches("head").to_owned()
-        + "statements/"
-        + record("bootstrap")["t1"].as_str().unwrap();
-    assert_eq!(get(&routes, &history).await.2, original);
+    assert_eq!(put(&routes, SUBJECT, renew.clone()).await.0, StatusCode::OK);
+    for _ in 0..2 {
+        assert_eq!(
+            put(&routes, SUBJECT, vector("fork-of-renew")).await.0,
+            StatusCode::CONFLICT
+        );
+        let current = get(&routes, &head(SUBJECT)).await;
+        assert_eq!(current.0, StatusCode::OK);
+        assert_eq!(current.2, renew);
+    }
+    assert_eq!(runtime.listed(NETWORK, SUBJECT).unwrap().1, 2);
+    assert!(!runtime.listed(NETWORK, SUBJECT).unwrap().2);
     runtime.begin_shutdown();
     runtime.wait_stopped().await;
 }

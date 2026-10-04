@@ -533,6 +533,12 @@ impl<'a> Directory<'a> {
             match state.history.classify(&self.anchor, &r)? {
                 Transition::Duplicate => (),
                 Transition::Append => state.history.append(r),
+                // On a relay the first accepted child of a revision wins. A second, different
+                // child (two devices renewing at once) is refused and nothing is recorded, so
+                // honest use can never quarantine an account; the client re-reads and adopts.
+                Transition::Fork if matches!(binding, BindingPolicy::Declared) => {
+                    return Err(AdmissionError::Fork);
+                }
                 Transition::Fork => {
                     let mut proof = state.history.records.split_off(accepted);
                     proof.push(r);

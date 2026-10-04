@@ -81,15 +81,30 @@ pub(crate) async fn handle_put(
         let Some(recipient_current) =
             deliverable_recipient(owner, descriptor.cbor_identifier, &principals.recipient).await?
         else {
-            return undeliverable_response(&request, descriptor.cbor_identifier, &principals);
+            return undeliverable_response(
+                &request,
+                descriptor.cbor_identifier,
+                &principals,
+                "undeliverable",
+            );
+        };
+        // A sender whose own entry is missing or expired can republish and send a new message;
+        // this one can never be verified.
+        let Some(sender_current) =
+            sender_entry(owner, descriptor.cbor_identifier, &principals.sender).await?
+        else {
+            return undeliverable_response(
+                &request,
+                descriptor.cbor_identifier,
+                &principals,
+                "sender_unpublished",
+            );
         };
         let Principals {
-            sender,
             recipient,
             recipient_t1,
             ..
         } = principals;
-        let sender_current = current(owner, descriptor.cbor_identifier, &sender).await?;
         let historical = if recipient_current.evidence.hash == recipient_t1 {
             None
         } else {
@@ -142,6 +157,7 @@ fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
     }
     Ok(value)
 }
+#[cfg(test)]
 async fn current(
     owner: &crate::store::monad_dm_cbor::Owner,
     network: &str,
@@ -216,14 +232,41 @@ async fn deliverable_recipient(
         Err(RuntimeError::Busy | RuntimeError::NotStarted | RuntimeError::OutcomeUnknown) => {
             Err(CanonicalError::Unavailable)
         }
-        // Unpublished, expired, quarantined or malformed: not a recipient this relay can serve.
-        Err(_) => Ok(None),
+        // Permanent for this request: never published here, expired, or quarantined.
+        Err(RuntimeError::NotFound | RuntimeError::Expired | RuntimeError::Forked) => Ok(None),
+        // Anything else is this relay's own trouble (clock, storage); the sender may retry.
+        Err(_) => Err(CanonicalError::Unavailable),
     }
 }
+/// The sender's current entry, or `None` when it has none here: never published, expired or
+/// quarantined. That is final for this request; a relay fault is an error the sender may retry.
+async fn sender_entry(
+    owner: &crate::store::monad_dm_cbor::Owner,
+    network: &str,
+    subject: &[u8],
+) -> Result<Option<crate::directory_admission::Current>> {
+    use crate::directory_runtime::{AdmittedSnapshot, RuntimeError, SnapshotOperation};
+    let directory = owner.directory().ok_or(CanonicalError::Unavailable)?;
+    let reservation = directory
+        .reserve(network, &hex::encode(subject))
+        .map_err(|_| CanonicalError::Unavailable)?;
+    match directory
+        .submit_snapshot(reservation, SnapshotOperation::Current)
+        .wait()
+        .await
+    {
+        Ok(AdmittedSnapshot::Current(current)) => Ok(Some(current)),
+        Err(RuntimeError::NotFound | RuntimeError::Expired | RuntimeError::Forked) => Ok(None),
+        _ => Err(CanonicalError::Unavailable),
+    }
+}
+/// A final answer for a submission this relay will never deliver, in the shape of the other
+/// dead answers. Nothing was retained and no payment was broadcast.
 fn undeliverable_response(
     request: &ExactRequest,
     network: &str,
     principals: &Principals,
+    reason: &str,
 ) -> Result<Response> {
     let recipient =
         crate::monad_stamp_stealth::recipient_address_from_public_key(&principals.recipient)
@@ -238,7 +281,7 @@ fn undeliverable_response(
     );
     Ok((
         StatusCode::OK,
-        Json(serde_json::json!({"version":1,"phase":"dead","identity":identity,"reason":"undeliverable"})),
+        Json(serde_json::json!({"version":1,"phase":"dead","identity":identity,"reason":reason})),
     )
         .into_response())
 }
@@ -720,43 +763,44 @@ fn private_binding(
         recovery_obligation_id,
     })
 }
+/// The caller's key when it is `recipient`'s and has a current entry. `Err` means the directory
+/// could not answer right now, which is not a verdict on the caller.
 async fn admitted_subject(
     server: &super::server::RegistryServer,
     headers: &HeaderMap,
     recipient: Address,
-) -> Option<Vec<u8>> {
-    let runtime = server.monad_mailbox.as_enabled()?;
-    let descriptor = crate::network_tag::monad_network(runtime.network_tag())?;
+) -> Result<Option<Vec<u8>>> {
+    let Some(runtime) = server.monad_mailbox.as_enabled() else {
+        return Ok(None);
+    };
+    let Some(descriptor) = crate::network_tag::monad_network(runtime.network_tag()) else {
+        return Ok(None);
+    };
     if descriptor.evm_chain_id != runtime.expected_chain_id() {
-        return None;
+        return Ok(None);
     }
-    let point = single_header(headers, "x-frank-mailbox-subject").ok()?;
+    let Ok(point) = single_header(headers, "x-frank-mailbox-subject") else {
+        return Ok(None);
+    };
     if point.len() != 66
         || !(point.starts_with("02") || point.starts_with("03"))
         || !point
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     {
-        return None;
+        return Ok(None);
     }
-    let point = hex::decode(point).ok()?;
-    admitted_point(server, descriptor, recipient, point).await
-}
-/// `point` only when it is `recipient`'s key and that key has a published, unexpired,
-/// self-consistent entry in the directory. Shared with the chain RPC proxy.
-pub(crate) async fn admitted_point(
-    server: &super::server::RegistryServer,
-    descriptor: &crate::network_tag::MonadNetworkDescriptor,
-    recipient: Address,
-    point: Vec<u8>,
-) -> Option<Vec<u8>> {
+    let Ok(point) = hex::decode(point) else {
+        return Ok(None);
+    };
     admitted_point_or_busy(server, descriptor, recipient, point)
         .await
-        .ok()
-        .flatten()
+        .map_err(|_| CanonicalError::Unavailable)
 }
-/// As [`admitted_point`], but tells "the directory owner could not answer now" (queue full, not
-/// ready, or an outcome it cannot report) apart from "not admitted". Only the former is an error.
+/// `point` only when it is `recipient`'s key and that key has a published, unexpired,
+/// self-consistent entry in the directory. Shared with the chain RPC proxy. "The directory owner
+/// could not answer now" (queue full, not ready, or an outcome it cannot report) is an error,
+/// distinct from "not admitted".
 pub(crate) async fn admitted_point_or_busy(
     server: &super::server::RegistryServer,
     descriptor: &crate::network_tag::MonadNetworkDescriptor,
@@ -833,7 +877,7 @@ async fn authenticate(
         MailboxNamespace::Canonical,
     )
     .map_err(|_| CanonicalError::Unauthorized)?;
-    let point = admitted_subject(server, headers, binding.recipient).await;
+    let point = admitted_subject(server, headers, binding.recipient).await?;
     let digest = Sha256::digest(
         super::monad_message::mailbox_auth_preimage(
             parsed.challenge,
@@ -890,7 +934,7 @@ pub(crate) async fn handle_challenge(
     };
     let binding = private_binding(runtime, recipient, resource, &query)?;
     if admitted_subject(&server, &headers, recipient)
-        .await
+        .await?
         .is_none()
     {
         // Preserve the existing strict ECC unknown-key primitive; never reveal a profile lookup.

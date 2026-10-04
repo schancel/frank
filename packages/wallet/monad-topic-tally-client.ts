@@ -187,7 +187,11 @@ async function traverse(params: {relayBaseUrl:string;policy:ForumReadPolicy;topi
           }
           if(charged>STAGING_BYTES) throw new Error('Forum staging limit')
           const next=page.nextCursor
-          if(!next) return output as ForumMessage[]|DiscoveredTopic[]
+          if(!next) {
+            // Decoding, signed-author projection and bookkeeping count toward this attempt too.
+            if (clock()-started >= LIFETIME) throw new Error('Forum snapshot lifetime limit')
+            return output as ForumMessage[]|DiscoveredTopic[]
+          }
           if(next.revision!==revision || toHex(next.epoch)!==epoch || next.network!==params.policy.network || next.family!==family || (incarnation!==undefined && next.incarnation!==incarnation)) throw new SnapshotRace('Cursor incarnation changed')
           if(next.family===13) {
             const tuple=last as {timestamp:Timestamp;hash:Uint8Array}

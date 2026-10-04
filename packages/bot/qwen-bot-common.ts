@@ -61,7 +61,7 @@
  * near-simultaneous transactions from a single account, funding happens in small
  * (`DEFAULT_TOPUP_BUFFER_SIZE = 5`) top-ups spread out one send at a time.
  */
-import { readFileSync, existsSync, writeFileSync } from 'fs'
+import { readFileSync, existsSync, statSync, writeFileSync } from 'fs'
 import { JsonRpcProvider, Provider } from 'ethers'
 
 import { MonadHttpClient } from '@frank/wallet/monad-http'
@@ -794,6 +794,15 @@ export function loadQwenCanonicalRoots(rootsJsonPath: string): MonadRootBundle {
       `Qwen canonical roots at ${rootsJsonPath} are missing or not a frank-domain-roots-v1 bundle`,
     )
   let saved: { registry?: unknown; roots?: Record<string, unknown> }
+  let mode: number
+  try {
+    mode = statSync(rootsJsonPath).mode
+  } catch {
+    throw invalid()
+  }
+  // Secret material: readable or writable by the owner only.
+  if (process.platform !== 'win32' && (mode & 0o077) !== 0)
+    throw new QwenStartRefusal('roots-file-permissions')
   try {
     saved = JSON.parse(readFileSync(rootsJsonPath, 'utf8'))
   } catch {
@@ -824,14 +833,20 @@ export function loadQwenCanonicalRoots(rootsJsonPath: string): MonadRootBundle {
   }
 }
 
-const provisioningInvalid = (what: string) =>
-  new Error(`Invalid public directory ${what}; refusing to start`)
+/** A configuration the bot will not start with. `code` is a fixed public word list, safe to
+ * print; it never carries file contents, keys or provider text. */
+export class QwenStartRefusal extends Error {
+  constructor(readonly code: string) {
+    super(`Qwen bot refusing to start: ${code}`)
+    this.name = 'QwenStartRefusal'
+  }
+}
 /** Strict app parser: verifies the policy identity and every tuple. */
 export function readQwenBootstrapPolicy(path: string): BootstrapPolicy {
   try {
     return parseBootstrapPolicy(new Uint8Array(readFileSync(path)))
   } catch {
-    throw provisioningInvalid('bootstrap policy')
+    throw new QwenStartRefusal('bootstrap-policy-invalid')
   }
 }
 /** Strict app parser: verifies both signed frames, revision zero, tuples and both identities. */
@@ -839,7 +854,7 @@ export function readQwenApprovedBundle(path: string): ApprovedPolicy {
   try {
     return parseApprovedPolicy(new Uint8Array(readFileSync(path)))
   } catch {
-    throw provisioningInvalid('approved bundle')
+    throw new QwenStartRefusal('approved-bundle-invalid')
   }
 }
 
@@ -864,9 +879,9 @@ export async function openQwenCanonicalWallet(params: {
   roots: MonadRootBundle
 }): Promise<QwenCanonicalWallet> {
   if (params.chain.networkTag !== 'MONT' && params.chain.networkTag !== 'MON1')
-    throw new Error('Qwen canonical sender requires an installed Monad network')
+    throw new QwenStartRefusal('network-not-installed-monad')
   if (params.chain.walletStorageLocation === false)
-    throw new Error('Qwen canonical sender requires durable wallet storage')
+    throw new QwenStartRefusal('wallet-storage-not-durable')
   const handle = (await createMonadChain(params.chain).createWallet(
     params.roots,
   )) as unknown as MonadChainWalletHandle
@@ -882,7 +897,7 @@ export async function openQwenCanonicalWallet(params: {
           nowNs < BigInt(policy.exportValidity.issuedAtNs) ||
           nowNs >= BigInt(policy.exportValidity.expiresAtNs)
         )
-          throw new Error('Bootstrap policy export window is not current')
+          throw new QwenStartRefusal('policy-export-window-not-current')
         const process = (processId: 'relay-a' | 'relay-b') => {
           const tuple = policy.relayTuples.find(
             relay => relay.processId === processId,
@@ -993,10 +1008,44 @@ export async function openQwenInstalledDirectory(params: {
   peerRefreshMs?: number
 }): Promise<QwenInstalledDirectory> {
   const { bundle, policy } = params
-  if (bundle.bootstrapPolicyIdentity !== policy.policyIdentity)
-    throw new Error('Approved bundle belongs to a different bootstrap policy')
+  // The same checks the app's readiness barrier applies to the same two files.
+  const participant = (p: {
+    processId: string
+    origin: string
+    trustReference: string
+  }) => `${p.processId}\n${p.origin}\n${p.trustReference}`
+  const bundleParticipants = bundle.participants.map(participant).sort(),
+    policyParticipants = policy.participants.map(participant).sort()
+  if (
+    bundle.bootstrapPolicyIdentity !== policy.policyIdentity ||
+    bundleParticipants.length !== policyParticipants.length ||
+    bundleParticipants.some((value, i) => value !== policyParticipants[i])
+  )
+    throw new QwenStartRefusal('bundle-foreign-policy')
   const self = bundle.subjects.find(subject => subject.role === 'bot')
-  if (!self) throw new Error('Approved bundle installs no bot subject')
+  if (!self) throw new QwenStartRefusal('bundle-installs-no-bot')
+  // Every subject must be homed on a relay of this policy, with exactly its installed tuple,
+  // and on the same network and home origin as the bot: relay forwarding (#779) does not exist.
+  for (const subject of bundle.subjects) {
+    const installed = policy.relayTuples.find(
+      tuple => tuple.processId === subject.homeProcessId,
+    )
+    if (
+      !installed ||
+      installed.id !== subject.relay.id ||
+      installed.key !== subject.relay.key ||
+      installed.endpoint !== subject.relay.endpoint ||
+      installed.expiryNs !== subject.relay.expiryNs
+    )
+      throw new QwenStartRefusal('bundle-subject-outside-policy')
+    if (
+      subject.network !== self.network ||
+      subject.network !== policy.network ||
+      new URL(subject.relay.endpoint).origin !==
+        new URL(self.relay.endpoint).origin
+    )
+      throw new QwenStartRefusal('forwarding-unavailable')
+  }
   const nowNs = params.nowNs ?? (() => BigInt(Date.now()) * 1_000_000n)
   // The bundle must carry this bot's own exact signed bytes, not merely its key or T1.
   const expected = params.wallet.publicExport({
@@ -1012,7 +1061,7 @@ export async function openQwenInstalledDirectory(params: {
     expected.statement !== self.statement ||
     expected.attestation !== self.attestation
   )
-    throw new Error("Approved bundle does not carry this bot's own evidence")
+    throw new QwenStartRefusal('bundle-not-this-bot')
   mkdirSync(params.location, { recursive: true })
   const opened: Array<{ close(): Promise<void> }> = []
   const stores = new Map<string, { status(): Promise<Status | null> }>()
@@ -1239,10 +1288,10 @@ export function setUpCanonicalQwenSender(params: {
   const { wallet, directory } = params
   // Checked before any canonical consumer is taken.
   if (wallet.subject !== directory.selfSubject)
-    throw new Error('Qwen roots differ from the installed directory subject')
+    throw new QwenStartRefusal('roots-not-installed-subject')
   const network = canonicalNetworkDescriptor(params.networkTag).network
   if (network !== directory.network)
-    throw new Error('Installed directory network differs from the wallet')
+    throw new QwenStartRefusal('network-mismatch')
   const client = canonicalMonadStampClient(wallet.handle)
   console.log(
     `[${params.label}] canonical stamp account: ${wallet.accountAddress}`,

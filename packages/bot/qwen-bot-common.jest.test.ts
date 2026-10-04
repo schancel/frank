@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -196,7 +196,12 @@ describe('#703/#778 canonical Qwen composition', () => {
 
   /** The two public files an operator installs, built by the operator tool's own functions and
    * read back through the bot's strict readers. */
-  async function install(options: { botRoots?: MonadRootBundle } = {}) {
+  async function install(
+    options: {
+      botRoots?: MonadRootBundle
+      uiHome?: 'relay-a' | 'relay-b'
+    } = {},
+  ) {
     const relayKey = Buffer.from(
       createMonadWalletMaterial(
         roots(1),
@@ -234,18 +239,18 @@ describe('#703/#778 canonical Qwen composition', () => {
       ),
     )
     const policy = readQwenBootstrapPolicy(policyPath)
-    const exportFor = async (bundle: MonadRootBundle, storage: string) => {
+    const exportFor = async (
+      bundle: MonadRootBundle,
+      storage: string,
+      home: 'relay-a' | 'relay-b' = 'relay-a',
+    ) => {
       const opened = await wallet(bundle, storage)
-      const file = opened.publicExport({
-        policy,
-        home: 'relay-a',
-        nowNs: NOW_NS,
-      })
+      const file = opened.publicExport({ policy, home, nowNs: NOW_NS })
       await opened.close()
       return file
     }
     const bot = await exportFor(options.botRoots ?? roots(0), 'export-bot'),
-      ui = await exportFor(roots(1), 'export-ui')
+      ui = await exportFor(roots(1), 'export-ui', options.uiHome)
     const bundlePath = join(root, 'approved-bundle.json')
     writeFileSync(
       bundlePath,
@@ -575,7 +580,55 @@ describe('#703/#778 canonical Qwen composition', () => {
     const foreign = await install({
       botRoots: { ...roots(0), messaging: roots(1).messaging },
     })
-    await expect(openDirectory(foreign)).rejects.toThrow('own evidence')
+    await expect(openDirectory(foreign)).rejects.toThrow('bundle-not-this-bot')
+    expect(directoryRequests).toEqual([])
+    expect(requests).toEqual([])
+  }, 60000)
+
+  it('applies the app readiness checks to the bundle: same participants, subjects homed inside the policy, one network and home origin', async () => {
+    const installed = await install()
+    const refuse = async (bundle: typeof installed.bundle, code: string) => {
+      const opened = await wallet(roots(0), 'wallet')
+      await expect(
+        openQwenInstalledDirectory({
+          wallet: opened,
+          policy: installed.policy,
+          bundle,
+          location: join(root, 'directory'),
+          fetch: directoryFetch,
+          nowNs: () => NOW_NS,
+        }),
+      ).rejects.toThrow(code)
+      await opened.close()
+    }
+    await refuse(
+      {
+        ...installed.bundle,
+        participants: installed.bundle.participants.map(p =>
+          p.processId === 'bot'
+            ? { ...p, origin: 'https://elsewhere.example' }
+            : p,
+        ),
+      },
+      'bundle-foreign-policy',
+    )
+    await refuse(
+      {
+        ...installed.bundle,
+        subjects: installed.bundle.subjects.map(subject =>
+          subject.role === 'ui'
+            ? {
+                ...subject,
+                relay: { ...subject.relay, endpoint: 'https://c.example' },
+              }
+            : subject,
+        ),
+      },
+      'bundle-subject-outside-policy',
+    )
+    // A genuine operator bundle whose UI account is homed on the other relay.
+    const split = await install({ uiHome: 'relay-b' })
+    await refuse(split.bundle, 'forwarding-unavailable')
     expect(directoryRequests).toEqual([])
     expect(requests).toEqual([])
   }, 60000)
@@ -602,7 +655,7 @@ describe('#703/#778 canonical Qwen composition', () => {
         directory,
         label: 'test',
       }),
-    ).toThrow('installed directory subject')
+    ).toThrow('roots-not-installed-subject')
     expect(requests).toEqual([])
   }, 60000)
 
@@ -701,13 +754,13 @@ describe('#703/#778 canonical Qwen composition', () => {
         chain: { ...chain(), networkTag: 'fixture' },
         roots: roots(0),
       }),
-    ).rejects.toThrow('installed Monad network')
+    ).rejects.toThrow('network-not-installed-monad')
     await expect(
       openQwenCanonicalWallet({
         chain: { ...chain(), walletStorageLocation: false },
         roots: roots(0),
       }),
-    ).rejects.toThrow('durable wallet storage')
+    ).rejects.toThrow('wallet-storage-not-durable')
     expect(existsSync(join(root, 'wallet'))).toBe(false)
   })
 
@@ -721,6 +774,10 @@ describe('#703/#778 canonical Qwen composition', () => {
       JSON.stringify({ registry: 'frank-domain-roots-v1', roots: outputs }),
       { mode: 0o600 },
     )
+    // Secret material readable by group or others is refused, with a fixed reason.
+    chmodSync(path, 0o644)
+    expect(() => loadQwenCanonicalRoots(path)).toThrow('roots-file-permissions')
+    chmodSync(path, 0o600)
     const loaded = loadQwenCanonicalRoots(path)
     expect(Buffer.from(loaded.evm.bytes).toString('hex')).toBe(
       outputs['evm-wallet'],

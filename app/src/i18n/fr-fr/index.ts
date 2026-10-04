@@ -187,16 +187,21 @@ export default {
     maxBet: 'Mise maximale',
     limitDealer:
       'Vous pouvez proposer jusqu’à {amount} : le donneur doit pouvoir payer un gain doublé (4× la mise) avec son propre solde.',
-    limitPlayer: 'Vous pouvez miser jusqu’à {amount} : ce que vous pouvez dépenser maintenant.',
+    limitPlayer:
+      'Vous pouvez miser jusqu’à {amount} : ce que vous pouvez dépenser maintenant.',
     sendChallenge: 'Envoyer le défi',
     challengeRefused:
       'Ce défi dépasse ce que votre solde couvre. Rien n’a été envoyé.',
     balanceUnknown: 'Votre solde n’est pas encore chargé.',
     enterAmount: 'Saisissez un montant supérieur à zéro.',
-    belowStamp: 'Le montant ne peut pas être inférieur au timbre minimal ({amount}).',
-    aboveOwnLimit: 'C’est plus que ce que vous pouvez couvrir (au plus {amount}).',
-    aboveMaxBet: 'C’est au-dessus de la mise maximale de cette main ({amount}).',
-    lineChallengeDealer: 'Défi de blackjack : l’expéditeur distribue. Mise maximale {amount}.',
+    belowStamp:
+      'Le montant ne peut pas être inférieur au timbre minimal ({amount}).',
+    aboveOwnLimit:
+      'C’est plus que ce que vous pouvez couvrir (au plus {amount}).',
+    aboveMaxBet:
+      'C’est au-dessus de la mise maximale de cette main ({amount}).',
+    lineChallengeDealer:
+      'Défi de blackjack : l’expéditeur distribue. Mise maximale {amount}.',
     lineChallengePlayer:
       'Défi de blackjack : l’expéditeur joue, vous distribuez. Mise maximale {amount}.',
     lineAccept: 'Défi accepté. Mise maximale {amount}.',
@@ -207,7 +212,8 @@ export default {
       stand: 'Reste.',
       double: 'Double : le timbre de ce message est la seconde mise.',
       card: 'Carte distribuée.',
-      reveal: 'Main révélée : le timbre de ce message est le paiement, s’il y en a un.',
+      reveal:
+        'Main révélée : le timbre de ce message est le paiement, s’il y en a un.',
       refund: 'Remboursement : le timbre de ce message est l’argent rendu.',
     },
     playerHand: 'Joueur : {cards} ({total})',

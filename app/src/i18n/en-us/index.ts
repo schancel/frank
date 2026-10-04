@@ -193,7 +193,8 @@ export default {
     belowStamp: 'The amount cannot be below the minimum stamp ({amount}).',
     aboveOwnLimit: 'That is more than you can cover (at most {amount}).',
     aboveMaxBet: 'That is above the maximum bet of this hand ({amount}).',
-    lineChallengeDealer: 'Blackjack challenge: the sender deals. Maximum bet {amount}.',
+    lineChallengeDealer:
+      'Blackjack challenge: the sender deals. Maximum bet {amount}.',
     lineChallengePlayer:
       'Blackjack challenge: the sender plays, you deal. Maximum bet {amount}.',
     lineAccept: 'Challenge accepted. Maximum bet {amount}.',

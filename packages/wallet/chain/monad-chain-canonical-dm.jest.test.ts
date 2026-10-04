@@ -17,6 +17,15 @@ import {
   restoreCanonicalRequest,
   type CanonicalFetch,
 } from '@frank/cashweb/relay/canonical-dm-transport'
+import {
+  OpenDirectoryError,
+  openDirectory,
+} from '@frank/cashweb/relay/open-directory'
+import { nodeDirectoryStorage } from '@frank/cashweb/relay/open-directory-node'
+import {
+  createFakeRelay,
+  testAccount,
+} from '@frank/cashweb/relay/open-directory-fake-relay.testutil'
 import { openNodeDirectoryStore } from '../../directory-admission/src/node'
 import type { DirectoryStore } from '../../directory-admission/src'
 import domainVectors from '../../domain-roots/vectors/domain-roots-v1.json'
@@ -29,12 +38,14 @@ import {
 import {
   CanonicalMessagingHoldError,
   CanonicalMessagingPendingError,
+  CanonicalRecipientNotPublishedError,
   createMonadChain,
   installCanonicalDirectory,
   canonicalMonadStampClient,
   createCanonicalMessageRoles,
   prepareCanonicalStampInventory,
   prepareMonadRevisionZeroExport,
+  prepareMonadNextRevisionExport,
   type CanonicalDirectory,
   type MonadChainConfig,
   type MonadChainWalletHandle,
@@ -284,6 +295,8 @@ async function fixture(funded = true) {
     chain,
     alice,
     bob,
+    root: directory,
+    fetch,
     requests,
     setPhase: (next: typeof phase) => (phase = next),
     directoryFor,
@@ -404,7 +417,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     expect(auth.subject).toBe(toHex(f.bob.identity.compressedPubKey))
   })
 
-  it('does not display a tampered ciphertext or a sender outside the installed directory', async () => {
+  it('does not display a tampered ciphertext or a sender with no published entry', async () => {
     installCanonicalDirectory(
       f.alice,
       await f.directoryFor('alice', f.alice, f.bob),
@@ -429,7 +442,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     expect(
       await f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 0 }),
     ).toEqual([])
-    // Same exact bytes, but the sender is no longer an installed peer.
+    // Same exact bytes, but the sender has no published entry.
     installCanonicalDirectory(f.bob, {
       ...bobDirectory,
       peerCurrent: async () => undefined,
@@ -448,7 +461,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     expect(quarantined).toEqual([5])
   })
 
-  it('refuses unsupported items and uninstalled recipients before any payment intent', async () => {
+  it('refuses unsupported items and unpublished recipients before any payment intent', async () => {
     installCanonicalDirectory(
       f.alice,
       await f.directoryFor('alice', f.alice, f.bob),
@@ -466,7 +479,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         recipient: { raw: '0x000000000000000000000000000000000000dEaD' },
         items: text('hello'),
       }),
-    ).rejects.toThrow('not in the operator-installed directory')
+    ).rejects.toBeInstanceOf(CanonicalRecipientNotPublishedError)
     expect(f.requests).toHaveLength(0)
     expect(
       await f.chain.directMessages.unattributedAttempts({
@@ -816,5 +829,250 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     expect(sent.preparationTxHashes.length).toBeGreaterThan(0)
     expect(sent.stampPayments.reduce((n, p) => n + p.valueWei, 0n)).toBe(1_000n)
     expect(f.requests).toHaveLength(1)
+  })
+})
+
+describe('two typed wallets on the open directory', () => {
+  jest.setTimeout(60_000)
+  const SECOND = 1_000_000_000n
+  const CLOCK = 1_800_000_000n * SECOND
+  let f: Awaited<ReturnType<typeof fixture>>
+  let relay: ReturnType<typeof createFakeRelay>
+  const directories: ReturnType<typeof openDirectory>[] = []
+  beforeEach(async () => {
+    jest.clearAllMocks()
+    mockBalances.clear()
+    mockFunded.length = 0
+    f = await fixture()
+    relay = createFakeRelay({ endpoint: RELAY })
+  })
+  afterEach(async () => {
+    for (const directory of directories.splice(0)) await directory.close()
+    await f.close()
+  })
+  /** One wallet's own directory: its own stores and pins, signing with its own typed custody. */
+  function open(name: string, wallet: MonadChainWalletHandle) {
+    const descriptor = {
+      networkTag: 'MONT' as const,
+      network: 'monad-testnet',
+      chainId: 10143n,
+    }
+    const directory = openDirectory({
+      network: 'monad-testnet',
+      relayBaseUrl: RELAY,
+      nowNs: () => CLOCK,
+      fetch: relay.fetch,
+      ...nodeDirectoryStorage(join(f.root, `open-${name}`)),
+      self: {
+        subject: toHex(wallet.identity.compressedPubKey),
+        signRevisionZero: input =>
+          prepareMonadRevisionZeroExport(wallet, { ...descriptor, ...input })
+            .attestation,
+        signNextRevision: input =>
+          prepareMonadNextRevisionExport(wallet, { ...descriptor, ...input })
+            .attestation,
+      },
+    })
+    directories.push(directory)
+    return directory
+  }
+  async function online(name: string, wallet: MonadChainWalletHandle) {
+    const directory = open(name, wallet)
+    await directory.publish()
+    installCanonicalDirectory(wallet, { ...directory, fetch: f.fetch })
+    return directory
+  }
+  /** What the relay would put in the recipient's inbox for the n-th accepted submission. */
+  const inboxRecord = (index: number, timestampMs: number) => {
+    const request = restoreCanonicalRequest(f.requests[index])
+    return {
+      delivery: request.parts.delivery,
+      context: request.parts.context,
+      submissionIdentity: request.identity.submission_identity,
+      timestampMs,
+    }
+  }
+  const fund = async (wallet: MonadChainWalletHandle) => {
+    for (const record of wallet.pool.ensureSize(2))
+      mockBalances.set(record.address.toLowerCase(), 187_500n + 600n)
+    await wallet.pool.flush()
+  }
+
+  it('message each other in both directions knowing only an address', async () => {
+    await online('alice', f.alice)
+    await online('bob', f.bob)
+    await fund(f.bob)
+    // Each account published exactly one self-signed entry; nobody installed anything.
+    expect([...relay.subjects()].sort()).toEqual(
+      [f.alice, f.bob].map(w => toHex(w.identity.compressedPubKey)).sort(),
+    )
+    await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('hello bob'),
+    })
+    inboxPage.mockResolvedValue({ records: [inboxRecord(0, 7)] })
+    // Bob has never looked Alice up: her entry is fetched and verified from the sending key.
+    const atBob = await f.chain.directMessages.fetchSince({
+      wallet: f.bob,
+      sinceMs: 0,
+    })
+    expect(atBob).toHaveLength(1)
+    expect(atBob[0].items).toEqual(text('hello bob'))
+    expect(atBob[0].senderAddress.raw.toLowerCase()).toBe(
+      f.alice.identity.address.raw.toLowerCase(),
+    )
+    await f.chain.directMessages.send({
+      wallet: f.bob,
+      recipient: atBob[0].senderAddress,
+      items: text('hello alice'),
+    })
+    inboxPage.mockResolvedValue({ records: [inboxRecord(1, 9)] })
+    const atAlice = await f.chain.directMessages.fetchSince({
+      wallet: f.alice,
+      sinceMs: 0,
+    })
+    expect(atAlice.map(m => m.items)).toEqual([text('hello alice')])
+    expect(atAlice[0].senderAddress.raw.toLowerCase()).toBe(
+      f.bob.identity.address.raw.toLowerCase(),
+    )
+  })
+
+  it('gives a typed "not published" error for an unknown address and pays nothing', async () => {
+    await online('alice', f.alice)
+    const stranger = testAccount(40)
+    const failure = await f.chain.directMessages
+      .send({
+        wallet: f.alice,
+        recipient: { raw: stranger.address },
+        items: text('anyone there?'),
+      })
+      .catch(error => error)
+    expect(failure).toBeInstanceOf(CanonicalRecipientNotPublishedError)
+    expect(failure.address).toBe(stranger.address)
+    expect(f.requests).toHaveLength(0)
+    expect(mockFunded).toHaveLength(0)
+    expect(f.alice.pool.records().map(r => r.status)).toEqual([
+      'available',
+      'available',
+    ])
+    expect(
+      await f.chain.directMessages.unattributedAttempts({
+        wallet: f.alice,
+        knownDigests: [],
+      }),
+    ).toEqual([])
+  })
+
+  it('refuses a forged entry for the recipient and pays nothing', async () => {
+    await online('alice', f.alice)
+    const bobSubject = toHex(f.bob.identity.compressedPubKey)
+    const bobAddress = f.bob.identity.address.raw.toLowerCase()
+    const mallory = testAccount(41)
+    const validity = {
+      network: 'monad-testnet',
+      revision: 0n,
+      predecessor: null,
+      issuedAt: { seconds: CLOCK / SECOND - 60n, nanoseconds: 0 },
+      expiresAt: { seconds: CLOCK / SECOND + 86_400n, nanoseconds: 0 },
+      relay: relay.binding,
+    }
+    // Mallory's own valid entry served for Bob's address, then one naming Bob's key signed by her.
+    for (const forged of [
+      mallory.sign(validity),
+      mallory.sign({ ...validity, claimSubject: bobSubject }),
+    ]) {
+      relay.tamper = path =>
+        path.endsWith(`/address/${bobAddress}`) ? forged : undefined
+      const failure = await f.chain.directMessages
+        .send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('for bob only'),
+        })
+        .catch(error => error)
+      expect(failure).toBeInstanceOf(OpenDirectoryError)
+      expect(failure.code).toBe('invalid')
+    }
+    expect(f.requests).toHaveLength(0)
+    expect(mockFunded).toHaveLength(0)
+  })
+
+  it('refuses a rolled back recipient entry after first contact and pays nothing', async () => {
+    const aliceDirectory = await online('alice', f.alice)
+    const bobDirectory = open('bob', f.bob)
+    await bobDirectory.publish()
+    installCanonicalDirectory(f.bob, { ...bobDirectory, fetch: f.fetch })
+    const bobSubject = toHex(f.bob.identity.compressedPubKey)
+    const revisionZero = relay.chain(bobSubject)[0]
+    // Bob renews: his chain is now two revisions long, and Alice accepts the newer one.
+    const head = await bobDirectory.selfCurrent()
+    relay.replicate([
+      prepareMonadNextRevisionExport(f.bob, {
+        networkTag: 'MONT',
+        network: 'monad-testnet',
+        chainId: 10143n,
+        issuedAt: { seconds: CLOCK / SECOND - 30n, nanoseconds: 0 },
+        expiresAt: { seconds: CLOCK / SECOND + 86_400n, nanoseconds: 0 },
+        now: { seconds: CLOCK / SECOND, nanoseconds: 0 },
+        relay: relay.binding,
+        revision: 1n,
+        predecessor: head.evidence.hash,
+      }).attestation,
+    ])
+    expect(
+      (await aliceDirectory.lookup(f.bob.identity.address.raw)).current
+        .revision,
+    ).toBe(1n)
+    relay.tamper = path =>
+      path.endsWith(`/${bobSubject}/head`) ? revisionZero : undefined
+    const later = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000)
+    try {
+      const failure = await f.chain.directMessages
+        .send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('to the old key?'),
+        })
+        .catch(error => error)
+      expect(failure).toBeInstanceOf(OpenDirectoryError)
+      expect(failure.code).toBe('rollback')
+      expect(f.requests).toHaveLength(0)
+      expect(mockFunded).toHaveLength(0)
+    } finally {
+      later.mockRestore()
+    }
+  })
+
+  it('does not show a message whose sender entry is forged', async () => {
+    await online('alice', f.alice)
+    await online('bob', f.bob)
+    await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('really from alice'),
+    })
+    const aliceSubject = toHex(f.alice.identity.compressedPubKey)
+    const forged = testAccount(42).sign({
+      network: 'monad-testnet',
+      revision: 0n,
+      predecessor: null,
+      issuedAt: { seconds: CLOCK / SECOND - 60n, nanoseconds: 0 },
+      expiresAt: { seconds: CLOCK / SECOND + 86_400n, nanoseconds: 0 },
+      relay: relay.binding,
+      claimSubject: aliceSubject,
+    })
+    relay.tamper = path =>
+      path.endsWith(`/${aliceSubject}/head`) ? forged : undefined
+    inboxPage.mockResolvedValue({ records: [inboxRecord(0, 7)] })
+    const quarantined: number[] = []
+    expect(
+      await f.chain.directMessages.fetchSince({
+        wallet: f.bob,
+        sinceMs: 0,
+        onQuarantinedTimestamp: time => void quarantined.push(time),
+      }),
+    ).toEqual([])
+    expect(quarantined).toEqual([7])
   })
 })

@@ -215,6 +215,7 @@ describe("MonadJsonRpcProvider (#534)", () => {
     let challengeBody = "";
     let authenticatedBody = "";
     let issuanceHeaders: typeof import("http").IncomingHttpHeaders = {};
+    let challengeHeaders: typeof import("http").IncomingHttpHeaders = {};
 
     await new Promise<void>((resolve) => server.close(() => resolve()));
     server = createServer((req, res) => {
@@ -223,6 +224,7 @@ describe("MonadJsonRpcProvider (#534)", () => {
       req.on("end", () => {
         if (req.url?.endsWith("/capability/auth")) {
           challengeBody = body;
+          challengeHeaders = req.headers;
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(
             JSON.stringify({
@@ -272,6 +274,7 @@ describe("MonadJsonRpcProvider (#534)", () => {
       relayAuth: {
         chain: "monad-testnet",
         customer,
+        subject: `02${"56".repeat(32)}`,
         networkTag: "MONT",
         signDigest: (digest) => {
           signedDigests.push(digest);
@@ -288,6 +291,9 @@ describe("MonadJsonRpcProvider (#534)", () => {
       expect(signedDigests).toHaveLength(1);
       expect(signedDigests[0]).toHaveLength(32);
       expect(issuanceHeaders["x-frank-rpc-customer"]).toBe(customer);
+      // The account key is presented on both capability requests.
+      expect(issuanceHeaders["x-frank-rpc-subject"]).toBe(`02${"56".repeat(32)}`);
+      expect(challengeHeaders["x-frank-rpc-subject"]).toBe(`02${"56".repeat(32)}`);
       expect(issuanceHeaders["x-frank-rpc-epoch"]).toBe("11".repeat(32));
       expect(issuanceHeaders["x-frank-rpc-signature"]).toBe("3006020101020101");
     } finally {

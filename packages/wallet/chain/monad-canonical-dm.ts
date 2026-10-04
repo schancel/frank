@@ -8,8 +8,10 @@
  * before it will replay or finish anything.
  *
  * Directory trust is never created here. The caller installs a {@link CanonicalDirectory} whose
- * `Current` values come from its own public DirectoryStore; without one every operation rejects
- * with {@link CanonicalMessagingPendingError} before funding, signing or any relay request.
+ * `Current` values come from its own admission stores (the open directory: every account signs its
+ * own entry, and any address with a published entry can be messaged). Until this account's own
+ * entry is published every operation rejects with {@link CanonicalMessagingPendingError} before
+ * funding, signing or any relay request.
  */
 import { Transaction, computeAddress, getAddress, hexlify } from 'ethers'
 import level, { type LevelDB } from 'level'
@@ -55,13 +57,17 @@ import type { MonadCanonicalRoleOwner } from '../monad-wallet-material'
 
 /** Public directory access owned by the caller. Every call must return a fresh admitted Current. */
 export interface CanonicalDirectory {
-  /** Exact canonical network of every installed subject, e.g. `monad-testnet`. */
+  /** Exact canonical network of every entry, e.g. `monad-testnet`. */
   readonly network: string
-  /** Exact installed HTTPS root endpoint of this wallet's own home relay. */
+  /** HTTPS root endpoint of the relay this wallet submits to and reads its mailbox from. */
   readonly homeEndpoint: string
-  /** Fresh Current of the wallet's own subject. */
+  /** Fresh Current of the wallet's own entry. */
   selfCurrent(): Promise<Current>
-  /** Fresh Current of an operator-installed peer; `undefined` when that peer is not installed. */
+  /**
+   * Fresh Current of any account, by address or by signing key. `undefined` when that account has
+   * not published an entry. Throws when an entry exists but is refused (wrong key for the address,
+   * rolled back, forked, expired) or cannot be obtained right now.
+   */
   peerCurrent(
     peer: { address: string } | { subject: string },
   ): Promise<
@@ -71,13 +77,23 @@ export interface CanonicalDirectory {
   readonly fetch?: CanonicalFetch
 }
 
-/** Messaging is unavailable until the operator-installed directory configuration is verified. */
+/** Messaging is unavailable until this account's own directory entry is published. */
 export class CanonicalMessagingPendingError extends Error {
   constructor(
-    message = 'Direct messages are pending operator directory installation. Open Settings > Networking to export, install and refresh.',
+    message = 'Direct messages are not available yet: this account’s directory entry has not been published to its relay.',
   ) {
     super(message)
     this.name = 'CanonicalMessagingPendingError'
+  }
+}
+
+/** The recipient address has no published directory entry. Nothing was paid or sent. */
+export class CanonicalRecipientNotPublishedError extends Error {
+  constructor(readonly address: string) {
+    super(
+      `${address} has not published a directory entry, so it cannot receive messages yet. Nothing was paid or sent.`,
+    )
+    this.name = 'CanonicalRecipientNotPublishedError'
   }
 }
 
@@ -340,17 +356,9 @@ async function send(
   const items = textItems(params.items)
   const stampValueWei = params.stampValue ?? defaultStampValueWei
   const peer = await directory.peerCurrent({ address: params.recipient.raw })
-  if (!peer)
-    throw new Error(
-      `${params.recipient.raw} is not in the operator-installed directory; nothing was paid or sent.`,
-    )
-  if (
-    installedCanonicalOrigin(new URL(peer.endpoint).origin) !==
-    installedCanonicalOrigin(new URL(owner.relayBaseUrl).origin)
-  )
-    throw new Error(
-      'The recipient is homed on another relay and relay forwarding (#779) is not available; nothing was paid or sent.',
-    )
+  if (!peer) throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
+  // The recipient may live on any relay: this wallet always submits to its own relay, which
+  // forwards. A relay that cannot forward refuses the submission before any payment is broadcast.
   // Earlier attempts first: a live one is re-sent as-is, and an unmatched record holds everything.
   await settle(owner, directory.fetch, 1)
   const live = owner.links.all().filter(row => !row.outcome)
@@ -364,7 +372,8 @@ async function send(
   // Fresh snapshots after funding: sealing and payment intent must see the same Current pair.
   const senderCurrent = await directory.selfCurrent()
   const recipient = await directory.peerCurrent({ subject: peer.subject })
-  if (!recipient) throw new CanonicalMessagingPendingError()
+  if (!recipient)
+    throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
   const messageId = randomBytes(16)
   const roles = owner.roles.create(directory.network, senderCurrent)
   let sealed
@@ -452,7 +461,7 @@ function mailboxAuth(
     installedCanonicalOrigin(new URL(owner.relayBaseUrl).origin)
   )
     throw new CanonicalMessagingPendingError(
-      'This app is configured for a relay other than the installed home relay.',
+      'This account’s directory entry is being moved to the configured relay.',
     )
   return {
     relayBaseUrl: directory.homeEndpoint,
@@ -535,11 +544,27 @@ async function fetchSince(
       const payload = delivery.typed.payloadFrame.typed
       if (payload?.type !== 5) continue
       const digest = toHex(delivery.typed.payloadDigest)
-      const sender = await directory.peerCurrent({
-        subject: toHex(payload.sender.keyBytes),
-      })
+      // Any sender with a published entry that verifies is shown; no peer list is consulted.
+      let sender
+      try {
+        sender = await directory.peerCurrent({
+          subject: toHex(payload.sender.keyBytes),
+        })
+      } catch (error) {
+        const code = (error as { code?: string } | null)?.code
+        if (code === 'invalid' || code === 'fork') {
+          // The sender's entry is not signed by that sender, or conflicts with the one pinned
+          // for it: this message is never shown.
+          params.onQuarantinedTimestamp?.(record.timestampMs, digest)
+          continue
+        }
+        // Expired or rolled back entries may be repaired by their owner: not shown now, and
+        // not given up on. Anything else (relay unreachable, storage) fails this whole read.
+        if (code === 'expired' || code === 'rollback') continue
+        throw error
+      }
       if (!sender) {
-        // Not an operator-installed peer: it can never be opened under this installation.
+        // No published entry for the sending key: nothing can authenticate this message.
         params.onQuarantinedTimestamp?.(record.timestampMs, digest)
         continue
       }

@@ -162,6 +162,7 @@ import {
 export {
   CanonicalMessagingHoldError,
   CanonicalMessagingPendingError,
+  CanonicalRecipientNotPublishedError,
   type CanonicalDirectory,
 } from "./monad-canonical-dm";
 import {
@@ -353,8 +354,8 @@ export function canonicalMonadStampClient(wallet: NativeWalletHandle): MonadCano
   if (!create) throw new Error("Canonical wallet requires live typed persistent custody");
   return create();
 }
-// Canonical direct messages (#778). The directory is installed by the caller only after the
-// operator-installed public configuration is verified; it is never inferred from a wallet.
+// Canonical direct messages (#778). The caller installs the open directory once this account's own
+// entry is published; it is never inferred from a wallet.
 const canonicalDirectories = new WeakMap<object, CanonicalDirectory>();
 const canonicalMessaging = new WeakMap<object, ReturnType<typeof canonicalDirectMessages>>();
 /** Install the caller's verified public directory for one live typed wallet. Returns its removal. */
@@ -1605,6 +1606,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               ? {
                   chain: config.rpcChain,
                   customer: identity.address.raw,
+                  subject: hexlify(identity.compressedPubKey).slice(2),
                   networkTag: config.networkTag,
                   signDigest: (digest: Uint8Array) =>
                     identity.signHash(Buffer.from(digest)),

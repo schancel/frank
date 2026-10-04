@@ -44,6 +44,9 @@ export interface MonadJsonRpcProviderOptions extends JsonRpcApiProviderOptions {
 export interface MonadRelayRpcAuth {
   chain: string;
   customer: string;
+  /** The key that signs the challenge: 66 hex characters, compressed. It hashes to `customer`.
+   * Sent so the relay can check the caller's own published directory entry. */
+  subject?: string;
   networkTag: string;
   signDigest: (digest: Uint8Array) => Uint8Array | Promise<Uint8Array>;
 }
@@ -332,6 +335,8 @@ async function issueMonadRelayRpcCapabilityWithLifecycle(
   challengeRequest.retryFunc = async () => false;
   challengeRequest.setHeader("content-type", "application/octet-stream");
   challengeRequest.setHeader("x-frank-rpc-customer", auth.customer);
+  if (auth.subject !== undefined)
+    challengeRequest.setHeader("x-frank-rpc-subject", auth.subject);
   const challengeResponse = await sendRelayCapabilityRequest(
     challengeRequest,
     lifecycle
@@ -354,6 +359,8 @@ async function issueMonadRelayRpcCapabilityWithLifecycle(
   issueRequest.retryFunc = async () => false;
   issueRequest.setHeader("content-type", "application/octet-stream");
   issueRequest.setHeader("x-frank-rpc-customer", auth.customer);
+  if (auth.subject !== undefined)
+    issueRequest.setHeader("x-frank-rpc-subject", auth.subject);
   issueRequest.setHeader("x-frank-rpc-epoch", challenge.epoch);
   issueRequest.setHeader("x-frank-rpc-nonce", challenge.nonce);
   issueRequest.setHeader("x-frank-rpc-expires-at-ms", challenge.expires_at_ms);

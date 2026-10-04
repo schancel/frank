@@ -1089,6 +1089,77 @@ describe('two typed wallets on the open directory', () => {
     expect(quarantined).toEqual([7])
   })
 
+  it('keeps delivering other senders when one sender cannot be checked, and retries that one', async () => {
+    await online('alice', f.alice)
+    const bobDirectory = await online('bob', f.bob)
+    await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('first'),
+    })
+    mockBalances.set(
+      (await f.alice.getReceiveAddress()).raw.toLowerCase(),
+      10n ** 18n,
+    )
+    await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('second'),
+    })
+    // The first message stands in for a sender whose entry cannot be read right now: only the
+    // first directory lookup of each read fails.
+    const stuck = inboxRecord(0, 5),
+      good = inboxRecord(1, 9)
+    inboxPage.mockResolvedValue({ records: [stuck, good] })
+    const real = bobDirectory.peerCurrent
+    let lookups = 0
+    const failing = (code: string) => {
+      lookups = 0
+      installCanonicalDirectory(f.bob, {
+        ...bobDirectory,
+        fetch: f.fetch,
+        peerCurrent: async wanted => {
+          if (lookups++ === 0) throw new OpenDirectoryError(code as never)
+          return real(wanted)
+        },
+      })
+    }
+    for (const code of ['unreachable', 'storage', 'expired', 'rollback']) {
+      failing(code)
+      const incomplete: number[] = [],
+        quarantined: number[] = []
+      const received = await f.chain.directMessages.fetchSince({
+        wallet: f.bob,
+        sinceMs: 0,
+        onIncompleteTimestamp: time => void incomplete.push(time),
+        onQuarantinedTimestamp: time => void quarantined.push(time),
+      })
+      // The read did not fail; the good sender's message arrived; the other is kept for later.
+      expect(received.map(m => m.receivedTime)).toEqual([9])
+      expect(incomplete).toEqual([5])
+      expect(quarantined).toEqual([])
+    }
+    // After a day of failing, it is given up on so it cannot hold the inbox scan forever.
+    const later = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(Date.now() + 25 * 60 * 60_000)
+    try {
+      failing('unreachable')
+      const incomplete: number[] = [],
+        quarantined: number[] = []
+      await f.chain.directMessages.fetchSince({
+        wallet: f.bob,
+        sinceMs: 0,
+        onIncompleteTimestamp: time => void incomplete.push(time),
+        onQuarantinedTimestamp: time => void quarantined.push(time),
+      })
+      expect(incomplete).toEqual([])
+      expect(quarantined).toEqual([5])
+    } finally {
+      later.mockRestore()
+    }
+  })
+
   describe('a recipient that lives on another relay', () => {
     let other: ReturnType<typeof createFakeRelay>
     beforeEach(async () => {

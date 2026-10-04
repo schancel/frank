@@ -249,6 +249,10 @@ const RECOVERY_SYNC_INTERVAL_MS = 60_000
 const MAX_INBOX_PAGES = 8
 const queues = new WeakMap<object, Promise<unknown>>()
 const lastRecoverySync = new WeakMap<object, number>()
+/** Messages whose sender could not be checked yet: digest -> when that was first seen. */
+const unreadable = new WeakMap<object, Map<string, number>>()
+const UNREADABLE_RETRY_MS = 24 * 60 * 60_000
+const MAX_UNREADABLE = 1024
 
 function serial<T>(owner: object, task: () => Promise<T>): Promise<T> {
   const run = (queues.get(owner) ?? Promise.resolve()).then(task, task)
@@ -613,11 +617,23 @@ async function fetchSince(
           params.onQuarantinedTimestamp?.(record.timestampMs, digest)
           continue
         }
-        // Expired or rolled back entries may be repaired by their owner: not shown now, and
-        // not given up on. Anything else (relay unreachable, storage) fails this whole read.
-        if (code === 'expired' || code === 'rollback') continue
-        throw error
+        // Anything else is about this one sender right now: its entry expired or was rolled
+        // back, its history could not be read, the lookup failed. The message is left for a
+        // later read and every other sender's mail is still delivered. It is retried for a
+        // bounded time, after which it is given up on so it cannot pin the inbox scan forever.
+        const waiting = unreadable.get(owner.links) ?? new Map<string, number>()
+        unreadable.set(owner.links, waiting)
+        const since = waiting.get(digest) ?? Date.now()
+        if (waiting.size >= MAX_UNREADABLE && !waiting.has(digest))
+          waiting.delete(waiting.keys().next().value as string)
+        waiting.set(digest, since)
+        if (Date.now() - since >= UNREADABLE_RETRY_MS) {
+          waiting.delete(digest)
+          params.onQuarantinedTimestamp?.(record.timestampMs, digest)
+        } else params.onIncompleteTimestamp?.(record.timestampMs)
+        continue
       }
+      unreadable.get(owner.links)?.delete(digest)
       if (!sender) {
         // No published entry for the sending key: nothing can authenticate this message.
         params.onQuarantinedTimestamp?.(record.timestampMs, digest)

@@ -3,7 +3,8 @@
 //! The signed evidence itself lives in the preview sidecar. This table remembers, for every key
 //! that published an entry, the revision-zero hash it pinned first and the last continuity
 //! checkpoint, so a restart reopens exactly the history it served before. The address index maps
-//! the 20-byte account address to the key that hashes to it.
+//! the 20-byte account address to the key that hashes to it. A third table lists addresses in
+//! the order their first entry was accepted here, for the public "new accounts" listing.
 use bitcoinsuite_error::Result;
 use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode, WriteBatch, WriteOptions};
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,9 @@ use crate::directory_admission::Checkpoint;
 pub(crate) const STORE: &str = "directory-subjects-v1.rocksdb";
 pub(crate) const CF_DIRECTORY_SUBJECTS_V1: &str = "directory_subjects_v1";
 pub(crate) const CF_DIRECTORY_ADDRESSES_V1: &str = "directory_addresses_v1";
+pub(crate) const CF_DIRECTORY_FIRST_ACCEPTED_V1: &str = "directory_first_accepted_v1";
+/// Length of a first-accepted position: big-endian Unix milliseconds, then the address.
+pub(crate) const FIRST_ACCEPTED_POSITION_BYTES: usize = 8 + 20;
 
 /// Durable per-subject continuity. `anchor` never changes once written.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,9 +34,13 @@ pub(crate) fn open(path: &std::path::Path) -> Result<rocksdb::DB> {
     let mut options = rocksdb::Options::default();
     options.create_if_missing(true);
     options.create_missing_column_families(true);
-    let cfs = [CF_DIRECTORY_SUBJECTS_V1, CF_DIRECTORY_ADDRESSES_V1]
-        .iter()
-        .map(|name| ColumnFamilyDescriptor::new(*name, rocksdb::Options::default()));
+    let cfs = [
+        CF_DIRECTORY_SUBJECTS_V1,
+        CF_DIRECTORY_ADDRESSES_V1,
+        CF_DIRECTORY_FIRST_ACCEPTED_V1,
+    ]
+    .iter()
+    .map(|name| ColumnFamilyDescriptor::new(*name, rocksdb::Options::default()));
     Ok(rocksdb::DB::open_cf_descriptors(&options, path, cfs)?)
 }
 
@@ -40,6 +48,13 @@ pub(crate) struct DbDirectorySubjects<'a> {
     db: &'a rocksdb::DB,
     subjects: &'a CF,
     addresses: &'a CF,
+    first_accepted: &'a CF,
+}
+fn position(accepted_ms: u64, address: &[u8; 20]) -> [u8; FIRST_ACCEPTED_POSITION_BYTES] {
+    let mut tail = [0; FIRST_ACCEPTED_POSITION_BYTES];
+    tail[..8].copy_from_slice(&accepted_ms.to_be_bytes());
+    tail[8..].copy_from_slice(address);
+    tail
 }
 
 fn prefix(network: &str) -> Vec<u8> {
@@ -64,6 +79,7 @@ impl<'a> DbDirectorySubjects<'a> {
             db,
             subjects: cf(CF_DIRECTORY_SUBJECTS_V1)?,
             addresses: cf(CF_DIRECTORY_ADDRESSES_V1)?,
+            first_accepted: cf(CF_DIRECTORY_FIRST_ACCEPTED_V1)?,
         })
     }
 
@@ -77,12 +93,14 @@ impl<'a> DbDirectorySubjects<'a> {
         }
     }
 
-    /// Write the continuity row; with `address` also the index entry, in one synced batch.
+    /// Write the continuity row. With `first` (the address and the time of this first
+    /// publication in Unix milliseconds) also the address index entry and the first-accepted
+    /// position, all in one synced batch.
     pub(crate) fn put(
         &self,
         network: &str,
         subject: &[u8],
-        address: Option<&[u8; 20]>,
+        first: Option<(&[u8; 20], u64)>,
         row: &SubjectRow,
     ) -> Result<()> {
         let mut batch = WriteBatch::default();
@@ -91,8 +109,13 @@ impl<'a> DbDirectorySubjects<'a> {
             key(network, subject),
             serde_json::to_vec(row)?,
         );
-        if let Some(address) = address {
+        if let Some((address, accepted_ms)) = first {
             batch.put_cf(self.addresses, key(network, address), subject);
+            batch.put_cf(
+                self.first_accepted,
+                key(network, &position(accepted_ms, address)),
+                [],
+            );
         }
         let mut options = WriteOptions::default();
         options.set_sync(true);
@@ -100,11 +123,25 @@ impl<'a> DbDirectorySubjects<'a> {
         Ok(())
     }
 
-    /// Forget a subject whose first entry was never accepted.
-    pub(crate) fn delete(&self, network: &str, subject: &[u8], address: &[u8; 20]) -> Result<()> {
+    /// Forget a subject whose first entry was never accepted. `accepted_ms` is the time its
+    /// first-accepted position was written with, when the caller still knows it; a position
+    /// left behind names an address with no index entry and is skipped by the listing.
+    pub(crate) fn delete(
+        &self,
+        network: &str,
+        subject: &[u8],
+        address: &[u8; 20],
+        accepted_ms: Option<u64>,
+    ) -> Result<()> {
         let mut batch = WriteBatch::default();
         batch.delete_cf(self.subjects, key(network, subject));
         batch.delete_cf(self.addresses, key(network, address));
+        if let Some(accepted_ms) = accepted_ms {
+            batch.delete_cf(
+                self.first_accepted,
+                key(network, &position(accepted_ms, address)),
+            );
+        }
         let mut options = WriteOptions::default();
         options.set_sync(true);
         self.db.write_opt(batch, &options)?;
@@ -159,6 +196,41 @@ impl<'a> DbDirectorySubjects<'a> {
             if out.len() >= limit {
                 break;
             }
+        }
+        Ok(out)
+    }
+
+    /// At most `limit` first-accepted positions of `network` in time order, strictly after
+    /// `after`, as `(position, accepted_ms, address)`.
+    pub(crate) fn first_accepted(
+        &self,
+        network: &str,
+        after: &[u8; FIRST_ACCEPTED_POSITION_BYTES],
+        limit: usize,
+    ) -> Result<Vec<([u8; FIRST_ACCEPTED_POSITION_BYTES], u64, [u8; 20])>> {
+        let start = prefix(network);
+        let from = key(network, after);
+        let mut out = Vec::new();
+        for row in self.db.iterator_cf(
+            self.first_accepted,
+            IteratorMode::From(&from, Direction::Forward),
+        ) {
+            if out.len() >= limit {
+                break;
+            }
+            let (key, _) = row?;
+            if !key.starts_with(&start) || key.len() != start.len() + FIRST_ACCEPTED_POSITION_BYTES
+            {
+                break;
+            }
+            let tail: [u8; FIRST_ACCEPTED_POSITION_BYTES] =
+                key[start.len()..].try_into().expect("length checked");
+            if after == &tail {
+                continue;
+            }
+            let accepted_ms = u64::from_be_bytes(tail[..8].try_into().expect("8 bytes"));
+            let address = tail[8..].try_into().expect("20 bytes");
+            out.push((tail, accepted_ms, address));
         }
         Ok(out)
     }

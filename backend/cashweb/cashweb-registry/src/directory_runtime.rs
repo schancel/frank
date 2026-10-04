@@ -4,6 +4,17 @@
 //! itself pins that key's chain; later revisions must extend it. There is no per-account
 //! configuration: continuity lives in the relay's own database, one row per subject.
 use crate::{directory_admission::*, registry::Registry, store::directory_subjects::SubjectRow};
+/// Length of a position in the listing of new accounts.
+pub const FIRST_ACCEPTED_POSITION_BYTES: usize =
+    crate::store::directory_subjects::FIRST_ACCEPTED_POSITION_BYTES;
+/// One account in the listing of new accounts: public data only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FirstAccepted {
+    /// The account address.
+    pub address: [u8; 20],
+    /// When this relay accepted the account's first entry, in Unix milliseconds.
+    pub accepted_ms: u64,
+}
 use cashweb_config::DirectoryConf;
 use std::{
     collections::{HashMap, HashSet},
@@ -412,7 +423,7 @@ impl<'a> Worker<'a> {
                 {
                     Ok(_) => {
                         self.rows()?
-                            .delete(&key.0, &subject, &address)
+                            .delete(&key.0, &subject, &address, None)
                             .map_err(|_| RuntimeError::NotStarted)?;
                         Ok(None)
                     }
@@ -484,10 +495,15 @@ impl<'a> Worker<'a> {
             checkpoint: prospective,
         };
         let rows = self.rows()?;
-        rows.put(&key.0, &subject, Some(&address), &row)
+        // When this first publication happened, for the public listing of new accounts.
+        let accepted_ms = u64::try_from(now.seconds)
+            .unwrap_or(0)
+            .saturating_mul(1000)
+            .saturating_add(u64::from(now.nanoseconds / 1_000_000));
+        rows.put(&key.0, &subject, Some((&address, accepted_ms)), &row)
             .map_err(|_| RuntimeError::OutcomeUnknown)?;
         let forget = |rows: &crate::store::directory_subjects::DbDirectorySubjects<'_>| {
-            rows.delete(&key.0, &subject, &address)
+            rows.delete(&key.0, &subject, &address, Some(accepted_ms))
                 .map_err(|_| RuntimeError::OutcomeUnknown)
         };
         let directory = match self
@@ -858,6 +874,50 @@ impl DirectoryRuntime {
             .ok()
             .flatten()
             .map(hex::encode)
+    }
+    /// Addresses whose first entry this relay accepted, oldest first: at most `limit` positions
+    /// from `since_ms` (inclusive), or strictly after the position `after` when one is given.
+    /// Returns the accepted accounts and the position to continue from. Cheap reads of public
+    /// data; `None` when the network is not this relay's or storage cannot be read.
+    pub fn first_accepted(
+        &self,
+        network: &str,
+        since_ms: u64,
+        after: Option<&[u8; FIRST_ACCEPTED_POSITION_BYTES]>,
+        limit: usize,
+    ) -> Option<(
+        Vec<FirstAccepted>,
+        Option<[u8; FIRST_ACCEPTED_POSITION_BYTES]>,
+    )> {
+        if network != self.owner.info.network {
+            return None;
+        }
+        let rows = self.owner.registry.directory_subjects().ok()?;
+        let mut start = [0; FIRST_ACCEPTED_POSITION_BYTES];
+        start[..8].copy_from_slice(&since_ms.to_be_bytes());
+        // `since` is inclusive: the starting position has an all-zero address part, so every row
+        // at that millisecond sorts after it (only the zero address itself would not, and no
+        // key is known to hash to it).
+        let scanned = rows
+            .first_accepted(network, after.unwrap_or(&start), limit)
+            .ok()?;
+        let next = scanned.last().map(|(position, ..)| *position);
+        let accounts = scanned
+            .into_iter()
+            .filter(|(_, _, address)| {
+                // Listed only once the first entry was accepted, not while it is being checked.
+                rows.subject_for_address(network, address)
+                    .ok()
+                    .flatten()
+                    .and_then(|subject| rows.get(network, &subject).ok().flatten())
+                    .is_some_and(|row| row.checkpoint.kind != CheckpointKind::ProspectiveEnrollment)
+            })
+            .map(|(_, accepted_ms, address)| FirstAccepted {
+                address,
+                accepted_ms,
+            })
+            .collect();
+        Some((accounts, next.or(after.copied())))
     }
     /// Reserve pending capacity after cheap route/media checks, before body collection.
     pub fn reserve(&self, network: &str, subject: &str) -> Result<Reservation> {

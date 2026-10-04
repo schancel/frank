@@ -289,6 +289,146 @@ async fn unseen_account_publishes_itself_and_is_found_by_key_and_by_address() {
 }
 
 #[tokio::test]
+async fn new_accounts_are_listed_once_in_the_order_they_first_published() {
+    let root = tempfile::tempdir().unwrap();
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry.clone(), config.clone(), &clock).await;
+    let routes = router(Arc::new(runtime.clone()));
+    let list = |query: String| {
+        let routes = routes.clone();
+        async move {
+            let (status, _, body) =
+                get(&routes, &format!("/directory/v1/{NETWORK}/accounts{query}")).await;
+            assert_eq!(status, StatusCode::OK, "{query}");
+            let value: Value = serde_json::from_slice(&body).unwrap();
+            let addresses = value["accounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a["address"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            (addresses, value)
+        }
+    };
+    // Nothing published: an empty listing and no cursor.
+    let (none, empty) = list(String::new()).await;
+    assert!(none.is_empty());
+    assert_eq!(empty["cursor"], Value::Null);
+
+    let first = entry(42, |_| ());
+    let second = entry(43, |_| ());
+    let third = entry(44, |_| ());
+    assert_eq!(
+        put(&routes, &first.subject, first.attestation.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    clock.set(1700000130);
+    assert_eq!(
+        put(&routes, &second.subject, second.attestation.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    // A forged first entry publishes nothing and is not listed.
+    let forged = signed(45, 46, |_| ());
+    assert_ne!(
+        put(&routes, &forged.subject, forged.attestation.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    // Publishing the same bytes again does not list the account twice.
+    assert_eq!(
+        put(&routes, &first.subject, first.attestation.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+
+    let (all, page) = list(String::new()).await;
+    assert_eq!(all, vec![first.address.clone(), second.address.clone()]);
+    assert_eq!(page["accounts"][0]["acceptedMs"], 1700000100000u64);
+    assert_eq!(page["accounts"][1]["acceptedMs"], 1700000130000u64);
+    // Only an address and a time are served.
+    assert_eq!(page["accounts"][0].as_object().unwrap().len(), 2);
+    let cursor = page["cursor"].as_str().unwrap().to_owned();
+
+    // `since` is inclusive and in milliseconds.
+    assert_eq!(
+        list("?since=1700000130000".into()).await.0,
+        vec![second.address.clone()]
+    );
+    assert!(list("?since=1700000130001".into()).await.0.is_empty());
+    // One at a time, continuing from each answer's cursor.
+    let (one, page_one) = list("?limit=1".into()).await;
+    assert_eq!(one, vec![first.address.clone()]);
+    let (two, _) = list(format!(
+        "?limit=1&after={}",
+        page_one["cursor"].as_str().unwrap()
+    ))
+    .await;
+    assert_eq!(two, vec![second.address.clone()]);
+
+    // Nothing new after the cursor; the cursor is handed back unchanged.
+    let (nothing, same) = list(format!("?after={cursor}")).await;
+    assert!(nothing.is_empty());
+    assert_eq!(same["cursor"], cursor.as_str());
+
+    // A later account appears after the cursor, also across a restart.
+    clock.set(1700000160);
+    assert_eq!(
+        put(&routes, &third.subject, third.attestation.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        list(format!("?after={cursor}")).await.0,
+        vec![third.address.clone()]
+    );
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+    drop(routes);
+    let runtime = start(registry, config, &clock).await;
+    let routes = router(Arc::new(runtime.clone()));
+    let (status, _, body) = get(
+        &routes,
+        &format!("/directory/v1/{NETWORK}/accounts?after={cursor}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let value: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["accounts"][0]["address"], third.address.as_str());
+
+    // Bad requests: page size out of range, a malformed cursor, an unknown parameter,
+    // another network.
+    for query in [
+        "?limit=0",
+        "?limit=101",
+        "?after=zz",
+        "?after=00",
+        "?since=-1",
+        "?other=1",
+    ] {
+        assert_eq!(
+            get(&routes, &format!("/directory/v1/{NETWORK}/accounts{query}"))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST,
+            "{query}"
+        );
+    }
+    assert_eq!(
+        get(&routes, "/directory/v1/other-network/accounts").await.0,
+        StatusCode::NOT_FOUND
+    );
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
+#[tokio::test]
 async fn relay_info_is_the_single_configured_tuple() {
     let root = tempfile::tempdir().unwrap();
     let (registry, config, clock) = setup(root.path());

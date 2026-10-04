@@ -3,7 +3,9 @@
 //! Publishing is open: any key may PUT its own signed entry. The only gates are the signature,
 //! the chain rules, a relay-wide subject cap and a per-source limit on first publications.
 use super::hourly_quota::{normalize_quota_ip, FixedHourQuota};
-use crate::directory_runtime::{DirectoryRuntime, Evidence, Operation, RuntimeError};
+use crate::directory_runtime::{
+    DirectoryRuntime, Evidence, Operation, RuntimeError, FIRST_ACCEPTED_POSITION_BYTES,
+};
 use axum::{
     body::HttpBody,
     extract::{connect_info::ConnectInfo, Extension, Path, RawBody},
@@ -216,6 +218,64 @@ async fn info(Extension(routes): Extension<Arc<Routes>>) -> Response {
     )
         .into_response()
 }
+/// Most accounts one listing of new accounts returns.
+const NEW_ACCOUNTS_PAGE: usize = 100;
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewAccountsQuery {
+    /// Unix milliseconds, inclusive. Used when no `after` is given. Defaults to 0.
+    since: Option<u64>,
+    /// The `cursor` of an earlier answer: continue strictly after it.
+    after: Option<String>,
+    /// At most this many positions are read; 1 to 100, default 100.
+    limit: Option<usize>,
+}
+/// `GET /directory/v1/{network}/accounts?since=<ms>|after=<cursor>[&limit=<n>]`: addresses whose
+/// first entry this relay accepted, oldest first. Public data only (address and time); a caller
+/// that wants to message one still looks its entry up and verifies it.
+async fn new_accounts(
+    Extension(routes): Extension<Arc<Routes>>,
+    Path(network): Path<String>,
+    query: Result<axum::extract::Query<NewAccountsQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    let Ok(axum::extract::Query(query)) = query else {
+        return error(RuntimeError::Invalid);
+    };
+    let limit = query.limit.unwrap_or(NEW_ACCOUNTS_PAGE);
+    if limit == 0 || limit > NEW_ACCOUNTS_PAGE {
+        return error(RuntimeError::Invalid);
+    }
+    let after = match query.after.as_deref().map(hex::decode) {
+        None => None,
+        Some(Ok(bytes)) => match <[u8; FIRST_ACCEPTED_POSITION_BYTES]>::try_from(bytes) {
+            Ok(position) => Some(position),
+            Err(_) => return error(RuntimeError::Invalid),
+        },
+        Some(Err(_)) => return error(RuntimeError::Invalid),
+    };
+    let Some((accounts, cursor)) =
+        routes
+            .runtime
+            .first_accepted(&network, query.since.unwrap_or(0), after.as_ref(), limit)
+    else {
+        return error(RuntimeError::NotFound);
+    };
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({
+            "accounts": accounts
+                .iter()
+                .map(|account| serde_json::json!({
+                    "address": format!("0x{}", hex::encode(account.address)),
+                    "acceptedMs": account.accepted_ms,
+                }))
+                .collect::<Vec<_>>(),
+            // Pass this back as `after` to read what came later; absent while nothing was read.
+            "cursor": cursor.map(hex::encode),
+        })),
+    )
+        .into_response()
+}
 /// Mount the open directory. Present whenever the relay has a `[registry.directory]` tuple.
 pub fn router(runtime: Arc<DirectoryRuntime>) -> Router {
     let routes = Arc::new(Routes {
@@ -230,6 +290,10 @@ pub fn router(runtime: Arc<DirectoryRuntime>) -> Router {
         .route(
             "/directory/v1/:network/:subject/statements/:t1",
             routing::get(historical),
+        )
+        .route(
+            "/directory/v1/:network/accounts",
+            routing::get(new_accounts),
         )
         .route("/relay/v1/info", routing::get(info))
         .layer(Extension(routes))

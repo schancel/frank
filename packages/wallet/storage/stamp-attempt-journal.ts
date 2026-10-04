@@ -1,3 +1,4 @@
+import { inspectCanonicalPreparedEnvelope } from '../monad-stamp-stealth'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
@@ -333,6 +334,7 @@ function assertPrepared(
   boundedBytes(prepared.payload, CANONICAL_MAX_BODY)
   boundedBytes(prepared.context, 4096)
   boundedBytes(prepared.economicBinding, 16384)
+  inspectCanonicalPreparedEnvelope(prepared.payload, prepared.context)
   const parsed = parseFrame(prepared.payload)
   if (
     parsed.kind !== 'parsed' ||

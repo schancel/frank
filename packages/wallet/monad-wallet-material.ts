@@ -658,6 +658,7 @@ function copyRevisionZeroInput(
       throw new Error('canonical-rev0:tuple')
     const endpoint = new URL(tuple.endpoint)
     if (
+      endpoint.origin !== p.origin ||
       endpoint.protocol !== 'https:' ||
       endpoint.username ||
       endpoint.password ||

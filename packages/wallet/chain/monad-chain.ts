@@ -302,11 +302,15 @@ const privateTopicWallets = new WeakMap<
   MonadChainWalletHandle,
   MonadWalletHandle
 >();
+const installedCanonicalWalletDescriptors = new WeakMap<object, { networkTag: "MONT" | "MON1"; network: string; chainId: bigint }>();
 /** Public local evidence only. No Current, enrollment, provider or financial effects. */
 export function prepareMonadRevisionZeroExport(wallet: NativeWalletHandle, input: PublicRevisionZeroInput): PublicRevisionZeroExport {
   const live = wallet as MonadChainWalletHandle;
   const material = walletMaterial.get(live);
   if (!material?.canonicalRoles || !typedWallets.has(live) || closedWallets.has(live)) throw new Error("Revision-zero export requires live typed wallet custody");
+  const installed = installedCanonicalWalletDescriptors.get(wallet);
+  if (!installed || installed.networkTag !== input.networkTag || installed.network !== input.network || installed.chainId !== input.chainId)
+    throw new Error("Revision-zero export differs from actual installed wallet descriptor");
   return material.canonicalRoles.prepareRevisionZero(input);
 }
 const canonicalClientFactories = new WeakMap<object, () => MonadCanonicalStampClient>();
@@ -624,10 +628,16 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
   // concurrent stamp selection between preparation and lease.
   const runWalletExclusive = <T>(
     wallet: MonadChainWalletHandle,
-    task: () => Promise<T>
+    task: () => Promise<T>,
+    canonical = false
   ): Promise<T> => {
     requireOpenWallet(wallet);
-    const run = (walletSendQueues.get(wallet) ?? Promise.resolve()).then(task);
+    const run = (walletSendQueues.get(wallet) ?? Promise.resolve()).then(() => {
+      const owner = privateTopicWallets.get(wallet)?.walletState;
+      if (!canonical && owner?.canonicalJournal?.getIntents().some(intent => intent.members.some(m => wallet.pool.getRecord(m.reservation.index)?.status === "available")))
+        throw new Error("Canonical pre-sign intent requires explicit correlation before ordinary pool operations");
+      return task();
+    });
     walletSendQueues.set(
       wallet,
       run.then(
@@ -1694,6 +1704,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                   httpClient.destroy();
                   material.dispose();
                   canonicalClientFactories.delete(wallet);
+                  installedCanonicalWalletDescriptors.delete(wallet);
                   privateTopicWallets.delete(wallet);
                   walletMaterial.delete(wallet);
                 }
@@ -1708,6 +1719,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             walletState: topicOwner,
             topicOperationJournal: topicOwner.topicOperationJournal,
           });
+          if (material.canonicalRoles !== undefined && (config.networkTag === "MONT" || config.networkTag === "MON1"))
+            installedCanonicalWalletDescriptors.set(wallet, { networkTag: config.networkTag, network: forumPolicy.network, chainId: BigInt(config.chainId) });
           if (material.canonicalRoles !== undefined && topicOwner.canonicalJournal !== undefined &&
               (config.networkTag === "MONT" || config.networkTag === "MON1")) {
             const canonicalRoles = material.canonicalRoles;
@@ -1717,9 +1730,9 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               return new MonadCanonicalStampClient({ ...wallet, walletState: topicOwner!, canonicalRoles, installedNetworkTag,
                 runCanonicalExclusive: task => runWalletExclusive(wallet, async () => {
                   enclosingTopicAdmissions.add(wallet);
-                  try { return await topicOwner!.runOperation(task); }
+                  try { return await topicOwner!.runCanonicalOperation(task); }
                   finally { enclosingTopicAdmissions.delete(wallet); }
-                }) });
+                }, true) });
             });
           }
           walletMaterial.set(wallet, material);

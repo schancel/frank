@@ -185,3 +185,95 @@ export function deriveMonadStampChildPrivate(params: {
     privateKey: privateKeyBytes,
   }
 }
+
+import {
+  validateFrame,
+  defaultContext,
+  decodeCanonical,
+  encodeDirectMessageCryptoContext,
+  compareBytes,
+  recipientPayloadDigest,
+  type AccountRef,
+} from '@frank/codec'
+import { verifyCanonicalStampProof } from '@frank/cashweb/relay/canonical-dm-stamp'
+
+/** Exact B envelope/context validation before any quote, lease, signer or network operation. */
+export function inspectCanonicalPreparedEnvelope(
+  payload: Uint8Array,
+  context: Uint8Array,
+) {
+  if (
+    !(payload instanceof Uint8Array) ||
+    payload.length < 1 ||
+    payload.length > 8 * 1024 * 1024 ||
+    !(context instanceof Uint8Array) ||
+    context.length < 1 ||
+    context.length > 4096
+  )
+    throw new Error('canonical-stamp:bounds')
+  const parsed = validateFrame(payload, defaultContext())
+  if (
+    parsed.kind !== 'parsed' ||
+    parsed.typed?.type !== 5 ||
+    parsed.typed.schemaVersion !== 2 ||
+    parsed.typed.suite !== 1
+  )
+    throw new Error('canonical-stamp:payload')
+  const fields = decodeCanonical(context)
+  if (!(fields instanceof Map) || fields.size !== 16)
+    throw new Error('canonical-stamp:context')
+  const account = (key: bigint): AccountRef => {
+    const value = fields.get(key)
+    if (
+      !(value instanceof Map) ||
+      value.size !== 2 ||
+      value.get(0n) !== 1n ||
+      !(value.get(1n) instanceof Uint8Array)
+    )
+      throw new Error('canonical-stamp:role')
+    return { keyType: 1, keyBytes: new Uint8Array(value.get(1n) as Uint8Array) }
+  }
+  const bytes = (key: bigint): Uint8Array => {
+    const value = fields.get(key)
+    if (!(value instanceof Uint8Array) || value.length !== 32)
+      throw new Error('canonical-stamp:T1')
+    return new Uint8Array(value)
+  }
+  const frame = parsed.typed,
+    senderT1 = bytes(4n),
+    recipientT1 = bytes(5n),
+    senderMessageKey = account(6n),
+    recipientMessageKey = account(7n),
+    stampKey = account(8n)
+  const expected = encodeDirectMessageCryptoContext({
+    network: frame.network,
+    sender: frame.sender,
+    recipient: frame.recipient,
+    senderDirectoryHash: senderT1,
+    recipientDirectoryHash: recipientT1,
+    senderMessageKey,
+    recipientMessageKey,
+    stampKey,
+    ephemeralPoint: frame.ephemeralPoint,
+    sharedPoint: frame.sharedPoint,
+    dleqProof: frame.dleqProof,
+  })
+  if (compareBytes(expected, context) !== 0)
+    throw new Error('canonical-stamp:exact-context')
+  verifyCanonicalStampProof({
+    network: frame.network,
+    stampKey,
+    ephemeralPoint: frame.ephemeralPoint,
+    sharedPoint: frame.sharedPoint,
+    dleqProof: frame.dleqProof,
+  })
+  return {
+    payload: frame,
+    senderT1,
+    recipientT1,
+    senderMessageKey,
+    recipientMessageKey,
+    stampKey,
+    t3: recipientPayloadDigest(frame.network, payload),
+  }
+}

@@ -22,8 +22,8 @@ use crate::{
         handle_put_monad_profile, handle_search_monad_profiles, BoundedProfileBody,
     },
     http::monad_topics::{
-        handle_get_monad_topic_post, handle_list_monad_topic_posts, handle_list_topics,
-        handle_put_monad_topic_post, handle_put_monad_topic_vote,
+        handle_forum_status, handle_get_monad_topic_post, handle_list_monad_topic_posts,
+        handle_list_topics, handle_put_monad_topic_post, handle_put_monad_topic_vote,
     },
     http::pop_protection::{self, MonadReceiptVerifier, PopChallenge, PopGate, PopGateConfigError},
     monad_http::{Address as MonadAddress, HttpTransport},
@@ -503,6 +503,10 @@ impl RegistryServer {
             .route(
                 "/message/monad/topics/discover",
                 routing::get(handle_list_topics),
+            )
+            .route(
+                "/message/monad/topics/status",
+                routing::post(handle_forum_status),
             )
             .route(
                 "/message/monad/topics/:payload_hash",

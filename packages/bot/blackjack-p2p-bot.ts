@@ -248,56 +248,84 @@ export class BlackjackP2pBot {
     this.store.save(this.state)
   }
 
+  /** Rounds run so far, and for rows whose send failed, the round they may be tried again in. */
+  private round = 0
+  private readonly retry = new Map<string, { failures: number; notBefore: number }>()
+
   /** One round: settle the outbox, read new messages, decide, send. Safe to call again after any
    * failure or restart. Returns how many messages were delivered this round. */
   async tick(): Promise<number> {
+    this.round++
     let delivered = 0
-    // A row whose outcome is unknown blocks everything: nothing new is decided or paid until the
-    // wallet has said what happened to it.
-    if (!(await this.settleOutbox())) return delivered
+    // A row whose outcome is in doubt is settled with the wallet before anything is sent.
+    for (const row of this.state.outbox)
+      if (!(await this.settle(row))) return delivered
     await this.receive()
     if (this.config.newAccounts)
       for (const address of await this.config.newAccounts())
         await this.challengeOnce(address)
     for (;;) {
       await this.decide()
-      const row = this.state.outbox.find(r => r.phase === 'queued')
-      if (!row) return delivered
-      if (!(await this.deliver(row))) return delivered
-      delivered++
+      // Every hand's message is sent on its own: one that cannot be sent waits and is tried
+      // again later, and does not hold up the others.
+      const ready = this.state.outbox.filter(
+        row =>
+          row.phase === 'queued' &&
+          (this.retry.get(row.key)?.notBefore ?? 0) <= this.round,
+      )
+      let progress = false
+      for (const row of ready) {
+        if (await this.deliver(row)) {
+          delivered++
+          progress = true
+        } else if (!(await this.settle(row, true))) return delivered
+      }
+      if (!progress) return delivered
     }
   }
 
-  /** Resolves every row that is neither queued nor final. True when none is left in doubt. */
-  private async settleOutbox(): Promise<boolean> {
-    for (const row of this.state.outbox) {
-      if (row.phase === 'sending') {
-        // The process died (or the send failed) before the attempt was recorded here. The wallet
-        // knows whether a payment set exists: rows go out one at a time, so an attempt the wallet
-        // holds that no row accounts for can only be this row's.
-        const known = this.state.outbox.flatMap(r => (r.digest ? [r.digest] : []))
-        const orphans = await this.account.unattributedAttempts(known)
-        if (orphans.length > 1) {
-          this.log(`outbox held: ${orphans.length} unexplained payment attempts`)
-          return false
+  /**
+   * Asks the wallet what became of a row that is neither queued nor final. False only when the
+   * wallet holds payment attempts the outbox cannot explain: then nothing may be sent.
+   */
+  private async settle(row: OutboxRow, failedNow = false): Promise<boolean> {
+    if (row.phase === 'sending') {
+      // The send stopped (or the process died) before an attempt was recorded here. The wallet
+      // knows whether a payment set exists. Only one row is ever in this phase, because a failed
+      // send is settled before the next one starts, so an attempt the wallet holds that no row
+      // accounts for can only be this row's.
+      const known = this.state.outbox.flatMap(r => (r.digest ? [r.digest] : []))
+      const orphans = await this.account.unattributedAttempts(known)
+      if (orphans.length > 1) {
+        this.log(`outbox held: ${orphans.length} unexplained payment attempts`)
+        return false
+      }
+      if (orphans.length === 1) {
+        row.digest = orphans[0]
+        row.phase = 'attempt'
+      } else {
+        // Nothing was paid: the row may be sent again. After a send that failed in this run it
+        // waits a growing number of rounds; after a restart it is simply tried.
+        row.phase = 'queued'
+        if (failedNow) {
+          const failures = (this.retry.get(row.key)?.failures ?? 0) + 1
+          this.retry.set(row.key, {
+            failures,
+            notBefore: this.round + Math.min(2 ** (failures - 1), 64),
+          })
         }
-        if (orphans.length === 1) {
-          row.digest = orphans[0]
-          row.phase = 'attempt'
-        } else {
-          row.phase = 'queued'
-        }
+      }
+      this.save()
+    }
+    if (row.phase === 'attempt') {
+      const status = (await this.account.attemptStatus([row.digest!]))[row.digest!]
+      if (status === 'delivered') this.markDelivered(row)
+      else if (status === 'dead') {
+        row.phase = 'dead'
         this.save()
+        this.log(`message ${row.key} can never be delivered; it is not paid again`)
       }
-      if (row.phase === 'attempt') {
-        const status = (await this.account.attemptStatus([row.digest!]))[row.digest!]
-        if (status === 'delivered') this.markDelivered(row)
-        else if (status === 'dead') {
-          row.phase = 'dead'
-          this.save()
-          this.log(`message ${row.key} can never be delivered; it is not paid again`)
-        } else return false
-      }
+      // Still live: the same bytes are sent again next round. Other rows are not held up.
     }
     return true
   }
@@ -335,7 +363,7 @@ export class BlackjackP2pBot {
       this.markDelivered(row)
       return true
     } catch (error) {
-      // Outcome unknown. The row stays `sending` or `attempt`; the next tick asks the wallet.
+      // Outcome unknown. The row stays `sending` or `attempt` until the wallet is asked.
       this.log(`send ${row.key} did not complete: ${(error as Error).message}`)
       return false
     }

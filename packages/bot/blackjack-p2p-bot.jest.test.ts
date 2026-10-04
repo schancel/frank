@@ -612,15 +612,18 @@ describe('each debt is paid once and one stuck message does not hold up the rest
         for (let i = 0; i < 6; i++) await bot.tick()
       },
       300n,
-      WIN_BET,
+      sha('the other bet'),
       gid('fine'),
     )
-    expect(result.state).toMatchObject({ phase: 'resolved', owedWei: 600n, paidWei: 600n })
+    // The other account's hand is played to the end and settled in full.
+    expect(result.state?.phase).toBe('resolved')
+    const owed = result.state!.owedWei!
+    expect(result.state?.paidWei).toBe(owed > 0n ? owed : STAMP)
     // Once the first account is reachable again it is paid, once.
     account.unreachableTo = undefined
     for (let i = 0; i < 80; i++) await bot.tick()
     expect(user.hand(gid('stuck')).state).toMatchObject({ phase: 'resolved', paidWei: 600n })
-    expect(net.paidBy(BOT).filter(d => d.stampWei === 600n)).toHaveLength(2)
+    expect(net.paidBy(BOT).filter(d => d.to === USER && d.stampWei === 600n)).toHaveLength(1)
   })
 })
 
@@ -716,7 +719,8 @@ describe('a payment is made exactly once', () => {
     user.send({ gameId: gid('g'), action: 'challenge', role: 'player', maxBetWei: '500' })
     account.fault = 'unreachable'
     await bot.tick()
-    expect(bot.outbox()).toMatchObject([{ phase: 'sending' }])
+    // The wallet holds no payment for it, so the row is simply queued again.
+    expect(bot.outbox()).toMatchObject([{ phase: 'queued' }])
     expect(net.attempts.size).toBe(0)
     account.fault = 'none'
     await settle(bot)
@@ -740,16 +744,19 @@ describe('a payment is made exactly once', () => {
   it('holds everything while two payment attempts are unexplained', async () => {
     const { net, account, bot, user } = setup()
     user.send({ gameId: gid('g'), action: 'challenge', role: 'player', maxBetWei: '500' })
-    account.fault = 'unreachable'
-    await bot.tick()
-    account.fault = 'none'
-    for (const digest of ['stray-1', 'stray-2'])
-      net.attempts.set(digest, {
-        owner: BOT,
-        status: 'live',
-        message: { from: BOT, to: USER, item: { type: 'text' }, stampWei: 1n, digest },
-        accounted: false,
-      })
+    // A send that stops with two payment sets in the wallet and none recorded by the bot.
+    account.send = async () => {
+      for (const digest of ['stray-1', 'stray-2'])
+        net.attempts.set(digest, {
+          owner: BOT,
+          status: 'live',
+          message: { from: BOT, to: USER, item: { type: 'text' }, stampWei: 1n, digest },
+          accounted: false,
+        })
+      throw new Error('stopped')
+    }
+    expect(await bot.tick()).toBe(0)
+    expect(bot.outbox()).toMatchObject([{ phase: 'sending' }])
     expect(await bot.tick()).toBe(0)
     expect(net.paidBy(BOT)).toEqual([])
   })

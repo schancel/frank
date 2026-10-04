@@ -14,7 +14,9 @@ import {
 } from '@frank/wallet/chain/monad-chain'
 import { openBrowserDirectoryStore } from '@frank/directory-admission/browser'
 import type { DirectoryFetch } from '@frank/cashweb/relay/directory-client'
+import { fromHex } from '@frank/codec'
 import { accountSession, accountStatus } from '../accounts/session'
+import { setDirectoryPeer } from './directory-peer'
 import {
   startDirectMessagePolling,
   startOutgoingReconciliation,
@@ -151,6 +153,7 @@ export async function stopMessaging(): Promise<void> {
   const previous = live
   live = undefined
   state.peerAddress = null
+  setDirectoryPeer(null)
   if (state.status === 'ready') state.status = 'pending'
   if (!previous) return
   previous.polling.stop()
@@ -213,6 +216,10 @@ export async function refreshMessaging(explicit: boolean): Promise<void> {
     reconcile: d.startReconcile({ wallet }),
   }
   state.peerAddress = activation.peerAddress
+  setDirectoryPeer({
+    address: activation.peerAddress,
+    pubKey: fromHex(activation.peerSubject),
+  })
   state.status = 'ready'
   state.reason = null
 }

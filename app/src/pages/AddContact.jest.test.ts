@@ -12,6 +12,7 @@ import { openChat } from 'src/utils/routes'
 import AddContact from './AddContact.vue'
 
 const mockAddContactToStore = jest.fn()
+import { setDirectoryPeer } from 'src/utils/directory-peer'
 jest.mock('src/stores/contacts', () => ({
   defaultRelayData: { profile: { name: '', bio: '', avatar: '' } },
   useContactStore: () => ({ addContact: mockAddContactToStore }),
@@ -222,6 +223,27 @@ describe('AddContact latest lookup', () => {
     // The canonical resolved address, not the raw '  a  ' the user typed.
     expect(mockOpenChat).toHaveBeenCalledTimes(1)
     expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+  })
+
+  it('offers the operator-installed directory peer even though it has no display profile', async () => {
+    chain.fetchProfile.mockResolvedValue(undefined)
+    setDirectoryPeer({ address: ADDRESS_A, pubKey: new Uint8Array(33).fill(2) })
+    try {
+      await typeAndFire(wrapper, 'a')
+      expect(addButton(wrapper).attributes('disabled')).toBeUndefined()
+      await addButton(wrapper).trigger('click')
+      expect(mockAddContactToStore).toHaveBeenCalledTimes(1)
+      expect(mockAddContactToStore.mock.calls[0][0].address).toBe(ADDRESS_A)
+      expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+    } finally {
+      setDirectoryPeer(null)
+    }
+    // Without the installed peer, an unknown address is still not offered.
+    wrapper.unmount()
+    wrapper = mountPage()
+    mockAddContactToStore.mockClear()
+    await typeAndFire(wrapper, 'a')
+    expect(addButton(wrapper).attributes('disabled')).toBeDefined()
   })
 
   it('commits dealer signed-name provenance from the first validated fetch', async () => {

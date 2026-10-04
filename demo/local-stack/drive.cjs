@@ -39,7 +39,9 @@ const [profileName, phase, ...rest] = process.argv.slice(2)
 const profile = path.join(STATE, 'chrome-profiles', profileName || 'driven')
 const shots = path.join(STATE, 'shots')
 const accountFile = name => path.join(STATE, 'run', 'accounts', `${name}.json`)
-const label = (process.env.LABEL ? process.env.LABEL + '-' : '') + `${profileName}-${phase}`
+// Every run's evidence has its own time in the name, so a later run never replaces an earlier one.
+const runAt = new Date().toISOString().replace(/[:.]/g, '').slice(11, 17)
+const label = (process.env.LABEL ? process.env.LABEL + '-' : '') + `${runAt}-${profileName}-${phase}`
 const delay = ms => new Promise(r => setTimeout(r, ms))
 
 let child, owner, socket, exit, session, seq = 0, secretPhase = false, APP
@@ -564,7 +566,7 @@ const phases = {
     report.console = consoleLines.slice(-200)
     report.network = relayRequests(0).filter(r => r.status !== 200 || !/inbox|topics/.test(r.url)).slice(-200)
     fs.mkdirSync(path.join(STATE, 'logs'), { recursive: true })
-    const out = path.join(STATE, 'logs', `drive-${label}-${new Date().toISOString().replace(/[:.]/g, '').slice(11, 17)}.json`)
+    const out = path.join(STATE, 'logs', `drive-${label}.json`)
     fs.writeFileSync(out, JSON.stringify(report, null, 2))
     console.log(JSON.stringify({ PASS: !failed, report: out, chromeExit: report.chromeExit, chromeProcessesLeft: report.chromeProcessesLeft }))
     process.exit(failed ? 1 : 0)

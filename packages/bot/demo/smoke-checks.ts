@@ -4,6 +4,14 @@
  * drives the real relay and bots.
  */
 import { request } from 'http'
+import { mkdtemp, rm } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { fromHex, toHex, contentHash, matchForumOperation, validateFrame, defaultContext } from '@frank/codec'
+import type { ForumMessage } from '@frank/wallet/forum-model'
+import { openMonadWalletBundle } from '@frank/wallet/storage/monad-wallet-bundle'
+import { MonadTopicVoteClient } from '@frank/wallet/monad-topic-vote-client'
+import { fetchMonadTopicPostView, fetchMonadTopicPostsSince, fetchDiscoveredTopics } from '@frank/wallet/monad-topic-tally-client'
 
 import {
   parseEnvelope,
@@ -30,15 +38,12 @@ import {
 import { handValue } from '@frank/wallet/message-item-plugins/blackjack/deck'
 import { Wallet } from 'ethers'
 
-import __pb_broadcast_pb from '@frank/cashweb/registry/broadcast_pb'
 import { MonadHttpClient } from '@frank/wallet/monad-http'
-import { SubAccountLeaseManager } from '@frank/wallet/monad-account-lease'
 import {
   MonadTopicPostClient,
   quoteMonadTopicBurnGasReserve,
 } from '@frank/wallet/monad-topic-post-client'
 
-const { BroadcastMessage, ForumPost: BroadcastForumPostPayload } = __pb_broadcast_pb
 
 import {
   registerAndLog,
@@ -253,8 +258,17 @@ export async function checkCors(handle: DemoHandle): Promise<SmokeCheck> {
       // A real (rejected) PUT: the relay's CORS layer must decorate actual responses, not only the
       // preflight. The body is not a valid post, so any status is fine; only the header matters.
       body: 'x',
-      contentType: 'application/x-protobuf',
+      contentType: 'application/cbor',
     },
+    ...[
+      ['relay topic vote', '/vote', 'PUT'],
+      ['relay topic status', '/status', 'POST'],
+      ['relay topic list', '?topic=news', 'GET'],
+      ['relay topic discovery', '/discover', 'GET'],
+    ].map(([name, path, method]) => ({
+      name, url: `${handle.relayUrl}/message/monad/topics${path}`,
+      method, body: method === 'GET' ? '' : 'x', contentType: 'application/cbor',
+    })),
     {
       name: 'relay topic read',
       url: `${handle.relayUrl}/message/monad/topics/${'00'.repeat(32)}`,
@@ -268,7 +282,7 @@ export async function checkCors(handle: DemoHandle): Promise<SmokeCheck> {
       const pre = await rawRequest(t.url, 'OPTIONS', {
         'origin': APP_ORIGIN,
         'access-control-request-method': t.method,
-        'access-control-request-headers': 'content-type',
+        'access-control-request-headers': 'content-type,accept',
       })
       if (pre.status < 200 || pre.status >= 300 || !pre.headers['access-control-allow-origin']) {
         failures.push(
@@ -281,7 +295,7 @@ export async function checkCors(handle: DemoHandle): Promise<SmokeCheck> {
         const res = await rawRequest(
           t.url,
           t.method,
-          { 'origin': APP_ORIGIN, 'content-type': t.contentType ?? 'application/json' },
+          { 'origin': APP_ORIGIN, 'content-type': t.contentType ?? 'application/json', 'accept': t.name.startsWith('relay topic') ? 'application/cbor' : 'application/json' },
           t.body,
         )
         if (!res.headers['access-control-allow-origin']) {
@@ -304,90 +318,120 @@ export async function checkCors(handle: DemoHandle): Promise<SmokeCheck> {
 /** Checks the payload the relay returned for the posted topic: present, and the SAME title and
  * message that were posted (not merely "some post"). Pure, unit-tested. */
 export function verifyReadBackPost(
-  payload: Uint8Array | undefined,
+  read: ForumMessage | undefined,
   payloadHashHex: string,
+  expected: { title: string; message: string; parentDigest?: string } = {
+    title: POSTED_TITLE, message: POSTED_MESSAGE,
+  },
 ): SmokeCheck {
-  if (!payload) {
-    return {
-      name: 'topic-post',
-      ok: false,
-      detail: 'the relay accepted the post but does not return it',
-    }
+  if (!read) return { name: 'topic-post', ok: false, detail: 'the relay accepted the post but does not return it' }
+  const entry = read.entries[0]
+  if (!entry) return { name: 'topic-post', ok: false, detail: 'the relay returned a post with no entries' }
+  if (read.payloadDigest !== payloadHashHex || read.topic !== 'news' ||
+      read.parentDigest !== expected.parentDigest || read.entries.length !== 1 ||
+      entry.kind !== 'post' || entry.title !== expected.title || entry.message !== expected.message) {
+    return { name: 'topic-post', ok: false, detail: 'the relay returned a different title, body, topic, parent or T1' }
   }
-  const entry = BroadcastMessage.deserializeBinary(payload).getEntriesList()[0]
-  if (!entry) {
-    return { name: 'topic-post', ok: false, detail: 'the relay returned a post with no entries' }
-  }
-  const read = BroadcastForumPostPayload.deserializeBinary(entry.getPayload_asU8())
-  if (read.getTitle() !== POSTED_TITLE || read.getMessage() !== POSTED_MESSAGE) {
-    return {
-      name: 'topic-post',
-      ok: false,
-      detail: `the relay returned a different post: title "${read.getTitle()}", message "${read.getMessage()}"`,
-    }
-  }
-  return {
-    name: 'topic-post',
-    ok: true,
-    detail: `posted to "news" and read back the same title and message (payload ${payloadHashHex.slice(
-      0,
-      12,
-    )}...)`,
-  }
+  return { name: 'topic-post', ok: true, detail: `canonical post read back exactly (T1 ${payloadHashHex.slice(0, 12)}...)` }
 }
 
-/** Posts a forum topic through the relay's real route (a burn transaction to the demo burn address
- * plus `PUT /message/monad/topics`) and reads it back (#364). A relay configured without the burn
- * address answers HTTP 500 here. */
+/** The ordinary demo uses the canonical clients and an isolated durable wallet root. */
 export async function checkTopicPost(
   handle: DemoHandle,
-  ctx: Pick<
-    Awaited<ReturnType<typeof setUpFundedStampClient>>,
-    'pool' | 'provider' | 'mainAccountSigner'
-  >,
+  ctx: Pick<Awaited<ReturnType<typeof setUpFundedStampClient>>, 'pool' | 'provider' | 'mainAccountSigner'>,
 ): Promise<SmokeCheck> {
+  let walletState: Awaited<ReturnType<typeof openMonadWalletBundle>> | undefined
+  let location: string | undefined
   try {
     const { config, relayUrl } = handle
-    const httpClient = new MonadHttpClient({ rpcUrl: config.rpcUrl })
-    const client = new MonadTopicPostClient({
-      pool: ctx.pool,
-      leaseManager: new SubAccountLeaseManager(ctx.pool),
-      provider: ctx.provider,
-      httpClient,
-      relayBaseUrl: relayUrl,
+    if (!config.fakeChain) throw new Error('canonical Forum smoke requires the built-in fake chain')
+    location = await mkdtemp(join(tmpdir(), 'frank-forum-smoke-'))
+    const syntheticWallet = Wallet.createRandom()
+    walletState = await openMonadWalletBundle({
+      location, mode: 'create', seed: { mnemonic: syntheticWallet.mnemonic!.phrase },
     })
+    const policy = {
+      network: 'monad-testnet',
+      chainId: (await ctx.provider.getNetwork()).chainId,
+      burnAddress: config.stampBurnAddress,
+    }
+    const handleParams = {
+      pool: walletState.pool, leaseManager: walletState.leaseManager,
+      topicOperationJournal: walletState.topicOperationJournal, walletState,
+      provider: ctx.provider, httpClient: new MonadHttpClient({ rpcUrl: config.rpcUrl }),
+      relayBaseUrl: relayUrl, cborNetwork: policy.network,
+      forumChainId: policy.chainId, forumBurnAddress: policy.burnAddress,
+    }
+    const client = new MonadTopicPostClient(handleParams)
+    const votes = new MonadTopicVoteClient(handleParams)
     const voteWeightWei = BigInt(config.minStampWei)
     const gasReserveWei = await quoteMonadTopicBurnGasReserve({
-      signer: ctx.mainAccountSigner,
-      burnAddress: config.stampBurnAddress,
+      signer: ctx.mainAccountSigner, burnAddress: policy.burnAddress,
     })
-    const prepared = await ctx.pool.prepareBurnAccount({
-      mainAccountSigner: ctx.mainAccountSigner,
-      provider: ctx.provider,
-      burnValueWei: voteWeightWei,
-      gasReserveWei,
-    })
-    const result = await client.submitTopicPost({
-      topic: 'news',
-      entries: [{ kind: 'post', title: POSTED_TITLE, message: POSTED_MESSAGE }],
-      direction: 'up',
-      burnAddress: config.stampBurnAddress,
-      voteWeightWei,
-      leaseIndex: prepared.index,
-    })
-    const view = await client.fetchStoredTopicPostView(result.payloadHashHex)
-    return verifyReadBackPost(view?.post?.post?.encryptedPayload, result.payloadHashHex)
-  } catch (err) {
-    const status = (err as { status?: number }).status
-    return {
-      name: 'topic-post',
-      ok: false,
-      detail: `${err instanceof Error ? err.message : String(err)}${
-        status === 500
-          ? ' (a 500 here means the relay has no MONAD_STAMP_BURN_ADDRESS: see relay.log)'
-          : ''
-      }`,
+    const prepare = async () => {
+      await client.resumePendingOperations()
+      await votes.resumePendingOperations()
+      return walletState!.pool.prepareBurnAccount({
+        mainAccountSigner: ctx.mainAccountSigner, provider: ctx.provider,
+        burnValueWei: voteWeightWei, gasReserveWei,
+      })
     }
+    const verifyStatus = async (expected: Parameters<typeof matchForumOperation>[1]) => {
+      const response = await fetch(`${relayUrl}/message/monad/topics/status`, {
+        method: 'POST', headers: { 'content-type': 'application/cbor', accept: 'application/cbor' },
+        body: expected.submittedFrame as unknown as BodyInit,
+      })
+      if (!response.ok || response.headers.get('content-type')?.split(';')[0] !== 'application/cbor') throw new Error('status did not return CBOR success')
+      const status = matchForumOperation(new Uint8Array(await response.arrayBuffer()), expected)
+      if (status.state !== 2) throw new Error('exact status is not confirmed')
+    }
+    const submit = async (title: string, message: string, parentDigest?: string) => {
+      const prepared = await prepare()
+      const result = await client.submitTopicPost({
+        topic: 'news', entries: [{ kind: 'post', title, message }], direction: 'up',
+        parentPostHash: parentDigest ? fromHex(parentDigest) : undefined,
+        burnAddress: policy.burnAddress, voteWeightWei, leaseIndex: prepared.index,
+      })
+      const parsed = validateFrame(result.postFrame, defaultContext())
+      if (parsed.kind !== 'parsed' || parsed.typed?.type !== 9 || parsed.schemaVersion !== 2) throw new Error('post is not canonical schema 2')
+      if (toHex(contentHash(parsed)) !== result.payloadHashHex) throw new Error('post T1 differs from exact schema-2 bytes')
+      await verifyStatus({
+        network: policy.network, submittedFrame: result.status.submittedFrame.frame,
+        targetHash: fromHex(result.payloadHashHex), transactionHash: result.status.transactionHash,
+        sender: result.status.sender, direction: 1, value: voteWeightWei,
+      })
+      const read = await fetchMonadTopicPostView({ relayBaseUrl: relayUrl, payloadHashHex: result.payloadHashHex, policy })
+      const verdict = verifyReadBackPost(read, result.payloadHashHex, { title, message, parentDigest })
+      if (!verdict.ok) throw new Error(verdict.detail)
+      return result
+    }
+    const post = await submit(POSTED_TITLE, POSTED_MESSAGE)
+    await submit('Demo reply', 'canonical reply body', post.payloadHashHex)
+    for (const direction of ['up', 'down'] as const) {
+      const prepared = await prepare()
+      const result = await votes.castVote({
+        targetPayloadHash: fromHex(post.payloadHashHex), direction,
+        burnAddress: policy.burnAddress, voteWeightWei, leaseIndex: prepared.index,
+      })
+      if (result.status.state !== 2 || result.status.direction !== (direction === 'up' ? 1 : 0) || result.status.value !== voteWeightWei) throw new Error('vote status does not match direction/value')
+      await verifyStatus({
+        network: policy.network, submittedFrame: result.status.submittedFrame.frame,
+        targetHash: fromHex(post.payloadHashHex), transactionHash: result.status.transactionHash,
+        sender: result.status.sender, direction: direction === 'up' ? 1 : 0, value: voteWeightWei,
+      })
+    }
+    const rows = await fetchMonadTopicPostsSince({ relayBaseUrl: relayUrl, topic: 'news', policy })
+    const topics = await fetchDiscoveredTopics({ relayBaseUrl: relayUrl, policy })
+    const read = rows.find(row => row.payloadDigest === post.payloadHashHex)
+    if (!verifyReadBackPost(read, post.payloadHashHex).ok || read!.voteWeightWei !== voteWeightWei.toString()) throw new Error('complete list does not show exact post and net up/down weight')
+    if (!topics.some(topic => topic.topic === 'news')) throw new Error('complete discovery omits news')
+    if (walletState.topicOperationJournal.getAll().length !== 0) throw new Error('confirmed smoke operations remain unsettled')
+    return { name: 'topic-post', ok: true, detail: 'canonical post, reply/parent/T1, list, discovery, up/down votes and exact confirmed status verified' }
+  } catch (err) {
+    return { name: 'topic-post', ok: false, detail: err instanceof Error ? err.message : String(err) }
+  } finally {
+    await walletState?.close()
+    if (location) await rm(location, { recursive: true, force: true })
   }
 }
 

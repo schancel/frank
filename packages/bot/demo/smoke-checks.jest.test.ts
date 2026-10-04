@@ -3,7 +3,7 @@ import { MessageItem } from '@frank/cashweb/types/messages'
 import { STUB_REPLY_PREFIX } from '../qwen-reply'
 import { createServer, Server } from 'http'
 
-import { buildTopicPostPayload } from '@frank/wallet/monad-topic-post-client'
+import type { ForumMessage } from '@frank/wallet/forum-model'
 
 import { BlackjackMoveItem } from '@frank/cashweb/types/messages'
 import { deriveDeck, sha256Hex } from '@frank/wallet/message-item-plugins/blackjack/deck'
@@ -100,6 +100,29 @@ describe('checkCors (#361)', () => {
     }
   })
 
+  it('sends exact CBOR Accept/Content-Type and preflights every normal Forum route', async () => {
+    const seen: Array<{ method?: string; url?: string; headers: Record<string, unknown> }> = []
+    const server = createServer((req, res) => {
+      seen.push({ method: req.method, url: req.url, headers: req.headers })
+      res.setHeader('access-control-allow-origin', '*')
+      res.statusCode = req.method === 'OPTIONS' ? 204 : 400
+      res.end()
+    })
+    servers.push(server)
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const relay = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+    expect((await checkCors({ config: { fakeChain: false }, relayUrl: relay } as DemoHandle)).ok).toBe(true)
+    const actual = seen.filter(row => row.method !== 'OPTIONS')
+    expect(actual.map(row => [row.method, row.url])).toEqual([
+      ['PUT', '/message/monad/topics'], ['PUT', '/message/monad/topics/vote'],
+      ['POST', '/message/monad/topics/status'], ['GET', '/message/monad/topics?topic=news'],
+      ['GET', '/message/monad/topics/discover'], ['GET', `/message/monad/topics/${'00'.repeat(32)}`],
+    ])
+    for (const row of actual) expect(row.headers.accept).toBe('application/cbor')
+    for (const row of actual.filter(row => row.method !== 'GET')) expect(row.headers['content-type']).toBe('application/cbor')
+    for (const row of seen.filter(row => row.method === 'OPTIONS')) expect(row.headers['access-control-request-headers']).toBe('content-type,accept')
+  })
+
   it('also fails when only the real responses lack the header (the preflight alone is not enough)', async () => {
     const fake = await startFakeRpc({ port: 0 })
     const server = createServer((req, res) => {
@@ -137,23 +160,35 @@ describe('checkCors (#361)', () => {
   })
 })
 
-describe('verifyReadBackPost (#364)', () => {
-  const payload = (title: string, message: string) =>
-    buildTopicPostPayload({ topic: 'news', entries: [{ kind: 'post', title, message }] })
-
-  it('passes only when the title and the message read back are the ones posted', () => {
-    expect(verifyReadBackPost(payload(POSTED_TITLE, POSTED_MESSAGE), 'abcdef0123456789').ok).toBe(
-      true,
-    )
+describe('verifyReadBackPost (canonical Forum)', () => {
+  const digest = 'ab'.repeat(32)
+  const payload = (title = POSTED_TITLE, message = POSTED_MESSAGE): ForumMessage => ({
+    topic: 'news', entries: [{ kind: 'post', title, message }], payloadDigest: digest,
+    poster: '0x' + '11'.repeat(20), voteWeightWei: '9223372036854775807',
+    visibleTimestamp: { seconds: '1', nanoseconds: 0 }, timestamp: new Date(1000),
+    epoch: '12'.repeat(16), revision: '18446744073709551615',
+    transactionHash: '34'.repeat(32), authorBurnTx: '0x01', blockNumber: '0', transactionIndex: '0',
   })
-
-  it('fails on a different title, a different message, no entries, or no post at all', () => {
-    expect(verifyReadBackPost(payload('Other', POSTED_MESSAGE), 'ab').detail).toMatch(/different/)
-    expect(verifyReadBackPost(payload(POSTED_TITLE, 'other'), 'ab').ok).toBe(false)
-    expect(
-      verifyReadBackPost(buildTopicPostPayload({ topic: 'news', entries: [] }), 'ab').detail,
-    ).toMatch(/no entries/)
-    expect(verifyReadBackPost(undefined, 'ab').detail).toMatch(/does not return it/)
+  it('requires exact title/body/topic/parent/T1 from the normal client model', () => {
+    expect(verifyReadBackPost(payload(), digest).ok).toBe(true)
+    expect(verifyReadBackPost({ ...payload(), parentDigest: digest }, digest).ok).toBe(false)
+    expect(verifyReadBackPost({ ...payload(), parentDigest: digest }, digest,
+      { title: POSTED_TITLE, message: POSTED_MESSAGE, parentDigest: digest }).ok).toBe(true)
+    for (const changed of [
+      payload('Other'), payload(POSTED_TITLE, 'other'),
+      { ...payload(), payloadDigest: '00'.repeat(32) },
+      { ...payload(), topic: 'other' },
+      { ...payload(), entries: [...payload().entries, ...payload().entries] },
+    ]) expect(verifyReadBackPost(changed, digest).ok).toBe(false)
+    expect(verifyReadBackPost({ ...payload(), entries: [] }, digest).detail).toMatch(/no entries/)
+    expect(verifyReadBackPost(undefined, digest).detail).toMatch(/does not return it/)
+  })
+  it('accepts wide observations without Number coercion or BigInt persistence', () => {
+    const exact = { ...payload(), voteWeightWei: (-(1n << 255n)).toString() }
+    const restored = JSON.parse(JSON.stringify(exact))
+    expect(restored.voteWeightWei).toBe(exact.voteWeightWei)
+    expect(restored.revision).toBe('18446744073709551615')
+    expect(verifyReadBackPost(restored, digest).ok).toBe(true)
   })
 })
 

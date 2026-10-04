@@ -66,8 +66,38 @@ explicit installed inputs for both relays and the bot, trusted nanosecond time,
 new/reopen intent and continuity outside the admission store. It starts only an
 owned pinned-HTTPS fixture and uses the public admission facade; it does not
 activate production directory routes, writers, DM or UI. Normal `yarn demo`
-behavior is unchanged, and its topic wire remains protobuf.
+behavior is unchanged; normal Forum traffic uses canonical CBOR.
 
 See [the integration contract and configuration](directory-trust/README.md).
 Real directory publication/resolution is #774; actual UI/game/two-relay proof
 remains separately owned. Synthetic fixture completion is not those outcomes.
+
+
+# Normal Forum proof
+
+Normal fake-chain smoke posts schema-2 Forum content through the actual post
+client and a fresh persistent wallet bundle. It reads back exact title/body/T1,
+posts a reply with the exact parent T1, traverses list and discovery snapshots,
+casts both vote directions, and queries type-15 status using the exact signed
+request bytes. CORS checks use `application/cbor` for the normal Forum routes.
+The Forum check requires built-in fake-chain mode and synthetic funds.
+
+The rendered proof uses a fresh Chrome profile and the actual app's setup,
+CreatePost, Forum, single-post, reply, vote and drawer components. With a
+coordinator-owned fake demo and dev app already running, launch from the root:
+
+```sh
+FORUM_FAKE_DEMO=true FORUM_APP_ORIGIN=http://127.0.0.1:9699 \
+  node app/test/forum-browser.mjs
+```
+
+`FORUM_CHROME` can select the local Chrome executable. The harness captures
+exact browser HTTP bytes, asserts CBOR media and schema-2/type-10–15 frames,
+checks the rendered threshold at 9007199254740993 wei, and intercepts actual
+list responses to test wide signed observations, u64 revision, atomic staging
+and a delayed older refresh. It preserves immutable post and signed author
+bytes in those observation fixtures and removes its synthetic browser profile
+on exit. It requires the dev source loader for the public codec facade.
+Preparing this harness does not establish a browser pass: execute it under the
+coordinator's browser lease after the integrated app and relay are built. These
+checks do not establish chain finality or real-funds behavior.

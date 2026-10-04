@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "sourceMap": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "target": "es2020",
+    "lib": ["es2020"],
+    // See @frank/cashweb's tsconfig.json for why this is needed (avoids auto-including broken
+    // hoisted @types stubs from unrelated devDependencies elsewhere in the workspace).
+    "types": [],
+    // Resolve sibling packages from this checkout's source rather than through node_modules.
+    "paths": {
+      "@frank/threshold-ecdsa": ["../threshold-ecdsa/src/index.ts"],
+      "@frank/adaptor-signatures": ["../adaptor-signatures/src/index.ts"],
+      "@frank/adaptor-signatures/src/*": ["../adaptor-signatures/src/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": [
+    "node_modules",
+    "**/*.jest.spec.ts",
+    "**/*.jest.test.ts",
+    "src/conformance.ts"
+  ]
+}

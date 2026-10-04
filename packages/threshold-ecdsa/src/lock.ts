@@ -7,7 +7,22 @@
  * `@frank/adaptor-signatures`). This package never accepts a bare,
  * caller-chosen T. A lock is one of two things, both created by the party
  * that knows the secret, which is always the RESPONDER of the key (the
- * initiator is the party that later extracts the secret):
+ * initiator is the party that later extracts the secret).
+ *
+ * The two parties check a lock differently, and both checks are needed:
+ *
+ *  - The INITIATOR verifies the proofs below: someone knows the secret, so
+ *    the adaptor construction is safe to use.
+ *  - The RESPONDER must show `startSign` the secret itself (a `LockOpening`).
+ *    A proof only shows that SOMEONE knows the secret, and the identity
+ *    hashed into it is just bytes: the initiator could build a lock from its
+ *    own secret, label it with the responder's identity and present it as
+ *    "the responder's". The responder would then pre-sign under a lock the
+ *    initiator can open, and the initiator would complete the signature
+ *    alone. Requiring the opening means the responder only ever pre-signs
+ *    under a lock it can open itself.
+ *
+ * The two kinds of lock:
  *
  * 1. POINT LOCK. T = t*G with two proofs of knowledge of t:
  *    - the 65-byte proof of `@frank/adaptor-signatures`, which that package's
@@ -152,6 +167,19 @@ export type AdaptorLock =
       readonly proof: Uint8Array
       /** The candidate value i this pre-signature is for: lock point C - i*H. */
       readonly index: number
+    }
+
+/**
+ * The secret side of a lock, held by the responder only and required by its
+ * `startSign`. Returned by `createPointLock` / `createCommitmentLock`.
+ */
+export type LockOpening =
+  | { readonly kind: 'point'; readonly secret: Uint8Array }
+  | {
+      readonly kind: 'commitment'
+      readonly secret: Uint8Array
+      /** The committed value v (not the candidate index being signed). */
+      readonly value: number
     }
 
 /** A validated lock: its point and the canonical bytes bound into the session. */
@@ -325,6 +353,40 @@ export function resolveLock(
   return fail('invalid-input')
 }
 
+/**
+ * Responder-side check: the opening really opens this lock, i.e.
+ * `secret * G = T` for a point lock and `secret * G + value * H = C` for a
+ * commitment lock (whatever candidate index the session is for). Fails with
+ * `lock-not-owned` otherwise.
+ */
+export function requireLockOpening(
+  lock: AdaptorLock,
+  opening: LockOpening,
+): void {
+  if (typeof opening !== 'object' || opening === null) fail('invalid-input')
+  const secretBytes = snapshot(opening.secret, SCALAR_BYTES)
+  if (secretBytes === null) fail('invalid-input')
+  try {
+    const secret = parseScalar(secretBytes)
+    if (lock.kind === 'point' && opening.kind === 'point') {
+      const point = snapshot(lock.point, POINT_BYTES)
+      if (point === null) fail('invalid-input')
+      if (!multiply(G, secret).equals(parsePoint(point))) fail('lock-not-owned')
+      return
+    }
+    if (lock.kind === 'commitment' && opening.kind === 'commitment') {
+      const commitment = snapshot(lock.commitment, POINT_BYTES)
+      if (commitment === null) fail('invalid-input')
+      const expected = pedersen(secret, indexScalar(opening.value))
+      if (!expected.equals(parsePoint(commitment))) fail('lock-not-owned')
+      return
+    }
+    fail('invalid-input')
+  } finally {
+    secretBytes.fill(0)
+  }
+}
+
 /** Inverse of the encoding produced by `resolveLock`. */
 export function decodeLock(encoded: Uint8Array): AdaptorLock {
   const reader = new Reader(encoded)
@@ -364,8 +426,10 @@ function responderShare(share: KeyShare) {
 export interface PointLockMaterial {
   /** The secret t. Reveal it only by completing a pre-signature. */
   readonly secret: AdaptorSecret
-  /** Give this to the other party; pass it to `startSign` as `lock`. */
+  /** Give this to the other party; both pass it to `startSign` as `lock`. */
   readonly lock: AdaptorLock & { readonly kind: 'point' }
+  /** Keep private; the responder passes it to `startSign` as `lockOpening`. */
+  readonly opening: LockOpening
 }
 
 /** Creates a fresh point lock for a key. Responder only. */
@@ -389,6 +453,7 @@ export function createPointLock(input: {
     )
     return success({
       secret: material.value.secret,
+      opening: { kind: 'point', secret: material.value.secret.slice() },
       lock: {
         kind: 'point',
         point: material.value.point,
@@ -408,12 +473,15 @@ export interface CommitmentLockMaterial {
   readonly commitment: Uint8Array
   /** Proof of knowledge of the opening, bound to the key and this party. */
   readonly proof: Uint8Array
+  /** Keep private; the responder passes it to `startSign` as `lockOpening`. */
+  readonly opening: LockOpening
 }
 
 /**
  * Commits to `value` (0 to 2^32 - 1) with a fresh secret. Responder only.
  * Use `{ kind: 'commitment', commitment, proof, index }` as the `lock` of one
- * signing session per candidate value `index`.
+ * signing session per candidate value `index`; the responder passes the
+ * returned `opening` as `lockOpening` in each of them.
  */
 export function createCommitmentLock(input: {
   readonly keyShare: KeyShare
@@ -430,6 +498,11 @@ export function createCommitmentLock(input: {
     const context = lockContext(share.keyId, share.localId)
     return success({
       secret: scalarBytes(secret),
+      opening: {
+        kind: 'commitment',
+        secret: scalarBytes(secret),
+        value: input.value,
+      },
       commitment: pointBytes(commitment),
       proof: proveOpening(
         rng,

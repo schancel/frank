@@ -1,4 +1,10 @@
-export { abortKeygen, keygenStep, startKeygen } from './keygen.js'
+export {
+  abortKeygen,
+  checkKeyConfirmation,
+  exportPendingKeyShareRecord,
+  keygenStep,
+  startKeygen,
+} from './keygen.js'
 export type {
   KeygenSession,
   KeygenStepOutput,
@@ -30,6 +36,7 @@ export type {
   AdaptorLock,
   CommitmentLockMaterial,
   CompletedSignature,
+  LockOpening,
   PointLockMaterial,
 } from './lock.js'
 export {

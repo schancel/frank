@@ -112,14 +112,17 @@ import {
   burnShare,
   internalShare,
   shareIsBurned,
+  storageMac,
   type KeyShare,
   type KeyShareInternal,
 } from './key-share.js'
 import {
   decodeLock,
   isLockedSignature,
+  requireLockOpening,
   resolveLock,
   type AdaptorLock,
+  type LockOpening,
 } from './lock.js'
 import {
   addCiphertexts,
@@ -805,9 +808,17 @@ export interface StartSignInput {
   readonly tweakCommitment?: Uint8Array
   /**
    * Produce an adaptor pre-signature locked to this lock instead of a
-   * signature. Locks are created by the key's responder (lock.ts).
+   * signature. Locks are created by the key's responder (lock.ts). Both
+   * parties pass the same public lock.
    */
   readonly lock?: AdaptorLock
+  /**
+   * RESPONDER ONLY, and required there whenever `lock` is given: the private
+   * opening returned with the lock by `createPointLock` /
+   * `createCommitmentLock`. The responder refuses to pre-sign under a lock it
+   * cannot open itself. The initiator must not pass it.
+   */
+  readonly lockOpening?: LockOpening
   readonly randomBytes: RandomBytes
 }
 
@@ -880,6 +891,7 @@ export function startSign(
     const digest = snapshot(input.digest, 32)
     const rawCommitment = input.tweakCommitment
     const rawLock = input.lock
+    const rawOpening = input.lockOpening
     const rng = input.randomBytes
     if (shareIsBurned(keyShare)) return failure('key-share-burned')
     if (sessionId === null || digest === null) return failure('invalid-input')
@@ -896,6 +908,14 @@ export function startSign(
     ) {
       return failure('invalid-input')
     }
+    const initiator = keyShare.role === 'initiator'
+    // The initiator has no lock secrets; the responder must hold this one's.
+    if (rawOpening !== undefined && (initiator || rawLock === undefined)) {
+      return failure('invalid-input')
+    }
+    if (rawLock !== undefined && !initiator && rawOpening === undefined) {
+      return failure('lock-not-owned')
+    }
     const resolved = resolve(
       keyShare,
       sessionId,
@@ -903,7 +923,9 @@ export function startSign(
       tweakCommitment,
       rawLock ?? null,
     )
-    const initiator = keyShare.role === 'initiator'
+    if (rawLock !== undefined && rawOpening !== undefined) {
+      requireLockOpening(rawLock, rawOpening)
+    }
     const base: SignState = {
       __thresholdEcdsa: 'sign-session',
       status: 'active',
@@ -991,10 +1013,15 @@ export function signStep(
   )
 }
 
-/** Aborts a signing session and wipes its nonces. */
+/**
+ * Aborts a signing session and wipes its nonces. Has no effect on a state
+ * that was already advanced, finished or aborted: abort the latest state.
+ */
 export function abortSign(session: SignSession): void {
   const state = asState(session)
-  if (state === null || state.status === 'finished') return
+  // Only a live state is aborted. A state that was already advanced shares
+  // its buffers with its successor, which must stay usable.
+  if (state === null || state.status !== 'active') return
   wipeSign(state)
   state.status = 'aborted'
 }
@@ -1004,15 +1031,22 @@ export function abortSign(session: SignSession): void {
 //   "FTES" || version || expectedRound || keyId || sessionId || digest
 //   || field(tweakCommitment) || field(lock) || session || nonce
 //   || field(proofNonce) || field(opening) || field(peerCommit)
-//   || field(peerShare) || field(jointNonce)
+//   || field(peerShare) || field(jointNonce) || mac (32)
+//
+// mac = HMAC-SHA256 under the key share's storage key (key-share.ts), over
+// everything before it, verified before anything is parsed. Without it a
+// writer who cannot read the state could re-pair a stored nonce with another
+// digest and a recomputed binding. The MAC cannot detect an OLDER genuine
+// state being put back; that remains a caller rule.
 //
 // Import recomputes the session binding, public key, tweak and lock point
 // from the key share and the stored inputs and requires the stored binding
 // to match, so the parts of an imported state are always mutually consistent.
 
 const STATE_MAGIC = asciiBytes('FTES')
-const STATE_VERSION = 2
-const MAX_STATE_BYTES = 1280
+const STATE_VERSION = 3
+const MAC_BYTES = 32
+const MAX_STATE_BYTES = 1312
 
 function field(value: Uint8Array | null): Uint8Array {
   const bytes = value ?? EMPTY
@@ -1038,24 +1072,23 @@ export function exportSignSession(
   if (state.status === 'aborted') return failure('session-aborted')
   if (state.status !== 'active') return failure('state-already-used')
   try {
-    return success(
-      concat(
-        STATE_MAGIC,
-        Uint8Array.of(STATE_VERSION, state.expectedRound),
-        state.keyShare.keyId,
-        state.sessionId,
-        state.digest,
-        field(state.tweakCommitment),
-        field(state.lock),
-        state.session,
-        state.nonce,
-        field(state.proofNonce),
-        field(state.opening),
-        field(state.peerCommit),
-        field(state.peerShare),
-        field(state.jointNonce),
-      ),
+    const data = concat(
+      STATE_MAGIC,
+      Uint8Array.of(STATE_VERSION, state.expectedRound),
+      state.keyShare.keyId,
+      state.sessionId,
+      state.digest,
+      field(state.tweakCommitment),
+      field(state.lock),
+      state.session,
+      state.nonce,
+      field(state.proofNonce),
+      field(state.opening),
+      field(state.peerCommit),
+      field(state.peerShare),
+      field(state.jointNonce),
     )
+    return success(concat(data, storageMac(state.keyShare.secretShare, data)))
   } catch (error) {
     return failure(failureCode(error))
   }
@@ -1080,8 +1113,17 @@ export function importSignSession(
     copied = snapshotBounded(input.state, 0, MAX_STATE_BYTES)
     if (shareIsBurned(keyShare)) return failure('key-share-burned')
     if (typeof rng !== 'function') return failure('rng-failed')
-    if (copied === null) return failure('invalid-input')
-    const reader = new Reader(copied)
+    if (copied === null || copied.length < MAC_BYTES) {
+      return failure('invalid-input')
+    }
+    // Integrity first: nothing is parsed until the MAC verifies under a key
+    // derived from this key share's secret.
+    const data = copied.subarray(0, copied.length - MAC_BYTES)
+    const mac = storageMac(keyShare.secretShare, data)
+    if (!equalBytes(mac, copied.subarray(copied.length - MAC_BYTES))) {
+      fail('invalid-input')
+    }
+    const reader = new Reader(data)
     if (!equalBytes(reader.take(4), STATE_MAGIC)) fail('invalid-input')
     if (reader.byte() !== STATE_VERSION) fail('invalid-input')
     const expectedRound = reader.byte()

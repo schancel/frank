@@ -4,7 +4,9 @@ import { randomBytes } from 'crypto'
 
 import {
   abortKeygen,
+  checkKeyConfirmation,
   describeKeyShare,
+  exportPendingKeyShareRecord,
   exportKeyShare,
   exportKeyShareRecord,
   importKeyShare,
@@ -247,6 +249,71 @@ describe('two-party key generation', () => {
     expect(confirmed.ok && confirmed.value.result !== null).toBe(true)
     // The responder refuses a wrong confirmation from the initiator.
     expectAbort(deliver(6, flipAt(6, M7.CONFIRM + 1)), 'invalid-commitment')
+  })
+
+  it('an initiator that never receives message 8 can still recover its share and confirm later', () => {
+    // The responder finishes at message 7. If the initiator's session is
+    // lost before message 8 arrives, the record it exported while waiting
+    // plus its seed rebuild the share, and a re-sent message 8 confirms it.
+    const waiting = cloneState(trace.before[7]!)
+    const record = must(exportPendingKeyShareRecord(waiting))
+    const restored = must(
+      restoreKeyShare({ secretSeed: initiatorSeed, record }),
+    )
+    expect(hex(must(exportKeyShare(restored)))).toBe(
+      hex(must(exportKeyShare(a))),
+    )
+    expect(checkKeyConfirmation(restored, message(7))).toEqual({
+      ok: true,
+      value: true,
+    })
+    expect(checkKeyConfirmation(restored, flipAt(7, 5))).toEqual(
+      frameError('invalid-commitment'),
+    )
+    // Not message 8, or the responder's own confirmation of another key.
+    expect(checkKeyConfirmation(restored, flip(message(7), 5))).toEqual(
+      frameError('invalid-commitment'),
+    )
+    expect(checkKeyConfirmation(restored, message(6)).ok).toBe(false)
+    expect(checkKeyConfirmation(b, message(7)).ok).toBe(false)
+    // Only a state that is holding a share back has a pending record.
+    for (const index of [1, 3, 5, 6]) {
+      expect(
+        exportPendingKeyShareRecord(cloneState(trace.before[index]!)),
+      ).toEqual(frameError('invalid-input'))
+    }
+    expect(exportPendingKeyShareRecord(trace.initiatorSession)).toEqual(
+      frameError('invalid-input'),
+    )
+  })
+
+  it('aborting a consumed or finished state does not wipe the live session or the share', () => {
+    const one = must(
+      startKeygen({
+        role: 'initiator',
+        sessionId,
+        localId: alice,
+        peerId: bob,
+        randomBytes: rng,
+      }),
+    )
+    const two = must(
+      startKeygen({
+        role: 'responder',
+        sessionId,
+        localId: bob,
+        peerId: alice,
+        randomBytes: rng,
+      }),
+    )
+    const advanced = must(keygenStep(two.session, one.outgoing!))
+    abortKeygen(two.session) // already consumed: must be a no-op
+    const live = advanced.session as unknown as { share: Uint8Array }
+    expect(live.share.some(byte => byte !== 0)).toBe(true)
+    abortKeygen(trace.initiatorSession)
+    abortKeygen(trace.responderSession)
+    expect(exportKeyShare(a).ok).toBe(true)
+    expect(exportKeyShare(b).ok).toBe(true)
   })
 
   it('exports and re-imports a share that still signs', () => {

@@ -22,6 +22,7 @@ import {
   tweakPublicKey,
   type AdaptorLock,
   type KeyShare,
+  type LockOpening,
   type SignResult,
   type SignSession,
 } from './index.js'
@@ -59,10 +60,15 @@ function shares(): { a: KeyShare; b: KeyShare } {
   }
 }
 
+interface Locked {
+  readonly lock: AdaptorLock
+  readonly opening: LockOpening
+}
+
 function presign(
   a: KeyShare,
   b: KeyShare,
-  lock: AdaptorLock,
+  locked: Locked,
   digest: Uint8Array,
   tweakCommitment?: Uint8Array,
 ): Trace<SignSession, SignResult> {
@@ -70,12 +76,13 @@ function presign(
     sessionId: rng(32),
     digest,
     tweakCommitment,
-    lock,
+    lock: locked.lock,
     randomBytes: rng,
   }
   return drive(
     startSign({ ...common, keyShare: a }),
-    startSign({ ...common, keyShare: b }),
+    // Only the responder holds, and must show, the lock's opening.
+    startSign({ ...common, keyShare: b, lockOpening: locked.opening }),
     signStep,
   )
 }
@@ -109,7 +116,7 @@ describe('point locks', () => {
     const { a, b } = shares()
     const made = must(createPointLock({ keyShare: b, randomBytes: rng }))
     const digest = rng(32)
-    const trace = presign(a, b, made.lock, digest)
+    const trace = presign(a, b, made, digest)
     const first = adaptorResult(trace.initiatorResult)
     expect(adaptorResult(trace.responderResult)).toEqual(first)
     expect(first.adaptorSignature).toHaveLength(162)
@@ -191,7 +198,7 @@ describe('point locks', () => {
     })
     const digest = fromHex(transaction.unsignedHash.slice(2))
     const result = adaptorResult(
-      presign(a, b, made.lock, digest, commitment).responderResult,
+      presign(a, b, made, digest, commitment).responderResult,
     )
     expect(hex(result.publicKey)).toBe(hex(tweaked.publicKey))
     const completed = must(
@@ -279,9 +286,16 @@ describe('point locks', () => {
         randomBytes: rng,
       }),
     )
-    for (const lock of [two.lock, undefined]) {
+    for (const other of [two, undefined]) {
       const responder = must(
-        startSign({ keyShare: b, sessionId, digest, lock, randomBytes: rng }),
+        startSign({
+          keyShare: b,
+          sessionId,
+          digest,
+          lock: other?.lock,
+          lockOpening: other?.opening,
+          randomBytes: rng,
+        }),
       )
       expect(signStep(responder.session, initiator.outgoing!)).toEqual(
         frameError('wrong-session'),
@@ -321,10 +335,13 @@ describe('commitment locks', () => {
         a,
         b,
         {
-          kind: 'commitment',
-          commitment: made.commitment,
-          proof: made.proof,
-          index,
+          lock: {
+            kind: 'commitment',
+            commitment: made.commitment,
+            proof: made.proof,
+            index,
+          },
+          opening: made.opening,
         },
         digest,
       )
@@ -396,10 +413,13 @@ describe('commitment locks', () => {
         a,
         b,
         {
-          kind: 'commitment',
-          commitment: made.commitment,
-          proof: made.proof,
-          index,
+          lock: {
+            kind: 'commitment',
+            commitment: made.commitment,
+            proof: made.proof,
+            index,
+          },
+          opening: made.opening,
         },
         digest,
       ).initiatorResult,
@@ -459,6 +479,7 @@ describe('commitment locks', () => {
         sessionId: rng(32),
         digest: rng(32),
         lock,
+        lockOpening: keyShare === b ? made.opening : undefined,
         randomBytes: rng,
       })
     const good: AdaptorLock = {
@@ -535,6 +556,7 @@ describe('commitment locks', () => {
         sessionId,
         digest,
         lock: lock(3),
+        lockOpening: made.opening,
         randomBytes: rng,
       }),
     )
@@ -544,11 +566,96 @@ describe('commitment locks', () => {
   })
 })
 
+describe('lock provenance: the responder pre-signs only under locks it can open', () => {
+  const start = (
+    keyShare: KeyShare,
+    lock: AdaptorLock,
+    lockOpening?: LockOpening,
+  ) =>
+    startSign({
+      keyShare,
+      sessionId: rng(32),
+      digest: rng(32),
+      lock,
+      lockOpening,
+      randomBytes: rng,
+    })
+
+  it('refuses a commitment lock the initiator built from its own secret under the responder identity', () => {
+    // The auditor's demonstration: the proofs only show that SOMEONE knows
+    // the opening, and the identity inside them is just bytes. A second
+    // responder handle stands in for "an initiator that knows (s, v)".
+    const { a, b } = shares()
+    const forged = must(
+      createCommitmentLock({ keyShare: b, value: 7, randomBytes: rng }),
+    )
+    const lock: AdaptorLock = {
+      kind: 'commitment',
+      commitment: forged.commitment,
+      proof: forged.proof,
+      index: 7,
+    }
+    // The proofs verify, so the initiator's side starts...
+    expect(start(a, lock).ok).toBe(true)
+    // ...but the responder, which did not create this lock, has no opening:
+    expect(start(b, lock)).toEqual(frameError('lock-not-owned'))
+    // and the opening of one of its own locks does not fit either.
+    const own = must(
+      createCommitmentLock({ keyShare: b, value: 7, randomBytes: rng }),
+    )
+    expect(start(b, lock, own.opening)).toEqual(frameError('lock-not-owned'))
+    // Right secret, wrong committed value: not an opening.
+    expect(
+      start(b, lock, { kind: 'commitment', secret: forged.secret, value: 8 }),
+    ).toEqual(frameError('lock-not-owned'))
+    // The real opening works for every candidate index.
+    expect(start(b, lock, forged.opening).ok).toBe(true)
+    expect(start(b, { ...lock, index: 3 }, forged.opening).ok).toBe(true)
+  })
+
+  it('refuses a point lock the responder cannot open', () => {
+    const { a, b } = shares()
+    const forged = must(createPointLock({ keyShare: b, randomBytes: rng }))
+    const own = must(createPointLock({ keyShare: b, randomBytes: rng }))
+    expect(start(a, forged.lock).ok).toBe(true)
+    expect(start(b, forged.lock)).toEqual(frameError('lock-not-owned'))
+    expect(start(b, forged.lock, own.opening)).toEqual(
+      frameError('lock-not-owned'),
+    )
+    // An opening of the wrong kind is a caller error.
+    expect(
+      start(b, forged.lock, {
+        kind: 'commitment',
+        secret: forged.secret,
+        value: 0,
+      }),
+    ).toEqual(frameError('invalid-input'))
+    expect(start(b, forged.lock, forged.opening).ok).toBe(true)
+  })
+
+  it('the initiator never passes an opening, and none is accepted without a lock', () => {
+    const { a, b } = shares()
+    const made = must(createPointLock({ keyShare: b, randomBytes: rng }))
+    expect(start(a, made.lock, made.opening)).toEqual(
+      frameError('invalid-input'),
+    )
+    expect(
+      startSign({
+        keyShare: b,
+        sessionId: rng(32),
+        digest: rng(32),
+        lockOpening: made.opening,
+        randomBytes: rng,
+      }),
+    ).toEqual(frameError('invalid-input'))
+  })
+})
+
 describe('malicious counterpart: adaptor pre-signing', () => {
   const { a, b } = shares()
   const made = must(createPointLock({ keyShare: b, randomBytes: rng }))
   const digest = rng(32)
-  const trace = presign(a, b, made.lock, digest)
+  const trace = presign(a, b, made, digest)
   // Body layout of messages 2 and 3: R(33) RT(33) dleq(64) A(33) AT(33).
   const OFFSET = { R: 0, RT: 33, DLEQ: 66, A: 130, AT: 163 }
 
@@ -559,7 +666,7 @@ describe('malicious counterpart: adaptor pre-signing', () => {
   })
 
   it('message 2: rejects a nonce share whose two halves have different discrete logs', () => {
-    const other = presign(a, b, made.lock, digest)
+    const other = presign(a, b, made, digest)
     // R2T taken from another session: a valid point, wrong discrete log.
     const mixed = replace(
       message(trace, 1),
@@ -617,7 +724,7 @@ describe('malicious counterpart: adaptor pre-signing', () => {
 
   it('message 4: a wrong proof response is rejected before anything is decrypted', () => {
     const fresh = shares()
-    const local = presign(fresh.a, fresh.b, made.lock, digest)
+    const local = presign(fresh.a, fresh.b, made, digest)
     const body = message(local, 3)
     const z = bytesToInt(body.subarray(HEADER_BYTES + 512))
     for (const bad of [
@@ -638,7 +745,7 @@ describe('malicious counterpart: adaptor pre-signing', () => {
 
   it('message 4: a well-formed ciphertext of a wrong value burns the key share', () => {
     const fresh = shares()
-    const local = presign(fresh.a, fresh.b, made.lock, digest)
+    const local = presign(fresh.a, fresh.b, made, digest)
     const modulus = bytesToInt(
       (fresh.a as unknown as { modulus: Uint8Array }).modulus,
     )
@@ -651,7 +758,7 @@ describe('malicious counterpart: adaptor pre-signing', () => {
 
   it('message 5: the responder accepts only the pre-signature for the agreed nonce', () => {
     const good = message(trace, 4)
-    const other = presign(a, b, made.lock, digest)
+    const other = presign(a, b, made, digest)
     // A valid pre-signature for the same key, lock and digest but another
     // nonce (as if replayed from another session).
     const replayed = replace(

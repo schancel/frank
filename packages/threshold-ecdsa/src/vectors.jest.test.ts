@@ -31,6 +31,7 @@ import {
   tweakPublicKey,
   type AdaptorLock,
   type KeyShare,
+  type LockOpening,
 } from './index.js'
 import { PEDERSEN_H } from './lock.js'
 import {
@@ -261,6 +262,17 @@ function lockInput(vector: LockVector | null): AdaptorLock | undefined {
   }
 }
 
+function lockOpening(vector: LockVector | null): LockOpening | undefined {
+  if (vector === null) return undefined
+  return vector.kind === 'point'
+    ? { kind: 'point', secret: fromHex(vector.secret) }
+    : {
+        kind: 'commitment',
+        secret: fromHex(vector.secret),
+        value: vector.value!,
+      }
+}
+
 function runSign(
   plan: SignPlan,
   a: KeyShare,
@@ -285,6 +297,7 @@ function runSign(
     startSign({
       ...common,
       keyShare: b,
+      lockOpening: lockOpening(lock),
       randomBytes: seededRandom(responderRng),
     }),
     signStep,

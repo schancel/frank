@@ -295,7 +295,10 @@ function readBody(reader: Reader): PublicFields {
   }
 }
 
-function storageMac(secretShare: Uint8Array, data: Uint8Array): Uint8Array {
+export function storageMac(
+  secretShare: Uint8Array,
+  data: Uint8Array,
+): Uint8Array {
   const key = transcript('storage-mac-key', secretShare)
   const mac = hmac(sha256, key, data)
   key.fill(0)

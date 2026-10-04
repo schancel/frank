@@ -28,6 +28,9 @@ import { fail } from './result.js'
 
 // --- Modulus proof ---------------------------------------------------------
 //
+// CITATION UNVERIFIED: the section number and parameters below were written
+// from memory and have not been confirmed against the paper.
+//
 // Goldberg, Reyzin, Sagga, Baldimtsi, "Efficient Noninteractive Certification
 // of RSA Moduli and Beyond" (ASIACRYPT 2019, ePrint 2018/057), Section 3.2,
 // the protocol for the relation "Paillier-N": the prover shows that

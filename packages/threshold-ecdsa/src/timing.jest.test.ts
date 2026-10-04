@@ -87,8 +87,8 @@ it('reports key generation and signing time per party', () => {
     for (const adaptor of [false, true]) {
       const sessionId = rng(32)
       const digest = rng(32)
-      const lock = adaptor
-        ? must(createPointLock({ keyShare: b!, randomBytes: rng })).lock
+      const made = adaptor
+        ? must(createPointLock({ keyShare: b!, randomBytes: rng }))
         : undefined
       const signed = timed(
         role =>
@@ -97,7 +97,8 @@ it('reports key generation and signing time per party', () => {
               keyShare: role === 'initiator' ? a! : b!,
               sessionId,
               digest,
-              lock,
+              lock: made?.lock,
+              lockOpening: role === 'responder' ? made?.opening : undefined,
               randomBytes: rng,
             }),
           ),

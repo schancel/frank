@@ -623,6 +623,84 @@ describe('malicious counterpart: plain signing', () => {
 })
 
 describe('inputs and persistence', () => {
+  it('exported state is authenticated: a stored nonce cannot be re-paired with another digest', () => {
+    // The auditor's demonstration: rewrite the stored digest and replace the
+    // stored binding by its public recomputation, keeping the secret nonce.
+    const { a } = shares()
+    const info = must(describeKeyShare(a))
+    const sessionId = rng(32)
+    const started = must(
+      startSign({ keyShare: a, sessionId, digest: rng(32), randomBytes: rng }),
+    )
+    const exported = must(exportSignSession(started.session))
+    const { signBinding, PROTOCOL_SIGN } = jest.requireActual(
+      './wire',
+    ) as typeof import('./wire.js')
+    const digest2 = rng(32)
+    const crafted = exported.slice()
+    crafted.set(digest2, 4 + 1 + 1 + 32 + 32)
+    crafted.set(
+      signBinding({
+        protocol: PROTOCOL_SIGN,
+        sessionId,
+        initiatorId: info.localId,
+        responderId: info.peerId,
+        keyId: info.keyId,
+        publicKey: info.publicKey,
+        tweakCommitment: new Uint8Array(0),
+        digest: digest2,
+        lock: new Uint8Array(0),
+      }),
+      4 + 1 + 1 + 32 + 32 + 32 + 2 + 2,
+    )
+    expect(
+      importSignSession({ state: crafted, keyShare: a, randomBytes: rng }),
+    ).toEqual(frameError('invalid-input'))
+    // Every byte is covered, the secret nonce and the MAC included.
+    for (let index = 0; index < exported.length; index += 13) {
+      expect(
+        importSignSession({
+          state: flip(exported, index),
+          keyShare: a,
+          randomBytes: rng,
+        }),
+      ).toEqual(frameError('invalid-input'))
+    }
+    expect(
+      importSignSession({ state: exported, keyShare: a, randomBytes: rng }).ok,
+    ).toBe(true)
+  })
+
+  it('aborting a state that was already advanced leaves the live session usable', () => {
+    const { a, b } = shares()
+    const sessionId = rng(32)
+    const digest = rng(32)
+    const initiator = must(
+      startSign({ keyShare: a, sessionId, digest, randomBytes: rng }),
+    )
+    const responder = must(
+      startSign({ keyShare: b, sessionId, digest, randomBytes: rng }),
+    )
+    const r1 = must(signStep(responder.session, initiator.outgoing!))
+    const i2 = must(signStep(initiator.session, r1.outgoing!))
+    // The consumed states share their nonce buffers with the live ones.
+    abortSign(initiator.session)
+    abortSign(responder.session)
+    const r3 = must(signStep(r1.session, i2.outgoing!))
+    const i4 = must(signStep(i2.session, r3.outgoing!))
+    const r5 = must(signStep(r3.session, i4.outgoing!))
+    const result = signature(r5.result)
+    expect(
+      secp256k1.verify(result.signature, digest, result.publicKey, {
+        prehash: false,
+      }),
+    ).toBe(true)
+    // Aborting the finished states does not touch the key shares either.
+    abortSign(i4.session)
+    abortSign(r5.session)
+    expect(exportKeyShare(a).ok).toBe(true)
+  })
+
   it('rejects malformed inputs with typed errors', () => {
     const { a } = shares()
     const base = {
@@ -732,7 +810,7 @@ describe('inputs and persistence', () => {
     )
     const state = must(exportSignSession(started.session))
     // Layout: magic 4, version 1, round 1, keyId 32, sessionId 32, digest 32,
-    // tweak field 2+32, lock field 2, binding 32, nonce 32, ...
+    // tweak field 2+32, lock field 2, binding 32, nonce 32, ..., mac 32
     const offsets = {
       magic: 0,
       round: 5,

@@ -27,6 +27,8 @@ export type ThresholdErrorCode =
   | 'invalid-proof'
   /** A Paillier modulus or ciphertext failed validation. */
   | 'invalid-paillier'
+  /** The responder was asked to pre-sign under a lock it cannot open. */
+  | 'lock-not-owned'
   /** A signature or adaptor signature did not verify. */
   | 'invalid-signature'
   /** The joint nonce is unusable (r = 0 or R.x >= n). Retry with a new session. */

@@ -80,6 +80,7 @@ import {
   computeKeyId,
   derivePaillierKey,
   deriveShare,
+  exportKeyShareRecord,
   shareContextOf,
   type KeyShare,
 } from './key-share.js'
@@ -163,6 +164,7 @@ const ROUND_5_FIXED_BYTES = HASH_BYTES
 const ROUND_6_BYTES = SCALAR_BYTES + PDL_B_BYTES + NONCE_BYTES
 const ROUND_7_BYTES = POINT_BYTES + NONCE_BYTES + HASH_BYTES
 const ROUND_8_BYTES = HASH_BYTES
+const CONFIRMATION_MESSAGE_BYTES = 4 + 2 + HASH_BYTES + ROUND_8_BYTES
 
 function exact(length: number): BodyBounds {
   return { minBody: length, maxBody: length }
@@ -883,10 +885,77 @@ export function keygenStep(
   )
 }
 
-/** Aborts a key-generation session and wipes its secrets. */
+/**
+ * Aborts a key-generation session and wipes its secrets. Has no effect on a
+ * state that was already advanced, finished or aborted.
+ */
 export function abortKeygen(session: KeygenSession): void {
   const state = asState(session)
-  if (state === null || state.status === 'finished') return
+  // Only a live state is aborted. A state that was already advanced shares
+  // its buffers with its successor (and a finished one with the returned
+  // key share), which must stay usable.
+  if (state === null || state.status !== 'active') return
   discardPending(state)
   state.status = 'aborted'
+}
+
+/**
+ * For the INITIATOR while it waits for the responder's key confirmation
+ * (message 8): the public record of the share it is holding back. The
+ * responder may already have finished, so the initiator must be able to get
+ * its share back if this session is lost before message 8 arrives. Store the
+ * record; later `restoreKeyShare({ secretSeed, record })` rebuilds the share
+ * (key generation must have used `secretSeed`), and `checkKeyConfirmation`
+ * verifies a re-sent message 8 against it.
+ */
+export function exportPendingKeyShareRecord(
+  session: KeygenSession,
+): ThresholdResult<Uint8Array> {
+  const state = asState(session)
+  if (state === null) return failure('invalid-input')
+  if (state.status !== 'active' || state.pending === null) {
+    return failure('invalid-input')
+  }
+  return exportKeyShareRecord(state.pending)
+}
+
+/**
+ * Checks the other party's key confirmation (key-generation message 8 for
+ * the initiator, the confirmation inside message 7 is checked by the session
+ * itself) against a key share obtained outside the session, for example one
+ * restored from a pending record. `message` is the complete message 8.
+ */
+export function checkKeyConfirmation(
+  share: KeyShare,
+  message: Uint8Array,
+): ThresholdResult<true> {
+  try {
+    const internal = share as unknown as {
+      __thresholdEcdsa?: string
+      keyId: Uint8Array
+      peerId: Uint8Array
+    }
+    if (
+      typeof internal !== 'object' ||
+      internal === null ||
+      internal.__thresholdEcdsa !== 'key-share'
+    ) {
+      return failure('invalid-input')
+    }
+    const copied = snapshot(message, CONFIRMATION_MESSAGE_BYTES)
+    if (copied === null) return failure('malformed-message')
+    const expected = encodeMessage(
+      PROTOCOL_KEYGEN,
+      8,
+      copied.subarray(6, 6 + HASH_BYTES),
+      confirmation(internal.keyId, internal.peerId),
+    )
+    // Compares magic, protocol, round and the confirmation; the frame
+    // binding in between is not stored in a share and is covered by the key
+    // id inside the confirmation.
+    if (!equalBytes(copied, expected)) return failure('invalid-commitment')
+    return success(true as const)
+  } catch (error) {
+    return failure(failureCode(error))
+  }
 }

@@ -56,6 +56,8 @@ import {
   type RelayReceiptIdentity,
 } from '@frank/cashweb/relay/storage/storage'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
+import { itemsExceedTextLimit } from '../utils/message-limits'
+import { SendRefusedError } from '../utils/send-refusal'
 import { useProfileStore } from './my-profile'
 import { useContactStore } from './contacts'
 import { mapObjIndexed, pathOr } from 'ramda'
@@ -268,6 +270,8 @@ export type OutgoingOutcome =
   | { state: 'needs-confirmation'; reason: OutgoingFailureReason }
   /** This message is already being worked on, or no longer exists. */
   | { state: 'busy' }
+
+const PREVIEW_MAX_CHARS = 500
 
 function errorDetail(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, 300)
@@ -504,6 +508,17 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
         newMsg.delivery = { ...newMsg.delivery, failureReason: 'interrupted' }
       }
     }
+    if (
+      newMsg.outbound &&
+      newMsg.status !== 'confirmed' &&
+      newMsg.delivery?.attemptDigest === undefined &&
+      itemsExceedTextLimit(newMsg.items ?? [])
+    ) {
+      // Stored before over-limit text was refused up front. It can never be sent: show it as
+      // failed for that reason so it can be discarded.
+      newMsg.status = 'error'
+      newMsg.delivery = { ...newMsg.delivery, failureReason: 'too-large' }
+    }
     assert(newMsg.outbound !== undefined, 'outbound is not defined')
     assert(newMsg.status !== undefined, 'status is not defined')
     assert(newMsg.receivedTime !== undefined, 'receivedTime is not defined')
@@ -654,7 +669,8 @@ export const useChatStore = defineStore('chats', {
       // registry instead: every registered type gets real preview text, not a crash.
       return {
         outbound: lastMessage.outbound,
-        text: getMessageItemPreview(lastItem),
+        // One line of preview: never put a whole (possibly huge) message into the chat list.
+        text: getMessageItemPreview(lastItem).slice(0, PREVIEW_MAX_CHARS),
       }
     },
     getLastReceived(state) {
@@ -945,6 +961,14 @@ export const useChatStore = defineStore('chats', {
         progress: DirectMessagePreparationProgress,
       ) => void
     }): Promise<OutgoingOutcome> {
+      // Refused before anything is stored or shown: text over the canonical limit can never be
+      // encoded, and a stored copy of it would be re-rendered on every load.
+      if (itemsExceedTextLimit(items)) {
+        throw new SendRefusedError(
+          'too-large',
+          'The message text is longer than the canonical limit; nothing was stored, paid or sent.',
+        )
+      }
       const recipient = activeChain.parseAddress(address)
       assert(recipient, `Invalid recipient address: ${address}`)
       const displayAddress = toChainDisplayAddress(address)
@@ -1293,6 +1317,14 @@ export const useChatStore = defineStore('chats', {
       const digest = previous?.attemptDigest
       const stillCurrent = () =>
         this.messages[id] === message && walletOwnsMessage(wallet, message)
+
+      // An over-limit message stored by an earlier version: no payment exists and none can.
+      if (digest === undefined && itemsExceedTextLimit(message.items)) {
+        await this.setOutgoingState(address, id, 'error', {
+          failureReason: 'too-large',
+        })
+        return { state: 'failed', reason: 'too-large' }
+      }
 
       // 1. An earlier payment attempt exists: ask what became of it BEFORE anything else.
       if (digest !== undefined) {

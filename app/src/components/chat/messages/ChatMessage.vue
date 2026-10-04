@@ -29,7 +29,19 @@
       >
         <!-- Wrap a div around the template to keep all items within 1 QChatMessasge -->
         <div data-testid="chat-message-body" class="chat-message-body">
-          <template v-for="(item, subIndex) in message.items" :key="subIndex">
+          <!-- One item that cannot be drawn must not take the conversation down with it. The
+          suffix below stays, so the message can still be deleted or discarded. -->
+          <span
+            v-if="renderFailed"
+            class="text-caption text-italic"
+            data-testid="chat-message-unrenderable"
+          >
+            {{ $t('chatMessage.couldNotDisplay') }}
+          </span>
+          <template
+            v-for="(item, subIndex) in renderFailed ? [] : message.items"
+            :key="subIndex"
+          >
             <chat-message-reply
               v-if="item.type == 'reply'"
               :payload-digest="item.payloadDigest"
@@ -131,6 +143,17 @@ import { errorNotify } from '../../../utils/notifications'
 import { sendErrorNotifyOptions } from '../../../utils/send-refusal'
 import { getMessageItemRenderer } from '../../../utils/message-item-renderers'
 
+// Vue names the failing phase in development and gives an error-reference URL ending in its
+// numeric code in production: setup (0), render (1) and component update (15).
+function isRenderErrorInfo(info: string): boolean {
+  return (
+    info === 'render function' ||
+    info === 'setup function' ||
+    info === 'component update' ||
+    /#runtime-(?:0|1|15)$/.test(info)
+  )
+}
+
 export default defineComponent({
   name: 'ChatMessage',
   components: {
@@ -151,7 +174,17 @@ export default defineComponent({
     return {
       transactionDialog: false,
       deleteDialog: false,
+      // An item of this message threw while rendering; a placeholder is shown instead.
+      renderFailed: false,
     }
+  },
+  // Contain a rendering failure to this bubble. Errors from event handlers (a button inside a
+  // bubble) are not rendering failures and keep propagating as before.
+  errorCaptured(err: unknown, _instance: unknown, info: string) {
+    if (!isRenderErrorInfo(info)) return
+    console.error('a chat message could not be displayed', err)
+    this.renderFailed = true
+    return false
   },
   setup() {
     const chats = useChatStore()

@@ -199,6 +199,9 @@ export type OutgoingFailureReason =
   /** The recipient has no installed directory entry this relay can deliver to. Nothing was paid
    * or sent. */
   | 'recipient-unavailable'
+  /** The text is longer than the canonical limit, so it can never be encoded or sent. Nothing
+   * was paid or sent; only Discard helps. */
+  | 'too-large'
   | 'error'
 
 /** Delivery bookkeeping for an outgoing (`outbound`) direct message that is not yet confirmed. */

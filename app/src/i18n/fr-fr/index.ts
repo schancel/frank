@@ -369,6 +369,7 @@ export default {
       'Les fonds sont insuffisants pour envoyer ce message.',
     reasonRecipientUnavailable:
       'Le destinataire n’est pas encore configuré pour recevoir des messages ici.',
+    reasonTooLarge: 'Le message est trop long pour être envoyé.',
     reasonError: 'Le message n’a pas pu être envoyé.',
     retry: 'Réessayer',
     retryHint:
@@ -397,6 +398,9 @@ export default {
   chatMessage: {
     noPayloadFound: 'Impossible de trouver les données pour ce message',
     failedToSend: 'Échec de l’envoi',
+    textTooLongToDisplay:
+      '… Ce message est trop long pour être affiché en entier.',
+    couldNotDisplay: 'Ce message n’a pas pu être affiché.',
     showActions: 'Afficher les actions du message',
     replyMessage: 'Répondre au message',
     forwardMessage: 'Transférer le message',

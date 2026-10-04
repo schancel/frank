@@ -33,6 +33,8 @@ import {
 } from '@frank/wallet/chain/monad-canonical-dm'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { MessageWrapper } from '@frank/cashweb/types/messages'
+import { MAX_TEXT_STRING_BYTES } from '@frank/codec'
+import { MAX_MESSAGE_TEXT_BYTES } from '../utils/message-limits'
 import {
   deserializeMessageWrapper,
   serializeMessageWrapper,
@@ -1086,6 +1088,104 @@ describe('outgoing direct messages (#269, #270)', () => {
         if (original) Object.defineProperty(globalThis, 'navigator', original)
         else delete (globalThis as { navigator?: unknown }).navigator
       }
+    })
+  })
+
+  describe('text over the canonical limit', () => {
+    const tooLong = [
+      { type: 'text' as const, text: 'x'.repeat(MAX_MESSAGE_TEXT_BYTES + 1) },
+    ]
+
+    it('uses the canonical codec limit, which the bot shares', () => {
+      expect(MAX_MESSAGE_TEXT_BYTES).toBe(MAX_TEXT_STRING_BYTES)
+      expect(MAX_MESSAGE_TEXT_BYTES).toBe(262_144)
+    })
+
+    it('is refused before anything is stored, shown or sent', async () => {
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+      const chats = useChatStore()
+      await expect(
+        chats.sendMessage({ wallet, address: PEER, items: tooLong }),
+      ).rejects.toMatchObject({ name: 'SendRefusedError', reason: 'too-large' })
+      expect(send).not.toHaveBeenCalled()
+      expect(only(chats)).toHaveLength(0)
+      expect(Object.keys(chats.messages)).toHaveLength(0)
+      expect((await durable()).size).toBe(0)
+    })
+
+    it('counts UTF-8 bytes, not characters', async () => {
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockResolvedValue(okResult(HASH))
+      const chats = useChatStore()
+      // Fewer characters than the limit, more bytes (3 each).
+      const wide = '€'.repeat(Math.floor(MAX_MESSAGE_TEXT_BYTES / 3) + 1)
+      await expect(
+        chats.sendMessage({
+          wallet,
+          address: PEER,
+          items: [{ type: 'text', text: wide }],
+        }),
+      ).rejects.toMatchObject({ reason: 'too-large' })
+      expect(send).not.toHaveBeenCalled()
+      // Exactly at the limit is accepted.
+      await expect(
+        chats.sendMessage({
+          wallet,
+          address: PEER,
+          items: [{ type: 'text', text: 'x'.repeat(MAX_MESSAGE_TEXT_BYTES) }],
+        }),
+      ).resolves.toEqual({ state: 'sent', payloadDigest: HASH })
+    })
+
+    it('an already stored over-limit message loads as failed for that reason, is not re-sent, and can be discarded', async () => {
+      const db = await durable()
+      db.set(
+        'pending:1:1:huge',
+        serializeMessageWrapper({
+          index: 'pending:1:1:huge',
+          outbound: true,
+          senderAddress: ME,
+          copartyAddress: PEER,
+          message: {
+            outbound: true,
+            status: 'pending',
+            receivedTime: 1,
+            serverTime: 1,
+            items: tooLong,
+            outpoints: [],
+            senderAddress: ME,
+            delivery: {},
+          },
+        }),
+      )
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+      const restored = await reload()
+      expect(only(restored)).toHaveLength(1)
+      expect(only(restored)[0]).toEqual(
+        expect.objectContaining({
+          status: 'error',
+          delivery: expect.objectContaining({ failureReason: 'too-large' }),
+        }),
+      )
+      // The chat-list preview never carries the whole text.
+      expect(restored.getLatestMessage(PEER)?.text.length).toBeLessThanOrEqual(
+        500,
+      )
+      await expect(
+        restored.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: only(restored)[0].payloadDigest,
+        }),
+      ).resolves.toEqual({ state: 'failed', reason: 'too-large' })
+      expect(send).not.toHaveBeenCalled()
+      await restored.deleteMessage({
+        address: PEER,
+        payloadDigest: only(restored)[0].payloadDigest,
+      })
+      expect(only(restored)).toHaveLength(0)
+      expect((await durable()).size).toBe(0)
     })
   })
 

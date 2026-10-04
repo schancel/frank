@@ -1,10 +1,27 @@
 <template>
-  <span class="chat-message-text" v-html="markedMessage" />
+  <span
+    v-if="rendered.kind === 'plain'"
+    class="chat-message-text"
+    style="white-space: pre-wrap; overflow-wrap: anywhere"
+    data-testid="chat-message-text-plain"
+    >{{ rendered.text
+    }}<em
+      v-if="rendered.truncated"
+      class="text-caption"
+      data-testid="chat-message-text-truncated"
+    >
+      {{ $t('chatMessage.textTooLongToDisplay') }}</em
+    ></span
+  >
+  <span v-else class="chat-message-text" v-html="rendered.html" />
 </template>
 
 <script lang="ts">
 import { defineComponent } from 'vue'
-import { renderMarkdown, purify } from '../../../utils/markdown'
+import {
+  renderMessageText,
+  type RenderedMessageText,
+} from '../../../utils/markdown'
 
 export default defineComponent({
   name: 'ChatMessageText',
@@ -19,10 +36,8 @@ export default defineComponent({
     },
   },
   computed: {
-    markedMessage() {
-      return this.isReply
-        ? purify(this.text)
-        : renderMarkdown(this.text, this.$q.dark.isActive)
+    rendered(): RenderedMessageText {
+      return renderMessageText(this.text, this.$q.dark.isActive, this.isReply)
     },
   },
 })

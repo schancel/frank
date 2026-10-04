@@ -361,6 +361,7 @@ export default {
     reasonInsufficientFunds: 'There are not enough funds to send this message.',
     reasonRecipientUnavailable:
       'The recipient is not set up to receive messages here yet.',
+    reasonTooLarge: 'The message is too long to send.',
     reasonError: 'The message could not be sent.',
     retry: 'Retry',
     retryHint:
@@ -387,6 +388,8 @@ export default {
   chatMessage: {
     noPayloadFound: 'Unable to find message payload',
     failedToSend: 'Failed to send',
+    textTooLongToDisplay: '… This message is too long to display in full.',
+    couldNotDisplay: 'This message could not be displayed.',
     showActions: 'Show message actions',
     replyMessage: 'Reply to message',
     forwardMessage: 'Forward message',

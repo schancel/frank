@@ -246,6 +246,7 @@ export default defineComponent({
       }
       keys['insufficient-funds'] = 'outgoing.reasonInsufficientFunds'
       keys['recipient-unavailable'] = 'outgoing.reasonRecipientUnavailable'
+      keys['too-large'] = 'outgoing.reasonTooLarge'
       const key = keys[this.failureReason]
       return key === undefined ? '' : this.$t(key)
     },

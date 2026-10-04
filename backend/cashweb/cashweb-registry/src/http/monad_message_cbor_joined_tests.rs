@@ -676,14 +676,13 @@ impl TwoRelays {
                 .unwrap();
             assert_eq!(published.status(), 200);
         }
-        let pair = Self {
+        Self {
             a,
             b,
             chain,
             work: tempfile::tempdir().unwrap(),
             rpc: (rpc_stop, rpc_task),
-        };
-        pair
+        }
     }
     /// Point the wallet at one relay, as a device configured for that relay is.
     fn wallet_uses(&self, relay: &RelayNode) {
@@ -809,6 +808,22 @@ async fn two_relays_recipient_relay_down_then_restarted_gets_the_message_exactly
         assert!(held["terminal"].is_null());
         assert_eq!(pair.a.pending_forwards(), 1);
         assert_eq!(pair.chain.count("eth_sendRawTransaction"), 0);
+        // The same bytes arriving back at relay A as a forward (as they would if another relay
+        // disagreed about where the recipient lives) are not passed on again from here: a
+        // retryable 503, and no new attempt at forwarding.
+        let rows = pair.a.fixture.registry.directory_subjects().unwrap();
+        let (identity, row) = rows.forwards().unwrap().into_iter().next().unwrap();
+        let bounced = reqwest::Client::new()
+            .put(format!("{}/message/monad/cbor", pair.a.url()))
+            .header("content-type", &row.content_type)
+            .header(crate::directory_federation::FORWARDED_HEADER, "1")
+            .body(rows.forward_body(&identity).unwrap().unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bounced.status(), 503);
+        let after = rows.forward(&identity).unwrap().unwrap();
+        assert_eq!((after.attempts, after.done), (row.attempts, false));
         pair.a.retry_forwards().await;
         assert_eq!(pair.a.pending_forwards(), 1);
         // It comes back as a fresh process. Relay A's timer passes the message on; nobody

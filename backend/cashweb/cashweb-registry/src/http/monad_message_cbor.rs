@@ -79,15 +79,19 @@ pub(crate) async fn handle_put(
         let directory = owner.directory().ok_or(CanonicalError::Unavailable)?;
         let federation = directory.federation().cloned();
         let identity = request.submission_identity();
+        let forwarded = headers.contains_key(crate::directory_federation::FORWARDED_HEADER);
         // A message this relay already accepted for another relay: the same bytes get the same
-        // handling, whatever has changed since.
+        // handling, whatever has changed since. Not when another relay passed these bytes on:
+        // a forwarded message is delivered here or refused, never sent on again, even if this
+        // relay also holds it for forwarding (two relays that disagree about where the
+        // recipient lives would otherwise hand it back and forth).
         if let Some(federation) = &federation {
             let known = server
                 .registry
                 .directory_subjects()
                 .and_then(|rows| rows.forward(&identity))
                 .map_err(|_| CanonicalError::Unavailable)?;
-            if known.is_some() {
+            if known.is_some() && !forwarded {
                 let (status, body) = federation
                     .forward(&directory, &identity)
                     .await
@@ -126,7 +130,7 @@ pub(crate) async fn handle_put(
             // A message another relay passed on is delivered here or not at all. If this relay
             // is not the recipient's home (it moved, or this copy of its entry is behind), the
             // forwarding relay keeps the message and looks the home up again.
-            if headers.contains_key(crate::directory_federation::FORWARDED_HEADER) {
+            if forwarded {
                 return Err(CanonicalError::Unavailable);
             }
             let Some(federation) = federation.as_ref().filter(|f| f.forwarding()) else {

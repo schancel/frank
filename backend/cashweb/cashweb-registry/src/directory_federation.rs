@@ -8,14 +8,15 @@
 //! Entries: whole chains are copied, never only heads. A relay tells its peers when a key's
 //! chain changed, and each relay periodically compares its list of keys with every peer's. A
 //! relay asked for a key or address it does not hold asks its peers before answering "unknown".
-//! Conflicting chains are never resolved by timestamp: the ordinary fork rule quarantines them.
+//! Conflicting chains are never resolved by timestamp and never quarantined: every relay keeps
+//! the branch whose record at the first difference has the lower hash, so all relays converge.
 //!
 //! Messages: a submission for a recipient whose entry names another relay is checked, written
 //! durably, and re-sent to that relay until it gives a final answer. Re-sending the same bytes is
 //! idempotent on the receiving relay, so the recipient gets one message however often either
 //! relay restarts.
 use crate::{
-    directory_runtime::{DirectoryRuntime, Operation, RuntimeError},
+    directory_runtime::{DirectoryRuntime, RuntimeError},
     store::directory_subjects::ForwardRow,
 };
 use std::{

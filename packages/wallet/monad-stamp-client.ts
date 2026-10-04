@@ -1726,10 +1726,6 @@ export class MonadCanonicalStampClient {
         sharedPoint: parsed.typed.sharedPoint,
         dleqProof: parsed.typed.dleqProof,
       })
-      const digest = recipientPayloadDigest(
-        input.prepared.network,
-        input.prepared.payload,
-      )
       const destination = (i: number) =>
         canonicalStampDestination({
           network: input.prepared.network,
@@ -1740,8 +1736,6 @@ export class MonadCanonicalStampClient {
               : new Uint8Array(),
           childIndex: i,
         })
-      const calldata = (i: number) =>
-        hexlify(buildMonadStampCalldata(paymentCommitment(digest, i)))
       const protectedIndices = new Set([
         ...this.journal
           .getIntents()
@@ -1776,10 +1770,9 @@ export class MonadCanonicalStampClient {
           throw new Error('canonical-wallet:pool-custody-mismatch')
         const quote = Transaction.from(
           (
-            await signer.populateUnsignedCall(
+            await signer.populateUnsignedTransfer(
               hexlify(destination(0).address),
               1n,
-              calldata(0),
               input.overrides,
             )
           ).unsignedSerialized,
@@ -1813,10 +1806,11 @@ export class MonadCanonicalStampClient {
       for (const [i, selection] of selected.entries()) {
         const quote = frozenQuotes.get(selection.index)!
         const signer = this.wallet.pool.getSigner(selection.index, this.wallet)
-        const frozen = await signer.populateUnsignedCall(
+        // Plain value transfer to the one-off child address: no calldata, so nothing on
+        // chain marks this as a Frank message payment (#826).
+        const frozen = await signer.populateUnsignedTransfer(
           hexlify(destination(i).address),
           selection.paymentValueWei,
-          calldata(i),
           {
             nonce: quote.nonce,
             chainId: quote.chainId,

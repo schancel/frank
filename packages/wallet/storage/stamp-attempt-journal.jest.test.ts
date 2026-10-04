@@ -90,9 +90,12 @@ import {
   cborMap,
   decodeCanonical,
   encodeFrame,
+  defaultContext,
   fromHex,
   parseFrame,
+  recipientPayloadDigest,
   toHex,
+  validateFrame,
 } from '@frank/codec'
 import {
   freezeCanonicalRequest,
@@ -147,7 +150,6 @@ async function canonicalFixture(
     gasLimit: 100000n,
     maxFeePerGas: 2n,
     maxPriorityFeePerGas: 1n,
-    data: '0x' + captured.t4,
   })
   const tx = Transaction.from(raw)
   const delivery = encodeFrame(
@@ -744,13 +746,30 @@ async function recoveryStorageFixture(
   journal: LevelCanonicalStampAttemptJournal,
   count = 1,
   valueWei = 1n,
+  calldata?: (commitment: Uint8Array) => string,
+  /** A second sealed body under the same ephemeral key, shared point and proof. */
+  otherBody?: { obligationId: string },
 ) {
   const fixture = await canonicalFixture()
+  if (otherBody) {
+    const sealed = validateFrame(fixture.prepared.payload, defaultContext())
+    if (sealed.kind !== 'parsed') throw new Error('fixture payload')
+    const fields = new Map(sealed.payload as Map<bigint, unknown>)
+    const box = Uint8Array.from(fields.get(4n) as Uint8Array)
+    box[box.length - 1] ^= 1
+    fields.set(4n, box)
+    fixture.prepared.payload = encodeFrame(
+      { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
+      fields as never,
+    )
+  }
   const envelope = inspectCanonicalPreparedEnvelope(
     fixture.prepared.payload,
     fixture.prepared.context,
   )
-  const digest = fromHex(wire.t3)
+  const digest = otherBody
+    ? recipientPayloadDigest(wire.network, fixture.prepared.payload)
+    : fromHex(wire.t3)
   const payments = [],
     transactions = []
   for (let childIndex = 0; childIndex < count; childIndex++) {
@@ -770,7 +789,7 @@ async function recoveryStorageFixture(
       gasLimit: 100000n,
       maxFeePerGas: 2n,
       maxPriorityFeePerGas: 1n,
-      data: '0x504f4e4402' + toHex(commitment),
+      ...(calldata ? { data: calldata(commitment) } : {}),
     })
     const tx = Transaction.from(raw)
     transactions.push(getBytes(raw))
@@ -800,7 +819,7 @@ async function recoveryStorageFixture(
       [4, payments],
     ]),
   )
-  const obligationId = 'cd'.repeat(32)
+  const obligationId = otherBody?.obligationId ?? 'cd'.repeat(32)
   const request = freezeCanonicalRequest(
     { delivery, context: fixture.prepared.context, transactions },
     `frank-recovery-${obligationId.slice(0, 32)}`,
@@ -1158,6 +1177,44 @@ describe('retained canonical recovery durability', () => {
       })
       expect(journal.getAll()).toEqual([])
       expect(journal.getIntents()).toEqual([])
+    })
+  })
+  it('refuses a recovery payment that carries calldata, including the retired POND commitment', async () => {
+    await withCanonicalJournal(async journal => {
+      for (const calldata of [
+        (commitment: Uint8Array) => '0x504f4e4402' + toHex(commitment),
+        () => '0x00',
+      ]) {
+        const tagged = await recoveryStorageFixture(journal, 1, 1n, calldata)
+        expect(() => journal.importRecovery(tagged)).toThrow('invalid')
+      }
+      expect(journal.getImportedRecoveries()).toEqual([])
+      const plain = await recoveryStorageFixture(journal)
+      const imported = await journal.importRecovery(plain)
+      expect(
+        Transaction.from(hexlify(imported.request.parts.transactions[0])).data,
+      ).toBe('0x')
+    })
+  })
+  it('refuses a second obligation that lists an already imported payment for another body', async () => {
+    await withCanonicalJournal(async journal => {
+      const first = await recoveryStorageFixture(journal)
+      const second = await recoveryStorageFixture(journal, 1, 1n, undefined, {
+        obligationId: 'ce'.repeat(32),
+      })
+      // Same signed payment, same destination, different sealed body.
+      expect(second.request.parts.transactions).toEqual(
+        first.request.parts.transactions,
+      )
+      expect(second.request.identity.payload_hash).not.toBe(
+        first.request.identity.payload_hash,
+      )
+      await journal.importRecovery(first)
+      await expect(journal.importRecovery(second)).rejects.toThrow('conflict')
+      await journal.Close()
+      await journal.Open()
+      await expect(journal.importRecovery(second)).rejects.toThrow('conflict')
+      expect(journal.getImportedRecoveries()).toHaveLength(1)
     })
   })
   it('retains all 64 verified members and applies shared record backpressure without eviction', async () => {

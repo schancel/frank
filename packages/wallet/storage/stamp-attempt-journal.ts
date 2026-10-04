@@ -11,7 +11,7 @@ import {
   toHex,
   paymentCommitment,
 } from '@frank/codec'
-import { hexlify, Transaction, sha256, toUtf8Bytes } from 'ethers'
+import { hexlify, keccak256, Transaction, sha256, toUtf8Bytes } from 'ethers'
 import {
   restoreCanonicalRequest,
   equalCanonicalRequests,
@@ -263,7 +263,8 @@ function publicRecovery(
             childIndex,
           ),
         ) ||
-      tx.data.toLowerCase() !== '0x504f4e4402' + toHex(payment.commitment)
+      // A canonical stamp payment is a plain value transfer; calldata of any kind is refused.
+      tx.data !== '0x'
     )
       canonicalFail('invalid')
     return {
@@ -1195,6 +1196,7 @@ export class LevelCanonicalStampAttemptJournal {
         tx.unsignedSerialized !== member.unsignedSerialized ||
         tx.chainId.toString() !== publicRow.prepared.chainId ||
         tx.to === null ||
+        tx.data !== '0x' ||
         tx.value <= 0n ||
         tx.gasLimit <= 0n ||
         (tx.type !== 0 && tx.type !== 2)
@@ -1356,6 +1358,10 @@ export class LevelCanonicalStampAttemptJournal {
     const row = validateRecovery(candidate)
     this.assertRecoveryBinding(row)
     return this.serialize(async () => {
+      // A signed transaction's hash is the Keccak-256 of its exact raw bytes.
+      const paymentHashes = (item: CanonicalExactRequest) =>
+        item.parts.transactions.map(raw => keccak256(raw))
+      const nextPayments = new Set(paymentHashes(request))
       for (const other of this.recoveries.values()) {
         if (other.obligationId === row.obligationId) continue
         const retained = publicRecovery(other),
@@ -1368,7 +1374,10 @@ export class LevelCanonicalStampAttemptJournal {
             retained.request.identity.recipient ===
               next.request.identity.recipient &&
             retained.request.identity.payload_hash ===
-              next.request.identity.payload_hash)
+              next.request.identity.payload_hash) ||
+          // Nothing on chain names the message a payment was for, so one signed payment
+          // may back at most one retained obligation.
+          paymentHashes(retained.request).some(hash => nextPayments.has(hash))
         )
           canonicalFail('conflict')
       }

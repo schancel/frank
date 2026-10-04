@@ -325,14 +325,14 @@ fn typed_origin_independent_rust_welcome_and_reveal() {
         let frame = encode_blackjack_item(&item).unwrap();
         let record = json!({"id":id,"origin":"rust","operation":"typed","context":"type18-reader1","frameHex":hex::encode(&frame),"expected":{"result":"accept"},"application":application(&item),"note":"Independently encoded through the active Rust public typed writer for #782."});
         println!("BLACKJACK_ORIGIN {}", record);
-        if let Some(expected) = corpus()["frames"]
+        let c = corpus();
+        let expected = c["frames"]
             .as_array()
             .unwrap()
             .iter()
             .find(|f| f["id"] == id)
-        {
-            assert_eq!(*expected, record);
-        }
+            .expect("active corpus must contain each genuinely emitted Rust origin");
+        assert_eq!(*expected, record);
         assert_eq!(project_blackjack_item(&parsed(&frame)).unwrap().item, item);
     }
 }

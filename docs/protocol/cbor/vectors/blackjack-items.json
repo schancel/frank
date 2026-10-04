@@ -1,6 +1,6 @@
 {
   "format": "PROPOSED-blackjack-items-v1",
-  "status": "proposal-only; expected typed18 verdicts are normative until #782, not executed active codec results",
+  "status": "active type18 typed facade corpus; historical proposal records preserved unchanged",
   "authority": {
     "issue": 771,
     "approvedArtifactSha256": "f58473a93079048315d85f3250fb45b0418614568de6edd40e4b17bbbb02b139",
@@ -3397,6 +3397,49 @@
         "outcome": "push"
       },
       "note": "Independently encoded through the active TypeScript public typed writer for #782."
+    },
+    {
+      "application": {
+        "action": "welcome",
+        "feeHintWei": "0",
+        "gameId": "welcome",
+        "maxWagerWei": "9999999999999999999999999999999999999999",
+        "minWagerWei": "18446744073709551616",
+        "rules": "Rust café / café — 🎴",
+        "type": "blackjack-move"
+      },
+      "context": "type18-reader1",
+      "expected": {
+        "result": "accept"
+      },
+      "frameHex": "46524e4b010000009ea4001201010201035894a6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000100000000000000000b58200000000000000000000000000000001d6329f1c35ca4bfabb9f560ffffffffff0c582000000000000000000000000000000000000000000000000000000000000000000d781c5275737420636166c3a9202f2063616665cc8120e2809420f09f8eb4",
+      "id": "rust-welcome-wide-unicode",
+      "note": "Independently encoded through the active Rust public typed writer for #782.",
+      "operation": "typed",
+      "origin": "rust"
+    },
+    {
+      "application": {
+        "action": "reveal",
+        "dealerCards": [
+          13,
+          0,
+          51
+        ],
+        "gameId": "rust-🎴-é",
+        "outcome": "player_blackjack",
+        "serverSeed": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        "type": "blackjack-move"
+      },
+      "context": "type18-reader1",
+      "expected": {
+        "result": "accept"
+      },
+      "frameHex": "46524e4b0100000067a400120101020103585da5006d727573742df09f8eb42d65cc81010507830d001833087840616263646566303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566303132333435363738390903",
+      "id": "rust-reveal-unicode",
+      "note": "Independently encoded through the active Rust public typed writer for #782.",
+      "operation": "typed",
+      "origin": "rust"
     }
   ],
   "writerInputs": [
@@ -4257,5 +4300,20 @@
     "preservedFrames": 90,
     "preservedWriterInputs": 79,
     "runtimeOwner": 780
+  },
+  "activeProvenance": {
+    "implementationBase": "71e2d6355081d5a7e0b8e091637920f05a9fe677",
+    "historicalProposalFrames": 90,
+    "historicalWriterInputs": 79,
+    "typedTypescriptOrigins": [
+      "typescript-welcome-wide-unicode",
+      "typescript-reveal-unicode"
+    ],
+    "typedRustOrigins": [
+      "rust-welcome-wide-unicode",
+      "rust-reveal-unicode"
+    ],
+    "rustOriginGeneration": "Actual encode_blackjack_item execution; independent typed writer output consumed by both public facades. Historical provenance above describes the preserved proposal records only.",
+    "scope": "Codec representation and traversal proof; no runtime authentication, game or payment authority."
   }
 }

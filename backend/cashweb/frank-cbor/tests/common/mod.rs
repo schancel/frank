@@ -420,8 +420,8 @@ fn context_for(types: impl Iterator<Item = u32>) -> ValidationContext {
         // Reader version 2 reads type 4 and production type 5 at schema 2.
         reader_version: 2,
         supported_schemas: types
-            // Freeze historical readers when new Forum read types are allocated.
-            .filter(|type_id| !(12..=15).contains(type_id))
+            // Freeze historical readers at type17, preserving the Forum read-type omission.
+            .filter(|type_id| *type_id <= 17 && !(12..=15).contains(type_id))
             .map(|type_id| SupportedSchema {
                 type_id,
                 schema_version: if type_id == 4 || type_id == 5 { 2 } else { 1 },

@@ -650,34 +650,56 @@ pub struct PreviewDirectoryRoles {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlackjackAction<H, Q> {
     /// Wager request.
-    Bet { wager_tx_hash: H },
+    Bet {
+        /// Exact wager transaction hash.
+        wager_tx_hash: H,
+    },
     /// Initial two-card hand and dealer up-card.
     Deal {
+        /// Exact seed commitment hash.
         server_seed_hash: H,
+        /// Ordered initial two-card hand.
         player_cards: Vec<u32>,
+        /// Dealer's distinct visible card.
         dealer_up_card: u32,
     },
     /// Hit request.
     HitRequest,
     /// Hit response.
-    HitResponse { player_cards: Vec<u32> },
+    HitResponse {
+        /// Ordered updated hand.
+        player_cards: Vec<u32>,
+    },
     /// Stand request.
     Stand,
     /// Double request.
-    DoubleRequest { double_wager_tx_hash: H },
+    DoubleRequest {
+        /// Exact additional wager transaction hash.
+        double_wager_tx_hash: H,
+    },
     /// Three-card double response.
-    DoubleResponse { player_cards: Vec<u32> },
+    DoubleResponse {
+        /// Ordered three-card hand.
+        player_cards: Vec<u32>,
+    },
     /// Reveal; seed is lowercase ASCII text, never decoded binary.
     Reveal {
+        /// Ordered final dealer hand.
         dealer_cards: Vec<u32>,
+        /// Exactly64 lowercase ASCII hex characters as text.
         server_seed: String,
+        /// Allocated result, without economic verification.
         outcome: BlackjackOutcome,
     },
     /// Exact decimal presentation or 32-byte unsigned quantity, with optional-presence retention.
     Welcome {
+        /// Positive minimum wager.
         min_wager_wei: Q,
+        /// Maximum wager, at least the minimum.
         max_wager_wei: Q,
+        /// Optional fee; zero differs from absence.
         fee_hint_wei: Option<Q>,
+        /// Optional rules; empty differs from absence.
         rules: Option<String>,
     },
 }

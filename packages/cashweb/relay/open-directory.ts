@@ -271,6 +271,7 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
   let closed = false
   let publishing: Promise<DirectoryEntry> | undefined
   let renewTriedAt = 0
+  let published = false
 
   const now = () => timestamp(deps.nowNs())
   /** One operation at a time per account, so a store never sees interleaved admissions. */
@@ -839,9 +840,14 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     return entry(admitted.handle, admitted.current)
   }
   const publish = (): Promise<DirectoryEntry> =>
-    (publishing ??= publishOnce().finally(() => {
-      publishing = undefined
-    }))
+    (publishing ??= publishOnce()
+      .then(entry => {
+        published = true
+        return entry
+      })
+      .finally(() => {
+        publishing = undefined
+      }))
 
   return {
     network,
@@ -849,8 +855,11 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     publish,
     async selfCurrent() {
       const handle = handles.get(selfSubject)
-      if (!handle?.head)
-        throw new OpenDirectoryError('unpublished', selfAddress)
+      if (!handle?.head) {
+        if (!published) throw new OpenDirectoryError('unpublished', selfAddress)
+        // The store was dropped after a storage failure: reopen it through a normal publish.
+        return (await publish()).current
+      }
       if (
         renewalDue(handle.head) &&
         Date.now() - renewTriedAt > RENEW_RETRY_MS

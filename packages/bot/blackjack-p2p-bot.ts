@@ -89,8 +89,11 @@ export interface BotAccount {
 export type OutboxPhase = 'queued' | 'sending' | 'attempt' | 'delivered' | 'dead'
 
 export interface OutboxRow {
-  /** One message per key, ever. */
+  /** One message per key, ever. The key names what the message is for (the debt it pays, the
+   * move it makes), not when it was decided: `refund|peer|game|ref`, `reveal|peer|game`... */
   key: string
+  /** `peer|game` of the hand the message belongs to. */
+  hand?: string
   to: string
   item: HandItem
   stampWei: string
@@ -226,7 +229,8 @@ export class BlackjackP2pBot {
 
   private events(peer: string, gameId: string): HandEvent[] {
     const games = this.state.hands[lower(peer)]
-    const log = games && Object.hasOwn(games, gameId) ? games[gameId] : []
+    // Both maps have no prototype, so an unknown key is simply absent.
+    const log = games?.[gameId] ?? []
     return log.map(e => ({
       ...e,
       stampWei: BigInt(e.stampWei),
@@ -362,10 +366,17 @@ export class BlackjackP2pBot {
     this.save()
   }
 
-  private enqueue(key: string, to: string, item: HandItem, stampWei: bigint): void {
+  private enqueue(
+    key: string,
+    hand: string | undefined,
+    to: string,
+    item: HandItem,
+    stampWei: bigint,
+  ): void {
     if (this.state.outbox.some(row => row.key === key)) return
     this.state.outbox.push({
       key,
+      ...(hand === undefined ? {} : { hand }),
       to,
       item,
       stampWei: stampWei.toString(),
@@ -387,8 +398,7 @@ export class BlackjackP2pBot {
           state.phase === 'awaiting_deal' &&
           this.state.outbox.some(
             row =>
-              row.key === `${peer}|${gameId}|${state.seen.length}` &&
-              row.item.action === 'deal' &&
+              row.key === `deal|${peer}|${gameId}` &&
               row.phase !== 'dead',
           )
         if (dealt || dealing) total += state.wagerWei * DEALER_COVER_MULTIPLE
@@ -428,7 +438,13 @@ export class BlackjackP2pBot {
         seed: this.newSeed(peer, gameId),
       })
       if ('item' in built)
-        this.enqueue(`challenge|${peer}`, address, built.item, this.config.stampWei)
+        this.enqueue(
+          `challenge|${peer}`,
+          undefined,
+          address,
+          built.item,
+          this.config.stampWei,
+        )
     }
     if (persist) this.save()
   }
@@ -446,9 +462,22 @@ export class BlackjackP2pBot {
         if (!state) continue
         const role = roleOf(state, own)
         const to = role === 'dealer' ? state.player : state.dealer
-        // The position in the hand: a hand at the same position always gives the same key.
-        const key = `${peer}|${gameId}|${state.seen.length}`
-        if (this.state.outbox.some(row => row.key === key)) continue
+        const hand = `${peer}|${gameId}`
+        // One message per hand at a time: nothing new is decided for a hand while a message of
+        // it is still on its way, so a decision is never made on a state that is about to change.
+        if (
+          this.state.outbox.some(
+            row =>
+              row.hand === hand &&
+              (row.phase === 'queued' ||
+                row.phase === 'sending' ||
+                row.phase === 'attempt'),
+          )
+        )
+          continue
+        /** Queues the hand's next message under the key of what it is for. */
+        const queue = (item: HandItem, stampWei: bigint) =>
+          this.enqueue(messageKey(hand, item, state), hand, to, item, stampWei)
         // Finished hands with nothing owed need no balance and no message.
         if (
           (state.phase === 'resolved' || state.phase === 'refunded') &&
@@ -467,7 +496,7 @@ export class BlackjackP2pBot {
                 this.newSeed(peer, gameId),
             })
             if ('item' in built && BigInt(maxBet(built.item)) >= this.config.stampWei)
-              this.enqueue(key, to, built.item, this.config.stampWei)
+              queue(built.item, this.config.stampWei)
             else this.log(`cannot cover the challenge ${gameId} from ${peer}`)
             continue
           }
@@ -481,7 +510,7 @@ export class BlackjackP2pBot {
           )
             step = refundBetStep(state)
           if (step)
-            this.enqueue(key, to, step.item, step.payWei ?? this.config.stampWei)
+            queue(step.item, step.payWei ?? this.config.stampWei)
           continue
         }
         if (role !== 'player') continue
@@ -493,15 +522,30 @@ export class BlackjackP2pBot {
             a < b ? a : b,
           )
           if (wager >= this.config.stampWei)
-            this.enqueue(key, to, { ...base, action: 'bet' }, wager)
+            queue({ ...base, action: 'bet' }, wager)
           else this.log(`cannot afford a bet in ${gameId}`)
         } else if (moves.length) {
           // The player's choices are few: draw below 17, otherwise stand.
           const action = handValue(state.playerCards).total < 17 ? 'hit' : 'stand'
-          this.enqueue(key, to, { ...base, action }, this.config.stampWei)
+          queue({ ...base, action }, this.config.stampWei)
         }
       }
     this.save()
+  }
+}
+
+/** The outbox key of a hand's message: what it pays or which move it is. The same debt or move
+ * always gives the same key, so it is queued, and paid, once. */
+function messageKey(hand: string, item: HandItem, state: HandState): string {
+  switch (item.action) {
+    case 'refund':
+      return `refund|${hand}|${item.ref}`
+    case 'card':
+      return `card|${hand}|${item.playerCards.length}`
+    case 'hit':
+      return `hit|${hand}|${state.playerCards.length}`
+    default:
+      return `${item.action}|${hand}`
   }
 }
 

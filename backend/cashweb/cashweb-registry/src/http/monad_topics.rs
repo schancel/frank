@@ -3,15 +3,6 @@
 //! ordinary DB records and unsupported wallet obligations remain retained; these routes
 //! never decode, translate, settle or replay their predecessor representations.
 
-use std::{fmt, sync::OnceLock};
-use axum::{
-    body::Bytes,
-    extract::{Path, RawQuery},
-    http::{header::{ACCEPT, CONTENT_TYPE, VARY}, HeaderMap, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
-    Extension, Json,
-};
-use serde::Serialize;
 use crate::{
     http::server::RegistryServer,
     monad_http::{Address, HttpTransport, JsonRpcTransport},
@@ -20,6 +11,18 @@ use crate::{
     registry::Registry,
     store::forum::{invalid, ForumError},
 };
+use axum::{
+    body::Bytes,
+    extract::{Path, RawQuery},
+    http::{
+        header::{ACCEPT, CONTENT_TYPE, VARY},
+        HeaderMap, HeaderValue, StatusCode,
+    },
+    response::{IntoResponse, Response},
+    Extension, Json,
+};
+use serde::Serialize;
+use std::{fmt, sync::OnceLock};
 
 /// Errors reading required topic-vote gate configuration from the environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,28 +232,54 @@ fn forum_error(error: crate::store::forum::ForumError) -> Response {
     )
 }
 
-
 fn request_error(status: StatusCode, code: &'static str, detail: &str) -> Response {
-    vary_accept((status, Json(MonadTopicErrorBody { error: code, detail: detail.into() })).into_response())
+    vary_accept(
+        (
+            status,
+            Json(MonadTopicErrorBody {
+                error: code,
+                detail: detail.into(),
+            }),
+        )
+            .into_response(),
+    )
 }
 
 fn write_headers(headers: &HeaderMap, body: &[u8]) -> Option<Response> {
-    let bare_cbor = headers.get(CONTENT_TYPE).and_then(|v| v.to_str().ok())
+    let bare_cbor = headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.trim().eq_ignore_ascii_case("application/cbor"));
     if !bare_cbor {
-        return Some(request_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_topic_media", "canonical Forum requires bare application/cbor"));
+        return Some(request_error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported_topic_media",
+            "canonical Forum requires bare application/cbor",
+        ));
     }
     if !topic_accepts(headers, "application/cbor") {
-        return Some(request_error(StatusCode::NOT_ACCEPTABLE, "topic_not_acceptable", "canonical Forum offers application/cbor"));
+        return Some(request_error(
+            StatusCode::NOT_ACCEPTABLE,
+            "topic_not_acceptable",
+            "canonical Forum offers application/cbor",
+        ));
     }
     if body.len() as u64 > MAX_TOPIC_EVENT_FRAME_BYTES {
-        return Some(request_error(StatusCode::PAYLOAD_TOO_LARGE, "topic_event_too_large", "topic event exceeds the frame limit"));
+        return Some(request_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "topic_event_too_large",
+            "topic event exceeds the frame limit",
+        ));
     }
     None
 }
 
 async fn forum_submission<T: JsonRpcTransport + Clone>(
-    registry: &Registry, transport: &T, burn: Address, frame: &[u8], post: bool,
+    registry: &Registry,
+    transport: &T,
+    burn: Address,
+    frame: &[u8],
+    post: bool,
 ) -> Response {
     let event = match parse_topic_event(frame, registry.expected_cbor_network()) {
         Ok(event) => event,
@@ -260,7 +289,11 @@ async fn forum_submission<T: JsonRpcTransport + Clone>(
     match &event {
         TopicEvent::Post(value) if post && value.schema_version >= 2 => (),
         TopicEvent::Vote(value) if !post => {
-            match registry.forum().contains(registry.expected_cbor_network(), policy, &value.target_hash) {
+            match registry.forum().contains(
+                registry.expected_cbor_network(),
+                policy,
+                &value.target_hash,
+            ) {
                 Ok(true) => (),
                 Ok(false) => return forum_error(ForumError::NotFound),
                 Err(error) => return forum_error(error),
@@ -268,38 +301,92 @@ async fn forum_submission<T: JsonRpcTransport + Clone>(
         }
         _ => return forum_error(invalid("request does not match the canonical Forum route")),
     }
-    match registry.forum().submit(registry.expected_cbor_network(), policy, frame, transport, PollConfig::default()).await {
+    match registry
+        .forum()
+        .submit(
+            registry.expected_cbor_network(),
+            policy,
+            frame,
+            transport,
+            PollConfig::default(),
+        )
+        .await
+    {
         Ok(frame) => forum_bytes(frame),
         Err(error) => forum_error(error),
     }
 }
 
-async fn put_forum(server: RegistryServer, headers: HeaderMap, body: Bytes, post: bool) -> Response {
-    if let Some(response) = write_headers(&headers, &body) { return response; }
-    let Ok(config) = monad_topic_gate().as_ref() else { return forum_error(ForumError::Unavailable); };
+async fn put_forum(
+    server: RegistryServer,
+    headers: HeaderMap,
+    body: Bytes,
+    post: bool,
+) -> Response {
+    if let Some(response) = write_headers(&headers, &body) {
+        return response;
+    }
+    let Ok(config) = monad_topic_gate().as_ref() else {
+        return forum_error(ForumError::Unavailable);
+    };
     let transport = HttpTransport::new(config.rpc_url.clone());
-    forum_submission(&server.registry, &transport, config.burn_address, &body, post).await
+    forum_submission(
+        &server.registry,
+        &transport,
+        config.burn_address,
+        &body,
+        post,
+    )
+    .await
 }
 
-pub async fn handle_put_monad_topic_post(Extension(server): Extension<RegistryServer>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn handle_put_monad_topic_post(
+    Extension(server): Extension<RegistryServer>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     put_forum(server, headers, body, true).await
 }
 
-pub async fn handle_put_monad_topic_vote(Extension(server): Extension<RegistryServer>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn handle_put_monad_topic_vote(
+    Extension(server): Extension<RegistryServer>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     put_forum(server, headers, body, false).await
 }
 
-pub async fn handle_get_monad_topic_post(Path(hash): Path<String>, Extension(server): Extension<RegistryServer>, headers: HeaderMap) -> Response {
+pub async fn handle_get_monad_topic_post(
+    Path(hash): Path<String>,
+    Extension(server): Extension<RegistryServer>,
+    headers: HeaderMap,
+) -> Response {
     if !topic_accepts(&headers, "application/cbor") {
-        return request_error(StatusCode::NOT_ACCEPTABLE, "topic_not_acceptable", "canonical Forum offers application/cbor");
+        return request_error(
+            StatusCode::NOT_ACCEPTABLE,
+            "topic_not_acceptable",
+            "canonical Forum offers application/cbor",
+        );
     }
-    let hash = match hex::decode(hash).ok().and_then(|v| <[u8;32]>::try_from(v).ok()) {
+    let hash = match hex::decode(hash)
+        .ok()
+        .and_then(|v| <[u8; 32]>::try_from(v).ok())
+    {
         Some(hash) => hash,
         None => return forum_error(invalid("target hash must be 32 decoded bytes")),
     };
-    let Ok(config) = monad_topic_gate().as_ref() else { return forum_error(ForumError::Unavailable); };
-    let policy = crate::forum::policy(server.registry.expected_monad_chain_id(), config.burn_address);
-    match server.registry.forum().view(server.registry.expected_cbor_network(), policy, &hash) {
+    let Ok(config) = monad_topic_gate().as_ref() else {
+        return forum_error(ForumError::Unavailable);
+    };
+    let policy = crate::forum::policy(
+        server.registry.expected_monad_chain_id(),
+        config.burn_address,
+    );
+    match server
+        .registry
+        .forum()
+        .view(server.registry.expected_cbor_network(), policy, &hash)
+    {
         Ok(Some(frame)) => forum_bytes(frame),
         Ok(None) => forum_error(ForumError::NotFound),
         Err(error) => forum_error(error),
@@ -307,16 +394,33 @@ pub async fn handle_get_monad_topic_post(Path(hash): Path<String>, Extension(ser
 }
 
 /// Status never admits, broadcasts or borrows another operation's observations.
-pub async fn handle_forum_status(Extension(server): Extension<RegistryServer>, headers: HeaderMap, body: Bytes) -> Response {
-    if let Some(response) = write_headers(&headers, &body) { return response; }
-    let Ok(config) = monad_topic_gate().as_ref() else { return forum_error(ForumError::Unavailable); };
+pub async fn handle_forum_status(
+    Extension(server): Extension<RegistryServer>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Some(response) = write_headers(&headers, &body) {
+        return response;
+    }
+    let Ok(config) = monad_topic_gate().as_ref() else {
+        return forum_error(ForumError::Unavailable);
+    };
     match parse_topic_event(&body, server.registry.expected_cbor_network()) {
-        Ok(TopicEvent::Post(post)) if post.schema_version < 2 => return forum_error(invalid("historical Forum operation is unsupported")),
+        Ok(TopicEvent::Post(post)) if post.schema_version < 2 => {
+            return forum_error(invalid("historical Forum operation is unsupported"))
+        }
         Err(error) => return forum_error(invalid(error)),
         _ => (),
     }
-    let policy = crate::forum::policy(server.registry.expected_monad_chain_id(), config.burn_address);
-    match server.registry.forum().status(server.registry.expected_cbor_network(), policy, &body) {
+    let policy = crate::forum::policy(
+        server.registry.expected_monad_chain_id(),
+        config.burn_address,
+    );
+    match server
+        .registry
+        .forum()
+        .status(server.registry.expected_cbor_network(), policy, &body)
+    {
         Ok(frame) => forum_bytes(frame),
         Err(error) => forum_error(error),
     }
@@ -403,17 +507,32 @@ fn forum_query_component(raw: &str) -> crate::store::forum::Result<String> {
     String::from_utf8(decoded).map_err(invalid)
 }
 
-
-pub async fn handle_list_monad_topic_posts(RawQuery(raw): RawQuery, Extension(server): Extension<RegistryServer>, headers: HeaderMap) -> Response {
+pub async fn handle_list_monad_topic_posts(
+    RawQuery(raw): RawQuery,
+    Extension(server): Extension<RegistryServer>,
+    headers: HeaderMap,
+) -> Response {
     if !topic_accepts(&headers, "application/cbor") {
-        return request_error(StatusCode::NOT_ACCEPTABLE, "topic_not_acceptable", "canonical Forum offers application/cbor");
+        return request_error(
+            StatusCode::NOT_ACCEPTABLE,
+            "topic_not_acceptable",
+            "canonical Forum offers application/cbor",
+        );
     }
     forum_page(&server.registry, raw.as_deref(), false)
 }
 
-pub async fn handle_list_topics(RawQuery(raw): RawQuery, Extension(server): Extension<RegistryServer>, headers: HeaderMap) -> Response {
+pub async fn handle_list_topics(
+    RawQuery(raw): RawQuery,
+    Extension(server): Extension<RegistryServer>,
+    headers: HeaderMap,
+) -> Response {
     if !topic_accepts(&headers, "application/cbor") {
-        return request_error(StatusCode::NOT_ACCEPTABLE, "topic_not_acceptable", "canonical Forum offers application/cbor");
+        return request_error(
+            StatusCode::NOT_ACCEPTABLE,
+            "topic_not_acceptable",
+            "canonical Forum offers application/cbor",
+        );
     }
     forum_page(&server.registry, raw.as_deref(), true)
 }
@@ -454,9 +573,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        monad_evm_tx::decode_signed_transaction,
-        monad_http::MonadRpcError,
-        store::db::Db,
+        monad_evm_tx::decode_signed_transaction, monad_http::MonadRpcError, store::db::Db,
     };
     use cashweb_payload::chain_adapter::{ChainAdapter, MempoolAcceptResult, SubmitTxOutcome};
 
@@ -629,8 +746,8 @@ mod tests {
         let (directory, registry) = test_registry();
         let transport = MockTransport::default();
         let over = observation_with_amount(0, None, false, i64::MAX as u128 + 1);
-        let response = forum_submission(&registry, &transport, burn_address(), over.frame(), true)
-            .await;
+        let response =
+            forum_submission(&registry, &transport, burn_address(), over.frame(), true).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(transport.call_count(), 0);
         assert!(!directory.path().join("db.rocksdb.forum-cbor-v1").exists());
@@ -640,8 +757,7 @@ mod tests {
             panic!()
         };
         let frame = cbor_submission(&post.post_frame, vote.event.burn_tx());
-        let response = forum_submission(&registry, &transport, burn_address(), &frame, true)
-            .await;
+        let response = forum_submission(&registry, &transport, burn_address(), &frame, true).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(transport.call_count(), 0);
         assert!(!directory.path().join("db.rocksdb.forum-cbor-v1").exists());
@@ -657,8 +773,8 @@ mod tests {
         transport.set("eth_sendRawTransaction", Value::String(hash.clone()));
         transport.set("eth_getTransactionReceipt",serde_json::json!({"transactionHash":hash,"blockHash":hex_hash(2),"blockNumber":"0x0","transactionIndex":"0x0","from":Address([9;20]).to_hex(),"to":burn_address().to_hex(),"contractAddress":null,"gasUsed":"0x5208","status":"0x1","logs":[]}));
         transport.set("eth_getTransactionByHash",serde_json::json!({"hash":hash,"from":op.checked.decoded.sender.to_hex(),"to":burn_address().to_hex(),"value":"0x7","input":format!("0x{}",hex::encode(&op.checked.decoded.input))}));
-        let response = forum_submission(&registry, &transport, burn_address(), op.frame(), true)
-            .await;
+        let response =
+            forum_submission(&registry, &transport, burn_address(), op.frame(), true).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let policy = crate::forum::policy(10143, burn_address());
         let status = registry
@@ -982,10 +1098,20 @@ mod tests {
     }
 
     fn isolated(name: &str, key: &str) -> bool {
-        if std::env::var_os(key).is_some() { return false; }
+        if std::env::var_os(key).is_some() {
+            return false;
+        }
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .env(key, "1").args(["--exact", name, "--nocapture"]).output().unwrap();
-        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            .env(key, "1")
+            .args(["--exact", name, "--nocapture"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         true
     }
 
@@ -997,21 +1123,42 @@ mod tests {
 
     #[test]
     fn canonical_media_rejects_predecessors_without_body_sniffing() {
-        for declared in [None, Some("application/x-protobuf"), Some("application/x-protobuf; charset=binary"), Some("application/cbor; charset=binary"), Some("application/octet-stream")] {
+        for declared in [
+            None,
+            Some("application/x-protobuf"),
+            Some("application/x-protobuf; charset=binary"),
+            Some("application/cbor; charset=binary"),
+            Some("application/octet-stream"),
+        ] {
             let mut headers = HeaderMap::new();
-            if let Some(declared) = declared { headers.insert(CONTENT_TYPE, declared.parse().unwrap()); }
-            assert_eq!(write_headers(&headers, b"FRNK").unwrap().status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+            if let Some(declared) = declared {
+                headers.insert(CONTENT_TYPE, declared.parse().unwrap());
+            }
+            assert_eq!(
+                write_headers(&headers, b"FRNK").unwrap().status(),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE
+            );
         }
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, "application/cbor".parse().unwrap());
-        for accept in ["application/x-protobuf", "application/cbor;q=0, */*;q=1", "application/cbor;profile=next"] {
+        for accept in [
+            "application/x-protobuf",
+            "application/cbor;q=0, */*;q=1",
+            "application/cbor;profile=next",
+        ] {
             headers.insert(ACCEPT, accept.parse().unwrap());
-            assert_eq!(write_headers(&headers, b"FRNK").unwrap().status(), StatusCode::NOT_ACCEPTABLE);
+            assert_eq!(
+                write_headers(&headers, b"FRNK").unwrap().status(),
+                StatusCode::NOT_ACCEPTABLE
+            );
         }
         headers.insert(ACCEPT, "application/cbor;q=1;ext=next".parse().unwrap());
         assert!(write_headers(&headers, b"FRNK").is_none());
         let body = vec![0; MAX_TOPIC_EVENT_FRAME_BYTES as usize + 1];
-        assert_eq!(write_headers(&headers, &body).unwrap().status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            write_headers(&headers, &body).unwrap().status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
     }
 
     #[tokio::test]
@@ -1021,84 +1168,215 @@ mod tests {
         use crate::proto;
         use tower::ServiceExt;
         let (dir, registry) = test_registry();
-        let hash = [0xab;32];
+        let hash = [0xab; 32];
         let stored = proto::StoredMonadTopicPost {
-            post: Some(proto::MonadTopicPost { topic: "old.topic".into(), parent_post_hash: vec![], raw_burn_tx: vec![1,2,3], encrypted_payload: vec![4,5,6], payload_hash: hash.to_vec() }),
-            sender_address: vec![9;20], tx_hash: vec![8;32], timestamp: 500,
-            network_tag: vec![], cbor_post_frame: vec![], confirmed_block_number: 0, confirmed_transaction_index: 0,
+            post: Some(proto::MonadTopicPost {
+                topic: "old.topic".into(),
+                parent_post_hash: vec![],
+                raw_burn_tx: vec![1, 2, 3],
+                encrypted_payload: vec![4, 5, 6],
+                payload_hash: hash.to_vec(),
+            }),
+            sender_address: vec![9; 20],
+            tx_hash: vec![8; 32],
+            timestamp: 500,
+            network_tag: vec![],
+            cbor_post_frame: vec![],
+            confirmed_block_number: 0,
+            confirmed_transaction_index: 0,
         };
-        registry.put_monad_topic_post(&hash, stored.clone(), &[]).unwrap();
+        registry
+            .put_monad_topic_post(&hash, stored.clone(), &[])
+            .unwrap();
         let router = test_server(registry).into_router();
         for accept in ["application/cbor", "application/x-protobuf"] {
-            let response = router.clone().oneshot(axum::http::Request::builder()
-                .uri(format!("/message/monad/topics/{}", hex::encode(hash))).header(ACCEPT, accept)
-                .body(axum::body::Body::empty()).unwrap()).await.unwrap();
-            assert_eq!(response.status(), if accept == "application/cbor" { StatusCode::NOT_FOUND } else { StatusCode::NOT_ACCEPTABLE });
-            assert!(response.headers().get_all(VARY).iter().any(|v|v.as_bytes().eq_ignore_ascii_case(b"accept")));
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(format!("/message/monad/topics/{}", hex::encode(hash)))
+                        .header(ACCEPT, accept)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                if accept == "application/cbor" {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::NOT_ACCEPTABLE
+                }
+            );
+            assert!(response
+                .headers()
+                .get_all(VARY)
+                .iter()
+                .any(|v| v.as_bytes().eq_ignore_ascii_case(b"accept")));
         }
-        for path in ["/message/monad/topics?topic=old.topic", "/message/monad/topics/discover"] {
-            let response = router.clone().oneshot(axum::http::Request::builder().uri(path)
-                .header(ACCEPT, "application/cbor").body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        for path in [
+            "/message/monad/topics?topic=old.topic",
+            "/message/monad/topics/discover",
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(path)
+                        .header(ACCEPT, "application/cbor")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
-            let frame=hyper::body::to_bytes(response.into_body()).await.unwrap();
-            let frank_cbor::ValidationResult::Parsed(parsed)=frank_cbor::validate_frame(&frame,&frank_cbor::default_context()).unwrap() else {panic!()};
+            let frame = hyper::body::to_bytes(response.into_body()).await.unwrap();
+            let frank_cbor::ValidationResult::Parsed(parsed) =
+                frank_cbor::validate_frame(&frame, &frank_cbor::default_context()).unwrap()
+            else {
+                panic!()
+            };
             match parsed.typed.as_deref().unwrap() {
-                frank_cbor::TypedPayload::ForumTopicPage(page)=>assert!(page.rows.is_empty()),
-                frank_cbor::TypedPayload::ForumDiscoveryPage(page)=>assert!(page.entries.is_empty()),
-                _=>panic!("canonical family required"),
+                frank_cbor::TypedPayload::ForumTopicPage(page) => assert!(page.rows.is_empty()),
+                frank_cbor::TypedPayload::ForumDiscoveryPage(page) => {
+                    assert!(page.entries.is_empty())
+                }
+                _ => panic!("canonical family required"),
             }
         }
         drop(router);
-        let registry=Registry::new(Db::open(dir.path().join("db.rocksdb")).unwrap(),Arc::new(UnusedChainAdapter),Net::Regtest);
-        assert_eq!(registry.get_monad_topic_post(&hash).unwrap().unwrap(),stored,"HTTP cutover must not delete predecessor authority");
+        let registry = Registry::new(
+            Db::open(dir.path().join("db.rocksdb")).unwrap(),
+            Arc::new(UnusedChainAdapter),
+            Net::Regtest,
+        );
+        assert_eq!(
+            registry.get_monad_topic_post(&hash).unwrap().unwrap(),
+            stored,
+            "HTTP cutover must not delete predecessor authority"
+        );
     }
 
     #[tokio::test]
     async fn actual_router_restart_returns_410_for_both_old_cursor_families() {
         if isolated("http::monad_topics::tests::actual_router_restart_returns_410_for_both_old_cursor_families", "FRANK_FORUM_CURSOR_HTTP_CHILD") { return; }
         configure_reads();
-        use crate::store::forum::{Store, tests::{distinct_post, facts}};
+        use crate::store::forum::{
+            tests::{distinct_post, facts},
+            Store,
+        };
         use frank_cbor::{Timestamp, TypedPayload, ValidationResult};
         use tower::ServiceExt;
-        let (dir, registry)=test_registry();
-        let legacy=dir.path().join("db.rocksdb");
-        let mut store=Store::open(&legacy,"monad-testnet",crate::forum::policy(10143,burn_address())).unwrap();
+        let (dir, registry) = test_registry();
+        let legacy = dir.path().join("db.rocksdb");
+        let mut store = Store::open(
+            &legacy,
+            "monad-testnet",
+            crate::forum::policy(10143, burn_address()),
+        )
+        .unwrap();
         for i in 0..129 {
-            for op in [distinct_post(i,"test.topic"),distinct_post(1000+i,&format!("topic.{i:03}"))] {
+            for op in [
+                distinct_post(i, "test.topic"),
+                distinct_post(1000 + i, &format!("topic.{i:03}")),
+            ] {
                 store.admit(op.clone()).unwrap();
-                store.confirm(&op.checked.decoded.tx_hash.0,&facts(&op,i,0),Timestamp{seconds:200,nanoseconds:0}).unwrap();
+                store
+                    .confirm(
+                        &op.checked.decoded.tx_hash.0,
+                        &facts(&op, i, 0),
+                        Timestamp {
+                            seconds: 200,
+                            nanoseconds: 0,
+                        },
+                    )
+                    .unwrap();
             }
         }
         drop(store);
-        let router=test_server(registry).into_router();
-        let paths=["/message/monad/topics?topic=test.topic&since=0","/message/monad/topics/discover"];
-        let mut continuations=Vec::new();
+        let router = test_server(registry).into_router();
+        let paths = [
+            "/message/monad/topics?topic=test.topic&since=0",
+            "/message/monad/topics/discover",
+        ];
+        let mut continuations = Vec::new();
         for path in paths {
-            let response=router.clone().oneshot(axum::http::Request::builder().uri(path)
-                .header(ACCEPT,"application/cbor").body(axum::body::Body::empty()).unwrap()).await.unwrap();
-            assert_eq!(response.status(),StatusCode::OK);
-            let bytes=hyper::body::to_bytes(response.into_body()).await.unwrap();
-            let ValidationResult::Parsed(parsed)=frank_cbor::validate_frame(&bytes,&frank_cbor::default_context()).unwrap() else{panic!()};
-            let cursor=match parsed.typed.as_deref().unwrap(){
-                TypedPayload::ForumTopicPage(page)=>page.next_cursor.as_ref().unwrap().bytes.clone(),
-                TypedPayload::ForumDiscoveryPage(page)=>page.next_cursor.as_ref().unwrap().bytes.clone(),
-                _=>panic!(),
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(path)
+                        .header(ACCEPT, "application/cbor")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = hyper::body::to_bytes(response.into_body()).await.unwrap();
+            let ValidationResult::Parsed(parsed) =
+                frank_cbor::validate_frame(&bytes, &frank_cbor::default_context()).unwrap()
+            else {
+                panic!()
             };
-            let encoded=frank_cbor::forum_cursor_to_transport(&cursor).unwrap();
-            let continuation=format!("{path}{}cursor={encoded}",if path.contains('?'){"&"}else{"?"});
-            let response=router.clone().oneshot(axum::http::Request::builder().uri(&continuation)
-                .header(ACCEPT,"application/cbor").body(axum::body::Body::empty()).unwrap()).await.unwrap();
-            assert_eq!(response.status(),StatusCode::OK,"retained cursor must work before restart");
+            let cursor = match parsed.typed.as_deref().unwrap() {
+                TypedPayload::ForumTopicPage(page) => {
+                    page.next_cursor.as_ref().unwrap().bytes.clone()
+                }
+                TypedPayload::ForumDiscoveryPage(page) => {
+                    page.next_cursor.as_ref().unwrap().bytes.clone()
+                }
+                _ => panic!(),
+            };
+            let encoded = frank_cbor::forum_cursor_to_transport(&cursor).unwrap();
+            let continuation = format!(
+                "{path}{}cursor={encoded}",
+                if path.contains('?') { "&" } else { "?" }
+            );
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(&continuation)
+                        .header(ACCEPT, "application/cbor")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "retained cursor must work before restart"
+            );
             continuations.push(continuation);
         }
         drop(router);
-        let registry=Registry::new(Db::open(&legacy).unwrap(),Arc::new(UnusedChainAdapter),Net::Regtest);
-        let router=test_server(registry).into_router();
+        let registry = Registry::new(
+            Db::open(&legacy).unwrap(),
+            Arc::new(UnusedChainAdapter),
+            Net::Regtest,
+        );
+        let router = test_server(registry).into_router();
         for continuation in continuations {
-            let response=router.clone().oneshot(axum::http::Request::builder().uri(continuation)
-                .header(ACCEPT,"application/cbor").body(axum::body::Body::empty()).unwrap()).await.unwrap();
-            assert_eq!(response.status(),StatusCode::GONE,"actual restarted Owner must reject old retained incarnation at public HTTP");
-            let body=hyper::body::to_bytes(response.into_body()).await.unwrap();
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(continuation)
+                        .header(ACCEPT, "application/cbor")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::GONE,
+                "actual restarted Owner must reject old retained incarnation at public HTTP"
+            );
+            let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
             assert!(String::from_utf8_lossy(&body).contains("forum_cursor_expired"));
         }
     }
@@ -1120,5 +1398,4 @@ mod tests {
             bitcoin_proxy: None,
         }
     }
-
 }

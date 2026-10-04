@@ -74,8 +74,7 @@
             </q-item>
           </template>
         </q-select>
-        <q-input label="Post Title" v-model="title"
-          data-test="post-title" />
+        <q-input label="Post Title" v-model="title" data-test="post-title" />
         <q-input
           label="URL"
           v-model="url"
@@ -87,8 +86,12 @@
         card's own width -- so it went side-by-side even when the card itself was narrow, squeezing
         both halves uncomfortably. Stacked vertically instead, always, regardless of viewport. -->
         <q-card-section class="col-12 q-pa-none">
-          <q-input label="Message" v-model="message"
-          data-test="post-message" type="textarea" />
+          <q-input
+            label="Message"
+            v-model="message"
+            data-test="post-message"
+            type="textarea"
+          />
         </q-card-section>
 
         <q-card-section class="col-12 q-pa-none q-pt-md" v-show="this.message">
@@ -364,7 +367,10 @@ export default defineComponent({
       if (this.refreshingStatus) return
       const routeEpoch = this.routeEpoch
       const revision = this.walletRevision
-      const current = () => this.componentMounted && this.routeEpoch === routeEpoch && this.walletRevision === revision
+      const current = () =>
+        this.componentMounted &&
+        this.routeEpoch === routeEpoch &&
+        this.walletRevision === revision
       this.refreshingStatus = true
       try {
         const wallet = await useActiveWallet()
@@ -381,8 +387,12 @@ export default defineComponent({
     validateOffering(value: string) {
       try {
         const amount = displayToRawAmount(activeChain, String(value))
-        return (amount > 0n && amount <= 9223372036854775807n) || 'Invalid amount'
-      } catch { return 'Invalid amount' }
+        return (
+          (amount > 0n && amount <= 9223372036854775807n) || 'Invalid amount'
+        )
+      } catch {
+        return 'Invalid amount'
+      }
     },
     submissionDestination(parentDigest: string | undefined) {
       return parentDigest ? `reply:${parentDigest}` : 'top-level'
@@ -469,9 +479,13 @@ export default defineComponent({
       const retryOwnedFocus = retryElement?.contains(document.activeElement)
       this.parentLoading = true
       try {
-        await this.fetchMessage({ payloadDigest: requestedParent, isCurrent: () =>
-          this.componentMounted && this.parentRouteEpoch === requestedParentRouteEpoch &&
-          this.parentDigest === requestedParent && this.activeParentRequestId === requestId,
+        await this.fetchMessage({
+          payloadDigest: requestedParent,
+          isCurrent: () =>
+            this.componentMounted &&
+            this.parentRouteEpoch === requestedParentRouteEpoch &&
+            this.parentDigest === requestedParent &&
+            this.activeParentRequestId === requestId,
         })
       } catch {
         // The visible terminal state supplies the retry path.

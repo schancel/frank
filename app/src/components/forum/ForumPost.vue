@@ -9,7 +9,7 @@
             padding="0"
             :aria-label="$t('a11y.voteUp')"
             @click="addVotes(1)"
-          data-test="forum-vote-up"
+            data-test="forum-vote-up"
           />
         </q-card-section>
         <q-card-section class="q-pa-none q-ma-none text-center">
@@ -19,7 +19,7 @@
             padding="0"
             :aria-label="$t('a11y.voteDown')"
             @click="addVotes(-1)"
-          data-test="forum-vote-down"
+            data-test="forum-vote-down"
           />
         </q-card-section>
       </q-card-section>
@@ -203,14 +203,17 @@ export default defineComponent({
       )
     },
     addVotes(direction: number) {
-      if (this.voteTarget !== this.message.payloadDigest || this.voteOwnerRevision !== accountStatus.revision || this.voteOwnerStatus !== accountStatus.status) this.voteAmount = 0n
+      if (
+        this.voteTarget !== this.message.payloadDigest ||
+        this.voteOwnerRevision !== accountStatus.revision ||
+        this.voteOwnerStatus !== accountStatus.status
+      )
+        this.voteAmount = 0n
       this.voteTarget = this.message.payloadDigest
       this.voteOwnerRevision = accountStatus.revision
       this.voteOwnerStatus = accountStatus.status
 
-      this.voteAmount +=
-        BigInt(direction) *
-        activeChain.defaultTopicVoteValue
+      this.voteAmount += BigInt(direction) * activeChain.defaultTopicVoteValue
       if (this.timeoutId) {
         clearTimeout(this.timeoutId)
       }
@@ -218,7 +221,15 @@ export default defineComponent({
       const revision = accountStatus.revision
       const status = accountStatus.status
       this.timeoutId = setTimeout(() => {
-        if (!this.voteActive || this.message.payloadDigest !== digest || accountStatus.revision !== revision || accountStatus.status !== status) { this.voteAmount = 0n; return }
+        if (
+          !this.voteActive ||
+          this.message.payloadDigest !== digest ||
+          accountStatus.revision !== revision ||
+          accountStatus.status !== status
+        ) {
+          this.voteAmount = 0n
+          return
+        }
         void (async () => {
           if (this.voteAmount === 0n) {
             return
@@ -233,7 +244,13 @@ export default defineComponent({
           this.voteAmount = 0n
           try {
             const wallet = await useActiveWallet()
-            if (!this.voteActive || this.message.payloadDigest !== digest || accountStatus.revision !== revision || accountStatus.status !== status) return
+            if (
+              !this.voteActive ||
+              this.message.payloadDigest !== digest ||
+              accountStatus.revision !== revision ||
+              accountStatus.status !== status
+            )
+              return
             await this.addOffering({
               wallet,
               payloadDigest: digest,

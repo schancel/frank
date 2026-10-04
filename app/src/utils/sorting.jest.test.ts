@@ -19,7 +19,13 @@ function makePost(
     poster: '0xposter',
     topic: 'stamp',
     voteWeightWei: '0',
-    visibleTimestamp: { seconds: '1', nanoseconds: 0 }, epoch: '00'.repeat(16), revision: '1', transactionHash: '11'.repeat(32), authorBurnTx: '0x01', blockNumber: '1', transactionIndex: '0',
+    visibleTimestamp: { seconds: '1', nanoseconds: 0 },
+    epoch: '00'.repeat(16),
+    revision: '1',
+    transactionHash: '11'.repeat(32),
+    authorBurnTx: '0x01',
+    blockNumber: '1',
+    transactionIndex: '0',
     entries: [{ kind: 'post', message: 'hello' }],
     payloadDigest: 'deadbeef',
     timestamp: new Date(),
@@ -186,17 +192,37 @@ describe('sortPostsByMode', () => {
 it('orders adjacent wide signed weights exactly and resolves ties deterministically', () => {
   const positive = 2n ** 255n - 1n
   const rows = [
-    makePost({payloadDigest:'b',voteWeightWei:positive.toString()}),
-    makePost({payloadDigest:'a',voteWeightWei:positive.toString()}),
-    makePost({payloadDigest:'c',voteWeightWei:(positive-1n).toString()}),
-    makePost({payloadDigest:'e',voteWeightWei:(-positive).toString()}),
-    makePost({payloadDigest:'d',voteWeightWei:(-positive+1n).toString()}),
+    makePost({ payloadDigest: 'b', voteWeightWei: positive.toString() }),
+    makePost({ payloadDigest: 'a', voteWeightWei: positive.toString() }),
+    makePost({ payloadDigest: 'c', voteWeightWei: (positive - 1n).toString() }),
+    makePost({ payloadDigest: 'e', voteWeightWei: (-positive).toString() }),
+    makePost({
+      payloadDigest: 'd',
+      voteWeightWei: (-positive + 1n).toString(),
+    }),
   ]
-  expect(voteSort(rows).map(row => row.payloadDigest)).toEqual(['a','b','c','d','e'])
+  expect(voteSort(rows).map(row => row.payloadDigest)).toEqual([
+    'a',
+    'b',
+    'c',
+    'd',
+    'e',
+  ])
   expect(voteSort([...rows].reverse())).toEqual(voteSort(rows))
 })
 it('hot ranking uses deterministic exact ties without modifying stored amounts', () => {
-  const rows = [makePost({payloadDigest:'b',voteWeightWei:'9007199254740992',timestamp:'2026-01-01'}), makePost({payloadDigest:'a',voteWeightWei:'9007199254740993',timestamp:'2026-01-01'})]
+  const rows = [
+    makePost({
+      payloadDigest: 'b',
+      voteWeightWei: '9007199254740992',
+      timestamp: '2026-01-01',
+    }),
+    makePost({
+      payloadDigest: 'a',
+      voteWeightWei: '9007199254740993',
+      timestamp: '2026-01-01',
+    }),
+  ]
   expect(halfLifeSort(rows)[0].payloadDigest).toBe('a')
   expect(rows[1].voteWeightWei).toBe('9007199254740993')
 })

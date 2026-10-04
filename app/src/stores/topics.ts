@@ -7,7 +7,11 @@ import { DEFAULT_TOPIC_NAMES } from 'src/stores/default-topics'
 
 import { activeChain, WalletHandle } from '@frank/wallet/chain'
 
-import type { DiscoveredTopic, ForumMessage, ForumMessageEntry } from '@frank/wallet/forum-model'
+import type {
+  DiscoveredTopic,
+  ForumMessage,
+  ForumMessageEntry,
+} from '@frank/wallet/forum-model'
 
 export type MessageWithReplies = ForumMessage & {
   replies: MessageWithReplies[]
@@ -111,14 +115,34 @@ export const useTopicStore = defineStore('topics', {
     setEntries(topic: string, messages: ForumMessage[], until: number) {
       const topicState = this.ensureTopic(topic)
       const snapshot = forumSnapshot(messages)
-      const other = Object.fromEntries(Object.entries(this.messageIndex).filter(([, row]) => row?.topic !== topic))
+      const other = Object.fromEntries(
+        Object.entries(this.messageIndex).filter(
+          ([, row]) => row?.topic !== topic,
+        ),
+      )
       this.$patch(state => {
-        state.topics = { ...state.topics, [topic]: { ...topicState, messages: snapshot.messages, lastUpdate: until } }
+        state.topics = {
+          ...state.topics,
+          [topic]: {
+            ...topicState,
+            messages: snapshot.messages,
+            lastUpdate: until,
+          },
+        }
         state.messageIndex = { ...other, ...snapshot.index }
       })
     },
     setMessage(topic: string, message: ForumMessage) {
-      this.setEntries(topic, [...this.ensureTopic(topic).messages.filter(row => row.payloadDigest !== message.payloadDigest), message], Date.now())
+      this.setEntries(
+        topic,
+        [
+          ...this.ensureTopic(topic).messages.filter(
+            row => row.payloadDigest !== message.payloadDigest,
+          ),
+          message,
+        ],
+        Date.now(),
+      )
     },
     invalidateRefresh() {
       topicRequests.delete(this)
@@ -143,9 +167,29 @@ export const useTopicStore = defineStore('topics', {
       const status = accountStatus.status
       const chain = activeChain
       const to = Date.now()
-      const current = () => topicRequests.get(this) === requests && requests.get(topic) === token && accountStatus.revision === revision && accountStatus.status === status && activeChain === chain
-      const entries = await stageForumQuery(() => activeChain.topics.fetchByTopic({ wallet, topic, sinceMs: to - 1000 * 60 * 60 * 24 * 7 }), current)
-      if (topicRequests.get(this) !== requests || requests.get(topic) !== token || accountStatus.revision !== revision || accountStatus.status !== status || activeChain !== chain) return
+      const current = () =>
+        topicRequests.get(this) === requests &&
+        requests.get(topic) === token &&
+        accountStatus.revision === revision &&
+        accountStatus.status === status &&
+        activeChain === chain
+      const entries = await stageForumQuery(
+        () =>
+          activeChain.topics.fetchByTopic({
+            wallet,
+            topic,
+            sinceMs: to - 1000 * 60 * 60 * 24 * 7,
+          }),
+        current,
+      )
+      if (
+        topicRequests.get(this) !== requests ||
+        requests.get(topic) !== token ||
+        accountStatus.revision !== revision ||
+        accountStatus.status !== status ||
+        activeChain !== chain
+      )
+        return
       if (!entries) throw new Error('Incomplete topic query')
       this.setEntries(topic, entries, to)
     },
@@ -162,7 +206,8 @@ export const useTopicStore = defineStore('topics', {
     }) {
       const topicData = this.ensureTopic(topic)
       const satoshis = BigInt(topicData.offering)
-      if (satoshis <= 0n || satoshis > 9223372036854775807n) throw new Error('Invalid Forum post amount')
+      if (satoshis <= 0n || satoshis > 9223372036854775807n)
+        throw new Error('Invalid Forum post amount')
       const { payloadDigest } = await activeChain.topics.post({
         wallet,
         topic,
@@ -192,13 +237,29 @@ export const useTopicStore = defineStore('topics', {
       const key = `${topic}\u0000${payloadDigest}`
       const token = {}
       requests.set(key, token)
-      const current = () => topicViews.get(this) === requests && requests.get(key) === token && accountStatus.revision === revision && accountStatus.status === status && activeChain === chain
-      const message = await stageForumQuery(() => activeChain.topics.fetchOne(payloadDigest), current)
+      const current = () =>
+        topicViews.get(this) === requests &&
+        requests.get(key) === token &&
+        accountStatus.revision === revision &&
+        accountStatus.status === status &&
+        activeChain === chain
+      const message = await stageForumQuery(
+        () => activeChain.topics.fetchOne(payloadDigest),
+        current,
+      )
       if (!message) {
         console.log('could not fetch message', payloadDigest)
         return
       }
-      if (topicViews.get(this) !== requests || requests.get(key) !== token || accountStatus.revision !== revision || accountStatus.status !== status || activeChain !== chain || message.topic !== topic) return
+      if (
+        topicViews.get(this) !== requests ||
+        requests.get(key) !== token ||
+        accountStatus.revision !== revision ||
+        accountStatus.status !== status ||
+        activeChain !== chain ||
+        message.topic !== topic
+      )
+        return
       this.setMessage(topic, message)
       // Need to refetch so we get the right proxy object
       return this.getMessage(payloadDigest)
@@ -211,27 +272,61 @@ export const useTopicStore = defineStore('topics', {
       discoveryRequests.set(this, token)
       let discovered
       try {
-        discovered = await stageForumQuery(() => activeChain.topics.discoverTopics(), () => discoveryRequests.get(this) === token && revision === accountStatus.revision && status === accountStatus.status && activeChain === chain)
+        discovered = await stageForumQuery(
+          () => activeChain.topics.discoverTopics(),
+          () =>
+            discoveryRequests.get(this) === token &&
+            revision === accountStatus.revision &&
+            status === accountStatus.status &&
+            activeChain === chain,
+        )
         for (const row of discovered ?? []) {
-          if (typeof row.postCount !== 'string' || !/^(0|[1-9][0-9]*)$/.test(row.postCount) || row.postCount.length > 20 || BigInt(row.postCount) > 18446744073709551615n) {
+          if (
+            typeof row.postCount !== 'string' ||
+            !/^(0|[1-9][0-9]*)$/.test(row.postCount) ||
+            row.postCount.length > 20 ||
+            BigInt(row.postCount) > 18446744073709551615n
+          ) {
             throw new Error('Invalid canonical topic post count')
           }
         }
-      }
-      catch (error) {
-        if (discoveryRequests.get(this) !== token || revision !== accountStatus.revision || status !== accountStatus.status || activeChain !== chain) return false
-        this.$patch({discoveryStatus: 'error', discoveryError: error instanceof Error ? error.message : String(error)})
+      } catch (error) {
+        if (
+          discoveryRequests.get(this) !== token ||
+          revision !== accountStatus.revision ||
+          status !== accountStatus.status ||
+          activeChain !== chain
+        )
+          return false
+        this.$patch({
+          discoveryStatus: 'error',
+          discoveryError:
+            error instanceof Error ? error.message : String(error),
+        })
         return false
       }
-      if (discoveryRequests.get(this) !== token || revision !== accountStatus.revision || status !== accountStatus.status || activeChain !== chain) return
+      if (
+        discoveryRequests.get(this) !== token ||
+        revision !== accountStatus.revision ||
+        status !== accountStatus.status ||
+        activeChain !== chain
+      )
+        return
       if (!discovered) return false
       const topics = { ...this.topics }
       for (const { topic } of discovered) {
         if (!Object.prototype.hasOwnProperty.call(topics, topic)) {
-          topics[topic] = { topic, threshold: '0', offering: defaultOffering, messages: [] }
+          topics[topic] = {
+            topic,
+            threshold: '0',
+            offering: defaultOffering,
+            messages: [],
+          }
         }
       }
-      const discoveredTopics = Object.fromEntries(discovered.map(row => [row.topic, { ...row }]))
+      const discoveredTopics = Object.fromEntries(
+        discovered.map(row => [row.topic, { ...row }]),
+      )
       this.$patch(state => {
         state.topics = topics
         state.discoveredTopics = discoveredTopics
@@ -274,10 +369,14 @@ export const useTopicStore = defineStore('topics', {
         )
         return {
           topics,
-          messageIndex: Object.fromEntries(Object.entries(state.messageIndex).filter(([, row]) => row).map(([digest, row]) => {
-            const { replies: _replies, ...observation } = row!
-            return [digest, observation]
-          })),
+          messageIndex: Object.fromEntries(
+            Object.entries(state.messageIndex)
+              .filter(([, row]) => row)
+              .map(([digest, row]) => {
+                const { replies: _replies, ...observation } = row!
+                return [digest, observation]
+              }),
+          ),
         }
       }
       const reducedState = reduceState()
@@ -316,8 +415,12 @@ export const useTopicStore = defineStore('topics', {
           )
           hydratedState.topics[topic.topic] = {
             ...topic,
-            threshold: typeof topic.threshold === 'string' ? topic.threshold : '0',
-            offering: typeof topic.offering === 'string' ? topic.offering : defaultOffering,
+            threshold:
+              typeof topic.threshold === 'string' ? topic.threshold : '0',
+            offering:
+              typeof topic.offering === 'string'
+                ? topic.offering
+                : defaultOffering,
             lastUpdate: undefined,
             // Persisted observations are unverified after restart.
             messages: validMessages.map(

@@ -7,7 +7,9 @@ import { useTopicStore } from './topics'
 import { ForumMessage } from '@frank/wallet/forum-model'
 import { WalletHandle } from '@frank/wallet/chain'
 
-jest.mock('src/accounts/session', () => ({ accountStatus: { revision: 1, status: 'ready' } }))
+jest.mock('src/accounts/session', () => ({
+  accountStatus: { revision: 1, status: 'ready' },
+}))
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
@@ -45,7 +47,13 @@ function makeMessage(overrides: Partial<ForumMessage> = {}): ForumMessage {
     poster: '0xposter',
     topic: 'stamp',
     voteWeightWei: '100000000',
-    visibleTimestamp: { seconds: '1', nanoseconds: 0 }, epoch: '00'.repeat(16), revision: '1', transactionHash: '11'.repeat(32), authorBurnTx: '0x01', blockNumber: '1', transactionIndex: '0',
+    visibleTimestamp: { seconds: '1', nanoseconds: 0 },
+    epoch: '00'.repeat(16),
+    revision: '1',
+    transactionHash: '11'.repeat(32),
+    authorBurnTx: '0x01',
+    blockNumber: '1',
+    transactionIndex: '0',
     entries: [{ kind: 'post', message: 'hello' }],
     payloadDigest: 'deadbeef',
     timestamp: new Date(),
@@ -181,7 +189,9 @@ describe('useTopicStore: refreshMessages', () => {
     const store = useTopicStore()
     mockedFetchByTopic.mockResolvedValueOnce(undefined)
 
-    await expect(store.refreshMessages({ wallet: testWallet, topic: 'stamp' })).rejects.toThrow('Incomplete topic query')
+    await expect(
+      store.refreshMessages({ wallet: testWallet, topic: 'stamp' }),
+    ).rejects.toThrow('Incomplete topic query')
 
     expect(store.ensureTopic('stamp').messages).toHaveLength(0)
   })
@@ -216,7 +226,13 @@ describe('useTopicStore: refreshDiscoveredTopics', () => {
       poster: '0xposter',
       topic: 'stamp',
       voteWeightWei: '1',
-      visibleTimestamp: { seconds: '1', nanoseconds: 0 }, epoch: '00'.repeat(16), revision: '1', transactionHash: '11'.repeat(32), authorBurnTx: '0x01', blockNumber: '1', transactionIndex: '0',
+      visibleTimestamp: { seconds: '1', nanoseconds: 0 },
+      epoch: '00'.repeat(16),
+      revision: '1',
+      transactionHash: '11'.repeat(32),
+      authorBurnTx: '0x01',
+      blockNumber: '1',
+      transactionIndex: '0',
       entries: [],
       payloadDigest: 'existing',
       timestamp: new Date(),
@@ -274,12 +290,21 @@ describe('useTopicStore: fetchMessage', () => {
 
 it('replaces each complete topic query including author and removes absent rows', async () => {
   const store = useTopicStore()
-  store.setEntries('stamp', [makeMessage(),makeMessage({payloadDigest:'removed'})], 1)
-  mockedFetchByTopic.mockResolvedValue([makeMessage({poster:'new author',voteWeightWei:'9007199254740993'})])
-  await store.refreshMessages({wallet:testWallet,topic:'stamp'})
+  store.setEntries(
+    'stamp',
+    [makeMessage(), makeMessage({ payloadDigest: 'removed' })],
+    1,
+  )
+  mockedFetchByTopic.mockResolvedValue([
+    makeMessage({ poster: 'new author', voteWeightWei: '9007199254740993' }),
+  ])
+  await store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
   expect(store.getMessage('removed')).toBeUndefined()
   expect(store.topics.stamp.messages).toHaveLength(1)
-  expect(store.getMessage('deadbeef')).toMatchObject({poster:'new author',voteWeightWei:'9007199254740993'})
+  expect(store.getMessage('deadbeef')).toMatchObject({
+    poster: 'new author',
+    voteWeightWei: '9007199254740993',
+  })
   expect(() => JSON.stringify(store.$state)).not.toThrow()
 })
 it('distinguishes failed discovery from verified empty without adding topics', async () => {
@@ -297,40 +322,79 @@ it('distinguishes failed discovery from verified empty without adding topics', a
 it('cannot publish a delayed old wallet query after a new wallet starts another topic', async () => {
   const store = useTopicStore()
   let resolve!: (rows: ForumMessage[]) => void
-  mockedFetchByTopic.mockReturnValueOnce(new Promise<ForumMessage[]>(yes => {resolve=yes})).mockResolvedValueOnce([])
-  const old = store.refreshMessages({wallet:testWallet,topic:'stamp'})
+  mockedFetchByTopic
+    .mockReturnValueOnce(
+      new Promise<ForumMessage[]>(yes => {
+        resolve = yes
+      }),
+    )
+    .mockResolvedValueOnce([])
+  const old = store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
   await flushPromises()
-  const wallet = {identity:{address:{raw:'0xdef'}}} as unknown as WalletHandle
-  const fresh = store.refreshMessages({wallet,topic:'news'})
-  resolve([makeMessage()]); await old; await fresh
+  const wallet = {
+    identity: { address: { raw: '0xdef' } },
+  } as unknown as WalletHandle
+  const fresh = store.refreshMessages({ wallet, topic: 'news' })
+  resolve([makeMessage()])
+  await old
+  await fresh
   expect(store.getMessage('deadbeef')).toBeUndefined()
 })
 
 it('excludes old persisted observations and number inputs through actual restore', async () => {
-  let storageOptions: {restore(storage: unknown): Promise<unknown>} | undefined
+  let storageOptions:
+    | { restore(storage: unknown): Promise<unknown> }
+    | undefined
   const pinia = createPinia()
-  pinia.use(({options}) => { storageOptions = options.storage as typeof storageOptions })
+  pinia.use(({ options }) => {
+    storageOptions = options.storage as typeof storageOptions
+  })
   createApp({}).use(pinia)
-  setActivePinia(pinia); useTopicStore()
-  const restored = await storageOptions!.restore({get: async () => JSON.stringify({topics:[{topic:'stamp',offering:5,threshold:1,messages:['old']}],messageIndex:{old:{satoshis:7}}})})
-  expect(restored).toMatchObject({messageIndex:{},topics:{stamp:{messages:[],threshold:'0',offering:'100000000'}},discoveryStatus:'unverified'})
+  setActivePinia(pinia)
+  useTopicStore()
+  const restored = await storageOptions!.restore({
+    get: async () =>
+      JSON.stringify({
+        topics: [
+          { topic: 'stamp', offering: 5, threshold: 1, messages: ['old'] },
+        ],
+        messageIndex: { old: { satoshis: 7 } },
+      }),
+  })
+  expect(restored).toMatchObject({
+    messageIndex: {},
+    topics: { stamp: { messages: [], threshold: '0', offering: '100000000' } },
+    discoveryStatus: 'unverified',
+  })
 })
 
 it('retains the exact canonical u64-max discovery count and metadata', async () => {
   const store = useTopicStore()
-  const row = {topic:'news',postCount:'18446744073709551615',lastActivityMs:1000,lastActivity:{seconds:'1',nanoseconds:0},epoch:'00'.repeat(16),revision:'18446744073709551615'}
+  const row = {
+    topic: 'news',
+    postCount: '18446744073709551615',
+    lastActivityMs: 1000,
+    lastActivity: { seconds: '1', nanoseconds: 0 },
+    epoch: '00'.repeat(16),
+    revision: '18446744073709551615',
+  }
   mockedDiscoverTopics.mockResolvedValueOnce([row])
   expect(await store.refreshDiscoveredTopics()).toBe(true)
   expect(store.discoveredTopics.news).toEqual(row)
-  expect(JSON.parse(JSON.stringify(store.$state)).discoveredTopics.news.postCount).toBe('18446744073709551615')
+  expect(
+    JSON.parse(JSON.stringify(store.$state)).discoveredTopics.news.postCount,
+  ).toBe('18446744073709551615')
   mockedDiscoverTopics.mockResolvedValueOnce([])
   await store.refreshDiscoveredTopics()
   expect(store.discoveredTopics).toEqual({})
 })
-it.each(['18446744073709551616', '01', 9007199254740992])('rejects a noncanonical discovery count %s before publication', async postCount => {
-  const store = useTopicStore()
-  mockedDiscoverTopics.mockResolvedValueOnce([{topic:'news',postCount}])
-  expect(await store.refreshDiscoveredTopics()).toBe(false)
-  expect(store.discoveryStatus).toBe('error')
-  expect(store.discoveredTopics).toEqual({})
-})
+it.each(['18446744073709551616', '01', 9007199254740992])(
+  'rejects a noncanonical discovery count %s before publication',
+  async postCount => {
+    const store = useTopicStore()
+    mockedDiscoverTopics.mockResolvedValueOnce([{ topic: 'news', postCount }])
+    expect(await store.refreshDiscoveredTopics()).toBe(false)
+    expect(store.discoveryStatus).toBe('error')
+    expect(store.discoveredTopics).toEqual({})
+  },
+)

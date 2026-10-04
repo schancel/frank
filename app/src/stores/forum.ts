@@ -62,7 +62,10 @@ const refreshContexts = new WeakMap<object, object>()
 const viewRequests = new WeakMap<object, Map<string, object>>()
 
 /** Build rows, index and acyclic reply links privately, then publish in one Pinia patch. */
-export function forumSnapshot(rows: ForumMessage[]): { messages: MessageWithReplies[], index: Record<string, MessageWithReplies> } {
+export function forumSnapshot(rows: ForumMessage[]): {
+  messages: MessageWithReplies[]
+  index: Record<string, MessageWithReplies>
+} {
   const index: Record<string, MessageWithReplies> = Object.create(null)
   for (const row of rows) index[row.payloadDigest] = { ...row, replies: [] }
   const messages = Object.values(index)
@@ -70,13 +73,20 @@ export function forumSnapshot(rows: ForumMessage[]): { messages: MessageWithRepl
   for (const row of messages) {
     const trail = new Set<string>()
     let ancestor: MessageWithReplies | undefined = row
-    while (ancestor && !acyclic.has(ancestor.payloadDigest) && !trail.has(ancestor.payloadDigest)) {
+    while (
+      ancestor &&
+      !acyclic.has(ancestor.payloadDigest) &&
+      !trail.has(ancestor.payloadDigest)
+    ) {
       trail.add(ancestor.payloadDigest)
-      ancestor = ancestor.parentDigest ? index[ancestor.parentDigest] : undefined
+      ancestor = ancestor.parentDigest
+        ? index[ancestor.parentDigest]
+        : undefined
     }
     const valid = !ancestor || acyclic.get(ancestor.payloadDigest) === true
     for (const digest of trail) acyclic.set(digest, valid)
-    if (valid && row.parentDigest && index[row.parentDigest]) index[row.parentDigest].replies.push(row)
+    if (valid && row.parentDigest && index[row.parentDigest])
+      index[row.parentDigest].replies.push(row)
   }
   return { messages, index }
 }
@@ -84,13 +94,21 @@ export function forumSnapshot(rows: ForumMessage[]): { messages: MessageWithRepl
 // All app Forum queries share one staging slot, including overlapping refresh generations.
 // Queued obsolete requests never start another client snapshot.
 let forumReadTail = Promise.resolve()
-export async function stageForumQuery<T>(read: () => Promise<T>, isCurrent: () => boolean): Promise<T | undefined> {
+export async function stageForumQuery<T>(
+  read: () => Promise<T>,
+  isCurrent: () => boolean,
+): Promise<T | undefined> {
   const previous = forumReadTail
   let release!: () => void
-  forumReadTail = new Promise<void>(resolve => { release = resolve })
+  forumReadTail = new Promise<void>(resolve => {
+    release = resolve
+  })
   await previous
-  try { return isCurrent() ? await read() : undefined }
-  finally { release() }
+  try {
+    return isCurrent() ? await read() : undefined
+  } finally {
+    release()
+  }
 }
 
 export const useForumStore = defineStore('forum', {
@@ -220,7 +238,12 @@ export const useForumStore = defineStore('forum', {
       })
     },
     setMessage(message: ForumMessage) {
-      this.setEntries([...this.messages.filter(row => row.payloadDigest !== message.payloadDigest), message])
+      this.setEntries([
+        ...this.messages.filter(
+          row => row.payloadDigest !== message.payloadDigest,
+        ),
+        message,
+      ])
     },
     invalidateRefresh() {
       refreshContexts.delete(this)
@@ -240,8 +263,14 @@ export const useForumStore = defineStore('forum', {
      * discovered, and any topic we already hold posts for. A non-empty `selected` narrows this to
      * that topic plus the known topics it prefixes (matching `Forum.vue`'s prefix filter).
      */
-    async topicsToFetch(selected: string, isCurrent: () => boolean = () => true): Promise<string[]> {
-      const discovered = await stageForumQuery(() => activeChain.topics.discoverTopics(), isCurrent)
+    async topicsToFetch(
+      selected: string,
+      isCurrent: () => boolean = () => true,
+    ): Promise<string[]> {
+      const discovered = await stageForumQuery(
+        () => activeChain.topics.discoverTopics(),
+        isCurrent,
+      )
       if (!discovered) return []
       const known = [
         ...DEFAULT_TOPIC_NAMES,
@@ -260,9 +289,22 @@ export const useForumStore = defineStore('forum', {
       topic: string
       wallet: WalletHandle
     }) {
-      const token = { wallet: wallet.identity.address.raw.toLowerCase(), chain: activeChain, revision: accountStatus.revision, status: accountStatus.status, selected: this.selectedTopic, duration: this.duration }
+      const token = {
+        wallet: wallet.identity.address.raw.toLowerCase(),
+        chain: activeChain,
+        revision: accountStatus.revision,
+        status: accountStatus.status,
+        selected: this.selectedTopic,
+        duration: this.duration,
+      }
       refreshContexts.set(this, token)
-      const current = () => refreshContexts.get(this) === token && activeChain === token.chain && accountStatus.revision === token.revision && accountStatus.status === token.status && this.selectedTopic === token.selected && this.duration === token.duration
+      const current = () =>
+        refreshContexts.get(this) === token &&
+        activeChain === token.chain &&
+        accountStatus.revision === token.revision &&
+        accountStatus.status === token.status &&
+        this.selectedTopic === token.selected &&
+        this.duration === token.duration
       this.isRefreshing = true
       try {
         const from = Date.now() - this.duration
@@ -274,10 +316,21 @@ export const useForumStore = defineStore('forum', {
         let firstError: unknown
         for (const name of names) {
           try {
-            const entries = await stageForumQuery(() => activeChain.topics.fetchByTopic({ wallet, topic: name, sinceMs: from }), current)
+            const entries = await stageForumQuery(
+              () =>
+                activeChain.topics.fetchByTopic({
+                  wallet,
+                  topic: name,
+                  sinceMs: from,
+                }),
+              current,
+            )
             if (!current()) return
             if (!entries) throw new Error('Incomplete Forum query')
-            this.setEntries([...this.messages.filter(message => message.topic !== name), ...entries])
+            this.setEntries([
+              ...this.messages.filter(message => message.topic !== name),
+              ...entries,
+            ])
           } catch (error) {
             if (!current()) return
             failures++
@@ -286,7 +339,12 @@ export const useForumStore = defineStore('forum', {
         }
         if (!current()) return
         this.hasFetchedOnce = true
-        this.outageStatus = failures === 0 ? 'ok' : failures === names.length ? 'outage' : 'degraded'
+        this.outageStatus =
+          failures === 0
+            ? 'ok'
+            : failures === names.length
+            ? 'outage'
+            : 'degraded'
         if (failures) throw firstError
       } catch (error) {
         if (!current()) return
@@ -317,7 +375,8 @@ export const useForumStore = defineStore('forum', {
         progress: DirectMessagePreparationProgress,
       ) => void
     }) {
-      if (satoshis <= 0n || satoshis > 9223372036854775807n) throw new Error('Invalid Forum post amount')
+      if (satoshis <= 0n || satoshis > 9223372036854775807n)
+        throw new Error('Invalid Forum post amount')
       const { payloadDigest } = await activeChain.topics.post({
         wallet,
         topic,
@@ -329,7 +388,13 @@ export const useForumStore = defineStore('forum', {
       })
       await refreshAfterBurn('post', () => this.fetchMessage({ payloadDigest }))
     },
-    async fetchMessage({ payloadDigest, isCurrent }: { payloadDigest: string; isCurrent?: () => boolean }) {
+    async fetchMessage({
+      payloadDigest,
+      isCurrent,
+    }: {
+      payloadDigest: string
+      isCurrent?: () => boolean
+    }) {
       // Note: `ActiveChain.topics.fetchOne` takes no `wallet` -- reading a public topic post
       // never needed a sender identity to begin with.
       const token = refreshContexts.get(this)
@@ -341,14 +406,34 @@ export const useForumStore = defineStore('forum', {
       const requests = viewRequests.get(this) ?? new Map<string, object>()
       viewRequests.set(this, requests)
       requests.set(payloadDigest, request)
-      const current = () => (!isCurrent || isCurrent()) && viewRequests.get(this) === requests && requests.get(payloadDigest) === request && refreshContexts.get(this) === token && accountStatus.revision === revision && accountStatus.status === status && activeChain === chain && this.selectedTopic === selected
-      const message = await stageForumQuery(() => activeChain.topics.fetchOne(payloadDigest), current)
+      const current = () =>
+        (!isCurrent || isCurrent()) &&
+        viewRequests.get(this) === requests &&
+        requests.get(payloadDigest) === request &&
+        refreshContexts.get(this) === token &&
+        accountStatus.revision === revision &&
+        accountStatus.status === status &&
+        activeChain === chain &&
+        this.selectedTopic === selected
+      const message = await stageForumQuery(
+        () => activeChain.topics.fetchOne(payloadDigest),
+        current,
+      )
       if (!message) {
         console.log('could not fetch message', payloadDigest)
         return
       }
       if (isCurrent && !isCurrent()) return
-      if (viewRequests.get(this) !== requests || requests.get(payloadDigest) !== request || refreshContexts.get(this) !== token || accountStatus.revision !== revision || accountStatus.status !== status || activeChain !== chain || this.selectedTopic !== selected) return
+      if (
+        viewRequests.get(this) !== requests ||
+        requests.get(payloadDigest) !== request ||
+        refreshContexts.get(this) !== token ||
+        accountStatus.revision !== revision ||
+        accountStatus.status !== status ||
+        activeChain !== chain ||
+        this.selectedTopic !== selected
+      )
+        return
       this.setMessage(message)
       // Need to refetch so we get the right proxy object
       return this.getMessage(payloadDigest)
@@ -374,8 +459,13 @@ export const useForumStore = defineStore('forum', {
   },
   storage: {
     save(storage, _mutation, state): Promise<void> {
-      const messages = state.messages.map(({ replies: _replies, ...row }) => row)
-      return storage.put('forum', JSON.stringify({ ...state, messages, index: {} }))
+      const messages = state.messages.map(
+        ({ replies: _replies, ...row }) => row,
+      )
+      return storage.put(
+        'forum',
+        JSON.stringify({ ...state, messages, index: {} }),
+      )
     },
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async restore(storage): Promise<Partial<State>> {
@@ -391,7 +481,10 @@ export const useForumStore = defineStore('forum', {
         // Cached observations are unverified after restart, especially old number rows.
         messages: [],
         index: {},
-        voteThreshold: typeof deserializedForum.voteThreshold === 'string' ? deserializedForum.voteThreshold : '0',
+        voteThreshold:
+          typeof deserializedForum.voteThreshold === 'string'
+            ? deserializedForum.voteThreshold
+            : '0',
         hasFetchedOnce: false,
         outageStatus: 'ok',
         isRefreshing: false,

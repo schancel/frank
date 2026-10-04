@@ -45,7 +45,11 @@
  * 3. Topic observations use the wallet-specific canonical Forum model. A post's initial
  *    burn is positive; later votes may be positive or negative.
  */
-import { ForumMessage, ForumMessageEntry, DiscoveredTopic } from "../forum-model";
+import {
+  ForumMessage,
+  ForumMessageEntry,
+  DiscoveredTopic,
+} from "../forum-model";
 import { MessageItem } from "@frank/cashweb/types/messages";
 import type { MonadRootBundle } from "../monad-wallet-material";
 export type { MonadRootBundle } from "../monad-wallet-material";

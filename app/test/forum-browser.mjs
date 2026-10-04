@@ -6,14 +6,27 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // Run only against a coordinator-owned built-in fake demo. No account is reused.
-assert.equal(process.env.FORUM_FAKE_DEMO, 'true', 'set FORUM_FAKE_DEMO=true for the local synthetic fixture')
+assert.equal(
+  process.env.FORUM_FAKE_DEMO,
+  'true',
+  'set FORUM_FAKE_DEMO=true for the local synthetic fixture',
+)
 const origin = process.env.FORUM_APP_ORIGIN ?? 'http://127.0.0.1:9699'
-assert.ok(['localhost', '127.0.0.1', '[::1]'].includes(new URL(origin).hostname))
+assert.ok(
+  ['localhost', '127.0.0.1', '[::1]'].includes(new URL(origin).hostname),
+)
 const directory = await mkdtemp(join(tmpdir(), 'frank-forum-browser-'))
-const executable = process.env.FORUM_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-const codecPath = resolve(fileURLToPath(new URL('../../packages/frank-codec/src/index.ts', import.meta.url)))
+const executable =
+  process.env.FORUM_CHROME ??
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+const codecPath = resolve(
+  fileURLToPath(
+    new URL('../../packages/frank-codec/src/index.ts', import.meta.url),
+  ),
+)
 let child, socket, call, sessionId
-let interceptResponse = async event => call('Fetch.continueRequest', {requestId:event.params.requestId})
+let interceptResponse = async event =>
+  call('Fetch.continueRequest', { requestId: event.params.requestId })
 let events = []
 const allEvents = []
 async function stop() {
@@ -21,7 +34,15 @@ async function stop() {
   if (child && child.exitCode === null && child.signalCode === null) {
     const ended = new Promise(resolve => child.once('exit', resolve))
     child.kill('SIGTERM')
-    await Promise.race([ended,new Promise(resolve=>setTimeout(()=>{if(child.exitCode===null)child.kill('SIGKILL');resolve()},5000))])
+    await Promise.race([
+      ended,
+      new Promise(resolve =>
+        setTimeout(() => {
+          if (child.exitCode === null) child.kill('SIGKILL')
+          resolve()
+        }, 5000),
+      ),
+    ])
   }
 }
 async function launch(profile = 'first') {
@@ -68,7 +89,11 @@ async function launch(profile = 'first') {
     if (!message.id) {
       events.push(message)
       allEvents.push(message)
-      if(message.method==='Fetch.requestPaused')interceptResponse(message).catch(error=>{console.error(error);process.exitCode=1})
+      if (message.method === 'Fetch.requestPaused')
+        interceptResponse(message).catch(error => {
+          console.error(error)
+          process.exitCode = 1
+        })
       return
     }
     const handler = pending.get(message.id)
@@ -101,7 +126,8 @@ async function openTab() {
     mobile: false,
   })
   await call('Network.enable')
-  await call('Page.addScriptToEvaluateOnNewDocument', { source: `
+  await call('Page.addScriptToEvaluateOnNewDocument', {
+    source: `
     window.__forumWire=[];
     const bytes=async value=>value==null?[]:Array.from(value instanceof Blob?new Uint8Array(await value.arrayBuffer()):value instanceof ArrayBuffer?new Uint8Array(value):ArrayBuffer.isView(value)?new Uint8Array(value.buffer,value.byteOffset,value.byteLength):new TextEncoder().encode(value));
     const originalFetch=window.fetch;
@@ -118,7 +144,8 @@ async function openTab() {
     XMLHttpRequest.prototype.open=function(method,url){this.__forum={url:String(url),method,headers:{}};return open.apply(this,arguments)};
     XMLHttpRequest.prototype.setRequestHeader=function(k,v){this.__forum.headers[k.toLowerCase()]=v;return setHeader.apply(this,arguments)};
     XMLHttpRequest.prototype.send=function(body){const row=this.__forum;if(row.url.includes('/message/monad/topics')){window.__forumWire.push(row);bytes(body).then(v=>row.request=v);this.addEventListener('loadend',()=>{row.status=this.status;row.contentType=this.getResponseHeader('content-type');bytes(this.response).then(v=>row.response=v)})}return send.apply(this,arguments)};
-  ` })
+  `,
+  })
   await call('Page.navigate', { url: origin + '/#/setup' })
   await until(
     `document.querySelector('[data-test="new-account"]') || document.querySelector('[data-test="activate-account"]') || document.querySelector('[data-test="account-error"]')`,
@@ -181,14 +208,31 @@ async function input(name, value) {
 
 async function pressEnter(selector) {
   await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`)
-  await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
-  await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+  await call('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'Enter',
+    code: 'Enter',
+    windowsVirtualKeyCode: 13,
+  })
+  await call('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'Enter',
+    code: 'Enter',
+    windowsVirtualKeyCode: 13,
+  })
 }
 const forumState = `document.querySelector('#q-app').__vue_app__.config.globalProperties.$pinia.state.value.forum`
 async function createPost(title, body, parent) {
-  await evaluate(`location.hash=${JSON.stringify(parent ? '#/new-post/'+parent : '#/new-post')}`)
+  await evaluate(
+    `location.hash=${JSON.stringify(
+      parent ? '#/new-post/' + parent : '#/new-post',
+    )}`,
+  )
   await until(`document.querySelector('[data-test="post-title"]')`)
-  if (parent) await until(`!document.querySelector('[data-test="parent-resolution-status"]')`)
+  if (parent)
+    await until(
+      `!document.querySelector('[data-test="parent-resolution-status"]')`,
+    )
   await input('post-offering', '0.000000000000000001')
   await input('post-title', title)
   await input('post-message', body)
@@ -200,14 +244,23 @@ try {
   await launch()
   await click('new-account')
   await until(`document.querySelector('[data-test="backup-policy"]')`)
-  await evaluate(`document.querySelector('[data-test="backup-policy"] [role="radio"]').click()`)
+  await evaluate(
+    `document.querySelector('[data-test="backup-policy"] [role="radio"]').click()`,
+  )
   await click('generate-backups')
   await until(`document.querySelector('[data-test="backup-share"]')`)
-  const shares=[]
-  for(let i=0;i<3;i++){shares.push(await evaluate(`document.querySelector('[data-test="backup-share"]').value`));await click('next-share')}
+  const shares = []
+  for (let i = 0; i < 3; i++) {
+    shares.push(
+      await evaluate(
+        `document.querySelector('[data-test="backup-share"]').value`,
+      ),
+    )
+    await click('next-share')
+  }
   await click('descriptor-saved')
   await click('confirm-backups')
-  await input('confirm-shares', shares.slice(0,2).join('\n'))
+  await input('confirm-shares', shares.slice(0, 2).join('\n'))
   await input('display-name', 'Synthetic Forum proof')
   await click('verify-backups')
   await until(`document.querySelector('[data-test="activate-account"]')`)
@@ -215,46 +268,67 @@ try {
   await until(`location.hash==='#/wallet'`)
   await until(`document.querySelector('[data-test="demo-fund"]')`)
   await click('demo-fund')
-  await until(`document.querySelector('[data-test="fund-status"]').textContent.includes('Simulated credit confirmed')`)
+  await until(
+    `document.querySelector('[data-test="fund-status"]').textContent.includes('Simulated credit confirmed')`,
+  )
   await evaluate(`location.hash='#/forum'`)
   await until(`document.querySelector('[data-test="forum-threshold"]')`)
-  await input('forum-topic','news')
+  await input('forum-topic', 'news')
   await pressEnter('[data-test="forum-topic"] input')
   await until(`${forumState}.selectedTopic==='news'`)
   // Drive the real drawer's QInput. One wei above Number's precise integer range.
-  const threshold='0.009007199254740993'
-  await input('forum-threshold',threshold)
+  const threshold = '0.009007199254740993'
+  await input('forum-threshold', threshold)
   await until(`${forumState}.voteThreshold==='9007199254740993'`)
-  assert.equal(await evaluate(`${forumState}.voteThreshold`),'9007199254740993')
-  await input('forum-threshold','0')
+  assert.equal(
+    await evaluate(`${forumState}.voteThreshold`),
+    '9007199254740993',
+  )
+  await input('forum-threshold', '0')
   await until(`${forumState}.voteThreshold==='0'`)
-  const title='Forum browser '+Date.now()
-  const body='Exact rendered schema-2 body'
-  await createPost(title,body)
-  const digest=await evaluate(`${forumState}.messages.find(m=>m.entries.some(e=>e.title===${JSON.stringify(title)})).payloadDigest`)
-  assert.match(digest,/^[0-9a-f]{64}$/)
-  await evaluate(`location.hash=${JSON.stringify('#/forum/'+digest)}`)
+  const title = 'Forum browser ' + Date.now()
+  const body = 'Exact rendered schema-2 body'
+  await createPost(title, body)
+  const digest = await evaluate(
+    `${forumState}.messages.find(m=>m.entries.some(e=>e.title===${JSON.stringify(
+      title,
+    )})).payloadDigest`,
+  )
+  assert.match(digest, /^[0-9a-f]{64}$/)
+  await evaluate(`location.hash=${JSON.stringify('#/forum/' + digest)}`)
   await until(`document.body.innerText.includes(${JSON.stringify(body)})`)
-  await createPost(title+' reply','Exact rendered reply',digest)
-  await evaluate(`location.hash=${JSON.stringify('#/forum/'+digest)}`)
+  await createPost(title + ' reply', 'Exact rendered reply', digest)
+  await evaluate(`location.hash=${JSON.stringify('#/forum/' + digest)}`)
   await until(`document.body.innerText.includes('Exact rendered reply')`)
-  for(const direction of ['up','down']){
-    await until(`document.querySelector('[data-test="forum-vote-${direction}"]')`)
-    const before=await evaluate(`window.__forumWire.filter(r=>r.method==='PUT'&&r.url.endsWith('/vote')).length`)
-    await click('forum-vote-'+direction)
-    await until(`window.__forumWire.filter(r=>r.method==='PUT'&&r.url.endsWith('/vote')&&r.status>=200&&r.status<300).length>${before}`)
+  for (const direction of ['up', 'down']) {
+    await until(
+      `document.querySelector('[data-test="forum-vote-${direction}"]')`,
+    )
+    const before = await evaluate(
+      `window.__forumWire.filter(r=>r.method==='PUT'&&r.url.endsWith('/vote')).length`,
+    )
+    await click('forum-vote-' + direction)
+    await until(
+      `window.__forumWire.filter(r=>r.method==='PUT'&&r.url.endsWith('/vote')&&r.status>=200&&r.status<300).length>${before}`,
+    )
   }
   // Explicit normal status refresh, without constructing replacement signed operations.
   const status = await evaluate(`(async()=>{
-    const chain=await import('/@fs'+${JSON.stringify(resolve(fileURLToPath(new URL('../../packages/wallet/chain/index.ts',import.meta.url))))});
+    const chain=await import('/@fs'+${JSON.stringify(
+      resolve(
+        fileURLToPath(
+          new URL('../../packages/wallet/chain/index.ts', import.meta.url),
+        ),
+      ),
+    )});
     const session=await import(performance.getEntriesByType('resource').find(e=>e.name.includes('/src/accounts/session.ts')).name);
     await chain.activeChain.topics.reconcileOperations({wallet:await session.accountSession.getWallet()});
     const request=window.__forumWire.find(r=>r.method==='PUT'&&!r.url.endsWith('/vote'));
     const response=await fetch(request.url+'/status',{method:'POST',headers:{'content-type':'application/cbor',accept:'application/cbor'},body:new Uint8Array(request.request)});
     return response.status;
   })()`)
-  assert.equal(status,200)
-  const audit=await evaluate(`(async()=>{
+  assert.equal(status, 200)
+  const audit = await evaluate(`(async()=>{
     const c=await import('/@fs'+${JSON.stringify(codecPath)});
     const seen=new Set(),directions=new Set();
     for(const row of window.__forumWire){
@@ -270,9 +344,15 @@ try {
           if(post.schemaVersion!==2)throw Error('schema-1 post');
           const entry=post.typed.content.entries[0];
           if(entry.title===${JSON.stringify(title)}){
-            if(entry.message!==${JSON.stringify(body)}||c.toHex(c.contentHash(post))!==${JSON.stringify(digest)}||post.typed.parentHash)throw Error('root title/body/T1 changed');
-          }else if(entry.title===${JSON.stringify(title+' reply')}){
-            if(entry.message!=='Exact rendered reply'||c.toHex(post.typed.parentHash)!==${JSON.stringify(digest)})throw Error('reply parent/body changed');
+            if(entry.message!==${JSON.stringify(
+              body,
+            )}||c.toHex(c.contentHash(post))!==${JSON.stringify(
+    digest,
+  )}||post.typed.parentHash)throw Error('root title/body/T1 changed');
+          }else if(entry.title===${JSON.stringify(title + ' reply')}){
+            if(entry.message!=='Exact rendered reply'||c.toHex(post.typed.parentHash)!==${JSON.stringify(
+              digest,
+            )})throw Error('reply parent/body changed');
           }else throw Error('unexpected fixture post');
           seen.add(9);
         }
@@ -287,38 +367,71 @@ try {
     if(!directions.has(0)||!directions.has(1))throw Error('missing exact up/down operation statuses');
     return {seen:[...seen].sort((a,b)=>a-b),wireCount:window.__forumWire.length};
   })()`)
-  assert.deepEqual(audit.seen,[9,10,11,12,13,14,15])
+  assert.deepEqual(audit.seen, [9, 10, 11, 12, 13, 14, 15])
   // Alter relay observation fields only; immutable post bytes and signed author proof remain exact.
   // The single read slot queues the newer generation behind the old HTTP response.
-  let held, heldCurrent, heldCount=0, weight=(1n<<255n)+1n
+  let held,
+    heldCurrent,
+    heldCount = 0,
+    weight = (1n << 255n) + 1n
   const transformed = async event => {
-    const {body,base64Encoded}=await call('Fetch.getResponseBody',{requestId:event.params.requestId})
-    const bytes=base64Encoded?Buffer.from(body,'base64'):Buffer.from(body)
-    const encoded=await evaluate(`(async()=>{
+    const { body, base64Encoded } = await call('Fetch.getResponseBody', {
+      requestId: event.params.requestId,
+    })
+    const bytes = base64Encoded
+      ? Buffer.from(body, 'base64')
+      : Buffer.from(body)
+    const encoded = await evaluate(`(async()=>{
       const c=await import('/@fs'+${JSON.stringify(codecPath)});
-      const p=c.validateFrame(new Uint8Array(${JSON.stringify([...bytes])}),c.defaultContext());
+      const p=c.validateFrame(new Uint8Array(${JSON.stringify([
+        ...bytes,
+      ])}),c.defaultContext());
       if(p.kind!=='parsed'||p.typeId!==13)throw Error('fixture requires exact type13');
       const payload=p.payload;
       payload.set(3n,18446744073709551615n);
-      const magnitude=c.fromHex(${JSON.stringify((weight<0n?-weight:weight).toString(16).padStart(64,'0'))});
+      const magnitude=c.fromHex(${JSON.stringify(
+        (weight < 0n ? -weight : weight).toString(16).padStart(64, '0'),
+      )});
       payload.set(4n,payload.get(4n).map(raw=>{
         const view=c.validateFrame(raw,c.defaultContext());
-        view.payload.set(8n,new Map([[0n,${weight<0n}],[1n,magnitude]]));
+        view.payload.set(8n,new Map([[0n,${weight < 0n}],[1n,magnitude]]));
         view.payload.set(9n,18446744073709551615n);
         return c.encodeForumReadFrame(12,view.payload);
       }));
       return Array.from(c.encodeForumReadFrame(13,payload));
     })()`)
-    await call('Fetch.fulfillRequest',{requestId:event.params.requestId,responseCode:200,
-      responseHeaders:[...event.params.responseHeaders.filter(h=>!['content-length','content-encoding'].includes(h.name.toLowerCase())),{name:'content-length',value:String(encoded.length)}],body:Buffer.from(encoded).toString('base64')})
+    await call('Fetch.fulfillRequest', {
+      requestId: event.params.requestId,
+      responseCode: 200,
+      responseHeaders: [
+        ...event.params.responseHeaders.filter(
+          h =>
+            !['content-length', 'content-encoding'].includes(
+              h.name.toLowerCase(),
+            ),
+        ),
+        { name: 'content-length', value: String(encoded.length) },
+      ],
+      body: Buffer.from(encoded).toString('base64'),
+    })
   }
-  interceptResponse=async event=>{
-    if(heldCount++===0){held=event;return}
-    if(heldCount===2){heldCurrent=event;return}
+  interceptResponse = async event => {
+    if (heldCount++ === 0) {
+      held = event
+      return
+    }
+    if (heldCount === 2) {
+      heldCurrent = event
+      return
+    }
     await transformed(event)
   }
-  await call('Fetch.enable',{patterns:[{urlPattern:'*/message/monad/topics?*',requestStage:'Response'}]})
-  const refresh=`(async()=>{
+  await call('Fetch.enable', {
+    patterns: [
+      { urlPattern: '*/message/monad/topics?*', requestStage: 'Response' },
+    ],
+  })
+  const refresh = `(async()=>{
     const m=await import('/src/stores/forum.ts');
     const session=await import(performance.getEntriesByType('resource').find(e=>e.name.includes('/src/accounts/session.ts')).name);
     const pinia=document.querySelector('#q-app').__vue_app__.config.globalProperties.$pinia;
@@ -326,68 +439,156 @@ try {
     window.__refreshStarts=(window.__refreshStarts??0)+1;
     return task;
   })()`
-  const oldSnapshot=await evaluate(`JSON.stringify(${forumState}.messages)`)
-  await evaluate(`(()=>{window.__olderRefresh=${refresh}.then(()=>true);return true})()`)
-  for(let n=0;!held&&n<200;n++)await new Promise(resolve=>setTimeout(resolve,50))
-  assert.ok(held,'older HTTP response reached interception')
-  assert.equal(await evaluate(`JSON.stringify(${forumState}.messages)`),oldSnapshot,'staged response has not published')
-  await evaluate(`(()=>{window.__currentRefresh=${refresh}.then(()=>true);return true})()`)
+  const oldSnapshot = await evaluate(`JSON.stringify(${forumState}.messages)`)
+  await evaluate(
+    `(()=>{window.__olderRefresh=${refresh}.then(()=>true);return true})()`,
+  )
+  for (let n = 0; !held && n < 200; n++)
+    await new Promise(resolve => setTimeout(resolve, 50))
+  assert.ok(held, 'older HTTP response reached interception')
+  assert.equal(
+    await evaluate(`JSON.stringify(${forumState}.messages)`),
+    oldSnapshot,
+    'staged response has not published',
+  )
+  await evaluate(
+    `(()=>{window.__currentRefresh=${refresh}.then(()=>true);return true})()`,
+  )
   await until(`window.__refreshStarts===2 && ${forumState}.isRefreshing===true`)
-  assert.equal(heldCurrent,undefined,'current generation waits for the shared read slot')
-  await call('Fetch.continueRequest',{requestId:held.params.requestId})
+  assert.equal(
+    heldCurrent,
+    undefined,
+    'current generation waits for the shared read slot',
+  )
+  await call('Fetch.continueRequest', { requestId: held.params.requestId })
   await evaluate(`window.__olderRefresh`)
-  for(let n=0;!heldCurrent&&n<200;n++)await new Promise(resolve=>setTimeout(resolve,50))
-  assert.ok(heldCurrent,'current generation reaches HTTP after old slot releases')
-  assert.equal(await evaluate(`JSON.stringify(${forumState}.messages)`),oldSnapshot,'old result and staged current response cannot publish')
-  assert.equal(await evaluate(`${forumState}.isRefreshing`),true,'old finally cannot clear current loading')
+  for (let n = 0; !heldCurrent && n < 200; n++)
+    await new Promise(resolve => setTimeout(resolve, 50))
+  assert.ok(
+    heldCurrent,
+    'current generation reaches HTTP after old slot releases',
+  )
+  assert.equal(
+    await evaluate(`JSON.stringify(${forumState}.messages)`),
+    oldSnapshot,
+    'old result and staged current response cannot publish',
+  )
+  assert.equal(
+    await evaluate(`${forumState}.isRefreshing`),
+    true,
+    'old finally cannot clear current loading',
+  )
   await transformed(heldCurrent)
   await evaluate(`window.__currentRefresh`)
-  await until(`${forumState}.messages.some(m=>m.payloadDigest===${JSON.stringify(digest)}&&m.voteWeightWei===${JSON.stringify(weight.toString())})`)
-  assert.equal(await evaluate(`${forumState}.isRefreshing`),false,'current complete publication clears loading')
-  await input('forum-threshold','0.009007199254740993')
+  await until(
+    `${forumState}.messages.some(m=>m.payloadDigest===${JSON.stringify(
+      digest,
+    )}&&m.voteWeightWei===${JSON.stringify(weight.toString())})`,
+  )
+  assert.equal(
+    await evaluate(`${forumState}.isRefreshing`),
+    false,
+    'current complete publication clears loading',
+  )
+  await input('forum-threshold', '0.009007199254740993')
   await evaluate(`location.hash='#/forum'`)
-  await until(`Array.from(document.querySelectorAll('a.post-title')).some(e=>e.textContent===${JSON.stringify(title)}&&e.getClientRects().length>0)`)
-  assert.equal(await evaluate(`${forumState}.index[${JSON.stringify(digest)}].revision`),'18446744073709551615')
-  weight=-weight
+  await until(
+    `Array.from(document.querySelectorAll('a.post-title')).some(e=>e.textContent===${JSON.stringify(
+      title,
+    )}&&e.getClientRects().length>0)`,
+  )
+  assert.equal(
+    await evaluate(`${forumState}.index[${JSON.stringify(digest)}].revision`),
+    '18446744073709551615',
+  )
+  weight = -weight
   await evaluate(refresh)
-  await until(`${forumState}.index[${JSON.stringify(digest)}].voteWeightWei===${JSON.stringify(weight.toString())}`)
-  assert.equal(await evaluate(`Array.from(document.querySelectorAll('a.post-title')).some(e=>e.textContent===${JSON.stringify(title)}&&e.getClientRects().length>0)`),false,'negative wide amount is filtered by exact positive threshold')
-  weight=0n
-  await input('forum-threshold','0')
+  await until(
+    `${forumState}.index[${JSON.stringify(
+      digest,
+    )}].voteWeightWei===${JSON.stringify(weight.toString())}`,
+  )
+  assert.equal(
+    await evaluate(
+      `Array.from(document.querySelectorAll('a.post-title')).some(e=>e.textContent===${JSON.stringify(
+        title,
+      )}&&e.getClientRects().length>0)`,
+    ),
+    false,
+    'negative wide amount is filtered by exact positive threshold',
+  )
+  weight = 0n
+  await input('forum-threshold', '0')
   await evaluate(refresh)
-  await until(`${forumState}.index[${JSON.stringify(digest)}].voteWeightWei==='0'`)
-  assert.ok(await evaluate(`Array.from(document.querySelectorAll('a.post-title')).some(e=>e.textContent===${JSON.stringify(title)}&&e.getClientRects().length>0)`),'zero aggregate renders at zero threshold')
+  await until(
+    `${forumState}.index[${JSON.stringify(digest)}].voteWeightWei==='0'`,
+  )
+  assert.ok(
+    await evaluate(
+      `Array.from(document.querySelectorAll('a.post-title')).some(e=>e.textContent===${JSON.stringify(
+        title,
+      )}&&e.getClientRects().length>0)`,
+    ),
+    'zero aggregate renders at zero threshold',
+  )
   // Split the actual signed root/reply observations into two canonical pages.
   // The invented cursor is served by this isolated interception fixture, with exact echo.
   let continuation, pagingFixture
   const fulfill = async (event, bytes) => {
-    await call('Fetch.fulfillRequest',{
-      requestId:event.params.requestId,responseCode:200,
-      responseHeaders:[...event.params.responseHeaders.filter(h=>!['content-length','content-encoding','content-type'].includes(h.name.toLowerCase())),
-        {name:'content-type',value:'application/cbor'},{name:'content-length',value:String(bytes.length)}],
-      body:Buffer.from(bytes).toString('base64'),
+    await call('Fetch.fulfillRequest', {
+      requestId: event.params.requestId,
+      responseCode: 200,
+      responseHeaders: [
+        ...event.params.responseHeaders.filter(
+          h =>
+            !['content-length', 'content-encoding', 'content-type'].includes(
+              h.name.toLowerCase(),
+            ),
+        ),
+        { name: 'content-type', value: 'application/cbor' },
+        { name: 'content-length', value: String(bytes.length) },
+      ],
+      body: Buffer.from(bytes).toString('base64'),
     })
   }
-  interceptResponse=async event=>{
-    const query=new URL(event.params.request.url).searchParams
-    assert.equal(query.get('topic'),'news')
-    if(query.has('cursor')){
-      assert.ok(pagingFixture,'continuation requires its original first page')
-      assert.equal(query.get('cursor'),pagingFixture.cursor,'continuation sends exact retained cursor')
-      assert.equal(query.get('since'),pagingFixture.since,'continuation retains inclusive query')
-      assert.equal(continuation,undefined,'only one bounded terminal continuation')
-      continuation=event
+  interceptResponse = async event => {
+    const query = new URL(event.params.request.url).searchParams
+    assert.equal(query.get('topic'), 'news')
+    if (query.has('cursor')) {
+      assert.ok(pagingFixture, 'continuation requires its original first page')
+      assert.equal(
+        query.get('cursor'),
+        pagingFixture.cursor,
+        'continuation sends exact retained cursor',
+      )
+      assert.equal(
+        query.get('since'),
+        pagingFixture.since,
+        'continuation retains inclusive query',
+      )
+      assert.equal(
+        continuation,
+        undefined,
+        'only one bounded terminal continuation',
+      )
+      continuation = event
       return
     }
-    const {body,base64Encoded}=await call('Fetch.getResponseBody',{requestId:event.params.requestId})
-    const raw=base64Encoded?Buffer.from(body,'base64'):Buffer.from(body)
-    pagingFixture=await evaluate(`(async()=>{
+    const { body, base64Encoded } = await call('Fetch.getResponseBody', {
+      requestId: event.params.requestId,
+    })
+    const raw = base64Encoded ? Buffer.from(body, 'base64') : Buffer.from(body)
+    pagingFixture = await evaluate(`(async()=>{
       const c=await import('/@fs'+${JSON.stringify(codecPath)});
-      const page=c.validateFrame(new Uint8Array(${JSON.stringify([...raw])}),c.defaultContext());
+      const page=c.validateFrame(new Uint8Array(${JSON.stringify([
+        ...raw,
+      ])}),c.defaultContext());
       if(page.kind!=='parsed'||page.typeId!==13)throw Error('expected actual first topic page');
       const rows=page.typed.rows.filter(view=>{
         const title=view.typed.postFrame.typed.content.entries[0].title;
-        return title===${JSON.stringify(title)}||title===${JSON.stringify(title+' reply')};
+        return title===${JSON.stringify(title)}||title===${JSON.stringify(
+      title + ' reply',
+    )};
       });
       if(rows.length!==2)throw Error('first fixture response must contain exact signed root and reply');
       const encoded=rows.map(view=>{
@@ -406,32 +607,72 @@ try {
       return {first:Array.from(c.encodeForumReadFrame(13,first)),terminal:Array.from(c.encodeForumReadFrame(13,terminal)),
         cursor:c.forumCursorToTransport(cursor),hashes:rows.map(view=>c.toHex(c.contentHash(view.typed.postFrame)))};
     })()`)
-    pagingFixture.since=query.get('since')
-    await fulfill(event,pagingFixture.first)
+    pagingFixture.since = query.get('since')
+    await fulfill(event, pagingFixture.first)
   }
-  const beforePaging=await evaluate(`JSON.stringify(${forumState}.messages)`)
-  await evaluate(`(()=>{window.__pagedRefresh=${refresh}.then(()=>true);return true})()`)
-  for(let n=0;!continuation&&n<200;n++)await new Promise(resolve=>setTimeout(resolve,50))
-  assert.ok(continuation,'actual client traverses first page into held continuation')
-  assert.equal(await evaluate(`JSON.stringify(${forumState}.messages)`),beforePaging,'first-page prefix never publishes')
-  assert.equal(await evaluate(`${forumState}.isRefreshing`),true,'continuation keeps query loading')
-  await fulfill(continuation,pagingFixture.terminal)
+  const beforePaging = await evaluate(`JSON.stringify(${forumState}.messages)`)
+  await evaluate(
+    `(()=>{window.__pagedRefresh=${refresh}.then(()=>true);return true})()`,
+  )
+  for (let n = 0; !continuation && n < 200; n++)
+    await new Promise(resolve => setTimeout(resolve, 50))
+  assert.ok(
+    continuation,
+    'actual client traverses first page into held continuation',
+  )
+  assert.equal(
+    await evaluate(`JSON.stringify(${forumState}.messages)`),
+    beforePaging,
+    'first-page prefix never publishes',
+  )
+  assert.equal(
+    await evaluate(`${forumState}.isRefreshing`),
+    true,
+    'continuation keeps query loading',
+  )
+  await fulfill(continuation, pagingFixture.terminal)
   await evaluate(`window.__pagedRefresh`)
-  for(const hash of pagingFixture.hashes){
-    assert.equal(await evaluate(`${forumState}.index[${JSON.stringify(hash)}].voteWeightWei`),'7','all terminal snapshot observations publish together')
-    assert.equal(await evaluate(`${forumState}.index[${JSON.stringify(hash)}].revision`),'18446744073709551615')
+  for (const hash of pagingFixture.hashes) {
+    assert.equal(
+      await evaluate(
+        `${forumState}.index[${JSON.stringify(hash)}].voteWeightWei`,
+      ),
+      '7',
+      'all terminal snapshot observations publish together',
+    )
+    assert.equal(
+      await evaluate(`${forumState}.index[${JSON.stringify(hash)}].revision`),
+      '18446744073709551615',
+    )
   }
-  assert.equal(await evaluate(`${forumState}.messages.filter(row=>row.topic==='news').length`),2,'complete query replaces prior retained rows')
-  assert.equal(await evaluate(`${forumState}.isRefreshing`),false)
-  assert.ok(await evaluate(`Array.from(document.querySelectorAll('a.post-title')).some(e=>e.textContent===${JSON.stringify(title)}&&e.getClientRects().length>0)`),'complete multipage snapshot is rendered')
+  assert.equal(
+    await evaluate(
+      `${forumState}.messages.filter(row=>row.topic==='news').length`,
+    ),
+    2,
+    'complete query replaces prior retained rows',
+  )
+  assert.equal(await evaluate(`${forumState}.isRefreshing`), false)
+  assert.ok(
+    await evaluate(
+      `Array.from(document.querySelectorAll('a.post-title')).some(e=>e.textContent===${JSON.stringify(
+        title,
+      )}&&e.getClientRects().length>0)`,
+    ),
+    'complete multipage snapshot is rendered',
+  )
   // Feed the actual discovery consumer an exact maximum-u64 count.
   await call('Fetch.disable')
-  interceptResponse=async event=>{
-    const {body,base64Encoded}=await call('Fetch.getResponseBody',{requestId:event.params.requestId})
-    const raw=base64Encoded?Buffer.from(body,'base64'):Buffer.from(body)
-    const encoded=await evaluate(`(async()=>{
+  interceptResponse = async event => {
+    const { body, base64Encoded } = await call('Fetch.getResponseBody', {
+      requestId: event.params.requestId,
+    })
+    const raw = base64Encoded ? Buffer.from(body, 'base64') : Buffer.from(body)
+    const encoded = await evaluate(`(async()=>{
       const c=await import('/@fs'+${JSON.stringify(codecPath)});
-      const page=c.validateFrame(new Uint8Array(${JSON.stringify([...raw])}),c.defaultContext());
+      const page=c.validateFrame(new Uint8Array(${JSON.stringify([
+        ...raw,
+      ])}),c.defaultContext());
       if(page.kind!=='parsed'||page.typeId!==14||page.typed.nextCursor)throw Error('discovery fixture requires complete type14');
       const entries=page.payload.get(2n);
       const news=entries.find(entry=>entry.get(0n)==='news');
@@ -440,30 +681,60 @@ try {
       page.payload.set(1n,18446744073709551615n);
       return Array.from(c.encodeForumReadFrame(14,page.payload));
     })()`)
-    await fulfill(event,encoded)
+    await fulfill(event, encoded)
   }
-  await call('Fetch.enable',{patterns:[{urlPattern:'*/message/monad/topics/discover*',requestStage:'Response'}]})
+  await call('Fetch.enable', {
+    patterns: [
+      {
+        urlPattern: '*/message/monad/topics/discover*',
+        requestStage: 'Response',
+      },
+    ],
+  })
   await evaluate(`(async()=>{
     const m=await import('/src/stores/topics.ts');
     const pinia=document.querySelector('#q-app').__vue_app__.config.globalProperties.$pinia;
     const result=await m.useTopicStore(pinia).refreshDiscoveredTopics();
     if(result===false)throw Error('complete discovery fixture was not published');
   })()`)
-  await until(`document.querySelector('[data-test="forum-topic-count"][data-topic="news"]')?.textContent.trim()==='18446744073709551615'`)
-  assert.equal(await evaluate(`document.querySelector('[data-test="forum-topic-count"][data-topic="news"]').textContent.trim()`),'18446744073709551615','maximum u64 discovery count is rendered exactly')
-  assert.ok(await evaluate(`document.querySelector('[data-test="forum-topic-count"][data-topic="news"]').getClientRects().length>0`),'exact count is visible in the actual drawer')
-  const discovered=await evaluate(`(() => {
+  await until(
+    `document.querySelector('[data-test="forum-topic-count"][data-topic="news"]')?.textContent.trim()==='18446744073709551615'`,
+  )
+  assert.equal(
+    await evaluate(
+      `document.querySelector('[data-test="forum-topic-count"][data-topic="news"]').textContent.trim()`,
+    ),
+    '18446744073709551615',
+    'maximum u64 discovery count is rendered exactly',
+  )
+  assert.ok(
+    await evaluate(
+      `document.querySelector('[data-test="forum-topic-count"][data-topic="news"]').getClientRects().length>0`,
+    ),
+    'exact count is visible in the actual drawer',
+  )
+  const discovered = await evaluate(`(() => {
     const topics=document.querySelector('#q-app').__vue_app__.config.globalProperties.$pinia.state.value.topics;
     JSON.stringify(topics);
     return topics.discoveredTopics.news;
   })()`)
-  assert.equal(discovered.postCount,'18446744073709551615')
-  assert.equal(discovered.revision,'18446744073709551615')
+  assert.equal(discovered.postCount, '18446744073709551615')
+  assert.equal(discovered.revision, '18446744073709551615')
   await call('Fetch.disable')
-  assert.ok(await evaluate(`JSON.stringify(${forumState}).includes(${JSON.stringify(digest)})`))
-  assert.equal(allEvents.some(e=>e.method==='Runtime.exceptionThrown'),false)
-  console.log('Rendered CreatePost → list → single → reply → up/down → status; canonical bytes/media; exact drawer threshold/count; wide signed and zero observations; FIFO generations; held multipage atomic publication:',audit)
+  assert.ok(
+    await evaluate(
+      `JSON.stringify(${forumState}).includes(${JSON.stringify(digest)})`,
+    ),
+  )
+  assert.equal(
+    allEvents.some(e => e.method === 'Runtime.exceptionThrown'),
+    false,
+  )
+  console.log(
+    'Rendered CreatePost → list → single → reply → up/down → status; canonical bytes/media; exact drawer threshold/count; wide signed and zero observations; FIFO generations; held multipage atomic publication:',
+    audit,
+  )
 } finally {
   await stop()
-  await rm(directory,{recursive:true,force:true})
+  await rm(directory, { recursive: true, force: true })
 }

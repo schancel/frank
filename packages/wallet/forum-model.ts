@@ -1,6 +1,10 @@
 import { Transaction, getBytes, getAddress } from 'ethers'
 import {
-  contentHash, toHex, topicVoteCommitment, topicBurnCalldata, matchForumView,
+  contentHash,
+  toHex,
+  topicVoteCommitment,
+  topicBurnCalldata,
+  matchForumView,
   type ParsedFrame,
 } from '@frank/codec'
 
@@ -43,7 +47,10 @@ export interface ForumReadPolicy {
 }
 
 /** Compares the observed author with the signed transaction; this is no finality proof. */
-export function projectForumView(frame: ParsedFrame, policy: ForumReadPolicy): ForumMessage {
+export function projectForumView(
+  frame: ParsedFrame,
+  policy: ForumReadPolicy,
+): ForumMessage {
   const view = frame.typed
   if (view?.type !== 12) throw new Error('Expected Forum view')
   const post = view.postFrame.typed
@@ -54,31 +61,53 @@ export function projectForumView(frame: ParsedFrame, policy: ForumReadPolicy): F
   const hash = contentHash(view.postFrame)
   const commitment = topicVoteCommitment(policy.network, hash)
   if (
-    !tx.signature || !tx.from || !tx.hash || tx.chainId !== policy.chainId ||
+    !tx.signature ||
+    !tx.from ||
+    !tx.hash ||
+    tx.chainId !== policy.chainId ||
     tx.to?.toLowerCase() !== policy.burnAddress.toLowerCase() ||
-    tx.value < 1n || tx.value > 9223372036854775807n ||
+    tx.value < 1n ||
+    tx.value > 9223372036854775807n ||
     tx.data !== '0x' + toHex(topicBurnCalldata('up', commitment))
   ) {
     throw new Error('Author burn policy mismatch')
   }
   matchForumView(frame.frame, {
-    network: policy.network, topic: post.topic, targetHash: hash,
-    rawTransaction: getBytes(tx.serialized), transactionHash: getBytes(tx.hash),
-    sender: getBytes(tx.from), direction: 1, commitment,
+    network: policy.network,
+    topic: post.topic,
+    targetHash: hash,
+    rawTransaction: getBytes(tx.serialized),
+    transactionHash: getBytes(tx.hash),
+    sender: getBytes(tx.from),
+    direction: 1,
+    commitment,
   })
   let magnitude = BigInt('0x' + toHex(view.aggregate.magnitude))
   if (view.aggregate.negative) magnitude = -magnitude
-  const displayed = new Date(Number(view.firstVisible.seconds) * 1000 + view.firstVisible.nanoseconds / 1e6)
+  const displayed = new Date(
+    Number(view.firstVisible.seconds) * 1000 +
+      view.firstVisible.nanoseconds / 1e6,
+  )
   return {
     poster: getAddress(tx.from),
     topic: post.topic,
     voteWeightWei: magnitude.toString(),
     entries: post.content.entries
-      .filter((entry): entry is Extract<typeof entry, { kind: 'post' }> => entry.kind === 'post')
-      .map(({ title, url, message }) => ({ kind: 'post', title, url, message })),
+      .filter(
+        (entry): entry is Extract<typeof entry, { kind: 'post' }> =>
+          entry.kind === 'post',
+      )
+      .map(({ title, url, message }) => ({
+        kind: 'post',
+        title,
+        url,
+        message,
+      })),
     payloadDigest: toHex(hash),
     parentDigest: post.parentHash && toHex(post.parentHash),
-    timestamp: Number.isNaN(displayed.getTime()) ? view.firstVisible.seconds.toString() : displayed,
+    timestamp: Number.isNaN(displayed.getTime())
+      ? view.firstVisible.seconds.toString()
+      : displayed,
     visibleTimestamp: {
       seconds: view.firstVisible.seconds.toString(),
       nanoseconds: view.firstVisible.nanoseconds,

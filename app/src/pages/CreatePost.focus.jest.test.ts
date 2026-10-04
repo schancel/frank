@@ -17,7 +17,11 @@ const mockFetchOne = jest.fn()
 
 // vue-router's CommonJS build imports this ESM-only diagnostics package. The router behavior is
 // the boundary under test here, not its development reporter.
-jest.mock('src/accounts/session', () => ({ accountStatus: jest.requireActual('vue').reactive({revision:1,status:'ready'}) }))
+jest.mock('src/accounts/session', () => ({
+  accountStatus: jest
+    .requireActual('vue')
+    .reactive({ revision: 1, status: 'ready' }),
+}))
 jest.mock('nostics', () => ({
   createConsoleReporter: () => jest.fn(),
   defineDiagnostics: () => new Proxy({}, { get: () => jest.fn() }),
@@ -100,7 +104,13 @@ const validMessage = (payloadDigest: string, topic = 'news'): ForumMessage => ({
   poster: '0xposter',
   topic,
   voteWeightWei: '1',
-  visibleTimestamp: { seconds: '1', nanoseconds: 0 }, epoch: '00'.repeat(16), revision: '1', transactionHash: '11'.repeat(32), authorBurnTx: '0x01', blockNumber: '1', transactionIndex: '0',
+  visibleTimestamp: { seconds: '1', nanoseconds: 0 },
+  epoch: '00'.repeat(16),
+  revision: '1',
+  transactionHash: '11'.repeat(32),
+  authorBurnTx: '0x01',
+  blockNumber: '1',
+  transactionIndex: '0',
   entries: [{ kind: 'post', message: payloadDigest }],
   payloadDigest,
   timestamp: new Date(),
@@ -169,41 +179,67 @@ afterEach(() => {
 describe('CreatePost generation-scoped parent publication', () => {
   it('excludes stale A1 after A2 settles and preserves idle Retry focus', async () => {
     const { router, page, pending, forum } = await mountRoutedReply('parentA')
-    await router.push('/new-post/parentB'); await flushPromises()
-    await router.push('/new-post/parentA'); await flushPromises()
+    await router.push('/new-post/parentB')
+    await flushPromises()
+    await router.push('/new-post/parentA')
+    await flushPromises()
     // Only A1 may stage while in flight; obsolete queued B is skipped. Its result is
     // discarded under A2's route ownership before the current A2 request begins.
-    pending[0]?.resolve(validMessage('parentA')); await flushPromises()
-    expect(pending.map(request => request.digest)).toEqual(['parentA','parentA'])
-    pending[1]?.resolve(undefined); await flushPromises()
+    pending[0]?.resolve(validMessage('parentA'))
+    await flushPromises()
+    expect(pending.map(request => request.digest)).toEqual([
+      'parentA',
+      'parentA',
+    ])
+    pending[1]?.resolve(undefined)
+    await flushPromises()
     const retry = page().get('[data-test="retry-parent"]').element
     retry.focus()
     expect(forum().getMessage('parentA')).toBeNull()
     expect(forum().getMessage('parentB')).toBeNull()
-    expect(page().vm).toMatchObject({parentDigest:'parentA',parentLoading:false})
+    expect(page().vm).toMatchObject({
+      parentDigest: 'parentA',
+      parentLoading: false,
+    })
     expect(document.activeElement).toBe(retry)
   })
   it('hands Retry focus to compose for a completed current request', async () => {
     const { page, pending, forum } = await mountRoutedReply('parentA')
-    pending[0]?.resolve(undefined); await flushPromises()
+    pending[0]?.resolve(undefined)
+    await flushPromises()
     const retry = page().get('[data-test="retry-parent"]').element
     retry.focus()
     await page().get('[data-test="retry-parent"]').trigger('click')
-    pending[1]?.resolve(validMessage('parentA')); await flushPromises()
+    pending[1]?.resolve(validMessage('parentA'))
+    await flushPromises()
     expect(forum().getMessage('parentA')?.topic).toBe('news')
     expect(page().find('[data-test="retry-parent"]').exists()).toBe(false)
-    expect(document.activeElement).toBe(page().get('[data-test="compose-focus-target"]').element)
+    expect(document.activeElement).toBe(
+      page().get('[data-test="compose-focus-target"]').element,
+    )
   })
   it('preserves a connected focus competitor on current parent completion', async () => {
     const { page, pending, pinia } = await mountRoutedReply('parentA')
-    pending[0]?.resolve(undefined); await flushPromises()
+    pending[0]?.resolve(undefined)
+    await flushPromises()
     page().get('[data-test="retry-parent"]').element.focus()
     await page().get('[data-test="retry-parent"]').trigger('click')
-    const stop = watch(() => useForumStore(pinia).getMessage('parentA'), () => {
-      const competitor = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-      competitor.setAttribute('tabindex','0'); document.body.appendChild(competitor); competitor.focus()
-    }, {flush:'post'})
-    pending[1]?.resolve(validMessage('parentA')); await flushPromises(); stop()
+    const stop = watch(
+      () => useForumStore(pinia).getMessage('parentA'),
+      () => {
+        const competitor = document.createElementNS(
+          'http://www.w3.org/2000/svg',
+          'svg',
+        )
+        competitor.setAttribute('tabindex', '0')
+        document.body.appendChild(competitor)
+        competitor.focus()
+      },
+      { flush: 'post' },
+    )
+    pending[1]?.resolve(validMessage('parentA'))
+    await flushPromises()
+    stop()
     expect(document.activeElement).toBeInstanceOf(SVGElement)
   })
 })

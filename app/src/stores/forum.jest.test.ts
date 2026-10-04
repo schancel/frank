@@ -11,7 +11,9 @@ import { WalletHandle } from '@frank/wallet/chain'
 import { TopicPostOutcomeUnknownError } from '@frank/wallet/chain/active-chain'
 import { sortPostsByMode } from 'src/utils/sorting'
 
-jest.mock('src/accounts/session', () => ({ accountStatus: { revision: 1, status: 'ready' } }))
+jest.mock('src/accounts/session', () => ({
+  accountStatus: { revision: 1, status: 'ready' },
+}))
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
@@ -45,7 +47,13 @@ function makeMessage(overrides: Partial<ForumMessage> = {}): ForumMessage {
     poster: '0xposter',
     topic: 'stamp',
     voteWeightWei: '10000000',
-    visibleTimestamp: { seconds: '1', nanoseconds: 0 }, epoch: '00'.repeat(16), revision: '1', transactionHash: '11'.repeat(32), authorBurnTx: '0x01', blockNumber: '1', transactionIndex: '0',
+    visibleTimestamp: { seconds: '1', nanoseconds: 0 },
+    epoch: '00'.repeat(16),
+    revision: '1',
+    transactionHash: '11'.repeat(32),
+    authorBurnTx: '0x01',
+    blockNumber: '1',
+    transactionIndex: '0',
     entries: [{ kind: 'post', message: 'hello' }],
     payloadDigest: 'deadbeef',
     timestamp: new Date(),
@@ -546,26 +554,42 @@ describe('useForumStore: addOffering', () => {
   })
 })
 
-
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (error: Error) => void
-  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes
+    reject = no
+  })
   return { promise, resolve, reject }
 }
 
 const session = jest.requireMock('src/accounts/session').accountStatus
 
 describe('canonical complete query publication', () => {
-  beforeEach(() => { session.revision = 1; session.status = 'ready' })
+  beforeEach(() => {
+    session.revision = 1
+    session.status = 'ready'
+  })
   it('replaces removed rows and all observed author/content facts, with one mutation', async () => {
     const store = useForumStore()
     store.setEntries([makeMessage(), makeMessage({ payloadDigest: 'removed' })])
-    const updated = makeMessage({ poster: 'new author', transactionHash: '22'.repeat(32), entries: [{kind:'post', message:'new content'}], voteWeightWei: '9007199254740993' })
+    const updated = makeMessage({
+      poster: 'new author',
+      transactionHash: '22'.repeat(32),
+      entries: [{ kind: 'post', message: 'new content' }],
+      voteWeightWei: '9007199254740993',
+    })
     mockedFetchByTopic.mockResolvedValue([updated])
     const mutations: string[] = []
-    store.$subscribe((mutation, state) => { if (mutation.type === 'patch function') mutations.push(state.messages.map(row => row.poster).join(',')) }, {flush:'sync'})
-    await store.refreshMessages({wallet:testWallet, topic:'stamp'})
+    store.$subscribe(
+      (mutation, state) => {
+        if (mutation.type === 'patch function')
+          mutations.push(state.messages.map(row => row.poster).join(','))
+      },
+      { flush: 'sync' },
+    )
+    await store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
     expect(store.messages).toHaveLength(1)
     expect(store.getMessage('removed')).toBeNull()
     expect(store.getMessage('deadbeef')).toMatchObject(updated)
@@ -576,21 +600,24 @@ describe('canonical complete query publication', () => {
     const store = useForumStore()
     store.setEntries([makeMessage()])
     mockedFetchByTopic.mockResolvedValue([])
-    await store.refreshMessages({wallet:testWallet, topic:'stamp'})
+    await store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
     expect(store.messages).toEqual([])
     expect(store.outageStatus).toBe('ok')
   })
   it('uses one query at a time and reports partial query failures explicitly', async () => {
     const store = useForumStore()
-    let active = 0, maximum = 0
-    mockedFetchByTopic.mockImplementation(async ({topic}) => {
+    let active = 0,
+      maximum = 0
+    mockedFetchByTopic.mockImplementation(async ({ topic }) => {
       maximum = Math.max(maximum, ++active)
       await Promise.resolve()
       active--
       if (topic === 'stamp') throw new Error('failed continuation')
-      return topic === 'news' ? [makeMessage({topic:'news'})] : []
+      return topic === 'news' ? [makeMessage({ topic: 'news' })] : []
     })
-    await expect(store.refreshMessages({wallet:testWallet, topic:''})).rejects.toThrow('failed continuation')
+    await expect(
+      store.refreshMessages({ wallet: testWallet, topic: '' }),
+    ).rejects.toThrow('failed continuation')
     expect(maximum).toBe(1)
     expect(store.outageStatus).toBe('degraded')
     expect(store.getMessage('deadbeef')?.topic).toBe('news')
@@ -599,60 +626,79 @@ describe('canonical complete query publication', () => {
     const store = useForumStore()
     store.setEntries([makeMessage()])
     mockedDiscoverTopics.mockRejectedValue(new Error('discovery unavailable'))
-    await expect(store.refreshMessages({wallet:testWallet,topic:''})).rejects.toThrow('discovery unavailable')
+    await expect(
+      store.refreshMessages({ wallet: testWallet, topic: '' }),
+    ).rejects.toThrow('discovery unavailable')
     expect(mockedFetchByTopic).not.toHaveBeenCalled()
     expect(store.messages).toHaveLength(1)
     expect(store.outageStatus).toBe('outage')
   })
   it('old results and finally cannot replace a newer generation or clear loading', async () => {
     const store = useForumStore()
-    const old = deferred<ForumMessage[]>(), fresh = deferred<ForumMessage[]>()
-    mockedFetchByTopic.mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise)
-    const first = store.refreshMessages({wallet:testWallet,topic:'stamp'})
+    const old = deferred<ForumMessage[]>(),
+      fresh = deferred<ForumMessage[]>()
+    mockedFetchByTopic
+      .mockReturnValueOnce(old.promise)
+      .mockReturnValueOnce(fresh.promise)
+    const first = store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
     await flushPromises()
-    const second = store.refreshMessages({wallet:testWallet,topic:'stamp'})
+    const second = store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
     await flushPromises()
-    old.resolve([makeMessage({poster:'old'})])
+    old.resolve([makeMessage({ poster: 'old' })])
     await first
     expect(store.messages).toEqual([])
     expect(store.isRefreshing).toBe(true)
-    fresh.resolve([makeMessage({poster:'new'})])
+    fresh.resolve([makeMessage({ poster: 'new' })])
     await second
     expect(store.messages[0].poster).toBe('new')
     expect(store.isRefreshing).toBe(false)
   })
-  it.each(['route', 'wallet', 'locked'])('invalidates publication on %s change', async change => {
-    const store = useForumStore(), pending = deferred<ForumMessage[]>()
-    mockedFetchByTopic.mockReturnValue(pending.promise)
-    const task = store.refreshMessages({wallet:testWallet,topic:'stamp'})
-    await flushPromises()
-    if (change === 'route') store.setSelectedTopic('news')
-    else if (change === 'wallet') session.revision++
-    else session.status = 'locked'
-    pending.resolve([makeMessage()])
-    await task
-    expect(store.messages).toEqual([])
-  })
+  it.each(['route', 'wallet', 'locked'])(
+    'invalidates publication on %s change',
+    async change => {
+      const store = useForumStore(),
+        pending = deferred<ForumMessage[]>()
+      mockedFetchByTopic.mockReturnValue(pending.promise)
+      const task = store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
+      await flushPromises()
+      if (change === 'route') store.setSelectedTopic('news')
+      else if (change === 'wallet') session.revision++
+      else session.status = 'locked'
+      pending.resolve([makeMessage()])
+      await task
+      expect(store.messages).toEqual([])
+    },
+  )
   it('drops delayed view writes scoped to route and latest same-digest request', async () => {
-    const store = useForumStore(), old = deferred<ForumMessage | undefined>()
-    mockedFetchOne.mockReturnValueOnce(old.promise).mockResolvedValueOnce(makeMessage({poster:'new'}))
-    const first = store.fetchMessage({payloadDigest:'deadbeef'})
+    const store = useForumStore(),
+      old = deferred<ForumMessage | undefined>()
+    mockedFetchOne
+      .mockReturnValueOnce(old.promise)
+      .mockResolvedValueOnce(makeMessage({ poster: 'new' }))
+    const first = store.fetchMessage({ payloadDigest: 'deadbeef' })
     await flushPromises()
-    const second = store.fetchMessage({payloadDigest:'deadbeef'})
-    old.resolve(makeMessage({poster:'old'}))
-    await first; await second
+    const second = store.fetchMessage({ payloadDigest: 'deadbeef' })
+    old.resolve(makeMessage({ poster: 'old' }))
+    await first
+    await second
     expect(store.getMessage('deadbeef')?.poster).toBe('new')
-    mockedFetchOne.mockResolvedValue(makeMessage({payloadDigest:'other'}))
-    await store.fetchMessage({payloadDigest:'other', isCurrent:()=>false})
+    mockedFetchOne.mockResolvedValue(makeMessage({ payloadDigest: 'other' }))
+    await store.fetchMessage({ payloadDigest: 'other', isCurrent: () => false })
     expect(store.getMessage('other')).toBeNull()
   })
   it('rebuilds deduplicated reply links and suppresses cyclic ancestry', () => {
     const store = useForumStore()
     store.setEntries([
-      makeMessage({payloadDigest:'a',parentDigest:'b'}),makeMessage({payloadDigest:'b',parentDigest:'a'}),
-      makeMessage({payloadDigest:'descendant',parentDigest:'a'}),
-      makeMessage({payloadDigest:'root'}),makeMessage({payloadDigest:'child',parentDigest:'root'}),
-      makeMessage({payloadDigest:'child',parentDigest:'root',poster:'updated'}),
+      makeMessage({ payloadDigest: 'a', parentDigest: 'b' }),
+      makeMessage({ payloadDigest: 'b', parentDigest: 'a' }),
+      makeMessage({ payloadDigest: 'descendant', parentDigest: 'a' }),
+      makeMessage({ payloadDigest: 'root' }),
+      makeMessage({ payloadDigest: 'child', parentDigest: 'root' }),
+      makeMessage({
+        payloadDigest: 'child',
+        parentDigest: 'root',
+        poster: 'updated',
+      }),
     ])
     expect(store.getMessage('a')?.replies).toEqual([])
     expect(store.getMessage('b')?.replies).toEqual([])
@@ -662,41 +708,78 @@ describe('canonical complete query publication', () => {
   })
   it('never rounds a signed paid amount through number', async () => {
     const store = useForumStore()
-    mockedVote.mockResolvedValue(undefined); mockedFetchOne.mockResolvedValue(makeMessage())
-    await store.addOffering({wallet:testWallet,payloadDigest:'deadbeef',satoshis:-9007199254740993n})
-    expect(mockedVote).toHaveBeenCalledWith({wallet:testWallet,payloadDigest:'deadbeef',direction:'down',voteWeightWei:9007199254740993n})
+    mockedVote.mockResolvedValue(undefined)
+    mockedFetchOne.mockResolvedValue(makeMessage())
+    await store.addOffering({
+      wallet: testWallet,
+      payloadDigest: 'deadbeef',
+      satoshis: -9007199254740993n,
+    })
+    expect(mockedVote).toHaveBeenCalledWith({
+      wallet: testWallet,
+      payloadDigest: 'deadbeef',
+      direction: 'down',
+      voteWeightWei: 9007199254740993n,
+    })
   })
 })
 
 it('excludes unverified number-backed cache on actual persistence restore', async () => {
-  let storageOptions: {restore(storage: unknown): Promise<unknown>} | undefined
+  let storageOptions:
+    | { restore(storage: unknown): Promise<unknown> }
+    | undefined
   const pinia = createPinia()
-  pinia.use(({options}) => { storageOptions = options.storage as typeof storageOptions })
+  pinia.use(({ options }) => {
+    storageOptions = options.storage as typeof storageOptions
+  })
   createApp({}).use(pinia)
-  setActivePinia(pinia); useForumStore()
-  const restored = await storageOptions!.restore({get: async () => JSON.stringify({messages:[{satoshis:9007199254740992,payloadDigest:'old'}],index:{old:{satoshis:5}},voteThreshold:1,isRefreshing:true,hasFetchedOnce:true})})
-  expect(restored).toMatchObject({messages:[],index:{},voteThreshold:'0',isRefreshing:false,hasFetchedOnce:false})
+  setActivePinia(pinia)
+  useForumStore()
+  const restored = await storageOptions!.restore({
+    get: async () =>
+      JSON.stringify({
+        messages: [{ satoshis: 9007199254740992, payloadDigest: 'old' }],
+        index: { old: { satoshis: 5 } },
+        voteThreshold: 1,
+        isRefreshing: true,
+        hasFetchedOnce: true,
+      }),
+  })
+  expect(restored).toMatchObject({
+    messages: [],
+    index: {},
+    voteThreshold: '0',
+    isRefreshing: false,
+    hasFetchedOnce: false,
+  })
 })
 
 it('normal status refresh reconciles retained operations without creating paid intent', async () => {
   const store = useForumStore()
-  await store.refreshOperationStatus({wallet:testWallet})
-  expect(activeChain.topics.reconcileOperations).toHaveBeenCalledWith({wallet:testWallet})
+  await store.refreshOperationStatus({ wallet: testWallet })
+  expect(activeChain.topics.reconcileOperations).toHaveBeenCalledWith({
+    wallet: testWallet,
+  })
   expect(mockedPost).not.toHaveBeenCalled()
   expect(mockedVote).not.toHaveBeenCalled()
 })
 
 it('does not let an old rejected read overwrite newer loading/error state', async () => {
-  const store = useForumStore(), old = deferred<ForumMessage[]>(), fresh = deferred<ForumMessage[]>()
-  mockedFetchByTopic.mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise)
-  const first = store.refreshMessages({wallet:testWallet,topic:'stamp'})
+  const store = useForumStore(),
+    old = deferred<ForumMessage[]>(),
+    fresh = deferred<ForumMessage[]>()
+  mockedFetchByTopic
+    .mockReturnValueOnce(old.promise)
+    .mockReturnValueOnce(fresh.promise)
+  const first = store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
   await flushPromises()
-  const second = store.refreshMessages({wallet:testWallet,topic:'stamp'})
+  const second = store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
   old.reject(new Error('old continuation failed'))
   await first
   expect(store.isRefreshing).toBe(true)
   expect(store.outageStatus).toBe('ok')
-  fresh.resolve([]); await second
+  fresh.resolve([])
+  await second
   expect(store.isRefreshing).toBe(false)
   expect(store.outageStatus).toBe('ok')
 })
@@ -704,7 +787,9 @@ it('rejects an incomplete query instead of treating it as verified empty', async
   const store = useForumStore()
   store.setEntries([makeMessage()])
   mockedFetchByTopic.mockResolvedValue(undefined)
-  await expect(store.refreshMessages({wallet:testWallet,topic:'stamp'})).rejects.toThrow('Incomplete Forum query')
+  await expect(
+    store.refreshMessages({ wallet: testWallet, topic: 'stamp' }),
+  ).rejects.toThrow('Incomplete Forum query')
   expect(store.messages).toHaveLength(1)
   expect(store.outageStatus).toBe('outage')
 })

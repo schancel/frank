@@ -1,25 +1,91 @@
 import { Wallet, getBytes } from 'ethers'
-import { encodeForumPost, encodeForumReadFrame, contentHash, validateFrame, defaultContext, topicVoteCommitment, topicBurnCalldata, type Encodable } from '@frank/codec'
+import {
+  encodeForumPost,
+  encodeForumReadFrame,
+  contentHash,
+  validateFrame,
+  defaultContext,
+  topicVoteCommitment,
+  topicBurnCalldata,
+  type Encodable,
+} from '@frank/codec'
 import { projectForumView, ForumReadPolicy } from './forum-model'
-const time = (seconds: bigint) => new Map<number,Encodable>([[0,seconds],[1,0]])
-export const policy: ForumReadPolicy = {network:'monad-testnet',chainId:10143n,burnAddress:'0x000000000000000000000000000000000000dEaD'}
-export async function viewFixture(index=1, magnitude=(1n<<255n)+1n, negative=false) {
-  const post=encodeForumPost({network:policy.network,topic:'general',authored:{seconds:1n,nanoseconds:0},entries:[{title:'Exact',message:String(index)}]})
-  const p=validateFrame(post,defaultContext());if(p.kind!=='parsed')throw Error('post')
-  const wallet=new Wallet('0x'+'11'.repeat(32)), hash=contentHash(p)
-  const raw=await wallet.signTransaction({type:2,chainId:policy.chainId,nonce:index,to:policy.burnAddress,value:9223372036854775807n,gasLimit:21000,maxFeePerGas:1,maxPriorityFeePerGas:1,data:topicBurnCalldata('up',topicVoteCommitment(policy.network,hash))})
-  const tx=(await import('ethers')).Transaction.from(raw)
-  const bytes=encodeForumReadFrame(12,new Map<number,Encodable>([[0,policy.network],[1,post],[2,getBytes(wallet.address)],[3,getBytes(raw)],[4,getBytes(tx.hash!)],[5,time(BigInt(index))],[6,0],[7,0],[8,new Map<number,Encodable>([[0,negative],[1,getBytes('0x'+magnitude.toString(16).padStart(64,'0'))]])],[9,18446744073709551615n],[10,new Uint8Array(16).fill(1)]]))
-  return {bytes,hash}
+const time = (seconds: bigint) =>
+  new Map<number, Encodable>([
+    [0, seconds],
+    [1, 0],
+  ])
+export const policy: ForumReadPolicy = {
+  network: 'monad-testnet',
+  chainId: 10143n,
+  burnAddress: '0x000000000000000000000000000000000000dEaD',
 }
-describe('canonical observation model',()=>{
-  it('keeps signed 256-bit aggregates, u64 revision and zero block/index JSON exact',async()=>{
-    const {bytes}=await viewFixture(1,(1n<<256n)-1n,true),p=validateFrame(bytes,defaultContext());if(p.kind!=='parsed')throw Error('view')
-    const model=projectForumView(p,policy)
-    expect(model.voteWeightWei).toBe((-((1n<<256n)-1n)).toString())
+export async function viewFixture(
+  index = 1,
+  magnitude = (1n << 255n) + 1n,
+  negative = false,
+) {
+  const post = encodeForumPost({
+    network: policy.network,
+    topic: 'general',
+    authored: { seconds: 1n, nanoseconds: 0 },
+    entries: [{ title: 'Exact', message: String(index) }],
+  })
+  const p = validateFrame(post, defaultContext())
+  if (p.kind !== 'parsed') throw Error('post')
+  const wallet = new Wallet('0x' + '11'.repeat(32)),
+    hash = contentHash(p)
+  const raw = await wallet.signTransaction({
+    type: 2,
+    chainId: policy.chainId,
+    nonce: index,
+    to: policy.burnAddress,
+    value: 9223372036854775807n,
+    gasLimit: 21000,
+    maxFeePerGas: 1,
+    maxPriorityFeePerGas: 1,
+    data: topicBurnCalldata('up', topicVoteCommitment(policy.network, hash)),
+  })
+  const tx = (await import('ethers')).Transaction.from(raw)
+  const bytes = encodeForumReadFrame(
+    12,
+    new Map<number, Encodable>([
+      [0, policy.network],
+      [1, post],
+      [2, getBytes(wallet.address)],
+      [3, getBytes(raw)],
+      [4, getBytes(tx.hash!)],
+      [5, time(BigInt(index))],
+      [6, 0],
+      [7, 0],
+      [
+        8,
+        new Map<number, Encodable>([
+          [0, negative],
+          [1, getBytes('0x' + magnitude.toString(16).padStart(64, '0'))],
+        ]),
+      ],
+      [9, 18446744073709551615n],
+      [10, new Uint8Array(16).fill(1)],
+    ]),
+  )
+  return { bytes, hash }
+}
+describe('canonical observation model', () => {
+  it('keeps signed 256-bit aggregates, u64 revision and zero block/index JSON exact', async () => {
+    const { bytes } = await viewFixture(1, (1n << 256n) - 1n, true),
+      p = validateFrame(bytes, defaultContext())
+    if (p.kind !== 'parsed') throw Error('view')
+    const model = projectForumView(p, policy)
+    expect(model.voteWeightWei).toBe((-((1n << 256n) - 1n)).toString())
     expect(model.revision).toBe('18446744073709551615')
-    expect(model.blockNumber).toBe('0');expect(model.transactionIndex).toBe('0')
-    expect(JSON.parse(JSON.stringify(model)).voteWeightWei).toBe(model.voteWeightWei)
-    expect(()=>projectForumView(p,{...policy,chainId:1n})).toThrow('policy mismatch')
+    expect(model.blockNumber).toBe('0')
+    expect(model.transactionIndex).toBe('0')
+    expect(JSON.parse(JSON.stringify(model)).voteWeightWei).toBe(
+      model.voteWeightWei,
+    )
+    expect(() => projectForumView(p, { ...policy, chainId: 1n })).toThrow(
+      'policy mismatch',
+    )
   })
 })

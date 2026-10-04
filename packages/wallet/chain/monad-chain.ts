@@ -1073,8 +1073,20 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     },
   };
 
-  const forumPolicy: ForumReadPolicy = { network: config.networkTag === "MON1" ? "monad-mainnet" : config.networkTag === "MONT" ? "monad-testnet" : config.networkTag, chainId: BigInt(config.chainId), burnAddress: config.stampBurnAddress };
-  const reconcileTopicOperations = async (wallet: MonadChainWalletHandle, admission?: import("../storage/monad-wallet-bundle").MonadWalletOperationAdmission) => {
+  const forumPolicy: ForumReadPolicy = {
+    network:
+      config.networkTag === "MON1"
+        ? "monad-mainnet"
+        : config.networkTag === "MONT"
+        ? "monad-testnet"
+        : config.networkTag,
+    chainId: BigInt(config.chainId),
+    burnAddress: config.stampBurnAddress,
+  };
+  const reconcileTopicOperations = async (
+    wallet: MonadChainWalletHandle,
+    admission?: import("../storage/monad-wallet-bundle").MonadWalletOperationAdmission
+  ) => {
     await new MonadTopicPostClient(wallet).resumePendingOperations(admission);
     await new MonadTopicVoteClient(wallet).resumePendingOperations(admission);
   };
@@ -1082,40 +1094,67 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     async reconcileOperations(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       await runWalletExclusive(wallet, async () => {
-        if (!wallet.walletState) throw new Error("Canonical topics require coherent wallet persistence");
-        await wallet.walletState.runOperation(admission => reconcileTopicOperations(wallet, admission));
+        if (!wallet.walletState)
+          throw new Error(
+            "Canonical topics require coherent wallet persistence"
+          );
+        await wallet.walletState.runOperation((admission) =>
+          reconcileTopicOperations(wallet, admission)
+        );
       });
     },
     async post(params): Promise<{ payloadDigest: string }> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const client = new MonadTopicPostClient(wallet);
       return runWalletExclusive(wallet, async () => {
-        if (!wallet.walletState) throw new Error("Canonical topics require coherent wallet persistence");
-        return wallet.walletState.runOperation(async admission => {
+        if (!wallet.walletState)
+          throw new Error(
+            "Canonical topics require coherent wallet persistence"
+          );
+        return wallet.walletState.runOperation(async (admission) => {
           await reconcileTopicOperations(wallet, admission);
-          if (params.direction !== "up" || params.voteWeightWei < 1n || params.voteWeightWei > 9223372036854775807n) throw new Error("Canonical post burn must be up and within 1..i64::MAX");
+          if (
+            params.direction !== "up" ||
+            params.voteWeightWei < 1n ||
+            params.voteWeightWei > 9223372036854775807n
+          )
+            throw new Error(
+              "Canonical post burn must be up and within 1..i64::MAX"
+            );
           const timestampMs = Date.now();
-          encodeForumPost({network: forumPolicy.network, topic: params.topic, entries: params.entries,
-            parentHash: params.parentDigest ? getBytes(`0x${params.parentDigest}`) : undefined,
-            authored: {seconds: BigInt(Math.floor(timestampMs / 1000)), nanoseconds: (timestampMs % 1000) * 1000000}});
+          encodeForumPost({
+            network: forumPolicy.network,
+            topic: params.topic,
+            entries: params.entries,
+            parentHash: params.parentDigest
+              ? getBytes(`0x${params.parentDigest}`)
+              : undefined,
+            authored: {
+              seconds: BigInt(Math.floor(timestampMs / 1000)),
+              nanoseconds: (timestampMs % 1000) * 1000000,
+            },
+          });
           const leaseIndex = await prepareTopicBurnAccount(
             wallet,
             params.voteWeightWei,
             params.onPreparationProgress
           );
           const result = await client
-            .submitTopicPost({
-              topic: params.topic,
-              entries: params.entries,
-              timestampMs,
-              parentPostHash: params.parentDigest
-                ? getBytes(`0x${params.parentDigest}`)
-                : undefined,
-              direction: params.direction,
-              burnAddress: config.stampBurnAddress,
-              voteWeightWei: params.voteWeightWei,
-              leaseIndex,
-            }, admission)
+            .submitTopicPost(
+              {
+                topic: params.topic,
+                entries: params.entries,
+                timestampMs,
+                parentPostHash: params.parentDigest
+                  ? getBytes(`0x${params.parentDigest}`)
+                  : undefined,
+                direction: params.direction,
+                burnAddress: config.stampBurnAddress,
+                voteWeightWei: params.voteWeightWei,
+                leaseIndex,
+              },
+              admission
+            )
             .catch((err: unknown) => {
               if (err instanceof MonadTopicPostAbandonedError) {
                 throw new TopicPostOutcomeUnknownError(err.message, err);
@@ -1131,25 +1170,37 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const client = new MonadTopicVoteClient(wallet);
       await runWalletExclusive(wallet, async () => {
-        if (!wallet.walletState) throw new Error("Canonical topics require coherent wallet persistence");
-        await wallet.walletState.runOperation(async admission => {
+        if (!wallet.walletState)
+          throw new Error(
+            "Canonical topics require coherent wallet persistence"
+          );
+        await wallet.walletState.runOperation(async (admission) => {
           await reconcileTopicOperations(wallet, admission);
-          if ((params.direction !== "up" && params.direction !== "down") || params.voteWeightWei < 1n || params.voteWeightWei > 9223372036854775807n) throw new Error("Canonical vote burn must be within 1..i64::MAX");
+          if (
+            (params.direction !== "up" && params.direction !== "down") ||
+            params.voteWeightWei < 1n ||
+            params.voteWeightWei > 9223372036854775807n
+          )
+            throw new Error("Canonical vote burn must be within 1..i64::MAX");
           const targetPayloadHash = getBytes(`0x${params.payloadDigest}`);
-          if (targetPayloadHash.length !== 32) throw new Error("Canonical vote requires a T1 digest");
+          if (targetPayloadHash.length !== 32)
+            throw new Error("Canonical vote requires a T1 digest");
           const leaseIndex = await prepareTopicBurnAccount(
             wallet,
             params.voteWeightWei,
             params.onPreparationProgress
           );
           await client
-            .castVote({
-              targetPayloadHash,
-              direction: params.direction,
-              burnAddress: config.stampBurnAddress,
-              voteWeightWei: params.voteWeightWei,
-              leaseIndex,
-            }, admission)
+            .castVote(
+              {
+                targetPayloadHash,
+                direction: params.direction,
+                burnAddress: config.stampBurnAddress,
+                voteWeightWei: params.voteWeightWei,
+                leaseIndex,
+              },
+              admission
+            )
             .catch(asNothingSent);
         });
       });
@@ -1157,14 +1208,26 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     async fetchByTopic(params): Promise<ForumMessage[]> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      return fetchMonadTopicPostsSince({ relayBaseUrl: wallet.relayBaseUrl, topic: params.topic, sinceMs: params.sinceMs, policy: forumPolicy });
+      return fetchMonadTopicPostsSince({
+        relayBaseUrl: wallet.relayBaseUrl,
+        topic: params.topic,
+        sinceMs: params.sinceMs,
+        policy: forumPolicy,
+      });
     },
 
     async fetchOne(payloadDigest): Promise<ForumMessage | undefined> {
-      return fetchMonadTopicPostView({ relayBaseUrl: config.relayBaseUrl, payloadHashHex: payloadDigest, policy: forumPolicy });
+      return fetchMonadTopicPostView({
+        relayBaseUrl: config.relayBaseUrl,
+        payloadHashHex: payloadDigest,
+        policy: forumPolicy,
+      });
     },
     async discoverTopics() {
-      return fetchDiscoveredTopics({ relayBaseUrl: config.relayBaseUrl, policy: forumPolicy });
+      return fetchDiscoveredTopics({
+        relayBaseUrl: config.relayBaseUrl,
+        policy: forumPolicy,
+      });
     },
   };
   return {

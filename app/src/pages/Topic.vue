@@ -47,7 +47,10 @@ export default defineComponent({
   },
   setup() {
     const topicStore = useTopicStore()
-    watch(() => [accountStatus.revision, accountStatus.status], () => topicStore.invalidateRefresh())
+    watch(
+      () => [accountStatus.revision, accountStatus.status],
+      () => topicStore.invalidateRefresh(),
+    )
     const router = useRouter()
     const routeParams = router.currentRoute.value.params
     const topicParam = routeParams['topic']
@@ -60,7 +63,9 @@ export default defineComponent({
       topicStore.ensureTopic(topic.value)
       const topicData = topics.value[topic.value]
       const threshold = topicData.threshold
-      return topicData.messages.filter(message => BigInt(message.voteWeightWei) >= BigInt(threshold))
+      return topicData.messages.filter(
+        message => BigInt(message.voteWeightWei) >= BigInt(threshold),
+      )
     })
 
     const chatScroll = ref<QScrollArea | null>(null)

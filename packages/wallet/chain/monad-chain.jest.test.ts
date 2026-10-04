@@ -18,9 +18,7 @@ import { verifyEcdsa } from "@frank/nakamoto";
 
 import { MonadIdentity } from "../monad-identity";
 import { StoredMonadMessageProto } from "../monad-stamp-client";
-import {
-  MonadTopicPostAbandonedError,
-} from "../monad-topic-post-client";
+import { MonadTopicPostAbandonedError } from "../monad-topic-post-client";
 import { MessageItem, TextItem } from "@frank/cashweb/types/messages";
 import {
   decryptEnvelope,
@@ -1356,7 +1354,12 @@ describe("createMonadChain: one per-wallet queue for every account-spending oper
 });
 
 function allowMockTopicAdmission(wallet: ReturnType<typeof makeWallet>) {
-  Object.assign(wallet, { walletState: { runOperation: (work: (admission: object) => Promise<unknown>) => work({walletBindingId:"topic-test"}) } });
+  Object.assign(wallet, {
+    walletState: {
+      runOperation: (work: (admission: object) => Promise<unknown>) =>
+        work({ walletBindingId: "topic-test" }),
+    },
+  });
 }
 describe("createMonadChain: topics.post", () => {
   it("submits a topic post via MonadTopicPostClient and returns its payloadDigest", async () => {
@@ -1471,25 +1474,68 @@ describe("createMonadChain: topics.vote", () => {
 });
 
 describe("createMonadChain: canonical topic read wiring", () => {
-  const policy = { network: "monad-testnet", chainId: BigInt(TEST_CONFIG.chainId), burnAddress: TEST_CONFIG.stampBurnAddress };
+  const policy = {
+    network: "monad-testnet",
+    chainId: BigInt(TEST_CONFIG.chainId),
+    burnAddress: TEST_CONFIG.stampBurnAddress,
+  };
   it("passes explicit read policy and preserves exact projected observations", async () => {
     const chain = createMonadChain(TEST_CONFIG);
-    const wallet = makeWallet(MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX));
-    const message = { poster: "0x" + "11".repeat(20), topic: "general", voteWeightWei: "-9007199254740993", entries: [], payloadDigest: "22".repeat(32), timestamp: new Date(0), visibleTimestamp: { seconds: "0", nanoseconds: 0 }, epoch: "01".repeat(16), revision: "18446744073709551615", transactionHash: "33".repeat(32), authorBurnTx: "0x11", blockNumber: "0", transactionIndex: "0" };
+    const wallet = makeWallet(
+      MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    );
+    const message = {
+      poster: "0x" + "11".repeat(20),
+      topic: "general",
+      voteWeightWei: "-9007199254740993",
+      entries: [],
+      payloadDigest: "22".repeat(32),
+      timestamp: new Date(0),
+      visibleTimestamp: { seconds: "0", nanoseconds: 0 },
+      epoch: "01".repeat(16),
+      revision: "18446744073709551615",
+      transactionHash: "33".repeat(32),
+      authorBurnTx: "0x11",
+      blockNumber: "0",
+      transactionIndex: "0",
+    };
     mockedFetchMonadTopicPostsSince.mockResolvedValueOnce([message]);
-    expect(await chain.topics.fetchByTopic({wallet,topic:"general",sinceMs:42})).toEqual([message]);
-    expect(mockedFetchMonadTopicPostsSince).toHaveBeenCalledWith({relayBaseUrl:wallet.relayBaseUrl,topic:"general",sinceMs:42,policy});
+    expect(
+      await chain.topics.fetchByTopic({ wallet, topic: "general", sinceMs: 42 })
+    ).toEqual([message]);
+    expect(mockedFetchMonadTopicPostsSince).toHaveBeenCalledWith({
+      relayBaseUrl: wallet.relayBaseUrl,
+      topic: "general",
+      sinceMs: 42,
+      policy,
+    });
     mockedFetchMonadTopicPostView.mockResolvedValueOnce(message);
     expect(await chain.topics.fetchOne(message.payloadDigest)).toEqual(message);
-    expect(mockedFetchMonadTopicPostView).toHaveBeenCalledWith({relayBaseUrl:TEST_CONFIG.relayBaseUrl,payloadHashHex:message.payloadDigest,policy});
-    const topic = {topic:"general",postCount:"18446744073709551615",lastActivityMs:0,lastActivity:{seconds:"0",nanoseconds:0},epoch:message.epoch,revision:message.revision};
+    expect(mockedFetchMonadTopicPostView).toHaveBeenCalledWith({
+      relayBaseUrl: TEST_CONFIG.relayBaseUrl,
+      payloadHashHex: message.payloadDigest,
+      policy,
+    });
+    const topic = {
+      topic: "general",
+      postCount: "18446744073709551615",
+      lastActivityMs: 0,
+      lastActivity: { seconds: "0", nanoseconds: 0 },
+      epoch: message.epoch,
+      revision: message.revision,
+    };
     mockedFetchDiscoveredTopics.mockResolvedValueOnce([topic]);
     expect(await chain.topics.discoverTopics()).toEqual([topic]);
-    expect(mockedFetchDiscoveredTopics).toHaveBeenCalledWith({relayBaseUrl:TEST_CONFIG.relayBaseUrl,policy});
+    expect(mockedFetchDiscoveredTopics).toHaveBeenCalledWith({
+      relayBaseUrl: TEST_CONFIG.relayBaseUrl,
+      policy,
+    });
   });
   it("propagates discovery failure", async () => {
     mockedFetchDiscoveredTopics.mockRejectedValueOnce(Error("incomplete"));
-    await expect(createMonadChain(TEST_CONFIG).topics.discoverTopics()).rejects.toThrow("incomplete");
+    await expect(
+      createMonadChain(TEST_CONFIG).topics.discoverTopics()
+    ).rejects.toThrow("incomplete");
   });
 });
 

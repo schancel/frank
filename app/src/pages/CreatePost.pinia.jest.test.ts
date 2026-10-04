@@ -13,7 +13,11 @@ import { MonadTopicPostAbandonedError } from '@frank/wallet/monad-topic-post-cli
 const mockTopicPost = jest.fn()
 const mockFetchOne = jest.fn()
 
-jest.mock('src/accounts/session', () => ({ accountStatus: jest.requireActual('vue').reactive({revision:1,status:'ready'}) }))
+jest.mock('src/accounts/session', () => ({
+  accountStatus: jest
+    .requireActual('vue')
+    .reactive({ revision: 1, status: 'ready' }),
+}))
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
@@ -79,7 +83,13 @@ const message = (
   poster: '0xposter',
   topic,
   voteWeightWei: '1',
-  visibleTimestamp: { seconds: '1', nanoseconds: 0 }, epoch: '00'.repeat(16), revision: '1', transactionHash: '11'.repeat(32), authorBurnTx: '0x01', blockNumber: '1', transactionIndex: '0',
+  visibleTimestamp: { seconds: '1', nanoseconds: 0 },
+  epoch: '00'.repeat(16),
+  revision: '1',
+  transactionHash: '11'.repeat(32),
+  authorBurnTx: '0x01',
+  blockNumber: '1',
+  transactionIndex: '0',
   entries: [{ kind: 'post', message: payloadDigest }],
   payloadDigest,
   parentDigest,

@@ -7,18 +7,32 @@ import type { MonadTxOverrides } from './monad-account-tx'
 import type { MonadWalletHandle } from './monad-wallet-handle'
 import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
 import {
-  assertForumAmount, requireForumWallet, reconcileForumOperations, submitForumOperation,
+  assertForumAmount,
+  requireForumWallet,
+  reconcileForumOperations,
+  submitForumOperation,
   ForumOperationPendingError,
 } from './monad-forum-operation'
 import type { MatchedForumStatus } from './monad-forum-operation'
 
-export const buildCborMonadTopicVoteCalldata = (direction: TopicVoteDirection, commitment: Uint8Array): string => hexlify(topicBurnCalldata(direction, commitment))
+export const buildCborMonadTopicVoteCalldata = (
+  direction: TopicVoteDirection,
+  commitment: Uint8Array,
+): string => hexlify(topicBurnCalldata(direction, commitment))
 export class MonadTopicVoteError extends Error {}
 export class MonadTopicVoteRejectedError extends MonadTopicVoteError {
-  constructor(message: string, readonly status: number | undefined, readonly detail: unknown) { super(message) }
+  constructor(
+    message: string,
+    readonly status: number | undefined,
+    readonly detail: unknown,
+  ) {
+    super(message)
+  }
 }
 export class MonadTopicVoteAbandonedError extends MonadTopicVoteError {
-  constructor(message: string, readonly targetPayloadHashHex: string) { super(message) }
+  constructor(message: string, readonly targetPayloadHashHex: string) {
+    super(message)
+  }
 }
 export interface CastTopicVoteParams {
   targetPayloadHash: Uint8Array
@@ -36,10 +50,14 @@ export interface CastTopicVoteResult {
 }
 export class MonadTopicVoteClient {
   constructor(private readonly wallet: MonadWalletHandle) {}
-  async castVote(params: CastTopicVoteParams, admission?: MonadWalletOperationAdmission): Promise<CastTopicVoteResult> {
+  async castVote(
+    params: CastTopicVoteParams,
+    admission?: MonadWalletOperationAdmission,
+  ): Promise<CastTopicVoteResult> {
     requireForumWallet(this.wallet)
     assertForumAmount(params.voteWeightWei)
-    if (params.targetPayloadHash.length !== 32) throw new Error('Forum target must be exactly 32 bytes')
+    if (params.targetPayloadHash.length !== 32)
+      throw new Error('Forum target must be exactly 32 bytes')
     // Validate target/network/direction through the facade before any lease/sign effect.
     topicBurnCalldata(params.direction, new Uint8Array(32))
     const target = params.targetPayloadHash.slice()
@@ -48,20 +66,40 @@ export class MonadTopicVoteClient {
       await reconcileForumOperations(this.wallet, 'post', admitted)
       await reconcileForumOperations(this.wallet, 'vote', admitted)
       try {
-        const { operation, status } = await submitForumOperation(this.wallet, {
-          kind: 'vote', target, direction: params.direction,
-          burnAddress: params.burnAddress, value: params.voteWeightWei, overrides: params.overrides,
-          leaseIndex: params.leaseIndex, waitForLease: params.waitForLease,
-          encode: raw => encodeTopicVote(this.wallet.cborNetwork!, target, raw),
-        }, admitted)
-        return { txHash: operation.txHash, leaseIndex: operation.leaseIndex, status }
+        const { operation, status } = await submitForumOperation(
+          this.wallet,
+          {
+            kind: 'vote',
+            target,
+            direction: params.direction,
+            burnAddress: params.burnAddress,
+            value: params.voteWeightWei,
+            overrides: params.overrides,
+            leaseIndex: params.leaseIndex,
+            waitForLease: params.waitForLease,
+            encode: raw =>
+              encodeTopicVote(this.wallet.cborNetwork!, target, raw),
+          },
+          admitted,
+        )
+        return {
+          txHash: operation.txHash,
+          leaseIndex: operation.leaseIndex,
+          status,
+        }
       } catch (error) {
-        if (error instanceof ForumOperationPendingError) throw new MonadTopicVoteAbandonedError(error.message, targetPayloadHashHex)
+        if (error instanceof ForumOperationPendingError)
+          throw new MonadTopicVoteAbandonedError(
+            error.message,
+            targetPayloadHashHex,
+          )
         throw error
       }
     }, admission)
   }
-  async resumePendingOperations(admission?: MonadWalletOperationAdmission): Promise<void> {
+  async resumePendingOperations(
+    admission?: MonadWalletOperationAdmission,
+  ): Promise<void> {
     return reconcileForumOperations(this.wallet, 'vote', admission)
   }
 }

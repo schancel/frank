@@ -129,7 +129,11 @@ export default defineComponent({
     return {
       topics,
       discoveredTopicNames,
-      discoveredTopics: computed(() => topicStore.discoveryStatus === 'verified' ? topicStore.discoveredTopics : ({} as typeof topicStore.discoveredTopics)),
+      discoveredTopics: computed(() =>
+        topicStore.discoveryStatus === 'verified'
+          ? topicStore.discoveredTopics
+          : ({} as typeof topicStore.discoveredTopics),
+      ),
       storeSelectedTopic: selectedTopic,
       storeSortMode: sortMode,
       storeDuration: duration,

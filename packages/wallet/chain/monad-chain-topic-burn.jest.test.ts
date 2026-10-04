@@ -28,7 +28,9 @@ import { join } from 'path'
 import {
   defaultContext,
   topicBurnCommitment,
-  contentHash, encodeForumReadFrame, type Encodable,
+  contentHash,
+  encodeForumReadFrame,
+  type Encodable,
   validateFrame,
 } from '@frank/codec'
 
@@ -121,11 +123,31 @@ function makeFakeChain(
   const p = provider as unknown as Record<string, unknown>
   p.getTransactionReceipt = jest.fn(async (hash: string) => {
     const tx = observedBurns.get(hash.toLowerCase())
-    return tx ? {hash:tx.hash,from:tx.from,to:tx.to,status:1,blockNumber:1,index:0} : null
+    return tx
+      ? {
+          hash: tx.hash,
+          from: tx.from,
+          to: tx.to,
+          status: 1,
+          blockNumber: 1,
+          index: 0,
+        }
+      : null
   })
   p.getTransaction = jest.fn(async (hash: string) => {
     const tx = observedBurns.get(hash.toLowerCase())
-    return tx ? {hash:tx.hash,from:tx.from,to:tx.to,chainId:tx.chainId,value:tx.value,data:tx.data,blockNumber:1,index:0} : null
+    return tx
+      ? {
+          hash: tx.hash,
+          from: tx.from,
+          to: tx.to,
+          chainId: tx.chainId,
+          value: tx.value,
+          data: tx.data,
+          blockNumber: 1,
+          index: 0,
+        }
+      : null
   })
   p.getNetwork = async () => Network.from(CHAIN_ID)
   p.getBalance = async (address: string) =>
@@ -238,12 +260,37 @@ function decodePostSubmission(putBody: Uint8Array) {
 const observedBurns = new Map<string, Transaction>()
 function confirmedStatus(body: Uint8Array): Uint8Array {
   const parsed = validateFrame(body, defaultContext())
-  if (parsed.kind !== 'parsed' || (parsed.typed?.type !== 10 && parsed.typed?.type !== 11)) throw new Error('Expected canonical operation')
+  if (
+    parsed.kind !== 'parsed' ||
+    (parsed.typed?.type !== 10 && parsed.typed?.type !== 11)
+  )
+    throw new Error('Expected canonical operation')
   const operation = parsed.typed
-  const tx = Transaction.from('0x' + Buffer.from(operation.burnTx).toString('hex'))
-  observedBurns.set(tx.hash!.toLowerCase(),tx)
-  const hash = operation.type === 10 ? contentHash(operation.postFrame) : operation.targetHash
-  return encodeForumReadFrame(15,new Map<number,Encodable>([[0,operation.network],[1,body],[2,hash],[3,getBytes(tx.hash!)],[4,getBytes(tx.from!)],[5,getBytes(tx.data)[5]],[6,tx.value],[7,2],[8,1],[9,0],[10,1],[11,new Uint8Array(16).fill(1)]]))
+  const tx = Transaction.from(
+    '0x' + Buffer.from(operation.burnTx).toString('hex'),
+  )
+  observedBurns.set(tx.hash!.toLowerCase(), tx)
+  const hash =
+    operation.type === 10
+      ? contentHash(operation.postFrame)
+      : operation.targetHash
+  return encodeForumReadFrame(
+    15,
+    new Map<number, Encodable>([
+      [0, operation.network],
+      [1, body],
+      [2, hash],
+      [3, getBytes(tx.hash!)],
+      [4, getBytes(tx.from!)],
+      [5, getBytes(tx.data)[5]],
+      [6, tx.value],
+      [7, 2],
+      [8, 1],
+      [9, 0],
+      [10, 1],
+      [11, new Uint8Array(16).fill(1)],
+    ]),
+  )
 }
 
 /** Relay behaviour for the `PUT`s the topic clients make; records each request body. */
@@ -258,7 +305,10 @@ function fakeRelay(behaviour: 'ok' | 'reject-500' = 'ok') {
         response: { status: 500, data: 'relay error (test)' },
       })
     }
-    return { data: confirmedStatus(body), headers: {'content-type':'application/cbor'} }
+    return {
+      data: confirmedStatus(body),
+      headers: { 'content-type': 'application/cbor' },
+    }
   })
   ;(axios as unknown as { isAxiosError: unknown }).isAxiosError = (
     e: unknown,
@@ -391,9 +441,9 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
         voteWeightWei: WEIGHT,
       }),
     ).rejects.toBeInstanceOf(TopicPostOutcomeUnknownError)
-    expect(
-      fake.pool.records().filter(r => r.status === 'in-use'),
-    ).toHaveLength(1)
+    expect(fake.pool.records().filter(r => r.status === 'in-use')).toHaveLength(
+      1,
+    )
 
     puts.length = 0
     fakeRelay('ok')
@@ -651,10 +701,13 @@ describe('main-account native attempt admission (#724)', () => {
 
   function relay() {
     const puts: Uint8Array[] = []
-    mockedAxios.mockImplementation(async (req: Record<string,unknown>) => {
+    mockedAxios.mockImplementation(async (req: Record<string, unknown>) => {
       const body = req.data as Uint8Array
       puts.push(body)
-      return {data:confirmedStatus(body),headers:{'content-type':'application/cbor'}}
+      return {
+        data: confirmedStatus(body),
+        headers: { 'content-type': 'application/cbor' },
+      }
     })
     return puts
   }
@@ -976,9 +1029,18 @@ describe('main-account native attempt admission (#724)', () => {
     restored.wallet.provider.getTransactionReceipt = jest
       .fn()
       .mockImplementation(async (hash: string) => {
-        if (hash === attempt.txHash) return {hash,status:1}
+        if (hash === attempt.txHash) return { hash, status: 1 }
         const tx = observedBurns.get(hash.toLowerCase())
-        return tx ? {hash:tx.hash,from:tx.from,to:tx.to,status:1,blockNumber:1,index:0} : null
+        return tx
+          ? {
+              hash: tx.hash,
+              from: tx.from,
+              to: tx.to,
+              status: 1,
+              blockNumber: 1,
+              index: 0,
+            }
+          : null
       })
     relay()
     await actions[0][1](restored.chain, restored.wallet)

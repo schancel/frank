@@ -148,8 +148,7 @@ jest.mock('@frank/wallet/chain', () => ({
   },
 }))
 jest.mock('src/utils/chain-amount', () => ({
-  displayToRawAmount: (...args: unknown[]) =>
-    mockDisplayToRawAmount(...args),
+  displayToRawAmount: (...args: unknown[]) => mockDisplayToRawAmount(...args),
 }))
 jest.mock('../components/forum/ForumMessage.vue', () => ({
   template: '<div />',
@@ -1066,10 +1065,7 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     await posting
     await flushPromises()
 
-    expect(mockDisplayToRawAmount).toHaveBeenCalledWith(
-      expect.anything(),
-      '2',
-    )
+    expect(mockDisplayToRawAmount).toHaveBeenCalledWith(expect.anything(), '2')
     expect(mockPutMessage).toHaveBeenCalledWith(
       expect.objectContaining({ satoshis: 2n }),
     )

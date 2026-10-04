@@ -26,9 +26,9 @@
           data-test="forum-vote-up"
         />
       </q-card-section>
-      <q-card-section class="q-pa-none q-mt-xs text-center"
-        >{{ formttedAmount }}</q-card-section
-      >
+      <q-card-section class="q-pa-none q-mt-xs text-center">{{
+        formttedAmount
+      }}</q-card-section>
       <q-card-section class="q-pa-none q-mt-xs text-center">
         <q-btn
           flat
@@ -128,7 +128,12 @@ export default defineComponent({
       return '...' + address.substring(address.length - 10, address.length)
     },
     addVotes(votes: number) {
-      if (this.voteTarget !== this.message.payloadDigest || this.voteOwnerRevision !== accountStatus.revision || this.voteOwnerStatus !== accountStatus.status) this.voteAmount = 0n
+      if (
+        this.voteTarget !== this.message.payloadDigest ||
+        this.voteOwnerRevision !== accountStatus.revision ||
+        this.voteOwnerStatus !== accountStatus.status
+      )
+        this.voteAmount = 0n
       this.voteTarget = this.message.payloadDigest
       this.voteOwnerRevision = accountStatus.revision
       this.voteOwnerStatus = accountStatus.status
@@ -144,7 +149,15 @@ export default defineComponent({
       const revision = accountStatus.revision
       const status = accountStatus.status
       this.timeoutId = setTimeout(() => {
-        if (!this.voteActive || this.message.payloadDigest !== digest || accountStatus.revision !== revision || accountStatus.status !== status) { this.voteAmount = 0n; return }
+        if (
+          !this.voteActive ||
+          this.message.payloadDigest !== digest ||
+          accountStatus.revision !== revision ||
+          accountStatus.status !== status
+        ) {
+          this.voteAmount = 0n
+          return
+        }
         void (async () => {
           if (this.voteAmount === 0n) {
             return
@@ -159,12 +172,22 @@ export default defineComponent({
           this.voteAmount = 0n
           try {
             const wallet = await useActiveWallet()
-            if (!this.voteActive || this.message.payloadDigest !== digest || accountStatus.revision !== revision || accountStatus.status !== status) return
+            if (
+              !this.voteActive ||
+              this.message.payloadDigest !== digest ||
+              accountStatus.revision !== revision ||
+              accountStatus.status !== status
+            )
+              return
             await topicStore.addOffering({
               wallet,
               payloadDigest: digest,
               satoshis:
-                satoshis * BigInt(topicStore.topics[topic]?.offering ?? activeChain.defaultTopicVoteValue.toString()),
+                satoshis *
+                BigInt(
+                  topicStore.topics[topic]?.offering ??
+                    activeChain.defaultTopicVoteValue.toString(),
+                ),
               topic,
             })
           } catch (err) {

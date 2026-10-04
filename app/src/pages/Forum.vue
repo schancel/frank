@@ -136,7 +136,10 @@ export default defineComponent({
   setup() {
     const forumStore = useForumStore()
     onUnmounted(() => forumStore.invalidateRefresh())
-    watch(() => [accountStatus.revision, accountStatus.status], () => forumStore.invalidateRefresh())
+    watch(
+      () => [accountStatus.revision, accountStatus.status],
+      () => forumStore.invalidateRefresh(),
+    )
     const {
       messages,
       sortMode,
@@ -188,8 +191,11 @@ export default defineComponent({
       })
       console.log(filteredMessages)
       let voteThresholdRaw: bigint
-      try { voteThresholdRaw = activeChain.fromDisplayAmount(voteThreshold.value) }
-      catch { return [] }
+      try {
+        voteThresholdRaw = activeChain.fromDisplayAmount(voteThreshold.value)
+      } catch {
+        return []
+      }
       return sortPostsByMode(filteredMessages, sortMode.value).filter(
         msg => BigInt(msg.voteWeightWei) >= voteThresholdRaw,
       )

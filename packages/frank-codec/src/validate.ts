@@ -122,9 +122,10 @@ export function defaultContext(
       schemaVersion:
         typeId === TYPE_DIRECTORY_STATEMENT
           ? 3
+          : typeId === TYPE_BLACKJACK_MESSAGE_ITEM
+          ? 3
           : typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
-            typeId === TYPE_TOPIC_POST ||
-            typeId === TYPE_BLACKJACK_MESSAGE_ITEM
+            typeId === TYPE_TOPIC_POST
           ? 2
           : 1,
     })),

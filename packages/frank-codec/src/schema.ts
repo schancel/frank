@@ -67,6 +67,7 @@ import type {
   TopicPost,
   BlackjackMessageItem,
   BlackjackHandMessageItem,
+  BlackjackHandV3MessageItem,
 } from './types'
 
 function fail(
@@ -492,6 +493,71 @@ function blackjackHandPayload(payload: FrankValue): BlackjackHandMessageItem {
     default: {
       const { m, base } = read([10])
       return { ...base, action: 'refund', ref: hash(m, 10) }
+    }
+  }
+}
+
+/** Closed schema-3 shapes: a hand whose cards come from both sides' entropy. No shape states a
+ * card, an outcome or an amount of money. */
+function blackjackHandV3Payload(payload: FrankValue): BlackjackHandV3MessageItem {
+  const P = 'root/payload'
+  if (!isMap(payload)) throw bad(P, 'blackjack payload must be a map')
+  // Codes 32..41: disjoint from schema 1's 0..6 and schema 2's 16..25.
+  const action = u32ish(payload.get(1n), `${P}.1`, 32, 41) - 32
+  const read = (required: number[]) => {
+    const m = fields(payload, P, [0, 1, 11, ...required], [], false, false)
+    const gameId = tstr(m.get(0), `${P}.0`, 32, 32)
+    if (!/^[0-9a-f]{32}$/.test(gameId))
+      throw bad(`${P}.0`, 'game id must be 32 lowercase ASCII hex characters')
+    // A challenge is message 0 of its hand; every other message follows one.
+    const seq =
+      action === 0
+        ? u32ish(m.get(11), `${P}.11`, 0, 0)
+        : u32ish(m.get(11), `${P}.11`, 1, 255)
+    return { m, base: { type: 18 as const, schema: 3 as const, gameId, seq } }
+  }
+  const hash = (m: MapView, key: number) => bstr(m.get(key), `${P}.${key}`, 32, 32)
+  switch (action) {
+    case 0: {
+      const dealer = u32ish(payload.get(2n), `${P}.2`, 0, 1) === 0
+      const { m, base } = read(dealer ? [2, 3, 4] : [2, 3])
+      return dealer
+        ? {
+            ...base,
+            action: 'challenge',
+            role: 'dealer',
+            maxBetWei: hash(m, 3),
+            commitment: hash(m, 4),
+          }
+        : { ...base, action: 'challenge', role: 'player', maxBetWei: hash(m, 3) }
+    }
+    case 1: {
+      const { m, base } = read([3, 4, 12])
+      return {
+        ...base,
+        action: 'accept',
+        maxBetWei: hash(m, 3),
+        commitment: hash(m, 4),
+        prev: hash(m, 12),
+      }
+    }
+    case 2: {
+      const { m, base } = read([4, 12])
+      return { ...base, action: 'bet', commitment: hash(m, 4), prev: hash(m, 12) }
+    }
+    case 9: {
+      const { m, base } = read([10, 12])
+      return { ...base, action: 'refund', ref: hash(m, 10), prev: hash(m, 12) }
+    }
+    default: {
+      const { m, base } = read([12, 13])
+      const names = ['deal', 'hit', 'stand', 'double', 'card', 'reveal'] as const
+      return {
+        ...base,
+        action: names[action - 3],
+        link: hash(m, 13),
+        prev: hash(m, 12),
+      }
     }
   }
 }
@@ -1164,6 +1230,15 @@ export function parseDraft(
       // A hand shape is read only from a frame that requires reader 2; anywhere else its action
       // code is simply out of range for the schema-1 shapes.
       const code = isMap(payload) ? payload.get(1n) : undefined
+      // Schema 3 adds the hand shapes with entropy from both sides, codes 32..41, read only by
+      // a reader that supports schema 3.
+      if (
+        typeof code === 'bigint' &&
+        code >= 32n &&
+        schema.effective >= 3 &&
+        (schema.minReader ?? 1) >= 2
+      )
+        return blackjackHandV3Payload(payload)
       return typeof code === 'bigint' &&
         code >= 16n &&
         schema.effective >= 2 &&

@@ -253,6 +253,17 @@ impl Owner {
                 }
                 return Ok(existing);
             }
+            // One signed payment pays for one message. Nothing on chain names the message, so
+            // this durable index is what stops a payment being claimed again for another body.
+            for member in &candidate.members {
+                if db
+                    .get_pinned(payment_key(&member.tx_hash))
+                    .map_err(|_| CanonicalError::Unavailable)?
+                    .is_some()
+                {
+                    return Err(CanonicalError::Conflict);
+                }
+            }
             capacity(db, &candidate, &config.limits, external?)?;
             let mut batch = WriteBatch::default();
             reserve_retained_owner(db, &mut batch, &candidate)?;
@@ -262,6 +273,7 @@ impl Owner {
                     member_key(&candidate.policy.payload_hash, member.child_index),
                     encode_member(member)?,
                 );
+                batch.put(payment_key(&member.tx_hash), candidate.policy.payload_hash);
             }
             let mut identity_key = b"S".to_vec();
             identity_key.extend_from_slice(&candidate.request.submission_identity());
@@ -1140,6 +1152,13 @@ fn member_key(hash: &[u8; 32], index: u32) -> Vec<u8> {
     key.extend_from_slice(&index.to_be_bytes());
     key
 }
+/// Used-payment index: signed transaction hash to the one payload hash it paid for.
+/// Entries are written with the owner and never removed, including after terminal or ACK.
+fn payment_key(tx_hash: &Hash32) -> Vec<u8> {
+    let mut key = b"T".to_vec();
+    key.extend_from_slice(&tx_hash.0);
+    key
+}
 fn int(n: impl Into<i128>) -> CborValue {
     CborValue::Int(n.into())
 }
@@ -1342,6 +1361,16 @@ fn load(db: &rocksdb::DB, hash: &[u8; 32]) -> Result<Option<Claim>> {
         if member.child_index != index || member.tx_hash != tx_hash {
             return Err(CanonicalError::Unavailable);
         }
+        // Every reader of an owner (retry, replay, publication, recovery, ACK) rechecks that
+        // each of its payments is still indexed to this message and no other.
+        if db
+            .get_pinned(payment_key(&tx_hash))
+            .map_err(|_| CanonicalError::Unavailable)?
+            .as_deref()
+            != Some(hash.as_slice())
+        {
+            return Err(CanonicalError::Unavailable);
+        }
         members.push(member);
     }
     let phase = array(v(5))?;
@@ -1513,6 +1542,11 @@ fn audit_retained_usage(db: &rocksdb::DB) -> Result<()> {
             Some(b'N') => {
                 nonces += 1;
                 if nonces > MAX_AUTH_NONCES || key.len() != 85 || value.len() != 8 {
+                    return Err(CanonicalError::Unavailable);
+                }
+            }
+            Some(b'T') => {
+                if key.len() != 33 || value.len() != 32 {
                     return Err(CanonicalError::Unavailable);
                 }
             }
@@ -1757,8 +1791,12 @@ mod encoding_tests {
             // S identity, I inbox, A active, U recovery, H terminal and bounded
             // global/per-recipient accounting layouts are included at maxima.
             let remaining_indexes = 65 + 93 + 33 + 62 + 50 + 512;
+            // T used-payment index: one 33-byte key and 32-byte owner reference per member.
+            let payment_bytes = claim.members.len() * 65;
             assert!(
-                (owner_bytes + member_bytes + header_bytes + remaining_indexes) as u64 <= charge
+                (owner_bytes + member_bytes + header_bytes + remaining_indexes + payment_bytes)
+                    as u64
+                    <= charge
             );
         }
         claim.phase = Phase::Terminal(MonadOutboxTerminal::AttemptsExhausted);
@@ -1773,7 +1811,7 @@ mod encoding_tests {
             + claim
                 .members
                 .iter()
-                .map(|member| encode_member(member).unwrap().len() + 37)
+                .map(|member| encode_member(member).unwrap().len() + 37 + 65)
                 .sum::<usize>()
             + encode_usage_header(&claim).unwrap().len()
             + 33

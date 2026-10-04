@@ -2839,18 +2839,20 @@ impl<'a> DbMonadOutbox<'a> {
                 .ok_or_else(|| CorruptRecord("fully-confirmed child row missing".to_string()))?;
             members.push(member);
         }
-        if let Some(expected_chain_id) = expected_chain_id {
-            crate::monad_outbox::validate_fully_confirmed_snapshot(
+        let verified = if let Some(expected_chain_id) = expected_chain_id {
+            Some(crate::monad_outbox::financial::verify_submission(
                 &message,
                 record.canonical_message.as_deref().expect("decoded above"),
                 &payload_hash,
                 &policy,
-                members.iter(),
-                members.len(),
+                &members,
                 expected_chain_id,
-            )?;
-        }
-        let child_indices = message
+            )?)
+        } else {
+            None
+        };
+        let publication_message = verified.as_ref().map_or(&message, |view| view.message());
+        let child_indices = publication_message
             .stamp_payments
             .iter()
             .map(|payment| payment.child_index)

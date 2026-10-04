@@ -81,6 +81,14 @@ export class CanonicalMessagingPendingError extends Error {
   }
 }
 
+/** The recipient cannot be delivered to from here. Raised before anything is paid or sent. */
+export class CanonicalRecipientUnavailableError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'CanonicalRecipientUnavailableError'
+  }
+}
+
 /** A durable canonical payment record exists that no saved message accounts for. */
 export class CanonicalMessagingHoldError extends Error {
   /** The original failure, unchanged, when an earlier payment could not be finished. Callers
@@ -341,14 +349,14 @@ async function send(
   const stampValueWei = params.stampValue ?? defaultStampValueWei
   const peer = await directory.peerCurrent({ address: params.recipient.raw })
   if (!peer)
-    throw new Error(
+    throw new CanonicalRecipientUnavailableError(
       `${params.recipient.raw} is not in the operator-installed directory; nothing was paid or sent.`,
     )
   if (
     installedCanonicalOrigin(new URL(peer.endpoint).origin) !==
     installedCanonicalOrigin(new URL(owner.relayBaseUrl).origin)
   )
-    throw new Error(
+    throw new CanonicalRecipientUnavailableError(
       'The recipient is homed on another relay and relay forwarding (#779) is not available; nothing was paid or sent.',
     )
   // Earlier attempts first: a live one is re-sent as-is, and an unmatched record holds everything.

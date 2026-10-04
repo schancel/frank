@@ -27,7 +27,10 @@ import {
   MonadStampTerminalError,
 } from '@frank/wallet/monad-stamp-client'
 import { MonadRpcError } from '@frank/wallet/monad-http'
-import { CanonicalMessagingHoldError } from '@frank/wallet/chain/monad-canonical-dm'
+import {
+  CanonicalMessagingHoldError,
+  CanonicalRecipientUnavailableError,
+} from '@frank/wallet/chain/monad-canonical-dm'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { MessageWrapper } from '@frank/cashweb/types/messages'
 import {
@@ -1033,6 +1036,56 @@ describe('outgoing direct messages (#269, #270)', () => {
           attemptDigest: HASH,
         }),
       )
+    })
+  })
+
+  describe('a failed send says why where the reason is known', () => {
+    it('recipient not installed: nothing was paid, and the reason is kept on the message', async () => {
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockRejectedValue(
+          new CanonicalRecipientUnavailableError(
+            `${PEER} is not in the operator-installed directory; nothing was paid or sent.`,
+          ),
+        )
+      const chats = useChatStore()
+      await expect(
+        chats.sendMessage({ wallet, address: PEER, items: TEXT }),
+      ).resolves.toEqual({ state: 'failed', reason: 'recipient-unavailable' })
+      expect(only(chats)[0].delivery).toEqual(
+        expect.objectContaining({ failureReason: 'recipient-unavailable' }),
+      )
+      expect(only(chats)[0].delivery?.attemptDigest).toBeUndefined()
+    })
+
+    it('a fetch that got no response is "unreachable", not a generic error', async () => {
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockRejectedValue(new TypeError('Failed to fetch'))
+      const chats = useChatStore()
+      await expect(
+        chats.sendMessage({ wallet, address: PEER, items: TEXT }),
+      ).resolves.toEqual({ state: 'failed', reason: 'unreachable' })
+    })
+
+    it('any otherwise unclassified failure while the browser is offline is "unreachable"', async () => {
+      const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        value: { onLine: false },
+      })
+      try {
+        jest
+          .spyOn(activeChain.directMessages, 'send')
+          .mockRejectedValue(new Error('wrapped transport failure'))
+        const chats = useChatStore()
+        await expect(
+          chats.sendMessage({ wallet, address: PEER, items: TEXT }),
+        ).resolves.toEqual({ state: 'failed', reason: 'unreachable' })
+      } finally {
+        if (original) Object.defineProperty(globalThis, 'navigator', original)
+        else delete (globalThis as { navigator?: unknown }).navigator
+      }
     })
   })
 

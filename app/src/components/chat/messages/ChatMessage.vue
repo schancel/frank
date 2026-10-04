@@ -128,6 +128,7 @@ import '@frank/wallet/message-item-plugins/raffle/plugin'
 import { Message, MessageItem } from '@frank/cashweb/types/messages'
 import { useMonadWallet } from '../../../utils/clients'
 import { errorNotify } from '../../../utils/notifications'
+import { sendErrorNotifyOptions } from '../../../utils/send-refusal'
 import { getMessageItemRenderer } from '../../../utils/message-item-renderers'
 
 export default defineComponent({
@@ -267,7 +268,10 @@ export default defineComponent({
             this.focusAfterRetry?.()
           }
         } catch (error) {
-          errorNotify(error instanceof Error ? error : new Error(String(error)))
+          errorNotify(
+            error instanceof Error ? error : new Error(String(error)),
+            sendErrorNotifyOptions(error),
+          )
         }
         return
       }

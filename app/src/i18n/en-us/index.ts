@@ -79,6 +79,10 @@ export default {
     stampPreparationFunding:
       'Preparing private stamp accounts ({completed}/{total} on-chain transactions; up to {feeReserve} {unit} fee reserve each)…',
     stampPreparationReady: 'Private stamp accounts ready; sending message…',
+    sendRefusedMessagingPending:
+      'Messaging is pending operator directory installation. Open Settings > Networking.',
+    sendRefusedTooLarge:
+      'This message is too long to send. Shorten it and try again.',
     donationMessage:
       'Thank you for participating in our vision of the future of online communications. Please consider donating to our efforts by sending real BCH to bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a',
   },
@@ -355,6 +359,8 @@ export default {
     reasonUnverified: 'Delivery could not be confirmed.',
     reasonRecovered: 'An earlier message was delivered meanwhile.',
     reasonInsufficientFunds: 'There are not enough funds to send this message.',
+    reasonRecipientUnavailable:
+      'The recipient is not set up to receive messages here yet.',
     reasonError: 'The message could not be sent.',
     retry: 'Retry',
     retryHint:

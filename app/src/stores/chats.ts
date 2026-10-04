@@ -277,7 +277,22 @@ function isNoResponseError(error: unknown): boolean {
   const candidate = error as { isAxiosError?: boolean; response?: unknown }
   return (
     (candidate?.isAxiosError === true && candidate.response === undefined) ||
-    (error instanceof Error && error.name === 'MonadMailboxRetryableError')
+    (error instanceof Error && error.name === 'MonadMailboxRetryableError') ||
+    // `fetch` rejects with a TypeError when no response arrived at all.
+    (error instanceof TypeError && /fetch|network/i.test(error.message))
+  )
+}
+
+/** The browser itself reports no network: whatever the failure looked like, that is the reason. */
+function isOffline(): boolean {
+  return typeof navigator !== 'undefined' && navigator.onLine === false
+}
+
+/** The wallet refused before paying because the recipient cannot be delivered to from here. */
+function isRecipientUnavailableError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.name === 'CanonicalRecipientUnavailableError'
   )
 }
 
@@ -327,6 +342,9 @@ function classifySendFailure(
   if (isInsufficientFundsError(error)) {
     return { reason: 'insufficient-funds' }
   }
+  if (isRecipientUnavailableError(error)) {
+    return { reason: 'recipient-unavailable' }
+  }
   // An earlier payment that could not be finished holds this send. Show why it could not be
   // finished; whatever payment set this message already has stays on it.
   const held = heldCause(error)
@@ -335,7 +353,7 @@ function classifySendFailure(
   }
   return {
     reason:
-      isNoResponseError(error) || isNoResponseError(held)
+      isNoResponseError(error) || isNoResponseError(held) || isOffline()
         ? 'unreachable'
         : 'error',
     // Any failure after the payment set was journaled leaves that set on the message.

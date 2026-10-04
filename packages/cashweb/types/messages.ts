@@ -196,6 +196,9 @@ export type OutgoingFailureReason =
   | 'recovered'
   /** The wallet could not prepare the message's stamp because the account lacks funds. */
   | 'insufficient-funds'
+  /** The recipient has no installed directory entry this relay can deliver to. Nothing was paid
+   * or sent. */
+  | 'recipient-unavailable'
   | 'error'
 
 /** Delivery bookkeeping for an outgoing (`outbound`) direct message that is not yet confirmed. */

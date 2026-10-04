@@ -122,6 +122,10 @@ import { defaultAcceptancePrice, defaultStampAmount } from '../utils/constants'
 import { deliverBetWhenReady } from '../utils/blackjack-bet'
 import { useMonadWallet } from '../utils/clients'
 import {
+  sendErrorNotifyOptions,
+  sendRefusalReason,
+} from '../utils/send-refusal'
+import {
   activeChain,
   type DirectMessagePreparationProgress,
 } from '@frank/wallet/chain'
@@ -136,6 +140,15 @@ import { ChatMessage, useChatStore } from 'src/stores/chats'
 import type { OutgoingOutcome } from 'src/stores/chats'
 
 const scrollDuration = 0
+
+// A refusal carries its own translated reason; anything else stays the generic message, since
+// provider and relay text is never shown to the user.
+function notifySendError(err: unknown) {
+  errorNotify(
+    err instanceof Error ? err : new Error(String(err)),
+    sendErrorNotifyOptions(err),
+  )
+}
 
 export default defineComponent({
   components: {
@@ -461,10 +474,20 @@ export default defineComponent({
       if (!message) {
         return
       }
+      // Messaging not ready is known before anything is created: say why and leave the typed
+      // text where it is.
+      let wallet: ReturnType<typeof useMonadWallet>
+      try {
+        wallet = useMonadWallet()
+      } catch (err) {
+        notifySendError(err)
+        return
+      }
       // Move the submitted text into the optimistic outbox bubble immediately. The user should
       // never be editing the contents of a message whose accounts and stamp payments are already
       // being prepared.
       const submittedMessage = message
+      const submittedReply = this.replyDigest
       this.sendingMessage = true
       this.message = ''
       this.replyDigest = null
@@ -478,7 +501,7 @@ export default defineComponent({
       try {
         this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
         await this.sendDirectMessage({
-          wallet: useMonadWallet(),
+          wallet,
           address: this.address,
           items: [{ type: 'text', text: submittedMessage }],
           stampValue,
@@ -488,7 +511,13 @@ export default defineComponent({
         // Send failures do not throw: the message stays in the conversation, marked failed with a
         // Retry and Discard (#269/#270). Only a precondition failure (e.g. an invalid recipient)
         // or a failure to store an already delivered message arrives here.
-        errorNotify(err instanceof Error ? err : new Error(String(err)))
+        if (sendRefusalReason(err) !== undefined) {
+          // Refused before any message was created (e.g. too long): nothing holds the text but
+          // the composer, so give it back, ahead of anything typed meanwhile.
+          this.message = submittedMessage + this.message
+          this.replyDigest = this.replyDigest ?? submittedReply
+        }
+        notifySendError(err)
         return
       } finally {
         this.stampPreparationStatus = null
@@ -571,7 +600,7 @@ export default defineComponent({
           onPreparationProgress: this.showStampPreparation,
         })
       } catch (err) {
-        errorNotify(err instanceof Error ? err : new Error(String(err)))
+        notifySendError(err)
         return false
       } finally {
         this.stampPreparationStatus = null

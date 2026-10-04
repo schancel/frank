@@ -166,6 +166,22 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     expect(failed.text()).not.toContain('stamp-account')
   })
 
+  it.each([
+    [enUS, 'The recipient is not set up to receive messages here yet.'],
+    [
+      frFR,
+      'Le destinataire n’est pas encore configuré pour recevoir des messages ici.',
+    ],
+  ])('says when the recipient cannot receive messages', (locale, text) => {
+    const failed = mountSuffix(
+      { status: 'error', failureReason: 'recipient-unavailable' },
+      locale,
+    )
+    expect(failed.get('[data-testid="outgoing-failure-reason"]').text()).toBe(
+      text,
+    )
+  })
+
   it('keeps a localized generic fallback for unclassified failures', () => {
     const failed = mountSuffix({ status: 'error', failureReason: 'error' })
     expect(failed.get('[data-testid="outgoing-failure-reason"]').text()).toBe(

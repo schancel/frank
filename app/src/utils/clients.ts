@@ -3,6 +3,7 @@ import type RelayClient from '@frank/cashweb/relay'
 import type { Wallet } from '@frank/cashweb/legacy-wallet'
 import type { WalletHandle } from '@frank/wallet/chain'
 import { messagingWallet } from './monad-identity-session'
+import { SendRefusedError } from './send-refusal'
 
 let wallet: Wallet | null = null
 export function useWallet(newWallet?: Wallet) {
@@ -26,7 +27,8 @@ export function useRelayClient(newRelayClient?: RelayClient) {
 export function useMonadWallet(_newWallet?: WalletHandle): WalletHandle {
   const wallet = messagingWallet()
   if (!wallet)
-    throw new Error(
+    throw new SendRefusedError(
+      'messaging-pending',
       'Messaging is pending operator directory installation. Open Settings > Networking.',
     )
   return wallet

@@ -93,6 +93,10 @@ export default {
     stampPreparationFunding:
       'Préparation des comptes de timbre privés ({completed}/{total} transactions on-chain ; jusqu’à {feeReserve} {unit} de réserve de frais chacune)…',
     stampPreparationReady: 'Comptes de timbre privés prêts ; envoi du message…',
+    sendRefusedMessagingPending:
+      'La messagerie est en attente de l’installation de l’annuaire par l’opérateur. Ouvrez Paramètres > Réseau.',
+    sendRefusedTooLarge:
+      'Ce message est trop long pour être envoyé. Raccourcissez-le et réessayez.',
     donationMessage:
       "Merci de participer à notre vision du futur des communications. Merci de considérer contribuer en envoyant une donation en BCH à l'adresse suivante : bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a",
   },
@@ -363,6 +367,8 @@ export default {
     reasonRecovered: 'Un message précédent a été remis entre-temps.',
     reasonInsufficientFunds:
       'Les fonds sont insuffisants pour envoyer ce message.',
+    reasonRecipientUnavailable:
+      'Le destinataire n’est pas encore configuré pour recevoir des messages ici.',
     reasonError: 'Le message n’a pas pu être envoyé.',
     retry: 'Réessayer',
     retryHint:

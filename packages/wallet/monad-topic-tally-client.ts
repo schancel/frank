@@ -408,7 +408,12 @@ async function traverse(
           }
           if (charged > STAGING_BYTES) throw new Error('Forum staging limit')
           const next = page.nextCursor
-          if (!next) return output as ForumMessage[] | DiscoveredTopic[]
+          if (!next) {
+            // Decoding, signed-author projection and bookkeeping count toward this attempt too.
+            if (clock() - started >= LIFETIME)
+              throw new Error('Forum snapshot lifetime limit')
+            return output as ForumMessage[] | DiscoveredTopic[]
+          }
           if (
             next.revision !== revision ||
             toHex(next.epoch) !== epoch ||

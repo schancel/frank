@@ -11,6 +11,7 @@ import {
   fetchMonadTopicPostView,
 } from './monad-topic-tally-client'
 import { type ForumReadPolicy } from './forum-model'
+import * as forumModel from './forum-model'
 import { Wallet, Transaction, getBytes } from 'ethers'
 import {
   encodeForumPost,
@@ -297,6 +298,39 @@ it('does not renew the 120 second attempt lifetime after a slow response', async
       'lifetime limit',
     )
   } finally {
+    if (original) Object.defineProperty(globalThis, 'performance', original)
+    else Reflect.deleteProperty(globalThis, 'performance')
+  }
+})
+it('rejects terminal publication when real author projection crosses the attempt deadline', async () => {
+  const fixture = await viewFixture()
+  const page = topicPage([fixture.bytes])
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  let elapsed = 0
+  Object.defineProperty(globalThis, 'performance', {
+    configurable: true,
+    value: { now: () => elapsed },
+  })
+  const project = forumModel.projectForumView
+  const projection = jest
+    .spyOn(forumModel, 'projectForumView')
+    .mockImplementation((frame, readPolicy) => {
+      const observed = project(frame, readPolicy)
+      elapsed = 120001
+      return observed
+    })
+  http.mockImplementationOnce(async () => {
+    elapsed = 119999
+    return response(page) as any
+  })
+  try {
+    await expect(fetchMonadTopicPostsSince(params)).rejects.toThrow(
+      'lifetime limit',
+    )
+    expect(projection).toHaveBeenCalledTimes(1)
+    expect(http).toHaveBeenCalledTimes(1)
+  } finally {
+    projection.mockRestore()
     if (original) Object.defineProperty(globalThis, 'performance', original)
     else Reflect.deleteProperty(globalThis, 'performance')
   }

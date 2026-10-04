@@ -386,6 +386,19 @@ async fn main() -> Result<()> {
             Ok(Ok(())) => {
                 // Copy entries with the configured peers and pass messages on to them.
                 runtime.enable_federation(peer_urls.clone(), forwarding);
+                let expiry = runtime.info().binding.expiry.seconds;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|now| now.as_secs() as i64)
+                    .unwrap_or(0);
+                let days = (expiry - now) / 86_400;
+                if days < 400 {
+                    tracing::warn!(
+                        "registry.directory.binding_expiry_ns is {days} days away. Accounts \
+                         cannot publish entries that outlive it and the relay refuses to start \
+                         once it has passed. Set it at least 400 days ahead."
+                    );
+                }
                 tokio::spawn(cashweb_registry::directory_federation::Federation::spawn(
                     runtime.as_ref().clone(),
                 ));

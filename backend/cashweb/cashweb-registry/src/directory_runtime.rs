@@ -184,6 +184,9 @@ impl RelayInfo {
             || endpoint.fragment().is_some()
             || endpoint.path() != "/"
             || config.endpoint.ends_with('/')
+            // Exactly the form a browser reports as its origin: lowercase host, no default
+            // port. Clients compare this text with the origin they are configured with.
+            || endpoint.origin().ascii_serialization() != config.endpoint
         {
             return Err(RuntimeError::Trust);
         }

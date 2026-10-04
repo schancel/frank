@@ -660,6 +660,23 @@ async fn old_operator_configuration_is_refused_with_a_plain_reason() {
         incomplete.validate().unwrap_err().to_string(),
         "registry.directory.endpoint is required"
     );
+    // The endpoint must be written exactly as a browser reports the origin.
+    for endpoint in [
+        "https://Relay.example.invalid",
+        "https://relay.example.invalid:443",
+        "https://relay.example.invalid/",
+        "http://relay.example.invalid",
+    ] {
+        let mut config = relay_config();
+        config.endpoint = endpoint.into();
+        assert!(
+            matches!(
+                DirectoryRuntime::start(registry(root.path()), config),
+                Err(RuntimeError::Trust)
+            ),
+            "{endpoint}"
+        );
+    }
     // A relay tuple that has already expired cannot start on the real clock.
     let (expired, ready) = DirectoryRuntime::start(registry(root.path()), relay_config()).unwrap();
     assert_eq!(ready.await.unwrap(), Err(RuntimeError::Trust));

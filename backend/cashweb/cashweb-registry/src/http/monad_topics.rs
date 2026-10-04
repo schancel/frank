@@ -3235,7 +3235,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn protobuf_only_topic_lists_honor_specific_accept_refusals_and_vary() {
+    async fn topic_lists_select_canonical_reads_and_preserve_legacy_accept_responses() {
+        const CHILD: &str = "FRANK_FORUM_ACCEPT_COEXISTENCE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .env(CHILD, "1")
+                .args(["--exact", "http::monad_topics::tests::topic_lists_select_canonical_reads_and_preserve_legacy_accept_responses", "--nocapture"])
+                .output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        std::env::set_var("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1/");
+        std::env::set_var("MONAD_STAMP_BURN_ADDRESS", burn_address().to_hex());
+        std::env::set_var("FRANK_NETWORK_TAG", "MONT");
         use tower::ServiceExt;
 
         let (_tempdir, registry) = test_registry();
@@ -3254,6 +3271,42 @@ mod tests {
                     .body(hyper::Body::empty())
                     .unwrap();
                 let response = router.clone().oneshot(request).await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(response.headers()[CONTENT_TYPE], "application/cbor");
+                assert!(response
+                    .headers()
+                    .get_all(VARY)
+                    .iter()
+                    .any(|value| value.as_bytes().eq_ignore_ascii_case(b"accept")));
+                let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+                let frank_cbor::ValidationResult::Parsed(parsed) =
+                    frank_cbor::validate_frame(&body, &frank_cbor::default_context()).unwrap()
+                else {
+                    panic!()
+                };
+                match parsed.typed.as_deref().unwrap() {
+                    frank_cbor::TypedPayload::ForumTopicPage(page) => assert!(page.rows.is_empty()),
+                    frank_cbor::TypedPayload::ForumDiscoveryPage(page) => {
+                        assert!(page.entries.is_empty())
+                    }
+                    _ => panic!("canonical read family required"),
+                }
+            }
+            for accept in [
+                "application/json",
+                "application/cbor;q=0, application/x-protobuf;q=0, */*;q=1",
+            ] {
+                let response = router
+                    .clone()
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .uri(uri)
+                            .header(ACCEPT, accept)
+                            .body(hyper::Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
                 assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
                 assert!(response
                     .headers()
@@ -3261,6 +3314,7 @@ mod tests {
                     .iter()
                     .any(|value| value.as_bytes().eq_ignore_ascii_case(b"accept")));
             }
+            let mut legacy_bytes = None;
             for accept in [None, Some("*/*"), Some("application/x-protobuf")] {
                 let mut request = axum::http::Request::builder().method("GET").uri(uri);
                 if let Some(accept) = accept {
@@ -3278,6 +3332,12 @@ mod tests {
                     .iter()
                     .any(|value| value.as_bytes().eq_ignore_ascii_case(b"accept")));
                 assert_eq!(response.headers()[CONTENT_TYPE], "application/x-protobuf");
+                let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+                if let Some(previous) = &legacy_bytes {
+                    assert_eq!(&body, previous);
+                } else {
+                    legacy_bytes = Some(body);
+                }
             }
         }
     }

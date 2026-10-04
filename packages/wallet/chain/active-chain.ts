@@ -129,6 +129,9 @@ export type DirectMessagePreparationProgress =
  * isn't `ReceivedMessageWrapper` (`../types/user-interface.ts`). */
 export interface DirectMessageReceived {
   senderAddress: ChainAddress;
+  /** Compressed signing key of a sender admitted through the installed directory (canonical
+   * messages only). When present, no display profile is needed to show the message. */
+  senderPublicKey?: Uint8Array;
   recipientAddress: ChainAddress;
   items: MessageItem[];
   /** Bare (no `0x`) hex `payload_hash` of the stamped message this was decoded from. */

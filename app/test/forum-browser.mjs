@@ -472,6 +472,11 @@ try {
     })
   }
   interceptResponse = async event => {
+    const url = new URL(event.params.request.url)
+    if (url.pathname !== '/message/monad/topics' || url.searchParams.get('topic') !== 'news') {
+      await call('Fetch.continueRequest', { requestId: event.params.requestId })
+      return
+    }
     if (heldCount++ === 0) {
       held = event
       return

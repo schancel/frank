@@ -5,12 +5,15 @@ import { fr as accountRecovery } from '../account-recovery'
 
 export default {
   directoryProvisioning: {
-    title: "Installation de l’annuaire",
-    pending: "Installation par l’opérateur en attente",
-    explanation: "Les deux relais et le bot doivent disposer du même ensemble approuvé de comptes publics. L’admission récente dans l’annuaire est vérifiée séparément.",
-    policyUnavailable: "La politique authentifiée de l’opérateur n’est pas encore disponible dans cette application. L’export public reste indisponible avant son installation.",
-    exportPublic: "Exporter les preuves publiques de l’annuaire",
-    publicOnly: "Cet export contient uniquement des preuves publiques. Il n’inscrit aucun compte, n’envoie aucun message et ne dépense aucuns fonds.",
+    title: 'Installation de l’annuaire',
+    pending: 'Installation par l’opérateur en attente',
+    explanation:
+      'Les deux relais et le bot doivent disposer du même ensemble approuvé de comptes publics. L’admission récente dans l’annuaire est vérifiée séparément.',
+    policyUnavailable:
+      'La politique authentifiée de l’opérateur n’est pas encore disponible dans cette application. L’export public reste indisponible avant son installation.',
+    exportPublic: 'Exporter les preuves publiques de l’annuaire',
+    publicOnly:
+      'Cet export contient uniquement des preuves publiques. Il n’inscrit aucun compte, n’envoie aucun message et ne dépense aucuns fonds.',
   },
 
   accountRecovery,

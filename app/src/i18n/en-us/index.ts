@@ -5,12 +5,15 @@ import { en as accountRecovery } from '../account-recovery'
 
 export default {
   directoryProvisioning: {
-    title: "Directory installation",
-    pending: "Pending operator installation",
-    explanation: "Both relays and the bot must have the same approved public account bundle. Fresh directory admission is checked separately.",
-    policyUnavailable: "Authenticated operator policy is not available in this app yet. Public export is unavailable until it is installed.",
-    exportPublic: "Export public directory evidence",
-    publicOnly: "This exports public evidence only. It does not enroll an account, send a message, or spend funds.",
+    title: 'Directory installation',
+    pending: 'Pending operator installation',
+    explanation:
+      'Both relays and the bot must have the same approved public account bundle. Fresh directory admission is checked separately.',
+    policyUnavailable:
+      'Authenticated operator policy is not available in this app yet. Public export is unavailable until it is installed.',
+    exportPublic: 'Export public directory evidence',
+    publicOnly:
+      'This exports public evidence only. It does not enroll an account, send a message, or spend funds.',
   },
 
   accountRecovery,

@@ -602,10 +602,33 @@ keep it local and do not paste its contents into diagnostic logs or tickets.
 
 A held diagnostic includes the inbound hash and a fixed reason. Stop the bot and preserve both
 state roots before investigating that record alongside the wallet journals. There is deliberately
-no automatic release/reset command in this stage: #703 owns exact outbound-envelope and wallet
-attempt reconciliation. Later admitted turns from the held peer remain durably pending in order;
+no automatic release/reset command: exact outbound-envelope and wallet attempt reconciliation
+exists only for canonical replies (below); the legacy send keeps these holds. Later admitted turns from the held peer remain durably pending in order;
 other peers proceed. This does not complete #168 or promise
 exactly-once provider execution in the model-call/persistence crash window.
+
+#### Canonical replies: one sealed envelope and one wallet attempt (#703)
+
+With `QWEN_BOT_CANONICAL_ROOTS_JSON` set, a `response-ready` turn never enters the ordinary send
+builder and never becomes `send-started`. Instead it owns one coupling record
+(`coupling:v1:<inbound payload hash>`) beside its response row:
+
+| Coupling phase | What is durable | Restart behavior |
+| --- | --- | --- |
+| `envelope-ready` | The sealed reply bytes, the wallet's public prepared binding and bounded public identity, fsynced before the first wallet call. | The wallet is asked for a record with exactly those bytes. If it has one, the link is repaired; otherwise the first payment intent is prepared for the same bytes. The reply is never sealed again. |
+| `intent-linked` | The wallet's attempt reference. | Signs the stored unsigned transactions only, then re-sends the one promoted request. A `202` from the relay or an unknown outcome is held and retried with the same bytes. |
+| `terminal` | The wallet's delivered or dead evidence, copied in the Qwen final batch. Delivered commits receipt, conversation and processed marker in that same batch. | The wallet's evidence is cleaned up and acknowledged; a crash in between repeats only those two steps. |
+| `settled` | Bounded identity and evidence only; the sealed bytes are dropped once the wallet's acknowledgement frontier has passed the attempt. | Terminal. |
+
+The record holds ciphertext, never the reply text, history or model reasoning. On startup the CLI
+opens this state first, then the canonical wallet (which signs, funds and sends nothing on open),
+then correlates every retained wallet record with a saved turn before any replay. A wallet record
+no turn owns, a linked attempt the wallet no longer has, a changed account or stamp policy, or a
+dead outcome leaves the turn held with a fixed reason; none of them builds a second envelope or
+payment. A dead outcome is acknowledged to the wallet after it is recorded here, so it does not
+block later turns for other peers; the dead turn and its peer stay held. Legacy `model-started`
+and `send-started` rows keep the meanings in the table above and are never coupled after the fact.
+At most 64 unsettled envelopes are retained; beyond that new replies wait.
 
 Safe rollback: stop the bot and back up both state roots and its identity. Do not run older bot
 code against these roots while any pending inbox or nonterminal response row exists: old code

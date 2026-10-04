@@ -221,6 +221,9 @@ async fn genuine_native_directory_exact_transport_owner_and_sealed_payment_bound
     let recipient = current(fixture.registry.canonical_dm(), "monad-testnet", &recipient)
         .await
         .unwrap();
+    crate::monad_dm_verify::verify_canonical_stamp(crate::monad_dm_verify::CanonicalStampCheckInput {
+        delivery:request.delivery(), context:request.context(), sender_current:&sender, recipient_current:&recipient, recipient_evidence:None,
+    }).expect("actual admitted fixture must pass the public partial stamp verifier before financial admission");
     let input = financial::validate_canonical_payment_set(
         request.clone(),
         &sender,

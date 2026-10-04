@@ -1,4 +1,10 @@
 <template>
+  <!-- Below the drawer breakpoint the navigation drawer is closed: this header's menu button is
+  the way out of the page. -->
+  <page-menu-header
+    :title="$t('newContactDialog.newContact')"
+    @toggleMyDrawerOpen="$emit('toggleMyDrawerOpen')"
+  />
   <q-page-container>
     <q-page class="q-ma-none q-pa-sm">
       <q-card>
@@ -101,6 +107,7 @@ import {
 import { activeChain } from '@frank/wallet/chain'
 import { profilePubKeyFromBytes } from 'src/utils/profile-pubkey'
 import { openChat } from 'src/utils/routes'
+import PageMenuHeader from 'src/components/PageMenuHeader.vue'
 
 // Pastes (the usual way a complete address arrives) look up immediately; edits made while a
 // lookup is scheduled, in flight, or just fired wait this long so a burst yields one fetch.
@@ -115,6 +122,10 @@ type AcceptedLookup = {
 }
 
 export default defineComponent({
+  components: { PageMenuHeader },
+  // Two root nodes: the layout's other route listeners have no single element to land on.
+  inheritAttrs: false,
+  emits: ['toggleMyDrawerOpen'],
   data() {
     return {
       address: '',

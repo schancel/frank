@@ -1,4 +1,10 @@
 <template>
+  <!-- Below the drawer breakpoint the navigation drawer is closed: this header's menu button is
+  the way out of the page. -->
+  <page-menu-header
+    :title="$t('leftDrawer.wallet')"
+    @toggleMyDrawerOpen="$emit('toggleMyDrawerOpen')"
+  />
   <q-page-container>
     <q-page class="q-ma-none q-pa-sm">
       <q-card>
@@ -78,6 +84,7 @@ import { useRouter } from 'vue-router'
 
 import { copyToClipboard } from 'quasar'
 import { useReceiveAddress } from 'src/composables/useReceiveAddress'
+import PageMenuHeader from 'src/components/PageMenuHeader.vue'
 import { useBalance } from 'src/composables/useBalance'
 import { openPage } from 'src/utils/routes'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
@@ -86,6 +93,10 @@ import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
 // initiation is deliberately absent until the stealth design (#71) lands -- no dead controls.
 export default defineComponent({
+  components: { PageMenuHeader },
+  // Two root nodes: the layout's other route listeners have no single element to land on.
+  inheritAttrs: false,
+  emits: ['toggleMyDrawerOpen'],
   setup() {
     const router = useRouter()
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.

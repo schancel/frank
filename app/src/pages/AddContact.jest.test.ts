@@ -196,6 +196,17 @@ describe('AddContact latest lookup', () => {
     jest.useRealTimers()
   })
 
+  it('has a keyboard-reachable navigation menu button, not only Cancel', async () => {
+    const wrapper = mountPage()
+    const menu = wrapper.get('[data-testid="page-menu"]')
+    expect(menu.element.tagName).toBe('BUTTON')
+    expect(menu.attributes('disabled')).toBeUndefined()
+    expect(menu.attributes('aria-label')).toBe('Open navigation menu')
+    await menu.trigger('click')
+    expect(wrapper.emitted('toggleMyDrawerOpen')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
   it('canonicalizes the lookup, fetches once, and commits the exact accepted pair', async () => {
     chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
 

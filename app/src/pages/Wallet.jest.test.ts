@@ -71,6 +71,8 @@ function mountWallet() {
           params?.balance ? `${key}:${params.balance}` : key,
       },
       stubs: {
+        // Rendered for real: the page must carry a working navigation control.
+        PageMenuHeader: false,
         // The copy button lives in q-input's named #after slot; a generic stub drops it.
         QInput: { template: '<div><slot /><slot name="after" /></div>' },
         QBtn: {
@@ -79,6 +81,9 @@ function mountWallet() {
         },
         ...Object.fromEntries(
           [
+            'q-header',
+            'q-toolbar',
+            'q-toolbar-title',
             'q-page-container',
             'q-page',
             'q-card',
@@ -140,6 +145,20 @@ describe('Wallet detail page (#570)', () => {
     expect(mockCopyToClipboard).not.toHaveBeenCalledWith(
       '0xIDENTITY-DO-NOT-FUND',
     )
+    wrapper.unmount()
+  })
+
+  it('has a keyboard-reachable navigation menu button, the only way out at phone width', async () => {
+    const wrapper = mountWallet()
+    await flush()
+    const menu = wrapper.get('[data-testid="page-menu"]')
+    expect(menu.element.tagName).toBe('BUTTON')
+    expect(menu.attributes('tabindex')).toBeUndefined()
+    expect(menu.attributes('disabled')).toBeUndefined()
+    expect(menu.attributes('aria-label')).toBe('a11y.openNavigation')
+    expect(wrapper.emitted('toggleMyDrawerOpen')).toBeUndefined()
+    await menu.trigger('click')
+    expect(wrapper.emitted('toggleMyDrawerOpen')).toHaveLength(1)
     wrapper.unmount()
   })
 

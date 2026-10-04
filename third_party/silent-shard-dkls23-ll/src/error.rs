@@ -85,6 +85,16 @@ pub enum SignError {
     /// Abort the protocol and ban the party
     #[error("Abort the protocol and ban the party {0}")]
     AbortProtocolAndBanParty(u8),
+
+    /// Added by the Frank fork (2026-10-04): the operation is not allowed on
+    /// a session bound to one digest, or the session already ran round 3.
+    #[error("Bound session")]
+    BoundSession,
+
+    /// Added by the Frank fork (2026-10-04): an adaptor lock failed
+    /// validation.
+    #[error("Invalid lock: {0}")]
+    InvalidLock(&'static str),
 }
 
 /// Distributed key generation errors (OT variant)
@@ -134,6 +144,11 @@ impl From<SignError> for SignOTVariantError {
             SignError::AbortProtocolAndBanParty(_) => {
                 SignOTVariantError::Rvole
             }
+            // Added by the Frank fork (2026-10-04).
+            SignError::BoundSession => {
+                SignOTVariantError::FailedCheck("Bound session")
+            }
+            SignError::InvalidLock(e) => SignOTVariantError::FailedCheck(e),
         }
     }
 }

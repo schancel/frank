@@ -11,7 +11,10 @@ mod keygen;
 mod keyshare;
 mod message;
 mod sign;
-mod sign_ot_variant;
+// Changed by the Frank fork (2026-10-04): `sign_ot_variant` is no longer
+// compiled. Its `lastMessage(hash)` lets one pre-signature sign any digest;
+// the fork only exposes sessions bound to one digest. `adaptor` is new.
+mod adaptor;
 mod utils;
 
 pub fn maybe_seeded_rng<T: AsRef<[u8]>>(seed: Option<T>) -> ChaCha20Rng {

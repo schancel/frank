@@ -1,9 +1,9 @@
 use js_sys::{Error, Reflect};
 use wasm_bindgen::{prelude::*, throw_str};
 
-use dkls23_ll::{
-    dkg::KeygenError, dsg::SignError, dsg_ot_variant::SignOTVariantError,
-};
+// Changed by the Frank fork (2026-10-04): the OT-variant error mapping was
+// removed together with the OT-variant session (see lib.rs).
+use dkls23_ll::{dkg::KeygenError, dsg::SignError};
 
 fn set_party_id(js_err: &js_sys::Error, prop: &str, party_id: u8) {
     let ok = Reflect::set(
@@ -29,8 +29,4 @@ pub fn sign_error(err: SignError) -> js_sys::Error {
     }
 
     js_err
-}
-
-pub fn sign_ot_variant_error(err: SignOTVariantError) -> js_sys::Error {
-    Error::new(&err.to_string())
 }

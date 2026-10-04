@@ -75,6 +75,22 @@ impl Message {
         input.iter().map(Self::decode).collect()
     }
 
+    /// Added by the Frank fork (2026-10-04): like `decode_vector`, but a
+    /// malformed message is an error instead of a trap, so the session
+    /// object that was handling it stays usable and can be freed.
+    pub fn try_decode_vector<T: DeserializeOwned>(
+        input: &[Self],
+    ) -> Result<Vec<T>, js_sys::Error> {
+        input
+            .iter()
+            .map(|msg| {
+                let buffer = msg.payload.to_vec();
+                ciborium::from_reader(&buffer as &[u8])
+                    .map_err(|_| js_sys::Error::new("CBOR decode"))
+            })
+            .collect()
+    }
+
     pub fn encode_vector<T: Serialize + MessageRouting>(
         msgs: Vec<T>,
     ) -> Vec<Self> {

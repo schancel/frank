@@ -23,7 +23,10 @@ enum Round {
     WaitMsg1,
     WaitMsg2,
     WaitMsg3,
-    Pre(dsg::PreSignature),
+    // Changed by the Frank fork (2026-10-04): upstream had
+    // `Pre(dsg::PreSignature)` here, a state that could sign any digest.
+    // A session now goes from round 3 directly to its partial signature.
+    Partial(dsg::PartialSignature, dsg::SignMsg4),
     WaitMsg4(dsg::PartialSignature),
     Failed,
     Finished,
@@ -39,10 +42,17 @@ pub struct SignSession {
 #[wasm_bindgen]
 impl SignSession {
     /// Create a new session.
+    ///
+    /// Changed by the Frank fork (2026-10-04): the 32-byte digest to sign
+    /// and a context both parties agree on (any bytes, may be empty) are
+    /// given here and bound into the session. The session can sign nothing
+    /// else, and two parties that disagree on either stop in round 2.
     #[wasm_bindgen(constructor)]
     pub fn new(
         keyshare: Keyshare,
         chain_path: &str,
+        message_hash: &[u8],
+        context: &[u8],
         seed: Option<Vec<u8>>,
     ) -> Self {
         let mut rng = maybe_seeded_rng(seed);
@@ -50,9 +60,17 @@ impl SignSession {
         let chain_path = DerivationPath::from_str(chain_path)
             .expect_throw("invalid derivation path");
 
-        let state =
-            dsg::State::new(&mut rng, keyshare.into_inner(), &chain_path)
-                .expect_throw("sign session init");
+        let hash: [u8; 32] =
+            message_hash.try_into().expect_throw("invalid message hash");
+
+        let state = dsg::State::new_bound(
+            &mut rng,
+            keyshare.into_inner(),
+            &chain_path,
+            hash,
+            dsg::plain_binding(&hash, context),
+        )
+        .expect_throw("sign session init");
 
         SignSession {
             state,
@@ -109,7 +127,15 @@ impl SignSession {
         U: Serialize + MessageRouting,
         H: FnMut(&mut dsg::State, Vec<T>) -> Result<Vec<U>, dsg::SignError>,
     {
-        let msgs: Vec<T> = Message::decode_vector(&msgs);
+        // Changed by the Frank fork (2026-10-04): a malformed message is an
+        // error, not a trap.
+        let msgs: Vec<T> = match Message::try_decode_vector(&msgs) {
+            Ok(msgs) => msgs,
+            Err(err) => {
+                self.round = Round::Failed;
+                return Err(err);
+            }
+        };
         match h(&mut self.state, msgs) {
             Ok(msgs) => {
                 let out = Message::encode_vector(msgs);
@@ -148,10 +174,15 @@ impl SignSession {
             ),
 
             Round::WaitMsg3 => {
-                let msgs = Message::decode_vector(&msgs);
-                let pre = self.state.handle_msg3(msgs).map_err(sign_error)?;
+                // Changed by the Frank fork (2026-10-04): no pre-signature
+                // is kept; the partial signature for the session's digest
+                // is made here and the one-time secrets are wiped.
+                self.round = Round::Failed;
+                let msgs = Message::try_decode_vector(&msgs)?;
+                let (partial, msg4) =
+                    self.state.finish_bound(msgs).map_err(sign_error)?;
 
-                self.round = Round::Pre(pre);
+                self.round = Round::Partial(partial, msg4);
 
                 Ok(vec![])
             }
@@ -162,23 +193,15 @@ impl SignSession {
         }
     }
 
-    /// The session contains a "pre-signature".
-    /// Returns a last message.
+    /// Returns the last message: this party's partial signature for the
+    /// digest the session was created with.
+    ///
+    /// Changed by the Frank fork (2026-10-04): upstream took the digest
+    /// here.
     #[wasm_bindgen(js_name = lastMessage)]
-    pub fn last_message(
-        &mut self,
-        message_hash: &[u8],
-    ) -> Result<Message, Error> {
-        if message_hash.len() != 32 {
-            return Err(Error::new("invalid message hash"));
-        }
-
+    pub fn last_message(&mut self) -> Result<Message, Error> {
         match core::mem::replace(&mut self.round, Round::Finished) {
-            Round::Pre(pre) => {
-                let hash = message_hash.try_into().unwrap();
-                let (partial, msg4) =
-                    dsg::create_partial_signature(pre, hash);
-
+            Round::Partial(partial, msg4) => {
                 self.round = Round::WaitMsg4(partial);
 
                 Ok(Message::new(msg4))
@@ -204,7 +227,7 @@ impl SignSession {
     ) -> Result<Array, Error> {
         match self.round {
             Round::WaitMsg4(partial) => {
-                let msgs = Message::decode_vector(&msgs);
+                let msgs = Message::try_decode_vector(&msgs)?;
                 let sign = dsg::combine_signatures(partial, msgs)
                     .map_err(sign_error)?;
 

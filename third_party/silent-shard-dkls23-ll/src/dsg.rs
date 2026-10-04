@@ -120,6 +120,19 @@ pub struct State {
     pub additive_offset: Scalar,
     pub derived_public_key: AffinePoint,
     pub sender_additive_shares: Vec<[Scalar; 2]>,
+
+    // --- Added by the Frank fork (2026-10-04), see CHANGES ---
+    /// A value both parties must agree on, mixed into `final_session_id`.
+    /// `None` is the upstream behaviour.
+    #[serde(default)]
+    pub(crate) binding: Option<[u8; 32]>,
+    /// The only digest this session may sign. `None` is the upstream
+    /// behaviour (the digest is chosen after the pre-signature exists).
+    #[serde(default)]
+    pub(crate) bound_hash: Option<[u8; 32]>,
+    /// Set once round 3 has run on a bound session.
+    #[serde(default)]
+    pub(crate) spent: bool,
 }
 
 fn other_parties<T>(
@@ -181,7 +194,46 @@ impl State {
             final_session_id: [0u8; 32],
             digest_i: [0; 32],
             mta_receiver_list: Pairs::new(),
+            binding: None,
+            bound_hash: None,
+            spent: false,
         })
+    }
+
+    /// Added by the Frank fork (2026-10-04).
+    ///
+    /// A session that can sign exactly one digest. `binding` is mixed into
+    /// `final_session_id` in round 1, so two parties that disagree on it stop
+    /// in round 2, before either has sent anything that depends on its
+    /// nonce. Callers put the digest (and anything else both parties must
+    /// agree on) into `binding`; see [`plain_binding`].
+    ///
+    /// A bound session never hands out a [`PreSignature`]: `handle_msg3`
+    /// refuses it, and `finish_bound` goes from the round-3 messages
+    /// directly to the partial signature for `message_hash`.
+    pub fn new_bound<R: RngCore + CryptoRng>(
+        rng: &mut R,
+        keyshare: Keyshare,
+        chain_path: &DerivationPath,
+        message_hash: [u8; 32],
+        binding: [u8; 32],
+    ) -> Result<Self, BIP32Error> {
+        let mut state = Self::new(rng, keyshare, chain_path)?;
+        state.binding = Some(binding);
+        state.bound_hash = Some(message_hash);
+        Ok(state)
+    }
+
+    /// Added by the Frank fork (2026-10-04). Zeroes the nonce share, the
+    /// mask and the derived key share. The session cannot sign afterwards.
+    pub(crate) fn wipe_one_time_secrets(&mut self) {
+        self.phi_i.zeroize();
+        self.r_i.zeroize();
+        self.sk_i.zeroize();
+        for shares in self.sender_additive_shares.iter_mut() {
+            shares.zeroize();
+        }
+        self.spent = true;
     }
 
     //Round 1
@@ -231,6 +283,17 @@ impl State {
             .chain_update(self.keyshare.final_session_id)
             .finalize()
             .into();
+
+        // Added by the Frank fork (2026-10-04): a bound session's id also
+        // covers its binding. An unbound session is unchanged.
+        if let Some(binding) = &self.binding {
+            self.final_session_id = Sha256::new()
+                .chain_update(b"FRANK-DKLS23-FORK-V1/bound-session")
+                .chain_update(self.final_session_id)
+                .chain_update(binding)
+                .finalize()
+                .into();
+        }
 
         self.digest_i = {
             let mut h = Sha256::new();
@@ -381,6 +444,45 @@ impl State {
         &mut self,
         msgs: Vec<SignMsg3>,
     ) -> Result<PreSignature, SignError> {
+        // Added by the Frank fork (2026-10-04): a bound session never
+        // returns a message-independent pre-signature.
+        if self.binding.is_some() || self.bound_hash.is_some() {
+            return Err(SignError::BoundSession);
+        }
+        self.round3(msgs, None)
+    }
+
+    /// Added by the Frank fork (2026-10-04).
+    ///
+    /// Round 3 of a session made with [`State::new_bound`]: checks the
+    /// messages as `handle_msg3` does and returns the partial signature for
+    /// the session's digest. The one-time secrets are wiped before this
+    /// returns, whether it succeeds or not, so it runs at most once.
+    pub fn finish_bound(
+        &mut self,
+        msgs: Vec<SignMsg3>,
+    ) -> Result<(PartialSignature, SignMsg4), SignError> {
+        let Some(hash) = self.bound_hash else {
+            return Err(SignError::BoundSession);
+        };
+        let result = self.round3(msgs, None);
+        self.wipe_one_time_secrets();
+        Ok(create_partial_signature(result?, hash))
+    }
+
+    /// The body of upstream's `handle_msg3`. The Frank fork (2026-10-04)
+    /// added the `r_override` parameter: when given, it replaces the x
+    /// coordinate of the joint nonce point as the signature's `r`
+    /// (used by `adaptor.rs`, where `r` comes from `k*T`). With `None` the
+    /// computation is upstream's.
+    pub(crate) fn round3(
+        &mut self,
+        msgs: Vec<SignMsg3>,
+        r_override: Option<Scalar>,
+    ) -> Result<PreSignature, SignError> {
+        if self.spent {
+            return Err(SignError::BoundSession);
+        }
         if msgs.len() != self.keyshare.threshold as usize - 1 {
             return Err(SignError::MissingMessage);
         }
@@ -464,7 +566,10 @@ impl State {
         }
 
         let r_point = big_r.to_affine();
-        let r_x: Scalar = Reduce::<U256>::reduce_bytes(&r_point.x());
+        let r_x: Scalar = match r_override {
+            Some(r_x) => r_x,
+            None => Reduce::<U256>::reduce_bytes(&r_point.x()),
+        };
         let phi_plus_sum_psi = self.phi_i + sum_psi_j_i;
         let s_0 = r_x * (self.sk_i * phi_plus_sum_psi + sum_v);
         let s_1 = self.r_i * phi_plus_sum_psi + sum_u;
@@ -481,6 +586,19 @@ impl State {
 
         Ok(pre_sign_result)
     }
+}
+
+/// Added by the Frank fork (2026-10-04). The binding of a plain (not
+/// adaptor) bound session: `context` is whatever both parties must agree on
+/// besides the digest; it may be empty.
+pub fn plain_binding(message_hash: &[u8; 32], context: &[u8]) -> [u8; 32] {
+    Sha256::new()
+        .chain_update(b"FRANK-DKLS23-FORK-V1/plain-binding")
+        .chain_update((context.len() as u32).to_be_bytes())
+        .chain_update(context)
+        .chain_update(message_hash)
+        .finalize()
+        .into()
 }
 
 pub fn create_partial_signature(
@@ -892,5 +1010,133 @@ mod tests {
         let new_shares = dkg_inner(rotation_states);
 
         dsg(&new_shares[..2]);
+    }
+}
+
+/// Tests added by the Frank fork (2026-10-04) for bound sessions.
+#[cfg(test)]
+mod bound_tests {
+    use std::str::FromStr;
+
+    use super::*;
+    use crate::dkg::tests::dkg;
+
+    fn start(shares: &[Keyshare], hashes: [[u8; 32]; 2]) -> Vec<State> {
+        let mut rng = rand::thread_rng();
+        let path = DerivationPath::from_str("m").unwrap();
+        shares
+            .iter()
+            .zip(hashes)
+            .map(|(share, hash)| {
+                State::new_bound(
+                    &mut rng,
+                    share.clone(),
+                    &path,
+                    hash,
+                    plain_binding(&hash, b"context"),
+                )
+                .unwrap()
+            })
+            .collect()
+    }
+
+    fn until_round3(parties: &mut [State]) -> Vec<SignMsg3> {
+        let mut rng = rand::thread_rng();
+        let msg1: Vec<SignMsg1> =
+            parties.iter_mut().map(|p| p.generate_msg1()).collect();
+        let msg2: Vec<SignMsg2> = parties
+            .iter_mut()
+            .flat_map(|p| {
+                let id = p.keyshare.party_id;
+                let batch =
+                    msg1.iter().filter(|m| m.from_id != id).cloned().collect();
+                p.handle_msg1(&mut rng, batch).unwrap()
+            })
+            .collect();
+        parties
+            .iter_mut()
+            .flat_map(|p| {
+                let id = p.keyshare.party_id;
+                let batch =
+                    msg2.iter().filter(|m| m.to_id == id).cloned().collect();
+                p.handle_msg2(&mut rng, batch).unwrap()
+            })
+            .collect()
+    }
+
+    fn for_party(msgs: &[SignMsg3], id: u8) -> Vec<SignMsg3> {
+        msgs.iter().filter(|m| m.to_id == id).cloned().collect()
+    }
+
+    #[test]
+    fn bound_session_signs_its_digest_once() {
+        let shares = dkg(2, 2);
+        let hash = [0x42u8; 32];
+        let mut parties = start(&shares, [hash, hash]);
+        let msg3 = until_round3(&mut parties);
+
+        // No pre-signature can be taken out of a bound session.
+        assert!(matches!(
+            parties[0].handle_msg3(for_party(&msg3, 0)),
+            Err(SignError::BoundSession)
+        ));
+
+        let (partial0, msg4_0) =
+            parties[0].finish_bound(for_party(&msg3, 0)).unwrap();
+        let (partial1, msg4_1) =
+            parties[1].finish_bound(for_party(&msg3, 1)).unwrap();
+        assert_eq!(partial0.message_hash, hash);
+
+        // Round 3 does not run twice and the secrets are gone.
+        assert!(matches!(
+            parties[0].finish_bound(for_party(&msg3, 0)),
+            Err(SignError::BoundSession)
+        ));
+        assert!(bool::from(parties[0].r_i.is_zero()));
+        assert!(bool::from(parties[0].phi_i.is_zero()));
+        assert!(bool::from(parties[0].sk_i.is_zero()));
+
+        let sign0 = combine_signatures(partial0, vec![msg4_1]).unwrap();
+        let sign1 = combine_signatures(partial1, vec![msg4_0]).unwrap();
+        assert_eq!(sign0, sign1);
+        VerifyingKey::from_affine(shares[0].public_key)
+            .unwrap()
+            .verify_prehash(&hash, &sign0)
+            .unwrap();
+    }
+
+    #[test]
+    fn parties_bound_to_different_digests_stop_in_round_2() {
+        let shares = dkg(2, 2);
+        let mut rng = rand::thread_rng();
+        let mut parties = start(&shares, [[0x42u8; 32], [0x43u8; 32]]);
+        let msg1: Vec<SignMsg1> =
+            parties.iter_mut().map(|p| p.generate_msg1()).collect();
+        let to0 = parties[1].handle_msg1(&mut rng, vec![msg1[0].clone()]);
+        let to1 = parties[0].handle_msg1(&mut rng, vec![msg1[1].clone()]);
+        assert!(matches!(
+            parties[0].handle_msg2(&mut rng, to0.unwrap()),
+            Err(SignError::InvalidFinalSessionID)
+        ));
+        assert!(matches!(
+            parties[1].handle_msg2(&mut rng, to1.unwrap()),
+            Err(SignError::InvalidFinalSessionID)
+        ));
+    }
+
+    #[test]
+    fn unbound_session_has_no_finish_bound() {
+        let shares = dkg(2, 2);
+        let mut rng = rand::thread_rng();
+        let path = DerivationPath::from_str("m").unwrap();
+        let mut parties: Vec<State> = shares
+            .iter()
+            .map(|s| State::new(&mut rng, s.clone(), &path).unwrap())
+            .collect();
+        let msg3 = until_round3(&mut parties);
+        assert!(matches!(
+            parties[0].finish_bound(for_party(&msg3, 0)),
+            Err(SignError::BoundSession)
+        ));
     }
 }

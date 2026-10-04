@@ -63,6 +63,11 @@ async function waitForPath(router: Router, path: string) {
 function mountSettings(router: Router) {
   return shallowMount(SettingsPage, {
     global: {
+      stubs: {
+        QSplitter: {
+          template: '<div><slot name="before" /><slot name="after" /></div>',
+        },
+      },
       mocks: {
         $t: (key: string) => key,
         $q: { dark: { set: jest.fn() } },
@@ -134,6 +139,10 @@ it('adds pending directory configuration to Networking and retains storage contr
   const wrapper = mountSettings(router)
   expect(wrapper.find('persistent-storage-panel-stub').exists()).toBe(true)
   expect(wrapper.find('directory-provisioning-panel-stub').exists()).toBe(true)
-  expect(wrapper.find('directory-provisioning-panel-stub').element.closest('[name="networking"]')).not.toBeNull()
+  expect(
+    wrapper
+      .find('directory-provisioning-panel-stub')
+      .element.closest('[name="networking"]'),
+  ).not.toBeNull()
   expect(wrapper.find('[data-test="settings-back"]').exists()).toBe(true)
 })

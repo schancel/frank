@@ -653,7 +653,15 @@ export default defineComponent({
         errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')))
         return
       }
-      if (seed) saveSeed(this.address, gameId, seed)
+      if (seed) {
+        // The seed is kept under this account's own name before its commitment leaves.
+        const own = await getOwnCanonicalAddress()
+        if (!own) {
+          errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')))
+          return
+        }
+        saveSeed(own, this.address, gameId, seed)
+      }
       this.blackjackDialog = false
       await this.sendFollowUpItems({ items: [built.item] })
     },

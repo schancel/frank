@@ -89,13 +89,20 @@ export function chatHands(
 const SEED_PREFIX = 'frank.blackjack.seed.'
 const memorySeeds = new Map<string, string>()
 
-const seedKey = (peer: string, gameId: string) =>
-  `${peer.toLowerCase()}|${gameId}`
+const seedKey = (own: string, peer: string, gameId: string) =>
+  `${own.toLowerCase()}|${peer.toLowerCase()}|${gameId}`
 
-/** Keeps a dealer's seed for a hand on this device, per chat and game, so a seed is never shared
- * between two hands. Without it the dealer cannot deal or reveal (it can still refund the bet). */
-export function saveSeed(peer: string, gameId: string, seed: string): void {
-  const key = seedKey(peer, gameId)
+/** Keeps a dealer's seed for a hand on this device, under the dealer's own account, the chat and
+ * the game: a seed is never shared between two hands, and another account used in the same
+ * browser profile does not find it under its own name. Without the seed the dealer cannot deal
+ * or reveal (it can still refund the bet). */
+export function saveSeed(
+  own: string,
+  peer: string,
+  gameId: string,
+  seed: string,
+): void {
+  const key = seedKey(own, peer, gameId)
   memorySeeds.set(key, seed)
   try {
     localStorage.setItem(SEED_PREFIX + key, seed)
@@ -104,8 +111,12 @@ export function saveSeed(peer: string, gameId: string, seed: string): void {
   }
 }
 
-export function loadSeed(peer: string, gameId: string): string | undefined {
-  const key = seedKey(peer, gameId)
+export function loadSeed(
+  own: string,
+  peer: string,
+  gameId: string,
+): string | undefined {
+  const key = seedKey(own, peer, gameId)
   const held = memorySeeds.get(key)
   if (held) return held
   try {
@@ -142,7 +153,7 @@ export function automaticDealerSteps(
   const steps: { key: string; item: BlackjackHandItem }[] = []
   for (const { state } of chatHands(messages, own, peer)) {
     if (roleOf(state, own) !== 'dealer') continue
-    const seed = loadSeed(peer, state.gameId)
+    const seed = loadSeed(own, peer, state.gameId)
     if (!seed) continue
     const step: DealerStep | undefined = dealerStep(state, seed)
     if (step && step.payWei === undefined)

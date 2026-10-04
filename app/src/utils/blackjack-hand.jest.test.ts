@@ -130,8 +130,8 @@ describe('a chat as blackjack hand events', () => {
 
 describe('dealer seeds on this device', () => {
   it('keeps a seed for the page session when storage is unavailable', () => {
-    saveSeed(PEER, gid('session-only'), SEED)
-    expect(loadSeed(PEER, gid('session-only'))).toBe(SEED)
+    saveSeed(ME, PEER, gid('session-only'), SEED)
+    expect(loadSeed(ME, PEER, gid('session-only'))).toBe(SEED)
   })
 
   it('saves and loads a seed, and makes fresh ones', () => {
@@ -143,14 +143,21 @@ describe('dealer seeds on this device', () => {
         setItem: (key: string, value: string) => void stored.set(key, value),
       },
     })
-    expect(loadSeed(PEER, gid('nope'))).toBeUndefined()
-    saveSeed(PEER, gid('g-seed'), SEED)
-    expect(loadSeed(PEER, gid('g-seed'))).toBe(SEED)
-    expect(stored.get(`frank.blackjack.seed.${PEER}|${gid('g-seed')}`)).toBe(
-      SEED,
-    )
+    expect(loadSeed(ME, PEER, gid('nope'))).toBeUndefined()
+    saveSeed(ME, PEER, gid('g-seed'), SEED)
+    expect(loadSeed(ME, PEER, gid('g-seed'))).toBe(SEED)
+    expect(
+      stored.get(
+        `frank.blackjack.seed.${ME.toLowerCase()}|${PEER.toLowerCase()}|${gid(
+          'g-seed',
+        )}`,
+      ),
+    ).toBe(SEED)
     // Another chat with the same game id does not get this seed.
-    expect(loadSeed(ME, gid('g-seed'))).toBeUndefined()
+    expect(loadSeed(ME, ME, gid('g-seed'))).toBeUndefined()
+    // Another account on this browser does not get it either.
+    expect(loadSeed(PEER, PEER, gid('g-seed'))).toBeUndefined()
+    expect(loadSeed('0xOtherAccount', PEER, gid('g-seed'))).toBeUndefined()
     expect(newSeed()).toMatch(/^[0-9a-f]{64}$/)
     expect(newSeed()).not.toBe(newSeed())
     expect(newGameId()).toMatch(/^[0-9a-f]{32}$/)
@@ -174,7 +181,7 @@ describe('automatic dealer steps', () => {
   ]
 
   it('deals without asking when this user is the dealer and holds the seed', () => {
-    saveSeed(PEER, gid('auto'), SEED)
+    saveSeed(ME, PEER, gid('auto'), SEED)
     const messages = opened(gid('auto'))
     const steps = automaticDealerSteps(messages, ME, PEER)
     expect(steps).toHaveLength(1)
@@ -189,7 +196,7 @@ describe('automatic dealer steps', () => {
   })
 
   it('never sends a paying message automatically', () => {
-    saveSeed(PEER, gid('pay'), SEED)
+    saveSeed(ME, PEER, gid('pay'), SEED)
     // A bet above the max: the dealer owes a refund, which needs the dealer's confirmation.
     const messages = [
       opened(gid('pay'))[0],
@@ -204,7 +211,7 @@ describe('automatic dealer steps', () => {
   })
 
   it('does nothing as the player, or as a dealer without the seed', () => {
-    saveSeed(PEER, gid('mine'), SEED)
+    saveSeed(ME, PEER, gid('mine'), SEED)
     const asPlayer = [
       message(
         false,

@@ -212,7 +212,7 @@ describe('Chat.vue blackjack challenge', () => {
       maxBetWei: '1000',
     })
     // The seed behind the commitment is on this device and never in the message.
-    const seed = loadSeed('0xDealer', item.gameId)!
+    const seed = loadSeed('0xMe', '0xDealer', item.gameId)!
     expect(commitmentOf(seed)).toBe(item.commitment)
     expect(JSON.stringify(item)).not.toContain(seed)
     expect(self.blackjackDialog).toBe(false)
@@ -233,7 +233,7 @@ describe('Chat.vue blackjack challenge', () => {
       role: 'player',
       maxBetWei: '1000',
     })
-    expect(loadSeed('0xDealer', item.gameId)).toBeUndefined()
+    expect(loadSeed('0xMe', '0xDealer', item.gameId)).toBeUndefined()
   })
 
   it.each([
@@ -362,7 +362,7 @@ describe('Chat.vue automatic dealer steps', () => {
     self.sendFollowUpItems = jest.fn().mockResolvedValue(true)
     return self
   }
-  beforeAll(() => saveSeed('0xPeer', GAME, SEED))
+  beforeAll(() => saveSeed('0xMe', '0xPeer', GAME, SEED))
 
   it('deals as soon as the bet is in, once', async () => {
     const self = dealerThis(hand(challenge, [false, { action: 'bet' }, 300n]))

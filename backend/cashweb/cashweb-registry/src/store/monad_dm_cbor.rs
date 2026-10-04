@@ -1411,6 +1411,26 @@ mod encoding_tests {
                 (owner_bytes + member_bytes + header_bytes + remaining_indexes) as u64 <= charge
             );
         }
+        claim.phase = Phase::Terminal(MonadOutboxTerminal::AttemptsExhausted);
+        claim.reservation = false;
+        claim.acknowledged = true;
+        validate_acknowledged(&claim).unwrap();
+        let acknowledged = encode_claim(&claim).unwrap();
+        let decoded = decode_canonical(&acknowledged).unwrap();
+        assert_eq!(fields(&decoded, 16).unwrap()[15].1, CborValue::Bool(true));
+        let total = acknowledged.len()
+            + 33
+            + claim
+                .members
+                .iter()
+                .map(|member| encode_member(member).unwrap().len() + 37)
+                .sum::<usize>()
+            + encode_usage_header(&claim).unwrap().len()
+            + 33
+            + 65
+            + 93
+            + 512;
+        assert!(total as u64 <= charge);
         let mut invalid = claim.members[0].clone();
         invalid.last_error = "💸".repeat(129);
         assert!(encode_member(&invalid).is_err());

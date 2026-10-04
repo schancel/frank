@@ -110,6 +110,7 @@ impl CanonicalPaymentInput {
             backoff_base_ms: millis(config.limits.retry_backoff_base) as u64,
             max_backoff_ms: millis(config.limits.max_retry_backoff) as u64,
             reservation: true,
+            acknowledged: false,
             reserved_charge,
         })
     }

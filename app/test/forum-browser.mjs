@@ -141,7 +141,7 @@ async function openTab() {
       const response=await originalFetch.apply(this,arguments);
       row.status=response.status; row.contentType=response.headers.get('content-type');row.contentLength=response.headers.get('content-length');row.captureResponse=!window.__forumSkipResponseCapture;
       if(!window.__forumSkipResponseCapture){
-        const capture=response.clone().arrayBuffer().then(body=>row.response=Array.from(new Uint8Array(body)));
+        const capture=response.clone().arrayBuffer().then(body=>row.response=Array.from(new Uint8Array(body))).catch(error=>{row.captureError={name:error.name,message:error.message};});
         window.__forumResponseCaptures.push(capture);
       }
       return response;
@@ -370,6 +370,11 @@ try {
     const seen=new Set(),directions=new Set();
     for(const row of window.__forumWire){
       if(!row.status||row.status<200||row.status>=300)continue;
+      if(row.captureError){
+        if(row.method!=='GET'||row.captureError.name!=='AbortError')throw Error('unexpected response capture failure '+JSON.stringify(row));
+        console.log('Canceled read capture:',row.url,row.captureError);
+        continue;
+      }
       if(row.headers.accept!=='application/cbor')throw Error('non-CBOR Accept '+row.url);
       if(row.method==='PUT'||row.method==='POST'){
         if(row.headers['content-type']!=='application/cbor')throw Error('non-CBOR Content-Type');

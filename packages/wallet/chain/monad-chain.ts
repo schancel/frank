@@ -152,6 +152,18 @@ import {
 } from "../monad-topic-tally-client";
 import { readViteEnv } from "./vite-env";
 import {
+  CanonicalMessagingPendingError,
+  LevelCanonicalLinkStore,
+  canonicalDirectMessages,
+  type CanonicalDirectory,
+  type CanonicalLinkStore,
+} from "./monad-canonical-dm";
+export {
+  CanonicalMessagingHoldError,
+  CanonicalMessagingPendingError,
+  type CanonicalDirectory,
+} from "./monad-canonical-dm";
+import {
   defaultNativeTransactionAttemptStore,
   nativeTransactionAttemptKey,
   NativeTransactionAttemptStore,
@@ -321,6 +333,27 @@ export function canonicalMonadStampClient(wallet: NativeWalletHandle): MonadCano
   if (!create) throw new Error("Canonical wallet requires live typed persistent custody");
   return create();
 }
+// Canonical direct messages (#778). The directory is installed by the caller only after the
+// operator-installed public configuration is verified; it is never inferred from a wallet.
+const canonicalDirectories = new WeakMap<object, CanonicalDirectory>();
+const canonicalMessaging = new WeakMap<object, ReturnType<typeof canonicalDirectMessages>>();
+/** Install the caller's verified public directory for one live typed wallet. Returns its removal. */
+export function installCanonicalDirectory(wallet: NativeWalletHandle, directory: CanonicalDirectory): () => void {
+  const installed = installedCanonicalWalletDescriptors.get(wallet);
+  if (!installed || !canonicalMessaging.has(wallet) || closedWallets.has(wallet as MonadChainWalletHandle))
+    throw new Error("Canonical directory requires live typed persistent custody");
+  if (installed.network !== directory.network) throw new Error("Canonical directory differs from actual installed wallet network");
+  canonicalDirectories.set(wallet, directory);
+  return () => { if (canonicalDirectories.get(wallet) === directory) canonicalDirectories.delete(wallet); };
+}
+/** Typed wallets use only the canonical path: pending is an error, never a legacy fallback. */
+function canonicalMessagingFor(wallet: MonadChainWalletHandle) {
+  requireOpenWallet(wallet);
+  if (!typedWallets.has(wallet)) return undefined;
+  const canonical = canonicalMessaging.get(wallet);
+  if (!canonical) throw new CanonicalMessagingPendingError("Canonical direct messages require persistent typed wallet storage on a Monad network.");
+  return canonical;
+}
 const enclosingTopicAdmissions = new WeakSet<MonadChainWalletHandle>();
 type SignedNativeTransfer = Awaited<
   ReturnType<MonadAccountTxSigner["buildAndSignTransfer"]>
@@ -390,7 +423,7 @@ function requireLegacyMessaging(wallet: MonadChainWalletHandle): void {
   requireOpenWallet(wallet);
   if (typedWallets.has(wallet)) {
     throw new Error(
-      "Typed Monad messaging is unavailable until the messaging child schedule is allocated (#696)"
+      "Typed Monad wallets do not use the legacy stamp-payment journal"
     );
   }
 }
@@ -807,7 +840,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
   const directMessages: DirectMessageClient = {
     async send(params): Promise<DirectMessageSendResult> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      requireLegacyMessaging(wallet);
+      const canonical = canonicalMessagingFor(wallet);
+      if (canonical) return canonical.send(params);
       return runWalletExclusive(wallet, admission =>
         sendDirectMessageExclusive(params, wallet, admission)
       );
@@ -815,7 +849,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     async unattributedAttempts(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      requireLegacyMessaging(wallet);
+      const canonical = canonicalMessagingFor(wallet);
+      if (canonical) return canonical.unattributedAttempts(params);
       return runWalletExclusive(wallet, async admission => {
         const client = new MonadStampClient({ ...wallet, walletOperationAdmission: admission });
         await client.resumePendingAttempts({ maxAttempts: 1 });
@@ -829,7 +864,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     async reconcileAttempts(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      requireLegacyMessaging(wallet);
+      const canonical = canonicalMessagingFor(wallet);
+      if (canonical) return canonical.reconcileAttempts(params);
       return runWalletExclusive(wallet, async admission => {
         const client = new MonadStampClient({ ...wallet, walletOperationAdmission: admission });
         // Replays every journaled set byte for byte; this never signs or funds anything.
@@ -847,7 +883,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     async fetchSince(params): Promise<DirectMessageReceived[]> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      requireLegacyMessaging(wallet);
+      const canonical = canonicalMessagingFor(wallet);
+      if (canonical) return canonical.fetchSince(params);
       const mailbox = mailboxAuthFor(wallet.identity, wallet.relayBaseUrl);
       const stored = await fetchMonadMessagesSince({
         ...mailbox,
@@ -1408,6 +1445,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         });
         const leaseManager = new SubAccountLeaseManager(pool);
         let topicOwner: MonadWalletPersistenceBundle | undefined;
+        let canonicalLinks: CanonicalLinkStore | undefined;
         let topicOwnerWallet: MonadChainWalletHandle | undefined;
         let destroyProvider: (() => void) | undefined;
         let destroyHttpClient: (() => void) | undefined;
@@ -1704,6 +1742,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                 await walletSendQueues.get(wallet);
                 try {
                   await topicOwner!.close();
+                  await canonicalLinks?.close();
                   const results = await closeStores();
                   const failure = results.find(
                     (result) => result.status === "rejected"
@@ -1717,6 +1756,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                   httpClient.destroy();
                   material.dispose();
                   canonicalClientFactories.delete(wallet);
+                  canonicalMessaging.delete(wallet);
+                  canonicalDirectories.delete(wallet);
                   installedCanonicalWalletDescriptors.delete(wallet);
                   privateTopicWallets.delete(wallet);
                   walletMaterial.delete(wallet);
@@ -1743,6 +1784,35 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               return new MonadCanonicalStampClient({ ...wallet, walletState: topicOwner!, canonicalRoles, installedNetworkTag,
                 runCanonicalExclusive: task => runWalletExclusive(wallet, () => task(), true) });
             });
+            if (storageLocation !== undefined) {
+              const links = await LevelCanonicalLinkStore.open(storageLocation);
+              canonicalLinks = links;
+              canonicalMessaging.set(wallet, canonicalDirectMessages({
+                installedNetworkTag,
+                relayBaseUrl: config.relayBaseUrl,
+                identityAddress: identity.address.raw,
+                subject: bareHex(identity.compressedPubKey),
+                roles: canonicalRoles,
+                links,
+                client: () => canonicalMonadStampClient(wallet),
+                signDigest: digest => new Uint8Array(identity.signHash(Buffer.from(digest))),
+                directory: () => canonicalDirectories.get(wallet),
+                // Same ordinary owner path as legacy inventory: wallet queue, then main account.
+                prepareInventory: ({ stampValueWei, recipientStampKey, onProgress }) =>
+                  runWalletExclusive(wallet, async () => {
+                    const mainAccountSigner = new MonadAccountTxSigner({ privateKey: mainAccount.privateKey, provider, httpClient });
+                    const preparation = await runMainAccountExclusive(wallet, async () =>
+                      pool.prepareStampInventory({
+                        mainAccountSigner,
+                        provider,
+                        stampValueWei,
+                        gasReserveWei: await quoteMonadStampPaymentGasReserve({ signer: mainAccountSigner, recipientPublicKey: recipientStampKey }),
+                        onProgress,
+                      }));
+                    return preparation.fundingTxHashes;
+                  }),
+              }, config.defaultStampValueWei));
+            }
           }
           walletMaterial.set(wallet, material);
           mainAccountAdmissions.set(wallet, admission);
@@ -1754,6 +1824,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         } catch (error) {
           try {
             await topicOwner?.close();
+            await canonicalLinks?.close();
           } catch {
             /* preserve the original opening error */
           }

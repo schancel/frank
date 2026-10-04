@@ -75,20 +75,21 @@ pub(crate) async fn handle_put(
         if request.transaction_count() > runtime.reconcile().limits.max_members {
             return Err(CanonicalError::Invalid);
         }
-        let (sender, recipient, recipient_t1) =
-            request_principals(&request, descriptor.cbor_identifier)?;
+        let principals = request_principals(&request, descriptor.cbor_identifier)?;
+        // The recipient's own entry says which relay holds its mailbox. When this relay cannot
+        // deliver there, say so as a final answer: nothing is retained, no payment is broadcast.
+        let Some(recipient_current) =
+            deliverable_recipient(owner, descriptor.cbor_identifier, &principals.recipient).await?
+        else {
+            return undeliverable_response(&request, descriptor.cbor_identifier, &principals);
+        };
+        let Principals {
+            sender,
+            recipient,
+            recipient_t1,
+            ..
+        } = principals;
         let sender_current = current(owner, descriptor.cbor_identifier, &sender).await?;
-        let recipient_current = current(owner, descriptor.cbor_identifier, &recipient).await?;
-        // The recipient's own entry says which relay holds its mailbox. Until this relay can
-        // forward there, refuse here: nothing has been retained and no payment was broadcast.
-        if !owner
-            .directory()
-            .ok_or(CanonicalError::Unavailable)?
-            .info()
-            .is_local(&recipient_current.relay)
-        {
-            return Err(CanonicalError::RecipientElsewhere);
-        }
         let historical = if recipient_current.evidence.hash == recipient_t1 {
             None
         } else {
@@ -182,10 +183,66 @@ async fn history(
         _ => Err(CanonicalError::Unavailable),
     }
 }
-fn request_principals(
+/// What a submission says about itself, read from its own bytes before any directory lookup.
+pub(crate) struct Principals {
+    pub(crate) sender: Vec<u8>,
+    pub(crate) recipient: Vec<u8>,
+    pub(crate) sender_t1: [u8; 32],
+    pub(crate) recipient_t1: [u8; 32],
+    pub(crate) payload_hash: [u8; 32],
+}
+/// The recipient's current entry when its mailbox is on this relay. `None` when this relay can
+/// never deliver the message: the recipient has no current entry here, or its entry names
+/// another relay. A directory that is merely busy is an error the sender may retry.
+async fn deliverable_recipient(
+    owner: &crate::store::monad_dm_cbor::Owner,
+    network: &str,
+    subject: &[u8],
+) -> Result<Option<crate::directory_admission::Current>> {
+    use crate::directory_runtime::{AdmittedSnapshot, RuntimeError, SnapshotOperation};
+    let directory = owner.directory().ok_or(CanonicalError::Unavailable)?;
+    let reservation = directory
+        .reserve(network, &hex::encode(subject))
+        .map_err(|_| CanonicalError::Unavailable)?;
+    match directory
+        .submit_snapshot(reservation, SnapshotOperation::Current)
+        .wait()
+        .await
+    {
+        Ok(AdmittedSnapshot::Current(current)) => {
+            Ok(Some(current).filter(|current| directory.info().is_local(&current.relay)))
+        }
+        Ok(_) => Err(CanonicalError::Unavailable),
+        Err(RuntimeError::Busy | RuntimeError::NotStarted | RuntimeError::OutcomeUnknown) => {
+            Err(CanonicalError::Unavailable)
+        }
+        // Unpublished, expired, quarantined or malformed: not a recipient this relay can serve.
+        Err(_) => Ok(None),
+    }
+}
+fn undeliverable_response(
     request: &ExactRequest,
     network: &str,
-) -> Result<(Vec<u8>, Vec<u8>, [u8; 32])> {
+    principals: &Principals,
+) -> Result<Response> {
+    let recipient =
+        crate::monad_stamp_stealth::recipient_address_from_public_key(&principals.recipient)
+            .map_err(|_| CanonicalError::Invalid)?;
+    let identity = SubmissionEcho::new(
+        request,
+        network,
+        recipient,
+        &principals.payload_hash,
+        &principals.sender_t1,
+        &principals.recipient_t1,
+    );
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({"version":1,"phase":"dead","identity":identity,"reason":"undeliverable"})),
+    )
+        .into_response())
+}
+fn request_principals(request: &ExactRequest, network: &str) -> Result<Principals> {
     use frank_cbor::{TypedPayload, ValidationResult};
     let ValidationResult::Parsed(frame) =
         frank_cbor::validate_frame(request.delivery(), &frank_cbor::default_context())
@@ -215,25 +272,23 @@ fn request_principals(
     else {
         return Err(CanonicalError::Invalid);
     };
-    let recipient_t1 = context
-        .iter()
-        .find_map(|(key, value)| {
-            if *key == 5 {
-                if let CborValue::Bytes(hash) = value {
-                    hash.as_slice().try_into().ok()
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        })
-        .ok_or(CanonicalError::Invalid)?;
-    Ok((
-        sender.key_bytes.clone(),
-        recipient.key_bytes.clone(),
-        recipient_t1,
-    ))
+    let hash = |wanted: u64| -> Result<[u8; 32]> {
+        context
+            .iter()
+            .find_map(|(key, value)| match value {
+                CborValue::Bytes(hash) if *key == wanted => hash.as_slice().try_into().ok(),
+                _ => None,
+            })
+            .ok_or(CanonicalError::Invalid)
+    };
+    Ok(Principals {
+        sender: sender.key_bytes.clone(),
+        recipient: recipient.key_bytes.clone(),
+        sender_t1: hash(4)?,
+        recipient_t1: hash(5)?,
+        payload_hash: frank_cbor::recipient_payload_digest(network, &payload_frame.frame)
+            .map_err(|_| CanonicalError::Invalid)?,
+    })
 }
 fn terminal_reason(reason: crate::store::monad_outbox::MonadOutboxTerminal) -> &'static str {
     use crate::store::monad_outbox::MonadOutboxTerminal::*;
@@ -293,8 +348,6 @@ pub(crate) enum CanonicalError {
     Unauthorized,
     #[error("recovery obligation is active")]
     ActiveObligation,
-    #[error("recipient's mailbox is on another relay")]
-    RecipientElsewhere,
 }
 pub(crate) type Result<T> = std::result::Result<T, CanonicalError>;
 impl IntoResponse for CanonicalError {
@@ -317,10 +370,6 @@ impl IntoResponse for CanonicalError {
             Self::Capacity => (StatusCode::TOO_MANY_REQUESTS, "mailbox_challenge_capacity"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "mailbox_auth_failed"),
             Self::ActiveObligation => (StatusCode::CONFLICT, "recovery_obligation_is_active"),
-            Self::RecipientElsewhere => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "recipient_relay_forwarding_unavailable",
-            ),
         };
         (status, Json(serde_json::json!({"version":1,"error":error}))).into_response()
     }

@@ -286,7 +286,9 @@ impl Joined {
             freeze["identity"]["submission_identity"].as_str().unwrap()
         );
         let owner = self.fixture.registry.canonical_dm();
-        let (sender, recipient, _) = request_principals(&request, "monad-testnet").unwrap();
+        let Principals {
+            sender, recipient, ..
+        } = request_principals(&request, "monad-testnet").unwrap();
         let sender = current(owner, "monad-testnet", &sender).await.unwrap();
         let recipient = current(owner, "monad-testnet", &recipient).await.unwrap();
         crate::monad_dm_verify::verify_canonical_stamp(

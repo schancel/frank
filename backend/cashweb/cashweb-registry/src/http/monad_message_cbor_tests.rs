@@ -293,7 +293,9 @@ async fn genuine_native_directory_exact_transport_owner_and_sealed_payment_bound
     use crate::monad_outbox::{financial, MonadOutboxReconcileConfig};
     let fixture = NativeDirectoryFixture::new().await;
     let request = genuine_fixture();
-    let (sender, recipient, _) = request_principals(&request, "monad-testnet").unwrap();
+    let Principals {
+        sender, recipient, ..
+    } = request_principals(&request, "monad-testnet").unwrap();
     let sender = current(fixture.registry.canonical_dm(), "monad-testnet", &sender)
         .await
         .unwrap();
@@ -338,6 +340,11 @@ async fn genuine_native_directory_exact_transport_owner_and_sealed_payment_bound
         .exact_equal(&request));
     assert_eq!(claim.policy.sender_t1, sender.evidence.hash);
     assert_eq!(claim.policy.recipient_t1, recipient.evidence.hash);
+    // What the request says about itself is what admission verified and froze.
+    let stated = request_principals(&request, "monad-testnet").unwrap();
+    assert_eq!(stated.payload_hash, claim.policy.payload_hash);
+    assert_eq!(stated.sender_t1, claim.policy.sender_t1);
+    assert_eq!(stated.recipient_t1, claim.policy.recipient_t1);
     // No legacy profile/protobuf writer or synthetic Current was involved.
     fixture.stop().await;
 }
@@ -526,10 +533,14 @@ try { if(Buffer.from(material.identity.compressedPubKey).toString('hex')!==expec
     hex::decode(output.stdout).unwrap()
 }
 #[tokio::test]
-async fn message_for_a_recipient_on_another_relay_is_refused_before_any_payment_is_broadcast() {
-    // This relay is the sender's. Both accounts are published here, but the recipient's own
-    // entry says its mailbox is on a different relay.
-    let fixture = NativeDirectoryFixture::homed(0, |_| true).await;
+async fn message_for_a_recipient_this_relay_cannot_deliver_to_is_dead_without_any_payment() {
+    // The sender's relay: both accounts are published here, but the recipient's own entry says
+    // its mailbox is on a different relay.
+    undeliverable(NativeDirectoryFixture::homed(0, |_| true).await).await;
+    // The recipient's relay, where the recipient has never published.
+    undeliverable(NativeDirectoryFixture::homed(1, |index| index == 0).await).await;
+}
+async fn undeliverable(fixture: NativeDirectoryFixture) {
     let request = genuine_fixture();
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = calls.clone();
@@ -553,14 +564,29 @@ async fn message_for_a_recipient_on_another_relay_is_refused_before_any_payment_
         .await
         .unwrap();
     let status = response.status().as_u16();
-    let body: serde_json::Value =
-        serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
     http_stop.send(()).unwrap();
     http_task.await.unwrap();
     rpc_stop.send(()).unwrap();
     rpc_task.await.unwrap();
-    assert_eq!(status, 503);
-    assert_eq!(body["error"], "recipient_relay_forwarding_unavailable");
+    assert_eq!(status, 200);
+    assert_eq!(body["version"], 1);
+    assert_eq!(body["phase"], "dead");
+    assert_eq!(body["reason"], "undeliverable");
+    // The identity is the same echo a delivered submission would carry.
+    assert_eq!(
+        body["identity"]["submission_identity"],
+        hex::encode(request.submission_identity())
+    );
+    assert_eq!(
+        body["identity"]["sender_t1"],
+        fixture.accounts[0].revision_zero.as_str()
+    );
+    assert_eq!(
+        body["identity"]["recipient_t1"],
+        fixture.accounts[1].revision_zero.as_str()
+    );
+    assert_eq!(body["identity"]["payload_hash"].as_str().unwrap().len(), 64);
     // Nothing was retained and the chain was never contacted.
     assert!(fixture
         .registry

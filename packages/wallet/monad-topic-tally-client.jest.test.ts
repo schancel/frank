@@ -91,9 +91,16 @@ it('rejects an oversized response before decoding',async()=>{
  await expect(fetchDiscoveredTopics(params)).rejects.toThrow('byte limit')
 })
 it('does not renew the 120 second attempt lifetime after a slow response',async()=>{
- jest.useFakeTimers()
- http.mockImplementationOnce(async()=>{jest.advanceTimersByTime(120000);return response(discovery([])) as any})
- try {await expect(fetchDiscoveredTopics(params)).rejects.toThrow('lifetime limit')} finally {jest.useRealTimers()}
+ const original = Object.getOwnPropertyDescriptor(globalThis,'performance')
+ let elapsed = 0
+ // Keep the real Promise scheduler and timers alive; only the monotonic observation advances.
+ Object.defineProperty(globalThis,'performance',{configurable:true,value:{now:()=>elapsed}})
+ http.mockImplementationOnce(async()=>{elapsed=120000;return response(discovery([])) as any})
+ try {await expect(fetchDiscoveredTopics(params)).rejects.toThrow('lifetime limit')}
+ finally {
+   if(original) Object.defineProperty(globalThis,'performance',original)
+   else Reflect.deleteProperty(globalThis,'performance')
+ }
 })
 it('aborts download accumulation on announced or received response oversize',async()=>{
  http.mockImplementationOnce(async(config:any)=>{

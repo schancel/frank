@@ -1885,7 +1885,7 @@ describe('canonical topic owner production composition', () => {
       try { await reopenedJournal.Open();expect(reopenedJournal.getAll()).toEqual(rows) } finally { await reopened.close() }
     } finally { await wallet?.close();rmSync(directory,{recursive:true,force:true}) }
   })
-  it('preserves typed material identities in a private topic copy and drains an admitted action on close', async () => {
+  it('preserves the creator private owner across facades and drains an admitted action on close', async () => {
     const roots: MonadRootBundle = {
       evm:{registry:'frank-domain-roots-v1',purpose:'evm-wallet',bytes:new Uint8Array(32).fill(31)},
       authentication:{registry:'frank-domain-roots-v1',purpose:'identity-authentication',bytes:new Uint8Array(32).fill(32)},
@@ -1907,13 +1907,18 @@ describe('canonical topic owner production composition', () => {
       expect(wallet.identity.address.raw).toBe(expected.identity.address.raw)
       expect((await wallet.getReceiveAddress()).raw).toBe(expected.mainAccount.address)
       expect(wallet.pool.getRecord(0)!.address).toBe(expected.keyring.deriveSubAccount(0).address)
-      const action = chain.topics.reconcileOperations({wallet})
+      const other = createMonadChain({...TEST_CONFIG, chainId:143n,
+        stampBurnAddress:'0x'+'22'.repeat(20),nativeAttemptStore:new InMemoryNativeTransactionAttemptStore()})
+      const action = other.topics.reconcileOperations({wallet})
       await started
       expect(privateHandle).not.toBe(wallet)
       expect(privateHandle!.pool).toBe(wallet.pool)
       expect(privateHandle!.changePool).toBe(wallet.changePool)
       expect(privateHandle!.leaseManager).toBe(wallet.leaseManager)
       expect(privateHandle!.provider).toBe(wallet.provider)
+      expect(privateHandle!.forumChainId).toBe(BigInt(TEST_CONFIG.chainId))
+      expect(privateHandle!.forumBurnAddress).toBe(TEST_CONFIG.stampBurnAddress)
+      expect(privateHandle!.cborNetwork).toBe('monad-testnet')
       expect(wallet.walletState).toBeUndefined()
       const close = wallet.close()
       expect(wallet.close()).toBe(close)

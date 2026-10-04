@@ -292,6 +292,9 @@ const walletMaterial = new WeakMap<
 // Facades may receive a handle created by another factory on the same configured network.
 // Its key ownership and send queue travel with that handle, not with the receiving facade.
 const walletSendQueues = new WeakMap<MonadChainWalletHandle, Promise<void>>();
+// The private topic owner and enclosing admission travel with the creator's wallet too.
+const privateTopicWallets = new WeakMap<MonadChainWalletHandle, MonadWalletHandle>();
+const enclosingTopicAdmissions = new WeakSet<MonadChainWalletHandle>();
 type SignedNativeTransfer = Awaited<
   ReturnType<MonadAccountTxSigner["buildAndSignTransfer"]>
 >;
@@ -663,7 +666,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         // The fee quote itself signs a probe, so it belongs behind admission too.
         const gasReserveWei = await quoteMonadTopicBurnGasReserve({
           signer: mainAccountSigner,
-          burnAddress: config.stampBurnAddress,
+          burnAddress: creatorForumPolicy(privateTopicWallets.get(wallet) ?? wallet).burnAddress,
         });
         return wallet.pool.prepareBurnAccount({
           mainAccountSigner,
@@ -1075,8 +1078,6 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
   };
 
   // The normal handle stays unchanged for DM callers. Only topic code receives this owner.
-  const privateTopicWallets = new WeakMap<MonadChainWalletHandle, MonadWalletHandle>();
-  const enclosingTopicAdmissions = new WeakSet<MonadChainWalletHandle>();
   const runTopicExclusive = <T>(wallet: MonadChainWalletHandle, task: (topicWallet: MonadWalletHandle) => Promise<T>): Promise<T> =>
     runWalletExclusive(wallet, async () => {
       enclosingTopicAdmissions.add(wallet);
@@ -1089,6 +1090,11 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       }
     });
   const forumPolicy: ForumReadPolicy = { network: config.networkTag === "MON1" ? "monad-mainnet" : config.networkTag === "MONT" ? "monad-testnet" : config.networkTag, chainId: BigInt(config.chainId), burnAddress: config.stampBurnAddress };
+  const creatorForumPolicy = (wallet: MonadWalletHandle): ForumReadPolicy => ({
+    network: wallet.cborNetwork ?? forumPolicy.network,
+    chainId: wallet.forumChainId ?? forumPolicy.chainId,
+    burnAddress: wallet.forumBurnAddress ?? forumPolicy.burnAddress,
+  });
   const reconcileTopicOperations = async (wallet: MonadWalletHandle, admission?: import("../storage/monad-wallet-bundle").MonadWalletOperationAdmission) => {
     await new MonadTopicPostClient(wallet).resumePendingOperations(admission);
     await new MonadTopicVoteClient(wallet).resumePendingOperations(admission);
@@ -1104,11 +1110,12 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       return runTopicExclusive(wallet, async topicWallet => {
         const client = new MonadTopicPostClient(topicWallet);
+        const policy = creatorForumPolicy(topicWallet);
         return topicWallet.walletState!.runOperation(async admission => {
           await reconcileTopicOperations(topicWallet, admission);
           if (params.direction !== "up" || params.voteWeightWei < 1n || params.voteWeightWei > 9223372036854775807n) throw new Error("Canonical post burn must be up and within 1..i64::MAX");
           const timestampMs = Date.now();
-          encodeForumPost({network: forumPolicy.network, topic: params.topic, entries: params.entries,
+          encodeForumPost({network: policy.network, topic: params.topic, entries: params.entries,
             parentHash: params.parentDigest ? getBytes(`0x${params.parentDigest}`) : undefined,
             authored: {seconds: BigInt(Math.floor(timestampMs / 1000)), nanoseconds: (timestampMs % 1000) * 1000000}});
           const leaseIndex = await prepareTopicBurnAccount(
@@ -1125,7 +1132,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                 ? getBytes(`0x${params.parentDigest}`)
                 : undefined,
               direction: params.direction,
-              burnAddress: config.stampBurnAddress,
+              burnAddress: policy.burnAddress,
               voteWeightWei: params.voteWeightWei,
               leaseIndex,
             }, admission)
@@ -1144,6 +1151,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       await runTopicExclusive(wallet, async topicWallet => {
         const client = new MonadTopicVoteClient(topicWallet);
+        const policy = creatorForumPolicy(topicWallet);
         await topicWallet.walletState!.runOperation(async admission => {
           await reconcileTopicOperations(topicWallet, admission);
           if ((params.direction !== "up" && params.direction !== "down") || params.voteWeightWei < 1n || params.voteWeightWei > 9223372036854775807n) throw new Error("Canonical vote burn must be within 1..i64::MAX");
@@ -1158,7 +1166,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             .castVote({
               targetPayloadHash,
               direction: params.direction,
-              burnAddress: config.stampBurnAddress,
+              burnAddress: policy.burnAddress,
               voteWeightWei: params.voteWeightWei,
               leaseIndex,
             }, admission)
@@ -1169,7 +1177,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     async fetchByTopic(params): Promise<ForumMessage[]> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      return fetchMonadTopicPostsSince({ relayBaseUrl: wallet.relayBaseUrl, topic: params.topic, sinceMs: params.sinceMs, policy: forumPolicy });
+      return fetchMonadTopicPostsSince({ relayBaseUrl: wallet.relayBaseUrl, topic: params.topic, sinceMs: params.sinceMs, policy: creatorForumPolicy(privateTopicWallets.get(wallet) ?? wallet) });
     },
 
     async fetchOne(payloadDigest): Promise<ForumMessage | undefined> {

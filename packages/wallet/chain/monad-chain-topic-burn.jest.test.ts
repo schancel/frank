@@ -784,14 +784,19 @@ describe('main-account native attempt admission (#724)', () => {
     await expect(f.send()).rejects.toBeInstanceOf(
       NativeTransactionSubmissionError,
     )
-    relay()
-    const other = createMonadChain({
-      ...CONFIG,
-      nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
-    })
-    await expect(actions[1][1](other, f.wallet)).rejects.toBeInstanceOf(
-      TopicBurnPreparationError,
-    )
+    const puts = relay()
+    const otherStore = new InMemoryNativeTransactionAttemptStore()
+    const other = createMonadChain({ ...CONFIG, nativeAttemptStore: otherStore })
+    const creatorAttempt = f.nativeAttemptStore.get(f.key)
+    const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
+    const failure = await actions[1][1](other,f.wallet).catch(error => error)
+    expect(failure).toBeInstanceOf(TopicBurnPreparationError)
+    expect(failure.cause).toBeInstanceOf(NativeTransactionSubmissionError)
+    expect(f.nativeAttemptStore.get(f.key)).toEqual(creatorAttempt)
+    expect(otherStore.get(f.key)).toBeUndefined()
+    expect(sign).not.toHaveBeenCalled()
+    expect(puts).toHaveLength(0)
+    expect(f.rpcSubmissions).toHaveLength(0)
     expect(f.rawAttempts).toHaveLength(1)
   })
 

@@ -677,8 +677,8 @@ async fn admitted_subject(
     let point = hex::decode(point).ok()?;
     admitted_point(server, descriptor, recipient, point).await
 }
-/// `point` only when it is `recipient`'s key and the directory owner currently admits it as an
-/// installed subject with fresh, self-consistent evidence. Shared with the chain RPC proxy.
+/// `point` only when it is `recipient`'s key and that key has a published, unexpired,
+/// self-consistent entry in the directory. Shared with the chain RPC proxy.
 pub(crate) async fn admitted_point(
     server: &super::server::RegistryServer,
     descriptor: &crate::network_tag::MonadNetworkDescriptor,

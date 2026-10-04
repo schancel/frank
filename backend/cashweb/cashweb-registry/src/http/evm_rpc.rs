@@ -70,6 +70,8 @@ const MAX_WS_SUBSCRIPTION_ID_BYTES: usize = 256;
 // not the usage limit; weighted fixed-hour quotas remain the resource-control boundary.
 const MAX_USED_RPC_CHALLENGES_PER_CUSTOMER: usize = 2_048;
 pub(crate) const RPC_CUSTOMER_HEADER: &str = "x-frank-rpc-customer";
+/// Optional: the caller's directory key, lowercase compressed hex.
+pub(crate) const RPC_SUBJECT_HEADER: &str = "x-frank-rpc-subject";
 const RPC_EPOCH_HEADER: &str = "x-frank-rpc-epoch";
 const RPC_NONCE_HEADER: &str = "x-frank-rpc-nonce";
 const RPC_EXPIRY_HEADER: &str = "x-frank-rpc-expires-at-ms";
@@ -1134,18 +1136,20 @@ thread_local! {
     static DIRECTORY_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// The key of the installed directory subject whose address is `customer`, when the directory
-/// owner currently admits it. A canonical account has no legacy profile key on this relay, so
-/// this is the only key its RPC proxy signature can be checked against. Installation alone is not
-/// enough: the subject must have published evidence the owner admits as fresh, on the network
-/// whose chain is the one being proxied.
+/// The key of the published directory subject whose address is `customer`, when its entry is
+/// current. A canonical account has no legacy profile key on this relay, so this is the only key
+/// its RPC proxy signature can be checked against. The caller may present its key in
+/// `x-frank-rpc-subject`; otherwise the relay finds it through its address index. Either way the
+/// key must hash to `customer` and must have a published, unexpired entry on the network whose
+/// chain is the one being proxied.
 ///
-/// `Ok(None)` means the customer is not such a subject and the legacy profile key applies. Finding
-/// the installed subject reads only published configuration. Asking the owner takes one of its few
-/// queue slots, so callers do it only after the challenge was verified. When the owner cannot
-/// answer now the request is refused as retryable instead of being judged without its key.
+/// `Ok(None)` means the customer has no such entry and the legacy profile key applies. Asking the
+/// owner takes one of its few queue slots, so callers do it only after the challenge was verified.
+/// When the owner cannot answer now the request is refused as retryable instead of being judged
+/// without its key.
 async fn admitted_customer(
     server: &RegistryServer,
+    headers: &HeaderMap,
     network_tag: &[u8],
     expected_chain_id: u64,
     customer: Address,
@@ -1159,16 +1163,20 @@ async fn admitted_customer(
     let Some(directory) = server.registry.canonical_dm().directory() else {
         return Ok(None);
     };
-    let Some(point) = directory
-        .installed_subjects(descriptor.cbor_identifier)
-        .into_iter()
-        .filter_map(|subject| hex::decode(subject).ok())
-        .find(|point| {
-            crate::monad_stamp_stealth::recipient_address_from_public_key(point)
-                .map(|address| address == customer)
-                .unwrap_or(false)
-        })
-    else {
+    let presented = match headers.get(RPC_SUBJECT_HEADER) {
+        Some(value) => Some(
+            value
+                .to_str()
+                .ok()
+                .filter(|point| {
+                    crate::directory_runtime::valid_key(descriptor.cbor_identifier, point)
+                })
+                .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?
+                .to_owned(),
+        ),
+        None => directory.subject_for_address(descriptor.cbor_identifier, &customer.0),
+    };
+    let Some(point) = presented.and_then(|point| hex::decode(point).ok()) else {
         return Ok(None);
     };
     #[cfg(test)]
@@ -1287,7 +1295,7 @@ pub(crate) fn authenticate(
 }
 
 /// EVM proxy proof: the challenge is verified first, and only then is the directory asked whether
-/// the customer is a currently admitted subject. Any other customer is checked against its legacy
+/// the customer has a current published entry. Any other customer is checked against its legacy
 /// profile key exactly as [`authenticate`] does.
 async fn authenticate_customer(
     headers: &HeaderMap,
@@ -1298,8 +1306,14 @@ async fn authenticate_customer(
     binding: &RpcBinding,
 ) -> Result<(), RpcRejection> {
     let parsed = parse_authentication(headers, auth, binding)?;
-    let admitted =
-        admitted_customer(server, network_tag, expected_chain_id, binding.customer).await?;
+    let admitted = admitted_customer(
+        server,
+        headers,
+        network_tag,
+        expected_chain_id,
+        binding.customer,
+    )
+    .await?;
     finish_authentication(server, network_tag, binding, parsed, admitted.as_deref())
 }
 
@@ -3694,9 +3708,9 @@ mod tests {
             }
         }
 
-        /// The installed subject the fixture's wallet signer holds the key of.
+        /// The self-published account the fixture's wallet signer holds the key of.
         fn subject(fixture: &NativeDirectoryFixture) -> (String, Address) {
-            let point = fixture.config.principals[1].subject.clone();
+            let point = fixture.accounts[1].subject.clone();
             let address = crate::monad_stamp_stealth::recipient_address_from_public_key(
                 &hex::decode(&point).unwrap(),
             )
@@ -3732,7 +3746,7 @@ mod tests {
             Sha256::digest(auth_preimage(challenge, binding, tag)).into()
         }
 
-        /// A fresh challenge for the installed subject, signed by its real wallet key.
+        /// A fresh challenge for the published account, signed by its real wallet key.
         async fn subject_proof(
             fixture: &NativeDirectoryFixture,
             auth: &RpcAuthState,
@@ -3783,7 +3797,7 @@ mod tests {
             fixture: &NativeDirectoryFixture,
         ) -> (std::sync::mpsc::Sender<()>, Vec<Submission>) {
             let directory = &fixture.directory;
-            let principal = &fixture.config.principals[0];
+            let principal = &fixture.accounts[0];
             let reserve = || {
                 directory
                     .reserve(&principal.network, &principal.subject)
@@ -3875,36 +3889,65 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn evm_rpc_admitted_subject_key_comes_only_from_current_admission() {
-            // The same subject and the same valid signature: admitted in one directory, installed
-            // but never published in the other.
-            let admitted = NativeDirectoryFixture::new().await;
-            let installed_only = NativeDirectoryFixture::publishing(|index| index != 1).await;
-            assert_eq!(subject(&admitted), subject(&installed_only));
+        async fn evm_rpc_self_published_account_is_admitted_and_an_unpublished_key_is_not() {
+            // The same account and the same valid signature: published on one relay, never
+            // published on the other. Neither relay has any per-account configuration.
+            let published = NativeDirectoryFixture::new().await;
+            let unpublished = NativeDirectoryFixture::publishing(|index| index != 1).await;
+            assert_eq!(subject(&published), subject(&unpublished));
             let runtime = runtime();
             let (auth, tag) = (&runtime.auth, b"MONT".as_slice());
-            let proof = subject_proof(&admitted, auth, tag).await;
+            let proof = subject_proof(&published, auth, tag).await;
+            let mut presenting = proof.clone();
+            presenting
+                .1
+                .insert(RPC_SUBJECT_HEADER, subject(&published).0.parse().unwrap());
 
-            let not_admitted = server(&installed_only, self::runtime());
+            let stranger = server(&unpublished, self::runtime());
             DIRECTORY_LOOKUPS.set(0);
+            // Without its key in the request the relay has no index entry to find it by.
+            assert_eq!(check(&stranger, auth, tag, CHAIN_ID, &proof).await, REFUSED);
+            assert_eq!(lookups(), 0);
+            // Presenting the key does not help: the directory is asked and has no entry for it.
             assert_eq!(
-                check(&not_admitted, auth, tag, CHAIN_ID, &proof).await,
+                check(&stranger, auth, tag, CHAIN_ID, &presenting).await,
                 REFUSED
             );
-            // It was asked, and it said no.
             assert_eq!(lookups(), 1);
 
-            let server = server(&admitted, self::runtime());
+            let server = server(&published, self::runtime());
             // The legacy profile path alone has no key for a canonical account.
             assert!(matches!(
                 authenticate(&proof.1, &server, auth, tag, &proof.0),
                 Err(rejection) if rejection.status == StatusCode::UNAUTHORIZED
             ));
             DIRECTORY_LOOKUPS.set(0);
+            // Found through the address index, with no key header.
             assert_eq!(check(&server, auth, tag, CHAIN_ID, &proof).await, Ok(()));
             assert_eq!(lookups(), 1);
-            admitted.stop().await;
-            installed_only.stop().await;
+            // Found by the presented key.
+            let again = subject_proof(&published, auth, tag).await;
+            let mut again_presenting = again.clone();
+            again_presenting
+                .1
+                .insert(RPC_SUBJECT_HEADER, subject(&published).0.parse().unwrap());
+            assert_eq!(
+                check(&server, auth, tag, CHAIN_ID, &again_presenting).await,
+                Ok(())
+            );
+            // A presented key that is someone else's published key does not authenticate.
+            let other = subject_proof(&published, auth, tag).await;
+            let mut wrong_key = other.clone();
+            wrong_key.1.insert(
+                RPC_SUBJECT_HEADER,
+                published.accounts[0].subject.parse().unwrap(),
+            );
+            assert_eq!(
+                check(&server, auth, tag, CHAIN_ID, &wrong_key).await,
+                REFUSED
+            );
+            published.stop().await;
+            unpublished.stop().await;
         }
 
         #[tokio::test]
@@ -3915,7 +3958,7 @@ mod tests {
             let auth = &runtime.auth;
             DIRECTORY_LOOKUPS.set(0);
 
-            // The relay proxies mainnet; the subject is installed on testnet.
+            // The relay proxies mainnet; the account published on testnet.
             let mainnet = subject_proof(&fixture, auth, b"MON1").await;
             assert_eq!(check(&server, auth, b"MON1", 143, &mainnet).await, REFUSED);
 
@@ -3933,12 +3976,12 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn evm_rpc_admitted_class_excludes_an_address_that_is_not_installed() {
+        async fn evm_rpc_admitted_class_excludes_an_address_that_never_published() {
             let fixture = NativeDirectoryFixture::new().await;
             let server = server(&fixture, runtime());
             let runtime = runtime();
             let (auth, tag) = (&runtime.auth, b"MONT".as_slice());
-            // A valid signature by a key that is neither installed nor a stored profile.
+            // A valid signature by a key that has neither published nor stored a profile.
             let stranger = legacy_proof(auth, tag);
             DIRECTORY_LOOKUPS.set(0);
             assert_eq!(

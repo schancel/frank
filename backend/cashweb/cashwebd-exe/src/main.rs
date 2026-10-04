@@ -365,17 +365,20 @@ async fn main() -> Result<()> {
     };
 
     let directory = if let Some(config) = conf.registry.directory.clone() {
-        if !conf.host.ip().is_loopback() {
-            return Err(bitcoinsuite_error::Report::msg(
-                "Directory backend requires authenticated loopback HTTPS front",
-            ));
-        }
+        config
+            .validate()
+            .map_err(|error| bitcoinsuite_error::Report::msg(error.to_string()))?;
         let (runtime, ready) = cashweb_registry::directory_runtime::DirectoryRuntime::start(
             Arc::clone(&registry),
-            conf.registry.db_path.clone(),
             config,
         )
-        .map_err(|_| bitcoinsuite_error::Report::msg("Directory runtime unavailable"))?;
+        .map_err(|_| {
+            bitcoinsuite_error::Report::msg(
+                "registry.directory is invalid: relay_id must be 32 hex characters, \
+                 relay_identity a compressed secp256k1 key in hex, endpoint an https origin \
+                 without a trailing slash, binding_expiry_ns decimal Unix nanoseconds",
+            )
+        })?;
         let runtime = Arc::new(runtime);
         match ready.await {
             Ok(Ok(())) => Some(runtime),
@@ -383,7 +386,8 @@ async fn main() -> Result<()> {
                 runtime.begin_shutdown();
                 runtime.wait_stopped().await;
                 return Err(bitcoinsuite_error::Report::msg(
-                    "Directory trust/continuity unavailable",
+                    "Directory could not start: registry.directory.binding_expiry_ns is in the \
+                     past or the directory database could not be read",
                 ));
             }
         }

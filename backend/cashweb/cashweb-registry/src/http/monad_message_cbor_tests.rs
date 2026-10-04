@@ -118,11 +118,20 @@ fn genuine_fixture() -> ExactRequest {
     request
 }
 
+/// One account of the captured case: only its public key and first entry, nothing installed.
+pub(crate) struct Account {
+    pub(crate) network: String,
+    pub(crate) subject: String,
+    pub(crate) revision_zero: String,
+}
 pub(crate) struct NativeDirectoryFixture {
     pub(crate) root: tempfile::TempDir,
     pub(crate) registry: Arc<crate::registry::Registry>,
     pub(crate) directory: Arc<crate::directory_runtime::DirectoryRuntime>,
-    pub(crate) config: cashweb_config::DirectoryConf,
+    /// The two accounts of the captured case. They are not part of any relay configuration.
+    pub(crate) accounts: Vec<Account>,
+    config: cashweb_config::DirectoryConf,
+    clock: crate::directory_runtime::TestClock,
 }
 fn admitted_source() -> serde_json::Value {
     serde_json::from_str(include_str!(
@@ -134,11 +143,11 @@ impl NativeDirectoryFixture {
     pub(crate) async fn new() -> Self {
         Self::publishing(|_| true).await
     }
-    /// Every principal is installed; only those `publishes` selects publish their evidence, so
-    /// the others stay installed but not admitted.
+    /// A relay that knows only its own tuple. The accounts `publishes` selects publish their own
+    /// signed entries; the others have simply never published here.
     pub(crate) async fn publishing(publishes: impl Fn(usize) -> bool) -> Self {
         use crate::{
-            directory_runtime::{DirectoryRuntime, Operation},
+            directory_runtime::{DirectoryRuntime, Operation, TestClock},
             disabled_chain_adapter::DisabledChainAdapter,
             registry::Registry,
             store::db::Db,
@@ -146,46 +155,38 @@ impl NativeDirectoryFixture {
         let root = tempfile::tempdir().unwrap();
         let source = admitted_source();
         let case = &source["canonical_facade_final_http_case"];
-        // Explicit trusted fixture clock; these public captures do NOT grant wall-clock freshness.
-        std::fs::write(root.path().join("clock"), "1700000100000000000\n").unwrap();
-        let principals = case["installed_principals"]
-            .as_array()
-            .unwrap()
+        // These public captures are signed for 2023; the relay runs on a clock set to their time.
+        let clock = TestClock::at(1700000100);
+        let captured = case["installed_principals"].as_array().unwrap();
+        let accounts = captured
             .iter()
-            .enumerate()
-            .map(|(index, p)| {
-                let bundle = root.path().join(format!("bundle-{index}"));
-                std::fs::create_dir(&bundle).unwrap();
-                cashweb_config::DirectoryPrincipalConf {
-                    network: p["network"].as_str().unwrap().into(),
-                    subject: p["subject"].as_str().unwrap().into(),
-                    revision_zero: p["rev0T1"].as_str().unwrap().into(),
-                    manifest_identity: "00".repeat(32),
-                    relay_id: p["relayId"].as_str().unwrap().into(),
-                    relay_identity: p["relayIdentity"]["point"].as_str().unwrap().into(),
-                    endpoint: p["endpoint"].as_str().unwrap().into(),
-                    binding_expiry_ns: p["bindingExpiryNs"].as_str().unwrap().into(),
-                    continuity_file: root.path().join(format!("floor-{index}")),
-                    bundle_root: bundle,
-                    mode: "new".into(),
-                }
+            .map(|p| Account {
+                network: p["network"].as_str().unwrap().into(),
+                subject: p["subject"].as_str().unwrap().into(),
+                revision_zero: p["rev0T1"].as_str().unwrap().into(),
             })
-            .collect();
-        let config = cashweb_config::DirectoryConf {
-            clock_file: root.path().join("clock"),
-            principals,
-        };
+            .collect::<Vec<_>>();
+        // The relay is the one the recipient's entry names. The sender's entry names another.
+        let home = &captured[1];
+        let config: cashweb_config::DirectoryConf = serde_json::from_value(serde_json::json!({
+            "network": home["network"],
+            "relay_id": home["relayId"],
+            "relay_identity": home["relayIdentity"]["point"],
+            "endpoint": home["endpoint"],
+            "binding_expiry_ns": home["bindingExpiryNs"],
+        }))
+        .unwrap();
         let registry = Arc::new(Registry::new(
             Db::open(root.path().join("db")).unwrap(),
             Arc::new(DisabledChainAdapter),
             bitcoinsuite_core::Net::Regtest,
         ));
         let (directory, ready) =
-            DirectoryRuntime::start(registry.clone(), root.path().join("db"), config.clone())
+            DirectoryRuntime::start_with_clock(registry.clone(), config.clone(), clock.clock())
                 .unwrap();
         ready.await.unwrap().unwrap();
         let directory = Arc::new(directory);
-        for (index, principal) in config.principals.iter().enumerate() {
+        for (index, account) in accounts.iter().enumerate() {
             if !publishes(index) {
                 continue;
             }
@@ -194,7 +195,7 @@ impl NativeDirectoryFixture {
             directory
                 .submit(
                     directory
-                        .reserve(&principal.network, &principal.subject)
+                        .reserve(&account.network, &account.subject)
                         .unwrap(),
                     Operation::Put(exact.clone()),
                 )
@@ -204,7 +205,7 @@ impl NativeDirectoryFixture {
             let actual = directory
                 .submit_snapshot(
                     directory
-                        .reserve(&principal.network, &principal.subject)
+                        .reserve(&account.network, &account.subject)
                         .unwrap(),
                     crate::directory_runtime::SnapshotOperation::Current,
                 )
@@ -215,7 +216,7 @@ impl NativeDirectoryFixture {
                 panic!("actual Current");
             };
             assert_eq!(actual.evidence.attestation, exact);
-            assert_eq!(hex::encode(actual.evidence.hash), principal.revision_zero);
+            assert_eq!(hex::encode(actual.evidence.hash), account.revision_zero);
         }
         registry
             .canonical_dm()
@@ -225,7 +226,9 @@ impl NativeDirectoryFixture {
             root,
             registry,
             directory,
+            accounts,
             config,
+            clock,
         }
     }
     pub(crate) async fn stop(&self) {
@@ -238,7 +241,9 @@ impl NativeDirectoryFixture {
             root,
             registry,
             directory,
-            mut config,
+            accounts,
+            config,
+            clock,
         } = self;
         let previous = Arc::downgrade(&registry);
         drop(directory);
@@ -255,13 +260,11 @@ impl NativeDirectoryFixture {
             Arc::new(crate::disabled_chain_adapter::DisabledChainAdapter),
             bitcoinsuite_core::Net::Regtest,
         ));
-        for principal in &mut config.principals {
-            principal.mode = "reopen".into();
-        }
-        let (directory, ready) = crate::directory_runtime::DirectoryRuntime::start(
+        // Nothing is re-published: the restarted relay finds the accounts in its own database.
+        let (directory, ready) = crate::directory_runtime::DirectoryRuntime::start_with_clock(
             registry.clone(),
-            root.path().join("db"),
             config.clone(),
+            clock.clock(),
         )
         .unwrap();
         ready.await.unwrap().unwrap();
@@ -274,7 +277,9 @@ impl NativeDirectoryFixture {
             root,
             registry,
             directory,
+            accounts,
             config,
+            clock,
         }
     }
 }
@@ -350,21 +355,20 @@ async fn weak_directory_hook_preserves_same_owner_rejects_other_live_owner_and_o
     other.stop().await;
     fixture.stop().await;
     let NativeDirectoryFixture {
-        root,
+        root: _root,
         registry,
         directory,
-        mut config,
+        config,
+        clock,
+        ..
     } = fixture;
     drop(directory);
     assert!(registry.canonical_dm().directory().is_none());
     // A real reopened owner may replace only the expired weak hook.
-    for principal in &mut config.principals {
-        principal.mode = "reopen".into();
-    }
-    let (reopened, ready) = crate::directory_runtime::DirectoryRuntime::start(
+    let (reopened, ready) = crate::directory_runtime::DirectoryRuntime::start_with_clock(
         registry.clone(),
-        root.path().join("db"),
         config,
+        clock.clock(),
     )
     .unwrap();
     ready.await.unwrap().unwrap();
@@ -389,7 +393,9 @@ async fn ordinary_directory_drop_releases_registry_before_reopen() {
         root,
         registry,
         directory,
-        mut config,
+        config,
+        clock,
+        ..
     } = fixture;
     let weak = Arc::downgrade(&registry);
     drop(directory);
@@ -406,12 +412,12 @@ async fn ordinary_directory_drop_releases_registry_before_reopen() {
         Arc::new(crate::disabled_chain_adapter::DisabledChainAdapter),
         bitcoinsuite_core::Net::Regtest,
     ));
-    for principal in &mut config.principals {
-        principal.mode = "reopen".into();
-    }
-    let (directory, ready) =
-        crate::directory_runtime::DirectoryRuntime::start(registry, root.path().join("db"), config)
-            .unwrap();
+    let (directory, ready) = crate::directory_runtime::DirectoryRuntime::start_with_clock(
+        registry,
+        config,
+        clock.clock(),
+    )
+    .unwrap();
     ready.await.unwrap().unwrap();
     directory.begin_shutdown();
     directory.wait_stopped().await;
@@ -573,7 +579,7 @@ async fn actual_http_canonical_public_admission_p_authenticated_inbox_and_nonce_
     assert!(accepted["mailbox_committed_at_ms"].as_i64().unwrap() > 0);
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     let recipient = accepted["identity"]["recipient"].as_str().unwrap();
-    let point = &fixture.config.principals[1].subject;
+    let point = &fixture.accounts[1].subject;
     assert_eq!(client.get(format!("{url}/message/monad/cbor/auth/{recipient}?resource=inbox&since=0&limit=50&max_bytes=8388608")).header("x-frank-mailbox-subject", point).send().await.unwrap().status(), StatusCode::METHOD_NOT_ALLOWED);
     let challenge_response = client.post(format!("{url}/message/monad/cbor/auth/{recipient}?resource=inbox&since=0&limit=50&max_bytes=8388608")).header("x-frank-mailbox-subject", point).send().await.unwrap().error_for_status().unwrap().bytes().await.unwrap();
     let challenge: serde_json::Value = serde_json::from_slice(&challenge_response).unwrap();
@@ -798,7 +804,7 @@ async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reop
     let hash: [u8; 32] =
         hash_hex("9f688f51d6a798d62f4b14a8b1958b14d22916ca0cb8108b91b017f238f7f2d2").unwrap();
     let recipient = Address::from_hex("0x8dc3750a7789544eb239029b1eb0eaaddebdfe9d").unwrap();
-    let point = fixture.config.principals[1].subject.clone();
+    let point = fixture.accounts[1].subject.clone();
     let outcome = std::panic::AssertUnwindSafe(async {
         let client = reqwest::Client::new();
         let put = || {
@@ -1101,7 +1107,7 @@ async fn actual_http_exposure_only_terminal_exact_age_release_and_native_reopen(
     let hash =
         hash_hex("9f688f51d6a798d62f4b14a8b1958b14d22916ca0cb8108b91b017f238f7f2d2").unwrap();
     let recipient = Address::from_hex("0x8dc3750a7789544eb239029b1eb0eaaddebdfe9d").unwrap();
-    let point = fixture.config.principals[1].subject.clone();
+    let point = fixture.accounts[1].subject.clone();
     let outcome = std::panic::AssertUnwindSafe(async {
         let client = reqwest::Client::new();
         let put = || {
@@ -1433,7 +1439,7 @@ async fn actual_http_recipient_128_owner_boundary_publication_and_terminal_ack_t
                     &client,
                     &url,
                     fixture.root.path(),
-                    &fixture.config.principals[1].subject,
+                    &fixture.accounts[1].subject,
                     &binding,
                 )
                 .await;

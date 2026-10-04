@@ -5,9 +5,20 @@ use crate::{
 };
 use axum::body::Body;
 use bitcoinsuite_core::Net;
-use cashweb_config::{DirectoryConf, DirectoryPrincipalConf};
+use cashweb_config::DirectoryConf;
+use frank_cbor::{
+    cbor_map, decode_canonical, encode_frame, CborValue, EnvelopeFields, FramePayload,
+};
+use secp256k1_abc::{Message, PublicKey, Secp256k1, SecretKey};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tower::ServiceExt;
+
+/// Key of the reviewed vectors' account (secret scalar 1).
+pub(crate) const SUBJECT: &str =
+    "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+const NETWORK: &str = "monad-testnet";
+
 fn source() -> Value {
     serde_json::from_str(include_str!(
         "../../../../../docs/protocol/proposals/suite1-directory/vectors.json"
@@ -23,32 +34,139 @@ pub(crate) fn record(id: &str) -> Value {
         .unwrap()
         .clone()
 }
-pub(crate) fn setup(root: &std::path::Path) -> (Arc<Registry>, DirectoryConf) {
-    std::fs::create_dir(root.join("bundle")).unwrap();
-    std::fs::write(root.join("clock"), "1700000100000000000\n").unwrap();
-    let registry = Arc::new(Registry::new(
+fn vector(id: &str) -> Vec<u8> {
+    hex::decode(record(id)["type2_hex"].as_str().unwrap()).unwrap()
+}
+/// The whole relay configuration: its own tuple. No account appears in it.
+pub(crate) fn relay_config() -> DirectoryConf {
+    serde_json::from_value(serde_json::json!({
+        "network": NETWORK,
+        "relay_id": "000102030405060708090a0b0c0d0e0f",
+        "relay_identity": "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
+        "endpoint": "https://relay.example.invalid",
+        "binding_expiry_ns": "1700007200000000000",
+    }))
+    .unwrap()
+}
+fn registry(root: &std::path::Path) -> Arc<Registry> {
+    Arc::new(Registry::new(
         Db::open(root.join("db")).unwrap(),
         Arc::new(DisabledChainAdapter),
         Net::Regtest,
-    ));
-    let config = DirectoryConf {
-        clock_file: root.join("clock"),
-        principals: vec![DirectoryPrincipalConf {
-            network: "monad-testnet".into(),
-            subject: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
-            revision_zero: record("bootstrap")["t1"].as_str().unwrap().into(),
-            manifest_identity: "00".repeat(32),
-            relay_id: "000102030405060708090a0b0c0d0e0f".into(),
-            relay_identity: "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13"
-                .into(),
-            endpoint: "https://relay.example.invalid".into(),
-            binding_expiry_ns: "1700007200000000000".into(),
-            continuity_file: root.join("continuity"),
-            bundle_root: root.join("bundle"),
-            mode: "new".into(),
-        }],
+    ))
+}
+/// The vectors are signed for 2023, so tests run the relay on a clock set to their time.
+pub(crate) fn setup(root: &std::path::Path) -> (Arc<Registry>, DirectoryConf, TestClock) {
+    (registry(root), relay_config(), TestClock::at(1700000100))
+}
+async fn start(
+    registry: Arc<Registry>,
+    config: DirectoryConf,
+    clock: &TestClock,
+) -> DirectoryRuntime {
+    let (runtime, ready) =
+        DirectoryRuntime::start_with_clock(registry, config, clock.clock()).unwrap();
+    ready.await.unwrap().unwrap();
+    runtime
+}
+/// One self-signed entry of an account whose key is derived from `secret`.
+pub(crate) struct Entry {
+    pub(crate) subject: String,
+    pub(crate) address: String,
+    pub(crate) attestation: Vec<u8>,
+    pub(crate) hash: [u8; 32],
+}
+/// Build and sign an entry exactly as an account would: the reviewed bootstrap statement with
+/// this account's key as subject, optionally edited, signed by that same key.
+pub(crate) fn entry(secret: u32, edit: impl Fn(&mut Vec<(u64, CborValue)>)) -> Entry {
+    signed(secret, secret, edit)
+}
+/// As [`entry`], but signed by `signer` while naming the key of `secret` as subject.
+fn signed(secret: u32, signer: u32, edit: impl Fn(&mut Vec<(u64, CborValue)>)) -> Entry {
+    let scalar = |n: u32| {
+        let mut bytes = [0; 32];
+        bytes[28..].copy_from_slice(&n.to_be_bytes());
+        SecretKey::from_slice(&bytes).unwrap()
     };
-    (registry, config)
+    let secp = Secp256k1::new();
+    let point = PublicKey::from_secret_key(&secp, &scalar(secret)).serialize();
+    let original = hex::decode(record("bootstrap")["type4_hex"].as_str().unwrap()).unwrap();
+    let CborValue::Map(envelope) = decode_canonical(&original[9..]).unwrap() else {
+        panic!("envelope")
+    };
+    let Some((_, CborValue::Bytes(body))) = envelope.iter().find(|(key, _)| *key == 3) else {
+        panic!("body")
+    };
+    let CborValue::Map(mut fields) = decode_canonical(body).unwrap() else {
+        panic!("payload")
+    };
+    let subject = cbor_map(vec![
+        (0, CborValue::Int(1)),
+        (1, CborValue::Bytes(point.to_vec())),
+    ]);
+    for (key, value) in &mut fields {
+        if *key == 1 {
+            *value = subject.clone();
+        }
+    }
+    edit(&mut fields);
+    let statement = encode_frame(
+        EnvelopeFields {
+            type_id: 4,
+            schema_version: 4,
+            min_reader_version: 4,
+        },
+        FramePayload::Value(&CborValue::Map(fields)),
+    )
+    .unwrap();
+    let hash: [u8; 32] = Sha256::digest(
+        frank_cbor::common_transcript("frank/content-hash/v1", NETWORK, &statement, &[]).unwrap(),
+    )
+    .into();
+    let signature = secp
+        .sign(
+            &Message::from_slice(
+                &frank_cbor::directory_signature_digest(NETWORK, &statement).unwrap(),
+            )
+            .unwrap(),
+            &scalar(signer),
+        )
+        .serialize_der()
+        .to_vec();
+    let wrapper = cbor_map(vec![
+        (0, CborValue::Bytes(statement)),
+        (
+            1,
+            CborValue::Array(vec![cbor_map(vec![
+                (0, CborValue::Int(1)),
+                (1, subject),
+                (2, CborValue::Bytes(signature)),
+            ])]),
+        ),
+    ]);
+    let attestation = encode_frame(
+        EnvelopeFields {
+            type_id: 2,
+            schema_version: 1,
+            min_reader_version: 1,
+        },
+        FramePayload::Value(&wrapper),
+    )
+    .unwrap();
+    Entry {
+        subject: hex::encode(point),
+        address: crate::monad_stamp_stealth::recipient_address_from_public_key(&point)
+            .unwrap()
+            .to_hex(),
+        attestation,
+        hash,
+    }
+}
+fn head(subject: &str) -> String {
+    format!("/directory/v1/{NETWORK}/{subject}/head")
+}
+fn by_address(address: &str) -> String {
+    format!("/directory/v1/{NETWORK}/address/{address}")
 }
 async fn request(
     router: Router,
@@ -57,15 +175,25 @@ async fn request(
     bytes: Vec<u8>,
     media: &str,
 ) -> (StatusCode, HeaderMap, Vec<u8>) {
+    request_from(router, method, path, bytes, media, None).await
+}
+async fn request_from(
+    router: Router,
+    method: &str,
+    path: &str,
+    bytes: Vec<u8>,
+    media: &str,
+    forwarded_for: Option<&str>,
+) -> (StatusCode, HeaderMap, Vec<u8>) {
+    let mut builder = axum::http::Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::CONTENT_TYPE, media);
+    if let Some(source) = forwarded_for {
+        builder = builder.header("x-forwarded-for", source);
+    }
     let response = router
-        .oneshot(
-            axum::http::Request::builder()
-                .method(method)
-                .uri(path)
-                .header(header::CONTENT_TYPE, media)
-                .body(Body::from(bytes))
-                .unwrap(),
-        )
+        .oneshot(builder.body(Body::from(bytes)).unwrap())
         .await
         .unwrap();
     let (status, headers) = (response.status(), response.headers().clone());
@@ -75,33 +203,134 @@ async fn request(
         .to_vec();
     (status, headers, body)
 }
+async fn put(routes: &Router, subject: &str, bytes: Vec<u8>) -> (StatusCode, HeaderMap, Vec<u8>) {
+    request(routes.clone(), "PUT", &head(subject), bytes, MEDIA).await
+}
+async fn get(routes: &Router, path: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
+    request(routes.clone(), "GET", path, vec![], MEDIA).await
+}
+
 #[tokio::test]
-async fn exact_http_admission_duplicate_history_and_authenticated_reopen() {
+async fn unseen_account_publishes_itself_and_is_found_by_key_and_by_address() {
     let root = tempfile::tempdir().unwrap();
-    let (registry, mut config) = setup(root.path());
-    let (runtime, ready) =
-        DirectoryRuntime::start(registry.clone(), root.path().join("db"), config.clone()).unwrap();
-    ready.await.unwrap().unwrap();
-    let path = format!(
-        "/directory/v1/{}/{}/head",
-        config.principals[0].network, config.principals[0].subject
-    );
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry, config, &clock).await;
     let routes = router(Arc::new(runtime.clone()));
-    let original = hex::decode(record("bootstrap")["type2_hex"].as_str().unwrap()).unwrap();
-    let result = request(routes.clone(), "PUT", &path, original.clone(), MEDIA).await;
+    // Nothing in the relay configuration names this account; it is simply unknown so far.
+    let account = entry(42, |_| ());
+    assert_eq!(
+        get(&routes, &head(&account.subject)).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(&routes, &by_address(&account.address)).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    let published = put(&routes, &account.subject, account.attestation.clone()).await;
+    assert_eq!(published.0, StatusCode::OK);
+    assert_eq!(published.2, account.attestation);
+    assert_eq!(published.1["x-frank-directory-evidence"], "fresh-current");
+
+    let by_key = get(&routes, &head(&account.subject)).await;
+    assert_eq!(by_key.0, StatusCode::OK);
+    assert_eq!(by_key.2, account.attestation);
+    let found = get(&routes, &by_address(&account.address)).await;
+    assert_eq!(found.0, StatusCode::OK);
+    assert_eq!(found.2, account.attestation);
+    assert_eq!(
+        found.1["x-frank-directory-subject"],
+        account.subject.as_str()
+    );
+    assert_eq!(found.1["x-frank-directory-evidence"], "fresh-current");
+    assert_eq!(found.1[header::CONTENT_TYPE], MEDIA);
+    // A second, unrelated account on the same relay.
+    let other = entry(43, |_| ());
+    assert_eq!(
+        put(&routes, &other.subject, other.attestation.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        get(&routes, &by_address(&other.address)).await.2,
+        other.attestation
+    );
+    assert_eq!(
+        get(&routes, &by_address(&account.address)).await.2,
+        account.attestation
+    );
+    // Malformed and unknown addresses.
+    assert_eq!(
+        get(&routes, &by_address("0x1234")).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        get(&routes, &by_address(&format!("0x{}", "11".repeat(20))))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    // An entry for another network is not this relay's to hold.
+    assert_eq!(
+        request(
+            routes.clone(),
+            "PUT",
+            &format!("/directory/v1/other-network/{}/head", account.subject),
+            account.attestation.clone(),
+            MEDIA
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
+#[tokio::test]
+async fn relay_info_is_the_single_configured_tuple() {
+    let root = tempfile::tempdir().unwrap();
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry, config, &clock).await;
+    let routes = router(Arc::new(runtime.clone()));
+    let info = get(&routes, "/relay/v1/info").await;
+    assert_eq!(info.0, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&info.2).unwrap(),
+        serde_json::json!({
+            "network": "monad-testnet",
+            "relayId": "000102030405060708090a0b0c0d0e0f",
+            "endpoint": "https://relay.example.invalid",
+            "relayKey": "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
+            "bindingExpiry": "1700007200000000000",
+        })
+    );
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
+#[tokio::test]
+async fn exact_http_admission_duplicate_history_and_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry.clone(), config.clone(), &clock).await;
+    let path = head(SUBJECT);
+    let routes = router(Arc::new(runtime.clone()));
+    let original = vector("bootstrap");
+    let result = put(&routes, SUBJECT, original.clone()).await;
     assert_eq!(result.0, StatusCode::OK);
     assert_eq!(result.2, original);
     assert_eq!(result.1["x-frank-directory-evidence"], "fresh-current");
-    let renew = hex::decode(record("renew")["type2_hex"].as_str().unwrap()).unwrap();
-    let result = request(routes.clone(), "PUT", &path, renew.clone(), MEDIA).await;
-    assert_eq!(result.0, StatusCode::OK);
-    let duplicate = request(routes.clone(), "PUT", &path, original.clone(), MEDIA).await;
+    let renew = vector("renew");
+    assert_eq!(put(&routes, SUBJECT, renew.clone()).await.0, StatusCode::OK);
+    let duplicate = put(&routes, SUBJECT, original.clone()).await;
     assert_eq!(duplicate.0, StatusCode::OK);
     assert_eq!(duplicate.2, renew);
     let history = path.trim_end_matches("head").to_owned()
         + "statements/"
         + record("bootstrap")["t1"].as_str().unwrap();
-    let result = request(routes.clone(), "GET", &history, vec![], MEDIA).await;
+    let result = get(&routes, &history).await;
     assert_eq!(result.2, original);
     assert_eq!(result.1["x-frank-directory-evidence"], "historical");
     assert_eq!(
@@ -116,93 +345,207 @@ async fn exact_http_admission_duplicate_history_and_authenticated_reopen() {
         .0,
         StatusCode::UNSUPPORTED_MEDIA_TYPE
     );
-    assert_eq!(
-        request(
-            routes.clone(),
-            "GET",
-            &path.replace(
-                &config.principals[0].subject,
-                &("02".to_owned() + &"00".repeat(32))
-            ),
-            vec![],
-            MEDIA
-        )
-        .await
-        .0,
-        StatusCode::NOT_FOUND
-    );
+    let address = crate::monad_stamp_stealth::recipient_address_from_public_key(
+        &hex::decode(SUBJECT).unwrap(),
+    )
+    .unwrap()
+    .to_hex();
     runtime.begin_shutdown();
     runtime.wait_stopped().await;
     drop(routes);
     drop(runtime);
-    config.principals[0].mode = "reopen".into();
-    let (reopened, ready) =
-        DirectoryRuntime::start(registry.clone(), root.path().join("db"), config.clone()).unwrap();
-    ready.await.unwrap().unwrap();
-    let response = request(
-        router(Arc::new(reopened.clone())),
-        "GET",
-        &path,
-        vec![],
-        MEDIA,
-    )
-    .await;
-    assert_eq!(response.2, renew);
+    // A full process restart: the old registry and database handle are gone.
+    let released = Arc::downgrade(&registry);
+    drop(registry);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while released.upgrade().is_some() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let reopened = start(self::registry(root.path()), config, &clock).await;
+    let routes = router(Arc::new(reopened.clone()));
+    assert_eq!(get(&routes, &path).await.2, renew);
+    let found = get(&routes, &by_address(&address)).await;
+    assert_eq!(found.2, renew);
+    assert_eq!(found.1["x-frank-directory-subject"], SUBJECT);
+    assert_eq!(get(&routes, &history).await.2, original);
+    // The pinned first entry survived too: a different revision 0 is still refused.
+    assert_eq!(
+        put(&routes, SUBJECT, vector("wrong-relay")).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(get(&routes, &path).await.2, renew);
     reopened.begin_shutdown();
     reopened.wait_stopped().await;
-    drop(reopened);
-    std::fs::remove_file(&config.principals[0].continuity_file).unwrap();
-    let (failed, ready) =
-        DirectoryRuntime::start(registry, root.path().join("db"), config).unwrap();
-    assert_eq!(ready.await.unwrap(), Err(RuntimeError::Trust));
-    failed.wait_stopped().await;
 }
+
 #[tokio::test]
-async fn first_historical_request_after_missing_external_floor_is_conflict() {
+async fn forged_entries_are_refused_and_publish_nothing() {
     let root = tempfile::tempdir().unwrap();
-    let (registry, config) = setup(root.path());
-    let c = &config.principals[0];
-    let (runtime, ready) =
-        DirectoryRuntime::start(registry, root.path().join("db"), config.clone()).unwrap();
-    ready.await.unwrap().unwrap();
-    let path = format!("/directory/v1/{}/{}/head", c.network, c.subject);
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry, config, &clock).await;
     let routes = router(Arc::new(runtime.clone()));
-    let original = hex::decode(record("bootstrap")["type2_hex"].as_str().unwrap()).unwrap();
+    let victim = entry(50, |_| ());
+    let attacker = entry(51, |_| ());
+    // The attacker's own valid entry, offered under the victim's key.
     assert_eq!(
-        request(routes.clone(), "PUT", &path, original.clone(), MEDIA)
+        put(&routes, &victim.subject, attacker.attestation.clone())
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    // An entry naming the victim but signed with the attacker's key.
+    let forged = signed(50, 51, |_| ());
+    assert_eq!(forged.subject, victim.subject);
+    assert_eq!(
+        put(&routes, &victim.subject, forged.attestation.clone())
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    // The reviewed corpus's broken and foreign signatures over the reviewed account.
+    for id in ["bad-signature", "wrong-signer"] {
+        assert_eq!(
+            put(&routes, SUBJECT, vector(id)).await.0,
+            StatusCode::BAD_REQUEST,
+            "{id}"
+        );
+    }
+    for unpublished in [&victim.subject, SUBJECT] {
+        assert_eq!(
+            get(&routes, &head(unpublished)).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert!(!runtime.is_published(NETWORK, unpublished));
+    }
+    assert_eq!(
+        get(&routes, &by_address(&victim.address)).await.0,
+        StatusCode::NOT_FOUND
+    );
+    // A first entry that is not revision 0 cannot start a chain.
+    let later = entry(52, |fields| {
+        for (key, value) in fields.iter_mut() {
+            match *key {
+                2 => *value = CborValue::Int(1),
+                13 => *value = CborValue::Bytes(vec![7; 32]),
+                _ => (),
+            }
+        }
+    });
+    assert_eq!(
+        put(&routes, &later.subject, later.attestation).await.0,
+        StatusCode::CONFLICT
+    );
+    // Once the victim has published, a forgery still cannot replace or extend its chain.
+    assert_eq!(
+        put(&routes, &victim.subject, victim.attestation.clone())
             .await
             .0,
         StatusCode::OK
     );
-    let history = path.trim_end_matches("head").to_owned()
-        + "statements/"
-        + record("bootstrap")["t1"].as_str().unwrap();
-    std::fs::write(&config.clock_file, "1700008000000000000\n").unwrap();
-    // Archive evidence remains available with a valid floor despite current-head expiry.
-    let retained = request(routes.clone(), "GET", &history, vec![], MEDIA).await;
-    assert_eq!(retained.0, StatusCode::OK);
-    assert_eq!(retained.1["x-frank-directory-evidence"], "historical");
-    assert_eq!(retained.2, original);
-    std::fs::remove_file(&c.continuity_file).unwrap();
-    let missing = request(routes, "GET", &history, vec![], MEDIA).await;
+    for bytes in [forged.attestation, attacker.attestation] {
+        assert_ne!(put(&routes, &victim.subject, bytes).await.0, StatusCode::OK);
+    }
+    assert_eq!(
+        get(&routes, &head(&victim.subject)).await.2,
+        victim.attestation
+    );
     runtime.begin_shutdown();
     runtime.wait_stopped().await;
-    assert_eq!(missing.0, StatusCode::CONFLICT);
-    assert!(!c.continuity_file.exists());
 }
+
+#[tokio::test]
+async fn conflicting_first_entry_is_refused_and_a_forked_chain_is_quarantined() {
+    let root = tempfile::tempdir().unwrap();
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry, config, &clock).await;
+    let routes = router(Arc::new(runtime.clone()));
+    let original = vector("bootstrap");
+    assert_eq!(
+        put(&routes, SUBJECT, original.clone()).await.0,
+        StatusCode::OK
+    );
+    // The same key signs a second, different revision 0 (it names another relay key).
+    let conflicting = put(&routes, SUBJECT, vector("wrong-relay")).await;
+    assert_eq!(conflicting.0, StatusCode::CONFLICT);
+    assert_eq!(conflicting.1["x-frank-directory-disposition"], "rejected");
+    assert_eq!(get(&routes, &head(SUBJECT)).await.2, original);
+    // Two different signed successors of one revision: the chain is quarantined, not resolved
+    // by picking the newer timestamp.
+    let renew = vector("renew");
+    assert_eq!(put(&routes, SUBJECT, renew).await.0, StatusCode::OK);
+    assert_eq!(
+        put(&routes, SUBJECT, vector("fork-of-renew")).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(get(&routes, &head(SUBJECT)).await.0, StatusCode::CONFLICT);
+    let history = head(SUBJECT).trim_end_matches("head").to_owned()
+        + "statements/"
+        + record("bootstrap")["t1"].as_str().unwrap();
+    assert_eq!(get(&routes, &history).await.2, original);
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
+#[tokio::test]
+async fn publishing_is_limited_per_source_and_by_a_relay_wide_cap() {
+    let root = tempfile::tempdir().unwrap();
+    let (registry, mut config, clock) = setup(root.path());
+    config.enrollments_per_source_per_hour = 2;
+    config.max_subjects = 4;
+    let runtime = start(registry, config, &clock).await;
+    let routes = router(Arc::new(runtime.clone()));
+    let accounts: Vec<Entry> = (60..66).map(|secret| entry(secret, |_| ())).collect();
+    let publish = |index: usize, source: &'static str| {
+        let (routes, account) = (routes.clone(), &accounts[index]);
+        async move {
+            request_from(
+                routes,
+                "PUT",
+                &head(&account.subject),
+                account.attestation.clone(),
+                MEDIA,
+                Some(source),
+            )
+            .await
+        }
+    };
+    assert_eq!(publish(0, "203.0.113.7").await.0, StatusCode::OK);
+    assert_eq!(publish(1, "203.0.113.7").await.0, StatusCode::OK);
+    let limited = publish(2, "203.0.113.7").await;
+    assert_eq!(limited.0, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(limited.1["x-frank-directory-disposition"], "rejected");
+    assert!(!runtime.is_published(NETWORK, &accounts[2].subject));
+    // Re-publishing an existing account is not a first publication and is not charged.
+    assert_eq!(publish(0, "203.0.113.7").await.0, StatusCode::OK);
+    // Another source is unaffected, until the relay-wide cap of four subjects is reached.
+    assert_eq!(publish(2, "198.51.100.9").await.0, StatusCode::OK);
+    assert_eq!(publish(3, "198.51.100.9").await.0, StatusCode::OK);
+    assert_eq!(
+        publish(4, "192.0.2.33").await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert!(!runtime.is_published(NETWORK, &accounts[4].subject));
+    assert_eq!(
+        get(&routes, &head(&accounts[3].subject)).await.0,
+        StatusCode::OK
+    );
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
 #[tokio::test]
 async fn http_reserves_before_body_and_bounds_collection_without_starting_native_work() {
     let root = tempfile::tempdir().unwrap();
-    let (registry, config) = setup(root.path());
-    let (runtime, ready) =
-        DirectoryRuntime::start(registry, root.path().join("db"), config.clone()).unwrap();
-    ready.await.unwrap().unwrap();
-    let c = &config.principals[0];
-    let path = format!("/directory/v1/{}/{}/head", c.network, c.subject);
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry, config, &clock).await;
+    let path = head(SUBJECT);
     let routes = router(Arc::new(runtime.clone()));
     let mut held = Vec::new();
     for _ in 0..8 {
-        held.push(runtime.reserve(&c.network, &c.subject).unwrap());
+        held.push(runtime.reserve(NETWORK, SUBJECT).unwrap());
     }
     // A never-ending body cannot consume a ninth slot or postpone overload rejection.
     let (_sender, body) = Body::channel();
@@ -235,7 +578,7 @@ async fn http_reserves_before_body_and_bounds_collection_without_starting_native
     )
     .await;
     assert_eq!(oversized.0, StatusCode::TOO_MANY_REQUESTS);
-    assert!(!c.continuity_file.exists());
+    assert!(!runtime.is_published(NETWORK, SUBJECT));
     let (_sender, body) = Body::channel();
     let response = routes
         .oneshot(
@@ -253,47 +596,66 @@ async fn http_reserves_before_body_and_bounds_collection_without_starting_native
         response.headers()["x-frank-directory-disposition"],
         "not-started"
     );
-    assert!(!c.continuity_file.exists());
+    assert!(!runtime.is_published(NETWORK, SUBJECT));
     runtime.begin_shutdown();
     runtime.wait_stopped().await;
 }
+
 #[tokio::test]
-async fn startup_does_not_substitute_for_missing_operator_clock() {
+async fn old_operator_configuration_is_refused_with_a_plain_reason() {
+    let old: DirectoryConf = serde_json::from_value(serde_json::json!({
+        "clock_file": "/var/lib/frank/clock",
+        "principals": [{
+            "network": NETWORK, "subject": SUBJECT, "revision_zero": "00", "manifest_identity": "00",
+            "relay_id": "00", "relay_identity": "00", "endpoint": "https://relay.example.invalid",
+            "binding_expiry_ns": "1", "continuity_file": "/x", "bundle_root": "/y", "mode": "new",
+        }],
+    }))
+    .unwrap();
+    let reason = old.validate().unwrap_err().to_string();
+    assert!(
+        reason.contains("principals") && reason.contains("removed"),
+        "{reason}"
+    );
     let root = tempfile::tempdir().unwrap();
-    let (registry, mut config) = setup(root.path());
-    std::fs::remove_file(&config.clock_file).unwrap();
-    let (runtime, ready) =
-        DirectoryRuntime::start(registry, root.path().join("db"), config.clone()).unwrap();
+    assert!(matches!(
+        DirectoryRuntime::start(registry(root.path()), old),
+        Err(RuntimeError::Trust)
+    ));
+    let mut incomplete = relay_config();
+    incomplete.endpoint.clear();
+    assert_eq!(
+        incomplete.validate().unwrap_err().to_string(),
+        "registry.directory.endpoint is required"
+    );
+    // A relay tuple that has already expired cannot start on the real clock.
+    let (expired, ready) = DirectoryRuntime::start(registry(root.path()), relay_config()).unwrap();
     assert_eq!(ready.await.unwrap(), Err(RuntimeError::Trust));
-    runtime.wait_stopped().await;
-    config.principals[0].mode = "reopen".into();
+    expired.wait_stopped().await;
 }
 
 #[tokio::test]
 async fn real_http_socket_exact_bytes_and_expired_current_never_promote_history() {
     let root = tempfile::tempdir().unwrap();
-    let (registry, config) = setup(root.path());
-    let (runtime, ready) =
-        DirectoryRuntime::start(registry, root.path().join("db"), config.clone()).unwrap();
-    ready.await.unwrap().unwrap();
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry, config, &clock).await;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let server = axum::Server::from_tcp(listener)
         .unwrap()
-        .serve(router(Arc::new(runtime.clone())).into_make_service())
+        .serve(
+            router(Arc::new(runtime.clone()))
+                .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
         .with_graceful_shutdown(async {
             let _ = stopped.await;
         });
     let server = tokio::spawn(server);
-    let c = &config.principals[0];
-    let path = format!(
-        "http://{address}/directory/v1/{}/{}/head",
-        c.network, c.subject
-    );
+    let path = format!("http://{address}{}", head(SUBJECT));
     let client = reqwest::Client::new();
-    let original = hex::decode(record("bootstrap")["type2_hex"].as_str().unwrap()).unwrap();
+    let original = vector("bootstrap");
     let put = client
         .put(&path)
         .header("content-type", MEDIA)
@@ -306,11 +668,36 @@ async fn real_http_socket_exact_bytes_and_expired_current_never_promote_history(
     let get = client.get(&path).send().await.unwrap();
     assert_eq!(get.headers()["x-frank-directory-evidence"], "fresh-current");
     assert_eq!(get.bytes().await.unwrap().as_ref(), original);
-    std::fs::write(&config.clock_file, "1800000000000000000\n").unwrap();
+    // An account that tries to publish an entry which has already expired stays unpublished.
+    let stale = entry(70, |_| ());
+    clock.set(1800000000);
+    let refused = client
+        .put(format!("http://{address}{}", head(&stale.subject)))
+        .header("content-type", MEDIA)
+        .body(stale.attestation)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status().as_u16(), 409);
+    assert!(!runtime.is_published(NETWORK, &stale.subject));
+    // The published entry has expired too: it is no longer served as current, by key or address.
     assert_eq!(
         client.get(&path).send().await.unwrap().status().as_u16(),
         409
     );
+    let by_address = format!(
+        "http://{address}{}",
+        by_address(
+            &crate::monad_stamp_stealth::recipient_address_from_public_key(
+                &hex::decode(SUBJECT).unwrap()
+            )
+            .unwrap()
+            .to_hex()
+        )
+    );
+    let expired = client.get(by_address).send().await.unwrap();
+    assert_eq!(expired.status().as_u16(), 409);
+    assert!(expired.headers().get("x-frank-directory-subject").is_none());
     let history = path.trim_end_matches("head").to_owned()
         + "statements/"
         + record("bootstrap")["t1"].as_str().unwrap();
@@ -407,8 +794,20 @@ async fn authenticated_https_rust_and_node_client_close_reopen_exact_bytes() {
         "{}",
         String::from_utf8_lossy(&prepared.stderr)
     );
-    let mut config: DirectoryConf =
+    // The account in this proof names its own relay tuple; the relay is configured with the same.
+    let native: Value =
         serde_json::from_slice(&std::fs::read(root.path().join("native.json")).unwrap()).unwrap();
+    let principal = &native["principals"][0];
+    let text = |key: &str| principal[key].as_str().unwrap().to_owned();
+    let config = DirectoryConf {
+        network: text("network"),
+        relay_id: text("relay_id"),
+        relay_identity: text("relay_identity"),
+        endpoint: text("endpoint"),
+        binding_expiry_ns: text("binding_expiry_ns"),
+        ..relay_config()
+    };
+    let clock = TestClock::at(1700000100);
     for mode in ["new", "reopen"] {
         let registry = Arc::new(Registry::new(
             Db::open(root.path().join("db")).unwrap(),
@@ -416,7 +815,7 @@ async fn authenticated_https_rust_and_node_client_close_reopen_exact_bytes() {
             Net::Regtest,
         ));
         let (runtime, ready) =
-            DirectoryRuntime::start(registry, root.path().join("db"), config.clone()).unwrap();
+            DirectoryRuntime::start_with_clock(registry, config.clone(), clock.clock()).unwrap();
         ready.await.unwrap().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -448,158 +847,5 @@ async fn authenticated_https_rust_and_node_client_close_reopen_exact_bytes() {
         if std::env::var_os("DIRECTORY_ADMISSION_CHROMIUM").is_some() {
             assert!(output.contains(&format!("exact HTTPS Rust/Chromium {mode} accepted")));
         }
-        config.principals[0].mode = "reopen".into();
     }
-}
-#[tokio::test]
-async fn installation_snapshot_reports_actual_published_public_configuration_only() {
-    let root = tempfile::tempdir().unwrap();
-    let (registry, config) = setup(root.path());
-    let (runtime, ready) =
-        DirectoryRuntime::start(registry.clone(), root.path().join("db"), config.clone()).unwrap();
-    ready.await.unwrap().unwrap();
-    let routes = router(Arc::new(runtime.clone()));
-    let installed = format!("/directory-installation/{}", "00".repeat(32));
-    // A manifest this process did not install is not described, and nothing is echoed back.
-    let foreign = request(
-        routes.clone(),
-        "GET",
-        &format!("/directory-installation/{}", "11".repeat(32)),
-        vec![],
-        MEDIA,
-    )
-    .await;
-    assert_eq!(foreign.0, StatusCode::NOT_FOUND);
-    assert!(!String::from_utf8_lossy(&foreign.2).contains(&"11".repeat(32)));
-    for malformed in ["00", &"AB".repeat(32), &"0g".repeat(32)] {
-        let path = format!("/directory-installation/{malformed}");
-        assert_eq!(
-            request(routes.clone(), "GET", &path, vec![], MEDIA).await.0,
-            StatusCode::BAD_REQUEST
-        );
-    }
-    assert_eq!(
-        request(routes.clone(), "PUT", &installed, vec![], MEDIA)
-            .await
-            .0,
-        StatusCode::METHOD_NOT_ALLOWED
-    );
-
-    let before = request(routes.clone(), "GET", &installed, vec![], MEDIA).await;
-    assert_eq!(before.0, StatusCode::OK);
-    assert_eq!(before.1[header::CONTENT_TYPE], "application/json");
-    assert_eq!(before.1[header::CACHE_CONTROL], "no-store");
-    let text = String::from_utf8(before.2.clone()).unwrap();
-    // Public fields only: no filesystem paths, open mode, or readiness claim.
-    for private in ["continuity", "bundle", "clock", "mode", "ready", "/"] {
-        let allowed = private == "/" && text.matches('/').count() == 2;
-        assert!(allowed || !text.contains(private), "{private} in {text}");
-    }
-    let body: Value = serde_json::from_slice(&before.2).unwrap();
-    let c = &config.principals[0];
-    assert_eq!(body["version"], 1);
-    assert_eq!(body["kind"], "published-directory-installation");
-    assert_eq!(body["classification"], "historical-installation-snapshot");
-    assert_eq!(body["generation"], "1");
-    assert_eq!(body["sampledAtNs"], "1700000100000000000");
-    assert_eq!(
-        body["configuration"],
-        serde_json::json!({
-            "version": 1,
-            "kind": "published-directory-configuration",
-            "principals": [{
-                "network": c.network,
-                "subjectP": c.subject,
-                "revisionZeroT1": c.revision_zero,
-                "manifestIdentity": c.manifest_identity,
-                "relayId": c.relay_id,
-                "relayIdentity": c.relay_identity,
-                "endpoint": c.endpoint,
-                "bindingExpiryNs": c.binding_expiry_ns,
-            }],
-        })
-    );
-    assert_eq!(
-        body["states"],
-        serde_json::json!([{
-            "network": c.network,
-            "subjectP": c.subject,
-            "enrollment": "unenrolled",
-            "historicalHead": null,
-            "historicalRevision": null,
-            "messageGeneration": null,
-            "stampGeneration": null,
-            "forked": false,
-            "unavailable": false,
-        }])
-    );
-    assert_eq!(
-        body["publicConfigurationIdentity"].as_str().unwrap().len(),
-        64
-    );
-    assert_eq!(body.as_object().unwrap().len(), 9);
-
-    // Enrollment is a separately observed lifecycle fact; configuration identity is unchanged.
-    let head = format!("/directory/v1/{}/{}/head", c.network, c.subject);
-    let original = hex::decode(record("bootstrap")["type2_hex"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        request(routes.clone(), "PUT", &head, original, MEDIA)
-            .await
-            .0,
-        StatusCode::OK
-    );
-    let after: Value = serde_json::from_slice(
-        &request(routes.clone(), "GET", &installed, vec![], MEDIA)
-            .await
-            .2,
-    )
-    .unwrap();
-    assert_eq!(after["states"][0]["enrollment"], "enrolled");
-    assert_eq!(
-        after["states"][0]["historicalHead"],
-        record("bootstrap")["t1"]
-    );
-    assert_eq!(after["states"][0]["historicalRevision"], "0");
-    assert_eq!(after["states"][0]["messageGeneration"], "0");
-    assert_eq!(after["states"][0]["stampGeneration"], "0");
-    assert_eq!(after["runtimeEpoch"], body["runtimeEpoch"]);
-    assert_eq!(after["generation"], body["generation"]);
-    assert_eq!(
-        after["publicConfigurationIdentity"],
-        body["publicConfigurationIdentity"]
-    );
-
-    // A restarted worker reports a new epoch for the same published configuration.
-    runtime.begin_shutdown();
-    runtime.wait_stopped().await;
-    assert_eq!(
-        request(routes, "GET", &installed, vec![], MEDIA).await.0,
-        StatusCode::SERVICE_UNAVAILABLE
-    );
-    drop(runtime);
-    let mut reopened = config.clone();
-    reopened.principals[0].mode = "reopen".into();
-    let (runtime, ready) =
-        DirectoryRuntime::start(registry, root.path().join("db"), reopened).unwrap();
-    ready.await.unwrap().unwrap();
-    let restarted: Value = serde_json::from_slice(
-        &request(
-            router(Arc::new(runtime.clone())),
-            "GET",
-            &installed,
-            vec![],
-            MEDIA,
-        )
-        .await
-        .2,
-    )
-    .unwrap();
-    assert_ne!(restarted["runtimeEpoch"], body["runtimeEpoch"]);
-    assert_eq!(
-        restarted["publicConfigurationIdentity"],
-        body["publicConfigurationIdentity"]
-    );
-    assert_eq!(restarted["states"][0]["enrollment"], "enrolled");
-    runtime.begin_shutdown();
-    runtime.wait_stopped().await;
 }

@@ -324,3 +324,30 @@ test('failed pending cleanup leaves independently authenticated active account u
   await f.session.retry()
   expect(f.session.state.pendingError).toBeNull()
 })
+
+test('an unchanged account keeps its published identity across wallet acquisitions, and a replacement changes it', async () => {
+  const f = fixture()
+  // Real custody builds a new snapshot object on every read.
+  const fresh = (revision: number, accountId: string): CustodySnapshot => ({
+    schema: 1,
+    revision,
+    active: {
+      ...f.account,
+      receipt: { operationId: 'attempt-' + accountId, context: { accountId } },
+    } as PublicAccount,
+    pending: null,
+  })
+  f.custody.snapshot.mockImplementation(async () => fresh(1, 'a'))
+  await f.session.initialize()
+  const account = f.session.state.account,
+    revision = f.session.state.revision
+  await f.session.getWallet()
+  await f.session.getWallet()
+  expect(f.session.state.account).toBe(account)
+  expect(f.session.state.revision).toBe(revision)
+  f.custody.snapshot.mockImplementation(async () => fresh(2, 'b'))
+  f.capability.account = fresh(2, 'b').active as PublicAccount
+  await f.session.getWallet()
+  expect(f.session.state.account).not.toBe(account)
+  expect(f.session.state.account?.receipt.context.accountId).toBe('b')
+})

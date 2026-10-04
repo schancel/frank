@@ -602,6 +602,110 @@ mod tests {
     }
 
     #[test]
+    fn full_pages_preserve_exact_snapshot_rows_and_reject_forged_tuples() {
+        for discovery in [false, true] {
+            let (_dir, mut state) = setup();
+            for nonce in 0..130 {
+                let topic = if discovery {
+                    format!("topic.{nonce:03}")
+                } else {
+                    "test.topic".into()
+                };
+                let op = crate::store::forum::tests::distinct_post(nonce, &topic);
+                state.store.admit(op.clone()).unwrap();
+                state
+                    .store
+                    .confirm(
+                        &op.checked.decoded.tx_hash.0,
+                        &facts(&op, nonce, 0),
+                        Timestamp {
+                            seconds: 200,
+                            nanoseconds: 0,
+                        },
+                    )
+                    .unwrap();
+                state.revision += 1;
+            }
+            let query = if discovery {
+                Query::Discovery
+            } else {
+                Query::Topic {
+                    topic: "test.topic".into(),
+                    since: Timestamp {
+                        seconds: 0,
+                        nanoseconds: 0,
+                    },
+                }
+            };
+            let first = state.page(query.clone(), None).unwrap();
+            let expected = state.snapshots[0]
+                .rows
+                .iter()
+                .map(|r| r.value.clone())
+                .collect::<Vec<_>>();
+            let mut observed = Vec::new();
+            let mut frame = first;
+            let mut request: Option<Vec<u8>> = None;
+            let mut pages = 0;
+            loop {
+                assert!(frame.len() <= 4 * 1024 * 1024);
+                let ValidationResult::Parsed(parsed) =
+                    frank_cbor::validate_frame(&frame, &frank_cbor::default_context()).unwrap()
+                else {
+                    panic!()
+                };
+                let (next, echo, count, rows) = match parsed.typed.as_deref().unwrap() {
+                    TypedPayload::ForumTopicPage(page) => (
+                        page.next_cursor.as_ref(),
+                        page.request_cursor.as_ref(),
+                        page.rows.len(),
+                        page.rows
+                            .iter()
+                            .map(|r| CborValue::Bytes(r.frame.clone()))
+                            .collect::<Vec<_>>(),
+                    ),
+                    TypedPayload::ForumDiscoveryPage(page) => {
+                        let CborValue::Map(fields) = &parsed.payload else {
+                            panic!()
+                        };
+                        let CborValue::Array(rows) =
+                            fields.iter().find(|(k, _)| *k == 2).unwrap().1.clone()
+                        else {
+                            panic!()
+                        };
+                        (
+                            page.next_cursor.as_ref(),
+                            page.request_cursor.as_ref(),
+                            page.entries.len(),
+                            rows,
+                        )
+                    }
+                    _ => panic!(),
+                };
+                assert!(count > 0 && count <= 128);
+                assert_eq!(echo.map(|c| &c.bytes), request.as_ref());
+                observed.extend(rows);
+                pages += 1;
+                let Some(next) = next else { break };
+                let mut forged = next.clone();
+                match &mut forged.position {
+                    ForumCursorPosition::Topic { hash, .. } => *hash = vec![0xaa; 32],
+                    ForumCursorPosition::Discovery { topic } => *topic = "unknown.topic".into(),
+                }
+                let forged = encode_forum_cursor(&forged).unwrap();
+                assert!(matches!(
+                    state.page(query.clone(), Some(&forged)),
+                    Err(ForumError::Invalid(_))
+                ));
+                request = Some(next.bytes.clone());
+                frame = state.page(query.clone(), request.as_deref()).unwrap();
+            }
+            assert_eq!(pages, 2);
+            assert_eq!(observed, expected);
+        }
+    }
+
+    #[test]
     fn retained_snapshot_is_immutable_after_new_votes() {
         let (_dir, mut state) = setup();
         let post = publish(&mut state, 0, None, false);

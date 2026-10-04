@@ -18,19 +18,34 @@ pub(crate) fn observation_with_amount(
     down: bool,
     amount: u128,
 ) -> Observation {
+    observation_fields(nonce, target, down, amount, "test.topic", "title")
+}
+
+pub(crate) fn distinct_post(nonce: u64, topic: &str) -> Observation {
+    observation_fields(nonce, None, false, 7, topic, &format!("post-{nonce}"))
+}
+
+fn observation_fields(
+    nonce: u64,
+    target: Option<[u8; 32]>,
+    down: bool,
+    amount: u128,
+    topic: &str,
+    title: &str,
+) -> Observation {
     use bitcoinsuite_core::ecc::Ecc;
     use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
     use frank_cbor::{encode_forum_post, encode_frame, EnvelopeFields, ForumEntry, FramePayload};
     let post = encode_forum_post(
         "monad-testnet",
-        "test.topic",
+        topic,
         None,
         &Timestamp {
             seconds: 1,
             nanoseconds: 0,
         },
         &[ForumEntry::Post {
-            title: Some("title".into()),
+            title: Some(title.into()),
             url: None,
             message: Some("body".into()),
             unknown: vec![],
@@ -473,4 +488,42 @@ fn actual_predecessor_reopens_unused_and_populated_without_forum_loss() {
             Magnitude::from_u64(7)
         );
     }
+}
+
+#[test]
+fn actual_pending_limit_survives_rebuild_and_permits_only_exact_retry() {
+    let root = tempdir::TempDir::new("forum-real-capacity").unwrap();
+    let legacy = root.path().join("db.rocksdb");
+    let mut store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
+    let first = observation(0, None, false);
+    for nonce in 0..4096 {
+        store.admit(observation(nonce, None, false)).unwrap();
+    }
+    assert_eq!(store.pending_count, 4096);
+    assert!(store.pending_bytes > 0 && store.pending_bytes <= 64 * 1024 * 1024);
+    assert!(matches!(
+        store.admit(observation(4096, None, false)),
+        Err(ForumError::Capacity)
+    ));
+    let charge = store.pending_bytes;
+    store.admit(first.clone()).unwrap();
+    assert_eq!(store.pending_bytes, charge);
+    drop(store);
+    let mut store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
+    assert_eq!(store.pending_count, 4096);
+    assert_eq!(store.pending_bytes, charge);
+    store.admit(first.clone()).unwrap();
+    store
+        .confirm(
+            &first.checked.decoded.tx_hash.0,
+            &facts(&first, 1, 0),
+            Timestamp {
+                seconds: 200,
+                nanoseconds: 0,
+            },
+        )
+        .unwrap();
+    assert_eq!(store.pending_count, 4095);
+    store.admit(observation(4096, None, false)).unwrap();
+    assert_eq!(store.pending_count, 4096);
 }

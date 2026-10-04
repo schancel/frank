@@ -1,0 +1,28 @@
+{
+  "name": "@frank/dkls-two-party",
+  "version": "0.0.1",
+  "description": "Two-party ECDSA over secp256k1 from oblivious transfer (DKLs family, Asharov 2026 two-party variant) with adaptor pre-signatures. Experimental: not audited, testnet only, not for real funds.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "jest --runInBand",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.tests.json"
+  },
+  "dependencies": {
+    "@frank/adaptor-signatures": "0.0.1",
+    "@noble/curves": "1.9.1",
+    "@noble/hashes": "1.8.0"
+  },
+  "devDependencies": {
+    "@frank/threshold-ecdsa": "0.0.1",
+    "@types/jest": "^29",
+    "@types/node": "^16.11.11",
+    "ethers": "^6.17.0",
+    "jest": "^29",
+    "ts-jest": "^29",
+    "typescript": "^5.9.3"
+  }
+}

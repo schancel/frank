@@ -1,0 +1,25 @@
+[package]
+name = "dkls-kernel"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "The curve hot spot of @frank/dkls-two-party's base OT, for WebAssembly. Experimental, unaudited."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+k256 = { version = "0.13.4", default-features = false, features = ["arithmetic"] }
+subtle = { version = "2.6", default-features = false }
+zeroize = { version = "1", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Not part of any other workspace.
+[workspace]

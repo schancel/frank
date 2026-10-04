@@ -422,6 +422,49 @@ describe('local/demo directory readiness barrier', () => {
     expect(signing).not.toHaveBeenCalled()
   })
 
+  it('automatic start refuses another account that holds the approved account’s saved export, even with committed checkpoints', async () => {
+    const approved = f.install()
+    const first = await f.check()
+    if (first.status !== 'ready') throw new Error(first.reason)
+    await first.activation.close()
+    const [ownKey] = [...f.savedExports.keys()]
+    const saved = f.savedExports.get(ownKey)!
+    // The approved account's export is byte for byte the bundle's UI subject, and it is admitted.
+    const uiSubject = approved.subjects.find(subject => subject.role === 'ui')!
+    expect(JSON.parse(saved)).toEqual(
+      expect.objectContaining({
+        subjectP: uiSubject.subjectP,
+        statement: uiSubject.statement,
+        attestation: uiSubject.attestation,
+      }),
+    )
+    expect(
+      [...f.checkpoints.values()].map(v => parseCheckpoint(v).kind),
+    ).toEqual(['CommittedPrefix', 'CommittedPrefix'])
+
+    // A second account on this device ends up with that same saved export under its own key.
+    const otherKey = ownKey.replace(/^account-0:/, 'account-1:')
+    expect(otherKey).not.toBe(ownKey)
+    f.savedExports.set(otherKey, saved)
+    signing.mockClear()
+    const other = await f.check(false, f.bot)
+    // Everything public matches, so only the wallet itself can tell: it must not be activated.
+    expect(other).toEqual(
+      expect.objectContaining({
+        status: 'pending',
+        reason: 'bundle-not-this-account',
+      }),
+    )
+    expect(signing).not.toHaveBeenCalled()
+    // Nothing admitted was thrown away, and the approved account still starts.
+    expect(
+      [...f.checkpoints.values()].map(v => parseCheckpoint(v).kind),
+    ).toEqual(['CommittedPrefix', 'CommittedPrefix'])
+    const own = await f.check(false)
+    if (own.status !== 'ready') throw new Error(own.reason)
+    await own.activation.close()
+  })
+
   it.each([409, 429, 503])(
     'a first enrollment the relay answers with %s can simply be checked again',
     async status => {

@@ -1,22 +1,18 @@
 //! Lazy isolated canonical DM persistence. The original signed request has exactly one owner.
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
 use frank_cbor::{cbor_map, decode_canonical, encode_canonical, CborValue};
-use rand::RngCore;
 use rocksdb::{IteratorMode, Options, WriteBatch, WriteOptions};
 
 use crate::{
     directory_runtime::DirectoryRuntime,
     http::monad_message_cbor::{CanonicalError, ExactRequest, Result, SubmissionEcho},
     monad_http::{Address, Hash32},
-    monad_outbox::{
-        financial::{CanonicalPaymentInput, VerifiedSubmission},
-        MonadOutboxReconcileConfig,
-    },
+    monad_outbox::{financial::CanonicalPaymentInput, MonadOutboxReconcileConfig},
     store::{
         monad_messages::ChallengeConsumption,
         monad_outbox::{
@@ -349,6 +345,10 @@ impl Owner {
             {
                 return Ok(false);
             }
+            let terminal = match &state {
+                MonadOutboxMemberState::Terminal(reason) => Some(*reason),
+                _ => None,
+            };
             member.state = state;
             // The caller preserves prior exposure on an exact-lookup failure and
             // restores it after a definite replay rejection. A tentative durable
@@ -367,7 +367,7 @@ impl Owner {
                 .saturating_mul(1u64 << exponent)
                 .min(claim.max_backoff_ms);
             member.next_replay_at_ms = now.saturating_add(delay.min(i64::MAX as u64) as i64);
-            if let MonadOutboxMemberState::Terminal(reason) = state {
+            if let Some(reason) = terminal {
                 claim.phase = Phase::Terminal(reason);
                 claim.reservation = claim.recoverable();
             } else if claim
@@ -735,7 +735,7 @@ fn find_request_locked(db: &rocksdb::DB, request: &ExactRequest) -> Result<Optio
         .map_err(|_| CanonicalError::Invalid)?;
     let lookup = if let Some(indexed) = indexed.as_ref() {
         let reference: [u8; 32] = indexed
-            .as_ref()
+            .as_slice()
             .try_into()
             .map_err(|_| CanonicalError::Unavailable)?;
         if reference != hash {
@@ -994,7 +994,7 @@ fn load(db: &rocksdb::DB, hash: &[u8; 32]) -> Result<Option<Claim>> {
         .get(usage_key(hash))
         .map_err(|_| CanonicalError::Unavailable)?
         .ok_or(CanonicalError::Unavailable)?;
-    if header.as_ref() != encode_usage_header(&claim)?.as_slice() {
+    if header.as_slice() != encode_usage_header(&claim)?.as_slice() {
         return Err(CanonicalError::Unavailable);
     }
     Ok(Some(claim))

@@ -1059,7 +1059,9 @@ pub async fn handle_get_monad_topic_post(
     if !accepts_cbor && !accepts_protobuf {
         return Err(GetMonadTopicPostError::NotAcceptable);
     }
-    let stored = server.registry.get_monad_topic_post(&payload_hash)
+    let stored = server
+        .registry
+        .get_monad_topic_post(&payload_hash)
         .map_err(GetMonadTopicPostError::Infrastructure)?;
     if stored.is_none() && accepts_cbor {
         if monad_topic_gate().is_err() && server.registry.forum().exists().unwrap_or(true) {
@@ -1166,14 +1168,15 @@ async fn forum_submission<T: JsonRpcTransport + Clone>(
                 Ok(None) => (),
             }
             match registry.forum().contains(
-            registry.expected_cbor_network(),
-            policy,
-            &value.target_hash,
-        ) {
-            Ok(true) => true,
-            Ok(false) => return Some(forum_error(crate::store::forum::ForumError::NotFound)),
-            Err(error) => return Some(forum_error(error)),
-        }},
+                registry.expected_cbor_network(),
+                policy,
+                &value.target_hash,
+            ) {
+                Ok(true) => true,
+                Ok(false) => return Some(forum_error(crate::store::forum::ForumError::NotFound)),
+                Err(error) => return Some(forum_error(error)),
+            }
+        }
         _ => return None,
     };
     if !selected {
@@ -1243,26 +1246,26 @@ fn forum_query(
     if raw.unwrap_or("").len() > 8192 {
         return Err(invalid("query exceeds bound"));
     }
-    for pair in raw.unwrap_or("").split('&').filter(|p|!p.is_empty()) {
-        let (key,value)=pair.split_once('=').unwrap_or((pair,""));
-        let key=forum_query_component(key)?;
-        let value=forum_query_component(value)?;
+    for pair in raw.unwrap_or("").split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let key = forum_query_component(key)?;
+        let value = forum_query_component(value)?;
         let allowed = if discovery {
             key == "cursor"
         } else {
             matches!(key.as_str(), "topic" | "since" | "cursor")
         };
-        if !allowed
-            || fields
-                .insert(key, value)
-                .is_some()
-        {
+        if !allowed || fields.insert(key, value).is_some() {
             return Err(invalid("duplicate or unknown query field"));
         }
     }
     let cursor = fields
         .remove("cursor")
-        .map(|value| frank_cbor::forum_cursor_from_transport(&value).map(|cursor| cursor.bytes).map_err(invalid))
+        .map(|value| {
+            frank_cbor::forum_cursor_from_transport(&value)
+                .map(|cursor| cursor.bytes)
+                .map_err(invalid)
+        })
         .transpose()?;
     let query = if discovery {
         crate::forum::Query::Discovery
@@ -1290,19 +1293,25 @@ fn forum_query(
     Ok((query, cursor))
 }
 
-fn forum_query_component(raw:&str)->crate::store::forum::Result<String> {
+fn forum_query_component(raw: &str) -> crate::store::forum::Result<String> {
     use crate::store::forum::invalid;
-    let mut decoded=Vec::with_capacity(raw.len());
-    let mut input=raw.as_bytes().iter().copied();
-    while let Some(byte)=input.next() {
+    let mut decoded = Vec::with_capacity(raw.len());
+    let mut input = raw.as_bytes().iter().copied();
+    while let Some(byte) = input.next() {
         decoded.push(match byte {
-            b'+'=>b' ',
-            b'%'=>{
-                let hi=input.next().and_then(|b|(b as char).to_digit(16)).ok_or_else(||invalid("malformed query escape"))?;
-                let lo=input.next().and_then(|b|(b as char).to_digit(16)).ok_or_else(||invalid("malformed query escape"))?;
-                ((hi<<4)|lo) as u8
-            },
-            other=>other,
+            b'+' => b' ',
+            b'%' => {
+                let hi = input
+                    .next()
+                    .and_then(|b| (b as char).to_digit(16))
+                    .ok_or_else(|| invalid("malformed query escape"))?;
+                let lo = input
+                    .next()
+                    .and_then(|b| (b as char).to_digit(16))
+                    .ok_or_else(|| invalid("malformed query escape"))?;
+                ((hi << 4) | lo) as u8
+            }
+            other => other,
         });
     }
     String::from_utf8(decoded).map_err(invalid)
@@ -1768,42 +1777,64 @@ mod tests {
 
     #[tokio::test]
     async fn forum_over_ceiling_and_post_down_burn_reject_before_admission_or_rpc() {
-        use crate::store::forum::tests::{observation,observation_with_amount};
-        let (directory,registry)=test_registry();
-        let transport=MockTransport::default();
-        let over=observation_with_amount(0,None,false,i64::MAX as u128+1);
-        let response=forum_submission(&registry,&transport,burn_address(),over.frame(),true).await.unwrap();
-        assert_eq!(response.status(),StatusCode::BAD_REQUEST);
-        assert_eq!(transport.call_count(),0);
+        use crate::store::forum::tests::{observation, observation_with_amount};
+        let (directory, registry) = test_registry();
+        let transport = MockTransport::default();
+        let over = observation_with_amount(0, None, false, i64::MAX as u128 + 1);
+        let response = forum_submission(&registry, &transport, burn_address(), over.frame(), true)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(transport.call_count(), 0);
         assert!(!directory.path().join("db.rocksdb.forum-cbor-v1").exists());
-        let post=observation(1,None,false);
-        let vote=observation(2,Some(*post.event.target_hash()),true);
-        let TopicEvent::Post(post)=post.event else {panic!()};
-        let frame=cbor_submission(&post.post_frame,vote.event.burn_tx());
-        let response=forum_submission(&registry,&transport,burn_address(),&frame,true).await.unwrap();
-        assert_eq!(response.status(),StatusCode::BAD_REQUEST);
-        assert_eq!(transport.call_count(),0);
+        let post = observation(1, None, false);
+        let vote = observation(2, Some(*post.event.target_hash()), true);
+        let TopicEvent::Post(post) = post.event else {
+            panic!()
+        };
+        let frame = cbor_submission(&post.post_frame, vote.event.burn_tx());
+        let response = forum_submission(&registry, &transport, burn_address(), &frame, true)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(transport.call_count(), 0);
         assert!(!directory.path().join("db.rocksdb.forum-cbor-v1").exists());
     }
 
     #[tokio::test]
     async fn forum_receipt_sender_mismatch_keeps_pending_exact_operation() {
         use crate::store::forum::tests::observation;
-        let (_directory,registry)=test_registry();
-        let op=observation(0,None,false);
-        let hash=op.checked.decoded.tx_hash.to_hex();
-        let transport=MockTransport::default();
-        transport.set("eth_sendRawTransaction",Value::String(hash.clone()));
+        let (_directory, registry) = test_registry();
+        let op = observation(0, None, false);
+        let hash = op.checked.decoded.tx_hash.to_hex();
+        let transport = MockTransport::default();
+        transport.set("eth_sendRawTransaction", Value::String(hash.clone()));
         transport.set("eth_getTransactionReceipt",serde_json::json!({"transactionHash":hash,"blockHash":hex_hash(2),"blockNumber":"0x0","transactionIndex":"0x0","from":Address([9;20]).to_hex(),"to":burn_address().to_hex(),"contractAddress":null,"gasUsed":"0x5208","status":"0x1","logs":[]}));
         transport.set("eth_getTransactionByHash",serde_json::json!({"hash":hash,"from":op.checked.decoded.sender.to_hex(),"to":burn_address().to_hex(),"value":"0x7","input":format!("0x{}",hex::encode(&op.checked.decoded.input))}));
-        let response=forum_submission(&registry,&transport,burn_address(),op.frame(),true).await.unwrap();
-        assert_eq!(response.status(),StatusCode::SERVICE_UNAVAILABLE);
-        let policy=crate::forum::policy(10143,burn_address());
-        let status=registry.forum().status("monad-testnet",policy,op.frame()).unwrap();
-        let frank_cbor::ValidationResult::Parsed(parsed)=frank_cbor::validate_frame(&status,&frank_cbor::default_context()).unwrap() else {panic!()};
-        let frank_cbor::TypedPayload::ForumOperationStatus(status)=parsed.typed.as_deref().unwrap() else {panic!()};
-        assert_eq!(status.evidence,frank_cbor::ForumOperationEvidence::Pending);
-        assert!(!registry.forum().contains("monad-testnet",policy,op.event.target_hash()).unwrap());
+        let response = forum_submission(&registry, &transport, burn_address(), op.frame(), true)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let policy = crate::forum::policy(10143, burn_address());
+        let status = registry
+            .forum()
+            .status("monad-testnet", policy, op.frame())
+            .unwrap();
+        let frank_cbor::ValidationResult::Parsed(parsed) =
+            frank_cbor::validate_frame(&status, &frank_cbor::default_context()).unwrap()
+        else {
+            panic!()
+        };
+        let frank_cbor::TypedPayload::ForumOperationStatus(status) =
+            parsed.typed.as_deref().unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(status.evidence, frank_cbor::ForumOperationEvidence::Pending);
+        assert!(!registry
+            .forum()
+            .contains("monad-testnet", policy, op.event.target_hash())
+            .unwrap());
     }
 
     #[tokio::test]
@@ -1812,12 +1843,25 @@ mod tests {
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .env(CHILD, "1")
-                .args(["--exact", "http::monad_topics::tests::forum_retained_vote_missing_post_is_unavailable", "--nocapture"])
-                .output().unwrap();
-            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+                .args([
+                    "--exact",
+                    "http::monad_topics::tests::forum_retained_vote_missing_post_is_unavailable",
+                    "--nocapture",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
             return;
         }
-        use crate::store::forum::{tests::{observation, facts}, Store};
+        use crate::store::forum::{
+            tests::{facts, observation},
+            Store,
+        };
         use frank_cbor::Timestamp;
         use tower::ServiceExt;
         std::env::set_var("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1/");
@@ -1828,11 +1872,16 @@ mod tests {
         let policy = crate::forum::policy(10143, burn_address());
         let post = observation(0, None, false);
         let vote = observation(1, Some(*post.event.target_hash()), true);
-        let at = Timestamp { seconds: 200, nanoseconds: 0 };
+        let at = Timestamp {
+            seconds: 200,
+            nanoseconds: 0,
+        };
         let mut store = Store::open(&legacy, "monad-testnet", policy).unwrap();
         for op in [&post, &vote] {
             store.admit(op.clone()).unwrap();
-            store.confirm(&op.checked.decoded.tx_hash.0, &facts(op, 10, 0), at).unwrap();
+            store
+                .confirm(&op.checked.decoded.tx_hash.0, &facts(op, 10, 0), at)
+                .unwrap();
         }
         drop(store);
         let mut vote_key = vec![b'e'];
@@ -1847,16 +1896,35 @@ mod tests {
             db.flush().unwrap();
         }
         let router = test_server(registry).into_router();
-        let response = router.clone().oneshot(axum::http::Request::builder()
-            .uri(format!("/message/monad/topics/{}", hex::encode(post.event.target_hash())))
-            .header(ACCEPT, "application/cbor")
-            .body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!(
+                        "/message/monad/topics/{}",
+                        hex::encode(post.event.target_hash())
+                    ))
+                    .header(ACCEPT, "application/cbor")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let status = response.status();
         let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
         drop(router);
         let db = rocksdb::DB::open_default(Store::path(&legacy).unwrap()).unwrap();
-        assert_eq!(db.get(&vote_key).unwrap().unwrap(), retained, "retained authority must not be rewritten");
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(
+            db.get(&vote_key).unwrap().unwrap(),
+            retained,
+            "retained authority must not be rewritten"
+        );
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
         assert!(String::from_utf8_lossy(&body).contains("forum_unavailable"));
     }
 

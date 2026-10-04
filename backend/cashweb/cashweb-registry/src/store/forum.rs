@@ -382,14 +382,18 @@ impl Store {
     }
     fn write(&self, batch: WriteBatch) -> Result<()> {
         #[cfg(test)]
-        if self.fail_write.get() == 1 { return Err(ForumError::Unavailable); }
+        if self.fail_write.get() == 1 {
+            return Err(ForumError::Unavailable);
+        }
         let mut options = WriteOptions::default();
         options.set_sync(true);
         self.db
             .write_opt(batch, &options)
             .map_err(|_| ForumError::Unavailable)?;
         #[cfg(test)]
-        if self.fail_write.get() == 2 { return Err(ForumError::Unavailable); }
+        if self.fail_write.get() == 2 {
+            return Err(ForumError::Unavailable);
+        }
         Ok(())
     }
     fn decode_observation(&self, hash: &[u8], value: &[u8]) -> Result<Observation> {
@@ -439,13 +443,20 @@ impl Store {
             .transpose()
     }
     pub(crate) fn post(&self, hash: &[u8; 32]) -> Result<Option<Post>> {
-        let post = self.get(&key(b'p', hash))?.map(|v| Post::parse(&decode(&v)?)).transpose()?;
+        let post = self
+            .get(&key(b'p', hash))?
+            .map(|v| Post::parse(&decode(&v)?))
+            .transpose()?;
         if let Some(post) = &post {
             crate::monad_topic_cbor::validate_topic_post_target(&post.frame, &self.network, hash)
                 .map_err(|_| ForumError::Unavailable)?;
-            let parsed=frank_cbor::validate_frame(&post.frame,&frank_cbor::default_context()).map_err(|_|ForumError::Unavailable)?;
-            let frank_cbor::ValidationResult::Parsed(parsed)=parsed else {return Err(ForumError::Unavailable)};
-            if !matches!(parsed.typed.as_deref(),Some(frank_cbor::TypedPayload::TopicPost {topic,..}) if topic==&post.topic) {
+            let parsed = frank_cbor::validate_frame(&post.frame, &frank_cbor::default_context())
+                .map_err(|_| ForumError::Unavailable)?;
+            let frank_cbor::ValidationResult::Parsed(parsed) = parsed else {
+                return Err(ForumError::Unavailable);
+            };
+            if !matches!(parsed.typed.as_deref(),Some(frank_cbor::TypedPayload::TopicPost {topic,..}) if topic==&post.topic)
+            {
                 return Err(ForumError::Unavailable);
             }
         }
@@ -594,7 +605,10 @@ impl Store {
                     ]))?,
                 );
                 use bitcoinsuite_core::{Hashed, Sha256};
-                let mut index_key = key(b't', Sha256::digest(post.topic.as_bytes().into()).as_slice());
+                let mut index_key = key(
+                    b't',
+                    Sha256::digest(post.topic.as_bytes().into()).as_slice(),
+                );
                 index_key.extend_from_slice(&((visible.seconds as u64) ^ (1 << 63)).to_be_bytes());
                 index_key.extend_from_slice(&visible.nanoseconds.to_be_bytes());
                 index_key.extend_from_slice(op.event.target_hash());
@@ -707,7 +721,12 @@ impl Store {
                 if !selected {
                     continue;
                 }
-                let post = self.pending_post(&op)?;
+                // A missing target in retained authority is an inconsistent store,
+                // whereas a new request for an unknown target remains NotFound.
+                let post = self.pending_post(&op).map_err(|error| match error {
+                    ForumError::NotFound => ForumError::Unavailable,
+                    other => other,
+                })?;
                 let mut batch = WriteBatch::default();
                 if phase < 2 {
                     self.publish_projection(&mut batch, &op, post)?;

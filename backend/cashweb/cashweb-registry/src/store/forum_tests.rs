@@ -9,10 +9,15 @@ fn policy() -> TopicBurnPolicy {
 }
 
 pub(crate) fn observation(nonce: u64, target: Option<[u8; 32]>, down: bool) -> Observation {
-    observation_with_amount(nonce,target,down,7)
+    observation_with_amount(nonce, target, down, 7)
 }
 
-pub(crate) fn observation_with_amount(nonce: u64, target: Option<[u8;32]>, down: bool, amount:u128) -> Observation {
+pub(crate) fn observation_with_amount(
+    nonce: u64,
+    target: Option<[u8; 32]>,
+    down: bool,
+    amount: u128,
+) -> Observation {
     use bitcoinsuite_core::ecc::Ecc;
     use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
     use frank_cbor::{encode_forum_post, encode_frame, EnvelopeFields, ForumEntry, FramePayload};
@@ -212,23 +217,63 @@ fn exact_retry_at_capacity_and_conflicting_wrapper_preserve_authority() {
 
 #[test]
 fn crash_boundaries_reopen_only_durable_authority_without_partial_publication() {
-    for after in [false,true] {
-        let root=tempdir::TempDir::new("forum-admission-crash").unwrap();
-        let legacy=root.path().join("db.rocksdb");
-        let op=observation(0,None,false); let hash=op.checked.decoded.tx_hash.0;
-        let mut store=Store::open(&legacy,"monad-testnet",policy()).unwrap();
-        store.fail_write.set(if after {2}else{1});
-        assert!(store.admit(op.clone()).is_err()); drop(store);
-        let mut store=Store::open(&legacy,"monad-testnet",policy()).unwrap();
-        assert_eq!(store.operation(&hash).unwrap().is_some(),after);
+    for after in [false, true] {
+        let root = tempdir::TempDir::new("forum-admission-crash").unwrap();
+        let legacy = root.path().join("db.rocksdb");
+        let op = observation(0, None, false);
+        let hash = op.checked.decoded.tx_hash.0;
+        let mut store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
+        store.fail_write.set(if after { 2 } else { 1 });
+        assert!(store.admit(op.clone()).is_err());
+        drop(store);
+        let mut store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
+        assert_eq!(store.operation(&hash).unwrap().is_some(), after);
         store.admit(op.clone()).unwrap();
-        store.fail_write.set(if after {2}else{1});
-        assert!(store.confirm(&hash,&facts(&op,1,0),Timestamp {seconds:200,nanoseconds:0}).is_err()); drop(store);
-        let mut store=Store::open(&legacy,"monad-testnet",policy()).unwrap();
-        assert_eq!(store.operation(&hash).unwrap().unwrap().confirmed.is_some(),after);
-        assert_eq!(store.post(op.event.target_hash()).unwrap().unwrap().visible.is_some(),after);
-        store.confirm(&hash,&facts(&op,1,0),Timestamp {seconds:200,nanoseconds:0}).unwrap();
-        assert_eq!(store.post(op.event.target_hash()).unwrap().unwrap().aggregate.magnitude,Magnitude::from_u64(7));
+        store.fail_write.set(if after { 2 } else { 1 });
+        assert!(store
+            .confirm(
+                &hash,
+                &facts(&op, 1, 0),
+                Timestamp {
+                    seconds: 200,
+                    nanoseconds: 0
+                }
+            )
+            .is_err());
+        drop(store);
+        let mut store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
+        assert_eq!(
+            store.operation(&hash).unwrap().unwrap().confirmed.is_some(),
+            after
+        );
+        assert_eq!(
+            store
+                .post(op.event.target_hash())
+                .unwrap()
+                .unwrap()
+                .visible
+                .is_some(),
+            after
+        );
+        store
+            .confirm(
+                &hash,
+                &facts(&op, 1, 0),
+                Timestamp {
+                    seconds: 200,
+                    nanoseconds: 0,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .post(op.event.target_hash())
+                .unwrap()
+                .unwrap()
+                .aggregate
+                .magnitude,
+            Magnitude::from_u64(7)
+        );
     }
 }
 
@@ -319,4 +364,113 @@ fn closed_private_maps_reject_extra_fields_and_bad_timestamps() {
         ),
         (-1, 999_000_000)
     );
+}
+
+#[test]
+#[ignore = "requires preserved exact pre-Forum executable"]
+fn actual_predecessor_reopens_unused_and_populated_without_forum_loss() {
+    use sha2::{Digest, Sha256};
+    fn inventory(path: &std::path::Path) -> (Vec<String>, Vec<u8>) {
+        let mut names = rocksdb::DB::list_cf(&Options::default(), path).unwrap();
+        names.sort();
+        let db = rocksdb::DB::open_cf(&Options::default(), path, &names).unwrap();
+        let mut digest = Sha256::new();
+        for name in &names {
+            digest.update((name.len() as u64).to_be_bytes());
+            digest.update(name.as_bytes());
+            for row in db.iterator_cf(db.cf_handle(name).unwrap(), IteratorMode::Start) {
+                let (key, value) = row.unwrap();
+                for bytes in [&*key, &*value] {
+                    digest.update((bytes.len() as u64).to_be_bytes());
+                    digest.update(bytes);
+                }
+            }
+        }
+        (names, digest.finalize().to_vec())
+    }
+    let helper =
+        std::env::var("FRANK_FORUM_BASE_OPENER").expect("exact predecessor executable required");
+    for mode in ["empty", "populated"] {
+        let root = tempdir::TempDir::new("forum-actual-predecessor").unwrap();
+        let legacy = root.path().join("db.rocksdb");
+        let run = |seed: bool| {
+            let mut cmd = std::process::Command::new(&helper);
+            cmd.env("FRANK_FORUM_LEGACY_DB", &legacy).args([
+                "--exact",
+                "forum_actual_predecessor_opener",
+                "--nocapture",
+            ]);
+            if seed {
+                cmd.env("FRANK_FORUM_LEGACY_SEED", mode);
+            } else {
+                cmd.env_remove("FRANK_FORUM_LEGACY_SEED");
+            }
+            let out = cmd.output().unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(stdout.contains("FRANK_FORUM_ACTUAL_PREDECESSOR_OPENED_461cec2"));
+            assert!(stdout.contains("1 passed"));
+        };
+        run(true);
+        let before = inventory(&legacy);
+        drop(crate::store::db::Db::open(&legacy).unwrap());
+        assert_eq!(inventory(&legacy), before);
+        run(false); // Forum-unused candidate must remain predecessor-openable.
+        assert_eq!(inventory(&legacy), before);
+        let op = observation(0, None, false);
+        let pending = observation(1, None, false);
+        let mut store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
+        store.admit(op.clone()).unwrap();
+        store
+            .confirm(
+                &op.checked.decoded.tx_hash.0,
+                &facts(&op, 10, 0),
+                Timestamp {
+                    seconds: 200,
+                    nanoseconds: 0,
+                },
+            )
+            .unwrap();
+        store.admit(pending.clone()).unwrap();
+        let authority = [
+            op.checked.decoded.tx_hash.0,
+            pending.checked.decoded.tx_hash.0,
+        ]
+        .map(|hash| (hash, store.get(&key(b'e', &hash)).unwrap().unwrap()));
+        drop(store);
+        assert_eq!(inventory(&legacy), before);
+        run(false); // Genuine old production opener while the sidecar is populated.
+        assert_eq!(inventory(&legacy), before);
+        let store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
+        for (hash, bytes) in authority {
+            assert_eq!(store.get(&key(b'e', &hash)).unwrap().unwrap(), bytes);
+        }
+        assert!(store
+            .operation(&op.checked.decoded.tx_hash.0)
+            .unwrap()
+            .unwrap()
+            .confirmed
+            .is_some());
+        assert!(store
+            .operation(&pending.checked.decoded.tx_hash.0)
+            .unwrap()
+            .unwrap()
+            .confirmed
+            .is_none());
+        assert_eq!(store.pending_count, 1);
+        assert_eq!(
+            store
+                .post(op.event.target_hash())
+                .unwrap()
+                .unwrap()
+                .aggregate
+                .magnitude,
+            Magnitude::from_u64(7)
+        );
+    }
 }

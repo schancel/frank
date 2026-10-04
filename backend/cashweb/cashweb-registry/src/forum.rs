@@ -18,7 +18,7 @@ use crate::{
         check_topic_burn_before_broadcast, parse_topic_event, TopicBurnPolicy, TopicEvent,
     },
     monad_topic_verify::VoteDirection,
-    store::forum::{invalid, time_key, time_value, ForumError, Observation, Post, Result, Store},
+    store::forum::{invalid, time_value, ForumError, Observation, Post, Result, Store},
 };
 
 pub(crate) fn now() -> Timestamp {
@@ -74,7 +74,7 @@ impl Owner {
     pub(crate) fn exists(&self) -> Result<bool> {
         match std::fs::symlink_metadata(Store::path(&self.path)?) {
             Ok(_) => Ok(true),
-            Err(e) if e.kind()==std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(_) => Err(ForumError::Unavailable),
         }
     }
@@ -276,8 +276,12 @@ impl State {
             .operation(&post.author.ok_or(ForumError::Unavailable)?)?
             .ok_or(ForumError::Unavailable)?;
         let (block, index, _) = author.confirmed.ok_or(ForumError::Unavailable)?;
-        let TopicEvent::Post(author_post) = &author.event else { return Err(ForumError::Unavailable) };
-        if author_post.post_frame != post.frame { return Err(ForumError::Unavailable); }
+        let TopicEvent::Post(author_post) = &author.event else {
+            return Err(ForumError::Unavailable);
+        };
+        if author_post.post_frame != post.frame {
+            return Err(ForumError::Unavailable);
+        }
         encode_forum_read_frame(
             12,
             &cbor_map(vec![
@@ -516,7 +520,9 @@ impl State {
                 return Err(ForumError::SnapshotCapacity);
             }
             let snapshot = self.materialize(query, self.incarnation)?;
-            if snapshot.created.elapsed() >= Duration::from_secs(120) { return Err(ForumError::Expired); }
+            if snapshot.created.elapsed() >= Duration::from_secs(120) {
+                return Err(ForumError::Expired);
+            }
             self.snapshots.push(snapshot);
             (self.snapshots.len() - 1, 0)
         };

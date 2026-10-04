@@ -55,9 +55,12 @@ export interface QwenInboxScan {
 }
 export interface QwenInboxInput {
   payloadHashHex: string
+  /** Legacy rows: the encrypted envelope. Canonical rows: the exact type-1 delivery frame. */
   encryptedPayloadHex: string
   timestamp: number
   networkTagHex: string
+  /** Present only on canonical rows (#778): the exact authenticated crypto context bytes. */
+  contextHex?: string
 }
 export type QwenInboxRejection = 'wrong-recipient' | 'self' | 'no-text'
 export type QwenInboxRow =
@@ -97,12 +100,18 @@ const natural = (n: unknown): n is number =>
   Number.isSafeInteger(n) && Number(n) >= 0
 const hex = (s: unknown): s is string =>
   typeof s === 'string' && /^(?:[0-9a-f]{2})*$/.test(s)
+const inboxRowBytes = (row: QwenInboxInput) =>
+  (row.encryptedPayloadHex.length + (row.contextHex?.length ?? 0)) / 2
 function validInboxInput(row: QwenInboxInput): boolean {
   return (
     /^[0-9a-f]{64}$/.test(row.payloadHashHex) &&
     hex(row.encryptedPayloadHex) &&
     hex(row.networkTagHex) &&
-    natural(row.timestamp)
+    natural(row.timestamp) &&
+    (row.contextHex === undefined ||
+      (hex(row.contextHex) &&
+        row.contextHex.length >= 2 &&
+        row.contextHex.length <= 2 * 4096))
   )
 }
 const invalidInbox = () =>
@@ -544,6 +553,7 @@ export class QwenBotStateStore {
                       'timestamp',
                       'networkTagHex',
                       'order',
+                      'contextHex',
                     ])
                   : row.phase !== 'rejected' ||
                     !['wrong-recipient', 'self', 'no-text'].includes(
@@ -733,7 +743,7 @@ export class QwenBotStateStore {
 
   private inboxBytes(): number {
     return this.pendingInbox().reduce(
-      (total, row) => total + row.encryptedPayloadHex.length / 2,
+      (total, row) => total + inboxRowBytes(row),
       0,
     )
   }
@@ -771,6 +781,9 @@ export class QwenBotStateStore {
           encryptedPayloadHex: input.encryptedPayloadHex,
           timestamp: input.timestamp,
           networkTagHex: input.networkTagHex,
+          ...(input.contextHex === undefined
+            ? {}
+            : { contextHex: input.contextHex }),
           version: 1,
           phase: 'pending',
           order: nextOrder++,
@@ -779,10 +792,7 @@ export class QwenBotStateStore {
       if (
         this.pendingInbox().length + rows.size > QWEN_INBOX_MAX_COUNT ||
         this.inboxBytes() +
-          [...rows.values()].reduce(
-            (n, row) => n + row.encryptedPayloadHex.length / 2,
-            0,
-          ) >
+          [...rows.values()].reduce((n, row) => n + inboxRowBytes(row), 0) >
           QWEN_INBOX_MAX_BYTES
       )
         return 'capacity'

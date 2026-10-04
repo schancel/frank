@@ -24,3 +24,23 @@ export function extractPromptText(plaintext: string): string | undefined {
     .join('\n')
   return text || undefined
 }
+
+/** Canonical (#778) counterpart: only fully validated type-17 text items are prompts. Any other
+ * typed or unknown item is never fed to the model, and a message with no text is not a prompt. */
+export function extractCanonicalPromptText(
+  items: ReadonlyArray<{
+    kind: string
+    typed?: { type: number; text?: unknown }
+  }>,
+): string | undefined {
+  const text = items
+    .flatMap(item =>
+      item.kind === 'parsed' &&
+      item.typed?.type === 17 &&
+      typeof item.typed.text === 'string'
+        ? [item.typed.text]
+        : [],
+    )
+    .join('\n')
+  return text || undefined
+}

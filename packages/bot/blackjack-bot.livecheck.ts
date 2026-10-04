@@ -230,6 +230,9 @@ export interface BlackjackLegacyTransport {
 export interface BlackjackCanonicalMove {
   /** Durably saves one reply to the authenticated sender; the outbox delivers it exactly once. */
   reply(items: MessageItem[]): Promise<void>
+  /** Why saved replies cannot be delivered at all right now, if they cannot. A dealer that
+   * cannot answer takes no new stake: bets and doubles are refused and refunded. */
+  held?(): string | undefined
   actors: {
     actor(gameId: string): { actor: string; wagerTxHash: string } | undefined
     bindActor(
@@ -843,6 +846,14 @@ export async function handleMove(
     async function rejectBet(text: string) {
       await sendError(text + (await refundRejected(wagerTxHash, wager)))
     }
+    const heldBet = canonical?.held?.()
+    if (heldBet) {
+      console.error(
+        `[blackjack-bot] refusing bet for game ${gameId}: replies are held (${heldBet})`,
+      )
+      await rejectBet('the dealer cannot deliver replies right now')
+      return
+    }
     if (state.getGame(gameId)) {
       await rejectBet('this gameId already has a hand in progress')
       return
@@ -969,6 +980,14 @@ export async function handleMove(
     )
   }
   const rejectMove = action === 'double' ? rejectDouble : sendError
+  const heldDouble = action === 'double' ? canonical?.held?.() : undefined
+  if (heldDouble) {
+    console.error(
+      `[blackjack-bot] refusing double for game ${gameId}: replies are held (${heldDouble})`,
+    )
+    await rejectDouble('the dealer cannot deliver replies right now')
+    return
+  }
 
   const record = state.getGame(gameId)
   if (
@@ -1342,7 +1361,7 @@ export async function processCanonicalMessage(params: {
   /** Chain reads for wager lookups (the wallet's own provider, through the home relay). */
   wagerProvider: Provider
   store: BlackjackCanonicalStore
-  outbox: Pick<BlackjackCanonicalOutbox, 'enqueue' | 'drive'>
+  outbox: Pick<BlackjackCanonicalOutbox, 'enqueue' | 'drive' | 'held'>
   blockReason?: (address: string) => string | undefined
   minWagerWei: bigint
   maxWagerWei: bigint
@@ -1373,6 +1392,7 @@ export async function processCanonicalMessage(params: {
       )
     },
     actors: params.store,
+    held: () => params.outbox.held(),
   }
   const plugin = getMessageItemPlugin('blackjack-move')
   if (!plugin) throw new Error('blackjack-move plugin not registered')

@@ -293,6 +293,14 @@ type CanonicalMessages = Pick<
 export class BlackjackCanonicalOutbox {
   private queue: Promise<unknown> = Promise.resolve()
   private readonly reported = new Set<string>()
+  private hold: string | undefined
+
+  /** Why no reply can be delivered at all, as of the last pass: the wallet cannot correlate its
+   * retained payment sets with saved replies. `undefined` when replies are flowing or merely
+   * waiting on the relay. While this is set the dealer must not take on new hands. */
+  held(): string | undefined {
+    return this.hold
+  }
 
   constructor(
     private readonly options: {
@@ -343,6 +351,12 @@ export class BlackjackCanonicalOutbox {
   private async pass(): Promise<number> {
     const { store, messages, wallet, stampValueWei } = this.options
     let delivered = 0
+    const holding = (row: BlackjackOutboxRow, reason: string) => {
+      this.hold = reason
+      this.note(row, reason)
+      return delivered
+    }
+    this.hold = undefined
     for (;;) {
       let row = store.open()[0]
       if (!row) return delivered
@@ -356,13 +370,9 @@ export class BlackjackCanonicalOutbox {
             knownDigests: store.digests(),
           })
         } catch {
-          this.note(row, 'wallet-correlation-held')
-          return delivered
+          return holding(row, 'wallet-correlation-held')
         }
-        if (orphans.length > 1) {
-          this.note(row, 'unaccounted-payment-sets')
-          return delivered
-        }
+        if (orphans.length > 1) return holding(row, 'unaccounted-payment-sets')
         row =
           orphans.length === 1
             ? await store.advance(row.seq, 'attempt', orphans[0])
@@ -378,8 +388,7 @@ export class BlackjackCanonicalOutbox {
             })
           )[row.digest!]
         } catch {
-          this.note(row, 'wallet-correlation-held')
-          return delivered
+          return holding(row, 'wallet-correlation-held')
         }
         if (status === 'delivered') {
           await store.advance(row.seq, 'delivered')
@@ -398,10 +407,8 @@ export class BlackjackCanonicalOutbox {
           continue
         }
         // Live, or not known to the wallet: never a reason to pay again.
-        this.note(
-          row,
-          status === 'live' ? 'delivery-pending' : 'attempt-unknown',
-        )
+        if (status !== 'live') return holding(row, 'attempt-unknown')
+        this.note(row, 'delivery-pending')
         return delivered
       }
       // Queued: no payment set exists for this row.

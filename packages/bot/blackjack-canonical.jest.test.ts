@@ -198,9 +198,22 @@ describe('canonical reply outbox', () => {
       'bb'.repeat(32),
     ]
     const send = jest.spyOn(f.wallet.messages, 'send')
+    expect(f.outbox.held()).toBeUndefined()
     expect(await f.outbox.drive()).toBe(0)
     expect(send).not.toHaveBeenCalled()
     expect(store.all()[0].phase).toBe('sending')
+    expect(f.outbox.held()).toBe('unaccounted-payment-sets')
+    // A wallet that cannot correlate at all is a hold too; a relay that is merely slow is not.
+    f.wallet.messages.unattributedAttempts = async () => {
+      throw new Error('hold')
+    }
+    await f.outbox.drive()
+    expect(f.outbox.held()).toBe('wallet-correlation-held')
+    f.wallet.messages.unattributedAttempts = async () => []
+    f.wallet.state.relay = 'retained'
+    await f.outbox.drive()
+    expect(store.all()[0].phase).toBe('attempt')
+    expect(f.outbox.held()).toBeUndefined()
   })
 
   it('refuses oversize or malformed replies before saving anything, and bad rows on open', async () => {
@@ -395,6 +408,7 @@ describe('canonical move authority', () => {
     actors = new BlackjackCanonicalStore(directory)
     await actors.Open()
     replies = []
+    held = undefined
     mainAccountSigner = {
       address: `0x${'dd'.repeat(20)}`,
       buildAndSignTransfer: jest.fn(async () => ({
@@ -414,6 +428,7 @@ describe('canonical move authority', () => {
     rmSync(directory, { recursive: true, force: true })
   })
 
+  let held: string | undefined
   const move = (
     action: HydratedBlackjackMove['action'],
     hydrated: Partial<HydratedBlackjackMove>,
@@ -437,6 +452,7 @@ describe('canonical move authority', () => {
       canonical: {
         reply: async items => void replies.push({ to: sender, items }),
         actors,
+        held: () => held,
       },
     })
   const bet = (
@@ -582,6 +598,49 @@ describe('canonical move authority', () => {
       doubleWagerWei: 100n,
       revealed: true,
     })
+  })
+
+  it('takes no new stake while replies are held: a bet or double is refused and refunded', async () => {
+    await bet()
+    held = 'wallet-correlation-held'
+    replies = []
+    await bet({
+      gameId: 'game-b',
+      wagerTxHash: DOUBLE,
+      verifiedWager: { fromAddress: PAYER, toAddress: DEALER, valueWei: 100n },
+    })
+    expect(state.getGame('game-b')).toBeUndefined()
+    expect(actors.actor('game-b')).toBeUndefined()
+    expect(state.getRefund(DOUBLE)).toMatchObject({
+      playerAddress: PAYER,
+      amountWei: 100n,
+    })
+    const third = `0x${'ef'.repeat(32)}`
+    await move('double', {
+      doubleWagerTxHash: third,
+      verifiedDoubleWager: {
+        fromAddress: PAYER,
+        toAddress: DEALER,
+        valueWei: 100n,
+      },
+    })
+    expect(state.getGame('game-a')!.doubled).toBe(false)
+    expect(state.getRefund(third)).toMatchObject({ amountWei: 100n })
+    expect(errors()).toEqual(
+      Array(2).fill(
+        'the dealer cannot deliver replies right now Your transfer has been refunded.',
+      ),
+    )
+    // A hand already dealt can still be finished, and is paid.
+    await move('stand', {})
+    expect(state.getGame('game-a')!.revealed).toBe(true)
+    // Once replies flow again, bets are taken again.
+    held = undefined
+    await bet({
+      gameId: 'game-c',
+      wagerTxHash: `0x${'12'.repeat(32)}`,
+    })
+    expect(state.getGame('game-c')).toBeDefined()
   })
 
   it('refunds a rejected verified transfer once, to the account it came from', async () => {

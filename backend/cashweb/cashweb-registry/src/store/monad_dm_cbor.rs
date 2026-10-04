@@ -6,7 +6,7 @@ use std::{
 };
 
 use frank_cbor::{cbor_map, decode_canonical, encode_canonical, CborValue};
-use rocksdb::{IteratorMode, Options, WriteBatch, WriteOptions};
+use rocksdb::{IteratorMode, Options, ReadOptions, WriteBatch, WriteOptions};
 
 use crate::{
     directory_runtime::DirectoryRuntime,
@@ -239,7 +239,7 @@ impl Owner {
     ) -> Result<Vec<[u8; 32]>> {
         self.with(false, |db| {
             let mut result = Vec::new();
-            for item in db.iterator(IteratorMode::Start) {
+            for item in db.iterator_opt(IteratorMode::Start, prefix_options(b"R")?) {
                 let (key, _) = item.map_err(|_| CanonicalError::Unavailable)?;
                 if key.first() != Some(&b'R') {
                     continue;
@@ -538,8 +538,10 @@ impl Owner {
             let mut live = 0usize;
             let mut global_live = 0usize;
             let mut inspected = 0usize;
-            for item in db.iterator(IteratorMode::Start) {
+            for item in db.iterator_opt(IteratorMode::Start, prefix_options(b"N")?) {
                 let (row, value) = item.map_err(|_| CanonicalError::Unavailable)?;
+                #[cfg(test)]
+                record_read(&row, &value);
                 if row.first() != Some(&b'N') {
                     continue;
                 }
@@ -585,8 +587,10 @@ impl Owner {
             let mut prefix = b"I".to_vec();
             prefix.extend_from_slice(&recipient.0);
             let mut result = Vec::new();
-            for item in db.iterator(IteratorMode::Start) {
+            for item in db.iterator_opt(IteratorMode::Start, prefix_options(&prefix)?) {
                 let (key, value) = item.map_err(|_| CanonicalError::Unavailable)?;
+                #[cfg(test)]
+                record_read(&key, &value);
                 if !key.starts_with(&prefix) {
                     continue;
                 }
@@ -624,9 +628,16 @@ impl Owner {
     ) -> Result<Vec<Claim>> {
         self.with(false, |db| {
             let mut result = Vec::new();
-            for item in db.iterator(IteratorMode::Start) {
-                let (key, _) = item.map_err(|_| CanonicalError::Unavailable)?;
-                if key.first() != Some(&b'R') {
+            let mut inspected = 0u64;
+            for item in db.iterator_opt(IteratorMode::Start, prefix_options(b"J")?) {
+                let (key, header) = item.map_err(|_| CanonicalError::Unavailable)?;
+                #[cfg(test)]
+                record_read(&key, &header);
+                inspected += 1;
+                if inspected > MAX_RETAINED_OWNERS {
+                    return Err(CanonicalError::Unavailable);
+                }
+                if key.first() != Some(&b'J') {
                     continue;
                 }
                 let hash: [u8; 32] = key[1..]
@@ -635,8 +646,39 @@ impl Owner {
                 if after.is_some_and(|cursor| hash <= cursor) {
                     continue;
                 }
+                if header.len() > 128 {
+                    return Err(CanonicalError::Unavailable);
+                }
+                let metadata =
+                    decode_canonical(&header).map_err(|_| CanonicalError::Unavailable)?;
+                let [version, owner, active, reserved, charge, confirmed] = array(&metadata)?
+                else {
+                    return Err(CanonicalError::Unavailable);
+                };
+                if number(version)? != 1 {
+                    return Err(CanonicalError::Unavailable);
+                }
+                let owner = Address(fixed(owner)?);
+                let active = boolean(active)?;
+                let reserved = boolean(reserved)?;
+                let _confirmed = boolean(confirmed)?;
+                let charge: u64 = convert(charge)?;
+                if active && !reserved
+                    || charge < 8192
+                    || charge
+                        > (crate::http::monad_message_cbor::MAX_REQUEST_BYTES + 8192 + 64 * 662)
+                            as u64
+                {
+                    return Err(CanonicalError::Unavailable);
+                }
+                if owner != recipient {
+                    continue;
+                }
                 let claim = load(db, &hash)?.ok_or(CanonicalError::Unavailable)?;
-                if claim.policy.recipient() == Ok(recipient) && claim.recoverable() {
+                if claim.policy.recipient() != Ok(recipient) {
+                    return Err(CanonicalError::Unavailable);
+                }
+                if claim.recoverable() {
                     result.push(claim);
                     if result.len() == limit {
                         break;
@@ -743,14 +785,41 @@ fn validate_acknowledged(claim: &Claim) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(test)]
+thread_local! {
+    static READ_BYTES: std::cell::RefCell<std::collections::BTreeMap<u8, usize>> =
+        std::cell::RefCell::new(std::collections::BTreeMap::new());
+}
+#[cfg(test)]
+fn record_read(key: &[u8], value: &[u8]) {
+    READ_BYTES.with(|counts| *counts.borrow_mut().entry(key[0]).or_default() += value.len());
+}
+
+/// Bound the native iterator before RocksDB copies any value into an owned box.
+fn prefix_options(prefix: &[u8]) -> Result<ReadOptions> {
+    let mut upper = prefix.to_vec();
+    let last = upper
+        .iter()
+        .rposition(|byte| *byte != u8::MAX)
+        .ok_or(CanonicalError::Unavailable)?;
+    upper[last] += 1;
+    upper.truncate(last + 1);
+    let mut options = ReadOptions::default();
+    options.set_iterate_lower_bound(prefix.to_vec());
+    options.set_iterate_upper_bound(upper);
+    Ok(options)
+}
+
 fn financial_usage_locked(
     db: &rocksdb::DB,
     recipient: Address,
 ) -> Result<crate::monad_outbox::financial::AdmissionUsage> {
     let mut usage = crate::monad_outbox::financial::AdmissionUsage::default();
     let mut inspected = 0u64;
-    for item in db.iterator(IteratorMode::Start) {
+    for item in db.iterator_opt(IteratorMode::Start, prefix_options(b"J")?) {
         let (key, value) = item.map_err(|_| CanonicalError::Unavailable)?;
+        #[cfg(test)]
+        record_read(&key, &value);
         if key.first() != Some(&b'J') {
             continue;
         }
@@ -992,6 +1061,8 @@ fn load(db: &rocksdb::DB, hash: &[u8; 32]) -> Result<Option<Claim>> {
     else {
         return Ok(None);
     };
+    #[cfg(test)]
+    record_read(&row_key(hash), &raw);
     let value = decode_canonical(&raw).map_err(|_| CanonicalError::Unavailable)?;
     let rows = fields(&value, 16)?;
     let v = |i: usize| &rows[i].1;
@@ -1302,6 +1373,60 @@ fn capacity(
 #[cfg(test)]
 mod encoding_tests {
     use super::*;
+
+    // Actual populated RocksDB scan accounting. Poison owner bodies are deliberately
+    // not valid submission authority: these metadata-only/negative reads must never load them.
+    #[test]
+    fn bounded_metadata_and_negative_pages_never_read_unrelated_owner_bodies() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = Owner::new(directory.path().join("legacy"));
+        let mut options = Options::default();
+        options.create_if_missing(true);
+        let db = rocksdb::DB::open(&options, &owner.path).unwrap();
+        let recipient = Address([1; 20]);
+        let other = Address([2; 20]);
+        let mut header_bytes = 0usize;
+        for index in 0..16u8 {
+            let hash = [index; 32];
+            db.put(row_key(&hash), vec![0xff; 64 * 1024]).unwrap();
+            let header = encode(CborValue::Array(vec![
+                int(1),
+                blob(other.0),
+                CborValue::Bool(false),
+                CborValue::Bool(true),
+                int(8192),
+                CborValue::Bool(false),
+            ]))
+            .unwrap();
+            header_bytes += header.len();
+            db.put(usage_key(&hash), header).unwrap();
+        }
+        *owner.db.lock().unwrap() = Some(db);
+        READ_BYTES.with(|counts| counts.borrow_mut().clear());
+        let usage = owner.financial_usage(recipient).unwrap();
+        assert_eq!(usage.active, 0);
+        assert!(owner.inbox(recipient, 0, None, 1).unwrap().is_empty());
+        assert!(owner.recovery(recipient, None, 1).unwrap().is_empty());
+        assert_eq!(
+            owner
+                .consume_challenge([3; 32], recipient, [4; 32], 100, 0, 30)
+                .unwrap(),
+            ChallengeConsumption::Consumed
+        );
+        assert_eq!(
+            owner
+                .consume_challenge([3; 32], recipient, [5; 32], 100, 0, 30)
+                .unwrap(),
+            ChallengeConsumption::Consumed
+        );
+        READ_BYTES.with(|counts| {
+            let counts = counts.borrow();
+            assert_eq!(counts.get(&b'R'), None);
+            assert_eq!(counts.get(&b'I'), None);
+            assert_eq!(counts.get(&b'J'), Some(&(2 * header_bytes)));
+            assert_eq!(counts.get(&b'N'), Some(&8));
+        });
+    }
 
     // This exercises the private storage codec only. It creates no admitted
     // Current, chain confirmation, sealed payment input or publication authority.

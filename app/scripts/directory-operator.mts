@@ -53,13 +53,18 @@ if (command === 'policy' && args.length === 2) {
   console.log(`policy ${policy.policyIdentity} -> ${args[1]}`)
 } else if (command === 'approve' && (args.length === 5 || args.length === 6)) {
   const policy = parseBootstrapPolicy(readFileSync(args[0]))
-  const approved = buildApprovedBundle(policy, {
-    ui: json(args[1]),
-    bot: json(args[2]),
-  })
+  const mode = args[5] ?? 'new'
+  if (mode !== 'new' && mode !== 'reopen') {
+    console.error(`mode must be "new" or "reopen", got "${mode}"`)
+    process.exit(64)
+  }
+  const approved = buildApprovedBundle(
+    policy,
+    { ui: json(args[1]), bot: json(args[2]) },
+    BigInt(Date.now()) * 1_000_000n,
+  )
   const out = resolve(args[3]),
-    state = resolve(args[4]),
-    mode = (args[5] ?? 'new') as 'new' | 'reopen'
+    state = resolve(args[4])
   mkdirSync(out, { recursive: true })
   writeFileSync(
     join(out, 'approved-bundle.json'),

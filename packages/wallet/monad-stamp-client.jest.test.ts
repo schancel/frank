@@ -20,7 +20,7 @@ import {
   getAddress,
   sha256,
 } from 'ethers'
-import axios from 'axios'
+import axios, { type AxiosRequestConfig, type AxiosResponse } from 'axios'
 
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
 import { MonadHdKeyring } from './monad-hd-keyring'
@@ -30,6 +30,7 @@ import { MonadAccountTxSigner, MonadTxSubmitter } from './monad-account-tx'
 import { MonadChangePool } from './monad-change-pool'
 import {
   InMemoryStampAttemptJournal,
+  LevelStampAttemptJournal,
   StampAttemptJournal,
 } from './storage/stamp-attempt-journal'
 import {
@@ -1438,3 +1439,130 @@ function hexOf(bytes: Uint8Array): string {
 function hexNoPrefix(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('hex')
 }
+
+// C0 characterizes current economics; clean reopen is not power-loss durability.
+describe('C0 disk-backed exact attempt ownership', () => {
+  it.each(['delivered', 'dead'] as const)(
+    'replays the persisted signed set without signing and loses %s evidence after reopen',
+    async terminal => {
+      const fs = await import('fs')
+      const os = await import('os')
+      const path = await import('path')
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'c0-stamp-client-'))
+      let journal = new LevelStampAttemptJournal(dir)
+      let opened = false
+      const requests: Uint8Array[] = []
+      const http =
+        jest.mocked<(config: AxiosRequestConfig) => Promise<AxiosResponse>>(
+          axios,
+        )
+      const sign = jest.spyOn(
+        MonadAccountTxSigner.prototype,
+        'buildAndSignCall',
+      )
+      try {
+        await journal.Open()
+        opened = true
+        http.mockReset()
+        mockedAxios.isAxiosError.mockImplementation(
+          (e: unknown) =>
+            (e as { isAxiosError?: boolean })?.isAxiosError === true,
+        )
+        http.mockImplementation(async config => {
+          const bytes = new Uint8Array(config.data as Buffer)
+          requests.push(bytes)
+          // Observe actual Level inventory before the first relay submission.
+          expect(journal.getAll()).toHaveLength(1)
+          expect(journal.getAll()[0].messageBytes).toEqual(Array.from(bytes))
+          expect(journal.getAll()[0].leaseIndices).toHaveLength(2)
+          throw Object.assign(new Error('uncertain submission'), {
+            isAxiosError: true,
+          })
+        })
+        const first = makeClient({ stampAttemptJournal: journal }).client
+        await expect(
+          first.submitStampedMessage({
+            encryptedPayload: new TextEncoder().encode('C0 retained exact set'),
+            recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+            stampValueWei: 10_000n,
+            overrides: FEE_OVERRIDES,
+            putRetry: { maxAttempts: 1, intervalMs: 0 },
+          }),
+        ).rejects.toThrow(MonadStampAbandonedError)
+        const attempt = journal.getAll()[0]
+        const original = requests[0]
+        const signed = decodeMonadStampedMessage(original).stampPayments.map(
+          p => Transaction.from('0x' + Buffer.from(p.rawTx).toString('hex')),
+        )
+        expect(signed.map(tx => tx.value)).toEqual([6000n, 4000n])
+        expect(signed.every(tx => tx.chainId === BigInt(CHAIN_ID))).toBe(true)
+        expect(
+          signed.every(
+            tx => tx.data.length === 2 + MONAD_STAMP_CALLDATA_LENGTH * 2,
+          ),
+        ).toBe(true)
+        const signCount = sign.mock.calls.length
+        // Current construction signs two capacity probes and two retained members.
+        expect(signCount).toBe(4)
+        await journal.Close()
+        opened = false
+        journal = new LevelStampAttemptJournal(dir)
+        await journal.Open()
+        opened = true
+        expect(journal.getAll()).toEqual([attempt])
+        const pool = makePool()
+        const resumed = makeClient({
+          pool,
+          stampAttemptJournal: journal,
+        }).client
+        http.mockImplementation(async config => {
+          const bytes = new Uint8Array(config.data as Buffer)
+          requests.push(bytes)
+          expect(bytes).toEqual(original)
+          expect(journal.getAll()).toEqual([attempt])
+          expect(
+            attempt.leaseIndices.every(
+              index => pool.getRecord(index)?.status === 'in-use',
+            ),
+          ).toBe(true)
+          if (terminal === 'dead')
+            throw Object.assign(new Error('terminal exact set'), {
+              isAxiosError: true,
+              response: {
+                status: 422,
+                data: { error: 'mailbox_terminal', exact_set_retained: true },
+              },
+            })
+          return {
+            data: storedMessageBytes(decodeMonadStampedMessage(bytes)),
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            config,
+          }
+        })
+        await resumed.resumePendingAttempts({ maxAttempts: 1, intervalMs: 0 })
+        expect(sign).toHaveBeenCalledTimes(signCount)
+        expect(requests).toHaveLength(2)
+        expect(resumed.attemptStatus(attempt.payloadHashHex)).toBe(terminal)
+        expect(journal.getAll()).toEqual([])
+        await journal.Close()
+        opened = false
+        journal = new LevelStampAttemptJournal(dir)
+        await journal.Open()
+        opened = true
+        const restarted = makeClient({ stampAttemptJournal: journal }).client
+        // Known gap: completion lives only in a WeakMap keyed by the old journal.
+        expect(restarted.attemptStatus(attempt.payloadHashHex)).toBe('unknown')
+        expect(restarted.recordedAttempts()).toEqual([])
+        await restarted.resumePendingAttempts({ maxAttempts: 1, intervalMs: 0 })
+        expect(requests).toHaveLength(2)
+        expect(sign).toHaveBeenCalledTimes(signCount)
+      } finally {
+        sign.mockRestore()
+        if (opened) await journal.Close()
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    },
+  )
+})

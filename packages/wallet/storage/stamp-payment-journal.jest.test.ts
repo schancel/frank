@@ -80,3 +80,58 @@ describe('stamp payment recovery journal', () => {
     }
   })
 })
+
+it('C0 retains a real signed sweep intent and public recovery facts without a key after clean reopen', async () => {
+  const fs = await import('fs')
+  const os = await import('os')
+  const path = await import('path')
+  const { Wallet, Transaction } = await import('ethers')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'c0-sweep-intent-'))
+  const signer = new Wallet('0x' + '55'.repeat(32))
+  const raw = await signer.signTransaction({
+    type: 2,
+    chainId: 10143,
+    nonce: 7,
+    to: '0x' + '66'.repeat(20),
+    value: 100n,
+    gasLimit: 21000n,
+    maxFeePerGas: 2n,
+    maxPriorityFeePerGas: 1n,
+  })
+  const tx = Transaction.from(raw)
+  const pending: StampPaymentRecoveryRecord = {
+    ...DISCOVERED,
+    status: 'sweep-pending',
+    sweepRawTx: raw,
+    sweepTxHash: tx.hash!,
+    sweepValueWei: '100',
+    sweepDestinationAddress: tx.to!,
+  }
+  let journal = new LevelStampPaymentJournal(dir)
+  let opened = false
+  try {
+    expect(new InMemoryStampPaymentJournal().durable).toBe(false)
+    expect(journal.durable).toBe(true)
+    await journal.Open()
+    opened = true
+    await journal.put(pending)
+    await journal.Close()
+    opened = false
+    journal = new LevelStampPaymentJournal(dir)
+    await journal.Open()
+    opened = true
+    const saved = journal.getAll()[0]
+    expect(saved).toEqual(pending)
+    const decoded = Transaction.from(saved.sweepRawTx!)
+    expect(decoded.from).toBe(signer.address)
+    expect(decoded.hash).toBe(saved.sweepTxHash)
+    expect(decoded.nonce).toBe(7)
+    expect(decoded.value.toString()).toBe(saved.sweepValueWei)
+    expect(decoded.to).toBe(saved.sweepDestinationAddress)
+    expect(Object.keys(saved).sort()).toEqual(Object.keys(pending).sort())
+    expect(JSON.stringify(saved)).not.toContain(signer.privateKey)
+  } finally {
+    if (opened) await journal.Close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

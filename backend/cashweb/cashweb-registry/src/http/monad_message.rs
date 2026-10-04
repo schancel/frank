@@ -60,9 +60,9 @@
 //! RPC endpoint and aggregate minimum come only from the validated `RegistryServer` mailbox
 //! runtime; this module never reparses environment configuration.
 
+use std::fmt;
 #[cfg(test)]
 use std::{collections::HashMap, sync::OnceLock};
-use std::{collections::HashSet, fmt};
 
 use axum::{
     extract::{Path, Query},
@@ -73,7 +73,6 @@ use axum::{
 use bitcoinsuite_core::{Hashed, Sha256};
 use bitcoinsuite_error::Report;
 use cashweb_http_utils::protobuf::{BoundedProtobufBody, Protobuf};
-use cashweb_payload::verify::BROADCAST_MESSAGE_LOKAD_ID;
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest as _, Keccak256};
@@ -99,7 +98,7 @@ const MAX_ECDSA_DER_SIGNATURE_BYTES: usize = 72;
 
 use crate::{
     http::server::RegistryServer,
-    monad_evm_tx::{decode_signed_transaction, EvmTxError},
+    monad_evm_tx::EvmTxError,
     monad_http::{Address, Hash32, JsonRpcTransport},
     monad_mailbox::{
         MailboxChallenge, MailboxCursor, MailboxCursorBinding, MailboxRequestBinding,
@@ -109,8 +108,7 @@ use crate::{
         reconcile_monad_outbox_with_permits, MonadOutboxPermitPool, MonadOutboxReconcileOutcome,
     },
     monad_stamp_relay::StampRelayOutcome,
-    monad_stamp_stealth::{derive_monad_stamp_child_public, StampStealthError},
-    monad_stamp_verify::parse_commitment_calldata,
+    monad_stamp_stealth::StampStealthError,
     proto,
     registry::Registry,
     store::monad_messages::{ChallengeConsumption, RecipientMessageCursor},
@@ -122,12 +120,14 @@ use crate::{
 
 #[cfg(test)]
 use crate::{
+    monad_evm_tx::decode_signed_transaction,
     monad_http::HttpTransport,
+    monad_outbox::financial::payment_commitment,
     store::monad_messages::{MonadMessageAttemptClaim, MonadMessageAttemptPolicy},
     store::monad_outbox::MonadOutboxLeaseAcquire,
 };
 
-const MAX_STAMP_PAYMENTS: usize = 64;
+use crate::monad_outbox::financial::MAX_STAMP_PAYMENTS;
 const MAX_MONAD_MESSAGE_BODY_BYTES: usize = 2 * 1024 * 1024;
 const MIN_ENVELOPE_BODY_HEADROOM_BYTES: usize = 128 * 1024;
 const MAX_ENVELOPE_JSON_OVERHEAD_BYTES: usize = 1024;
@@ -418,16 +418,6 @@ struct ClaimedMonadMessageRouting {
     network_tag: Option<Vec<u8>>,
 }
 
-const PAYMENT_COMMITMENT_DOMAIN: &[u8] = b"frank:dm-stamp-payment:v1";
-
-fn payment_commitment(payload_hash: &[u8; 32], child_index: u32) -> Sha256 {
-    let mut preimage = Vec::with_capacity(PAYMENT_COMMITMENT_DOMAIN.len() + 36);
-    preimage.extend_from_slice(PAYMENT_COMMITMENT_DOMAIN);
-    preimage.extend_from_slice(payload_hash);
-    preimage.extend_from_slice(&child_index.to_be_bytes());
-    Sha256::digest(preimage.into())
-}
-
 fn validate_lower_hex_field(
     name: &str,
     value: &str,
@@ -564,105 +554,57 @@ fn validate_payment_set(
     policy: &MonadOutboxPolicy,
     expected_chain_id: u64,
 ) -> Result<(), ProcessMonadMessageError> {
-    if request.stamp_payments.is_empty() {
-        return Err(ProcessMonadMessageError::MissingStampPayments);
-    }
-    if request.stamp_payments.len() > MAX_STAMP_PAYMENTS {
-        return Err(ProcessMonadMessageError::TooManyStampPayments {
-            actual: request.stamp_payments.len(),
-            maximum: MAX_STAMP_PAYMENTS,
-        });
-    }
-    let mut child_indices = HashSet::new();
-    let mut funding_accounts = HashSet::new();
-    let mut transaction_hashes = HashSet::new();
-    let mut destination_addresses = HashSet::new();
-    let mut total_value_wei = 0u128;
-    for (position, payment) in request.stamp_payments.iter().enumerate() {
-        if payment.child_index as usize != position {
-            return Err(ProcessMonadMessageError::NonCanonicalChildIndex {
-                position,
-                actual: payment.child_index,
-            });
+    use crate::monad_outbox::financial::PaymentPreflightError;
+    crate::monad_outbox::financial::validate_payment_set(
+        request,
+        payload_hash,
+        policy,
+        expected_chain_id,
+    )
+    .map(|_| ())
+    .map_err(|error| match error {
+        PaymentPreflightError::MissingStampPayments => {
+            ProcessMonadMessageError::MissingStampPayments
         }
-        if !child_indices.insert(payment.child_index) {
-            return Err(ProcessMonadMessageError::DuplicateChildIndex(
-                payment.child_index,
-            ));
+        PaymentPreflightError::TooManyStampPayments { actual, maximum } => {
+            ProcessMonadMessageError::TooManyStampPayments { actual, maximum }
         }
-        let decoded = decode_signed_transaction(&payment.raw_tx)
-            .map_err(ProcessMonadMessageError::FundingAccountRecoveryFailed)?;
-        if decoded.chain_id != Some(expected_chain_id) {
-            return Err(ProcessMonadMessageError::UnexpectedChainId {
-                expected: expected_chain_id,
-                actual: decoded.chain_id,
-            });
+        PaymentPreflightError::NonCanonicalChildIndex { position, actual } => {
+            ProcessMonadMessageError::NonCanonicalChildIndex { position, actual }
         }
-        if !transaction_hashes.insert(decoded.tx_hash) {
-            return Err(ProcessMonadMessageError::DuplicateTransaction(
-                decoded.tx_hash,
-            ));
+        PaymentPreflightError::DuplicateChildIndex(value) => {
+            ProcessMonadMessageError::DuplicateChildIndex(value)
         }
-        if !funding_accounts.insert(decoded.sender) {
-            return Err(ProcessMonadMessageError::DuplicateFundingAccount(
-                decoded.sender,
-            ));
+        PaymentPreflightError::FundingAccountRecoveryFailed(value) => {
+            ProcessMonadMessageError::FundingAccountRecoveryFailed(value)
         }
-        let destination = derive_monad_stamp_child_public(
-            payload_hash,
-            &policy.recipient_pubkey,
-            payment.child_index,
-        )
-        .map_err(ProcessMonadMessageError::InvalidStealthDestination)?;
-        let destination_address = Address(destination.address);
-        destination_addresses.insert(destination_address);
-        let expected_commitment = payment_commitment(&payload_hash, payment.child_index);
-        if decoded.destination != Some(destination_address) {
-            return Err(ProcessMonadMessageError::InvalidPaymentPreflight {
-                child_index: payment.child_index,
-                detail: format!(
-                    "destination {:?} does not match expected {destination_address}",
-                    decoded.destination
-                ),
-            });
+        PaymentPreflightError::UnexpectedChainId { expected, actual } => {
+            ProcessMonadMessageError::UnexpectedChainId { expected, actual }
         }
-        if decoded.value_wei == 0 {
-            return Err(ProcessMonadMessageError::InvalidPaymentPreflight {
-                child_index: payment.child_index,
-                detail: "value must be positive".to_string(),
-            });
+        PaymentPreflightError::DuplicateTransaction(value) => {
+            ProcessMonadMessageError::DuplicateTransaction(value)
         }
-        let actual_commitment =
-            parse_commitment_calldata(BROADCAST_MESSAGE_LOKAD_ID, &decoded.input).map_err(
-                |err| ProcessMonadMessageError::InvalidPaymentPreflight {
-                    child_index: payment.child_index,
-                    detail: err.to_string(),
-                },
-            )?;
-        if actual_commitment != expected_commitment {
-            return Err(ProcessMonadMessageError::InvalidPaymentPreflight {
-                child_index: payment.child_index,
-                detail: format!(
-                    "commitment {actual_commitment} does not match expected {expected_commitment}"
-                ),
-            });
+        PaymentPreflightError::DuplicateFundingAccount(value) => {
+            ProcessMonadMessageError::DuplicateFundingAccount(value)
         }
-        total_value_wei = total_value_wei
-            .checked_add(decoded.value_wei)
-            .ok_or(ProcessMonadMessageError::TotalValueOverflow)?;
-    }
-    if let Some(address) = funding_accounts.intersection(&destination_addresses).next() {
-        return Err(ProcessMonadMessageError::FundingAccountIsDestination(
-            *address,
-        ));
-    }
-    if total_value_wei < policy.min_value_wei {
-        return Err(ProcessMonadMessageError::InsufficientTotalValue {
-            required: policy.min_value_wei,
-            actual: total_value_wei,
-        });
-    }
-    Ok(())
+        PaymentPreflightError::InvalidStealthDestination(value) => {
+            ProcessMonadMessageError::InvalidStealthDestination(value)
+        }
+        PaymentPreflightError::InvalidPaymentPreflight {
+            child_index,
+            detail,
+        } => ProcessMonadMessageError::InvalidPaymentPreflight {
+            child_index,
+            detail,
+        },
+        PaymentPreflightError::TotalValueOverflow => ProcessMonadMessageError::TotalValueOverflow,
+        PaymentPreflightError::FundingAccountIsDestination(value) => {
+            ProcessMonadMessageError::FundingAccountIsDestination(value)
+        }
+        PaymentPreflightError::InsufficientTotalValue { required, actual } => {
+            ProcessMonadMessageError::InsufficientTotalValue { required, actual }
+        }
+    })
 }
 
 fn now_ms() -> i64 {

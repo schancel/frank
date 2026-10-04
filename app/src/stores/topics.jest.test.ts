@@ -196,8 +196,8 @@ describe('useTopicStore: refreshDiscoveredTopics', () => {
     store.ensureTopic('news')
 
     mockedDiscoverTopics.mockResolvedValueOnce([
-      { topic: 'general', postCount: 5, lastActivityMs: 1_000 },
-      { topic: 'trading', postCount: 1, lastActivityMs: 2_000 },
+      { topic: 'general', postCount: '5', lastActivityMs: 1_000 },
+      { topic: 'trading', postCount: '1', lastActivityMs: 2_000 },
     ])
 
     await store.refreshDiscoveredTopics()
@@ -224,7 +224,7 @@ describe('useTopicStore: refreshDiscoveredTopics', () => {
     })
 
     mockedDiscoverTopics.mockResolvedValueOnce([
-      { topic: 'stamp', postCount: 10, lastActivityMs: 999 },
+      { topic: 'stamp', postCount: '10', lastActivityMs: 999 },
     ])
 
     await store.refreshDiscoveredTopics()
@@ -314,4 +314,23 @@ it('excludes old persisted observations and number inputs through actual restore
   setActivePinia(pinia); useTopicStore()
   const restored = await storageOptions!.restore({get: async () => JSON.stringify({topics:[{topic:'stamp',offering:5,threshold:1,messages:['old']}],messageIndex:{old:{satoshis:7}}})})
   expect(restored).toMatchObject({messageIndex:{},topics:{stamp:{messages:[],threshold:'0',offering:'100000000'}},discoveryStatus:'unverified'})
+})
+
+it('retains the exact canonical u64-max discovery count and metadata', async () => {
+  const store = useTopicStore()
+  const row = {topic:'news',postCount:'18446744073709551615',lastActivityMs:1000,lastActivity:{seconds:'1',nanoseconds:0},epoch:'00'.repeat(16),revision:'18446744073709551615'}
+  mockedDiscoverTopics.mockResolvedValueOnce([row])
+  expect(await store.refreshDiscoveredTopics()).toBe(true)
+  expect(store.discoveredTopics.news).toEqual(row)
+  expect(JSON.parse(JSON.stringify(store.$state)).discoveredTopics.news.postCount).toBe('18446744073709551615')
+  mockedDiscoverTopics.mockResolvedValueOnce([])
+  await store.refreshDiscoveredTopics()
+  expect(store.discoveredTopics).toEqual({})
+})
+it.each(['18446744073709551616', '01', 9007199254740992])('rejects a noncanonical discovery count %s before publication', async postCount => {
+  const store = useTopicStore()
+  mockedDiscoverTopics.mockResolvedValueOnce([{topic:'news',postCount}])
+  expect(await store.refreshDiscoveredTopics()).toBe(false)
+  expect(store.discoveryStatus).toBe('error')
+  expect(store.discoveredTopics).toEqual({})
 })

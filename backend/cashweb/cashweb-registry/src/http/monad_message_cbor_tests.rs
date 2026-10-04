@@ -1496,3 +1496,6 @@ async fn actual_http_recipient_128_owner_boundary_publication_and_terminal_ack_t
         }
     }
 }
+
+#[path = "monad_message_cbor_joined_tests.rs"]
+mod joined;

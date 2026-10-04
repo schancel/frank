@@ -53,8 +53,8 @@ If a rejected message was the **player's money** (a bet above the limit, a secon
 double in the wrong state, a double of the wrong amount), the hand records it and the dealer owes
 it back: a `refund` whose `ref` is that message's digest and whose stamp equals what was sent.
 Dealer steps that involve no choice (`deal`, `card`, a `reveal` that pays nothing) are sent
-automatically; a human dealer confirms only messages that pay (`accept`, a paying `reveal`, a
-`refund`).
+automatically; a human dealer only accepts a challenge and confirms messages that pay (a paying
+`reveal`, a `refund`).
 
 ## Cards
 

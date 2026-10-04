@@ -126,6 +126,162 @@ impl SnapshotSubmission {
     }
 }
 
+/// Largest public installation snapshot body; larger installed data makes it unavailable.
+pub const MAX_INSTALLATION_SNAPSHOT_BYTES: usize = 8 * 1024 * 1024;
+/// Typed response guard for a public installation snapshot, with the usual queue lifetime.
+#[derive(Debug)]
+pub struct InstallationSubmission {
+    submission: Submission,
+    receiver: oneshot::Receiver<Result<Vec<u8>>>,
+}
+impl InstallationSubmission {
+    /// Closed ordinary JSON describing what this worker actually published. Never a Current.
+    pub async fn wait(self) -> Result<Vec<u8>> {
+        self.submission.wait().await?;
+        self.receiver
+            .await
+            .map_err(|_| RuntimeError::OutcomeUnknown)?
+    }
+}
+fn cbor_head(out: &mut Vec<u8>, major: u8, n: usize) {
+    let m = major << 5;
+    match n {
+        0..=23 => out.push(m | n as u8),
+        24..=0xff => out.extend([m | 24, n as u8]),
+        0x100..=0xffff => {
+            out.push(m | 25);
+            out.extend((n as u16).to_be_bytes())
+        }
+        _ => {
+            out.push(m | 26);
+            out.extend((n as u32).to_be_bytes())
+        }
+    }
+}
+fn cbor_item(out: &mut Vec<u8>, major: u8, bytes: &[u8]) {
+    cbor_head(out, major, bytes.len());
+    out.extend_from_slice(bytes);
+}
+/// Ordinary equality comparator over the immutable installed public fields (#778). It is the
+/// SHA-256 of deterministic CBOR {0:1, 1:kind, 2:[{0:network, 1:P, 2:rev0 T1, 3:manifest,
+/// 4:relay id, 5:relay identity, 6:endpoint, 7:expiry decimal}]}. It grants no authority.
+fn configuration_identity(principals: &[&DirectoryPrincipalConf]) -> Result<[u8; 32]> {
+    use sha2::Digest;
+    let mut out = Vec::new();
+    cbor_head(&mut out, 5, 3);
+    out.extend([0, 1, 1]);
+    cbor_item(&mut out, 3, b"published-directory-configuration");
+    out.push(2);
+    cbor_head(&mut out, 4, principals.len());
+    for c in principals {
+        cbor_head(&mut out, 5, 8);
+        out.push(0);
+        cbor_item(&mut out, 3, c.network.as_bytes());
+        for (key, (text, n)) in [
+            (&c.subject, 33),
+            (&c.revision_zero, 32),
+            (&c.manifest_identity, 32),
+            (&c.relay_id, 16),
+            (&c.relay_identity, 33),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            out.push(key as u8 + 1);
+            cbor_item(&mut out, 2, &exact(text, n)?);
+        }
+        out.push(6);
+        cbor_item(&mut out, 3, c.endpoint.as_bytes());
+        out.push(7);
+        cbor_item(&mut out, 3, c.binding_expiry_ns.as_bytes());
+    }
+    Ok(sha2::Sha256::digest(&out).into())
+}
+/// Built only by the owning worker from its actual installed principals and their Directory
+/// status. Reports configuration and historical lifecycle observations; never readiness.
+fn installation_snapshot(
+    principals: &BTreeMap<Key, Principal<'_>>,
+    manifest: [u8; 32],
+    generation: u64,
+    epoch: [u8; 16],
+    now: Timestamp,
+) -> Result<Vec<u8>> {
+    let wanted = hex::encode(manifest);
+    // A foreign or partly different installation is not described under the requested identity.
+    if principals
+        .values()
+        .any(|p| p.config.manifest_identity != wanted)
+    {
+        return Err(RuntimeError::NotFound);
+    }
+    let mut size = 1024usize;
+    for p in principals.values() {
+        // Inspect borrowed fields before any copy; an oversized field makes this unavailable.
+        if p.config.endpoint.len() > 2048 || p.config.network.len() > 64 {
+            return Err(RuntimeError::Resource);
+        }
+        size += 2048 + p.config.endpoint.len() * 6 + p.config.network.len() * 2;
+        if size > MAX_INSTALLATION_SNAPSHOT_BYTES {
+            return Err(RuntimeError::Resource);
+        }
+    }
+    let configs: Vec<&DirectoryPrincipalConf> = principals.values().map(|p| &p.config).collect();
+    let identity = configuration_identity(&configs)?;
+    let mut records = Vec::with_capacity(configs.len());
+    let mut states = Vec::with_capacity(configs.len());
+    for p in principals.values() {
+        let c = &p.config;
+        records.push(serde_json::json!({
+            "network": c.network,
+            "subjectP": c.subject,
+            "revisionZeroT1": c.revision_zero,
+            "manifestIdentity": c.manifest_identity,
+            "relayId": c.relay_id,
+            "relayIdentity": c.relay_identity,
+            "endpoint": c.endpoint,
+            "bindingExpiryNs": c.binding_expiry_ns,
+        }));
+        let status = match p.directory.status() {
+            Ok(status) => status,
+            Err(AdmissionError::Unenrolled) => None,
+            Err(_) => return Err(RuntimeError::NotStarted),
+        };
+        let enrolled = status
+            .as_ref()
+            .and_then(|s| Some((s.head?, s.revision?, s.generations?)));
+        states.push(serde_json::json!({
+            "network": c.network,
+            "subjectP": c.subject,
+            "enrollment": if enrolled.is_some() { "enrolled" } else { "unenrolled" },
+            "historicalHead": enrolled.map(|e| hex::encode(e.0)),
+            "historicalRevision": enrolled.map(|e| e.1.to_string()),
+            "messageGeneration": enrolled.map(|e| e.2[0].to_string()),
+            "stampGeneration": enrolled.map(|e| e.2[1].to_string()),
+            "forked": status.as_ref().is_some_and(|s| s.forked),
+            "unavailable": p.unavailable,
+        }));
+    }
+    let body = serde_json::to_vec(&serde_json::json!({
+        "version": 1,
+        "kind": "published-directory-installation",
+        "runtimeEpoch": hex::encode(epoch),
+        "generation": generation.to_string(),
+        "configuration": {
+            "version": 1,
+            "kind": "published-directory-configuration",
+            "principals": records,
+        },
+        "publicConfigurationIdentity": hex::encode(identity),
+        "sampledAtNs": (now.seconds as u128 * 1_000_000_000 + now.nanoseconds as u128).to_string(),
+        "classification": "historical-installation-snapshot",
+        "states": states,
+    }))
+    .map_err(|_| RuntimeError::NotStarted)?;
+    if body.len() > MAX_INSTALLATION_SNAPSHOT_BYTES {
+        return Err(RuntimeError::Resource);
+    }
+    Ok(body)
+}
 #[derive(Debug, Default)]
 struct Published {
     generation: u64,
@@ -169,6 +325,7 @@ struct Job {
     work: Work,
 }
 enum Work {
+    Installation([u8; 32], oneshot::Sender<Result<Vec<u8>>>),
     Request(Operation),
     Snapshot(SnapshotOperation, oneshot::Sender<Result<AdmittedSnapshot>>),
     Reload(DirectoryConf),
@@ -696,6 +853,8 @@ impl DirectoryRuntime {
                         return;
                     }
                     let mut clock = config.clock_file.clone();
+                    // Fresh per worker start: lets a reader notice a restart between two reads.
+                    let epoch: [u8; 16] = rand::random();
                     {
                         let mut published = worker_shared.published.write().unwrap();
                         published.generation = 1;
@@ -739,6 +898,28 @@ impl DirectoryRuntime {
                             Err(RuntimeError::Trust)
                         } else {
                             match job.work {
+                                Work::Installation(manifest, reply) => {
+                                    let generation =
+                                        worker_shared.published.read().unwrap().generation;
+                                    let snapshot = trusted_time(&clock).and_then(|now| {
+                                        installation_snapshot(
+                                            &principals,
+                                            manifest,
+                                            generation,
+                                            epoch,
+                                            now,
+                                        )
+                                    });
+                                    let completion = snapshot
+                                        .as_ref()
+                                        .map(|_| Evidence {
+                                            attestation: vec![],
+                                            historical: true,
+                                        })
+                                        .map_err(|error| *error);
+                                    let _ = reply.send(snapshot);
+                                    completion
+                                }
                                 Work::Request(op) => trusted_time(&clock).and_then(|now| {
                                     principals
                                         .get_mut(&job.key)
@@ -890,6 +1071,43 @@ impl DirectoryRuntime {
             deadline: reservation.deadline,
         }
     }
+    /// Reserve finite capacity for a read-only snapshot of what this owner actually published.
+    /// It shares the queue and captured generation but takes no reload control lease.
+    pub fn reserve_installation(&self) -> Result<Reservation> {
+        if self.owner.shared.closed.load(Ordering::Acquire)
+            || !self.owner.shared.ready.load(Ordering::Acquire)
+        {
+            return Err(RuntimeError::NotStarted);
+        }
+        let sender = self
+            .owner
+            .sender
+            .lock()
+            .unwrap()
+            .as_ref()
+            .ok_or(RuntimeError::NotStarted)?
+            .clone();
+        let permit = sender.try_reserve_owned().map_err(|_| RuntimeError::Busy)?;
+        Ok(Reservation {
+            permit,
+            key: (String::new(), String::new()),
+            generation: self.owner.shared.published.read().unwrap().generation,
+            deadline: Instant::now() + RESPONSE_BUDGET,
+        })
+    }
+    /// Describe the installed public configuration under `manifest`, or NotFound when the
+    /// installed principals do not all carry that manifest identity.
+    pub fn submit_installation(
+        &self,
+        reservation: Reservation,
+        manifest: [u8; 32],
+    ) -> InstallationSubmission {
+        let (reply, receiver) = oneshot::channel();
+        InstallationSubmission {
+            submission: self.send(reservation, Work::Installation(manifest, reply)),
+            receiver,
+        }
+    }
     /// One staged reload at a time, sharing the native owner and pending capacity.
     pub fn reload(&self, config: DirectoryConf) -> Result<Submission> {
         if self
@@ -956,6 +1174,28 @@ impl DirectoryRuntime {
 mod tests {
     use super::*;
     use crate::http::directory::tests::{record, setup};
+    #[test]
+    fn configuration_identity_matches_the_shared_cross_language_vector() {
+        // Same fixed input and digest as app/src/utils/directory-provisioning.jest.test.ts.
+        let point = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+        let c = DirectoryPrincipalConf {
+            network: "monad-testnet".into(),
+            subject: point.into(),
+            revision_zero: "ab".repeat(32),
+            manifest_identity: "ab".repeat(32),
+            relay_id: "01".repeat(16),
+            relay_identity: point.into(),
+            endpoint: "https://relay-a.example".into(),
+            binding_expiry_ns: "3600000000001".into(),
+            continuity_file: PathBuf::from("/unused"),
+            bundle_root: PathBuf::from("/unused"),
+            mode: "new".into(),
+        };
+        assert_eq!(
+            hex::encode(configuration_identity(&[&c]).unwrap()),
+            "a12f0f1af2d041e203afdddb61f53721a2f7a7d6c744ea7a84037416595069d4"
+        );
+    }
     #[tokio::test]
     async fn finite_queue_cancel_races_started_owner_clock_and_shutdown() {
         let root = tempfile::tempdir().unwrap();

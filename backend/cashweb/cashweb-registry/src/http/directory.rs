@@ -127,6 +127,37 @@ async fn put(
         Ok(Ok(bytes)) => evidence(runtime.submit(slot, Operation::Put(bytes)).wait().await),
     }
 }
+/// Read-only public description of what this process actually installed (#778). It is not
+/// authenticated by the request, installs nothing, and never states readiness or a Current.
+async fn installation(
+    Extension(runtime): Extension<Arc<DirectoryRuntime>>,
+    Path(manifest): Path<String>,
+) -> Response {
+    if manifest.len() != 64
+        || !manifest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return error(RuntimeError::Invalid);
+    }
+    let manifest = hex::decode(manifest).unwrap().try_into().unwrap();
+    let slot = match runtime.reserve_installation() {
+        Ok(slot) => slot,
+        Err(e) => return error(e),
+    };
+    match runtime.submit_installation(slot, manifest).wait().await {
+        Err(e) => error(e),
+        Ok(body) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            body,
+        )
+            .into_response(),
+    }
+}
 /// Mount only when an explicit operator runtime exists; no implicit enrollment surface.
 pub fn router(runtime: Arc<DirectoryRuntime>) -> Router {
     Router::new()
@@ -137,6 +168,10 @@ pub fn router(runtime: Arc<DirectoryRuntime>) -> Router {
         .route(
             "/directory/v1/:network/:subject/statements/:t1",
             routing::get(historical),
+        )
+        .route(
+            "/directory-installation/:manifest_identity",
+            routing::get(installation),
         )
         .layer(Extension(runtime))
 }

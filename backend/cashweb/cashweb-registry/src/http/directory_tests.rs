@@ -451,3 +451,155 @@ async fn authenticated_https_rust_and_node_client_close_reopen_exact_bytes() {
         config.principals[0].mode = "reopen".into();
     }
 }
+#[tokio::test]
+async fn installation_snapshot_reports_actual_published_public_configuration_only() {
+    let root = tempfile::tempdir().unwrap();
+    let (registry, config) = setup(root.path());
+    let (runtime, ready) =
+        DirectoryRuntime::start(registry.clone(), root.path().join("db"), config.clone()).unwrap();
+    ready.await.unwrap().unwrap();
+    let routes = router(Arc::new(runtime.clone()));
+    let installed = format!("/directory-installation/{}", "00".repeat(32));
+    // A manifest this process did not install is not described, and nothing is echoed back.
+    let foreign = request(
+        routes.clone(),
+        "GET",
+        &format!("/directory-installation/{}", "11".repeat(32)),
+        vec![],
+        MEDIA,
+    )
+    .await;
+    assert_eq!(foreign.0, StatusCode::NOT_FOUND);
+    assert!(!String::from_utf8_lossy(&foreign.2).contains(&"11".repeat(32)));
+    for malformed in ["00", &"AB".repeat(32), &"0g".repeat(32)] {
+        let path = format!("/directory-installation/{malformed}");
+        assert_eq!(
+            request(routes.clone(), "GET", &path, vec![], MEDIA).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        request(routes.clone(), "PUT", &installed, vec![], MEDIA)
+            .await
+            .0,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+
+    let before = request(routes.clone(), "GET", &installed, vec![], MEDIA).await;
+    assert_eq!(before.0, StatusCode::OK);
+    assert_eq!(before.1[header::CONTENT_TYPE], "application/json");
+    assert_eq!(before.1[header::CACHE_CONTROL], "no-store");
+    let text = String::from_utf8(before.2.clone()).unwrap();
+    // Public fields only: no filesystem paths, open mode, or readiness claim.
+    for private in ["continuity", "bundle", "clock", "mode", "ready", "/"] {
+        let allowed = private == "/" && text.matches('/').count() == 2;
+        assert!(allowed || !text.contains(private), "{private} in {text}");
+    }
+    let body: Value = serde_json::from_slice(&before.2).unwrap();
+    let c = &config.principals[0];
+    assert_eq!(body["version"], 1);
+    assert_eq!(body["kind"], "published-directory-installation");
+    assert_eq!(body["classification"], "historical-installation-snapshot");
+    assert_eq!(body["generation"], "1");
+    assert_eq!(body["sampledAtNs"], "1700000100000000000");
+    assert_eq!(
+        body["configuration"],
+        serde_json::json!({
+            "version": 1,
+            "kind": "published-directory-configuration",
+            "principals": [{
+                "network": c.network,
+                "subjectP": c.subject,
+                "revisionZeroT1": c.revision_zero,
+                "manifestIdentity": c.manifest_identity,
+                "relayId": c.relay_id,
+                "relayIdentity": c.relay_identity,
+                "endpoint": c.endpoint,
+                "bindingExpiryNs": c.binding_expiry_ns,
+            }],
+        })
+    );
+    assert_eq!(
+        body["states"],
+        serde_json::json!([{
+            "network": c.network,
+            "subjectP": c.subject,
+            "enrollment": "unenrolled",
+            "historicalHead": null,
+            "historicalRevision": null,
+            "messageGeneration": null,
+            "stampGeneration": null,
+            "forked": false,
+            "unavailable": false,
+        }])
+    );
+    assert_eq!(
+        body["publicConfigurationIdentity"].as_str().unwrap().len(),
+        64
+    );
+    assert_eq!(body.as_object().unwrap().len(), 9);
+
+    // Enrollment is a separately observed lifecycle fact; configuration identity is unchanged.
+    let head = format!("/directory/v1/{}/{}/head", c.network, c.subject);
+    let original = hex::decode(record("bootstrap")["type2_hex"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        request(routes.clone(), "PUT", &head, original, MEDIA)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let after: Value = serde_json::from_slice(
+        &request(routes.clone(), "GET", &installed, vec![], MEDIA)
+            .await
+            .2,
+    )
+    .unwrap();
+    assert_eq!(after["states"][0]["enrollment"], "enrolled");
+    assert_eq!(
+        after["states"][0]["historicalHead"],
+        record("bootstrap")["t1"]
+    );
+    assert_eq!(after["states"][0]["historicalRevision"], "0");
+    assert_eq!(after["states"][0]["messageGeneration"], "0");
+    assert_eq!(after["states"][0]["stampGeneration"], "0");
+    assert_eq!(after["runtimeEpoch"], body["runtimeEpoch"]);
+    assert_eq!(after["generation"], body["generation"]);
+    assert_eq!(
+        after["publicConfigurationIdentity"],
+        body["publicConfigurationIdentity"]
+    );
+
+    // A restarted worker reports a new epoch for the same published configuration.
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+    assert_eq!(
+        request(routes, "GET", &installed, vec![], MEDIA).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    drop(runtime);
+    let mut reopened = config.clone();
+    reopened.principals[0].mode = "reopen".into();
+    let (runtime, ready) =
+        DirectoryRuntime::start(registry, root.path().join("db"), reopened).unwrap();
+    ready.await.unwrap().unwrap();
+    let restarted: Value = serde_json::from_slice(
+        &request(
+            router(Arc::new(runtime.clone())),
+            "GET",
+            &installed,
+            vec![],
+            MEDIA,
+        )
+        .await
+        .2,
+    )
+    .unwrap();
+    assert_ne!(restarted["runtimeEpoch"], body["runtimeEpoch"]);
+    assert_eq!(
+        restarted["publicConfigurationIdentity"],
+        body["publicConfigurationIdentity"]
+    );
+    assert_eq!(restarted["states"][0]["enrollment"], "enrolled");
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}

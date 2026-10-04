@@ -191,16 +191,6 @@
       }
     },
     {
-      "id": "reject-schema1-action-code-with-reader2",
-      "context": "default",
-      "frameHex": "46524e4b0100000014a4001201020202034ba2006668616e642d310103",
-      "expected": {
-        "result": "reject",
-        "stage": "8.2",
-        "category": "schema"
-      }
-    },
-    {
       "id": "reject-hand-action-code-readable-by-reader1",
       "context": "default",
       "frameHex": "46524e4b0100000014a4001201020201034ba2006668616e642d310112",
@@ -461,13 +451,13 @@
       }
     },
     {
-      "id": "reader-without-schema2-does-not-read-a-hand-item",
+      "id": "reader-without-schema2-rejects-a-hand-action-code",
       "context": "schema1",
       "frameHex": "46524e4b0100000014a4001201020202034ba2006668616e642d310112",
       "expected": {
         "result": "reject",
-        "stage": "7",
-        "category": "unsupported"
+        "stage": "8.2",
+        "category": "schema"
       }
     }
   ]

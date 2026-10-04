@@ -1158,12 +1158,19 @@ export function parseDraft(
         unknownFields: m.unknown,
       }
     }
-    case TYPE_BLACKJACK_MESSAGE_ITEM:
-      // The hand shapes are a different closed set, not an extension of schema 1. They are
-      // written with min reader 2; a schema-2 frame that still allows reader 1 is schema-1 shaped.
-      return schema.effective >= 2 && (schema.minReader ?? 1) >= 2
+    case TYPE_BLACKJACK_MESSAGE_ITEM: {
+      // Schema 2 adds the ten hand shapes to the schema-1 shapes. Their action codes (16..25)
+      // are disjoint from schema 1's (0..6), so the code alone says which closed map applies.
+      // A hand shape is read only from a frame that requires reader 2; anywhere else its action
+      // code is simply out of range for the schema-1 shapes.
+      const code = isMap(payload) ? payload.get(1n) : undefined
+      return typeof code === 'bigint' &&
+        code >= 16n &&
+        schema.effective >= 2 &&
+        (schema.minReader ?? 1) >= 2
         ? blackjackHandPayload(payload)
         : blackjackPayload(payload)
+    }
     default:
       throw new Error(`parseDraft: type ${typeId} has no schema`)
   }

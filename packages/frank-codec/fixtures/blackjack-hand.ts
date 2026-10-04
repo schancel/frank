@@ -77,7 +77,6 @@ const g: [number, Encodable] = [0, GAME]
 
 /** Malformed frames. The expectation is recorded from this reader and mirrored by Rust. */
 const MALFORMED: readonly { id: string; frame: Uint8Array; context?: 'schema1' }[] = [
-  { id: 'reject-schema1-action-code-with-reader2', frame: raw([g, [1, 3]]) },
   { id: 'reject-hand-action-code-readable-by-reader1', frame: raw([g, [1, 18]], 2, 1) },
   { id: 'reject-hand-action-code-in-schema1', frame: raw([g, [1, 18]], 1, 1) },
   { id: 'reject-action-out-of-range', frame: raw([g, [1, 26]]) },
@@ -129,7 +128,7 @@ const MALFORMED: readonly { id: string; frame: Uint8Array; context?: 'schema1' }
   { id: 'reject-refund-without-ref', frame: raw([g, [1, 25]]) },
   { id: 'reject-hit-with-cards', frame: raw([g, [1, 20], [5, [1, 2, 3]]]) },
   {
-    id: 'reader-without-schema2-does-not-read-a-hand-item',
+    id: 'reader-without-schema2-rejects-a-hand-action-code',
     frame: encodeBlackjackHandItem({ ...base, action: 'bet' }),
     context: 'schema1',
   },

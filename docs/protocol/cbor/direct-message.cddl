@@ -141,10 +141,11 @@ bj-welcome = {0: game-id, 1: 6, 10: evm-quantity, 11: evm-quantity,
               ? 12: evm-quantity, ? 13: tstr .size (0..1200)}
 
 ; Active type18 / schema2 / min-reader2: one peer-to-peer hand (../blackjack-p2p.md).
-; A frame that requires reader 2 is read ONLY as these ten closed maps; a schema-2
-; frame that still allows reader 1 keeps the schema-1 shapes above. Action codes
-; 16..25 are disjoint from schema 1's 0..6. A reader without per-type schema-2
-; support does not read these frames (stage7 unsupported, or retained when allowed).
+; Schema 2 ADDS these ten closed maps to the nine above. Action codes 16..25 are
+; disjoint from schema 1's 0..6, so the code alone selects the map. A hand map is
+; read only when the reader supports type18 schema 2 AND the frame requires reader 2
+; (writers emit schema2/min-reader2); in any other frame, and for any reader without
+; schema-2 support, codes 16..25 are out of range (stage8.2 schema).
 ; No map carries an amount of money: a wager, payout or refund is the stamp of the
 ; message that carries the item.
 ; Stage8.2: reveal key8 is exactly 64 lowercase ASCII hex characters.

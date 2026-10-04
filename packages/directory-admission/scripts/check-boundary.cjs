@@ -10,6 +10,10 @@ const demoEntries = new Map([
   ['packages/bot/demo/directory-trust/admission.ts', '/node'],
   ['packages/bot/demo/directory-trust/browser-admission.ts', '/browser'],
   ['packages/bot/demo/directory-trust/admission.jest.test.ts', null],
+  ['packages/cashweb/relay/canonical-dm.ts', null],
+  ['packages/cashweb/relay/canonical-dm.jest.test.ts', '/node'],
+  ['packages/cashweb/relay/directory-client.ts', null],
+  ['packages/cashweb/relay/directory-client.jest.test.ts', '/node'],
 ])
 function checkConsumer(file, text) {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true)
@@ -89,6 +93,48 @@ function checkConsumerRegressions() {
     ),
     1,
   )
+  for (const basename of ['canonical-dm', 'directory-client']) {
+    const production = `packages/cashweb/relay/${basename}.ts`
+    const fixture = `packages/cashweb/relay/${basename}.jest.test.ts`
+    for (const file of [production, fixture]) {
+      assert.equal(
+        checkConsumer(
+          file,
+          "import type {Current} from '@frank/directory-admission'",
+        ),
+        1,
+      )
+      for (const statement of [
+        "import {Current} from '@frank/directory-admission'",
+        "import '@frank/directory-admission'",
+        "export * from '@frank/directory-admission'",
+        "require('@frank/directory-admission')",
+        "import('@frank/directory-admission')",
+        "import type {X} from '@frank/directory-admission/storage/level'",
+        "import {open} from '@frank/directory-admission/browser'",
+      ])
+        assert.throws(
+          () => checkConsumer(file, statement),
+          /unexpected active runtime adoption/,
+        )
+    }
+    assert.equal(
+      checkConsumer(
+        fixture,
+        "import {openNodeDirectoryStore} from '@frank/directory-admission/node'",
+      ),
+      1,
+    )
+    for (const file of [production, fixture + '.extra.ts'])
+      assert.throws(
+        () =>
+          checkConsumer(
+            file,
+            "import {openNodeDirectoryStore} from '@frank/directory-admission/node'",
+          ),
+        /unexpected active runtime adoption/,
+      )
+  }
   for (const [file, statement] of [
     [node, "import {Current} from '@frank/directory-admission'"],
     [node, "import {} from '@frank/directory-admission'"],

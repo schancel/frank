@@ -1318,7 +1318,7 @@ fn forum_query_component(raw: &str) -> crate::store::forum::Result<String> {
 }
 
 /// Explicit CBOR reads are separate from predecessor list selection.
-pub async fn handle_forum_topic_pages(
+pub async fn handle_list_monad_topic_posts(
     RawQuery(raw): RawQuery,
     Extension(server): Extension<RegistryServer>,
     headers: HeaderMap,
@@ -1339,7 +1339,7 @@ pub async fn handle_forum_topic_pages(
             Ok(params) => params,
             Err(error) => return error.into_response(),
         };
-        return handle_list_monad_topic_posts(params, Extension(server), headers)
+        return legacy_list_monad_topic_posts(params, Extension(server), headers)
             .await
             .into_response();
     }
@@ -1347,13 +1347,13 @@ pub async fn handle_forum_topic_pages(
 }
 
 /// Discovery uses the same explicit representation boundary as topic pages.
-pub async fn handle_forum_discovery_pages(
+pub async fn handle_list_topics(
     RawQuery(raw): RawQuery,
     Extension(server): Extension<RegistryServer>,
     headers: HeaderMap,
 ) -> Response {
     if !exclusive_forum_read(&headers) {
-        return handle_list_topics(Extension(server), headers)
+        return legacy_list_topics(Extension(server), headers)
             .await
             .into_response();
     }
@@ -1423,7 +1423,7 @@ impl IntoResponse for ListMonadTopicPostsError {
 /// discovery model (ticket #37), with `topic` required in addition (see
 /// [`ListMonadTopicPostsQuery::topic`]'s doc). No gate/burn check here, same as
 /// [`handle_get_monad_topic_post`] -- reads aren't payment/burn-gated anywhere in this crate.
-pub async fn handle_list_monad_topic_posts(
+async fn legacy_list_monad_topic_posts(
     Query(params): Query<ListMonadTopicPostsQuery>,
     Extension(server): Extension<RegistryServer>,
     headers: HeaderMap,
@@ -1479,7 +1479,7 @@ impl IntoResponse for ListTopicsError {
 /// anywhere in this crate. No `since`/pagination parameter -- see
 /// `crate::store::monad_topics::DbMonadTopicPosts::list_topics`'s docs for why (small keyspace;
 /// the client/route can add pagination later if that ever changes).
-pub async fn handle_list_topics(
+async fn legacy_list_topics(
     Extension(server): Extension<RegistryServer>,
     headers: HeaderMap,
 ) -> Result<Response, ListTopicsError> {
@@ -3150,9 +3150,13 @@ mod tests {
         store_monad_topic_post_at(&registry, vec![0x03; 32], "topic.oldest", 150);
 
         let server = test_server(registry);
-        let response = handle_list_topics(Extension(server), HeaderMap::new())
-            .await
-            .expect("listing discovered topics should succeed");
+        let response =
+            handle_list_topics(RawQuery(None), Extension(server), HeaderMap::new()).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "listing discovered topics should succeed"
+        );
         assert_eq!(response.headers()[VARY], "Accept");
         let response = proto::ListTopicsResponse::decode(
             hyper::body::to_bytes(response.into_body())

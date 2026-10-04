@@ -26,7 +26,7 @@ null (13). P, P' and M MUST be valid compressed type-1 secp256k1 points with
 pairwise distinct x coordinates (including rejection of point negations).
 The relay identity MUST also be a valid compressed type-1 point, its endpoint
 MUST satisfy S4 and use `https:`, and its expiry MUST cover statement expiry.
-Statement validity MUST be positive and at most 3600 seconds, calculated at
+Statement validity MUST be positive and at most 366 days (31622400 seconds), calculated at
 nanosecond precision. Revision zero requires null predecessor and zero
 generations; other revisions require a 32-byte predecessor and generations
 no greater than revision. These are stateless necessities, not evidence that

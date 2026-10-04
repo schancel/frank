@@ -2,7 +2,7 @@
   "format": "directory-admission-v1",
   "source": {
     "path": "docs/protocol/proposals/suite1-directory/vectors.json",
-    "sha256": "e68b62e24a65a9ed4912f055594706775971ba4eacb7dde37d2ccd4c1404f2ed"
+    "sha256": "0f4548be6be5eda120a143ef174a8987258744bf09ceb1d83242ba65503bfd4a"
   },
   "network": "monad-testnet",
   "subject": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
@@ -774,7 +774,7 @@
       "candidates": [
         "long-validity"
       ],
-      "anchor": "4df2cf385cd9187c32021cdc420ea4b541f6a144a78942fd84485064d99e3128",
+      "anchor": "cfcd7ca8d0743b21fb23ff1c047eb67bf186efcf4c34b2c2f14a23a8813984ac",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",

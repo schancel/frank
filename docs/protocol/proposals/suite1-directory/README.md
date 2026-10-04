@@ -134,7 +134,7 @@ stamp state together before acknowledging it.
    type-7 proof is not sufficient to enable that missing policy. No recovery
    authority can be introduced and consumed in the same update.
 5. **Validity:** trusted Unix time with nanosecond precision is caller input.
-   Every record requires `issue <= now`, `0 < expiry-issue <= 3600 seconds`, and
+   Every record requires `issue <= now`, `0 < expiry-issue <= 366 days`, and
    every binding expiry >= statement expiry. The final head additionally
    requires `now < expiry`; expired intermediate links are allowed only inside
    atomic catch-up or archive verification. No implicit clock-skew allowance.

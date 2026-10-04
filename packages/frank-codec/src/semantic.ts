@@ -3,6 +3,7 @@ import { FrankCodecError } from './errors'
 import { utf8Encode } from './utf8'
 import { isCompressedPoint } from './point'
 import { contentHash } from './hash'
+import { MAX_DIRECTORY_VALIDITY_NS } from './constants'
 import type {
   AccountRef,
   DirectoryStatement,
@@ -479,11 +480,11 @@ function checkPreviewStatement(st: DirectoryStatement<ParsedFrame>): void {
   const duration = nanos(expiry) - nanos(st.timestamp)
   if (
     duration <= 0n ||
-    duration > 3_600_000_000_000n ||
+    duration > MAX_DIRECTORY_VALIDITY_NS ||
     nanos(relay.expiry) < nanos(expiry)
   )
     throw semantic(
-      'directory preview validity must be positive, at most one hour and covered by relay expiry',
+      'directory preview validity must be positive, at most 366 days and covered by relay expiry',
     )
   if (st.revision === 0n) {
     if (

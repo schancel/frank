@@ -418,7 +418,29 @@ describe('provisional directory codec, not directory admission', () => {
       18446744073709551615n,
     )
     expect(result.typed.preview?.stampKeyGeneration).toBe(18446744073709551615n)
-    const expiry = new Map(p.get(6n) as Map<bigint, Encodable>)
+    // Exactly 366 days is accepted; one nanosecond more is refused. The relay binding covers both,
+    // so only the validity cap decides.
+    const issued = (p.get(3n) as Map<bigint, Encodable>).get(0n) as bigint
+    const year = new Map<bigint, Encodable>([
+      [0n, issued + 31_622_400n],
+      [1n, 0n],
+    ])
+    const relay = new Map(
+      (p.get(4n) as Map<bigint, Encodable>[])[0] as Map<bigint, Encodable>,
+    )
+    relay.set(
+      3n,
+      new Map<bigint, Encodable>([
+        [0n, issued + 31_622_401n],
+        [1n, 0n],
+      ]),
+    )
+    p.set(4n, [relay])
+    p.set(6n, year)
+    expect(validateFrame(statement(p), previewDirectoryContext()).kind).toBe(
+      'parsed',
+    )
+    const expiry = new Map(year)
     expiry.set(1n, 1n)
     p.set(6n, expiry)
     expectError(

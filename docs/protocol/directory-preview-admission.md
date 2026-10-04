@@ -61,7 +61,7 @@ contiguous same-network/P history. It enforces the installed bootstrap,
 predecessor T1, schema/issue ordering, independent exact generation increments
 and historical x-coordinate no-reuse, including negation. Arithmetic never
 wraps. Every intermediate issue time must be no later than the trusted current
-time. Signed one-hour validity windows and relay coverage are checked by the
+time. Signed validity windows (at most 366 days) and relay coverage are checked by the
 codec. Expired intermediates may lead to a fresh head; intermediate bindings
 do not need to equal today's authenticated tuple.
 

@@ -178,6 +178,8 @@ export default {
     seedConfirmed: 'Your recovery phrase is confirmed.',
   },
   blackjackP2p: {
+    notNext:
+      'This blackjack move was already sent or is no longer possible. Nothing was sent.',
     challengeTitle: 'Challenge to a hand of blackjack',
     roleDealer: 'I deal',
     rolePlayer: 'I play, they deal',

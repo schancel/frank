@@ -181,6 +181,8 @@ export default {
     seedConfirmed: 'Votre phrase de récupération est confirmée.',
   },
   blackjackP2p: {
+    notNext:
+      'Ce coup de blackjack a déjà été envoyé ou n’est plus possible. Rien n’a été envoyé.',
     challengeTitle: 'Défier pour une main de blackjack',
     roleDealer: 'Je distribue',
     rolePlayer: 'Je joue, l’autre distribue',

@@ -26,8 +26,9 @@ jest.mock('../utils/notifications', () => ({
   insufficientStampNotify: jest.fn(),
   desktopNotify: jest.fn(),
 }))
+// The active wallet, as the own-address lookup reads it.
 jest.mock('../composables/useActiveWallet', () => ({
-  useActiveWallet: jest.fn(),
+  useActiveWallet: jest.fn(async () => mockUseMonadWallet()),
 }))
 
 // jsdom has no TextEncoder/TextDecoder (the wallet/relay modules Chat.vue imports need them).

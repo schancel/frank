@@ -262,6 +262,73 @@ describe('Chat.vue blackjack challenge', () => {
   })
 })
 
+describe('Chat.vue sends a hand message only while it is still the next one', () => {
+  const GAME = 'feedfacefeedfacefeedfacefeedface'
+  const challenge = {
+    outbound: false,
+    items: [
+      {
+        type: 'blackjack-hand',
+        gameId: GAME,
+        action: 'challenge',
+        role: 'dealer',
+        maxBetWei: '500',
+        commitment: 'c'.repeat(64),
+      },
+    ],
+    stampValueWei: 1n,
+    payloadDigest: 'challenge',
+  }
+  const bet = { type: 'blackjack-hand', gameId: GAME, action: 'bet' }
+  beforeEach(() => jest.mocked(errorNotify).mockReset())
+
+  it('sends a bet once: with the bet already in the chat a second click sends nothing', async () => {
+    const self = fakeThis({ address: '0xPeer', messages: [challenge] })
+    await expect(
+      methods.sendFollowUpItems.call(self, {
+        items: [bet],
+        stampValueWei: 300n,
+      }),
+    ).resolves.toBe(true)
+    expect(self.sendDirectMessage).toHaveBeenCalledTimes(1)
+
+    const again = fakeThis({
+      address: '0xPeer',
+      messages: [
+        challenge,
+        {
+          outbound: true,
+          items: [bet],
+          stampValueWei: 300n,
+          payloadDigest: 'pending:1',
+          status: 'error',
+        },
+      ],
+    })
+    const settled = jest.fn()
+    await expect(
+      methods.sendFollowUpItems.call(again, {
+        items: [bet],
+        stampValueWei: 300n,
+        settled,
+      }),
+    ).resolves.toBe(false)
+    expect(again.sendDirectMessage).not.toHaveBeenCalled()
+    expect(settled).toHaveBeenCalledWith(false)
+    expect(errorNotify).toHaveBeenCalled()
+  })
+
+  it('sends nothing for a move that is not legal in the hand as saved', async () => {
+    const self = fakeThis({ address: '0xPeer', messages: [challenge] })
+    await expect(
+      methods.sendFollowUpItems.call(self, {
+        items: [{ type: 'blackjack-hand', gameId: GAME, action: 'stand' }],
+      }),
+    ).resolves.toBe(false)
+    expect(self.sendDirectMessage).not.toHaveBeenCalled()
+  })
+})
+
 describe('Chat.vue automatic dealer steps', () => {
   const SEED = 'cd'.repeat(32)
   const GAME = '0123456789abcdef0123456789abcdef'

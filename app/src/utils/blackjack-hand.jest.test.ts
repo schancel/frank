@@ -7,6 +7,7 @@ import {
   automaticDealerSteps,
   chatHandEvents,
   chatHands,
+  handItemStillNext,
   loadSeed,
   newGameId,
   newSeed,
@@ -220,5 +221,104 @@ describe('automatic dealer steps', () => {
     ]
     expect(automaticDealerSteps(asPlayer, ME, PEER)).toEqual([])
     expect(automaticDealerSteps(opened(gid('no-seed')), ME, PEER)).toEqual([])
+  })
+})
+
+describe('a paying message is sent once across tabs', () => {
+  const GAME = gid('tabs')
+  // This user deals; the player bet above the max, so a refund of 501 is owed.
+  const memory = () => [
+    message(
+      true,
+      {
+        action: 'challenge',
+        role: 'dealer',
+        maxBetWei: '500',
+        commitment: commitmentOf(SEED),
+      },
+      10n,
+      GAME,
+    ),
+    { ...message(false, { action: 'bet' }, 501n, GAME), payloadDigest: 'over' },
+  ]
+  const refund = {
+    type: 'blackjack-hand',
+    gameId: GAME,
+    action: 'refund',
+    ref: 'over',
+  } as const
+  const ask = (
+    stored: HandChatMessage[],
+    inMemory = memory(),
+    item: Parameters<typeof handItemStillNext>[0]['item'] = refund,
+    stampWei = 501n,
+  ) =>
+    handItemStillNext({
+      item,
+      stampWei,
+      own: ME,
+      peer: PEER,
+      memory: inMemory,
+      stored: async () => stored,
+    })
+
+  it('allows the refund while nothing has been sent for it', async () => {
+    expect(await ask([])).toBe(true)
+    // Messages already in memory are not counted twice.
+    expect(await ask(memory())).toBe(true)
+  })
+
+  it.each(['pending', 'error', 'confirmed'])(
+    'refuses it when another tab already saved that refund (%s)',
+    async status => {
+      const other = {
+        ...message(true, refund, 501n, GAME),
+        status,
+        payloadDigest: 'pending:other-tab',
+      }
+      expect(await ask([other])).toBe(false)
+    },
+  )
+
+  it('refuses it when this tab already has that refund in the chat', async () => {
+    expect(
+      await ask([], [...memory(), message(true, refund, 501n, GAME)]),
+    ).toBe(false)
+  })
+
+  it('refuses a second deal, card or bet the same way', async () => {
+    const bet = { type: 'blackjack-hand', gameId: GAME, action: 'bet' } as const
+    const asPlayer = [
+      message(
+        false,
+        {
+          action: 'challenge',
+          role: 'dealer',
+          maxBetWei: '500',
+          commitment: commitmentOf(SEED),
+        },
+        10n,
+        GAME,
+      ),
+    ]
+    expect(await ask([], asPlayer, bet, 300n)).toBe(true)
+    expect(
+      await ask([message(true, bet, 300n, GAME)], asPlayer, bet, 300n),
+    ).toBe(false)
+  })
+
+  it('refuses when the saved messages cannot be read', async () => {
+    await expect(
+      handItemStillNext({
+        item: refund,
+        stampWei: 501n,
+        own: ME,
+        peer: PEER,
+        memory: memory(),
+        stored: async () => {
+          throw new Error('storage unavailable')
+        },
+      }),
+    ).resolves.toBe(false)
   })
 })

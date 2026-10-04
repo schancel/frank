@@ -12,6 +12,7 @@ import type {
 } from '@frank/cashweb/types/messages'
 import { BET_MESSAGE_FEE_RESERVE_WEI } from '@frank/wallet/message-item-plugins/blackjack/game'
 import {
+  applyHandEvent,
   dealerStep,
   foldHand,
   roleOf,
@@ -32,6 +33,8 @@ export interface HandChatMessage {
   items: MessageItem[]
   stampValueWei?: bigint
   payloadDigest: string
+  /** The digest this message will have once delivered, when it is still under a local id. */
+  attemptDigest?: string
 }
 
 /** The hand events of a chat, in chat order. `gameId` narrows to one hand. A message this user
@@ -150,4 +153,78 @@ export function automaticDealerSteps(
       })
   }
   return steps
+}
+
+/**
+ * Whether `item` is still the hand's next message, checked against the messages saved on this
+ * device as well as those in memory. Another tab of this account saves its outgoing message
+ * before sending it, so a payout, refund, bet, deal or card that another tab already sent (or is
+ * sending, or failed to send and may retry) is refused here instead of being sent a second time.
+ * If the saved messages cannot be read the answer is no: nothing is paid on a guess.
+ */
+export async function handItemStillNext(params: {
+  item: BlackjackHandItem
+  /** The stamp the message would carry. */
+  stampWei: bigint
+  own: string
+  peer: string
+  memory: readonly HandChatMessage[]
+  /** This chat's outgoing messages as saved on this device. */
+  stored: () => Promise<readonly HandChatMessage[]>
+}): Promise<boolean> {
+  let saved: readonly HandChatMessage[]
+  try {
+    saved = await params.stored()
+  } catch {
+    return false
+  }
+  const known = new Set<string>()
+  for (const message of params.memory) {
+    known.add(message.payloadDigest)
+    if (message.attemptDigest) known.add(message.attemptDigest)
+  }
+  const elsewhere = saved.filter(
+    message =>
+      message.outbound &&
+      !known.has(message.payloadDigest) &&
+      !(message.attemptDigest && known.has(message.attemptDigest)),
+  )
+  const events = chatHandEvents(
+    [...params.memory, ...elsewhere],
+    params.own,
+    params.peer,
+    params.item.gameId,
+  )
+  const result = applyHandEvent(foldHand(events).state, {
+    item: params.item,
+    from: params.own,
+    to: params.peer,
+    stampWei: params.stampWei,
+    digest: '(not sent yet)',
+  })
+  return result.error === undefined
+}
+
+/** This chat's outgoing messages as saved on this device (by any tab of this account). */
+export async function storedOutgoingMessages(
+  peer: string,
+): Promise<HandChatMessage[]> {
+  const { store } = await import('../adapters/level-message-store')
+  const messages: HandChatMessage[] = []
+  for await (const wrapper of await (await store).getIterator()) {
+    if (
+      !wrapper.message ||
+      !wrapper.outbound ||
+      wrapper.copartyAddress.toLowerCase() !== peer.toLowerCase()
+    )
+      continue
+    messages.push({
+      outbound: true,
+      items: wrapper.message.items,
+      stampValueWei: wrapper.message.stampValueWei,
+      payloadDigest: wrapper.index,
+      attemptDigest: wrapper.message.delivery?.attemptDigest,
+    })
+  }
+  return messages
 }

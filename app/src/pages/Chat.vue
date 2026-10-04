@@ -125,7 +125,9 @@ import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import { defaultAcceptancePrice, defaultStampAmount } from '../utils/constants'
 import {
   automaticDealerSteps,
+  handItemStillNext,
   HAND_FEE_RESERVE_WEI,
+  storedOutgoingMessages,
   newGameId,
   newSeed,
   saveSeed,
@@ -133,6 +135,7 @@ import {
 import { getOwnCanonicalAddress } from '../utils/own-address'
 import {
   buildChallenge,
+  soleHandItem,
   type HandRole,
 } from '@frank/wallet/message-item-plugins/blackjack/hand'
 import { useMonadWallet } from '../utils/clients'
@@ -563,6 +566,33 @@ export default defineComponent({
       }
       const stampValue =
         stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
+      // A blackjack message is sent only while it is still the hand's next message, judged on
+      // the messages saved on this device too, so a payout, refund, bet or deal that another
+      // tab already sent (or is still sending) is not sent a second time from this one.
+      const handItem = soleHandItem(items)
+      if (handItem) {
+        this.sendingMessage = true
+        let stillNext = false
+        try {
+          const own = await getOwnCanonicalAddress()
+          stillNext =
+            !!own &&
+            (await handItemStillNext({
+              item: handItem,
+              stampWei: stampValue,
+              own,
+              peer: this.address,
+              memory: this.messages,
+              stored: () => storedOutgoingMessages(this.address),
+            }))
+        } finally {
+          this.sendingMessage = false
+        }
+        if (!stillNext) {
+          errorNotify(new Error(this.$t('blackjackP2p.notNext')))
+          return false
+        }
+      }
       this.sendingMessage = true
       let outcome: OutgoingOutcome
       try {

@@ -1739,9 +1739,7 @@ export class MonadCanonicalStampClient {
           childIndex: i,
         })
       const calldata = (i: number) =>
-        hexlify(
-          concat([getBytes('0x504f4e4401'), paymentCommitment(digest, i)]),
-        )
+        hexlify(buildMonadStampCalldata(paymentCommitment(digest, i)))
       const protectedIndices = new Set([
         ...this.journal
           .getIntents()

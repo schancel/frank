@@ -770,7 +770,7 @@ async function recoveryStorageFixture(
       gasLimit: 100000n,
       maxFeePerGas: 2n,
       maxPriorityFeePerGas: 1n,
-      data: '0x504f4e4401' + toHex(commitment),
+      data: '0x504f4e4402' + toHex(commitment),
     })
     const tx = Transaction.from(raw)
     transactions.push(getBytes(raw))

@@ -1858,7 +1858,7 @@ async function makeCanonicalConsumerFixture() {
         maxPriorityFeePerGas: 1n,
         value: 32n,
         to: '0x' + toHex(destination.address),
-        data: '0x504f4e4401' + toHex(paymentCommitment(digest, 0)),
+        data: '0x504f4e4402' + toHex(paymentCommitment(digest, 0)),
       },
     )
     const tx = Transaction.from(raw)

@@ -263,7 +263,7 @@ function publicRecovery(
             childIndex,
           ),
         ) ||
-      tx.data.toLowerCase() !== '0x504f4e4401' + toHex(payment.commitment)
+      tx.data.toLowerCase() !== '0x504f4e4402' + toHex(payment.commitment)
     )
       canonicalFail('invalid')
     return {

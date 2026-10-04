@@ -289,8 +289,8 @@ try {
   })()`)
   assert.deepEqual(audit.seen,[9,10,11,12,13,14,15])
   // Alter relay observation fields only; immutable post bytes and signed author proof remain exact.
-  // Pause the older real HTTP response while a newer whole snapshot is published.
-  let held, holding=true, weight=(1n<<255n)+1n
+  // The single read slot queues the newer generation behind the old HTTP response.
+  let held, heldCurrent, heldCount=0, weight=(1n<<255n)+1n
   const transformed = async event => {
     const {body,base64Encoded}=await call('Fetch.getResponseBody',{requestId:event.params.requestId})
     const bytes=base64Encoded?Buffer.from(body,'base64'):Buffer.from(body)
@@ -313,7 +313,8 @@ try {
       responseHeaders:[...event.params.responseHeaders.filter(h=>!['content-length','content-encoding'].includes(h.name.toLowerCase())),{name:'content-length',value:String(encoded.length)}],body:Buffer.from(encoded).toString('base64')})
   }
   interceptResponse=async event=>{
-    if(holding){holding=false;held=event;return}
+    if(heldCount++===0){held=event;return}
+    if(heldCount===2){heldCurrent=event;return}
     await transformed(event)
   }
   await call('Fetch.enable',{patterns:[{urlPattern:'*/message/monad/topics?*',requestStage:'Response'}]})
@@ -321,19 +322,28 @@ try {
     const m=await import('/src/stores/forum.ts');
     const session=await import(performance.getEntriesByType('resource').find(e=>e.name.includes('/src/accounts/session.ts')).name);
     const pinia=document.querySelector('#q-app').__vue_app__.config.globalProperties.$pinia;
-    return m.useForumStore(pinia).refreshMessages({wallet:await session.accountSession.getWallet(),topic:'news'});
+    const task=m.useForumStore(pinia).refreshMessages({wallet:await session.accountSession.getWallet(),topic:'news'});
+    window.__refreshStarts=(window.__refreshStarts??0)+1;
+    return task;
   })()`
   const oldSnapshot=await evaluate(`JSON.stringify(${forumState}.messages)`)
   await evaluate(`(()=>{window.__olderRefresh=${refresh}.then(()=>true);return true})()`)
   for(let n=0;!held&&n<200;n++)await new Promise(resolve=>setTimeout(resolve,50))
   assert.ok(held,'older HTTP response reached interception')
   assert.equal(await evaluate(`JSON.stringify(${forumState}.messages)`),oldSnapshot,'staged response has not published')
-  await evaluate(refresh)
-  await until(`${forumState}.messages.some(m=>m.payloadDigest===${JSON.stringify(digest)}&&m.voteWeightWei===${JSON.stringify(weight.toString())})`)
-  const newerSnapshot=await evaluate(`JSON.stringify(${forumState})`)
+  await evaluate(`(()=>{window.__currentRefresh=${refresh}.then(()=>true);return true})()`)
+  await until(`window.__refreshStarts===2 && ${forumState}.isRefreshing===true`)
+  assert.equal(heldCurrent,undefined,'current generation waits for the shared read slot')
   await call('Fetch.continueRequest',{requestId:held.params.requestId})
   await evaluate(`window.__olderRefresh`)
-  assert.equal(await evaluate(`JSON.stringify(${forumState})`),newerSnapshot,'older result/finally cannot overwrite newer snapshot')
+  for(let n=0;!heldCurrent&&n<200;n++)await new Promise(resolve=>setTimeout(resolve,50))
+  assert.ok(heldCurrent,'current generation reaches HTTP after old slot releases')
+  assert.equal(await evaluate(`JSON.stringify(${forumState}.messages)`),oldSnapshot,'old result and staged current response cannot publish')
+  assert.equal(await evaluate(`${forumState}.isRefreshing`),true,'old finally cannot clear current loading')
+  await transformed(heldCurrent)
+  await evaluate(`window.__currentRefresh`)
+  await until(`${forumState}.messages.some(m=>m.payloadDigest===${JSON.stringify(digest)}&&m.voteWeightWei===${JSON.stringify(weight.toString())})`)
+  assert.equal(await evaluate(`${forumState}.isRefreshing`),false,'current complete publication clears loading')
   await input('forum-threshold','0.009007199254740993')
   await evaluate(`location.hash='#/forum'`)
   await until(`Array.from(document.querySelectorAll('a.post-title')).some(e=>e.textContent===${JSON.stringify(title)}&&e.getClientRects().length>0)`)

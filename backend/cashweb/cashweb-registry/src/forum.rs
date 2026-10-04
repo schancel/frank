@@ -1061,7 +1061,9 @@ mod tests {
 
     #[tokio::test]
     async fn proof_concurrent_owner_duplicates_and_exact_event_conflict_publish_once() {
-        use crate::store::forum::tests::{optional_observation, proof_retained_records};
+        use crate::store::forum::tests::{
+            optional_observation, proof_reservations, proof_retained_records,
+        };
         use std::sync::{atomic::Ordering, Arc};
         let dir = tempdir::TempDir::new("forum-proof-concurrency").unwrap();
         let owner = Arc::new(Owner::new(dir.path().join("db.rocksdb")));
@@ -1088,6 +1090,13 @@ mod tests {
             .with("monad-testnet", policy, true, |s| {
                 assert_eq!(s.revision, 1);
                 assert_eq!(s.store.pending_count(), 1);
+                assert_eq!(
+                    proof_reservations(&s.store, op.event.target_hash()),
+                    (
+                        crate::store::forum::Magnitude::from_u64(7),
+                        crate::store::forum::Magnitude::default()
+                    )
+                );
                 let retained = s.store.operation(&op.checked.decoded.tx_hash.0)?.unwrap();
                 assert_eq!(retained.frame(), op.frame());
                 assert!(retained.confirmed.is_none());
@@ -1152,6 +1161,13 @@ mod tests {
             .with("monad-testnet", policy, true, |s| {
                 assert_eq!(s.revision, 2);
                 assert_eq!(s.store.pending_count(), 0);
+                assert_eq!(
+                    proof_reservations(&s.store, op.event.target_hash()),
+                    (
+                        crate::store::forum::Magnitude::default(),
+                        crate::store::forum::Magnitude::default()
+                    )
+                );
                 let post = s.store.post(op.event.target_hash())?.unwrap();
                 assert!(post.visible.is_some());
                 assert_eq!(
@@ -1258,7 +1274,9 @@ mod tests {
 
     #[tokio::test]
     async fn proof_revision_exhaustion_preserves_pending_obligation_and_never_wraps() {
-        use crate::store::forum::tests::{optional_observation, proof_retained_records};
+        use crate::store::forum::tests::{
+            optional_observation, proof_reservations, proof_retained_records,
+        };
         use std::sync::atomic::Ordering;
         let dir = tempdir::TempDir::new("forum-proof-revision").unwrap();
         let owner = Owner::new(dir.path().join("db.rocksdb"));
@@ -1287,6 +1305,13 @@ mod tests {
             .with("monad-testnet", policy, true, |s| {
                 assert_eq!(s.revision, u64::MAX - 1);
                 assert_eq!(s.store.pending_count(), 1);
+                assert_eq!(
+                    proof_reservations(&s.store, op.event.target_hash()),
+                    (
+                        crate::store::forum::Magnitude::from_u64(7),
+                        crate::store::forum::Magnitude::default()
+                    )
+                );
                 assert_eq!(
                     s.store
                         .operation(&op.checked.decoded.tx_hash.0)?
@@ -1317,6 +1342,13 @@ mod tests {
             .with("monad-testnet", policy, true, |s| {
                 assert_eq!(s.revision, u64::MAX - 1);
                 assert_eq!(s.store.pending_count(), 1);
+                assert_eq!(
+                    proof_reservations(&s.store, op.event.target_hash()),
+                    (
+                        crate::store::forum::Magnitude::from_u64(7),
+                        crate::store::forum::Magnitude::default()
+                    )
+                );
                 assert_eq!(proof_retained_records(&s.store), before);
                 Ok(())
             })
@@ -1337,6 +1369,13 @@ mod tests {
             .with("monad-testnet", policy, true, |s| {
                 assert_eq!(s.revision, u64::MAX);
                 assert_eq!(s.store.pending_count(), 0);
+                assert_eq!(
+                    proof_reservations(&s.store, op.event.target_hash()),
+                    (
+                        crate::store::forum::Magnitude::default(),
+                        crate::store::forum::Magnitude::default()
+                    )
+                );
                 assert!(s
                     .store
                     .operation(&op.checked.decoded.tx_hash.0)?

@@ -767,3 +767,8 @@ pub(crate) fn proof_retained_records(store: &Store) -> Vec<(Vec<u8>, Vec<u8>)> {
         })
         .collect()
 }
+
+pub(crate) fn proof_reservations(store: &Store, hash: &[u8; 32]) -> (Magnitude, Magnitude) {
+    let post = store.post(hash).unwrap().unwrap();
+    (post.reserved_up, post.reserved_down)
+}

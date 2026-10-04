@@ -6,6 +6,12 @@ import { createRouter, createWebHashHistory, Router } from 'vue-router'
 import SettingsPage from './Settings.vue'
 
 // See navigate-back.jest.test.ts: vue-router 5's ESM-only dev-only dependencies.
+// The panel's own behaviour is covered by its test; Settings only mounts it.
+jest.mock('../utils/monad-identity-session', () => ({
+  messagingState: { status: 'pending', reason: null, participants: {} },
+  exportPublicIdentity: jest.fn(),
+  refreshMessaging: jest.fn(),
+}))
 jest.mock(
   require.resolve('@vue/devtools-api', {
     paths: [require.resolve('vue-router')],

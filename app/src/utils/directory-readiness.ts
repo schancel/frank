@@ -399,6 +399,28 @@ export async function checkDirectoryReadiness(
     const checkpoint = deps.checkpoints.load(key)
     if (!checkpoint && !options.allowEnrollment) return 'enrollment-required'
     const tuple = binding(subject.relay)
+    if (!checkpoint && !attestation) {
+      // A peer that has not published yet must not leave an empty store behind: without a saved
+      // checkpoint that store could never be reopened, and it is never silently recreated.
+      const head = `${new URL(subject.relay.endpoint).origin}/directory/v1/${
+        subject.network
+      }/${subject.subjectP}/head`
+      const controller = new AbortController()
+      const probe = await deps.directoryFetch(head, {
+        method: 'GET',
+        headers: { Accept: 'application/vnd.frank.cbor' },
+        redirect: 'error',
+        credentials: 'omit',
+        signal: controller.signal,
+      })
+      const published = probe.status === 200 && probe.url === head
+      controller.abort()
+      await probe.body
+        ?.getReader()
+        .cancel()
+        .catch(() => undefined)
+      if (!published) throw new Error('Peer directory record is not published')
+    }
     const store = await deps.openStore({
       name: key,
       anchor: {

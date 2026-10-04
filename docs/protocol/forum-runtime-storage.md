@@ -94,5 +94,17 @@ next cursor for an empty/terminal page. Frozen snapshots do not change when late
 votes change current author/tally facts. #770 retains ownership of bounded client
 accumulation and atomic publication; server proof alone does not establish it.
 
-Implementation status: storage/HTTP work is in progress. This contract is not a
-claim that runtime or rollback gates have passed.
+The server stage landed with runtime and rollback verification. The normal client
+cutover additionally requires private bounded accumulation (32768 rows,64 MiB,
+120 seconds; initial attempt plus two fresh bounded retries), one shared staging
+slot, cursor/epoch/revision binding and atomic publication guarded by request
+ownership. Client gate results must be reported separately from server evidence.
+
+The existing wallet pool, change pool, roots and lease manager retain their object
+identity. Topic ownership opens only the existing topic journal namespace under
+wallet admission. Startup retirement unions stamp and all retained topic lease
+references before touching in-use leases. Unsupported predecessor operations keep
+exact records and signed bytes; they cannot enter canonical reconciliation or
+release/settlement. Closing drains admitted topic work before closing the journal;
+competing topic owners for one pool/location are rejected. No new durable wallet
+identity, root role, manifest migration or financial policy is introduced.

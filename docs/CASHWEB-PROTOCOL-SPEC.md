@@ -1004,12 +1004,14 @@ complete multipage publication, restart, capacity accounting or finality. #675 o
 successor and the normal post/reply/read/list/discovery/vote/reconciliation switch; #718 remains
 blocked until canonical target selection and reconciliation are reachable.
 
-The normal Forum target is a canonical clean reset with an explicit owner-approved creation fence,
-rebuild and predecessor-removal proof. This codec landing performs no reset, switches no wallet,
-route, storage or UI default, and makes no claim that #675 is complete. Existing protobuf reads and
-opt-in schema1 writers remain reachable until the named normal-path successor removes them.
-Preserve exact CBOR-origin authority and constrained historical protobuf storage/export until the
-sections11/16 deletion gates pass; never transcode one origin into the other's identity.
+The normal Forum successor uses canonical type-10/11 operations and type-12–15
+reads/status throughout wallet, app and bot. It removes normal protobuf/schema1
+routes, decoders and writers without resetting stores. Historical exact records,
+signed operations and lease references remain retained and unsupported by normal
+runtime until separately authorized reconciliation/export. Preserve constrained
+historical storage/bindings until sections11/16 deletion gates pass; never transcode
+one origin into another identity. Actual integrated client/browser evidence is
+required before treating the complete #675 outcome as proven.
 First-confirmed-burn authorship and public front-running remain unchanged.
 
 **SERVER STAGE (#769).** Canonical Forum submissions retain exact type-10/11 authority in a
@@ -1235,7 +1237,7 @@ claim that those fences or deletion gates are implemented.
 | `packages/cashweb/bip70/proto/paymentrequest.proto` | Legacy POP request/payment/ack and output contract | Disable new issuance at fence; retain exact pre-fence request/payment/token evidence through scoped terminal/expiry |
 | `backend/cashweb/cashweb-registry/proto/monad_message.proto`; `packages/cashweb/relay/proto/monad_message.proto` | Legacy Monad encrypted DM, raw stamp-payment set, stored timestamp/network and list response | Constrained migration reader/decryptor and reconciler for pre-fence rows; no new writes; remove after decrypt/payment/cursor reachability clears |
 | `backend/cashweb/cashweb-registry/proto/monad_profile.proto`; material profile messages in `backend/cashweb/cashweb-registry/proto/registry.proto` and `packages/cashweb/registry/proto/metadata.proto` | Monad/Lotus timestamp+TTL profile entries, exact signed profile discovery; peer and range/put response shapes | Exact read-only profile/directory history where referenced; target migration creates new records, never transcodes; transport responses may disappear with their route |
-| `backend/cashweb/cashweb-registry/proto/topic_message.proto`; `packages/wallet/proto/topic_message.proto` | Monad topic post/vote, stored author/tx/time/network/CBOR-origin facts, vote tally, topic page/discovery | Preserve protobuf-origin history and bounded coexistence; reject new legacy writes at fence; client copy must remain wire-compatible while reachable |
+| `backend/cashweb/cashweb-registry/proto/topic_message.proto`; `packages/wallet/proto/topic_message.proto` | Monad topic post/vote, stored author/tx/time/network/CBOR-origin facts, vote tally, topic page/discovery | Preserve exact historical storage and retained signed obligations; normal routes/readers/writers are removed by #770; retain generated bindings while historical storage/test reachability remains |
 | `packages/cashweb/relay/proto/relay.proto` | Legacy relay profile, encrypted `Message`/`Payload`, stamp/outpoints, pages and push errors | Retain exact constrained reader only for reachable legacy stores/migration; no authority in target; delete after runtime/storage reachability proof |
 | `packages/cashweb/relay/proto/filters.proto` | Legacy inbox price/notification filter (`false`/zero proto3 defaults) | Preserve only with legacy inbox projection; never reinterpret as target pricing or provider-fee policy |
 | `packages/cashweb/relay/proto/p2pkh.proto`; `packages/cashweb/relay/proto/stealth.proto` | Legacy serialized P2PKH and stealth payment/outpoint transport payloads | Opaque historical transport-only data; preserve if referenced, otherwise delete with owning legacy feature after reachability proof |

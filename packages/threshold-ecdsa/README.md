@@ -196,7 +196,16 @@ function keygenStep(
   session: KeygenSession,
   message: Uint8Array,
 ): ThresholdResult<Step<KeygenSession, KeyShare>>
-function abortKeygen(session: KeygenSession): void
+function abortKeygen(session: KeygenSession): void // no-op unless the state is live
+// Initiator, while waiting for message 8: the record of the share held back.
+function exportPendingKeyShareRecord(
+  session: KeygenSession,
+): ThresholdResult<Uint8Array>
+// Verify a (re-sent) message 8 against a share restored from that record.
+function checkKeyConfirmation(
+  share: KeyShare,
+  message: Uint8Array,
+): ThresholdResult<true>
 
 // Key shares ---------------------------------------------------------------
 function describeKeyShare(share: KeyShare): ThresholdResult<{
@@ -227,7 +236,8 @@ function tweakPublicKey(
   tweak: Uint8Array
 }>
 
-// Locks (responder only) -----------------------------------------------------
+// Locks (created by the responder only) --------------------------------------
+// AdaptorLock is public: both parties pass it to startSign.
 type AdaptorLock =
   | {
       kind: 'point'
@@ -242,10 +252,20 @@ type AdaptorLock =
       index: number
     }
 
+// LockOpening is private: only the responder has it, and its startSign
+// requires it.
+type LockOpening =
+  | { kind: 'point'; secret: Uint8Array }
+  | { kind: 'commitment'; secret: Uint8Array; value: number }
+
 function createPointLock(input: {
   keyShare: KeyShare
   randomBytes: RandomBytes
-}): ThresholdResult<{ secret: AdaptorSecret; lock: AdaptorLock }>
+}): ThresholdResult<{
+  secret: AdaptorSecret
+  lock: AdaptorLock
+  opening: LockOpening
+}>
 function createCommitmentLock(input: {
   keyShare: KeyShare
   value: number // 0 .. 2^32 - 1
@@ -254,6 +274,7 @@ function createCommitmentLock(input: {
   secret: Uint8Array
   commitment: Uint8Array
   proof: Uint8Array
+  opening: LockOpening
 }>
 function commitmentLockPoint(
   commitment: Uint8Array,
@@ -287,14 +308,15 @@ function startSign(input: {
   sessionId: Uint8Array // 32 bytes, agreed, never reused with this key
   digest: Uint8Array // 32 bytes
   tweakCommitment?: Uint8Array // 32 bytes: sign for the tweaked key
-  lock?: AdaptorLock // pre-sign for this lock instead
+  lock?: AdaptorLock // pre-sign for this lock instead (both parties)
+  lockOpening?: LockOpening // responder: required with `lock`; initiator: forbidden
   randomBytes: RandomBytes
 }): ThresholdResult<Step<SignSession, SignResult>>
 function signStep(
   session: SignSession,
   message: Uint8Array,
 ): ThresholdResult<Step<SignSession, SignResult>>
-function abortSign(session: SignSession): void
+function abortSign(session: SignSession): void // no-op unless the state is live
 
 type SignResult =
   | {
@@ -312,7 +334,7 @@ type SignResult =
     }
 
 // Crash recovery for signing -------------------------------------------------
-function exportSignSession(session: SignSession): ThresholdResult<Uint8Array> // SECRET
+function exportSignSession(session: SignSession): ThresholdResult<Uint8Array> // SECRET, MACed
 function importSignSession(input: {
   state: Uint8Array
   keyShare: KeyShare
@@ -343,6 +365,19 @@ message 4, the responder when it processes message 5. In key generation the
 responder gets its share at message 7 and the initiator at message 8, after
 each has seen the other's key confirmation.
 
+**Do not send funds to the joint address until both sides hold a confirmed
+share.** The responder finishes one message before the initiator. If message 8
+is lost, the initiator's session still holds its share back; so that the share
+is not lost with the session, the initiator should store
+`exportPendingKeyShareRecord(session)` as soon as it has sent message 7. With
+that record and its `secretSeed` it can `restoreKeyShare` later and verify a
+re-sent message 8 with `checkKeyConfirmation`. Without a seed there is nothing
+to restore from: finish the session or start over.
+
+`abortKeygen` and `abortSign` act only on a live state. Calling them on a
+state that was already advanced, finished or aborted does nothing, so they can
+never wipe the buffers of the successor state or of a returned key share.
+
 Completing and extracting:
 
 - Point lock: `completeAdaptorSignature` and `extractAdaptorSecret` from
@@ -367,10 +402,17 @@ These are not suggestions. Breaking any of them can leak the key or lose it.
    well-formed ciphertext **permanently burns the initiator's share**, and with
    it access to the funds. `peerFault` is only meaningful over an
    authenticated transport.
-2. **Stored shares and records are integrity-critical.** Both export formats
-   carry a MAC keyed from the secret share, and import and restore verify it
-   before using anything. That protects against someone who can modify storage
-   but not read the secrets. Do not strip it, do not "repair" a record that
+2. **Stored shares, records and signing states are integrity-critical.** All
+   three export formats carry an HMAC keyed from the secret share, and nothing
+   in them is trusted before it verifies. Precisely: `importKeyShare` reads the
+   layout and the share from the blob to key the MAC, and `importSignSession`
+   keys it from the key share you pass in, parsing nothing first.
+   `restoreKeyShare` has no stored secret, so before the MAC it parses the
+   layout and uses two fields, the role and the share context, to re-derive the
+   share from your seed; a modified role or context only yields a different
+   derived share, hence a different MAC key and a failed check. This protects
+   against someone who can modify storage but not read the secrets. It cannot
+   detect an older, genuine export being put back (see rule 6). Do not strip it, do not "repair" a record that
    fails, and store the secret export encrypted. (Without the MAC, replacing
    the responder's stored copy of the initiator's encrypted share let the
    initiator read the responder's share out of a single ordinary-looking
@@ -399,9 +441,10 @@ These are not suggestions. Breaking any of them can leak the key or lose it.
      initiator state that is waiting for message 2, fed two different message
      2s, signs twice with the same nonce share against two different joint
      nonces, and two such signatures give the responder the private key.
-   - `importSignSession` recomputes the session binding, public key, tweak and
-     lock from the key share and the stored inputs and refuses state whose
-     parts do not agree. It cannot detect an old state.
+   - `importSignSession` verifies the state's MAC, then recomputes the session
+     binding, public key, tweak and lock from the key share and the stored
+     inputs and refuses state whose parts do not agree. Neither check can
+     detect an old, unmodified state being loaded again; only you can.
    - If you cannot guarantee this, do not export sessions: after a crash,
      abandon in-flight sessions and start new ones. Signing costs about 0.1 s.
    - Key-generation sessions cannot be exported. After a crash, start again.
@@ -421,9 +464,16 @@ The initiator learns each result first and can refuse to send message 5.
 - Adaptor pre-signing: locks are created by the **responder**, who holds the
   secret. The **initiator** is the party that later extracts it. A withholding
   initiator then holds a pre-signature it cannot complete, and the responder
-  can complete nothing it was not sent. The package enforces this direction:
-  `createPointLock` and `createCommitmentLock` refuse an initiator share, and
-  lock proofs are bound to the responder's identity.
+  can complete nothing it was not sent.
+- The package enforces this direction on the responder's side, where it
+  matters: the responder's `startSign` requires the lock's private `opening`
+  and checks that it opens the lock, so **the responder only ever pre-signs
+  under a lock it can open itself**. The proofs inside a lock cannot do this
+  job: they show that someone knows the secret, and the identity hashed into
+  them is only bytes, so an initiator could build a lock from its own secret,
+  label it with the responder's identity, and then complete the pre-signature
+  alone. The initiator's side verifies the proofs (it needs to know the lock
+  is openable at all) and must never be given an opening.
 
 ## Key tweak
 
@@ -502,8 +552,16 @@ Why we believe it is safe (an argument, not a proof):
 
 An adaptor signature under a point `T` is only safe if someone provably knows
 the discrete log of `T`. A bare, caller-chosen `T` is never accepted: `lock`
-must be one of the following, and its proofs are verified in `startSign`
-before any nonce is drawn.
+must be one of the following. Before any nonce is drawn, the initiator's
+`startSign` verifies the lock's proofs and the responder's `startSign`
+verifies its own opening of the lock (and the proofs as well).
+
+**A lock is single-purpose.** Completing any pre-signature made under a point
+lock reveals `t`, and with it every other pre-signature under the same lock
+becomes completable by the initiator. Pre-signing two transactions under one
+point lock is therefore fatal unless releasing both together is exactly what
+you want. The same holds for a commitment's `s` across the pre-signatures for
+its committed value.
 
 **Point lock.** `T = t*G` with two proofs of knowledge of `t`:
 
@@ -546,6 +604,16 @@ session.
   one.
 - The commitment hides `v` perfectly; it binds the responder to `v` only as
   long as `log_G(H)` is unknown.
+- **What is not proven.** The published security argument for ECDSA adaptor
+  signatures assumes a proof of knowledge of the discrete log of the lock
+  point. For a commitment lock that holds only for `T_v`; for every other
+  candidate `T_i` nobody knows the discrete log, and a pre-signature under it
+  still leaks the Diffie-Hellman value between the signing key `x` and the
+  lock point. Over the life of a key that leak amounts to one static point,
+  `x*H`, for the nothing-up-my-sleeve `H` (the rest is computable from public
+  values and revealed secrets). This package's position is that revealing
+  `x*H` for such an `H` does not help forge signatures; that is its own
+  argument, not a published result.
 
 ## Deterministic shares
 
@@ -579,7 +647,8 @@ any other field, then rebuilds everything (1 to 2 s for the initiator).
   EIP-1559 transaction recovers to the joint and the tweaked address); a
   malicious counterpart for every message; the abort rule across handles and
   stored copies; nonce freshness; crash recovery and inconsistent state.
-- `adaptor-sign`: point locks (verify, complete and extract with
+- `adaptor-sign`: lock provenance (the responder refuses any lock it cannot
+  open), point locks (verify, complete and extract with
   `@frank/adaptor-signatures`; owner-proof binding; replayed lock refused),
   commitment locks (only the committed value completes; extraction; malformed
   opening proofs refused before a session exists), and a malicious counterpart
@@ -598,9 +667,15 @@ ambient randomness.
 
 No external audit. One independent review found and this version fixes a
 key-extraction path through unauthenticated stored records; it found no break
-of the core protocol, the joint equality proof or the tweak, and that is not
-the same as an audit. Section and protocol numbers cited in the source were
-written from memory of the papers and must be confirmed against the PDFs.
+of the core protocol, the joint equality proof or the tweak. A second review
+found that lock provenance was not enforced and that exported signing state
+was unauthenticated; both are fixed here. Neither review is an audit.
+
+Citations: section and protocol numbers in the source were written from
+memory of the papers. One could not be confirmed by the reviewers and is
+**unverified**: the section of Goldberg, Reyzin, Sagga and Baldimtsi (ePrint
+2018/057) cited for the modulus proof and its parameters (alpha = 6370, 11
+repetitions). Check it against the PDF before relying on it.
 
 **"Testnet only" means:** use it only with keys that hold assets of no value.
 Do not point it at a mainnet address, do not reuse seeds or shares from it on
@@ -624,8 +699,9 @@ recover a share.
 ### Review first
 
 1. The joint discrete-log-equality proof (`sign.ts`, rounds 3 and 4).
-2. Commitment locks: the opening proof, its binding, and the claim that only
-   `T_v` is completable (`lock.ts`).
+2. Commitment locks: the opening proof, the responder-side opening check, the
+   claim that only `T_v` is completable, and the unproven `x*H` leak argument
+   (`lock.ts`).
 3. The tweak inside the Paillier step.
 4. Range proof: hashed commitments, 80 rounds, pre-committed challenge, and
    the ordering that opens the L_PDL challenge only after it verified
@@ -633,8 +709,8 @@ recover a share.
 5. The modulus proof does not show that N has exactly two prime factors. We
    argue the protocol only needs encryption to be a bijection and the
    plaintext not to wrap; both are enforced.
-6. The storage MAC is keyed from the secret share; salts and key confirmation
-   in key generation.
+6. The storage MAC (shares, records, signing states) is keyed from the secret
+   share; salts and key confirmation in key generation.
 7. The process-wide burned-share set is the package's only module-level state
    and does not survive a restart.
 8. Concurrent sessions; timing of `modPow` and `modInverse` on secrets.

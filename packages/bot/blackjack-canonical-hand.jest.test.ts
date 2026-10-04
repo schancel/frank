@@ -68,6 +68,7 @@ import {
 import { welcomeItems } from './blackjack-greeter'
 import {
   processCanonicalMessage,
+  recoverCanonicalReplies,
   runBlackjackLoop,
 } from './blackjack-bot.livecheck'
 
@@ -845,5 +846,162 @@ describe('#780 typed blackjack over the canonical path', () => {
     ])
     const game = await uiGame(sent, 'g4')
     expect(verifyRevealedHand(game)).toEqual({ valid: true })
+  })
+  // The windows between a durable game write and the reply that announces it. The "crash" is
+  // the reply save failing at that exact point, then every bot store closed and reopened; the
+  // wallets, journals, sealing and relay stand-in are the real ones used above. (A SIGKILLed
+  // child cannot carry this file's jest module stand-ins for the chain RPC, so real process
+  // death is covered only for the outbox, in blackjack-canonical.jest.test.ts.)
+  const losing = (prefix: string) => {
+    const enqueue = outbox.enqueue.bind(outbox)
+    jest
+      .spyOn(outbox, 'enqueue')
+      .mockImplementation((key, recipient, items) =>
+        key.startsWith(prefix)
+          ? Promise.reject(new Error('killed here'))
+          : enqueue(key, recipient, items),
+      )
+  }
+  const restart = async () => {
+    await closeBot()
+    await openBot()
+    return recoverCanonicalReplies({
+      state,
+      store,
+      outbox,
+      identity: f.bot.identity,
+      mainAccountSigner: bankroll as never,
+      provider: wagerProvider as never,
+    })
+  }
+  const standingWin = (hash: string) =>
+    seedFor(hash, deck => {
+      const initial = dealInitialCards(deck)
+      return (
+        !handValue(initial.playerCards).blackjack &&
+        playOutDealer(deck, [...initial.playerCards], 4).outcome ===
+          'player_win'
+      )
+    })
+
+  it('re-saves a deal lost after the wager was claimed, and the hand can be finished', async () => {
+    const hash = wager('0x' + 'e1'.repeat(32))
+    const seed = standingWin(hash)
+    await state.setPendingCommitment(seed, sha256Hex(seed))
+    const sent = move('g5', 'bet', { wagerTxHash: hash })
+    await uiSends(sent)
+    losing('deal:')
+    await botRuns()
+    // The wager is claimed and the game exists, but nothing was saved for the player.
+    expect(state.getGame('g5')).toMatchObject({
+      revealed: false,
+      dealtCount: 4,
+    })
+    expect(store.all()).toEqual([])
+    expect(await uiReceives()).toEqual([])
+
+    expect(await restart()).toBe(1)
+    await botRuns()
+    expect((await uiReceives()).at(-1)).toMatchObject({
+      action: 'deal',
+      gameId: 'g5',
+      serverSeedHash: sha256Hex(seed),
+    })
+    // Another restart finds nothing to repair and sends nothing more.
+    expect(await restart()).toBe(0)
+    await botRuns()
+    expect(botSets().size).toBe(1)
+
+    sent.push(...move('g5', 'stand'))
+    await uiSends(move('g5', 'stand'))
+    await botRuns(1)
+    await botRuns()
+    const game = await uiGame(sent, 'g5')
+    expect(verifyRevealedHand(game)).toEqual({ valid: true })
+    expect(bankroll.signed).toHaveLength(1)
+    expect(botSets().size).toBe(2)
+  })
+
+  it('re-saves a reveal lost after the hand was resolved and paid, without paying again', async () => {
+    const hash = wager('0x' + 'e2'.repeat(32))
+    const seed = seedFor(hash, deck => {
+      const initial = dealInitialCards(deck)
+      const hand = [...initial.playerCards, deck[4]]
+      return (
+        !handValue(initial.playerCards).blackjack &&
+        !handValue(hand).bust &&
+        playOutDealer(deck, hand, 5).outcome === 'player_win'
+      )
+    })
+    await state.setPendingCommitment(seed, sha256Hex(seed))
+    const sent = move('g6', 'bet', { wagerTxHash: hash })
+    await uiSends(sent)
+    await botRuns()
+    sent.push(...move('g6', 'hit'), ...move('g6', 'stand'))
+    await uiSends(move('g6', 'hit'))
+    await botRuns()
+    await uiSends(move('g6', 'stand'))
+    losing('reveal:')
+    await botRuns(1)
+    expect(state.getGame('g6')).toMatchObject({ revealed: true })
+    expect(bankroll.signed).toHaveLength(1)
+    expect(
+      (await uiReceives()).some(
+        item => item.type === 'blackjack-move' && item.action === 'reveal',
+      ),
+    ).toBe(false)
+
+    expect(await restart()).toBe(1)
+    await botRuns()
+    expect(await restart()).toBe(0)
+    await botRuns()
+    const game = await uiGame(sent, 'g6')
+    expect(game).toMatchObject({ phase: 'resolved', serverSeed: seed })
+    expect(game.playerCards).toHaveLength(3)
+    expect(verifyRevealedHand(game)).toEqual({ valid: true })
+    expect(bankroll.signed).toHaveLength(1)
+    expect(state.getPayout('g6')).toMatchObject({ status: 'confirmed' })
+    // deal, hit, reveal.
+    expect(botSets().size).toBe(3)
+  })
+
+  it('finishes a doubled hand whose card and reveal were lost with the process', async () => {
+    const hash = wager('0x' + 'e3'.repeat(32))
+    const second = wager('0x' + 'e4'.repeat(32))
+    const seed = seedFor(hash, deck => {
+      const initial = dealInitialCards(deck)
+      return (
+        !handValue(initial.playerCards).blackjack &&
+        playOutDealer(deck, [...initial.playerCards, deck[4]], 5).outcome ===
+          'player_win'
+      )
+    })
+    await state.setPendingCommitment(seed, sha256Hex(seed))
+    const sent = move('g7', 'bet', { wagerTxHash: hash })
+    await uiSends(sent)
+    await botRuns()
+    const double = move('g7', 'double', { doubleWagerTxHash: second })
+    sent.push(...double)
+    await uiSends(double)
+    losing('double:')
+    await botRuns()
+    // Both transfers are claimed; nothing was said and nothing resolved.
+    expect(state.getGame('g7')).toMatchObject({
+      doubled: true,
+      revealed: false,
+    })
+    expect(bankroll.signed).toEqual([])
+
+    expect(await restart()).toBe(2)
+    await botRuns()
+    await botRuns()
+    expect(await restart()).toBe(0)
+    const game = await uiGame(sent, 'g7')
+    expect(game).toMatchObject({ phase: 'resolved', doubled: true })
+    expect(verifyRevealedHand(game)).toEqual({ valid: true })
+    expect(bankroll.signed.map(({ to, value }) => ({ to, value }))).toEqual([
+      { to: getAddress(f.uiAccount), value: 4n * WAGER_WEI },
+    ])
+    expect(state.getPayout('g7')).toMatchObject({ status: 'confirmed' })
   })
 })

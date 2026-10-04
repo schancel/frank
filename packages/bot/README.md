@@ -797,6 +797,13 @@ Inbound messages are handled at most once (as in legacy mode), and only after th
 opened under the installed directory; a tampered envelope or an uninstalled sender never reaches
 the game.
 
+At every start the dealer rebuilds any deal, card or reveal reply that a crash lost between
+the game write and the reply save (each is a pure function of the game record), and finishes a
+hand it must finish itself (doubled, bust, natural). While the wallet cannot match its retained
+payment sets to saved replies (`reply ... waiting: wallet-correlation-held`,
+`unaccounted-payment-sets` or `attempt-unknown`), no reply can leave, so new bets and doubles
+are refused and refunded; hands already dealt can still be finished and are paid.
+
 **1. Export** (opens the typed wallet, sends nothing, prints the stamp account to fund):
 
 ```sh

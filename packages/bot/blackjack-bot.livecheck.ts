@@ -228,8 +228,12 @@ export interface BlackjackLegacyTransport {
  * payout or refund goes, exactly as before), and the actor binding saved here is who may act.
  */
 export interface BlackjackCanonicalMove {
-  /** Durably saves one reply to the authenticated sender; the outbox delivers it exactly once. */
-  reply(items: MessageItem[]): Promise<void>
+  /** Durably saves one reply to the authenticated sender; the outbox delivers it exactly once.
+   * `key` names a reply that can be rebuilt from the game record alone (`deal:<gameId>`,
+   * `reveal:<gameId>`, ...), so a restart can save it again if it was lost. */
+  reply(items: MessageItem[], key?: string): Promise<void>
+  /** Saved before a hand is resolved; see `recoverCanonicalReplies`. */
+  beforeResolve?(gameId: string, playerCardCount: number): Promise<void>
   /** Why saved replies cannot be delivered at all right now, if they cannot. A dealer that
    * cannot answer takes no new stake: bets and doubles are refused and refunded. */
   held?(): string | undefined
@@ -256,13 +260,13 @@ function replier(
     provider: Provider
   },
 ): {
-  items(toAddress: string, items: MessageItem[]): Promise<void>
+  items(toAddress: string, items: MessageItem[], key?: string): Promise<void>
   text(toAddress: string, text: string): Promise<void>
 } {
   if (params.canonical) {
     const { canonical } = params
     return {
-      items: (_to, items) => canonical.reply(items),
+      items: (_to, items, key) => canonical.reply(items, key),
       text: (_to, text) => canonical.reply([{ type: 'text', text }]),
     }
   }
@@ -366,6 +370,10 @@ export async function resolveAndReveal(
   // Resolving the hand and recording what it owes are ONE atomic write: there is no durable state
   // in which the game is revealed but its payout is not recorded. Nothing external happens before
   // this write is durable, so a failure or crash anywhere after it is recovered by `settlePayouts`.
+  // Canonical mode: without this note a crash after the write below could never rebuild the
+  // reveal (a resolved record no longer says how many cards the player held). If it cannot be
+  // saved the hand is not resolved now; the player's next stand tries again.
+  await params.canonical?.beforeResolve?.(gameId, playerCards.length)
   const resolved = await state.resolveGameWithPayout({
     gameId,
     dealtCount,
@@ -385,16 +393,20 @@ export async function resolveAndReveal(
   // A failed reveal message must not cost the winner their payout: the payout is already owed and
   // is attempted (and, if need be, retried from the poll loop) regardless.
   try {
-    await send.items(record.playerAddress, [
-      {
-        type: 'blackjack-move',
-        gameId,
-        action: 'reveal',
-        dealerCards,
-        serverSeed: record.serverSeed,
-        outcome,
-      },
-    ])
+    await send.items(
+      record.playerAddress,
+      [
+        {
+          type: 'blackjack-move',
+          gameId,
+          action: 'reveal',
+          dealerCards,
+          serverSeed: record.serverSeed,
+          outcome,
+        },
+      ],
+      `reveal:${gameId}`,
+    )
   } catch (err) {
     console.error(
       `[blackjack-bot] reveal message for game ${gameId} failed (payout is still owed and will proceed):`,
@@ -947,7 +959,7 @@ export async function handleMove(
           playerCards,
           dealerUpCard: dealerCards[0],
         },
-      ])
+      ], `deal:${gameId}`)
 
     if (handValue(playerCards).blackjack) {
       await resolveAndReveal({
@@ -1024,7 +1036,7 @@ export async function handleMove(
     const playerCards = playerCardsSoFar(deck, newDealtCount)
     await state.setGame(gameId, { ...record, dealtCount: newDealtCount })
 
-    await send.items(record.playerAddress, [{ type: 'blackjack-move', gameId, action: 'hit', playerCards }])
+    await send.items(record.playerAddress, [{ type: 'blackjack-move', gameId, action: 'hit', playerCards }], `hit:${gameId}:${newDealtCount}`)
 
     if (handValue(playerCards).bust) {
       await resolveAndReveal({
@@ -1146,7 +1158,7 @@ export async function handleMove(
       return
     }
 
-    await send.items(record.playerAddress, [{ type: 'blackjack-move', gameId, action: 'double', playerCards }])
+    await send.items(record.playerAddress, [{ type: 'blackjack-move', gameId, action: 'double', playerCards }], `double:${gameId}`)
 
     // Doubling is always exactly one more card then an automatic stand -- win, lose, or bust, the
     // hand is over, unlike an ordinary `hit` which only forces a reveal on a bust.
@@ -1384,13 +1396,14 @@ export async function processCanonicalMessage(params: {
 
   let replies = 0
   const canonical: BlackjackCanonicalMove = {
-    async reply(items) {
+    async reply(items, key) {
       await params.outbox.enqueue(
-        `${received.payloadDigest}:${replies++}`,
+        key ?? `${received.payloadDigest}:${replies++}`,
         sender,
         items,
       )
     },
+    beforeResolve: (gameId, cards) => params.store.noteResolving(gameId, cards),
     actors: params.store,
     held: () => params.outbox.held(),
   }
@@ -1447,6 +1460,122 @@ export async function processCanonicalMessage(params: {
     // Whatever was saved is delivered now rather than a poll interval later.
     await params.outbox.drive()
   }
+}
+
+/**
+ * Startup repair for canonical mode. A crash (or a failed save) between a game write and the
+ * reply that announces it would otherwise leave a hand nobody can finish: a claimed wager with
+ * no deal, or a paid hand whose seed was never revealed. Every such reply is a pure function of
+ * the durable game record (plus the resolving note for a reveal), so it is rebuilt and saved
+ * under its fixed key; a reply that was saved before is a duplicate and changes nothing.
+ * A hand the dealer itself must finish (doubled, bust, natural) is resolved here too.
+ * Nothing is sent from here; the outbox delivers what was saved. Returns how many were saved.
+ */
+export async function recoverCanonicalReplies(params: {
+  state: BlackjackBotStateStore
+  store: BlackjackCanonicalStore
+  outbox: Pick<BlackjackCanonicalOutbox, 'enqueue'>
+  identity: MonadIdentity
+  mainAccountSigner: MonadAccountTxSigner
+  provider: Provider
+}): Promise<number> {
+  const { state, store, outbox } = params
+  let saved = 0
+  for (const gameId of store.boundGames()) {
+    try {
+      const binding = store.actor(gameId)
+      const record = state.getGame(gameId)
+      if (
+        !binding ||
+        !record ||
+        record.authority !== 'verified-wager-sender' ||
+        binding.wagerTxHash !== record.wagerTxHash
+      )
+        continue
+      const save = async (key: string, item: BlackjackMoveItem) => {
+        if ((await outbox.enqueue(key, binding.actor, [item])) !== 'saved')
+          return
+        saved++
+        console.log(`[blackjack-bot] recovered reply ${key}`)
+      }
+      const deck = deriveDeck(record.serverSeed, record.wagerTxHash, 0)
+      const initial = dealInitialCards(deck)
+      await save(`deal:${gameId}`, {
+        type: 'blackjack-move',
+        gameId,
+        action: 'deal',
+        serverSeedHash: record.serverSeedHash,
+        playerCards: initial.playerCards,
+        dealerUpCard: initial.dealerCards[0],
+      })
+      if (record.revealed) {
+        if (store.has(`reveal:${gameId}`)) continue
+        const cards = store.resolving(gameId)
+        const hand =
+          cards === undefined ? undefined : playerCardsSoFar(deck, cards + 2)
+        const played = hand && playOutDealer(deck, hand, cards! + 2)
+        // The rebuilt hand must land exactly on the recorded final count.
+        if (!played || played.dealtCount !== record.dealtCount) {
+          console.error(
+            `[blackjack-bot] OPERATOR ACTION: game ${gameId} is resolved but its reveal cannot be rebuilt`,
+          )
+          continue
+        }
+        await save(`reveal:${gameId}`, {
+          type: 'blackjack-move',
+          gameId,
+          action: 'reveal',
+          dealerCards: played.dealerCards,
+          serverSeed: record.serverSeed,
+          outcome: played.outcome,
+        })
+        continue
+      }
+      const playerCards = playerCardsSoFar(deck, record.dealtCount)
+      if (record.doubled)
+        await save(`double:${gameId}`, {
+          type: 'blackjack-move',
+          gameId,
+          action: 'double',
+          playerCards,
+        })
+      else if (record.dealtCount > 4)
+        await save(`hit:${gameId}:${record.dealtCount}`, {
+          type: 'blackjack-move',
+          gameId,
+          action: 'hit',
+          playerCards,
+        })
+      const hand = handValue(playerCards)
+      if (!record.doubled && !hand.bust && !hand.blackjack) continue
+      // The dealer resolves these itself; the stand that would do it will never come.
+      await resolveAndReveal({
+        gameId,
+        record,
+        identity: params.identity,
+        mainAccountSigner: params.mainAccountSigner,
+        provider: params.provider,
+        state,
+        canonical: {
+          async reply(items, key) {
+            if (
+              key &&
+              (await outbox.enqueue(key, binding.actor, items)) === 'saved'
+            )
+              saved++
+          },
+          beforeResolve: (id, cards) => store.noteResolving(id, cards),
+          actors: store,
+        },
+      })
+    } catch (err) {
+      console.error(
+        `[blackjack-bot] could not recover replies of game ${gameId} (will retry at the next start):`,
+        err,
+      )
+    }
+  }
+  return saved
 }
 
 let closeCanonical: Array<() => Promise<void>> = []
@@ -1700,6 +1829,18 @@ async function mainCanonical(): Promise<void> {
     relayBaseUrl,
   })
   const greetingsEnabled = greeterConfigFromEnv(process.env).maxPerRun > 0
+  const recovered = await recoverCanonicalReplies({
+    state,
+    store,
+    outbox,
+    identity,
+    mainAccountSigner,
+    provider: wallet.handle.provider,
+  })
+  if (recovered > 0)
+    console.log(
+      `[blackjack-bot] saved ${recovered} repl${recovered === 1 ? 'y' : 'ies'} an earlier run did not`,
+    )
 
   console.log(
     `\nPolling the canonical inbox of ${wallet.identityAddress} at ${relayBaseUrl} every ${pollIntervalMs}ms ...`,

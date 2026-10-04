@@ -78,6 +78,7 @@ export interface BlackjackActorBinding {
 const ROW_PREFIX = 'row:'
 const KEY_PREFIX = 'key:'
 const ACTOR_PREFIX = 'actor:'
+const RESOLVING_PREFIX = 'resolving:'
 const rowKey = (seq: number) => ROW_PREFIX + seq.toString().padStart(12, '0')
 
 function validRow(value: unknown): value is BlackjackOutboxRow {
@@ -107,6 +108,7 @@ export class BlackjackCanonicalStore {
   private readonly rows = new Map<number, BlackjackOutboxRow>()
   private readonly keys = new Map<string, number>()
   private readonly actors = new Map<string, BlackjackActorBinding>()
+  private readonly resolvingHands = new Map<string, number>()
   private nextSeq = 0
 
   constructor(location: string) {
@@ -147,6 +149,14 @@ export class BlackjackCanonicalStore {
         )
           throw new Error(`blackjack actor binding ${key} is not valid`)
         this.actors.set(key.slice(ACTOR_PREFIX.length), binding)
+      } else if (key.startsWith(RESOLVING_PREFIX)) {
+        const cards: unknown = JSON.parse(value)
+        if (!Number.isSafeInteger(cards) || (cards as number) < 2)
+          throw new Error(`blackjack resolving note ${key} is not valid`)
+        this.resolvingHands.set(
+          key.slice(RESOLVING_PREFIX.length),
+          cards as number,
+        )
       }
     }
   }
@@ -251,6 +261,31 @@ export class BlackjackCanonicalStore {
 
   digests(): string[] {
     return this.all().flatMap(row => (row.digest ? [row.digest] : []))
+  }
+
+  /** Every game id that ever had an actor bound, for startup recovery. */
+  boundGames(): string[] {
+    return [...this.actors.keys()]
+  }
+
+  /** How many cards the player held when the dealer began resolving this game, if it did. */
+  resolving(gameId: string): number | undefined {
+    return this.resolvingHands.get(gameId)
+  }
+
+  /** Saved before a hand is resolved: with the game record, it is everything needed to rebuild
+   * the reveal later. It is not a reply and is never sent. */
+  async noteResolving(gameId: string, playerCardCount: number): Promise<void> {
+    if (!Number.isSafeInteger(playerCardCount) || playerCardCount < 2)
+      throw new Error('blackjack resolving note needs the player card count')
+    await this.synced([
+      {
+        type: 'put',
+        key: RESOLVING_PREFIX + gameId,
+        value: JSON.stringify(playerCardCount),
+      },
+    ])
+    this.resolvingHands.set(gameId, playerCardCount)
   }
 
   actor(gameId: string): BlackjackActorBinding | undefined {

@@ -345,7 +345,19 @@ const phases = {
     const balances = async () => ({ player: await mon(player), bankroll: await mon(bankroll), dealer: await mon(dealer) })
     const moves = () => ev(`[...document.querySelectorAll('.blackjack-move')].map(e=>e.innerText.trim().replace(/\\s*\\n\\s*/g,' | ').slice(0,500))`)
     const last = () => ev(`(()=>{const all=[...document.querySelectorAll('.blackjack-move')];const e=all[all.length-1];if(!e)return null;return {count:all.length,text:e.innerText.trim().replace(/\\s*\\n\\s*/g,' | '),buttons:[...e.querySelectorAll('button')].filter(b=>!b.closest('.blackjack-bet-control')).map(b=>({label:b.innerText.trim(),disabled:b.disabled})),bet:!!e.querySelector('.blackjack-bet-control')}})()`)
-    const betForm = `(()=>{const all=[...document.querySelectorAll('.blackjack-bet-control')];return all[all.length-1]})()`
+    // Where a hand is started: the composer's message-type menu (default, works in any chat), or
+    // BJ_VIA=inline for the bet box inside the newest dealer bubble.
+    const viaMenu = process.env.BJ_VIA !== 'inline'
+    const betForm = viaMenu ? `document.querySelector('[data-testid=blackjack-dialog] .blackjack-bet-control')` : `(()=>{const all=[...document.querySelectorAll('.blackjack-bet-control')];return all[all.length-1]})()`
+    const openBet = async () => {
+      if (!viaMenu || (await has('[data-testid=blackjack-dialog]'))) return
+      await click('.q-footer button[aria-haspopup=menu]')
+      await wait(() => has('[data-testid=blackjack-menu-item]'), 'the message-type menu')
+      await shot('20a-blackjack-menu')
+      await click('[data-testid=blackjack-menu-item]')
+      await wait(() => has('[data-testid=blackjack-dialog] .blackjack-bet-control'), 'the bet dialog')
+      await delay(400)
+    }
     const betState = () => ev(`(()=>{const f=${betForm};if(!f)return null;return {amount:f.querySelector('input[type=text]').value,hint:f.querySelector('.q-field__bottom')?.innerText.trim()??'',status:f.querySelector('[data-testid=blackjack-bet-status]').innerText.trim(),submit:f.querySelector('[data-testid=blackjack-bet-submit]').innerText.trim(),submitDisabled:f.querySelector('[data-testid=blackjack-bet-submit]').disabled,confirmDisabled:f.querySelector('[data-testid=blackjack-bet-confirm]').getAttribute('aria-disabled')}})()`)
     const typeBet = async amount => {
       await ev(`(()=>{const i=${betForm}.querySelector('input[type=text]');i.focus();i.select()})()`)
@@ -365,8 +377,10 @@ const phases = {
     await delay(1500)
     await shot('20-blackjack-welcome')
     note('dealer welcome', { moves: await moves(), betBoxShown: await has('.blackjack-bet-control'), contact: await text('.q-header') })
-    if (!(await has('.blackjack-bet-control'))) throw Error('the app shows no bet box for the installed dealer')
-    note('bet box', await betState())
+    note('inline bet box in the newest bubble', await has('.blackjack-move .blackjack-bet-control'))
+    await openBet()
+    await shot('20b-blackjack-bet-dialog')
+    note('bet control', { via: viaMenu ? 'composer menu' : 'inline', ...(await betState()) })
     report.hands = []
     let n = 0
     for (const step of plan.split(',')) {
@@ -374,6 +388,7 @@ const phases = {
       const before = await balances()
       const block = Number(await chain('eth_blockNumber', []))
       const movesBefore = (await moves()).length
+      await openBet()
       if (step === 'limits') {
         const results = {}
         for (const amount of ['0.001', '5', '0', '-1', 'abc']) {

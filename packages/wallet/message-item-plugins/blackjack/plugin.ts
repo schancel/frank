@@ -7,7 +7,12 @@
  */
 import { Provider } from 'ethers'
 
-import { BlackjackMoveItem } from '@frank/cashweb/types/messages'
+import type { ParsedFrame } from '@frank/codec'
+import { encodeBlackjackItem, projectBlackjackItem } from '@frank/codec'
+import {
+  BlackjackMoveItem,
+  CanonicalBlackjackMoveItem,
+} from '@frank/cashweb/types/messages'
 
 import {
   BlackjackGameState,
@@ -15,7 +20,7 @@ import {
   parseBlackjackWelcome,
   reduceBlackjackState,
 } from './game'
-import { registerMessageItemPlugin } from '../index'
+import { registerMessageItemPlugin, type MessageItemContext } from '../index'
 
 /** Looks up `wagerTxHash` on-chain and reports what it actually shows -- confirmed or not, real
  * sender/recipient/value -- without judging whether it's "enough" or "to the right place" (that's
@@ -77,34 +82,92 @@ async function lookupWagerTransaction(
   }
 }
 
-registerMessageItemPlugin<BlackjackMoveItem, HydratedBlackjackMove, BlackjackGameState>({
+/** Validate the complete closed writer shape before callers fund or send it. */
+export function encodeCanonicalBlackjackItem(
+  item: CanonicalBlackjackMoveItem,
+): Uint8Array {
+  return encodeBlackjackItem(item)
+}
+
+/** Accept only an already validated parsed type18 child from public authenticated content.
+ * Keeps the original frame; never reparses a child with a fresh traversal budget.
+ * The projection and frame are copy-owned by the public codec.
+ */
+export function projectCanonicalBlackjackItem(parsed: ParsedFrame): {
+  frame: Uint8Array
+  item: CanonicalBlackjackMoveItem
+} {
+  return projectBlackjackItem(parsed)
+}
+
+/** Shape is already established by the parent's validation. Wager lookup remains separate
+ * from authenticated actor, game, directory and payment authority, which stay caller-owned.
+ */
+export async function hydrateCanonicalBlackjackItem(
+  parsed: ParsedFrame,
+  context: MessageItemContext,
+): Promise<{
+  frame: Uint8Array
+  item: CanonicalBlackjackMoveItem
+  hydrated: HydratedBlackjackMove
+}> {
+  const projected = projectCanonicalBlackjackItem(parsed)
+  return {
+    ...projected,
+    hydrated: await hydrateBlackjackItem(
+      {
+        ...projected.item,
+        playerCards:
+          'playerCards' in projected.item
+            ? projected.item.playerCards?.slice()
+            : undefined,
+        dealerCards:
+          'dealerCards' in projected.item
+            ? projected.item.dealerCards.slice()
+            : undefined,
+      },
+      context,
+    ),
+  }
+}
+
+async function hydrateBlackjackItem(
+  raw: BlackjackMoveItem,
+  context: MessageItemContext,
+): Promise<HydratedBlackjackMove> {
+  const verifiedWager =
+    raw.action === 'bet' && raw.wagerTxHash
+      ? await verifyWagerTransaction(context.provider, raw.wagerTxHash)
+      : undefined
+  const verifiedDoubleWager =
+    raw.action === 'double' && raw.doubleWagerTxHash
+      ? await verifyWagerTransaction(context.provider, raw.doubleWagerTxHash)
+      : undefined
+  return {
+    gameId: raw.gameId,
+    action: raw.action,
+    wagerTxHash: raw.wagerTxHash,
+    doubleWagerTxHash: raw.doubleWagerTxHash,
+    serverSeedHash: raw.serverSeedHash,
+    playerCards: raw.playerCards,
+    dealerUpCard: raw.dealerUpCard,
+    dealerCards: raw.dealerCards,
+    serverSeed: raw.serverSeed,
+    outcome: raw.outcome,
+    verifiedWager,
+    verifiedDoubleWager,
+    welcome: parseBlackjackWelcome(raw),
+    senderAddress: context.message.senderAddress,
+  }
+}
+
+registerMessageItemPlugin<
+  BlackjackMoveItem,
+  HydratedBlackjackMove,
+  BlackjackGameState
+>({
   type: 'blackjack-move',
-  async hydrate(raw, context) {
-    const verifiedWager =
-      raw.action === 'bet' && raw.wagerTxHash
-        ? await verifyWagerTransaction(context.provider, raw.wagerTxHash)
-        : undefined
-    const verifiedDoubleWager =
-      raw.action === 'double' && raw.doubleWagerTxHash
-        ? await verifyWagerTransaction(context.provider, raw.doubleWagerTxHash)
-        : undefined
-    return {
-      gameId: raw.gameId,
-      action: raw.action,
-      wagerTxHash: raw.wagerTxHash,
-      doubleWagerTxHash: raw.doubleWagerTxHash,
-      serverSeedHash: raw.serverSeedHash,
-      playerCards: raw.playerCards,
-      dealerUpCard: raw.dealerUpCard,
-      dealerCards: raw.dealerCards,
-      serverSeed: raw.serverSeed,
-      outcome: raw.outcome,
-      verifiedWager,
-      verifiedDoubleWager,
-      welcome: parseBlackjackWelcome(raw),
-      senderAddress: context.message.senderAddress,
-    }
-  },
+  hydrate: hydrateBlackjackItem,
   previewText(raw) {
     switch (raw.action) {
       case 'bet':
@@ -126,6 +189,7 @@ registerMessageItemPlugin<BlackjackMoveItem, HydratedBlackjackMove, BlackjackGam
         return 'Blackjack'
     }
   },
-  threadKey: raw => raw.gameId,
-  reduceState: (prevState, hydrated) => reduceBlackjackState(prevState, hydrated),
+  threadKey: (raw) => raw.gameId,
+  reduceState: (prevState, hydrated) =>
+    reduceBlackjackState(prevState, hydrated),
 })

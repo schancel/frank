@@ -1,3 +1,5 @@
+import type { BlackjackItem } from '@frank/codec'
+
 import { Utxo } from './utxo'
 
 export interface ReplyItem {
@@ -27,6 +29,9 @@ export interface ImageItem {
   type: 'image'
   image: string
 }
+
+/** Closed type18 shapes for explicit canonical consumers; no payment or actor authority. */
+export type CanonicalBlackjackMoveItem = BlackjackItem
 
 /**
  * One move in a provably-fair blackjack hand against a bot dealer (see `@frank/wallet/message-item-plugins/blackjack`

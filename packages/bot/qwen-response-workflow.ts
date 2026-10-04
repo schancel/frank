@@ -89,7 +89,29 @@ export class QwenResponseWorkflow {
     ),
   ) {}
 
+  private readonly heldReported = new Set<string>()
+
+  /** How the poll loop should treat a pending turn. `final-hold` is never retried (a dead
+   * outcome can only be released by an operator); `continue-linked` replays an exact attempt
+   * that already exists and is not a new reply decision; `new-effect` would seal or pay and
+   * is subject to the peer guard and reply budget. */
+  pollDisposition(
+    payloadHashHex: string,
+  ): 'final-hold' | 'continue-linked' | 'new-effect' {
+    const coupling = this.options.state.getCoupling(payloadHashHex)
+    if (!coupling) return 'new-effect'
+    if ('terminal' in coupling)
+      return coupling.terminal.outcome === 'dead'
+        ? 'final-hold'
+        : 'continue-linked'
+    return coupling.phase === 'intent-linked' ? 'continue-linked' : 'new-effect'
+  }
+
   private held(row: { payloadHashHex: string }, reason: string): 'held' {
+    // A retried hold is reported once per turn and reason, not once per poll.
+    const key = `${row.payloadHashHex}:${reason}`
+    if (this.heldReported.has(key)) return 'held'
+    this.heldReported.add(key)
     // Only controlled phase/reason strings and the inbound hash; no error objects or text.
     console.warn(
       `[bot] response ${row.payloadHashHex} held: ${reason}; preserve state, inspect the response record before operator reconciliation`,
@@ -461,6 +483,8 @@ export class QwenResponseWorkflow {
 
     if (coupling.phase === 'terminal') await this.retire(canonical, coupling)
     if (confirmed) {
+      for (const key of this.heldReported)
+        if (key.startsWith(`${payloadHashHex}:`)) this.heldReported.delete(key)
       console.log(`[bot] response ${payloadHashHex} confirmed`)
       return 'confirmed'
     }

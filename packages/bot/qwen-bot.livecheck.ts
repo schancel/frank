@@ -374,7 +374,10 @@ async function main() {
 
   // Surface nonretryable ambiguity once on startup. Only ready rows enter periodic recovery.
   for (const row of state.pendingResponses()) {
-    if (row.phase !== 'response-ready')
+    if (
+      row.phase !== 'response-ready' ||
+      responses.pollDisposition(row.payloadHashHex) === 'final-hold'
+    )
       await responses.resume(row.payloadHashHex)
   }
 
@@ -409,17 +412,19 @@ async function main() {
       break
     }
 
-    // Recovery does not depend on a mailbox entry or operator restart. A transient profile
-    // lookup failure/budget limit leaves ready rows eligible for the next poll; held sends
-    // never enter this retry path. Each row is reconsidered at most once per poll.
+    // Recovery does not depend on a mailbox entry or operator restart. Each ready row is
+    // reconsidered at most once per poll: a turn that would seal or pay goes through the peer
+    // guard and reply budget; a turn that already owns a linked wallet attempt replays exactly
+    // that attempt; a dead outcome is final and is not retried. Legacy model-started and
+    // send-started holds never enter this path.
     if (canonical) await responses.recover()
     for (const row of state.pendingResponses()) {
       if (repliesSent >= maxReplies) break
       if (row.phase !== 'response-ready') continue
-      // A turn that already owns a sealed envelope continues its exact attempt; that is not a
-      // new reply decision, so it neither re-asks the peer guard nor spends reply budget.
+      const disposition = responses.pollDisposition(row.payloadHashHex)
+      if (disposition === 'final-hold') continue
       if (
-        !state.getCoupling(row.payloadHashHex) &&
+        disposition === 'new-effect' &&
         ((await guard.peerBlockReason(row.senderAddress)) ||
           !guard.reserveReply(row.senderAddress))
       )

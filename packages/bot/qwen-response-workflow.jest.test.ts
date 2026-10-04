@@ -961,6 +961,43 @@ describe('#703 canonical outbound coupling', () => {
     ])
     expect(logs.join()).toContain('delivery-dead')
     expect(logs.join()).toContain('earlier-turn-unresolved')
+    // A dead turn is final for the poll loop and is reported once, not on every retry.
+    expect(f.run.pollDisposition('01')).toBe('final-hold')
+    const reported = logs.filter(line => line.includes('delivery-dead')).length
+    for (let poll = 0; poll < 3; poll++)
+      expect(await f.run.resume('01')).toBe('held')
+    // Once per process: the first run and this reopened one.
+    expect(reported).toBe(2)
+    expect(logs.filter(line => line.includes('delivery-dead'))).toHaveLength(
+      reported,
+    )
+  }, 30000)
+
+  it('classifies pending turns for the poll loop and reports a repeated hold once per reason', async () => {
+    const f = await open()
+    await f.state.beginResponse({ ...input, context: canonicalContext })
+    await f.state.saveResponse('01', 'REPLY_SENTINEL', [])
+    expect(f.run.pollDisposition('01')).toBe('new-effect')
+    f.canonical.prepareInventory = async () => {
+      throw new Error('no inventory yet')
+    }
+    for (let poll = 0; poll < 3; poll++)
+      expect(await f.run.resume('01')).toBe('held')
+    // A sealed but unlinked envelope has paid nothing: it is still a new effect.
+    expect(f.run.pollDisposition('01')).toBe('new-effect')
+    expect(
+      logs.filter(line => line.includes('inventory-unavailable')),
+    ).toHaveLength(1)
+    f.canonical.prepareInventory = async () => undefined
+    f.relay.mode = 'retained'
+    for (let poll = 0; poll < 3; poll++)
+      expect(await f.run.resume('01')).toBe('held')
+    expect(f.run.pollDisposition('01')).toBe('continue-linked')
+    expect(
+      logs.filter(line => line.includes('relay-retained-delivery-pending')),
+    ).toHaveLength(1)
+    f.relay.mode = 'delivered'
+    expect(await f.run.resume('01')).toBe('confirmed')
   }, 30000)
 
   it('serializes concurrent resumes into one envelope, one attempt and one terminal batch', async () => {

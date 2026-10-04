@@ -116,10 +116,11 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, computed } from 'vue'
+import { defineComponent, onUnmounted, watch, computed } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { activeChain } from '@frank/wallet/chain'
+import { accountStatus } from 'src/accounts/session'
 import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { sortPostsByMode } from '../utils/sorting'
@@ -134,6 +135,8 @@ export default defineComponent({
   emits: ['set-topic'],
   setup() {
     const forumStore = useForumStore()
+    onUnmounted(() => forumStore.invalidateRefresh())
+    watch(() => [accountStatus.revision, accountStatus.status], () => forumStore.invalidateRefresh())
     const {
       messages,
       sortMode,
@@ -184,19 +187,11 @@ export default defineComponent({
         )
       })
       console.log(filteredMessages)
-      // Ticket #61: this used `* 1_000_000` (Lotus sats-per-XPI) against `msg.satoshis`, which for
-      // Monad-sourced posts is actually `view.voteWeight` in wei (see chain/monad-chain.ts's
-      // `viewToForumMessage`) -- a Lotus-scale constant against a wei-scale value, off by 12 orders
-      // of magnitude. Uses `activeChain.fromDisplayAmount` (already-established chain-agnostic
-      // display<->raw conversion, `chain/active-chain.ts`) so the "Vote Threshold" field in
-      // ForumDrawer.vue is interpreted in the active chain's own display unit (MON), not a
-      // hardcoded Lotus one. Not renaming `satoshis` itself here -- that's the pre-existing,
-      // deliberately-deferred field-name question this code's own header already flags.
-      const voteThresholdRaw = Number(
-        activeChain.fromDisplayAmount(voteThreshold.value.toString()),
-      )
+      let voteThresholdRaw: bigint
+      try { voteThresholdRaw = activeChain.fromDisplayAmount(voteThreshold.value) }
+      catch { return [] }
       return sortPostsByMode(filteredMessages, sortMode.value).filter(
-        msg => msg.satoshis >= voteThresholdRaw,
+        msg => BigInt(msg.voteWeightWei) >= voteThresholdRaw,
       )
     })
 

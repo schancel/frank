@@ -1,12 +1,7 @@
 /** @jest-environment jsdom */
 
-// TQ-FOCUS-PRODUCTION-BOUNDARY: the stale-arrival focus handoff (`parentMessage` watcher ->
-// `handoffResolvedParentFocus`) was previously only exercised against a permissive copied
-// `getMessage` getter fed topic-only objects -- data production `forum.getMessage` rejects. These
-// regressions drive the exact A1 -> B -> settled A2 -> valid stale A1 ordering through the real
-// Pinia forum store (valid `ForumMessage` records only) inside a real routed Quasar page, and
-// assert both focus outcomes: the idle Retry hands focus to compose, and a connected non-body
-// competitor (an SVG control) keeps focus through the handoff.
+// Real routed Quasar/Pinia boundary: stale parent requests never publish; completed current
+// requests preserve Retry focus handoff and connected competing focus.
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
@@ -16,12 +11,13 @@ import type { VueWrapper } from '@vue/test-utils'
 
 import CreatePost from './CreatePost.vue'
 import { useForumStore } from 'src/stores/forum'
-import type { ForumMessage } from '@frank/cashweb/types/forum'
+import type { ForumMessage } from '@frank/wallet/forum-model'
 
 const mockFetchOne = jest.fn()
 
 // vue-router's CommonJS build imports this ESM-only diagnostics package. The router behavior is
 // the boundary under test here, not its development reporter.
+jest.mock('src/accounts/session', () => ({ accountStatus: jest.requireActual('vue').reactive({revision:1,status:'ready'}) }))
 jest.mock('nostics', () => ({
   createConsoleReporter: () => jest.fn(),
   defineDiagnostics: () => new Proxy({}, { get: () => jest.fn() }),
@@ -59,7 +55,7 @@ jest.mock('src/stores/wallet', () => ({
     jest.requireActual('vue').reactive({ seedPhrase: 'production-focus-test' }),
 }))
 jest.mock('src/utils/chain-amount', () => ({
-  displayToSafeRawAmount: jest.fn(() => 1_000_000),
+  displayToRawAmount: jest.fn(() => 1_000_000),
 }))
 jest.mock('src/utils/notifications', () => ({
   errorNotify: jest.fn(),
@@ -103,7 +99,8 @@ const $t = (key: string) => key
 const validMessage = (payloadDigest: string, topic = 'news'): ForumMessage => ({
   poster: '0xposter',
   topic,
-  satoshis: 1,
+  voteWeightWei: '1',
+  visibleTimestamp: { seconds: '1', nanoseconds: 0 }, epoch: '00'.repeat(16), revision: '1', transactionHash: '11'.repeat(32), authorBurnTx: '0x01', blockNumber: '1', transactionIndex: '0',
   entries: [{ kind: 'post', message: payloadDigest }],
   payloadDigest,
   timestamp: new Date(),
@@ -169,105 +166,44 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-describe('CreatePost stale-arrival focus at the production boundary', () => {
-  it('hands idle Retry focus to compose when a valid stale A1 lands in the production store', async () => {
+describe('CreatePost generation-scoped parent publication', () => {
+  it('excludes stale A1 after A2 settles and preserves idle Retry focus', async () => {
     const { router, page, pending, forum } = await mountRoutedReply('parentA')
-
-    // A1 issued on parentA; B on parentB; A2 re-issued back on parentA.
-    await router.push('/new-post/parentB')
-    await flushPromises()
-    await router.push('/new-post/parentA')
-    await flushPromises()
-    expect(pending.map(request => request.digest)).toEqual([
-      'parentA',
-      'parentB',
-      'parentA',
-    ])
-
-    // A2 settles with no parent available: the idle Retry button remains.
-    pending[2]?.resolve(undefined)
-    await flushPromises()
-    expect(page().vm).toMatchObject({
-      parentDigest: 'parentA',
-      parentLoading: false,
-    })
-    const idleRetry = page().get('[data-test="retry-parent"]').element
-    idleRetry.focus()
-    expect(document.activeElement).toBe(idleRetry)
-
-    // The stale A1 completion writes a valid record into the shared store.
-    pending[0]?.resolve(validMessage('parentA'))
-    await flushPromises()
-
-    expect(router.currentRoute.value.fullPath).toBe('/new-post/parentA')
-    expect(page().find('[data-test="retry-parent"]').exists()).toBe(false)
-    expect(page().vm).toMatchObject({
-      parentDigest: 'parentA',
-      parentLoading: false,
-      topic: 'news',
-    })
-    expect(
-      page().get('[data-test="compose-focus-target"]').element.isConnected,
-    ).toBe(true)
-    expect(document.activeElement).toBe(
-      page().get('[data-test="compose-focus-target"]').element,
-    )
-    expect(forum().getMessage('parentA')?.topic).toBe('news')
+    await router.push('/new-post/parentB'); await flushPromises()
+    await router.push('/new-post/parentA'); await flushPromises()
+    // Only A1 may stage while in flight; obsolete queued B is skipped. Its result is
+    // discarded under A2's route ownership before the current A2 request begins.
+    pending[0]?.resolve(validMessage('parentA')); await flushPromises()
+    expect(pending.map(request => request.digest)).toEqual(['parentA','parentA'])
+    pending[1]?.resolve(undefined); await flushPromises()
+    const retry = page().get('[data-test="retry-parent"]').element
+    retry.focus()
+    expect(forum().getMessage('parentA')).toBeNull()
+    expect(forum().getMessage('parentB')).toBeNull()
+    expect(page().vm).toMatchObject({parentDigest:'parentA',parentLoading:false})
+    expect(document.activeElement).toBe(retry)
   })
-
-  it('preserves a connected SVG competitor through the stale A1 focus handoff', async () => {
-    const { router, page, pending, pinia } = await mountRoutedReply('parentA')
-
-    await router.push('/new-post/parentB')
-    await flushPromises()
-    await router.push('/new-post/parentA')
-    await flushPromises()
-    expect(pending.map(request => request.digest)).toEqual([
-      'parentA',
-      'parentB',
-      'parentA',
-    ])
-
-    // A2 settles with a failure this time: still a settled, idle Retry.
-    pending[2]?.reject(new Error('current A retry failed'))
-    await flushPromises()
-    const idleRetry = page().get('[data-test="retry-parent"]').element
-    idleRetry.focus()
-    expect(document.activeElement).toBe(idleRetry)
-
-    // While the stale A1 completion renders the resolved parent, a connected
-    // non-body element takes focus before the handoff's next-turn check runs.
-    // The handoff must leave that competitor alone instead of steering focus.
-    const stopCompetitorWatch = watch(
-      () => useForumStore(pinia).getMessage('parentA'),
-      () => {
-        const svgControl = document.createElementNS(
-          'http://www.w3.org/2000/svg',
-          'svg',
-        )
-        svgControl.setAttribute('tabindex', '0')
-        document.body.appendChild(svgControl)
-        svgControl.focus()
-      },
-      { flush: 'post' },
-    )
-
-    pending[0]?.resolve(validMessage('parentA'))
-    await flushPromises()
-    stopCompetitorWatch()
-
-    expect(router.currentRoute.value.fullPath).toBe('/new-post/parentA')
+  it('hands Retry focus to compose for a completed current request', async () => {
+    const { page, pending, forum } = await mountRoutedReply('parentA')
+    pending[0]?.resolve(undefined); await flushPromises()
+    const retry = page().get('[data-test="retry-parent"]').element
+    retry.focus()
+    await page().get('[data-test="retry-parent"]').trigger('click')
+    pending[1]?.resolve(validMessage('parentA')); await flushPromises()
+    expect(forum().getMessage('parentA')?.topic).toBe('news')
     expect(page().find('[data-test="retry-parent"]').exists()).toBe(false)
-    expect(page().vm).toMatchObject({
-      parentDigest: 'parentA',
-      parentLoading: false,
-      topic: 'news',
-    })
-    // The connected competitor survived the handoff with focus intact.
+    expect(document.activeElement).toBe(page().get('[data-test="compose-focus-target"]').element)
+  })
+  it('preserves a connected focus competitor on current parent completion', async () => {
+    const { page, pending, pinia } = await mountRoutedReply('parentA')
+    pending[0]?.resolve(undefined); await flushPromises()
+    page().get('[data-test="retry-parent"]').element.focus()
+    await page().get('[data-test="retry-parent"]').trigger('click')
+    const stop = watch(() => useForumStore(pinia).getMessage('parentA'), () => {
+      const competitor = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      competitor.setAttribute('tabindex','0'); document.body.appendChild(competitor); competitor.focus()
+    }, {flush:'post'})
+    pending[1]?.resolve(validMessage('parentA')); await flushPromises(); stop()
     expect(document.activeElement).toBeInstanceOf(SVGElement)
-    expect(document.activeElement?.isConnected).toBe(true)
-    expect(document.activeElement).not.toBe(
-      page().get('[data-test="compose-focus-target"]').element,
-    )
   })
 })

@@ -290,20 +290,24 @@ fn canonical_target(path: &Path) -> Result<PathBuf> {
             .join(path.file_name().ok_or(RuntimeError::Trust)?))
     }
 }
+fn check_floor(c: &DirectoryPrincipalConf, expected: Checkpoint) -> Result<()> {
+    let existing: Continuity = serde_json::from_slice(&bounded_file(&c.continuity_file, 8192)?)
+        .map_err(|_| RuntimeError::Trust)?;
+    if existing.version != 1
+        || existing.installed != identity(c.clone())
+        || existing.checkpoint != expected
+    {
+        return Err(RuntimeError::Trust);
+    }
+    Ok(())
+}
 fn save(
     c: &DirectoryPrincipalConf,
     checkpoint: Checkpoint,
     prior: Option<Checkpoint>,
 ) -> Result<()> {
     if let Some(expected) = prior {
-        let existing: Continuity = serde_json::from_slice(&bounded_file(&c.continuity_file, 8192)?)
-            .map_err(|_| RuntimeError::Trust)?;
-        if existing.version != 1
-            || existing.installed != identity(c.clone())
-            || existing.checkpoint != expected
-        {
-            return Err(RuntimeError::Trust);
-        }
+        check_floor(c, expected)?;
     }
     let first = prior.is_none();
     let data = serde_json::to_vec(&Continuity {
@@ -421,10 +425,10 @@ fn stage<'a>(
                 .unwrap_or(OpenMode::NewEnrollment),
         )?;
         if checkpoint.is_some() {
-            // Validate staged authority without replacing the external floor. A later
-            // invalid principal must not change the previous published generation's
-            // continuity record. The first served operation persists its fresh result.
-            directory.current(Context {
+            // Validate staged authority without a durable freshness commit. A later
+            // invalid principal must leave the previous generation's native clock and
+            // external floor intact. A served operation performs its own fresh commit.
+            directory.check_current(Context {
                 now: Some(now),
                 relay: Some(&relay),
             })?;
@@ -465,6 +469,12 @@ fn execute(p: &mut Principal<'_>, op: Operation, now: Timestamp, clock: &Path) -
     };
     if p.unavailable {
         return Err(RuntimeError::Trust);
+    }
+    if let Some(expected) = p.checkpoint {
+        if check_floor(&p.config, expected).is_err() {
+            p.unavailable = true;
+            return Err(RuntimeError::Trust);
+        }
     }
     if let Operation::Historical(hash) = op {
         return p
@@ -1105,7 +1115,7 @@ mod reload_tests {
                 )
                 .wait()
                 .await,
-            Err(RuntimeError::OutcomeUnknown)
+            Err(RuntimeError::Trust)
         ));
         assert!(!c.continuity_file.exists());
         assert!(matches!(

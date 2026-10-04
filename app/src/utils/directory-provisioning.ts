@@ -99,7 +99,10 @@ function bootstrapPolicy(value: unknown): BootstrapPolicy {
   const validity = object(r.exportValidity, ['issuedAtNs', 'expiresAtNs'])
   const issuedAtNs = decimal(validity.issuedAtNs, MAX_NS), expiresAtNs = decimal(validity.expiresAtNs, MAX_NS)
   if (BigInt(expiresAtNs) <= BigInt(issuedAtNs) || BigInt(expiresAtNs) - BigInt(issuedAtNs) > 3_600_000_000_000n) invalid()
-  return { version: 1, kind: 'directory-bootstrap-process-policy', networkTag: choice(r.networkTag, ['MONT', 'MON1'] as const), network: text(r.network, 64, true), chainId: decimal(r.chainId), participants: ps, relayTuples: ts, exportValidity: { issuedAtNs, expiresAtNs }, policyIdentity: hex(r.policyIdentity, 32) }
+  const networkTag = choice(r.networkTag, ['MONT', 'MON1'] as const)
+  const network = text(r.network, 64, true), chainId = decimal(r.chainId)
+  if (!((networkTag === 'MONT' && network === 'monad-testnet' && chainId === '10143') || (networkTag === 'MON1' && network === 'monad-mainnet' && chainId === '143'))) invalid()
+  return { version: 1, kind: 'directory-bootstrap-process-policy', networkTag, network, chainId, participants: ps, relayTuples: ts, exportValidity: { issuedAtNs, expiresAtNs }, policyIdentity: hex(r.policyIdentity, 32) }
 }
 function decodeBase64(value: string): Uint8Array { return Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)) }
 function base64(value: unknown): string {
@@ -205,14 +208,18 @@ export function configurationMatches(snapshot: InstallationSnapshot, approved: A
 export async function fetchInstallationSnapshot(participant: Participant, manifest: string, signal: AbortSignal, request: typeof fetch = fetch): Promise<InstallationSnapshot> {
   const origin = endpoint(participant.origin, true), identity = hex(manifest, 32)
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  let body: ReadableStream<Uint8Array> | null = null
   const controller = new AbortController()
   const abort = () => { controller.abort(); void reader?.cancel().catch(() => undefined) }
   signal.addEventListener('abort', abort, { once: true })
   if (signal.aborted) abort()
-  let chunks: Uint8Array[] = []
+  // One fixed bounded allocation: fragmentation (including empty chunks) cannot
+  // accumulate per-chunk objects. Retained byte storage never exceeds the cap.
+  let scratch: Uint8Array | undefined
   try {
     const url = `${origin}/directory-installation/${identity}`
     const response = await request(url, { method: 'GET', redirect: 'error', credentials: 'omit', cache: 'no-store', headers: { Accept: 'application/json' }, signal: controller.signal })
+    body = response.body
     if (signal.aborted || response.redirected || response.url !== url || !response.ok || response.status !== 200) invalid()
     let headerBytes = 0, headerCount = 0
     response.headers.forEach((value, name) => {
@@ -226,28 +233,27 @@ export async function fetchInstallationSnapshot(participant: Participant, manife
     if (encoding !== null && encoding !== 'identity') invalid()
     const length = response.headers.get('content-length')
     if (length !== null && (decimal(length) !== length || BigInt(length) > BigInt(PROVISIONING_BODY_LIMIT))) invalid()
-    if (!response.body) invalid()
-    reader = response.body.getReader()
+    if (!body) invalid()
+    reader = body.getReader()
+    scratch = new Uint8Array(PROVISIONING_BODY_LIMIT)
     let total = 0
     for (;;) {
       const part = await reader.read()
       if (signal.aborted) invalid()
       if (part.done) break
       if (part.value.length > PROVISIONING_BODY_LIMIT - total) invalid()
+      scratch.set(part.value, total)
       total += part.value.length
-      chunks.push(Uint8Array.from(part.value))
     }
     if (length !== null && BigInt(length) !== BigInt(total)) invalid()
-    const bytes = new Uint8Array(total)
-    let at = 0
-    for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.length }
-    return parseInstallationSnapshot(bytes)
+    return parseInstallationSnapshot(scratch.subarray(0, total))
   } finally {
     controller.abort()
-    await reader?.cancel().catch(() => undefined)
+    if (reader) await reader.cancel().catch(() => undefined)
+    else await body?.cancel().catch(() => undefined)
     reader?.releaseLock()
-    for (const chunk of chunks) chunk.fill(0)
-    chunks = []
+    scratch?.fill(0)
+    scratch = undefined
     signal.removeEventListener('abort', abort)
   }
 }

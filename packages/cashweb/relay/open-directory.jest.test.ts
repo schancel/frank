@@ -336,6 +336,79 @@ describe('one signature per revision', () => {
   })
 })
 
+describe('two devices of one account renewing at the same time', () => {
+  it('end on the same head with one accepted statement and no fork', async () => {
+    const alice = testAccount(1)
+    const phone = device(alice, 'phone')
+    await phone.directory.publish()
+    const laptop = device(alice, 'laptop')
+    await laptop.directory.publish()
+    clock = START + 340n * DAY
+    // The laptop signs its renewal but the relay never gets it.
+    relay.putFault = 'lose'
+    await laptop.directory.publish()
+    relay.putFault = undefined
+    expect(laptop.signed).toEqual([1n])
+    // The phone renews from the head the relay holds and is accepted.
+    clock += 3600n * SECOND
+    const atPhone = await phone.directory.publish()
+    expect(phone.signed).toEqual([0n, 1n])
+    expect(atPhone.current.revision).toBe(1n)
+    // The laptop's next attempt still believes the relay is at revision zero (its read raced the
+    // phone's write), re-sends its saved bytes once, gets 409, drops them and adopts the phone's.
+    let stale = true
+    const zero = relay.chain(alice.subject)[0]
+    relay.tamper = path =>
+      stale && path.endsWith(`/${alice.subject}/head`)
+        ? ((stale = false), zero)
+        : undefined
+    const before = relay.requests.filter(r => r.method === 'PUT').length
+    clock += 3600n * SECOND
+    const atLaptop = await laptop.directory.publish()
+    expect(relay.requests.filter(r => r.method === 'PUT')).toHaveLength(
+      before + 1,
+    )
+    expect(toHex(atLaptop.current.evidence.attestation)).toBe(
+      toHex(atPhone.current.evidence.attestation),
+    )
+    expect(relay.chain(alice.subject)).toHaveLength(2)
+    // The dropped statement is never sent again and nothing more is signed.
+    clock += 3600n * SECOND
+    await laptop.directory.publish()
+    expect(laptop.signed).toEqual([1n])
+    expect(relay.requests.filter(r => r.method === 'PUT')).toHaveLength(
+      before + 1,
+    )
+    // A third party sees one chain.
+    const bob = device(testAccount(2), 'bob')
+    await bob.directory.publish()
+    expect((await bob.directory.lookup(alice.address)).current.revision).toBe(
+      1n,
+    )
+  })
+
+  it('re-reads the head just before signing and renews from what another device published', async () => {
+    const alice = testAccount(1)
+    const phone = device(alice, 'phone')
+    await phone.directory.publish()
+    const laptop = device(alice, 'laptop')
+    await laptop.directory.publish()
+    clock = START + 340n * DAY
+    await phone.directory.publish()
+    // The laptop's first read of this publish is stale; the read before signing is not.
+    let stale = true
+    const zero = relay.chain(alice.subject)[0]
+    relay.tamper = path =>
+      stale && path.endsWith(`/${alice.subject}/head`)
+        ? ((stale = false), zero)
+        : undefined
+    const entry = await laptop.directory.publish()
+    expect(laptop.signed).toEqual([])
+    expect(entry.current.revision).toBe(1n)
+    expect(relay.chain(alice.subject)).toHaveLength(2)
+  })
+})
+
 describe('what the relay says about itself is not trusted blindly', () => {
   it('signs nothing when the relay names another host as its endpoint', async () => {
     const alice = testAccount(1)

@@ -205,9 +205,7 @@ export async function fixture() {
     issuedAt: NOW,
     expiresAt: { seconds: 3700n, nanoseconds: 0 },
     now: NOW,
-    relayA: { processId: 'relay-a', origin: RELAY, tuple },
-    relayB: { processId: 'relay-b', origin: RELAY, tuple },
-    subjectBinding: 'A',
+    relay: tuple,
   }
   const stores: DirectoryStore[] = []
   // Each wallet admits both subjects through its own independent public store.

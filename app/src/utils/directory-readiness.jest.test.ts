@@ -4,13 +4,16 @@
  * operator bundle builder and real public directory admission (Node store). The participants'
  * status reads and the relay's directory route are in-memory stand-ins for separate processes.
  */
-import { mkdirSync, mkdtempSync, rmSync } from 'fs'
+import 'fake-indexeddb/auto'
+import { IDBFactory } from 'fake-indexeddb'
+import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { getBytes } from 'ethers'
 import { toHex } from '@frank/codec'
-import { openNodeDirectoryStore } from '@frank/directory-admission/node'
+import { openBrowserDirectoryStore } from '@frank/directory-admission/browser'
 import type { Checkpoint } from '@frank/directory-admission'
+import * as monadChain from '@frank/wallet/chain/monad-chain'
 import {
   createMonadChain,
   type MonadChainWalletHandle,
@@ -31,6 +34,7 @@ import {
   buildBootstrapPolicy,
   relayDirectoryToml,
 } from './directory-operator'
+import { discardUnenrolledDirectoryStore } from './directory-store-reset'
 import {
   checkDirectoryReadiness,
   parseCheckpoint,
@@ -40,6 +44,17 @@ import {
   type ReadinessDeps,
 } from './directory-readiness'
 
+jest.mock('@frank/wallet/chain/monad-chain', () => {
+  const actual = jest.requireActual('@frank/wallet/chain/monad-chain')
+  return {
+    ...actual,
+    prepareMonadRevisionZeroExport: jest.fn(
+      actual.prepareMonadRevisionZeroExport,
+    ),
+  }
+})
+// The only operation in this barrier that signs with the account's authentication key.
+const signing = monadChain.prepareMonadRevisionZeroExport as jest.Mock
 const RELAY_A = 'https://relay-a.example'
 const NOW = 1_000_000_000_000n
 const bytes = (value: unknown) =>
@@ -64,7 +79,8 @@ function roots(index: number): MonadRootBundle {
 
 async function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'directory-readiness-'))
-  mkdirSync(join(dir, 'stores'))
+  // A fresh browser profile per test: the real IndexedDB admission store runs against it.
+  globalThis.indexedDB = new IDBFactory()
   const chain = createMonadChain({
     networkId: 'monad-testnet',
     rpcChain: 'monad-testnet',
@@ -101,10 +117,20 @@ async function fixture() {
       expiresAtNs: (NOW + 3_000_000_000_000n).toString(),
     },
   })
-  const session = (wallet: MonadChainWalletHandle) => ({
-    state: { status: 'ready', revision: 3, account: { id: 'account' } },
-    getWallet: async () => wallet,
-  })
+  const accounts = new Map<MonadChainWalletHandle, unknown>()
+  const session = (wallet: MonadChainWalletHandle) => {
+    if (!accounts.has(wallet))
+      accounts.set(wallet, {
+        receipt: { context: { accountId: `account-${accounts.size}` } },
+      })
+    return {
+      state: { status: 'ready', revision: 3, account: accounts.get(wallet) },
+      getWallet: async () => wallet,
+    }
+  }
+  const savedExports = new Map<string, string>()
+  const failDirectory: { next?: number } = {}
+  const failEnroll = { next: false }
   const deployed = new Map<string, Uint8Array>([
     ['bootstrap-policy.json', bytes(policy)],
   ])
@@ -113,6 +139,11 @@ async function fixture() {
   const directoryRequests: string[] = []
   const directoryFetch: DirectoryFetch = async (url, init) => {
     directoryRequests.push(`${init.method} ${url}`)
+    if (failDirectory.next !== undefined) {
+      const status = failDirectory.next
+      failDirectory.next = undefined
+      return { status, url, headers: { get: () => null }, body: null }
+    }
     const subject = url.split('/')[6]
     if (init.method === 'PUT') heads.set(subject, new Uint8Array(init.body!))
     const head = heads.get(subject)
@@ -189,12 +220,22 @@ async function fixture() {
         }),
       }
     },
-    openStore: options =>
-      openNodeDirectoryStore({
-        location: join(dir, 'stores', options.name.replace(/[^a-z0-9]/g, '-')),
-        anchor: options.anchor,
-        mode: options.mode,
-      }),
+    async openStore(options) {
+      const store = await openBrowserDirectoryStore(options)
+      if (!failEnroll.next) return store
+      failEnroll.next = false
+      return {
+        ...store,
+        enroll: async () => {
+          throw new Error('local enrollment interrupted')
+        },
+      }
+    },
+    discardUnenrolled: discardUnenrolledDirectoryStore,
+    exports: {
+      load: key => savedExports.get(key) ?? null,
+      save: (key, value) => void savedExports.set(key, value),
+    },
     checkpoints: {
       load: key =>
         checkpoints.has(key) ? parseCheckpoint(checkpoints.get(key)!) : null,
@@ -224,6 +265,9 @@ async function fixture() {
     checkpoints,
     directoryRequests,
     snapshotReads,
+    savedExports,
+    failDirectory,
+    failEnroll,
     deps,
     setNow: (value: bigint) => (now = value),
     setForeign: (id: Participant['processId'] | undefined) => (foreignAt = id),
@@ -328,10 +372,12 @@ describe('local/demo directory readiness barrier', () => {
     expect(directory.homeEndpoint).toBe(RELAY_A + '/')
     await result.activation.close()
 
-    // Reload: automatic check reopens the retained stores and publishes nothing.
+    // Reload: automatic check reopens the retained stores, signs nothing and publishes nothing.
     f.directoryRequests.length = 0
+    signing.mockClear()
     const resumed = await f.check(false)
     if (resumed.status !== 'ready') throw new Error(resumed.reason)
+    expect(signing).not.toHaveBeenCalled()
     expect(f.directoryRequests.every(r => r.startsWith('GET'))).toBe(true)
     await resumed.activation.close()
 
@@ -347,10 +393,93 @@ describe('local/demo directory readiness barrier', () => {
     expect(toml).toContain(`revision_zero = "${f.files.ui.revisionZeroT1}"`)
   })
 
-  it('never enrolls automatically on a device that has not joined the directory', async () => {
+  it('automatic start signs nothing and contacts no participant on a device that has not joined', async () => {
     f.install()
+    signing.mockClear()
     expect(await reason(false)).toBe('enrollment-required')
+    expect(signing).not.toHaveBeenCalled()
     expect(f.directoryRequests).toEqual([])
+    expect(f.snapshotReads).toEqual([])
+  })
+
+  it('automatic start refuses a saved export that is not this wallet or this policy', async () => {
+    f.install()
+    const first = await f.check()
+    if (first.status !== 'ready') throw new Error(first.reason)
+    await first.activation.close()
+    const [key] = [...f.savedExports.keys()]
+    const saved = JSON.parse(f.savedExports.get(key)!)
+    f.savedExports.set(
+      key,
+      JSON.stringify({ ...saved, bootstrapPolicyIdentity: 'ee'.repeat(32) }),
+    )
+    signing.mockClear()
+    expect(await reason(false)).toBe('enrollment-required')
+    // Another account's public export under this account's key is never activated.
+    f.savedExports.set(key, JSON.stringify(f.files.bot))
+    expect(await reason(false)).toBe('bundle-not-this-account')
+    expect(signing).not.toHaveBeenCalled()
+  })
+
+  it.each([409, 429, 503])(
+    'a first enrollment the relay answers with %s can simply be checked again',
+    async status => {
+      f.install()
+      f.failDirectory.next = status
+      expect(await reason()).toBe('admission-failed')
+      expect(f.checkpoints.size).toBe(0)
+      const retried = await f.check()
+      if (retried.status !== 'ready') throw new Error(retried.reason)
+      await retried.activation.close()
+    },
+  )
+
+  it('a first enrollment interrupted after its prospective checkpoint was saved can be checked again', async () => {
+    f.install()
+    f.failEnroll.next = true
+    expect(await reason()).toBe('admission-failed')
+    const saved = [...f.checkpoints.values()].map(v => parseCheckpoint(v).kind)
+    expect(saved).toEqual(['ProspectiveEnrollment'])
+    // Automatic start does not repair or enroll; the explicit action does.
+    expect(await reason(false)).toBe('enrollment-required')
+    const retried = await f.check()
+    if (retried.status !== 'ready') throw new Error(retried.reason)
+    expect(
+      [...f.checkpoints.values()].map(v => parseCheckpoint(v).kind),
+    ).toEqual(['CommittedPrefix', 'CommittedPrefix'])
+    await retried.activation.close()
+  })
+
+  it('never discards admitted state: a lost checkpoint or an emptied store stays failed', async () => {
+    f.install()
+    const first = await f.check()
+    if (first.status !== 'ready') throw new Error(first.reason)
+    await first.activation.close()
+    const names = (await indexedDB.databases()).map(db => db.name!).sort()
+    expect(names).toHaveLength(2)
+
+    // Checkpoints lost, admitted stores intact: nothing is deleted and nothing re-enrolls.
+    const checkpoints = new Map(f.checkpoints)
+    f.checkpoints.clear()
+    expect(await reason()).toBe('admission-failed')
+    expect((await indexedDB.databases()).map(db => db.name!).sort()).toEqual(
+      names,
+    )
+    for (const [key, value] of checkpoints) f.checkpoints.set(key, value)
+    const restored = await f.check(false)
+    if (restored.status !== 'ready') throw new Error(restored.reason)
+    await restored.activation.close()
+
+    // Acknowledged checkpoints intact, stores wiped: never treated as a fresh enrollment.
+    for (const name of names)
+      await new Promise<void>((resolve, reject) => {
+        const request = indexedDB.deleteDatabase(name)
+        request.onsuccess = () => resolve()
+        request.onerror = () => reject(request.error)
+      })
+    expect(await reason()).toBe('admission-failed')
+    expect(await reason()).toBe('admission-failed')
+    expect([...f.checkpoints.values()]).toEqual([...checkpoints.values()])
   })
 
   it.each(['relay-a', 'relay-b', 'bot'] as const)(

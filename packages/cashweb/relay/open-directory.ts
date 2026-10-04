@@ -769,58 +769,132 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
       throw error
     }
   }
+  // The one signed-but-unconfirmed own statement. It is saved before it is sent and sent again,
+  // byte for byte, until the relay accepts it or shows a head that supersedes it. A second
+  // statement is never signed for the same revision: two would be a fork that every peer
+  // refuses for good.
+  const pendingKey = `pending:${network}:${selfAddress}`
+  async function loadPending(): Promise<Evidence | undefined> {
+    let saved: string | null
+    try {
+      saved = await deps.pins.load(pendingKey)
+    } catch {
+      throw new OpenDirectoryError('storage', selfAddress)
+    }
+    if (!saved) return undefined
+    let pending: Evidence
+    try {
+      pending = parse(fromHex(saved), selfAddress)
+    } catch {
+      throw new OpenDirectoryError('storage', selfAddress)
+    }
+    if (pending.subject !== selfSubject)
+      throw new OpenDirectoryError('storage', selfAddress)
+    return pending
+  }
+  async function savePending(attestation: Uint8Array | null): Promise<void> {
+    try {
+      await deps.pins.save(pendingKey, attestation ? toHex(attestation) : '')
+    } catch {
+      throw new OpenDirectoryError('storage', selfAddress)
+    }
+  }
+  const supersedes = (head: Evidence, pending: Evidence): boolean =>
+    same(head.hash, pending.hash) || head.revision >= pending.revision
+  type Admitted = { handle: Handle; current: Current } | undefined
+  /** Send the saved statement. It stays saved unless the relay took it or moved past it. */
+  async function sendPending(
+    pending: Evidence,
+  ): Promise<{ head: Evidence; admitted: Admitted }> {
+    const bytes = pending.candidate.attestation
+    const answer = await put(bytes)
+    if (answer.status === 200) {
+      await savePending(null)
+      return { head: pending, admitted: await admitOwn(bytes) }
+    }
+    if (answer.status === 409) {
+      // Another device got there first (or the relay kept ours earlier): adopt what it holds.
+      const winner = await getEntry(`/${selfSubject}/head`, 'fresh-current')
+      const head = winner && parse(winner, selfAddress)
+      if (winner && head && supersedes(head, pending)) {
+        await savePending(null)
+        return { head, admitted: await admitOwn(winner) }
+      }
+    }
+    throw putFailure(answer.status)
+  }
+  /** Hand a relay that lacks it the chain this device retains, oldest first. Signs nothing. */
+  async function handOver(local: Handle, retained: Evidence): Promise<void> {
+    const chain = [retained]
+    while (chain[0].predecessor) {
+      const evidence = await local.store.historicalEvidence(
+        chain[0].predecessor,
+      )
+      if (!evidence) throw new OpenDirectoryError('storage', selfAddress)
+      chain.unshift(parse(evidence.attestation, selfAddress))
+    }
+    for (const revision of chain) {
+      const answer = await put(revision.candidate.attestation)
+      if (answer.status !== 200) throw putFailure(answer.status)
+    }
+  }
   async function publishOnce(): Promise<DirectoryEntry> {
     const binding = await relayBinding()
     const served = await getEntry(`/${selfSubject}/head`, 'fresh-current')
+    const servedHead = served ? parse(served, selfAddress) : undefined
+    let pending = await loadPending()
+    if (pending && servedHead && supersedes(servedHead, pending)) {
+      // The relay did keep it (the answer was lost), or the account has moved past it.
+      await savePending(null)
+      pending = undefined
+    }
     let head: Evidence
-    let admitted: { handle: Handle; current: Current } | undefined
-    if (served) {
+    let admitted: Admitted
+    if (!pending && served && servedHead) {
       // The relay already has this account (another device, or an earlier session): adopt it
       // instead of signing a second, conflicting revision zero.
-      head = parse(served, selfAddress)
+      head = servedHead
       admitted = await admitOwn(served)
     } else {
       const local = await pinnedHandle(selfSubject, selfAddress)
       const retained = local && (await retainedHead(local))
-      if (local && retained) {
+      if (!servedHead && local && retained)
         // This device holds the account's chain but the relay does not (a new relay, or one
-        // that lost it): hand the same signed revisions over, oldest first. Nothing new is signed.
-        const chain = [retained]
-        while (chain[0].predecessor) {
-          const evidence = await local.store.historicalEvidence(
-            chain[0].predecessor,
-          )
-          if (!evidence) throw new OpenDirectoryError('storage', selfAddress)
-          chain.unshift(parse(evidence.attestation, selfAddress))
+        // that lost it): hand the same signed revisions over. Nothing new is signed.
+        await handOver(local, retained)
+      if (pending)
+        try {
+          ;({ head, admitted } = await sendPending(pending))
+        } catch (error) {
+          // The saved statement is still not accepted. The entry the relay does hold stays
+          // usable meanwhile, unless it names another relay than the configured one.
+          const current =
+            served && servedHead && !moved(servedHead, binding)
+              ? await admitOwn(served)
+              : undefined
+          if (!current || !servedHead) throw error
+          return entry(current.handle, current.current)
         }
-        for (const revision of chain) {
-          const answer = await put(revision.candidate.attestation)
-          if (answer.status !== 200) throw putFailure(answer.status)
-        }
+      else if (local && retained) {
         head = retained
         admitted = await admitOwn(retained.candidate.attestation)
       } else {
         const attestation = await deps.self.signRevisionZero(validity(binding))
-        const answer = await put(attestation)
-        let bytes = attestation
-        if (answer.status === 409) {
-          // Another device published first. Adopt what the relay holds.
-          const winner = await getEntry(`/${selfSubject}/head`, 'fresh-current')
-          if (!winner) throw putFailure(answer.status)
-          bytes = winner
-        } else if (answer.status !== 200) throw putFailure(answer.status)
-        head = parse(bytes, selfAddress)
-        admitted = await admitOwn(bytes)
+        await savePending(attestation)
+        ;({ head, admitted } = await sendPending(
+          parse(attestation, selfAddress),
+        ))
       }
     }
     if (head.subject !== selfSubject)
       throw new OpenDirectoryError('invalid', selfAddress)
-    if (!admitted || moved(head, binding) || renewalDue(head)) {
+    const relocating = moved(head, binding)
+    if (!admitted || relocating || renewalDue(head)) {
       const input = validity(binding, head.issued)
       // Renewing for time only is pointless unless the relay lets the entry live longer.
       if (
         !admitted ||
-        moved(head, binding) ||
+        relocating ||
         nanos(input.expiresAt) > nanos(head.expiry) + 3600n * SECOND
       ) {
         renewTriedAt = Date.now()
@@ -829,11 +903,14 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
           revision: head.revision + 1n,
           predecessor: head.hash,
         })
-        const answer = await put(attestation)
-        // A current entry that could not be renewed is still usable.
-        if (answer.status === 200)
-          admitted = await admit(attestation, selfExpected)
-        else if (!admitted) throw putFailure(answer.status)
+        await savePending(attestation)
+        try {
+          ;({ admitted } = await sendPending(parse(attestation, selfAddress)))
+        } catch (error) {
+          // The signed renewal stays saved and is sent again next time. Until then an entry
+          // that is still current stays usable; a move that did not happen is not reported done.
+          if (!admitted || relocating) throw error
+        }
       }
     }
     if (!admitted) throw new OpenDirectoryError('expired', selfAddress)

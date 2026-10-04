@@ -262,6 +262,80 @@ describe('own entry', () => {
   })
 })
 
+describe('one signature per revision', () => {
+  const putBodies = () =>
+    relay.requests.filter(r => r.method === 'PUT').map(r => r.body)
+
+  it('re-sends the identical revision zero after a failed publish', async () => {
+    const alice = testAccount(1)
+    const { directory, signed } = device(alice, 'alice')
+    relay.putFault = 'lose'
+    expect(await code(directory.publish())).toBe('unreachable')
+    clock += 3600n * SECOND
+    expect(await code(directory.publish())).toBe('unreachable')
+    relay.putFault = undefined
+    clock += 3600n * SECOND
+    await directory.publish()
+    expect(signed).toEqual([0n])
+    const bodies = putBodies()
+    expect(bodies).toHaveLength(3)
+    expect(new Set(bodies).size).toBe(1)
+    expect(toHex(relay.chain(alice.subject)[0])).toBe(bodies[0])
+  })
+
+  it('sends the identical bytes after a crash between signing and sending', async () => {
+    const alice = testAccount(1)
+    const first = device(alice, 'alice')
+    // The process dies inside the PUT: the request never completes and nothing is stored.
+    relay.putFault = 'lose'
+    await code(first.directory.publish())
+    await first.directory.close()
+    relay.putFault = undefined
+    clock += 86_400n * SECOND
+    const second = device(alice, 'alice')
+    await second.directory.publish()
+    expect(first.signed).toEqual([0n])
+    expect(second.signed).toEqual([])
+    const bodies = putBodies()
+    expect(bodies[bodies.length - 1]).toBe(bodies[0])
+    expect(relay.chain(alice.subject)).toHaveLength(1)
+  })
+
+  it('adopts its own entry when the relay stored it but answered with an error', async () => {
+    const alice = testAccount(1)
+    const first = device(alice, 'alice')
+    relay.putFault = 'keep'
+    expect(await code(first.directory.publish())).toBe('unreachable')
+    await first.directory.close()
+    relay.putFault = undefined
+    const second = device(alice, 'alice')
+    const entry = await second.directory.publish()
+    expect(second.signed).toEqual([])
+    expect(putBodies()).toHaveLength(1)
+    expect(toHex(entry.current.evidence.attestation)).toBe(putBodies()[0])
+  })
+
+  it('signs a renewal once and re-sends those bytes until the relay takes them', async () => {
+    const alice = testAccount(1)
+    const { directory, signed } = device(alice, 'alice')
+    await directory.publish()
+    clock = START + 340n * DAY
+    relay.putFault = 'lose'
+    // The current entry is still valid, so messaging keeps working on it meanwhile.
+    expect((await directory.publish()).current.revision).toBe(0n)
+    clock += DAY
+    expect((await directory.publish()).current.revision).toBe(0n)
+    relay.putFault = undefined
+    clock += DAY
+    expect((await directory.publish()).current.revision).toBe(1n)
+    expect(signed).toEqual([0n, 1n])
+    const renewals = putBodies().slice(1)
+    expect(renewals).toHaveLength(3)
+    expect(new Set(renewals).size).toBe(1)
+    expect(relay.chain(alice.subject)).toHaveLength(2)
+  })
+})
+
 describe('other accounts', () => {
   it('finds any published address and pins it; an unpublished one is a typed error', async () => {
     const alice = testAccount(1),

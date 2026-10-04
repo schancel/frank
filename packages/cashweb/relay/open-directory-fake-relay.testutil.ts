@@ -40,7 +40,9 @@ export interface FakeRelay {
   readonly binding: RelayBinding
   readonly fetch: DirectoryFetch
   /** Every request seen, in order. */
-  readonly requests: { method: string; path: string }[]
+  readonly requests: { method: string; path: string; body?: string }[]
+  /** Make PUTs answer 503: `lose` stores nothing, `keep` stores the entry and still answers 503. */
+  putFault?: 'lose' | 'keep'
   /** Every key this relay holds an entry for. */
   subjects(): IterableIterator<string>
   /** Stored attestation chain of a key, oldest first. */
@@ -221,7 +223,11 @@ export function createFakeRelay(options: FakeRelayOptions = {}): FakeRelay {
       if (!url.startsWith(endpoint + '/'))
         throw new Error(`request for another origin: ${url}`)
       const path = url.slice(endpoint.length)
-      relay.requests.push({ method: init.method, path })
+      relay.requests.push({
+        method: init.method,
+        path,
+        ...(init.body ? { body: toHex(new Uint8Array(init.body)) } : {}),
+      })
       if (init.method === 'GET') {
         const forged = relay.tamper?.(path)
         if (forged === 404) return answer(url, 404)
@@ -289,6 +295,7 @@ export function createFakeRelay(options: FakeRelayOptions = {}): FakeRelay {
       }
       if (parts[1] === 'head' && parts.length === 2 && init.method === 'PUT') {
         const bytes = new Uint8Array(init.body!)
+        if (relay.putFault === 'lose') return answer(url, 503)
         let entry
         try {
           entry = parse(bytes)
@@ -310,6 +317,7 @@ export function createFakeRelay(options: FakeRelayOptions = {}): FakeRelay {
           return answer(url, 409)
         chain.push({ hash: entry.hash, bytes })
         chains.set(subject, chain)
+        if (relay.putFault === 'keep') return answer(url, 503)
         return head(bytes, url, subject)
       }
       return answer(url, 404)

@@ -1392,6 +1392,27 @@ impl<'a> DbMonadOutbox<'a> {
         now_ms: i64,
         limits: &MonadOutboxLimits,
     ) -> Result<MonadOutboxClaim> {
+        self.claim_with_external_usage(
+            payload_hash,
+            message,
+            policy,
+            now_ms,
+            limits,
+            Ok(crate::monad_outbox::financial::AdmissionUsage::default()),
+        )
+    }
+
+    /// Production admission holds the private shared gate while taking the external
+    /// snapshot, then releases that store lock before entering this original lock.
+    pub(crate) fn claim_with_external_usage(
+        &self,
+        payload_hash: &[u8],
+        message: &proto::MonadStampedMessage,
+        policy: &MonadOutboxPolicy,
+        now_ms: i64,
+        limits: &MonadOutboxLimits,
+        external: Result<crate::monad_outbox::financial::AdmissionUsage>,
+    ) -> Result<MonadOutboxClaim> {
         let payload_hash = checked_payload_hash(payload_hash)?;
         let canonical_message = message.encode_to_vec();
         validate_limits(limits)?;
@@ -1473,7 +1494,11 @@ impl<'a> DbMonadOutbox<'a> {
             limits,
             adopted_legacy,
         )?;
-        if self.active_count_up_to(limits.max_active_claims)? >= limits.max_active_claims {
+        let external = external?;
+        if (self.active_count_up_to(limits.max_active_claims)? as u64)
+            .checked_add(external.active)
+            .is_none_or(|n| n >= limits.max_active_claims as u64)
+        {
             return Ok(if adopted_legacy {
                 MonadOutboxClaim::AtCapacityExactLegacy
             } else {
@@ -1532,8 +1557,11 @@ impl<'a> DbMonadOutbox<'a> {
             &policy.recipient,
             reservation_bytes,
             limits,
-        )? || self.read_unconfirmed_count_locked(&policy.recipient)?
-            >= limits.max_unconfirmed_claims_per_recipient as u64
+            &external,
+        )? || self
+            .read_unconfirmed_count_locked(&policy.recipient)?
+            .checked_add(external.unconfirmed)
+            .is_none_or(|n| n >= limits.max_unconfirmed_claims_per_recipient as u64)
         {
             return Ok(if adopted_legacy {
                 MonadOutboxClaim::AtCapacityExactLegacy
@@ -3271,6 +3299,41 @@ impl<'a> DbMonadOutbox<'a> {
         })
     }
 
+    /// Read durable usage for the other namespace's production admission gate.
+    /// This lock is released before that namespace takes its storage lock.
+    pub(crate) fn admission_usage(
+        &self,
+        recipient: Address,
+        limits: &MonadOutboxLimits,
+    ) -> Result<crate::monad_outbox::financial::AdmissionUsage> {
+        validate_limits(limits)?;
+        let _guard = self.db.lock_monad_outbox();
+        if !self.migration_complete(
+            RECOVERY_QUOTA_MIGRATION_KEY,
+            RECOVERY_QUOTA_CURSOR_KEY,
+            RECOVERY_QUOTA_CURSOR_STATE_KEY,
+            "v5 recovery quota migration",
+        )? {
+            return Err(CorruptRecord(
+                "recovery quota accounting migration is incomplete".to_owned(),
+            )
+            .into());
+        }
+        let global = self.read_required_quota_usage_locked(
+            RECOVERY_QUOTA_GLOBAL_KEY,
+            "global recovery quota counter",
+        )?;
+        let recipient_usage = self.read_recipient_quota_usage_for_reserve_locked(&recipient)?;
+        Ok(crate::monad_outbox::financial::AdmissionUsage {
+            active: self.active_count_up_to(limits.max_active_claims)? as u64,
+            global_records: global.records,
+            global_bytes: global.bytes,
+            recipient_records: recipient_usage.records,
+            recipient_bytes: recipient_usage.bytes,
+            unconfirmed: self.read_unconfirmed_count_locked(&recipient)?,
+        })
+    }
+
     fn active_count_up_to(&self, limit: usize) -> Result<usize> {
         let mut count = 0;
         for item in self
@@ -3290,6 +3353,7 @@ impl<'a> DbMonadOutbox<'a> {
         recipient: &Address,
         new_bytes: usize,
         limits: &MonadOutboxLimits,
+        external: &crate::monad_outbox::financial::AdmissionUsage,
     ) -> Result<bool> {
         #[cfg(test)]
         QUOTA_ADMISSION_META_READS.set(QUOTA_ADMISSION_META_READS.get().saturating_add(1));
@@ -3313,10 +3377,22 @@ impl<'a> DbMonadOutbox<'a> {
         let recipient_usage = self
             .read_recipient_quota_usage_for_reserve_locked(recipient)?
             .checked_add(new_bytes as u64)?;
-        Ok(global.records <= limits.max_recovery_records as u64
-            && global.bytes <= limits.max_recovery_bytes as u64
-            && recipient_usage.records <= limits.max_recovery_records_per_recipient as u64
-            && recipient_usage.bytes <= limits.max_recovery_bytes_per_recipient as u64)
+        Ok(global
+            .records
+            .checked_add(external.global_records)
+            .is_some_and(|n| n <= limits.max_recovery_records as u64)
+            && global
+                .bytes
+                .checked_add(external.global_bytes)
+                .is_some_and(|n| n <= limits.max_recovery_bytes as u64)
+            && recipient_usage
+                .records
+                .checked_add(external.recipient_records)
+                .is_some_and(|n| n <= limits.max_recovery_records_per_recipient as u64)
+            && recipient_usage
+                .bytes
+                .checked_add(external.recipient_bytes)
+                .is_some_and(|n| n <= limits.max_recovery_bytes_per_recipient as u64))
     }
 
     /// Unconfirmed-claim counter for one recipient (O(1): one metadata read).
@@ -4639,6 +4715,124 @@ mod tests {
     use bitcoinsuite_core::ecc::Ecc;
     use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn external_capacity_is_checked_for_new_reservations_and_predecessor_adoption() -> Result<()> {
+        use crate::monad_outbox::financial::AdmissionUsage;
+        use crate::store::monad_messages::{MonadMessageAttemptClaim, MonadMessageAttemptPolicy};
+        let limits = MonadOutboxLimits::default();
+        let cases = [
+            AdmissionUsage {
+                active: limits.max_active_claims as u64,
+                ..Default::default()
+            },
+            AdmissionUsage {
+                global_records: limits.max_recovery_records as u64,
+                ..Default::default()
+            },
+            AdmissionUsage {
+                global_bytes: limits.max_recovery_bytes as u64,
+                ..Default::default()
+            },
+            AdmissionUsage {
+                recipient_records: limits.max_recovery_records_per_recipient as u64,
+                ..Default::default()
+            },
+            AdmissionUsage {
+                recipient_bytes: limits.max_recovery_bytes_per_recipient as u64,
+                ..Default::default()
+            },
+            AdmissionUsage {
+                unconfirmed: limits.max_unconfirmed_claims_per_recipient as u64,
+                ..Default::default()
+            },
+        ];
+        for external in cases {
+            let temp = tempdir::TempDir::new("external-financial-capacity")?;
+            let db = Db::open(temp.path().join("db"))?;
+            let request = message(&[b"unchanged original raw bytes"]);
+            let store = db.monad_outbox();
+            assert_eq!(
+                store.claim_with_external_usage(
+                    &request.payload_hash,
+                    &request,
+                    &policy(),
+                    1,
+                    &limits,
+                    Ok(external)
+                )?,
+                MonadOutboxClaim::AtCapacity
+            );
+            assert!(store.get(&request.payload_hash)?.is_none());
+            let predecessor = MonadMessageAttemptPolicy {
+                recipient_pubkey: policy().recipient_pubkey,
+                min_value_wei: 77,
+                network_tag: Some(b"legacy-net".to_vec()),
+            };
+            assert_eq!(
+                db.monad_messages()
+                    .claim_attempt(&request.payload_hash, &request, &predecessor)?,
+                MonadMessageAttemptClaim::New
+            );
+            assert_eq!(
+                store.claim_with_external_usage(
+                    &request.payload_hash,
+                    &request,
+                    &policy(),
+                    2,
+                    &limits,
+                    Ok(external)
+                )?,
+                MonadOutboxClaim::AtCapacityExactLegacy
+            );
+            assert!(store.get(&request.payload_hash)?.is_none());
+            assert_eq!(
+                db.monad_messages()
+                    .get_attempt(&request.payload_hash, &request)?,
+                MonadMessageAttemptClaim::ExistingExact(predecessor)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn retained_exact_and_conflict_precede_external_snapshot_failure() -> Result<()> {
+        let temp = tempdir::TempDir::new("external-financial-exact")?;
+        let db = Db::open(temp.path().join("db"))?;
+        let request = message(&[b"retained original raw bytes"]);
+        let limits = MonadOutboxLimits::default();
+        let store = db.monad_outbox();
+        assert_eq!(
+            store.claim(&request.payload_hash, &request, &policy(), 1, &limits)?,
+            MonadOutboxClaim::New
+        );
+        let failed_snapshot = || Err(CorruptRecord("external usage unavailable".to_owned()).into());
+        assert!(matches!(
+            store.claim_with_external_usage(
+                &request.payload_hash,
+                &request,
+                &policy(),
+                2,
+                &limits,
+                failed_snapshot()
+            )?,
+            MonadOutboxClaim::ExistingExact(_)
+        ));
+        let mut changed = request.clone();
+        changed.stamp_payments[0].raw_tx.push(1);
+        assert_eq!(
+            store.claim_with_external_usage(
+                &request.payload_hash,
+                &changed,
+                &policy(),
+                2,
+                &limits,
+                failed_snapshot()
+            )?,
+            MonadOutboxClaim::Conflict
+        );
+        Ok(())
+    }
 
     fn message(raw_txs: &[&[u8]]) -> proto::MonadStampedMessage {
         message_with_seed(b"canonical encrypted payload", raw_txs)

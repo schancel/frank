@@ -134,3 +134,20 @@ Owner agreed #843 design (optional stamps; three limits; threshold counts what t
 - integration-open b13df5d (pushed): merge of open-directory-client, open-directory-relay (through 15ad18a) and p2p-blackjack; real dependency install; shared bot directory; relay route GET /directory/v1/{network}/accounts feeding the blackjack bot's new-account challenge; demo/local-stack rewritten for the open design (two relays, both bots, `chrome <name>` per user, `e2e`). Lane's run 2: full e2e 571 s PASS in real Chrome — onboarding with no Settings step, Alice↔Bob by address (one stamp each under Enter-spam), unpublished address refused unpaid, Qwen reply (real qwen2.5:7b), bot challenges a fresh account by itself, blackjack vs bot in both roles and human vs human in both roles with on-chain amounts checked (win 2×, natural 2.5×, push returns stake, loss nothing; max bet (spendable − 0.05)/4 as dealer). Cross-relay refused before payment (phase 2 not built). Not exercised: double down; natural from the bot dealer.
 - Coordinator rerun of `stack.mjs e2e` on b13df5d under heavy load: FAILED in the human-vs-human hand (log /private/tmp/frank-stack/open/coordinator-e2e.log). Everything through both bot hands passed. Dealer Alice's chat shows a "Cards dealt" bubble but no PUT was ever made and no stamp paid; Bob never receives the deal; the hand stays stuck with Bob's bet paid. Suspected: an automatic dealer step interrupted before delivery is never resumed on reopen (the cross-tab guard counts a pending/failed outgoing as sent; blackjack bubble has no Retry). Fix + rerun assigned to the integration lane. DO NOT hand to the owner until a rerun passes.
 - Signing lanes: threshold-ecdsa a9c762b (Fable audit fixes: lock provenance via LockOpening on the responder, MAC on exported sign sessions, abort no-op on consumed states, pending record + key confirmation check; 94 tests). Owner decisions: fork Silence Labs DKLs23 to add adaptor pre-signing and build our own wasm (licence notices in the About screen for now), AND build our own OT-based implementation (packages/dkls-two-party, branch own-dkls; Asharov 2026/976 Protocol 6.2 + SoftSpokenOT + VSOT; Stage A design reviewed by Fable: go with changes — durable burn mark, document the static-DH assumption for commitment locks). Both behind packages/joint-signer.
+
+## 2026-10-04 (evening) — two-party signing fork handed back; audit started
+
+- `joint-signer` tip `f8befd4`: Silence Labs DKLs23 forked into `third_party/silent-shard-dkls23-ll/`
+  (v1.2.0, `f5a2a3d`), our own wasm committed, adaptor pre-signing for both lock kinds, npm
+  dependency dropped. Lane's numbers (machine under load): keygen ~0.5 s, sign ~60 ms, pre-sign
+  ~100 ms. Conformance 52 + 9 lock tests and 37 Rust tests reported passing by the lane; not rerun
+  by the coordinator.
+- Interface: `StartPreSignInput.lockOpening?: JointLockOpening`; holder without a valid opening →
+  `lock-not-owned`. Passed to the `own-dkls` lane so it drops its in-process registry.
+- Fable audit of the fork's adaptor construction dispatched (read-only, 11 items: `r`
+  substitution, release order/fairness, commit-then-reveal, lock handling, state rollback,
+  selective abort). No result yet. Second Fable pass on `threshold-ecdsa` `a9c762b` still owed.
+- Not wired into blackjack. About-screen notices (`3e6e49c`, `cbe9812`) to be cherry-picked when
+  the fork ships in the app.
+- Still blocking the owner's test: stuck human-dealer step on `integration-open` `b13df5d`
+  (integration lane fixing; coordinator rerun of `stack.mjs e2e` required before hand-over).

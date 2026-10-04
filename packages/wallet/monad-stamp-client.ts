@@ -1,3 +1,4 @@
+import { inspectCanonicalPreparedEnvelope } from './monad-stamp-stealth'
 /**
  * Client-side Stamp-over-Monad message submission (ticket #13).
  *
@@ -1476,6 +1477,7 @@ export class MonadCanonicalStampClient {
       input.economicBinding.length > 8192
     )
       throw new Error('canonical-wallet:economics-invalid')
+    inspectCanonicalPreparedEnvelope(input.payload, input.context)
     const payload = new Uint8Array(input.payload),
       context = new Uint8Array(input.context)
     const parsed = parseFrame(payload),
@@ -1580,6 +1582,10 @@ export class MonadCanonicalStampClient {
     overrides?: MonadTxOverrides
     onIntentDurable: (link: CanonicalWorkflowLink) => Promise<void>
   }): Promise<CanonicalJournalIntent> {
+    inspectCanonicalPreparedEnvelope(
+      input.prepared.payload,
+      input.prepared.context,
+    )
     // Copy all byte input before admission's first asynchronous boundary.
     input = {
       ...input,
@@ -1701,6 +1707,15 @@ export class MonadCanonicalStampClient {
         hexlify(
           concat([getBytes('0x504f4e4401'), paymentCommitment(digest, i)]),
         )
+      const protectedIndices = new Set([
+        ...this.journal
+          .getIntents()
+          .flatMap(intent => intent.members.map(m => m.reservation.index)),
+        ...this.journal
+          .getAll()
+          .filter(a => !a.cleanupComplete)
+          .flatMap(a => a.reservations.map(r => r.index)),
+      ])
       const quotes = []
       const frozenQuotes = new Map<
         number,
@@ -1716,7 +1731,9 @@ export class MonadCanonicalStampClient {
       >()
       for (const record of this.wallet.pool
         .records()
-        .filter(r => r.status === 'available')) {
+        .filter(
+          r => r.status === 'available' && !protectedIndices.has(r.index),
+        )) {
         const balance = await this.wallet.provider.getBalance(record.address)
         if (balance <= 0n) continue
         const signer = this.wallet.pool.getSigner(record.index, this.wallet)
@@ -1839,8 +1856,17 @@ export class MonadCanonicalStampClient {
           (record.status !== 'available' && record.status !== 'in-use')
         )
           throw new Error('canonical-wallet:pool-custody-hold')
-        if (record.status === 'available')
+        if (
+          record.status === 'in-use' &&
+          this.wallet.leaseManager.isLeased(record.index) &&
+          !canonicalLiveLeases.get(this.wallet.walletState)?.has(record.index)
+        )
+          throw new Error('canonical-wallet:foreign-lease-hold')
+        if (record.status === 'available') {
+          if (this.wallet.leaseManager.isLeased(record.index))
+            throw new Error('canonical-wallet:foreign-lease-hold')
           this.acquireCanonicalLease(record.index)
+        }
       }
       await this.flushCanonicalReservations()
       for (let i = 0; i < intent.members.length; i++) {
@@ -1883,7 +1909,13 @@ export class MonadCanonicalStampClient {
             1,
             cborMap([
               [0, 1],
-              [1, getBytes(`0x${intent.prepared.recipientSubject}`)],
+              [
+                1,
+                inspectCanonicalPreparedEnvelope(
+                  intent.prepared.payload,
+                  intent.prepared.context,
+                ).stampKey.keyBytes,
+              ],
             ]),
           ],
           [2, intent.prepared.payload],

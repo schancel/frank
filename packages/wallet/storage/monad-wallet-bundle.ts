@@ -90,6 +90,7 @@ export interface MonadWalletPersistenceBundle {
   readonly canonicalJournal?: LevelCanonicalStampAttemptJournal
   readonly canonicalBinding?: { readonly tuple: string; readonly id: string }
   assertOpen(): void
+  runCanonicalOperation<T>(operation: () => Promise<T>): Promise<T>
   /** Admits one complete stateful wallet operation. Close stops admission immediately and waits
    * for every admitted operation before closing stores or releasing root ownership. */
   runOperation<T>(
@@ -217,9 +218,10 @@ function makeBundle(params: {
   const activeAdmissions = new Set<MonadWalletOperationAdmission>()
   let operationTail: Promise<unknown> = Promise.resolve()
 
-  const runOperation = async <T>(
+  const runOperationImpl = async <T>(
     operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
     admission?: MonadWalletOperationAdmission,
+    canonical = false,
   ): Promise<T> => {
     params.assertEnclosingAdmission?.()
     if (admission !== undefined) {
@@ -240,6 +242,21 @@ function makeBundle(params: {
     activeOperations++
     const run = operationTail.then(() => {
       params.assertEnclosingAdmission?.()
+      if (
+        !canonical &&
+        params.canonicalJournal
+          ?.getIntents()
+          .some(intent =>
+            intent.members.some(
+              m =>
+                params.pool.getRecord(m.reservation.index)?.status ===
+                'available',
+            ),
+          )
+      )
+        throw new Error(
+          'Canonical pre-sign intent requires explicit correlation before ordinary pool operations',
+        )
       return operation(admitted)
     })
     operationTail = run.then(
@@ -255,6 +272,10 @@ function makeBundle(params: {
     }
   }
 
+  const runOperation = <T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+    admission?: MonadWalletOperationAdmission,
+  ) => runOperationImpl(operation, admission)
   if (params.attachSharedPoolGates !== false) {
     params.pool.attachWalletOperationGate(runOperation)
     params.changePool.attachWalletOperationGate(runOperation)
@@ -296,6 +317,9 @@ function makeBundle(params: {
       }
     },
     runOperation,
+    runCanonicalOperation<T>(operation: () => Promise<T>): Promise<T> {
+      return runOperationImpl(operation, undefined, true)
+    },
     assertSemanticallyValid: () =>
       validateMonadWalletState({
         pool: params.pool,

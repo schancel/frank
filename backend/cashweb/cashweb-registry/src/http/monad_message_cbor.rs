@@ -1,6 +1,7 @@
 //! Exact canonical DM transport. No legacy protobuf projection or implicit admission.
 use std::{ops::Range, sync::Arc};
 
+use crate::monad_http::Address;
 use axum::{
     extract::RawBody,
     http::HeaderMap,

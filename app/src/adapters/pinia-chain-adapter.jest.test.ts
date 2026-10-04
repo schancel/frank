@@ -25,6 +25,7 @@ import { activeChain } from '@frank/wallet/chain'
 import type { DirectMessageReceived, WalletHandle } from '@frank/wallet/chain'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 
+import { setDirectoryPeer } from '../utils/directory-peer'
 jest.mock('../utils/notifications', () => ({
   desktopNotify: jest.fn(),
 }))
@@ -148,6 +149,74 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
 
       expect(wrapper).toBeUndefined()
       expect(consoleErrorSpy).toHaveBeenCalled()
+    })
+  })
+
+  describe('canonical receive from a directory-admitted sender without a display profile (#778)', () => {
+    const BOT_ADDRESS = '0x00000000000000000000000000000000000000B0'
+    const wallet: WalletHandle = {
+      identity: {
+        address: { raw: RECIPIENT_ADDRESS },
+        displayAddress: RECIPIENT_ADDRESS,
+      },
+    }
+    const canonical = () =>
+      makeRecord({
+        senderAddress: { raw: BOT_ADDRESS },
+        senderPublicKey: PUB_KEY_BYTES,
+        payloadDigest: 'canonical-digest',
+      })
+    afterEach(() => setDirectoryPeer(null))
+
+    it('adapts the record using the directory key and never asks for a display profile', async () => {
+      const fetchProfile = jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockResolvedValue(undefined)
+      const wrapper = await toReceivedMessageWrapper(canonical())
+      expect(wrapper?.index).toBe('canonical-digest')
+      expect(wrapper?.copartyAddress).toBe(BOT_ADDRESS)
+      expect(
+        Buffer.from(wrapper!.copartyPubKey.toBuffer()).toString('hex'),
+      ).toBe(PUB_KEY_HEX)
+      expect(fetchProfile).not.toHaveBeenCalled()
+    })
+
+    it('displays the polled message once and creates the contact from the directory', async () => {
+      const realSetImmediate = setImmediate
+      const settle = async () => {
+        for (let i = 0; i < 25; i++)
+          await new Promise<void>(resolve => realSetImmediate(resolve))
+      }
+      jest.useFakeTimers({
+        doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
+      })
+      setDirectoryPeer({ address: BOT_ADDRESS, pubKey: PUB_KEY_BYTES })
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue(undefined)
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      const fetchSince = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockResolvedValue([canonical()])
+      const chats = useChatStore()
+      const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
+      try {
+        for (let i = 0; i < 4; i++) {
+          await settle()
+          jest.advanceTimersByTime(25)
+          await settle()
+        }
+        expect(fetchSince.mock.calls.length).toBeGreaterThanOrEqual(2)
+        // Delivered again by the inclusive relay bound, but shown exactly once.
+        expect(chats.chats[BOT_ADDRESS]?.messages).toHaveLength(1)
+        expect(chats.chats[BOT_ADDRESS]?.messages[0].items).toEqual([
+          { type: 'text', text: 'hi' },
+        ])
+        expect(useContactStore().isContact(BOT_ADDRESS)).toBe(true)
+        // The cursor moved past the row instead of being pinned by a missing profile.
+        expect(fetchSince.mock.calls.at(-1)![0].sinceMs).toBeGreaterThan(0)
+      } finally {
+        polling.stop()
+        jest.useRealTimers()
+      }
     })
   })
 

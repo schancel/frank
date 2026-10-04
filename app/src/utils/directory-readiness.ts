@@ -130,6 +130,8 @@ export interface DirectoryActivation {
   account: unknown
   /** Identity address of the installed bot: the only peer this installation can message. */
   peerAddress: string
+  /** Compressed signing key of that bot, from the approved bundle and admitted evidence. */
+  peerSubject: string
   close(): Promise<void>
 }
 export type ReadinessResult =
@@ -539,6 +541,7 @@ export async function checkDirectoryReadiness(
       revision,
       account,
       peerAddress: computeAddress('0x' + bot.subjectP),
+      peerSubject: bot.subjectP,
       close: closeAll,
     },
   }

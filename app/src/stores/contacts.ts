@@ -1,3 +1,4 @@
+import { fetchContactProfile } from '../utils/directory-peer'
 import { defineStore } from 'pinia'
 
 import { useChatStore } from './chats'
@@ -386,7 +387,7 @@ export const useContactStore = defineStore('contacts', {
           console.error(`Invalid ${activeChain.name} address: ${address}`)
           return
         }
-        const profileInfo = await activeChain.fetchProfile(chainAddress)
+        const profileInfo = await fetchContactProfile(chainAddress)
         if (!profileInfo) {
           return
         }
@@ -510,7 +511,7 @@ export const useContactStore = defineStore('contacts', {
         if (!chainAddress) {
           throw new Error(`Invalid ${activeChain.name} address: ${address}`)
         }
-        const profileInfo = await activeChain.fetchProfile(chainAddress)
+        const profileInfo = await fetchContactProfile(chainAddress)
         if (!profileInfo) {
           throw new Error(`No registered profile found for ${address}`)
         }

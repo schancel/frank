@@ -71,6 +71,7 @@ function harness() {
       revision: 1,
       account: mockStatus.account,
       peerAddress: '0xBot',
+      peerSubject: '02' + '11'.repeat(32),
       close,
     },
   }

@@ -154,12 +154,25 @@ describe('canonical exact request', () => {
         (
           await submitCanonicalRequest({
             installedRelayOrigin,
+            expectedNetworkTag: 'MONT',
             request: frozen,
             fetch,
           })
         ).phase,
       ).toBe('retained')
     expect(seen).toEqual([frozen.body, frozen.body])
+  })
+  test('installed descriptor mismatch rejects before any PUT', async () => {
+    const fetch = jest.fn()
+    await expect(
+      submitCanonicalRequest({
+        installedRelayOrigin: 'https://one.example',
+        expectedNetworkTag: 'MON1',
+        request: request(),
+        fetch,
+      }),
+    ).rejects.toThrow(/installed Monad network/)
+    expect(fetch).not.toHaveBeenCalled()
   })
   test('changed raw member and context are rejected before network', async () => {
     const parts = canonicalTransportFixture()
@@ -172,6 +185,7 @@ describe('canonical exact request', () => {
     await expect(
       submitCanonicalRequest({
         installedRelayOrigin: 'https://one.example',
+        expectedNetworkTag: 'MONT',
         request: { ...frozen, parts: altered },
         fetch,
       }),
@@ -243,7 +257,7 @@ describe('canonical exact request', () => {
       source: ArrayLike<number>,
     ) => {
       if (source.length > 4096) largeCopies++
-      return original.call(Uint8Array, source)
+      return original.call(Uint8Array, source as Uint8Array)
     }) as typeof Uint8Array.from)
     try {
       expect(() =>
@@ -341,6 +355,7 @@ describe('canonical acceptance stays uncertain unless exact', () => {
     await expect(
       submitCanonicalRequest({
         installedRelayOrigin: 'https://one.example',
+        expectedNetworkTag: 'MONT',
         request: frozen,
         fetch,
       }),
@@ -349,6 +364,7 @@ describe('canonical acceptance stays uncertain unless exact', () => {
     await expect(
       submitCanonicalRequest({
         installedRelayOrigin: 'https://one.example',
+        expectedNetworkTag: 'MONT',
         request: frozen,
         fetch: async () =>
           canonicalTestResponse(
@@ -433,6 +449,7 @@ describe('bounded streamed responses', () => {
     await expect(
       submitCanonicalRequest({
         installedRelayOrigin: 'https://one.example',
+        expectedNetworkTag: 'MONT',
         request: request(),
         fetch,
         signal: controller.signal,

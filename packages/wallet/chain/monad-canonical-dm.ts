@@ -73,6 +73,11 @@ export interface CanonicalDirectory {
   ): Promise<
     { subject: string; endpoint: string; current: Current } | undefined
   >
+  /**
+   * Whether this wallet's relay says it delivers to accounts that live on other relays. Absent
+   * counts as no: a message for another relay is then refused before anything is funded.
+   */
+  forwarding?(): Promise<boolean>
   /** Transport override for tests and controlled origins; defaults to global fetch. */
   readonly fetch?: CanonicalFetch
 }
@@ -97,6 +102,32 @@ export class CanonicalRecipientNotPublishedError extends Error {
   }
 }
 
+/** The recipient lives on another relay and this wallet's relay does not forward there yet.
+ * Raised before anything is funded, signed or sent. */
+export class CanonicalRelayCannotForwardError extends Error {
+  constructor(readonly address: string, readonly recipientRelay: string) {
+    super(
+      `Your relay cannot deliver to ${recipientRelay} yet, the relay ${address} lives on. Nothing was paid or sent.`,
+    )
+    this.name = 'CanonicalRelayCannotForwardError'
+  }
+}
+
+/** The relay accepted the submission for checking and then ended it because it cannot deliver to
+ * the recipient's relay. It broadcast no payment. This attempt is over; later sends are free. */
+export class CanonicalRecipientUndeliverableError extends MonadStampTerminalError {
+  constructor() {
+    super(
+      'Your relay could not deliver to the relay this address lives on. This message was not sent and its payment was not broadcast.',
+      422,
+      'mailbox_terminal',
+      false,
+      'recipient_undeliverable',
+    )
+    this.name = 'CanonicalRecipientUndeliverableError'
+  }
+}
+
 /** A durable canonical payment record exists that no saved message accounts for. */
 export class CanonicalMessagingHoldError extends Error {
   /** The original failure, unchanged, when an earlier payment could not be finished. Callers
@@ -118,6 +149,8 @@ interface StoredLink {
   consumerId: string
   prepared: Record<string, string>
   outcome?: 'delivered' | 'dead'
+  /** The relay's reason when the outcome is `dead`. */
+  reason?: string
   acknowledged?: boolean
   /** Saved once a message pointed at this delivered attempt, or the user answered for it. Until
    * then a delivered attempt is reported as unattributed in every session. */
@@ -289,6 +322,9 @@ async function settle(
       await owner.links.put({
         ...row,
         outcome: attempt.terminal.phase === 'delivered' ? 'delivered' : 'dead',
+        ...(attempt.terminal.phase === 'dead'
+          ? { reason: attempt.terminal.reason }
+          : {}),
       })
       await client.cleanupTerminal(row.attemptRef, row.consumerId)
       await client.acknowledgeWorkflow(row.attemptRef, row.consumerId)
@@ -358,7 +394,19 @@ async function send(
   const peer = await directory.peerCurrent({ address: params.recipient.raw })
   if (!peer) throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
   // The recipient may live on any relay: this wallet always submits to its own relay, which
-  // forwards. A relay that cannot forward refuses the submission before any payment is broadcast.
+  // forwards. A relay that does not say it forwards is not handed a payment for another relay.
+  let elsewhere = true
+  try {
+    elsewhere =
+      new URL(peer.endpoint).origin !== new URL(directory.homeEndpoint).origin
+  } catch {
+    // An endpoint that is not a URL is certainly not this relay.
+  }
+  if (elsewhere && !(await directory.forwarding?.()))
+    throw new CanonicalRelayCannotForwardError(
+      params.recipient.raw,
+      peer.endpoint,
+    )
   // Earlier attempts first: a live one is re-sent as-is, and an unmatched record holds everything.
   await settle(owner, directory.fetch, 1)
   const live = owner.links.all().filter(row => !row.outcome)
@@ -435,6 +483,12 @@ async function send(
     throw new MonadStampPendingAttemptError([digest])
   }
   const status = statusOf(owner, digest)
+  if (
+    status === 'dead' &&
+    owner.links.all().find(row => row.digest === digest)?.reason ===
+      'recipient_undeliverable'
+  )
+    throw new CanonicalRecipientUndeliverableError()
   if (status === 'dead')
     throw new MonadStampTerminalError(
       'The relay ended this payment set; it can never be delivered.',

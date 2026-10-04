@@ -163,6 +163,8 @@ export {
   CanonicalMessagingHoldError,
   CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
+  CanonicalRecipientUndeliverableError,
+  CanonicalRelayCannotForwardError,
   type CanonicalDirectory,
 } from "./monad-canonical-dm";
 import {

@@ -39,6 +39,8 @@ import {
   CanonicalMessagingHoldError,
   CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
+  CanonicalRecipientUndeliverableError,
+  CanonicalRelayCannotForwardError,
   createMonadChain,
   installCanonicalDirectory,
   canonicalMonadStampClient,
@@ -222,7 +224,7 @@ async function fixture(funded = true) {
     }
   }
   const requests: { body: Uint8Array; contentType: string }[] = []
-  let phase: 'delivered' | 'retained' | 'fail' = 'delivered'
+  let phase: 'delivered' | 'retained' | 'fail' | 'undeliverable' = 'delivered'
   const fetch: CanonicalFetch = async (url, init) => {
     if (url !== RELAY + '/message/monad/cbor' || init.method !== 'PUT')
       throw new Error(`unexpected relay request ${init.method} ${url}`)
@@ -242,12 +244,19 @@ async function fixture(funded = true) {
               identity,
               mailbox_committed_at_ms: 1234,
             }
+          : phase === 'undeliverable'
+          ? {
+              version: 1,
+              phase: 'dead',
+              identity,
+              reason: 'recipient_undeliverable',
+            }
           : { version: 1, phase, identity },
       ),
     )
     let read = false
     return {
-      status: phase === 'delivered' ? 200 : 202,
+      status: phase === 'retained' ? 202 : 200,
       url,
       headers: {
         get: name =>
@@ -851,7 +860,11 @@ describe('two typed wallets on the open directory', () => {
     await f.close()
   })
   /** One wallet's own directory: its own stores and pins, signing with its own typed custody. */
-  function open(name: string, wallet: MonadChainWalletHandle) {
+  function open(
+    name: string,
+    wallet: MonadChainWalletHandle,
+    on: ReturnType<typeof createFakeRelay> = relay,
+  ) {
     const descriptor = {
       networkTag: 'MONT' as const,
       network: 'monad-testnet',
@@ -859,9 +872,9 @@ describe('two typed wallets on the open directory', () => {
     }
     const directory = openDirectory({
       network: 'monad-testnet',
-      relayBaseUrl: RELAY,
+      relayBaseUrl: on.endpoint,
       nowNs: () => CLOCK,
-      fetch: relay.fetch,
+      fetch: on.fetch,
       ...nodeDirectoryStorage(join(f.root, `open-${name}`)),
       self: {
         subject: toHex(wallet.identity.compressedPubKey),
@@ -1074,5 +1087,89 @@ describe('two typed wallets on the open directory', () => {
       }),
     ).toEqual([])
     expect(quarantined).toEqual([7])
+  })
+
+  describe('a recipient that lives on another relay', () => {
+    let other: ReturnType<typeof createFakeRelay>
+    beforeEach(async () => {
+      other = createFakeRelay({
+        endpoint: 'https://relay-b.example',
+        relayId: '0b'.repeat(16),
+      })
+      relay.peers.push(other)
+      await open('bob', f.bob, other).publish()
+    })
+
+    it('is refused before funding or intent while the relay does not say it forwards', async () => {
+      await online('alice', f.alice)
+      const failure = await f.chain.directMessages
+        .send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('across relays'),
+        })
+        .catch(error => error)
+      expect(failure).toBeInstanceOf(CanonicalRelayCannotForwardError)
+      expect(failure.recipientRelay).toBe('https://relay-b.example')
+      expect(failure.message).toContain('cannot deliver')
+      expect(f.requests).toHaveLength(0)
+      expect(mockFunded).toHaveLength(0)
+      expect(f.alice.pool.records().map(r => r.status)).toEqual([
+        'available',
+        'available',
+      ])
+      expect(
+        await f.chain.directMessages.unattributedAttempts({
+          wallet: f.alice,
+          knownDigests: [],
+        }),
+      ).toEqual([])
+    })
+
+    it('is sent through the own relay once that relay says it forwards', async () => {
+      relay.infoOverride = { forwarding: true }
+      await online('alice', f.alice)
+      await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('across relays'),
+      })
+      // Submitted to Alice's own relay, sealed to the key in Bob's entry on the other relay.
+      expect(f.requests).toHaveLength(1)
+    })
+
+    it('ends only that attempt when the relay finds it cannot deliver, and later sends go through', async () => {
+      relay.infoOverride = { forwarding: true }
+      await online('alice', f.alice)
+      mockBalances.set(
+        (await f.alice.getReceiveAddress()).raw.toLowerCase(),
+        10n ** 18n,
+      )
+      f.setPhase('undeliverable')
+      const failure = await f.chain.directMessages
+        .send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('will not arrive'),
+        })
+        .catch(error => error)
+      expect(failure).toBeInstanceOf(CanonicalRecipientUndeliverableError)
+      // Nothing is left reserved or reported as possibly paid.
+      expect(f.alice.pool.records().map(r => r.status)).not.toContain('in-use')
+      expect(
+        await f.chain.directMessages.unattributedAttempts({
+          wallet: f.alice,
+          knownDigests: [],
+        }),
+      ).toEqual([])
+      f.setPhase('delivered')
+      const sent = await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('second try'),
+      })
+      expect(sent.stampPayments.length).toBeGreaterThan(0)
+      expect(f.requests).toHaveLength(2)
+    })
   })
 })

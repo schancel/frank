@@ -41,6 +41,8 @@ const REQUEST_DEADLINE_MS = 30_000
 const PEER_REFRESH_MS = 30_000
 /** Longest chain walked back to revision zero or to a known revision. */
 const MAX_CHAIN = 64
+/** How many "no entry" answers are remembered at once. */
+const MAX_MISSING = 1024
 const SECOND = 1_000_000_000n
 const DAY = 86_400n * SECOND
 /** New entries are valid this long (the codec cap is 366 days). */
@@ -78,6 +80,10 @@ export type OpenDirectoryErrorCode =
   | 'relay-info'
   /** Local directory storage failed. */
   | 'storage'
+  /** The account's history is longer than this client reads on first contact. */
+  | 'history-too-long'
+  /** This device's clock is behind an entry's issue time, or went backwards. */
+  | 'clock'
   /** This account's own entry has not been published yet. */
   | 'unpublished'
 
@@ -94,6 +100,10 @@ const MESSAGES: Record<OpenDirectoryErrorCode, string> = {
   'relay-info':
     'The relay is misconfigured: it did not describe itself correctly, so nothing was signed for it.',
   'storage': 'Local directory storage is unavailable.',
+  'history-too-long':
+    'This address has more directory history than can be read at once. Try again later.',
+  'clock':
+    'This device’s clock looks wrong (it is behind the directory entry, or went backwards). Check the date and time.',
   'unpublished': 'This account’s directory entry has not been published yet.',
 }
 
@@ -293,13 +303,15 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
   /** One operation at a time per account, so a store never sees interleaved admissions. */
   const serial = <T>(key: string, task: () => Promise<T>): Promise<T> => {
     const run = (queues.get(key) ?? Promise.resolve()).then(task, task)
-    queues.set(
-      key,
-      run.then(
-        () => undefined,
-        () => undefined,
-      ),
+    const tail: Promise<unknown> = run.then(
+      () => undefined,
+      () => undefined,
     )
+    queues.set(key, tail)
+    // Forget an idle account's queue, so the map holds only accounts with work in flight.
+    void tail.then(() => {
+      if (queues.get(key) === tail) queues.delete(key)
+    })
     return run
   }
 
@@ -413,8 +425,10 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     const chain: Evidence[] = []
     let cursor = head
     while (cursor.revision > 0n) {
-      if (!cursor.predecessor || chain.length >= MAX_CHAIN)
-        throw new OpenDirectoryError('invalid', address)
+      if (!cursor.predecessor) throw new OpenDirectoryError('invalid', address)
+      if (chain.length >= MAX_CHAIN)
+        // Not a sign of forgery: nothing is pinned and the address can be tried again.
+        throw new OpenDirectoryError('history-too-long', address)
       if (await known(cursor.predecessor)) break
       const bytes = await getEntry(
         `/${head.subject}/statements/${toHex(cursor.predecessor)}`,
@@ -440,6 +454,8 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     switch (code) {
       case 'validity':
         return new OpenDirectoryError('expired', address)
+      case 'clock':
+        return new OpenDirectoryError('clock', address)
       case 'rollback':
         return new OpenDirectoryError('rollback', address)
       case 'fork':
@@ -630,6 +646,10 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         }
         if (code === 'unavailable' || code === 'continuity' || !code)
           if (!(error instanceof OpenDirectoryError)) await drop(handle)
+        // "Not valid" because it was issued after this device's idea of now is a clock problem,
+        // not an expired entry.
+        if (code === 'validity' && nanos(head.issued) > deps.nowNs())
+          throw new OpenDirectoryError('clock', address)
         throw refusal(error, address)
       }
     })
@@ -680,6 +700,11 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     if (!bytes) {
       // A relay that no longer serves an account we already admitted is withholding, not proof
       // that the account is gone; either way there is nothing current to use.
+      // Bounded: the oldest remembered absences are forgotten first.
+      if (missing.size >= MAX_MISSING)
+        for (const key of [...missing.keys()].slice(0, MAX_MISSING / 2))
+          missing.delete(key)
+      missing.delete(address)
       missing.set(address, Date.now())
       return undefined
     }
@@ -742,7 +767,9 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     const limit = nanos(binding.expiry)
     const expires =
       issued + ENTRY_VALIDITY_NS < limit ? issued + ENTRY_VALIDITY_NS : limit
-    if (expires <= current + 60n * SECOND || issued > current)
+    // The entry being renewed was issued after this device's idea of now.
+    if (issued > current) throw new OpenDirectoryError('clock', selfAddress)
+    if (expires <= current + 60n * SECOND)
       throw new OpenDirectoryError('relay-info')
     return {
       issuedAt: timestamp(issued),

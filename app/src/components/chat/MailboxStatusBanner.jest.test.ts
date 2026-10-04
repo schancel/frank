@@ -121,6 +121,7 @@ describe('MailboxStatusBanner (ticket #271)', () => {
       'relay-rejected',
       'relay-misconfigured',
       'entry-refused',
+      'device-clock',
       'storage',
     ]
     it.each(reasons)(

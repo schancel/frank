@@ -310,6 +310,8 @@ export default {
   },
   mailboxStatus: {
     directory: {
+      'device-clock':
+        'Messagerie désactivée : la date et l’heure de cet appareil semblent incorrectes. Vérifiez l’horloge ; nouvelle tentative en cours.',
       'account-unavailable':
         'Messagerie désactivée : ce compte n’a pas pu être ouvert pour la messagerie. Nouvelle tentative en cours.',
       'relay-unreachable':
@@ -501,6 +503,8 @@ export default {
   },
   newContactDialog: {
     lookup: {
+      'clock':
+        'La date et l’heure de cet appareil semblent incorrectes, cette adresse n’a donc pas pu être vérifiée. Vérifiez l’horloge et réessayez.',
       'not-published':
         'Cette adresse ne s’est pas encore publiée et ne peut donc pas recevoir de messages. Demandez à son propriétaire d’ouvrir l’application une fois.',
       'unreachable':

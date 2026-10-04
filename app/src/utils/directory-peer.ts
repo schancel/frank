@@ -33,6 +33,7 @@ export type ContactLookupFailure =
   | 'not-published'
   | 'unreachable'
   | 'refused'
+  | 'clock'
   | 'messaging-off'
 let lastFailure: { address: string; reason: ContactLookupFailure } | null = null
 export function contactLookupFailure(
@@ -63,7 +64,11 @@ export async function fetchContactProfile(
       reason:
         code === 'not-published'
           ? 'not-published'
-          : code === 'unreachable' || code === 'storage'
+          : code === 'clock'
+          ? 'clock'
+          : code === 'unreachable' ||
+            code === 'storage' ||
+            code === 'history-too-long'
           ? 'unreachable'
           : 'refused',
     }

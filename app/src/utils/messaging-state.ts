@@ -12,6 +12,7 @@ export type MessagingReason =
   | 'relay-rejected'
   | 'relay-misconfigured'
   | 'entry-refused'
+  | 'device-clock'
   | 'storage'
 
 export interface MessagingState {

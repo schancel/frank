@@ -182,6 +182,8 @@ function reasonOf(error: unknown): MessagingReason {
       return 'relay-misconfigured'
     case 'storage':
       return 'storage'
+    case 'clock':
+      return 'device-clock'
     default:
       return 'entry-refused'
   }

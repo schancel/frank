@@ -304,6 +304,8 @@ export default {
   },
   mailboxStatus: {
     directory: {
+      'device-clock':
+        'Messaging is off: this device’s date and time look wrong. Check the clock; retrying.',
       'account-unavailable':
         'Messaging is off: this account could not be opened for messaging. Retrying.',
       'relay-unreachable':
@@ -482,6 +484,8 @@ export default {
   },
   newContactDialog: {
     lookup: {
+      'clock':
+        'This device’s date and time look wrong, so this address could not be checked. Check the clock and try again.',
       'not-published':
         'This address has not published itself yet, so it cannot receive messages. Ask its owner to open the app once.',
       'unreachable':

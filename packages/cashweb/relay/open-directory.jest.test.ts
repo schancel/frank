@@ -560,4 +560,38 @@ describe('other accounts', () => {
     await a.directory.lookup(bob.address)
     expect(relay.requests.length).toBe(before + 1)
   })
+
+  it('reports a too-long history as such, not as a forgery, and can try again', async () => {
+    const alice = testAccount(1),
+      bob = testAccount(2)
+    const chain = chainOf(bob, 70)
+    relay.replicate(chain)
+    const a = device(alice, 'alice')
+    await a.directory.publish()
+    expect(await code(a.directory.lookup(bob.address))).toBe('history-too-long')
+    // Nothing was pinned by the failed attempt: a readable chain for the address is accepted.
+    relay = createFakeRelay()
+    relay.replicate(chain.slice(0, 3))
+    await a.directory.close()
+    const again = device(alice, 'alice')
+    await again.directory.publish()
+    expect((await again.directory.lookup(bob.address)).current.revision).toBe(
+      2n,
+    )
+  })
+
+  it('blames the device clock for an entry issued in its future and for a clock that went back', async () => {
+    const alice = testAccount(1),
+      bob = testAccount(2),
+      carol = testAccount(3)
+    relay.replicate(chainOf(bob, 1, relay, START + 3600n * SECOND))
+    relay.replicate(chainOf(carol, 1))
+    const a = device(alice, 'alice')
+    await a.directory.publish()
+    expect(await code(a.directory.lookup(bob.address))).toBe('clock')
+    await a.directory.lookup(carol.address)
+    clock = START - 7200n * SECOND
+    wall += 60_000
+    expect(await code(a.directory.lookup(carol.address))).toBe('clock')
+  })
 })

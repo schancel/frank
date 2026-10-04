@@ -77,8 +77,7 @@ pub(crate) struct Routes {
     pub(crate) runtime: Arc<DirectoryRuntime>,
     enrollments: FixedHourQuota<IpAddr>,
 }
-/// Largest directory entry accepted over HTTP. An ordinary entry is under 600 bytes.
-pub(crate) const MAX_ENTRY_BYTES: usize = 8 * 1024;
+use crate::directory_runtime::MAX_ENTRY_BYTES;
 impl Routes {
     /// The address a first publication is charged to: the connecting address, or, only when
     /// that address is a reverse proxy the operator listed, the client that proxy reports.

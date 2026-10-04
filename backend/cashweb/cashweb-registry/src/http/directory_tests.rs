@@ -45,6 +45,7 @@ pub(crate) fn relay_config() -> DirectoryConf {
         "relay_identity": "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
         "endpoint": "https://relay.example.invalid",
         "binding_expiry_ns": "1700007200000000000",
+        "min_revision_interval_s": 0,
     }))
     .unwrap()
 }
@@ -458,7 +459,8 @@ async fn forged_entries_are_refused_and_publish_nothing() {
 }
 
 #[tokio::test]
-async fn conflicting_first_entry_and_a_second_renewal_of_the_same_revision_are_refused_first_wins() {
+async fn conflicting_first_entry_and_a_second_renewal_of_the_same_revision_are_refused_first_wins()
+{
     let root = tempfile::tempdir().unwrap();
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry, config, &clock).await;
@@ -915,6 +917,187 @@ async fn forwarded_for_is_ignored_unless_the_connection_is_from_a_listed_proxy()
             StatusCode::TOO_MANY_REQUESTS,
             StatusCode::TOO_MANY_REQUESTS
         ]
+    );
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
+#[tokio::test]
+async fn new_revisions_are_paced_and_capped_per_account() {
+    let root = tempfile::tempdir().unwrap();
+    let (registry, mut config, clock) = setup(root.path());
+    config.min_revision_interval_s = 3600;
+    let runtime = start(registry, config.clone(), &clock).await;
+    let routes = router(Arc::new(runtime.clone()));
+    assert_eq!(
+        put(&routes, SUBJECT, vector("bootstrap")).await.0,
+        StatusCode::OK
+    );
+    // A second revision straight away is too soon; re-sending the first is not a new revision.
+    assert_eq!(
+        put(&routes, SUBJECT, vector("renew")).await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        put(&routes, SUBJECT, vector("bootstrap")).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(get(&routes, &head(SUBJECT)).await.2, vector("bootstrap"));
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+    drop(routes);
+    drop(runtime);
+
+    let other = tempfile::tempdir().unwrap();
+    config.min_revision_interval_s = 0;
+    config.max_revisions_per_subject = 2;
+    let runtime = start(self::registry(other.path()), config, &clock).await;
+    let routes = router(Arc::new(runtime.clone()));
+    for id in ["bootstrap", "renew"] {
+        assert_eq!(put(&routes, SUBJECT, vector(id)).await.0, StatusCode::OK);
+    }
+    assert_eq!(
+        put(&routes, SUBJECT, vector("rotate-stamp")).await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(get(&routes, &head(SUBJECT)).await.2, vector("renew"));
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
+#[tokio::test]
+async fn lookups_of_a_maximum_length_chain_stay_well_inside_the_waiter_deadline() {
+    use crate::directory_admission::{AccountRef, Anchor, Candidate, OpenMode, Timestamp};
+    let root = tempfile::tempdir().unwrap();
+    let (registry, config, clock) = setup(root.path());
+    let length = config.max_revisions_per_subject;
+    // One account at the revision cap, written the way the relay stores it.
+    let mut chain: Vec<Entry> = Vec::new();
+    for revision in 0..length {
+        let previous = chain.last().map(|entry| entry.hash.to_vec());
+        chain.push(entry(90, |fields| {
+            for (key, value) in fields.iter_mut() {
+                match *key {
+                    2 => *value = CborValue::Int(revision as i128),
+                    13 => {
+                        *value = previous
+                            .clone()
+                            .map(CborValue::Bytes)
+                            .unwrap_or(CborValue::Null)
+                    }
+                    _ => (),
+                }
+            }
+        }));
+    }
+    let subject = hex::decode(&chain[0].subject).unwrap();
+    let statements: Vec<Vec<u8>> = chain
+        .iter()
+        .map(|entry| {
+            frank_cbor::verify_preview_directory_evidence(&entry.attestation, NETWORK)
+                .unwrap()
+                .statement_frame()
+                .frame
+                .clone()
+        })
+        .collect();
+    {
+        let directory = registry
+            .directory_preview(
+                Anchor {
+                    network: NETWORK.into(),
+                    subject: AccountRef {
+                        key_type: 1,
+                        key_bytes: subject.clone(),
+                    },
+                    revision_zero: chain[0].hash,
+                },
+                OpenMode::NewEnrollment,
+            )
+            .unwrap();
+        let candidates: Vec<Candidate<'_>> = chain
+            .iter()
+            .zip(&statements)
+            .map(|(entry, statement)| Candidate {
+                statement,
+                attestation: &entry.attestation,
+            })
+            .collect();
+        let current = directory
+            .advance_declared(
+                &candidates,
+                Some(Timestamp {
+                    seconds: 1700000100,
+                    nanoseconds: 0,
+                }),
+            )
+            .unwrap();
+        let address: [u8; 20] =
+            crate::monad_stamp_stealth::recipient_address_from_public_key(&subject)
+                .unwrap()
+                .0;
+        registry
+            .directory_subjects()
+            .unwrap()
+            .put(
+                NETWORK,
+                &subject,
+                Some(&address),
+                &crate::store::directory_subjects::SubjectRow {
+                    version: 1,
+                    anchor: chain[0].hash,
+                    checkpoint: current.status.checkpoint,
+                    local: true,
+                },
+            )
+            .unwrap();
+    }
+    let runtime = start(registry, config, &clock).await;
+    let routes = router(Arc::new(runtime.clone()));
+    let last = chain.last().unwrap();
+    // The first lookup after a restart verifies the whole chain once.
+    let started = std::time::Instant::now();
+    let first = get(&routes, &head(&last.subject)).await;
+    assert_eq!(first.0, StatusCode::OK);
+    assert_eq!(first.2, last.attestation);
+    assert!(
+        started.elapsed() < RESPONSE_BUDGET / 2,
+        "first lookup took {:?}",
+        started.elapsed()
+    );
+    // Every later lookup is answered from the verified head: no signature check, no write.
+    let started = std::time::Instant::now();
+    for _ in 0..200 {
+        assert_eq!(
+            get(&routes, &by_address(&last.address)).await.2,
+            last.attestation
+        );
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "200 cached lookups took {:?}",
+        started.elapsed()
+    );
+    // The account is at its cap: one more revision is refused at once.
+    let previous = last.hash.to_vec();
+    let extra = entry(90, |fields| {
+        for (key, value) in fields.iter_mut() {
+            match *key {
+                2 => *value = CborValue::Int(length as i128),
+                13 => *value = CborValue::Bytes(previous.clone()),
+                _ => (),
+            }
+        }
+    });
+    assert_eq!(
+        put(&routes, &extra.subject, extra.attestation).await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // The expiry still ends the cached answer.
+    clock.set(1800000000);
+    assert_eq!(
+        get(&routes, &head(&last.subject)).await.0,
+        StatusCode::CONFLICT
     );
     runtime.begin_shutdown();
     runtime.wait_stopped().await;

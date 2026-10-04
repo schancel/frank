@@ -135,6 +135,8 @@ impl SnapshotSubmission {
     }
 }
 
+/// Largest directory entry a relay accepts. An ordinary entry is under 600 bytes.
+pub const MAX_ENTRY_BYTES: usize = 8 * 1024;
 /// Open subject handles kept in memory; least recently used is closed first.
 const MAX_OPEN_HANDLES: usize = if cfg!(test) { 8 } else { 256 };
 
@@ -309,6 +311,11 @@ struct Principal<'a> {
     row: SubjectRow,
     unavailable: bool,
     used: u64,
+    /// The verified current entry and when it stops being current. Lookups are answered from
+    /// this without touching storage or checking a signature until the entry changes or expires.
+    cached: Option<(Current, Timestamp)>,
+    /// When this relay last accepted a new revision of this account.
+    revised: Option<Instant>,
 }
 fn nanos(text: &str) -> Result<Timestamp> {
     if text.is_empty()
@@ -361,6 +368,8 @@ struct Worker<'a> {
     info: RelayInfo,
     max_subjects: u64,
     max_replicated_subjects: u64,
+    max_revisions: usize,
+    min_revision_interval: Duration,
     clock: Clock,
     last: Timestamp,
     handles: HashMap<Key, Principal<'a>>,
@@ -415,6 +424,8 @@ impl<'a> Worker<'a> {
                 row,
                 unavailable: false,
                 used: 0,
+                cached: None,
+                revised: None,
             })),
             Err(_) if row.checkpoint.kind == CheckpointKind::ProspectiveEnrollment => {
                 // The process stopped between writing the row and accepting the first entry.
@@ -450,7 +461,7 @@ impl<'a> Worker<'a> {
     }
     /// First entry of a key this relay has not seen: it must be that key's own revision 0.
     fn enroll(&mut self, key: &Key, bytes: Vec<u8>, now: Timestamp) -> Result<AdmittedSnapshot> {
-        if bytes.len() > MAX_FRAME_BYTES {
+        if bytes.len() > MAX_ENTRY_BYTES {
             return Err(RuntimeError::Resource);
         }
         let subject = exact(&key.1, 33)?;
@@ -554,13 +565,18 @@ impl<'a> Worker<'a> {
                 row,
                 unavailable: false,
                 used: self.tick,
+                cached: None,
+                revised: Some(Instant::now()),
             },
         );
-        let current = result?;
-        self.finish(current)
+        let (current, until) = self.finish(result?)?;
+        if let Some(p) = self.handles.get_mut(key) {
+            p.cached = Some((current.clone(), until));
+        }
+        Ok(AdmittedSnapshot::Current(current))
     }
     /// The entry and its relay binding must still be unexpired when the answer leaves.
-    fn finish(&mut self, current: Current) -> Result<AdmittedSnapshot> {
+    fn finish(&mut self, current: Current) -> Result<(Current, Timestamp)> {
         let parsed = frank_cbor::validate_frame(
             &current.evidence.statement,
             &frank_cbor::preview_directory_context(),
@@ -586,7 +602,12 @@ impl<'a> Worker<'a> {
         {
             return Err(RuntimeError::Expired);
         }
-        Ok(AdmittedSnapshot::Current(current))
+        let until = if tuple(*expiry) < tuple(current.relay.expiry) {
+            *expiry
+        } else {
+            current.relay.expiry
+        };
+        Ok((current, until))
     }
     fn execute(&mut self, key: &Key, op: Operation) -> Result<AdmittedSnapshot> {
         #[cfg(test)]
@@ -674,10 +695,18 @@ impl<'a> Worker<'a> {
             p.row = row;
             Ok(())
         };
+        let (max_revisions, min_interval) = (self.max_revisions, self.min_revision_interval);
         let result = match op {
-            Operation::Current => p.directory.current_declared(Some(now)),
+            Operation::Current => {
+                if let Some((current, until)) = &p.cached {
+                    if tuple(now) < tuple(*until) {
+                        return Ok(AdmittedSnapshot::Current(current.clone()));
+                    }
+                }
+                p.directory.current_declared(Some(now))
+            }
             Operation::Put(bytes) => {
-                if bytes.len() > MAX_FRAME_BYTES {
+                if bytes.len() > MAX_ENTRY_BYTES {
                     return Err(RuntimeError::Resource);
                 }
                 let verified =
@@ -697,7 +726,18 @@ impl<'a> Worker<'a> {
                     }
                     p.directory.current_declared(Some(now))
                 } else {
-                    p.directory.advance_declared(&[candidate], Some(now))
+                    // A new revision. Publishing is free, so its count and pace are bounded.
+                    if p.row.checkpoint.retained >= max_revisions
+                        || p.revised.is_some_and(|at| at.elapsed() < min_interval)
+                    {
+                        return Err(RuntimeError::Resource);
+                    }
+                    p.cached = None;
+                    let advanced = p.directory.advance_declared(&[candidate], Some(now));
+                    if advanced.is_ok() {
+                        p.revised = Some(Instant::now());
+                    }
+                    advanced
                 }
             }
             Operation::Historical(_) | Operation::Chain => unreachable!(),
@@ -707,7 +747,11 @@ impl<'a> Worker<'a> {
         match result {
             Ok(current) => {
                 remember(p, current.status.checkpoint)?;
-                self.finish(current)
+                let (current, until) = self.finish(current)?;
+                if let Some(p) = self.handles.get_mut(key) {
+                    p.cached = Some((current.clone(), until));
+                }
+                Ok(AdmittedSnapshot::Current(current))
             }
             Err(error) => {
                 if error == AdmissionError::Fork {
@@ -795,6 +839,8 @@ impl DirectoryRuntime {
                         info: worker_info,
                         max_subjects: config.max_subjects,
                         max_replicated_subjects: config.max_replicated_subjects,
+                        max_revisions: config.max_revisions_per_subject,
+                        min_revision_interval: Duration::from_secs(config.min_revision_interval_s),
                         clock,
                         last: started,
                         handles: HashMap::new(),

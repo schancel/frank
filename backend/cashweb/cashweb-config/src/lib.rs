@@ -303,6 +303,13 @@ pub struct DirectoryConf {
     /// separate budget, so copies from peers cannot block sign-ups here.
     #[serde(default = "default_directory_max_subjects")]
     pub max_replicated_subjects: u64,
+    /// Most signed entries (revisions) one account may have here. Each renewal, key rotation
+    /// or relay move is one.
+    #[serde(default = "default_directory_max_revisions")]
+    pub max_revisions_per_subject: usize,
+    /// Shortest time between two new revisions of one account, in seconds.
+    #[serde(default = "default_directory_min_revision_interval_s")]
+    pub min_revision_interval_s: u64,
     /// Accept a message for a recipient on another relay and forward it there.
     #[serde(default = "default_true")]
     pub forwarding: bool,
@@ -327,6 +334,14 @@ pub struct DirectoryConf {
 
 const fn default_directory_max_subjects() -> u64 {
     1_000_000
+}
+
+const fn default_directory_max_revisions() -> usize {
+    128
+}
+
+const fn default_directory_min_revision_interval_s() -> u64 {
+    60
 }
 
 const fn default_true() -> bool {

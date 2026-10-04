@@ -178,6 +178,7 @@ impl NativeDirectoryFixture {
             "relay_identity": home["relayIdentity"]["point"],
             "endpoint": home["endpoint"],
             "binding_expiry_ns": home["bindingExpiryNs"],
+            "min_revision_interval_s": 0,
         }))
         .unwrap();
         let registry = Arc::new(Registry::new(

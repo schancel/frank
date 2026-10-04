@@ -662,5 +662,23 @@ export default {
     txAddress: 'Adresse',
     txAmount: 'Montant',
   },
+  about: {
+    title: 'À propos',
+    menu: 'À propos et licences',
+    thirdPartyTitle: 'Logiciels tiers',
+    dklsName:
+      'Bibliothèque de signature à deux parties DKLs23 (Silence Laboratories)',
+    dklsModified:
+      'Frank inclut une version modifiée de la bibliothèque DKLs23 de Silence Laboratories. Le projet Frank l’a modifiée le {date}, de façon indépendante et sans aucune participation de Silence Laboratories.',
+    dklsChanges:
+      'Ce qui a été modifié : une session de signature est liée à un seul message, et la pré-signature à adaptateur à deux parties a été ajoutée.',
+    dklsNonCommercial:
+      'Ce composant ne peut être utilisé qu’à des fins non commerciales. La licence MIT de Frank ne s’y applique pas.',
+    dklsSource:
+      'Le code source de la bibliothèque modifiée se trouve dans le dépôt de Frank, dans le dossier {path}.',
+    licenseHeading: 'Licence de la bibliothèque DKLs23',
+    licenseIntro:
+      'Le texte intégral de la licence, avec ses conditions et son avertissement, tel que publié par Silence Laboratories (en anglais uniquement) :',
+  },
   close: 'Fermer',
 }

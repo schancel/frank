@@ -637,5 +637,22 @@ export default {
     txAddress: 'Address',
     txAmount: 'Amount',
   },
+  about: {
+    title: 'About',
+    menu: 'About and licences',
+    thirdPartyTitle: 'Third-party software',
+    dklsName: 'DKLs23 two-party signing library (Silence Laboratories)',
+    dklsModified:
+      'Frank includes a modified version of the DKLs23 library by Silence Laboratories. The Frank project changed it on {date}, independently and without any involvement from Silence Laboratories.',
+    dklsChanges:
+      'What was changed: a signing session is tied to one message, and two-party adaptor pre-signing was added.',
+    dklsNonCommercial:
+      'This component may be used for non-commercial purposes only. Frank’s own MIT licence does not apply to it.',
+    dklsSource:
+      'The source code of the modified library is in the Frank repository, in the folder {path}.',
+    licenseHeading: 'Licence of the DKLs23 library',
+    licenseIntro:
+      'The full licence text, including its conditions and disclaimer, as published by Silence Laboratories (English only):',
+  },
   close: 'Close',
 }

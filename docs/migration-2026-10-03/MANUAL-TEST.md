@@ -1,150 +1,90 @@
-# Manual test: encrypted UI ↔ Qwen over the canonical path
+# Manual test: Frank Open Directory, P2P Blackjack & Bots
 
-> **2026-10-04 afternoon — this describes the OLD design.** The owner reset the requirements: no
-> operator approval file or installation step, any user messages any address across relays, and
-> blackjack is a peer-to-peer challenge from the message-types menu with stamp wagers. That is being
-> built now (worktrees `open-relay`, `open-client`, `p2p-blackjack`). What is below still runs and
-> shows encrypted UI ↔ Qwen messaging end to end, but it goes through the approval flow hidden in
-> the launcher and is not the design that will ship. This file will be rewritten when the new
-> design has been run live.
+Last updated 2026-10-04 16:25 PDT. This describes the **new open design**:
+- No operator approval file or installation step.
+- Open directory registration: account signs its own entry on creation and publishes it to the relay.
+- P2P encrypted direct messaging knowing only the recipient's address.
+- P2P Blackjack plugin with stamp-based wagers from the message-types menu.
+- Headless bots: Qwen bot (hosted Alibaba Cloud API using `~/.frank-demo-qwen.env`) and Blackjack bot (auto-challenges fresh accounts).
+- Stuck-dealer recovery: interrupted/cut-off dealer sends are safely recovered when reopening the chat, without double-spending stamps.
 
+## Exact Branch & Commit
 
-Last updated 2026-10-04 10:30 PDT. This is the first point that really works end to end. Typed
-blackjack, two-relay forwarding and legacy-path retirement are not in it yet (see "Where it stops").
+- Branch: `integration-open`
+- Commit: `e0201ee` (pushed to origin)
+- Worktree: `/Users/shammah/repos/frank/.worktrees/integration-open`
 
-## What to check out
+## What Was Run & Verified
 
-- Branch `local-stack`, commit `0bd66d3` (pushed to origin). Worktree on this machine:
-  `~/repos/frank/.worktrees/local-stack`, already built.
-- It contains main (`2769115`, with #825) plus the app cutover (PR #833), the Qwen bot's canonical
-  mode (not yet in a PR) and the launcher under `demo/local-stack/`.
+The coordinator executed `node demo/local-stack/stack.mjs e2e live` which completed in 1104 s with `exit=0`:
+1. **Onboarding**: Alice and Bob onboard without any operator approval or Settings export.
+2. **Encrypted DM**: Alice messages Bob by address, Bob receives and replies, Alice receives.
+3. **Unpublished Address Refusal**: An unpublished address cannot be added as a contact and burns 0 MON.
+4. **Qwen Bot**: Alice messages the Qwen bot; Qwen 3.8 Max answers via the cloud API in ~3.2 s (local Ollama is NOT used).
+5. **Blackjack vs Bot**:
+   - The bot automatically challenges Alice upon detecting her registration.
+   - Alice plays as player against bot dealer (wagers, cards, hit/stand, payout verified on-chain).
+   - Alice challenges bot with Alice as dealer; bot accepts, plays, and hand completes.
+6. **Blackjack Human-to-Human**:
+   - Alice challenges Bob (Alice deals, Bob bets and plays).
+   - Bob challenges Alice (Bob deals, Alice bets and plays).
+   - Hostile dealer interrupt test: dealer window killed mid-deal; on reopen, deal is safely recovered and delivered once, and hand finishes cleanly.
+7. **Cross-Relay Refusal**: Carol on relay-b cannot message Alice on relay-a yet (phase 2 replication is in progress in `open-relay`).
 
-## Quickest path (about a minute)
+All 143 unit test cases across `blackjack-hand`, `ChatMessageBlackjack`, `Chat.sendFollowUp`, and `chats.outgoing` pass.
 
-From `~/repos/frank/.worktrees/local-stack`:
+## Quickest Path: Test Live Now
 
+The local stack is already running in `/Users/shammah/repos/frank/.worktrees/integration-open`.
+
+### 1. Open the UI in Chrome
+Run:
 ```sh
-node demo/local-stack/stack.mjs e2e             # clean state → account → provision → fund → one message and reply
-node demo/local-stack/stack.mjs chrome driven   # opens that account in a real Chrome window
-# chat with the bot contact; replies take several seconds (real qwen2.5:7b on local Ollama)
+cd /Users/shammah/repos/frank/.worktrees/integration-open
+node demo/local-stack/stack.mjs chrome alice
+```
+(A browser window has already been opened for you).
+
+In the browser:
+- Complete onboarding (choose any username / create account).
+- Note your address from the **Receive** page (e.g. `0x...`).
+
+### 2. Fund your account
+In terminal:
+```sh
+node demo/local-stack/stack.mjs fund <your-receive-address>
+```
+This gives you 5 local MON for stamps and bets.
+
+### 3. Test Qwen Bot
+- The Qwen bot is already in your contact list.
+- Click into the conversation with the Qwen bot.
+- Send a message (e.g., "Hello, what is two plus two?").
+- Qwen answers using Alibaba Cloud Qwen 3.8 Max.
+
+### 4. Test Blackjack Bot
+- The Blackjack bot will challenge you automatically when it detects your account on the relay.
+- Open the bot's chat and place a bet.
+- Play buttons (Hit / Stand) will guide your turns.
+- Payout happens automatically via stealth stamp.
+- You can also challenge the bot yourself: click the "+" icon next to the message composer, select **Blackjack challenge**, choose your role and max bet.
+
+### 5. Test Two Users (Human vs Human)
+Open a second window with a distinct throwaway profile:
+```sh
+node demo/local-stack/stack.mjs chrome bob
+```
+- Onboard Bob.
+- Fund Bob: `node demo/local-stack/stack.mjs fund <bob-receive-address>`
+- Add Alice's address to Bob's contacts, and Bob's address to Alice's contacts.
+- Message each other, or challenge each other to Blackjack!
+
+### Stop the stack when done
+```sh
 node demo/local-stack/stack.mjs down
 ```
 
-`e2e` prints `PASS` per browser phase and ends with "e2e finished". The Chrome window uses a
-throwaway profile that trusts only this stack's certificates; your normal Chrome is untouched.
+## What Does Not Work Yet
 
-## Fully by hand
-
-```sh
-node demo/local-stack/stack.mjs up
-node demo/local-stack/stack.mjs chrome          # empty throwaway profile
-#   create the account; Settings → Networking → "Export public directory evidence"; download the file
-node demo/local-stack/stack.mjs provision ~/Downloads/frank-ui-public-export.json
-#   open the Receive page and copy the address shown THERE (not the one on the Wallet page, #834)
-node demo/local-stack/stack.mjs fund 0x<receive address>
-#   Settings → Networking → "Check installation"; Add Contact with the bot address the panel shows; chat
-node demo/local-stack/stack.mjs down
-```
-
-`provision` and the empty-profile `chrome` command had not been run by anyone when this was
-written; `e2e` runs the same steps through the driver. If `provision` fails, fall back to `e2e`.
-
-`node demo/local-stack/stack.mjs build` rebuilds everything (relay binary, app, local chain) if you
-change code. `stack.mjs status` shows what is running; logs are in `/private/tmp/frank-stack/logs`.
-
-## One-hour limit
-
-Everything must happen within one hour of `up` (or `e2e`). The operator policy is valid for at most
-3600 s and the installation cannot be renewed for the same account (#831). After that, messaging
-stops; run `e2e` or `up` again — it wipes all local state and takes about 20 s to re-provision.
-
-## What I ran myself and saw
-
-- `stack.mjs e2e` from clean state on `0bd66d3`: all phases PASS in 49 s. In real (headless) Chrome
-  against the production build: account created through normal onboarding; public evidence exported;
-  operator approve and install into both relays; bot started; "Check installation" → "Ready: local
-  demo installation verified. Encrypted messaging is enabled."; after a Chrome restart messaging
-  resumed without pressing Check; Add Contact with the bot address opened the chat; one message sent
-  (0.01 MON stamp); the reply rendered once. Screenshot:
-  `/private/tmp/frank-stack/shots/10-chat-after-wait.png`.
-- `stack.mjs chrome driven` opens a real Chrome window on that account (launch only checked).
-- The lane that built the stack also saw three consecutive turns with no duplicates, and the
-  correct pending state without the bot ("Bot: no installation status available", nothing sent or
-  paid). Evidence: `/private/tmp/frank-stack/evidence/final/` (`e2e.log`, `shots/`, `wire-report.txt`
-  with the hex of each canonical PUT and inbox GET).
-
-## Real and stand-in
-
-Real: the `cashwebd` relay binaries and their directory runtime; the production app bundle; Chrome;
-the operator tool; the bot code; the local Qwen model; all signing, encryption, stamp payments and
-the relay's verification of them.
-
-Stand-ins: the chain is a local Hardhat node with Monad testnet's chain id (a shim substitutes the
-pinned genesis hash and serves raw transactions; it automines instantly); TLS is a throwaway local
-CA trusted by a Chrome flag; the relay clock file is written from this machine's time; relay
-identity points are random with the private half discarded; bot roots are random and disposable.
-relay-b is installed and reports status, but nothing is homed on it and nothing is forwarded.
-
-## Known rough edges
-
-- Fund the address on the **Receive** page. The Wallet page shows a different address and funding it
-  does not help (#834). The wallet panel banner still says messaging is unavailable even when it
-  works (#834).
-- Text only. The only contact you can message is the installed bot.
-- If the home relay restarts, the bot exits and must be restarted (`stack.mjs bot-start live`) (#835).
-- A reply the bot cannot pay for, or a relay that keeps answering "retained", holds later messages
-  with no recovery screen (#830, #831).
-- The console shows "No registered profile found" for the bot; harmless (#835).
-- UI polish is deferred by decision; findings about look and wording are ticketed, not fixed.
-
-## Persona run (2026-10-04, real headless Chrome on this stack)
-
-Worked: a newcomer can complete create → export → `provision` → `fund` → Check → Add Contact →
-first message (the by-hand `provision` path worked first time). Recovery in a fresh profile with a
-different pair of shares gave the same account and balance, and messaging worked again after one
-Check; the bot's replies came back but the user's own sent messages did not. Enter-spam and
-double-click paid once. Offline send failed cleanly; a cut at the PUT retried and paid once. A
-tampered inbox record was not displayed and nothing was paid ("Payload digest mismatch"). A replayed
-PUT was idempotent; a modified one got 409. A non-installed address could not be added or paid.
-
-Will trip you up (fixes in progress on branch `persona-fixes`, not in this checkout yet):
-- Sending while messaging is not Ready shows "Something went wrong" and discards what you typed.
-- The Send button only works with a real mouse press or Enter in the composer.
-- At phone width the Wallet page has no navigation.
-- Pasting several megabytes and pressing Enter blanks that chat permanently on the device.
-- After any outage nothing recovers until you press Check again; `restart-relays` kills the bot
-  (restart it with `stack.mjs bot-start live`, then Check).
-- The gear icon opens a drawer; click Settings again inside it.
-Everything else found (wording, onboarding, accessibility) is in #838.
-
-## Not proven
-
-- Behaviour after the one-hour expiry, and a relay killed mid-delivery with store-and-forward
-  (needs #779). Typed wallets cannot yet spend stamps they receive (#837).
-- The chain RPC proxy now authenticates operator-installed directory subjects (needed for anything
-  to work). That is an authority change with no unit test yet; it is under independent review as
-  part of #833.
-- Nothing has run against a real chain or a real TLS deployment.
-- `yarn` on this machine is a broken symlink, so the newest app jest tests (which need
-  `fake-indexeddb`) were not run in the `local-stack` worktree; they pass in the app worktree.
-
-## Where it stops
-
-- **Typed blackjack (#780):** implementation in progress in `.worktrees/issue-780-blackjack-canonical`;
-  not in this checkout. The approved bundle allows exactly one bot, so a local session will run
-  either Qwen or blackjack.
-- **Two relays with forwarding and restart/store-and-forward (#779):** not started. Both relays run
-  and are installed, but the UI and the bot are homed on relay-a.
-- **Retiring the active protobuf/CBC paths (#780, #797):** not started.
-- **Landing:** #825 is merged. The app cutover is PR #833 (CI and review in progress). The bot's
-  canonical mode and the launcher are local branches (`issue-703-qwen-coupling` at `c2cb664`,
-  `local-stack` at `0bd66d3`) to be opened as PRs stacked on #833.
-
-## Decisions waiting for you
-
-- Drop the identifying `POND` calldata from message payments (#826). Default: after this milestone,
-  before any deployment.
-- The one-hour installation lifetime and how renewal should work (#831).
-- Whether a second identity may ever use canonical messaging at the same wallet storage (#832).
-- Dead bot replies are cleaned up and acknowledged so one dead reply does not block later ones; the
-  turn stays held (#830).
+1. **Cross-relay store-and-forward (Phase 2)**: Carol on relay-b cannot yet message Alice on relay-a. Phase 2 relay code has passed initial tests on branch `open-directory-relay` and is undergoing independent review before being merged into `integration-open`.
+2. **Escrow contracts / Adaptor signatures**: Money moves strictly via stealth stamp payments (Requirements 1-4). Escrow via adaptor signatures is deferred until the stamp-based flow is fully vetted.

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { createServer } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -24,7 +25,7 @@ const codecPath = resolve(
     new URL('../../packages/frank-codec/src/index.ts', import.meta.url),
   ),
 )
-let child, socket, call, sessionId
+let child, socket, call, sessionId, streamServer
 let interceptResponse = async event =>
   call('Fetch.continueRequest', { requestId: event.params.requestId })
 let events = []
@@ -128,7 +129,7 @@ async function openTab() {
   await call('Network.enable')
   await call('Page.addScriptToEvaluateOnNewDocument', {
     source: `
-    window.__forumWire=[];
+    window.__forumWire=[];window.__forumResponseCaptures=[];
     const bytes=async value=>value==null?[]:Array.from(value instanceof Blob?new Uint8Array(await value.arrayBuffer()):value instanceof ArrayBuffer?new Uint8Array(value):ArrayBuffer.isView(value)?new Uint8Array(value.buffer,value.byteOffset,value.byteLength):new TextEncoder().encode(value));
     const originalFetch=window.fetch;
     window.fetch=async function(input,init={}) {
@@ -137,7 +138,11 @@ async function openTab() {
       const row={url,method:init.method??'GET',headers:Object.fromEntries(new Headers(init.headers)),request:await bytes(init.body)};
       window.__forumWire.push(row);
       const response=await originalFetch.apply(this,arguments);
-      row.status=response.status; row.contentType=response.headers.get('content-type'); row.response=Array.from(new Uint8Array(await response.clone().arrayBuffer()));
+      row.status=response.status; row.contentType=response.headers.get('content-type');row.contentLength=response.headers.get('content-length');row.captureResponse=!window.__forumSkipResponseCapture;
+      if(!window.__forumSkipResponseCapture){
+        const capture=response.clone().arrayBuffer().then(body=>row.response=Array.from(new Uint8Array(body)));
+        window.__forumResponseCaptures.push(capture);
+      }
       return response;
     };
     const open=XMLHttpRequest.prototype.open,send=XMLHttpRequest.prototype.send,setHeader=XMLHttpRequest.prototype.setRequestHeader;
@@ -330,6 +335,7 @@ try {
   assert.equal(status, 200)
   const audit = await evaluate(`(async()=>{
     const c=await import('/@fs'+${JSON.stringify(codecPath)});
+    await Promise.all(window.__forumResponseCaptures);
     const seen=new Set(),directions=new Set();
     for(const row of window.__forumWire){
       if(!row.status||row.status<200||row.status>=300)continue;
@@ -721,6 +727,149 @@ try {
   assert.equal(discovered.postCount, '18446744073709551615')
   assert.equal(discovered.revision, '18446744073709551615')
   await call('Fetch.disable')
+  // A genuine unknown-length HTTP stream exercises the browser reader before buffering.
+  // No CDP response-body retrieval/fulfillment or capture clone touches this response.
+  const stream = {
+    bytes: 0,
+    requests: 0,
+    aborted: false,
+    finished: false,
+    headers: undefined,
+  }
+  const limit = 4 * 1024 * 1024,
+    planned = 8 * 1024 * 1024
+  streamServer = createServer((request, response) => {
+    response.setHeader('access-control-allow-origin', '*')
+    response.setHeader('access-control-allow-headers', 'accept,content-type')
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204)
+      response.end()
+      return
+    }
+    stream.requests++
+    stream.headers = request.headers
+    response.writeHead(200, { 'content-type': 'application/cbor' })
+    response.flushHeaders()
+    const prefix = Buffer.from(pagingFixture.first)
+    response.write(prefix)
+    stream.bytes += prefix.length
+    const chunk = Buffer.alloc(64 * 1024, 0xaa)
+    const timer = setInterval(() => {
+      if (response.destroyed) {
+        clearInterval(timer)
+        return
+      }
+      if (stream.bytes >= planned) {
+        clearInterval(timer)
+        stream.finished = true
+        response.end()
+        return
+      }
+      stream.bytes += chunk.length
+      response.write(chunk)
+    }, 10)
+    response.on('close', () => {
+      clearInterval(timer)
+      stream.aborted = !response.writableFinished
+    })
+  })
+  await new Promise((resolve, reject) => {
+    streamServer.once('error', reject)
+    streamServer.listen(0, '127.0.0.1', resolve)
+  })
+  const streamOrigin = 'http://127.0.0.1:' + streamServer.address().port
+  await evaluate(`window.__forumSkipResponseCapture=true`)
+  interceptResponse = async event => {
+    const url = new URL(event.params.request.url)
+    if (
+      url.searchParams.get('topic') !== 'news' ||
+      url.origin === streamOrigin
+    ) {
+      await call('Fetch.continueRequest', { requestId: event.params.requestId })
+      return
+    }
+    await call('Fetch.continueRequest', {
+      requestId: event.params.requestId,
+      url: streamOrigin + url.pathname + url.search,
+    })
+  }
+  await call('Fetch.enable', {
+    patterns: [
+      { urlPattern: '*/message/monad/topics?*', requestStage: 'Request' },
+    ],
+  })
+  const beforeOversize = await evaluate(
+    `JSON.stringify(${forumState}.messages.filter(row=>row.topic==='news'))`,
+  )
+  const error = await evaluate(`${refresh}.then(()=>null,error=>error.message)`)
+  assert.equal(
+    error,
+    'Forum response byte limit',
+    'unknown-length body is rejected at the streaming bound',
+  )
+  const streamWire = await evaluate(
+    `window.__forumWire.filter(row=>row.method==='GET'&&row.url.includes('topic=news')).at(-1)`,
+  )
+  assert.equal(
+    streamWire.contentLength,
+    null,
+    'actual browser received no declared Content-Length',
+  )
+  assert.equal(
+    streamWire.captureResponse,
+    false,
+    'wire recorder did not clone or prebuffer the stream',
+  )
+  assert.equal(
+    streamWire.response,
+    undefined,
+    'fixture bytes were consumed only by the bounded production reader',
+  )
+  for (let n = 0; !stream.aborted && n < 100; n++)
+    await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(
+    stream.requests,
+    1,
+    'oversize is permanent and cannot start a fresh retry',
+  )
+  assert.equal(stream.headers.accept, 'application/cbor')
+  assert.equal(
+    stream.headers.authorization,
+    undefined,
+    'browser public GET is anonymous',
+  )
+  assert.equal(
+    stream.headers.cookie,
+    undefined,
+    'browser public GET sends no credentials',
+  )
+  assert.equal(
+    stream.aborted,
+    true,
+    'bounded reader cancels the actual HTTP stream',
+  )
+  assert.equal(
+    stream.finished,
+    false,
+    'browser aborts before the full planned body is sent',
+  )
+  assert.ok(
+    stream.bytes > limit && stream.bytes < planned,
+    'abort occurs after crossing the bound and before full buffering',
+  )
+  assert.equal(
+    await evaluate(
+      `JSON.stringify(${forumState}.messages.filter(row=>row.topic==='news'))`,
+    ),
+    beforeOversize,
+    'oversized stream cannot publish a prefix',
+  )
+  assert.equal(
+    await evaluate(`${forumState}.isRefreshing`),
+    false,
+    'failed current stream clears its loading state',
+  )
+  await call('Fetch.disable')
   assert.ok(
     await evaluate(
       `JSON.stringify(${forumState}).includes(${JSON.stringify(digest)})`,
@@ -731,10 +880,15 @@ try {
     false,
   )
   console.log(
-    'Rendered CreatePost → list → single → reply → up/down → status; canonical bytes/media; exact drawer threshold/count; wide signed and zero observations; FIFO generations; held multipage atomic publication:',
+    'Rendered CreatePost → list → single → reply → up/down → status; canonical bytes/media; exact drawer threshold/count; wide signed and zero observations; FIFO generations; held multipage atomic publication; unknown-length streaming abort:',
     audit,
   )
 } finally {
   await stop()
+  if (streamServer) {
+    const closed = new Promise(resolve => streamServer.close(resolve))
+    streamServer.closeAllConnections()
+    await closed
+  }
   await rm(directory, { recursive: true, force: true })
 }

@@ -2018,7 +2018,8 @@ export class MonadCanonicalStampClient {
       if (!attempt || attempt.terminal === null)
         throw new Error('canonical-wallet:terminal-required')
       if (attempt.cleanupComplete) return
-      for (const reservation of attempt.reservations) {
+      const members = attempt.request.parts.transactions
+      for (const [i, reservation] of attempt.reservations.entries()) {
         const record = this.wallet.pool.getRecord(reservation.index)
         if (
           !record ||
@@ -2028,6 +2029,22 @@ export class MonadCanonicalStampClient {
         )
           throw new Error('canonical-wallet:cleanup-hold')
         if (record.status === 'in-use') {
+          if (
+            attempt.terminal.phase === 'delivered' &&
+            record.lifecycle?.spend === undefined
+          ) {
+            // A spent account must retain its exact signed spend, or the wallet's own
+            // lifecycle validation rejects the whole owner on the next operation or reopen.
+            const rawTx = hexlify(members[i])
+            const tx = Transaction.from(rawTx)
+            if (tx.from?.toLowerCase() !== record.address.toLowerCase())
+              throw new Error('canonical-wallet:cleanup-hold')
+            this.wallet.pool.recordSpendTransaction(record.index, {
+              rawTx,
+              txHash: tx.hash!,
+              valueWei: tx.value.toString(),
+            })
+          }
           const live = canonicalLiveLeases
             .get(this.wallet.walletState)
             ?.get(record.index)

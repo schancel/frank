@@ -2114,6 +2114,62 @@ describe('canonical durable consumer barriers', () => {
     },
     20000,
   )
+  it('keeps the owner valid after delivered cleanup marks accounts spent', async () => {
+    await withCanonicalConsumer(async f => {
+      let link!: CanonicalWorkflowLink
+      await f.prepare(1, async durable => {
+        link = durable
+      })
+      const attempt = await f.client.finishIntent(
+        f.client.reconcileWorkflowLinks([link])[0].eligibility!,
+      )
+      const body = new TextEncoder().encode(
+        JSON.stringify({
+          version: 1,
+          phase: 'delivered',
+          identity: attempt.request.identity,
+          mailbox_committed_at_ms: 1,
+        }),
+      )
+      const accepted = await f.client.submit(
+        f.client.reconcileWorkflowLinks([link])[0].eligibility!,
+        {
+          fetch: async url => {
+            let done = false
+            return {
+              status: 200,
+              url,
+              headers: {
+                get: name =>
+                  name === 'content-type' ? 'application/json' : null,
+              },
+              body: {
+                getReader: () => ({
+                  read: async () =>
+                    done
+                      ? { done: true }
+                      : ((done = true), { done: false, value: body }),
+                  cancel: async () => undefined,
+                  releaseLock: () => undefined,
+                }),
+              },
+            }
+          },
+        },
+      )
+      expect(accepted.phase).toBe('delivered')
+      await f.client.cleanupTerminal(link.attemptRef, link.consumerId)
+      const record = f.pool.getRecord(0)!
+      expect(record.status).toBe('spent')
+      expect(record.lifecycle?.spend?.rawTx).toBe(
+        `0x${toHex(attempt.request.parts.transactions[0])}`,
+      )
+      expect(() => f.state.assertSemanticallyValid()).not.toThrow()
+      expect(f.client.terminalOutcomes()).toHaveLength(1)
+      await f.client.acknowledgeWorkflow(link.attemptRef, link.consumerId)
+      expect(f.client.wasAcknowledged(link.attemptRef)).toBe(true)
+    })
+  }, 20000)
   it('retains callback-failed prelease intent and excludes its available account from canonical and topic selection', async () => {
     await withCanonicalConsumer(async f => {
       await expect(

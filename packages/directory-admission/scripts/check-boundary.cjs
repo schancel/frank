@@ -14,7 +14,25 @@ const demoEntries = new Map([
   ['packages/cashweb/relay/canonical-dm.jest.test.ts', '/node'],
   ['packages/cashweb/relay/directory-client.ts', null],
   ['packages/cashweb/relay/directory-client.jest.test.ts', '/node'],
+  ['packages/cashweb/relay/monad-mailbox-client.ts', null],
+  ['packages/cashweb/relay/monad-mailbox-client.jest.test.ts', '/node'],
+  // #778: the app opens the browser store only behind the operator readiness barrier.
+  ['app/src/utils/directory-readiness.ts', null],
+  ['app/src/utils/directory-readiness.jest.test.ts', '/browser'],
+  ['app/src/utils/monad-identity-session.ts', '/browser'],
+  ['app/src/utils/monad-identity-session.jest.test.ts', '/browser'],
 ])
+// A jest test may replace its own allowlisted entry with a mock; nothing else may call it in.
+function isJestMock(node, file) {
+  return (
+    /\.jest\.test\.[cm]?[jt]sx?$/.test(file) &&
+    ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) &&
+    ts.isIdentifier(node.expression.expression) &&
+    node.expression.expression.text === 'jest' &&
+    node.expression.name.text === 'mock'
+  )
+}
 function checkConsumer(file, text) {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true)
   let count = 0
@@ -47,7 +65,7 @@ function checkConsumer(file, text) {
           !demoEntries.has(file) ||
           (name === base
             ? !typeOnly
-            : !ts.isImportDeclaration(node) ||
+            : !(ts.isImportDeclaration(node) || isJestMock(node, file)) ||
               !demoEntries.get(file) ||
               name !== base + demoEntries.get(file))
         )

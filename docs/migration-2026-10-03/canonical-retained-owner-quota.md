@@ -1,0 +1,9 @@
+# Accepted finite canonical retained-owner accounting
+
+Coordinator accepts separate canonical immutable-owner storage limits:4096 owners/2GiB globally and128 owners/256MiB per recipient, independent of unchanged legacy financial reservation and compact history limits. No automatic owner eviction. Permanent saturation at these bounds is an explicit initial backpressure limitation; exact retained retry, private reads and acknowledgement remain available. No reclamation API or confirmed-fact deletion is authorized.
+
+Admission atomically reserves maximum bounded lifecycle footprint: checked `original_body_length + 8192 + 662 * member_count`. This follows deterministic binary CBOR row encoding,625-byte bounded member value plus37-byte key, single original body owner and bounded fixed metadata/index layouts. Diagnostics must be bounded to512 UTF-8 BYTES, not512 characters. Every introduced key/value/index must fit the documented envelope; no duplicated raw body or serialized provider receipt. Final actual-encoder and exact-full confirmation/terminal/publication probes remain mandatory. Reserved transitions require no fresh capacity.
+
+Canonical consumed-auth nonce storage is globally bounded4096 live tokens/1MiB logical encoded storage, plus existing30 per recipient. Bounded all-recipient expired-token scan and capacity checks happen under the same owner lock before atomic durable consumption. Invalid authentication never initializes storage. Retained immutable submission lookup precedes fresh quota checks; alternate tuple conflicts before RPC. Existing financial C0 policy, confirmed-prefix retention and frozen original-row economics remain unchanged.
+
+This finite extension is inside R's existing claimed source paths. It accepts implementation policy, not a test or runtime verdict. Native existing gate remains live and must reach terminal before source mutation. Full source/runtime review and feature proofs remain required.

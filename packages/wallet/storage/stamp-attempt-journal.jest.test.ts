@@ -301,6 +301,35 @@ describe('canonical exact-attempt storage', () => {
     },
   )
 
+  it('holds after a committed-but-rejected storage callback and finds the original attempt on reopen', async () => {
+    await withCanonicalJournal(async journal => {
+      const fixture = await canonicalFixture()
+      const db = database(journal),
+        original = db.batch.bind(db)
+      const spy = jest.spyOn(db, 'batch').mockImplementation((async (
+        ...args: unknown[]
+      ) => {
+        await original(...args)
+        throw new Error('completion became uncertain after commit')
+      }) as never)
+      const networkEffect = jest.fn()
+      await expect(
+        journal.prepare(fixture).then(networkEffect),
+      ).rejects.toThrow('completion became uncertain')
+      spy.mockRestore()
+      expect(networkEffect).not.toHaveBeenCalled()
+      expect(() => journal.prepare(fixture)).toThrow('corrupt')
+      await journal.Close()
+      await journal.Open()
+      const retained = journal.lookup(fixture.prepared)!
+      expect(retained.request.body).toEqual(fixture.request.body)
+      expect((await journal.prepare(fixture)).attemptRef).toBe(
+        retained.attemptRef,
+      )
+      expect(journal.getAll()).toHaveLength(1)
+    })
+  })
+
   it('serializes idempotent producers, snapshots caller bytes and rejects alternate raw sets or multipart boundaries', async () => {
     await withCanonicalJournal(async journal => {
       const fixture = await canonicalFixture()
@@ -645,6 +674,8 @@ describe('canonical exact-attempt storage', () => {
           await exit
           await journal.Open()
         }
+        expect(child.signalCode).toBe('SIGKILL')
+        expect(child.exitCode).toBeNull()
         const row = journal.lookup(fixture.prepared)!
         expect(row.request.body).toEqual(fixture.request.body)
         expect(row.request.contentType).toBe(fixture.request.contentType)

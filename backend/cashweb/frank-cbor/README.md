@@ -54,3 +54,15 @@ finality nor wallet authority. Active TS/Rust conformance uses
 `docs/protocol/cbor/vectors/forum-content-read.json`. Runtime snapshot storage/publication,
 normal-client switching and predecessor removal remain under #675: server successor #769
 and whole normal-path cutover/removal successor #770.
+
+## Typed blackjack items
+
+Type18/schema1/min-reader1 is supported by default. `BlackjackItem` combines an exact
+game ID with one of nine closed `BlackjackAction` shapes. `encode_blackjack_item`
+validates strict hash/decimal presentation and the same typed wire validator;
+`project_blackjack_item` owns exact original frame bytes and its application value
+without restarting traversal. Seed stays text and quantities use exact decimal
+strings. Optional zero fee/empty rules remain distinct from absence. The active
+corpus preserves90 proposal frames/79 writer inputs and genuine typed Rust/TS origins.
+Root/nested4096 and existing item/depth/aggregate counters apply through the public
+#789 continuation. #780 owns actual authenticated runtime/economic adoption.

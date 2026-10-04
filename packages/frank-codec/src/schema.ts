@@ -303,46 +303,95 @@ function blackjackPayload(payload: FrankValue): BlackjackMessageItem {
   const P = 'root/payload'
   if (!isMap(payload)) throw bad(P, 'blackjack payload must be a map')
   const action = u32ish(payload.get(1n), `${P}.1`, 0, 6)
-  const card = (v: FrankValue | undefined, path: string) => u32ish(v, path, 0, 51)
-  const hand = (v: FrankValue | undefined, key: number, min: number, max: number) =>
-    asList(v, `${P}.${key}`, min, max).map((c, i) => card(c, `${P}.${key}[${i}]`))
+  const card = (v: FrankValue | undefined, path: string) =>
+    u32ish(v, path, 0, 51)
+  const hand = (
+    v: FrankValue | undefined,
+    key: number,
+    min: number,
+    max: number,
+  ) =>
+    asList(v, `${P}.${key}`, min, max).map((c, i) =>
+      card(c, `${P}.${key}[${i}]`),
+    )
   const read = (required: number[], optional: number[] = []) => {
     const m = fields(payload, P, [0, 1, ...required], optional, false, false)
-    return { m, base: { type: 18 as const, gameId: tstr(m.get(0), `${P}.0`, 1, 128) } }
+    return {
+      m,
+      base: { type: 18 as const, gameId: tstr(m.get(0), `${P}.0`, 1, 128) },
+    }
   }
   switch (action) {
     case 0: {
-      const {m, base} = read([2])
-      return {...base, action: 'bet', wagerTxHash: bstr(m.get(2), `${P}.2`, 32, 32)}
+      const { m, base } = read([2])
+      return {
+        ...base,
+        action: 'bet',
+        wagerTxHash: bstr(m.get(2), `${P}.2`, 32, 32),
+      }
     }
     case 1: {
-      const {m, base} = read([4, 5, 6])
-      return {...base, action: 'deal', serverSeedHash: bstr(m.get(4), `${P}.4`, 32, 32), playerCards: hand(m.get(5), 5, 2, 2), dealerUpCard: card(m.get(6), `${P}.6`)}
+      const { m, base } = read([4, 5, 6])
+      return {
+        ...base,
+        action: 'deal',
+        serverSeedHash: bstr(m.get(4), `${P}.4`, 32, 32),
+        playerCards: hand(m.get(5), 5, 2, 2),
+        dealerUpCard: card(m.get(6), `${P}.6`),
+      }
     }
     case 2: {
-      const {m, base} = read([], [5])
-      return m.has(5) ? {...base, action: 'hit', playerCards: hand(m.get(5), 5, 3, 52)} : {...base, action: 'hit'}
+      const { m, base } = read([], [5])
+      return m.has(5)
+        ? { ...base, action: 'hit', playerCards: hand(m.get(5), 5, 3, 52) }
+        : { ...base, action: 'hit' }
     }
-    case 3: return {...read([]).base, action: 'stand'}
+    case 3:
+      return { ...read([]).base, action: 'stand' }
     case 4: {
-      if (payload.has(3n) === payload.has(5n)) throw bad(P, 'double requires exactly one request/response form')
-      const {m, base} = read(payload.has(3n) ? [3] : [5])
-      return m.has(3) ? {...base, action: 'double', doubleWagerTxHash: bstr(m.get(3), `${P}.3`, 32, 32)} : {...base, action: 'double', playerCards: hand(m.get(5), 5, 3, 3)}
+      if (payload.has(3n) === payload.has(5n))
+        throw bad(P, 'double requires exactly one request/response form')
+      const { m, base } = read(payload.has(3n) ? [3] : [5])
+      return m.has(3)
+        ? {
+            ...base,
+            action: 'double',
+            doubleWagerTxHash: bstr(m.get(3), `${P}.3`, 32, 32),
+          }
+        : { ...base, action: 'double', playerCards: hand(m.get(5), 5, 3, 3) }
     }
     case 5: {
-      const {m, base} = read([7, 8, 9])
+      const { m, base } = read([7, 8, 9])
       const seed = tstr(m.get(8), `${P}.8`, 64, 64)
-      if (seed.length !== 64 || !/^[0-9a-f]+$/.test(seed)) throw bad(`${P}.8`, 'seed must be 64 lowercase ASCII hex characters')
-      const outcome = ['player_win', 'dealer_win', 'push', 'player_blackjack'] as const
-      return {...base, action: 'reveal', dealerCards: hand(m.get(7), 7, 2, 52), serverSeed: seed, outcome: outcome[u32ish(m.get(9), `${P}.9`, 0, 3)]}
+      if (seed.length !== 64 || !/^[0-9a-f]+$/.test(seed))
+        throw bad(`${P}.8`, 'seed must be 64 lowercase ASCII hex characters')
+      const outcome = [
+        'player_win',
+        'dealer_win',
+        'push',
+        'player_blackjack',
+      ] as const
+      return {
+        ...base,
+        action: 'reveal',
+        dealerCards: hand(m.get(7), 7, 2, 52),
+        serverSeed: seed,
+        outcome: outcome[u32ish(m.get(9), `${P}.9`, 0, 3)],
+      }
     }
     default: {
-      const {m, base} = read([10, 11], [12, 13])
-      const result: BlackjackMessageItem = {...base, action: 'welcome', minWagerWei: bstr(m.get(10), `${P}.10`, 32, 32), maxWagerWei: bstr(m.get(11), `${P}.11`, 32, 32)}
+      const { m, base } = read([10, 11], [12, 13])
+      const result: BlackjackMessageItem = {
+        ...base,
+        action: 'welcome',
+        minWagerWei: bstr(m.get(10), `${P}.10`, 32, 32),
+        maxWagerWei: bstr(m.get(11), `${P}.11`, 32, 32),
+      }
       if (m.has(12)) result.feeHintWei = bstr(m.get(12), `${P}.12`, 32, 32)
       if (m.has(13)) {
         result.rules = tstr(m.get(13), `${P}.13`, 0, 1200)
-        if (result.rules.length > 400) throw bad(`${P}.13`, 'rules exceed 400 UTF-16 units')
+        if (result.rules.length > 400)
+          throw bad(`${P}.13`, 'rules exceed 400 UTF-16 units')
       }
       return result
     }

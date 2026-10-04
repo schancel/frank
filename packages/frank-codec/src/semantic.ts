@@ -188,17 +188,32 @@ export function checkSemantics(
     case 18: {
       if ((typed.gameId === 'welcome') !== (typed.action === 'welcome'))
         throw semantic('welcome gameId is reserved iff action is welcome')
-      const cards = 'playerCards' in typed ? typed.playerCards : 'dealerCards' in typed ? typed.dealerCards : undefined
+      const cards =
+        'playerCards' in typed
+          ? typed.playerCards
+          : 'dealerCards' in typed
+          ? typed.dealerCards
+          : undefined
       if (cards && new Set(cards).size !== cards.length)
         throw semantic('blackjack hand contains duplicate cards')
-      if (typed.action === 'deal' && typed.playerCards.includes(typed.dealerUpCard))
+      if (
+        typed.action === 'deal' &&
+        typed.playerCards.includes(typed.dealerUpCard)
+      )
         throw semantic('deal up-card duplicates a player card')
       if (typed.action === 'welcome') {
-        const quantity = (bytes: Uint8Array) => bytes.reduce((n, b) => (n << 8n) | BigInt(b), 0n)
-        const min = quantity(typed.minWagerWei), max = quantity(typed.maxWagerWei)
+        const quantity = (bytes: Uint8Array) =>
+          bytes.reduce((n, b) => (n << 8n) | BigInt(b), 0n)
+        const min = quantity(typed.minWagerWei),
+          max = quantity(typed.maxWagerWei)
         const limit = 10n ** 40n - 1n
-        if (min < 1n || max < 1n || min > max || max > limit ||
-            (typed.feeHintWei !== undefined && quantity(typed.feeHintWei) > limit))
+        if (
+          min < 1n ||
+          max < 1n ||
+          min > max ||
+          max > limit ||
+          (typed.feeHintWei !== undefined && quantity(typed.feeHintWei) > limit)
+        )
           throw semantic('blackjack welcome quantity range/order')
       }
       break

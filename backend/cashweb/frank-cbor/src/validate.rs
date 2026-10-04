@@ -467,6 +467,7 @@ fn process_frame(
     let effective_schema = parsed.schema_version.min(highest_schema);
     if (matches!(mode, Mode::Root)
         || (9..=15).contains(&parsed.type_id)
+        || parsed.type_id == crate::limits::TYPE_BLACKJACK_ITEM
         || (parsed.type_id == TYPE_DIRECTORY_STATEMENT && effective_schema >= 4))
         && !check_root_frame_limit(parsed.type_id, parsed.frame.len(), effective_schema)
     {
@@ -1213,6 +1214,7 @@ fn open_children(
             items: open_items(items, env_depth + 2, shared, &format!("{path}.0"))?,
             unknown,
         }),
+        Draft::Blackjack(item) => Ok(TypedPayload::BlackjackItem(item)),
         Draft::Text { text, unknown } => Ok(TypedPayload::TextItem { text, unknown }),
     }
 }

@@ -82,6 +82,9 @@ pub(crate) const TYPE_FORUM_DISCOVERY_PAGE: u32 = 14;
 pub(crate) const TYPE_FORUM_OPERATION_STATUS: u32 = 15;
 pub(crate) const TYPE_CONTAINER_ITEM: u32 = 16;
 pub(crate) const TYPE_TEXT_ITEM: u32 = 17;
+/// Type18 frame limit at both root and nested positions.
+pub const MAX_BLACKJACK_FRAME_BYTES: usize = 4096;
+pub(crate) const TYPE_BLACKJACK_ITEM: u32 = 18;
 
 /// Types with a version-1 schema in this codec (E5). `0xffff0001` is not included.
 pub const KNOWN_TYPES: [u32; 17] = [
@@ -102,6 +105,7 @@ pub const KNOWN_TYPES: [u32; 17] = [
     TYPE_FORUM_OPERATION_STATUS,
     TYPE_CONTAINER_ITEM,
     TYPE_TEXT_ITEM,
+    TYPE_BLACKJACK_ITEM,
 ];
 
 /// Frank-CBOR production DM suite (S2c): authenticated XChaCha20-Poly1305.

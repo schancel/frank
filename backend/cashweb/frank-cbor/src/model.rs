@@ -622,6 +622,8 @@ pub enum TypedPayload {
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
+    /// Type 18, nine closed blackjack item shapes.
+    BlackjackItem(BlackjackMessageItem),
     /// Type 17.
     TextItem {
         /// Field 0.
@@ -643,3 +645,64 @@ pub struct PreviewDirectoryRoles {
     /// Field 13, exact predecessor type-4 T1, null only at revision zero.
     pub predecessor: Option<Vec<u8>>,
 }
+
+/// Codec-owned nine closed blackjack action shapes; H and Q distinguish bytes from text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlackjackAction<H, Q> {
+    /// Wager request.
+    Bet { wager_tx_hash: H },
+    /// Initial two-card hand and dealer up-card.
+    Deal {
+        server_seed_hash: H,
+        player_cards: Vec<u32>,
+        dealer_up_card: u32,
+    },
+    /// Hit request.
+    HitRequest,
+    /// Hit response.
+    HitResponse { player_cards: Vec<u32> },
+    /// Stand request.
+    Stand,
+    /// Double request.
+    DoubleRequest { double_wager_tx_hash: H },
+    /// Three-card double response.
+    DoubleResponse { player_cards: Vec<u32> },
+    /// Reveal; seed is lowercase ASCII text, never decoded binary.
+    Reveal {
+        dealer_cards: Vec<u32>,
+        server_seed: String,
+        outcome: BlackjackOutcome,
+    },
+    /// Exact decimal presentation or 32-byte unsigned quantity, with optional-presence retention.
+    Welcome {
+        min_wager_wei: Q,
+        max_wager_wei: Q,
+        fee_hint_wei: Option<Q>,
+        rules: Option<String>,
+    },
+}
+
+/// Common game ID plus one closed action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlackjackFields<H, Q> {
+    /// Exact UTF-8 game ID, with no normalization.
+    pub game_id: String,
+    /// The complete selected action shape.
+    pub action: BlackjackAction<H, Q>,
+}
+
+/// Four allocated outcomes; no payout or fairness authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlackjackOutcome {
+    /// Player wins.
+    PlayerWin,
+    /// Dealer wins.
+    DealerWin,
+    /// Push.
+    Push,
+    /// Player blackjack.
+    PlayerBlackjack,
+}
+
+/// Closed type-18 wire projection; exact frame bytes stay on ParsedFrame.
+pub type BlackjackMessageItem = BlackjackFields<Vec<u8>, Vec<u8>>;

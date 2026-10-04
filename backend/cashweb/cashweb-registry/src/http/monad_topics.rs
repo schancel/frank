@@ -1262,7 +1262,7 @@ fn forum_query(
     }
     let cursor = fields
         .remove("cursor")
-        .map(|value| frank_cbor::forum_cursor_from_transport(&value).map_err(invalid))
+        .map(|value| frank_cbor::forum_cursor_from_transport(&value).map(|cursor| cursor.bytes).map_err(invalid))
         .transpose()?;
     let query = if discovery {
         crate::forum::Query::Discovery

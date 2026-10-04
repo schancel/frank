@@ -1493,6 +1493,7 @@ mod tests {
         let bitcoind = instance.rpc_client();
 
         let registry = Registry {
+            forum: crate::forum::Owner::new(db.owned_path().to_path_buf()),
             db,
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
@@ -1888,6 +1889,7 @@ mod tests {
         let bitcoind = instance.rpc_client();
 
         let registry = Registry {
+            forum: crate::forum::Owner::new(db.owned_path().to_path_buf()),
             db,
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
@@ -2043,6 +2045,7 @@ mod tests {
         let bitcoind = instance.rpc_client();
 
         let registry = Registry {
+            forum: crate::forum::Owner::new(db.owned_path().to_path_buf()),
             db,
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
@@ -2367,6 +2370,7 @@ mod tests {
         let tempdir = tempdir::TempDir::new(name).unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
         let registry = Registry {
+            forum: crate::forum::Owner::new(db.owned_path().to_path_buf()),
             db,
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(NeverCalledChainAdapter),

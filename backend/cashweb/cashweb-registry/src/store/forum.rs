@@ -594,7 +594,7 @@ impl Store {
                     ]))?,
                 );
                 use bitcoinsuite_core::{Hashed, Sha256};
-                let mut index_key = key(b't', Sha256::digest(post.topic.as_bytes()).as_slice());
+                let mut index_key = key(b't', Sha256::digest(post.topic.as_bytes().into()).as_slice());
                 index_key.extend_from_slice(&((visible.seconds as u64) ^ (1 << 63)).to_be_bytes());
                 index_key.extend_from_slice(&visible.nanoseconds.to_be_bytes());
                 index_key.extend_from_slice(op.event.target_hash());
@@ -742,7 +742,7 @@ impl Store {
         mut visit: impl FnMut([u8; 32], Post) -> Result<()>,
     ) -> Result<()> {
         use bitcoinsuite_core::{Hashed, Sha256};
-        let prefix = key(b't', Sha256::digest(topic.as_bytes()).as_slice());
+        let prefix = key(b't', Sha256::digest(topic.as_bytes().into()).as_slice());
         for row in self
             .db
             .iterator(IteratorMode::From(&prefix, Direction::Forward))

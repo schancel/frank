@@ -6,21 +6,24 @@
 //   node demo/local-stack/stack.mjs up               wipe state, start everything, write the policy
 //   node demo/local-stack/stack.mjs status
 //   node demo/local-stack/stack.mjs policy           (re)write the bootstrap policy (valid 1 hour)
-//   node demo/local-stack/stack.mjs bot-export       write the Qwen bot's public export (disposable roots)
+//   node demo/local-stack/stack.mjs bot-export [live|stub|blackjack]   write the bot's public export (disposable roots)
 //   node demo/local-stack/stack.mjs install [ui-export.json] [bot-export.json]
-//   node demo/local-stack/stack.mjs bot-start [live|stub]   run the Qwen bot (live = local Ollama)
+//   node demo/local-stack/stack.mjs bot-start [live|stub|blackjack]    Qwen on local Ollama, Qwen stub, or the dealer
+//   node demo/local-stack/stack.mjs restart-relays [relay-a|relay-b]   also restarts a running bot
+//   node demo/local-stack/stack.mjs balance <0xaddress>...
+//   node demo/local-stack/stack.mjs e2e-blackjack [plan]               blackjack variant, driven in headless Chrome
 //   node demo/local-stack/stack.mjs bot-stop
 //   node demo/local-stack/stack.mjs restart-relays
 //   node demo/local-stack/stack.mjs fund <0xaddress> [MON]
 //   node demo/local-stack/stack.mjs chrome [driven]  open Chrome on the app (empty profile, or the driver's)
-//   node demo/local-stack/stack.mjs provision <ui-export.json> [live|stub]   bot export + install + fund bot + start bot
+//   node demo/local-stack/stack.mjs provision <ui-export.json> [live|stub|blackjack]   bot export + install + fund bot + start bot
 //   node demo/local-stack/stack.mjs e2e [live|stub] ["message"]   everything, driven in headless Chrome
 //   node demo/local-stack/stack.mjs down
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash, randomBytes, X509Certificate } from 'node:crypto'
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { HDNodeWallet, JsonRpcProvider, SigningKey, formatEther, parseEther } from 'ethers'
+import { HDNodeWallet, JsonRpcProvider, SigningKey, computeAddress, formatEther, parseEther } from 'ethers'
 import { BURN_ADDRESS, DEV_MNEMONIC, FRONTS, HERE, HOST, NETWORK, ORIGINS, P, PINNED_GENESIS, PORTS, REPO, STATE } from './config.mjs'
 
 const RELAYS = ['relay-a', 'relay-b']
@@ -256,7 +259,9 @@ function policy() {
   copyFileSync(join(P.operator, 'bootstrap-policy.json'), join(P.appDirectory, 'bootstrap-policy.json'))
   say(`policy served at ${ORIGINS.app}/directory/bootstrap-policy.json (exports must be made within one hour)`)
 }
-async function install(ui = join(P.operator, 'frank-ui-public-export.json'), bot = join(P.operator, 'bot-export.json')) {
+async function install(ui, bot) {
+  ui ??= join(P.operator, 'frank-ui-public-export.json')
+  bot ??= join(P.operator, 'bot-export.json')
   for (const file of [ui, bot]) if (!existsSync(file)) die(`export not found: ${file}`)
   const reinstall = existsSync(join(P.operator, 'installed'))
   operatorCli(['approve', join(P.operator, 'bootstrap-policy.json'), ui, bot, P.operatorOut, P.directoryState, 'new'])
@@ -268,10 +273,20 @@ async function install(ui = join(P.operator, 'frank-ui-public-export.json'), bot
   say(`${reinstall ? 're' : ''}installed: both relays restarted with the directory section; bundle served at ${ORIGINS.app}/directory/approved-bundle.json`)
   say(`the bot needs: ${join(P.operator, 'bootstrap-policy.json')} and ${join(P.operatorOut, 'approved-bundle.json')}`)
 }
-async function restartRelays() {
-  for (const relay of RELAYS) {
+async function restartRelays(only) {
+  // The bots treat a failed inbox read as fatal, so a relay restart ends a running bot. Stop it
+  // first and start it again afterwards.
+  const hadBot = alive(readPids().bot)
+  if (hadBot) await stop('bot')
+  for (const relay of only ? [only] : RELAYS) {
     await stop(relay)
     await startRelay(relay)
+    say(`${relay} restarted`)
+  }
+  if (hadBot) {
+    await botStart()
+    await waitBotStatus()
+    say('the bot was stopped for the relay restart and is running again')
   }
 }
 
@@ -280,41 +295,71 @@ async function restartRelays() {
 // "Canonical mode"). Its roots are disposable and generated here; nothing else creates them.
 const BOT_SRC = process.env.FRANK_BOT_SRC ?? REPO
 const BOT = join(STATE, 'bot')
-function botEnv(extra) {
+// Exactly one bot is installed per stack: the Qwen bot ("live" on local Ollama, or "stub") or the
+// blackjack dealer. The choice made at export time is remembered so restarts start the same bot.
+const BOT_KINDS = { live: 'qwen', stub: 'qwen', blackjack: 'blackjack' }
+const botChoice = () => (existsSync(join(BOT, 'choice')) ? readFileSync(join(BOT, 'choice'), 'utf8').trim() : undefined)
+function botEnv(choice, extra) {
+  const kind = BOT_KINDS[choice]
+  if (!kind) die('bot must be one of: live, stub, blackjack')
+  const script = kind === 'qwen' ? 'qwen-bot.livecheck.ts' : 'blackjack-bot.livecheck.ts'
+  if (!existsSync(join(BOT_SRC, 'packages', 'bot', script))) die(`bot checkout not found at ${BOT_SRC} (set FRANK_BOT_SRC)`)
+  mkdirSync(BOT, { recursive: true })
   const roots = join(BOT, 'roots.json')
-  if (!existsSync(join(BOT_SRC, 'packages', 'bot', 'qwen-bot.livecheck.ts'))) die(`bot checkout not found at ${BOT_SRC} (set FRANK_BOT_SRC)`)
   if (!existsSync(roots)) {
-    mkdirSync(BOT, { recursive: true })
     const root = () => randomBytes(32).toString('hex')
     writeFileSync(roots, JSON.stringify({ registry: 'frank-domain-roots-v1', roots: { 'evm-wallet': root(), 'identity-authentication': root(), 'messaging-encryption': root() } }), { mode: 0o600 })
   }
-  return {
-    QWEN_BOT_CANONICAL_ROOTS_JSON: roots,
-    QWEN_BOT_CANONICAL_POLICY_JSON: join(P.operator, 'bootstrap-policy.json'),
-    QWEN_BOT_STATE_DIR: join(BOT, 'state'),
-    QWEN_BOT_WALLET_STATE_DIR: join(BOT, 'wallet'),
-    QWEN_BOT_HANDOFF_JSON: join(BOT, 'handoff.json'),
-    NODE_EXTRA_CA_CERTS: P.ca,
-    ...extra,
-  }
+  const prefix = kind === 'qwen' ? 'QWEN_BOT_' : 'BLACKJACK_BOT_'
+  const named = Object.fromEntries(
+    Object.entries({
+      CANONICAL_ROOTS_JSON: roots,
+      CANONICAL_POLICY_JSON: join(P.operator, 'bootstrap-policy.json'),
+      STATE_DIR: join(BOT, 'state'),
+      WALLET_STATE_DIR: join(BOT, 'wallet'),
+      HANDOFF_JSON: join(BOT, 'handoff.json'),
+      ...extra,
+    }).map(([key, value]) => [prefix + key, value]),
+  )
+  const model = choice === 'live' ? { QWEN_BOT_MODE: 'live', QWEN_API_KEY: 'local-ollama-placeholder', QWEN_OPENAI_COMPATIBLE_ENDPOINT: 'http://127.0.0.1:11434/v1', QWEN_MODEL: process.env.QWEN_MODEL ?? 'qwen2.5:7b' } : choice === 'stub' ? { QWEN_BOT_MODE: 'stub' } : {}
+  return { script, env: { ...named, ...model, NODE_EXTRA_CA_CERTS: P.ca } }
 }
-const botCommand = () => [join(BOT_SRC, 'node_modules', '.bin', 'tsx'), ['qwen-bot.livecheck.ts'], join(BOT_SRC, 'packages', 'bot')]
-function botExport() {
-  const [tsx, args, cwd] = botCommand()
+const botRun = script => [join(BOT_SRC, 'node_modules', '.bin', 'tsx'), [script], join(BOT_SRC, 'packages', 'bot')]
+function botExport(choice = 'live') {
   const out = join(P.operator, 'bot-export.json')
-  const done = spawnSync(tsx, args, { cwd, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, ...botEnv({ QWEN_BOT_MODE: 'stub', QWEN_BOT_CANONICAL_HOME: 'relay-a', QWEN_BOT_CANONICAL_EXPORT_JSON: out }) } })
+  const { script, env } = botEnv(choice, { CANONICAL_HOME: 'relay-a', CANONICAL_EXPORT_JSON: out })
+  const [tsx, args, cwd] = botRun(script)
+  const done = spawnSync(tsx, args, { cwd, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env, ...(choice === 'live' ? { QWEN_BOT_MODE: 'stub' } : {}) } })
   writeFileSync(join(P.logs, 'bot-export.log'), done.stdout + done.stderr)
   process.stdout.write(done.stdout)
-  if (done.status !== 0 || !existsSync(out)) die(`bot export failed:\n${done.stderr}`)
-  say(`bot export -> ${out}`)
+  if (done.status !== 0 || !existsSync(out)) die(`bot export failed:\n${done.stdout}${done.stderr}`)
+  writeFileSync(join(BOT, 'choice'), choice + '\n')
+  say(`bot export (${choice}) -> ${out}`)
   return /canonical stamp account to fund: (0x[0-9a-fA-F]{40})/.exec(done.stdout)?.[1]
 }
-async function botStart(mode = 'live') {
-  if (!['live', 'stub'].includes(mode)) die('usage: bot-start [live|stub]')
-  const [tsx, args, cwd] = botCommand()
-  const model = mode === 'live' ? { QWEN_BOT_MODE: 'live', QWEN_API_KEY: 'local-ollama-placeholder', QWEN_OPENAI_COMPATIBLE_ENDPOINT: 'http://127.0.0.1:11434/v1', QWEN_MODEL: process.env.QWEN_MODEL ?? 'qwen2.5:7b' } : { QWEN_BOT_MODE: 'stub' }
-  start('bot', tsx, args, botEnv({ ...model, QWEN_BOT_CANONICAL_BUNDLE_JSON: join(P.operatorOut, 'approved-bundle.json'), QWEN_BOT_CANONICAL_STATUS_PORT: String(PORTS.bot), QWEN_BOT_STAMP_VALUE_WEI: '10000000000000000', QWEN_BOT_POLL_INTERVAL_MS: '2000', ...(process.env.LOCAL_STACK_DEBUG_FATAL ? { LOCAL_STACK_DEBUG_FATAL: '1' } : {}) }), cwd)
-  say(`bot started (${mode}); log ${join(P.logs, 'bot.log')}`)
+/** The dealer pays winnings from a separate plain key; the launcher makes a disposable one. */
+function bankroll() {
+  const file = join(BOT, 'bankroll.json')
+  if (!existsSync(file)) {
+    const key = new SigningKey('0x' + randomBytes(32).toString('hex'))
+    writeFileSync(file, JSON.stringify({ address: computeAddress(key), privateKey: key.privateKey }), { mode: 0o600 })
+  }
+  return { file, address: JSON.parse(readFileSync(file, 'utf8')).address }
+}
+async function botStart(choice = botChoice() ?? 'live') {
+  if (botChoice() && BOT_KINDS[choice] !== BOT_KINDS[botChoice()]) die(`this stack's installed bot is "${botChoice()}"; "${choice}" needs a fresh "up" and its own export`)
+  const common = { CANONICAL_BUNDLE_JSON: join(P.operatorOut, 'approved-bundle.json'), CANONICAL_STATUS_PORT: String(PORTS.bot), STAMP_VALUE_WEI: '10000000000000000', POLL_INTERVAL_MS: '2000' }
+  const { script, env } = botEnv(choice, BOT_KINDS[choice] === 'blackjack' ? { ...common, BANKROLL_WALLET_JSON: bankroll().file, IDLE_TIMEOUT_MS: '86400000', CANONICAL_PROFILE: '0' } : common)
+  const [tsx, args, cwd] = botRun(script)
+  start('bot', tsx, args, { ...env, ...(process.env.LOCAL_STACK_DEBUG_FATAL ? { LOCAL_STACK_DEBUG_FATAL: '1' } : {}) }, cwd)
+  say(`bot started (${choice}); log ${join(P.logs, 'bot.log')}`)
+}
+async function waitBotStatus() {
+  const bundle = JSON.parse(readFileSync(join(P.operatorOut, 'approved-bundle.json'), 'utf8')).bundleIdentity
+  await waitFor('bot installation status', async () => {
+    if (!alive(readPids().bot)) die(`the bot exited; see ${join(P.logs, 'bot.log')}`)
+    return spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--cacert', P.ca, `${ORIGINS.bot}/directory-installation/${bundle}`], { encoding: 'utf8' }).stdout === '200'
+  }, 90)
 }
 
 // ---------------------------------------------------------------- lifecycle
@@ -354,13 +399,12 @@ async function up() {
   say('')
   await status()
   say(`
-next:
-  1. node demo/local-stack/stack.mjs chrome     (or: node demo/local-stack/drive.cjs export)
-  2. create an account, Settings -> Networking -> "Export public directory evidence", save the JSON
-  3. produce the bot export against ${join(P.operator, 'bootstrap-policy.json')}
-  4. node demo/local-stack/stack.mjs install <ui-export.json> <bot-export.json>
-  5. node demo/local-stack/stack.mjs fund <the account's main EVM address>
-  6. in the app: Settings -> Networking -> "Check installation"`)
+next (or run "e2e" / "e2e-blackjack" to have all of it driven for you):
+  1. node demo/local-stack/stack.mjs chrome
+  2. create an account; Settings -> Networking -> "Export public directory evidence"; download the file
+  3. node demo/local-stack/stack.mjs provision <frank-ui-public-export.json> [live|stub|blackjack]
+  4. node demo/local-stack/stack.mjs fund <the address on the app's Receive page>
+  5. in the app: Settings -> Networking -> "Check installation", then Add Contact with the bot address shown`)
 }
 async function status() {
   const pids = readPids()
@@ -382,38 +426,87 @@ function chrome(which) {
   say(`Chrome started (pid ${child.pid}) with profile ${profile}; it trusts only this stack's certificates.`)
   say('Quit that Chrome window before running the driver again or "up"; "up" deletes both profiles.')
 }
-/** After a person exported the UI evidence by hand: everything the operator and the bot then do. */
-async function provision(ui, mode = 'live') {
-  if (!ui || !existsSync(ui)) die('usage: provision <frank-ui-public-export.json> [live|stub]')
-  const stampAccount = botExport()
+/** Bot export, operator approval and install, funding and start of the chosen bot. */
+async function provisionBot(ui, choice) {
+  const stampAccount = botExport(choice)
   if (!stampAccount) die('the bot did not print its stamp account')
   await install(ui)
   await fund(stampAccount)
-  await botStart(mode)
+  if (BOT_KINDS[choice] === 'blackjack') await fund(bankroll().address, '50')
+  await botStart(choice)
+  await waitBotStatus()
+}
+/** After a person exported the UI evidence by hand: everything the operator and the bot then do. */
+async function provision(ui, choice = 'live') {
+  if (!ui || !existsSync(ui)) die('usage: provision <frank-ui-public-export.json> [live|stub|blackjack]')
+  await provisionBot(ui, choice)
   say('now: fund the address on the app\'s Receive page ("fund <address>"), then Settings -> Networking -> "Check installation"')
 }
-
-// The whole flow from clean state, with the browser steps driven in headless Chrome.
-async function e2e(mode = 'live', message) {
-  const started = Date.now()
-  const drive = (...phase) => {
-    say(`\n== drive ${phase[0]}`)
-    const done = spawnSync(process.execPath, [join(HERE, 'drive.cjs'), ...phase], { stdio: 'inherit', env: process.env })
-    if (done.status !== 0) die(`driver phase "${phase[0]}" failed; see ${join(P.logs, `drive-${phase[0]}.json`)} and ${P.shots}`)
-  }
+const drive = (...phase) => {
+  say(`\n== drive ${phase.join(' ')}`)
+  const done = spawnSync(process.execPath, [join(HERE, 'drive.cjs'), ...phase], { stdio: 'inherit', env: process.env })
+  if (done.status !== 0) die(`driver phase "${phase[0]}" failed; see ${join(P.logs, `drive-${phase[0]}.json`)} and ${P.shots}`)
+}
+async function driveToReady(choice) {
   await up()
   drive('export')
-  const stampAccount = botExport()
-  if (!stampAccount) die('the bot did not print its stamp account')
-  await install()
-  await fund(stampAccount)
-  await botStart(mode)
-  await waitFor('bot installation status', async () => spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--cacert', P.ca, `${ORIGINS.bot}/directory-installation/${JSON.parse(readFileSync(join(P.operatorOut, 'approved-bundle.json'), 'utf8')).bundleIdentity}`], { encoding: 'utf8' }).stdout === '200', 90)
+  await provisionBot(undefined, choice)
   drive('check')
   drive('address')
   await fund(readFileSync(join(P.operator, 'ui-wallet-address.txt'), 'utf8').trim())
+}
+// The whole flow from clean state, with the browser steps driven in headless Chrome.
+async function e2e(choice = 'live', message) {
+  if (BOT_KINDS[choice] !== 'qwen') die('usage: e2e [live|stub] ["message"]')
+  const started = Date.now()
+  await driveToReady(choice)
   drive('chat', ...(message ? [message] : []))
   say(`\ne2e finished in ${Math.round((Date.now() - started) / 1000)} s; the stack is still up (policy valid one hour from "up")`)
+}
+/** Run a driver phase in the background and call `during` once it reports that it is paused. */
+async function driveWithInterruption(label, plan, settleMs, during) {
+  say(`\n== drive blackjack ${plan} (${label})`)
+  const gate = join(P.run, 'blackjack-resume')
+  for (const file of [gate, gate + '.waiting']) rmSync(file, { force: true })
+  const child = spawn(process.execPath, [join(HERE, 'drive.cjs'), 'blackjack', plan], { stdio: 'inherit', env: { ...process.env, BJ_PAUSE_AFTER_BET: gate, BJ_PAUSE_SETTLE_MS: String(settleMs), DRIVE_REPORT: `drive-blackjack-${label}.json`, SHOT_PREFIX: label + '-' } })
+  const exited = new Promise(resolve => child.on('exit', resolve))
+  let code
+  exited.then(c => (code = c))
+  await waitFor('the driver to pause after its bet', () => code !== undefined || existsSync(gate + '.waiting'), 240)
+  if (code !== undefined) die(`driver failed before pausing (${label})`)
+  await during()
+  writeFileSync(gate, '')
+  if ((await exited) !== 0) die(`driver failed after the interruption (${label}); see ${join(P.logs, `drive-blackjack-${label}.json`)}`)
+}
+async function kill9(name) {
+  const entry = readPids()[name]
+  if (!alive(entry)) die(`${name} is not running`)
+  process.kill(-entry.pid, 'SIGKILL')
+  for (let i = 0; i < 50 && alive(entry); i++) await delay(100)
+  const pids = readPids()
+  delete pids[name]
+  writePids(pids)
+  say(`${name} killed with SIGKILL`)
+}
+/** Hostile cases on a provisioned blackjack stack: dealer killed mid-hand, relay-a restarted mid-hand. */
+async function blackjackHostile() {
+  // Kill the dealer once the wager is on chain: at two points, before it can have read the bet
+  // message and a few seconds later, when it has dealt and may be mid-reply.
+  for (const [label, settleMs] of [['kill-early', 0], ['kill-late', Number(process.env.BJ_KILL_LATE_MS ?? 6000)]])
+    await driveWithInterruption(label, 'basic', settleMs, async () => {
+      await kill9('bot')
+      await delay(3000)
+      await botStart()
+      await waitBotStatus()
+    })
+  await driveWithInterruption('relay-restart', 'basic', 0, () => restartRelays('relay-a'))
+}
+async function e2eBlackjack(plan = 'limits,spam,double,basic,basic,hit2') {
+  const started = Date.now()
+  await driveToReady('blackjack')
+  drive('blackjack', plan)
+  if (!process.env.BJ_SKIP_HOSTILE) await blackjackHostile()
+  say(`\ne2e-blackjack finished in ${Math.round((Date.now() - started) / 1000)} s; the stack is still up (policy valid one hour from "up")`)
 }
 
 const [command, ...args] = process.argv.slice(2)
@@ -426,18 +519,25 @@ const commands = {
   status,
   policy,
   'install': () => install(args[0], args[1]),
-  'bot-export': botExport,
+  'bot-export': () => botExport(args[0]),
   'bot-start': () => botStart(args[0]),
+  'balance': async () => {
+    const p = provider()
+    for (const a of args) say(`${a} ${formatEther(await p.getBalance(a))}`)
+    p.destroy()
+  },
   'bot-stop': () => stop('bot'),
   'restart-shim': async () => {
     await stop('chain-shim')
     start('chain-shim', process.execPath, [join(HERE, 'chain-shim.mjs')])
   },
-  'restart-relays': restartRelays,
+  'restart-relays': () => restartRelays(args[0]),
   'fund': () => (/^0x[0-9a-fA-F]{40}$/.test(args[0] ?? '') ? fund(args[0], args[1]) : die('usage: fund <0xaddress> [MON]')),
   'chrome': () => chrome(args[0]),
   'provision': () => provision(args[0], args[1]),
   'e2e': () => e2e(args[0], args[1]),
+  'e2e-blackjack': () => e2eBlackjack(args[0]),
+  'blackjack-hostile': blackjackHostile,
   'chrome-args': () => say(JSON.stringify(chromeArgs(args[0] ?? P.chromeProfile))),
 }
 if (!commands[command]) die(`usage: stack.mjs ${Object.keys(commands).join('|')}`)

@@ -70,6 +70,7 @@ const click = sel => ev(`(()=>{const e=document.querySelector(${JSON.stringify(s
 const input = (sel, value) => ev(`(()=>{const e=document.querySelector(${JSON.stringify(sel)});e.value=${JSON.stringify(value)};e.dispatchEvent(new Event('input',{bubbles:true}))})()`)
 const shot = async name => {
   if (secretPhase) return
+  name = (process.env.SHOT_PREFIX || '') + name
   fs.writeFileSync(path.join(shots, name + '.png'), Buffer.from((await rpc('Page.captureScreenshot', { format: 'png' })).data, 'base64'))
   console.log('   shot ' + path.join(shots, name + '.png'))
 }
@@ -200,6 +201,41 @@ const showPanel = async name => {
   await shot(name)
 }
 
+/** Settings panel -> bot address -> Add Contact -> chat: the path a person takes. Returns the address. */
+async function openPeerChat() {
+  await openNetworking()
+  // After a reload the app resumes messaging on its own only if this device completed an
+  // explicit Check before. Give that a moment, and press Check only if it did not happen.
+  await wait(async () => (await panel()).peerAddress, 'messaging resumed after reload', 15000).catch(() => {})
+  let state = await panel()
+  note('panel after reload, before any action', state)
+  report.resumedWithoutCheck = !!state.peerAddress
+  if (!state.peerAddress) {
+    await click('[data-test=directory-check]')
+    await delay(300)
+    await wait(async () => !(await ev('document.querySelector("[data-test=directory-check]").disabled')), 'check to finish', 90000)
+    state = await panel()
+    note('panel after pressing Check', state)
+  }
+  const peer = /0x[0-9a-fA-F]{40}/.exec(state.peerAddress ?? '')?.[0]
+  if (!peer) throw Error('messaging is not ready: ' + JSON.stringify(state))
+  // The path a person takes: Add Contact with the address the panel shows, then open the chat.
+  await ev('location.hash = "#/add-contact"')
+  await wait(() => has('.q-card input'), 'Add Contact page')
+  await ev('document.querySelector(".q-card input").focus()')
+  await rpc('Input.insertText', { text: peer })
+  const addButton = `[...document.querySelectorAll('.q-card__actions button')].find(b => b.innerText.trim().toLowerCase() === 'add')`
+  await wait(() => ev(`(()=>{const b=${addButton};return !!b && !b.disabled})()`), 'Add enabled for the installed bot address', 30000)
+  await shot('08a-add-contact')
+  await ev(`${addButton}.click()`)
+  await delay(1500)
+  note('after Add Contact', { route: await ev('location.hash') })
+  if (!(await ev('location.hash')).toLowerCase().includes(peer.toLowerCase())) await ev(`location.hash = ${JSON.stringify('#/chat/' + peer)}`)
+  await wait(() => has('.q-footer textarea, textarea[placeholder]'), 'chat composer')
+  await delay(1000)
+  return peer
+}
+
 const phases = {
   async export() {
     if (fs.existsSync(profile) && !process.env.REUSE_PROFILE) throw Error(`${profile} already exists; "export" starts from a fresh profile (run stack.mjs up, or set REUSE_PROFILE=1 to export from the existing account)`)
@@ -266,37 +302,8 @@ const phases = {
   async chat(message = 'Hello from the local stack. Reply with one short sentence.') {
     await launch()
     await resume()
-    await openNetworking()
-    // After a reload the app resumes messaging on its own only if this device completed an
-    // explicit Check before. Give that a moment, and press Check only if it did not happen.
-    await wait(async () => (await panel()).peerAddress, 'messaging resumed after reload', 15000).catch(() => {})
-    let state = await panel()
-    note('panel after reload, before any action', state)
-    report.resumedWithoutCheck = !!state.peerAddress
-    if (!state.peerAddress) {
-      await click('[data-test=directory-check]')
-      await delay(300)
-      await wait(async () => !(await ev('document.querySelector("[data-test=directory-check]").disabled')), 'check to finish', 90000)
-      state = await panel()
-      note('panel after pressing Check', state)
-    }
-    const peer = /0x[0-9a-fA-F]{40}/.exec(state.peerAddress ?? '')?.[0]
-    if (!peer) throw Error('messaging is not ready: ' + JSON.stringify(state))
-    // The path a person takes: Add Contact with the address the panel shows, then open the chat.
-    await ev('location.hash = "#/add-contact"')
-    await wait(() => has('.q-card input'), 'Add Contact page')
-    await ev('document.querySelector(".q-card input").focus()')
-    await rpc('Input.insertText', { text: peer })
-    const addButton = `[...document.querySelectorAll('.q-card__actions button')].find(b => b.innerText.trim().toLowerCase() === 'add')`
-    await wait(() => ev(`(()=>{const b=${addButton};return !!b && !b.disabled})()`), 'Add enabled for the installed bot address', 30000)
-    await shot('08a-add-contact')
-    await ev(`${addButton}.click()`)
-    await delay(1500)
-    note('after Add Contact', { route: await ev('location.hash') })
-    if (!(await ev('location.hash')).toLowerCase().includes(peer.toLowerCase())) await ev(`location.hash = ${JSON.stringify('#/chat/' + peer)}`)
+    const peer = await openPeerChat()
     const composer = '.q-footer textarea, textarea[placeholder]'
-    await wait(() => has(composer), 'chat composer')
-    await delay(1000)
     await shot('08-chat-open')
     const bubbles = () => ev(`[...document.querySelectorAll('.q-message')].map(e=>({sent:e.classList.contains('q-message-sent'),text:e.innerText.trim().slice(0,400)}))`)
     const before = await bubbles()
@@ -322,6 +329,139 @@ const phases = {
     report.replyCount = after.filter(b => !b.sent).length - before.filter(b => !b.sent).length
     if (!replied) throw Error('no reply bubble appeared')
   },
+  // Blackjack against the installed dealer. `plan` is a comma list, one entry per hand:
+  //   basic (hit below 17, else stand) | stand | double (double if offered, else basic)
+  // or one hostile case: spam (Enter-spam and double-click on Bet), limits (below/above the table).
+  // Other options: BJ_BET (MON, default 0.1), BJ_PAUSE_AFTER_BET=<file> (after the bet message is
+  // accepted, create <file>.waiting and wait until <file> exists before watching for the deal).
+  async blackjack(plan = 'basic,double,basic') {
+    await launch()
+    await resume()
+    const dealer = await openPeerChat()
+    const chain = async (method, params) => (await (await fetch('http://127.0.0.1:18546', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json()).result
+    const mon = async address => Number(BigInt(await chain('eth_getBalance', [address, 'latest']))) / 1e18
+    const player = fs.readFileSync(path.join(STATE, 'operator', 'ui-wallet-address.txt'), 'utf8').trim()
+    const bankroll = JSON.parse(fs.readFileSync(path.join(STATE, 'bot', 'bankroll.json'), 'utf8')).address
+    const balances = async () => ({ player: await mon(player), bankroll: await mon(bankroll), dealer: await mon(dealer) })
+    const moves = () => ev(`[...document.querySelectorAll('.blackjack-move')].map(e=>e.innerText.trim().replace(/\\s*\\n\\s*/g,' | ').slice(0,500))`)
+    const last = () => ev(`(()=>{const all=[...document.querySelectorAll('.blackjack-move')];const e=all[all.length-1];if(!e)return null;return {count:all.length,text:e.innerText.trim().replace(/\\s*\\n\\s*/g,' | '),buttons:[...e.querySelectorAll('button')].filter(b=>!b.closest('.blackjack-bet-control')).map(b=>({label:b.innerText.trim(),disabled:b.disabled})),bet:!!e.querySelector('.blackjack-bet-control')}})()`)
+    const betForm = `(()=>{const all=[...document.querySelectorAll('.blackjack-bet-control')];return all[all.length-1]})()`
+    const betState = () => ev(`(()=>{const f=${betForm};if(!f)return null;return {amount:f.querySelector('input[type=text]').value,hint:f.querySelector('.q-field__bottom')?.innerText.trim()??'',status:f.querySelector('[data-testid=blackjack-bet-status]').innerText.trim(),submit:f.querySelector('[data-testid=blackjack-bet-submit]').innerText.trim(),submitDisabled:f.querySelector('[data-testid=blackjack-bet-submit]').disabled,confirmDisabled:f.querySelector('[data-testid=blackjack-bet-confirm]').getAttribute('aria-disabled')}})()`)
+    const typeBet = async amount => {
+      await ev(`(()=>{const i=${betForm}.querySelector('input[type=text]');i.focus();i.select()})()`)
+      await rpc('Input.insertText', { text: amount })
+      await delay(300)
+    }
+    const tick = () => ev(`(()=>{const c=${betForm}.querySelector('[data-testid=blackjack-bet-confirm]');if(c.getAttribute('aria-checked')!=='true')c.click()})()`)
+    const wagerTransfers = async sinceBlock => {
+      // Count on chain: transfers from the player's account to the dealer since `sinceBlock`.
+      const head = Number(await chain('eth_blockNumber', []))
+      let n = 0
+      for (let b = sinceBlock + 1; b <= head; b++) for (const tx of (await chain('eth_getBlockByNumber', ['0x' + b.toString(16), true])).transactions) if (tx.from.toLowerCase() === player.toLowerCase() && (tx.to ?? '').toLowerCase() === dealer.toLowerCase()) n++
+      return n
+    }
+    // A fresh chat shows the dealer's welcome; a longer one shows its newest bubbles.
+    await wait(() => has('.blackjack-move'), 'dealer welcome or an earlier hand', 90000)
+    await delay(1500)
+    await shot('20-blackjack-welcome')
+    note('dealer welcome', { moves: await moves(), betBoxShown: await has('.blackjack-bet-control'), contact: await text('.q-header') })
+    if (!(await has('.blackjack-bet-control'))) throw Error('the app shows no bet box for the installed dealer')
+    note('bet box', await betState())
+    report.hands = []
+    let n = 0
+    for (const step of plan.split(',')) {
+      n++
+      const before = await balances()
+      const block = Number(await chain('eth_blockNumber', []))
+      const movesBefore = (await moves()).length
+      if (step === 'limits') {
+        const results = {}
+        for (const amount of ['0.001', '5', '0', '-1', 'abc']) {
+          await typeBet(amount)
+          results[amount] = await betState()
+        }
+        await shot(`2${n}-blackjack-limits`)
+        await delay(2500)
+        note('bets outside the table limits', { results, transfers: await wagerTransfers(block), balancesUnchanged: JSON.stringify(await balances()) === JSON.stringify(before) })
+        await typeBet(process.env.BJ_BET ?? '0.1')
+        continue
+      }
+      await typeBet(process.env.BJ_BET ?? '0.1')
+      await tick()
+      await delay(300)
+      const ready = await betState()
+      if (ready.submitDisabled) throw Error('bet cannot be submitted: ' + JSON.stringify(ready))
+      if (step === 'spam') {
+        // Double-click the button, then hammer Enter in the amount field.
+        const box = await ev(`(()=>{const r=${betForm}.querySelector('[data-testid=blackjack-bet-submit]').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`)
+        for (const type of ['mousePressed', 'mouseReleased', 'mousePressed', 'mouseReleased']) await rpc('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: type === 'mousePressed' ? 1 : 1 })
+        await ev(`(()=>{const f=${betForm};const i=f?.querySelector('input[type=text]');i&&i.focus()})()`).catch(() => {})
+        for (let i = 0; i < 8; i++) {
+          await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+          await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+          await delay(40)
+        }
+      } else await ev(`${betForm}.querySelector('[data-testid=blackjack-bet-submit]').click()`)
+      const hand = { n, step, before, actions: [] }
+      report.hands.push(hand)
+      // The chat renders a bounded window of bubbles, so watch the newest one, not the count.
+      await wait(async () => /^Your (bet|hand):/.test((await last())?.text ?? ''), 'the bet message bubble', 60000)
+      await delay(1500)
+      await shot(`2${n}a-blackjack-bet`)
+      if (process.env.BJ_PAUSE_AFTER_BET) {
+        // Let the bet reach the relay, then hand control to whoever is breaking things.
+        await wait(async () => (await wagerTransfers(block)) >= 1, 'the wager transfer on chain', 60000)
+        await delay(Number(process.env.BJ_PAUSE_SETTLE_MS ?? 0))
+        fs.writeFileSync(process.env.BJ_PAUSE_AFTER_BET + '.waiting', '')
+        note('paused after the bet; waiting for ' + process.env.BJ_PAUSE_AFTER_BET, await last())
+        await wait(() => fs.existsSync(process.env.BJ_PAUSE_AFTER_BET), 'resume file', 600000)
+        fs.rmSync(process.env.BJ_PAUSE_AFTER_BET)
+      }
+      // Play until the hand resolves.
+      const resolved = s => /Dealer's hand:/.test(s?.text ?? '')
+      let guard = 0, doubled = false
+      for (;;) {
+        await wait(async () => { const s = await last(); return resolved(s) || s?.buttons.some(b => !b.disabled) }, 'the deal or the next card', Number(process.env.BJ_TIMEOUT_MS ?? 120000))
+        const s = await last()
+        if (resolved(s)) break
+        if (++guard > 12) throw Error('hand did not resolve')
+        const total = Number(/Your hand:[^(]*\((\d+)/.exec(s.text)?.[1] ?? 0)
+        const dealerLow = /Dealer shows: [2-6][^0-9]/.test(s.text)
+        const offered = s.buttons.filter(b => !b.disabled).map(b => b.label.toLowerCase())
+        const want = step === 'hit2' && hand.actions.length === 0 && total <= 11 ? 'hit' : step === 'double' && !doubled && offered.some(l => l.startsWith('double')) ? 'double' : step === 'stand' || total >= 17 || (total >= 12 && dealerLow) ? 'stand' : 'hit'
+        const label = offered.find(l => l.startsWith(want)) ?? offered.find(l => l.startsWith('stand'))
+        if (!label) throw Error('no usable action among ' + JSON.stringify(s.buttons))
+        if (want === 'double') doubled = true
+        hand.actions.push({ state: s.text.slice(0, 160), offered, chose: label })
+        await shot(`2${n}b-blackjack-dealt-${hand.actions.length}`)
+        const cards = t => /Your hand:[^|]*/.exec(t?.text ?? '')?.[0]
+        const clickAction = wanted => ev(`(()=>{const all=[...document.querySelectorAll('.blackjack-move')];const b=[...all[all.length-1].querySelectorAll('button')].find(b=>!b.closest('.blackjack-bet-control')&&!b.disabled&&b.innerText.trim().toLowerCase()===${JSON.stringify(wanted)});if(!b)return false;b.click();return true})()`)
+        await clickAction(label)
+        if (step === 'hit2' && want === 'hit' && hand.actions.length === 1) {
+          // Hostile: a second click on Hit before the dealer has answered the first.
+          const tries = []
+          for (const ms of [150, 1500, 3000]) {
+            await delay(ms)
+            const now = await last()
+            if (resolved(now) || cards(now) !== cards(s)) break
+            tries.push({ afterMs: ms, buttons: now.buttons, clicked: await clickAction(label) })
+          }
+          hand.secondHitAttempts = tries
+        }
+        await wait(async () => { const t = await last(); return resolved(t) || (want === 'hit' && cards(t) !== cards(s)) }, 'the dealer to answer the move', Number(process.env.BJ_TIMEOUT_MS ?? 120000))
+        await delay(500)
+      }
+      await delay(4000) // payout confirmation
+      const end = await last()
+      await ev(`(()=>{const all=[...document.querySelectorAll('.blackjack-move')];all[all.length-1].scrollIntoView({block:'center'})})()`)
+      await delay(300)
+      await shot(`2${n}c-blackjack-resolved`)
+      const after = await balances()
+      Object.assign(hand, { result: end.text.slice(0, 420), after, wagerTransfers: await wagerTransfers(block), playerDelta: +(after.player - before.player).toFixed(6), bankrollDelta: +(after.bankroll - before.bankroll).toFixed(6), dealerDelta: +(after.dealer - before.dealer).toFixed(6), fair: /Verified fair/.test(end.text) ? 'verified fair' : /Verification failed/.test(end.text) ? 'FAILED' : 'not shown' })
+      note(`hand ${n} (${step})`, hand)
+    }
+    note('all blackjack bubbles', await moves())
+  },
 }
 
 ;(async () => {
@@ -343,7 +483,7 @@ const phases = {
     report.console = consoleLines.slice(-200)
     if (caught.length) report.caughtExceptions = caught.slice(-100)
     report.network = stackRequests(0)
-    const out = path.join(STATE, 'logs', `drive-${phase}.json`)
+    const out = path.join(STATE, 'logs', process.env.DRIVE_REPORT || `drive-${phase}.json`)
     fs.writeFileSync(out, JSON.stringify(report, null, 2))
     console.log(JSON.stringify({ PASS: !failed, report: out, chromeExit: report.chromeExit, chromeProcessesLeft: report.chromeProcessesLeft }))
     process.exit(failed ? 1 : 0)

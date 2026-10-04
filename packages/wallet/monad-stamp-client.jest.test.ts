@@ -2170,6 +2170,31 @@ describe('canonical durable consumer barriers', () => {
       expect(f.client.wasAcknowledged(link.attemptRef)).toBe(true)
     })
   }, 20000)
+  it('sends nothing to the relay when the journal refuses replay admission', async () => {
+    await withCanonicalConsumer(async f => {
+      let link!: CanonicalWorkflowLink
+      await f.prepare(1, async durable => {
+        link = durable
+      })
+      await f.client.finishIntent(
+        f.client.reconcileWorkflowLinks([link])[0].eligibility!,
+      )
+      const refused = new Error('replay admission refused')
+      jest
+        .spyOn(f.state.canonicalJournal!, 'beginReplay')
+        .mockRejectedValue(refused)
+      const fetch = jest.fn(async () => {
+        throw new Error('relay must not be contacted')
+      })
+      await expect(
+        f.client.submit(
+          f.client.reconcileWorkflowLinks([link])[0].eligibility!,
+          { fetch },
+        ),
+      ).rejects.toBe(refused)
+      expect(fetch).not.toHaveBeenCalled()
+    })
+  }, 20000)
   it('retains callback-failed prelease intent and excludes its available account from canonical and topic selection', async () => {
     await withCanonicalConsumer(async f => {
       await expect(

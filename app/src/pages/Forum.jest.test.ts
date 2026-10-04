@@ -256,12 +256,10 @@ describe('Forum.vue outage and degraded states (#533)', () => {
     })
     mockFetchByTopic.mockResolvedValue([initialPost])
 
-    await expect(
-      store.refreshMessages({
-        wallet: testWallet as unknown as WalletHandle,
-        topic: '',
-      }),
-    ).rejects.toThrow('503')
+    await store.refreshMessages({
+      wallet: testWallet as unknown as WalletHandle,
+      topic: '',
+    })
     expect(store.messages).toHaveLength(1)
     expect(store.outageStatus).toBe('ok')
 
@@ -321,10 +319,12 @@ describe('Forum.vue outage and degraded states (#533)', () => {
       throw create503Error()
     })
 
-    await store.refreshMessages({
-      wallet: testWallet as unknown as WalletHandle,
-      topic: '',
-    })
+    await expect(
+      store.refreshMessages({
+        wallet: testWallet as unknown as WalletHandle,
+        topic: '',
+      }),
+    ).rejects.toThrow('503')
     expect(store.outageStatus).toBe('degraded')
 
     const wrapper = mountForum()

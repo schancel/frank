@@ -78,6 +78,54 @@ pub struct Evidence {
     /// Explicit historical classification; false remains a point-in-time fresh check.
     pub historical: bool,
 }
+/// Typed operation for native consumers which require genuine admitted domain snapshots.
+#[derive(Debug)]
+pub enum SnapshotOperation {
+    /// Recheck current trust and trusted time through the existing owner.
+    Current,
+    /// Retrieve one exact retained record without current authority.
+    Historical([u8; 32]),
+}
+
+/// Copy-owned admission results; never reconstructed from HTTP evidence bytes.
+#[derive(Debug)]
+pub enum AdmittedSnapshot {
+    /// The actual result of the public fresh Directory::current operation.
+    Current(Current),
+    /// Exact public accepted history, explicitly without fresh-head authority.
+    Historical(HistoricalEvidence),
+}
+impl AdmittedSnapshot {
+    fn into_evidence(self) -> Evidence {
+        match self {
+            Self::Current(current) => Evidence {
+                attestation: current.evidence.attestation,
+                historical: false,
+            },
+            Self::Historical(evidence) => Evidence {
+                attestation: evidence.attestation,
+                historical: true,
+            },
+        }
+    }
+}
+
+/// Typed response guard using the original queued/started/deadline lifetime.
+#[derive(Debug)]
+pub struct SnapshotSubmission {
+    submission: Submission,
+    receiver: oneshot::Receiver<Result<AdmittedSnapshot>>,
+}
+impl SnapshotSubmission {
+    /// Preserve queued cancellation and started-uncertainty semantics of Submission.
+    pub async fn wait(self) -> Result<AdmittedSnapshot> {
+        self.submission.wait().await?;
+        self.receiver
+            .await
+            .map_err(|_| RuntimeError::OutcomeUnknown)?
+    }
+}
+
 #[derive(Debug, Default)]
 struct Published {
     generation: u64,
@@ -122,6 +170,7 @@ struct Job {
 }
 enum Work {
     Request(Operation),
+    Snapshot(SnapshotOperation, oneshot::Sender<Result<AdmittedSnapshot>>),
     Reload(DirectoryConf),
 }
 /// Reserved pending capacity, acquired before request-body buffering.
@@ -454,6 +503,15 @@ fn stage<'a>(
     Ok(principals)
 }
 fn execute(p: &mut Principal<'_>, op: Operation, now: Timestamp, clock: &Path) -> Result<Evidence> {
+    execute_snapshot(p, op, now, clock).map(AdmittedSnapshot::into_evidence)
+}
+
+fn execute_snapshot(
+    p: &mut Principal<'_>,
+    op: Operation,
+    now: Timestamp,
+    clock: &Path,
+) -> Result<AdmittedSnapshot> {
     #[cfg(test)]
     let op = match op {
         Operation::Barrier {
@@ -480,10 +538,7 @@ fn execute(p: &mut Principal<'_>, op: Operation, now: Timestamp, clock: &Path) -
         return p
             .directory
             .historical_evidence(hash)?
-            .map(|e| Evidence {
-                attestation: e.attestation,
-                historical: true,
-            })
+            .map(AdmittedSnapshot::Historical)
             .ok_or(RuntimeError::NotFound);
     }
     let context = Context {
@@ -570,10 +625,7 @@ fn execute(p: &mut Principal<'_>, op: Operation, now: Timestamp, clock: &Path) -
             {
                 return Err(RuntimeError::Trust);
             }
-            Ok(Evidence {
-                attestation: current.evidence.attestation,
-                historical: false,
-            })
+            Ok(AdmittedSnapshot::Current(current))
         }
         Err(error) => {
             if error == AdmissionError::Fork {
@@ -693,6 +745,31 @@ impl DirectoryRuntime {
                                         .ok_or(RuntimeError::NotFound)
                                         .and_then(|p| execute(p, op, now, &clock))
                                 }),
+                                Work::Snapshot(operation, reply) => {
+                                    let operation = match operation {
+                                        SnapshotOperation::Current => Operation::Current,
+                                        SnapshotOperation::Historical(hash) => {
+                                            Operation::Historical(hash)
+                                        }
+                                    };
+                                    let snapshot = trusted_time(&clock).and_then(|now| {
+                                        principals
+                                            .get_mut(&job.key)
+                                            .ok_or(RuntimeError::NotFound)
+                                            .and_then(|p| {
+                                                execute_snapshot(p, operation, now, &clock)
+                                            })
+                                    });
+                                    let completion = snapshot
+                                        .as_ref()
+                                        .map(|_| Evidence {
+                                            attestation: vec![],
+                                            historical: false,
+                                        })
+                                        .map_err(|error| *error);
+                                    let _ = reply.send(snapshot);
+                                    completion
+                                }
                                 Work::Reload(config) => {
                                     let result = (if config.principals.iter().any(|c| {
                                         c.mode == "new"
@@ -779,6 +856,18 @@ impl DirectoryRuntime {
     /// Submit through previously reserved finite capacity; never creates a waiting producer.
     pub fn submit(&self, reservation: Reservation, op: Operation) -> Submission {
         self.send(reservation, Work::Request(op))
+    }
+    /// Obtain a real domain snapshot using the same finite owner and reservation generation.
+    pub fn submit_snapshot(
+        &self,
+        reservation: Reservation,
+        operation: SnapshotOperation,
+    ) -> SnapshotSubmission {
+        let (reply, receiver) = oneshot::channel();
+        SnapshotSubmission {
+            submission: self.send(reservation, Work::Snapshot(operation, reply)),
+            receiver,
+        }
     }
     fn send(&self, reservation: Reservation, work: Work) -> Submission {
         let (reply, receiver) = oneshot::channel();

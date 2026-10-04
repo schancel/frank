@@ -448,44 +448,36 @@ export async function openCanonicalFixture(
   }
   const material = createMonadWalletMaterial(fixtureRoots(0)),
     peer = createMonadWalletMaterial(fixtureRoots(1))
+  /** Each account's own self-signed entry, naming the relay it lives on. */
   const publicInput = (
     m: typeof material,
-    subjectBinding: 'A' | 'B',
-  ): PublicRevisionZeroInput => {
-    const tuple = (label: string) => ({
-      processId: label,
-      origin: `https://${label}.example`,
-      tuple: {
-        relayId: new Uint8Array(16).fill(label === 'a' ? 1 : 2),
-        endpoint: `https://${label}.example`,
-        identity: {
-          keyType: 1,
-          keyBytes: m.canonicalRoles!.publicGenerationZeroPoints().auth,
-        },
-        expiry: { seconds: 3700n, nanoseconds: 0 },
-        unknownFields: new Map(),
+    relay: 'a' | 'b',
+  ): PublicRevisionZeroInput => ({
+    networkTag: 'MONT',
+    network: NETWORK,
+    chainId: 10143n,
+    issuedAt: { seconds: 100n, nanoseconds: 0 },
+    expiresAt: { seconds: 3700n, nanoseconds: 0 },
+    now: { seconds: 100n, nanoseconds: 0 },
+    relay: {
+      relayId: new Uint8Array(16).fill(relay === 'a' ? 1 : 2),
+      endpoint: `https://${relay}.example`,
+      identity: {
+        keyType: 1,
+        keyBytes: m.canonicalRoles!.publicGenerationZeroPoints().auth,
       },
-    })
-    return {
-      networkTag: 'MONT',
-      network: NETWORK,
-      chainId: 10143n,
-      issuedAt: { seconds: 100n, nanoseconds: 0 },
-      expiresAt: { seconds: 3700n, nanoseconds: 0 },
-      now: { seconds: 100n, nanoseconds: 0 },
-      relayA: tuple('a'),
-      relayB: tuple('b'),
-      subjectBinding,
-    }
-  }
+      expiry: { seconds: 3700n, nanoseconds: 0 },
+      unknownFields: new Map(),
+    },
+  })
   const scratch = mkdtempSync(join(tmpdir(), 'qwen-canonical-directory-'))
   const enroll = async (
     m: typeof material,
-    binding: 'A' | 'B',
+    relay: 'a' | 'b',
     label: string,
   ) => {
     const exported = m.canonicalRoles!.prepareRevisionZero(
-      publicInput(m, binding),
+      publicInput(m, relay),
     )
     const directory = await openNodeDirectoryStore({
       location: join(scratch, label),
@@ -500,16 +492,13 @@ export async function openCanonicalFixture(
       [{ statement: exported.statement, attestation: exported.attestation }],
       {
         now: exported.configuration.now,
-        relay:
-          binding === 'A'
-            ? exported.configuration.relayA.tuple
-            : exported.configuration.relayB.tuple,
+        relay: exported.configuration.relay,
       },
     )
     return { directory, current }
   }
-  const sender = await enroll(material, 'A', 'sender'),
-    recipient = await enroll(peer, 'B', 'recipient')
+  const sender = await enroll(material, 'a', 'sender'),
+    recipient = await enroll(peer, 'b', 'recipient')
 
   const walletRoot = options.walletRoot ?? join(root, 'wallet')
   mkdirSync(walletRoot, { recursive: true })

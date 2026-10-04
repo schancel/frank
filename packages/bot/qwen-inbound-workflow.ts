@@ -43,7 +43,7 @@ export interface QwenCanonicalInbound {
   network: string
   /** The bot's own compressed identity point P, lowercase hex. */
   subject: string
-  /** The mailbox address and installed home relay these pages are authenticated for. */
+  /** The mailbox address and the bot's own relay these pages are authenticated for. */
   recipient: string
   relayBaseUrl: string
   fetchPage(input: {
@@ -53,8 +53,9 @@ export interface QwenCanonicalInbound {
     maxBytes: number
   }): Promise<CanonicalMailboxPage<CanonicalInboxRecord>>
   selfCurrent(): Promise<Current>
-  /** Admitted Current of an installed peer, or `undefined` when it is not installed or not
-   * readable now. `refresh` forces a new read from the peer's relay instead of a recent one. */
+  /** Verified Current of any sender key from its own published directory entry, or `undefined`
+   * when it has published none, or its entry is refused or not readable now. `refresh` asks for
+   * an entry the relay served just now instead of a recently remembered one. */
   peerCurrent(subject: string, refresh?: boolean): Promise<Current | undefined>
   /** A scoped opening session for the bot's own current directory entry. */
   roles(self: Current): DirectMessageRoles
@@ -358,7 +359,8 @@ export class QwenInboundWorkflow {
     let self: Current
     try {
       sender = await canonical.peerCurrent(senderSubject)
-      // Not an installed peer, or not readable now: never opened, never answered, retained.
+      // No verified directory entry for this sender now (none published, refused, or not
+      // readable): never opened, never answered, retained.
       if (!sender) return 'other'
       self = await canonical.selfCurrent()
     } catch {

@@ -255,18 +255,22 @@ it('a competing CLI process cannot open the same Level root or run another drain
   }
 })
 
-// #703/#778: the real CLI in canonical mode. Production code runs unmodified: configuration
-// readers, installed directory (real Node stores behind the real directory client), typed wallet
-// owner through the public bridge, shared producer and opener, both workflows and both Level
-// roots. Only the relay is local: its Directory routes are a responder that stores and returns
-// published heads, and the canonical inbox page read returns one prepared record. The typed
-// owner has no funded inventory, so no payment is signed or sent: this proves sequencing, one
-// inference, one retained envelope for the admitted sender and secret-free output, not delivery.
-import { writeFileSync } from 'fs'
+// #703/#778: the real CLI in canonical mode on the open directory. Production code runs
+// unmodified: roots loader, typed wallet owner through the public bridge, the shared open
+// directory over real Node admission stores, shared producer and opener, both workflows and both
+// Level roots. Only the relay is local: its directory routes are the shared fake relay (kept in
+// a file so it survives a restart of the bot), and the canonical inbox page read returns one
+// prepared record. The sender is a second real typed wallet in this test process with its own
+// stores; all it does is publish its own entry. Nothing about it is configured in the bot. The
+// typed owner has no funded inventory, so no payment is signed or sent: this proves sequencing,
+// one inference, one retained envelope for the verified sender and secret-free output, not
+// delivery.
+import { chmodSync, statSync, writeFileSync } from 'fs'
 import { Transaction, Wallet, getBytes } from 'ethers'
 import {
   cborMap,
   encodeFrame,
+  fromHex,
   paymentCommitment,
   recipientPayloadDigest,
   toHex,
@@ -275,52 +279,58 @@ import {
   directMessageText,
   prepareDirectMessage,
 } from '@frank/cashweb/relay/canonical-dm'
-import { openNodeDirectoryStore } from '@frank/directory-admission/node'
+import { directoryAddress } from '@frank/cashweb/relay/open-directory'
 import {
-  createMonadWalletMaterial,
-  type MonadRootBundle,
-} from '@frank/wallet/monad-wallet-material'
+  createFakeRelay,
+  testAccount,
+} from '@frank/cashweb/relay/open-directory-fake-relay.testutil'
+import { createCanonicalMessageRoles } from '@frank/wallet/chain/monad-chain'
+import type { MonadRootBundle } from '@frank/wallet/monad-wallet-material'
 import domainVectors from '../domain-roots/vectors/domain-roots-v1.json'
-import {
-  buildApprovedBundle,
-  buildBootstrapPolicy,
-} from '../../app/src/utils/directory-operator'
-import {
-  openQwenCanonicalWallet,
-  type QwenPublicExportFile,
-} from './qwen-bot-common'
+import { openQwenCanonicalWallet, openQwenDirectory } from './qwen-bot-common'
+
+const RELAY = 'https://a.example'
 
 function canonicalPreload(): string {
   const at = (file: string) => JSON.stringify(join(__dirname, file))
-  const mailbox = JSON.stringify(
-    join(__dirname, '../cashweb/relay/monad-mailbox-client.ts'),
-  )
+  const mailbox = at('../cashweb/relay/monad-mailbox-client.ts')
+  const fakeRelay = at('../cashweb/relay/open-directory-fake-relay.testutil.ts')
   return `
-    const { readFileSync, existsSync } = require('fs')
-    const counters = { generations: 0, pages: 0, directory: [], other: [] }
+    const { readFileSync, existsSync, writeFileSync } = require('fs')
+    const counters = { generations: 0, pages: 0, directory: [], down: 0, other: [] }
     process.on('exit', () =>
       console.log('QWEN_PROCESS_FIXTURE ' + JSON.stringify(counters)))
-    // Local relay Directory routes: store and return published heads only.
-    const heads = new Map(Object.entries(JSON.parse(
-      readFileSync(process.env.QWEN_FIXTURE_HEADS, 'utf8'))))
+    // The relay's open directory routes. Its stored entries live in a file, as a relay's would
+    // across a restart of the bot.
+    const relay = require(${fakeRelay}).createFakeRelay({ endpoint: ${JSON.stringify(
+    RELAY,
+  )} })
+    const relayFile = process.env.QWEN_FIXTURE_RELAY
+    if (existsSync(relayFile))
+      relay.replicate(JSON.parse(readFileSync(relayFile, 'utf8'))
+        .map(hex => new Uint8Array(Buffer.from(hex, 'hex'))))
+    let down = Number(process.env.QWEN_FIXTURE_RELAY_DOWN_FOR || 0)
     globalThis.fetch = async (url, init) => {
-      const match = /^https:\\/\\/a\\.example\\/directory\\/v1\\/([^/]+)\\/([^/]+)\\/head$/.exec(url)
-      if (!match) { counters.other.push(init.method + ' ' + url); throw new Error('unreachable') }
-      counters.directory.push(init.method)
-      const key = match[1] + '/' + match[2]
-      if (init.method === 'PUT') heads.set(key, Buffer.from(init.body).toString('hex'))
-      const head = heads.get(key)
-      let sent = false
-      return {
-        url, status: head ? 200 : 404,
-        headers: { get: name => name.toLowerCase() === 'content-type'
-          ? 'application/vnd.frank.cbor'
-          : name.toLowerCase() === 'x-frank-directory-evidence' ? 'fresh-current' : null },
-        body: { getReader: () => ({
-          read: async () => sent || !head ? { done: true }
-            : ((sent = true), { done: false, value: new Uint8Array(Buffer.from(head, 'hex')) }),
-          cancel: async () => undefined, releaseLock: () => undefined }) },
+      const path = url.slice(${JSON.stringify(RELAY)}.length)
+      if (!url.startsWith(${JSON.stringify(
+        RELAY,
+      )} + '/') || !/^\\/(relay|directory)\\/v1\\//.test(path)) {
+        counters.other.push(init.method + ' ' + url)
+        throw new Error('unreachable')
       }
+      if (down > 0) { down--; counters.down++; throw new Error('unreachable') }
+      const forged = process.env.QWEN_FIXTURE_FORGED
+      relay.tamper = forged
+        ? at => at.endsWith('/' + process.env.QWEN_FIXTURE_FORGED_SUBJECT + '/head')
+          ? new Uint8Array(Buffer.from(forged, 'hex')) : undefined
+        : undefined
+      const response = await relay.fetch(url, init)
+      counters.directory.push(init.method + ' ' + path)
+      if (init.method === 'PUT' && response.status === 200)
+        writeFileSync(relayFile, JSON.stringify([...relay.subjects()]
+          .flatMap(subject => relay.chain(subject))
+          .map(bytes => Buffer.from(bytes).toString('hex'))))
+      return response
     }
     // The canonical inbox page read is the only replaced production function.
     const realMailbox = require(${mailbox})
@@ -362,12 +372,14 @@ function canonicalPreload(): string {
   `
 }
 
-describe('#703/#778 production CLI in canonical mode', () => {
+describe('#703/#778 production CLI in canonical mode on the open directory', () => {
   const NETWORK = 'monad-testnet'
   let location: string
-  let bot: QwenPublicExportFile
-  let ui: QwenPublicExportFile
+  let botSubject: string
+  let botAddress: string
+  let sender: { subject: string; address: string; t1: string }
   let turn: string
+  let firstStart: ReturnType<typeof run>
 
   const roots = (index: number): MonadRootBundle => {
     const outputs = domainVectors.vectors[index].outputs
@@ -389,6 +401,7 @@ describe('#703/#778 production CLI in canonical mode', () => {
       messaging: one('messaging-encryption'),
     }
   }
+  /** Everything canonical mode is configured with: a roots path, a relay, state directories. */
   const env = (extra: Record<string, string | undefined> = {}) => ({
     PATH: process.env.PATH,
     TSX_TSCONFIG_PATH: join(__dirname, 'tsconfig.json'),
@@ -401,25 +414,28 @@ describe('#703/#778 production CLI in canonical mode', () => {
     QWEN_BOT_WALLET_STATE_DIR: join(location, 'wallet'),
     QWEN_BOT_HANDOFF_JSON: join(location, 'handoff.json'),
     QWEN_BOT_CANONICAL_ROOTS_JSON: join(location, 'roots.json'),
-    QWEN_BOT_CANONICAL_POLICY_JSON: join(location, 'bootstrap-policy.json'),
-    QWEN_BOT_CANONICAL_BUNDLE_JSON: join(location, 'approved-bundle.json'),
+    E2E_DEMO_RELAY_URL: RELAY,
     MONAD_RPC_CHAIN: 'monad-testnet',
-    QWEN_FIXTURE_HEADS: join(location, 'heads.json'),
+    QWEN_FIXTURE_RELAY: join(location, 'relay.json'),
     QWEN_FIXTURE_INBOX: join(location, 'inbox.json'),
     ...extra,
   })
-  const run = (extra: Record<string, string | undefined> = {}) => {
+  function run(
+    extra: Record<string, string | undefined> = {},
+    timeout = 30000,
+  ) {
     const child = spawnSync(
       process.execPath,
       ['--require', require.resolve('tsx/cjs'), '-e', canonicalPreload()],
-      { encoding: 'utf8', timeout: 30000, env: env(extra) },
+      { encoding: 'utf8', timeout, env: env(extra) },
     )
     return { child, summary: counters(child) }
   }
   const withState = async <T>(
     use: (state: QwenBotStateStore) => Promise<T> | T,
+    directory = join(location, 'state'),
   ): Promise<T> => {
-    const state = new QwenBotStateStore(join(location, 'state'))
+    const state = new QwenBotStateStore(directory)
     await state.Open()
     try {
       return await use(state)
@@ -434,6 +450,11 @@ describe('#703/#778 production CLI in canonical mode', () => {
         expect(output).not.toContain(root)
     expect(output).not.toContain('QWEN BOT FAILED')
   }
+  const relayEntries = (): Uint8Array[] =>
+    (
+      JSON.parse(readFileSync(join(location, 'relay.json'), 'utf8')) as string[]
+    ).map(fromHex)
+  const headOf = (subject: string) => `/directory/v1/${NETWORK}/${subject}/head`
 
   beforeEach(async () => {
     location = mkdtempSync(join(tmpdir(), 'qwen-canonical-cli-'))
@@ -445,146 +466,76 @@ describe('#703/#778 production CLI in canonical mode', () => {
       }),
       { mode: 0o600 },
     )
-    const now = BigInt(Date.now()) * 1_000_000n
-    const relayKey = Buffer.from(
-      createMonadWalletMaterial(
-        roots(1),
-      ).canonicalRoles!.publicGenerationZeroPoints().auth,
-    ).toString('hex')
-    const tuple = (label: 'a' | 'b') => ({
-      processId: `relay-${label}` as 'relay-a' | 'relay-b',
-      id: (label === 'a' ? '01' : '02').repeat(16),
-      endpoint: `https://${label}.example`,
-      key: relayKey,
-      expiryNs: (now + 7_200_000_000_000n).toString(),
-    })
-    // Both public files come from the operator tool's own builders.
-    const policy = buildBootstrapPolicy({
-      networkTag: 'MONT',
-      network: NETWORK,
-      chainId: '10143',
-      participants: (['relay-a', 'relay-b', 'bot'] as const).map(processId => ({
-        processId,
-        origin: `https://${
-          processId === 'bot' ? 'bot' : processId.slice(-1)
-        }.example`,
-        trustReference: processId,
-      })),
-      relayTuples: [tuple('a'), tuple('b')],
-      exportValidity: {
-        issuedAtNs: (now - 60_000_000_000n).toString(),
-        expiresAtNs: (now + 3_000_000_000_000n).toString(),
-      },
-    })
-    writeFileSync(
-      join(location, 'bootstrap-policy.json'),
-      JSON.stringify(policy),
-    )
-    // The bot's export comes from the real CLI export path, as the operator would run it.
-    const exported = run({
-      QWEN_BOT_CANONICAL_EXPORT_JSON: join(location, 'bot-export.json'),
-      QWEN_BOT_CANONICAL_HOME: 'relay-a',
-      QWEN_FIXTURE_HEADS: (() => {
-        writeFileSync(join(location, 'heads.json'), '{}')
-        return join(location, 'heads.json')
-      })(),
-    })
-    expect(exported.child.status).toBe(0)
-    secrets(exported.child.stdout + exported.child.stderr)
-    bot = JSON.parse(readFileSync(join(location, 'bot-export.json'), 'utf8'))
-    const uiWallet = await openQwenCanonicalWallet({
+    // First start of the real CLI: it publishes its own entry and finds an empty inbox.
+    firstStart = run()
+    expect(firstStart.child.status).toBe(0)
+    const relay = createFakeRelay({ endpoint: RELAY })
+    relay.replicate(relayEntries())
+    expect([...relay.subjects()]).toHaveLength(1)
+    botSubject = [...relay.subjects()][0]
+    botAddress = directoryAddress(botSubject)!
+
+    // An unrelated typed account publishes its own entry to the same relay. That is all.
+    const wallet = await openQwenCanonicalWallet({
       chain: {
         networkId: 'monad-testnet',
         rpcChain: 'monad-testnet',
         chainId: 10143,
-        relayBaseUrl: 'https://a.example',
+        relayBaseUrl: RELAY,
         networkTag: 'MONT',
         stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
         defaultStampValueWei: 32n,
         defaultTopicVoteValueWei: 1n,
         subAccountPoolSize: 2,
-        walletStorageLocation: join(location, 'ui-wallet'),
+        walletStorageLocation: join(location, 'sender-wallet'),
       },
       roots: roots(1),
     })
-    ui = uiWallet.publicExport({ policy, home: 'relay-a', nowNs: now })
-    await uiWallet.close()
-    const relay = tuple('a')
-    writeFileSync(
-      join(location, 'approved-bundle.json'),
-      JSON.stringify(buildApprovedBundle(policy, { ui, bot })),
-    )
-    // The typed UI account has published its own revision zero to the relay.
-    writeFileSync(
-      join(location, 'heads.json'),
-      JSON.stringify({
-        [`${NETWORK}/${ui.subjectP}`]: Buffer.from(
-          ui.attestation,
-          'base64url',
-        ).toString('hex'),
-      }),
-    )
-    // One canonical text from that account, sealed by the real producer for the bot.
-    const stamp = (ns: bigint) => ({
-      seconds: ns / 1_000_000_000n,
-      nanoseconds: Number(ns % 1_000_000_000n),
+    const directory = openQwenDirectory({
+      wallet,
+      networkTag: 'MONT',
+      relayBaseUrl: RELAY,
+      location: join(location, 'sender-directory'),
+      fetch: relay.fetch,
     })
-    const context = {
-      now: stamp(now),
-      relay: {
-        relayId: new Uint8Array(Buffer.from(relay.id, 'hex')),
-        endpoint: relay.endpoint,
-        identity: {
-          keyType: 1,
-          keyBytes: new Uint8Array(Buffer.from(relay.key, 'hex')),
-        },
-        expiry: stamp(BigInt(relay.expiryNs)),
-        unknownFields: new Map(),
-      },
-    }
-    const current = async (file: QwenPublicExportFile, label: string) => {
-      const store = await openNodeDirectoryStore({
-        location: join(location, `scratch-${label}`),
-        anchor: {
-          network: NETWORK,
-          subject: {
-            keyType: 1,
-            keyBytes: new Uint8Array(Buffer.from(file.subjectP, 'hex')),
-          },
-          revisionZero: new Uint8Array(Buffer.from(file.revisionZeroT1, 'hex')),
-        },
-        mode: { kind: 'new' },
-      })
-      try {
-        return await store.enroll(
-          [
-            {
-              statement: new Uint8Array(
-                Buffer.from(file.statement, 'base64url'),
-              ),
-              attestation: new Uint8Array(
-                Buffer.from(file.attestation, 'base64url'),
-              ),
-            },
-          ],
-          context,
-        )
-      } finally {
-        await store.close()
+    let sealed
+    let botCurrent
+    try {
+      await directory.publish()
+      const senderCurrent = await directory.selfCurrent()
+      // The sender knows only the bot's key; the bot's entry comes from the relay.
+      botCurrent = (await directory.peerCurrent(botSubject))!
+      sender = {
+        subject: wallet.subject,
+        address: wallet.identityAddress,
+        t1: toHex(senderCurrent.evidence.hash),
       }
+      // One canonical text from that account, sealed by the real producer for the bot.
+      const roles = createCanonicalMessageRoles(wallet.handle, senderCurrent)
+      try {
+        sealed = prepareDirectMessage({
+          network: NETWORK,
+          senderCurrent,
+          recipientCurrent: botCurrent,
+          messageId: new Uint8Array(16).fill(7),
+          items: [directMessageText('PROCESS_PROMPT_SENTINEL')],
+          roles,
+        })
+      } finally {
+        roles.dispose()
+      }
+    } finally {
+      await directory.close()
+      await wallet.close()
     }
-    const botCurrent = await current(bot, 'bot'),
-      uiCurrent = await current(ui, 'ui')
-    const uiMaterial = createMonadWalletMaterial(roots(1))
-    const sealed = prepareDirectMessage({
-      network: NETWORK,
-      senderCurrent: uiCurrent,
-      recipientCurrent: botCurrent,
-      messageId: new Uint8Array(16).fill(7),
-      items: [directMessageText('PROCESS_PROMPT_SENTINEL')],
-      roles: uiMaterial.canonicalRoles!.create(NETWORK, uiCurrent),
-    })
-    uiMaterial.dispose()
+    writeFileSync(
+      join(location, 'relay.json'),
+      JSON.stringify(
+        [...relay.subjects()]
+          .flatMap(subject => relay.chain(subject))
+          .map(toHex),
+      ),
+    )
     const digest = recipientPayloadDigest(NETWORK, sealed.payload)
     turn = toHex(digest)
     const raw = await new Wallet('0x' + '00'.repeat(31) + '01').signTransaction(
@@ -637,45 +588,65 @@ describe('#703/#778 production CLI in canonical mode', () => {
   }, 60000)
   afterEach(() => rmSync(location, { recursive: true, force: true }))
 
-  it('writes a public-only export without opening Qwen state or contacting the relay', () => {
-    expect(Object.keys(bot).sort()).toEqual(Object.keys(ui).sort())
-    expect(bot.kind).toBe('public-revision-zero-export')
-    for (const root of Object.values(domainVectors.vectors[0].outputs))
-      expect(JSON.stringify(bot)).not.toContain(root)
-    // The export step never opens Qwen state, the directory or the relay.
-    expect(existsSync(join(location, 'state'))).toBe(false)
+  it('publishes its own self-signed entry on first start from a roots path, a relay and state directories alone', () => {
+    const output = firstStart.child.stdout + firstStart.child.stderr
+    // Asked the relay who it is, found no entry for its key, signed and stored revision zero.
+    expect(firstStart.summary.directory).toEqual([
+      'GET /relay/v1/info',
+      `GET ${headOf(botSubject)}`,
+      `PUT ${headOf(botSubject)}`,
+    ])
+    expect(firstStart.summary.other).toEqual([])
+    const order = [
+      '[bot] persisted state loaded',
+      '[bot] canonical stamp account',
+      '[bot] directory entry published',
+      '[bot] canonical wallet correlation complete',
+      'Polling the canonical inbox',
+    ].map(line => output.indexOf(line))
+    expect(order.every(index => index >= 0)).toBe(true)
+    expect([...order].sort((a, b) => a - b)).toEqual(order)
+    expect(output).toContain(`Bot Frank identity address: ${botAddress}`)
+    expect(
+      JSON.parse(readFileSync(join(location, 'handoff.json'), 'utf8')),
+    ).toEqual({ address: botAddress })
+    secrets(output)
   })
 
-  it('opens state, then the wallet and directory, correlates, then answers one canonical text from the installed account with one inference and one retained envelope', async () => {
+  it('opens state, then the wallet, adopts its entry, correlates, then answers one canonical text from a sender it was never told about with one inference and one retained envelope', async () => {
     const first = run()
     const output = first.child.stdout + first.child.stderr
     expect({ status: first.child.status, ...first.summary }).toMatchObject({
       status: 0,
       generations: 1,
     })
-    // Besides the Directory routes, the only requests are the wallet funding its own inventory
+    // Besides the directory routes, the only requests are the wallet funding its own inventory
     // through the relay's RPC proxy, which is down here: no message was submitted.
     expect(first.summary.other.length).toBeGreaterThan(0)
     for (const request of first.summary.other)
-      expect(request).toContain('https://a.example/chain-rpc/')
-    expect(first.summary.directory[0]).toBe('PUT')
+      expect(request).toContain(`${RELAY}/chain-rpc/`)
+    // Its own entry is adopted from the relay, not signed again; the sender's entry is read
+    // from the relay by the key the envelope names.
+    expect(first.summary.directory).toEqual([
+      'GET /relay/v1/info',
+      `GET ${headOf(botSubject)}`,
+      `GET ${headOf(sender.subject)}`,
+    ])
     const order = [
       '[bot] persisted state loaded',
       '[bot] canonical stamp account',
+      '[bot] directory entry published',
       '[bot] canonical wallet correlation complete',
       `[bot] response ${turn} held: inventory-unavailable`,
     ].map(line => output.indexOf(line))
     expect(order.every(index => index >= 0)).toBe(true)
     expect([...order].sort((a, b) => a - b)).toEqual(order)
-    expect(output).toContain(
-      `Bot Frank identity address: ${bot.authAddress.toLowerCase()}`,
-    )
     secrets(output)
     const saved = await withState(state => {
       expect(state.getResponse(turn)).toMatchObject({
         phase: 'response-ready',
-        senderAddress: ui.authAddress.toLowerCase(),
-        senderPubKeyHex: ui.subjectP,
+        senderAddress: sender.address,
+        senderPubKeyHex: sender.subject,
       })
       expect(state.pendingInbox()).toEqual([])
       expect(state.hasProcessed(turn)).toBe(false)
@@ -686,9 +657,9 @@ describe('#703/#778 production CLI in canonical mode', () => {
       binding: {
         network: NETWORK,
         chainId: '10143',
-        senderSubject: bot.subjectP,
-        recipientSubject: ui.subjectP,
-        recipientT1: ui.revisionZeroT1,
+        senderSubject: botSubject,
+        recipientSubject: sender.subject,
+        recipientT1: sender.t1,
       },
     })
 
@@ -703,7 +674,46 @@ describe('#703/#778 production CLI in canonical mode', () => {
       '[bot] canonical wallet correlation complete',
     )
     expect(await withState(state => state.getCoupling(turn))).toEqual(saved)
+    expect(relayEntries()).toHaveLength(2)
   }, 90000)
+
+  it('gives no reply and pays nothing when the entry served for the sender is signed by another key', async () => {
+    const mallory = testAccount(41)
+    const seconds = BigInt(Math.floor(Date.now() / 1000))
+    const forged = mallory.sign({
+      network: NETWORK,
+      revision: 0n,
+      predecessor: null,
+      issuedAt: { seconds: seconds - 60n, nanoseconds: 0 },
+      expiresAt: { seconds: seconds + 86_400n, nanoseconds: 0 },
+      relay: createFakeRelay({ endpoint: RELAY }).binding,
+      claimSubject: sender.subject,
+    })
+    const refused = run({
+      QWEN_FIXTURE_FORGED: toHex(forged),
+      QWEN_FIXTURE_FORGED_SUBJECT: sender.subject,
+    })
+    const output = refused.child.stdout + refused.child.stderr
+    expect({ status: refused.child.status, ...refused.summary }).toMatchObject({
+      status: 0,
+      generations: 0,
+      // Not even inventory funding was attempted.
+      other: [],
+    })
+    expect(refused.summary.pages).toBeGreaterThan(0)
+    expect(output).toContain(
+      `[bot] directory entry of ${sender.address} not usable: invalid`,
+    )
+    secrets(output)
+    await withState(state => {
+      expect(state.getResponse(turn)).toBeUndefined()
+      expect(state.getCoupling(turn)).toBeUndefined()
+      // Imported, never opened, never answered.
+      expect(state.pendingInbox().map(row => row.payloadHashHex)).toEqual([
+        turn,
+      ])
+    })
+  }, 60000)
 
   it('SIGKILL right after the envelope is saved leaves one envelope that the restarted CLI reuses without inference', async () => {
     const killed = run({ QWEN_CANONICAL_CRASH: 'envelope' })
@@ -719,8 +729,8 @@ describe('#703/#778 production CLI in canonical mode', () => {
     expect(await withState(state => state.getCoupling(turn))).toEqual(saved)
   }, 90000)
 
-  it('keeps the operator denylist effective: a denylisted installed account is imported but never answered', async () => {
-    const denied = run({ FRANK_BOT_PEER_DENYLIST: ui.authAddress })
+  it('keeps the peer denylist effective: a denylisted account with a valid entry is imported but never answered', async () => {
+    const denied = run({ FRANK_BOT_PEER_DENYLIST: sender.address })
     expect({ status: denied.child.status, ...denied.summary }).toMatchObject({
       status: 0,
       generations: 0,
@@ -734,14 +744,124 @@ describe('#703/#778 production CLI in canonical mode', () => {
     secrets(denied.child.stdout + denied.child.stderr)
   }, 60000)
 
-  it('refuses to start when the approved bundle is missing, before opening any state', () => {
-    rmSync(join(location, 'approved-bundle.json'))
-    const refused = run()
+  it('reads no mail and answers nothing while its relay is down at startup, then starts and answers once the relay is back', async () => {
+    // The relay never answers: the process keeps retrying and is stopped from outside.
+    const waiting = run({ QWEN_FIXTURE_RELAY_DOWN_FOR: '1000' }, 6000)
+    expect(waiting.child.status).not.toBe(0)
+    expect(waiting.child.stderr).toContain(
+      '[bot] directory entry not published: the relay could not be reached (unreachable); retrying in 1000 ms',
+    )
+    expect(waiting.child.stderr).toContain('retrying in 2000 ms')
+    const stalled = waiting.child.stdout + waiting.child.stderr
+    expect(stalled).not.toContain('directory entry published')
+    expect(stalled).not.toContain('canonical wallet correlation')
+    expect(stalled).not.toContain('Polling the canonical inbox')
+    await withState(state => {
+      // The waiting message was never read from the inbox, let alone answered.
+      expect(state.pendingInbox()).toEqual([])
+      expect(state.getResponse(turn)).toBeUndefined()
+    })
+    secrets(stalled)
+
+    // The relay fails once more, then answers: one retry, then the normal start.
+    const back = run({ QWEN_FIXTURE_RELAY_DOWN_FOR: '1' })
+    expect({ status: back.child.status, ...back.summary }).toMatchObject({
+      status: 0,
+      down: 1,
+      generations: 1,
+    })
+    expect(back.child.stderr).toContain(
+      '[bot] directory entry not published: the relay could not be reached (unreachable); retrying in 1000 ms',
+    )
+    expect(back.child.stderr).not.toContain('retrying in 2000 ms')
+    const order = [
+      '[bot] directory entry published',
+      '[bot] canonical wallet correlation complete',
+      'Polling the canonical inbox',
+    ].map(line => back.child.stdout.indexOf(line))
+    expect(order.every(index => index >= 0)).toBe(true)
+    expect([...order].sort((a, b) => a - b)).toEqual(order)
+    expect(back.child.stdout + back.child.stderr).toContain(
+      `[bot] response ${turn} held: inventory-unavailable`,
+    )
+    secrets(back.child.stdout + back.child.stderr)
+    expect((await withState(state => state.getResponse(turn)))?.phase).toBe(
+      'response-ready',
+    )
+  }, 90000)
+
+  it('creates its roots file (0600) on first run when the path is missing, logs only the path, and is the same account on the next start', () => {
+    const rootsPath = join(location, 'fresh', 'roots.json')
+    const fresh = {
+      QWEN_BOT_CANONICAL_ROOTS_JSON: rootsPath,
+      QWEN_BOT_STATE_DIR: join(location, 'fresh', 'state'),
+      QWEN_BOT_WALLET_STATE_DIR: join(location, 'fresh', 'wallet'),
+      QWEN_BOT_HANDOFF_JSON: join(location, 'fresh', 'handoff.json'),
+      QWEN_FIXTURE_RELAY: join(location, 'fresh', 'relay.json'),
+      QWEN_FIXTURE_INBOX: undefined,
+    }
+    const first = run(fresh)
+    const output = first.child.stdout + first.child.stderr
+    expect(first.child.status).toBe(0)
+    expect(statSync(rootsPath).mode & 0o777).toBe(0o600)
+    const contents = readFileSync(rootsPath, 'utf8')
+    const created = Object.values(JSON.parse(contents).roots) as string[]
+    expect(created).toHaveLength(3)
+    expect(new Set(created).size).toBe(3)
+    expect(output).toContain(
+      `[bot] created canonical roots file at ${rootsPath}`,
+    )
+    for (const root of created) expect(output).not.toContain(root)
+    // A new account, not the fixture one, with its own published entry.
+    const address = JSON.parse(
+      readFileSync(fresh.QWEN_BOT_HANDOFF_JSON, 'utf8'),
+    ).address as string
+    expect(address).not.toBe(botAddress)
+    expect(first.summary.directory.map((r: string) => r.slice(0, 3))).toEqual([
+      'GET',
+      'GET',
+      'PUT',
+    ])
+
+    // Next start: the file is reused untouched and the same entry is adopted.
+    const second = run(fresh)
+    const again = second.child.stdout + second.child.stderr
+    expect(second.child.status).toBe(0)
+    expect(readFileSync(rootsPath, 'utf8')).toBe(contents)
+    expect(again).not.toContain('created canonical roots file')
+    expect(again).toContain(`Bot Frank identity address: ${address}`)
+    expect(second.summary.directory.map((r: string) => r.slice(0, 3))).toEqual([
+      'GET',
+      'GET',
+    ])
+    for (const root of created) expect(again).not.toContain(root)
+
+    // An existing file that others can read is refused, never replaced.
+    chmodSync(rootsPath, 0o644)
+    const refused = run(fresh)
     expect(refused.child.status).toBe(1)
     expect(refused.child.stderr).toContain(
-      'QWEN BOT REFUSING TO START: approved-bundle-invalid',
+      'QWEN BOT REFUSING TO START: roots-file-permissions',
     )
     expect(refused.summary).toMatchObject({ generations: 0, pages: 0 })
-    expect(existsSync(join(location, 'state'))).toBe(false)
+    expect(refused.summary.directory).toEqual([])
+    expect(readFileSync(rootsPath, 'utf8')).toBe(contents)
+  }, 90000)
+
+  it('refuses a relay URL that is not an HTTPS root origin before creating roots or opening any state', () => {
+    for (const url of ['http://127.0.0.1:8098', `${RELAY}/path`, undefined]) {
+      const refused = run({
+        E2E_DEMO_RELAY_URL: url,
+        QWEN_BOT_CANONICAL_ROOTS_JSON: join(location, 'unused', 'roots.json'),
+        QWEN_BOT_STATE_DIR: join(location, 'unused', 'state'),
+        QWEN_BOT_WALLET_STATE_DIR: join(location, 'unused', 'wallet'),
+      })
+      expect(refused.child.status).toBe(1)
+      expect(refused.child.stderr).toContain(
+        'QWEN BOT REFUSING TO START: relay-url-not-https-origin',
+      )
+      expect(refused.summary).toMatchObject({ generations: 0, pages: 0 })
+    }
+    expect(existsSync(join(location, 'unused'))).toBe(false)
   }, 60000)
 })

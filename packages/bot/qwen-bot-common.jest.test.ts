@@ -1,4 +1,11 @@
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -79,13 +86,15 @@ describe('Qwen durable stamp-wallet lifecycle', () => {
   })
 })
 
-// #703/#778: the canonical bot is composed only from public producer/owner/directory APIs.
-// These tests open the real typed wallet through the chain factory and the wallet's own canonical
-// bridge, the real Node directory store behind the real directory client, and the real producer
-// and opener. A loopback listener stands where the relay's RPC proxy and message routes would be,
-// so any startup or correlation request is counted; the relay's Directory routes are a local
-// responder that only stores and returns published attestation bytes. No account is funded and
-// nothing is sent, so these stop at "held: no spendable inventory".
+// #703/#778: the canonical bot is an ordinary account on the open directory, composed only from
+// public producer/owner/directory APIs. These tests open real typed wallets through the chain
+// factory and the wallet's own canonical bridge, the shared open directory over real Node
+// admission stores (one independent root per account), and the real producer and opener. The
+// relay's directory routes are the shared fake relay, which verifies signatures with the real
+// codec. A loopback listener stands where the relay's RPC proxy and message routes would be, so
+// any startup or correlation request is counted. No account is funded and nothing is sent, so
+// these stop at "held: no spendable inventory".
+import { statSync } from 'fs'
 import { createServer, type Server } from 'http'
 import type { AddressInfo } from 'net'
 import { Transaction, Wallet as EthersWallet, getBytes } from 'ethers'
@@ -101,32 +110,26 @@ import {
   openDirectMessage,
   prepareDirectMessage,
 } from '@frank/cashweb/relay/canonical-dm'
-import type { DirectoryFetch } from '@frank/cashweb/relay/directory-client'
 import type { CanonicalInboxRecord } from '@frank/cashweb/relay/monad-mailbox-client'
-import type { MonadChainConfig } from '@frank/wallet/chain/monad-chain'
 import {
-  createMonadWalletMaterial,
-  type MonadRootBundle,
-} from '@frank/wallet/monad-wallet-material'
+  createFakeRelay,
+  testAccount,
+  type FakeRelay,
+} from '@frank/cashweb/relay/open-directory-fake-relay.testutil'
+import {
+  createCanonicalMessageRoles,
+  type MonadChainConfig,
+} from '@frank/wallet/chain/monad-chain'
+import type { MonadRootBundle } from '@frank/wallet/monad-wallet-material'
 import domainVectors from '../domain-roots/vectors/domain-roots-v1.json'
-import {
-  buildApprovedBundle,
-  buildBootstrapPolicy,
-} from '../../app/src/utils/directory-operator'
-import {
-  configurationMatches,
-  parseInstallationSnapshot,
-} from '../../app/src/utils/directory-provisioning'
 import {
   loadQwenCanonicalRoots,
   openQwenCanonicalWallet,
-  openQwenInstalledDirectory,
-  startQwenInstallationServer,
-  readQwenApprovedBundle,
-  readQwenBootstrapPolicy,
+  openQwenDirectory,
+  publishQwenDirectoryEntry,
   setUpCanonicalQwenSender,
-  type QwenCanonicalDirectory,
-  type QwenPublicExportFile,
+  type QwenCanonicalWallet,
+  type QwenOpenDirectory,
 } from './qwen-bot-common'
 import {
   QwenBotStateStore,
@@ -136,16 +139,15 @@ import {
 import { QwenInboundWorkflow } from './qwen-inbound-workflow'
 import { QwenResponseWorkflow } from './qwen-response-workflow'
 
-describe('#703/#778 canonical Qwen composition', () => {
+describe('#703/#778 canonical Qwen composition on the open directory', () => {
   const NETWORK = 'monad-testnet'
-  const NOW_NS = 200_000_000_000n
+  const RELAY = 'https://a.example'
   let root: string
   let server: Server
   let requests: string[]
   let logs: string[]
   let cleanup: Array<() => Promise<void>>
-  let published: Map<string, Uint8Array>
-  let directoryRequests: string[]
+  let relay: FakeRelay
 
   function roots(index: number): MonadRootBundle {
     const outputs = domainVectors.vectors[index].outputs
@@ -185,137 +187,39 @@ describe('#703/#778 canonical Qwen composition', () => {
     }
   }
 
-  async function wallet(bundle: MonadRootBundle, storage: string) {
-    const opened = await openQwenCanonicalWallet({
-      chain: { ...chain(), walletStorageLocation: join(root, storage) },
-      roots: bundle,
+  /** One account: its own typed wallet and its own directory root. Nothing is published. */
+  async function account(index: number, name: string) {
+    const wallet = await openQwenCanonicalWallet({
+      chain: {
+        ...chain(),
+        walletStorageLocation: join(root, `${name}-wallet`),
+      },
+      roots: roots(index),
     })
-    cleanup.push(() => opened.close())
-    return opened
-  }
-
-  /** The two public files an operator installs, built by the operator tool's own functions and
-   * read back through the bot's strict readers. */
-  async function install(
-    options: {
-      botRoots?: MonadRootBundle
-      uiHome?: 'relay-a' | 'relay-b'
-    } = {},
-  ) {
-    const relayKey = Buffer.from(
-      createMonadWalletMaterial(
-        roots(1),
-      ).canonicalRoles!.publicGenerationZeroPoints().auth,
-    ).toString('hex')
-    const policyPath = join(root, 'bootstrap-policy.json')
-    writeFileSync(
-      policyPath,
-      JSON.stringify(
-        buildBootstrapPolicy({
-          networkTag: 'MONT',
-          network: NETWORK,
-          chainId: '10143',
-          participants: (['relay-a', 'relay-b', 'bot'] as const).map(
-            processId => ({
-              processId,
-              origin: `https://${
-                processId === 'bot' ? 'bot' : processId.slice(-1)
-              }.example`,
-              trustReference: processId,
-            }),
-          ),
-          relayTuples: (['a', 'b'] as const).map(label => ({
-            processId: `relay-${label}` as const,
-            id: (label === 'a' ? '01' : '02').repeat(16),
-            endpoint: `https://${label}.example`,
-            key: relayKey,
-            expiryNs: '3700000000000',
-          })),
-          exportValidity: {
-            issuedAtNs: '100000000000',
-            expiresAtNs: '3700000000000',
-          },
-        }),
-      ),
-    )
-    const policy = readQwenBootstrapPolicy(policyPath)
-    const exportFor = async (
-      bundle: MonadRootBundle,
-      storage: string,
-      home: 'relay-a' | 'relay-b' = 'relay-a',
-    ) => {
-      const opened = await wallet(bundle, storage)
-      const file = opened.publicExport({ policy, home, nowNs: NOW_NS })
-      await opened.close()
-      return file
+    const directory = openQwenDirectory({
+      wallet,
+      networkTag: 'MONT',
+      relayBaseUrl: RELAY,
+      location: join(root, `${name}-directory`),
+      fetch: relay.fetch,
+    })
+    let closed = false
+    const close = async () => {
+      if (closed) return
+      closed = true
+      await directory.close()
+      await wallet.close()
     }
-    const bot = await exportFor(options.botRoots ?? roots(0), 'export-bot'),
-      ui = await exportFor(roots(1), 'export-ui', options.uiHome)
-    const bundlePath = join(root, 'approved-bundle.json')
-    writeFileSync(
-      bundlePath,
-      JSON.stringify(buildApprovedBundle(policy, { ui, bot })),
-    )
-    return { policy, bundle: readQwenApprovedBundle(bundlePath), bot, ui }
+    cleanup.push(close)
+    return { wallet, directory, close }
   }
-
-  /** Stand-in for the relay's public Directory routes: stores and returns published heads. */
-  const directoryFetch: DirectoryFetch = async (url, init) => {
-    const match =
-      /^https:\/\/a\.example\/directory\/v1\/([^/]+)\/([^/]+)\/head$/.exec(url)
-    directoryRequests.push(
-      `${init.method} ${match ? match[2].slice(0, 8) : url}`,
-    )
-    const key = match ? `${match[1]}/${match[2]}` : ''
-    if (match && init.method === 'PUT')
-      published.set(key, Uint8Array.from(init.body as Uint8Array))
-    const head = published.get(key)
-    let sent = false
-    return {
-      url,
-      status: head ? 200 : 404,
-      headers: {
-        get: (name: string) =>
-          name.toLowerCase() === 'content-type'
-            ? 'application/vnd.frank.cbor'
-            : name.toLowerCase() === 'x-frank-directory-evidence'
-            ? 'fresh-current'
-            : null,
-      },
-      body: {
-        getReader: () => ({
-          read: async () =>
-            sent || !head
-              ? { done: true as const, value: undefined }
-              : ((sent = true), { done: false as const, value: head }),
-          cancel: async () => undefined,
-          releaseLock: () => undefined,
-        }),
-      },
-    } as Awaited<ReturnType<DirectoryFetch>>
-  }
-  const publishUi = (ui: QwenPublicExportFile) =>
-    published.set(
-      `${NETWORK}/${ui.subjectP}`,
-      new Uint8Array(Buffer.from(ui.attestation, 'base64url')),
-    )
-
-  async function openDirectory(
-    installed: Awaited<ReturnType<typeof install>>,
-    bundle = roots(0),
-  ) {
-    const opened = await wallet(bundle, 'wallet')
-    const directory = await openQwenInstalledDirectory({
-      wallet: opened,
-      policy: installed.policy,
-      bundle: installed.bundle,
-      location: join(root, 'directory'),
-      fetch: directoryFetch,
-      nowNs: () => NOW_NS,
-      peerRefreshMs: 0,
-    })
-    cleanup.push(() => directory.close())
-    return Object.assign(directory, { wallet: opened })
+  type Account = Awaited<ReturnType<typeof account>>
+  const openBot = () => account(0, 'bot')
+  /** A second, unrelated typed account. All it ever does is publish its own entry. */
+  async function openSender() {
+    const sender = await account(1, 'sender')
+    await sender.directory.publish()
+    return sender
   }
 
   beforeEach(async () => {
@@ -323,8 +227,7 @@ describe('#703/#778 canonical Qwen composition', () => {
     requests = []
     logs = []
     cleanup = []
-    published = new Map()
-    directoryRequests = []
+    relay = createFakeRelay({ endpoint: RELAY })
     server = createServer((request, response) => {
       requests.push(`${request.method} ${request.url}`)
       response.statusCode = 500
@@ -344,11 +247,14 @@ describe('#703/#778 canonical Qwen composition', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
-  async function open(directory: Awaited<ReturnType<typeof openDirectory>>) {
+  async function open(bot: {
+    wallet: QwenCanonicalWallet
+    directory: QwenOpenDirectory
+  }) {
     const setup = setUpCanonicalQwenSender({
-      wallet: directory.wallet,
+      wallet: bot.wallet,
       networkTag: 'MONT',
-      directory,
+      directory: bot.directory,
       label: 'test',
     })
     const state = new QwenBotStateStore(join(root, 'bot'))
@@ -356,7 +262,7 @@ describe('#703/#778 canonical Qwen composition', () => {
     const inboxContext = {
       botAddress: setup.identityAddress,
       networkTag: 'MONT',
-      relayBaseUrl: directory.homeEndpoint,
+      relayBaseUrl: bot.directory.homeEndpoint,
     }
     const context: QwenResponseContext = {
       ...inboxContext,
@@ -383,33 +289,47 @@ describe('#703/#778 canonical Qwen composition', () => {
     cleanup.push(close)
     return { setup, state, run, reply, close, inboxContext }
   }
-
-  /** What the typed UI account would send: a real sealed text in a real delivery frame. */
-  async function fromUi(
-    text: string,
-    directory: QwenCanonicalDirectory,
-  ): Promise<{
-    record: CanonicalInboxRecord
-    ui: ReturnType<typeof createMonadWalletMaterial>
-    uiCurrent: NonNullable<
-      Awaited<ReturnType<QwenCanonicalDirectory['peerCurrent']>>
-    >
-  }> {
-    const ui = createMonadWalletMaterial(roots(1))
-    cleanup.push(async () => ui.dispose())
-    const uiSubject = Buffer.from(
-      ui.canonicalRoles!.publicGenerationZeroPoints().auth,
-    ).toString('hex')
-    const uiCurrent = (await directory.peerCurrent(uiSubject))!
-    const botCurrent = await directory.selfCurrent()
-    const sealed = prepareDirectMessage({
-      network: NETWORK,
-      senderCurrent: uiCurrent,
-      recipientCurrent: botCurrent,
-      messageId: new Uint8Array(16).fill(7),
-      items: [directMessageText(text)],
-      roles: ui.canonicalRoles!.create(NETWORK, uiCurrent),
+  type Opened = Awaited<ReturnType<typeof open>>
+  /** The production inbound source, with only the relay page read replaced. */
+  const inbound = (bot: Opened, page: CanonicalInboxRecord[]) =>
+    new QwenInboundWorkflow({
+      state: bot.state,
+      context: bot.inboxContext,
+      responses: bot.run,
+      canonical: {
+        ...bot.setup.inbound,
+        fetchPage: async () => ({ records: page.splice(0) }),
+      },
+      peerBlockReason: async () => undefined,
+      reserveReply: () => true,
     })
+
+  /** What the sender's own client would send: a real sealed text in a real delivery frame,
+   * sealed to the bot's entry as the sender itself read and verified it from the relay. */
+  async function from(
+    sender: Account,
+    botSubject: string,
+    text: string,
+  ): Promise<CanonicalInboxRecord> {
+    const senderCurrent = await sender.directory.selfCurrent()
+    const botCurrent = (await sender.directory.peerCurrent(botSubject))!
+    const roles = createCanonicalMessageRoles(
+      sender.wallet.handle,
+      senderCurrent,
+    )
+    let sealed
+    try {
+      sealed = prepareDirectMessage({
+        network: NETWORK,
+        senderCurrent,
+        recipientCurrent: botCurrent,
+        messageId: new Uint8Array(16).fill(7),
+        items: [directMessageText(text)],
+        roles,
+      })
+    } finally {
+      roles.dispose()
+    }
     const digest = recipientPayloadDigest(NETWORK, sealed.payload)
     const raw = await new EthersWallet(
       '0x' + '00'.repeat(31) + '01',
@@ -453,189 +373,129 @@ describe('#703/#778 canonical Qwen composition', () => {
       ]),
     )
     return {
-      record: {
-        delivery,
-        context: sealed.context,
-        submissionIdentity: 'ab'.repeat(32),
-        timestampMs: 1000,
-      },
-      ui,
-      uiCurrent,
+      delivery,
+      context: sealed.context,
+      submissionIdentity: 'ab'.repeat(32),
+      timestampMs: 1000,
     }
   }
-
-  it("exports only public evidence, publishes only the bot's own attestation, admits a peer only from that peer's published evidence, and reports the installed configuration", async () => {
-    const installed = await install()
-    for (const secret of Object.values(domainVectors.vectors[0].outputs))
-      expect(JSON.stringify(installed.bot)).not.toContain(secret)
-    expect(Object.keys(installed.bot).sort()).toEqual(
-      [
-        'attestation',
-        'authAddress',
-        'bootstrapPolicyIdentity',
-        'chainId',
-        'homeProcessId',
-        'kind',
-        'messagePoint',
-        'network',
-        'networkTag',
-        'revisionZeroT1',
-        'stampPoint',
-        'statement',
-        'subjectP',
-        'version',
-      ].sort(),
+  const directoryRequests = () =>
+    relay.requests.map(
+      request =>
+        `${request.method} ${request.path.replace(/[0-9a-f]{66}/, 'P')}`,
     )
-    const directory = await openDirectory(installed)
-    expect(directory.selfSubject).toBe(installed.bot.subjectP)
-    expect(directoryRequests).toEqual([
-      `PUT ${installed.bot.subjectP.slice(0, 8)}`,
+
+  it('publishes its own self-signed entry at startup with nothing else configured, and adopts it on restart', async () => {
+    const bot = await openBot()
+    // Opening contacts nobody and there is nothing to read yet.
+    expect(relay.requests).toEqual([])
+    await expect(bot.directory.selfCurrent()).rejects.toThrow(
+      'not been published',
+    )
+    await publishQwenDirectoryEntry({ directory: bot.directory, label: 'test' })
+    expect(directoryRequests()).toEqual([
+      'GET /relay/v1/info',
+      `GET /directory/v1/${NETWORK}/P/head`,
+      `PUT /directory/v1/${NETWORK}/P/head`,
     ])
-    expect(toHex((await directory.selfCurrent()).evidence.hash)).toBe(
-      installed.bot.revisionZeroT1,
+    // The relay holds exactly one entry: the bot's own key, signed by the bot, naming this relay.
+    expect([...relay.subjects()]).toEqual([bot.wallet.subject])
+    expect(relay.chain(bot.wallet.subject)).toHaveLength(1)
+    expect(bot.directory.selfSubject).toBe(bot.wallet.subject)
+    expect(bot.directory.network).toBe(NETWORK)
+    expect(bot.directory.homeEndpoint).toBe(RELAY + '/')
+    const self = await bot.directory.selfCurrent()
+    expect(self.revision).toBe(0n)
+    expect(toHex(self.evidence.attestation)).toBe(
+      toHex(relay.chain(bot.wallet.subject)[0]),
     )
-    // Installed but not yet published by its owner: not usable, never enrolled from the file.
-    expect(await directory.peerCurrent(installed.ui.subjectP)).toBeUndefined()
-    // Not installed at all: no relay request is even made.
-    const before = directoryRequests.length
-    expect(await directory.peerCurrent('02' + '11'.repeat(32))).toBeUndefined()
-    expect(directoryRequests).toHaveLength(before)
-
-    // The readiness endpoint: exact headers, the app's own strict parser and comparator.
-    const status = await startQwenInstallationServer({ directory, port: 0 })
-    cleanup.push(() => status.close())
-    const read = (manifest: string) =>
-      fetch(
-        `http://127.0.0.1:${status.port}/directory-installation/${manifest}`,
-      )
-    const response = await read(installed.bundle.bundleIdentity)
-    expect(response.status).toBe(200)
-    expect(response.headers.get('content-type')).toBe('application/json')
-    expect(response.headers.get('cache-control')).toBe('no-store')
-    expect(response.headers.get('access-control-allow-origin')).toBe('*')
-    const snapshot = parseInstallationSnapshot(
-      new Uint8Array(await response.arrayBuffer()),
-    )
-    expect(configurationMatches(snapshot, installed.bundle)).toBe(true)
-    const stateOf = (subject: string, from = snapshot) =>
-      from.states.find(state => state.subjectP === subject)!
-    expect(stateOf(installed.bot.subjectP)).toMatchObject({
-      enrollment: 'enrolled',
-      historicalHead: installed.bot.revisionZeroT1,
-      forked: false,
-      unavailable: false,
-    })
-    expect(stateOf(installed.ui.subjectP)).toMatchObject({
-      enrollment: 'unenrolled',
-      historicalHead: null,
-      forked: false,
-      unavailable: false,
-    })
-    expect((await read('00'.repeat(32))).status).toBe(404)
-    // An empty host (an env variable set to nothing) still binds loopback only.
-    const emptyHost = await startQwenInstallationServer({
-      directory,
-      port: 0,
-      host: '',
-    })
-    cleanup.push(() => emptyHost.close())
-    expect(emptyHost.address).toBe('127.0.0.1')
-    expect(status.address).toBe('127.0.0.1')
+    expect(logs.join()).toContain('directory entry published')
+    // A key that never published is simply not usable; that is not an error.
     expect(
-      (await fetch(`http://127.0.0.1:${status.port}/anything-else`)).status,
-    ).toBe(404)
+      await bot.directory.peerCurrent('02' + '11'.repeat(32)),
+    ).toBeUndefined()
+    expect(await bot.directory.peerCurrent('not a key')).toBeUndefined()
 
-    publishUi(installed.ui)
-    const peer = await directory.peerCurrent(installed.ui.subjectP)
-    expect(toHex(peer!.evidence.hash)).toBe(installed.ui.revisionZeroT1)
-    const later = parseInstallationSnapshot(
-      new Uint8Array(
-        await (await read(installed.bundle.bundleIdentity)).arrayBuffer(),
-      ),
-    )
-    expect(stateOf(installed.ui.subjectP, later)).toMatchObject({
-      enrollment: 'enrolled',
-      historicalHead: installed.ui.revisionZeroT1,
+    // Restart: the entry the relay already holds is adopted, nothing new is signed or stored.
+    await bot.close()
+    relay.requests.length = 0
+    const again = await openBot()
+    await publishQwenDirectoryEntry({
+      directory: again.directory,
+      label: 'test',
     })
-    expect(later.runtimeEpoch).toBe(snapshot.runtimeEpoch)
-    expect(later.generation).toBe(snapshot.generation)
-
-    // Restart: whole checkpoints reopen both stores; the same bytes are published again.
-    await directory.close()
-    await directory.wallet.close()
-    directoryRequests = []
-    const again = await openDirectory(installed)
-    expect(directoryRequests).toEqual([
-      `PUT ${installed.bot.subjectP.slice(0, 8)}`,
+    expect(directoryRequests()).toEqual([
+      'GET /relay/v1/info',
+      `GET /directory/v1/${NETWORK}/P/head`,
     ])
-    expect(toHex((await again.selfCurrent()).evidence.hash)).toBe(
-      installed.bot.revisionZeroT1,
+    expect(relay.chain(bot.wallet.subject)).toHaveLength(1)
+    expect((await again.directory.selfCurrent()).evidence.hash).toEqual(
+      self.evidence.hash,
     )
-    expect(await again.peerCurrent(installed.ui.subjectP)).toBeDefined()
+    // No roots, no RPC, no message route.
+    for (const secret of Object.values(domainVectors.vectors[0].outputs))
+      expect(logs.join()).not.toContain(secret)
     expect(requests).toEqual([])
   }, 60000)
 
-  it("refuses a bundle that does not carry this wallet's own exact evidence, before any relay request", async () => {
-    // Same identity, another messaging root: a different signed statement for the same P.
-    const foreign = await install({
-      botRoots: { ...roots(0), messaging: roots(1).messaging },
+  it('is not started while its relay is down, retries with backoff, and publishes when the relay comes back', async () => {
+    const bot = await openBot()
+    relay.down = true
+    const delays: number[] = []
+    let published = false
+    const starting = publishQwenDirectoryEntry({
+      directory: bot.directory,
+      label: 'test',
+      maxDelayMs: 3000,
+      sleep: async ms => {
+        delays.push(ms)
+        // Still nothing published, and the bot has no entry to read mail or answer with.
+        expect([...relay.subjects()]).toEqual([])
+        await expect(bot.directory.selfCurrent()).rejects.toThrow(
+          'not been published',
+        )
+        expect(published).toBe(false)
+        if (delays.length === 4) relay.down = false
+      },
+    }).then(() => {
+      published = true
     })
-    await expect(openDirectory(foreign)).rejects.toThrow('bundle-not-this-bot')
-    expect(directoryRequests).toEqual([])
+    await starting
+    expect(delays).toEqual([1000, 2000, 3000, 3000])
+    expect([...relay.subjects()]).toEqual([bot.wallet.subject])
+    expect(await bot.directory.selfCurrent()).toBeDefined()
+    const output = logs.join('\n')
+    expect(
+      output.split('the relay could not be reached (unreachable)'),
+    ).toHaveLength(5)
+    expect(output).toContain('retrying in 1000 ms')
+    expect(output.indexOf('directory entry published')).toBeGreaterThan(
+      output.lastIndexOf('not published'),
+    )
+    for (const secret of Object.values(domainVectors.vectors[0].outputs))
+      expect(output).not.toContain(secret)
+
+    // A failure that is not a directory failure is not retried.
+    await expect(
+      publishQwenDirectoryEntry({
+        directory: {
+          publish: async () => {
+            throw new Error('custody')
+          },
+        },
+        label: 'test',
+        sleep: async () => {
+          throw new Error('must not wait')
+        },
+      }),
+    ).rejects.toThrow('custody')
     expect(requests).toEqual([])
   }, 60000)
 
-  it('applies the app readiness checks to the bundle: same participants, subjects homed inside the policy, one network and home origin', async () => {
-    const installed = await install()
-    const refuse = async (bundle: typeof installed.bundle, code: string) => {
-      const opened = await wallet(roots(0), 'wallet')
-      await expect(
-        openQwenInstalledDirectory({
-          wallet: opened,
-          policy: installed.policy,
-          bundle,
-          location: join(root, 'directory'),
-          fetch: directoryFetch,
-          nowNs: () => NOW_NS,
-        }),
-      ).rejects.toThrow(code)
-      await opened.close()
-    }
-    await refuse(
-      {
-        ...installed.bundle,
-        participants: installed.bundle.participants.map(p =>
-          p.processId === 'bot'
-            ? { ...p, origin: 'https://elsewhere.example' }
-            : p,
-        ),
-      },
-      'bundle-foreign-policy',
-    )
-    await refuse(
-      {
-        ...installed.bundle,
-        subjects: installed.bundle.subjects.map(subject =>
-          subject.role === 'ui'
-            ? {
-                ...subject,
-                relay: { ...subject.relay, endpoint: 'https://c.example' },
-              }
-            : subject,
-        ),
-      },
-      'bundle-subject-outside-policy',
-    )
-    // A genuine operator bundle whose UI account is homed on the other relay.
-    const split = await install({ uiHome: 'relay-b' })
-    await refuse(split.bundle, 'forwarding-unavailable')
-    expect(directoryRequests).toEqual([])
-    expect(requests).toEqual([])
-  }, 60000)
-
-  it('opens the public typed owner and correlates without any relay, RPC, signing or replay effect', async () => {
-    const directory = await openDirectory(await install())
-    const first = await open(directory)
+  it('opens the public typed owner and correlates without any RPC, signing or replay effect', async () => {
+    const bot = await openBot()
+    await bot.directory.publish()
+    const first = await open(bot)
     expect(await first.run.recover()).toBeUndefined()
     expect(first.setup.sender.wallet.reconcileWorkflowLinks([])).toEqual([])
     expect(requests).toEqual([])
@@ -646,44 +506,41 @@ describe('#703/#778 canonical Qwen composition', () => {
         roots: roots(0),
       }),
     ).rejects.toThrow('already open')
-    // Roots that are not the installed bot subject never get a canonical consumer.
-    const other = await wallet(roots(1), 'other')
+    // A wallet that is not the account this directory publishes never gets a canonical consumer.
+    const other = await account(1, 'other')
     expect(() =>
       setUpCanonicalQwenSender({
-        wallet: other,
+        wallet: other.wallet,
         networkTag: 'MONT',
-        directory,
+        directory: bot.directory,
         label: 'test',
       }),
-    ).toThrow('roots-not-installed-subject')
+    ).toThrow('wallet-not-directory-subject')
     expect(requests).toEqual([])
   }, 60000)
 
-  it('turns one canonical text from an installed typed account into one inference and one coupled reply envelope for that account', async () => {
-    const installed = await install()
-    let directory = await openDirectory(installed)
-    publishUi(installed.ui)
-    const first = await open(directory)
-    const { record, ui, uiCurrent } = await fromUi('PROMPT_SENTINEL', directory)
+  it('answers a sender it has never seen: one inference and one coupled reply sealed to the key in that sender’s own directory entry', async () => {
+    let bot = await openBot()
+    await bot.directory.publish()
+    // Nothing about the sender exists on the bot's side: it only published its own entry.
+    const sender = await openSender()
+    const senderCurrent = await sender.directory.selfCurrent()
+    const record = await from(sender, bot.wallet.subject, 'PROMPT_SENTINEL')
+    const first = await open(bot)
     await first.state.initializeInbox(first.inboxContext, 0)
-    const inbound = (bot: typeof first, page: CanonicalInboxRecord[]) =>
-      new QwenInboundWorkflow({
-        state: bot.state,
-        context: bot.inboxContext,
-        responses: bot.run,
-        // The production source, with only the relay page read replaced.
-        canonical: {
-          ...bot.setup.inbound,
-          fetchPage: async () => ({ records: page.splice(0) }),
-        },
-        peerBlockReason: async () => undefined,
-        reserveReply: () => true,
-      })
+    const before = relay.requests.length
     const workflow = inbound(first, [record])
     await workflow.import()
+    // Imported durably before the directory, the model or the reply path is touched.
     expect(first.reply).not.toHaveBeenCalled()
+    expect(relay.requests).toHaveLength(before)
     expect(requests).toEqual([])
     expect(await workflow.drain(10)).toBe(0)
+    // The sender's entry was fetched from the relay by the key the envelope names.
+    expect(directoryRequests().slice(before)).toEqual([
+      `GET /directory/v1/${NETWORK}/P/head`,
+    ])
+    expect(relay.requests[before].path).toContain(sender.wallet.subject)
     expect(first.reply).toHaveBeenCalledTimes(1)
     expect(first.reply.mock.calls[0][0]).toEqual([
       { role: 'system', content: 'SYSTEM_SENTINEL' },
@@ -692,30 +549,36 @@ describe('#703/#778 canonical Qwen composition', () => {
     const turn = first.state.pendingResponses()[0]
     expect(turn).toMatchObject({
       phase: 'response-ready',
-      senderAddress: installed.ui.authAddress.toLowerCase(),
-      senderPubKeyHex: installed.ui.subjectP,
+      senderAddress: sender.wallet.identityAddress,
+      senderPubKeyHex: sender.wallet.subject,
     })
     const saved = first.state.getCoupling(turn.payloadHashHex)!
     if (saved.phase !== 'envelope-ready') throw new Error('expected envelope')
     expect(saved.binding).toMatchObject({
       accountId: first.setup.accountAddress.toLowerCase(),
       network: NETWORK,
-      senderSubject: installed.bot.subjectP,
-      recipientSubject: installed.ui.subjectP,
-      senderT1: installed.bot.revisionZeroT1,
-      recipientT1: installed.ui.revisionZeroT1,
+      senderSubject: bot.wallet.subject,
+      recipientSubject: sender.wallet.subject,
+      senderT1: toHex((await bot.directory.selfCurrent()).evidence.hash),
+      recipientT1: toHex(senderCurrent.evidence.hash),
     })
-    // The typed account's own role keys open exactly the retained reply bytes.
+    // The sender's own role keys open exactly the retained reply bytes: it was sealed to the
+    // message key published in that sender's entry.
     const prepared = qwenCouplingPrepared(saved.binding)
+    const roles = createCanonicalMessageRoles(
+      sender.wallet.handle,
+      senderCurrent,
+    )
     const opened = openDirectMessage({
       mode: 'receive',
       network: NETWORK,
       payload: prepared.payload,
       context: prepared.context,
-      roles: ui.canonicalRoles!.create(NETWORK, uiCurrent),
-      senderCurrent: await directory.selfCurrent(),
-      recipientCurrent: uiCurrent,
+      roles,
+      senderCurrent: (await sender.directory.peerCurrent(bot.wallet.subject))!,
+      recipientCurrent: senderCurrent,
     })
+    roles.dispose()
     expect(Buffer.from(opened.content).toString('latin1')).toContain(
       'REPLY_SENTINEL',
     )
@@ -730,10 +593,10 @@ describe('#703/#778 canonical Qwen composition', () => {
     )
 
     await first.close()
-    await directory.close()
-    await directory.wallet.close()
-    directory = await openDirectory(installed)
-    const again = await open(directory)
+    await bot.close()
+    bot = await openBot()
+    await bot.directory.publish()
+    const again = await open(bot)
     expect(await again.run.recover()).toBeUndefined()
     // The relay returns the same record again: terminal by digest, no second inference.
     const replay = inbound(again, [record])
@@ -748,13 +611,92 @@ describe('#703/#778 canonical Qwen composition', () => {
     expect(logs.join()).not.toContain('SENTINEL')
   }, 60000)
 
+  it('does not answer or pay for a sender whose directory entry is forged, and answers once the real entry is served', async () => {
+    const bot = await openBot()
+    await bot.directory.publish()
+    const sender = await openSender()
+    const record = await from(sender, bot.wallet.subject, 'PROMPT_SENTINEL')
+    const first = await open(bot)
+    await first.state.initializeInbox(first.inboxContext, 0)
+    const workflow = inbound(first, [record])
+    await workflow.import()
+
+    const mallory = testAccount(41)
+    const seconds = BigInt(Math.floor(Date.now() / 1000))
+    const validity = {
+      network: NETWORK,
+      revision: 0n,
+      predecessor: null,
+      issuedAt: { seconds: seconds - 60n, nanoseconds: 0 },
+      expiresAt: { seconds: seconds + 86_400n, nanoseconds: 0 },
+      relay: relay.binding,
+    }
+    // An entry naming the sender's key but signed by another key, then that other account's
+    // own valid entry served in the sender's place.
+    for (const forged of [
+      mallory.sign({ ...validity, claimSubject: sender.wallet.subject }),
+      mallory.sign(validity),
+    ]) {
+      relay.tamper = path =>
+        path.endsWith(`/${sender.wallet.subject}/head`) ? forged : undefined
+      expect(await workflow.drain(10)).toBe(0)
+      expect(
+        await bot.directory.peerCurrent(sender.wallet.subject),
+      ).toBeUndefined()
+    }
+    expect(first.reply).not.toHaveBeenCalled()
+    expect(first.state.pendingResponses()).toEqual([])
+    // Never opened, never answered: the ciphertext stays retained, undecided.
+    expect(first.state.pendingInbox()).toHaveLength(1)
+    // No inventory funding, no intent, no signature, no message request.
+    expect(requests).toEqual([])
+    expect(logs.join()).toContain(
+      `directory entry of ${sender.wallet.identityAddress} not usable: invalid`,
+    )
+    expect(logs.join().split('not usable: invalid')).toHaveLength(2)
+    expect(logs.join()).not.toContain('SENTINEL')
+
+    // The forgery pinned nothing: the sender's real entry is accepted afterwards.
+    relay.tamper = undefined
+    expect(await workflow.drain(10)).toBe(0)
+    expect(first.reply).toHaveBeenCalledTimes(1)
+    expect(first.state.pendingResponses()[0]).toMatchObject({
+      senderPubKeyHex: sender.wallet.subject,
+    })
+  }, 60000)
+
+  it('satisfies a forced peer read only with an entry the relay served just now', async () => {
+    const bot = await openBot()
+    await bot.directory.publish()
+    const sender = await openSender()
+    const subject = sender.wallet.subject
+    const reads = () =>
+      relay.requests.filter(request => request.path.endsWith(`${subject}/head`))
+        .length
+    const start = reads()
+    expect(await bot.directory.peerCurrent(subject)).toBeDefined()
+    expect(await bot.directory.peerCurrent(subject, true)).toBeDefined()
+    expect(reads()).toBe(start + 1)
+    const real = Date.now()
+    const clock = jest.spyOn(Date, 'now')
+    // The shared directory still reuses its recent entry: that is not a fresh read.
+    clock.mockImplementation(() => real + 10_000)
+    expect(await bot.directory.peerCurrent(subject)).toBeDefined()
+    expect(await bot.directory.peerCurrent(subject, true)).toBeUndefined()
+    expect(reads()).toBe(start + 1)
+    // Once it asks the relay again, the forced read is satisfied.
+    clock.mockImplementation(() => real + 31_000)
+    expect(await bot.directory.peerCurrent(subject, true)).toBeDefined()
+    expect(reads()).toBe(start + 2)
+  }, 60000)
+
   it('refuses a non-Monad tag or ephemeral wallet storage before opening anything', async () => {
     await expect(
       openQwenCanonicalWallet({
         chain: { ...chain(), networkTag: 'fixture' },
         roots: roots(0),
       }),
-    ).rejects.toThrow('network-not-installed-monad')
+    ).rejects.toThrow('network-not-monad')
     await expect(
       openQwenCanonicalWallet({
         chain: { ...chain(), walletStorageLocation: false },
@@ -764,32 +706,60 @@ describe('#703/#778 canonical Qwen composition', () => {
     expect(existsSync(join(root, 'wallet'))).toBe(false)
   })
 
-  it('loads an operator-provisioned root bundle and never creates or echoes one', () => {
+  it('creates a 0600 roots file once when the path is missing, reuses it on the next start, and never echoes it', () => {
+    const path = join(root, 'secrets', 'roots.json')
+    const created = loadQwenCanonicalRoots(path)
+    expect(statSync(path).mode & 0o777).toBe(0o600)
+    const file = JSON.parse(readFileSync(path, 'utf8'))
+    expect(file.registry).toBe('frank-domain-roots-v1')
+    expect(Object.keys(file.roots).sort()).toEqual([
+      'evm-wallet',
+      'identity-authentication',
+      'messaging-encryption',
+    ])
+    const values = Object.values(file.roots) as string[]
+    for (const value of values) expect(value).toMatch(/^[0-9a-f]{64}$/)
+    expect(new Set(values).size).toBe(3)
+    expect(toHex(created.evm.bytes)).toBe(file.roots['evm-wallet'])
+    expect(created.authentication.purpose).toBe('identity-authentication')
+    // Only the fact and the path are logged.
+    expect(logs).toEqual([
+      JSON.stringify([`[bot] created canonical roots file at ${path}`]),
+    ])
+    for (const value of values) expect(logs.join()).not.toContain(value)
+
+    // Next start: the same file, byte for byte, and nothing is logged or rewritten.
+    const before = readFileSync(path, 'utf8')
+    const reused = loadQwenCanonicalRoots(path)
+    expect(readFileSync(path, 'utf8')).toBe(before)
+    expect(logs).toHaveLength(1)
+    for (const purpose of ['evm', 'authentication', 'messaging'] as const)
+      expect(toHex(reused[purpose].bytes)).toBe(toHex(created[purpose].bytes))
+  })
+
+  it('refuses an existing roots file with loose permissions or bad contents and never replaces it', () => {
     const path = join(root, 'roots.json')
-    expect(() => loadQwenCanonicalRoots(path)).toThrow(path)
-    expect(existsSync(path)).toBe(false)
     const outputs = domainVectors.vectors[0].outputs
-    writeFileSync(
-      path,
-      JSON.stringify({ registry: 'frank-domain-roots-v1', roots: outputs }),
-      { mode: 0o600 },
-    )
+    const good = JSON.stringify({
+      registry: 'frank-domain-roots-v1',
+      roots: outputs,
+    })
+    writeFileSync(path, good, { mode: 0o600 })
     // Secret material readable by group or others is refused, with a fixed reason.
     chmodSync(path, 0o644)
     expect(() => loadQwenCanonicalRoots(path)).toThrow('roots-file-permissions')
+    expect(readFileSync(path, 'utf8')).toBe(good)
     chmodSync(path, 0o600)
     const loaded = loadQwenCanonicalRoots(path)
     expect(Buffer.from(loaded.evm.bytes).toString('hex')).toBe(
       outputs['evm-wallet'],
     )
     expect(loaded.messaging.purpose).toBe('messaging-encryption')
-    writeFileSync(
-      path,
-      JSON.stringify({
-        registry: 'frank-domain-roots-v1',
-        roots: { ...outputs, 'evm-wallet': 'ROOT_SECRET_SENTINEL' },
-      }),
-    )
+    const bad = JSON.stringify({
+      registry: 'frank-domain-roots-v1',
+      roots: { ...outputs, 'evm-wallet': 'ROOT_SECRET_SENTINEL' },
+    })
+    writeFileSync(path, bad)
     let message = ''
     try {
       loadQwenCanonicalRoots(path)
@@ -797,6 +767,9 @@ describe('#703/#778 canonical Qwen composition', () => {
       message = String((error as Error).message)
     }
     expect(message).toContain('not a frank-domain-roots-v1 bundle')
+    expect(message).toContain(path)
     expect(message).not.toContain('SENTINEL')
+    expect(readFileSync(path, 'utf8')).toBe(bad)
+    expect(logs).toEqual([])
   })
 })

@@ -797,13 +797,20 @@ describe('#778 canonical inbound', () => {
   let fetches: number
   let reply: jest.Mock
   let sent: jest.Mock
-  let installed: boolean
+  /** Whether the sender's own entry can be read from the relay right now. */
+  let published: boolean
   let refreshes: number
   let directoryDown: boolean
   let staleCurrent: typeof bot.current | undefined
   let cleanup: Array<() => Promise<void>>
   let bot: Awaited<ReturnType<typeof principal>>
   let user: Awaited<ReturnType<typeof principal>>
+  let other: Awaited<ReturnType<typeof principal>>
+  const entries = () =>
+    new Map([
+      [user.subject, user.current],
+      [other.subject, other.current],
+    ])
   let canonicalContext: {
     botAddress: string
     networkTag: string
@@ -811,7 +818,13 @@ describe('#778 canonical inbound', () => {
   }
 
   function bundle(index: number): MonadRootBundle {
-    const outputs = domainVectors.vectors[index].outputs
+    // Two vector accounts; any further account uses its own arbitrary distinct roots.
+    const fill = (n: number) => Buffer.alloc(32, n).toString('hex')
+    const outputs = domainVectors.vectors[index]?.outputs ?? {
+      'evm-wallet': fill(0x41),
+      'identity-authentication': fill(0x42),
+      'messaging-encryption': fill(0x43),
+    }
     const one = <
       P extends
         | 'evm-wallet'
@@ -830,22 +843,9 @@ describe('#778 canonical inbound', () => {
       messaging: one('messaging-encryption'),
     }
   }
-  async function principal(index: number, binding: 'A' | 'B') {
+  /** One account with its own self-signed entry naming `relay`, admitted in its own store. */
+  async function principal(index: number, relay: 'a' | 'b') {
     const material = createMonadWalletMaterial(bundle(index))
-    const tuple = (label: string) => ({
-      processId: label,
-      origin: `https://${label}.example`,
-      tuple: {
-        relayId: new Uint8Array(16).fill(label === 'a' ? 1 : 2),
-        endpoint: `https://${label}.example`,
-        identity: {
-          keyType: 1,
-          keyBytes: material.canonicalRoles!.publicGenerationZeroPoints().auth,
-        },
-        expiry: { seconds: 3700n, nanoseconds: 0 },
-        unknownFields: new Map(),
-      },
-    })
     const input: PublicRevisionZeroInput = {
       networkTag: 'MONT',
       network: NETWORK,
@@ -853,9 +853,16 @@ describe('#778 canonical inbound', () => {
       issuedAt: { seconds: 100n, nanoseconds: 0 },
       expiresAt: { seconds: 3700n, nanoseconds: 0 },
       now: { seconds: 100n, nanoseconds: 0 },
-      relayA: tuple('a'),
-      relayB: tuple('b'),
-      subjectBinding: binding,
+      relay: {
+        relayId: new Uint8Array(16).fill(relay === 'a' ? 1 : 2),
+        endpoint: `https://${relay}.example`,
+        identity: {
+          keyType: 1,
+          keyBytes: material.canonicalRoles!.publicGenerationZeroPoints().auth,
+        },
+        expiry: { seconds: 3700n, nanoseconds: 0 },
+        unknownFields: new Map(),
+      },
     }
     const exported = material.canonicalRoles!.prepareRevisionZero(input)
     const store = await openNodeDirectoryStore({
@@ -869,10 +876,7 @@ describe('#778 canonical inbound', () => {
     })
     const current = await store.enroll(
       [{ statement: exported.statement, attestation: exported.attestation }],
-      {
-        now: input.now,
-        relay: binding === 'A' ? input.relayA.tuple : input.relayB.tuple,
-      },
+      { now: input.now, relay: input.relay },
     )
     cleanup.push(async () => {
       await store.close()
@@ -986,10 +990,12 @@ describe('#778 canonical inbound', () => {
       selfCurrent: async () => bot.current,
       peerCurrent: async (subject, refresh) => {
         if (refresh) refreshes++
-        if (!installed || subject !== user.subject) return undefined
+        // Any sender key is looked up; nothing about a sender is configured.
+        const entry = entries().get(subject)
+        if (!published || !entry) return undefined
         if (directoryDown && refresh) throw new Error('relay unreachable')
         // A recent read may lag the relay; a forced read never does.
-        return staleCurrent && !refresh ? staleCurrent : user.current
+        return staleCurrent && !refresh ? staleCurrent : entry
       },
       roles: self => bot.material.canonicalRoles!.create(NETWORK, self),
     }
@@ -1014,7 +1020,7 @@ describe('#778 canonical inbound', () => {
     cleanup = []
     pages = []
     fetches = 0
-    installed = true
+    published = true
     refreshes = 0
     directoryDown = false
     staleCurrent = undefined
@@ -1023,8 +1029,9 @@ describe('#778 canonical inbound', () => {
       reasoning: 'REASONING_SENTINEL',
     }))
     sent = jest.fn(async () => ({ payloadHashHex: 'ee', txHashes: ['tx'] }))
-    bot = await principal(0, 'A')
-    user = await principal(1, 'B')
+    bot = await principal(0, 'a')
+    user = await principal(1, 'b')
+    other = await principal(2, 'b')
     canonicalContext = {
       botAddress: bot.address,
       networkTag: 'MONT',
@@ -1066,7 +1073,8 @@ describe('#778 canonical inbound', () => {
       { role: 'user', content: 'PROMPT_SENTINEL' },
     ])
     expect(sent).toHaveBeenCalledTimes(1)
-    // The peer and its key come from the opened, admitted sender — not from a profile lookup.
+    // The peer and its key come from the sender's own verified entry — not from a profile lookup
+    // or any configured list.
     expect(canonicalState.getResponse(first.digest)).toMatchObject({
       phase: 'confirmed',
       senderAddress: user.address,
@@ -1125,27 +1133,50 @@ describe('#778 canonical inbound', () => {
     30000,
   )
 
-  it('retains, without opening, a message from a subject that is not installed, then answers once it is', async () => {
-    installed = false
+  it('retains, without opening, a message from a sender with no readable directory entry, then answers once its entry is published', async () => {
+    published = false
     const first = await record('PROMPT_SENTINEL', 3)
     pages.push([first])
     await inbound.import()
     expect(await inbound.drain(10)).toBe(0)
     expect(reply).not.toHaveBeenCalled()
     expect(canonicalState.pendingInbox()).toHaveLength(1)
-    installed = true
+    published = true
     expect(await inbound.drain(10)).toBe(1)
     expect(reply).toHaveBeenCalledTimes(1)
   }, 30000)
 
-  it('does not let a forged frame that only claims the approved sender block that sender', async () => {
-    // Sealed by someone else entirely, with the sender field rewritten to the approved subject
-    // is not constructible here without the codec; an unopenable frame from the approved
-    // subject's own producer with a foreign context is the same case for the drain.
-    const other = await record('OTHER_SENTINEL', 9)
+  it('answers any sender whose entry verifies: two unrelated senders, each replied to under its own key', async () => {
+    const first = await record('PROMPT_SENTINEL', 20)
+    const second = await record('PROMPT_SENTINEL', 21, { from: other })
+    pages.push([first, second])
+    await inbound.import()
+    expect(await inbound.drain(10)).toBe(2)
+    expect(reply).toHaveBeenCalledTimes(2)
+    expect(canonicalState.getResponse(first.digest)).toMatchObject({
+      phase: 'confirmed',
+      senderAddress: user.address,
+      senderPubKeyHex: user.subject,
+    })
+    expect(canonicalState.getResponse(second.digest)).toMatchObject({
+      phase: 'confirmed',
+      senderAddress: other.address,
+      senderPubKeyHex: other.subject,
+    })
+    expect(sent.mock.calls.map(call => call[0].senderPubKeyHex)).toEqual([
+      user.subject,
+      other.subject,
+    ])
+  }, 30000)
+
+  it('does not let a forged frame that only claims a sender block that sender', async () => {
+    // Sealed by someone else entirely, with the sender field rewritten to that sender's key
+    // is not constructible here without the codec; an unopenable frame from the sender's own
+    // producer with a foreign context is the same case for the drain.
+    const foreign = await record('OTHER_SENTINEL', 9)
     const forged = await record('PROMPT_SENTINEL', 8, {
       mutate: parts => {
-        parts.context = other.context
+        parts.context = foreign.context
       },
     })
     const valid = await record('PROMPT_SENTINEL', 10)

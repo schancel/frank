@@ -10,6 +10,7 @@
 //   node demo/local-stack/stack.mjs chrome [profile-name] [a|b]   open Chrome with its own throwaway profile (b: the app on relay-b)
 //   node demo/local-stack/stack.mjs e2e [live|stub]       everything, driven in real Chrome (drive.cjs)
 //   node demo/local-stack/stack.mjs down
+//   node demo/local-stack/stack.mjs e2e-interrupted-hand  on a stack where "e2e" left alice and bob: one hand, dealer killed mid-deal
 //   also: balance <0xaddress>..., restart-relay <relay-a|relay-b>, stop <name>, start-relay <name>, start-bot <qwen|blackjack>
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash, randomBytes, X509Certificate } from 'node:crypto'
@@ -399,14 +400,23 @@ const drive = (...step) => {
 }
 const account = name => JSON.parse(readFileSync(join(P.accounts, `${name}.json`), 'utf8'))
 /** One hand between two people, one window at a time, each pressing what their role is offered. */
-function humanHand(challenger, other, role, options) {
+function humanHand(challenger, other, role, options, interrupt) {
   drive(options, challenger, 'challenge', account(other).address, role, '0.05')
   // The other person moves first in both cases: a player bets, a dealer accepts.
   const order = [other, challenger]
-  for (let turn = 0; turn < 14 && !existsSync(join(P.run, 'hand-resolved')); turn++) drive({ ...options, BET: '0.04' }, order[turn % 2], 'play', account(order[(turn + 1) % 2]).address, 'turn')
+  const turn = (who, extra = {}) => drive({ ...options, BET: '0.04', ...extra }, who, 'play', account(who === other ? challenger : other).address, 'turn')
+  let next = 0
+  if (interrupt) {
+    // The dealer's window is killed while its deal is on its way, before it is delivered. When
+    // the window is opened again the same deal must go out once and the hand must finish.
+    turn(other)
+    turn(challenger, { KILL_WHEN_SENDING: 'Cards dealt', LABEL: 'killed' })
+    next = 1
+  }
+  for (let turns = 0; turns < 14 && !existsSync(join(P.run, 'hand-resolved')); turns++, next++) turn(order[next % 2])
   if (!existsSync(join(P.run, 'hand-resolved'))) die(`the hand between ${challenger} and ${other} did not resolve`)
   // What each of them sees at the end.
-  for (const who of order) drive({ LABEL: 'result' }, who, 'play', account(who === other ? challenger : other).address, 'turn')
+  for (const who of order) drive({ LABEL: 'result', VIEW_RESULT: '1' }, who, 'play', account(who === other ? challenger : other).address, 'turn')
 }
 // The whole flow from clean state, in real Chrome, one window at a time.
 async function e2e(mode = 'live') {
@@ -435,6 +445,8 @@ async function e2e(mode = 'live') {
   // Blackjack between the two people, one hand in each role assignment.
   humanHand('alice', 'bob', 'dealer', { SPAM: '1' })
   humanHand('alice', 'bob', 'player', {})
+  // The stuck-hand case: the dealer's window closes between the bet arriving and the deal leaving.
+  humanHand('alice', 'bob', 'dealer', {}, true)
   // A third person on relay-b. The relays do not replicate or forward yet, so neither side can
   // add the other, and nothing is paid.
   drive('carol', 'onboard', 'b')
@@ -469,6 +481,8 @@ const commands = {
   'stop': () => (PROCESSES.includes(args[0]) ? stop(args[0]) : die(`usage: stop <${PROCESSES.join('|')}>`)),
   'start-relay': () => (RELAYS.includes(args[0]) ? startRelay(args[0]) : die('usage: start-relay <relay-a|relay-b>')),
   'start-bot': () => (BOT_SCRIPTS[args[0]] ? startBot(args[0]) : die('usage: start-bot <qwen|blackjack>')),
+  // One more hand between alice and bob on a stack that is up, with the dealer killed mid-deal.
+  'e2e-interrupted-hand': () => humanHand('alice', 'bob', 'dealer', {}, true),
   'chrome-args': () => say(JSON.stringify(chromeArgs(chromeProfile(args[0] ?? 'driven')))),
 }
 if (!commands[command]) die(`usage: stack.mjs ${Object.keys(commands).join('|')}`)

@@ -1004,6 +1004,42 @@ export const useChatStore = defineStore('chats', {
         onPreparationProgress,
       })
     },
+    /**
+     * Settles a failed outgoing message's recorded payment without the user: asks the wallet
+     * what became of it and re-sends the same bytes while it is still live at the relay. It
+     * never builds a new payment; a message with no recorded payment is left as it is.
+     */
+    async resumeOutgoing({
+      wallet,
+      address,
+      payloadDigest,
+    }: {
+      wallet: WalletHandle
+      address: string
+      payloadDigest: string
+    }): Promise<OutgoingOutcome> {
+      const message = this.messages[payloadDigest]
+      if (
+        !message ||
+        !message.outbound ||
+        message.status !== 'error' ||
+        !walletOwnsMessage(wallet, message)
+      ) {
+        return { state: 'busy' }
+      }
+      if (message.delivery?.attemptDigest === undefined) {
+        return {
+          state: 'failed',
+          reason: message.delivery?.failureReason ?? 'error',
+        }
+      }
+      return this.runOutgoing({
+        wallet,
+        address: toChainDisplayAddress(address),
+        id: payloadDigest,
+        manual: false,
+      })
+    },
     /** Best-effort durable write of one outgoing message's current state. */
     async saveOutgoing(
       address: string,

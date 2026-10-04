@@ -552,3 +552,56 @@ describe('older bubbles', () => {
     )
   })
 })
+
+describe('a message of the hand that the other side does not have', () => {
+  const status = (wrapper: Awaited<ReturnType<typeof mountLast>>) =>
+    wrapper.find('[data-testid="blackjack-status"]').text()
+
+  it('a deal cut off before it was sent does not read as dealt and waiting for the player', async () => {
+    saveSeed(ME, PEER, GAME, WIN)
+    const messages = hand(true, WIN, 400n, []) as any[]
+    const deal = messages[messages.length - 1]
+    expect(deal.items[0].action).toBe('deal')
+    // What a reload leaves of a send that the closing window cut off.
+    deal.status = 'error'
+    deal.delivery = { failureReason: 'interrupted' }
+    const wrapper = await mountLast(messages)
+    expect(status(wrapper)).toBe(
+      'The other side does not have this message: it was not sent. It was interrupted before it was sent.',
+    )
+    expect(wrapper.text()).not.toContain("Waiting for the player's move.")
+    await button(wrapper, 'retry').trigger('click')
+    expect(wrapper.emitted('retry')).toHaveLength(1)
+  })
+
+  it('says so while the message is still being sent, and offers no Retry', async () => {
+    saveSeed(ME, PEER, GAME, WIN)
+    const messages = hand(true, WIN, 400n, []) as any[]
+    for (const state of ['pending', 'payment-pending']) {
+      messages[messages.length - 1].status = state
+      const wrapper = await mountLast(messages)
+      expect(status(wrapper)).toBe(
+        'The other side does not have this message yet: it is still being sent.',
+      )
+      expect(button(wrapper, 'retry').exists()).toBe(false)
+    }
+  })
+
+  it('a player’s bet that failed is shown as not sent, with its reason', async () => {
+    const messages = hand(false, WIN, 400n, []).slice(0, 2) as any[]
+    expect(messages[1].items[0].action).toBe('bet')
+    messages[1].status = 'error'
+    messages[1].delivery = { failureReason: 'unverified', attemptDigest: 'aa' }
+    const wrapper = await mountLast(messages)
+    expect(status(wrapper)).toContain('Delivery could not be confirmed.')
+    expect(wrapper.text()).not.toContain('Waiting for the dealer.')
+    expect(button(wrapper, 'retry').exists()).toBe(true)
+  })
+
+  it('a delivered message reads as before', async () => {
+    saveSeed(ME, PEER, GAME, WIN)
+    const wrapper = await mountLast(hand(true, WIN, 400n, []))
+    expect(status(wrapper)).toBe("Waiting for the player's move.")
+    expect(button(wrapper, 'retry').exists()).toBe(false)
+  })
+})

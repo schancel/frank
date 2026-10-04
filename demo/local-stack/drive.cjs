@@ -17,7 +17,15 @@
 // Options (environment): SPAM=1 (send/challenge/play: hammer Enter and double-click the paying
 // control), BET=<amount> (play: the bet; default the form's suggestion), MOVES=<hit|stand|double,...>
 // (play: the player's moves in order; default stand at 17 or more, else hit), HEADFUL=1,
-// REPLY_TIMEOUT_MS, LABEL=<prefix for screenshots and the report file>.
+// REPLY_TIMEOUT_MS, LABEL=<prefix for screenshots and the report file>,
+// KILL_WHEN_SENDING="<text>" (play: kill the browser the moment one of this account's own messages
+// containing the text is being sent, before it is delivered; the step then ends as "killed"),
+// TURN_WAIT_MS (play turn: how long to wait for the other side's message when nothing has changed
+// since this account last looked; default 180000), VIEW_RESULT=1 (play turn: only look at a
+// finished hand), SEND_TIMEOUT_MS (default 600000).
+//
+// Nothing here waits a fixed time for a send: a step ends only when every message this account sent
+// is delivered, and "turn" waits for the other side's move to arrive before deciding it has none.
 //
 // One Chrome at a time; each profile is a separate throwaway directory under the stack state, trusted
 // only for the stack's own certificates. Backup shares exist only in this process's memory during
@@ -35,6 +43,7 @@ const APPS = { a: 'https://127.0.0.1:18440', b: 'https://127.0.0.1:18441' }
 const RELAY_PORTS = { a: 18098, b: 18099 }
 const CHAIN = 'http://127.0.0.1:18546'
 const STAMP_MON = 0.01
+const SEND_TIMEOUT = Number(process.env.SEND_TIMEOUT_MS ?? 600000)
 const [profileName, phase, ...rest] = process.argv.slice(2)
 const profile = path.join(STATE, 'chrome-profiles', profileName || 'driven')
 const shots = path.join(STATE, 'shots')
@@ -135,6 +144,13 @@ async function ledger(fromBlock) {
   }
   const sum = Object.fromEntries(Object.entries(stamps).map(([who, values]) => [who, +values.reduce((a, b) => a + b, 0).toFixed(6)]))
   return { sinceBlock: fromBlock, head: await head(), stamps, paidInStamps: sum }
+}
+/** The ledger once it shows what is expected, or as it stands after a minute. */
+async function ledgerWhen(fromBlock, expected) {
+  let seen
+  await wait(async () => expected((seen = await ledger(fromBlock))), 'the payment to be on the chain', 60000).catch(() => {})
+  await delay(2500) // anything paid twice would show up right after
+  return ledger(fromBlock)
 }
 const me = () => JSON.parse(fs.readFileSync(accountFile(profileName), 'utf8'))
 
@@ -291,10 +307,10 @@ async function typeAndSend(message, spam) {
   }
 }
 /** Waits until the newest sent bubble with `message` is neither sending nor failed. */
-async function sentAndSettled(message, ms = 90000) {
+async function sentAndSettled(message, ms = SEND_TIMEOUT) {
   const mine = async () => (await bubbles()).filter(b => b.sent && b.text.includes(message))
   await wait(async () => (await mine()).length > 0, 'the sent bubble', 30000)
-  await wait(async () => (await mine()).every(b => !b.sending && !b.paymentPending) || (await mine()).some(b => b.failed), 'the message to be accepted', ms)
+  await wait(async () => (await mine()).every(b => !b.sending && !b.paymentPending) || (await mine()).some(b => b.failed), 'the message to be delivered', ms)
   const result = await mine()
   if (result.some(b => b.failed)) throw Error('the message failed: ' + JSON.stringify(result))
   return result
@@ -359,9 +375,8 @@ const phases = {
       before = await balance(me().fund)
     await typeAndSend(message, !!process.env.SPAM)
     const result = await sentAndSettled(message)
-    await delay(3000)
     await shot('sent')
-    const paid = await ledger(block)
+    const paid = await ledgerWhen(block, l => (l.paidInStamps[profileName] ?? 0) >= STAMP_MON - 1e-9)
     note('message sent', { contact: opened, bubbles: result.length, spam: !!process.env.SPAM, accountBefore: before, accountAfter: await balance(me().fund), ...paid })
     report.sentBubbles = result.length
     report.stampsPaid = paid.stamps[profileName] ?? []
@@ -456,10 +471,10 @@ const phases = {
       }
     } else await click('[data-testid=blackjack-challenge-send]')
     await wait(async () => (await hand()).bubbles > count, 'the challenge bubble', 60000)
-    await wait(async () => (await bubbles()).every(b => !b.sending), 'the challenge to be accepted', 90000)
-    await delay(3000)
+    await wait(async () => (await bubbles()).every(b => !b.sending && !b.paymentPending), 'the challenge to be delivered', SEND_TIMEOUT)
+    if ((await bubbles()).some(b => b.sent && b.failed)) throw Error('the challenge was not delivered')
     await shot('sent')
-    const paid = await ledger(block)
+    const paid = await ledgerWhen(block, l => (l.paidInStamps[profileName] ?? 0) >= STAMP_MON - 1e-9)
     note('challenge sent', { hand: await hand(), newBubbles: (await hand()).bubbles - count, ...paid })
     if ((await hand()).bubbles - count !== 1) throw Error('more than one challenge was sent')
     if (Math.abs((paid.paidInStamps[profileName] ?? 0) - STAMP_MON) > 1e-9) throw Error('expected exactly one ordinary stamp, the chain shows ' + JSON.stringify(paid.stamps[profileName] ?? []))
@@ -474,6 +489,12 @@ const phases = {
     const block = Number(process.env.SINCE_BLOCK ?? (await head()))
     const moves = (process.env.MOVES ?? '').split(',').filter(Boolean)
     const actions = []
+    // What this account saw of this chat's hands the last time it looked.
+    const seenFile = path.join(STATE, 'run', `seen-${profileName}-${address.toLowerCase()}.json`)
+    const seenBefore = fs.existsSync(seenFile) ? fs.readFileSync(seenFile, 'utf8') : null
+    const fingerprint = s => JSON.stringify([s.bubbles, s.line, s.status])
+    const patience = Date.now() + Number(process.env.TURN_WAIT_MS ?? 180000)
+    const killText = process.env.KILL_WHEN_SENDING
     await wait(async () => (await hand()).line, 'a blackjack hand in this chat', Number(process.env.HAND_TIMEOUT_MS ?? 120000))
     // The chat renders its newest bubbles last: give a hand that is still open time to appear
     // before taking an earlier, finished one for the current hand.
@@ -481,7 +502,7 @@ const phases = {
     await delay(1500)
     await shot('hand')
     let state, quiet = 0, n = 0
-    const end = Date.now() + Number(process.env.PLAY_TIMEOUT_MS ?? 300000)
+    const end = Date.now() + Number(process.env.PLAY_TIMEOUT_MS ?? 900000)
     for (;;) {
       if (Date.now() > end) throw Error('the hand did not get further: ' + JSON.stringify(state))
       state = await hand()
@@ -491,12 +512,36 @@ const phases = {
         await delay(300)
         continue
       }
-      if (state.outcome || state.refunded) break
-      const offered = (state.buttons ?? []).filter(b => !b.disabled).map(b => b.id)
-      const sending = (await bubbles()).some(b => b.sending)
+      if (state.outcome || state.refunded) {
+        // A finished hand this account has already seen is not news: the next hand's first
+        // message has not arrived yet. Wait for it (unless this run is only here to look).
+        if (mode === 'turn' && !process.env.VIEW_RESULT && fingerprint(state) === seenBefore && Date.now() < patience) {
+          await delay(500)
+          continue
+        }
+        break
+      }
+      const offered = (state.buttons ?? []).filter(b => !b.disabled && b.id !== 'retry').map(b => b.id)
+      const own = (await bubbles()).filter(b => b.sent)
+      if (killText) {
+        // Hostile: the window dies while one of this account's messages is on its way.
+        if (own.some(b => b.sending && b.text.includes(killText))) {
+          note('killing the browser while this message is being sent', { text: killText, hand: state.text })
+          owner.signal('SIGKILL')
+          await delay(1000)
+          report.hand = { killed: true, actions, final: state }
+          return
+        }
+        await delay(40)
+        continue
+      }
+      const sending = own.some(b => b.sending || b.paymentPending)
       if (!offered.length || sending) {
         // Nothing to press. In "turn" mode stop once the hand plainly waits for the other side.
-        quiet = !sending && WAITING.includes(state.status) ? quiet + 1 : 0
+        // If nothing changed since this account last looked, the other side's move has not
+        // arrived yet: keep waiting for it rather than leaving in the middle of what follows.
+        const unchanged = fingerprint(state) === seenBefore && Date.now() < patience
+        quiet = !sending && !unchanged && WAITING.includes(state.status) ? quiet + 1 : 0
         if (mode === 'turn' && quiet >= 8) break
         await delay(500)
         continue
@@ -533,21 +578,28 @@ const phases = {
           await delay(40)
         }
       } else await ev(`${handButton(choice)}.click()`)
-      await wait(async () => (await hand()).bubbles > before, `the "${choice}" message bubble`, 60000)
+      await wait(async () => (await hand()).bubbles > before, `the "${choice}" message bubble`, 120000)
       await delay(700)
     }
     // A message this account is still sending (a dealer's reveal, say) must be accepted before the
     // window closes; its payment is only then on the chain.
-    await wait(async () => (await bubbles()).every(b => !b.sending && !b.paymentPending), 'messages still being sent', 120000)
-    await delay(4000)
+    await wait(async () => (await bubbles()).every(b => !b.sending && !b.paymentPending), 'every message of this account to be delivered', SEND_TIMEOUT)
+    await delay(2000)
     await wait(async () => (state = await hand()).newest, 'the chat to settle', 15000)
+    const undelivered = (await bubbles()).filter(b => b.sent && (b.failed || b.sending || b.paymentPending))
+    if (undelivered.length) throw Error('messages of this account were not delivered: ' + JSON.stringify(undelivered))
+    fs.writeFileSync(seenFile, fingerprint(state))
     await ev(`(()=>{const all=[...document.querySelectorAll('.blackjack-hand')];all[all.length-1].scrollIntoView({block:'center'})})()`)
     await delay(300)
     await shot('end')
     const resolved = !!(state.outcome || state.refunded)
     if (resolved) fs.writeFileSync(path.join(STATE, 'run', 'hand-resolved'), '')
     const all = await ev(`[...document.querySelectorAll('.q-message')].filter(e=>e.querySelector('.blackjack-hand')).map(e=>(e.classList.contains('q-message-sent')?'sent: ':'received: ')+e.querySelector('[data-testid=blackjack-line]').innerText.trim())`)
-    report.hand = { resolved, actions, final: state, bubbles: all, ...(await ledger(block)) }
+    // Within the newest hand each dealer message appears once: nothing was sent twice.
+    const newest = all.slice(Math.max(0, all.map(l => /Blackjack challenge/.test(l)).lastIndexOf(true)))
+    const deals = newest.filter(l => /Cards dealt\./.test(l)).length
+    report.hand = { resolved, actions, final: state, bubbles: all, dealsInNewestHand: deals, ...(await ledger(block)) }
+    if (deals > 1) throw Error('the newest hand has more than one deal: ' + JSON.stringify(newest))
     note(resolved ? 'hand resolved' : 'waiting for the other side', report.hand)
     if (mode === 'bot' && !resolved) throw Error('the hand did not resolve')
   },

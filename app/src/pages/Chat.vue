@@ -128,6 +128,8 @@ import {
   handItemStillNext,
   HAND_FEE_RESERVE_WEI,
   storedOutgoingMessages,
+  resumeHandMessages,
+  type HandResumeStore,
   newGameId,
   newSeed,
   saveSeed,
@@ -209,6 +211,7 @@ export default defineComponent({
       getProfile: myProfile,
       getMessageByPayload: chats.getMessageByPayload,
       sendDirectMessage: chats.sendMessage,
+      chatStore: chats,
       chats: chats.chats,
       chatScroll: ref<QScrollArea | null>(null),
     }
@@ -672,6 +675,21 @@ export default defineComponent({
       if (this.sendingMessage) return
       const own = await getOwnCanonicalAddress()
       if (!own) return
+      // First finish what this user already decided: a hand message that was cut off (the
+      // window closed mid-send) or failed counts as sent in the hand, so nothing else can
+      // happen until it is delivered. Free steps are sent again; money is only settled.
+      const resumed = await resumeHandMessages({
+        store: this.chatStore as unknown as HandResumeStore,
+        wallet: useMonadWallet(),
+        address: this.address,
+        own,
+        messages: this.messages,
+        attempted: this.blackjackAttempted,
+      })
+      if (resumed > 0) {
+        void this.runBlackjackDealer()
+        return
+      }
       const step = automaticDealerSteps(this.messages, own, this.address).find(
         candidate => !this.blackjackAttempted.has(candidate.key),
       )

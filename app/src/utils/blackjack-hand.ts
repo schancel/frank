@@ -35,6 +35,127 @@ export interface HandChatMessage {
   payloadDigest: string
   /** The digest this message will have once delivered, when it is still under a local id. */
   attemptDigest?: string
+  /** Delivery state of a stored chat message; `confirmed` once the relay has it. */
+  status?: string
+  delivery?: { attemptDigest?: string; failureReason?: string }
+}
+
+/** One of this user's own hand messages that the other side has not received. */
+export interface UndeliveredHandMessage {
+  payloadDigest: string
+  action: BlackjackHandItem['action']
+  /** `sending`: a send or an automatic re-send is under way. `failed`: nothing is under way. */
+  state: 'sending' | 'failed'
+  /** A payment set was recorded for this message; the wallet can say what became of it. */
+  hasAttempt: boolean
+  /** Its stamp is a bet, a second bet, a payout or a refund rather than an ordinary stamp. */
+  carriesMoney: boolean
+}
+
+/**
+ * This user's own hand messages in a chat that are not delivered: still sending, or failed
+ * (also a send cut off by closing the window). A hand's state counts them as sent so that no
+ * move is offered twice, so the hand cannot go on until each is delivered or discarded.
+ */
+export function undeliveredHandMessages(
+  messages: readonly HandChatMessage[],
+  own: string,
+  peer: string,
+): UndeliveredHandMessage[] {
+  const undelivered: UndeliveredHandMessage[] = []
+  for (const message of messages) {
+    if (!message.outbound || message.status === undefined) continue
+    if (message.status === 'confirmed') continue
+    const item = soleHandItem(message.items)
+    if (!item) continue
+    let carriesMoney =
+      item.action === 'bet' ||
+      item.action === 'double' ||
+      item.action === 'refund'
+    if (item.action === 'reveal') {
+      // A reveal pays only when the player is owed something.
+      const upTo = messages.slice(0, messages.indexOf(message) + 1)
+      const owed = foldHand(chatHandEvents(upTo, own, peer, item.gameId)).state
+        ?.owedWei
+      carriesMoney = owed === undefined || owed > 0n
+    }
+    undelivered.push({
+      payloadDigest: message.payloadDigest,
+      action: item.action,
+      state: message.status === 'error' ? 'failed' : 'sending',
+      hasAttempt:
+        (message.delivery?.attemptDigest ?? message.attemptDigest) !==
+        undefined,
+      carriesMoney,
+    })
+  }
+  return undelivered
+}
+
+/** What the chat store offers for an outgoing message that failed. */
+export interface HandResumeStore {
+  /** A fresh send of a failed message; asks before it could pay a second time. */
+  retryOutgoing(params: {
+    wallet: unknown
+    address: string
+    payloadDigest: string
+  }): Promise<{ state: string }>
+  /** Settles a failed message's recorded payment; never builds a new one. */
+  resumeOutgoing(params: {
+    wallet: unknown
+    address: string
+    payloadDigest: string
+  }): Promise<{ state: string }>
+}
+
+/**
+ * Resumes this user's failed hand messages when their chat is open, each at most once per page
+ * session (`attempted`), oldest first:
+ *
+ * - A message whose stamp is an ordinary stamp (challenge, accept, deal, hit, stand, card, a
+ *   reveal that owes nothing) is sent again without asking, through the same retry a person's
+ *   Retry button uses: an earlier payment for it is settled first and its bytes re-sent while it
+ *   is live, and where a second payment cannot be ruled out nothing is sent and the bubble keeps
+ *   its Retry.
+ * - A message that carries money (bet, double, paying reveal, refund) is only settled: if a
+ *   payment was recorded for it and is still live at the relay the same bytes are re-sent. A new
+ *   payment is never built here; the bubble shows Retry and the user decides.
+ *
+ * Returns how many messages it acted on.
+ */
+export async function resumeHandMessages(params: {
+  store: HandResumeStore
+  wallet: unknown
+  address: string
+  own: string
+  messages: readonly HandChatMessage[]
+  attempted: Set<string>
+}): Promise<number> {
+  let acted = 0
+  for (const message of undeliveredHandMessages(
+    params.messages,
+    params.own,
+    params.address,
+  )) {
+    const key = `resume:${message.payloadDigest}`
+    if (message.state !== 'failed' || params.attempted.has(key)) continue
+    params.attempted.add(key)
+    const target = {
+      wallet: params.wallet,
+      address: params.address,
+      payloadDigest: message.payloadDigest,
+    }
+    try {
+      if (!message.carriesMoney) await params.store.retryOutgoing(target)
+      else if (message.hasAttempt) await params.store.resumeOutgoing(target)
+      else continue
+      acted++
+    } catch (error) {
+      // The message stays failed with its Retry; nothing was paid on a guess.
+      console.warn('could not resume a blackjack message', error)
+    }
+  }
+  return acted
 }
 
 /** The hand events of a chat, in chat order. `gameId` narrows to one hand. A message this user

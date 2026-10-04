@@ -11,7 +11,9 @@ import {
   loadSeed,
   newGameId,
   newSeed,
+  resumeHandMessages,
   saveSeed,
+  undeliveredHandMessages,
   type HandChatMessage,
 } from './blackjack-hand'
 
@@ -327,5 +329,206 @@ describe('a paying message is sent once across tabs', () => {
         },
       }),
     ).resolves.toBe(false)
+  })
+})
+
+describe('own hand messages the other side does not have', () => {
+  const seed = SEED
+  const dealt = (): HandChatMessage[] => {
+    const messages: HandChatMessage[] = [
+      {
+        ...message(true, {
+          action: 'challenge',
+          role: 'dealer',
+          maxBetWei: '500',
+          commitment: commitmentOf(seed),
+        }),
+        status: 'confirmed',
+      },
+      { ...message(false, { action: 'bet' }, 300n), status: 'confirmed' },
+    ]
+    return messages
+  }
+  const withDeal = (fields: Partial<HandChatMessage>) => {
+    const messages = dealt()
+    const [hand] = chatHands(messages, ME, PEER)
+    const step = dealerStep(hand.state, seed)
+    if (!step) throw new Error('no deal')
+    messages.push({
+      ...message(true, step.item as unknown as Record<string, unknown>),
+      ...fields,
+    })
+    return messages
+  }
+  const store = () => ({
+    retryOutgoing: jest.fn(async () => ({ state: 'sent' })),
+    resumeOutgoing: jest.fn(async () => ({ state: 'payment-pending' })),
+  })
+
+  it('lists a cut-off deal as failed and free, and nothing once it is delivered', () => {
+    const messages = withDeal({
+      status: 'error',
+      delivery: { failureReason: 'interrupted' },
+    })
+    expect(undeliveredHandMessages(messages, ME, PEER)).toEqual([
+      {
+        payloadDigest: messages[2].payloadDigest,
+        action: 'deal',
+        state: 'failed',
+        hasAttempt: false,
+        carriesMoney: false,
+      },
+    ])
+    messages[2].status = 'confirmed'
+    expect(undeliveredHandMessages(messages, ME, PEER)).toEqual([])
+    // The other side's messages and other kinds of message are never listed.
+    expect(
+      undeliveredHandMessages(
+        [
+          { ...message(false, { action: 'bet' }, 300n), status: 'error' },
+          {
+            outbound: true,
+            status: 'error',
+            items: [{ type: 'text', text: 'hi' }],
+            payloadDigest: 'x',
+          },
+        ],
+        ME,
+        PEER,
+      ),
+    ).toEqual([])
+  })
+
+  it('knows which messages carry money: bet, double, refund, and a reveal that owes something', () => {
+    const own = (fields: Record<string, unknown>, stamp = 10n) => ({
+      ...message(true, fields, stamp),
+      status: 'error',
+    })
+    const listed = undeliveredHandMessages(
+      [
+        own({ action: 'bet' }, 300n),
+        own({ action: 'double' }, 300n),
+        own({ action: 'refund', ref: 'aa'.repeat(32) }, 300n),
+        own({ action: 'hit' }),
+        own({ action: 'stand' }),
+        own({ action: 'challenge', role: 'player', maxBetWei: '5' }),
+      ],
+      ME,
+      PEER,
+    )
+    expect(listed.map(m => [m.action, m.carriesMoney])).toEqual([
+      ['bet', true],
+      ['double', true],
+      ['refund', true],
+      ['hit', false],
+      ['stand', false],
+      ['challenge', false],
+    ])
+  })
+
+  it('sends a cut-off deal again without asking, once per page session', async () => {
+    const messages = withDeal({
+      status: 'error',
+      delivery: { failureReason: 'interrupted' },
+    })
+    const s = store()
+    const attempted = new Set<string>()
+    const run = () =>
+      resumeHandMessages({
+        store: s,
+        wallet: 'w',
+        address: PEER,
+        own: ME,
+        messages,
+        attempted,
+      })
+    expect(await run()).toBe(1)
+    expect(s.retryOutgoing).toHaveBeenCalledWith({
+      wallet: 'w',
+      address: PEER,
+      payloadDigest: messages[2].payloadDigest,
+    })
+    expect(await run()).toBe(0)
+    expect(s.retryOutgoing).toHaveBeenCalledTimes(1)
+    expect(s.resumeOutgoing).not.toHaveBeenCalled()
+  })
+
+  it('leaves a message that is still being sent alone', async () => {
+    const s = store()
+    for (const status of ['pending', 'payment-pending']) {
+      expect(
+        await resumeHandMessages({
+          store: s,
+          wallet: 'w',
+          address: PEER,
+          own: ME,
+          messages: withDeal({ status }),
+          attempted: new Set(),
+        }),
+      ).toBe(0)
+    }
+    expect(s.retryOutgoing).not.toHaveBeenCalled()
+  })
+
+  it('only settles a failed bet that has a recorded payment, and never sends one that has none', async () => {
+    const bet = (delivery: HandChatMessage['delivery']): HandChatMessage[] => [
+      {
+        ...message(false, {
+          action: 'challenge',
+          role: 'dealer',
+          maxBetWei: '500',
+          commitment: commitmentOf(seed),
+        }),
+        status: 'confirmed',
+      },
+      { ...message(true, { action: 'bet' }, 300n), status: 'error', delivery },
+    ]
+    const s = store()
+    const recorded = bet({ attemptDigest: 'cd'.repeat(32) })
+    expect(
+      await resumeHandMessages({
+        store: s,
+        wallet: 'w',
+        address: PEER,
+        own: ME,
+        messages: recorded,
+        attempted: new Set(),
+      }),
+    ).toBe(1)
+    expect(s.resumeOutgoing).toHaveBeenCalledWith({
+      wallet: 'w',
+      address: PEER,
+      payloadDigest: recorded[1].payloadDigest,
+    })
+    expect(
+      await resumeHandMessages({
+        store: s,
+        wallet: 'w',
+        address: PEER,
+        own: ME,
+        messages: bet({ failureReason: 'interrupted' }),
+        attempted: new Set(),
+      }),
+    ).toBe(0)
+    expect(s.resumeOutgoing).toHaveBeenCalledTimes(1)
+    expect(s.retryOutgoing).not.toHaveBeenCalled()
+  })
+
+  it('a resume that throws leaves the rest to be tried', async () => {
+    const messages = withDeal({ status: 'error' })
+    const s = store()
+    s.retryOutgoing.mockRejectedValueOnce(new Error('wallet closed'))
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    expect(
+      await resumeHandMessages({
+        store: s,
+        wallet: 'w',
+        address: PEER,
+        own: ME,
+        messages,
+        attempted: new Set(),
+      }),
+    ).toBe(0)
+    warn.mockRestore()
   })
 })

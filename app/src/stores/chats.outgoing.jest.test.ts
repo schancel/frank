@@ -35,6 +35,11 @@ import {
   serializeMessageWrapper,
 } from '@frank/cashweb/relay/storage/level-storage'
 import { store as messageStorePromise } from '../adapters/level-message-store'
+import {
+  resumeHandMessages,
+  undeliveredHandMessages,
+  type HandResumeStore,
+} from '../utils/blackjack-hand'
 
 jest.mock('../utils/notifications', () => ({ desktopNotify: jest.fn() }))
 
@@ -1185,6 +1190,187 @@ describe('outgoing direct messages (#269, #270)', () => {
           message: expect.stringContaining('no longer exists'),
         }),
       )
+    })
+  })
+
+  // The human dealer path: a blackjack message is an ordinary outgoing message, so closing the
+  // window mid-send leaves it in the chat, counted by the hand, and not delivered. "Reload" is a
+  // fresh store over what was durably written.
+  describe('a blackjack message cut off by closing the window', () => {
+    const GAME = '0123456789abcdef0123456789abcdef'
+    const DEAL = [
+      {
+        type: 'blackjack-hand' as const,
+        gameId: GAME,
+        action: 'deal' as const,
+        playerCards: [1, 2],
+        dealerUpCard: 3,
+      },
+    ]
+    const BET = [
+      { type: 'blackjack-hand' as const, gameId: GAME, action: 'bet' as const },
+    ]
+    const resume = (chats: ReturnType<typeof useChatStore>) =>
+      resumeHandMessages({
+        store: chats as unknown as HandResumeStore,
+        wallet,
+        address: PEER,
+        own: ME,
+        messages: only(chats),
+        attempted: new Set(),
+      })
+    /** The app stops while `send` is in flight; `journaled` says whether the wallet had
+     * already recorded the message's payment set. */
+    async function killedMidSend(
+      items: typeof DEAL | typeof BET,
+      journaled: string | undefined,
+      stampValue?: bigint,
+    ) {
+      let stop: (error: Error) => void = () => undefined
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async (params: SendParams) => {
+          if (journaled) await params.onAttemptCreated?.(journaled)
+          return new Promise((_, reject) => {
+            stop = reject
+          })
+        })
+      void useChatStore().sendMessage({
+        wallet,
+        address: PEER,
+        items,
+        ...(stampValue === undefined ? {} : { stampValue }),
+      })
+      await new Promise(resolve => setImmediate(resolve))
+      // The process dies here. What is durable at this instant is all that survives; the dying
+      // instance is let go afterwards and whatever it would still have written is dropped.
+      const db = await durable()
+      const survived = new Map(db)
+      stop(new Error('process killed'))
+      await new Promise(resolve => setImmediate(resolve))
+      await new Promise(resolve => setImmediate(resolve))
+      db.clear()
+      survived.forEach((value, key) => db.set(key, value))
+      jest.restoreAllMocks()
+      jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+      return reload()
+    }
+
+    it('killed between "message saved" and the PUT: the deal is sent again on reopening, once', async () => {
+      const restored = await killedMidSend(DEAL, undefined)
+      expect(undeliveredHandMessages(only(restored), ME, PEER)).toEqual([
+        expect.objectContaining({
+          action: 'deal',
+          state: 'failed',
+          hasAttempt: false,
+          carriesMoney: false,
+        }),
+      ])
+      jest
+        .spyOn(activeChain.directMessages, 'unattributedAttempts')
+        .mockResolvedValue([])
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockResolvedValue(okResult(HASH))
+      expect(await resume(restored)).toBe(1)
+      expect(send).toHaveBeenCalledTimes(1)
+      expect(send.mock.calls[0][0].items).toEqual(DEAL)
+      expect(only(restored)).toEqual([
+        expect.objectContaining({ status: 'confirmed', payloadDigest: HASH }),
+      ])
+      expect(undeliveredHandMessages(only(restored), ME, PEER)).toEqual([])
+      // Reopening again finds nothing to do.
+      const again = await reload()
+      expect(await resume(again)).toBe(0)
+      expect(send).toHaveBeenCalledTimes(1)
+    })
+
+    it('killed after the payment set was recorded: the same bytes are delivered, no new payment', async () => {
+      const restored = await killedMidSend(DEAL, HASH)
+      expect(only(restored)[0]).toEqual(
+        expect.objectContaining({ status: 'payment-pending' }),
+      )
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+      reconcileReturns({ [HASH]: 'delivered' })
+      // Nothing for the hand to resume: the store's own reconciliation settles it.
+      expect(await resume(restored)).toBe(0)
+      await restored.reconcileOutgoing({ wallet })
+      expect(only(restored)).toEqual([
+        expect.objectContaining({ status: 'confirmed', payloadDigest: HASH }),
+      ])
+      expect(send).not.toHaveBeenCalled()
+    })
+
+    it('a cut-off deal is not sent while a payment nobody points at may exist', async () => {
+      const restored = await killedMidSend(DEAL, undefined)
+      jest
+        .spyOn(activeChain.directMessages, 'unattributedAttempts')
+        .mockResolvedValue(['ee'.repeat(32)])
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+      await resume(restored)
+      expect(send).not.toHaveBeenCalled()
+      // Still shown as failed, with its Retry.
+      expect(undeliveredHandMessages(only(restored), ME, PEER)).toEqual([
+        expect.objectContaining({ state: 'failed' }),
+      ])
+    })
+
+    it('a cut-off bet with no recorded payment is never sent by itself', async () => {
+      const restored = await killedMidSend(BET, undefined, 40n)
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+      const reconcile = jest.spyOn(activeChain.directMessages, 'reconcileAttempts')
+      expect(await resume(restored)).toBe(0)
+      expect(send).not.toHaveBeenCalled()
+      expect(reconcile).not.toHaveBeenCalled()
+      expect(undeliveredHandMessages(only(restored), ME, PEER)).toEqual([
+        expect.objectContaining({
+          action: 'bet',
+          state: 'failed',
+          carriesMoney: true,
+        }),
+      ])
+    })
+
+    it('a failed bet with a recorded payment is settled with the wallet: live bytes are re-sent, a dead payment is not replaced', async () => {
+      for (const [status, after] of [
+        ['delivered', 'confirmed'],
+        ['live', 'payment-pending'],
+        ['dead', 'error'],
+        ['unknown', 'error'],
+      ] as const) {
+        ;(await durable()).clear()
+        setActivePinia(createPinia())
+        jest.restoreAllMocks()
+        jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+        // A bet whose payment set exists and whose delivery could not be confirmed.
+        jest
+          .spyOn(activeChain.directMessages, 'send')
+          .mockImplementation(async (params: SendParams) => {
+            await params.onAttemptCreated?.(HASH)
+            throw new MonadStampAbandonedError('abandoned', HASH)
+          })
+        const chats = useChatStore()
+        await chats.sendMessage({
+          wallet,
+          address: PEER,
+          items: BET,
+          stampValue: 40n,
+        })
+        const restored = await reload()
+        expect(only(restored)[0]).toEqual(
+          expect.objectContaining({
+            status: 'error',
+            delivery: expect.objectContaining({ attemptDigest: HASH }),
+          }),
+        )
+        jest.restoreAllMocks()
+        jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+        const send = jest.spyOn(activeChain.directMessages, 'send')
+        reconcileReturns({ [HASH]: status })
+        await resume(restored)
+        expect(send).not.toHaveBeenCalled()
+        expect(only(restored)[0].status).toBe(after)
+      }
     })
   })
 })

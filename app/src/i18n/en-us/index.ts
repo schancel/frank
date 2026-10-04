@@ -110,6 +110,11 @@ export default {
     seedConfirmed: 'Your recovery phrase is confirmed.',
   },
   blackjackP2p: {
+    notDeliveredYet:
+      'The other side does not have this message yet: it is still being sent.',
+    notDelivered:
+      'The other side does not have this message: it was not sent. {reason}',
+    retry: 'Send it again',
     notNext:
       'This blackjack move was already sent or is no longer possible. Nothing was sent.',
     challengeTitle: 'Challenge to a hand of blackjack',

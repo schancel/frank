@@ -67,10 +67,21 @@
         role="status"
         aria-live="polite"
         class="text-caption q-mt-xs"
+        :class="{ 'text-weight-bold': !!undelivered }"
         data-testid="blackjack-status"
       >
         {{ statusText }}
       </div>
+      <!-- This user's own message of the hand that the other side does not have. -->
+      <q-btn
+        v-if="undelivered === 'failed'"
+        dense
+        color="primary"
+        class="q-mt-xs"
+        data-testid="blackjack-retry"
+        :label="$t('blackjackP2p.retry')"
+        @click="$emit('retry')"
+      />
       <div
         v-if="problem"
         role="status"
@@ -235,7 +246,7 @@ export default defineComponent({
       default: '',
     },
   },
-  emits: ['sendFollowUp'],
+  emits: ['sendFollowUp', 'retry'],
   setup() {
     const { balance } = useBalance()
     return { balance }
@@ -410,9 +421,40 @@ export default defineComponent({
           return this.$t(`blackjackP2p.line.${item.action}`)
       }
     },
+    // Whether this bubble's own message has reached the other side. A hand counts a message
+    // from the moment it is in the chat, so until it is delivered the hand has not moved on for
+    // the other user, whatever the folded state says.
+    undelivered(): 'sending' | 'failed' | undefined {
+      const messages = useChatStore().chats[this.address]?.messages ?? []
+      const message = messages.find(m => m.payloadDigest === this.payloadDigest)
+      if (!message || !message.outbound || message.status === 'confirmed')
+        return undefined
+      return message.status === 'error' ? 'failed' : 'sending'
+    },
+    undeliveredReason(): string {
+      const messages = useChatStore().chats[this.address]?.messages ?? []
+      const reason = messages.find(m => m.payloadDigest === this.payloadDigest)
+        ?.delivery?.failureReason
+      const keys: Record<string, string> = {
+        'unreachable': 'outgoing.reasonUnreachable',
+        'unavailable': 'outgoing.reasonUnavailable',
+        'rejected': 'outgoing.reasonRejected',
+        'interrupted': 'outgoing.reasonInterrupted',
+        'unverified': 'outgoing.reasonUnverified',
+        'recovered': 'outgoing.reasonRecovered',
+        'insufficient-funds': 'outgoing.reasonInsufficientFunds',
+      }
+      return this.$t(keys[reason ?? ''] ?? 'outgoing.reasonError')
+    },
     statusText(): string {
       const state = this.state
       if (!state || !this.role) return ''
+      if (this.undelivered === 'sending')
+        return this.$t('blackjackP2p.notDeliveredYet')
+      if (this.undelivered === 'failed')
+        return this.$t('blackjackP2p.notDelivered', {
+          reason: this.undeliveredReason,
+        })
       const mine = this.role === 'dealer'
       switch (state.phase) {
         case 'challenged':

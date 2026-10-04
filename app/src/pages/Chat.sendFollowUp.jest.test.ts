@@ -376,6 +376,51 @@ describe('Chat.vue automatic dealer steps', () => {
     expect(self.sendFollowUpItems).toHaveBeenCalledTimes(1)
   })
 
+  it('on opening the chat, sends a deal that was cut off again instead of leaving the hand stuck', async () => {
+    const bet = hand(challenge, [false, { action: 'bet' }, 300n])
+    const step = dealerStep(
+      foldHand(
+        bet.map(m => ({
+          item: m.items[0] as never,
+          from: m.outbound ? '0xMe' : '0xPeer',
+          to: m.outbound ? '0xPeer' : '0xMe',
+          stampWei: m.stampValueWei,
+          digest: m.payloadDigest,
+        })),
+      ).state,
+      SEED,
+    )
+    // What a reload leaves of a deal whose send the closing window cut off.
+    const messages = [
+      ...bet.map(m => ({ ...m, status: 'confirmed' })),
+      {
+        outbound: true,
+        status: 'error',
+        delivery: { failureReason: 'interrupted' },
+        items: [step?.item],
+        stampValueWei: 1n,
+        payloadDigest: 'pending:1:1:',
+      },
+    ]
+    const chatStore = {
+      retryOutgoing: jest.fn().mockResolvedValue({ state: 'sent' }),
+      resumeOutgoing: jest.fn(),
+    }
+    const self = dealerThis(messages, { chatStore })
+    self.runBlackjackDealer = () => methods.runBlackjackDealer.call(self)
+    await methods.runBlackjackDealer.call(self)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(chatStore.retryOutgoing).toHaveBeenCalledTimes(1)
+    expect(chatStore.retryOutgoing).toHaveBeenCalledWith({
+      wallet: {},
+      address: '0xPeer',
+      payloadDigest: 'pending:1:1:',
+    })
+    // The cut-off deal is the hand's deal: no second one is built.
+    expect(self.sendFollowUpItems).not.toHaveBeenCalled()
+    expect(chatStore.resumeOutgoing).not.toHaveBeenCalled()
+  })
+
   it('does not send while another message is being sent', async () => {
     const self = dealerThis(hand(challenge, [false, { action: 'bet' }, 300n]), {
       sendingMessage: true,

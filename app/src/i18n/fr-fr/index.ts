@@ -111,6 +111,11 @@ export default {
     seedConfirmed: 'Votre phrase de récupération est confirmée.',
   },
   blackjackP2p: {
+    notDeliveredYet:
+      'L’autre joueur n’a pas encore ce message : l’envoi est en cours.',
+    notDelivered:
+      'L’autre joueur n’a pas ce message : il n’a pas été envoyé. {reason}',
+    retry: 'Renvoyer',
     notNext:
       'Ce coup de blackjack a déjà été envoyé ou n’est plus possible. Rien n’a été envoyé.',
     challengeTitle: 'Défier pour une main de blackjack',

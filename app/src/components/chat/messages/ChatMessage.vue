@@ -53,6 +53,7 @@
               :address="address"
               :payload-digest="payloadDigest"
               @sendFollowUp="handleSendFollowUp"
+              @retry="resend()"
             />
             <chat-message-digital-goods
               v-else-if="item.type == 'digital-goods'"

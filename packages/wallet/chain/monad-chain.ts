@@ -1,3 +1,4 @@
+import type { PublicRevisionZeroInput, PublicRevisionZeroExport } from '../monad-wallet-handle';
 /**
  * `MonadChain`: the real `ActiveChain` implementation (ticket #41 -- see `PLAN.md`'s M9 section)
  * over the already-merged Monad wallet clients (`../wallet/monad-stamp-client.ts`,
@@ -301,6 +302,13 @@ const privateTopicWallets = new WeakMap<
   MonadChainWalletHandle,
   MonadWalletHandle
 >();
+/** Public local evidence only. No Current, enrollment, provider or financial effects. */
+export function prepareMonadRevisionZeroExport(wallet: NativeWalletHandle, input: PublicRevisionZeroInput): PublicRevisionZeroExport {
+  const live = wallet as MonadChainWalletHandle;
+  const material = walletMaterial.get(live);
+  if (!material?.canonicalRoles || !typedWallets.has(live) || closedWallets.has(live)) throw new Error("Revision-zero export requires live typed wallet custody");
+  return material.canonicalRoles.prepareRevisionZero(input);
+}
 const canonicalClientFactories = new WeakMap<object, () => MonadCanonicalStampClient>();
 /** Opt-in bridge verifies the actual registered live typed wallet; no caller-supplied owner. */
 export function canonicalMonadStampClient(wallet: NativeWalletHandle): MonadCanonicalStampClient {

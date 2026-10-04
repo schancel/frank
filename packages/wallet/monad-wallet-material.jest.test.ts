@@ -298,3 +298,153 @@ test('valid remote uint64 generations do not truncate into local derivation indi
     a.material.dispose()
   }
 })
+
+import { verifyPreviewDirectoryEvidence, toHex } from '@frank/codec'
+import { canonicalWalletPublicBinding } from './monad-wallet-material'
+import type { PublicRevisionZeroInput } from './monad-wallet-handle'
+
+function revisionZeroInput(
+  material: ReturnType<typeof createMonadWalletMaterial>,
+): PublicRevisionZeroInput {
+  const point = material.canonicalRoles!.publicGenerationZeroPoints().auth
+  const process = (label: string) => ({
+    processId: label,
+    origin: `https://${label}.example`,
+    tuple: {
+      relayId: new Uint8Array(16).fill(label === 'a' ? 1 : 2),
+      endpoint: `https://${label}.example`,
+      identity: { keyType: 1, keyBytes: point },
+      expiry: { seconds: 3700n, nanoseconds: 0 },
+      unknownFields: new Map(),
+    },
+  })
+  return {
+    networkTag: 'MONT',
+    network: 'monad-testnet',
+    chainId: 10143n,
+    issuedAt: { seconds: 100n, nanoseconds: 1 },
+    expiresAt: { seconds: 3700n, nanoseconds: 1 },
+    now: { seconds: 100n, nanoseconds: 1 },
+    relayA: process('a'),
+    relayB: process('b'),
+    subjectBinding: 'A',
+  }
+}
+
+describe('effect-free typed public preparation', () => {
+  it('exports exact deterministic schema4 evidence and generation-zero public role points without Current', () => {
+    const material = createMonadWalletMaterial(roots())
+    const input = revisionZeroInput(material)
+    // Tuple coverage uses exact nanosecond timestamp, not rounded seconds.
+    input.relayA.tuple.expiry.nanoseconds = 1
+    input.relayB.tuple.expiry.nanoseconds = 1
+    try {
+      const exported = material.canonicalRoles!.prepareRevisionZero(input)
+      const repeat = material.canonicalRoles!.prepareRevisionZero(input)
+      expect(repeat.statement).toEqual(exported.statement)
+      expect(repeat.attestation).toEqual(exported.attestation)
+      const verified = verifyPreviewDirectoryEvidence(
+        exported.attestation,
+        input.network,
+      )
+      expect(verified.statementFrame.frame).toEqual(exported.statement)
+      expect(verified.statementHash).toEqual(exported.t1)
+      expect(verified.statement.revision).toBe(0n)
+      expect(verified.statement.preview.mailboxKeyGeneration).toBe(0n)
+      expect(verified.statement.preview.stampKeyGeneration).toBe(0n)
+      expect(verified.statement.preview.predecessor).toBeNull()
+      expect(verified.statement.relays).toHaveLength(1)
+      expect(verified.statement.relays[0].endpoint).toBe('https://a.example')
+      expect(toHex(verified.statement.subject.keyBytes)).toBe(
+        toHex(exported.auth.compressedPoint),
+      )
+      expect(toHex(verified.statement.preview.messageDhKey.keyBytes)).toBe(
+        toHex(exported.message.compressedPoint),
+      )
+      expect(toHex(verified.statement.stampKey.keyBytes)).toBe(
+        toHex(exported.stamp.compressedPoint),
+      )
+      expect(Object.keys(exported)).not.toContain('current')
+      expect(Object.keys(exported)).not.toContain('root')
+      expect(Object.keys(exported)).not.toContain('fingerprint')
+      const bytes = exported.statement
+      bytes.fill(0)
+      exported.configuration.relayA.tuple.identity.keyBytes.fill(0)
+      exported.auth.compressedPoint.fill(0)
+      expect(exported.statement).toEqual(repeat.statement)
+      expect(exported.configuration.relayA.tuple.identity.keyBytes).toEqual(
+        input.relayA.tuple.identity.keyBytes,
+      )
+      const recovered = createMonadWalletMaterial(roots())
+      try {
+        expect(
+          recovered.canonicalRoles!.prepareRevisionZero(input).attestation,
+        ).toEqual(exported.attestation)
+      } finally {
+        recovered.dispose()
+      }
+    } finally {
+      material.dispose()
+    }
+    expect(() => material.canonicalRoles!.prepareRevisionZero(input)).toThrow(
+      'disposed',
+    )
+  })
+  it('binds all actual public roots and pool branches without serializing the secret fingerprint', () => {
+    const one = createMonadWalletMaterial(roots()),
+      same = createMonadWalletMaterial(roots())
+    const changed = { ...roots(), messaging: roots(1).messaging }
+    const other = createMonadWalletMaterial(changed)
+    try {
+      const binding = canonicalWalletPublicBinding(one, 'monad-testnet', 10143n)
+      expect(binding).toEqual(
+        canonicalWalletPublicBinding(same, 'monad-testnet', 10143n),
+      )
+      expect(binding.id).not.toBe(
+        canonicalWalletPublicBinding(other, 'monad-testnet', 10143n).id,
+      )
+      expect(binding.tuple).not.toContain(one.fingerprint)
+      expect(JSON.parse(binding.tuple).accounts.path).toBe("m/44'/60'/0'/0")
+      expect(JSON.parse(binding.tuple).change.path).toBe("m/44'/60'/0'/1")
+      expect(() =>
+        canonicalWalletPublicBinding(one, 'monad-mainnet', 10143n),
+      ).toThrow('typed-network')
+    } finally {
+      one.dispose()
+      same.dispose()
+      other.dispose()
+    }
+  })
+  it('rejects expiry, tuple coverage and mismatched descriptor before producing signed evidence', () => {
+    const material = createMonadWalletMaterial(roots()),
+      input = revisionZeroInput(material)
+    try {
+      expect(() => material.canonicalRoles!.prepareRevisionZero(input)).toThrow(
+        'tuple-expiry',
+      )
+      const covered = revisionZeroInput(material)
+      covered.relayA.tuple.expiry.nanoseconds = 1
+      covered.relayB.tuple.expiry.nanoseconds = 1
+      expect(() =>
+        material.canonicalRoles!.prepareRevisionZero({
+          ...covered,
+          networkTag: 'MON1',
+        }),
+      ).toThrow('network')
+      expect(() =>
+        material.canonicalRoles!.prepareRevisionZero({
+          ...covered,
+          now: covered.expiresAt,
+        }),
+      ).toThrow('validity')
+      expect(() =>
+        material.canonicalRoles!.prepareRevisionZero({
+          ...covered,
+          expiresAt: { seconds: 3701n, nanoseconds: 1 },
+        }),
+      ).toThrow('validity')
+    } finally {
+      material.dispose()
+    }
+  })
+})

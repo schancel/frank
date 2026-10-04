@@ -58,3 +58,37 @@ export interface MonadCanonicalWalletHandle extends MonadWalletHandle {
   installedNetworkTag: 'MONT' | 'MON1'
   runCanonicalExclusive<T>(operation: () => Promise<T>): Promise<T>
 }
+
+import type { Timestamp, RelayBinding } from '@frank/codec'
+import type { RolePoint } from '../role-keys/src'
+export interface PublicRevisionZeroProcess {
+  readonly processId: string
+  readonly origin: string
+  readonly tuple: RelayBinding
+}
+export interface PublicRevisionZeroInput {
+  readonly networkTag: 'MONT' | 'MON1'
+  readonly network: string
+  readonly chainId: bigint
+  readonly issuedAt: Timestamp
+  readonly expiresAt: Timestamp
+  readonly now: Timestamp
+  readonly relayA: PublicRevisionZeroProcess
+  readonly relayB: PublicRevisionZeroProcess
+  readonly subjectBinding: 'A' | 'B'
+}
+export interface PublicRevisionZeroExport {
+  readonly kind: 'public-revision-zero-preparation'
+  readonly registry: 'frank-domain-roots-v1'
+  readonly networkTag: 'MONT' | 'MON1'
+  readonly network: string
+  readonly chainId: bigint
+  readonly authAddress: string
+  readonly auth: RolePoint<'auth'>
+  readonly message: RolePoint<'message'>
+  readonly stamp: RolePoint<'stamp'>
+  readonly statement: Uint8Array
+  readonly attestation: Uint8Array
+  readonly t1: Uint8Array
+  readonly configuration: PublicRevisionZeroInput
+}

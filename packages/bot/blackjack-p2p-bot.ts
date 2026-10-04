@@ -266,6 +266,8 @@ export class BlackjackP2pBot {
     this.store.save(this.state)
   }
 
+  /** Why the new-account listing last failed, so the same reason is logged once. */
+  private feedFailure: string | undefined
   /** Rounds run so far, and for rows whose send failed, the round they may be tried again in. */
   private round = 0
   private readonly retry = new Map<string, { failures: number; notBefore: number }>()
@@ -279,9 +281,21 @@ export class BlackjackP2pBot {
     for (const row of this.state.outbox)
       if (!(await this.settle(row))) return delivered
     await this.receive()
-    if (this.config.newAccounts)
-      for (const address of await this.config.newAccounts())
-        await this.challengeOnce(address)
+    if (this.config.newAccounts) {
+      // The listing only finds new opponents. When it cannot be read, hands in progress are
+      // still played and paid this round; it is asked again next round.
+      let addresses: string[] = []
+      try {
+        addresses = await this.config.newAccounts()
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        if (reason !== this.feedFailure)
+          this.config.log?.(`new accounts could not be read: ${reason}`)
+        this.feedFailure = reason
+      }
+      if (addresses.length) this.feedFailure = undefined
+      for (const address of addresses) await this.challengeOnce(address)
+    }
     for (;;) {
       await this.decide()
       // Every hand's message is sent on its own: one that cannot be sent waits and is tried

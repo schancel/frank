@@ -976,6 +976,41 @@ describe('the new-accounts feed', () => {
     expect(asked).toEqual([1_000, 2_000, 2_000])
   })
 
+  it('keeps playing a hand while the new-account listing cannot be read', async () => {
+    const net = new Net()
+    net.balances.set(BOT, RESERVE + 100_000n)
+    net.balances.set(USER, 100_000n)
+    let down = true
+    const lines: string[] = []
+    const bot = new BlackjackP2pBot(
+      new NetAccount(net, BOT),
+      new MemoryBotStore(),
+      config({
+        newAccounts: async () => {
+          if (down) throw new Error('listing down')
+          return [OTHER]
+        },
+        log: line => lines.push(line),
+      }),
+    )
+    // A message from USER arrives while the listing is down: the bot still answers it.
+    net.deliver({
+      from: USER,
+      to: BOT,
+      item: { type: 'text' },
+      stampWei: STAMP,
+      digest: sha('hello'),
+    })
+    await settle(bot)
+    await settle(bot)
+    expect(net.paidBy(BOT).map(d => d.to)).toEqual([USER])
+    expect(lines.filter(l => l.includes('listing down'))).toHaveLength(1)
+    // Once it can be read again the listed account is challenged.
+    down = false
+    await settle(bot)
+    expect(net.paidBy(BOT).map(d => d.to)).toEqual([USER, OTHER])
+  })
+
   it('reads the relay listing by time first and then from the position the relay hands back', async () => {
     const urls: string[] = []
     const cursor = 'ab'.repeat(28)

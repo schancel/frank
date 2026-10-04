@@ -1,243 +1,185 @@
-# Blackjack escrow and shared entropy (stage 1: design and feasibility)
+# Blackjack escrow (design, not implemented)
 
-Status: proposal, nothing implemented. It replaces the trust-based settlement of
-`blackjack-p2p.md`. Experiments that back the claims are in `experiments/blackjack-escrow/`.
+Status: the shared-entropy part is built (`blackjack-p2p.md`, type 18 schema 3). The escrow below
+is a design for stage 2. Experiments that back its claims are in `experiments/blackjack-escrow/`.
 
-## Verdict
+## Decisions taken by the owner
 
-- **Cards: solved with what is in the repo.** Both sides commit to entropy before money moves and
-  open it one card at a time. Nobody picks the deck, nobody sees a card early, there is no hole
-  card to leak.
-- **Theft: solved with what is in the repo.** Both stakes sit in one-off accounts whose key is
-  split between the two players. Neither can spend alone, and the relay never says what was paid.
-- **Forced payment: not achievable on Monad without a contract.** A loser who goes silent cannot
-  be made to pay, by any signature scheme. Without a clock on chain, the best that exists is: the
-  money stays locked for both, and the one who walked away loses a deposit as well.
-- **Adaptor signatures do not enforce anything here.** The package works on EVM transactions
-  (experiment 1), but a pre-signature is only binding if the signing key is jointly held, and
-  even then a blackjack payout depends on a computed result, not on one secret. What this design
-  uses from `@frank/adaptor-signatures` is its secret, point and proof of knowledge, as key shares.
+- No contract. The accepted end state: no theft, no free look, quitting never pays.
+- Each side locks a deposit equal to the bet, returned when the hand finishes.
+- The bet is a separate transfer into a joint two-party address; the bet message carries an
+  ordinary stamp.
+- The escrow is the two-party (threshold) address of `@frank/threshold-ecdsa`, not handed-over key
+  shares. The `escrow` module keeps one boundary so tests can simulate the joint key.
+- Testnet only. Naturals keep paying 3:2. Escrow checks read the chain from a configurable
+  endpoint that the relay operator does not run.
+
+## Verdict on "adaptor signatures and two-party signing"
+
+The owner's intuition is right, and my stage-1 sentence "adaptor pre-signing adds no guarantee" was
+wrong. Once the money sits in a jointly held account, a pre-signature is binding (neither side can
+sign a competing transfer alone), and it can make **opening a card and taking your money the same
+act** (experiment 4). What that buys, exactly:
+
+- The side that opens first can never be held hostage afterwards. A loser cannot keep the
+  winner's money by refusing to sign the payout, because the payout was signed before the card.
+- The side that opens last can only collect anything, its deposit included, by opening.
+
+What it does not buy: the side that opens last can still walk away from a hand it has just seen
+it lost. It then forfeits its deposit and whatever else the hand would have returned to it, and
+the other side's money stays locked. No construction without a clock on chain removes this.
+
+It has three costs, each a point where the plan could still fail (see "Open risks"):
+
+1. Card entropy must change from hash links to small committed numbers, one per card.
+2. One two-party adaptor pre-signature per possible card, per transfer, per locked card: about a
+   hundred signing sessions for each card that can end the hand.
+3. The adaptor scheme must be used without its per-point proof of knowledge, as DLCs use it.
 
 ## Threat model
 
-- **Cheating dealer:** pick or foresee the deck; look at the hand and decline it; deal false cards;
-  not pay a winner; take the bet and vanish.
-- **Cheating player:** foresee a card before hitting or doubling; bet without paying; refuse to
-  let go of the dealer's own cover after losing; quit when the cards are bad.
+- **Cheating dealer:** pick or foresee cards; decline a hand after looking; not pay a winner;
+  take the bet and vanish.
+- **Cheating player:** foresee a card; bet without paying; refuse to release the dealer's money
+  after losing; quit when the cards are bad.
 - **Dishonest relay:** report a payment that never happened; reorder, drop or replay messages.
-  It cannot read or forge messages (they are sealed and authenticated end to end).
-- Out of scope: both players colluding, a stolen device, a chain reorganisation deeper than the
-  wallet's confirmation rule.
+  It cannot read or forge messages.
+- Out of scope: both players colluding, a stolen device, a deep chain reorganisation.
 
-## Cards: entropy from both, one card at a time
+## Cards with locked reveals
 
-Each side makes a hash chain: `link[52]` random, `link[k-1] = SHA-256(link[k])`, and publishes
-`link[0]` as its commitment. The dealer's commitment is in the `challenge` or `accept` as today;
-the player's is in the `bet`. Both exist before either side locks money.
+Today (schema 3) each card is a hash of one link from each side. A hash preimage cannot lock a
+signature, so for the escrow each side's contribution to card `k` becomes a number `v` in
+`[0, 52 - k)`, committed before any money moves as `C = s·G + v·H` (`H` is a fixed point with no
+known discrete log). The card is the `(u + v) mod (52 - k)`-th card left in the deck, for the
+player's `u` and the dealer's `v`. Either side choosing uniformly makes the card uniform, and
+knowing one's own number says nothing about the card. All commitments (about 24 per side, 33
+bytes each) go in the `challenge`/`accept` and the `bet`.
 
-Draw `k` is `SHA-256("frank/blackjack/draw/v1" | gameId | k | dealerLink[k+1] | playerLink[k+1])`
-reduced over the cards still in the deck. A link is checked by hashing it back to the last link
-already seen, so a side can only open the chain it committed to, and opening one link says nothing
-about the next (experiment 3).
+For every possible `v` the point `T_v = C - v·H` is public, and its owner knows the discrete log
+of exactly one of them. A transfer pre-signed under `T_v` can be completed only if the committed
+number is `v`, and completing it publishes `s`.
 
-Order of opening, chosen so that money is locked before knowledge and a player who busts is
-never the only one who knows it:
+The order of opening does not change from schema 3. The dealer opens last on every card that can
+end the hand:
 
-| draw | opened first | opened second | who knows the card first |
-| ---- | ------------ | ------------- | ------------------------ |
-| first three cards (player, dealer up, player) | dealer, in `deal`, after locking its cover | player, in its first move | player, for one message |
-| a hit or double card | player, in `hit` / `double` | dealer, in `card` | dealer, then both |
-| dealer's hole card and draws | player, in `stand` | dealer, in `reveal` | dealer, then both |
+| card | first to open | last to open, learns the result first | can it end the hand? |
+| ---- | ------------- | ------------------------------------- | -------------------- |
+| first three | dealer (`deal`) | player | no |
+| hit, double | player | dealer | yes, on a bust |
+| each dealer draw | player | dealer | yes |
 
-The hole card is not dealt until the dealer's turn. Blackjack never needs the dealer to know it,
-so there is nothing hidden to leak. A player natural is opened by an automatic `stand`.
+For a card that can end the hand:
 
-What this prevents: choosing the deck, the dealer's free look (it locks cover before it can know
-any card), look-ahead by either side. What it does not prevent: the side that learns a card
-first can stop answering. That is abandonment, handled below. A full seed reveal up front, the
-simpler option, would leave whoever opens second knowing the whole hand before playing.
+1. The player opens its number in the clear (`hit`, `double`, or one message per dealer draw).
+2. For every `v` that would end the hand, both pre-sign two transfers from the joint address,
+   locked under the dealer's `T_v`: **nonce 0** pays the dealer its share and deposit for that
+   result, **nonce 1** pays the player the rest. The player does not know yet which `v` is real,
+   so it has no reason to refuse. The dealer does know; a dealer that refuses here is abandoning
+   a hand it lost, the one case that cannot be removed (below).
+3. If the card ends the hand, the dealer completes its nonce-0 transfer and broadcasts it. That is
+   the reveal. The player reads `s` from the signature, which identifies the card, and completes
+   its own nonce-1 transfer. Neither needs the other again.
+4. If the card does not end the hand, the dealer opens its number in a message and play goes on.
 
-## Escrow: accounts with a split key
+All nonce-0 alternatives share one nonce, so at most one ever lands. Transfers for different cards
+with the same result are byte-identical; only their signatures differ, so the chain shows the
+amounts but not the cards.
 
-An escrow account is an ordinary Monad account whose key is `a + b`: the player knows `a`, the
-dealer knows `b`, each publishes its point with a proof of knowledge (without the proof one side
-could choose its point so that it alone holds the key; experiment 2). The address also commits to
-the hand's terms through a public tweak. A plain transfer pays one address, so money that can go
-to different people sits in different accounts, each with independent shares:
+Fees: a pre-signed transfer cannot be repriced. Each names a generous fee cap (Monad charges the
+actual price up to the cap, times the 21,000 gas limit), and the joint address holds a fee reserve
+for two transfers at that cap. If the price rises above the cap the transfers wait; nothing is
+lost. What is left of the reserve stays in the address unless both sign once more. Monad lets an
+account go below its 10 MON reserve only if it sent nothing in the last few blocks, so the
+nonce-1 transfer has to wait that long after nonce 0 (to be confirmed on testnet).
 
-| account | funded by, when | amount | goes to the player on |
-| ------- | --------------- | ------ | --------------------- |
-| stake | player, `bet` | wager W | push, win, natural |
-| player deposit | player, `bet` | D | always, after settling |
-| double | player, `double` | W | push, win |
-| match | dealer, `deal` | W | win, natural |
-| bonus | dealer, `deal` | W/2 rounded down | natural, doubled win |
-| extra | dealer, `deal` | the rest of W | doubled win |
-| dealer deposit | dealer, `deal` | D | never (returns to dealer) |
+## Money
 
-Paying is handing over a share. The receiver checks it against the published point, now holds the
-whole key, and sweeps the account with a transaction it signs then, at the current fee. So there
-is no pre-signed transaction, no fee guess, no nonce to reserve and no signing nonce to reuse.
-Shares travel only inside the sealed message, are derived from the wallet's root and the hand
-(a lost device or cleared storage loses nothing), and are never logged.
+| | player | dealer |
+| --- | --- | --- |
+| locked | bet W + deposit W, at `bet` | cover 2W + deposit W, at `deal` |
+| on a double | another W | nothing more (cover already holds it) |
 
-End of hand, in this order, so that each side still has something to wait for when it must act:
-
-1. `reveal` (dealer): its last link, plus its shares of the accounts the player takes.
-2. `settle` (player, new, automatic): its shares of everything the dealer takes, including the
-   dealer's deposit.
-3. `release` (dealer, new, automatic): its share of the player's deposit.
-
-Before dealing, `refund` hands back the dealer's shares of the stake and the player's deposit.
-
-## Verifying money on chain
-
-A money-carrying message names an amount; the receiver derives the escrow address itself and
-reads its balance from the chain at the wallet's confirmation rule. The event enters the state
-machine only then. The relay's delivery frame plays no part in game money.
-
-Found while checking this: the app's wallet reads the chain **through the relay's own RPC proxy**
-(`monad-chain.ts`, `/chain-rpc/…/rpc`). Reading the balance there is still trusting the relay.
-The escrow check needs a second endpoint the relay operator does not run. The bot already uses the
-operator's own.
+Each funding is one plain transfer to the hand's joint address, which is the pair's joint key
+tweaked by the hand's terms (experiment 2 shows the tweak). The receiver derives the address
+itself and reads its balance from the independent endpoint; the relay's word plays no part.
 
 ## If the other side stops
-
-No timeout exists. "Locked" means nobody can spend it until the silent side returns.
 
 | the hand stops | who can cause it | player's worst case | dealer's worst case |
 | -------------- | ---------------- | ------------------- | ------------------- |
 | before `bet` | either | nothing | nothing |
-| after `bet`, before `deal` | dealer | W + D locked | nothing |
-| after `deal`, any point up to `reveal` | either | W + D locked (2W + D doubled) | 2W + D locked |
-| player withholds `settle` | player | its deposit D locked | winnings and own cover locked |
-| dealer withholds `release` | dealer | its deposit D locked | nothing |
-| crash and restart, any step | — | nothing: secrets re-derive, messages resend unchanged | same |
+| after `bet`, before `deal` | dealer | 2W locked | nothing |
+| mid-hand, before a deciding card is opened | either | 2W locked (3W doubled) | 3W locked |
+| the dealer does not open a card that it saw lost the hand | dealer | 2W and its winnings locked | 3W locked, of which it had lost W to 2W anyway |
+| after the dealer's transfer landed | nobody | nothing | nothing |
+| crash and restart | — | nothing, if secrets and pre-signatures are stored before use | same |
 
-Nobody ever gains by stopping. Two cases cost the one who stops nothing: a dealer who never
-deals, and a dealer who withholds the last `release`. With D = 0 a losing player's refusal to
-`settle` is free as well.
-
-## State machine and messages
-
-The eight states and their order do not change. Type 18, schema 3:
-
-| action | change |
-| ------ | ------ |
-| every item | `seq` and `prev` (digest of the hand's previous message): order and replay no longer depend on clocks or transport |
-| `challenge` | adds `depositWei`; a dealer's also carries its seven points and proofs |
-| `accept` | adds the dealer's points and proofs |
-| `bet` | adds `wagerWei`, the player's commitment, points and proofs. Money: stake and deposit |
-| `deal` | carries a link instead of cards. Money: match, bonus, extra, dealer deposit |
-| `hit`, `stand`, `double` | carry a link. `double` money: the double account |
-| `card`, `reveal` | carry a link; cards and outcome are computed by both sides, not stated |
-| `refund` | carries shares instead of paying |
-| `settle`, `release` | new, shares only, sent without a button |
-
-`resolved` is reached at `reveal` as today; "owed" and "paid" become which accounts each side has
-received. The fold stays pure: money events carry the balances the wallet verified. One new pure
-helper gives the player its own early view of the first three cards. The dealer needs to hold
-`2W + D` instead of four times the bet.
-
-The escrow part of each message (points, proofs, shares) is one opaque versioned byte string, so
-the escrow scheme can change without touching states or the codec again.
-
-## What the user sees differently
-
-- Betting says "locks W plus a deposit D that returns when the hand finishes".
-- A bet counts once the chain confirms it, a second or two later.
-- The dealer sees the first cards only after the player's first move.
-- A human dealer confirms `deal` (it locks money) and no longer confirms paying: paying is
-  automatic and costs it nothing new.
-- A stalled hand reads "locked, waiting for X" with the amounts, not "lost".
+Remaining for a spiteful party: a dealer that never deals (costs it nothing, locks 2W of the
+player's); a dealer that abandons a lost hand (costs it its deposit and unlost cover). A player
+can no longer hurt the dealer after it has opened.
 
 ## Cost per hand
 
-Plain transfers, 21,000 gas each; Monad charges the gas limit.
-
-| | on-chain transactions | gas | messages added |
+| | on chain | two-party signing sessions | extra messages |
 | --- | --- | --- | --- |
-| today | the stamps only | — | — |
-| split-key accounts | 6 fundings + 6 sweeps (7 + 7 with a double) | 252,000 (294,000) | 2, automatic |
-| split-key, no deposits | 4 + 4 (5 + 5) | 168,000 (210,000) | 1 |
-| joint signing (below) | 2 fundings + 2 payouts (3 + 2) | 84,000 (105,000) | 1 per hand, about 4 once per pair |
+| today | stamps only | 0 | 0 |
+| joint address, plain signing after the result | 4 transfers (5 with a double) | 2 | about 2 |
+| joint address, locked reveals | 4 transfers (5) | up to 2 × (52 − k) per card that can end the hand; about 250 in a hand with no hit | about 3 per such card, large |
 
-Message size: about 700 bytes more on `challenge`/`accept` and `bet`, under 100 elsewhere.
+Key generation between two users is once per pair (about 4 messages). The locked-reveal messages
+are protocol rounds, not money: they belong on the stampless channel (#843) and need about 256 KB
+per message if signing is Paillier-based. Every round can also be an ordinary stamped message.
+How long a hundred sessions take in a browser is unknown until the package exists.
 
-## Stamped messages and protocol rounds (#843)
+A cheaper middle: lock only the dealer's draws. Then a player who busts can still refuse to sign
+the dealer's payout, at the cost of its deposit.
 
-Messages that must stay in durable history, because money or the recovery of money depends on
-them: `challenge`, `bet`, `deal`, `double`, `refund`, `reveal`, `settle`, `release`. The rest are
-rounds: `accept`, `hit`, `card`, `stand`, and all key-generation and signing rounds.
+## Open risks
 
-| per hand with h hits | durable, stamped | rounds |
-| -------------------- | ---------------- | ------ |
-| split-key accounts | 6 (7 with a double) | 1 + 2h (+1 `accept`) |
-| joint signing | 3 (4 with a double) | 3 + 2h (+1 `accept`), plus about 4 once per pair |
+1. **The proof of knowledge.** `@frank/adaptor-signatures` refuses a lock point without a proof
+   that someone knows its secret (experiment 4, last test). Here that is impossible for all but
+   one point. The underlying scheme was designed for exactly this use in DLCs, but the package
+   and the threshold package need a mode for it, and that mode needs a cryptographer's review.
+2. **Volume.** Two-party adaptor pre-signing has to be cheap enough to do a hundred times while
+   a player waits for a card. If not, lock fewer cards.
+3. **First funding.** The player funds before the dealer. No pre-signed exit can protect it: an
+   exit that works before the dealer funds also works after, as a free way out of a bad hand.
+4. **Schema.** Locked reveals replace schema 3's hash links with commitments and openings
+   (a schema 4). States, order of opening and the `seq`/`prev` chain stay.
+5. **No outside review** of any of this cryptography.
 
-In escrow the stamp is no longer the money: the relay checks that a stamp pays an address derived
-from the recipient's key, and an escrow address is not one. Funding is a separate transfer next
-to an ordinary stamp. Making the stamp itself pay the escrow needs a relay rule change.
+## Requirements for `@frank/threshold-ecdsa`
 
-What the hand needs from a stampless channel: the same sealing and sender authentication as a
-direct message; delivery at least once (the hand orders and de-duplicates by `seq`/`prev`, so the
-channel need not); 2 KB per message for split-key, 64 KB if Paillier-based signing rounds ride
-on it; survival of a few minutes for a peer that is briefly away. A lost round loses no money:
-the sender keeps every round until a later message acknowledges it through `prev`, resends the
-same bytes, and falls back to a stamped message. A signing round is never regenerated for the
-same session. Every round is an ordinary hand item, so everything works with stamps only.
+Key generation once per pair, with shares re-derivable from the wallet root and the peer; a
+tweaked key per hand; plain signing; adaptor pre-signing under a point **without** a proof of
+knowledge for that point, in batches of about a hundred with one message each way after a
+message-independent first phase; the pre-signature delivered to both parties in the
+`@frank/adaptor-signatures` byte format; sessions resumable from stored state, with every signing
+nonce marked used before the first message leaves; explicit 32-byte digest in, low-s signature and
+recovery bit out; proofs sound against a malicious peer; usable in a browser without blocking.
 
 ## What cannot be guaranteed without a contract
 
-1. A loser who goes silent cannot be made to pay; the winnings stay locked.
-2. A dealer who never deals leaves the player's bet and deposit locked, at no cost to the dealer.
-3. Whoever sends the last message of a hand can leave the other's deposit locked at no cost.
-4. Money locked by a party that never returns is locked forever; there is no refund after a wait.
-5. A relay that also serves the app's chain data can still lie about balances until the app
-   reads the chain somewhere else.
-6. The cryptography has had no outside review; the package's own README says not to secure real
-   funds with it.
+1. A dealer that sees it lost can abandon the hand; the player's money stays locked.
+2. A dealer that never deals leaves the player's bet and deposit locked at no cost to itself.
+3. Money locked by a party that never returns is locked forever.
+4. The cryptography has had no outside review.
 
-## Options and what they would buy
+## Options not taken
 
-**Joint signing (`@frank/threshold-ecdsa`, being built).** One key per pair of users, generated
-once; each hand's account is that key tweaked by the hand's terms; both fund it; at the end both
-sign two transfers from it (nonce 0 to one side, nonce 1 to the other; the second is signed
-first). It buys 4 transactions instead of 12, any split, a key that never exists whole, and no
-free last move. It does not buy forced payment. Hand steps: key generation before the first
-`bet` between a pair; `tweak` at `bet`; `sign` twice across `reveal` and `settle`. Adaptor
-pre-signing is not used: I found no step where it adds a guarantee. Requirements for the package:
-shares re-derivable from the wallet root and the peer; every session resumable from stored state
-with the nonce marked used before the first message leaves; a message-independent first phase so
-the final signature costs one message each way; an explicit 32-byte digest in, low-s signature
-and recovery bit out; both signatures available to both parties; proofs sound against a
-malicious peer; usable in a browser without blocking; message sizes stated.
+- **Handed-over key shares** (experiment 2): no new cryptography, 12 transfers a hand, and the
+  loser must still sign away the winner's money.
+- **An adjudicator contract** with a jointly pre-signed transfer into it: the only way to give
+  the waiting side the money after a timeout. Removes items 1 to 3.
+- **EIP-7702 delegation of the escrow account:** Monad supports EIP-7702 but reverts any
+  transaction that takes a delegated account below 10 MON, so it cannot pay out these stakes.
+- **Schnorr in account code:** not needed once code checks two ordinary signatures.
+- **Moving funds to a new state-committed address at every step:** a transfer and a joint
+  signature per step, and no rule on chain reads the commitment.
 
-**State-committed keys.** The tweak costs nothing and works for ECDSA keys (experiment 2). At
-funding it ties the address to the terms; adopted above. Moving the money to a new address for
-every state costs a transfer and a joint signature per move, and buys nothing on Monad, because
-no rule on chain reads the commitment. Tweaks of one key are related: with split-key handover
-each account needs its own key.
+## Carrying over to general off-chain contracts (#842)
 
-**Schnorr and account code.** Monad supports EIP-7702 (its documentation, read 2026-10-04). Once
-code verifies the cooperative path, two ordinary signatures checked with `ecrecover` do the job;
-aggregated Schnorr through the `ecrecover` trick saves about 3,000 gas and needs a multi-signature
-scheme the repo does not have. Not worth it. Two-party ECDSA itself: the repo has no piece of it
-(no Paillier, no oblivious transfer); written here it is my estimate of 1,500 to 2,500 lines with
-its proofs. I did not evaluate outside libraries, and built no prototype once the package started.
-
-**A fallback path, like taproot's script path.** Only this removes items 1 to 4.
-- *EIP-7702 delegation of the escrow account:* does not work for these stakes. Monad reverts any
-  transaction that takes a delegated account below 10 MON, so the code could not pay the money out.
-- *One adjudicator contract, deployed once:* before funding, both sign (jointly) a transaction
-  that moves the escrow into the contract under the hand's terms. Either side can broadcast it
-  alone; a cooperative payout uses the same nonce and so cancels it. In the contract the latest
-  state signed by both wins, and the side whose move is due when the wait ends forfeits. This is
-  also the pre-signed exit: nobody deposits without a way out. Cooperative hands cost and reveal
-  nothing extra. A dispute costs roughly 200,000 to 300,000 gas and shows the contract, the
-  amounts, the posted state and both keys. It needs joint signing, a contract, and for blackjack
-  a small on-chain check of a move.
-
-**Hands as off-chain contracts (#842).** The entropy chains, `seq`/`prev`, the verified-balance
-events and the opaque escrow payload carry over unchanged. The split-key accounts do not: they
-only pay amounts fixed in advance. A general machine needs joint signing plus the adjudicator.
+The `seq`/`prev` chain, verified-balance events, the joint address and locked reveals carry over
+to any two-party game whose deciding steps have a small set of results. A general state machine
+with arbitrary results needs the adjudicator.

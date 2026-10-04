@@ -167,7 +167,9 @@ async function openTab() {
   `,
   })
   await call('Page.navigate', { url: origin + '/#/setup' })
-  await until(`Array.isArray(window.__forumWire) && Array.isArray(window.__forumResponseCaptures)`)
+  await until(
+    `Array.isArray(window.__forumWire) && Array.isArray(window.__forumResponseCaptures)`,
+  )
   await until(
     `document.querySelector('[data-test="new-account"]') || document.querySelector('[data-test="activate-account"]') || document.querySelector('[data-test="account-error"]')`,
   )
@@ -308,14 +310,21 @@ try {
   )
   await evaluate(`location.hash='#/forum'`)
   await until(`document.querySelector('[data-test="forum-threshold"]')`)
-  console.log('Actual Forum drawer before opening:', await evaluate(`(() => {
+  console.log(
+    'Actual Forum drawer before opening:',
+    await evaluate(`(() => {
     const button = document.querySelector('button[aria-label="Forum settings"]');
     const root = document.querySelector('[data-test="forum-topic"]');
     const field = root.matches('input,textarea') ? root : root.querySelector('input,textarea');
     return { expanded: button?.getAttribute('aria-expanded'), rootTag: root.tagName, fieldTag: field.tagName, drawerClass: field.closest('.q-drawer')?.className };
-  })()`))
-  await evaluate(`document.querySelector('button[aria-label="Forum settings"]').click()`)
-  await until(`document.querySelector('button[aria-label="Forum settings"]').getAttribute('aria-expanded')==='true'`)
+  })()`),
+  )
+  await evaluate(
+    `document.querySelector('button[aria-label="Forum settings"]').click()`,
+  )
+  await until(
+    `document.querySelector('button[aria-label="Forum settings"]').getAttribute('aria-expanded')==='true'`,
+  )
   await until(`(() => {
     const root = document.querySelector('[data-test="forum-topic"]');
     const field = root.matches('input,textarea') ? root : root.querySelector('input,textarea');
@@ -329,11 +338,13 @@ try {
   const threshold = '0.009007199254740993'
   await input('forum-threshold', threshold)
   await until(`${forumState}.voteThreshold===${JSON.stringify(threshold)}`)
+  assert.equal(await evaluate(`${forumState}.voteThreshold`), threshold)
   assert.equal(
-    await evaluate(`${forumState}.voteThreshold`),
+    await evaluate(
+      `document.querySelector('[data-test="forum-threshold"]').value`,
+    ),
     threshold,
   )
-  assert.equal(await evaluate(`document.querySelector('[data-test="forum-threshold"]').value`), threshold)
   await input('forum-threshold', '0')
   await until(`${forumState}.voteThreshold==='0'`)
   const title = 'Forum browser ' + Date.now()
@@ -426,7 +437,9 @@ try {
   assert.deepEqual(audit.seen, [9, 10, 11, 12, 13, 14, 15])
   console.log('Canonical normal flow witnesses:', audit)
   await evaluate(`location.hash='#/forum'`)
-  await until(`document.querySelector('a.post-title') && ${forumState}.isRefreshing===false`)
+  await until(
+    `document.querySelector('a.post-title') && ${forumState}.isRefreshing===false`,
+  )
   await evaluate(`(async()=>{
     const m=await import('/src/stores/forum.ts');
     const session=await import(performance.getEntriesByType('resource').find(e=>e.name.includes('/src/accounts/session.ts')).name);
@@ -488,7 +501,10 @@ try {
   }
   interceptResponse = async event => {
     const url = new URL(event.params.request.url)
-    if (url.pathname !== '/message/monad/topics' || url.searchParams.get('topic') !== 'news') {
+    if (
+      url.pathname !== '/message/monad/topics' ||
+      url.searchParams.get('topic') !== 'news'
+    ) {
       await call('Fetch.continueRequest', { requestId: event.params.requestId })
       return
     }
@@ -549,7 +565,10 @@ try {
     oldSnapshot,
     'old result and staged current response cannot publish',
   )
-  console.log('Held generation lifecycle:', await evaluate(`window.__forumActions`))
+  console.log(
+    'Held generation lifecycle:',
+    await evaluate(`window.__forumActions`),
+  )
   assert.equal(
     await evaluate(`${forumState}.isRefreshing`),
     true,
@@ -631,7 +650,10 @@ try {
   interceptResponse = async event => {
     const url = new URL(event.params.request.url)
     const query = url.searchParams
-    if (url.pathname !== '/message/monad/topics' || query.get('topic') !== 'news') {
+    if (
+      url.pathname !== '/message/monad/topics' ||
+      query.get('topic') !== 'news'
+    ) {
       await call('Fetch.continueRequest', { requestId: event.params.requestId })
       return
     }

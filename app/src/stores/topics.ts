@@ -1,3 +1,4 @@
+import { toRaw } from 'vue'
 import assert from 'assert'
 import { forumSnapshot, stageForumQuery } from './forum'
 import { accountStatus } from 'src/accounts/session'
@@ -145,9 +146,9 @@ export const useTopicStore = defineStore('topics', {
       )
     },
     invalidateRefresh() {
-      topicRequests.delete(this)
-      topicViews.delete(this)
-      discoveryRequests.delete(this)
+      topicRequests.delete(toRaw(this.$state))
+      topicViews.delete(toRaw(this.$state))
+      discoveryRequests.delete(toRaw(this.$state))
     },
     async refreshMessages({
       topic,
@@ -157,10 +158,12 @@ export const useTopicStore = defineStore('topics', {
       wallet: WalletHandle
     }) {
       const owner = wallet.identity.address.raw.toLowerCase()
-      if (topicWallets.get(this) !== owner) this.invalidateRefresh()
-      topicWallets.set(this, owner)
-      const requests = topicRequests.get(this) ?? new Map<string, object>()
-      topicRequests.set(this, requests)
+      if (topicWallets.get(toRaw(this.$state)) !== owner)
+        this.invalidateRefresh()
+      topicWallets.set(toRaw(this.$state), owner)
+      const requests =
+        topicRequests.get(toRaw(this.$state)) ?? new Map<string, object>()
+      topicRequests.set(toRaw(this.$state), requests)
       const token = {}
       requests.set(topic, token)
       const revision = accountStatus.revision
@@ -168,7 +171,7 @@ export const useTopicStore = defineStore('topics', {
       const chain = activeChain
       const to = Date.now()
       const current = () =>
-        topicRequests.get(this) === requests &&
+        topicRequests.get(toRaw(this.$state)) === requests &&
         requests.get(topic) === token &&
         accountStatus.revision === revision &&
         accountStatus.status === status &&
@@ -183,7 +186,7 @@ export const useTopicStore = defineStore('topics', {
         current,
       )
       if (
-        topicRequests.get(this) !== requests ||
+        topicRequests.get(toRaw(this.$state)) !== requests ||
         requests.get(topic) !== token ||
         accountStatus.revision !== revision ||
         accountStatus.status !== status ||
@@ -232,13 +235,14 @@ export const useTopicStore = defineStore('topics', {
       const revision = accountStatus.revision
       const status = accountStatus.status
       const chain = activeChain
-      const requests = topicViews.get(this) ?? new Map<string, object>()
-      topicViews.set(this, requests)
+      const requests =
+        topicViews.get(toRaw(this.$state)) ?? new Map<string, object>()
+      topicViews.set(toRaw(this.$state), requests)
       const key = `${topic}\u0000${payloadDigest}`
       const token = {}
       requests.set(key, token)
       const current = () =>
-        topicViews.get(this) === requests &&
+        topicViews.get(toRaw(this.$state)) === requests &&
         requests.get(key) === token &&
         accountStatus.revision === revision &&
         accountStatus.status === status &&
@@ -252,7 +256,7 @@ export const useTopicStore = defineStore('topics', {
         return
       }
       if (
-        topicViews.get(this) !== requests ||
+        topicViews.get(toRaw(this.$state)) !== requests ||
         requests.get(key) !== token ||
         accountStatus.revision !== revision ||
         accountStatus.status !== status ||
@@ -269,13 +273,13 @@ export const useTopicStore = defineStore('topics', {
       const status = accountStatus.status
       const chain = activeChain
       const token = {}
-      discoveryRequests.set(this, token)
+      discoveryRequests.set(toRaw(this.$state), token)
       let discovered
       try {
         discovered = await stageForumQuery(
           () => activeChain.topics.discoverTopics(),
           () =>
-            discoveryRequests.get(this) === token &&
+            discoveryRequests.get(toRaw(this.$state)) === token &&
             revision === accountStatus.revision &&
             status === accountStatus.status &&
             activeChain === chain,
@@ -292,7 +296,7 @@ export const useTopicStore = defineStore('topics', {
         }
       } catch (error) {
         if (
-          discoveryRequests.get(this) !== token ||
+          discoveryRequests.get(toRaw(this.$state)) !== token ||
           revision !== accountStatus.revision ||
           status !== accountStatus.status ||
           activeChain !== chain
@@ -306,7 +310,7 @@ export const useTopicStore = defineStore('topics', {
         return false
       }
       if (
-        discoveryRequests.get(this) !== token ||
+        discoveryRequests.get(toRaw(this.$state)) !== token ||
         revision !== accountStatus.revision ||
         status !== accountStatus.status ||
         activeChain !== chain

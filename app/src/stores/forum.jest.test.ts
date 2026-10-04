@@ -640,9 +640,15 @@ describe('canonical complete query publication', () => {
     mockedFetchByTopic
       .mockReturnValueOnce(old.promise)
       .mockReturnValueOnce(fresh.promise)
-    const first = store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
+    const first = store.refreshMessages.call(new Proxy(store, {}), {
+      wallet: testWallet,
+      topic: 'stamp',
+    })
     await flushPromises()
-    const second = store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
+    const second = store.refreshMessages.call(new Proxy(store, {}), {
+      wallet: testWallet,
+      topic: 'stamp',
+    })
     await flushPromises()
     old.resolve([makeMessage({ poster: 'old' })])
     await first
@@ -659,9 +665,13 @@ describe('canonical complete query publication', () => {
       const store = useForumStore(),
         pending = deferred<ForumMessage[]>()
       mockedFetchByTopic.mockReturnValue(pending.promise)
-      const task = store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
+      const task = store.refreshMessages.call(new Proxy(store, {}), {
+        wallet: testWallet,
+        topic: 'stamp',
+      })
       await flushPromises()
-      if (change === 'route') store.setSelectedTopic('news')
+      if (change === 'route')
+        store.setSelectedTopic.call(new Proxy(store, {}), 'news')
       else if (change === 'wallet') session.revision++
       else session.status = 'locked'
       pending.resolve([makeMessage()])
@@ -675,9 +685,13 @@ describe('canonical complete query publication', () => {
     mockedFetchOne
       .mockReturnValueOnce(old.promise)
       .mockResolvedValueOnce(makeMessage({ poster: 'new' }))
-    const first = store.fetchMessage({ payloadDigest: 'deadbeef' })
+    const first = store.fetchMessage.call(new Proxy(store, {}), {
+      payloadDigest: 'deadbeef',
+    })
     await flushPromises()
-    const second = store.fetchMessage({ payloadDigest: 'deadbeef' })
+    const second = store.fetchMessage.call(new Proxy(store, {}), {
+      payloadDigest: 'deadbeef',
+    })
     old.resolve(makeMessage({ poster: 'old' }))
     await first
     await second

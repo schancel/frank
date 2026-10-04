@@ -398,3 +398,60 @@ it.each(['18446744073709551616', '01', 9007199254740992])(
     expect(store.discoveredTopics).toEqual({})
   },
 )
+
+it('shares discovery authority across fresh action proxies and explicit invalidation', async () => {
+  const store = useTopicStore()
+  let resolve!: (rows: []) => void
+  mockedDiscoverTopics
+    .mockReturnValueOnce(
+      new Promise<[]>(yes => {
+        resolve = yes
+      }),
+    )
+    .mockResolvedValueOnce([])
+  const old = store.refreshDiscoveredTopics.call(new Proxy(store, {}))
+  await flushPromises()
+  const fresh = store.refreshDiscoveredTopics.call(new Proxy(store, {}))
+  resolve([])
+  await old
+  await fresh
+  expect(mockedDiscoverTopics).toHaveBeenCalledTimes(2)
+  expect(store.discoveryStatus).toBe('verified')
+  mockedDiscoverTopics.mockReturnValueOnce(
+    new Promise<[]>(yes => {
+      resolve = yes
+    }),
+  )
+  const invalidated = store.refreshDiscoveredTopics.call(new Proxy(store, {}))
+  await flushPromises()
+  store.invalidateRefresh.call(new Proxy(store, {}))
+  resolve([])
+  expect(await invalidated).toBeUndefined()
+  expect(mockedDiscoverTopics).toHaveBeenCalledTimes(3)
+})
+
+it('keeps only latest same-view authority across distinct action proxies', async () => {
+  const store = useTopicStore()
+  let resolve!: (row: ForumMessage) => void
+  mockedFetchOne
+    .mockReturnValueOnce(
+      new Promise<ForumMessage>(yes => {
+        resolve = yes
+      }),
+    )
+    .mockResolvedValueOnce(makeMessage({ poster: 'new proxy' }))
+  const old = store.fetchMessage.call(new Proxy(store, {}), {
+    topic: 'stamp',
+    payloadDigest: 'deadbeef',
+  })
+  await flushPromises()
+  const fresh = store.fetchMessage.call(new Proxy(store, {}), {
+    topic: 'stamp',
+    payloadDigest: 'deadbeef',
+  })
+  resolve(makeMessage({ poster: 'old proxy' }))
+  await old
+  await fresh
+  expect(mockedFetchOne).toHaveBeenCalledTimes(2)
+  expect(store.getMessage('deadbeef')?.poster).toBe('new proxy')
+})

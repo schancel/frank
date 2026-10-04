@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { reactive } from 'vue'
+import { reactive, toRaw } from 'vue'
 import { uniq } from 'ramda'
 
 import {
@@ -246,8 +246,8 @@ export const useForumStore = defineStore('forum', {
       ])
     },
     invalidateRefresh() {
-      refreshContexts.delete(this)
-      viewRequests.delete(this)
+      refreshContexts.delete(toRaw(this.$state))
+      viewRequests.delete(toRaw(this.$state))
       this.isRefreshing = false
     },
     setSelectedTopic(topic: string) {
@@ -297,9 +297,9 @@ export const useForumStore = defineStore('forum', {
         selected: this.selectedTopic,
         duration: this.duration,
       }
-      refreshContexts.set(this, token)
+      refreshContexts.set(toRaw(this.$state), token)
       const current = () =>
-        refreshContexts.get(this) === token &&
+        refreshContexts.get(toRaw(this.$state)) === token &&
         activeChain === token.chain &&
         accountStatus.revision === token.revision &&
         accountStatus.status === token.status &&
@@ -397,20 +397,21 @@ export const useForumStore = defineStore('forum', {
     }) {
       // Note: `ActiveChain.topics.fetchOne` takes no `wallet` -- reading a public topic post
       // never needed a sender identity to begin with.
-      const token = refreshContexts.get(this)
+      const token = refreshContexts.get(toRaw(this.$state))
       const revision = accountStatus.revision
       const status = accountStatus.status
       const selected = this.selectedTopic
       const chain = activeChain
       const request = {}
-      const requests = viewRequests.get(this) ?? new Map<string, object>()
-      viewRequests.set(this, requests)
+      const requests =
+        viewRequests.get(toRaw(this.$state)) ?? new Map<string, object>()
+      viewRequests.set(toRaw(this.$state), requests)
       requests.set(payloadDigest, request)
       const current = () =>
         (!isCurrent || isCurrent()) &&
-        viewRequests.get(this) === requests &&
+        viewRequests.get(toRaw(this.$state)) === requests &&
         requests.get(payloadDigest) === request &&
-        refreshContexts.get(this) === token &&
+        refreshContexts.get(toRaw(this.$state)) === token &&
         accountStatus.revision === revision &&
         accountStatus.status === status &&
         activeChain === chain &&
@@ -425,9 +426,9 @@ export const useForumStore = defineStore('forum', {
       }
       if (isCurrent && !isCurrent()) return
       if (
-        viewRequests.get(this) !== requests ||
+        viewRequests.get(toRaw(this.$state)) !== requests ||
         requests.get(payloadDigest) !== request ||
-        refreshContexts.get(this) !== token ||
+        refreshContexts.get(toRaw(this.$state)) !== token ||
         accountStatus.revision !== revision ||
         accountStatus.status !== status ||
         activeChain !== chain ||

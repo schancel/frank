@@ -1102,3 +1102,312 @@ async fn lookups_of_a_maximum_length_chain_stay_well_inside_the_waiter_deadline(
     runtime.begin_shutdown();
     runtime.wait_stopped().await;
 }
+
+/// A relay on a real socket, for tests with more than one relay.
+struct Node {
+    runtime: DirectoryRuntime,
+    url: String,
+    stop: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+    _root: tempfile::TempDir,
+}
+const RELAY_B_ID: &str = "101112131415161718191a1b1c1d1e1f";
+const RELAY_B_ENDPOINT: &str = "https://relay-b.example.invalid";
+fn relay_b_config() -> DirectoryConf {
+    DirectoryConf {
+        relay_id: RELAY_B_ID.into(),
+        endpoint: RELAY_B_ENDPOINT.into(),
+        ..relay_config()
+    }
+}
+/// Make an entry say the account lives on relay B instead of the vectors' relay (A).
+fn homed_on_b(fields: &mut Vec<(u64, CborValue)>) {
+    for (key, value) in fields.iter_mut() {
+        if *key == 4 {
+            let CborValue::Array(relays) = value else {
+                panic!("relays")
+            };
+            let CborValue::Map(relay) = &mut relays[0] else {
+                panic!("relay")
+            };
+            for (key, value) in relay.iter_mut() {
+                match *key {
+                    0 => *value = CborValue::Bytes(hex::decode(RELAY_B_ID).unwrap()),
+                    1 => *value = CborValue::Text(RELAY_B_ENDPOINT.into()),
+                    _ => (),
+                }
+            }
+        }
+    }
+}
+/// Start relays that are each other's configured peers.
+async fn network(configs: Vec<DirectoryConf>, clock: &TestClock) -> Vec<Node> {
+    let listeners: Vec<std::net::TcpListener> = configs
+        .iter()
+        .map(|_| {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            listener
+        })
+        .collect();
+    let urls: Vec<String> = listeners
+        .iter()
+        .map(|listener| format!("http://{}", listener.local_addr().unwrap()))
+        .collect();
+    let mut nodes = Vec::new();
+    for (index, (config, listener)) in configs.into_iter().zip(listeners).enumerate() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = start(registry(root.path()), config, clock).await;
+        let peers = urls
+            .iter()
+            .enumerate()
+            .filter(|(other, _)| *other != index)
+            .map(|(_, url)| url.parse().unwrap())
+            .collect();
+        runtime.enable_federation(peers, true);
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let routes = router(Arc::new(runtime.clone()));
+        let task = tokio::spawn(async move {
+            axum::Server::from_tcp(listener)
+                .unwrap()
+                .serve(routes.into_make_service_with_connect_info::<std::net::SocketAddr>())
+                .with_graceful_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await
+                .unwrap();
+        });
+        nodes.push(Node {
+            runtime,
+            url: urls[index].clone(),
+            stop,
+            task,
+            _root: root,
+        });
+    }
+    nodes
+}
+impl Node {
+    async fn put(&self, entry: &Entry) -> u16 {
+        reqwest::Client::new()
+            .put(format!("{}{}", self.url, head(&entry.subject)))
+            .header("content-type", MEDIA)
+            .body(entry.attestation.clone())
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    }
+    async fn get(&self, path: &str) -> (u16, reqwest::header::HeaderMap, Vec<u8>) {
+        let response = reqwest::get(format!("{}{path}", self.url)).await.unwrap();
+        let (status, headers) = (response.status().as_u16(), response.headers().clone());
+        (status, headers, response.bytes().await.unwrap().to_vec())
+    }
+    /// Publish without the public route's peer check, as if peers were unreachable then.
+    async fn publish_unchecked(&self, entry: &Entry) {
+        self.runtime
+            .submit(
+                self.runtime.reserve(NETWORK, &entry.subject).unwrap(),
+                Operation::Put(entry.attestation.clone()),
+            )
+            .wait()
+            .await
+            .unwrap();
+    }
+    async fn sync(&self) {
+        self.runtime
+            .federation()
+            .unwrap()
+            .clone()
+            .sync(&self.runtime)
+            .await;
+    }
+    async fn stop(self) {
+        self.stop.send(()).unwrap();
+        self.task.await.unwrap();
+        self.runtime.begin_shutdown();
+        self.runtime.wait_stopped().await;
+    }
+}
+fn revision(secret: u32, number: u64, previous: [u8; 32], extra: i128) -> Entry {
+    entry(secret, |fields| {
+        for (key, value) in fields.iter_mut() {
+            match *key {
+                2 => *value = CborValue::Int(number as i128),
+                13 => *value = CborValue::Bytes(previous.to_vec()),
+                // A different expiry makes a different signed statement of the same revision.
+                6 => {
+                    *value = cbor_map(vec![
+                        (0, CborValue::Int(1700003600 - extra)),
+                        (1, CborValue::Int(0)),
+                    ])
+                }
+                _ => (),
+            }
+        }
+    })
+}
+
+#[tokio::test]
+async fn a_relay_learns_accounts_from_its_peer_with_their_whole_history() {
+    let clock = TestClock::at(1700000100);
+    let mut b_config = relay_b_config();
+    b_config.max_replicated_subjects = 4;
+    b_config.max_subjects = 1;
+    let mut nodes = network(vec![relay_config(), b_config], &clock).await;
+    let (b, a) = (nodes.pop().unwrap(), nodes.pop().unwrap());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&a.get("/relay/v1/info").await.2).unwrap()["forwarding"],
+        true
+    );
+    // An account on relay A with two revisions. Relay B has never heard of it.
+    let first = entry(100, |_| ());
+    let second = revision(100, 1, first.hash, 0);
+    assert_eq!(a.put(&first).await, 200);
+    assert_eq!(a.put(&second).await, 200);
+    assert!(!b.runtime.is_published(NETWORK, &first.subject));
+    // Asked for the address, relay B asks its peer before answering, and then holds the
+    // account's whole chain, verified record by record: the old revision is there too.
+    let found = b.get(&by_address(&first.address)).await;
+    assert_eq!(found.0, 200);
+    assert_eq!(found.2, second.attestation);
+    assert_eq!(found.1["x-frank-directory-subject"], first.subject.as_str());
+    let history = format!(
+        "/directory/v1/{NETWORK}/{}/statements/{}",
+        first.subject,
+        hex::encode(first.hash)
+    );
+    let old = b.get(&history).await;
+    assert_eq!(old.0, 200);
+    assert_eq!(old.2, first.attestation);
+    // An address nobody published is unknown on both.
+    let nobody = by_address(&format!("0x{}", "22".repeat(20)));
+    assert_eq!(a.get(&nobody).await.0, 404);
+    assert_eq!(b.get(&nobody).await.0, 404);
+    // A peer cannot make a relay take on an account: an entry naming relay A as home, for a
+    // key relay A has never seen, is not accepted by relay A from relay B.
+    let claimed = entry(112, |_| ());
+    b.publish_unchecked(&claimed).await;
+    // Accounts nobody asked about arrive by the periodic comparison, as does a new revision.
+    let others: Vec<Entry> = (101..104).map(|secret| entry(secret, |_| ())).collect();
+    for other in &others {
+        assert_eq!(a.put(other).await, 200);
+    }
+    let third = revision(100, 2, second.hash, 0);
+    assert_eq!(a.put(&third).await, 200);
+    b.sync().await;
+    assert_eq!(b.get(&head(&first.subject)).await.2, third.attestation);
+    // Relay B's budget for copies is four accounts and two are used: one more is not copied.
+    let copied = others
+        .iter()
+        .filter(|other| b.runtime.is_published(NETWORK, &other.subject))
+        .count();
+    assert_eq!(copied, 2);
+    // Copies do not use up relay B's own sign-up budget of one account.
+    let local = entry(110, homed_on_b);
+    assert_eq!(b.put(&local).await, 200);
+    assert_eq!(b.put(&entry(111, homed_on_b)).await, 429);
+    a.sync().await;
+    assert!(!a.runtime.is_published(NETWORK, &claimed.subject));
+    // Relay A does copy relay B's own account.
+    assert!(a.runtime.is_published(NETWORK, &local.subject));
+    a.stop().await;
+    b.stop().await;
+}
+
+#[tokio::test]
+async fn an_account_restored_on_another_relay_adopts_its_existing_entry() {
+    let clock = TestClock::at(1700000100);
+    let mut nodes = network(vec![relay_config(), relay_b_config()], &clock).await;
+    let (b, a) = (nodes.pop().unwrap(), nodes.pop().unwrap());
+    let original = entry(120, |_| ());
+    assert_eq!(a.put(&original).await, 200);
+    // The same key, restored on a device configured for relay B, would sign a fresh first
+    // entry. Relay B asks its peer first, finds the account, and refuses the second one.
+    let fresh = revision(120, 0, [0; 32], 7);
+    let fresh = entry(120, |fields| {
+        homed_on_b(fields);
+        for (key, value) in fields.iter_mut() {
+            if *key == 6 {
+                *value = cbor_map(vec![
+                    (0, CborValue::Int(1700003000)),
+                    (1, CborValue::Int(0)),
+                ]);
+            }
+        }
+        let _ = &fresh;
+    });
+    assert_ne!(fresh.hash, original.hash);
+    assert_eq!(b.put(&fresh).await, 409);
+    let adopted = b.get(&head(&original.subject)).await;
+    assert_eq!(adopted.0, 200);
+    assert_eq!(adopted.2, original.attestation);
+    // Moving the account is the next revision of the same chain, published on relay B.
+    let moved = entry(120, |fields| {
+        homed_on_b(fields);
+        for (key, value) in fields.iter_mut() {
+            match *key {
+                2 => *value = CborValue::Int(1),
+                13 => *value = CborValue::Bytes(original.hash.to_vec()),
+                _ => (),
+            }
+        }
+    });
+    assert_eq!(b.put(&moved).await, 200);
+    a.sync().await;
+    assert_eq!(a.get(&head(&original.subject)).await.2, moved.attestation);
+    a.stop().await;
+    b.stop().await;
+}
+
+#[tokio::test]
+async fn conflicting_chains_on_two_relays_converge_on_one_without_quarantine() {
+    let clock = TestClock::at(1700000100);
+    let mut nodes = network(vec![relay_config(), relay_b_config()], &clock).await;
+    let (b, a) = (nodes.pop().unwrap(), nodes.pop().unwrap());
+    // Peers were unreachable when the same key published two different first entries.
+    let on_a = entry(130, |_| ());
+    let on_b = revision(130, 0, [0; 32], 9);
+    let on_b = entry(130, |fields| {
+        for (key, value) in fields.iter_mut() {
+            if *key == 6 {
+                *value = cbor_map(vec![
+                    (0, CborValue::Int(1700003111)),
+                    (1, CborValue::Int(0)),
+                ]);
+            }
+        }
+        let _ = &on_b;
+    });
+    a.publish_unchecked(&on_a).await;
+    b.publish_unchecked(&on_b).await;
+    // And two devices renewed another account on different relays at the same moment.
+    let shared = entry(131, |_| ());
+    a.publish_unchecked(&shared).await;
+    b.sync().await;
+    let renew_a = revision(131, 1, shared.hash, 1);
+    let renew_b = revision(131, 1, shared.hash, 2);
+    a.publish_unchecked(&renew_a).await;
+    b.publish_unchecked(&renew_b).await;
+    for _ in 0..2 {
+        a.sync().await;
+        b.sync().await;
+    }
+    // Both relays hold the same chain for each account: the one whose first differing record
+    // has the lower hash. Both serve it as current; nothing is quarantined.
+    for (subject, candidates) in [
+        (&on_a.subject, [&on_a, &on_b]),
+        (&shared.subject, [&renew_a, &renew_b]),
+    ] {
+        let winner = candidates.iter().min_by_key(|entry| entry.hash).unwrap();
+        for node in [&a, &b] {
+            let current = node.get(&head(subject)).await;
+            assert_eq!(current.0, 200);
+            assert_eq!(current.2, winner.attestation);
+            assert!(!node.runtime.listed(NETWORK, subject).unwrap().2);
+        }
+    }
+    a.stop().await;
+    b.stop().await;
+}

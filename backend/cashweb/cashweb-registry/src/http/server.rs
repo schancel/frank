@@ -250,6 +250,13 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
             Cow::Borrowed("/directory/v1/:network/:subject/statements/:t1")
         }
         ["relay", "v1", "info"] => Cow::Borrowed("/relay/v1/info"),
+        ["directory", "v1", _, "subjects"] => Cow::Borrowed("/directory/v1/:network/subjects"),
+        ["directory", "v1", _, _, "chain"] => {
+            Cow::Borrowed("/directory/v1/:network/:subject/chain")
+        }
+        ["directory", "v1", _, _, "announce"] => {
+            Cow::Borrowed("/directory/v1/:network/:subject/announce")
+        }
         ["directory", "v1", _, "address", _] => {
             Cow::Borrowed("/directory/v1/:network/address/:address")
         }

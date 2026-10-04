@@ -25,10 +25,11 @@ use std::{
 };
 use url::Url;
 
-const MEDIA: &str = "application/vnd.frank.cbor";
 /// Marks a request made by a relay on its own behalf; the receiver then answers from what it
 /// holds and does not ask its own peers in turn.
 pub(crate) const REPLICA_HEADER: &str = "x-frank-directory-replica";
+/// Marks a message passed on by the sender's relay. A relay receiving it never forwards again.
+pub(crate) const FORWARDED_HEADER: &str = "x-frank-forwarded";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_CHAIN_BYTES: usize = crate::directory_admission::MAX_CHARGED_BYTES + 1024 * 1024;
 const NEGATIVE_TTL: Duration = Duration::from_secs(3);
@@ -45,8 +46,10 @@ pub struct Federation {
     peers: Vec<Url>,
     forwarding: bool,
     client: reqwest::Client,
-    /// Relay endpoint (as written in entries) of each configured peer, to its configured URL.
-    endpoints: Mutex<HashMap<String, Url>>,
+    /// What each configured peer says it is: (endpoint as written in entries, relay id in hex),
+    /// to the configured URL it is reached at. Nothing else is ever contacted.
+    endpoints: Mutex<HashMap<(String, String), Url>>,
+    lookups: tokio::sync::Semaphore,
     /// Keys and addresses peers recently did not know.
     unknown: Mutex<HashMap<String, Instant>>,
     announcements: Arc<tokio::sync::Semaphore>,
@@ -61,33 +64,6 @@ fn now_ms() -> i64 {
 fn join(base: &Url, path: &str) -> String {
     format!("{}{path}", base.as_str().trim_end_matches('/'))
 }
-/// An endpoint from a signed entry that is not a configured peer is contacted only when it is a
-/// public HTTPS origin: never this machine or a private network.
-fn public_endpoint(endpoint: &str) -> Option<Url> {
-    let url = Url::parse(endpoint).ok()?;
-    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
-        return None;
-    }
-    match url.host()? {
-        url::Host::Domain(name) => (!name.eq_ignore_ascii_case("localhost")
-            && !name.ends_with(".localhost")
-            && name.contains('.'))
-        .then_some(url),
-        url::Host::Ipv4(ip) => (!ip.is_loopback()
-            && !ip.is_private()
-            && !ip.is_link_local()
-            && !ip.is_unspecified()
-            && !ip.is_broadcast())
-        .then_some(url),
-        url::Host::Ipv6(ip) => (!ip.is_loopback()
-            && !ip.is_unspecified()
-            && (ip.segments()[0] & 0xfe00) != 0xfc00
-            && (ip.segments()[0] & 0xffc0) != 0xfe80
-            && ip.to_ipv4_mapped().is_none())
-        .then_some(url),
-    }
-}
-
 impl Federation {
     /// `peers` are the base URLs of the relays this one copies entries with.
     pub fn new(peers: Vec<Url>, forwarding: bool) -> Self {
@@ -101,6 +77,7 @@ impl Federation {
             endpoints: Mutex::new(HashMap::new()),
             unknown: Mutex::new(HashMap::new()),
             announcements: Arc::new(tokio::sync::Semaphore::new(8)),
+            lookups: tokio::sync::Semaphore::new(8),
         }
     }
     /// Whether this relay accepts messages for recipients on other relays.
@@ -140,29 +117,6 @@ impl Federation {
         }
         Some(bytes)
     }
-    /// Offer one signed record to this relay's own directory. Every record is verified there.
-    async fn admit(runtime: &DirectoryRuntime, network: &str, subject: &str, record: Vec<u8>) {
-        for _ in 0..50 {
-            match runtime.reserve(network, subject) {
-                Ok(slot) => {
-                    let _ = runtime.submit(slot, Operation::Put(record)).wait().await;
-                    return;
-                }
-                Err(RuntimeError::Busy) => tokio::time::sleep(Duration::from_millis(20)).await,
-                Err(_) => return,
-            }
-        }
-    }
-    /// This relay's own retained records for `subject`, oldest first.
-    async fn own_chain(runtime: &DirectoryRuntime, network: &str, subject: &str) -> Vec<Vec<u8>> {
-        let Ok(slot) = runtime.reserve(network, subject) else {
-            return vec![];
-        };
-        match runtime.submit(slot, Operation::Chain).wait().await {
-            Ok(evidence) => records(&evidence.attestation),
-            Err(_) => vec![],
-        }
-    }
     /// Copy `subject`'s whole chain from one peer and verify it into this relay's directory.
     async fn pull(&self, runtime: &DirectoryRuntime, peer: &Url, network: &str, subject: &str) {
         let url = join(peer, &format!("/directory/v1/{network}/{subject}/chain"));
@@ -175,9 +129,7 @@ impl Federation {
         let Some(chain) = Self::body(response, MAX_CHAIN_BYTES).await else {
             return;
         };
-        for record in records(&chain) {
-            Self::admit(runtime, network, subject, record).await;
-        }
+        let _ = runtime.replicate(network, subject, records(&chain)).await;
     }
     /// Ask peers for a key this relay does not hold. True when it is held afterwards.
     pub(crate) async fn learn(
@@ -193,6 +145,10 @@ impl Federation {
         if self.peers.is_empty() || self.recently_unknown(&key) {
             return false;
         }
+        // At most a few peer lookups at a time; the rest are answered from what is held.
+        let Ok(_lookup) = self.lookups.try_acquire() else {
+            return false;
+        };
         for peer in &self.peers {
             self.pull(runtime, peer, network, subject).await;
             if runtime.is_published(network, subject) {
@@ -214,6 +170,10 @@ impl Federation {
         if self.peers.is_empty() || self.recently_unknown(&key) {
             return None;
         }
+        // At most a few peer lookups at a time; the rest are answered from what is held.
+        let Ok(_lookup) = self.lookups.try_acquire() else {
+            return None;
+        };
         for peer in &self.peers {
             let url = join(
                 peer,
@@ -270,18 +230,8 @@ impl Federation {
     /// differs. Also learns which configured URL serves which relay endpoint.
     pub async fn sync(self: &Arc<Self>, runtime: &DirectoryRuntime) {
         let network = runtime.info().network.clone();
+        self.refresh_peers().await;
         for peer in &self.peers {
-            if let Some(response) = self.fetch(join(peer, "/relay/v1/info")).await {
-                let info = Self::body(response, 16 * 1024)
-                    .await
-                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-                if let Some(endpoint) = info.as_ref().and_then(|info| info["endpoint"].as_str()) {
-                    self.endpoints
-                        .lock()
-                        .unwrap()
-                        .insert(endpoint.to_owned(), peer.clone());
-                }
-            }
             let mut after: Option<String> = None;
             // Bounded by the peer's own subject budget; one page is one small request.
             for _ in 0..100_000 {
@@ -321,13 +271,11 @@ impl Federation {
                     if ours.as_ref() == Some(&theirs) {
                         continue;
                     }
-                    let behind = ours
-                        .as_ref()
-                        .is_none_or(|ours| theirs.1 > ours.1 || (theirs.2 && !ours.2));
-                    if behind {
-                        self.pull(runtime, peer, &network, subject).await;
-                    } else {
-                        // This relay holds more of the chain (or a fork proof) than the peer.
+                    // Copy the peer's chain; the directory extends, keeps or replaces its own
+                    // under the fixed rule. If the two still differ this relay holds something
+                    // the peer lacks, so the peer is told to copy from here.
+                    self.pull(runtime, peer, &network, subject).await;
+                    if runtime.listed(&network, subject).as_ref() != Some(&theirs) {
                         self.announce(&network, subject);
                     }
                 }
@@ -338,19 +286,51 @@ impl Federation {
             }
         }
     }
-    fn target(&self, endpoint: &str) -> Option<Url> {
-        if let Some(peer) = self.endpoints.lock().unwrap().get(endpoint) {
-            return Some(peer.clone());
-        }
-        public_endpoint(endpoint)
+    /// The configured peer that is the relay named by `relay`, if any. The endpoint in an
+    /// entry is text an account chose; it is only ever used to pick among configured peers.
+    pub(crate) fn peer_for(&self, relay: &frank_cbor::RelayBinding) -> Option<Url> {
+        self.endpoints
+            .lock()
+            .unwrap()
+            .get(&(relay.endpoint.clone(), hex::encode(&relay.relay_id)))
+            .cloned()
     }
-    /// Try once to hand a retained message to the recipient's relay. Returns what the sender
-    /// should be told now: the recipient relay's own answer, or "retained".
+    /// Ask each configured peer which relay it is. Needed before anything can be forwarded.
+    pub(crate) async fn refresh_peers(&self) {
+        for peer in &self.peers {
+            let Some(response) = self.fetch(join(peer, "/relay/v1/info")).await else {
+                continue;
+            };
+            let info = Self::body(response, 16 * 1024)
+                .await
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+            if let Some((endpoint, id)) = info
+                .as_ref()
+                .and_then(|info| Some((info["endpoint"].as_str()?, info["relayId"].as_str()?)))
+            {
+                self.endpoints
+                    .lock()
+                    .unwrap()
+                    .insert((endpoint.to_owned(), id.to_owned()), peer.clone());
+            }
+        }
+    }
+    /// Whether every configured peer has said which relay it is. Until then "no peer is that
+    /// relay" is not yet known and must not be reported as final.
+    pub(crate) fn peers_known(&self) -> bool {
+        let endpoints = self.endpoints.lock().unwrap();
+        self.peers
+            .iter()
+            .all(|peer| endpoints.values().any(|known| known == peer))
+    }
+    /// Try once to hand a retained message to the relay its recipient lives on now. Returns
+    /// what the sender should be told: that relay's own answer, or "retained".
     pub(crate) async fn forward(
         self: &Arc<Self>,
         runtime: &DirectoryRuntime,
         identity: &[u8; 32],
     ) -> Option<(u16, String)> {
+        use crate::directory_runtime::{AdmittedSnapshot, SnapshotOperation};
         let registry = runtime.registry().clone();
         let save = |row: &ForwardRow| {
             registry
@@ -368,62 +348,76 @@ impl Federation {
         }
         let retained =
             serde_json::json!({"version":1,"phase":"retained","identity":row.echo}).to_string();
-        let give_up = |row: &mut ForwardRow| {
-            row.done = true;
-            row.status = 200;
-            row.response = serde_json::json!({"version":1,"phase":"dead","identity":row.echo,
-                "reason":"undeliverable"})
-            .to_string();
-        };
         let now = now_ms();
-        let target = self.target(&row.endpoint);
+        // Where the recipient lives is read again on every attempt, so a recipient that moved
+        // relay after the message was accepted is followed to its new home.
+        let home = match runtime.reserve(&row.network, &row.recipient) {
+            Ok(slot) => match runtime
+                .submit_snapshot(slot, SnapshotOperation::Current)
+                .wait()
+                .await
+            {
+                Ok(AdmittedSnapshot::Current(current)) => Ok(Some(current.relay)),
+                Err(RuntimeError::NotFound | RuntimeError::Expired | RuntimeError::Forked) => {
+                    Ok(None)
+                }
+                _ => Err(()),
+            },
+            Err(_) => Err(()),
+        };
+        let mut target = None;
+        let mut permanent = now.saturating_sub(row.created_ms) >= FORWARD_LIFETIME_MS;
+        match &home {
+            Ok(Some(relay)) => {
+                target = self.peer_for(relay);
+                if target.is_none() && !runtime.info().is_local(relay) {
+                    if !self.peers_known() {
+                        self.refresh_peers().await;
+                        target = self.peer_for(relay);
+                    }
+                    permanent |= target.is_none() && self.peers_known();
+                }
+            }
+            Ok(None) => permanent = true,
+            Err(()) => (),
+        }
         let body = registry
             .directory_subjects()
             .ok()?
             .forward_body(identity)
             .ok()?;
-        let (Some(target), Some(body), true) = (
-            target,
-            body,
-            now.saturating_sub(row.created_ms) < FORWARD_LIFETIME_MS,
-        ) else {
-            give_up(&mut row);
+        if permanent || body.is_none() {
+            row.done = true;
+            row.status = 200;
+            row.response = serde_json::json!({"version":1,"phase":"dead","identity":row.echo,
+                "reason":"undeliverable"})
+            .to_string();
             save(&row)?;
             return Some((row.status, row.response));
-        };
-        // The recipient's relay must know the sender's entry to verify the message. Offer it
-        // the sender's signed chain; it verifies every record like any other publication.
-        if row.attempts == 0 || row.status == 503 {
-            for record in Self::own_chain(runtime, &row.network, &row.sender).await {
-                let _ = self
-                    .client
-                    .put(join(
-                        &target,
-                        &format!("/directory/v1/{}/{}/head", row.network, row.sender),
-                    ))
-                    .header("content-type", MEDIA)
-                    .header(REPLICA_HEADER, "1")
-                    .body(record)
-                    .send()
-                    .await;
-            }
         }
-        let answer = match self
-            .client
-            .put(join(&target, "/message/monad/cbor"))
-            .header("content-type", &row.content_type)
-            .body(body)
-            .send()
-            .await
-        {
-            Ok(response) => {
-                let status = response.status().as_u16();
-                Self::body(response, 64 * 1024)
+        let answer = match (target, body) {
+            (Some(target), Some(body)) => {
+                match self
+                    .client
+                    .put(join(&target, "/message/monad/cbor"))
+                    .header("content-type", &row.content_type)
+                    // The receiving relay delivers or refuses; it never forwards again.
+                    .header(FORWARDED_HEADER, "1")
+                    .body(body)
+                    .send()
                     .await
-                    .and_then(|bytes| String::from_utf8(bytes).ok())
-                    .map(|text| (status, text))
+                {
+                    Ok(response) => {
+                        let status = response.status().as_u16();
+                        Self::body(response, 64 * 1024)
+                            .await
+                            .and_then(|bytes| String::from_utf8(bytes).ok())
+                            .map(|text| (status, text))
+                    }
+                    Err(_) => None,
+                }
             }
-            Err(_) => None,
+            _ => None,
         };
         row.attempts = row.attempts.saturating_add(1);
         row.next_ms = now + (1000i64 << row.attempts.min(9)).min(MAX_BACKOFF_MS);
@@ -506,29 +500,5 @@ fn records(chain: &[u8]) -> Vec<Vec<u8>> {
             })
             .collect(),
         _ => vec![],
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn only_public_https_origins_are_contacted_without_being_a_configured_peer() {
-        for refused in [
-            "http://relay.example.org",
-            "https://localhost",
-            "https://127.0.0.1:8443",
-            "https://10.1.2.3",
-            "https://192.168.0.4",
-            "https://169.254.169.254",
-            "https://[::1]",
-            "https://[fd00::1]",
-            "https://user:pass@relay.example.org",
-            "https://intranet",
-        ] {
-            assert!(public_endpoint(refused).is_none(), "{refused}");
-        }
-        assert!(public_endpoint("https://relay.example.org").is_some());
-        assert!(public_endpoint("https://203.0.113.9:8443").is_some());
     }
 }

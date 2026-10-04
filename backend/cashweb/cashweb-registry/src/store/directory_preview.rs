@@ -646,6 +646,39 @@ impl<'a> Directory<'a> {
             .transpose()
     }
 
+    /// Remove everything stored for this subject. Used by a relay to replace a chain that lost
+    /// to a conflicting one, or to drop an account; the handle must not be used afterwards.
+    pub fn erase(&self) -> Result<()> {
+        let _guard = self
+            .db
+            .lock_directory_preview()
+            .map_err(|_| AdmissionError::Unavailable)?;
+        let mut batch = WriteBatch::default();
+        let evidence = self.db.cf(CF_DIRECTORY_PREVIEW_EVIDENCE_V1)?;
+        for row in self
+            .db
+            .rocksdb()
+            .iterator_cf(evidence, IteratorMode::From(&self.key, Direction::Forward))
+        {
+            let (key, _) = row.map_err(|_| AdmissionError::Unavailable)?;
+            if !key.starts_with(&self.key) || key.len() != self.key.len() + 44 {
+                break;
+            }
+            batch.delete_cf(evidence, key);
+        }
+        batch.delete_cf(self.db.cf(CF_DIRECTORY_PREVIEW_ENROLLMENT_V1)?, &self.key);
+        batch.delete_cf(self.db.cf(CF_DIRECTORY_PREVIEW_HEAD_V1)?, &self.key);
+        let mut options = WriteOptions::default();
+        options.set_sync(true);
+        self.db
+            .rocksdb()
+            .write_opt(batch, &options)
+            .map_err(|_| AdmissionError::Unavailable)?;
+        self.enrolled.store(false, Ordering::Release);
+        self.unavailable.store(true, Ordering::Release);
+        Ok(())
+    }
+
     /// Every retained record in stored order: the accepted chain, then any fork proof. This is
     /// what one relay hands another; the receiver verifies each record itself.
     pub fn retained(&self) -> Result<Vec<HistoricalEvidence>> {

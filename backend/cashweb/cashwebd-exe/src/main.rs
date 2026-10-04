@@ -275,6 +275,7 @@ async fn main() -> Result<()> {
                 (runtime, Some(worker))
             }
         };
+    let peer_urls = conf.registry.peers.clone();
     let our_peers = conf
         .registry
         .peers
@@ -365,6 +366,7 @@ async fn main() -> Result<()> {
     };
 
     let directory = if let Some(config) = conf.registry.directory.clone() {
+        let forwarding = config.forwarding;
         config
             .validate()
             .map_err(|error| bitcoinsuite_error::Report::msg(error.to_string()))?;
@@ -381,7 +383,14 @@ async fn main() -> Result<()> {
         })?;
         let runtime = Arc::new(runtime);
         match ready.await {
-            Ok(Ok(())) => Some(runtime),
+            Ok(Ok(())) => {
+                // Copy entries with the configured peers and pass messages on to them.
+                runtime.enable_federation(peer_urls.clone(), forwarding);
+                tokio::spawn(cashweb_registry::directory_federation::Federation::spawn(
+                    runtime.as_ref().clone(),
+                ));
+                Some(runtime)
+            }
             _ => {
                 runtime.begin_shutdown();
                 runtime.wait_stopped().await;

@@ -68,6 +68,9 @@ pub enum Operation {
     Historical([u8; 32]),
     /// Every retained record as one canonical CBOR array of byte strings, for another relay.
     Chain,
+    /// A whole chain copied from a peer relay, oldest record first. Every record is verified.
+    /// It extends what is held, or replaces it only under the fixed conflict rule.
+    Adopt(Vec<Vec<u8>>),
     /// Test-only gate for observing started ownership without blocking Tokio.
     #[cfg(test)]
     Barrier {
@@ -225,6 +228,9 @@ struct Owner {
     federation: OnceLock<Arc<crate::directory_federation::Federation>>,
     registry: Arc<Registry>,
     sender: Mutex<Option<mpsc::Sender<Job>>>,
+    /// Separate bounded queue for chains copied from peers, so copying never takes one of the
+    /// few slots that serve users.
+    replica_sender: Mutex<Option<mpsc::Sender<Job>>>,
     join: Mutex<Option<thread::JoinHandle<()>>>,
 }
 impl Drop for Owner {
@@ -232,6 +238,7 @@ impl Drop for Owner {
         self.shared.closed.store(true, Ordering::Release);
         self.shared.ready.store(false, Ordering::Release);
         self.sender.get_mut().unwrap().take();
+        self.replica_sender.get_mut().unwrap().take();
     }
 }
 /// Cloneable request handle; clones share the same single worker and queue.
@@ -460,10 +467,17 @@ impl<'a> Worker<'a> {
         }
     }
     /// First entry of a key this relay has not seen: it must be that key's own revision 0.
-    fn enroll(&mut self, key: &Key, bytes: Vec<u8>, now: Timestamp) -> Result<AdmittedSnapshot> {
-        if bytes.len() > MAX_ENTRY_BYTES {
+    fn enroll(
+        &mut self,
+        key: &Key,
+        mut records: Vec<Vec<u8>>,
+        now: Timestamp,
+    ) -> Result<AdmittedSnapshot> {
+        if records.is_empty() || records.iter().any(|r| r.len() > MAX_ENTRY_BYTES) {
             return Err(RuntimeError::Resource);
         }
+        let later = records.split_off(1);
+        let bytes = records.remove(0);
         let subject = exact(&key.1, 33)?;
         let verified = frank_cbor::verify_preview_directory_evidence(&bytes, &key.0)
             .map_err(|_| RuntimeError::Invalid)?;
@@ -536,7 +550,29 @@ impl<'a> Worker<'a> {
                 return Err(error.into());
             }
         };
-        let result = directory.advance_declared(&[candidate], Some(now));
+        // Later records of a copied chain go in with the first as one batch, so an old revision
+        // that has expired is still accepted as history under a current head.
+        let mut later_statements = Vec::with_capacity(later.len());
+        for record in &later {
+            match policy::statement_bytes(record) {
+                Ok(statement) => later_statements.push(statement),
+                Err(error) => {
+                    forget(&rows)?;
+                    return Err(error.into());
+                }
+            }
+        }
+        let mut batch = vec![candidate];
+        batch.extend(
+            later
+                .iter()
+                .zip(&later_statements)
+                .map(|(record, statement)| Candidate {
+                    statement,
+                    attestation: record,
+                }),
+        );
+        let result = directory.advance_declared(&batch, Some(now));
         let enrolled = match &result {
             Ok(_) => true,
             Err(_) => !matches!(directory.status(), Ok(None)),
@@ -574,6 +610,150 @@ impl<'a> Worker<'a> {
             p.cached = Some((current.clone(), until));
         }
         Ok(AdmittedSnapshot::Current(current))
+    }
+    /// A chain copied from a peer. See [`Operation::Adopt`].
+    fn adopt(
+        &mut self,
+        key: &Key,
+        chain: Vec<Vec<u8>>,
+        now: Timestamp,
+    ) -> Result<AdmittedSnapshot> {
+        let done = || {
+            Ok(AdmittedSnapshot::Historical(HistoricalEvidence {
+                statement: vec![],
+                attestation: vec![],
+                hash: [0; 32],
+            }))
+        };
+        if chain.is_empty()
+            || chain.len() > self.max_revisions
+            || chain.iter().any(|record| record.len() > MAX_ENTRY_BYTES)
+        {
+            return Err(RuntimeError::Resource);
+        }
+        let subject = exact(&key.1, 33)?;
+        // Verify every record and that they form one chain before anything is touched.
+        let mut hashes: Vec<[u8; 32]> = Vec::with_capacity(chain.len());
+        let (mut first_local, mut current_until) = (false, None);
+        for (index, record) in chain.iter().enumerate() {
+            let verified = frank_cbor::verify_preview_directory_evidence(record, &key.0)
+                .map_err(|_| RuntimeError::Invalid)?;
+            let Some(frank_cbor::TypedPayload::DirectoryStatement {
+                subject: signer,
+                revision,
+                relays,
+                expiry: Some(expiry),
+                preview: Some(roles),
+                ..
+            }) = verified.statement_frame().typed.as_deref()
+            else {
+                return Err(RuntimeError::Invalid);
+            };
+            if signer.key_bytes != subject
+                || *revision != index as u64
+                || roles.predecessor.as_deref() != hashes.last().map(|hash| hash.as_slice())
+            {
+                return Err(RuntimeError::Invalid);
+            }
+            let relay = relays.first().ok_or(RuntimeError::Invalid)?;
+            if index == 0 {
+                first_local = self.info.is_local(relay);
+            }
+            current_until = Some(if tuple(*expiry) < tuple(relay.expiry) {
+                *expiry
+            } else {
+                relay.expiry
+            });
+            hashes.push(verified.statement_hash);
+        }
+        if !self.handles.contains_key(key) {
+            if let Some(principal) = self.open(key)? {
+                self.evict();
+                self.handles.insert(key.clone(), principal);
+            }
+        }
+        let Some(p) = self.handles.get_mut(key) else {
+            // A key this relay has never seen. An entry that names this relay as the account's
+            // home must be published here by the account itself, through the limited public
+            // route: a peer cannot make this relay take on an account.
+            if first_local {
+                return Err(RuntimeError::NotFound);
+            }
+            let result = self.enroll(key, chain, now);
+            return result.and_then(|_| done());
+        };
+        let held: Vec<[u8; 32]> = p
+            .directory
+            .retained()?
+            .into_iter()
+            .map(|record| record.hash)
+            .collect();
+        let common = held
+            .iter()
+            .zip(&hashes)
+            .take_while(|(ours, theirs)| ours == theirs)
+            .count();
+        if common == hashes.len() {
+            return done(); // Nothing new: the copy is what is held, or a prefix of it.
+        }
+        if common == held.len() {
+            // The copy extends what is held.
+            let statements = chain[common..]
+                .iter()
+                .map(|record| policy::statement_bytes(record))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let batch: Vec<Candidate<'_>> = chain[common..]
+                .iter()
+                .zip(&statements)
+                .map(|(record, statement)| Candidate {
+                    statement,
+                    attestation: record,
+                })
+                .collect();
+            p.cached = None;
+            p.directory.advance_declared(&batch, Some(now))?;
+            if let Some(status) = p.directory.status()? {
+                let row = SubjectRow {
+                    version: 1,
+                    anchor: p.row.anchor,
+                    checkpoint: status.checkpoint,
+                    local: p.row.local,
+                };
+                self.registry
+                    .directory_subjects()
+                    .and_then(|rows| {
+                        rows.put(&p.anchor.network, &p.anchor.subject.key_bytes, None, &row)
+                    })
+                    .map_err(|_| RuntimeError::OutcomeUnknown)?;
+                p.row = row;
+            }
+            return done();
+        }
+        // Two different signed records at the same revision: the account's key signed both, so
+        // neither relay is wrong. Every relay keeps the branch whose record at the first
+        // difference has the lower hash, so all relays end on the same branch without anyone
+        // deciding. A branch that has already expired never replaces a held one.
+        if hashes[common] >= held[common]
+            || current_until.is_none_or(|until| tuple(now) >= tuple(until))
+        {
+            return done();
+        }
+        let was_local = p.row.local;
+        p.directory.erase()?;
+        self.handles.remove(key);
+        let address = crate::monad_stamp_stealth::recipient_address_from_public_key(&subject)
+            .map_err(|_| RuntimeError::Invalid)?
+            .0;
+        self.rows()?
+            .delete(&key.0, &subject, &address)
+            .map_err(|_| RuntimeError::OutcomeUnknown)?;
+        if was_local {
+            self.shared.subjects.fetch_sub(1, Ordering::AcqRel);
+        } else {
+            self.shared.replicated.fetch_sub(1, Ordering::AcqRel);
+        }
+        let result = self.enroll(key, chain, now);
+        result.and_then(|_| done())
     }
     /// The entry and its relay binding must still be unexpired when the answer leaves.
     fn finish(&mut self, current: Current) -> Result<(Current, Timestamp)> {
@@ -627,6 +807,10 @@ impl<'a> Worker<'a> {
             return Err(RuntimeError::NotFound);
         }
         let now = self.now()?;
+        let op = match op {
+            Operation::Adopt(chain) => return self.adopt(key, chain, now),
+            other => other,
+        };
         if !self.handles.contains_key(key) {
             match self.open(key)? {
                 Some(principal) => {
@@ -635,7 +819,7 @@ impl<'a> Worker<'a> {
                 }
                 None => {
                     return match op {
-                        Operation::Put(bytes) => self.enroll(key, bytes, now),
+                        Operation::Put(bytes) => self.enroll(key, vec![bytes], now),
                         _ => Err(RuntimeError::NotFound),
                     }
                 }
@@ -740,7 +924,7 @@ impl<'a> Worker<'a> {
                     advanced
                 }
             }
-            Operation::Historical(_) | Operation::Chain => unreachable!(),
+            Operation::Historical(_) | Operation::Chain | Operation::Adopt(_) => unreachable!(),
             #[cfg(test)]
             Operation::Barrier { .. } => unreachable!(),
         };
@@ -803,6 +987,7 @@ impl DirectoryRuntime {
         }
         let claim = Claim(address);
         let (sender, mut receiver) = mpsc::channel::<Job>(8);
+        let (replica_sender, mut replica) = mpsc::channel::<Job>(16);
         let (ready_send, ready) = oneshot::channel();
         let (stopped, _) = watch::channel(false);
         let shared = Arc::new(Shared {
@@ -849,7 +1034,17 @@ impl DirectoryRuntime {
                     };
                     worker_shared.ready.store(true, Ordering::Release);
                     let _ = ready_send.send(Ok(()));
-                    while let Some(job) = receiver.blocking_recv() {
+                    // Users' operations first; copied chains when no user is waiting.
+                    while let Some(job) = futures::executor::block_on(async {
+                        tokio::select! {
+                            biased;
+                            job = receiver.recv() => job,
+                            job = replica.recv() => match job {
+                                Some(job) => Some(job),
+                                None => receiver.recv().await,
+                            },
+                        }
+                    }) {
                         if worker_shared.closed.load(Ordering::Acquire) {
                             receiver.close();
                         }
@@ -918,6 +1113,7 @@ impl DirectoryRuntime {
                     federation: OnceLock::new(),
                     registry,
                     sender: Mutex::new(Some(sender)),
+                    replica_sender: Mutex::new(Some(replica_sender)),
                     join: Mutex::new(Some(join)),
                 }),
             },
@@ -1073,6 +1269,34 @@ impl DirectoryRuntime {
             receiver,
         }
     }
+    /// Offer a whole chain copied from a peer relay. Waits for room in the copying queue, which
+    /// is separate from the queue that serves users. Every record is verified by the owner.
+    pub async fn replicate(&self, network: &str, subject: &str, chain: Vec<Vec<u8>>) -> Result<()> {
+        if !valid_key(network, subject) {
+            return Err(RuntimeError::Invalid);
+        }
+        let sender = self
+            .owner
+            .replica_sender
+            .lock()
+            .unwrap()
+            .as_ref()
+            .ok_or(RuntimeError::NotStarted)?
+            .clone();
+        let permit = sender
+            .reserve_owned()
+            .await
+            .map_err(|_| RuntimeError::NotStarted)?;
+        let reservation = Reservation {
+            permit,
+            key: (network.into(), subject.into()),
+            deadline: Instant::now() + RESPONSE_BUDGET,
+        };
+        self.send(reservation, Work::Request(Operation::Adopt(chain)))
+            .wait()
+            .await
+            .map(|_| ())
+    }
     fn send(&self, reservation: Reservation, work: Work) -> Submission {
         let (reply, receiver) = oneshot::channel();
         let phase = Arc::new(AtomicU8::new(QUEUED));
@@ -1094,6 +1318,7 @@ impl DirectoryRuntime {
         self.owner.shared.closed.store(true, Ordering::Release);
         self.owner.shared.ready.store(false, Ordering::Release);
         self.owner.sender.lock().unwrap().take();
+        self.owner.replica_sender.lock().unwrap().take();
     }
     /// Wait asynchronously for native completion; join only after the completion notification.
     pub async fn wait_stopped(&self) {

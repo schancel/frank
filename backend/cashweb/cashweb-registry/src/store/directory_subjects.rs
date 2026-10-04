@@ -23,11 +23,9 @@ pub(crate) const CF_FORWARD_BODIES_V1: &str = "forward_bodies_v1";
 /// One message this relay accepted for a recipient whose mailbox is on another relay.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ForwardRow {
-    /// Relay endpoint named by the recipient's entry.
-    pub(crate) endpoint: String,
+    /// Recipient key. Where it lives is read from its current entry at each attempt.
+    pub(crate) recipient: String,
     pub(crate) content_type: String,
-    /// Sender key, so its entry can be offered to the recipient's relay.
-    pub(crate) sender: String,
     pub(crate) network: String,
     pub(crate) created_ms: i64,
     pub(crate) attempts: u32,

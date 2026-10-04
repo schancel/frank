@@ -76,18 +76,77 @@ pub(crate) async fn handle_put(
             return Err(CanonicalError::Invalid);
         }
         let principals = request_principals(&request, descriptor.cbor_identifier)?;
-        // The recipient's own entry says which relay holds its mailbox. When this relay cannot
-        // deliver there, say so as a final answer: nothing is retained, no payment is broadcast.
-        let Some(recipient_current) =
-            deliverable_recipient(owner, descriptor.cbor_identifier, &principals.recipient).await?
-        else {
-            return undeliverable_response(
+        let directory = owner.directory().ok_or(CanonicalError::Unavailable)?;
+        let federation = directory.federation().cloned();
+        let identity = request.submission_identity();
+        // A message this relay already accepted for another relay: the same bytes get the same
+        // handling, whatever has changed since.
+        if let Some(federation) = &federation {
+            let known = server
+                .registry
+                .directory_subjects()
+                .and_then(|rows| rows.forward(&identity))
+                .map_err(|_| CanonicalError::Unavailable)?;
+            if known.is_some() {
+                let (status, body) = federation
+                    .forward(&directory, &identity)
+                    .await
+                    .ok_or(CanonicalError::Unavailable)?;
+                return Ok(relayed_response(status, body));
+            }
+            // Entries of accounts that live on a peer relay are copied here on first need.
+            for subject in [&principals.recipient, &principals.sender] {
+                federation
+                    .learn(
+                        &directory,
+                        descriptor.cbor_identifier,
+                        &hex::encode(subject),
+                    )
+                    .await;
+            }
+        }
+        // The recipient's own entry says which relay holds its mailbox. When this relay can
+        // neither deliver nor forward, say so as a final answer: nothing is retained, no payment
+        // is broadcast.
+        let undeliverable = || {
+            undeliverable_response(
                 &request,
                 descriptor.cbor_identifier,
                 &principals,
                 "undeliverable",
-            );
+            )
         };
+        let Some(recipient_current) =
+            recipient_entry(owner, descriptor.cbor_identifier, &principals.recipient).await?
+        else {
+            return undeliverable();
+        };
+        let elsewhere = !directory.info().is_local(&recipient_current.relay);
+        if elsewhere {
+            // A message another relay passed on is delivered here or not at all. If this relay
+            // is not the recipient's home (it moved, or this copy of its entry is behind), the
+            // forwarding relay keeps the message and looks the home up again.
+            if headers.contains_key(crate::directory_federation::FORWARDED_HEADER) {
+                return Err(CanonicalError::Unavailable);
+            }
+            let Some(federation) = federation.as_ref().filter(|f| f.forwarding()) else {
+                return undeliverable();
+            };
+            if federation.peer_for(&recipient_current.relay).is_none() {
+                if !federation.peers_known() {
+                    federation.refresh_peers().await;
+                }
+                if federation.peer_for(&recipient_current.relay).is_none() {
+                    // Not one of the relays this one is configured to talk to. That is only a
+                    // final answer once every configured peer has said which relay it is.
+                    return if federation.peers_known() {
+                        undeliverable()
+                    } else {
+                        Err(CanonicalError::Unavailable)
+                    };
+                }
+            }
+        }
         // A sender whose own entry is missing or expired can republish and send a new message;
         // this one can never be verified.
         let Some(sender_current) =
@@ -102,7 +161,9 @@ pub(crate) async fn handle_put(
         };
         let Principals {
             recipient,
+            sender_t1,
             recipient_t1,
+            payload_hash,
             ..
         } = principals;
         let historical = if recipient_current.evidence.hash == recipient_t1 {
@@ -110,6 +171,16 @@ pub(crate) async fn handle_put(
         } else {
             Some(history(owner, descriptor.cbor_identifier, &recipient, recipient_t1).await?)
         };
+        let retained_request = elsewhere.then(|| request.clone());
+        let echo = SubmissionEcho::new(
+            &request,
+            descriptor.cbor_identifier,
+            crate::monad_stamp_stealth::recipient_address_from_public_key(&recipient)
+                .map_err(|_| CanonicalError::Invalid)?,
+            &payload_hash,
+            &sender_t1,
+            &recipient_t1,
+        );
         let input = crate::monad_outbox::financial::validate_canonical_payment_set(
             request,
             &sender_current,
@@ -119,6 +190,43 @@ pub(crate) async fn handle_put(
             descriptor.evm_chain_id,
             runtime.min_value_wei(),
         )?;
+        if let (Some(request), Some(federation)) = (retained_request, federation) {
+            // Checked exactly as a local delivery would be, then written down before anything
+            // is sent. The recipient's relay verifies it all again and broadcasts the payments;
+            // this relay never does.
+            drop(input);
+            let now = now_ms();
+            let row = crate::store::directory_subjects::ForwardRow {
+                recipient: hex::encode(&recipient),
+                content_type: request.content_type().to_owned(),
+                network: descriptor.cbor_identifier.to_owned(),
+                created_ms: now,
+                attempts: 0,
+                next_ms: now,
+                done: false,
+                status: 0,
+                response: String::new(),
+                echo: serde_json::to_value(&echo).map_err(|_| CanonicalError::Unavailable)?,
+            };
+            let stored = server.registry.directory_subjects().and_then(|rows| {
+                let pending = rows.forwards()?.iter().filter(|(_, row)| !row.done).count();
+                if pending >= crate::directory_federation::MAX_PENDING_FORWARDS {
+                    return Ok(false);
+                }
+                rows.put_forward(&identity, &row, Some(request.body()))?;
+                Ok(true)
+            });
+            match stored {
+                Ok(true) => (),
+                Ok(false) => return Err(CanonicalError::Capacity),
+                Err(_) => return Err(CanonicalError::Unavailable),
+            }
+            let (status, body) = federation
+                .forward(&directory, &identity)
+                .await
+                .ok_or(CanonicalError::Unavailable)?;
+            return Ok(relayed_response(status, body));
+        }
         server
             .registry
             .claim_canonical_dm(input, now_ms(), runtime.reconcile())?
@@ -207,10 +315,9 @@ pub(crate) struct Principals {
     pub(crate) recipient_t1: [u8; 32],
     pub(crate) payload_hash: [u8; 32],
 }
-/// The recipient's current entry when its mailbox is on this relay. `None` when this relay can
-/// never deliver the message: the recipient has no current entry here, or its entry names
-/// another relay. A directory that is merely busy is an error the sender may retry.
-async fn deliverable_recipient(
+/// The recipient's current entry, or `None` when it has none here: never published, expired or
+/// quarantined. A directory that is merely busy is an error the sender may retry.
+async fn recipient_entry(
     owner: &crate::store::monad_dm_cbor::Owner,
     network: &str,
     subject: &[u8],
@@ -225,9 +332,7 @@ async fn deliverable_recipient(
         .wait()
         .await
     {
-        Ok(AdmittedSnapshot::Current(current)) => {
-            Ok(Some(current).filter(|current| directory.info().is_local(&current.relay)))
-        }
+        Ok(AdmittedSnapshot::Current(current)) => Ok(Some(current)),
         Ok(_) => Err(CanonicalError::Unavailable),
         Err(RuntimeError::Busy | RuntimeError::NotStarted | RuntimeError::OutcomeUnknown) => {
             Err(CanonicalError::Unavailable)
@@ -259,6 +364,15 @@ async fn sender_entry(
         Err(RuntimeError::NotFound | RuntimeError::Expired | RuntimeError::Forked) => Ok(None),
         _ => Err(CanonicalError::Unavailable),
     }
+}
+/// Pass on the answer of the recipient's relay, or this relay's own "retained".
+fn relayed_response(status: u16, body: String) -> Response {
+    (
+        StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+        .into_response()
 }
 /// A final answer for a submission this relay will never deliver, in the shape of the other
 /// dead answers. Nothing was retained and no payment was broadcast.

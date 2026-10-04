@@ -76,6 +76,7 @@ fn evidence(result: std::result::Result<Evidence, RuntimeError>) -> Response {
 pub(crate) struct Routes {
     pub(crate) runtime: Arc<DirectoryRuntime>,
     enrollments: FixedHourQuota<IpAddr>,
+    announcements: Arc<tokio::sync::Semaphore>,
 }
 use crate::directory_runtime::MAX_ENTRY_BYTES;
 impl Routes {
@@ -109,16 +110,30 @@ async fn current(routes: &Routes, network: &str, subject: &str) -> Result<Eviden
     let slot = routes.runtime.reserve(network, subject)?;
     routes.runtime.submit(slot, Operation::Current).wait().await
 }
-/// `GET …/{P}/head` and `GET …/address/{0x-address}` share one route shape.
+fn from_relay(headers: &HeaderMap) -> bool {
+    headers.contains_key(crate::directory_federation::REPLICA_HEADER)
+}
+/// `GET …/{P}/head`, `…/{P}/chain` and `…/address/{0x-address}` share one route shape.
 async fn lookup(
     Extension(routes): Extension<Arc<Routes>>,
     Path((network, first, second)): Path<(String, String, String)>,
+    headers: HeaderMap,
 ) -> Response {
+    let runtime = &routes.runtime;
+    // A key or address this relay does not hold is looked for on its peers before it is called
+    // unknown. A peer asking on its own behalf is answered from what is held.
+    let peers = runtime
+        .federation()
+        .filter(|_| !from_relay(&headers) && network == runtime.info().network);
     if first == "address" {
         let Ok(address) = crate::monad_http::Address::from_hex(&second) else {
             return error(RuntimeError::Invalid);
         };
-        let Some(subject) = routes.runtime.subject_for_address(&network, &address.0) else {
+        let mut subject = runtime.subject_for_address(&network, &address.0);
+        if let (None, Some(peers)) = (&subject, peers) {
+            subject = peers.learn_address(runtime, &network, address).await;
+        }
+        let Some(subject) = subject else {
             return error(RuntimeError::NotFound);
         };
         let mut response = evidence(current(&routes, &network, &subject).await);
@@ -130,10 +145,83 @@ async fn lookup(
         }
         return response;
     }
-    if second != "head" {
+    if !crate::directory_runtime::valid_key(&network, &first) {
+        return error(RuntimeError::Invalid);
+    }
+    match second.as_str() {
+        "head" => {
+            if let Some(peers) = peers {
+                peers.learn(runtime, &network, &first).await;
+            }
+            evidence(current(&routes, &network, &first).await)
+        }
+        // Every record held for the key, as one CBOR array of byte strings, for a peer relay
+        // to verify. Served whether or not the head is still current.
+        "chain" => match runtime.reserve(&network, &first) {
+            Err(e) => error(e),
+            Ok(slot) => match runtime.submit(slot, Operation::Chain).wait().await {
+                Err(e) => error(e),
+                Ok(chain) => (
+                    StatusCode::OK,
+                    [
+                        (header::CONTENT_TYPE, "application/cbor"),
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
+                    chain.attestation,
+                )
+                    .into_response(),
+            },
+        },
+        _ => error(RuntimeError::NotFound),
+    }
+}
+#[derive(serde::Deserialize)]
+struct ListQuery {
+    after: Option<String>,
+    limit: Option<usize>,
+}
+/// One page of the keys this relay holds, in key order, with head hash and record count, so a
+/// peer can see what differs from its own copy.
+async fn subjects(
+    Extension(routes): Extension<Arc<Routes>>,
+    Path(network): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ListQuery>,
+) -> Response {
+    let limit = query.limit.unwrap_or(256).clamp(1, 256);
+    let Some(page) = routes.runtime.list(&network, query.after.as_deref(), limit) else {
+        return error(RuntimeError::Invalid);
+    };
+    let next = (page.len() == limit)
+        .then(|| page.last().map(|row| row.0.clone()))
+        .flatten();
+    Json(serde_json::json!({
+        "subjects": page.into_iter().map(|(subject, head, retained, forked)| serde_json::json!({
+            "subject": subject, "head": head, "retained": retained, "forked": forked,
+        })).collect::<Vec<_>>(),
+        "next": next,
+    }))
+    .into_response()
+}
+/// A peer says a key's chain changed there. This relay then copies it from its own configured
+/// peers; the request itself carries nothing that has to be believed.
+async fn announce(
+    Extension(routes): Extension<Arc<Routes>>,
+    Path((network, subject, leaf)): Path<(String, String, String)>,
+) -> Response {
+    let runtime = routes.runtime.clone();
+    if leaf != "announce" || !crate::directory_runtime::valid_key(&network, &subject) {
         return error(RuntimeError::NotFound);
     }
-    evidence(current(&routes, &network, &first).await)
+    let Some(federation) = runtime.federation().cloned() else {
+        return error(RuntimeError::NotFound);
+    };
+    if let Ok(permit) = routes.announcements.clone().try_acquire_owned() {
+        tokio::spawn(async move {
+            federation.announced(&runtime, &network, &subject).await;
+            drop(permit);
+        });
+    }
+    StatusCode::ACCEPTED.into_response()
 }
 async fn historical(
     Extension(routes): Extension<Arc<Routes>>,
@@ -197,6 +285,12 @@ async fn put(
     if !crate::directory_runtime::valid_key(&network, &subject) {
         return error(RuntimeError::Invalid);
     }
+    // Before a first entry for a key is accepted here, peers are asked whether the key already
+    // has a chain. If it has, that chain is copied first, so an account restored on this relay
+    // gets 409 for a fresh revision 0 and adopts its existing entry instead of forking itself.
+    if let Some(peers) = runtime.federation().filter(|_| !from_relay(&headers)) {
+        peers.learn(runtime, &network, &subject).await;
+    }
     // Publishing is free, so a key this relay has never seen is charged to its source, and only
     // once the entry is known to be signed by that key: a forgery costs its sender nothing here
     // and cannot use up anyone's allowance.
@@ -225,7 +319,11 @@ async fn put(
         Ok(s) => s,
         Err(e) => return error(e),
     };
-    evidence(runtime.submit(slot, Operation::Put(bytes)).wait().await)
+    let result = runtime.submit(slot, Operation::Put(bytes)).wait().await;
+    if let (Ok(_), Some(peers)) = (&result, runtime.federation()) {
+        peers.announce(&network, &subject);
+    }
+    evidence(result)
 }
 /// The relay-wide tuple an account embeds in its own entry.
 async fn info(Extension(routes): Extension<Arc<Routes>>) -> Response {
@@ -240,7 +338,8 @@ async fn info(Extension(routes): Extension<Arc<Routes>>) -> Response {
             "bindingExpiry": info.binding_expiry_ns(),
             // Whether this relay accepts a message for a recipient whose entry names another
             // relay and forwards it there. While false such a message is answered as undeliverable.
-            "forwarding": false,
+            // True only when the operator enabled it and it is running.
+            "forwarding": routes.runtime.federation().is_some_and(|peers| peers.forwarding()),
         })),
     )
         .into_response()
@@ -249,13 +348,15 @@ async fn info(Extension(routes): Extension<Arc<Routes>>) -> Response {
 pub fn router(runtime: Arc<DirectoryRuntime>) -> Router {
     let routes = Arc::new(Routes {
         enrollments: FixedHourQuota::new(runtime.enrollments_per_source_per_hour()),
+        announcements: Arc::new(tokio::sync::Semaphore::new(4)),
         runtime,
     });
     Router::new()
         .route(
             "/directory/v1/:network/:subject/:leaf",
-            routing::get(lookup).put(put),
+            routing::get(lookup).put(put).post(announce),
         )
+        .route("/directory/v1/:network/subjects", routing::get(subjects))
         .route(
             "/directory/v1/:network/:subject/statements/:t1",
             routing::get(historical),

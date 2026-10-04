@@ -124,13 +124,12 @@ import { mkdirSync } from 'fs'
 import { dirname } from 'path'
 import type { Current } from '@frank/directory-admission'
 import type { DirectoryFetch } from '@frank/cashweb/relay/directory-client'
+import { directoryAddress } from '@frank/cashweb/relay/open-directory'
 import {
-  OpenDirectoryError,
-  directoryAddress,
-  openDirectory,
-  type OpenDirectoryErrorCode,
-} from '@frank/cashweb/relay/open-directory'
-import { nodeDirectoryStorage } from '@frank/cashweb/relay/open-directory-node'
+  isOpenDirectoryError,
+  openBotDirectory,
+  publishBotDirectoryEntry,
+} from './bot-open-directory'
 import {
   fetchCanonicalInboxPage,
   type CanonicalMailboxAuthParams,
@@ -138,8 +137,6 @@ import {
 import {
   createCanonicalMessageRoles,
   prepareCanonicalStampInventory,
-  prepareMonadNextRevisionExport,
-  prepareMonadRevisionZeroExport,
   type MonadChainWalletHandle,
 } from '@frank/wallet/chain/monad-chain'
 
@@ -908,35 +905,23 @@ export function openQwenDirectory(params: {
   fetch: DirectoryFetch
   nowNs?: () => bigint
 }): QwenOpenDirectory {
-  const { tag, network, chainId } = canonicalNetworkDescriptor(
-    params.networkTag,
-  )
-  const descriptor = { networkTag: tag, network, chainId }
-  const handle = params.wallet.handle
   // When the relay last answered a head read for a key, so a forced read can tell an answer the
   // relay gave just now from one the shared directory remembered.
   const answeredAt = new Map<string, number>()
   const headRead = /\/directory\/v1\/[^/]+\/((?:02|03)[0-9a-f]{64})\/head$/
-  const directory = openDirectory({
-    network,
+  const directory = openBotDirectory({
+    handle: params.wallet.handle,
+    subject: params.wallet.subject,
+    networkTag: params.networkTag,
     relayBaseUrl: params.relayBaseUrl,
-    nowNs: params.nowNs ?? (() => BigInt(Date.now()) * 1_000_000n),
+    location: params.location,
+    nowNs: params.nowNs,
     fetch: async (url, init) => {
       const response = await params.fetch(url, init)
       const read = init.method === 'GET' ? headRead.exec(url) : null
       if (read && (response.status === 200 || response.status === 404))
         answeredAt.set(read[1], Date.now())
       return response
-    },
-    ...nodeDirectoryStorage(params.location),
-    self: {
-      subject: params.wallet.subject,
-      signRevisionZero: input =>
-        prepareMonadRevisionZeroExport(handle, { ...descriptor, ...input })
-          .attestation,
-      signNextRevision: input =>
-        prepareMonadNextRevisionExport(handle, { ...descriptor, ...input })
-          .attestation,
     },
   })
   const refusals = new Map<string, string>()
@@ -979,75 +964,11 @@ export function openQwenDirectory(params: {
   }
 }
 
-const DIRECTORY_CODES: readonly OpenDirectoryErrorCode[] = [
-  'not-published',
-  'unreachable',
-  'invalid',
-  'expired',
-  'rollback',
-  'fork',
-  'rejected',
-  'relay-info',
-  'storage',
-  'unpublished',
-]
-function isOpenDirectoryError(error: unknown): error is OpenDirectoryError {
-  const candidate = error as { name?: unknown; code?: unknown } | null
-  return (
-    error instanceof OpenDirectoryError ||
-    (candidate?.name === 'OpenDirectoryError' &&
-      DIRECTORY_CODES.includes(candidate.code as OpenDirectoryErrorCode))
-  )
-}
-
-/** Fixed words only: safe to log. */
-const PUBLISH_REASONS: Record<OpenDirectoryErrorCode, string> = {
-  'unreachable': 'the relay could not be reached',
-  'relay-info': 'the relay did not describe itself for this network',
-  'rejected': 'the relay refused to store the entry',
-  'invalid': 'the relay holds an entry for this account that does not verify',
-  'expired': 'the entry for this account has expired and was not renewed',
-  'rollback': 'the relay served an older entry than one already accepted',
-  'fork': 'two conflicting entries exist for this account',
-  'storage': 'local directory storage is unavailable',
-  'not-published': 'the entry is not published',
-  'unpublished': 'the entry is not published',
-}
-
 /**
- * Publishes the bot's own directory entry and returns only once the relay holds it. Every
- * directory failure is retried with doubling backoff and logged with a fixed reason; the caller
- * must not import or answer anything before this returns. Anything that is not a directory
- * failure (for example wallet custody) is thrown.
+ * Publishes the bot's own directory entry and returns only once the relay holds it; see
+ * `publishBotDirectoryEntry`, the one implementation every bot uses.
  */
-export async function publishQwenDirectoryEntry(params: {
-  directory: Pick<QwenOpenDirectory, 'publish'>
-  label: string
-  firstDelayMs?: number
-  maxDelayMs?: number
-  /** Test seam. Production callers omit it. */
-  sleep?: (ms: number) => Promise<void>
-}): Promise<void> {
-  const wait = params.sleep ?? sleep
-  const maxDelayMs = params.maxDelayMs ?? 60_000
-  let delayMs = Math.min(params.firstDelayMs ?? 1_000, maxDelayMs)
-  for (;;) {
-    try {
-      await params.directory.publish()
-      console.log(`[${params.label}] directory entry published`)
-      return
-    } catch (error) {
-      if (!isOpenDirectoryError(error)) throw error
-      console.warn(
-        `[${params.label}] directory entry not published: ${
-          PUBLISH_REASONS[error.code]
-        } (${error.code}); retrying in ${delayMs} ms`,
-      )
-      await wait(delayMs)
-      delayMs = Math.min(delayMs * 2, maxDelayMs)
-    }
-  }
-}
+export const publishQwenDirectoryEntry = publishBotDirectoryEntry
 
 /**
  * #703/#778 canonical composition over the one live typed wallet and the open directory.

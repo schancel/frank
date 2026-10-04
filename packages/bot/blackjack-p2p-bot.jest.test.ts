@@ -35,7 +35,7 @@ import {
   type BotStore,
   runBlackjackP2pBot,
 } from './blackjack-p2p-bot'
-import { sinceFeed } from './blackjack-p2p-bot.livecheck'
+import { relayNewAccounts, sinceFeed } from './blackjack-p2p-bot.livecheck'
 
 const BOT = '0xB07b07B07b07b07b07b07B07b07B07b07b07b07B'
 const USER = '0x1111111111111111111111111111111111111111'
@@ -974,6 +974,55 @@ describe('the new-accounts feed', () => {
     clock = 4_000
     await feed()
     expect(asked).toEqual([1_000, 2_000, 2_000])
+  })
+
+  it('reads the relay listing by time first and then from the position the relay hands back', async () => {
+    const urls: string[] = []
+    const cursor = 'ab'.repeat(28)
+    const answers: (() => { ok: boolean; status: number; body?: unknown })[] = [
+      () => ({ ok: false, status: 503 }),
+      () => ({ ok: true, status: 200, body: { accounts: [], cursor: null } }),
+      () => ({
+        ok: true,
+        status: 200,
+        body: { accounts: [{ address: USER, acceptedMs: 5 }], cursor },
+      }),
+      () => ({ ok: true, status: 200, body: { accounts: [], cursor } }),
+      () => ({ ok: true, status: 200, body: { accounts: [{ address: 'bob' }] } }),
+      () => ({ ok: true, status: 200, body: { accounts: [], cursor: 'zz' } }),
+      () => ({
+        ok: true,
+        status: 200,
+        body: { accounts: [{ address: OTHER, acceptedMs: 9 }], cursor },
+      }),
+    ]
+    const feed = relayNewAccounts(
+      'https://relay.example/directory/v1/monad-testnet/accounts',
+      async url => {
+        urls.push(url)
+        const answer = (answers.shift() as (typeof answers)[number])()
+        return { ...answer, json: async () => answer.body }
+      },
+    )
+    const base = 'https://relay.example/directory/v1/monad-testnet/accounts'
+    await expect(feed(1_000)).rejects.toThrow('503')
+    expect(await feed(1_000)).toEqual([])
+    // No position yet: the time is still what is asked.
+    expect(await feed(2_000.7)).toEqual([USER])
+    // From here on the relay's position is used and the time is ignored.
+    expect(await feed(9_000)).toEqual([])
+    await expect(feed(9_000)).rejects.toThrow('no address')
+    await expect(feed(9_000)).rejects.toThrow('cursor')
+    expect(await feed(9_000)).toEqual([OTHER])
+    expect(urls).toEqual([
+      `${base}?since=1000`,
+      `${base}?since=1000`,
+      `${base}?since=2000`,
+      `${base}?after=${cursor}`,
+      `${base}?after=${cursor}`,
+      `${base}?after=${cursor}`,
+      `${base}?after=${cursor}`,
+    ])
   })
 
   it('feeds the bot, which challenges each new account once', async () => {

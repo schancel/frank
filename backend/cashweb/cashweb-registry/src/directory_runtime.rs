@@ -967,6 +967,52 @@ mod reload_tests {
     use super::*;
     use crate::http::directory::tests::{record, setup};
     #[tokio::test]
+    async fn failed_reload_with_independent_future_clock_preserves_durable_old_generation() {
+        let root = tempfile::tempdir().unwrap();
+        let (registry, config) = setup(root.path());
+        let c = config.principals[0].clone();
+        let (runtime, ready) =
+            DirectoryRuntime::start(registry, root.path().join("db"), config.clone()).unwrap();
+        ready.await.unwrap().unwrap();
+        let original = hex::decode(record("bootstrap")["type2_hex"].as_str().unwrap()).unwrap();
+        runtime
+            .submit(
+                runtime.reserve(&c.network, &c.subject).unwrap(),
+                Operation::Put(original.clone()),
+            )
+            .wait()
+            .await
+            .unwrap();
+        let before = fs::read(&c.continuity_file).unwrap();
+        let mut next = config.clone();
+        next.clock_file = root.path().join("independent-future-clock");
+        fs::write(&next.clock_file, "1700000120000000000\n").unwrap();
+        next.principals[0].mode = "reopen".into();
+        let mut later_invalid = next.principals[0].clone();
+        later_invalid.continuity_file = root.path().join("other-continuity");
+        later_invalid.mode = "invalid".into();
+        next.principals.push(later_invalid);
+        assert!(matches!(
+            runtime.reload(next).unwrap().wait().await,
+            Err(RuntimeError::Trust)
+        ));
+        assert_eq!(fs::read(&c.continuity_file).unwrap(), before);
+        // The rejected bundle cannot persist its independent future clock into the old owner.
+        let current = runtime
+            .submit(
+                runtime.reserve(&c.network, &c.subject).unwrap(),
+                Operation::Current,
+            )
+            .wait()
+            .await;
+        runtime.begin_shutdown();
+        runtime.wait_stopped().await;
+        assert_eq!(current.unwrap().attestation, original);
+        let floor: Continuity =
+            serde_json::from_slice(&fs::read(&c.continuity_file).unwrap()).unwrap();
+        assert_eq!(floor.checkpoint.checked_time, (1700000100, 0));
+    }
+    #[tokio::test]
     async fn reload_rejects_old_queued_generation_and_preserves_previous_generation_on_failure() {
         let root = tempfile::tempdir().unwrap();
         let (registry, mut config) = setup(root.path());

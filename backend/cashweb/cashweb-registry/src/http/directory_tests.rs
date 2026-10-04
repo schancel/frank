@@ -158,6 +158,39 @@ async fn exact_http_admission_duplicate_history_and_authenticated_reopen() {
     failed.wait_stopped().await;
 }
 #[tokio::test]
+async fn first_historical_request_after_missing_external_floor_is_conflict() {
+    let root = tempfile::tempdir().unwrap();
+    let (registry, config) = setup(root.path());
+    let c = &config.principals[0];
+    let (runtime, ready) =
+        DirectoryRuntime::start(registry, root.path().join("db"), config.clone()).unwrap();
+    ready.await.unwrap().unwrap();
+    let path = format!("/directory/v1/{}/{}/head", c.network, c.subject);
+    let routes = router(Arc::new(runtime.clone()));
+    let original = hex::decode(record("bootstrap")["type2_hex"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        request(routes.clone(), "PUT", &path, original.clone(), MEDIA)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let history = path.trim_end_matches("head").to_owned()
+        + "statements/"
+        + record("bootstrap")["t1"].as_str().unwrap();
+    std::fs::write(&config.clock_file, "1700008000000000000\n").unwrap();
+    // Archive evidence remains available with a valid floor despite current-head expiry.
+    let retained = request(routes.clone(), "GET", &history, vec![], MEDIA).await;
+    assert_eq!(retained.0, StatusCode::OK);
+    assert_eq!(retained.1["x-frank-directory-evidence"], "historical");
+    assert_eq!(retained.2, original);
+    std::fs::remove_file(&c.continuity_file).unwrap();
+    let missing = request(routes, "GET", &history, vec![], MEDIA).await;
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+    assert_eq!(missing.0, StatusCode::CONFLICT);
+    assert!(!c.continuity_file.exists());
+}
+#[tokio::test]
 async fn http_reserves_before_body_and_bounds_collection_without_starting_native_work() {
     let root = tempfile::tempdir().unwrap();
     let (registry, config) = setup(root.path());

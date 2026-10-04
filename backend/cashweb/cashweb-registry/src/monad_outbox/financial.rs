@@ -5,6 +5,7 @@
 //! its existing storage lock. Scheduling, leases and publication remain outside this module.
 
 use std::collections::HashSet;
+use std::sync::{Mutex, MutexGuard};
 
 use bitcoinsuite_core::{Hashed, Sha256};
 use bitcoinsuite_error::{bail, Result, WrapErr};
@@ -28,6 +29,33 @@ use crate::{
 const PAYMENT_COMMITMENT_DOMAIN: &[u8] = b"frank:dm-stamp-payment:v1";
 pub(crate) const MAX_STAMP_PAYMENTS: usize = 64;
 
+/// One Registry lifetime serializes reservation increases in both durable namespaces.
+/// Never take this gate while holding a store lock or across transport work.
+#[derive(Debug, Default)]
+pub(crate) struct AdmissionOwner {
+    gate: Mutex<()>,
+}
+impl AdmissionOwner {
+    pub(crate) fn lock(&self) -> Result<MutexGuard<'_, ()>> {
+        Ok(self.gate.lock().map_err(|_| {
+            crate::store::monad_outbox::DbMonadOutboxError::CorruptRecord(
+                "financial admission owner unavailable".to_owned(),
+            )
+        })?)
+    }
+}
+
+/// Read-only durable capacity facts. They carry neither payment nor Current authority.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct AdmissionUsage {
+    pub(crate) active: u64,
+    pub(crate) global_records: u64,
+    pub(crate) global_bytes: u64,
+    pub(crate) recipient_records: u64,
+    pub(crate) recipient_bytes: u64,
+    pub(crate) unconfirmed: u64,
+}
+
 /// CPU facts for one exact canonical request. Only this owner can construct them.
 pub(crate) struct CanonicalPaymentInput {
     request: crate::http::monad_message_cbor::ExactRequest,
@@ -36,6 +64,9 @@ pub(crate) struct CanonicalPaymentInput {
 }
 
 impl CanonicalPaymentInput {
+    pub(crate) fn recipient(&self) -> crate::http::monad_message_cbor::Result<Address> {
+        self.policy.recipient()
+    }
     pub(crate) fn into_claim(
         self,
         now: i64,
@@ -64,6 +95,8 @@ impl CanonicalPaymentInput {
             .collect();
         let millis =
             |duration: std::time::Duration| duration.as_millis().min(i64::MAX as u128) as i64;
+        let reserved_charge =
+            crate::store::monad_dm_cbor::reserved_footprint(&self.request, self.payments.len())?;
         Ok(Claim {
             request: self.request,
             policy: self.policy,
@@ -77,6 +110,7 @@ impl CanonicalPaymentInput {
             backoff_base_ms: millis(config.limits.retry_backoff_base) as u64,
             max_backoff_ms: millis(config.limits.max_retry_backoff) as u64,
             reservation: true,
+            reserved_charge,
         })
     }
 }

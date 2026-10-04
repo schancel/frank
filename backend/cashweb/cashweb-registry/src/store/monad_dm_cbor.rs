@@ -66,6 +66,30 @@ pub(crate) struct Claim {
     pub(crate) backoff_base_ms: u64,
     pub(crate) max_backoff_ms: u64,
     pub(crate) reservation: bool,
+    /// Admission-time maximum lifecycle footprint, never reclaimed by a transition.
+    pub(crate) reserved_charge: u64,
+}
+
+const MAX_RETAINED_OWNERS: u64 = 4096;
+const MAX_RETAINED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_RECIPIENT_OWNERS: u64 = 128;
+const MAX_RECIPIENT_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_AUTH_NONCES: usize = 4096;
+
+/// Binary CBOR metadata and every possible bounded lifecycle index/member.
+/// See the actual-encoder boundary probes; this does not allocate a future body.
+pub(crate) fn reserved_footprint(request: &ExactRequest, members: usize) -> Result<u64> {
+    let charge = request
+        .body()
+        .len()
+        .checked_add(8192)
+        .and_then(|bytes| {
+            members
+                .checked_mul(662)
+                .and_then(|overhead| bytes.checked_add(overhead))
+        })
+        .ok_or(CanonicalError::TooLarge)?;
+    u64::try_from(charge).map_err(|_| CanonicalError::TooLarge)
 }
 impl Claim {
     pub(crate) fn echo(&self) -> Result<SubmissionEcho> {
@@ -138,9 +162,10 @@ impl Owner {
             }
             let mut options = Options::default();
             options.create_if_missing(create);
-            *guard = Some(
-                rocksdb::DB::open(&options, &self.path).map_err(|_| CanonicalError::Unavailable)?,
-            );
+            let opened =
+                rocksdb::DB::open(&options, &self.path).map_err(|_| CanonicalError::Unavailable)?;
+            audit_retained_usage(&opened)?;
+            *guard = Some(opened);
         }
         if !self.path.join("CURRENT").is_file() {
             return Err(CanonicalError::Unavailable);
@@ -151,14 +176,31 @@ impl Owner {
         self.with(false, |db| load(db, payload_hash))
             .map(Option::flatten)
     }
+    /// Exact immutable lookup runs before fresh-directory or live admission policy.
+    /// The ordinary hash selects a row; complete bytes remain the comparator.
+    pub(crate) fn find_request(&self, request: &ExactRequest) -> Result<Option<Claim>> {
+        self.with(false, |db| find_request_locked(db, request))
+            .map(Option::flatten)
+    }
+    pub(crate) fn financial_usage(
+        &self,
+        recipient: Address,
+    ) -> Result<crate::monad_outbox::financial::AdmissionUsage> {
+        self.with(false, |db| financial_usage_locked(db, recipient))
+            .map(|usage| usage.unwrap_or_default())
+    }
     pub(crate) fn claim(
         &self,
         input: CanonicalPaymentInput,
         now: i64,
         config: &MonadOutboxReconcileConfig,
+        external: Result<crate::monad_outbox::financial::AdmissionUsage>,
     ) -> Result<Claim> {
         let candidate = input.into_claim(now, config)?;
         self.with(true, |db| {
+            if let Some(existing) = find_request_locked(db, &candidate.request)? {
+                return Ok(existing);
+            }
             if let Some(existing) = load(db, &candidate.policy.payload_hash)? {
                 if !existing.request.exact_equal(&candidate.request)
                     || existing.policy.network != candidate.policy.network
@@ -171,18 +213,19 @@ impl Owner {
                 }
                 return Ok(existing);
             }
-            capacity(db, &candidate, &config.limits)?;
+            capacity(db, &candidate, &config.limits, external?)?;
             let mut batch = WriteBatch::default();
-            batch.put(
-                row_key(&candidate.policy.payload_hash),
-                encode_claim(&candidate)?,
-            );
+            reserve_retained_owner(db, &mut batch, &candidate)?;
+            append_owner(&mut batch, &candidate.policy.payload_hash, &candidate)?;
             for member in &candidate.members {
                 batch.put(
                     member_key(&candidate.policy.payload_hash, member.child_index),
                     encode_member(member)?,
                 );
             }
+            let mut identity_key = b"S".to_vec();
+            identity_key.extend_from_slice(&candidate.request.submission_identity());
+            batch.put(identity_key, candidate.policy.payload_hash);
             write(db, batch)?;
             Ok(candidate)
         })?
@@ -313,14 +356,21 @@ impl Owner {
             member.exposed = exposed;
             member.lease_until_ms = 0;
             member.updated_at_ms = now;
-            member.last_error = error.chars().take(512).collect();
+            let mut end = error.len().min(512);
+            while !error.is_char_boundary(end) {
+                end -= 1;
+            }
+            member.last_error = error[..end].to_owned();
             let exponent = member.attempts.saturating_sub(1).min(63);
             let delay = claim
                 .backoff_base_ms
                 .saturating_mul(1u64 << exponent)
                 .min(claim.max_backoff_ms);
             member.next_replay_at_ms = now.saturating_add(delay.min(i64::MAX as u64) as i64);
-            if claim
+            if let MonadOutboxMemberState::Terminal(reason) = state {
+                claim.phase = Phase::Terminal(reason);
+                claim.reservation = claim.recoverable();
+            } else if claim
                 .members
                 .iter()
                 .all(|m| matches!(m.state, MonadOutboxMemberState::Confirmed { .. }))
@@ -339,7 +389,7 @@ impl Owner {
                         .unwrap(),
                 )?,
             );
-            batch.put(row_key(hash), encode_claim(&claim)?);
+            append_owner(&mut batch, hash, &claim)?;
             write(db, batch)?;
             Ok(true)
         })?
@@ -360,7 +410,7 @@ impl Owner {
             claim.updated = now;
             claim.reservation = claim.recoverable();
             let mut batch = WriteBatch::default();
-            batch.put(row_key(hash), encode_claim(&claim)?);
+            append_owner(&mut batch, hash, &claim)?;
             write(db, batch)
         })?
         .ok_or(CanonicalError::Unavailable)
@@ -383,7 +433,7 @@ impl Owner {
             claim.updated = now;
             claim.reservation = false;
             let mut batch = WriteBatch::default();
-            batch.put(row_key(hash), encode_claim(&claim)?);
+            append_owner(&mut batch, hash, &claim)?;
             let mut inbox = b"I".to_vec();
             inbox.extend_from_slice(&claim.policy.recipient()?.0);
             inbox.extend_from_slice(&now.to_be_bytes());
@@ -419,10 +469,19 @@ impl Owner {
             }
             let mut batch = WriteBatch::default();
             let mut live = 0usize;
+            let mut global_live = 0usize;
+            let mut inspected = 0usize;
             for item in db.iterator(IteratorMode::Start) {
                 let (row, value) = item.map_err(|_| CanonicalError::Unavailable)?;
-                if !row.starts_with(&prefix) {
+                if row.first() != Some(&b'N') {
                     continue;
+                }
+                inspected += 1;
+                if inspected > MAX_AUTH_NONCES {
+                    return Err(CanonicalError::Unavailable);
+                }
+                if row.len() != 85 {
+                    return Err(CanonicalError::Unavailable);
                 }
                 let time = i64::from_be_bytes(
                     value
@@ -433,10 +492,13 @@ impl Owner {
                 if time < now {
                     batch.delete(row);
                 } else {
-                    live += 1;
+                    global_live += 1;
+                    if row.starts_with(&prefix) {
+                        live += 1;
+                    }
                 }
             }
-            if live >= cap {
+            if live >= cap || global_live >= MAX_AUTH_NONCES {
                 return Ok(ChallengeConsumption::AtCapacity);
             }
             batch.put(key, expires.to_be_bytes());
@@ -542,7 +604,7 @@ impl Owner {
             // Keep the confirmed/exposed member history intact. The durable
             // reservation flag records acknowledgment without rewriting facts.
             let mut batch = WriteBatch::default();
-            batch.put(row_key(&hash), encode_claim(&claim)?);
+            append_owner(&mut batch, &hash, &claim)?;
             write(db, batch)
         })?
         .ok_or(CanonicalError::Unauthorized)
@@ -559,6 +621,140 @@ fn row_key(hash: &[u8; 32]) -> Vec<u8> {
     let mut key = b"R".to_vec();
     key.extend_from_slice(hash);
     key
+}
+
+fn usage_key(hash: &[u8; 32]) -> Vec<u8> {
+    let mut key = b"J".to_vec();
+    key.extend_from_slice(hash);
+    key
+}
+fn encode_usage_header(claim: &Claim) -> Result<Vec<u8>> {
+    encode(CborValue::Array(vec![
+        int(1),
+        blob(claim.policy.recipient()?.0),
+        CborValue::Bool(matches!(
+            claim.phase,
+            Phase::Pending | Phase::FullyConfirmed
+        )),
+        CborValue::Bool(claim.reservation),
+        int(claim.reserved_charge),
+        CborValue::Bool(matches!(
+            claim.members.first().map(|m| &m.state),
+            Some(MonadOutboxMemberState::Confirmed { .. })
+        )),
+    ]))
+}
+fn append_owner(batch: &mut WriteBatch, hash: &[u8; 32], claim: &Claim) -> Result<()> {
+    if *hash != claim.policy.payload_hash
+        || claim.reserved_charge != reserved_footprint(&claim.request, claim.members.len())?
+    {
+        return Err(CanonicalError::Unavailable);
+    }
+    let row = encode_claim(claim)?;
+    let header = encode_usage_header(claim)?;
+    if header.len() > 128 || row.len().saturating_add(33) as u64 > claim.reserved_charge {
+        return Err(CanonicalError::Unavailable);
+    }
+    batch.put(row_key(hash), row);
+    batch.put(usage_key(hash), header);
+    Ok(())
+}
+fn financial_usage_locked(
+    db: &rocksdb::DB,
+    recipient: Address,
+) -> Result<crate::monad_outbox::financial::AdmissionUsage> {
+    let mut usage = crate::monad_outbox::financial::AdmissionUsage::default();
+    let mut inspected = 0u64;
+    for item in db.iterator(IteratorMode::Start) {
+        let (key, value) = item.map_err(|_| CanonicalError::Unavailable)?;
+        if key.first() != Some(&b'J') {
+            continue;
+        }
+        inspected += 1;
+        if inspected > MAX_RETAINED_OWNERS || key.len() != 33 || value.len() > 128 {
+            return Err(CanonicalError::Unavailable);
+        }
+        let value = decode_canonical(&value).map_err(|_| CanonicalError::Unavailable)?;
+        let [version, owner, active, reserved, charge, confirmed] = array(&value)? else {
+            return Err(CanonicalError::Unavailable);
+        };
+        if number(version)? != 1 {
+            return Err(CanonicalError::Unavailable);
+        }
+        let owner = Address(fixed(owner)?);
+        let charge: u64 = convert(charge)?;
+        if charge < 8192
+            || charge
+                > (crate::http::monad_message_cbor::MAX_REQUEST_BYTES + 8192 + 64 * 662) as u64
+        {
+            return Err(CanonicalError::Unavailable);
+        }
+        let active = boolean(active)?;
+        let reserved = boolean(reserved)?;
+        let confirmed = boolean(confirmed)?;
+        if active && !reserved {
+            return Err(CanonicalError::Unavailable);
+        }
+        let add = |a: u64, b: u64| a.checked_add(b).ok_or(CanonicalError::Unavailable);
+        if active {
+            usage.active = add(usage.active, 1)?;
+        }
+        if reserved {
+            usage.global_records = add(usage.global_records, 1)?;
+            usage.global_bytes = add(usage.global_bytes, charge)?;
+            if owner == recipient {
+                usage.recipient_records = add(usage.recipient_records, 1)?;
+                usage.recipient_bytes = add(usage.recipient_bytes, charge)?;
+                if !confirmed {
+                    usage.unconfirmed = add(usage.unconfirmed, 1)?;
+                }
+            }
+        }
+    }
+    Ok(usage)
+}
+
+fn find_request_locked(db: &rocksdb::DB, request: &ExactRequest) -> Result<Option<Claim>> {
+    use frank_cbor::{default_context, validate_frame, TypedPayload, ValidationResult};
+    let mut identity_key = b"S".to_vec();
+    identity_key.extend_from_slice(&request.submission_identity());
+    let indexed = db
+        .get(identity_key)
+        .map_err(|_| CanonicalError::Unavailable)?;
+    let ValidationResult::Parsed(frame) = validate_frame(request.delivery(), &default_context())
+        .map_err(|_| CanonicalError::Invalid)?
+    else {
+        return Err(CanonicalError::Invalid);
+    };
+    let Some(TypedPayload::DirectMessage { payload_digest, .. }) = frame.typed.as_deref() else {
+        return Err(CanonicalError::Invalid);
+    };
+    let hash: [u8; 32] = payload_digest
+        .as_slice()
+        .try_into()
+        .map_err(|_| CanonicalError::Invalid)?;
+    let lookup = if let Some(indexed) = indexed.as_ref() {
+        let reference: [u8; 32] = indexed
+            .as_ref()
+            .try_into()
+            .map_err(|_| CanonicalError::Unavailable)?;
+        if reference != hash {
+            return Err(CanonicalError::Conflict);
+        }
+        reference
+    } else {
+        hash
+    };
+    let Some(existing) = load(db, &lookup)? else {
+        if indexed.is_some() {
+            return Err(CanonicalError::Unavailable);
+        }
+        return Ok(None);
+    };
+    if !existing.request.exact_equal(request) {
+        return Err(CanonicalError::Conflict);
+    }
+    Ok(Some(existing))
 }
 fn member_key(hash: &[u8; 32], index: u32) -> Vec<u8> {
     let mut key = b"M".to_vec();
@@ -701,6 +897,7 @@ fn encode_claim(c: &Claim) -> Result<Vec<u8>> {
         (11, int(c.backoff_base_ms)),
         (12, int(c.max_backoff_ms)),
         (13, CborValue::Bool(c.reservation)),
+        (14, int(c.reserved_charge)),
     ]))
 }
 fn load(db: &rocksdb::DB, hash: &[u8; 32]) -> Result<Option<Claim>> {
@@ -711,7 +908,7 @@ fn load(db: &rocksdb::DB, hash: &[u8; 32]) -> Result<Option<Claim>> {
         return Ok(None);
     };
     let value = decode_canonical(&raw).map_err(|_| CanonicalError::Unavailable)?;
-    let rows = fields(&value, 14)?;
+    let rows = fields(&value, 15)?;
     let v = |i: usize| &rows[i].1;
     if number(v(0))? != 1 {
         return Err(CanonicalError::Unavailable);
@@ -787,11 +984,25 @@ fn load(db: &rocksdb::DB, hash: &[u8; 32]) -> Result<Option<Claim>> {
         backoff_base_ms: convert(v(11))?,
         max_backoff_ms: convert(v(12))?,
         reservation: boolean(v(13))?,
+        reserved_charge: convert(v(14))?,
     };
+    if claim.reserved_charge != reserved_footprint(&claim.request, claim.members.len())? {
+        return Err(CanonicalError::Unavailable);
+    }
     crate::monad_outbox::financial::validate_canonical_retained(&claim)?;
+    let header = db
+        .get(usage_key(hash))
+        .map_err(|_| CanonicalError::Unavailable)?
+        .ok_or(CanonicalError::Unavailable)?;
+    if header.as_ref() != encode_usage_header(&claim)?.as_slice() {
+        return Err(CanonicalError::Unavailable);
+    }
     Ok(Some(claim))
 }
 fn encode_member(m: &MonadOutboxMember) -> Result<Vec<u8>> {
+    if m.last_error.len() > 512 {
+        return Err(CanonicalError::Unavailable);
+    }
     let state = match m.state {
         MonadOutboxMemberState::Pending => vec![int(0)],
         MonadOutboxMemberState::Confirmed {
@@ -846,48 +1057,274 @@ fn put_member(db: &rocksdb::DB, hash: &[u8; 32], m: &MonadOutboxMember) -> Resul
     batch.put(member_key(hash, m.child_index), encode_member(m)?);
     write(db, batch)
 }
-fn capacity(db: &rocksdb::DB, candidate: &Claim, limits: &MonadOutboxLimits) -> Result<()> {
-    let mut active = 0usize;
-    let mut rows = 0usize;
-    let mut charge = 0usize;
-    let mut recipient_count = 0usize;
-    let mut recipient_charge = 0usize;
+
+fn retained_usage(db: &rocksdb::DB, key: &[u8]) -> Result<(u64, u64)> {
+    let Some(value) = db.get(key).map_err(|_| CanonicalError::Unavailable)? else {
+        return Ok((0, 0));
+    };
+    let value = decode_canonical(&value).map_err(|_| CanonicalError::Unavailable)?;
+    let [count, bytes] = array(&value)? else {
+        return Err(CanonicalError::Unavailable);
+    };
+    Ok((convert(count)?, convert(bytes)?))
+}
+
+/// Reopen checks the actual durable owner/index set, never an estimated counter.
+/// One row is staged at a time under the fixed owner/byte bounds.
+fn audit_retained_usage(db: &rocksdb::DB) -> Result<()> {
+    let mut global = (0u64, 0u64);
+    let mut recipients = std::collections::BTreeMap::<[u8; 20], (u64, u64)>::new();
+    let mut headers = 0u64;
+    let mut nonces = 0usize;
     for item in db.iterator(IteratorMode::Start) {
         let (key, value) = item.map_err(|_| CanonicalError::Unavailable)?;
-        if key.first() != Some(&b'R') {
-            continue;
-        }
-        rows += 1;
-        charge = charge
-            .checked_add(value.len())
-            .ok_or(CanonicalError::Capacity)?;
-        let hash = key
-            .get(1..)
-            .and_then(|b| b.try_into().ok())
-            .ok_or(CanonicalError::Unavailable)?;
-        let row = load(db, &hash)?.ok_or(CanonicalError::Unavailable)?;
-        if matches!(row.phase, Phase::Pending | Phase::FullyConfirmed) {
-            active += 1;
-        }
-        if row.reservation && row.policy.recipient() == candidate.policy.recipient() {
-            recipient_count += 1;
-            recipient_charge = recipient_charge
-                .checked_add(value.len())
-                .ok_or(CanonicalError::Capacity)?;
+        match key.first() {
+            Some(b'R') => {
+                global.0 = global.0.checked_add(1).ok_or(CanonicalError::Unavailable)?;
+                if global.0 > MAX_RETAINED_OWNERS
+                    || key.len() != 33
+                    || value.len() > crate::http::monad_message_cbor::MAX_REQUEST_BYTES + 8192
+                {
+                    return Err(CanonicalError::Unavailable);
+                }
+                let hash: [u8; 32] = key[1..]
+                    .try_into()
+                    .map_err(|_| CanonicalError::Unavailable)?;
+                let claim = load(db, &hash)?.ok_or(CanonicalError::Unavailable)?;
+                global.1 = global
+                    .1
+                    .checked_add(claim.reserved_charge)
+                    .ok_or(CanonicalError::Unavailable)?;
+                if global.1 > MAX_RETAINED_BYTES {
+                    return Err(CanonicalError::Unavailable);
+                }
+                let recipient = recipients.entry(claim.policy.recipient()?.0).or_default();
+                recipient.0 = recipient
+                    .0
+                    .checked_add(1)
+                    .ok_or(CanonicalError::Unavailable)?;
+                recipient.1 = recipient
+                    .1
+                    .checked_add(claim.reserved_charge)
+                    .ok_or(CanonicalError::Unavailable)?;
+                if recipient.0 > MAX_RECIPIENT_OWNERS || recipient.1 > MAX_RECIPIENT_BYTES {
+                    return Err(CanonicalError::Unavailable);
+                }
+            }
+            Some(b'J') => {
+                headers += 1;
+                if headers > MAX_RETAINED_OWNERS || key.len() != 33 || value.len() > 128 {
+                    return Err(CanonicalError::Unavailable);
+                }
+                let hash: [u8; 32] = key[1..]
+                    .try_into()
+                    .map_err(|_| CanonicalError::Unavailable)?;
+                if db
+                    .get_pinned(row_key(&hash))
+                    .map_err(|_| CanonicalError::Unavailable)?
+                    .is_none()
+                {
+                    return Err(CanonicalError::Unavailable);
+                }
+            }
+            Some(b'N') => {
+                nonces += 1;
+                if nonces > MAX_AUTH_NONCES || key.len() != 85 || value.len() != 8 {
+                    return Err(CanonicalError::Unavailable);
+                }
+            }
+            _ => {}
         }
     }
-    let incoming = encode_claim(candidate)?.len();
-    if active >= limits.max_active_claims
-        || rows >= limits.max_history_records
-        || charge
-            .checked_add(incoming)
-            .is_none_or(|n| n > limits.max_history_bytes)
-        || recipient_count >= limits.max_recovery_records_per_recipient
-        || recipient_charge
-            .checked_add(incoming)
-            .is_none_or(|n| n > limits.max_recovery_bytes_per_recipient)
+    if headers != global.0 || retained_usage(db, b"Q")? != global {
+        return Err(CanonicalError::Unavailable);
+    }
+    for item in db.iterator(IteratorMode::Start) {
+        let (key, _) = item.map_err(|_| CanonicalError::Unavailable)?;
+        if key.first() != Some(&b'q') {
+            continue;
+        }
+        let recipient: [u8; 20] = key
+            .get(1..)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(CanonicalError::Unavailable)?;
+        let expected = recipients
+            .remove(&recipient)
+            .ok_or(CanonicalError::Unavailable)?;
+        if retained_usage(db, &key)? != expected {
+            return Err(CanonicalError::Unavailable);
+        }
+    }
+    if !recipients.is_empty() {
+        return Err(CanonicalError::Unavailable);
+    }
+    Ok(())
+}
+
+fn reserve_retained_owner(db: &rocksdb::DB, batch: &mut WriteBatch, claim: &Claim) -> Result<()> {
+    let mut recipient_key = b"q".to_vec();
+    recipient_key.extend_from_slice(&claim.policy.recipient()?.0);
+    for (key, count_limit, byte_limit) in [
+        (b"Q".as_slice(), MAX_RETAINED_OWNERS, MAX_RETAINED_BYTES),
+        (
+            recipient_key.as_slice(),
+            MAX_RECIPIENT_OWNERS,
+            MAX_RECIPIENT_BYTES,
+        ),
+    ] {
+        let (count, bytes) = retained_usage(db, key)?;
+        let count = count.checked_add(1).ok_or(CanonicalError::Capacity)?;
+        let bytes = bytes
+            .checked_add(claim.reserved_charge)
+            .ok_or(CanonicalError::Capacity)?;
+        if count > count_limit || bytes > byte_limit {
+            return Err(CanonicalError::Capacity);
+        }
+        batch.put(key, encode(CborValue::Array(vec![int(count), int(bytes)]))?);
+    }
+    Ok(())
+}
+fn capacity(
+    db: &rocksdb::DB,
+    candidate: &Claim,
+    limits: &MonadOutboxLimits,
+    external: crate::monad_outbox::financial::AdmissionUsage,
+) -> Result<()> {
+    let local = financial_usage_locked(db, candidate.policy.recipient()?)?;
+    let sum = |a: u64, b: u64| a.checked_add(b).ok_or(CanonicalError::Capacity);
+    if sum(local.active, external.active)? >= limits.max_active_claims as u64
+        || sum(local.global_records, external.global_records)? >= limits.max_recovery_records as u64
+        || sum(
+            sum(local.global_bytes, external.global_bytes)?,
+            candidate.reserved_charge,
+        )? > limits.max_recovery_bytes as u64
+        || sum(local.recipient_records, external.recipient_records)?
+            >= limits.max_recovery_records_per_recipient as u64
+        || sum(
+            sum(local.recipient_bytes, external.recipient_bytes)?,
+            candidate.reserved_charge,
+        )? > limits.max_recovery_bytes_per_recipient as u64
+        || sum(local.unconfirmed, external.unconfirmed)?
+            >= limits.max_unconfirmed_claims_per_recipient as u64
     {
         return Err(CanonicalError::Capacity);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod encoding_tests {
+    use super::*;
+
+    // This exercises the private storage codec only. It creates no admitted
+    // Current, chain confirmation, sealed payment input or publication authority.
+    #[test]
+    fn actual_binary_encoder_fits_reserved_lifecycle_extremes() {
+        let boundary = "a".repeat(70);
+        let transactions =
+            encode(CborValue::Array((0..64).map(|_| blob([1u8])).collect())).unwrap();
+        let mut body = Vec::new();
+        for (name, media, bytes) in [
+            ("delivery", "application/vnd.frank.cbor", vec![1; 65536]),
+            ("context", "application/cbor", vec![2; 4096]),
+            ("transactions", "application/cbor", transactions),
+        ] {
+            body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\nContent-Type: {media}\r\n\r\n").as_bytes());
+            body.extend_from_slice(&bytes);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        let request =
+            ExactRequest::parse(body, format!("multipart/form-data; boundary={boundary}")).unwrap();
+        let mut diagnostic = "\"\\\0💸".repeat(100);
+        let mut end = 512;
+        while !diagnostic.is_char_boundary(end) {
+            end -= 1;
+        }
+        diagnostic.truncate(end);
+        let members: Vec<_> = (0..64)
+            .map(|index| MonadOutboxMember {
+                child_index: index,
+                tx_hash: Hash32([3; 32]),
+                state: MonadOutboxMemberState::Confirmed {
+                    value_wei: u128::MAX,
+                    block_number: u64::MAX,
+                },
+                attempts: u32::MAX,
+                exposed: true,
+                lease_generation: u64::MAX,
+                lease_until_ms: i64::MIN,
+                next_replay_at_ms: i64::MAX,
+                updated_at_ms: i64::MIN,
+                last_error: diagnostic.clone(),
+            })
+            .collect();
+        for member in &members {
+            assert!(encode_member(member).unwrap().len() <= 625);
+        }
+        let secp = secp256k1_abc::Secp256k1::new();
+        let point = secp256k1_abc::PublicKey::from_secret_key(
+            &secp,
+            &secp256k1_abc::SecretKey::from_slice(&[1; 32]).unwrap(),
+        )
+        .serialize()
+        .to_vec();
+        let charge = reserved_footprint(&request, members.len()).unwrap();
+        let mut claim = Claim {
+            request,
+            policy: FrozenCanonicalPolicy {
+                network: "a".repeat(64),
+                chain_id: u64::MAX,
+                minimum: u128::MAX,
+                sender_p: point.clone(),
+                recipient_p: point.clone(),
+                sender_m: point.clone(),
+                recipient_m: point.clone(),
+                stamp: point,
+                sender_t1: [1; 32],
+                recipient_t1: [2; 32],
+                payload_hash: [3; 32],
+            },
+            members,
+            phase: Phase::FullyConfirmed,
+            obligation_id: [4; 32],
+            created: i64::MIN,
+            updated: i64::MAX,
+            expires: i64::MAX,
+            max_attempts: u32::MAX,
+            backoff_base_ms: u64::MAX,
+            max_backoff_ms: u64::MAX,
+            reservation: true,
+            reserved_charge: charge,
+        };
+        for phase in [
+            Phase::Pending,
+            Phase::FullyConfirmed,
+            Phase::Delivered(i64::MAX),
+            Phase::Terminal(MonadOutboxTerminal::AttemptsExhausted),
+        ] {
+            claim.phase = phase;
+            let owner_bytes =
+                row_key(&claim.policy.payload_hash).len() + encode_claim(&claim).unwrap().len();
+            let member_bytes: usize = claim
+                .members
+                .iter()
+                .map(|member| {
+                    member_key(&claim.policy.payload_hash, member.child_index).len()
+                        + encode_member(member).unwrap().len()
+                })
+                .sum();
+            let header_bytes = usage_key(&claim.policy.payload_hash).len()
+                + encode_usage_header(&claim).unwrap().len();
+            // S identity, I inbox, A active, U recovery, H terminal and bounded
+            // global/per-recipient accounting layouts are included at maxima.
+            let remaining_indexes = 65 + 93 + 33 + 62 + 50 + 512;
+            assert!(
+                (owner_bytes + member_bytes + header_bytes + remaining_indexes) as u64 <= charge
+            );
+        }
+        let mut invalid = claim.members[0].clone();
+        invalid.last_error = "💸".repeat(129);
+        assert!(encode_member(&invalid).is_err());
+    }
 }

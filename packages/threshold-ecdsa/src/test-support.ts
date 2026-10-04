@@ -54,3 +54,93 @@ export function replace(
   out.set(patch, offset)
   return out
 }
+
+interface StepLike<S, R> {
+  readonly session: S
+  readonly outgoing: Uint8Array | null
+  readonly result: R | null
+}
+
+type StepResult<S, R> =
+  | { readonly ok: true; readonly value: StepLike<S, R> }
+  | { readonly ok: false; readonly error: { readonly code: string } }
+
+export interface Trace<S, R> {
+  /** Message `i` goes to the responder when `i` is even, else the initiator. */
+  readonly messages: Uint8Array[]
+  /** Copy of the recipient's state just before message `i` was delivered. */
+  readonly before: S[]
+  readonly initiatorResult: R | null
+  readonly responderResult: R | null
+  readonly initiatorSession: S
+  readonly responderSession: S
+}
+
+/** Runs a two-party protocol to completion, recording everything. */
+export function drive<S, R>(
+  initiator: StepResult<S, R>,
+  responder: StepResult<S, R>,
+  step: (session: S, message: Uint8Array) => StepResult<S, R>,
+): Trace<S, R> {
+  if (!initiator.ok) throw new Error(`initiator start: ${initiator.error.code}`)
+  if (!responder.ok) throw new Error(`responder start: ${responder.error.code}`)
+  const messages: Uint8Array[] = []
+  const before: S[] = []
+  let initiatorSession = initiator.value.session
+  let responderSession = responder.value.session
+  let initiatorResult = initiator.value.result
+  let responderResult = responder.value.result
+  let outgoing = initiator.value.outgoing
+  let toResponder = true
+  while (outgoing !== null) {
+    messages.push(outgoing)
+    const recipient = toResponder ? responderSession : initiatorSession
+    before.push(cloneState(recipient))
+    const stepped = step(recipient, outgoing)
+    if (!stepped.ok) {
+      throw new Error(`message ${messages.length}: ${stepped.error.code}`)
+    }
+    if (toResponder) {
+      responderSession = stepped.value.session
+      responderResult = stepped.value.result ?? responderResult
+    } else {
+      initiatorSession = stepped.value.session
+      initiatorResult = stepped.value.result ?? initiatorResult
+    }
+    outgoing = stepped.value.outgoing
+    toResponder = !toResponder
+  }
+  return {
+    messages,
+    before,
+    initiatorResult,
+    responderResult,
+    initiatorSession,
+    responderSession,
+  }
+}
+
+export function must<T>(
+  result:
+    | { readonly ok: true; readonly value: T }
+    | { readonly ok: false; readonly error: { readonly code: string } },
+): T {
+  if (!result.ok) throw new Error(result.error.code)
+  return result.value
+}
+
+interface RecordedShares {
+  readonly keygen: {
+    readonly initiatorShare: string
+    readonly responderShare: string
+    readonly publicKey: string
+    readonly address: string
+    readonly messages: string[]
+  }
+}
+
+/** Parsed `test-vectors/threshold_ecdsa.json`. */
+export function recordedVectors(): RecordedShares {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return require('../test-vectors/threshold_ecdsa.json') as RecordedShares
+}

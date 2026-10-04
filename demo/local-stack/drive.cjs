@@ -92,7 +92,11 @@ const key = async (name, code) => {
 const centre = expression => ev(`(()=>{const r=(${expression}).getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`)
 /** A real double click at an element's centre: two presses within the double-click interval. */
 const doubleClick = async expression => {
+  await ev(`(${expression}).scrollIntoView({block:'center'})`)
+  await delay(400)
   const at = await centre(expression)
+  const hit = await ev(`(()=>{const e=${expression};const t=document.elementFromPoint(${'${at.x}'},${'${at.y}'});return !!t&&(e===t||e.contains(t))})()`.replace('${at.x}', at.x).replace('${at.y}', at.y))
+  if (!hit) throw Error('the control to double-click is covered or off screen')
   for (const [type, clickCount] of [['mousePressed', 1], ['mouseReleased', 1], ['mousePressed', 2], ['mouseReleased', 2]]) await rpc('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', clickCount })
 }
 

@@ -168,6 +168,11 @@ export function parseCanonicalMultipart(
       invalid('Non-ASCII multipart header')
     const headers: Record<string, string> = Object.create(null)
     const lines = utf8(rawHeaders).split('\r\n')
+    if (
+      !lines[0]?.startsWith('Content-Disposition: ') ||
+      !lines[1]?.startsWith('Content-Type: ')
+    )
+      invalid('Multipart header order')
     for (const line of lines) {
       const match = /^([A-Za-z-]+): ([\x20-\x7e]+)$/.exec(line)
       if (!match) invalid('Invalid multipart header')
@@ -334,6 +339,7 @@ function ownRequest(
   contentType: string,
   parts: CanonicalExactParts,
 ): CanonicalExactRequest {
+  describeCanonicalParts(parts)
   const savedBody = Uint8Array.from(body)
   const saved = {
     delivery: Uint8Array.from(parts.delivery),
@@ -413,7 +419,7 @@ export function restoreCanonicalRequest(input: {
     input.body.length > CANONICAL_DM_MAX_BYTES
   )
     invalid('Canonical byte limit')
-  const body = Uint8Array.from(input.body)
+  const body = input.body
   const parts = parseCanonicalMultipart(
     body,
     input.contentType,

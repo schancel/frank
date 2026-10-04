@@ -1,3 +1,4 @@
+import { LevelCanonicalStampAttemptJournal } from './stamp-attempt-journal'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import level, { type LevelDB } from 'level'
 import { join, resolve } from 'path'
@@ -86,6 +87,8 @@ export interface MonadWalletPersistenceBundle {
   readonly leaseManager: SubAccountLeaseManager
   readonly changePool: MonadChangePool
   readonly topicOperationJournal: TopicOperationJournal
+  readonly canonicalJournal?: LevelCanonicalStampAttemptJournal
+  readonly canonicalBinding?: { readonly tuple: string; readonly id: string }
   assertOpen(): void
   /** Admits one complete stateful wallet operation. Close stops admission immediately and waits
    * for every admitted operation before closing stores or releasing root ownership. */
@@ -199,6 +202,8 @@ function makeBundle(params: {
   attachSharedPoolGates?: boolean
   assertEnclosingAdmission?: () => void
   ownerToken?: object
+  canonicalJournal?: LevelCanonicalStampAttemptJournal
+  canonicalBinding?: { readonly tuple: string; readonly id: string }
 }): MonadWalletPersistenceBundle {
   const ownerToken = params.ownerToken ?? {}
   const existingOwner = poolOwners.get(params.pool)
@@ -283,6 +288,8 @@ function makeBundle(params: {
     leaseManager,
     changePool: params.changePool,
     topicOperationJournal: params.topicJournal,
+    canonicalJournal: params.canonicalJournal,
+    canonicalBinding: params.canonicalBinding,
     assertOpen(): void {
       if (lifecycle !== 'open') {
         throw new Error('Monad wallet bundle is closing or closed')
@@ -347,6 +354,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
   subKeyring: MonadHdKeyring
   changeKeyring: MonadChangeKeyring
   stampReferencesLeaseIndex: (index: number) => boolean
+  canonicalBinding?: { readonly tuple: string; readonly id: string }
   assertEnclosingAdmission: () => void
 }): Promise<MonadWalletPersistenceBundle> {
   if (poolOwners.has(params.pool))
@@ -356,6 +364,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
   let database: LevelDB | undefined
   let manifestClaim: ReturnType<typeof claimManifest> | undefined
   let journalOpen = true
+  let canonicalJournal: LevelCanonicalStampAttemptJournal | undefined
   try {
     let topicJournal: TopicOperationJournal
     const assertJournalMutation = () => {
@@ -392,6 +401,14 @@ export async function openExistingPoolMonadTopicOwner(params: {
       )
       await (topicJournal as LevelTopicOperationJournal).Open()
     }
+    if (
+      params.canonicalBinding !== undefined &&
+      params.location !== undefined
+    ) {
+      canonicalJournal = new LevelCanonicalStampAttemptJournal(params.location)
+      await canonicalJournal.Open()
+      await canonicalJournal.bindPublicTuple(params.canonicalBinding.tuple)
+    }
     return makeBundle({
       durability:
         params.location === undefined ? 'test-only-ephemeral' : 'persistent',
@@ -403,11 +420,30 @@ export async function openExistingPoolMonadTopicOwner(params: {
       topicJournal,
       subKeyring: params.subKeyring,
       changeKeyring: params.changeKeyring,
-      additionalLeaseReference: params.stampReferencesLeaseIndex,
+      canonicalJournal,
+      canonicalBinding:
+        canonicalJournal === undefined ? undefined : params.canonicalBinding,
+      additionalLeaseReference: index =>
+        params.stampReferencesLeaseIndex(index) ||
+        (canonicalJournal
+          ?.getIntents()
+          .some(intent =>
+            intent.members.some(m => m.reservation.index === index),
+          ) ??
+          false) ||
+        (canonicalJournal
+          ?.getAll()
+          .some(
+            attempt =>
+              !attempt.cleanupComplete &&
+              attempt.reservations.some(r => r.index === index),
+          ) ??
+          false),
       attachSharedPoolGates: false,
       assertEnclosingAdmission: params.assertEnclosingAdmission,
       ownerToken,
       close: async () => {
+        await canonicalJournal?.Close()
         await database?.close()
         journalOpen = false
         manifestClaim?.release()
@@ -416,6 +452,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
   } catch (error) {
     // Never close another owner's handles. These were all created by this invocation.
     try {
+      await canonicalJournal?.Close()
       await database?.close()
       manifestClaim?.release()
       if (poolOwners.get(params.pool) === ownerToken)

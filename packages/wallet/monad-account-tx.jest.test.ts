@@ -330,3 +330,62 @@ describe('MonadAccountTxSigner', () => {
     })
   })
 })
+
+describe('canonical unsigned preparation', () => {
+  it('quotes with zero signatures, then signs exactly persisted bytes without provider reads or submission', async () => {
+    const perform = jest.fn(async () => {
+      throw new Error('No provider reads with complete overrides')
+    })
+    const provider = makeStubProvider(perform),
+      httpClient = makeMockHttpClient()
+    const signer = new MonadAccountTxSigner({
+      privateKey: TEST_PRIVATE_KEY,
+      provider,
+      httpClient,
+    })
+    const sign = jest.spyOn(
+      (
+        signer as unknown as {
+          wallet: { signTransaction: (input: unknown) => Promise<string> }
+        }
+      ).wallet,
+      'signTransaction',
+    )
+    try {
+      const frozen = await signer.populateUnsignedCall(
+        RECIPIENT,
+        32n,
+        '0x504f4e4401' + 'ab'.repeat(32),
+        {
+          nonce: 0,
+          chainId: BigInt(CHAIN_ID),
+          gasLimit: 50000n,
+          maxFeePerGas: 2n,
+          maxPriorityFeePerGas: 1n,
+        },
+      )
+      expect(sign).not.toHaveBeenCalled()
+      expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
+      const first = await signer.signFrozenUnsigned(frozen)
+      const repeat = await signer.signFrozenUnsigned({ ...frozen })
+      expect(first.rawTx).toBe(repeat.rawTx)
+      expect(Transaction.from(first.rawTx).unsignedSerialized).toBe(
+        frozen.unsignedSerialized,
+      )
+      expect(perform).not.toHaveBeenCalled()
+      expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
+      await expect(
+        signer.signFrozenUnsigned({ ...frozen, from: RECIPIENT.toLowerCase() }),
+      ).rejects.toThrow('sender mismatch')
+      await expect(
+        signer.signFrozenUnsigned({
+          ...frozen,
+          unsignedSerialized: first.rawTx,
+        }),
+      ).rejects.toThrow('Invalid canonical unsigned')
+      expect(sign).toHaveBeenCalledTimes(2)
+    } finally {
+      provider.destroy()
+    }
+  })
+})

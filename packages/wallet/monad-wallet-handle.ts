@@ -50,3 +50,11 @@ export interface MonadWalletHandle {
   forumBurnAddress?: string
   forumChainId?: bigint
 }
+
+/** Present only on the private wallet-owner facade, never inferred from a normal legacy handle. */
+export interface MonadCanonicalWalletHandle extends MonadWalletHandle {
+  walletState: MonadWalletPersistenceBundle
+  canonicalRoles: MonadCanonicalRoleOwner
+  installedNetworkTag: 'MONT' | 'MON1'
+  runCanonicalExclusive<T>(operation: () => Promise<T>): Promise<T>
+}

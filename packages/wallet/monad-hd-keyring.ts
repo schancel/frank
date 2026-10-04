@@ -6,7 +6,7 @@
  * existing BIP-32 interpretation is approved. Mnemonic generation and import remain legacy leaves.
  */
 import * as bip39 from 'bip39'
-import { HDNodeWallet, Mnemonic } from 'ethers'
+import { HDNodeWallet, Mnemonic, getBytes } from 'ethers'
 import { MonadDomainRoot, monadMasterFromDomainRoot } from './monad-domain-root'
 
 /** BIP-44 path prefix for Monad (coin type 60, same as Ethereum) sub-accounts. `{index}` is
@@ -72,6 +72,20 @@ export class MonadHdKeyring {
     const seed = Mnemonic.fromPhrase(mnemonic, passphrase).computeSeed()
     const masterNode = HDNodeWallet.fromSeed(seed)
     return new MonadHdKeyring(masterNode)
+  }
+
+  /** Public-only copy of the actual existing branch; no custody or signing authority. */
+  publicBranchDescriptor(): {
+    path: string
+    publicKey: Uint8Array
+    chainCode: Uint8Array
+  } {
+    const branch = this.masterNode.derivePath(DERIVATION_PATH_PREFIX).neuter()
+    return {
+      path: DERIVATION_PATH_PREFIX,
+      publicKey: getBytes(branch.publicKey),
+      chainCode: getBytes(branch.chainCode),
+    }
   }
 
   /** Deterministically derives the sub-account at `m/44'/60'/0'/0/{index}`. */

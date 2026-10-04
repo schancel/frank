@@ -1345,3 +1345,659 @@ export class MonadStampClient {
     return completed
   }
 }
+
+import { randomBytes as canonicalRandomBytes } from '@frank/crypto-box'
+// Opt-in canonical consumer. Legacy client/default submission and journals above are unchanged.
+import {
+  cborMap,
+  encodeFrame,
+  encodeCanonical,
+  parseFrame,
+  decodeCanonical,
+  toHex,
+  recipientPayloadDigest,
+  paymentCommitment,
+  verifyPreviewDirectoryEvidence,
+  compareBytes,
+} from '@frank/codec'
+import {
+  canonicalStampDestination,
+  verifyCanonicalStampProof,
+} from '@frank/cashweb/relay/canonical-dm-stamp'
+import {
+  freezeCanonicalRequest,
+  submitCanonicalRequest,
+  type CanonicalFetch,
+  type CanonicalAcceptedBody,
+} from '@frank/cashweb/relay/canonical-dm-transport'
+import type { Current } from '../directory-admission/src'
+import type { MonadCanonicalWalletHandle } from './monad-wallet-handle'
+import {
+  type CanonicalPreparedAttempt,
+  type CanonicalJournalIntent,
+  type CanonicalJournalAttempt,
+} from './storage/stamp-attempt-journal'
+import { assertMonadWalletBundleProvenance } from './storage/monad-wallet-bundle'
+
+export interface CanonicalWorkflowLink {
+  readonly attemptRef: string
+  readonly consumerId: string
+  readonly prepared: CanonicalPreparedAttempt
+}
+export interface CanonicalWalletEligibility {
+  readonly attemptRef: string
+}
+export type CanonicalWalletLookup =
+  | { readonly kind: 'intent'; readonly record: CanonicalJournalIntent }
+  | { readonly kind: 'attempt'; readonly record: CanonicalJournalAttempt }
+
+/** Explicit local workflow correlation, separate from HTTP recipient obligation acknowledgement. */
+const canonicalLiveLeases = new WeakMap<
+  object,
+  Map<number, AccountLeaseHandle>
+>()
+const canonicalFaultedOwners = new WeakSet<object>()
+export class MonadCanonicalStampClient {
+  private readonly tokens = new WeakMap<
+    CanonicalWalletEligibility,
+    { link: CanonicalWorkflowLink; snapshot: string }
+  >()
+  constructor(private readonly wallet: MonadCanonicalWalletHandle) {
+    assertMonadWalletBundleProvenance(wallet.walletState)
+    if (
+      !wallet.walletState.canonicalJournal ||
+      !wallet.walletState.canonicalBinding ||
+      wallet.walletState.pool !== wallet.pool ||
+      wallet.walletState.leaseManager !== wallet.leaseManager ||
+      wallet.walletState.changePool !== wallet.changePool
+    )
+      throw new Error('canonical-wallet:coherent-owner-required')
+  }
+  private get journal() {
+    return this.wallet.walletState.canonicalJournal!
+  }
+  private assertOwner(): void {
+    if (canonicalFaultedOwners.has(this.wallet.walletState))
+      throw new Error('canonical-wallet:storage-uncertain-reopen-required')
+    this.wallet.walletState.assertOpen()
+    assertMonadWalletBundleProvenance(this.wallet.walletState)
+    this.wallet.walletState.assertSemanticallyValid()
+  }
+  private acquireCanonicalLease(index: number): void {
+    const handle = this.wallet.leaseManager.acquireForIndex(index)
+    let leases = canonicalLiveLeases.get(this.wallet.walletState)
+    if (!leases) {
+      leases = new Map()
+      canonicalLiveLeases.set(this.wallet.walletState, leases)
+    }
+    leases.set(index, handle)
+  }
+  private async flushCanonicalReservations(): Promise<void> {
+    try {
+      await this.wallet.pool.flush()
+    } catch (error) {
+      canonicalFaultedOwners.add(this.wallet.walletState)
+      throw error
+    }
+  }
+  private assertPreparedOwner(prepared: CanonicalPreparedAttempt): void {
+    this.assertOwner()
+    const bound = JSON.parse(this.wallet.walletState.canonicalBinding!.tuple)
+    if (
+      prepared.walletBindingId !==
+        this.wallet.walletState.canonicalBinding!.id ||
+      prepared.accountId !== bound.main ||
+      prepared.network !== bound.network ||
+      prepared.chainId !== bound.chainId ||
+      `0x${prepared.senderSubject}` !== bound.auth
+    )
+      throw new Error('canonical-wallet:binding-mismatch')
+  }
+  lookup(
+    prepared: CanonicalPreparedAttempt,
+  ): CanonicalWalletLookup | undefined {
+    this.assertPreparedOwner(prepared)
+    const attempt = this.journal.lookup(prepared)
+    if (attempt) return { kind: 'attempt', record: attempt }
+    const intent = this.journal.lookupIntent(prepared)
+    return intent ? { kind: 'intent', record: intent } : undefined
+  }
+  /** Effect-free binding for the workflow's already sealed B bytes and intended economics. */
+  bindPrepared(input: {
+    payload: Uint8Array
+    context: Uint8Array
+    stampValueWei: bigint
+    economicBinding: Uint8Array
+  }): CanonicalPreparedAttempt {
+    this.assertOwner()
+    if (
+      input.stampValueWei <= 0n ||
+      input.stampValueWei >= 1n << 256n ||
+      input.economicBinding.length > 8192
+    )
+      throw new Error('canonical-wallet:economics-invalid')
+    const payload = new Uint8Array(input.payload),
+      context = new Uint8Array(input.context)
+    const parsed = parseFrame(payload),
+      fields = decodeCanonical(context)
+    if (
+      parsed.kind !== 'parsed' ||
+      parsed.typed?.type !== 5 ||
+      parsed.schemaVersion !== 2 ||
+      parsed.typed.suite !== 1 ||
+      !(fields instanceof Map)
+    )
+      throw new Error('canonical-wallet:prepared-required')
+    const bound = JSON.parse(this.wallet.walletState.canonicalBinding!.tuple)
+    const t1 = (key: bigint) => {
+      const value = fields.get(key)
+      if (!(value instanceof Uint8Array) || value.length !== 32)
+        throw new Error('canonical-wallet:T1-required')
+      return toHex(value)
+    }
+    const prepared = {
+      walletBindingId: this.wallet.walletState.canonicalBinding!.id,
+      accountId: bound.main,
+      chainId: bound.chainId,
+      network: parsed.typed.network,
+      senderSubject: toHex(parsed.typed.sender.keyBytes),
+      recipientSubject: toHex(parsed.typed.recipient.keyBytes),
+      senderT1: t1(4n),
+      recipientT1: t1(5n),
+      payload,
+      context,
+      economicBinding: encodeCanonical(
+        cborMap([
+          [0, 1],
+          [1, input.stampValueWei.toString()],
+          [2, new Uint8Array(input.economicBinding)],
+        ]),
+      ),
+    }
+    this.assertPreparedOwner(prepared)
+    this.journal.lookup(prepared)
+    this.journal.lookupIntent(prepared)
+    return prepared
+  }
+
+  private snapshot(): string {
+    return JSON.stringify([this.journal.getIntents(), this.journal.getAll()])
+  }
+
+  /** All reopened records must match real persisted workflow links before explicit replay. */
+  reconcileWorkflowLinks(links: readonly CanonicalWorkflowLink[]): readonly {
+    attemptRef: string
+    state: 'ready' | 'terminal' | 'hold'
+    eligibility?: CanonicalWalletEligibility
+  }[] {
+    this.assertOwner()
+    const records = [...this.journal.getIntents(), ...this.journal.getAll()]
+    const snapshot = this.snapshot()
+    const matches = records.map(record => {
+      const candidates = links.filter(
+        link => link.attemptRef === record.attemptRef,
+      )
+      const link = candidates.length === 1 ? candidates[0] : undefined
+      if (!link || link.consumerId !== record.consumerId)
+        return { attemptRef: record.attemptRef, state: 'hold' as const }
+      const found = this.lookup(link.prepared)
+      if (!found || found.record.attemptRef !== record.attemptRef)
+        return { attemptRef: record.attemptRef, state: 'hold' as const }
+      return {
+        attemptRef: record.attemptRef,
+        state: 'terminal' as const,
+        link,
+        record,
+      }
+    })
+    // A missing/unknown workflow record blocks all economic replay, not only its own row.
+    const complete =
+      matches.every(m => 'link' in m) && links.length === records.length
+    return matches.map(m => {
+      if (!m.link || !m.record || !complete)
+        return { attemptRef: m.attemptRef, state: 'hold' as const }
+      if ('terminal' in m.record && m.record.terminal !== null)
+        return { attemptRef: m.attemptRef, state: 'terminal' as const }
+      const eligibility = Object.freeze({ attemptRef: m.attemptRef })
+      this.tokens.set(eligibility, {
+        link: {
+          ...m.link,
+          prepared: this.lookup(m.link.prepared)!.record.prepared,
+        },
+        snapshot,
+      })
+      return { attemptRef: m.attemptRef, state: 'ready' as const, eligibility }
+    })
+  }
+
+  /** The callback must durably link this exact intent before any lease mutation or signature. */
+  prepareIntent(input: {
+    prepared: CanonicalPreparedAttempt
+    consumerId: string
+    stampValueWei: bigint
+    senderCurrent: Current
+    recipientCurrent: Current
+    overrides?: MonadTxOverrides
+    onIntentDurable: (link: CanonicalWorkflowLink) => Promise<void>
+  }): Promise<CanonicalJournalIntent> {
+    // Copy all byte input before admission's first asynchronous boundary.
+    input = {
+      ...input,
+      prepared: {
+        ...input.prepared,
+        payload: new Uint8Array(input.prepared.payload),
+        context: new Uint8Array(input.prepared.context),
+        economicBinding: new Uint8Array(input.prepared.economicBinding),
+      },
+      overrides: { ...input.overrides },
+    }
+    return this.wallet.runCanonicalExclusive(async () => {
+      this.assertPreparedOwner(input.prepared)
+      const economics = decodeCanonical(input.prepared.economicBinding)
+      if (
+        !(economics instanceof Map) ||
+        economics.size !== 3 ||
+        economics.get(0n) !== 1n ||
+        economics.get(1n) !== input.stampValueWei.toString() ||
+        !(economics.get(2n) instanceof Uint8Array)
+      )
+        throw new Error('canonical-wallet:economics-mismatch')
+      const existing = this.lookup(input.prepared)
+      if (existing)
+        throw new Error('canonical-wallet:existing-record-requires-correlation')
+      const roles = this.wallet.canonicalRoles.create(
+        input.prepared.network,
+        input.senderCurrent,
+      )
+      roles.dispose()
+      const evidence = verifyPreviewDirectoryEvidence(
+        input.recipientCurrent.evidence.attestation,
+        input.prepared.network,
+      )
+      if (
+        input.recipientCurrent.kind !== 'current' ||
+        input.recipientCurrent.status.forked ||
+        toHex(evidence.statement.subject.keyBytes) !==
+          input.prepared.recipientSubject ||
+        toHex(evidence.statementHash) !== input.prepared.recipientT1 ||
+        toHex(input.senderCurrent.evidence.hash) !== input.prepared.senderT1 ||
+        compareBytes(
+          evidence.statement.stampKey.keyBytes,
+          input.recipientCurrent.stampKey.keyBytes,
+        ) !== 0
+      )
+        throw new Error('canonical-wallet:current-mismatch')
+      const parsed = parseFrame(input.prepared.payload)
+      const context = decodeCanonical(input.prepared.context)
+      if (
+        parsed.kind !== 'parsed' ||
+        parsed.typed?.type !== 5 ||
+        parsed.schemaVersion !== 2 ||
+        !(context instanceof Map)
+      )
+        throw new Error('canonical-wallet:prepared-required')
+      const stampKey = context.get(8n)
+      if (
+        !(stampKey instanceof Map) ||
+        stampKey.get(0n) !== 1n ||
+        !(stampKey.get(1n) instanceof Uint8Array) ||
+        compareBytes(
+          stampKey.get(1n) as Uint8Array,
+          input.recipientCurrent.stampKey.keyBytes,
+        ) !== 0
+      )
+        throw new Error('canonical-wallet:stamp-key-mismatch')
+      const ownedStampKey = {
+        keyType: 1,
+        keyBytes: new Uint8Array(input.recipientCurrent.stampKey.keyBytes),
+      }
+      for (const [key, expected] of [
+        [6n, input.senderCurrent.messageKey.keyBytes],
+        [7n, input.recipientCurrent.messageKey.keyBytes],
+      ] as const) {
+        const role = context.get(key)
+        if (
+          !(role instanceof Map) ||
+          role.get(0n) !== 1n ||
+          !(role.get(1n) instanceof Uint8Array) ||
+          compareBytes(role.get(1n) as Uint8Array, expected) !== 0
+        )
+          throw new Error('canonical-wallet:message-role-mismatch')
+      }
+      for (const [key, expected] of [
+        [9n, parsed.typed.ephemeralPoint],
+        [10n, parsed.typed.sharedPoint],
+        [11n, parsed.typed.dleqProof],
+      ] as const) {
+        const bytes = context.get(key)
+        if (
+          !(bytes instanceof Uint8Array) ||
+          compareBytes(bytes, expected) !== 0
+        )
+          throw new Error('canonical-wallet:proof-context-mismatch')
+      }
+      verifyCanonicalStampProof({
+        network: input.prepared.network,
+        stampKey: ownedStampKey,
+        ephemeralPoint: parsed.typed.ephemeralPoint,
+        sharedPoint: parsed.typed.sharedPoint,
+        dleqProof: parsed.typed.dleqProof,
+      })
+      const digest = recipientPayloadDigest(
+        input.prepared.network,
+        input.prepared.payload,
+      )
+      const destination = (i: number) =>
+        canonicalStampDestination({
+          network: input.prepared.network,
+          stampKey: ownedStampKey,
+          sharedPoint:
+            parsed.typed!.type === 5
+              ? parsed.typed!.sharedPoint
+              : new Uint8Array(),
+          childIndex: i,
+        })
+      const calldata = (i: number) =>
+        hexlify(
+          concat([getBytes('0x504f4e4401'), paymentCommitment(digest, i)]),
+        )
+      const quotes = []
+      const frozenQuotes = new Map<
+        number,
+        {
+          nonce: number
+          chainId: bigint
+          gasLimit: bigint
+          maxFeePerGas?: bigint
+          maxPriorityFeePerGas?: bigint
+          gasPrice?: bigint
+          balance: bigint
+        }
+      >()
+      for (const record of this.wallet.pool
+        .records()
+        .filter(r => r.status === 'available')) {
+        const balance = await this.wallet.provider.getBalance(record.address)
+        if (balance <= 0n) continue
+        const signer = this.wallet.pool.getSigner(record.index, this.wallet)
+        if (signer.address.toLowerCase() !== record.address.toLowerCase())
+          throw new Error('canonical-wallet:pool-custody-mismatch')
+        const quote = Transaction.from(
+          (
+            await signer.populateUnsignedCall(
+              hexlify(destination(0).address),
+              1n,
+              calldata(0),
+              input.overrides,
+            )
+          ).unsignedSerialized,
+        )
+        const fee = quote.maxFeePerGas ?? quote.gasPrice
+        if (fee === null || quote.chainId.toString() !== input.prepared.chainId)
+          throw new Error('canonical-wallet:quote-mismatch')
+        const capacityWei =
+          balance > quote.gasLimit * fee ? balance - quote.gasLimit * fee : 0n
+        quotes.push({
+          index: record.index,
+          address: record.address,
+          capacityWei,
+        })
+        frozenQuotes.set(record.index, {
+          nonce: quote.nonce,
+          chainId: quote.chainId,
+          gasLimit: quote.gasLimit,
+          maxFeePerGas: quote.maxFeePerGas ?? undefined,
+          maxPriorityFeePerGas: quote.maxPriorityFeePerGas ?? undefined,
+          gasPrice: quote.gasPrice ?? undefined,
+          balance,
+        })
+      }
+      const selected = selectStampAccounts({
+        amountWei: input.stampValueWei,
+        accounts: quotes,
+        maxTransactions: 64,
+      })
+      const members = []
+      for (const [i, selection] of selected.entries()) {
+        const quote = frozenQuotes.get(selection.index)!
+        const signer = this.wallet.pool.getSigner(selection.index, this.wallet)
+        const frozen = await signer.populateUnsignedCall(
+          hexlify(destination(i).address),
+          selection.paymentValueWei,
+          calldata(i),
+          {
+            nonce: quote.nonce,
+            chainId: quote.chainId,
+            gasLimit: input.overrides?.gasLimit,
+            maxFeePerGas: quote.maxFeePerGas,
+            maxPriorityFeePerGas: quote.maxPriorityFeePerGas,
+            gasPrice: quote.gasPrice,
+          },
+        )
+        const tx = Transaction.from(frozen.unsignedSerialized),
+          fee = tx.maxFeePerGas ?? tx.gasPrice
+        if (fee === null || tx.value + tx.gasLimit * fee > quote.balance)
+          throw new Error('canonical-wallet:selection-capacity-changed')
+        members.push({
+          reservation: {
+            id: `canonical:${sha256(
+              toUtf8Bytes(`${selection.index}:${input.consumerId}`),
+            ).slice(2)}`,
+            index: selection.index,
+          },
+          ...frozen,
+          rawTx: null,
+        })
+      }
+      const intent = await this.journal.prepareIntent({
+        prepared: input.prepared,
+        consumerId: input.consumerId,
+        boundary: `frank-${toHex(canonicalRandomBytes(24))}`,
+        members,
+        construction: new TextEncoder().encode(input.stampValueWei.toString()),
+      })
+      await input.onIntentDurable({
+        attemptRef: intent.attemptRef,
+        consumerId: intent.consumerId,
+        prepared: intent.prepared,
+      })
+      // Durable intent and linked workflow are now authoritative; no pool write preceded them.
+      for (const member of intent.members)
+        this.acquireCanonicalLease(member.reservation.index)
+      await this.flushCanonicalReservations()
+      return intent
+    })
+  }
+
+  /** Finish only frozen correlated intent. No replacement quotes, fees, account or nonce. */
+  finishIntent(
+    eligibility: CanonicalWalletEligibility,
+  ): Promise<CanonicalJournalAttempt> {
+    return this.wallet.runCanonicalExclusive(async () => {
+      const token = this.tokens.get(eligibility)
+      this.tokens.delete(eligibility)
+      if (!token || token.snapshot !== this.snapshot())
+        throw new Error('canonical-wallet:reconcile-required')
+      const found = this.lookup(token.link.prepared)
+      if (
+        !found ||
+        found.kind !== 'intent' ||
+        found.record.attemptRef !== token.link.attemptRef
+      )
+        throw new Error('canonical-wallet:intent-required')
+      let intent = found.record
+      for (const member of intent.members) {
+        const record = this.wallet.pool.getRecord(member.reservation.index)
+        const signer = this.wallet.pool.getSigner(
+          member.reservation.index,
+          this.wallet,
+        )
+        if (
+          !record ||
+          signer.address.toLowerCase() !== member.from ||
+          record.address.toLowerCase() !== member.from ||
+          (record.status !== 'available' && record.status !== 'in-use')
+        )
+          throw new Error('canonical-wallet:pool-custody-hold')
+        if (record.status === 'available')
+          this.acquireCanonicalLease(record.index)
+      }
+      await this.flushCanonicalReservations()
+      for (let i = 0; i < intent.members.length; i++) {
+        const member = intent.members[i]
+        if (member.rawTx !== null) continue
+        const signer = this.wallet.pool.getSigner(
+          member.reservation.index,
+          this.wallet,
+        )
+        const signed = await signer.signFrozenUnsigned(member)
+        intent = await this.journal.checkpointSignedMember(
+          intent.attemptRef,
+          i,
+          signed.rawTx,
+        )
+      }
+      const payload = parseFrame(intent.prepared.payload)
+      if (payload.kind !== 'parsed' || payload.typed?.type !== 5)
+        throw new Error('canonical-wallet:payload-required')
+      const digest = recipientPayloadDigest(
+        intent.prepared.network,
+        intent.prepared.payload,
+      )
+      const payments = intent.members.map((member, i) => {
+        const tx = Transaction.from(member.rawTx!)
+        const value = getBytes('0x' + tx.value.toString(16).padStart(64, '0'))
+        return cborMap([
+          [0, i],
+          [1, getBytes(tx.hash!)],
+          [2, value],
+          [3, getBytes(tx.to!)],
+          [4, paymentCommitment(digest, i)],
+        ])
+      })
+      const delivery = encodeFrame(
+        { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+        cborMap([
+          [0, intent.prepared.network],
+          [
+            1,
+            cborMap([
+              [0, 1],
+              [1, getBytes(`0x${intent.prepared.recipientSubject}`)],
+            ]),
+          ],
+          [2, intent.prepared.payload],
+          [3, digest],
+          [4, payments],
+        ]),
+      )
+      const request = freezeCanonicalRequest(
+        {
+          delivery,
+          context: intent.prepared.context,
+          transactions: intent.members.map(m => getBytes(m.rawTx!)),
+        },
+        intent.boundary,
+      )
+      return this.journal.promoteIntent(intent.attemptRef, request)
+    })
+  }
+
+  submit(
+    eligibility: CanonicalWalletEligibility,
+    options: { fetch?: CanonicalFetch; signal?: AbortSignal } = {},
+  ): Promise<CanonicalAcceptedBody> {
+    return this.wallet.runCanonicalExclusive(async () => {
+      const token = this.tokens.get(eligibility)
+      this.tokens.delete(eligibility)
+      if (!token || token.snapshot !== this.snapshot())
+        throw new Error('canonical-wallet:reconcile-required')
+      const found = this.lookup(token.link.prepared)
+      if (!found || found.kind !== 'attempt' || found.record.terminal !== null)
+        throw new Error('canonical-wallet:attempt-required')
+      const attempt = found.record
+      const results = this.journal.reconcile(
+        this.journal.getAll().map(a => ({
+          attemptRef: a.attemptRef,
+          prepared: a.prepared,
+          request: a.request,
+          reservations: a.reservations,
+          consumerId: a.consumerId,
+        })),
+      )
+      const result = results.find(r => r.attemptRef === attempt.attemptRef)
+      if (!result || result.state !== 'ready')
+        throw new Error('canonical-wallet:replay-hold')
+      this.journal.beginReplay(result.eligibility)
+      try {
+        const accepted = await submitCanonicalRequest({
+          installedRelayOrigin: this.wallet.relayBaseUrl,
+          expectedNetworkTag: this.wallet.installedNetworkTag,
+          request: attempt.request,
+          ...options,
+        })
+        if (accepted.phase !== 'retained')
+          await this.journal.recordTerminal(attempt.attemptRef, accepted)
+        return accepted
+      } finally {
+        this.journal.endReplay(result.eligibility)
+      }
+    })
+  }
+  cleanupTerminal(attemptRef: string, consumerId: string): Promise<void> {
+    return this.wallet.runCanonicalExclusive(async () => {
+      this.assertOwner()
+      const attempt = this.journal
+        .getAll()
+        .find(a => a.attemptRef === attemptRef && a.consumerId === consumerId)
+      if (!attempt || attempt.terminal === null)
+        throw new Error('canonical-wallet:terminal-required')
+      if (attempt.cleanupComplete) return
+      for (const reservation of attempt.reservations) {
+        const record = this.wallet.pool.getRecord(reservation.index)
+        if (
+          !record ||
+          (record.status !== 'in-use' &&
+            record.status !== 'spent' &&
+            record.status !== 'retired')
+        )
+          throw new Error('canonical-wallet:cleanup-hold')
+        if (record.status === 'in-use') {
+          const live = canonicalLiveLeases
+            .get(this.wallet.walletState)
+            ?.get(record.index)
+          if (live) {
+            this.wallet.leaseManager.releaseLease(
+              live,
+              attempt.terminal.phase === 'delivered' ? 'confirmed' : 'failed',
+            )
+            canonicalLiveLeases
+              .get(this.wallet.walletState)!
+              .delete(record.index)
+          } else {
+            if (this.wallet.leaseManager.isLeased(record.index))
+              throw new Error('canonical-wallet:foreign-lease-hold')
+            this.wallet.pool.setStatus(
+              record.index,
+              attempt.terminal.phase === 'delivered' ? 'spent' : 'retired',
+            )
+          }
+        }
+      }
+      await this.flushCanonicalReservations()
+      await this.journal.completeCleanup(attemptRef)
+    })
+  }
+  acknowledgeWorkflow(attemptRef: string, consumerId: string): Promise<void> {
+    return this.wallet.runCanonicalExclusive(() =>
+      this.journal.acknowledge(attemptRef, consumerId),
+    )
+  }
+  wasAcknowledged(attemptRef: string): boolean {
+    return this.journal.wasAcknowledged(attemptRef)
+  }
+  terminalOutcomes(): readonly CanonicalJournalAttempt[] {
+    this.assertOwner()
+    return this.journal.getAll().filter(a => a.terminal !== null)
+  }
+}

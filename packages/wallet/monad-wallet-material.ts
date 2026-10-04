@@ -1,4 +1,4 @@
-import { Wallet, sha256 } from 'ethers'
+import { Wallet, sha256, hexlify, toUtf8Bytes } from 'ethers'
 import { DERIVATION_REGISTRY_ID } from '../domain-roots/src'
 import type { DomainRoot, DomainPurpose } from '../domain-roots/src'
 import type { HDSeed } from './chain/active-chain'
@@ -35,6 +35,11 @@ export interface MonadCanonicalRoles {
 /** Caller must obtain Current from fresh admission; this owner never grants that authority. */
 export interface MonadCanonicalRoleOwner {
   create(network: string, current: Current): MonadCanonicalRoles
+  publicGenerationZeroPoints(): {
+    auth: Uint8Array
+    message: Uint8Array
+    stamp: Uint8Array
+  }
   dispose(): void
 }
 
@@ -54,6 +59,27 @@ function roleOwner(
   const sessions = new Set<MonadCanonicalRoles>()
   let disposed = false
   return Object.freeze({
+    publicGenerationZeroPoints() {
+      if (disposed) throw new Error('canonical-roles:disposed')
+      const leaves = deriveRoleLeaves({
+        authRoot,
+        messageRoot,
+        stampRoot,
+        messageGeneration: 0n,
+        stampGeneration: 0n,
+      })
+      try {
+        return {
+          auth: leaves.auth.public.compressedPoint,
+          message: leaves.message.public.compressedPoint,
+          stamp: leaves.stamp.public.compressedPoint,
+        }
+      } finally {
+        leaves.auth.dispose()
+        leaves.message.dispose()
+        leaves.stamp.dispose()
+      }
+    },
     create(network: string, current: Current): MonadCanonicalRoles {
       if (disposed) throw new Error('canonical-roles:disposed')
       if (current.kind !== 'current')
@@ -319,4 +345,44 @@ function legacyMnemonicWalletMaterial(seed: HDSeed): MonadWalletMaterial {
     fingerprint: 'legacy',
     dispose() {},
   }
+}
+
+/** Ordinary public storage identity, never custody or admitted directory authority. */
+export function canonicalWalletPublicBinding(
+  material: MonadWalletMaterial,
+  network: string,
+  chainId: bigint,
+): { tuple: string; id: string } {
+  if (
+    !material.canonicalRoles ||
+    !(
+      (network === 'monad-testnet' && chainId === 10143n) ||
+      (network === 'monad-mainnet' && chainId === 143n)
+    )
+  )
+    throw new Error('canonical-wallet:typed-network-required')
+  const points = material.canonicalRoles.publicGenerationZeroPoints()
+  const branch = (b: {
+    path: string
+    publicKey: Uint8Array
+    chainCode: Uint8Array
+  }) => ({
+    path: b.path,
+    publicKey: hexlify(b.publicKey),
+    chainCode: hexlify(b.chainCode),
+  })
+  const tuple = JSON.stringify({
+    version: 1,
+    domain: 'frank-canonical-wallet-binding-v1',
+    network,
+    chainId: chainId.toString(),
+    auth: hexlify(points.auth),
+    message: hexlify(points.message),
+    stamp: hexlify(points.stamp),
+    main: material.mainAccount.address.toLowerCase(),
+    registry: DERIVATION_REGISTRY_ID,
+    accounts: branch(material.keyring.publicBranchDescriptor()),
+    change: branch(material.changeKeyring.publicBranchDescriptor()),
+  })
+  return Object.freeze({ tuple, id: sha256(toUtf8Bytes(tuple)).slice(2) })
 }

@@ -470,6 +470,83 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     ).toEqual([])
   })
 
+  it('carries closed type-18 blackjack items both ways and still refuses other structured kinds', async () => {
+    installCanonicalDirectory(
+      f.alice,
+      await f.directoryFor('alice', f.alice, f.bob),
+    )
+    installCanonicalDirectory(
+      f.bob,
+      await f.directoryFor('bob', f.bob, f.alice),
+    )
+    const wagerTxHash = '0x' + 'ab'.repeat(32)
+    // Not the closed bet shape: refused by the writer before any inventory or intent.
+    for (const items of [
+      [{ type: 'blackjack-move', gameId: 'g1', action: 'bet' }],
+      [
+        {
+          type: 'blackjack-move',
+          gameId: 'g1',
+          action: 'bet',
+          wagerTxHash,
+          amount: '5',
+        },
+      ],
+      [{ type: 'raffle', raffleId: 'r', action: 'enter' }],
+      [{ type: 'digital-goods', action: 'request', itemId: 'x' }],
+      [{ type: 'reply', payloadDigest: 'ff'.repeat(32) }],
+    ])
+      await expect(
+        f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: items as never,
+        }),
+      ).rejects.toThrow()
+    expect(f.requests).toHaveLength(0)
+    expect(f.alice.pool.records().map(r => r.status)).toEqual([
+      'available',
+      'available',
+    ])
+
+    const bet = [
+      {
+        type: 'blackjack-move' as const,
+        gameId: 'g1',
+        action: 'bet' as const,
+        wagerTxHash,
+      },
+      { type: 'text' as const, text: 'good luck' },
+    ]
+    const sent = await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: bet,
+    })
+    expect(f.requests).toHaveLength(1)
+    const request = restoreCanonicalRequest(f.requests[0])
+    // Sealed: neither the game id nor a JSON item is visible to the relay.
+    expect(Buffer.from(f.requests[0].body).includes('blackjack')).toBe(false)
+    expect(Buffer.from(f.requests[0].body).includes('g1')).toBe(false)
+    inboxPage.mockResolvedValue({
+      records: [
+        {
+          delivery: request.parts.delivery,
+          context: request.parts.context,
+          submissionIdentity: request.identity.submission_identity,
+          timestampMs: 77,
+        },
+      ],
+    })
+    const received = await f.chain.directMessages.fetchSince({
+      wallet: f.bob,
+      sinceMs: 0,
+    })
+    expect(received).toHaveLength(1)
+    expect(received[0].payloadDigest).toBe(sent.payloadDigest)
+    expect(received[0].items).toEqual(bet)
+  })
+
   it('keeps one payment set across an unknown outcome and re-sends the same bytes', async () => {
     installCanonicalDirectory(
       f.alice,

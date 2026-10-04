@@ -20,8 +20,9 @@ use crate::limits::{
 };
 use crate::model::{
     AccountRef, BlackjackAction, BlackjackFields, BlackjackHandAction, BlackjackHandFields,
-    BlackjackHandMessageItem, BlackjackMessageItem, BlackjackOutcome, PreviewDirectoryRoles,
-    Timestamp,
+    BlackjackHandMessageItem, BlackjackHandV3Action, BlackjackHandV3Fields,
+    BlackjackHandV3MessageItem, BlackjackHandV3Move, BlackjackMessageItem, BlackjackOutcome,
+    PreviewDirectoryRoles, Timestamp,
 };
 use crate::model::{
     ForumAggregate, ForumContent, ForumCursor, ForumCursorPosition, ForumDiscoveryEntry,
@@ -595,6 +596,7 @@ pub(crate) enum Draft {
     },
     Blackjack(BlackjackMessageItem),
     BlackjackHand(BlackjackHandMessageItem),
+    BlackjackHandV3(BlackjackHandV3MessageItem),
     Text {
         text: String,
         unknown: Vec<(u64, CborValue)>,
@@ -1286,6 +1288,17 @@ pub(crate) fn parse_draft(
         // are disjoint from schema 1's (0..6), so the code alone says which closed map applies.
         // A hand shape is read only from a frame that requires reader 2; anywhere else its action
         // code is simply out of range for the schema-1 shapes.
+        // Schema 3 adds the hand shapes with entropy from both sides, codes 32..41, read only by
+        // a reader that supports schema 3.
+        crate::limits::TYPE_BLACKJACK_ITEM
+            if schema.effective >= 3
+                && schema.min_reader >= 2
+                && blackjack_action_code_at_least(payload, 32) =>
+        {
+            Ok(Draft::BlackjackHandV3(blackjack_hand_v3_payload(
+                payload, path,
+            )?))
+        }
         crate::limits::TYPE_BLACKJACK_ITEM
             if schema.effective >= 2
                 && schema.min_reader >= 2
@@ -1443,7 +1456,8 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
         | Draft::Container { .. }
         | Draft::Text { .. }
         | Draft::Blackjack(_)
-        | Draft::BlackjackHand(_) => Ok(()),
+        | Draft::BlackjackHand(_)
+        | Draft::BlackjackHandV3(_) => Ok(()),
     }
 }
 
@@ -1546,12 +1560,17 @@ fn blackjack_payload(payload: &CborValue, path: &str) -> Result<BlackjackMessage
 
 /// True when the payload is a map whose action (key 1) is an integer of at least 16.
 fn is_blackjack_hand_action_code(payload: &CborValue) -> bool {
+    blackjack_action_code_at_least(payload, 16)
+}
+
+/// True when the payload is a map whose action (key 1) is an integer of at least `min`.
+fn blackjack_action_code_at_least(payload: &CborValue, min: i128) -> bool {
     let CborValue::Map(entries) = payload else {
         return false;
     };
     matches!(
         entries.iter().find(|(k, _)| *k == 1),
-        Some((_, CborValue::Int(code))) if *code >= 16
+        Some((_, CborValue::Int(code))) if *code >= min
     )
 }
 
@@ -1646,4 +1665,83 @@ fn blackjack_hand_payload(
         },
     };
     Ok(BlackjackHandFields { game_id, action })
+}
+
+/// Closed schema-3 shapes: a hand whose cards come from both sides' entropy. No shape states a
+/// card, an outcome or an amount of money.
+fn blackjack_hand_v3_payload(
+    payload: &CborValue,
+    path: &str,
+) -> Result<BlackjackHandV3MessageItem, CodecError> {
+    let CborValue::Map(entries) = payload else {
+        return Err(bad(path, "blackjack payload must be a map"));
+    };
+    let get = |key| entries.iter().find(|(k, _)| *k == key).map(|(_, v)| v);
+    // Codes 32..41: disjoint from schema 1's 0..6 and schema 2's 16..25.
+    let action = u32_in(get(1), &format!("{path}.1"), 32, 41)?;
+    let required: &[u64] = match action {
+        32 if u32_in(get(2), &format!("{path}.2"), 0, 1)? == 0 => &[0, 1, 11, 2, 3, 4],
+        32 => &[0, 1, 11, 2, 3],
+        33 => &[0, 1, 11, 3, 4, 12],
+        34 => &[0, 1, 11, 4, 12],
+        41 => &[0, 1, 11, 10, 12],
+        _ => &[0, 1, 11, 12, 13],
+    };
+    let m = fields(Some(payload), path, required, &[], false, false)?;
+    // Fixed form, so a game id is always safe to use as a key: 32 lowercase hex characters.
+    let game_path = format!("{path}.0");
+    let game_id = tstr(m.get(0), &game_path, 32, 32)?;
+    if game_id.len() != 32
+        || !game_id
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    {
+        return Err(bad(
+            &game_path,
+            "game id must be 32 lowercase ASCII hex characters",
+        ));
+    }
+    // A challenge is message 0 of its hand; every other message follows one.
+    let (seq_min, seq_max) = if action == 32 { (0, 0) } else { (1, 255) };
+    let seq = u32_in(m.get(11), &format!("{path}.11"), seq_min, seq_max)?;
+    let hash = |key: u64| bstr(m.get(key), &format!("{path}.{key}"), 32, 32);
+    let action = match action {
+        32 if m.has(4) => BlackjackHandV3Action::ChallengeDealer {
+            max_bet_wei: hash(3)?,
+            commitment: hash(4)?,
+        },
+        32 => BlackjackHandV3Action::ChallengePlayer {
+            max_bet_wei: hash(3)?,
+        },
+        33 => BlackjackHandV3Action::Accept {
+            max_bet_wei: hash(3)?,
+            commitment: hash(4)?,
+            prev: hash(12)?,
+        },
+        34 => BlackjackHandV3Action::Bet {
+            commitment: hash(4)?,
+            prev: hash(12)?,
+        },
+        41 => BlackjackHandV3Action::Refund {
+            reference: hash(10)?,
+            prev: hash(12)?,
+        },
+        code => BlackjackHandV3Action::Move {
+            kind: match code {
+                35 => BlackjackHandV3Move::Deal,
+                36 => BlackjackHandV3Move::Hit,
+                37 => BlackjackHandV3Move::Stand,
+                38 => BlackjackHandV3Move::Double,
+                39 => BlackjackHandV3Move::Card,
+                _ => BlackjackHandV3Move::Reveal,
+            },
+            link: hash(13)?,
+            prev: hash(12)?,
+        },
+    };
+    Ok(BlackjackHandV3Fields {
+        game_id,
+        seq,
+        action,
+    })
 }

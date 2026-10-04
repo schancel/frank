@@ -306,6 +306,23 @@ fn check_blackjack_hand(
     }
     Ok(())
 }
+/// Stage 9 of the schema-3 hand shapes: a positive bounded maximum bet on challenge and accept.
+/// No shape carries a card or an outcome, so nothing else is checked here.
+fn check_blackjack_hand_v3(
+    item: &crate::model::BlackjackHandV3MessageItem,
+    path: &str,
+) -> Result<(), CodecError> {
+    use crate::model::BlackjackHandV3Action;
+    if let BlackjackHandV3Action::ChallengeDealer { max_bet_wei, .. }
+    | BlackjackHandV3Action::ChallengePlayer { max_bet_wei }
+    | BlackjackHandV3Action::Accept { max_bet_wei, .. } = &item.action
+    {
+        if max_bet_wei.iter().all(|b| *b == 0) || max_bet_wei > &blackjack_quantity_limit() {
+            return Err(semantic("blackjack max bet range", path));
+        }
+    }
+    Ok(())
+}
 /// Stage 9 for one frame after its children have finished.
 ///
 /// `prior_slot` is `Some` only for a type-2 frame. `Some(None)` is bootstrap.
@@ -318,6 +335,7 @@ pub(crate) fn check_semantics(
     match typed {
         TypedPayload::BlackjackItem(item) => check_blackjack(item, path),
         TypedPayload::BlackjackHandItem(item) => check_blackjack_hand(item, path),
+        TypedPayload::BlackjackHandV3Item(item) => check_blackjack_hand_v3(item, path),
         TypedPayload::DirectMessage {
             network,
             destination,

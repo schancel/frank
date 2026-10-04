@@ -83,3 +83,21 @@ is exactly32 lowercase ASCII hex characters (stage8.2 `schema` otherwise, and th
 writer refuses anything else); schema-1 game IDs stay1..128 bytes. No shape carries an
 amount of money. Active TS/Rust conformance uses
 `docs/protocol/cbor/vectors/blackjack-hand.json`.
+
+Type 18 schema 3 adds the hand items whose cards come from both sides' entropy, and is
+the default supported schema of type 18. A `BlackjackHandV3Item` is a fixed-form game
+ID, a `seq` and one closed `BlackjackHandV3Action` (challenge as dealer or player,
+accept, bet, the six link-opening moves deal, hit, stand, double, card and reveal, and
+refund; wire action codes 32..41, disjoint from 0..6 and 16..25). `seq` counts the
+hand's messages before this one and `prev` is the payload digest of the previous one:
+a challenge has `seq` 0 and no `prev`, every other shape has `seq` 1..255 and a `prev`.
+Accept and bet carry a commitment, a move carries a `link`, a refund a `ref`; no shape
+states a card, an outcome or an amount of money. A schema-3 shape is read only when the
+reader supports type 18 schema 3 and the frame requires reader 2 (writers emit
+schema 3/min-reader 2). In a schema-1 or schema-2 frame, and for a reader without
+schema-3 support, codes 32..41 are out of range (stage 8.2 `schema`); schema-1 and
+schema-2 frames read exactly as before. Stage 9 checks only the maximum bet of
+challenge and accept (1..10^40-1). `encode_blackjack_hand_v3_item`,
+`project_blackjack_hand_v3_item` and `is_blackjack_hand_v3_frame` mirror the schema-2
+facade; commitment, link, prev and ref are 64 bare lowercase hex. Active TS/Rust
+conformance uses `docs/protocol/cbor/vectors/blackjack-hand-v3.json`.

@@ -1,9 +1,9 @@
 //! Pure typed blackjack writer/projection. No game, fairness or payment authority.
 use crate::{
     cbor_map, default_context, encode_frame, validate_frame, BlackjackAction, BlackjackFields,
-    BlackjackHandAction, BlackjackHandFields, BlackjackOutcome, CborValue, CodecError,
-    ContextError, EnvelopeFields, Error, ErrorCategory, ErrorStage, FramePayload, ParsedFrame,
-    TypedPayload,
+    BlackjackHandAction, BlackjackHandFields, BlackjackHandV3Action, BlackjackHandV3Fields,
+    BlackjackHandV3Move, BlackjackOutcome, CborValue, CodecError, ContextError, EnvelopeFields,
+    Error, ErrorCategory, ErrorStage, FramePayload, ParsedFrame, TypedPayload,
 };
 
 /// Nine closed application shapes; quantities and hashes use exact presentation strings.
@@ -419,6 +419,154 @@ pub fn project_blackjack_hand_item(parsed: &ParsedFrame) -> Result<BlackjackHand
         frame: parsed.frame.clone(),
         item: BlackjackHandFields {
             game_id: wire.game_id.clone(),
+            action,
+        },
+    })
+}
+
+/// The closed hand shapes with entropy from both sides (type 18, schema 3). Hashes are 64 bare
+/// lowercase hex characters, quantities exact decimal strings. No shape states a card, an
+/// outcome or an amount of money.
+pub type BlackjackHandV3Item = BlackjackHandV3Fields<String, String>;
+/// Owned exact original bytes and their schema-3 application projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlackjackHandV3Projection {
+    /// Original exact frame bytes.
+    pub frame: Vec<u8>,
+    /// Closed application value.
+    pub item: BlackjackHandV3Item,
+}
+/// Deterministic writer for one schema-3 hand item; the typed validator then enforces every
+/// wire rule, including the range of `seq`.
+pub fn encode_blackjack_hand_v3_item(item: &BlackjackHandV3Item) -> Result<Vec<u8>, Error> {
+    use BlackjackHandV3Action::*;
+    let bytes32 = |value: &str| Ok::<_, Error>(CborValue::Bytes(hash(value, false)?));
+    let mut fields = vec![
+        (0, CborValue::Text(item.game_id.clone())),
+        (11, CborValue::Int(i128::from(item.seq))),
+    ];
+    // Wire action codes 32..41; challenge role 0 is the dealer, 1 the player.
+    let action = match &item.action {
+        ChallengeDealer {
+            max_bet_wei,
+            commitment,
+        } => {
+            fields.extend([
+                (2, CborValue::Int(0)),
+                (3, CborValue::Bytes(quantity(max_bet_wei)?)),
+                (4, bytes32(commitment)?),
+            ]);
+            32
+        }
+        ChallengePlayer { max_bet_wei } => {
+            fields.extend([
+                (2, CborValue::Int(1)),
+                (3, CborValue::Bytes(quantity(max_bet_wei)?)),
+            ]);
+            32
+        }
+        Accept {
+            max_bet_wei,
+            commitment,
+            prev,
+        } => {
+            fields.extend([
+                (3, CborValue::Bytes(quantity(max_bet_wei)?)),
+                (4, bytes32(commitment)?),
+                (12, bytes32(prev)?),
+            ]);
+            33
+        }
+        Bet { commitment, prev } => {
+            fields.extend([(4, bytes32(commitment)?), (12, bytes32(prev)?)]);
+            34
+        }
+        Move { kind, link, prev } => {
+            fields.extend([(12, bytes32(prev)?), (13, bytes32(link)?)]);
+            match kind {
+                BlackjackHandV3Move::Deal => 35,
+                BlackjackHandV3Move::Hit => 36,
+                BlackjackHandV3Move::Stand => 37,
+                BlackjackHandV3Move::Double => 38,
+                BlackjackHandV3Move::Card => 39,
+                BlackjackHandV3Move::Reveal => 40,
+            }
+        }
+        Refund { reference, prev } => {
+            fields.extend([(10, bytes32(reference)?), (12, bytes32(prev)?)]);
+            41
+        }
+    };
+    fields.push((1, CborValue::Int(action)));
+    let payload = cbor_map(fields);
+    let bytes = encode_frame(
+        EnvelopeFields {
+            type_id: 18,
+            schema_version: 3,
+            min_reader_version: 2,
+        },
+        FramePayload::Value(&payload),
+    )
+    .map_err(|e| bad(&e.to_string()))?;
+    validate_frame(&bytes, &default_context())?;
+    Ok(bytes)
+}
+/// True for a parsed type-18 child that is a schema-3 hand item.
+pub fn is_blackjack_hand_v3_frame(parsed: &ParsedFrame) -> bool {
+    matches!(
+        parsed.typed.as_deref(),
+        Some(TypedPayload::BlackjackHandV3Item(_))
+    )
+}
+/// Project an already typed schema-3 child without a second parse; the frame is copied.
+pub fn project_blackjack_hand_v3_item(
+    parsed: &ParsedFrame,
+) -> Result<BlackjackHandV3Projection, Error> {
+    let Some(TypedPayload::BlackjackHandV3Item(wire)) = parsed.typed.as_deref() else {
+        return Err(Error::Context(ContextError(
+            "expected a typed schema-3 blackjack frame".into(),
+        )));
+    };
+    use BlackjackHandV3Action::*;
+    let action = match &wire.action {
+        ChallengeDealer {
+            max_bet_wei,
+            commitment,
+        } => ChallengeDealer {
+            max_bet_wei: decimal(max_bet_wei),
+            commitment: hex(commitment),
+        },
+        ChallengePlayer { max_bet_wei } => ChallengePlayer {
+            max_bet_wei: decimal(max_bet_wei),
+        },
+        Accept {
+            max_bet_wei,
+            commitment,
+            prev,
+        } => Accept {
+            max_bet_wei: decimal(max_bet_wei),
+            commitment: hex(commitment),
+            prev: hex(prev),
+        },
+        Bet { commitment, prev } => Bet {
+            commitment: hex(commitment),
+            prev: hex(prev),
+        },
+        Move { kind, link, prev } => Move {
+            kind: *kind,
+            link: hex(link),
+            prev: hex(prev),
+        },
+        Refund { reference, prev } => Refund {
+            reference: hex(reference),
+            prev: hex(prev),
+        },
+    };
+    Ok(BlackjackHandV3Projection {
+        frame: parsed.frame.clone(),
+        item: BlackjackHandV3Fields {
+            game_id: wire.game_id.clone(),
+            seq: wire.seq,
             action,
         },
     })

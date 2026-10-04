@@ -6,328 +6,41 @@
  *
  * Every wager, payout and refund here is the stamp of the message that carries the move.
  */
-import { mkdtempSync, rmSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { JsonRpcProvider, computeAddress, getBytes } from 'ethers'
-import { toHex } from '@frank/codec'
 import {
-  restoreCanonicalRequest,
-  type CanonicalFetch,
-} from '@frank/cashweb/relay/canonical-dm-transport'
-import { openNodeDirectoryStore } from '../../directory-admission/src/node'
-import type { DirectoryStore } from '../../directory-admission/src'
-import domainVectors from '../../domain-roots/vectors/domain-roots-v1.json'
-import type { MonadRootBundle } from '../monad-wallet-material'
-import type { PublicRevisionZeroInput } from '../monad-wallet-handle'
-import {
-  createMonadChain,
-  installCanonicalDirectory,
-  prepareMonadRevisionZeroExport,
-  type CanonicalDirectory,
-  type MonadChainConfig,
-  type MonadChainWalletHandle,
-} from './monad-chain'
-import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
+  START_BALANCE,
+  STAMP,
+  mockBalances,
+  table,
+  type Seat,
+} from './canonical-two-wallets.testutil'
 import { handValue } from '../message-item-plugins/blackjack/deck'
 import {
   buildAccept,
   buildChallenge,
   checkWager,
   dealerStep,
-  foldHand,
-  handEventsOf,
   maxDealerBetWei,
   playerMoves,
   refundBetStep,
   seedFromBytes,
   totalStakeWei,
-  type HandEvent,
   type HandItem,
   type HandRole,
   type HandState,
 } from '../message-item-plugins/blackjack/hand'
 
-const START_BALANCE = 10n ** 18n
 /** What a wallet keeps back for the fees of its own messages. */
 const RESERVE = 10n ** 16n
-const STAMP = 1_000n
-interface InboxRecord {
-  delivery: Uint8Array
-  context: Uint8Array
-  submissionIdentity: string
-  timestampMs: number
-}
 
-// Offline chain state: only these single-use sender accounts hold funds.
-const mockBalances = new Map<string, bigint>()
-jest.mock('../monad-provider', () => {
-  const actual = jest.requireActual('../monad-provider')
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const ethers = require('ethers')
-  return {
-    ...actual,
-    createMonadJsonRpcProvider: () => {
-      const provider = new ethers.JsonRpcProvider(
-        'http://127.0.0.1:1',
-        10143n,
-        {
-          staticNetwork: true,
-          cacheTimeout: -1,
-        },
-      )
-      provider._perform = async (request: {
-        method: string
-        address?: string
-      }) => {
-        if (request.method === 'getBalance')
-          return mockBalances.get(request.address!.toLowerCase()) ?? 0n
-        if (request.method === 'getTransactionCount') return 0
-        if (request.method === 'estimateGas') return 50_000n
-        if (request.method === 'getGasPrice') return 2n
-        if (request.method === 'getPriorityFee') return 1n
-        if (request.method === 'getBlock')
-          return {
-            hash: '0x' + '11'.repeat(32),
-            parentHash: '0x' + '22'.repeat(32),
-            number: '0x1',
-            timestamp: '0x64',
-            nonce: '0x0000000000000000',
-            difficulty: '0x0',
-            gasLimit: '0x1c9c380',
-            gasUsed: '0x0',
-            miner: '0x' + '00'.repeat(20),
-            extraData: '0x',
-            baseFeePerGas: '0x1',
-            transactions: [],
-          }
-        throw new Error(`unexpected provider call ${request.method}`)
-      }
-      return provider
-    },
-  }
-})
-// Offline chain: a submitted transfer is mined at once and moves its value.
-jest.mock('../monad-http', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const ethers = require('ethers')
-  const mined = new Set<string>()
-  return {
-    ...jest.requireActual('../monad-http'),
-    MonadHttpClient: class {
-      async submitRawTransaction(raw: string) {
-        const tx = ethers.Transaction.from(raw)
-        const to = tx.to.toLowerCase()
-        mockBalances.set(to, (mockBalances.get(to) ?? 0n) + tx.value)
-        const from = tx.from.toLowerCase()
-        mockBalances.set(from, (mockBalances.get(from) ?? 0n) - tx.value)
-        mockFunded.push({ from: tx.from.toLowerCase(), to, value: tx.value })
-        mined.add(tx.hash)
-        return tx.hash
-      }
-      async getTransactionReceipt(hash: string) {
-        return mined.has(hash) ? { status: 'success' } : undefined
-      }
-      destroy() {
-        return undefined
-      }
-    },
-  }
-})
-const mockFunded: { from: string; to: string; value: bigint }[] = []
-jest.mock('@frank/cashweb/relay/monad-mailbox-client', () => ({
-  ...jest.requireActual('@frank/cashweb/relay/monad-mailbox-client'),
-  fetchCanonicalInboxPage: jest.fn(),
-  fetchCanonicalRecoveryPage: jest.fn(async () => ({ records: [] })),
-}))
-import { fetchCanonicalInboxPage } from '@frank/cashweb/relay/monad-mailbox-client'
-const inboxPage = fetchCanonicalInboxPage as jest.MockedFunction<
-  typeof fetchCanonicalInboxPage
->
-
-const RELAY = 'https://relay-a.example'
-const NOW = { seconds: 100n, nanoseconds: 0 }
-function roots(index: number): MonadRootBundle {
-  const outputs = domainVectors.vectors[index].outputs
-  const root = <
-    P extends 'evm-wallet' | 'identity-authentication' | 'messaging-encryption',
-  >(
-    purpose: P,
-  ) => ({
-    registry: 'frank-domain-roots-v1' as const,
-    purpose,
-    bytes: getBytes(`0x${outputs[purpose]}`),
-  })
-  return {
-    evm: root('evm-wallet'),
-    authentication: root('identity-authentication'),
-    messaging: root('messaging-encryption'),
-  }
-}
-
-async function fixture() {
-  const directory = mkdtempSync(join(tmpdir(), 'chain-blackjack-'))
-  const config: MonadChainConfig = {
-    networkId: 'monad-testnet',
-    rpcChain: 'monad-testnet',
-    chainId: 10143,
-    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
-    relayBaseUrl: RELAY,
-    networkTag: 'MONT',
-    stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
-    defaultStampValueWei: 1_000n,
-    defaultTopicVoteValueWei: 1_000n,
-    subAccountPoolSize: 0,
-    walletStorageLocation: join(directory, 'wallet'),
-  }
-  const chain = createMonadChain(config)
-  const alice = (await chain.createWallet(roots(0))) as MonadChainWalletHandle,
-    bob = (await chain.createWallet(roots(1))) as MonadChainWalletHandle
-  // Both players hold spendable money in their own account; stamps are funded from it.
-  for (const wallet of [alice, bob])
-    mockBalances.set((await wallet.getReceiveAddress()).raw.toLowerCase(), START_BALANCE)
-  const tuple = {
-    relayId: new Uint8Array(16).fill(1),
-    endpoint: RELAY + '/',
-    identity: { keyType: 1, keyBytes: getBytes('0x02' + '11'.repeat(32)) },
-    expiry: { seconds: 3700n, nanoseconds: 0 },
-    unknownFields: new Map(),
-  }
-  tuple.identity.keyBytes = new Uint8Array(alice.identity.compressedPubKey)
-  const input: PublicRevisionZeroInput = {
-    networkTag: 'MONT',
-    network: 'monad-testnet',
-    chainId: 10143n,
-    issuedAt: NOW,
-    expiresAt: { seconds: 3700n, nanoseconds: 0 },
-    now: NOW,
-    relayA: { processId: 'relay-a', origin: RELAY, tuple },
-    relayB: { processId: 'relay-b', origin: RELAY, tuple },
-    subjectBinding: 'A',
-  }
-  const stores: DirectoryStore[] = []
-  // Each wallet admits both subjects through its own independent public store.
-  const admit = async (owner: string, wallet: MonadChainWalletHandle) => {
-    const exported = prepareMonadRevisionZeroExport(wallet, input)
-    const store = await openNodeDirectoryStore({
-      location: join(directory, `directory-${owner}-${toHex(exported.t1)}`),
-      anchor: {
-        network: 'monad-testnet',
-        subject: { keyType: 1, keyBytes: exported.auth.compressedPoint },
-        revisionZero: exported.t1,
-      },
-      mode: { kind: 'new' },
-    })
-    stores.push(store)
-    await store.enroll(
-      [{ statement: exported.statement, attestation: exported.attestation }],
-      { now: NOW, relay: tuple },
-    )
-    return {
-      subject: toHex(exported.auth.compressedPoint),
-      current: () => store.current({ now: NOW, relay: tuple }),
-    }
-  }
-  const requests: { body: Uint8Array; contentType: string }[] = []
-  /** The mailbox the relay stores the next delivered message in. */
-  let deliverTo: InboxRecord[] | undefined
-  let clock = 1_000
-  let phase: 'delivered' | 'retained' | 'fail' = 'delivered'
-  const fetch: CanonicalFetch = async (url, init) => {
-    if (url !== RELAY + '/message/monad/cbor' || init.method !== 'PUT')
-      throw new Error(`unexpected relay request ${init.method} ${url}`)
-    if (phase === 'fail') throw new Error('relay unreachable')
-    const body = new Uint8Array(init.body!)
-    requests.push({ body, contentType: init.headers['Content-Type'] })
-    const restored = restoreCanonicalRequest({
-      body,
-      contentType: init.headers['Content-Type'],
-    })
-    if (phase === 'delivered' && deliverTo)
-      deliverTo.push({
-        delivery: restored.parts.delivery,
-        context: restored.parts.context,
-        submissionIdentity: restored.identity.submission_identity,
-        timestampMs: ++clock,
-      })
-    const identity = restoreCanonicalRequest({
-      body,
-      contentType: init.headers['Content-Type'],
-    }).identity
-    const answer = new TextEncoder().encode(
-      JSON.stringify(
-        phase === 'delivered'
-          ? {
-              version: 1,
-              phase,
-              identity,
-              mailbox_committed_at_ms: 1234,
-            }
-          : { version: 1, phase, identity },
-      ),
-    )
-    let read = false
-    return {
-      status: phase === 'delivered' ? 200 : 202,
-      url,
-      headers: {
-        get: name =>
-          name.toLowerCase() === 'content-type' ? 'application/json' : null,
-      },
-      body: {
-        getReader: () => ({
-          read: async () =>
-            read
-              ? { done: true }
-              : ((read = true), { done: false, value: answer }),
-          cancel: async () => undefined,
-          releaseLock: () => undefined,
-        }),
-      },
-    }
-  }
-  const directoryFor = async (
-    owner: string,
-    self: MonadChainWalletHandle,
-    peer: MonadChainWalletHandle,
-  ): Promise<CanonicalDirectory> => {
-    const own = await admit(owner, self),
-      other = await admit(owner, peer)
-    return {
-      network: 'monad-testnet',
-      homeEndpoint: RELAY + '/',
-      selfCurrent: own.current,
-      peerCurrent: async wanted => {
-        const subject =
-          'subject' in wanted
-            ? wanted.subject
-            : computeAddress('0x' + other.subject).toLowerCase() ===
-              wanted.address.toLowerCase()
-            ? other.subject
-            : undefined
-        return subject === other.subject
-          ? { subject, endpoint: RELAY + '/', current: await other.current() }
-          : undefined
-      },
-      fetch,
-    }
-  }
-  return {
-    chain,
-    alice,
-    bob,
-    requests,
-    setPhase: (next: typeof phase) => (phase = next),
-    setMailbox: (next: InboxRecord[] | undefined) => (deliverTo = next),
-    directoryFor,
-    close: async () => {
-      await alice.close()
-      await bob.close()
-      for (const store of stores) await store.close()
-      rmSync(directory, { recursive: true, force: true })
-    },
-  }
-}
+jest.mock('../monad-provider', () =>
+  require('./canonical-two-wallets.testutil').offlineProviderModule(),
+)
+jest.mock('../monad-http', () =>
+  require('./canonical-two-wallets.testutil').offlineHttpModule(),
+)
+jest.mock('@frank/cashweb/relay/monad-mailbox-client', () =>
+  require('./canonical-two-wallets.testutil').offlineMailboxModule(),
+)
 
 // Cards: the scripted hands below fix the deck so that each outcome is certain. Everything else
 // is real, including the commitment check on reveal. With no script the real derivation runs
@@ -344,84 +57,6 @@ jest.mock('../message-item-plugins/blackjack/deck', () => {
 /** A full deck that starts with the given cards. Rank is `card % 13`: 0 ace, 9..12 tens. */
 function deckStarting(...first: number[]): number[] {
   return [...first, ...Array.from({ length: 52 }, (_, i) => i).filter(c => !first.includes(c))]
-}
-
-type Fixture = Awaited<ReturnType<typeof fixture>>
-const mailboxes = new Map<string, InboxRecord[]>()
-
-/** One wallet at the table. It knows only what it sent and what its mailbox delivered. */
-class Seat {
-  readonly events: HandEvent[] = []
-  readonly seeds = new Map<string, string>()
-  readonly mailbox: InboxRecord[] = []
-  private readonly seen = new Set<string>()
-  peer!: Seat
-  since = 0
-  /** Every stamp this wallet paid, in order. */
-  readonly paid: bigint[] = []
-  /** Money this wallet received as stamps, per payload digest, as its own wallet verified it. */
-  readonly received = new Map<string, bigint>()
-  constructor(
-    private readonly f: Fixture,
-    readonly wallet: MonadChainWalletHandle,
-  ) {
-    mailboxes.set(toHex(wallet.identity.compressedPubKey), this.mailbox)
-  }
-  get address(): string {
-    return this.wallet.identity.address.raw
-  }
-  balance(): Promise<bigint> {
-    return this.wallet.getBalance()
-  }
-  private record(event: HandEvent) {
-    if (this.seen.has(event.digest)) return
-    this.seen.add(event.digest)
-    this.events.push(event)
-  }
-  async send(item: HandItem, stampWei = STAMP) {
-    this.f.setMailbox(this.peer.mailbox)
-    const sent = await this.f.chain.directMessages.send({
-      wallet: this.wallet,
-      recipient: this.peer.wallet.identity.address,
-      items: [item],
-      stampValue: stampWei,
-    })
-    this.f.setMailbox(undefined)
-    this.paid.push(sent.stampPayments.reduce((sum, p) => sum + p.valueWei, 0n))
-    for (const event of handEventsOf({
-      items: [item],
-      senderAddress: this.address,
-      recipientAddress: this.peer.address,
-      stampValueWei: sent.stampValueWei,
-      payloadDigest: sent.payloadDigest,
-    }))
-      this.record(event)
-    return sent
-  }
-  async poll() {
-    const messages = await this.f.chain.directMessages.fetchSince({
-      wallet: this.wallet,
-      sinceMs: this.since,
-    })
-    for (const message of messages) {
-      this.since = Math.max(this.since, message.receivedTime)
-      this.received.set(message.payloadDigest, message.stampValueWei)
-      for (const event of handEventsOf({
-        items: message.items,
-        senderAddress: message.senderAddress.raw,
-        recipientAddress: message.recipientAddress.raw,
-        stampValueWei: message.stampValueWei,
-        payloadDigest: message.payloadDigest,
-      }))
-        this.record(event)
-    }
-  }
-  hand(gameId: string): HandState | undefined {
-    return foldHand(this.events.filter(e => e.item.gameId === gameId)).state
-  }
-  totalReceived(): bigint {
-    return [...this.received.values()].reduce((a, b) => a + b, 0n)
-  }
 }
 
 type Move = 'hit' | 'stand' | 'double'
@@ -511,26 +146,11 @@ async function playHand(
 
 describe('two typed wallets play blackjack through stamped messages', () => {
   jest.setTimeout(600_000)
-  let f: Fixture
+  let f: Awaited<ReturnType<typeof table>>['f']
   let alice: Seat
   let bob: Seat
   beforeEach(async () => {
-    jest.clearAllMocks()
-    mockBalances.clear()
-    mockFunded.length = 0
-    mailboxes.clear()
-    f = await fixture()
-    installCanonicalDirectory(f.alice, await f.directoryFor('alice', f.alice, f.bob))
-    installCanonicalDirectory(f.bob, await f.directoryFor('bob', f.bob, f.alice))
-    alice = new Seat(f, f.alice)
-    bob = new Seat(f, f.bob)
-    alice.peer = bob
-    bob.peer = alice
-    inboxPage.mockImplementation(async auth => ({
-      records: (mailboxes.get(auth.subject) ?? []).filter(
-        record => record.timestampMs > (auth.sinceMs ?? 0),
-      ),
-    }))
+    ;({ f, alice, bob } = await table())
   })
   afterEach(() => f.close())
 

@@ -706,6 +706,111 @@ mod tests {
     }
 
     #[test]
+    fn actual_charged_snapshots_reserve_empty_query_overhead() {
+        let (_dir, mut state) = setup();
+        let row_overhead = std::mem::size_of::<Row>() * 2;
+        let mut charged = 4096;
+        let mut nonce = 0;
+        let publish_sized = |state: &mut State, nonce: u64, title_len: usize| {
+            let op = crate::store::forum::tests::sized_post(nonce, "test.topic", title_len);
+            state.store.admit(op.clone()).unwrap();
+            state
+                .store
+                .confirm(
+                    &op.checked.decoded.tx_hash.0,
+                    &facts(&op, nonce, 0),
+                    Timestamp {
+                        seconds: 200,
+                        nanoseconds: 0,
+                    },
+                )
+                .unwrap();
+            state.revision += 1;
+            let post = state.store.post(op.event.target_hash()).unwrap().unwrap();
+            let frame = state.view(&post).unwrap();
+            frame.capacity() + post.topic.len() + 32 + 256 + row_overhead
+        };
+        let large_title = 262_000;
+        let large_charge = publish_sized(&mut state, nonce, large_title);
+        charged += large_charge;
+        nonce += 1;
+        let target = 64 * 1024 * 1024 - 512;
+        while target - charged > 2 * (large_charge + 128) {
+            charged += publish_sized(&mut state, nonce, large_title);
+            nonce += 1;
+        }
+        // Exact frame capacities let valid final titles approach the quota without
+        // assigning fictional charges. Nonce/CBOR integer width variations are bounded
+        // by the explicitly asserted 256-byte margin below.
+        let fixed = large_charge - large_title;
+        let title = (target - charged) / 2 - fixed - 64;
+        charged += publish_sized(&mut state, nonce, title);
+        nonce += 1;
+        let title = target - charged - fixed - 64;
+        charged += publish_sized(&mut state, nonce, title);
+        assert!(charged <= target + 128 && charged >= target - 256);
+        for seconds in 0..4 {
+            let query = Query::Topic {
+                topic: "test.topic".into(),
+                since: Timestamp {
+                    seconds,
+                    nanoseconds: 0,
+                },
+            };
+            state.page(query, None).unwrap();
+        }
+        assert_eq!(state.snapshots.len(), 4);
+        let actual = state.snapshots[0].charge;
+        assert!(actual > 64 * 1024 * 1024 - 1024);
+        for snapshot in &state.snapshots {
+            assert_eq!(snapshot.charge, actual);
+            assert!(snapshot.charge <= 64 * 1024 * 1024);
+            assert!(!snapshot.rows.is_empty());
+        }
+        let occupied: usize = state.snapshots.iter().map(|s| s.charge).sum();
+        assert!(occupied <= 256 * 1024 * 1024);
+        assert!(occupied + 4096 > 256 * 1024 * 1024);
+        let empty = Query::Topic {
+            topic: "empty.topic".into(),
+            since: Timestamp {
+                seconds: 0,
+                nanoseconds: 0,
+            },
+        };
+        assert!(matches!(
+            state.page(empty.clone(), None),
+            Err(ForumError::SnapshotTooLarge)
+        ));
+        assert_eq!(
+            state.snapshots.len(),
+            4,
+            "failed empty construction must not publish or evict"
+        );
+        let nonempty = Query::Topic {
+            topic: "test.topic".into(),
+            since: Timestamp {
+                seconds: 4,
+                nanoseconds: 0,
+            },
+        };
+        assert!(matches!(
+            state.page(nonempty.clone(), None),
+            Err(ForumError::SnapshotTooLarge)
+        ));
+        assert_eq!(state.snapshots.len(), 4);
+        assert_eq!(
+            state.incarnation, 6,
+            "failed allocations consume incarnations"
+        );
+        state.snapshots.truncate(3); // Controls have genuine remaining room.
+        state.page(empty, None).unwrap();
+        assert!(state.snapshots.last().unwrap().rows.is_empty());
+        state.snapshots.truncate(3);
+        state.page(nonempty, None).unwrap();
+        assert!(!state.snapshots.last().unwrap().rows.is_empty());
+    }
+
+    #[test]
     fn retained_snapshot_is_immutable_after_new_votes() {
         let (_dir, mut state) = setup();
         let post = publish(&mut state, 0, None, false);

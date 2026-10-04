@@ -25,6 +25,13 @@ pub(crate) fn distinct_post(nonce: u64, topic: &str) -> Observation {
     observation_fields(nonce, None, false, 7, topic, &format!("post-{nonce}"))
 }
 
+pub(crate) fn sized_post(nonce: u64, topic: &str, title_len: usize) -> Observation {
+    assert!((16..=262_144).contains(&title_len));
+    let mut title = format!("{nonce:016x}");
+    title.push_str(&"x".repeat(title_len - title.len()));
+    observation_fields(nonce, None, false, 7, topic, &title)
+}
+
 fn observation_fields(
     nonce: u64,
     target: Option<[u8; 32]>,

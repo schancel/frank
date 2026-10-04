@@ -67,6 +67,17 @@ export function linkAt(opened: OpenedLink, index: number): string | undefined {
   return link
 }
 
+/** Every link of an opened link's chain up to it: `links[k]` is link `k`. One pass. */
+export function linksUpTo(opened: OpenedLink): string[] {
+  const links = new Array<string>(opened.index + 1)
+  let link = opened.link
+  for (let k = opened.index; k >= 0; k--) {
+    links[k] = link
+    if (k > 0) link = sha256OfHex(link)
+  }
+  return links
+}
+
 /** Is `link` link number `index` of the chain whose earlier link `known` we already hold? */
 export function verifyLink(
   link: unknown,

@@ -22,6 +22,7 @@ import {
   drawCard,
   entropyChain,
   linkAt,
+  linksUpTo,
   verifyLink,
   type OpenedLink,
 } from './entropy'
@@ -240,13 +241,19 @@ function settle(
     return { dealerCards: [up], outcome: 'dealer_win' }
   const player = state.playerLink
   if (!player || player.index !== CHAIN_LENGTH) return undefined
+  if (dealerLast.index !== CHAIN_LENGTH) return undefined
+  const dealerLinks = linksUpTo(dealerLast)
+  const playerLinks = linksUpTo(player)
   const drawn = [...state.draws]
   const rest: Card[] = []
   for (let k = drawn.length; k < CHAIN_LENGTH; k++) {
-    const d = linkAt(dealerLast, k + 1)
-    const p = linkAt(player, k + 1)
-    if (d === undefined || p === undefined) return undefined
-    const card = drawCard(state.gameId, k, d, p, drawn)
+    const card = drawCard(
+      state.gameId,
+      k,
+      dealerLinks[k + 1],
+      playerLinks[k + 1],
+      drawn,
+    )
     drawn.push(card)
     rest.push(card)
   }

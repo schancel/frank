@@ -87,7 +87,7 @@ pub(crate) const MAX_BLACKJACK_FRAME_BYTES: usize = 4096;
 pub(crate) const TYPE_BLACKJACK_ITEM: u32 = 18;
 
 /// Types with a version-1 schema in this codec (E5). `0xffff0001` is not included.
-pub const KNOWN_TYPES: [u32; 18] = [
+pub const KNOWN_TYPES: [u32; 30] = [
     TYPE_DIRECT_MESSAGE,
     TYPE_DIRECTORY_ATTESTATION,
     TYPE_MAILBOX_CHECKPOINT,
@@ -106,6 +106,18 @@ pub const KNOWN_TYPES: [u32; 18] = [
     TYPE_CONTAINER_ITEM,
     TYPE_TEXT_ITEM,
     TYPE_BLACKJACK_ITEM,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
 ];
 
 /// Frank-CBOR production DM suite (S2c): authenticated XChaCha20-Poly1305.

@@ -54,6 +54,7 @@ pub fn common_transcript(
 
 fn network_field(typed: &TypedPayload) -> Option<&str> {
     match typed {
+        TypedPayload::Lotus(value) => Some(value.network()),
         TypedPayload::DirectMessage { network, .. }
         | TypedPayload::MailboxCheckpoint { network, .. }
         | TypedPayload::DirectoryStatement { network, .. }
@@ -70,7 +71,7 @@ fn network_field(typed: &TypedPayload) -> Option<&str> {
 /// T1's network source. Unknown types have no content hash.
 pub fn content_hash_network(frame: &ParsedFrame) -> Result<String, UsageError> {
     match frame.type_id {
-        8 | 16 | 17 => Ok("frank".to_string()),
+        8 | 16 | 17 | 35 => Ok("frank".to_string()),
         2 => {
             let typed = frame
                 .typed
@@ -92,7 +93,7 @@ pub fn content_hash_network(frame: &ParsedFrame) -> Result<String, UsageError> {
                 )),
             }
         }
-        1 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11 => {
+        1 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11 | 32..=34 | 36..=43 => {
             let typed = frame.typed.as_deref().ok_or_else(|| {
                 usage(format!(
                     "T1 for a type-{} frame needs the stage 8 typed projection",

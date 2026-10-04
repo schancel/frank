@@ -34,11 +34,19 @@ mod frame;
 mod hash;
 mod keccak;
 mod limits;
+mod lotus_public;
 mod model;
 mod registration;
 mod schema;
 mod semantic;
 mod validate;
+
+pub use lotus_public::{
+    encode_lotus_public, lotus_body_hash, lotus_burn_commitment, lotus_burn_script,
+    lotus_network_descriptor, lotus_request_index, lotus_signature_digest, project_lotus_public,
+    verify_lotus_submission, LotusBurn, LotusDescriptor, LotusEntry, LotusPayload, LotusProjection,
+    LotusReference, LotusVerification,
+};
 
 pub use blackjack::{
     encode_blackjack_item, project_blackjack_item, BlackjackItem, BlackjackProjection,

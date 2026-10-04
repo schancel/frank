@@ -66,6 +66,7 @@ export function contentHashNetwork(p: ParsedFrame): string {
     case 8:
     case 16:
     case 17:
+    case 35:
       return 'frank'
     case 2: {
       const t = p.typed
@@ -83,7 +84,18 @@ export function contentHashNetwork(p: ParsedFrame): string {
     case 7:
     case 9:
     case 10:
-    case 11: {
+    case 11:
+    case 32:
+    case 33:
+    case 34:
+    case 36:
+    case 37:
+    case 38:
+    case 39:
+    case 40:
+    case 41:
+    case 42:
+    case 43: {
       const t = p.typed
       if (t && 'network' in t) return t.network
       throw new Error(

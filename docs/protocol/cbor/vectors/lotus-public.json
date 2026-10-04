@@ -1,0 +1,491 @@
+{
+  "schema_version": 1,
+  "packet_sha256": "36dbe76f13d815f0fe31a82dd3fb8aaa9149a4326fb855f44005e50009af8732",
+  "origin": "Independent Python RFC8949 integer/map encoder; no TS or Rust encoder invoked.",
+  "author_key_hex": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+  "positive": [
+    {
+      "id": "metadata",
+      "type_id": 32,
+      "frame_hex": "46524e4b010000005da400182001010201035852a4006b7870692d6d61696e6e6574010102183c0382a30064706f73740181826161616202581d46524e4b0100000014a400182301010201034aa20060026568656c6c6fa30066637573746f6d0180024200ff",
+      "body_hash_hex": "0d6270ae031b268140b5aa8762aec4a6b616aca41a4e24470fd390abc61c7ea2",
+      "signature_digest_hex": "6a2148ecbf1b69fda95aaddd124fef64628db235614526b77cf49ce576a0aee4",
+      "burn_commitment_hex": "db5c9c2226b2665d782426d56684ec38deb392b9cf3cc9e0c2bc2dee129b2391"
+    },
+    {
+      "id": "post",
+      "type_id": 33,
+      "frame_hex": "46524e4b010000008fa400182101010201035884a5006b7870692d6d61696e6e6574016c6c6f7475732e7075626c696302020382a30064706f73740181826161616202581d46524e4b0100000014a400182301010201034aa20060026568656c6c6fa30066637573746f6d0180024200ff04a200000158200000000000000000000000000000000000000000000000000000000000000000",
+      "body_hash_hex": "bab448051784aebb9728e804e0284aea13621874da883a5ec988160ffb6154a5",
+      "signature_digest_hex": "de81bef20bd19697ea62389fe6e7ac74208208f5b6523c9e569492d9c78cc85e",
+      "burn_commitment_hex": "1a5d30e34c48e73696dac32c6e2afce702ca49481d1ddf8f2e825c6d5e427cee"
+    },
+    {
+      "id": "support",
+      "type_id": 34,
+      "frame_hex": "46524e4b0100000042a400182201010201035837a3006b7870692d6d61696e6e657401a2000001582000000000000000000000000000000000000000000000000000000000000000000200",
+      "body_hash_hex": "a777ef4f7e68c763b580a7af3c16abd712ab404cda5e350187fbc35156e0705d",
+      "signature_digest_hex": "c8a9ecded023915ff2f43bab4143227f954dd3a82065df5bcc7c2974f6df981c",
+      "burn_commitment_hex": "506f88b8be9c5c9157b4c4c2969a06a0597755739f5deab998b57a07d65125df"
+    },
+    {
+      "id": "oppose",
+      "type_id": 34,
+      "frame_hex": "46524e4b0100000042a400182201010201035837a3006b7870692d6d61696e6e657401a2000001582000000000000000000000000000000000000000000000000000000000000000000201",
+      "body_hash_hex": "10634d904dc65fc777daa5b837b73ac2d35ccb2c88d147fe4d1e6f766beda918",
+      "signature_digest_hex": "8c7e55235266d1adb296b4e4cf79ac36762d81d0400519dc26a7a1537597b921",
+      "burn_commitment_hex": "8e3c24326a492d5e4384a03c0ce5e8bd457ac743916c629ed72fd0724f318243"
+    },
+    {
+      "id": "text-empty-present",
+      "type_id": 35,
+      "frame_hex": "46524e4b0100000014a400182301010201034aa20060026568656c6c6f"
+    },
+    {
+      "id": "submission-two-outputs",
+      "type_id": 36,
+      "frame_hex": "46524e4b0100000135a40018240101020103590129a5006b7870692d6d61696e6e657401589846524e4b010000008fa400182101010201035884a5006b7870692d6d61696e6e6574016c6c6f7475732e7075626c696302020382a30064706f73740181826161616202581d46524e4b0100000014a400182301010201034aa20060026568656c6c6fa30066637573746f6d0180024200ff04a2000001582000000000000000000000000000000000000000000000000000000000000000000281a3000301a200010158210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798025840000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000382a20041010100a200410101010400",
+      "request_index_hex": "0a50202e5d1de6abf0e5602e5bbeb4d959926d85ca6611986753f9dead0df747"
+    },
+    {
+      "id": "historical-metadata",
+      "type_id": 37,
+      "frame_hex": "46524e4b0100000071a400182501010201035866a9006b7870692d6d61696e6e6574015820000000000000000000000000000000000000000000000000000000000000000002a200010158210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980300040405183c070008020901",
+      "request_index_hex": "7dfbd87787fbd621d235e980527ee3c40faad78b190410b2f91e1a36cb16b2ff"
+    },
+    {
+      "id": "historical-post",
+      "type_id": 37,
+      "frame_hex": "46524e4b0100000095a40018250101020103588aa9006b7870692d6d61696e6e6574015820000000000000000000000000000000000000000000000000000000000000000002a200010158210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980301040406a200000158200000000000000000000000000000000000000000000000000000000000000000070008020901",
+      "request_index_hex": "2ac796dd47f0098f85b13acc571058351d72ca73749c3fe3edf19d2401fe6982"
+    },
+    {
+      "id": "historical-offering",
+      "type_id": 37,
+      "frame_hex": "46524e4b0100000093a400182501010201035888a8006b7870692d6d61696e6e6574015820000000000000000000000000000000000000000000000000000000000000000002a200010158210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179803020404070008020aa200000158200000000000000000000000000000000000000000000000000000000000000000",
+      "request_index_hex": "4e9bcd7429c953f210944c75f217aa66aff41907adbd4d8fb2cdec1a18c921e0"
+    },
+    {
+      "id": "inventory",
+      "type_id": 38,
+      "frame_hex": "46524e4b0100000093a400182601010201035888a8006b7870692d6d61696e6e65740103025000000000000000000000000000000000030104040581a500182401582000000000000000000000000000000000000000000000000000000000000000000203030404a2000001582000000000000000000000000000000000000000000000000000000000000000000646637572736f7207446563686f"
+    },
+    {
+      "id": "summary",
+      "type_id": 39,
+      "frame_hex": "46524e4b0100000048a40018270101020103583da6006b7870692d6d61696e6e657401a2000001582000000000000000000000000000000000000000000000000000000000000000000201030304020501"
+    },
+    {
+      "id": "retained",
+      "type_id": 40,
+      "frame_hex": "46524e4b0100000040a400182801010201035835a4006b7870692d6d61696e6e6574015820000000000000000000000000000000000000000000000000000000000000000002000380"
+    },
+    {
+      "id": "accepted",
+      "type_id": 40,
+      "frame_hex": "46524e4b0100000064a400182801010201035859a5006b7870692d6d61696e6e6574015820000000000000000000000000000000000000000000000000000000000000000002010381582000000000000000000000000000000000000000000000000000000000000000000401"
+    },
+    {
+      "id": "terminal",
+      "type_id": 40,
+      "frame_hex": "46524e4b010000006ca400182801010201035861a5006b7870692d6d61696e6e657401582000000000000000000000000000000000000000000000000000000000000000000202038158200000000000000000000000000000000000000000000000000000000000000000056872656a6563746564"
+    },
+    {
+      "id": "absent",
+      "type_id": 40,
+      "frame_hex": "46524e4b0100000040a400182801010201035835a4006b7870692d6d61696e6e6574015820000000000000000000000000000000000000000000000000000000000000000002030380"
+    },
+    {
+      "id": "peers",
+      "type_id": 41,
+      "frame_hex": "46524e4b010000003fa400182901010201035834a2006b7870692d6d61696e6e657401827168747470733a2f2f612e6578616d706c657168747470733a2f2f622e6578616d706c65"
+    },
+    {
+      "id": "error",
+      "type_id": 42,
+      "frame_hex": "46524e4b0100000048a400182a0101020103583da4006b7870692d6d61696e6e65740168636f6e666c696374025820000000000000000000000000000000000000000000000000000000000000000003f4"
+    },
+    {
+      "id": "historical-chunk",
+      "type_id": 43,
+      "frame_hex": "46524e4b0100000051a400182b01010201035846a8006b7870692d6d61696e6e657401582000000000000000000000000000000000000000000000000000000000000000000200038407000000040005050600074568656c6c6f",
+      "request_index_hex": "7d4067804f24f36efbbdc25e720d8cdba13b7e1935c8733526022d937cb41cce"
+    },
+    {
+      "id": "regtest-metadata",
+      "type_id": 32,
+      "frame_hex": "46524e4b010000001fa4001820010102010355a4006b7870692d72656774657374010102183c0380",
+      "body_hash_hex": "0c2b8b1eff174f0a94f8811d1eae97bde4e69f2b3ea1af95439ed08a11991e83",
+      "signature_digest_hex": "f3313f0511d74433d1f89932a8984a6176d6a3815b161d09082611b70098aaa0",
+      "burn_commitment_hex": "2a1d3d88f98dd80148e62f94caad76365e90ade01829b05f7570fd15619e0c3e"
+    }
+  ],
+  "negative": [
+    {
+      "id": "wrong-network",
+      "frame_hex": "46524e4b010000001ea4001820010102010354a4006b6263682d6d61696e6e6574010102010380",
+      "error": {
+        "category": "schema",
+        "stage": "8.2"
+      }
+    },
+    {
+      "id": "null-text",
+      "frame_hex": "46524e4b010000000da4001823010102010343a100f6",
+      "error": {
+        "category": "schema",
+        "stage": "8.2"
+      }
+    },
+    {
+      "id": "empty-text-map",
+      "frame_hex": "46524e4b010000000ba4001823010102010341a0",
+      "error": {
+        "category": "schema",
+        "stage": "8.2"
+      }
+    },
+    {
+      "id": "closed-text-extension",
+      "frame_hex": "46524e4b0100000015a400182301010201034ba200617809656578747261",
+      "error": {
+        "category": "schema",
+        "stage": "8.2"
+      }
+    },
+    {
+      "id": "bad-summary",
+      "frame_hex": "46524e4b0100000048a40018270101020103583da6006b7870692d6d61696e6e657401a2000001582000000000000000000000000000000000000000000000000000000000000000000201030404020501",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "peer-list-in-inventory",
+      "frame_hex": "46524e4b010000005ea400182601010201035853a6006b7870692d6d61696e6e65740100025000000000000000000000000000000000030104010581a4001829015820000000000000000000000000000000000000000000000000000000000000000002010301",
+      "error": {
+        "category": "schema",
+        "stage": "8.2"
+      }
+    },
+    {
+      "id": "invalid-phase-fields",
+      "frame_hex": "46524e4b0100000042a400182801010201035837a5006b7870692d6d61696e6e65740158200000000000000000000000000000000000000000000000000000000000000000020003800401",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "chunk-overrun",
+      "frame_hex": "46524e4b010000004da400182b01010201035842a8006b7870692d6d61696e6e657401582000000000000000000000000000000000000000000000000000000000000000000200038407000000040005010601074178",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    }
+  ],
+  "origin_cases": [
+    {
+      "id": "dns",
+      "origin": "https://a.example",
+      "accept": true,
+      "frame_hex": "46524e4b010000002da400182901010201035822a2006b7870692d6d61696e6e657401817168747470733a2f2f612e6578616d706c65"
+    },
+    {
+      "id": "localhost",
+      "origin": "https://localhost",
+      "accept": true,
+      "frame_hex": "46524e4b010000002da400182901010201035822a2006b7870692d6d61696e6e657401817168747470733a2f2f6c6f63616c686f7374"
+    },
+    {
+      "id": "dns-port",
+      "origin": "https://a.example:8443",
+      "accept": true,
+      "frame_hex": "46524e4b0100000032a400182901010201035827a2006b7870692d6d61696e6e657401817668747470733a2f2f612e6578616d706c653a38343433"
+    },
+    {
+      "id": "ipv4",
+      "origin": "https://127.0.0.1",
+      "accept": true,
+      "frame_hex": "46524e4b010000002da400182901010201035822a2006b7870692d6d61696e6e657401817168747470733a2f2f3132372e302e302e31"
+    },
+    {
+      "id": "ipv4-max",
+      "origin": "https://255.255.255.255:65535",
+      "accept": true,
+      "frame_hex": "46524e4b010000003aa40018290101020103582fa2006b7870692d6d61696e6e65740181781d68747470733a2f2f3235352e3235352e3235352e3235353a3635353335"
+    },
+    {
+      "id": "ipv6-loopback",
+      "origin": "https://[::1]",
+      "accept": true,
+      "frame_hex": "46524e4b0100000029a40018290101020103581ea2006b7870692d6d61696e6e657401816d68747470733a2f2f5b3a3a315d"
+    },
+    {
+      "id": "ipv6-compressed",
+      "origin": "https://[2001:db8::1]",
+      "accept": true,
+      "frame_hex": "46524e4b0100000031a400182901010201035826a2006b7870692d6d61696e6e657401817568747470733a2f2f5b323030313a6462383a3a315d"
+    },
+    {
+      "id": "ipv6-uncompressed-nozero",
+      "origin": "https://[2001:db8:1:2:3:4:5:6]:8443",
+      "accept": true,
+      "frame_hex": "46524e4b0100000040a400182901010201035835a2006b7870692d6d61696e6e65740181782368747470733a2f2f5b323030313a6462383a313a323a333a343a353a365d3a38343433"
+    },
+    {
+      "id": "ipv6-mapped",
+      "origin": "https://[::ffff:192.0.2.1]",
+      "accept": true,
+      "frame_hex": "46524e4b0100000037a40018290101020103582ca2006b7870692d6d61696e6e65740181781a68747470733a2f2f5b3a3a666666663a3139322e302e322e315d"
+    },
+    {
+      "id": "ipv6-compatible-canonical",
+      "origin": "https://[::c000:201]",
+      "accept": true,
+      "frame_hex": "46524e4b0100000030a400182901010201035825a2006b7870692d6d61696e6e657401817468747470733a2f2f5b3a3a633030303a3230315d"
+    },
+    {
+      "id": "uppercase-dns",
+      "origin": "https://A.example",
+      "accept": false,
+      "frame_hex": "46524e4b010000002da400182901010201035822a2006b7870692d6d61696e6e657401817168747470733a2f2f412e6578616d706c65",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "trailing-dot",
+      "origin": "https://a.example.",
+      "accept": false,
+      "frame_hex": "46524e4b010000002ea400182901010201035823a2006b7870692d6d61696e6e657401817268747470733a2f2f612e6578616d706c652e",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "underscore",
+      "origin": "https://a_b.example",
+      "accept": false,
+      "frame_hex": "46524e4b010000002fa400182901010201035824a2006b7870692d6d61696e6e657401817368747470733a2f2f615f622e6578616d706c65",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "default-port",
+      "origin": "https://a.example:443",
+      "accept": false,
+      "frame_hex": "46524e4b0100000031a400182901010201035826a2006b7870692d6d61696e6e657401817568747470733a2f2f612e6578616d706c653a343433",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "zero-port",
+      "origin": "https://a.example:0",
+      "accept": false,
+      "frame_hex": "46524e4b010000002fa400182901010201035824a2006b7870692d6d61696e6e657401817368747470733a2f2f612e6578616d706c653a30",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "leadingzero-port",
+      "origin": "https://a.example:08443",
+      "accept": false,
+      "frame_hex": "46524e4b0100000033a400182901010201035828a2006b7870692d6d61696e6e657401817768747470733a2f2f612e6578616d706c653a3038343433",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "oversize-port",
+      "origin": "https://a.example:65536",
+      "accept": false,
+      "frame_hex": "46524e4b0100000033a400182901010201035828a2006b7870692d6d61696e6e657401817768747470733a2f2f612e6578616d706c653a3635353336",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "credentials",
+      "origin": "https://u@a.example",
+      "accept": false,
+      "frame_hex": "46524e4b010000002fa400182901010201035824a2006b7870692d6d61696e6e657401817368747470733a2f2f7540612e6578616d706c65",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "path",
+      "origin": "https://a.example/",
+      "accept": false,
+      "frame_hex": "46524e4b010000002ea400182901010201035823a2006b7870692d6d61696e6e657401817268747470733a2f2f612e6578616d706c652f",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "query",
+      "origin": "https://a.example?x",
+      "accept": false,
+      "frame_hex": "46524e4b010000002fa400182901010201035824a2006b7870692d6d61696e6e657401817368747470733a2f2f612e6578616d706c653f78",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "fragment",
+      "origin": "https://a.example#x",
+      "accept": false,
+      "frame_hex": "46524e4b010000002fa400182901010201035824a2006b7870692d6d61696e6e657401817368747470733a2f2f612e6578616d706c652378",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "http",
+      "origin": "http://a.example",
+      "accept": false,
+      "frame_hex": "46524e4b010000002ca400182901010201035821a2006b7870692d6d61696e6e6574018170687474703a2f2f612e6578616d706c65",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "ipv4-leadingzero",
+      "origin": "https://127.0.0.01",
+      "accept": false,
+      "frame_hex": "46524e4b010000002ea400182901010201035823a2006b7870692d6d61696e6e657401817268747470733a2f2f3132372e302e302e3031",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "ipv4-short",
+      "origin": "https://127.1",
+      "accept": false,
+      "frame_hex": "46524e4b0100000029a40018290101020103581ea2006b7870692d6d61696e6e657401816d68747470733a2f2f3132372e31",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "ipv4-hexalias",
+      "origin": "https://0x7f000001",
+      "accept": false,
+      "frame_hex": "46524e4b010000002ea400182901010201035823a2006b7870692d6d61696e6e657401817268747470733a2f2f30783766303030303031",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "numeric-final-dns",
+      "origin": "https://my.123",
+      "accept": false,
+      "frame_hex": "46524e4b010000002aa40018290101020103581fa2006b7870692d6d61696e6e657401816e68747470733a2f2f6d792e313233",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "ipv4-outofrange",
+      "origin": "https://256.0.0.1",
+      "accept": false,
+      "frame_hex": "46524e4b010000002da400182901010201035822a2006b7870692d6d61696e6e657401817168747470733a2f2f3235362e302e302e31",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "ipv6-noncanonical-expanded",
+      "origin": "https://[0:0:0:0:0:0:0:1]",
+      "accept": false,
+      "frame_hex": "46524e4b0100000036a40018290101020103582ba2006b7870692d6d61696e6e65740181781968747470733a2f2f5b303a303a303a303a303a303a303a315d",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "ipv6-uppercase",
+      "origin": "https://[2001:DB8::1]",
+      "accept": false,
+      "frame_hex": "46524e4b0100000031a400182901010201035826a2006b7870692d6d61696e6e657401817568747470733a2f2f5b323030313a4442383a3a315d",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "ipv6-leadingzero",
+      "origin": "https://[2001:0db8::1]",
+      "accept": false,
+      "frame_hex": "46524e4b0100000032a400182901010201035827a2006b7870692d6d61696e6e657401817668747470733a2f2f5b323030313a306462383a3a315d",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "ipv6-mapped-hexalias",
+      "origin": "https://[::ffff:c000:201]",
+      "accept": false,
+      "frame_hex": "46524e4b0100000036a40018290101020103582ba2006b7870692d6d61696e6e65740181781968747470733a2f2f5b3a3a666666663a633030303a3230315d",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "ipv6-compatible-dottedalias",
+      "origin": "https://[::192.0.2.1]",
+      "accept": false,
+      "frame_hex": "46524e4b0100000031a400182901010201035826a2006b7870692d6d61696e6e657401817568747470733a2f2f5b3a3a3139322e302e322e315d",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "ipv6-zone",
+      "origin": "https://[fe80::1%25eth0]",
+      "accept": false,
+      "frame_hex": "46524e4b0100000035a40018290101020103582aa2006b7870692d6d61696e6e65740181781868747470733a2f2f5b666538303a3a31253235657468305d",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    },
+    {
+      "id": "long-dnslabel",
+      "origin": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example",
+      "accept": false,
+      "frame_hex": "46524e4b010000006da400182901010201035862a2006b7870692d6d61696e6e65740181785068747470733a2f2f616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161612e6578616d706c65",
+      "error": {
+        "category": "semantic",
+        "stage": "9"
+      }
+    }
+  ]
+}

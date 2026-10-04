@@ -18,6 +18,73 @@ import type {
 const semantic = (message: string, location = 'root'): FrankCodecError =>
   new FrankCodecError('semantic', '9', message, location)
 
+/** Dependency-free authority grammar shared with the native precursor. */
+function lotusHttpsOrigin(origin: string): boolean {
+  if(!origin.startsWith('https://')) return false
+  const authority=origin.slice(8)
+  if(!authority.length || /[^\x21-\x7e]|[/?#@\\]/.test(authority)) return false
+  let host: string, port: string|undefined
+  if(authority.startsWith('[')) {
+    const close=authority.indexOf(']')
+    if(close<0) return false
+    host=authority.slice(0,close+1)
+    const rest=authority.slice(close+1)
+    if(rest.length) {if(!rest.startsWith(':')) return false;port=rest.slice(1)}
+  } else {
+    const colon=authority.lastIndexOf(':')
+    host=colon<0?authority:authority.slice(0,colon)
+    port=colon<0?undefined:authority.slice(colon+1)
+  }
+  if(!host.length || /[A-Z]/.test(host)) return false
+  if(port!==undefined && (!/^[1-9][0-9]*$/.test(port) || port==='443' || port.length>5 || Number(port)>65535)) return false
+  if(host.startsWith('[')) return lotusIpv6(host.slice(1,-1))
+  const lastLabel=host.slice(host.lastIndexOf('.')+1)
+  if(/^[0-9]+$/.test(lastLabel) || /^0x[0-9a-f]+$/.test(lastLabel)) return lotusIpv4(host)
+  return host.length<=253 && host.split('.').every(part=>part.length<=63 && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(part))
+}
+
+function lotusIpv4(host: string): boolean {
+  const octets=host.split('.')
+  return octets.length===4 && octets.every(part=>/^(?:0|[1-9][0-9]{0,2})$/.test(part) && Number(part)<=255)
+}
+
+function lotusIpv6(host: string): boolean {
+  const original=host
+  // Parse every supported IPv6 address, including an IPv4 tail, into eight words.
+  if(host.includes('.')) {
+    const colon=host.lastIndexOf(':')
+    if(colon<0) return false
+    const tail=host.slice(colon+1)
+    if(!lotusIpv4(tail)) return false
+    const octets=tail.split('.').map(Number)
+    host=host.slice(0,colon+1)+((octets[0]<<8)|octets[1]).toString(16)+':'+((octets[2]<<8)|octets[3]).toString(16)
+  }
+  const halves=host.split('::')
+  if(halves.length>2) return false
+  const valid=(group:string)=>/^[0-9a-f]{1,4}$/.test(group)
+  const left=halves[0].length?halves[0].split(':'):[]
+  const right=halves.length===2 && halves[1].length?halves[1].split(':'):[]
+  if(!left.every(valid) || !right.every(valid)) return false
+  if(halves.length===1 ? left.length!==8 : left.length+right.length>=8) return false
+  const words=[...left.map(part=>parseInt(part,16)),...Array<number>(8-left.length-right.length).fill(0),...right.map(part=>parseInt(part,16))]
+  // std::net::Ipv6Addr's canonical display uses dotted notation for mapped IPv4.
+  if(words.slice(0,5).every(word=>word===0) && words[5]===65535) {
+    const mapped=`::ffff:${words[6]>>>8}.${words[6]&255}.${words[7]>>>8}.${words[7]&255}`
+    return original===mapped
+  }
+  let start=-1, length=1
+  for(let i=0;i<8;) {
+    if(words[i]!==0) {i++;continue}
+    let end=i+1
+    while(end<8 && words[end]===0) end++
+    if(end-i>length) {start=i;length=end-i}
+    i=end
+  }
+  const text=words.map(word=>word.toString(16))
+  const canonical=start<0?text.join(':'):text.slice(0,start).join(':')+'::'+text.slice(start+length).join(':')
+  return original===canonical
+}
+
 /** S1a: unsigned byte-wise lexicographic comparison; a shorter equal prefix sorts first. */
 export function compareBytes(a: Uint8Array, b: Uint8Array): number {
   const n = Math.min(a.length, b.length)
@@ -185,6 +252,59 @@ export function checkSemantics(
 ): void {
   const P = 'root/payload'
   switch (typed.type) {
+    case 32:
+    case 33:
+      for (const entry of typed.entries) {
+        let previous: readonly [string,string] | undefined
+        const names = new Set<string>()
+        for (const header of entry.headers) {
+          if (names.has(header[0])) throw semantic('duplicate Lotus header name')
+          names.add(header[0])
+          if (previous && (compareBytes(utf8Encode(previous[0]),utf8Encode(header[0])) || compareBytes(utf8Encode(previous[1]),utf8Encode(header[1]))) >= 0) throw semantic('Lotus headers must be UTF8 sorted')
+          previous = header
+        }
+        if (entry.kind === 'post' && entry.postFrame?.typed?.type !== 35) throw semantic('Lotus post entry requires post text')
+      }
+      if (typed.type === 33) {
+        const parts=typed.topic.split('.')
+        if(parts.length>10 || parts.some(p=>!p.length || !/^[\p{Lowercase}\p{N}-]+$/u.test(p))) throw semantic('invalid Lotus topic')
+      }
+      break
+    case 36: {
+      const body=typed.bodyFrame.typed
+      if (!body || (body.type!==32 && body.type!==33 && body.type!==34) || body.network!==typed.network) throw semantic('Lotus submission body/network mismatch')
+      for(let i=0;i<typed.burns.length;i++) for(let j=0;j<i;j++) if(typed.burns[i].outputIndex===typed.burns[j].outputIndex && compareBytes(typed.burns[i].raw,typed.burns[j].raw)===0) throw semantic('duplicate selected Lotus output')
+      break
+    }
+    case 37:
+      if ((typed.kind===0)!==(typed.ttl!==undefined) || (typed.kind!==2)!==(typed.authorTime!==undefined) || (typed.kind===2)!==(typed.target!==undefined) || (typed.kind!==1 && typed.parent!==undefined)) throw semantic('invalid historical manifest conditional fields')
+      break
+    case 39:
+      if(typed.support+typed.oppose!==typed.physical) throw semantic('Lotus physical burn differs from support plus oppose')
+      break
+    case 40:
+      if((typed.phase===1)!==(typed.sequence!==undefined) || (typed.phase===2)!==(typed.reason!==undefined) || ((typed.phase===0 || typed.phase===3) && typed.txids.length)) throw semantic('invalid Lotus result phase fields')
+      for(let i=0;i<typed.txids.length;i++) for(let j=0;j<i;j++) if(compareBytes(typed.txids[i],typed.txids[j])===0) throw semantic('duplicate Lotus transaction id')
+      break
+    case 41: {
+      let previous: string|undefined
+      for(const origin of typed.origins) {
+        if(!lotusHttpsOrigin(origin)) throw semantic('peer must be an exact HTTPS origin')
+        if(previous!==undefined && compareBytes(utf8Encode(previous),utf8Encode(origin))>=0) throw semantic('peer origins must be unique UTF8 sorted')
+        previous=origin
+      }
+      break
+    }
+    case 42:
+      if(!/^[a-z_]{1,64}$/.test(typed.code)) throw semantic('invalid Lotus error code')
+      break
+    case 43: {
+      const [kind,entry,header,subfield]=typed.path
+      if(kind>7n || subfield!==0n || (kind===0n && (entry!==0n || header!==0n)) || ((kind===1n || kind===4n || kind>=5n) && header!==0n)) throw semantic('invalid historical component path')
+      if(typed.offset+BigInt(typed.bytes.length)>typed.totalBytes) throw semantic('historical chunk exceeds component length')
+      break
+    }
+
     case 18: {
       if ((typed.gameId === 'welcome') !== (typed.action === 'welcome'))
         throw semantic('welcome gameId is reserved iff action is welcome')

@@ -1860,3 +1860,175 @@ pure-value vectors (M2, M3, M6) in its own documented format. The TypeScript,
 Rust, Python, and browser runners consume the same T2a bytes and the manifest
 also pins M7 precedence when an unsupported transition authorization appears
 beside a corrupt outer signature.
+
+## 12. Lotus public codec precursor
+
+Issue #797 allocates types **32–43**, each at schema 1/minimum reader 1,
+using [lotus-public.cddl](lotus-public.cddl). Types 19–31 remain unassigned.
+These twelve types are not DM message items; assigning them does not admit
+one into a type-8 or type-16 item slot. This is a pure codec precursor.
+Registry routes, chain RPC, durable ownership, federation, peer authentication,
+historical publication and production cutover require separately reviewed
+runtime successors. Existing directory verification and M7 remain unchanged.
+
+| Type | Name | Complete frame cap, bytes |
+| ---: | --- | ---: |
+| 32 | lotus-metadata-body | 262144 |
+| 33 | lotus-post-body | 1048576 |
+| 34 | lotus-offering-body | 65536 |
+| 35 | lotus-post-text | 262144 |
+| 36 | lotus-submission | 8388617 |
+| 37 | lotus-historical-manifest | 65536 |
+| 38 | lotus-inventory-page | 4194304 |
+| 39 | lotus-burn-summary | 65536 |
+| 40 | lotus-operation-result | 65536 |
+| 41 | lotus-public-peer-list | 65536 |
+| 42 | lotus-error | 16384 |
+| 43 | lotus-historical-chunk | 131072 |
+
+L1. All maps are CLOSED, including compatible future projections. Every
+present field has its declared kind; null, coercion and unknown fields reject.
+Type 36 requires a parsed type-32, -33 or -34 body. An entry whose kind is
+`post` requires its data to open as type 35; other entry data remains literal.
+Required children use the existing shared traversal and budgets, never a fresh
+root context. Unsupported required children follow V6. Type 35 requires at
+least one of title, URL or message; empty text is distinct from absence.
+
+L2. The only network rows are `(XPI, Mainnet)` / `xpi-mainnet` / public
+`XPI_MAINNET`, and `(XPI, Regtest)` / `xpi-regtest` / `XPI_REGTEST`. The
+public descriptor family is `xpi`; equal native Net values do not authorize
+BCH, XEC or XRG. Public XPI_TESTNET is unsupported because the native Net
+has no Testnet counterpart. Address network, body network, chain adapter and
+installed peer row must agree at runtime. No startup alias is introduced.
+
+L3. T1 uses the existing `frank/content-hash/v1` common transcript and exact
+complete original frame, with empty context. Its network is validated field 0
+for types 32–34 and 36–43, and literal `frank` for type 35. A Lotus signature
+digest is SHA256 of the common transcript with domain
+`frank/lotus-public-signature/v1`, the validated body network, the complete
+original type-32/33/34 frame and empty context. No re-encoding precedes hashing.
+Exactly one signature entry is permitted in type 36: algorithm 1, strict-DER
+low-S ECDSA, key type 1, 8–72 bytes; or algorithm 3, May-2019 BCH Schnorr,
+key type 1, 64 bytes. Algorithms 2 and 16 are excluded from this family.
+Algorithm 1 has pure verification; algorithm 3 structural support does NOT
+mean verified. Full verification of algorithm 3 returns `unsupported` in this
+precursor, preserving M7. The native successor MUST prove the existing
+`schnorrabc_verify` primitive over this common digest. A separately named
+public TypeScript BCH Schnorr capability successor is also mandatory before
+any TS consumer claims algorithm-3 verification. BIP340 is not a substitute.
+
+L4. Body identity is T1 of type 32, 33 or 34. Burn commitment is
+`SHA256(SHA256(compressed_signer_33) || body_hash)`. The native script must be
+exactly `OP_RETURN PUSH4 STMP OP_1 PUSH32 commitment` for metadata, or the
+same script with `POND` for posts and offerings. An offering commits its own
+signed target-and-direction body, not just its target hash. The ordinary
+SHA256 of the complete type-36 submission is its request/GET index, distinct
+from body T1. Type-37 and type-43 GET indexes are ordinary SHA256 of their
+complete exact frames. Inventory descriptor types are ONLY 36, 37 and 43;
+a canonical post target resolves through its original author-wrapped type-36
+owner, never a bare type-33 replacement. None of these helpers proves receipt
+finality, DirectoryCurrent, peer credentials or runtime admission.
+
+L5. New post topics have at most 4096 UTF-8 bytes, with one through ten
+nonempty dot-separated segments containing native Unicode lowercase letters,
+numbers or hyphens. Headers have unique names and sort by exact UTF-8
+(name, value) order; entry order is preserved. References distinguish canonical
+body T1 (origin 0) from historical protobuf digest (origin 1). Offering direction
+0 supports and 1 opposes. Summary physical total equals support plus oppose,
+with checked uint64 addition; original post burn counts as support. A display
+score is bigint support minus oppose, never a stored signed overflow field.
+
+L6. Historical manifests and chunks are relay-authenticated historical
+projections, never newly signed author bodies. Manifest kind 0 metadata
+requires TTL key 5 and author timestamp key 9; kind 1 post requires key 9 and
+may have parent key 6; kind 2 offering requires target key 10. Keys 5, 6, 9 and
+10 are absent outside their stated kinds. Exact original author/account and
+legacy digest remain explicit. Chunks carry decoded public field bytes, not
+original protobuf payload. Their four-element path has component kind
+0 topic, 1 entry kind, 2 header name, 3 header value, 4 generic entry data,
+5 title, 6 URL or 7 message; unused path positions are zero. Encoding 0 is
+UTF-8 bytes, 1 raw bytes. Offset plus chunk length must not exceed total.
+Caller assembly requires finite record/byte bounds, contiguous coverage with
+no overlaps or gaps, and explicit UTF-8 decoding without replacement text.
+Large historical fields split into at most 65536-byte chunks; component counts
+and paged descriptors keep incomplete history explicit, with no silent omission.
+
+L7. Operation phases are 0 retained, 1 accepted, 2 terminal and 3 absent.
+Retained/absent have empty txids and no sequence/reason. Accepted requires a
+committed sequence and forbids reason. Terminal requires a sanitized reason,
+forbids sequence, and may list effects already retained. The codec enforces
+reason presence and text type; the runtime successor freezes its sanitized
+reason vocabulary. Txids are unique in
+first-occurrence order. Peer lists contain at most 32 unique exact HTTPS origins
+sorted by UTF-8, are direct complete type-41 responses, and are discovery only.
+The portable origin grammar is lowercase ASCII DNS labels (including localhost),
+canonical decimal IPv4 or canonical bracketed IPv6, with optional nondefault
+canonical port 1–65535 without leading zeros. DNS labels are 1–63 bytes,
+with host length at most 253. A final all-decimal or `0x` hexadecimal label
+classifies the host as numeric-looking and requires canonical four-octet IPv4,
+preventing shorthand/hex address aliases through the DNS branch. IPv6 uses
+lowercase minimal groups and longest-zero-run compression (first run on ties);
+IPv4-mapped addresses alone use a dotted-decimal suffix. Credentials, paths, queries,
+fragments and explicit default port 443 are forbidden. This new structural
+discovery representation grants no sender/TLS admission authority and changes
+no native peer configuration. Runtime successors compare the actual installed
+parsed origin and explicitly refuse unsupported representations; they must
+preserve supported IPv6 and configured-origin functions. Broader directory S4
+endpoint semantics remain unchanged. No peers inventory collection exists.
+Error codes contain 1–64 ASCII lowercase
+letters or underscores; they never carry a raw provider blob.
+
+L8. The table's full-frame caps apply at stage 8.1 at both root and nested
+positions, before new typed projection/field copies. Stage 1 global root limits
+and existing shared traversal bounds remain in force. Existing TS root ownership
+and Rust root/generic CBOR byte-string copies precede type discovery; stages
+2–7 retain their existing first-failure precedence. This precursor promises no
+zero-copy parsing, no absence of all prior owning copies, and no 8 MiB peak-memory
+bound. A borrowed generic parser would require a separate reviewed change.
+Existing global limits remain: body
+8388608 bytes, depth 32, containers 16384, items 131072, map entries 256,
+array elements 8192, text 262144 bytes and byte strings 8388608 bytes. Per-field
+limits are 64 entries, 32 headers, 64 burn records, 100 inventory descriptors
+and 32 peers. Each raw transaction is 1–1048576 bytes; opaque cursors are
+1–2048 bytes. Complete type 36 is served directly as exact GET bytes, with no
+additional frame wrapper. Signed timestamps/TTL are i64; claimed actual burn
+is 0..I64MAX, while physical counters, sequences and revisions are checked u64.
+Actual selected values must be nonnegative and their per-request sum must fit
+i64; absent or zero claims compute the actual value at runtime.
+
+L9. Runtime selected-output ownership is indexed by `(native_txid,
+output_index)`, while one native txid fixes one exact raw transaction. A request
+may select multiple distinct valid outputs from that same transaction; each
+contributes once. Repeating an index rejects. Chain validation/broadcast occurs
+once per distinct transaction per attempt, with unique returned txids in
+first-occurrence order. Each selected row immutably binds request index, body
+hash, signer, collection, target origin/hash, direction and output index.
+Exact retained retries recover those rows without double credit or rebroadcast.
+Conflicting raw bytes or another owner for the same selected output reject
+before RPC; a distinct unclaimed output remains eligible. Legacy credited
+indices require a read-only check: ambiguous ownership fails closed and retains
+the request. No legacy rows or pending requests are rewritten. The codec
+exposes raw bytes and indices but does not parse transactions or enforce this
+runtime policy. Runtime acceptance MUST independently prove multi-output
+credit, one RPC/broadcast per unique transaction, exact retries, distinct-output
+reuse, duplicate-index rejection and conflicting wrapper/target/direction cases.
+
+L10. Successor resource defaults are frozen here but not activated by codecs:
+live economic retention is at most 4096 requests AND 64 MiB owned bytes,
+without age eviction; exact duplicate recovery still works at capacity. At most
+16 snapshots each consume at most 4096 bookkeeping bytes, with aggregate at
+most 65536 bytes, and expire 120 monotonic seconds from creation without read
+extension. Epoch is a random 16-byte process identifier; checked u64 snapshot
+incarnations are never reused within it. Opaque cursors bind network, collection,
+full filters, ceiling, last sequence, page budget, epoch and incarnation under
+a process MAC. Historical version pins require separate accounting before
+snapshot acceptance. Disk capacity failure stops admission rather than dropping
+live economic state. No cursor cryptographic profile, runtime persistence,
+POP/peer, CORS or durable two-node catch-up proof is supplied by this precursor.
+
+[Lotus vectors](vectors/lotus-public.json) and both codec suites must cover
+independent encodings and cross-origin consumption, exact frames and digests,
+closed/future/null/wrong-child cases, algorithm-3 unsupported classification,
+root/nested caps, inherited traversal and bounded counters. Browser coverage
+must exercise actual Lotus cases without Node globals or native polyfills.
+Runtime successors remain mandatory; codec activation alone cannot close #797.

@@ -410,6 +410,25 @@ export type BlackjackMessageItem = { type: 18 } & BlackjackFields<
   Uint8Array
 >
 
+export type LotusNetwork = 'xpi-mainnet' | 'xpi-regtest'
+export interface LotusReference { origin: 0 | 1; hash: Uint8Array }
+export interface LotusEntry<F> { kind: string; headers: readonly (readonly [string, string])[]; body: Uint8Array; postFrame?: F }
+export interface LotusBurn { raw: Uint8Array; outputIndex: number }
+export interface LotusDescriptor { typeId: 36 | 37 | 43; index: Uint8Array; sequence: bigint; time: bigint; target?: LotusReference }
+export type LotusPayload<F> =
+  | { type: 32; network: LotusNetwork; timestamp: bigint; ttl: bigint; entries: readonly LotusEntry<F>[] }
+  | { type: 33; network: LotusNetwork; topic: string; timestamp: bigint; entries: readonly LotusEntry<F>[]; parent?: LotusReference }
+  | { type: 34; network: LotusNetwork; target: LotusReference; direction: 0 | 1 }
+  | { type: 35; title?: string; url?: string; message?: string }
+  | { type: 36; network: LotusNetwork; bodyFrame: F; signatures: readonly SignatureEntry[]; burns: readonly LotusBurn[]; claimedBurn?: bigint }
+  | { type: 37; network: LotusNetwork; legacyDigest: Uint8Array; author: AccountRef; kind: 0 | 1 | 2; observedTime: bigint; ttl?: bigint; parent?: LotusReference; totalBurn: bigint; componentCount: bigint; authorTime?: bigint; target?: LotusReference }
+  | { type: 38; network: LotusNetwork; collection: 0 | 1 | 2 | 3 | 4; epoch: Uint8Array; incarnation: bigint; ceiling: bigint; rows: readonly LotusDescriptor[]; nextCursor?: Uint8Array; requestCursor?: Uint8Array }
+  | { type: 39; network: LotusNetwork; target: LotusReference; revision: bigint; physical: bigint; support: bigint; oppose: bigint }
+  | { type: 40; network: LotusNetwork; requestIndex: Uint8Array; phase: 0 | 1 | 2 | 3; txids: readonly Uint8Array[]; sequence?: bigint; reason?: string }
+  | { type: 41; network: LotusNetwork; origins: readonly string[] }
+  | { type: 42; network: LotusNetwork; code: string; requestIndex?: Uint8Array; retryable: boolean }
+  | { type: 43; network: LotusNetwork; legacyDigest: Uint8Array; componentOrdinal: bigint; path: readonly [bigint, bigint, bigint, bigint]; encoding: 0 | 1; totalBytes: bigint; offset: bigint; bytes: Uint8Array }
+
 export type TypedPayload<F, C, P = ForumContent, K = ForumCursor> =
   | DirectMessageDelivery<F>
   | DirectoryAttestation<F>
@@ -429,6 +448,7 @@ export type TypedPayload<F, C, P = ForumContent, K = ForumCursor> =
   | ContainerMessageItem<C>
   | TextMessageItem
   | BlackjackMessageItem
+  | LotusPayload<F>
 
 /** Why a frame was kept only as opaque bytes. */
 export type RetentionReason =

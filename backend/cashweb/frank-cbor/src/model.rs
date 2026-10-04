@@ -438,6 +438,8 @@ pub struct OpaqueSection {
 /// Typed payload. Framed children are opened frames, not raw bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedPayload {
+    /// Closed Lotus public family projection, with shared-budget opened children.
+    Lotus(crate::lotus_public::LotusPayload),
     /// Type 1.
     DirectMessage {
         /// Field 0.

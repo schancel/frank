@@ -252,6 +252,7 @@ pub(crate) fn check_semantics(
 ) -> Result<(), CodecError> {
     let path = "root/payload";
     match typed {
+        TypedPayload::Lotus(value) => crate::lotus_public::check(value),
         TypedPayload::BlackjackItem(item) => check_blackjack(item, path),
         TypedPayload::DirectMessage {
             network,

@@ -167,6 +167,25 @@ Its numeric value, chain-adapter/transaction-family registry, applicable route a
 exact calldata bytes and known-answer/hostile vectors are **UNALLOCATED** until reviewed. No target
 transaction is admitted under the legacy tag and no legacy transaction is reinterpreted as T4.
 
+### Lotus public codec preparation
+
+**IMPLEMENTED-NOT-WIRED.** Issue #797 allocates the pure public Lotus codec
+precursor as FRNK types 32–43, schema 1/minimum reader 1; types 19–31 remain
+unassigned. The [Lotus codec profile](protocol/cbor/README.md#12-lotus-public-codec-precursor)
+and [CDDL](protocol/cbor/lotus-public.cddl) own its exact closed shapes,
+root/nested caps, XPI mainnet/regtest rows and signature/commitment transcripts.
+New signed metadata/post/offering bodies and relay historical projections have
+separate identities; historical protobuf signatures are never transcoded.
+Algorithm 3 is structurally allocated but full verification remains explicitly
+unsupported in this precursor. M7 is unchanged; native BCH Schnorr/common-
+transcript proof and a public TypeScript BCH Schnorr successor remain mandatory.
+
+This allocation does not activate Registry routes or replace deployed Lotus
+semantics. Runtime successors must prove immutable per-output ownership
+(including multiple distinct outputs of one exact transaction), durable bounded
+retention/retries, snapshots/cursors, historical publication, chain/peer/POP
+validation and two-node catch-up. Codec support alone cannot close #797.
+
 ## 4. Namespaces and allocations
 
 Identifiers are scoped; equal integers in different columns have no relationship.

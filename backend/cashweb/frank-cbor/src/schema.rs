@@ -221,7 +221,7 @@ fn key_length(key_type: u32) -> Option<usize> {
     }
 }
 
-fn account(v: Option<&CborValue>, path: &str) -> Result<AccountRef, CodecError> {
+pub(crate) fn account(v: Option<&CborValue>, path: &str) -> Result<AccountRef, CodecError> {
     let map = fields(v, path, &[0, 1], &[], false, false)?;
     let key_type = u32_in(map.get(0), &format!("{path}.0"), 0, 65_535)?;
     let key_bytes = bstr(map.get(1), &format!("{path}.1"), 1, 128)?;
@@ -301,6 +301,9 @@ pub(crate) fn check_root_frame_limit(
     frame_length: usize,
     schema_version: u32,
 ) -> bool {
+    if let Some(cap) = crate::lotus_public::frame_cap(type_id) {
+        return frame_length <= cap;
+    }
     if type_id == crate::limits::TYPE_BLACKJACK_ITEM {
         return frame_length <= crate::limits::MAX_BLACKJACK_FRAME_BYTES;
     }
@@ -347,6 +350,9 @@ pub(crate) fn check_type_limits(
 ) -> Result<(), CodecError> {
     if !matches!(payload, CborValue::Map(_)) {
         return Ok(());
+    }
+    if (32..=43).contains(&type_id) {
+        return crate::lotus_public::check_limits(type_id, payload);
     }
     let over = |what: &str| {
         fail(
@@ -492,6 +498,7 @@ pub(crate) struct ProfileEntryDraft {
 }
 
 pub(crate) enum Draft {
+    Lotus(crate::lotus_public::LotusPayload),
     DirectMessage {
         network: String,
         destination: AccountRef,
@@ -937,6 +944,9 @@ pub(crate) fn parse_draft(
     schema: SchemaVersions,
 ) -> Result<Draft, CodecError> {
     let path = "root/payload";
+    if (32..=43).contains(&type_id) {
+        return crate::lotus_public::parse(type_id, payload).map(Draft::Lotus);
+    }
     if (TYPE_FORUM_VIEW..=TYPE_FORUM_OPERATION_STATUS).contains(&type_id) {
         return parse_forum_read(type_id, payload, allow, path);
     }
@@ -1292,7 +1302,7 @@ pub(crate) fn parse_draft(
     }
 }
 
-fn check_key_type(account: &AccountRef, path: &str) -> Result<(), CodecError> {
+pub(crate) fn check_key_type(account: &AccountRef, path: &str) -> Result<(), CodecError> {
     if !matches!(account.key_type, 1..=3) {
         return Err(unsupported(
             path,
@@ -1302,7 +1312,7 @@ fn check_key_type(account: &AccountRef, path: &str) -> Result<(), CodecError> {
     Ok(())
 }
 
-fn check_signature_shape(
+pub(crate) fn check_signature_shape(
     algorithm: u32,
     signer: &AccountRef,
     signature: &[u8],
@@ -1333,6 +1343,7 @@ fn check_signature_shape(
 pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
     let path = "root/payload";
     match draft {
+        Draft::Lotus(value) => crate::lotus_public::allocated(value),
         Draft::DirectMessage { destination, .. } => {
             check_key_type(destination, &format!("{path}.1"))
         }

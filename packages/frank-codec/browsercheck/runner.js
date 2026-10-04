@@ -602,6 +602,44 @@ const frankBrowserCheckInstall = function () {
     )
       fail('blackjack', 'incomplete active typed corpus')
 
+    const lotus = globalThis.FRANK_LOTUS
+    for (const vector of lotus.positive) {
+      try {
+        const bytes = codec.fromHex(vector.frame_hex)
+        if (codec.projectLotusPayload(bytes).payload.type !== vector.type_id)
+          fail(vector.id, 'Lotus projection differs')
+        for (const [field, helper] of [
+          ['body_hash_hex', codec.lotusBodyHash],
+          ['signature_digest_hex', codec.lotusSignatureDigest],
+          ['request_index_hex', codec.lotusRequestIndex],
+        ]) if (field in vector && codec.toHex(helper(bytes)) !== vector[field])
+          fail(vector.id, 'Lotus ' + field + ' differs')
+        if ('burn_commitment_hex' in vector && codec.toHex(codec.lotusBurnCommitment(
+          bytes, codec.fromHex(lotus.author_key_hex))) !== vector.burn_commitment_hex)
+          fail(vector.id, 'Lotus burn commitment differs')
+      } catch (e) { fail(vector.id, 'Lotus positive rejected: ' + e) }
+    }
+    for (const vector of lotus.negative) {
+      try {
+        codec.projectLotusPayload(codec.fromHex(vector.frame_hex))
+        fail(vector.id, 'Lotus hostile frame accepted')
+      } catch (e) {
+        if (e.category !== vector.error.category || e.stage !== vector.error.stage)
+          fail(vector.id, 'Lotus first error differs')
+      }
+    }
+    for (const vector of lotus.origin_cases) {
+      try {
+        codec.projectLotusPayload(codec.fromHex(vector.frame_hex))
+        if (!vector.accept) fail(vector.id, 'noncanonical Lotus origin accepted')
+      } catch (e) {
+        if (vector.accept || e.category !== vector.error.category || e.stage !== vector.error.stage)
+          fail(vector.id, 'Lotus origin outcome differs')
+      }
+    }
+    if (lotus.origin_cases.length !== 34) fail('lotus', 'incomplete origin corpus')
+    if (lotus.positive.length !== 19 || lotus.negative.length !== 8)
+      fail('lotus', 'incomplete frozen corpus')
     const g = globalThis
     const leaked = ['process', 'Buffer', 'require', 'module', 'global'].filter(
       n => typeof g[n] !== 'undefined',
@@ -612,6 +650,7 @@ const frankBrowserCheckInstall = function () {
       registration: registrationCounts,
       forum: { total: forum.frames.length },
       blackjack: blackjackCounts,
+      lotus: { positive: lotus.positive.length, negative: lotus.negative.length, origins: lotus.origin_cases.length },
       interoperability: {
         hostileCases: hostile.case_count,
         mutationOffset: crypto.mutation_offset,

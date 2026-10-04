@@ -107,6 +107,7 @@ export const KNOWN_TYPES: readonly number[] = [
   TYPE_CONTAINER_MESSAGE_ITEM,
   TYPE_TEXT_MESSAGE_ITEM,
   TYPE_BLACKJACK_MESSAGE_ITEM,
+  32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43,
 ]
 
 export function defaultContext(
@@ -283,7 +284,7 @@ function processFrame(
       location,
     )
   }
-  if (mode.kind === 'open' && env.typeId >= 1 && env.typeId <= 15) {
+  if (mode.kind === 'open' && ((env.typeId >= 1 && env.typeId <= 15) || (env.typeId >= 32 && env.typeId <= 43))) {
     throw fail(
       'semantic',
       '8.4',
@@ -406,7 +407,8 @@ function processFrame(
       (env.typeId >= TYPE_TOPIC_POST &&
         env.typeId <= TYPE_FORUM_OPERATION_STATUS) ||
       (env.typeId === TYPE_DIRECTORY_STATEMENT && effectiveSchema >= 4) ||
-      env.typeId === TYPE_BLACKJACK_MESSAGE_ITEM) &&
+      env.typeId === TYPE_BLACKJACK_MESSAGE_ITEM ||
+      (env.typeId >= 32 && env.typeId <= 43)) &&
     !checkRootFrameLimit(env.typeId, f.length, effectiveSchema)
   ) {
     throw fail(
@@ -473,6 +475,10 @@ function runStage10(typed: FinalPayload): void {
     case 2:
       verifyDirectoryAttestation(typed)
       return
+    case 36:
+      throw new FrankContextError(
+        'full Lotus admission requires native transaction, selected-output ownership and burn validation; this codec provides structural projection and separate bounded signature evidence only',
+      )
     case 1:
       throw new FrankContextError(
         'stages 10.1-10.5 (the type-1 stamp checks) are outside this slice; `full` runs only the type-2 signature verification of stage 10.6',
@@ -565,6 +571,18 @@ function openChildren(
 ): FinalPayload {
   const P = `${loc}/payload`
   switch (d.type) {
+    case 32:
+    case 33:
+      return {
+        ...d,
+        entries: d.entries.map((entry, i) => entry.kind === 'post'
+          ? { ...entry, postFrame: required(entry.body, 35, envDepth + 3, sh,
+              `${P}.3[${i}].2`) }
+          : entry),
+      }
+    case 36:
+      return { ...d, bodyFrame: required(d.bodyFrame, [32, 33, 34],
+        envDepth + 1, sh, `${P}.1`) }
     case 9:
       if (d.schemaVersion === 1) return d
       return {

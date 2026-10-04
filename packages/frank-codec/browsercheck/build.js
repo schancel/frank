@@ -42,6 +42,7 @@ async function main() {
     ['FRANK_REGISTRATION_VALUES', 'account-registration-values.json'],
     ['FRANK_FORUM', 'forum-content-read.json'],
     ['FRANK_BLACKJACK', 'blackjack-items.json'],
+    ['FRANK_LOTUS', 'lotus-public.json'],
   ]
     .map(
       ([globalName, file]) =>

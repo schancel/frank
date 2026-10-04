@@ -1,0 +1,48 @@
+; Lotus public codec precursor, type IDs 32–43, schema 1/minimum reader 1.
+; Concatenate with common.cddl. All maps are closed, including compatible
+; future projections. README section 12 supplies conditional predicates,
+; required framed-child types, transcript rules and root/nested limits.
+; A structural result is not runtime admission or historical author evidence.
+
+lotus-network = "xpi-mainnet" / "xpi-regtest"
+lotus-i64 = -9223372036854775808..9223372036854775807
+lotus-u64 = 0..18446744073709551615
+lotus-ref = {0:0..1, 1:digest-32} ;0 canonical bodyT1,1 historical protobufdigest
+lotus-header = [tstr, tstr]
+lotus-entry = {0:tstr, 1:[0*32 lotus-header], 2:bstr}
+; known kind"post" requires field2=framed35, unknownkind keeps literaldata.
+lotus-metadata-body = {0:lotus-network,1:lotus-i64,2:lotus-i64,3:[0*64 lotus-entry]}
+lotus-post-body = {0:lotus-network,1:tstr,2:lotus-i64,3:[0*64 lotus-entry],?4:lotus-ref}
+lotus-offering-body = {0:lotus-network,1:lotus-ref,2:0..1} ;0 support,1 oppose
+lotus-post-text = {?0:tstr,?1:tstr,?2:tstr} ;atleast1present,title/url/message
+lotus-burn = {0:bstr .size (1..1048576),1:0..4294967295}
+lotus-submission = {0:lotus-network,1:framed-object,2:[signature-entry],
+                    3:[0*64 lotus-burn],?4:0..9223372036854775807}
+; bodyrequired32/33/34; exactly1signature alg1or3/key1; claimedactualburn optional
+lotus-historical-manifest = {0:lotus-network,1:digest-32,2:account-ref,
+                             3:0..2,4:lotus-i64,?5:lotus-i64,?6:lotus-ref,
+                             7:lotus-u64,8:lotus-u64,?9:lotus-i64,?10:lotus-ref}
+; originaldigest,originalauthor,kind(metadata/post/offering),observedtime,
+; metadataTTL key5 metadataonly,parent key6 postonly,totalburn,componentcount,
+; originalauthor timestamp key9 metadata/postonly, target key10 offeringonly
+lotus-descriptor = {0:36 / 37 / 43,1:digest-32,2:lotus-u64,3:lotus-i64,?4:lotus-ref}
+; alloweddescriptortypes36/37/43only;exactGETrequest/objectindex,sequence,time,target
+lotus-inventory-page = {0:lotus-network,1:0..4,2:uuid-16,3:lotus-u64,
+                        4:lotus-u64,5:[0*100 lotus-descriptor],?6:bstr .size(1..2048),
+                        ?7:bstr .size(1..2048)}
+; collection metadata/posts/offerings/events/historical-components,
+; epoch,snapshotincarnation,ceilingsequence,rows,nextcursor,echocursor
+lotus-burn-summary = {0:lotus-network,1:lotus-ref,2:lotus-u64,
+                      3:lotus-u64,4:lotus-u64,5:lotus-u64}
+; target,snapshotrevision,totalphysical,support,oppose
+lotus-operation-result = {0:lotus-network,1:digest-32,2:0..3,3:[0*64 digest-32],
+                          ?4:lotus-u64,?5:tstr}
+; exactrequestindex,retained/accepted/terminal/absent,exactnativetxids,
+; committedsequence onlyaccepted,reason onlyterminal
+lotus-public-peer-list = {0:lotus-network,1:[0*32 tstr]}
+lotus-error = {0:lotus-network,1:tstr,?2:digest-32,3:bool}
+lotus-historical-chunk = {0:lotus-network,1:digest-32,2:lotus-u64,
+                          3:[4*4 uint],4:0..1,5:lotus-u64,6:lotus-u64,
+                          7:bstr .size(0..65536)}
+; historicaldigest,componentordinal,path[componentkind,entryidx,headeridx,subfield],
+; encodingUTF8bytes/rawpublicbytes,totalcomponentbytes,offset,chunk

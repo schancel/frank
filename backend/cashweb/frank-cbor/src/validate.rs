@@ -330,7 +330,9 @@ fn process_frame(
             ));
         }
     }
-    if matches!(mode, Mode::Open) && (1..=15).contains(&env.type_id) {
+    if matches!(mode, Mode::Open)
+        && ((1..=15).contains(&env.type_id) || (32..=43).contains(&env.type_id))
+    {
         return Err(fail(
             ErrorCategory::Semantic,
             ErrorStage::S84,
@@ -467,6 +469,7 @@ fn process_frame(
     let effective_schema = parsed.schema_version.min(highest_schema);
     if (matches!(mode, Mode::Root)
         || (9..=15).contains(&parsed.type_id)
+        || (32..=43).contains(&parsed.type_id)
         || parsed.type_id == crate::limits::TYPE_BLACKJACK_ITEM
         || (parsed.type_id == TYPE_DIRECTORY_STATEMENT && effective_schema >= 4))
         && !check_root_frame_limit(parsed.type_id, parsed.frame.len(), effective_schema)
@@ -561,6 +564,7 @@ fn run_stage_10(parsed: &ParsedFrame) -> Result<(), Error> {
         return Err(Error::Context(ContextError("full preview directory admission requires trusted anchor, history, clock, relay and atomic state; use verify_preview_directory_evidence for bounded signed evidence".to_string())));
     }
     match typed {
+        TypedPayload::Lotus(crate::lotus_public::LotusPayload::Submission { .. }) => Err(Error::Context(ContextError("full Lotus submission admission requires the native/economic runtime context; use verify_lotus_submission for bounded signature evidence".into()))),
         TypedPayload::DirectoryAttestation {
             statement,
             signatures,
@@ -824,6 +828,46 @@ fn open_children(
 ) -> Result<TypedPayload, CodecError> {
     let path = format!("{location}/payload");
     match draft {
+        Draft::Lotus(mut value) => {
+            match &mut value {
+                crate::lotus_public::LotusPayload::Metadata { entries, .. }
+                | crate::lotus_public::LotusPayload::Post { entries, .. } => {
+                    for (i, entry) in entries.iter_mut().enumerate() {
+                        if entry.kind == "post" {
+                            entry.post = Some(open_required(
+                                std::mem::take(&mut entry.data),
+                                35,
+                                env_depth + 3,
+                                shared,
+                                &format!("{path}.3[{i}].2"),
+                            )?);
+                            entry.data = entry.post.as_ref().unwrap().frame.clone();
+                        }
+                    }
+                }
+                crate::lotus_public::LotusPayload::Submission {
+                    body_frame, body, ..
+                } => {
+                    let child = process_frame(
+                        std::mem::take(body_frame),
+                        Mode::Required {
+                            type_ids: vec![32, 33, 34],
+                        },
+                        env_depth + 1,
+                        shared,
+                        &format!("{path}.1"),
+                        Operation::Typed,
+                    )?;
+                    let ValidationResult::Parsed(parsed) = child else {
+                        unreachable!("required Lotus body parsed")
+                    };
+                    *body_frame = parsed.frame.clone();
+                    *body = Some(parsed);
+                }
+                _ => {}
+            }
+            Ok(TypedPayload::Lotus(value))
+        }
         Draft::DirectMessage {
             network,
             destination,

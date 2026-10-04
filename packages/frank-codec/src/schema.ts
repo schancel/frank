@@ -4,6 +4,7 @@ import type { FrankValue } from './cbor'
 import {
   ENCRYPTION_SUITE_DM_AUTH_XCHACHA,
   ENCRYPTION_SUITE_PROOF,
+  LOTUS_FRAME_LIMITS,
   I64_MAX,
   I64_MIN,
   MAX_CIPHERTEXT_BYTES,
@@ -48,7 +49,11 @@ import {
 } from './constants'
 import { ErrorCategory, ErrorStage, FrankCodecError } from './errors'
 import { isCompressedPoint, isProofEncoding } from './point'
+import { parseStrictDer, hasLowS } from './verify'
 import type {
+  LotusPayload,
+  LotusReference,
+  LotusEntry,
   AccountRef,
   DraftPayload,
   JournalFact,
@@ -277,6 +282,7 @@ export function checkRootFrameLimit(
   frameLength: number,
   schemaVersion = 1,
 ): boolean {
+  if (LOTUS_FRAME_LIMITS[typeId] !== undefined) return frameLength <= LOTUS_FRAME_LIMITS[typeId]
   if (typeId === TYPE_BLACKJACK_MESSAGE_ITEM)
     return frameLength <= MAX_BLACKJACK_FRAME_BYTES
   if (typeId === TYPE_DIRECTORY_STATEMENT && schemaVersion >= 4)
@@ -415,6 +421,25 @@ export function checkTypeLimits(
   }
   const f = (k: number) => payload.get(BigInt(k))
   switch (typeId) {
+    case 32: case 33: {
+      if (tooMany(f(3),64)) over('Lotus entries')
+      const entries=f(3)
+      if(Array.isArray(entries)) for(const entry of entries) if(isMap(entry) && tooMany(entry.get(1n),32)) over('Lotus headers')
+      break
+    }
+    case 36: {
+      if(tooMany(f(3),64)) over('Lotus selected outputs')
+      const burns=f(3)
+      if(Array.isArray(burns)) for(const burn of burns) if(isMap(burn)) {const raw=burn.get(0n);if(raw instanceof Uint8Array && raw.length>1048576) over('Lotus raw transaction')}
+      break
+    }
+    case 38:
+      if(tooMany(f(5),100)) over('Lotus inventory descriptors')
+      for(const key of [6,7]) {const cursor=f(key);if(cursor instanceof Uint8Array && cursor.length>2048) over('Lotus cursor')}
+      break
+    case 40: if(tooMany(f(3),64)) over('Lotus transaction ids');break
+    case 41: if(tooMany(f(1),32)) over('Lotus peer origins');break
+    case 43: {const bytes=f(7);if(bytes instanceof Uint8Array && bytes.length>65536) over('Lotus chunk bytes');break}
     case TYPE_DIRECT_MESSAGE_DELIVERY:
       if (tooMany(f(4), MAX_PAYMENT_MEMBERS)) over('payment members')
       break
@@ -1062,6 +1087,9 @@ export function parseDraft(
     }
     case TYPE_BLACKJACK_MESSAGE_ITEM:
       return blackjackPayload(payload)
+    case 32: case 33: case 34: case 35: case 36: case 37:
+    case 38: case 39: case 40: case 41: case 42: case 43:
+      return lotusPayload(typeId, payload)
     default:
       throw new Error(`parseDraft: type ${typeId} has no schema`)
   }
@@ -1122,10 +1150,63 @@ function checkSignatureShape(
   }
 }
 
+/** Lotus maps are closed even for compatible future envelopes. */
+function lotusPayload(typeId: number, payload: FrankValue): LotusPayload<Uint8Array> {
+  const P = 'root/payload'
+  const read = (required: number[], optional: number[] = []) => fields(payload,P,required,optional,false,false)
+  const int = (v: FrankValue | undefined, path: string, signed = false) => uintRange(v,path,signed ? I64_MIN : 0n,signed ? I64_MAX : U64_MAX)
+  const network = (m: MapView) => {
+    const value = tstr(m.get(0),`${P}.0`,1,64)
+    if (value !== 'xpi-mainnet' && value !== 'xpi-regtest') throw bad(`${P}.0`,'unsupported Lotus network')
+    return value
+  }
+  const ref = (v: FrankValue | undefined, path: string): LotusReference => {
+    const m = fields(v,path,[0,1],[],false,false)
+    return {origin:u32ish(m.get(0),`${path}.0`,0,1) as 0|1,hash:bstr(m.get(1),`${path}.1`,32,32)}
+  }
+  const entries = (v: FrankValue | undefined, path: string): LotusEntry<Uint8Array>[] => asList(v,path,0,64).map((v,i) => {
+    const q = `${path}[${i}]`, m = fields(v,q,[0,1,2],[],false,false)
+    return {kind:tstr(m.get(0),`${q}.0`,0,MAX_TEXT_STRING_BYTES),headers:asList(m.get(1),`${q}.1`,0,32).map((v,j) => {
+      const h = `${q}.1[${j}]`, a = asList(v,h,2,2)
+      return [tstr(a[0],`${h}[0]`,0,MAX_TEXT_STRING_BYTES),tstr(a[1],`${h}[1]`,0,MAX_TEXT_STRING_BYTES)] as const
+    }),body:bstr(m.get(2),`${q}.2`,0,MAX_FRAME_BYTES)}
+  })
+  switch(typeId) {
+    case 32: { const m=read([0,1,2,3]);return {type:32,network:network(m),timestamp:int(m.get(1),`${P}.1`,true),ttl:int(m.get(2),`${P}.2`,true),entries:entries(m.get(3),`${P}.3`)} }
+    case 33: { const m=read([0,1,2,3],[4]);return {type:33,network:network(m),topic:tstr(m.get(1),`${P}.1`,1,4096),timestamp:int(m.get(2),`${P}.2`,true),entries:entries(m.get(3),`${P}.3`),...(m.has(4)?{parent:ref(m.get(4),`${P}.4`)}:{})} }
+    case 34: { const m=read([0,1,2]);return {type:34,network:network(m),target:ref(m.get(1),`${P}.1`),direction:u32ish(m.get(2),`${P}.2`,0,1) as 0|1} }
+    case 35: { const m=read([],[0,1,2]);if(!m.has(0)&&!m.has(1)&&!m.has(2))throw bad(P,'post text requires at least one field');return {type:35,...(m.has(0)?{title:tstr(m.get(0),`${P}.0`,0,MAX_TEXT_STRING_BYTES)}:{}),...(m.has(1)?{url:tstr(m.get(1),`${P}.1`,0,MAX_TEXT_STRING_BYTES)}:{}),...(m.has(2)?{message:tstr(m.get(2),`${P}.2`,0,MAX_TEXT_STRING_BYTES)}:{})} }
+    case 36: { const m=read([0,1,2,3],[4]);return {type:36,network:network(m),bodyFrame:framed(m.get(1),`${P}.1`),signatures:asList(m.get(2),`${P}.2`,1,1).map((v,i)=>signatureEntry(v,`${P}.2[${i}]`)),burns:asList(m.get(3),`${P}.3`,0,64).map((v,i)=>{const q=`${P}.3[${i}]`,b=fields(v,q,[0,1],[],false,false);return {raw:bstr(b.get(0),`${q}.0`,1,1048576),outputIndex:u32ish(b.get(1),`${q}.1`,0,U32_MAX)}}),...(m.has(4)?{claimedBurn:uintRange(m.get(4),`${P}.4`,0n,I64_MAX)}:{})} }
+    case 37: { const m=read([0,1,2,3,4,7,8],[5,6,9,10]);return {type:37,network:network(m),legacyDigest:bstr(m.get(1),`${P}.1`,32,32),author:account(m.get(2),`${P}.2`),kind:u32ish(m.get(3),`${P}.3`,0,2) as 0|1|2,observedTime:int(m.get(4),`${P}.4`,true),totalBurn:int(m.get(7),`${P}.7`),componentCount:int(m.get(8),`${P}.8`),...(m.has(5)?{ttl:int(m.get(5),`${P}.5`,true)}:{}),...(m.has(6)?{parent:ref(m.get(6),`${P}.6`)}:{}),...(m.has(9)?{authorTime:int(m.get(9),`${P}.9`,true)}:{}),...(m.has(10)?{target:ref(m.get(10),`${P}.10`)}:{})} }
+    case 38: { const m=read([0,1,2,3,4,5],[6,7]);return {type:38,network:network(m),collection:u32ish(m.get(1),`${P}.1`,0,4) as 0|1|2|3|4,epoch:bstr(m.get(2),`${P}.2`,16,16),incarnation:int(m.get(3),`${P}.3`),ceiling:int(m.get(4),`${P}.4`),rows:asList(m.get(5),`${P}.5`,0,100).map((v,i)=>{const q=`${P}.5[${i}]`,d=fields(v,q,[0,1,2,3],[4],false,false),t=u32ish(d.get(0),`${q}.0`,36,43);if(t!==36&&t!==37&&t!==43)throw bad(`${q}.0`,'invalid Lotus descriptor type');return {typeId:t,index:bstr(d.get(1),`${q}.1`,32,32),sequence:int(d.get(2),`${q}.2`),time:int(d.get(3),`${q}.3`,true),...(d.has(4)?{target:ref(d.get(4),`${q}.4`)}:{})}}),...(m.has(6)?{nextCursor:bstr(m.get(6),`${P}.6`,1,2048)}:{}),...(m.has(7)?{requestCursor:bstr(m.get(7),`${P}.7`,1,2048)}:{})} }
+    case 39: {const m=read([0,1,2,3,4,5]);return {type:39,network:network(m),target:ref(m.get(1),`${P}.1`),revision:int(m.get(2),`${P}.2`),physical:int(m.get(3),`${P}.3`),support:int(m.get(4),`${P}.4`),oppose:int(m.get(5),`${P}.5`)} }
+    case 40: {const m=read([0,1,2,3],[4,5]);return {type:40,network:network(m),requestIndex:bstr(m.get(1),`${P}.1`,32,32),phase:u32ish(m.get(2),`${P}.2`,0,3) as 0|1|2|3,txids:asList(m.get(3),`${P}.3`,0,64).map((v,i)=>bstr(v,`${P}.3[${i}]`,32,32)),...(m.has(4)?{sequence:int(m.get(4),`${P}.4`)}:{}),...(m.has(5)?{reason:tstr(m.get(5),`${P}.5`,0,MAX_TEXT_STRING_BYTES)}:{})} }
+    case 41: {const m=read([0,1]);return {type:41,network:network(m),origins:asList(m.get(1),`${P}.1`,0,32).map((v,i)=>tstr(v,`${P}.1[${i}]`,1,MAX_TEXT_STRING_BYTES))} }
+    case 42: {const m=read([0,1,3],[2]),retryable=m.get(3);if(typeof retryable!=='boolean')throw bad(`${P}.3`,'expected boolean');return {type:42,network:network(m),code:tstr(m.get(1),`${P}.1`,1,64),retryable,...(m.has(2)?{requestIndex:bstr(m.get(2),`${P}.2`,32,32)}:{})} }
+    case 43: {const m=read([0,1,2,3,4,5,6,7]);return {type:43,network:network(m),legacyDigest:bstr(m.get(1),`${P}.1`,32,32),componentOrdinal:int(m.get(2),`${P}.2`),path:asList(m.get(3),`${P}.3`,4,4).map((v,i)=>int(v,`${P}.3[${i}]`)) as [bigint,bigint,bigint,bigint],encoding:u32ish(m.get(4),`${P}.4`,0,1) as 0|1,totalBytes:int(m.get(5),`${P}.5`),offset:int(m.get(6),`${P}.6`),bytes:bstr(m.get(7),`${P}.7`,0,65536)} }
+    default: throw new Error('unallocated Lotus type')
+  }
+}
+
 /** Stage 8.3: allocated-identifier checks that need only the draft. */
 export function checkAllocated(d: DraftPayload): void {
   const P = 'root/payload'
   switch (d.type) {
+    case 36:
+      d.signatures.forEach((s,i) => {
+        if (s.algorithm !== 1 && s.algorithm !== 3) throw unsupported(`${P}.2[${i}]`, 'Lotus signature algorithm must be 1 or 3')
+        checkKeyType(s.signer, `${P}.2[${i}].1`)
+        checkSignatureShape(s.algorithm,s.signer,s.signature,`${P}.2[${i}]`)
+        if(s.algorithm===1) {
+          let low: boolean
+          try { low=hasLowS(parseStrictDer(s.signature).s) } catch { throw bad(`${P}.2[${i}]`,'Lotus signature must be strict DER') }
+          if(!low) throw bad(`${P}.2[${i}]`,'Lotus signature must have low S')
+        }
+      })
+      break
+    case 37:
+      checkKeyType(d.author, `${P}.2`)
+      break
     case 1:
       checkKeyType(d.destination, `${P}.1`)
       break

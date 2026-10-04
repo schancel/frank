@@ -79,6 +79,16 @@ pub(crate) async fn handle_put(
             request_principals(&request, descriptor.cbor_identifier)?;
         let sender_current = current(owner, descriptor.cbor_identifier, &sender).await?;
         let recipient_current = current(owner, descriptor.cbor_identifier, &recipient).await?;
+        // The recipient's own entry says which relay holds its mailbox. Until this relay can
+        // forward there, refuse here: nothing has been retained and no payment was broadcast.
+        if !owner
+            .directory()
+            .ok_or(CanonicalError::Unavailable)?
+            .info()
+            .is_local(&recipient_current.relay)
+        {
+            return Err(CanonicalError::RecipientElsewhere);
+        }
         let historical = if recipient_current.evidence.hash == recipient_t1 {
             None
         } else {
@@ -283,6 +293,8 @@ pub(crate) enum CanonicalError {
     Unauthorized,
     #[error("recovery obligation is active")]
     ActiveObligation,
+    #[error("recipient's mailbox is on another relay")]
+    RecipientElsewhere,
 }
 pub(crate) type Result<T> = std::result::Result<T, CanonicalError>;
 impl IntoResponse for CanonicalError {
@@ -305,6 +317,10 @@ impl IntoResponse for CanonicalError {
             Self::Capacity => (StatusCode::TOO_MANY_REQUESTS, "mailbox_challenge_capacity"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "mailbox_auth_failed"),
             Self::ActiveObligation => (StatusCode::CONFLICT, "recovery_obligation_is_active"),
+            Self::RecipientElsewhere => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "recipient_relay_forwarding_unavailable",
+            ),
         };
         (status, Json(serde_json::json!({"version":1,"error":error}))).into_response()
     }

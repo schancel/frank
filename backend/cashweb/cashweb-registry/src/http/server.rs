@@ -580,6 +580,7 @@ impl RegistryServer {
                         header::HeaderName::from_static(BITCOIN_PROXY_CORS_HEADERS[0]),
                     ])
                     .expose_headers([
+                        header::CONTENT_TYPE,
                         header::HeaderName::from_static("x-frank-mailbox-next-cursor"),
                         header::HeaderName::from_static("x-frank-directory-evidence"),
                         header::HeaderName::from_static("x-frank-directory-disposition"),

@@ -209,6 +209,9 @@ async fn info(Extension(routes): Extension<Arc<Routes>>) -> Response {
             "endpoint": info.binding.endpoint,
             "relayKey": hex::encode(&info.binding.identity.key_bytes),
             "bindingExpiry": info.binding_expiry_ns(),
+            // Whether this relay accepts a message for a recipient whose entry names another
+            // relay and forwards it there. Clients must not send such a message when false.
+            "forwarding": false,
         })),
     )
         .into_response()

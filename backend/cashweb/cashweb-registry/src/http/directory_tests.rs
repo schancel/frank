@@ -304,6 +304,7 @@ async fn relay_info_is_the_single_configured_tuple() {
             "endpoint": "https://relay.example.invalid",
             "relayKey": "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
             "bindingExpiry": "1700007200000000000",
+            "forwarding": false,
         })
     );
     runtime.begin_shutdown();

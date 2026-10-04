@@ -146,6 +146,11 @@ impl NativeDirectoryFixture {
     /// A relay that knows only its own tuple. The accounts `publishes` selects publish their own
     /// signed entries; the others have simply never published here.
     pub(crate) async fn publishing(publishes: impl Fn(usize) -> bool) -> Self {
+        // The relay is the one the recipient's entry names. The sender's entry names another.
+        Self::homed(1, publishes).await
+    }
+    /// As [`Self::publishing`], on the relay that captured account `home` names in its entry.
+    pub(crate) async fn homed(home: usize, publishes: impl Fn(usize) -> bool) -> Self {
         use crate::{
             directory_runtime::{DirectoryRuntime, Operation, TestClock},
             disabled_chain_adapter::DisabledChainAdapter,
@@ -166,8 +171,7 @@ impl NativeDirectoryFixture {
                 revision_zero: p["rev0T1"].as_str().unwrap().into(),
             })
             .collect::<Vec<_>>();
-        // The relay is the one the recipient's entry names. The sender's entry names another.
-        let home = &captured[1];
+        let home = &captured[home];
         let config: cashweb_config::DirectoryConf = serde_json::from_value(serde_json::json!({
             "network": home["network"],
             "relay_id": home["relayId"],
@@ -521,6 +525,53 @@ try { if(Buffer.from(material.identity.compressedPubKey).toString('hex')!==expec
     );
     hex::decode(output.stdout).unwrap()
 }
+#[tokio::test]
+async fn message_for_a_recipient_on_another_relay_is_refused_before_any_payment_is_broadcast() {
+    // This relay is the sender's. Both accounts are published here, but the recipient's own
+    // entry says its mailbox is on a different relay.
+    let fixture = NativeDirectoryFixture::homed(0, |_| true).await;
+    let request = genuine_fixture();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let rpc = axum::Router::new().route(
+        "/",
+        axum::routing::post(move |Json(_): Json<serde_json::Value>| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Json(serde_json::json!({"jsonrpc":"2.0","id":1,"result":null})) }
+        }),
+    );
+    let (rpc_url, rpc_stop, rpc_task) = serve_http(rpc).await;
+    let (url, http_stop, http_task) = serve_http(
+        server(&fixture, &rpc_url).into_router_with_directory(Some(fixture.directory.clone())),
+    )
+    .await;
+    let response = reqwest::Client::new()
+        .put(format!("{url}/message/monad/cbor"))
+        .header("content-type", request.content_type())
+        .body(request.body().to_vec())
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    http_stop.send(()).unwrap();
+    http_task.await.unwrap();
+    rpc_stop.send(()).unwrap();
+    rpc_task.await.unwrap();
+    assert_eq!(status, 503);
+    assert_eq!(body["error"], "recipient_relay_forwarding_unavailable");
+    // Nothing was retained and the chain was never contacted.
+    assert!(fixture
+        .registry
+        .canonical_dm()
+        .find_request(&request)
+        .unwrap()
+        .is_none());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    fixture.stop().await;
+}
+
 #[tokio::test]
 async fn actual_http_canonical_public_admission_p_authenticated_inbox_and_nonce_replay() {
     use crate::monad_http::Hash32;

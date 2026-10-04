@@ -117,6 +117,7 @@ export default {
     selectMessagesTitle: 'Select Messages',
   },
   chatInput: {
+    blackjackHand: 'Blackjack hand',
     giveLotusSecretly: 'Give Lotus Secretly',
     attachImage: 'Attach Image',
     placeHolder: 'Write a message...',

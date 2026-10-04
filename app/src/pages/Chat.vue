@@ -96,6 +96,7 @@
       <!-- Message box -->
       <chat-input
         @sendFileClicked="toSendFileDialog"
+        @blackjackClicked="blackjackDialog = true"
         @giveLotusClicked="$emit('giveLotusClicked')"
         ref="chatInput"
         v-model:message="message"
@@ -104,6 +105,18 @@
         @sendMessage="sendMessage"
       />
     </q-footer>
+    <!-- A blackjack hand started from the composer's message-type menu: any chat, any contact. -->
+    <q-dialog v-model="blackjackDialog">
+      <q-card v-if="blackjackDialog" data-testid="blackjack-dialog">
+        <blackjack-bet-control
+          :address="address"
+          :dealer-name="peerName"
+          :table="blackjackTable"
+          :stamp-wei="blackjackStampWei"
+          :submit="submitBlackjackFromMenu"
+        />
+      </q-card>
+    </q-dialog>
   </div>
 </template>
 
@@ -114,12 +127,17 @@ import ChatMessageComponent from '../components/chat/messages/ChatMessage.vue'
 import ChatBannerStack from '../components/chat/ChatBannerStack.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
 import BlackjackUnsentWagers from '../components/chat/BlackjackUnsentWagers.vue'
+import BlackjackBetControl from '../components/chat/BlackjackBetControl.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 import type { BlackjackChatContext } from '../components/chat/messages/ChatMessageBlackjack.vue'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import { defaultAcceptancePrice, defaultStampAmount } from '../utils/constants'
-import { deliverBetWhenReady } from '../utils/blackjack-bet'
+import {
+  deliverBetWhenReady,
+  latestDealerTable,
+  type BlackjackTable,
+} from '../utils/blackjack-bet'
 import { useMonadWallet } from '../utils/clients'
 import {
   activeChain,
@@ -143,6 +161,7 @@ export default defineComponent({
     ChatMessageReply,
     ChatInput,
     BlackjackUnsentWagers,
+    BlackjackBetControl,
     ChatBannerStack,
   },
   beforeRouteUpdate(
@@ -175,6 +194,7 @@ export default defineComponent({
   data() {
     return {
       address: this.$route.params.address as string,
+      blackjackDialog: false,
       bottom: true as boolean,
       // Overlay height plus the 16px q-py-md gap. Zero keeps the stylesheet pad
       // when no banner is showing.
@@ -589,6 +609,14 @@ export default defineComponent({
     // For value-bearing follow-ups whose payment is already on its way (the first blackjack bet:
     // its wager transfer takes seconds): `sendFollowUpItems` drops a call made while another send
     // is in flight, which would strand the wager, so wait for the chat to go idle first.
+    // The bet control has paid the wager and hands over the bet message: close the dialog and
+    // send it through the chat's normal pipeline.
+    submitBlackjackFromMenu(
+      payload: Parameters<typeof this.sendFollowUpWhenIdle>[0],
+    ) {
+      this.blackjackDialog = false
+      return this.sendFollowUpWhenIdle(payload)
+    },
     async sendFollowUpWhenIdle(payload: {
       items: MessageItem[]
       stampValueWei?: bigint
@@ -627,6 +655,20 @@ export default defineComponent({
       return this.bannerClearance > 0
         ? { scrollMarginTop: `${this.bannerClearance}px` }
         : undefined
+    },
+    // The limits a menu-started hand is validated against: this peer's latest welcome, if it sent
+    // one, else the documented defaults (a peer may still refuse and refund).
+    blackjackTable(): BlackjackTable {
+      return latestDealerTable(
+        useChatStore().chats[this.address]?.messages ?? [],
+      )
+    },
+    blackjackStampWei(): bigint | null {
+      try {
+        return activeChain.fromDisplayAmount(this.stampAmount)
+      } catch {
+        return null
+      }
     },
     peerName(): string {
       return this.getContactVuex(this.address)?.profile?.name ?? ''

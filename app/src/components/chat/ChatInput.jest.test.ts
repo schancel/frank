@@ -73,23 +73,17 @@ const globalOptions = {
   },
 }
 
-describe('ChatInput has no blackjack control (#395)', () => {
-  it.each([
-    ['no extra props', {}],
-    [
-      'the props the removed toolbar button used (a bot-marked dealer chat)',
-      {
-        address: '0xDealer',
-        blackjackEnabled: true,
-        peerName: 'Dealer',
-        submitFollowUp: jest.fn(),
-      },
-    ],
-  ])('renders no casino button and no menu for %s', (_name, props) => {
-    const w = mount(ChatInput, { props, global: globalOptions })
+describe('blackjack is a message type in the composer menu', () => {
+  it('offers a blackjack hand in the extended menu of any chat and reports the choice', async () => {
+    const w = mount(ChatInput, { global: globalOptions })
+    const item = w.find('[data-testid="blackjack-menu-item"]')
+    expect(item.exists()).toBe(true)
+    expect(item.text()).toContain('Blackjack hand')
+    // No props about the peer are needed: no dealer, bot or profile gate.
+    await item.trigger('click')
+    expect(w.emitted('blackjackClicked')).toHaveLength(1)
+    // The rest of the toolbar is untouched: the menu, stamp payment and send.
     expect(w.find('[data-testid="blackjack-menu-button"]').exists()).toBe(false)
-    expect(w.find('[data-icon="casino"]').exists()).toBe(false)
-    // The rest of the toolbar is untouched: attach, stamp payment and send.
     expect(w.find('[data-icon="unfold_more"]').exists()).toBe(true)
     expect(w.find('[data-icon="local_post_office"]').exists()).toBe(true)
     expect(w.find('[data-icon="send"]').exists()).toBe(true)

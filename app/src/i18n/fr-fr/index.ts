@@ -120,6 +120,7 @@ export default {
     selectMessagesTitle: 'Sélectionner des messages',
   },
   chatInput: {
+    blackjackHand: 'Main de blackjack',
     giveLotusSecretly: 'Donner des lotus secrêtement',
     attachImage: 'Attacher une image',
     placeHolder: 'Ecrire un message...',

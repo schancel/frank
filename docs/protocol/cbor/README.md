@@ -795,9 +795,12 @@ or sender authority. #780 owns authenticated runtime adoption and economic proof
 unsupported structured kinds never become JSON/text17 fallbacks.
 
 Direct-message stamps are payments to recipient-derived addresses. They are not
-burns. A payment member commits to this recipient-specific encrypted-payload
-frame and its distinct child index, so an existing transaction cannot authorize
-a different payload.
+burns, and unlike a burn the transaction carries no data: it is a plain value
+transfer to a one-off address, so nothing on chain marks it as a message
+payment (#826). A payment member in the frame commits to this
+recipient-specific encrypted-payload frame and its distinct child index, and a
+relay accepts each signed transaction for at most one message (T4), so an
+existing transaction cannot authorize a different payload.
 
 Stamp destinations (decided on #198, superseding the #60 derivation): the
 sender picks a fresh scalar `e` and puts `E = e*G`, `X = e*P'` and a
@@ -1080,7 +1083,7 @@ recipient-encrypted-payload frame, its network argument is that frame's field 0
 (T5), and context is empty. It is the payload identity that T4 commits to. It no
 longer enters the derivation of stamp keys; because the frame includes `E`, `X`
 and the proof, the digest and every T4 commitment cover them, so a payment
-authorizes exactly one stamp derivation for one payload.
+member authorizes exactly one stamp derivation for one payload.
 
 T3a. Stamp destination derivation, byte-exact. `n` is the secp256k1 group order,
 `G` its generator, and all points are 33-byte compressed SEC1 encodings in
@@ -1204,23 +1207,37 @@ another network. The range checks on `c` and `s` are redundant with the hash
 comparison for acceptance (an out-of-range scalar could only match by
 accident), so they are observable only as a category (`schema` at 8.2 rather
 than `cryptographic`), which is what the manifest vectors pin. Within one
-network a copied `(E, X, proof)` gives the same child addresses again; T4 stops
-another message reusing the transactions, and the repeated-`E` warning (T3a
-step 1) is the linkage signal. The proof is not a signature over the frame; the
-frame binding is T3 and T4. The construction needs cryptographic review before
+network a copied `(E, X, proof)` gives the same child addresses again; the
+one-message-per-transaction rule in T4 stops another message reusing the
+transactions at the same relay, and the repeated-`E` warning (T3a step 1) is
+the linkage signal. The proof is not a signature over the frame; the frame
+binding is T3 and T4. The construction needs cryptographic review before
 implementation.
 
-T4. Each payment member's on-chain commitment is
+T4. Each payment member's commitment is
 `SHA256(ascii("frank:dm-stamp-payment:v1") || T3_digest ||
-u32be(child_index))`. The exact 32-byte value MUST be present in the verified
-transaction commitment field and field 4 of that payment member. The field's
-chain-specific layout (for Monad, calldata of a lokad identifier, a version
-byte, and the 32-byte commitment) belongs to the chain adapter defined by the
-Monad direct-message migration (#132), not to the codec. A missing or
-different value rejects. Changing the payload frame (including `E`, `X` and the proof), network, versions, or
-child index therefore prevents transaction reuse for another message. T4 is
-otherwise unchanged by #198: `T3_digest` is the T3 digest of the whole type-5
-frame. Relay
+u32be(child_index))`. The exact 32-byte value MUST be present in field 4 of
+that payment member. A missing or different value rejects. It is a statement
+inside the delivery frame only. It MUST NOT be written to the chain (#826):
+for Monad a direct-message payment transaction is a plain value transfer whose
+input (calldata) is empty, and a relay MUST reject a payment member whose
+signed transaction carries any input. Calldata is reserved for topic burns,
+which have no recipient-specific address. Earlier drafts put this value in
+calldata behind a constant tag, which made every message payment identifiable
+on chain.
+
+Because the transaction itself no longer names the payload, transaction reuse
+is prevented by the relay rather than by the chain: a relay MUST keep a
+durable record of every signed transaction hash it has accepted as a payment
+member and MUST reject a submission that lists one of them for a different
+payload digest, on new admission and after the first message is delivered,
+dead, acknowledged or the relay has restarted. An exact retry of the original
+submission is not a reuse. A recipient that imports payment members for
+recovery applies the same rule to what it retains. This rule is scoped to one
+relay's record: two relays that share no record cannot detect one transaction
+presented to each under different payloads, so a relay that takes over a
+recipient's mailbox SHOULD inherit the previous relay's record. `T3_digest` is
+the T3 digest of the whole type-5 frame. Relay
 delivery fees use a separate domain and are not part of this transcript.
 
 T5. Protocol signatures and commitments MUST bind the network tag passed to
@@ -1413,7 +1430,10 @@ category, and an implementation MUST NOT continue to report a later failure.
     5. Payment observations: each member's transaction ID MUST have an
        observation whose destination, value, and commitment equal the encoded
        member, otherwise `cryptographic`; an observation with no member is
-       ignored. Then the S3 rules: an observed value of zero, a checked-sum
+       ignored. A Monad payment transaction carries no commitment on chain
+       (T4), so its observation's commitment is the T4 value the adapter
+       recomputed, supplied only after it has checked that the transaction
+       input is empty; a non-empty input is `cryptographic`. Then the S3 rules: an observed value of zero, a checked-sum
        overflow, or a sum below the minimum is `semantic`. The consumption key of
        a stamp, that is what identifies it as spent, is the pair (T3 digest,
        child index); set-level uniqueness, distinct funders, and other
@@ -1549,8 +1569,7 @@ The positive `full` type-1 direct-message case MUST also record
 `payment_commitments_hex` value, plus `stamp_shared_point_hex` (`X`) and
 `stamp_child_public_keys_hex` (one 33-byte compressed child key per payment
 member, in the same order). Implementations compare those outputs with T1a,
-T3, T3a, T4, the encoded payment member, and the simulated verifier-visible
-transaction commitment. `payment_commitments_hex` position `i` corresponds
+T3, T3a, T4 and the encoded payment member. `payment_commitments_hex` position `i` corresponds
 exactly to payment member position `i` after the S3 sort; it is not independently
 sorted.
 

@@ -1,6 +1,6 @@
 {
   "appId": "org.cashweb.stamp",
-  "appName": "Stamp",
+  "appName": "Frank",
   "bundledWebRuntime": false,
   "npmClient": "yarn",
   "webDir": "www"

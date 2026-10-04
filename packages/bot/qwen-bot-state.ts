@@ -23,6 +23,7 @@ import level, { LevelDB } from 'level'
 import { join } from 'path'
 
 import { canonicalMonadEnvelopeAddress } from '@frank/cashweb/relay/monad-message-envelope'
+import type { CanonicalPreparedAttempt } from '@frank/wallet/storage/stamp-attempt-journal'
 
 import { QwenChatMessage } from './qwen-client'
 
@@ -34,6 +35,7 @@ const CONVERSATION_PREFIX = 'conversation:'
 const RESPONSE_PREFIX = 'response:v1:'
 const INBOX_PREFIX = 'inbox:v1:'
 const SCAN_KEY = 'inbox-scan:v1'
+const COUPLING_PREFIX = 'coupling:v1:'
 
 // Ciphertext is bounded; terminal identities deliberately grow with the replayable history.
 export const QWEN_INBOX_MAX_COUNT = 1000
@@ -53,11 +55,19 @@ export interface QwenInboxScan {
 }
 export interface QwenInboxInput {
   payloadHashHex: string
+  /** Legacy rows: the encrypted envelope. Canonical rows: the exact type-1 delivery frame. */
   encryptedPayloadHex: string
   timestamp: number
   networkTagHex: string
+  /** Present only on canonical rows (#778): the exact authenticated crypto context bytes. */
+  contextHex?: string
 }
-export type QwenInboxRejection = 'wrong-recipient' | 'self' | 'no-text'
+/** `unopenable`: authentication failed deterministically against a freshly read directory. */
+export type QwenInboxRejection =
+  | 'wrong-recipient'
+  | 'self'
+  | 'no-text'
+  | 'unopenable'
 export type QwenInboxRow =
   | (QwenInboxInput & { version: 1; phase: 'pending'; order: number })
   | {
@@ -95,18 +105,267 @@ const natural = (n: unknown): n is number =>
   Number.isSafeInteger(n) && Number(n) >= 0
 const hex = (s: unknown): s is string =>
   typeof s === 'string' && /^(?:[0-9a-f]{2})*$/.test(s)
+const inboxRowBytes = (row: QwenInboxInput) =>
+  (row.encryptedPayloadHex.length + (row.contextHex?.length ?? 0)) / 2
 function validInboxInput(row: QwenInboxInput): boolean {
   return (
     /^[0-9a-f]{64}$/.test(row.payloadHashHex) &&
     hex(row.encryptedPayloadHex) &&
     hex(row.networkTagHex) &&
-    natural(row.timestamp)
+    natural(row.timestamp) &&
+    (row.contextHex === undefined ||
+      (hex(row.contextHex) &&
+        row.contextHex.length >= 2 &&
+        row.contextHex.length <= 2 * 4096))
   )
 }
 const invalidInbox = () =>
   new Error('Invalid Qwen inbox state; preserve state and investigate')
 const onlyKeys = (row: object, keys: string[]) =>
   Object.keys(row).every(key => keys.includes(key))
+
+// #703 outbound coupling: one saved result owns one sealed envelope and one wallet attempt.
+// Sealed bytes are retained only until the wallet's acknowledgement frontier has passed them;
+// capacity is backpressure on new envelopes, never eviction of a linked workflow.
+export const QWEN_COUPLING_MAX_COUNT = 64
+export const QWEN_COUPLING_MAX_PAYLOAD_BYTES = 256 * 1024
+export const QWEN_COUPLING_MAX_CONTEXT_BYTES = 4096
+const COUPLING_MAX_ECONOMIC_BYTES = 16384
+
+/** The wallet's exact public prepared binding with opaque bytes as lowercase hex. The payload is
+ * ciphertext; plaintext, history and model reasoning never enter this record. */
+export interface QwenCouplingBinding {
+  walletBindingId: string
+  accountId: string
+  chainId: string
+  network: string
+  senderSubject: string
+  recipientSubject: string
+  senderT1: string
+  recipientT1: string
+  payloadHex: string
+  contextHex: string
+  economicBindingHex: string
+}
+/** Bounded public identity of the one sealed reply. */
+export interface QwenCouplingEnvelope {
+  messageIdHex: string
+  t3Hex: string
+  contentDigestHex: string
+  stampValueWei: string
+}
+/** Bounded copy of the wallet's durable accepted evidence for the exact signed set. */
+export type QwenCouplingTerminal =
+  | {
+      outcome: 'delivered'
+      submissionIdentity: string
+      payloadHashHex: string
+      txHashes: string[]
+      mailboxCommittedAtMs: number
+    }
+  | {
+      outcome: 'dead'
+      submissionIdentity: string
+      payloadHashHex: string
+      txHashes: string[]
+      reason: string
+    }
+interface QwenCouplingBase extends QwenCouplingEnvelope {
+  version: 1
+  /** Admitted inbound input identity; also the response row key. */
+  payloadHashHex: string
+  consumerId: string
+}
+/** envelope-ready: sealed bytes are durable, no wallet effect is known.
+ * intent-linked: the wallet's durable attempt reference is durably owned by this turn.
+ * terminal: the Qwen final batch consumed the wallet's durable outcome; wallet evidence remains.
+ * settled: the wallet frontier passed the attempt; only bounded identity and evidence remain. */
+export type QwenCouplingRow =
+  | (QwenCouplingBase & {
+      phase: 'envelope-ready'
+      binding: QwenCouplingBinding
+    })
+  | (QwenCouplingBase & {
+      phase: 'intent-linked'
+      binding: QwenCouplingBinding
+      attemptRef: string
+    })
+  | (QwenCouplingBase & {
+      phase: 'terminal'
+      binding: QwenCouplingBinding
+      attemptRef: string
+      terminal: QwenCouplingTerminal
+    })
+  | (QwenCouplingBase & {
+      phase: 'settled'
+      attemptRef: string
+      terminal: QwenCouplingTerminal
+    })
+
+const BINDING_KEYS = [
+  'walletBindingId',
+  'accountId',
+  'chainId',
+  'network',
+  'senderSubject',
+  'recipientSubject',
+  'senderT1',
+  'recipientT1',
+  'payloadHex',
+  'contextHex',
+  'economicBindingHex',
+]
+const COUPLING_KEYS = [
+  'version',
+  'phase',
+  'payloadHashHex',
+  'consumerId',
+  'messageIdHex',
+  't3Hex',
+  'contentDigestHex',
+  'stampValueWei',
+]
+const invalidCoupling = () =>
+  new Error('Invalid Qwen coupling record; preserve state and investigate')
+const boundedHex = (value: unknown, maxBytes: number): value is string =>
+  hex(value) && value.length >= 2 && value.length <= 2 * maxBytes
+const name = (value: unknown): value is string =>
+  typeof value === 'string' && /^[a-zA-Z0-9._:-]{1,128}$/.test(value)
+const hex32 = (value: unknown): value is string =>
+  typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+const txHash = (value: unknown): value is string =>
+  typeof value === 'string' && /^0x[0-9a-f]{64}$/.test(value)
+const bytesToHex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex')
+const hexToBytes = (value: string) => new Uint8Array(Buffer.from(value, 'hex'))
+
+export function qwenCouplingConsumerId(payloadHashHex: string): string {
+  return `qwen-response-v1:${payloadHashHex}`
+}
+export function qwenCouplingBinding(
+  prepared: CanonicalPreparedAttempt,
+): QwenCouplingBinding {
+  return {
+    walletBindingId: prepared.walletBindingId,
+    accountId: prepared.accountId,
+    chainId: prepared.chainId,
+    network: prepared.network,
+    senderSubject: prepared.senderSubject,
+    recipientSubject: prepared.recipientSubject,
+    senderT1: prepared.senderT1,
+    recipientT1: prepared.recipientT1,
+    payloadHex: bytesToHex(prepared.payload),
+    contextHex: bytesToHex(prepared.context),
+    economicBindingHex: bytesToHex(prepared.economicBinding),
+  }
+}
+/** Exact retained bytes; the envelope is never parsed, re-sealed or re-encoded here. */
+export function qwenCouplingPrepared(
+  binding: QwenCouplingBinding,
+): CanonicalPreparedAttempt {
+  return {
+    walletBindingId: binding.walletBindingId,
+    accountId: binding.accountId,
+    chainId: binding.chainId,
+    network: binding.network,
+    senderSubject: binding.senderSubject,
+    recipientSubject: binding.recipientSubject,
+    senderT1: binding.senderT1,
+    recipientT1: binding.recipientT1,
+    payload: hexToBytes(binding.payloadHex),
+    context: hexToBytes(binding.contextHex),
+    economicBinding: hexToBytes(binding.economicBindingHex),
+  }
+}
+
+function validCouplingTerminal(terminal: QwenCouplingTerminal): boolean {
+  return (
+    !!terminal &&
+    typeof terminal === 'object' &&
+    hex32(terminal.submissionIdentity) &&
+    hex32(terminal.payloadHashHex) &&
+    Array.isArray(terminal.txHashes) &&
+    terminal.txHashes.length >= 1 &&
+    terminal.txHashes.length <= 64 &&
+    terminal.txHashes.every(txHash) &&
+    (terminal.outcome === 'delivered'
+      ? natural(terminal.mailboxCommittedAtMs) &&
+        onlyKeys(terminal, [
+          'outcome',
+          'submissionIdentity',
+          'payloadHashHex',
+          'txHashes',
+          'mailboxCommittedAtMs',
+        ])
+      : terminal.outcome === 'dead' &&
+        typeof terminal.reason === 'string' &&
+        /^[a-z_]{1,64}$/.test(terminal.reason) &&
+        onlyKeys(terminal, [
+          'outcome',
+          'submissionIdentity',
+          'payloadHashHex',
+          'txHashes',
+          'reason',
+        ]))
+  )
+}
+
+function validateCouplingRow(row: QwenCouplingRow): QwenCouplingRow {
+  const hasBinding = row?.phase !== 'settled'
+  const hasRef = row?.phase !== 'envelope-ready'
+  const hasTerminal = row?.phase === 'terminal' || row?.phase === 'settled'
+  if (
+    !row ||
+    typeof row !== 'object' ||
+    row.version !== 1 ||
+    !['envelope-ready', 'intent-linked', 'terminal', 'settled'].includes(
+      row.phase,
+    ) ||
+    !onlyKeys(row, [
+      ...COUPLING_KEYS,
+      ...(hasBinding ? ['binding'] : []),
+      ...(hasRef ? ['attemptRef'] : []),
+      ...(hasTerminal ? ['terminal'] : []),
+    ]) ||
+    !hex32(row.payloadHashHex) ||
+    row.consumerId !== qwenCouplingConsumerId(row.payloadHashHex) ||
+    !boundedHex(row.messageIdHex, 16) ||
+    row.messageIdHex.length !== 32 ||
+    !hex32(row.t3Hex) ||
+    !hex32(row.contentDigestHex) ||
+    typeof row.stampValueWei !== 'string' ||
+    !/^[1-9][0-9]{0,77}$/.test(row.stampValueWei) ||
+    (hasRef &&
+      !/^canonical-v1:[0-9]{16}$/.test(
+        (row as { attemptRef: string }).attemptRef,
+      )) ||
+    (hasTerminal &&
+      !validCouplingTerminal(
+        (row as { terminal: QwenCouplingTerminal }).terminal,
+      ))
+  )
+    throw invalidCoupling()
+  if (hasBinding) {
+    const binding = (row as { binding: QwenCouplingBinding }).binding
+    if (
+      !binding ||
+      typeof binding !== 'object' ||
+      !onlyKeys(binding, BINDING_KEYS) ||
+      !name(binding.walletBindingId) ||
+      !name(binding.accountId) ||
+      !name(binding.chainId) ||
+      !name(binding.network) ||
+      !boundedHex(binding.senderSubject, 65) ||
+      !boundedHex(binding.recipientSubject, 65) ||
+      !hex32(binding.senderT1) ||
+      !hex32(binding.recipientT1) ||
+      !boundedHex(binding.payloadHex, QWEN_COUPLING_MAX_PAYLOAD_BYTES) ||
+      !boundedHex(binding.contextHex, QWEN_COUPLING_MAX_CONTEXT_BYTES) ||
+      !boundedHex(binding.economicBindingHex, COUPLING_MAX_ECONOMIC_BYTES)
+    )
+      throw invalidCoupling()
+  }
+  return row
+}
 
 /** Context must match on restart before a saved response may spend from a wallet. */
 export interface QwenResponseContext {
@@ -147,6 +406,8 @@ type QwenResponseWrite =
   | {
       row: Extract<QwenResponseRow, { phase: 'confirmed' }>
       conversation: QwenChatMessage[]
+      /** #703: the terminal linkage commits in the same batch as receipt/history/processed. */
+      coupling?: QwenCouplingRow
     }
 
 function copy<T>(value: T): T {
@@ -208,6 +469,7 @@ export class QwenBotStateStore {
   private conversations = new Map<string, QwenChatMessage[]>()
   private responses = new Map<string, QwenResponseRow>()
   private inbox = new Map<string, QwenInboxRow>()
+  private couplings = new Map<string, QwenCouplingRow>()
   private scan?: QwenInboxScan
   private mutations: Promise<unknown> = Promise.resolve()
   private drains: Promise<unknown> = Promise.resolve()
@@ -296,11 +558,15 @@ export class QwenBotStateStore {
                       'timestamp',
                       'networkTagHex',
                       'order',
+                      'contextHex',
                     ])
                   : row.phase !== 'rejected' ||
-                    !['wrong-recipient', 'self', 'no-text'].includes(
-                      row.reason,
-                    ) ||
+                    ![
+                      'wrong-recipient',
+                      'self',
+                      'no-text',
+                      'unopenable',
+                    ].includes(row.reason) ||
                     !onlyKeys(row, [
                       'version',
                       'phase',
@@ -314,6 +580,16 @@ export class QwenBotStateStore {
           } catch {
             throw invalidInbox()
           }
+        } else if (key.startsWith(COUPLING_PREFIX)) {
+          let row: QwenCouplingRow
+          try {
+            row = validateCouplingRow(JSON.parse(value))
+          } catch {
+            throw invalidCoupling()
+          }
+          if (key !== COUPLING_PREFIX + row.payloadHashHex)
+            throw invalidCoupling()
+          this.couplings.set(row.payloadHashHex, row)
         } else if (key.startsWith(RESPONSE_PREFIX)) {
           const row = parseResponseRow(value)
           if (key !== RESPONSE_PREFIX + row.payloadHashHex)
@@ -346,6 +622,7 @@ export class QwenBotStateStore {
         )
       )
         throw invalidInbox()
+      this.assertCouplingsCoherent()
     } catch (error) {
       await this.db.close()
       this.openedDb = undefined
@@ -474,7 +751,7 @@ export class QwenBotStateStore {
 
   private inboxBytes(): number {
     return this.pendingInbox().reduce(
-      (total, row) => total + row.encryptedPayloadHex.length / 2,
+      (total, row) => total + inboxRowBytes(row),
       0,
     )
   }
@@ -512,6 +789,9 @@ export class QwenBotStateStore {
           encryptedPayloadHex: input.encryptedPayloadHex,
           timestamp: input.timestamp,
           networkTagHex: input.networkTagHex,
+          ...(input.contextHex === undefined
+            ? {}
+            : { contextHex: input.contextHex }),
           version: 1,
           phase: 'pending',
           order: nextOrder++,
@@ -520,10 +800,7 @@ export class QwenBotStateStore {
       if (
         this.pendingInbox().length + rows.size > QWEN_INBOX_MAX_COUNT ||
         this.inboxBytes() +
-          [...rows.values()].reduce(
-            (n, row) => n + row.encryptedPayloadHex.length / 2,
-            0,
-          ) >
+          [...rows.values()].reduce((n, row) => n + inboxRowBytes(row), 0) >
           QWEN_INBOX_MAX_BYTES
       )
         return 'capacity'
@@ -664,6 +941,12 @@ export class QwenBotStateStore {
         },
         { type: 'put', key: PROCESSED_PREFIX + row.payloadHashHex, value: '1' },
       )
+      if (update.coupling)
+        operations.push({
+          type: 'put',
+          key: COUPLING_PREFIX + row.payloadHashHex,
+          value: JSON.stringify(update.coupling),
+        })
     }
     // Ownership transfer removes ciphertext in the same commit that holds model completion.
     if (row.phase === 'model-started' && this.inbox.has(row.payloadHashHex))
@@ -674,6 +957,8 @@ export class QwenBotStateStore {
     if ('conversation' in update) {
       this.conversations.set(row.senderAddress, copy(update.conversation))
       this.processedPayloadHashes.add(row.payloadHashHex)
+      if (update.coupling)
+        this.couplings.set(row.payloadHashHex, copy(update.coupling))
     }
   }
 
@@ -724,7 +1009,8 @@ export class QwenBotStateStore {
   async startResponseSend(payloadHashHex: string): Promise<void> {
     return this.mutate(async () => {
       const row = this.responses.get(payloadHashHex)
-      if (row?.phase !== 'response-ready')
+      // A coupled turn already owns exact outbound bytes; the legacy boundary cannot claim it.
+      if (row?.phase !== 'response-ready' || this.couplings.has(payloadHashHex))
         throw new Error('Invalid Qwen response transition')
       await this.writeResponse({ row: { ...row, phase: 'send-started' } })
     })
@@ -752,6 +1038,171 @@ export class QwenBotStateStore {
         },
         conversation: row.proposedHistory,
       })
+    })
+  }
+
+  /** A coupling always belongs to exactly one response row in the matching phase. */
+  private assertCouplingsCoherent(): void {
+    const refs = new Set<string>()
+    const payloads = new Set<string>()
+    let retained = 0
+    for (const row of this.couplings.values()) {
+      const response = this.responses.get(row.payloadHashHex)
+      const delivered =
+        'terminal' in row && row.terminal.outcome === 'delivered'
+      if (
+        !response ||
+        // The envelope was sealed and bound for exactly this turn's stamp policy.
+        row.stampValueWei !== response.context.stampValueWei ||
+        (delivered
+          ? response.phase !== 'confirmed' ||
+            !this.hasProcessed(row.payloadHashHex)
+          : response.phase !== 'response-ready')
+      )
+        throw invalidCoupling()
+      if ('attemptRef' in row) {
+        if (refs.has(row.attemptRef)) throw invalidCoupling()
+        refs.add(row.attemptRef)
+      }
+      if ('binding' in row) {
+        if (payloads.has(row.binding.payloadHex)) throw invalidCoupling()
+        payloads.add(row.binding.payloadHex)
+        retained++
+      }
+    }
+    if (retained > QWEN_COUPLING_MAX_COUNT) throw invalidCoupling()
+  }
+
+  getCoupling(payloadHashHex: string): QwenCouplingRow | undefined {
+    const row = this.couplings.get(payloadHashHex)
+    return row ? copy(row) : undefined
+  }
+
+  /** Every coupling, in durable key order. */
+  allCouplings(): QwenCouplingRow[] {
+    return [...this.couplings.values()].map(copy)
+  }
+
+  private async writeCoupling(row: QwenCouplingRow): Promise<void> {
+    validateCouplingRow(row)
+    await this.synced([
+      {
+        type: 'put',
+        key: COUPLING_PREFIX + row.payloadHashHex,
+        value: JSON.stringify(row),
+      },
+    ])
+    this.couplings.set(row.payloadHashHex, copy(row))
+  }
+
+  /** Synced before the first wallet call. A turn can own at most one sealed envelope, ever. */
+  async saveCoupling(
+    payloadHashHex: string,
+    envelope: QwenCouplingEnvelope,
+    binding: QwenCouplingBinding,
+  ): Promise<'saved' | 'capacity'> {
+    return this.mutate(async () => {
+      if (
+        this.responses.get(payloadHashHex)?.phase !== 'response-ready' ||
+        this.couplings.has(payloadHashHex)
+      )
+        throw new Error('Invalid Qwen coupling transition')
+      const row = validateCouplingRow({
+        version: 1,
+        phase: 'envelope-ready',
+        payloadHashHex,
+        consumerId: qwenCouplingConsumerId(payloadHashHex),
+        messageIdHex: envelope.messageIdHex,
+        t3Hex: envelope.t3Hex,
+        contentDigestHex: envelope.contentDigestHex,
+        stampValueWei: envelope.stampValueWei,
+        binding: copy(binding),
+      })
+      const retained = [...this.couplings.values()].filter(
+        other => 'binding' in other,
+      )
+      if (
+        retained.some(
+          other =>
+            'binding' in other &&
+            other.binding.payloadHex === binding.payloadHex,
+        )
+      )
+        throw new Error('Invalid Qwen coupling transition')
+      if (retained.length >= QWEN_COUPLING_MAX_COUNT) return 'capacity'
+      await this.writeCoupling(row)
+      return 'saved'
+    })
+  }
+
+  /** Records the wallet's durable attempt reference. Repeating the same link is a no-op; a
+   * different reference for an owned envelope is never accepted. */
+  async linkCoupling(
+    payloadHashHex: string,
+    attemptRef: string,
+  ): Promise<void> {
+    return this.mutate(async () => {
+      const row = this.couplings.get(payloadHashHex)
+      if (row && 'attemptRef' in row && row.attemptRef === attemptRef) return
+      if (
+        row?.phase !== 'envelope-ready' ||
+        [...this.couplings.values()].some(
+          other => 'attemptRef' in other && other.attemptRef === attemptRef,
+        )
+      )
+        throw new Error('Invalid Qwen coupling transition')
+      await this.writeCoupling({ ...row, phase: 'intent-linked', attemptRef })
+    })
+  }
+
+  /** The one Qwen terminal batch. Delivered commits receipt, conversation, processed marker and
+   * terminal linkage together; dead records only the held outcome and leaves the turn unsent. */
+  async commitCouplingTerminal(
+    payloadHashHex: string,
+    terminal: QwenCouplingTerminal,
+  ): Promise<void> {
+    return this.mutate(async () => {
+      const coupling = this.couplings.get(payloadHashHex)
+      const row = this.responses.get(payloadHashHex)
+      if (
+        coupling?.phase !== 'intent-linked' ||
+        row?.phase !== 'response-ready'
+      )
+        throw new Error('Invalid Qwen coupling transition')
+      const next = validateCouplingRow({
+        ...coupling,
+        phase: 'terminal',
+        terminal: copy(terminal),
+      })
+      if (terminal.outcome === 'dead') return this.writeCoupling(next)
+      await this.writeResponse({
+        row: {
+          version: row.version,
+          payloadHashHex: row.payloadHashHex,
+          senderAddress: row.senderAddress,
+          senderPubKeyHex: row.senderPubKeyHex,
+          context: row.context,
+          phase: 'confirmed',
+          receipt: {
+            payloadHashHex: terminal.payloadHashHex,
+            txHashes: [...terminal.txHashes],
+          },
+        },
+        conversation: row.proposedHistory,
+        coupling: next,
+      })
+    })
+  }
+
+  /** Drops the sealed bytes once the wallet no longer retains the attempt. */
+  async settleCoupling(payloadHashHex: string): Promise<void> {
+    return this.mutate(async () => {
+      const row = this.couplings.get(payloadHashHex)
+      if (row?.phase === 'settled') return
+      if (row?.phase !== 'terminal')
+        throw new Error('Invalid Qwen coupling transition')
+      const { binding: _discarded, ...rest } = row
+      await this.writeCoupling({ ...rest, phase: 'settled' })
     })
   }
 

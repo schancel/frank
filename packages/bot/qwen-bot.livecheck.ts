@@ -72,9 +72,25 @@
  *                                  Survives restarts; preserve held response rows (see README).
  *   QWEN_BOT_WALLET_STATE_DIR   -- durable HD seed, sender/change pools, and exact stamp journals
  *                                  (default ~/.frank-bots/qwen-wallet, or $XDG_STATE_HOME/frank-bots/qwen-wallet).
+ *
+ * Canonical mode (#703/#778), selected by QWEN_BOT_CANONICAL_ROOTS_JSON. In this mode the bot
+ * has no legacy identity, profile registration, greeting or legacy stamp wallet: it reads its
+ * canonical inbox from its installed home relay, opens messages with its own role keys under
+ * admitted directory evidence, and answers through one sealed envelope and one durable wallet
+ * attempt per turn. See `mainCanonical` below and README "Canonical mode".
+ *   QWEN_BOT_CANONICAL_ROOTS_JSON   -- operator-provisioned frank-domain-roots-v1 bundle; the
+ *                                      bot never creates it.
+ *   QWEN_BOT_CANONICAL_POLICY_JSON  -- operator-installed public bootstrap-policy.json.
+ *   QWEN_BOT_CANONICAL_BUNDLE_JSON  -- operator-installed public approved-bundle.json.
+ *   QWEN_BOT_CANONICAL_EXPORT_JSON  -- if set, write this bot's public revision-zero export
+ *                                      there (home relay from QWEN_BOT_CANONICAL_HOME, relay-a or
+ *                                      relay-b) and exit.
+ *   QWEN_BOT_CANONICAL_STATUS_PORT  -- serve GET /directory-installation/<bundle identity>
+ *                                      (plain HTTP, QWEN_BOT_CANONICAL_STATUS_HOST or loopback)
+ *                                      for the operator readiness check.
  */
 import { writeFileSync } from 'fs'
-import { resolve } from 'path'
+import { join, resolve } from 'path'
 
 import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
 const { AddressMetadata } = __pb_registry_metadata_pb
@@ -89,9 +105,18 @@ import { createQwenReplyGenerator, qwenBotConfigFromEnv } from './qwen-reply'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 import {
   loadOrCreateIdentity,
+  loadQwenCanonicalRoots,
+  openQwenCanonicalWallet,
+  QwenStartRefusal,
+  openQwenInstalledDirectory,
+  startQwenInstallationServer,
+  readQwenApprovedBundle,
+  readQwenBootstrapPolicy,
+  qwenCanonicalChainConfig,
   registerAndLog,
   requiredEnv,
   sendDirectMessageText,
+  setUpCanonicalQwenSender,
   setUpDurableFundedStampClient,
 } from './qwen-bot-common'
 import { botProfileFields } from './bot-directory'
@@ -113,10 +138,13 @@ const SYSTEM_PROMPT =
 
 let closeFundedSetup: (() => Promise<void>) | undefined
 let closeBotState: (() => Promise<void>) | undefined
+let closeCanonicalSetup: (() => Promise<void>) | undefined
+let closeCanonicalDirectory: (() => Promise<void>) | undefined
 
 async function main() {
   // Validated first so a missing key fails immediately, naming the variable (#314).
   const botConfig = qwenBotConfigFromEnv(process.env)
+  if (process.env.QWEN_BOT_CANONICAL_ROOTS_JSON) return mainCanonical(botConfig)
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
   const networkTag = requiredEnv('FRANK_NETWORK_TAG')
@@ -304,7 +332,10 @@ async function main() {
 
   // Surface nonretryable ambiguity once on startup. Only ready rows enter periodic recovery.
   for (const row of state.pendingResponses()) {
-    if (row.phase !== 'response-ready')
+    if (
+      row.phase !== 'response-ready' ||
+      responses.pollDisposition(row.payloadHashHex) === 'final-hold'
+    )
       await responses.resume(row.payloadHashHex)
   }
 
@@ -339,15 +370,20 @@ async function main() {
       break
     }
 
-    // Recovery does not depend on a mailbox entry or operator restart. A transient profile
-    // lookup failure/budget limit leaves ready rows eligible for the next poll; held sends
-    // never enter this retry path. Each row is reconsidered at most once per poll.
+    // Recovery does not depend on a mailbox entry or operator restart. Each ready row is
+    // reconsidered at most once per poll: a turn that would seal or pay goes through the peer
+    // guard and reply budget; a turn that already owns a linked wallet attempt replays exactly
+    // that attempt; a dead outcome is final and is not retried. Legacy model-started and
+    // send-started holds never enter this path.
     for (const row of state.pendingResponses()) {
       if (repliesSent >= maxReplies) break
+      if (row.phase !== 'response-ready') continue
+      const disposition = responses.pollDisposition(row.payloadHashHex)
+      if (disposition === 'final-hold') continue
       if (
-        row.phase !== 'response-ready' ||
-        (await guard.peerBlockReason(row.senderAddress)) ||
-        !guard.reserveReply(row.senderAddress)
+        disposition === 'new-effect' &&
+        ((await guard.peerBlockReason(row.senderAddress)) ||
+          !guard.reserveReply(row.senderAddress))
       )
         continue
       if ((await responses.resume(row.payloadHashHex)) === 'confirmed') {
@@ -479,15 +515,258 @@ async function main() {
   )
 }
 
+/**
+ * Canonical mode. Order matters and is fixed:
+ *  1. public configuration is read and checked; the export-only path ends here;
+ *  2. Qwen's response and inbox state opens;
+ *  3. the typed wallet owner opens, which signs, funds, replays and sends nothing;
+ *  4. the installed directory opens (own attestation published, peers read lazily);
+ *  5. every retained wallet record is correlated with a saved turn;
+ *  6. only then are pending turns resumed and the canonical inbox imported and drained.
+ */
+async function mainCanonical(
+  botConfig: ReturnType<typeof qwenBotConfigFromEnv>,
+): Promise<void> {
+  const path = (name: string) => resolve(process.cwd(), requiredEnv(name))
+  const roots = loadQwenCanonicalRoots(path('QWEN_BOT_CANONICAL_ROOTS_JSON'))
+  const policy = readQwenBootstrapPolicy(path('QWEN_BOT_CANONICAL_POLICY_JSON'))
+  const stampValueWei = BigInt(
+    process.env.QWEN_BOT_STAMP_VALUE_WEI ??
+      process.env.FRANK_DM_DEFAULT_STAMP_VALUE_WEI ??
+      '10000000000000000',
+  )
+  const stateDirPath = botStateDir('qwen', 'QWEN_BOT_STATE_DIR')
+  const walletStateDirPath = persistentStateDir(
+    'qwen-wallet',
+    'QWEN_BOT_WALLET_STATE_DIR',
+  )
+  const openWallet = async (relayBaseUrl: string) => {
+    const chain = qwenCanonicalChainConfig({
+      relayBaseUrl,
+      walletStorageLocation: join(walletStateDirPath, 'canonical'),
+      stampValueWei,
+    })
+    if (chain.networkTag !== policy.networkTag)
+      throw new QwenStartRefusal('chain-not-installed-network')
+    const wallet = await openQwenCanonicalWallet({ chain, roots })
+    closeCanonicalSetup = () => wallet.close()
+    return wallet
+  }
+
+  const exportPath = process.env.QWEN_BOT_CANONICAL_EXPORT_JSON
+  if (exportPath) {
+    const home = requiredEnv('QWEN_BOT_CANONICAL_HOME')
+    if (home !== 'relay-a' && home !== 'relay-b')
+      throw new QwenStartRefusal('home-relay-not-relay-a-or-relay-b')
+    // Opening the typed wallet signs, funds and sends nothing; the export is one public
+    // statement signed with the identity key.
+    const wallet = await openWallet(
+      policy.relayTuples.find(tuple => tuple.processId === home)!.endpoint,
+    )
+    const exported = wallet.publicExport({
+      policy,
+      home,
+      nowNs: BigInt(Date.now()) * 1_000_000n,
+    })
+    writeFileSync(
+      resolve(process.cwd(), exportPath),
+      JSON.stringify(exported, null, 2) + '\n',
+    )
+    console.log(
+      `[bot] public revision-zero export written for ${exported.authAddress} (home ${home}); give it to the operator`,
+    )
+    console.log(
+      `[bot] canonical stamp account to fund: ${wallet.accountAddress}`,
+    )
+    return
+  }
+
+  const bundle = readQwenApprovedBundle(path('QWEN_BOT_CANONICAL_BUNDLE_JSON'))
+  const installedSelf = bundle.subjects.find(subject => subject.role === 'bot')
+  if (!installedSelf) throw new QwenStartRefusal('bundle-installs-no-bot')
+  const relayBaseUrl = installedSelf.relay.endpoint
+  const configuredRelay = process.env.E2E_DEMO_RELAY_URL
+  if (
+    configuredRelay &&
+    new URL(configuredRelay).origin !== new URL(relayBaseUrl).origin
+  )
+    throw new QwenStartRefusal('relay-url-not-installed-home')
+  const pollIntervalMs = Number(process.env.QWEN_BOT_POLL_INTERVAL_MS ?? 4000)
+  const { maxReplies, idleTimeoutMs } = botConfig
+  const replyGenerator = createQwenReplyGenerator(botConfig)
+  console.log('== Qwen bot over Frank, canonical mode ==')
+  console.log(`Reply mode:   ${replyGenerator.mode}`)
+
+  const state = new QwenBotStateStore(stateDirPath)
+  await state.Open()
+  closeBotState = () => state.Close()
+  console.log(`[bot] persisted state loaded from ${stateDirPath}`)
+
+  const wallet = await openWallet(relayBaseUrl)
+  const directory = await openQwenInstalledDirectory({
+    wallet,
+    policy,
+    bundle,
+    location: join(stateDirPath, 'canonical-directory'),
+    fetch: (url, init) =>
+      (
+        globalThis as unknown as {
+          fetch: Parameters<typeof openQwenInstalledDirectory>[0]['fetch']
+        }
+      ).fetch(url, init),
+  })
+  closeCanonicalDirectory = () => directory.close()
+  const canonical = setUpCanonicalQwenSender({
+    wallet,
+    networkTag: policy.networkTag,
+    directory,
+    label: 'bot',
+  })
+  console.log(`Relay:        ${relayBaseUrl}`)
+  console.log(`Bot Frank identity address: ${canonical.identityAddress}`)
+  writeFileSync(
+    resolve(
+      process.cwd(),
+      process.env.QWEN_BOT_HANDOFF_JSON ?? '/tmp/qwen-bot-handoff.json',
+    ),
+    JSON.stringify({ address: canonical.identityAddress }, null, 2),
+  )
+  // The readiness check reads this process's installed public configuration from here.
+  const statusPort = process.env.QWEN_BOT_CANONICAL_STATUS_PORT
+  if (statusPort) {
+    const status = await startQwenInstallationServer({
+      directory,
+      port: Number(statusPort),
+      host: process.env.QWEN_BOT_CANONICAL_STATUS_HOST || undefined,
+    })
+    const closeDirectory = closeCanonicalDirectory
+    closeCanonicalDirectory = async () => {
+      await status.close()
+      await closeDirectory?.()
+    }
+    console.log(
+      `[bot] installed configuration ${directory.bundleIdentity} served on port ${status.port}`,
+    )
+  }
+
+  const inboxContext = {
+    botAddress: canonical.identityAddress,
+    networkTag: policy.networkTag,
+    relayBaseUrl,
+  }
+  await state.initializeInbox(
+    inboxContext,
+    Number(process.env.QWEN_BOT_MESSAGE_SINCE_MS ?? Date.now()),
+  )
+  const guard = botLoopGuardFromEnv({
+    selfAddress: canonical.identityAddress,
+    relayBaseUrl,
+  })
+  // A canonical peer is an operator-installed `ui` subject admitted by the directory; that is
+  // the statement that it is not another bot. The legacy profile-marker lookup is not consulted
+  // (and would be a legacy read). The operator denylist (FRANK_BOT_PEER_DENYLIST) and the
+  // per-peer reply budget still apply.
+  const peerBlockReason = async (address: string) =>
+    guard.staticBlockReason(address)
+  const responses = new QwenResponseWorkflow({
+    state,
+    context: {
+      ...inboxContext,
+      fundingAddress: canonical.accountAddress.toLowerCase(),
+      stampValueWei: stampValueWei.toString(),
+    },
+    systemPrompt: SYSTEM_PROMPT,
+    generator: replyGenerator,
+    canonical: canonical.sender,
+  })
+  const inbound = new QwenInboundWorkflow({
+    state,
+    context: inboxContext,
+    responses,
+    canonical: canonical.inbound,
+    peerBlockReason,
+    reserveReply: address => guard.reserveReply(address),
+  })
+
+  // Correlate saved turns with retained wallet records before any replay or new reply effect.
+  const hold = await responses.recover()
+  console.log(
+    `[bot] canonical wallet correlation ${hold ? 'held' : 'complete'}`,
+  )
+  for (const row of state.pendingResponses()) {
+    if (
+      row.phase !== 'response-ready' ||
+      responses.pollDisposition(row.payloadHashHex) === 'final-hold'
+    )
+      await responses.resume(row.payloadHashHex)
+  }
+
+  let repliesSent = 0
+  // Opening the typed owner and directory is not idleness.
+  let lastActivityAt = Date.now()
+  console.log(
+    `\nPolling the canonical inbox of ${canonical.identityAddress} at ${relayBaseUrl} every ${pollIntervalMs}ms ...`,
+  )
+  while (repliesSent < maxReplies) {
+    if (idleTimeoutMs > 0 && Date.now() - lastActivityAt > idleTimeoutMs) {
+      console.log(`\nNo activity within ${idleTimeoutMs}ms -- exiting.`)
+      break
+    }
+    await responses.recover()
+    for (const row of state.pendingResponses()) {
+      if (repliesSent >= maxReplies) break
+      if (row.phase !== 'response-ready') continue
+      const disposition = responses.pollDisposition(row.payloadHashHex)
+      if (disposition === 'final-hold') continue
+      if (
+        disposition === 'new-effect' &&
+        ((await peerBlockReason(row.senderAddress)) ||
+          !guard.reserveReply(row.senderAddress))
+      )
+        continue
+      if ((await responses.resume(row.payloadHashHex)) === 'confirmed') {
+        repliesSent++
+        lastActivityAt = Date.now()
+      }
+    }
+    if (repliesSent >= maxReplies) break
+    await inbound.import()
+    const confirmed = await inbound.drain(maxReplies - repliesSent)
+    repliesSent += confirmed
+    if (confirmed) lastActivityAt = Date.now()
+    if (repliesSent >= maxReplies) break
+    await state.flush()
+    await sleep(pollIntervalMs)
+  }
+  console.log(
+    `\nDone. Sent ${repliesSent} canonical repl${
+      repliesSent === 1 ? 'y' : 'ies'
+    } (${replyGenerator.mode}).`,
+  )
+}
+
 main()
   .finally(async () => {
     try {
       await closeBotState?.()
     } finally {
-      await closeFundedSetup?.()
+      try {
+        await closeCanonicalSetup?.()
+        await closeCanonicalDirectory?.()
+      } finally {
+        await closeFundedSetup?.()
+      }
     }
   })
-  .catch(() => {
+  .catch((error: unknown) => {
+    // A refusal carries only a fixed reason word; print it so an operator can act.
+    const refusal = error as { name?: unknown; code?: unknown } | null
+    if (
+      refusal?.name === 'QwenStartRefusal' &&
+      typeof refusal.code === 'string' &&
+      /^[a-z-]{1,64}$/.test(refusal.code)
+    )
+      console.error(`\nQWEN BOT REFUSING TO START: ${refusal.code}`)
     // Provider errors may contain prompts, tokens or raw response bodies, including in debug mode.
     console.error(
       '\nQWEN BOT FAILED: check QWEN_API_KEY and QWEN_OPENAI_COMPATIBLE_ENDPOINT (or QWEN_BOT_MODE=stub), configuration and durable response state; preserve held rows before restart',

@@ -602,10 +602,33 @@ keep it local and do not paste its contents into diagnostic logs or tickets.
 
 A held diagnostic includes the inbound hash and a fixed reason. Stop the bot and preserve both
 state roots before investigating that record alongside the wallet journals. There is deliberately
-no automatic release/reset command in this stage: #703 owns exact outbound-envelope and wallet
-attempt reconciliation. Later admitted turns from the held peer remain durably pending in order;
+no automatic release/reset command: exact outbound-envelope and wallet attempt reconciliation
+exists only for canonical replies (below); the legacy send keeps these holds. Later admitted turns from the held peer remain durably pending in order;
 other peers proceed. This does not complete #168 or promise
 exactly-once provider execution in the model-call/persistence crash window.
+
+#### Canonical replies: one sealed envelope and one wallet attempt (#703)
+
+With `QWEN_BOT_CANONICAL_ROOTS_JSON` set, a `response-ready` turn never enters the ordinary send
+builder and never becomes `send-started`. Instead it owns one coupling record
+(`coupling:v1:<inbound payload hash>`) beside its response row:
+
+| Coupling phase | What is durable | Restart behavior |
+| --- | --- | --- |
+| `envelope-ready` | The sealed reply bytes, the wallet's public prepared binding and bounded public identity, fsynced before the first wallet call. | The wallet is asked for a record with exactly those bytes. If it has one, the link is repaired; otherwise the first payment intent is prepared for the same bytes. The reply is never sealed again. |
+| `intent-linked` | The wallet's attempt reference. | Signs the stored unsigned transactions only, then re-sends the one promoted request. A `202` from the relay or an unknown outcome is held and retried with the same bytes. |
+| `terminal` | The wallet's delivered or dead evidence, copied in the Qwen final batch. Delivered commits receipt, conversation and processed marker in that same batch. | The wallet's evidence is cleaned up and acknowledged; a crash in between repeats only those two steps. |
+| `settled` | Bounded identity and evidence only; the sealed bytes are dropped once the wallet's acknowledgement frontier has passed the attempt. | Terminal. |
+
+The record holds ciphertext, never the reply text, history or model reasoning. On startup the CLI
+opens this state first, then the canonical wallet (which signs, funds and sends nothing on open),
+then correlates every retained wallet record with a saved turn before any replay. A wallet record
+no turn owns, a linked attempt the wallet no longer has, a changed account or stamp policy, or a
+dead outcome leaves the turn held with a fixed reason; none of them builds a second envelope or
+payment. A dead outcome is acknowledged to the wallet after it is recorded here, so it does not
+block later turns for other peers; the dead turn and its peer stay held. Legacy `model-started`
+and `send-started` rows keep the meanings in the table above and are never coupled after the fact.
+At most 64 unsettled envelopes are retained; beyond that new replies wait.
 
 Safe rollback: stop the bot and back up both state roots and its identity. Do not run older bot
 code against these roots while any pending inbox or nonterminal response row exists: old code
@@ -636,6 +659,97 @@ yarn send-demo
 `yarn ui-verify` (`monad-ui-verify.livecheck.ts`) exercises the same flow through the real app's
 own `ActiveChain` seam (`@frank/wallet/chain`) instead of the bot's own hand-rolled calls -- see
 that file's own header comment for its specific env vars.
+
+## Canonical mode (#703/#778)
+
+Setting `QWEN_BOT_CANONICAL_ROOTS_JSON` runs the bot with a typed account only: no legacy
+identity, profile registration, greeting or legacy stamp wallet. It reads its canonical inbox from
+its installed home relay, opens messages with its own role keys under admitted directory evidence,
+and answers each turn through one sealed envelope and one durable wallet attempt (see "Canonical
+replies" above). It answers only the `ui` subject in the operator-approved bundle.
+
+Files the operator provides (all paths absolute or relative to `packages/bot`):
+
+- **Roots** (`QWEN_BOT_CANONICAL_ROOTS_JSON`, mode `0600`, secret, never created by the bot):
+  `{"registry":"frank-domain-roots-v1","roots":{"evm-wallet":"<64 hex>","identity-authentication":"<64 hex>","messaging-encryption":"<64 hex>"}}`
+- **Bootstrap policy** (`QWEN_BOT_CANONICAL_POLICY_JSON`, public): the `bootstrap-policy.json`
+  written by `app/scripts/directory-operator.mts policy`.
+- **Approved bundle** (`QWEN_BOT_CANONICAL_BUNDLE_JSON`, public): the `approved-bundle.json`
+  written by `app/scripts/directory-operator.mts approve`.
+
+**1. Write the bot's public export** (signs one public statement; opens the typed wallet, which
+funds and sends nothing; prints the stamp account to fund):
+
+```sh
+cd packages/bot
+QWEN_BOT_MODE=stub \
+QWEN_BOT_CANONICAL_ROOTS_JSON=/abs/bot-roots.json \
+QWEN_BOT_CANONICAL_POLICY_JSON=/abs/bootstrap-policy.json \
+QWEN_BOT_CANONICAL_HOME=relay-a \
+QWEN_BOT_CANONICAL_EXPORT_JSON=/abs/bot-export.json \
+QWEN_BOT_STATE_DIR=/abs/bot-state QWEN_BOT_WALLET_STATE_DIR=/abs/bot-wallet \
+npx tsx qwen-bot.livecheck.ts
+```
+
+`QWEN_BOT_CANONICAL_HOME` must be the same relay the UI account is homed on (there is no relay
+forwarding yet). The export must be made inside the policy's validity window (at most one hour).
+
+**2. Operator approves** the UI export and the bot export and installs the result:
+
+```sh
+# from the repository root
+npx tsx --tsconfig packages/bot/tsconfig.json app/scripts/directory-operator.mts approve \
+  /abs/bootstrap-policy.json /abs/ui-export.json /abs/bot-export.json /abs/out /abs/relay-state new
+```
+
+Installing into the bot means pointing `QWEN_BOT_CANONICAL_BUNDLE_JSON` at
+`/abs/out/approved-bundle.json` and starting it; the relays install the generated
+`relay-*.directory.toml`. The bot refuses to start if the bundle or policy fails the strict parser,
+belongs to another policy, or does not carry exactly the evidence its own wallet produces.
+
+**3. Fund** the "canonical stamp account" printed in step 1 with native MON. The wallet funds
+its single-use stamp accounts from that account, through the relay's RPC proxy.
+
+**4. Run** (local Ollama model shown; use `QWEN_BOT_MODE=stub` for the deterministic model):
+
+```sh
+cd packages/bot
+QWEN_BOT_MODE=live QWEN_API_KEY=local-ollama-placeholder \
+QWEN_OPENAI_COMPATIBLE_ENDPOINT=http://127.0.0.1:11434/v1 QWEN_MODEL=qwen2.5:7b \
+QWEN_BOT_CANONICAL_ROOTS_JSON=/abs/bot-roots.json \
+QWEN_BOT_CANONICAL_POLICY_JSON=/abs/bootstrap-policy.json \
+QWEN_BOT_CANONICAL_BUNDLE_JSON=/abs/out/approved-bundle.json \
+QWEN_BOT_CANONICAL_STATUS_PORT=8455 \
+QWEN_BOT_STATE_DIR=/abs/bot-state QWEN_BOT_WALLET_STATE_DIR=/abs/bot-wallet \
+QWEN_BOT_STAMP_VALUE_WEI=10000000000000000 \
+NODE_EXTRA_CA_CERTS=/abs/local-ca.pem \
+npx tsx qwen-bot.livecheck.ts
+```
+
+- The relay is the bot subject's installed home endpoint from the bundle (an `https://` origin).
+  `E2E_DEMO_RELAY_URL`, if set, must have the same origin or the bot refuses to start.
+  `NODE_EXTRA_CA_CERTS` is only needed when that origin uses a local CA.
+- `QWEN_BOT_CANONICAL_STATUS_PORT` serves `GET /directory-installation/<bundle identity>` as plain
+  HTTP on `QWEN_BOT_CANONICAL_STATUS_HOST` (default `127.0.0.1`). Put a TLS front for the bot
+  origin named in the policy before it; the app's readiness check reads it there. Any other path
+  or manifest is 404.
+- On every start the bot publishes its own attestation to
+  `<home>/directory/v1/<network>/<P>/head`. It never publishes or enrolls anyone else: the UI
+  account becomes usable only after it has published its own evidence to that relay.
+- Chain RPC goes only through `<home>/chain-rpc/<MONAD_RPC_CHAIN>/rpc` (`MONAD_RPC_CHAIN`
+  defaults to `monad-testnet`).
+- `QWEN_BOT_MAX_REPLIES`, `QWEN_BOT_IDLE_TIMEOUT_MS`, `QWEN_BOT_POLL_INTERVAL_MS`,
+  `QWEN_BOT_MESSAGE_SINCE_MS` and the per-peer reply budget (`FRANK_BOT_MAX_REPLIES_PER_PEER`,
+  `FRANK_BOT_REPLY_WINDOW_MS`) and `FRANK_BOT_PEER_DENYLIST` apply as in legacy mode. The legacy
+  bot-marker profile lookup is not consulted: a canonical peer is whoever the operator installed.
+- A configuration the bot will not start with prints `QWEN BOT REFUSING TO START: <reason>` with a
+  fixed reason word (for example `roots-file-permissions`, `approved-bundle-invalid`,
+  `bundle-foreign-policy`, `bundle-not-this-bot`, `forwarding-unavailable`,
+  `relay-url-not-installed-home`). The roots file must not be group- or world-accessible.
+- Use a fresh `QWEN_BOT_STATE_DIR`: a root that already holds a legacy inbox context is refused.
+- Durable roots: `QWEN_BOT_STATE_DIR` (turns, inbox, couplings, and `canonical-directory/` with
+  the directory stores and their checkpoint files) and `QWEN_BOT_WALLET_STATE_DIR/canonical-*`
+  (typed wallet pool and journals). Back up and restore them together.
 
 ## Auto-greet / auto-fund new signups (ticket #77)
 

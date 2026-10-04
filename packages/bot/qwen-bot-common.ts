@@ -61,7 +61,7 @@
  * near-simultaneous transactions from a single account, funding happens in small
  * (`DEFAULT_TOPUP_BUFFER_SIZE = 5`) top-ups spread out one send at a time.
  */
-import { readFileSync, existsSync, writeFileSync } from 'fs'
+import { readFileSync, existsSync, statSync, writeFileSync } from 'fs'
 import { JsonRpcProvider, Provider } from 'ethers'
 
 import { MonadHttpClient } from '@frank/wallet/monad-http'
@@ -100,6 +100,58 @@ import { openPersistentStampPool } from './stamp-pool-seed'
 import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
 import { serializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { MessageItem } from '@frank/cashweb/types/messages'
+import { randomBytes } from 'crypto'
+import {
+  directMessageText,
+  prepareDirectMessage,
+} from '@frank/cashweb/relay/canonical-dm'
+import {
+  canonicalNetworkDescriptor,
+  type CanonicalFetch,
+} from '@frank/cashweb/relay/canonical-dm-transport'
+import type { MonadTxOverrides } from '@frank/wallet/monad-account-tx'
+import {
+  canonicalMonadStampClient,
+  createMonadChain,
+  loadMonadChainConfigFromEnv,
+  type MonadChainConfig,
+} from '@frank/wallet/chain/monad-chain'
+import type { MonadRootBundle } from '@frank/wallet/monad-wallet-material'
+import type { QwenCanonicalSender } from './qwen-response-workflow'
+import type { QwenCanonicalInbound } from './qwen-inbound-workflow'
+import { computeAddress } from 'ethers'
+import { mkdirSync, renameSync } from 'fs'
+import { createServer, type Server } from 'http'
+import { join } from 'path'
+import type { Checkpoint, Current, Status } from '@frank/directory-admission'
+import { openNodeDirectoryStore } from '@frank/directory-admission/node'
+import {
+  createDirectoryClient,
+  type DirectoryFetch,
+} from '@frank/cashweb/relay/directory-client'
+import {
+  fetchCanonicalInboxPage,
+  type CanonicalMailboxAuthParams,
+} from '@frank/cashweb/relay/monad-mailbox-client'
+import type { RelayBinding } from '@frank/codec'
+import {
+  createCanonicalMessageRoles,
+  prepareCanonicalStampInventory,
+  prepareMonadRevisionZeroExport,
+  type MonadChainWalletHandle,
+} from '@frank/wallet/chain/monad-chain'
+// The operator comparator and strict parsers are the app's own, so the bot, the app and the
+// operator tool cannot disagree about an identity. They belong in a shared package.
+import {
+  configurationIdentity,
+  expectedConfiguration,
+  parseApprovedPolicy,
+  parseBootstrapPolicy,
+  type ApprovedPolicy,
+  type BootstrapPolicy,
+  type HomeTuple,
+  type Subject,
+} from '../../app/src/utils/directory-provisioning'
 
 export function requiredEnv(name: string): string {
   const value = process.env[name]
@@ -649,4 +701,668 @@ export async function sendDirectMessageText(params: {
     ...params,
     items: [{ type: 'text', text: params.text }],
   })
+}
+
+/** Installed-directory view for the canonical bot (#778). Every call returns a fresh admitted
+ * snapshot from the public directory store; a peer is known only by admitted evidence for an
+ * operator-installed subject, never by a profile lookup or a fixture table. */
+export interface QwenCanonicalDirectory {
+  /** Canonical network identifier of every installed subject, e.g. `monad-testnet`. */
+  readonly network: string
+  /** Exact installed HTTPS root endpoint of the bot's home relay. */
+  readonly homeEndpoint: string
+  /** The bot's own compressed identity point P, lowercase hex. */
+  readonly selfSubject: string
+  selfCurrent(): Promise<Current>
+  /** `undefined` when that subject is not installed or has no admitted evidence yet. */
+  peerCurrent(subject: string, refresh?: boolean): Promise<Current | undefined>
+}
+export type QwenBootstrapPolicy = BootstrapPolicy
+export type QwenApprovedBundle = ApprovedPolicy
+
+/** Same public shape the app exports for the operator. Public bytes and points only. */
+export interface QwenPublicExportFile {
+  version: 1
+  kind: 'public-revision-zero-export'
+  bootstrapPolicyIdentity: string
+  networkTag: 'MONT' | 'MON1'
+  network: string
+  chainId: string
+  subjectP: string
+  authAddress: string
+  messagePoint: string
+  stampPoint: string
+  revisionZeroT1: string
+  statement: string
+  attestation: string
+  homeProcessId: 'relay-a' | 'relay-b'
+}
+
+/** The one live typed wallet owner, opened through the public chain factory. Opening signs,
+ * funds, replays and sends nothing. */
+export interface QwenCanonicalWallet {
+  readonly handle: MonadChainWalletHandle
+  /** The typed economic account that funds and pays reply stamps. Public; safe to log. */
+  readonly accountAddress: string
+  /** The bot's compressed identity point P and the mailbox address derived from it. */
+  readonly subject: string
+  readonly identityAddress: string
+  /** Public revision-zero export for the operator; one identity-key signature, nothing else. */
+  publicExport(input: {
+    policy: BootstrapPolicy
+    home: 'relay-a' | 'relay-b'
+    nowNs: bigint
+  }): QwenPublicExportFile
+  close(): Promise<void>
+}
+
+export interface CanonicalQwenSetup {
+  accountAddress: string
+  identityAddress: string
+  /** The #703 outbound boundary handed to `QwenResponseWorkflow`. */
+  sender: QwenCanonicalSender
+  /** The #778 inbound source handed to `QwenInboundWorkflow`. */
+  inbound: QwenCanonicalInbound
+}
+
+/** The env-configured chain row with Qwen's own relay and a durable canonical wallet root. */
+export function qwenCanonicalChainConfig(params: {
+  relayBaseUrl: string
+  walletStorageLocation: string
+  stampValueWei: bigint
+}): MonadChainConfig {
+  return {
+    ...loadMonadChainConfigFromEnv(),
+    relayBaseUrl: params.relayBaseUrl,
+    walletStorageLocation: params.walletStorageLocation,
+    defaultStampValueWei: params.stampValueWei,
+  }
+}
+
+const ROOT_PURPOSES = {
+  evm: 'evm-wallet',
+  authentication: 'identity-authentication',
+  messaging: 'messaging-encryption',
+} as const
+
+/** Loads an operator-provisioned typed root bundle. It NEVER creates one: a new identity needs
+ * directory enrollment and trust installation, which are outside this bot (#778). Failures name
+ * only the path, never file contents. */
+export function loadQwenCanonicalRoots(rootsJsonPath: string): MonadRootBundle {
+  const invalid = () =>
+    new Error(
+      `Qwen canonical roots at ${rootsJsonPath} are missing or not a frank-domain-roots-v1 bundle`,
+    )
+  let saved: { registry?: unknown; roots?: Record<string, unknown> }
+  let mode: number
+  try {
+    mode = statSync(rootsJsonPath).mode
+  } catch {
+    throw invalid()
+  }
+  // Secret material: readable or writable by the owner only.
+  if (process.platform !== 'win32' && (mode & 0o077) !== 0)
+    throw new QwenStartRefusal('roots-file-permissions')
+  try {
+    saved = JSON.parse(readFileSync(rootsJsonPath, 'utf8'))
+  } catch {
+    throw invalid()
+  }
+  if (
+    !saved ||
+    saved.registry !== 'frank-domain-roots-v1' ||
+    !saved.roots ||
+    typeof saved.roots !== 'object'
+  )
+    throw invalid()
+  const root = <P extends (typeof ROOT_PURPOSES)[keyof typeof ROOT_PURPOSES]>(
+    purpose: P,
+  ) => {
+    const hex = saved.roots![purpose]
+    if (typeof hex !== 'string' || !/^[0-9a-f]{64}$/.test(hex)) throw invalid()
+    return {
+      registry: 'frank-domain-roots-v1' as const,
+      purpose,
+      bytes: new Uint8Array(Buffer.from(hex, 'hex')),
+    }
+  }
+  return {
+    evm: root(ROOT_PURPOSES.evm),
+    authentication: root(ROOT_PURPOSES.authentication),
+    messaging: root(ROOT_PURPOSES.messaging),
+  }
+}
+
+/** A configuration the bot will not start with. `code` is a fixed public word list, safe to
+ * print; it never carries file contents, keys or provider text. */
+export class QwenStartRefusal extends Error {
+  constructor(readonly code: string) {
+    super(`Qwen bot refusing to start: ${code}`)
+    this.name = 'QwenStartRefusal'
+  }
+}
+/** Strict app parser: verifies the policy identity and every tuple. */
+export function readQwenBootstrapPolicy(path: string): BootstrapPolicy {
+  try {
+    return parseBootstrapPolicy(new Uint8Array(readFileSync(path)))
+  } catch {
+    throw new QwenStartRefusal('bootstrap-policy-invalid')
+  }
+}
+/** Strict app parser: verifies both signed frames, revision zero, tuples and both identities. */
+export function readQwenApprovedBundle(path: string): ApprovedPolicy {
+  try {
+    return parseApprovedPolicy(new Uint8Array(readFileSync(path)))
+  } catch {
+    throw new QwenStartRefusal('approved-bundle-invalid')
+  }
+}
+
+const nsTimestamp = (ns: bigint) => ({
+  seconds: ns / 1_000_000_000n,
+  nanoseconds: Number(ns % 1_000_000_000n),
+})
+const relayBinding = (tuple: HomeTuple): RelayBinding => ({
+  relayId: new Uint8Array(Buffer.from(tuple.id, 'hex')),
+  endpoint: tuple.endpoint,
+  identity: {
+    keyType: 1,
+    keyBytes: new Uint8Array(Buffer.from(tuple.key, 'hex')),
+  },
+  expiry: nsTimestamp(BigInt(tuple.expiryNs)),
+  unknownFields: new Map(),
+})
+const hexOf = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex')
+
+export async function openQwenCanonicalWallet(params: {
+  chain: MonadChainConfig
+  roots: MonadRootBundle
+}): Promise<QwenCanonicalWallet> {
+  if (params.chain.networkTag !== 'MONT' && params.chain.networkTag !== 'MON1')
+    throw new QwenStartRefusal('network-not-installed-monad')
+  if (params.chain.walletStorageLocation === false)
+    throw new QwenStartRefusal('wallet-storage-not-durable')
+  const handle = (await createMonadChain(params.chain).createWallet(
+    params.roots,
+  )) as unknown as MonadChainWalletHandle
+  try {
+    const subject = hexOf(handle.identity.compressedPubKey)
+    return {
+      handle,
+      accountAddress: (await handle.getReceiveAddress()).raw,
+      subject,
+      identityAddress: computeAddress('0x' + subject).toLowerCase(),
+      publicExport({ policy, home, nowNs }) {
+        if (
+          nowNs < BigInt(policy.exportValidity.issuedAtNs) ||
+          nowNs >= BigInt(policy.exportValidity.expiresAtNs)
+        )
+          throw new QwenStartRefusal('policy-export-window-not-current')
+        const process = (processId: 'relay-a' | 'relay-b') => {
+          const tuple = policy.relayTuples.find(
+            relay => relay.processId === processId,
+          )!
+          return {
+            processId,
+            origin: policy.participants.find(p => p.processId === processId)!
+              .origin,
+            tuple: relayBinding(tuple),
+          }
+        }
+        const exported = prepareMonadRevisionZeroExport(handle, {
+          networkTag: policy.networkTag,
+          network: policy.network,
+          chainId: BigInt(policy.chainId),
+          issuedAt: nsTimestamp(BigInt(policy.exportValidity.issuedAtNs)),
+          expiresAt: nsTimestamp(BigInt(policy.exportValidity.expiresAtNs)),
+          now: nsTimestamp(nowNs),
+          relayA: process('relay-a'),
+          relayB: process('relay-b'),
+          subjectBinding: home === 'relay-a' ? 'A' : 'B',
+        })
+        const base64url = (bytes: Uint8Array) =>
+          Buffer.from(bytes).toString('base64url')
+        return {
+          version: 1,
+          kind: 'public-revision-zero-export',
+          bootstrapPolicyIdentity: policy.policyIdentity,
+          networkTag: exported.networkTag,
+          network: exported.network,
+          chainId: exported.chainId.toString(),
+          subjectP: hexOf(exported.auth.compressedPoint),
+          authAddress: exported.authAddress,
+          messagePoint: hexOf(exported.message.compressedPoint),
+          stampPoint: hexOf(exported.stamp.compressedPoint),
+          revisionZeroT1: hexOf(exported.t1),
+          statement: base64url(exported.statement),
+          attestation: base64url(exported.attestation),
+          homeProcessId: home,
+        }
+      },
+      close: () => handle.close(),
+    }
+  } catch (error) {
+    await handle.close().catch(() => undefined)
+    throw error
+  }
+}
+
+function checkpointText(checkpoint: Checkpoint): string {
+  return JSON.stringify({
+    kind: checkpoint.kind,
+    identity: hexOf(checkpoint.identity),
+    anchor: hexOf(checkpoint.anchor),
+    head: checkpoint.head ? hexOf(checkpoint.head) : null,
+    accepted: checkpoint.accepted,
+    retained: checkpoint.retained,
+    evidenceDigest: hexOf(checkpoint.evidenceDigest),
+    checkedTime: {
+      seconds: checkpoint.checkedTime.seconds.toString(),
+      nanoseconds: checkpoint.checkedTime.nanoseconds,
+    },
+    forked: checkpoint.forked,
+  })
+}
+function checkpointFrom(text: string): Checkpoint {
+  const saved = JSON.parse(text)
+  const bytes = (value: string) => new Uint8Array(Buffer.from(value, 'hex'))
+  return {
+    kind: saved.kind,
+    identity: bytes(saved.identity),
+    anchor: bytes(saved.anchor),
+    head: saved.head === null ? null : bytes(saved.head),
+    accepted: saved.accepted,
+    retained: saved.retained,
+    evidenceDigest: bytes(saved.evidenceDigest),
+    checkedTime: {
+      seconds: BigInt(saved.checkedTime.seconds),
+      nanoseconds: saved.checkedTime.nanoseconds,
+    },
+    forked: saved.forked,
+  }
+}
+
+export interface QwenInstalledDirectory extends QwenCanonicalDirectory {
+  /** The exact `published-directory-installation` body for this process's installed bundle. */
+  installationSnapshot(): Promise<string>
+  readonly bundleIdentity: string
+  close(): Promise<void>
+}
+
+/**
+ * Opens the bot's installed directory through the public Node directory store and the public
+ * directory client. The bundle must carry exactly the evidence this wallet produces for the
+ * installed policy. The bot's own attestation is published to its home relay on every start;
+ * no other subject is ever enrolled from the installed file. A peer is the installed `ui`
+ * subject, admitted from its home relay on first use and re-read at most every `peerRefreshMs`.
+ * Whole checkpoints are kept in files outside the admission databases.
+ */
+export async function openQwenInstalledDirectory(params: {
+  wallet: Pick<QwenCanonicalWallet, 'subject' | 'publicExport'>
+  policy: BootstrapPolicy
+  bundle: ApprovedPolicy
+  /** Durable directory root, separate from wallet and bot state. */
+  location: string
+  fetch: DirectoryFetch
+  nowNs?: () => bigint
+  peerRefreshMs?: number
+}): Promise<QwenInstalledDirectory> {
+  const { bundle, policy } = params
+  // The same checks the app's readiness barrier applies to the same two files.
+  const participant = (p: {
+    processId: string
+    origin: string
+    trustReference: string
+  }) => `${p.processId}\n${p.origin}\n${p.trustReference}`
+  const bundleParticipants = bundle.participants.map(participant).sort(),
+    policyParticipants = policy.participants.map(participant).sort()
+  if (
+    bundle.bootstrapPolicyIdentity !== policy.policyIdentity ||
+    bundleParticipants.length !== policyParticipants.length ||
+    bundleParticipants.some((value, i) => value !== policyParticipants[i])
+  )
+    throw new QwenStartRefusal('bundle-foreign-policy')
+  const self = bundle.subjects.find(subject => subject.role === 'bot')
+  if (!self) throw new QwenStartRefusal('bundle-installs-no-bot')
+  // Every subject must be homed on a relay of this policy, with exactly its installed tuple,
+  // and on the same network and home origin as the bot: relay forwarding (#779) does not exist.
+  for (const subject of bundle.subjects) {
+    const installed = policy.relayTuples.find(
+      tuple => tuple.processId === subject.homeProcessId,
+    )
+    if (
+      !installed ||
+      installed.id !== subject.relay.id ||
+      installed.key !== subject.relay.key ||
+      installed.endpoint !== subject.relay.endpoint ||
+      installed.expiryNs !== subject.relay.expiryNs
+    )
+      throw new QwenStartRefusal('bundle-subject-outside-policy')
+    if (
+      subject.network !== self.network ||
+      subject.network !== policy.network ||
+      new URL(subject.relay.endpoint).origin !==
+        new URL(self.relay.endpoint).origin
+    )
+      throw new QwenStartRefusal('forwarding-unavailable')
+  }
+  const nowNs = params.nowNs ?? (() => BigInt(Date.now()) * 1_000_000n)
+  // The bundle must carry this bot's own exact signed bytes, not merely its key or T1.
+  const expected = params.wallet.publicExport({
+    policy,
+    home: self.homeProcessId,
+    nowNs: BigInt(policy.exportValidity.issuedAtNs),
+  })
+  if (
+    params.wallet.subject !== self.subjectP ||
+    expected.subjectP !== self.subjectP ||
+    expected.network !== self.network ||
+    expected.revisionZeroT1 !== self.revisionZeroT1 ||
+    expected.statement !== self.statement ||
+    expected.attestation !== self.attestation
+  )
+    throw new QwenStartRefusal('bundle-not-this-bot')
+  mkdirSync(params.location, { recursive: true })
+  const opened: Array<{ close(): Promise<void> }> = []
+  const stores = new Map<string, { status(): Promise<Status | null> }>()
+  const unavailable = new Set<string>()
+  const open = async (subject: Subject) => {
+    const name = `${subject.network}-${subject.subjectP}-${subject.revisionZeroT1}`
+    const checkpointPath = join(params.location, `${name}.checkpoint.json`)
+    const checkpoint = existsSync(checkpointPath)
+      ? checkpointFrom(readFileSync(checkpointPath, 'utf8'))
+      : undefined
+    const store = await openNodeDirectoryStore({
+      location: join(params.location, name),
+      anchor: {
+        network: subject.network,
+        subject: {
+          keyType: 1,
+          keyBytes: new Uint8Array(Buffer.from(subject.subjectP, 'hex')),
+        },
+        revisionZero: new Uint8Array(
+          Buffer.from(subject.revisionZeroT1, 'hex'),
+        ),
+      },
+      mode: checkpoint ? { kind: 'reopen', checkpoint } : { kind: 'new' },
+    })
+    opened.push(store)
+    stores.set(subject.subjectP, store)
+    const context = () => ({
+      now: nsTimestamp(nowNs()),
+      relay: relayBinding(subject.relay),
+    })
+    const client = createDirectoryClient({
+      network: subject.network,
+      subject: subject.subjectP,
+      endpoint: subject.relay.endpoint,
+      store,
+      context,
+      saveCheckpoint: async saved => {
+        // Whole checkpoint, replaced atomically, outside the admission database.
+        writeFileSync(checkpointPath + '.tmp', checkpointText(saved), {
+          mode: 0o600,
+        })
+        renameSync(checkpointPath + '.tmp', checkpointPath)
+      },
+      fetch: params.fetch,
+    })
+    return { store, client, context }
+  }
+  const closeAll = async () => {
+    for (const store of opened.splice(0))
+      await store.close().catch(() => undefined)
+  }
+  try {
+    const home = await open(self)
+    await home.client.put(
+      await home.client.preparePut(
+        new Uint8Array(Buffer.from(self.attestation, 'base64url')),
+      ),
+    )
+    const peers = new Map<
+      string,
+      { opened?: Awaited<ReturnType<typeof open>>; refreshed: number }
+    >()
+    const refreshMs = params.peerRefreshMs ?? 30_000
+    const runtimeEpoch = randomBytes(16).toString('hex')
+    const configuration = expectedConfiguration(bundle)
+    const publicConfigurationIdentity = configurationIdentity(configuration)
+    return {
+      network: self.network,
+      homeEndpoint: self.relay.endpoint,
+      selfSubject: self.subjectP,
+      bundleIdentity: bundle.bundleIdentity,
+      selfCurrent: () => home.store.current(home.context()),
+      async peerCurrent(subjectP, refresh = false) {
+        const subject = bundle.subjects.find(
+          candidate =>
+            candidate.role === 'ui' && candidate.subjectP === subjectP,
+        )
+        if (!subject) return undefined
+        let peer = peers.get(subjectP)
+        if (!peer) peers.set(subjectP, (peer = { refreshed: 0 }))
+        try {
+          peer.opened ??= await open(subject)
+          // A peer is only ever read; its owner publishes it.
+          if (
+            refresh ||
+            !(await peer.opened.store.status()) ||
+            Date.now() - peer.refreshed >= refreshMs
+          ) {
+            const admitted = await peer.opened.client.current()
+            peer.refreshed = Date.now()
+            unavailable.delete(subjectP)
+            return admitted.current
+          }
+          return await peer.opened.store.current(peer.opened.context())
+        } catch {
+          // Not published yet, unreachable, expired or forked: not usable now.
+          return undefined
+        }
+      },
+      /** Configuration and historical lifecycle observations only; never readiness. */
+      async installationSnapshot() {
+        const states = []
+        for (const principal of configuration.principals) {
+          let status: Status | null = null
+          let failed = false
+          try {
+            status = (await stores.get(principal.subjectP)?.status()) ?? null
+          } catch {
+            failed = true
+          }
+          const enrolled =
+            status &&
+            status.head &&
+            status.revision !== null &&
+            status.generations
+              ? status
+              : undefined
+          states.push({
+            network: principal.network,
+            subjectP: principal.subjectP,
+            enrollment: enrolled ? 'enrolled' : 'unenrolled',
+            historicalHead: enrolled ? hexOf(enrolled.head!) : null,
+            historicalRevision: enrolled ? enrolled.revision!.toString() : null,
+            messageGeneration: enrolled
+              ? enrolled.generations![0].toString()
+              : null,
+            stampGeneration: enrolled
+              ? enrolled.generations![1].toString()
+              : null,
+            forked: status?.forked ?? false,
+            unavailable: failed || unavailable.has(principal.subjectP),
+          })
+        }
+        return JSON.stringify({
+          version: 1,
+          kind: 'published-directory-installation',
+          runtimeEpoch,
+          generation: '1',
+          configuration,
+          publicConfigurationIdentity,
+          sampledAtNs: nowNs().toString(),
+          classification: 'historical-installation-snapshot',
+          states,
+        })
+      },
+      close: closeAll,
+    }
+  } catch (error) {
+    await closeAll()
+    throw error
+  }
+}
+
+/** Serves only `GET /directory-installation/<installed bundle identity>` with the exact headers
+ * the readiness check requires. Public data; any other path or manifest is 404. Plain HTTP on
+ * loopback by default: a TLS front for the operator-named bot origin belongs to the deployment. */
+export async function startQwenInstallationServer(params: {
+  directory: Pick<
+    QwenInstalledDirectory,
+    'bundleIdentity' | 'installationSnapshot'
+  >
+  port: number
+  host?: string
+}): Promise<{ port: number; address: string; close(): Promise<void> }> {
+  const server: Server = createServer((request, response) => {
+    const cors = {
+      'access-control-allow-origin': '*',
+      'access-control-allow-methods': 'GET',
+      'access-control-allow-headers': 'accept',
+      'cache-control': 'no-store',
+    }
+    const finish = (status: number, body = '', type = 'text/plain') => {
+      response.writeHead(status, {
+        ...cors,
+        'content-type': type,
+        'content-length': Buffer.byteLength(body),
+      })
+      response.end(body)
+    }
+    if (request.method === 'OPTIONS') return finish(204)
+    if (
+      request.method !== 'GET' ||
+      request.url !==
+        `/directory-installation/${params.directory.bundleIdentity}`
+    )
+      return finish(404)
+    params.directory.installationSnapshot().then(
+      body => finish(200, body, 'application/json'),
+      () => finish(503),
+    )
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    // An unset or empty host means loopback, never every interface.
+    server.listen(params.port, params.host || '127.0.0.1', resolve)
+  })
+  const bound = server.address() as { port: number; address: string }
+  return {
+    port: bound.port,
+    address: bound.address,
+    close: () => new Promise(resolve => server.close(() => resolve())),
+  }
+}
+
+/**
+ * #703/#778 canonical composition over the one live typed wallet and the installed directory.
+ * Sealing and opening use the wallet's own scoped message roles; inventory is funded by the
+ * wallet from its own account under its ordinary admission; submission and journaling are the
+ * wallet's canonical consumer. Nothing here signs, funds, replays or contacts the relay until a
+ * workflow asks, and replay waits for `QwenResponseWorkflow.recover()`.
+ *
+ * The legacy `setUpDurableFundedStampClient`/`sendDirectMessageItems` helpers above are left
+ * exactly as they were for the other bots and for Qwen's legacy mode.
+ */
+export function setUpCanonicalQwenSender(params: {
+  wallet: QwenCanonicalWallet
+  networkTag: 'MONT' | 'MON1'
+  directory: QwenCanonicalDirectory
+  overrides?: MonadTxOverrides
+  /** Deterministic no-network test seam. Production callers omit it. */
+  fetch?: CanonicalFetch
+  label: string
+}): CanonicalQwenSetup {
+  const { wallet, directory } = params
+  // Checked before any canonical consumer is taken.
+  if (wallet.subject !== directory.selfSubject)
+    throw new QwenStartRefusal('roots-not-installed-subject')
+  const network = canonicalNetworkDescriptor(params.networkTag).network
+  if (network !== directory.network)
+    throw new QwenStartRefusal('network-mismatch')
+  const client = canonicalMonadStampClient(wallet.handle)
+  console.log(
+    `[${params.label}] canonical stamp account: ${wallet.accountAddress}`,
+  )
+  const mailbox: CanonicalMailboxAuthParams = {
+    relayBaseUrl: directory.homeEndpoint,
+    recipient: wallet.identityAddress,
+    expectedNetworkTag: params.networkTag,
+    subject: wallet.subject,
+    getCurrent: () => directory.selfCurrent(),
+    signDigest: digest => wallet.handle.identity.signHash(Buffer.from(digest)),
+    fetch: params.fetch,
+  }
+  return {
+    accountAddress: wallet.accountAddress,
+    identityAddress: wallet.identityAddress,
+    inbound: {
+      network,
+      subject: wallet.subject,
+      recipient: wallet.identityAddress,
+      relayBaseUrl: directory.homeEndpoint,
+      fetchPage: page => fetchCanonicalInboxPage({ ...mailbox, ...page }),
+      selfCurrent: () => directory.selfCurrent(),
+      peerCurrent: (peer, refresh) => directory.peerCurrent(peer, refresh),
+      roles: self => createCanonicalMessageRoles(wallet.handle, self),
+    },
+    sender: {
+      wallet: client,
+      // The peer is the subject the inbound envelope was opened under, resolved again
+      // through admitted directory evidence for every preparation.
+      currents: async row => {
+        const recipientCurrent = await directory.peerCurrent(
+          row.senderPubKeyHex,
+        )
+        return recipientCurrent
+          ? { senderCurrent: await directory.selfCurrent(), recipientCurrent }
+          : undefined
+      },
+      seal: (row, currents) => {
+        const session = createCanonicalMessageRoles(
+          wallet.handle,
+          currents.senderCurrent,
+        )
+        try {
+          const sealed = prepareDirectMessage({
+            network,
+            senderCurrent: currents.senderCurrent,
+            recipientCurrent: currents.recipientCurrent,
+            messageId: new Uint8Array(randomBytes(16)),
+            items: [directMessageText(row.response)],
+            roles: session,
+          })
+          // Only opaque bytes and public identity leave this function. The authenticated
+          // plaintext fields of the producer result are never copied or stored.
+          return {
+            payload: sealed.payload,
+            context: sealed.context,
+            t3: sealed.t3,
+            messageId: sealed.messageId,
+            contentDigest: sealed.contentDigest,
+          }
+        } finally {
+          session.dispose()
+        }
+      },
+      // Funded by the wallet from its own account, under its own admission.
+      prepareInventory: async input => {
+        await prepareCanonicalStampInventory(wallet.handle, input)
+      },
+      overrides: params.overrides,
+      fetch: params.fetch,
+    },
+  }
 }

@@ -6,6 +6,7 @@ import { fr as accountRecovery } from '../account-recovery'
 export default {
   accountRecovery,
   forum: {
+    postsLabel: 'messages',
     noPosts: 'Aucun message pour le moment.',
     outageTitle: 'Forum indisponible',
     outageDescription:
@@ -26,6 +27,7 @@ export default {
       "Merci de participer à notre vision du futur des communications. Merci de considérer contribuer en envoyant une donation en BCH à l'adresse suivante : bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a",
   },
   stampPreparation: {
+    refreshStatus: 'Actualiser le statut',
     posting: 'Publication en cours…',
     postCreated: 'Message publié dans {topic} !',
     replyParentLoading: 'Chargement du message auquel vous répondez…',

@@ -32,6 +32,7 @@ import { RouteLocationNormalized, useRouter } from 'vue-router'
 import assert from 'assert'
 import { QScrollArea } from 'quasar'
 
+import { accountStatus } from 'src/accounts/session'
 import { useTopicStore } from 'src/stores/topics'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 
@@ -46,6 +47,10 @@ export default defineComponent({
   },
   setup() {
     const topicStore = useTopicStore()
+    watch(
+      () => [accountStatus.revision, accountStatus.status],
+      () => topicStore.invalidateRefresh(),
+    )
     const router = useRouter()
     const routeParams = router.currentRoute.value.params
     const topicParam = routeParams['topic']
@@ -58,7 +63,9 @@ export default defineComponent({
       topicStore.ensureTopic(topic.value)
       const topicData = topics.value[topic.value]
       const threshold = topicData.threshold
-      return topicData.messages.filter(message => message.satoshis >= threshold)
+      return topicData.messages.filter(
+        message => BigInt(message.voteWeightWei) >= BigInt(threshold),
+      )
     })
 
     const chatScroll = ref<QScrollArea | null>(null)
@@ -151,6 +158,7 @@ export default defineComponent({
     from: RouteLocationNormalized,
     next: () => void,
   ) {
+    useTopicStore().invalidateRefresh()
     this.topic = to.params.topic as string
     this.refreshContent()
     next()
@@ -164,6 +172,7 @@ export default defineComponent({
     this.scrollBottom()
   },
   unmounted() {
+    useTopicStore().invalidateRefresh()
     clearTimeout(this.timeoutId as ReturnType<typeof setTimeout>)
   },
   methods: {

@@ -23,11 +23,12 @@
           padding="0"
           :aria-label="$t('a11y.voteUp')"
           @click="addVotes(1)"
+          data-test="forum-vote-up"
         />
       </q-card-section>
-      <q-card-section class="q-pa-none q-mt-xs text-center"
-        >{{ formttedAmount }} XPI</q-card-section
-      >
+      <q-card-section class="q-pa-none q-mt-xs text-center">{{
+        formttedAmount
+      }}</q-card-section>
       <q-card-section class="q-pa-none q-mt-xs text-center">
         <q-btn
           flat
@@ -35,6 +36,7 @@
           padding="0"
           :aria-label="$t('a11y.voteDown')"
           @click="addVotes(-1)"
+          data-test="forum-vote-down"
         />
       </q-card-section>
       <span class="q-pa-none q-mt-xs text-center">
@@ -63,13 +65,16 @@
 
 <script lang="ts">
 import moment from 'moment'
+import { accountStatus } from 'src/accounts/session'
+import { activeChain } from '@frank/wallet/chain'
+import { formatRawAmount } from 'src/utils/chain-amount'
 import { computed, defineComponent } from 'vue'
 import type { PropType } from 'vue'
 
 import { renderMarkdown } from '../../utils/markdown'
 import { useContactStore } from 'src/stores/contacts'
 
-import { ForumMessage } from '@frank/cashweb/types/forum'
+import type { ForumMessage } from '@frank/wallet/forum-model'
 import { useTopicStore } from 'src/stores/topics'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { notifyBurnFailure } from 'src/utils/burn-refresh-error'
@@ -80,11 +85,15 @@ export default defineComponent({
 
     return {
       timeoutId: null as ReturnType<typeof setTimeout> | null,
-      voteAmount: 0,
+      voteAmount: 0n,
+      voteActive: true,
+      voteTarget: null as string | null,
+      voteOwnerRevision: null as number | null,
+      voteOwnerStatus: null as string | null,
       getContactProfile: contactStore.getContactProfile,
       haveContact: contactStore.haveContact,
       formttedAmount: computed(() => {
-        return (props.message.satoshis / 1_000_000).toFixed(0)
+        return formatRawAmount(activeChain, props.message.voteWeightWei)
       }),
     }
   },
@@ -92,7 +101,7 @@ export default defineComponent({
     message: {
       default: () => ({
         poster: undefined,
-        satoshis: 0,
+        voteWeightWei: '0',
         replies: [],
         entries: [],
         payloadDigest: undefined,
@@ -106,6 +115,11 @@ export default defineComponent({
       type: String,
     },
   },
+  unmounted() {
+    this.voteActive = false
+    if (this.timeoutId) clearTimeout(this.timeoutId)
+    this.voteAmount = 0n
+  },
   methods: {
     markedMessage(text?: string) {
       return renderMarkdown(text ?? '', this.$q.dark.isActive)
@@ -114,16 +128,38 @@ export default defineComponent({
       return '...' + address.substring(address.length - 10, address.length)
     },
     addVotes(votes: number) {
+      if (
+        this.voteTarget !== this.message.payloadDigest ||
+        this.voteOwnerRevision !== accountStatus.revision ||
+        this.voteOwnerStatus !== accountStatus.status
+      )
+        this.voteAmount = 0n
+      this.voteTarget = this.message.payloadDigest
+      this.voteOwnerRevision = accountStatus.revision
+      this.voteOwnerStatus = accountStatus.status
+
       const topicStore = useTopicStore()
       const topic = this.topic
-      this.voteAmount += votes
+      this.voteAmount += BigInt(votes)
       console.log('adding votes', this.voteAmount)
       if (this.timeoutId) {
         clearTimeout(this.timeoutId)
       }
+      const digest = this.message.payloadDigest
+      const revision = accountStatus.revision
+      const status = accountStatus.status
       this.timeoutId = setTimeout(() => {
+        if (
+          !this.voteActive ||
+          this.message.payloadDigest !== digest ||
+          accountStatus.revision !== revision ||
+          accountStatus.status !== status
+        ) {
+          this.voteAmount = 0n
+          return
+        }
         void (async () => {
-          if (this.voteAmount === 0) {
+          if (this.voteAmount === 0n) {
             return
           }
           console.log('Adding votes', {
@@ -133,14 +169,25 @@ export default defineComponent({
           // The votes being sent are consumed either way: a failed burn is reported, never
           // silently kept and re-sent on top of the next click (ticket #273).
           const satoshis = this.voteAmount
-          this.voteAmount = 0
+          this.voteAmount = 0n
           try {
             const wallet = await useActiveWallet()
+            if (
+              !this.voteActive ||
+              this.message.payloadDigest !== digest ||
+              accountStatus.revision !== revision ||
+              accountStatus.status !== status
+            )
+              return
             await topicStore.addOffering({
               wallet,
-              payloadDigest: this.message?.payloadDigest,
+              payloadDigest: digest,
               satoshis:
-                satoshis * (topicStore.topics[topic]?.offering ?? 1_000_000),
+                satoshis *
+                BigInt(
+                  topicStore.topics[topic]?.offering ??
+                    activeChain.defaultTopicVoteValue.toString(),
+                ),
               topic,
             })
           } catch (err) {

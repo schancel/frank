@@ -6,13 +6,18 @@ import { createPinia, setActivePinia } from 'pinia'
 import CreatePost from './CreatePost.vue'
 import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
-import type { ForumMessage } from '@frank/cashweb/types/forum'
+import type { ForumMessage } from '@frank/wallet/forum-model'
 import { TopicPostOutcomeUnknownError } from '@frank/wallet/chain/active-chain'
 import { MonadTopicPostAbandonedError } from '@frank/wallet/monad-topic-post-client'
 
 const mockTopicPost = jest.fn()
 const mockFetchOne = jest.fn()
 
+jest.mock('src/accounts/session', () => ({
+  accountStatus: jest
+    .requireActual('vue')
+    .reactive({ revision: 1, status: 'ready' }),
+}))
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
@@ -36,7 +41,7 @@ jest.mock('src/stores/wallet', () => ({
     jest.requireActual('vue').reactive({ seedPhrase: 'production-forum-test' }),
 }))
 jest.mock('src/utils/chain-amount', () => ({
-  displayToSafeRawAmount: jest.fn(() => 1_000_000),
+  displayToRawAmount: jest.fn(() => 1_000_000n),
 }))
 jest.mock('src/utils/notifications', () => ({
   errorNotify: jest.fn(),
@@ -77,7 +82,14 @@ const message = (
 ): ForumMessage => ({
   poster: '0xposter',
   topic,
-  satoshis: 1,
+  voteWeightWei: '1',
+  visibleTimestamp: { seconds: '1', nanoseconds: 0 },
+  epoch: '00'.repeat(16),
+  revision: '1',
+  transactionHash: '11'.repeat(32),
+  authorBurnTx: '0x01',
+  blockNumber: '1',
+  transactionIndex: '0',
   entries: [{ kind: 'post', message: payloadDigest }],
   payloadDigest,
   parentDigest,

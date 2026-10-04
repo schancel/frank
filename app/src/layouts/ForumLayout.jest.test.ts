@@ -13,6 +13,7 @@ const mockDiscoverTopics = jest.fn()
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
+    defaultTopicVoteValue: 100_000_000n,
     unit: 'MON',
     toDisplayAmount: (amount: bigint) => String(amount),
     fromDisplayAmount: (amount: string) => BigInt(amount),
@@ -130,7 +131,7 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
 
     // Delay the rejection on the manual click so we can assert the loading state
     const deferreds: Array<{ reject: (err: Error) => void }> = []
-    mockFetchByTopic.mockImplementation(
+    mockFetchByTopic.mockRejectedValue(create503Error()).mockImplementationOnce(
       () =>
         new Promise((_, reject) => {
           deferreds.push({ reject })

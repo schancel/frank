@@ -35,7 +35,7 @@ const BASELINE: Record<string, number> = {
   'components/SubscribeDialog.vue': 9,
   'components/topic/TopicDrawer.vue': 2,
   'components/topic/TopicList.vue': 1,
-  'components/topic/TopicMessage.vue': 1,
+  'components/topic/TopicMessage.vue': 0,
   'layouts/ForumLayout.vue': 1,
   'pages/AddContact.vue': 2,
   'pages/Chat.vue': 1,

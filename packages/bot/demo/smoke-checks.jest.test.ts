@@ -3,10 +3,13 @@ import { MessageItem } from '@frank/cashweb/types/messages'
 import { STUB_REPLY_PREFIX } from '../qwen-reply'
 import { createServer, Server } from 'http'
 
-import { buildTopicPostPayload } from '@frank/wallet/monad-topic-post-client'
+import type { ForumMessage } from '@frank/wallet/forum-model'
 
 import { BlackjackMoveItem } from '@frank/cashweb/types/messages'
-import { deriveDeck, sha256Hex } from '@frank/wallet/message-item-plugins/blackjack/deck'
+import {
+  deriveDeck,
+  sha256Hex,
+} from '@frank/wallet/message-item-plugins/blackjack/deck'
 import {
   buildBlackjackWelcomeItem,
   playOutDealer,
@@ -29,7 +32,9 @@ const text = (t: string): MessageItem[] => [{ type: 'text', text: t }]
 
 describe('classifyReply', () => {
   it('qwen must answer in labelled stub mode', () => {
-    expect(classifyReply('qwen', text(`${STUB_REPLY_PREFIX} You said: "hi"`)).ok).toBe(true)
+    expect(
+      classifyReply('qwen', text(`${STUB_REPLY_PREFIX} You said: "hi"`)).ok,
+    ).toBe(true)
     expect(classifyReply('qwen', text('Welcome to Frank!')).ok).toBe(false)
     expect(classifyReply('qwen', []).detail).toMatch(/nothing/)
   })
@@ -53,16 +58,23 @@ describe('classifyReply', () => {
 
   it('raffle must announce a round', () => {
     expect(
-      classifyReply('raffle', [{ type: 'raffle', raffleId: 'r', action: 'announce' }]).ok,
+      classifyReply('raffle', [
+        { type: 'raffle', raffleId: 'r', action: 'announce' },
+      ]).ok,
     ).toBe(true)
-    expect(classifyReply('raffle', [{ type: 'raffle', raffleId: 'r', action: 'draw' }]).ok).toBe(
-      false,
-    )
+    expect(
+      classifyReply('raffle', [
+        { type: 'raffle', raffleId: 'r', action: 'draw' },
+      ]).ok,
+    ).toBe(false)
   })
 
   it('blackjack must return the tagged dealer error', () => {
     expect(
-      classifyReply('blackjack', text('Blackjack: deal is a dealer-only action [game="g"]')).ok,
+      classifyReply(
+        'blackjack',
+        text('Blackjack: deal is a dealer-only action [game="g"]'),
+      ).ok,
     ).toBe(true)
     expect(classifyReply('blackjack', text('something else')).ok).toBe(false)
   })
@@ -100,21 +112,72 @@ describe('checkCors (#361)', () => {
     }
   })
 
+  it('sends exact CBOR Accept/Content-Type and preflights every normal Forum route', async () => {
+    const seen: Array<{
+      method?: string
+      url?: string
+      headers: Record<string, unknown>
+    }> = []
+    const server = createServer((req, res) => {
+      seen.push({ method: req.method, url: req.url, headers: req.headers })
+      res.setHeader('access-control-allow-origin', '*')
+      res.statusCode = req.method === 'OPTIONS' ? 204 : 400
+      res.end()
+    })
+    servers.push(server)
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const relay = `http://127.0.0.1:${
+      (server.address() as { port: number }).port
+    }`
+    expect(
+      (
+        await checkCors({
+          config: { fakeChain: false },
+          relayUrl: relay,
+        } as DemoHandle)
+      ).ok,
+    ).toBe(true)
+    const actual = seen.filter(row => row.method !== 'OPTIONS')
+    expect(actual.map(row => [row.method, row.url])).toEqual([
+      ['PUT', '/message/monad/topics'],
+      ['PUT', '/message/monad/topics/vote'],
+      ['POST', '/message/monad/topics/status'],
+      ['GET', '/message/monad/topics?topic=news'],
+      ['GET', '/message/monad/topics/discover'],
+      ['GET', `/message/monad/topics/${'00'.repeat(32)}`],
+    ])
+    for (const row of actual)
+      expect(row.headers.accept).toBe('application/cbor')
+    for (const row of actual.filter(row => row.method !== 'GET'))
+      expect(row.headers['content-type']).toBe('application/cbor')
+    for (const row of seen.filter(row => row.method === 'OPTIONS'))
+      expect(row.headers['access-control-request-headers']).toBe(
+        'content-type,accept',
+      )
+  })
+
   it('also fails when only the real responses lack the header (the preflight alone is not enough)', async () => {
     const fake = await startFakeRpc({ port: 0 })
     const server = createServer((req, res) => {
-      if (req.method === 'OPTIONS') res.setHeader('access-control-allow-origin', '*')
+      if (req.method === 'OPTIONS')
+        res.setHeader('access-control-allow-origin', '*')
       res.statusCode = req.method === 'OPTIONS' ? 204 : 400
       res.end()
     })
     servers.push(server)
     await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()))
-    const relay = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+    const relay = `http://127.0.0.1:${
+      (server.address() as { port: number }).port
+    }`
     try {
       const result = await checkCors(handleOf(fake.url, relay))
       expect(result.ok).toBe(false)
-      expect(result.detail).toMatch(/relay topics: PUT response has no access-control-allow-origin/)
-      expect(result.detail).toMatch(/relay topic read: GET response has no access-control/)
+      expect(result.detail).toMatch(
+        /relay topics: PUT response has no access-control-allow-origin/,
+      )
+      expect(result.detail).toMatch(
+        /relay topic read: GET response has no access-control/,
+      )
     } finally {
       await fake.close()
     }
@@ -123,12 +186,16 @@ describe('checkCors (#361)', () => {
   it('fails, naming the endpoint, when a request with an Origin gets no allow-origin', async () => {
     const fake = await startFakeRpc({ port: 0 })
     try {
-      const noRelayCors = await checkCors(handleOf(fake.url, await relayStub(false)))
+      const noRelayCors = await checkCors(
+        handleOf(fake.url, await relayStub(false)),
+      )
       expect(noRelayCors.ok).toBe(false)
       expect(noRelayCors.detail).toMatch(
         /relay topics: preflight got HTTP 204 and no access-control/,
       )
-      const noRpcCors = await checkCors(handleOf(await relayStub(false), await relayStub(true)))
+      const noRpcCors = await checkCors(
+        handleOf(await relayStub(false), await relayStub(true)),
+      )
       expect(noRpcCors.ok).toBe(false)
       expect(noRpcCors.detail).toMatch(/fake chain RPC/)
     } finally {
@@ -137,23 +204,59 @@ describe('checkCors (#361)', () => {
   })
 })
 
-describe('verifyReadBackPost (#364)', () => {
-  const payload = (title: string, message: string) =>
-    buildTopicPostPayload({ topic: 'news', entries: [{ kind: 'post', title, message }] })
-
-  it('passes only when the title and the message read back are the ones posted', () => {
-    expect(verifyReadBackPost(payload(POSTED_TITLE, POSTED_MESSAGE), 'abcdef0123456789').ok).toBe(
-      true,
+describe('verifyReadBackPost (canonical Forum)', () => {
+  const digest = 'ab'.repeat(32)
+  const payload = (
+    title = POSTED_TITLE,
+    message = POSTED_MESSAGE,
+  ): ForumMessage => ({
+    topic: 'news',
+    entries: [{ kind: 'post', title, message }],
+    payloadDigest: digest,
+    poster: '0x' + '11'.repeat(20),
+    voteWeightWei: '9223372036854775807',
+    visibleTimestamp: { seconds: '1', nanoseconds: 0 },
+    timestamp: new Date(1000),
+    epoch: '12'.repeat(16),
+    revision: '18446744073709551615',
+    transactionHash: '34'.repeat(32),
+    authorBurnTx: '0x01',
+    blockNumber: '0',
+    transactionIndex: '0',
+  })
+  it('requires exact title/body/topic/parent/T1 from the normal client model', () => {
+    expect(verifyReadBackPost(payload(), digest).ok).toBe(true)
+    expect(
+      verifyReadBackPost({ ...payload(), parentDigest: digest }, digest).ok,
+    ).toBe(false)
+    expect(
+      verifyReadBackPost({ ...payload(), parentDigest: digest }, digest, {
+        title: POSTED_TITLE,
+        message: POSTED_MESSAGE,
+        parentDigest: digest,
+      }).ok,
+    ).toBe(true)
+    for (const changed of [
+      payload('Other'),
+      payload(POSTED_TITLE, 'other'),
+      { ...payload(), payloadDigest: '00'.repeat(32) },
+      { ...payload(), topic: 'other' },
+      { ...payload(), entries: [...payload().entries, ...payload().entries] },
+    ])
+      expect(verifyReadBackPost(changed, digest).ok).toBe(false)
+    expect(
+      verifyReadBackPost({ ...payload(), entries: [] }, digest).detail,
+    ).toMatch(/no entries/)
+    expect(verifyReadBackPost(undefined, digest).detail).toMatch(
+      /does not return it/,
     )
   })
-
-  it('fails on a different title, a different message, no entries, or no post at all', () => {
-    expect(verifyReadBackPost(payload('Other', POSTED_MESSAGE), 'ab').detail).toMatch(/different/)
-    expect(verifyReadBackPost(payload(POSTED_TITLE, 'other'), 'ab').ok).toBe(false)
-    expect(
-      verifyReadBackPost(buildTopicPostPayload({ topic: 'news', entries: [] }), 'ab').detail,
-    ).toMatch(/no entries/)
-    expect(verifyReadBackPost(undefined, 'ab').detail).toMatch(/does not return it/)
+  it('accepts wide observations without Number coercion or BigInt persistence', () => {
+    const exact = { ...payload(), voteWeightWei: (-(1n << 255n)).toString() }
+    const restored = JSON.parse(JSON.stringify(exact))
+    expect(restored.voteWeightWei).toBe(exact.voteWeightWei)
+    expect(restored.revision).toBe('18446744073709551615')
+    expect(verifyReadBackPost(restored, digest).ok).toBe(true)
   })
 })
 
@@ -201,13 +304,36 @@ describe('judgeRaffleFill (#363)', () => {
     ).toBe(false)
   })
   it('fails on a wrong pot, a wrong round size, or a payment to a non-winner entrant', () => {
-    const base = { entrants: E, raffleAddress: RAFFLE, entryPriceWei: 20n, maxEntries: 3 }
-    expect(judgeRaffleFill({ ...base, draws: draws(), txs: [pay], entryPriceWei: 25n }).ok).toBe(false) // pot 60 != 75
-    expect(judgeRaffleFill({ ...base, draws: draws(), txs: [pay], maxEntries: 4 }).ok).toBe(false)
+    const base = {
+      entrants: E,
+      raffleAddress: RAFFLE,
+      entryPriceWei: 20n,
+      maxEntries: 3,
+    }
+    expect(
+      judgeRaffleFill({
+        ...base,
+        draws: draws(),
+        txs: [pay],
+        entryPriceWei: 25n,
+      }).ok,
+    ).toBe(false) // pot 60 != 75
+    expect(
+      judgeRaffleFill({ ...base, draws: draws(), txs: [pay], maxEntries: 4 })
+        .ok,
+    ).toBe(false)
     const extra = { from: RAFFLE, to: '0xcc', valueWei: '1' }
-    expect(judgeRaffleFill({ ...base, draws: draws(), txs: [pay, extra] }).ok).toBe(false)
+    expect(
+      judgeRaffleFill({ ...base, draws: draws(), txs: [pay, extra] }).ok,
+    ).toBe(false)
     // Payments to non-entrants (e.g. a top-up recipient) are not this check's business.
-    expect(judgeRaffleFill({ ...base, draws: draws(), txs: [pay, { from: RAFFLE, to: '0xdd', valueWei: '9' }] }).ok).toBe(true)
+    expect(
+      judgeRaffleFill({
+        ...base,
+        draws: draws(),
+        txs: [pay, { from: RAFFLE, to: '0xdd', valueWei: '9' }],
+      }).ok,
+    ).toBe(true)
   })
   it('fails when an entrant got no draw or the winner is not an entrant', () => {
     const partial = draws()
@@ -238,7 +364,13 @@ describe('judgeRaffleFill (#363)', () => {
 describe('judgeWelcome (#395)', () => {
   const expected = { minWei: 10n ** 16n, maxWei: 10n ** 18n }
   const welcome = (over: Partial<BlackjackMoveItem> = {}): MessageItem[] => [
-    { ...buildBlackjackWelcomeItem({ minWagerWei: 10n ** 16n, maxWagerWei: 10n ** 18n }), ...over },
+    {
+      ...buildBlackjackWelcomeItem({
+        minWagerWei: 10n ** 16n,
+        maxWagerWei: 10n ** 18n,
+      }),
+      ...over,
+    },
     { type: 'text', text: 'Welcome to the blackjack table.' },
   ]
 
@@ -251,13 +383,18 @@ describe('judgeWelcome (#395)', () => {
   })
 
   it('fails when the advertised limits differ from the dealer configuration', () => {
-    const verdict = judgeWelcome(welcome({ maxWagerWei: '20000000000000000' }), expected)
+    const verdict = judgeWelcome(
+      welcome({ maxWagerWei: '20000000000000000' }),
+      expected,
+    )
     expect(verdict.ok).toBe(false)
     expect(verdict.detail).toMatch(/configured for/)
   })
 
   it('fails a malformed welcome', () => {
-    expect(judgeWelcome(welcome({ minWagerWei: 'x' }), expected).detail).toMatch(/malformed/)
+    expect(
+      judgeWelcome(welcome({ minWagerWei: 'x' }), expected).detail,
+    ).toMatch(/malformed/)
   })
 
   it('fails when the text line is not last (an older client preview would break)', () => {
@@ -287,8 +424,14 @@ describe('judgeFirstBet (#395)', () => {
     playerCards,
     dealerUpCard: deck[1],
   }
-  const stand: BlackjackMoveItem = { type: 'blackjack-move', gameId: 'g', action: 'stand' }
-  const reveal = (over: Partial<BlackjackMoveItem> = {}): BlackjackMoveItem => ({
+  const stand: BlackjackMoveItem = {
+    type: 'blackjack-move',
+    gameId: 'g',
+    action: 'stand',
+  }
+  const reveal = (
+    over: Partial<BlackjackMoveItem> = {},
+  ): BlackjackMoveItem => ({
     type: 'blackjack-move',
     gameId: 'g',
     action: 'reveal',
@@ -298,7 +441,13 @@ describe('judgeFirstBet (#395)', () => {
     ...over,
   })
   const judge = (moves: BlackjackMoveItem[]) =>
-    judgeFirstBet({ gameId: 'g', wagerTxHash: HASH, wagerWei: 10n ** 16n, playerAddress: PLAYER, moves })
+    judgeFirstBet({
+      gameId: 'g',
+      wagerTxHash: HASH,
+      wagerWei: 10n ** 16n,
+      playerAddress: PLAYER,
+      moves,
+    })
 
   it('accepts a resolved, fair hand', () => {
     expect(judge([bet, deal, stand, reveal()])).toMatchObject({ ok: true })

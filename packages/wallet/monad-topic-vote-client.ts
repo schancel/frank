@@ -1,717 +1,105 @@
-/**
- * Client-side burn-weighted topic vote submission over Monad (ticket #32).
- *
- * Casts an up/down vote against an existing topic post — identified by that post's
- * `payload_hash` — as a Monad burn transaction whose exact value *is* the vote's weight, then
- * submits it to the relay's `PUT /message/monad/topics/vote` route. Mirrors Lotus's
- * `app/src/cashweb/registry/index.ts`'s `addOfferings` (cast additional burn-weight against
- * already-broadcast content, no new payload), and mirrors this repo's own `monad-stamp-client.ts`
- * (ticket #13) closely for everything downstream of calldata construction — read that file's
- * header first; only the differences are re-explained below.
- *
- * ## Scope
- *
- * This module only casts *additional* votes against an already-posted `payload_hash` (a
- * `MonadTopicVote`, `PUT /message/monad/topics/vote`). Posting a brand-new topic message (whose
- * `raw_burn_tx` doubles as its own initial vote, `MonadTopicPost`, `PUT /message/monad/topics`) is
- * ticket #31's scope, implemented in its own sibling file — deliberately not touched here to avoid
- * two concurrently-landing tickets editing the same file. Reading back posts/tallies
- * (`GET /message/monad/topics/:payload_hash`) is ticket #33's scope, blocked on both #31 and #32.
- *
- * ## Calldata layout (`cashweb_registry::monad_topic_verify`, ticket #30)
- *
- * ```text
- * <lokad_id: 4 bytes = "TPIC"><version: 1 byte><direction: 1 byte><commitment: 32 bytes>
- * ```
- *
- * 38 bytes total — `monad-stamp-client.ts`'s `<lokad_id><version><commitment>` (37 bytes) layout
- * with a single extra direction byte spliced in between `version` and `commitment`. Read directly
- * from `backend/cashweb/cashweb-registry/src/monad_topic_verify.rs`, not guessed:
- *
- * - `lokad_id` is `TOPIC_VOTE_LOKAD_ID` (`monad_topic_verify.rs` line 94): `*b"TPIC"` — distinct
- *   from Stamp's `"POND"` (`BROADCAST_MESSAGE_LOKAD_ID`) and plain Stamp's `"STMP"`
- *   (`ADDRESS_METADATA_LOKAD_ID`), so an indexer never confuses this calldata shape with either.
- * - `version` is `0x02`, reserved for deterministic-CBOR topic events.
- * - `direction` is `VoteDirection::UP_BYTE` (line 118, `0x01`) for an up-vote, or
- *   `VoteDirection::DOWN_BYTE` (line 120, `0x00`) for a down-vote — mirrors Lotus's `OP_1`/`OP_0`
- *   vote-opcode convention numerically.
- * - `commitment` is T7 over the network identifier and target type-9 T1 hash. The target hash
- *   itself remains field 1 of the type-11 frame.
- *
- * ## Value = weight, exactly (the load-bearing difference from Stamp)
- *
- * `monad_topic_verify.rs`'s own docs are explicit: "there is deliberately no `min_value_wei` --
- * any nonnegative value burned to `burn_address` with the right recipient/commitment is accepted,
- * and its exact value becomes the vote's weight." Stamp's burn only has to clear a minimum
- * threshold (`CASHWEB_STAMP_MIN_BURN_VALUE_WEI`) and the exact amount burned is discarded once the
- * threshold check passes. A topic vote has no such threshold at all — whatever wei value is passed
- * to `buildAndSignCall` as `value` is read back byte-for-byte server-side (`tx.value` in
- * `TopicVoteBurnVerification::Verified`) and becomes this vote's signed weight
- * (`VoteDirection::signed_weight`). This module therefore never rounds, floors, or adds any
- * "minimum clearance" margin to `voteWeightWei` — it's passed straight through as the tx's `value`.
- *
- * ## Burn address
- *
- * `http/monad_topics.rs`'s module docs confirm the topic-vote gate reuses the *same* `.env.example` var
- * the Stamp gate reads (`MONAD_STAMP_BURN_ADDRESS`) rather than a separate topic-specific one —
- * "there's no reason for a second, easy-to-typo burn-address var." This module therefore takes
- * `burnAddress` as an explicit caller-supplied param (same convention `monad-stamp-client.ts` and
- * `monad-http.ts` already use: never read `process.env` directly from inside `app/src/cashweb`),
- * with the expectation that callers pass the very same configured value they already use for
- * Stamp.
- *
- * ## Wire submission: `PUT /message/monad/topics/vote`
- *
- * The client submits legacy protobuf by default. With explicit `topicWriteFormat: 'cbor'`,
- * `handle_put_monad_topic_vote` decodes a deterministic-CBOR type-11 body and returns an empty
- * success response. The default path uses the real generated protobuf bindings from
- * `proto/topic_message.proto` (`./topic_message_pb.js`/`.d.ts`, generated and committed ahead
- * of this ticket — see `proto/topic_message.proto`'s own header), never hand-rolled
- * `jspb.BinaryWriter`/`BinaryReader` calls (see `monad-stamp-client.ts`'s header for why that
- * matters: an earlier ticket's hand-rolled encoding was rejected outright once a working `protoc`
- * toolchain was available).
- *
- * ## Lease acquisition and release policy
- *
- * Identical contract to `monad-stamp-client.ts`'s `submitStampedMessage` — see that file's header,
- * "Lease release policy", for the full reasoning; restated here for this module's own call:
- *
- *   - No sub-account currently `'available'`: `acquireLease()` throws `NoAvailableSubAccountError`
- *     immediately (abort), or — if `waitForLease` is supplied — `acquireLeaseWhenAvailable` polls
- *     for one to free up (retry) instead of ever signing without a lease.
- *   - Building/signing the burn tx throws (before any network call to the relay at all): release
- *     as `'failed'` (`'in-use' -> 'retired'`). No tx was ever broadcast, so the nonce isn't at
- *     risk, but `releaseLease` has no "never attempted" outcome to say so — same documented
- *     trade-off `monad-stamp-client.ts` accepts.
- *   - `PUT /message/monad/topics/vote` returns 2xx: the relay only reaches its success response
- *     after `TopicVoteRelayOutcome::Verified` (see `process_monad_topic_vote` in `http/monad_topics.rs` — every
- *     other outcome is a rejection *before* `add_monad_topic_vote` is ever called), i.e. the burn is
- *     already confirmed on-chain. → `'confirmed'` (`'in-use' -> 'spent'`, never `'available'`
- *     again per ticket #34's correction).
- *   - A definitive HTTP error means the vote was never recorded. → `'failed'` (retire, for the same
- *     conservative "never silently reuse" reason `monad-stamp-client.ts` documents — this module
- *     has no reliable way to distinguish "never touched the network" from "burn landed but the
- *     relay's own storage write failed after verifying it" without fragile JSON-error-body
- *     parsing). A machine-readable `topic_burn_outcome_unknown` response is instead `'stuck'`
- *     because the burn may have landed after broadcast.
- *   - No HTTP response at all (network/transport failure, relay never definitively reached): this
- *     is the case the ticket calls out as "likely different" from an HTTP error response — unlike
- *     `monad-stamp-client.ts`, there is no `GET /message/monad/topics/:payload_hash` read-back route
- *     available to this ticket's scope to disambiguate (that's #33's route, not yet built), so this
- *     module cannot poll its way to a `'confirmed'` outcome the way Stamp's client does. It
- *     therefore releases as `'stuck'` (retire, nonce not reused) and throws
- *     `MonadTopicVoteAbandonedError` so the caller knows the outcome is genuinely unresolved —
- *     never silently assumed confirmed or failed.
- */
-import {
-  Provider,
-  Transaction,
-  concat,
-  getAddress,
-  getBytes,
-  hexlify,
-} from 'ethers'
-import axios from 'axios'
-import {
-  defaultContext,
-  encodeTopicVote,
-  topicBurnCalldata,
-  topicVoteCommitment,
-  validateFrame,
-} from '@frank/codec'
-
-import __pb_topic_message_pb from './topic_message_pb'
-const { MonadTopicVote, StoredMonadTopicVoteEntry } = __pb_topic_message_pb
-import { MonadSubAccountPool } from './monad-account-pool'
-import {
-  AccountLeaseHandle,
-  AcquireLeaseWhenAvailableOptions,
-  BurnNotSentError,
-  SubAccountLeaseManager,
-  acquireLeaseWhenAvailable,
-} from './monad-account-lease'
-import {
-  MonadTxOverrides,
-  MonadTxSubmitter,
-  SignedMonadTx,
-} from './monad-account-tx'
-import { MonadWalletHandle } from './monad-wallet-handle'
+/** Canonical Forum votes; transport uncertainty preserves the exact signed journal authority. */
+import { encodeTopicVote, topicBurnCalldata } from '@frank/codec'
+import { hexlify } from 'ethers'
+import type { TopicVoteDirection } from './monad-topic-post-client'
+import type { AcquireLeaseWhenAvailableOptions } from './monad-account-lease'
+import type { MonadTxOverrides } from './monad-account-tx'
+import type { MonadWalletHandle } from './monad-wallet-handle'
 import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
-import type {
-  OutgoingTopicOperation,
-  TopicOperationJournal,
-} from './storage/topic-operation-journal'
+import {
+  assertForumAmount,
+  requireForumWallet,
+  reconcileForumOperations,
+  submitForumOperation,
+  ForumOperationPendingError,
+} from './monad-forum-operation'
+import type { MatchedForumStatus } from './monad-forum-operation'
 
-/** `cashweb_registry::monad_topic_verify::TOPIC_VOTE_LOKAD_ID` (`monad_topic_verify.rs` line 94,
- * `*b"TPIC"`) — distinct from Stamp's `"POND"`/`"STMP"` LOKAD IDs. */
-const TOPIC_VOTE_LOKAD_ID = new Uint8Array([0x54, 0x50, 0x49, 0x43]) // "TPIC"
-
-/** Version `0x02` selects the deterministic-CBOR topic commitment path. */
-const TOPIC_COMMITMENT_VERSION_TAG = new Uint8Array([0x02])
-
-/** A topic vote's direction, mirroring `cashweb_registry::monad_topic_verify::VoteDirection`'s
- * `UP_BYTE`/`DOWN_BYTE` convention (`monad_topic_verify.rs` lines 118/120) exactly: `1` = up,
- * `0` = down (Lotus's `OP_1`/`OP_0` numerically). */
-export type TopicVoteDirection = 'up' | 'down'
-
-/** `cashweb_registry::monad_topic_verify::{CALLDATA_PREFIX_LEN, CALLDATA_COMMITMENT_LEN}`
- * (`monad_topic_verify.rs` lines 102/104: `6 + 32 = 38` total):
- * `<lokad_id: 4><version: 1><direction: 1><commitment: 32>`. Exported for tests that want to
- * assert on the exact calldata length independent of this module's other constants. */
-export const MONAD_TOPIC_VOTE_CALLDATA_LENGTH =
-  TOPIC_VOTE_LOKAD_ID.length + TOPIC_COMMITMENT_VERSION_TAG.length + 1 + 32
-
-/** Build the exact `<lokad_id: TPIC><version: 0x01><direction><commitment: 32>` calldata layout
- * `monad_topic_verify::parse_topic_vote_calldata` decodes (see this file's header), as a `0x`-
- * prefixed hex string ready to pass straight into `MonadAccountTxSigner.buildAndSignCall`.
- *
- * `commitment` is the legacy target payload hash. This low-level helper never hashes it. */
-export function buildMonadTopicVoteCalldata(
+export const buildCborMonadTopicVoteCalldata = (
   direction: TopicVoteDirection,
   commitment: Uint8Array,
-): string {
-  if (commitment.length !== 32) {
-    throw new Error(
-      `Monad topic vote commitment (target payload_hash) must be exactly 32 bytes, got ${commitment.length}`,
-    )
-  }
-  return hexlify(
-    concat([
-      TOPIC_VOTE_LOKAD_ID,
-      new Uint8Array([0x01]),
-      new Uint8Array([direction === 'up' ? 0x01 : 0x00]),
-      commitment,
-    ]),
-  )
-}
-
-/** Build deterministic-CBOR/T7 topic calldata (version 0x02). */
-export function buildCborMonadTopicVoteCalldata(
-  direction: TopicVoteDirection,
-  commitment: Uint8Array,
-): string {
-  if (commitment.length !== 32) {
-    throw new Error(
-      `Monad topic vote commitment (T7) must be exactly 32 bytes, got ${commitment.length}`,
-    )
-  }
-  return hexlify(topicBurnCalldata(direction, commitment))
-}
-
-/**
- * `MonadTopicVote` from `topic_message.proto`, decoded/encoded here in plain-object form. Field
- * numbers match the `.proto` exactly: `target_payload_hash = 1`, `raw_burn_tx = 2`.
- */
-export interface MonadTopicVoteProto {
-  targetPayloadHash: Uint8Array
-  rawBurnTx: Uint8Array
-}
-
-/**
- * `StoredMonadTopicVoteEntry` from `topic_message.proto` — what `PUT /message/monad/topics/vote`
- * returns on success (`handle_put_monad_topic_vote`, `http/monad_topics.rs`). Field numbers:
- * `target_payload_hash = 1`, `sender_address = 2`, `tx_hash = 3`, `timestamp = 4`, `weight = 5`.
- */
-export interface StoredMonadTopicVoteEntryProto {
-  targetPayloadHash: Uint8Array
-  senderAddress: Uint8Array
-  txHash: Uint8Array
-  /** Milliseconds since the Unix epoch. Decoded via `jspb.BinaryReader.readInt64`, which returns a
-   * plain JS `number` (not `bigint`) — safe here for the same reason `monad-stamp-client.ts`'s
-   * `StoredMonadMessageProto.timestamp` documents. */
-  timestamp: number
-  /** Signed vote weight: `+value_wei` for an up-vote, `-value_wei` for a down-vote, exactly as
-   * burned on-chain (never thresholded). Decoded via `jspb.BinaryReader.readSint64` into a plain
-   * JS `number` — see `proto/topic_message.proto`'s own doc on `StoredMonadTopicVoteEntry.weight`
-   * for why `sint64` is a safe simplification at this repo's Stamp/vote burn magnitudes (~1e12
-   * wei), many orders of magnitude below `Number.MAX_SAFE_INTEGER`/`i64::MAX`. */
-  weight: number
-}
-
-/** Encode a {@link MonadTopicVoteProto} to protobuf wire-format bytes, via the generated
- * `MonadTopicVote` class. */
-export function encodeMonadTopicVote(vote: MonadTopicVoteProto): Uint8Array {
-  const pb = new MonadTopicVote()
-  pb.setTargetPayloadHash(vote.targetPayloadHash)
-  pb.setRawBurnTx(vote.rawBurnTx)
-  return pb.serializeBinary()
-}
-
-/** Decode protobuf wire-format bytes into a {@link MonadTopicVoteProto}. Round-trips with
- * {@link encodeMonadTopicVote}. */
-export function decodeMonadTopicVote(bytes: Uint8Array): MonadTopicVoteProto {
-  const pb = MonadTopicVote.deserializeBinary(bytes)
-  return {
-    targetPayloadHash: pb.getTargetPayloadHash_asU8(),
-    rawBurnTx: pb.getRawBurnTx_asU8(),
-  }
-}
-
-/** Decode protobuf wire-format bytes into a {@link StoredMonadTopicVoteEntryProto} — what
- * `PUT /message/monad/topics/vote` returns on success. */
-export function decodeStoredMonadTopicVoteEntry(
-  bytes: Uint8Array,
-): StoredMonadTopicVoteEntryProto {
-  const pb = StoredMonadTopicVoteEntry.deserializeBinary(bytes)
-  return {
-    targetPayloadHash: pb.getTargetPayloadHash_asU8(),
-    senderAddress: pb.getSenderAddress_asU8(),
-    txHash: pb.getTxHash_asU8(),
-    timestamp: pb.getTimestamp(),
-    weight: pb.getWeight(),
-  }
-}
-
-/** Hex-encode `bytes` with no `0x` prefix — the shape this repo's other Monad clients use for
- * display/logging (matches `monad-stamp-client.ts`'s `toBareHex`). */
-function toBareHex(bytes: Uint8Array): string {
-  return hexlify(bytes).slice(2)
-}
-
-function isRelayOutcomeUnknown(error: unknown): boolean {
-  if (!axios.isAxiosError(error) || !error.response) return false
-  let data: unknown = error.response.data
-  try {
-    if (data instanceof ArrayBuffer) data = new TextDecoder().decode(data)
-    else if (ArrayBuffer.isView(data))
-      data = new TextDecoder().decode(
-        new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
-      )
-    if (typeof data === 'string') data = JSON.parse(data)
-  } catch {
-    return false
-  }
-  return (
-    typeof data === 'object' &&
-    data !== null &&
-    (data as { error?: unknown }).error === 'topic_burn_outcome_unknown'
-  )
-}
-
-/** Base class for every error this module throws. */
+): string => hexlify(topicBurnCalldata(direction, commitment))
 export class MonadTopicVoteError extends Error {}
-
-/** Thrown when `PUT /message/monad/topics/vote` returns an HTTP-level error response (the relay was
- * reached and definitively rejected the vote — see this file's header, "Lease acquisition and
- * release policy"). */
 export class MonadTopicVoteRejectedError extends MonadTopicVoteError {
-  readonly status: number | undefined
-  readonly detail: unknown
-
-  constructor(message: string, status: number | undefined, detail: unknown) {
+  constructor(
+    message: string,
+    readonly status: number | undefined,
+    readonly detail: unknown,
+  ) {
     super(message)
-    this.status = status
-    this.detail = detail
   }
 }
-
-/** Thrown when a network/transport-level failure left the outcome genuinely unknown — the relay
- * was never definitively reached, and (unlike `monad-stamp-client.ts`) this ticket's scope has no
- * read-back route available to disambiguate (that's #33's job). The lease has already been
- * released as `'stuck'` (retired) by the time this is thrown. */
 export class MonadTopicVoteAbandonedError extends MonadTopicVoteError {
-  readonly targetPayloadHashHex: string
-
-  constructor(message: string, targetPayloadHashHex: string) {
+  constructor(message: string, readonly targetPayloadHashHex: string) {
     super(message)
-    this.targetPayloadHashHex = targetPayloadHashHex
   }
 }
-
-/** Params for `MonadTopicVoteClient.castVote`. */
 export interface CastTopicVoteParams {
-  /** The target post's `payload_hash` (32 raw bytes, not hex) — the post being voted on. This
-   * module never computes or re-derives this; it must be the exact value the target post was
-   * originally stored under. */
   targetPayloadHash: Uint8Array
-  /** Up or down — encoded as calldata's `direction` byte (see this file's header). */
   direction: TopicVoteDirection
-  /** `0x`-prefixed Monad burn address — reuses `MONAD_STAMP_BURN_ADDRESS` (see `.env.example` and
-   * this file's header, "Burn address"). Passed explicitly rather than read from `process.env`
-   * here, matching `monad-http.ts`/`monad-stamp-client.ts`'s established convention. */
   burnAddress: string
-  /** Value, in wei, to burn to `burnAddress` — this vote's exact weight (see this file's header,
-   * "Value = weight, exactly"). Passed through untouched as the signed tx's `value`; never
-   * thresholded, rounded, or padded by this module. */
   voteWeightWei: bigint
   overrides?: MonadTxOverrides
-  /** If provided, waits (`acquireLeaseWhenAvailable`) for a sub-account to free up instead of
-   * failing immediately when the pool is fully leased. Omit for the default immediate-reject
-   * behavior (`SubAccountLeaseManager.acquireLease`). */
   waitForLease?: AcquireLeaseWhenAvailableOptions
-  /** Lease exactly this (already funded, `'available'`) sub-account -- see
-   * `SubmitTopicPostParams.leaseIndex`. Takes precedence over `waitForLease`. */
   leaseIndex?: number
 }
-
-/** Outcome of a successful `castVote` call — the burn tx confirmed on-chain and the relay recorded
- * the vote (a 2xx `PUT /message/monad/topics/vote` response is the only way to reach this — see
- * this file's header: there is deliberately no network-failure fallback poll in this ticket's
- * scope). */
 export interface CastTopicVoteResult {
-  /** Present on the legacy protobuf path; CBOR vote success is HTTP 204. */
-  stored?: StoredMonadTopicVoteEntryProto
-  /** Bare (no `0x`) hex of the target post's `payload_hash`. */
-  targetPayloadHashHex: string
   txHash: string
   leaseIndex: number
+  status: MatchedForumStatus
 }
-
-/**
- * Ties together sub-account leasing (#14/#18), burn-tx construction (#11), and the live
- * `PUT /message/monad/topics/vote` HTTP surface (#30) into one call: "cast this burn-weighted vote
- * against an already-posted topic message and hand it to the relay." See this file's header for
- * the full calldata/protobuf/lease-release design.
- */
 export class MonadTopicVoteClient {
-  private readonly pool: MonadSubAccountPool
-  private readonly leaseManager: SubAccountLeaseManager
-  private readonly provider: Provider
-  private readonly httpClient: MonadTxSubmitter
-  private readonly walletState: MonadWalletHandle['walletState']
-  private readonly topicJournal: TopicOperationJournal | undefined
-  /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` — no trailing
-   * slash. `/message/monad/topics/vote` (`PUT`) is appended to it. */
-  private readonly relayBaseUrl: string
-  private readonly cborNetwork: string
-  private readonly topicWriteFormat: 'protobuf' | 'cbor'
-
-  constructor(params: MonadWalletHandle) {
-    this.pool = params.pool
-    this.leaseManager = params.leaseManager
-    this.provider = params.provider
-    this.httpClient = params.httpClient
-    this.walletState = params.walletState
-    this.topicJournal = params.topicOperationJournal
-    this.relayBaseUrl = params.relayBaseUrl.replace(/\/+$/, '')
-    this.cborNetwork = params.cborNetwork ?? 'monad-testnet'
-    this.topicWriteFormat = params.topicWriteFormat ?? 'protobuf'
-  }
-
-  private async putTopicVote(
-    body: Uint8Array,
-    writeFormat: 'protobuf' | 'cbor' = this.topicWriteFormat,
-  ): Promise<StoredMonadTopicVoteEntryProto | undefined> {
-    const cbor = writeFormat === 'cbor'
-    const response = await axios({
-      method: 'put',
-      url: `${this.relayBaseUrl}/message/monad/topics/vote`,
-      data: body,
-      headers: {
-        'Content-Type': cbor ? 'application/cbor' : 'application/x-protobuf',
-        'Accept': cbor ? 'application/cbor' : 'application/x-protobuf',
-      },
-      responseType: 'arraybuffer',
-    })
-    return cbor
-      ? undefined
-      : decodeStoredMonadTopicVoteEntry(new Uint8Array(response.data))
-  }
-
-  private assertStoredMatches(
-    stored: StoredMonadTopicVoteEntryProto,
-    operation: OutgoingTopicOperation,
-  ): void {
-    const expectedWeight =
-      operation.direction === 'up'
-        ? BigInt(operation.valueWei)
-        : -BigInt(operation.valueWei)
-    if (
-      operation.kind !== 'vote' ||
-      expectedWeight > BigInt(Number.MAX_SAFE_INTEGER) ||
-      expectedWeight < BigInt(Number.MIN_SAFE_INTEGER) ||
-      hexlify(stored.targetPayloadHash).slice(2).toLowerCase() !==
-        operation.targetPayloadHashHex.toLowerCase() ||
-      stored.senderAddress.length !== 20 ||
-      getAddress(hexlify(stored.senderAddress)) !==
-        getAddress(operation.senderAddress) ||
-      hexlify(stored.txHash).toLowerCase() !== operation.txHash.toLowerCase() ||
-      stored.weight !== Number(expectedWeight)
-    ) {
-      throw new Error('Relay returned a mismatched topic-vote result')
-    }
-  }
-
-  /**
-   * Casts `params.direction`-weighted vote of `params.voteWeightWei` against
-   * `params.targetPayloadHash`: builds the calldata, leases a sub-account, builds+signs the burn
-   * tx (value = `voteWeightWei` exactly), `PUT`s the assembled `MonadTopicVote` to the relay, and
-   * releases the lease per this file's header's documented policy. Throws
-   * {@link MonadTopicVoteRejectedError} if the relay definitively rejected the vote, or
-   * {@link MonadTopicVoteAbandonedError} if a network failure left the outcome unresolved (no
-   * read-back fallback is available in this ticket's scope — see header).
-   */
+  constructor(private readonly wallet: MonadWalletHandle) {}
   async castVote(
     params: CastTopicVoteParams,
     admission?: MonadWalletOperationAdmission,
   ): Promise<CastTopicVoteResult> {
-    if (
-      this.topicWriteFormat === 'cbor' &&
-      (this.topicJournal === undefined ||
-        this.walletState === undefined ||
-        this.walletState.topicOperationJournal !== this.topicJournal ||
-        this.walletState.pool !== this.pool ||
-        this.walletState.leaseManager !== this.leaseManager)
-    ) {
-      throw new Error(
-        'CBOR topic writes require one coherent walletState and topicOperationJournal',
-      )
-    }
-    if (this.walletState !== undefined) {
-      return this.walletState.runOperation(
-        admitted => this.castVoteAdmitted(params, admitted),
-        admission,
-      )
-    }
-    return this.castVoteAdmitted(params, admission)
-  }
-
-  private async castVoteAdmitted(
-    params: CastTopicVoteParams,
-    admission?: MonadWalletOperationAdmission,
-  ): Promise<CastTopicVoteResult> {
-    if (params.targetPayloadHash.length !== 32) {
-      throw new Error(
-        `targetPayloadHash must be exactly 32 bytes, got ${params.targetPayloadHash.length}`,
-      )
-    }
-    if (params.voteWeightWei < 0n) {
-      throw new Error(
-        `voteWeightWei must be nonnegative, got ${params.voteWeightWei}`,
-      )
-    }
-
-    const commitment =
-      this.topicWriteFormat === 'cbor'
-        ? topicVoteCommitment(this.cborNetwork, params.targetPayloadHash)
-        : params.targetPayloadHash
-    const calldata =
-      this.topicWriteFormat === 'cbor'
-        ? buildCborMonadTopicVoteCalldata(params.direction, commitment)
-        : buildMonadTopicVoteCalldata(params.direction, commitment)
-    const targetPayloadHashHex = toBareHex(params.targetPayloadHash)
-
-    const handle: AccountLeaseHandle =
-      params.leaseIndex !== undefined
-        ? this.leaseManager.acquireForIndex(params.leaseIndex)
-        : params.waitForLease
-        ? await acquireLeaseWhenAvailable(
-            this.leaseManager,
-            params.waitForLease,
-          )
-        : this.leaseManager.acquireLease()
-    await this.leaseManager.flush()
-
-    let signedTx: SignedMonadTx
-    try {
-      const signer = this.pool.getSigner(handle.index, {
-        provider: this.provider,
-        httpClient: this.httpClient,
-      })
-      // `value` is the vote's exact weight, not merely a minimum-clearing burn (see this file's
-      // header, "Value = weight, exactly") — passed through untouched.
-      signedTx = await signer.buildAndSignCall(
-        params.burnAddress,
-        params.voteWeightWei,
-        calldata,
-        params.overrides,
-      )
-    } catch (err) {
-      // Nothing was signed, broadcast or sent to the relay, so the account still holds its funds
-      // and an untouched nonce: hand it back so a retry reuses it instead of funding another.
-      this.leaseManager.releaseLease(handle, 'unused')
-      await this.leaseManager.flush()
-      throw new BurnNotSentError(
-        err instanceof Error ? err.message : String(err),
-        err,
-      )
-    }
-
-    const rawBurnTx = getBytes(signedTx.rawTx)
-    const vote =
-      this.topicWriteFormat === 'cbor'
-        ? encodeTopicVote(this.cborNetwork, params.targetPayloadHash, rawBurnTx)
-        : encodeMonadTopicVote({
-            targetPayloadHash: params.targetPayloadHash,
-            rawBurnTx,
-          })
-
-    const operation: OutgoingTopicOperation = {
-      version: 1,
-      kind: 'vote',
-      requestBytes: Array.from(vote),
-      ...(this.topicWriteFormat === 'cbor'
-        ? { writeFormat: 'cbor' as const }
-        : {}),
-      leaseIndex: handle.index,
-      senderAddress: signedTx.from,
-      rawTx: signedTx.rawTx,
-      txHash: signedTx.txHash,
-      valueWei: signedTx.value.toString(),
-      direction: params.direction,
-      targetPayloadHashHex,
-    }
-    // Journal the exact signed authority before the separate pool checkpoint. Startup can repair
-    // the latter from this validated operation without broadcasting until both are durable.
-    await this.topicJournal?.put(operation)
-    this.pool.recordSpendTransaction(handle.index, {
-      rawTx: signedTx.rawTx,
-      txHash: signedTx.txHash,
-      valueWei: signedTx.value.toString(),
-    })
-    await this.pool.flush()
-
-    try {
-      const stored = await this.putTopicVote(vote)
-      if (this.topicJournal !== undefined && stored !== undefined) {
-        try {
-          this.assertStoredMatches(stored, operation)
-        } catch {
+    requireForumWallet(this.wallet)
+    assertForumAmount(params.voteWeightWei)
+    if (params.targetPayloadHash.length !== 32)
+      throw new Error('Forum target must be exactly 32 bytes')
+    // Validate target/network/direction through the facade before any lease/sign effect.
+    topicBurnCalldata(params.direction, new Uint8Array(32))
+    const target = params.targetPayloadHash.slice()
+    const targetPayloadHashHex = hexlify(target).slice(2)
+    return this.wallet.walletState!.runOperation(async admitted => {
+      await reconcileForumOperations(this.wallet, 'post', admitted)
+      await reconcileForumOperations(this.wallet, 'vote', admitted)
+      try {
+        const { operation, status } = await submitForumOperation(
+          this.wallet,
+          {
+            kind: 'vote',
+            target,
+            direction: params.direction,
+            burnAddress: params.burnAddress,
+            value: params.voteWeightWei,
+            overrides: params.overrides,
+            leaseIndex: params.leaseIndex,
+            waitForLease: params.waitForLease,
+            encode: raw =>
+              encodeTopicVote(this.wallet.cborNetwork!, target, raw),
+          },
+          admitted,
+        )
+        return {
+          txHash: operation.txHash,
+          leaseIndex: operation.leaseIndex,
+          status,
+        }
+      } catch (error) {
+        if (error instanceof ForumOperationPendingError)
           throw new MonadTopicVoteAbandonedError(
-            'Relay returned a mismatched topic-vote result',
+            error.message,
             targetPayloadHashHex,
           )
-        }
+        throw error
       }
-      this.leaseManager.releaseLease(handle, 'confirmed')
-      await this.leaseManager.flush()
-      await this.topicJournal?.delete(operation)
-      if (admission !== undefined) {
-        await this.walletState?.compactTerminalAccounts(8, admission)
-      }
-      return {
-        stored,
-        targetPayloadHashHex,
-        txHash: signedTx.txHash,
-        leaseIndex: handle.index,
-      }
-    } catch (err) {
-      if (err instanceof MonadTopicVoteAbandonedError) throw err
-      if (isRelayOutcomeUnknown(err)) {
-        if (this.topicJournal === undefined) {
-          this.leaseManager.releaseLease(handle, 'stuck')
-          await this.leaseManager.flush()
-        }
-        throw new MonadTopicVoteAbandonedError(
-          `The relay broadcast outcome is unknown; retrying could burn twice (target ${targetPayloadHashHex})`,
-          targetPayloadHashHex,
-        )
-      }
-      if (axios.isAxiosError(err) && err.response) {
-        this.leaseManager.releaseLease(handle, 'failed')
-        await this.leaseManager.flush()
-        await this.topicJournal?.delete(operation)
-        throw new MonadTopicVoteRejectedError(
-          `Relay rejected the Monad topic vote (HTTP ${err.response.status})`,
-          err.response.status,
-          err.response.data,
-        )
-      }
-
-      // No HTTP response at all: genuinely unknown whether the relay received/broadcast/recorded
-      // the vote before the connection dropped. Unlike `monad-stamp-client.ts`, there is no
-      // `GET /message/monad/topics/:payload_hash` route in this ticket's scope to poll for
-      // disambiguation (ticket #33, not yet built) — retire and surface the ambiguity rather than
-      // guessing either way.
-      if (this.topicJournal === undefined) {
-        this.leaseManager.releaseLease(handle, 'stuck')
-        await this.leaseManager.flush()
-      }
-      throw new MonadTopicVoteAbandonedError(
-        'Monad topic vote submission abandoned: no response from the relay, and no read-back ' +
-          `route is available in this ticket's scope to confirm whether ${targetPayloadHashHex}'s ` +
-          'vote landed',
-        targetPayloadHashHex,
-      )
-    }
+    }, admission)
   }
-
   async resumePendingOperations(
     admission?: MonadWalletOperationAdmission,
   ): Promise<void> {
-    if (this.walletState === undefined || this.topicJournal === undefined)
-      return
-    return this.walletState.runOperation(async admitted => {
-      for (const operation of this.topicJournal!.getAll()) {
-        if (operation.kind !== 'vote') continue
-        const transaction = Transaction.from(operation.rawTx)
-        const request = Uint8Array.from(operation.requestBytes)
-        const writeFormat = operation.writeFormat ?? 'protobuf'
-        let requestBurnTx: Uint8Array
-        let requestTargetHash: Uint8Array
-        if (writeFormat === 'cbor') {
-          const decoded = validateFrame(
-            request,
-            defaultContext({ operation: 'typed' }),
-          )
-          if (decoded.kind !== 'parsed' || decoded.typed?.type !== 11) {
-            throw new Error('Invalid durable topic-vote operation authority')
-          }
-          requestBurnTx = decoded.typed.burnTx
-          requestTargetHash = decoded.typed.targetHash
-        } else {
-          const vote = decodeMonadTopicVote(request)
-          requestBurnTx = vote.rawBurnTx
-          requestTargetHash = vote.targetPayloadHash
-        }
-        let authorityRecord = this.pool.getRecord(operation.leaseIndex)
-        if (
-          transaction.hash?.toLowerCase() !== operation.txHash.toLowerCase() ||
-          transaction.from === null ||
-          getAddress(transaction.from) !==
-            getAddress(operation.senderAddress) ||
-          transaction.value.toString() !== operation.valueWei ||
-          hexlify(requestBurnTx).toLowerCase() !==
-            transaction.serialized.toLowerCase() ||
-          toBareHex(requestTargetHash) !==
-            operation.targetPayloadHashHex ||
-          authorityRecord === undefined ||
-          getAddress(authorityRecord.address) !==
-            getAddress(operation.senderAddress)
-        ) {
-          throw new Error('Invalid durable topic-vote operation authority')
-        }
-        if (authorityRecord.lifecycle?.spend === undefined) {
-          if (authorityRecord.status !== 'in-use') {
-            throw new Error('Invalid durable topic-vote operation authority')
-          }
-          this.pool.recordSpendTransaction(operation.leaseIndex, {
-            rawTx: operation.rawTx,
-            txHash: operation.txHash,
-            valueWei: operation.valueWei,
-          })
-          await this.pool.flush()
-          authorityRecord = this.pool.getRecord(operation.leaseIndex)
-        }
-        if (
-          authorityRecord?.lifecycle?.spend?.rawTx.toLowerCase() !==
-          operation.rawTx.toLowerCase()
-        ) {
-          throw new Error('Invalid durable topic-vote operation authority')
-        }
-        if (
-          authorityRecord.status === 'spent' ||
-          authorityRecord.status === 'retired'
-        ) {
-          await this.topicJournal!.delete(operation)
-          await this.walletState!.compactTerminalAccounts(8, admitted)
-          continue
-        }
-        if (authorityRecord.status !== 'in-use') {
-          throw new Error('Invalid durable topic-vote operation authority')
-        }
-        const stored = await this.putTopicVote(request, writeFormat)
-        if (writeFormat === 'protobuf') {
-          if (stored === undefined) {
-            throw new Error('Invalid durable topic-vote replay response')
-          }
-          this.assertStoredMatches(stored, operation)
-        }
-        this.pool.setStatus(operation.leaseIndex, 'spent')
-        await this.pool.flush()
-        await this.topicJournal!.delete(operation)
-        await this.walletState!.compactTerminalAccounts(8, admitted)
-      }
-    }, admission)
+    return reconcileForumOperations(this.wallet, 'vote', admission)
   }
 }

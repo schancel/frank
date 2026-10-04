@@ -1,11 +1,18 @@
+import { toRaw } from 'vue'
 import assert from 'assert'
+import { forumSnapshot, stageForumQuery } from './forum'
+import { accountStatus } from 'src/accounts/session'
 import { refreshAfterBurn } from 'src/utils/burn-refresh-error'
 import { defineStore } from 'pinia'
 import { DEFAULT_TOPIC_NAMES } from 'src/stores/default-topics'
 
 import { activeChain, WalletHandle } from '@frank/wallet/chain'
 
-import { ForumMessage, ForumMessageEntry } from '@frank/cashweb/types/forum'
+import type {
+  DiscoveredTopic,
+  ForumMessage,
+  ForumMessageEntry,
+} from '@frank/wallet/forum-model'
 
 export type MessageWithReplies = ForumMessage & {
   replies: MessageWithReplies[]
@@ -13,19 +20,19 @@ export type MessageWithReplies = ForumMessage & {
 
 type Topic = string
 
-const defaultOffering = 100_000_000
+const defaultOffering = activeChain.defaultTopicVoteValue.toString()
 // How far back should we fetch messages if we have never fetched?
 const defaultFetchDuration = Date.now() - 1000 * 60 * 60 * 24 * 7
 const defaultTopics = DEFAULT_TOPIC_NAMES.map(topic => ({
   topic,
-  threshold: 0,
+  threshold: '0',
   offering: defaultOffering,
   messages: [],
 }))
 
 export type TopicData = {
-  threshold: number
-  offering: number
+  threshold: string
+  offering: string
   messages: MessageWithReplies[]
   topic: string
   // Last update from Epoch in seconds
@@ -33,13 +40,16 @@ export type TopicData = {
 }
 
 export interface State {
+  discoveredTopics: Record<string, DiscoveredTopic>
+  discoveryStatus: 'unverified' | 'verified' | 'error'
+  discoveryError: string | null
   topics: Record<Topic, TopicData>
   messageIndex: Record<string, MessageWithReplies | undefined>
 }
 
 export type ReducedTopicData = {
-  threshold: number
-  offering: number
+  threshold: string
+  offering: string
   // These will be reborn from the messageIndex
   messages: string[]
   topic: string
@@ -49,11 +59,19 @@ export type ReducedTopicData = {
 
 interface ReducedState {
   topics: ReducedTopicData[]
-  messageIndex: Record<string, MessageWithReplies | undefined>
+  messageIndex: Record<string, ForumMessage | undefined>
 }
+
+const topicRequests = new WeakMap<object, Map<string, object>>()
+const topicViews = new WeakMap<object, Map<string, object>>()
+const topicWallets = new WeakMap<object, string>()
+const discoveryRequests = new WeakMap<object, object>()
 
 export const useTopicStore = defineStore('topics', {
   state: (): State => ({
+    discoveredTopics: {},
+    discoveryStatus: 'unverified',
+    discoveryError: null,
     topics: {},
     messageIndex: {},
   }),
@@ -72,6 +90,7 @@ export const useTopicStore = defineStore('topics', {
   },
   actions: {
     deleteTopic(topic: string) {
+      this.invalidateRefresh()
       delete this.topics[topic]
     },
     ensureTopic(topic: string): TopicData {
@@ -81,7 +100,7 @@ export const useTopicStore = defineStore('topics', {
 
       if (!(topic in this.topics)) {
         this.topics[topic] = {
-          threshold: 0,
+          threshold: '0',
           messages: [],
           topic,
           offering: defaultOffering,
@@ -90,113 +109,46 @@ export const useTopicStore = defineStore('topics', {
       }
       return this.topics[topic]
     },
-    setVoteThreshold(topic: string, voteThreshold: number) {
+    setVoteThreshold(topic: string, voteThreshold: string) {
       const topicState = this.ensureTopic(topic)
       topicState.threshold = voteThreshold
     },
     setEntries(topic: string, messages: ForumMessage[], until: number) {
       const topicState = this.ensureTopic(topic)
-      topicState.lastUpdate = until
-      console.log('settings entries', messages)
-
-      const transformedMessages = messages.map(m => ({ ...m, replies: [] }))
-
-      const newMessages = transformedMessages.filter(
-        m => !(m.payloadDigest in this.messageIndex),
+      const snapshot = forumSnapshot(messages)
+      const other = Object.fromEntries(
+        Object.entries(this.messageIndex).filter(
+          ([, row]) => row?.topic !== topic,
+        ),
       )
-
-      // Update votes for any messages we already had.
-      const oldMessages = transformedMessages.filter(
-        m => m.payloadDigest in this.messageIndex,
-      )
-      for (const newOldMessage of oldMessages) {
-        const oldMessage = this.messageIndex[newOldMessage.payloadDigest]
-        assert(oldMessage, 'Not possible, typescript hole')
-        oldMessage.satoshis = newOldMessage.satoshis
-      }
-
-      for (const message of newMessages) {
-        this.messageIndex[message.payloadDigest] = message
-      }
-
-      // Setup all the reply data
-      for (const message of newMessages) {
-        if (!message.parentDigest) {
-          continue
+      this.$patch(state => {
+        state.topics = {
+          ...state.topics,
+          [topic]: {
+            ...topicState,
+            messages: snapshot.messages,
+            lastUpdate: until,
+          },
         }
-        if (!(message.parentDigest in this.messageIndex)) {
-          continue
-        }
-        const replies = this.messageIndex[message.parentDigest]?.replies
-        const found = replies?.some(
-          reply => reply.payloadDigest === message.payloadDigest,
-        )
-        if (found) {
-          continue
-        }
-        this.messageIndex[message.parentDigest]?.replies.push(message)
-      }
-      // FIXME: Linear search not ideal
-
-      const messagesNewToTopic = transformedMessages
-        .map(message => {
-          const existingMessageObject = this.messageIndex[message.payloadDigest]
-          // We know this is not undefined here, but check
-          assert(existingMessageObject)
-          return existingMessageObject
-        })
-        .filter(
-          message =>
-            !topicState.messages.some(
-              oldMessage => message.payloadDigest === oldMessage.payloadDigest,
-            ),
-        )
-      topicState.messages.push(...messagesNewToTopic)
+        state.messageIndex = { ...other, ...snapshot.index }
+      })
     },
-    setMessage(topic: string, newMessage: ForumMessage) {
-      console.log('Updating topic message', newMessage.payloadDigest)
-
-      if (newMessage.payloadDigest in this.messageIndex) {
-        const oldMessage = this.messageIndex[newMessage.payloadDigest]
-        assert(oldMessage, 'Not possible, typescript hole')
-        console.log(
-          'Updating votes for message',
-          newMessage.payloadDigest,
-          newMessage.satoshis / 1_000_000,
-        )
-        oldMessage.satoshis = newMessage.satoshis
-      } else {
-        const mesageWithReplies = { ...newMessage, replies: [] }
-        this.messageIndex[newMessage.payloadDigest] = mesageWithReplies
-      }
-
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      const message = this.messageIndex[newMessage.payloadDigest]!
-      const topicData = this.ensureTopic(topic)
-      if (
-        !topicData.messages.some(
-          oldMessage => message.payloadDigest === oldMessage.payloadDigest,
-        )
-      ) {
-        topicData.messages.push(message)
-      }
-
-      console.log('Updated a specific message', newMessage.payloadDigest)
-
-      if (!message.parentDigest) {
-        return
-      }
-      if (!(message.parentDigest in this.messageIndex)) {
-        return
-      }
-      const replies = this.messageIndex[message.parentDigest]?.replies
-      const found = replies?.some(
-        reply => reply.payloadDigest === message.payloadDigest,
+    setMessage(topic: string, message: ForumMessage) {
+      this.setEntries(
+        topic,
+        [
+          ...this.ensureTopic(topic).messages.filter(
+            row => row.payloadDigest !== message.payloadDigest,
+          ),
+          message,
+        ],
+        Date.now(),
       )
-      if (found) {
-        return
-      }
-      this.messageIndex[message.parentDigest]?.replies.push(message)
+    },
+    invalidateRefresh() {
+      topicRequests.delete(toRaw(this.$state))
+      topicViews.delete(toRaw(this.$state))
+      discoveryRequests.delete(toRaw(this.$state))
     },
     async refreshMessages({
       topic,
@@ -205,21 +157,43 @@ export const useTopicStore = defineStore('topics', {
       topic: string
       wallet: WalletHandle
     }) {
-      const topicData = this.ensureTopic(topic)
-      // FIXME: We will not be aware of new votes. This will need to be handled
-      // through websocket subscriptions on the backend in the future.
-      const from = topicData.lastUpdate ?? defaultFetchDuration
+      const owner = wallet.identity.address.raw.toLowerCase()
+      if (topicWallets.get(toRaw(this.$state)) !== owner)
+        this.invalidateRefresh()
+      topicWallets.set(toRaw(this.$state), owner)
+      const requests =
+        topicRequests.get(toRaw(this.$state)) ?? new Map<string, object>()
+      topicRequests.set(toRaw(this.$state), requests)
+      const token = {}
+      requests.set(topic, token)
+      const revision = accountStatus.revision
+      const status = accountStatus.status
+      const chain = activeChain
       const to = Date.now()
-      console.log('fetching messages', topic, from, to)
-      const entries = await activeChain.topics.fetchByTopic({
-        wallet,
-        topic,
-        sinceMs: from,
-      })
-      if (!entries) {
+      const current = () =>
+        topicRequests.get(toRaw(this.$state)) === requests &&
+        requests.get(topic) === token &&
+        accountStatus.revision === revision &&
+        accountStatus.status === status &&
+        activeChain === chain
+      const entries = await stageForumQuery(
+        () =>
+          activeChain.topics.fetchByTopic({
+            wallet,
+            topic,
+            sinceMs: to - 1000 * 60 * 60 * 24 * 7,
+          }),
+        current,
+      )
+      if (
+        topicRequests.get(toRaw(this.$state)) !== requests ||
+        requests.get(topic) !== token ||
+        accountStatus.revision !== revision ||
+        accountStatus.status !== status ||
+        activeChain !== chain
+      )
         return
-      }
-      console.log('found entries', topic, entries.length)
+      if (!entries) throw new Error('Incomplete topic query')
       this.setEntries(topic, entries, to)
     },
     async putMessage({
@@ -234,18 +208,15 @@ export const useTopicStore = defineStore('topics', {
       parentDigest?: string
     }) {
       const topicData = this.ensureTopic(topic)
-      // Lotus's `RegistryHandler.addOfferings`/`createBroadcast` fold up/down direction into the
-      // sign of a single `vote: number` (positive => up, negative => down; see that module's
-      // `constructBurnTransaction`). `ActiveChain.topics.post` keeps `direction` and
-      // `voteWeightWei` (always-positive magnitude) separate to match Monad's real wire format --
-      // convert here, at the boundary, rather than folding a sign back in below it.
-      const satoshis = topicData.offering
+      const satoshis = BigInt(topicData.offering)
+      if (satoshis <= 0n || satoshis > 9223372036854775807n)
+        throw new Error('Invalid Forum post amount')
       const { payloadDigest } = await activeChain.topics.post({
         wallet,
         topic,
         entries: [entry],
-        direction: satoshis >= 0 ? 'up' : 'down',
-        voteWeightWei: BigInt(Math.abs(satoshis)),
+        direction: satoshis >= 0n ? 'up' : 'down',
+        voteWeightWei: satoshis < 0n ? -satoshis : satoshis,
         parentDigest,
       })
       await refreshAfterBurn('post', () =>
@@ -261,35 +232,112 @@ export const useTopicStore = defineStore('topics', {
     }) {
       // Note: `ActiveChain.topics.fetchOne` takes no `wallet` -- reading a public topic post
       // never needed a sender identity to begin with.
-      console.log('fetching message', payloadDigest)
-      const message = await activeChain.topics.fetchOne(payloadDigest)
+      const revision = accountStatus.revision
+      const status = accountStatus.status
+      const chain = activeChain
+      const requests =
+        topicViews.get(toRaw(this.$state)) ?? new Map<string, object>()
+      topicViews.set(toRaw(this.$state), requests)
+      const key = `${topic}\u0000${payloadDigest}`
+      const token = {}
+      requests.set(key, token)
+      const current = () =>
+        topicViews.get(toRaw(this.$state)) === requests &&
+        requests.get(key) === token &&
+        accountStatus.revision === revision &&
+        accountStatus.status === status &&
+        activeChain === chain
+      const message = await stageForumQuery(
+        () => activeChain.topics.fetchOne(payloadDigest),
+        current,
+      )
       if (!message) {
         console.log('could not fetch message', payloadDigest)
         return
       }
+      if (
+        topicViews.get(toRaw(this.$state)) !== requests ||
+        requests.get(key) !== token ||
+        accountStatus.revision !== revision ||
+        accountStatus.status !== status ||
+        activeChain !== chain ||
+        message.topic !== topic
+      )
+        return
       this.setMessage(topic, message)
       // Need to refetch so we get the right proxy object
       return this.getMessage(payloadDigest)
     },
     async refreshDiscoveredTopics() {
-      // Ticket #72: augment `defaultTopics` (the hardcoded seed list, still restored as a
-      // fail-soft fallback below) with real topics discovered from the relay's own
-      // `CF_MONAD_TOPIC_DISCOVERY` index -- see the design-decision comment on GitHub issue #72:
-      // topics stay emergent/tag-based, so this is simply "every topic name the relay has seen a
-      // real (burn-gated) post for," not a curated/moderated list.
-      //
-      // `activeChain.topics.discoverTopics()` already fails soft (`[]`) on any network/decode
-      // error (`../../packages/wallet/monad-topic-tally-client.ts`'s `fetchDiscoveredTopics`), so
-      // an unreachable relay just leaves `this.topics` as whatever it already was (the hardcoded
-      // defaults, plus anything discovered on a previous successful call) -- never throws, never
-      // clears existing topics.
-      const discovered = await activeChain.topics.discoverTopics()
-      for (const { topic } of discovered) {
-        // `ensureTopic` is idempotent and never overwrites an already-known topic's state (e.g.
-        // its accumulated `messages`/`lastUpdate`), so calling it for a topic the user is already
-        // subscribed to (or that was already discovered on a previous call) is a harmless no-op.
-        this.ensureTopic(topic)
+      const revision = accountStatus.revision
+      const status = accountStatus.status
+      const chain = activeChain
+      const token = {}
+      discoveryRequests.set(toRaw(this.$state), token)
+      let discovered
+      try {
+        discovered = await stageForumQuery(
+          () => activeChain.topics.discoverTopics(),
+          () =>
+            discoveryRequests.get(toRaw(this.$state)) === token &&
+            revision === accountStatus.revision &&
+            status === accountStatus.status &&
+            activeChain === chain,
+        )
+        for (const row of discovered ?? []) {
+          if (
+            typeof row.postCount !== 'string' ||
+            !/^(0|[1-9][0-9]*)$/.test(row.postCount) ||
+            row.postCount.length > 20 ||
+            BigInt(row.postCount) > 18446744073709551615n
+          ) {
+            throw new Error('Invalid canonical topic post count')
+          }
+        }
+      } catch (error) {
+        if (
+          discoveryRequests.get(toRaw(this.$state)) !== token ||
+          revision !== accountStatus.revision ||
+          status !== accountStatus.status ||
+          activeChain !== chain
+        )
+          return false
+        this.$patch({
+          discoveryStatus: 'error',
+          discoveryError:
+            error instanceof Error ? error.message : String(error),
+        })
+        return false
       }
+      if (
+        discoveryRequests.get(toRaw(this.$state)) !== token ||
+        revision !== accountStatus.revision ||
+        status !== accountStatus.status ||
+        activeChain !== chain
+      )
+        return
+      if (!discovered) return false
+      const topics = { ...this.topics }
+      for (const { topic } of discovered) {
+        if (!Object.prototype.hasOwnProperty.call(topics, topic)) {
+          topics[topic] = {
+            topic,
+            threshold: '0',
+            offering: defaultOffering,
+            messages: [],
+          }
+        }
+      }
+      const discoveredTopics = Object.fromEntries(
+        discovered.map(row => [row.topic, { ...row }]),
+      )
+      this.$patch(state => {
+        state.topics = topics
+        state.discoveredTopics = discoveredTopics
+        state.discoveryStatus = 'verified'
+        state.discoveryError = null
+      })
+      return true
     },
     async addOffering({
       wallet,
@@ -299,17 +347,15 @@ export const useTopicStore = defineStore('topics', {
     }: {
       wallet: WalletHandle
       payloadDigest: string
-      satoshis: number
+      satoshis: bigint
       topic: string
     }) {
-      // Same signed-number -> direction/magnitude mapping as `putMessage` above -- callers here
-      // (e.g. `TopicMessage.vue`'s up/down vote buttons) already produce a signed `satoshis`.
       console.log('voting towards message', payloadDigest, satoshis)
       await activeChain.topics.vote({
         wallet,
         payloadDigest,
-        direction: satoshis >= 0 ? 'up' : 'down',
-        voteWeightWei: BigInt(Math.abs(satoshis)),
+        direction: satoshis >= 0n ? 'up' : 'down',
+        voteWeightWei: satoshis < 0n ? -satoshis : satoshis,
       })
       await refreshAfterBurn('vote', () =>
         this.fetchMessage({ topic, payloadDigest }),
@@ -326,8 +372,15 @@ export const useTopicStore = defineStore('topics', {
           }),
         )
         return {
-          ...state,
           topics,
+          messageIndex: Object.fromEntries(
+            Object.entries(state.messageIndex)
+              .filter(([, row]) => row)
+              .map(([digest, row]) => {
+                const { replies: _replies, ...observation } = row!
+                return [digest, observation]
+              }),
+          ),
         }
       }
       const reducedState = reduceState()
@@ -339,7 +392,10 @@ export const useTopicStore = defineStore('topics', {
         deserializedState: Partial<ReducedState>,
       ): State => {
         const hydratedState: State = {
-          messageIndex: deserializedState.messageIndex ?? {},
+          discoveredTopics: {},
+          discoveryStatus: 'unverified',
+          discoveryError: null,
+          messageIndex: {},
           // Add default topics
           topics: Object.fromEntries(
             defaultTopics.map(topic => {
@@ -363,7 +419,14 @@ export const useTopicStore = defineStore('topics', {
           )
           hydratedState.topics[topic.topic] = {
             ...topic,
-            // We know these messages will be defined as they existed in the index
+            threshold:
+              typeof topic.threshold === 'string' ? topic.threshold : '0',
+            offering:
+              typeof topic.offering === 'string'
+                ? topic.offering
+                : defaultOffering,
+            lastUpdate: undefined,
+            // Persisted observations are unverified after restart.
             messages: validMessages.map(
               payloadDigest => messageIndex[payloadDigest],
             ) as MessageWithReplies[],

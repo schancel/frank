@@ -9,6 +9,11 @@ import { BurnRefreshError } from 'src/utils/burn-refresh-error'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
 
 const mockAddOffering = jest.fn()
+jest.mock('src/accounts/session', () => ({
+  accountStatus: jest
+    .requireActual('vue')
+    .reactive({ revision: 1, status: 'ready' }),
+}))
 jest.mock('pinia', () => ({
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
 }))
@@ -43,8 +48,7 @@ jest.mock('@frank/wallet/chain', () => ({
   },
 }))
 jest.mock('src/utils/chain-amount', () => ({
-  formatSafeRawAmount: () => '0',
-  rawToSafeNumber: () => 1_000_000,
+  formatRawAmount: () => '0',
 }))
 jest.mock('./ForumMessageReplies.vue', () => ({ template: '<div />' }))
 jest.mock('../../utils/markdown', () => ({ renderMarkdown: () => '' }))
@@ -58,7 +62,14 @@ function mountCard() {
     props: {
       message: {
         poster: '0x1',
-        satoshis: 0,
+        voteWeightWei: '0',
+        visibleTimestamp: { seconds: '1', nanoseconds: 0 },
+        epoch: '00'.repeat(16),
+        revision: '1',
+        transactionHash: '11'.repeat(32),
+        authorBurnTx: '0x01',
+        blockNumber: '1',
+        transactionIndex: '0',
         replies: [],
         entries: [{ kind: 'post', title: 't', message: 'm' }],
         payloadDigest: 'ab'.repeat(32),
@@ -112,7 +123,9 @@ describe('ForumMessage vote handler', () => {
 
     await vote(wrapper)
 
-    expect((wrapper.vm as unknown as { voteAmount: number }).voteAmount).toBe(0)
+    expect((wrapper.vm as unknown as { voteAmount: bigint }).voteAmount).toBe(
+      0n,
+    )
   })
 
   it('sends the vote once on success and shows nothing', async () => {
@@ -124,4 +137,28 @@ describe('ForumMessage vote handler', () => {
     expect(errorNotify).not.toHaveBeenCalled()
     expect(infoNotify).not.toHaveBeenCalled()
   })
+})
+
+it('preserves a wide default vote exactly in the transient queue', async () => {
+  const chain = jest.requireMock('@frank/wallet/chain').activeChain
+  const previous = chain.defaultTopicVoteValue
+  chain.defaultTopicVoteValue = 9007199254740993n
+  try {
+    mockAddOffering.mockResolvedValueOnce(undefined)
+    const wrapper = mountCard()
+    await vote(wrapper)
+    expect(mockAddOffering).toHaveBeenCalledWith(
+      expect.objectContaining({ satoshis: 9007199254740993n }),
+    )
+    wrapper.unmount()
+  } finally {
+    chain.defaultTopicVoteValue = previous
+  }
+})
+it('does not burn queued intent after the card unmounts', async () => {
+  const wrapper = mountCard()
+  ;(wrapper.vm as unknown as { addVotes(n: number): void }).addVotes(1)
+  wrapper.unmount()
+  await new Promise(resolve => setTimeout(resolve, 1150))
+  expect(mockAddOffering).not.toHaveBeenCalled()
 })

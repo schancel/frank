@@ -42,16 +42,14 @@
  *    Monad-shaped type instead and leaves folding it into (or replacing) `ReceivedMessageWrapper`
  *    to #42, which owns `stores/chats.ts` and can make that call with the UI's actual needs in
  *    view.
- * 3. **`TopicBroadcastClient.post` gained a required `direction` field**, absent from the issue's
- *    sketch. `MonadTopicPostClient.submitTopicPost` (`../wallet/monad-topic-post-client.ts`)
- *    requires a vote direction for a post's own initial vote -- "even a post's own first vote can
- *    be up or down" (that file's own doc comment) -- with no default, mirroring `PLAN.md`'s M8
- *    "Correction" note that Lotus's own `createBroadcast` has no code path for posting without a
- *    vote either. Omitting it here would force a silently-guessed default direction into every
- *    post, which is exactly the kind of unstated encoding choice issue #41 itself warns against
- *    (see the note on `direction` vs. signed `voteWeightWei` below).
+ * 3. Topic observations use the wallet-specific canonical Forum model. A post's initial
+ *    burn is positive; later votes may be positive or negative.
  */
-import { ForumMessage, ForumMessageEntry } from "@frank/cashweb/types/forum";
+import {
+  ForumMessage,
+  ForumMessageEntry,
+  DiscoveredTopic,
+} from "../forum-model";
 import { MessageItem } from "@frank/cashweb/types/messages";
 import type { MonadRootBundle } from "../monad-wallet-material";
 export type { MonadRootBundle } from "../monad-wallet-material";
@@ -296,12 +294,12 @@ export class TopicPostOutcomeUnknownError extends Error {
 }
 
 export interface TopicBroadcastClient {
+  reconcileOperations(params: { wallet: WalletHandle }): Promise<void>;
   post(params: {
     wallet: WalletHandle;
     topic: string;
     entries: ForumMessageEntry[];
-    /** This post's own initial vote direction -- see this file's header, deviation 3, for why this
-     * is required (no default), unlike the issue's own sketch. */
+    /** Canonical posts require an up vote; negative votes are separate operations. */
     direction: "up" | "down";
     voteWeightWei: bigint;
     parentDigest?: string;
@@ -326,15 +324,7 @@ export interface TopicBroadcastClient {
     sinceMs?: number;
   }): Promise<ForumMessage[]>;
   fetchOne(payloadDigest: string): Promise<ForumMessage | undefined>;
-  /** Discover distinct topic names the relay has seen at least one (burn-gated) post for, each
-   * with its post count and last-activity timestamp, ordered by last-activity descending (ticket
-   * #72). No `wallet` needed -- like `fetchOne`, this is a plain read against the chain's own
-   * configured relay. Fails soft (`[]`) on any error -- see `../monad-topic-tally-client.ts`'s
-   * `fetchDiscoveredTopics` for why: this is purely additive discovery on top of
-   * `app/src/stores/topics.ts`'s hardcoded default topic list. */
-  discoverTopics(): Promise<
-    { topic: string; postCount: number; lastActivityMs: number }[]
-  >;
+  discoverTopics(): Promise<DiscoveredTopic[]>;
 }
 
 export interface ChainCapabilities {

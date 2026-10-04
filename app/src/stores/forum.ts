@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
-import { reactive } from 'vue'
-import { indexBy, uniq } from 'ramda'
+import { reactive, toRaw } from 'vue'
+import { uniq } from 'ramda'
 
 import {
   activeChain,
@@ -8,9 +8,10 @@ import {
   WalletHandle,
 } from '@frank/wallet/chain'
 
-import { ForumMessage, ForumMessageEntry } from '@frank/cashweb/types/forum'
+import type { ForumMessage, ForumMessageEntry } from '@frank/wallet/forum-model'
 import { refreshAfterBurn } from 'src/utils/burn-refresh-error'
 import { DEFAULT_TOPIC_NAMES } from 'src/stores/default-topics'
+import { accountStatus } from 'src/accounts/session'
 import { SortMode } from 'src/utils/sorting'
 
 export type MessageWithReplies = ForumMessage & {
@@ -27,7 +28,7 @@ export interface State {
   selectedTopic: string
   sortMode: SortMode
   duration: number
-  voteThreshold: number
+  voteThreshold: string
   /** Ticket #61: distinguishes "still fetching" from "fetched, genuinely no posts" -- Forum.vue's
    * own perpetual loading spinner (found live) couldn't tell the two apart before this existed. */
   hasFetchedOnce: boolean
@@ -56,6 +57,60 @@ function forumPostReservationKey(
   return `${wallet.identity.address.raw.toLowerCase()}\u0000${destination}`
 }
 
+// Request authority is session-only and never serialized with observations.
+const refreshContexts = new WeakMap<object, object>()
+const viewRequests = new WeakMap<object, Map<string, object>>()
+
+/** Build rows, index and acyclic reply links privately, then publish in one Pinia patch. */
+export function forumSnapshot(rows: ForumMessage[]): {
+  messages: MessageWithReplies[]
+  index: Record<string, MessageWithReplies>
+} {
+  const index: Record<string, MessageWithReplies> = Object.create(null)
+  for (const row of rows) index[row.payloadDigest] = { ...row, replies: [] }
+  const messages = Object.values(index)
+  const acyclic = new Map<string, boolean>()
+  for (const row of messages) {
+    const trail = new Set<string>()
+    let ancestor: MessageWithReplies | undefined = row
+    while (
+      ancestor &&
+      !acyclic.has(ancestor.payloadDigest) &&
+      !trail.has(ancestor.payloadDigest)
+    ) {
+      trail.add(ancestor.payloadDigest)
+      ancestor = ancestor.parentDigest
+        ? index[ancestor.parentDigest]
+        : undefined
+    }
+    const valid = !ancestor || acyclic.get(ancestor.payloadDigest) === true
+    for (const digest of trail) acyclic.set(digest, valid)
+    if (valid && row.parentDigest && index[row.parentDigest])
+      index[row.parentDigest].replies.push(row)
+  }
+  return { messages, index }
+}
+
+// All app Forum queries share one staging slot, including overlapping refresh generations.
+// Queued obsolete requests never start another client snapshot.
+let forumReadTail = Promise.resolve()
+export async function stageForumQuery<T>(
+  read: () => Promise<T>,
+  isCurrent: () => boolean,
+): Promise<T | undefined> {
+  const previous = forumReadTail
+  let release!: () => void
+  forumReadTail = new Promise<void>(resolve => {
+    release = resolve
+  })
+  await previous
+  try {
+    return isCurrent() ? await read() : undefined
+  } finally {
+    release()
+  }
+}
+
 export const useForumStore = defineStore('forum', {
   state: (): State => ({
     messages: [],
@@ -65,7 +120,7 @@ export const useForumStore = defineStore('forum', {
     sortMode: 'hot',
     // 1 week
     duration: 1000 * 60 * 60 * 24 * 7,
-    voteThreshold: 0,
+    voteThreshold: '0',
     hasFetchedOnce: false,
     outageStatus: 'ok',
     isRefreshing: false,
@@ -85,6 +140,7 @@ export const useForumStore = defineStore('forum', {
           !message ||
           message.payloadDigest !== messageDigest ||
           typeof message.topic !== 'string' ||
+          typeof message.voteWeightWei !== 'string' ||
           !Array.isArray(message.entries)
         ) {
           return null
@@ -166,100 +222,36 @@ export const useForumStore = defineStore('forum', {
       this.sortMode = sortMode
     },
     setDuration(duration: number) {
+      this.invalidateRefresh()
       this.duration = duration
     },
-    setVoteThreshold(voteThreshold: number) {
-      this.voteThreshold = voteThreshold
+    setVoteThreshold(voteThreshold: string) {
+      this.voteThreshold = String(voteThreshold)
     },
 
     setEntries(messages: ForumMessage[]) {
-      const canonicalByDigest = new Map<string, MessageWithReplies>()
-      const canonicalMessages: MessageWithReplies[] = []
-      for (const message of this.messages) {
-        if (canonicalByDigest.has(message.payloadDigest)) {
-          continue
-        }
-        canonicalByDigest.set(message.payloadDigest, message)
-        canonicalMessages.push(message)
-      }
-      this.messages = canonicalMessages
-
-      for (const message of messages) {
-        const existingMessage = canonicalByDigest.get(message.payloadDigest)
-        if (existingMessage) {
-          existingMessage.satoshis = message.satoshis
-          continue
-        }
-
-        const newMessage: MessageWithReplies = { ...message, replies: [] }
-        this.messages.push(newMessage)
-        const canonicalMessage = this.messages[this.messages.length - 1]
-        canonicalByDigest.set(message.payloadDigest, canonicalMessage)
-      }
-
-      this.index = indexBy(message => message.payloadDigest, this.messages)
-      this.topics = uniq(messages.map(message => message.topic))
-      for (const message of this.messages) {
-        message.replies = []
-      }
-      for (const message of this.messages) {
-        if (!message.parentDigest) {
-          continue
-        }
-        const parent = this.getMessage(message.parentDigest)
-        if (!parent) {
-          continue
-        }
-        const visitedDigests = new Set([message.payloadDigest])
-        let ancestor: MessageWithReplies | undefined = parent
-        let cyclic = false
-        while (ancestor) {
-          if (visitedDigests.has(ancestor.payloadDigest)) {
-            cyclic = true
-            break
-          }
-          visitedDigests.add(ancestor.payloadDigest)
-          ancestor = ancestor.parentDigest
-            ? this.getMessage(ancestor.parentDigest) ?? undefined
-            : undefined
-        }
-        if (cyclic) {
-          continue
-        }
-        parent.replies.push(message)
-      }
+      const snapshot = forumSnapshot(messages)
+      this.$patch(state => {
+        state.messages = snapshot.messages
+        state.index = snapshot.index
+        state.topics = uniq(snapshot.messages.map(message => message.topic))
+      })
     },
     setMessage(message: ForumMessage) {
-      const oldMessage = this.getMessage(message.payloadDigest)
-      if (oldMessage) {
-        oldMessage.satoshis = message.satoshis
-        return
-      }
-      const containsPost = message.entries.some(entry => entry.kind === 'post')
-      if (!containsPost) {
-        return
-      }
-
-      console.log('Saving specific message', message)
-      const mesageWithReplies = { ...message, replies: [] }
-      this.messages.push(mesageWithReplies)
-      this.index = indexBy(message => message.payloadDigest, this.messages)
-      this.topics = uniq(this.messages.map(message => message.topic))
-      if (!mesageWithReplies.parentDigest) {
-        return
-      }
-      const parent = this.getMessage(mesageWithReplies.parentDigest)
-      if (!parent) return
-      const replies = parent.replies
-      const found = replies?.some(
-        reply => reply.payloadDigest === mesageWithReplies.payloadDigest,
-      )
-      if (found) {
-        return
-      }
-      parent.replies.push(mesageWithReplies)
+      this.setEntries([
+        ...this.messages.filter(
+          row => row.payloadDigest !== message.payloadDigest,
+        ),
+        message,
+      ])
+    },
+    invalidateRefresh() {
+      refreshContexts.delete(toRaw(this.$state))
+      viewRequests.delete(toRaw(this.$state))
+      this.isRefreshing = false
     },
     setSelectedTopic(topic: string) {
+      this.invalidateRefresh()
       this.selectedTopic = topic
     },
     pushNewTopic(topic: string) {
@@ -271,8 +263,15 @@ export const useForumStore = defineStore('forum', {
      * discovered, and any topic we already hold posts for. A non-empty `selected` narrows this to
      * that topic plus the known topics it prefixes (matching `Forum.vue`'s prefix filter).
      */
-    async topicsToFetch(selected: string): Promise<string[]> {
-      const discovered = await activeChain.topics.discoverTopics()
+    async topicsToFetch(
+      selected: string,
+      isCurrent: () => boolean = () => true,
+    ): Promise<string[]> {
+      const discovered = await stageForumQuery(
+        () => activeChain.topics.discoverTopics(),
+        isCurrent,
+      )
+      if (!discovered) return []
       const known = [
         ...DEFAULT_TOPIC_NAMES,
         ...discovered.map(entry => entry.topic),
@@ -290,46 +289,74 @@ export const useForumStore = defineStore('forum', {
       topic: string
       wallet: WalletHandle
     }) {
-      console.log('fetching messages')
+      const token = {
+        wallet: wallet.identity.address.raw.toLowerCase(),
+        chain: activeChain,
+        revision: accountStatus.revision,
+        status: accountStatus.status,
+        selected: this.selectedTopic,
+        duration: this.duration,
+      }
+      refreshContexts.set(toRaw(this.$state), token)
+      const current = () =>
+        refreshContexts.get(toRaw(this.$state)) === token &&
+        activeChain === token.chain &&
+        accountStatus.revision === token.revision &&
+        accountStatus.status === token.status &&
+        this.selectedTopic === token.selected &&
+        this.duration === token.duration
       this.isRefreshing = true
       try {
         const from = Date.now() - this.duration
-        const names = await this.topicsToFetch(topic)
-        const results = await Promise.allSettled(
-          names.map(name =>
-            activeChain.topics.fetchByTopic({
-              wallet,
-              topic: name,
-              sinceMs: from,
-            }),
-          ),
-        )
-        const failures = results.filter(
-          (result): result is PromiseRejectedResult =>
-            result.status === 'rejected',
-        )
-        for (const failure of failures) {
-          console.error('forum: topic fetch failed', failure.reason)
+        const names = await this.topicsToFetch(topic, current)
+        if (!current()) return
+        // Sequential query staging bounds aggregate memory instead of allocating one full
+        // 64 MiB client snapshot per discovered topic. Each query publishes atomically.
+        let failures = 0
+        let firstError: unknown
+        for (const name of names) {
+          try {
+            const entries = await stageForumQuery(
+              () =>
+                activeChain.topics.fetchByTopic({
+                  wallet,
+                  topic: name,
+                  sinceMs: from,
+                }),
+              current,
+            )
+            if (!current()) return
+            if (!entries) throw new Error('Incomplete Forum query')
+            this.setEntries([
+              ...this.messages.filter(message => message.topic !== name),
+              ...entries,
+            ])
+          } catch (error) {
+            if (!current()) return
+            failures++
+            firstError ??= error
+          }
         }
+        if (!current()) return
         this.hasFetchedOnce = true
-        // If every topic fetch failed, record the outage state and exit loading before re-throwing
-        // so callers can handle the rejection and the UI can show an accessible outage/retry view.
-        if (results.length > 0 && failures.length === results.length) {
-          this.outageStatus = 'outage'
-          throw failures[0].reason
-        }
-        if (failures.length > 0) {
-          this.outageStatus = 'degraded'
-        } else {
-          this.outageStatus = 'ok'
-        }
-        const entries = results.flatMap(result =>
-          result.status === 'fulfilled' ? result.value ?? [] : [],
-        )
-        this.setEntries(entries)
+        this.outageStatus =
+          failures === 0
+            ? 'ok'
+            : failures === names.length
+            ? 'outage'
+            : 'degraded'
+        if (failures) throw firstError
+      } catch (error) {
+        if (!current()) return
+        this.hasFetchedOnce = true
+        if (this.outageStatus !== 'degraded') this.outageStatus = 'outage'
+        throw error
       } finally {
-        this.isRefreshing = false
+        if (current()) this.isRefreshing = false
       }
+    },
+    async refreshOperationStatus({ wallet }: { wallet: WalletHandle }) {
+      await activeChain.topics.reconcileOperations({ wallet })
     },
     async putMessage({
       wallet,
@@ -341,37 +368,73 @@ export const useForumStore = defineStore('forum', {
     }: {
       wallet: WalletHandle
       entry: ForumMessageEntry
-      satoshis: number
+      satoshis: bigint
       topic: string
       parentDigest?: string
       onPreparationProgress?: (
         progress: DirectMessagePreparationProgress,
       ) => void
     }) {
-      // See `stores/topics.ts`'s `putMessage` for the signed-number -> direction/magnitude
-      // mapping rationale (same Lotus `RegistryHandler.createBroadcast`/`addOfferings`
-      // sign-folding convention this store's callers also produce).
-      console.log('posting message')
+      if (satoshis <= 0n || satoshis > 9223372036854775807n)
+        throw new Error('Invalid Forum post amount')
       const { payloadDigest } = await activeChain.topics.post({
         wallet,
         topic,
         entries: [entry],
-        direction: satoshis >= 0 ? 'up' : 'down',
-        voteWeightWei: BigInt(Math.abs(satoshis)),
+        direction: satoshis >= 0n ? 'up' : 'down',
+        voteWeightWei: satoshis < 0n ? -satoshis : satoshis,
         parentDigest,
         onPreparationProgress,
       })
       await refreshAfterBurn('post', () => this.fetchMessage({ payloadDigest }))
     },
-    async fetchMessage({ payloadDigest }: { payloadDigest: string }) {
+    async fetchMessage({
+      payloadDigest,
+      isCurrent,
+    }: {
+      payloadDigest: string
+      isCurrent?: () => boolean
+    }) {
       // Note: `ActiveChain.topics.fetchOne` takes no `wallet` -- reading a public topic post
       // never needed a sender identity to begin with.
-      console.log('fetching message', payloadDigest)
-      const message = await activeChain.topics.fetchOne(payloadDigest)
+      const token = refreshContexts.get(toRaw(this.$state))
+      const revision = accountStatus.revision
+      const status = accountStatus.status
+      const selected = this.selectedTopic
+      const chain = activeChain
+      const request = {}
+      const requests =
+        viewRequests.get(toRaw(this.$state)) ?? new Map<string, object>()
+      viewRequests.set(toRaw(this.$state), requests)
+      requests.set(payloadDigest, request)
+      const current = () =>
+        (!isCurrent || isCurrent()) &&
+        viewRequests.get(toRaw(this.$state)) === requests &&
+        requests.get(payloadDigest) === request &&
+        refreshContexts.get(toRaw(this.$state)) === token &&
+        accountStatus.revision === revision &&
+        accountStatus.status === status &&
+        activeChain === chain &&
+        this.selectedTopic === selected
+      const message = await stageForumQuery(
+        () => activeChain.topics.fetchOne(payloadDigest),
+        current,
+      )
       if (!message) {
         console.log('could not fetch message', payloadDigest)
         return
       }
+      if (isCurrent && !isCurrent()) return
+      if (
+        viewRequests.get(toRaw(this.$state)) !== requests ||
+        requests.get(payloadDigest) !== request ||
+        refreshContexts.get(toRaw(this.$state)) !== token ||
+        accountStatus.revision !== revision ||
+        accountStatus.status !== status ||
+        activeChain !== chain ||
+        this.selectedTopic !== selected
+      )
+        return
       this.setMessage(message)
       // Need to refetch so we get the right proxy object
       return this.getMessage(payloadDigest)
@@ -383,21 +446,27 @@ export const useForumStore = defineStore('forum', {
     }: {
       wallet: WalletHandle
       payloadDigest: string
-      satoshis: number
+      satoshis: bigint
     }) {
       console.log('voting towards message', payloadDigest, satoshis)
       await activeChain.topics.vote({
         wallet,
         payloadDigest,
-        direction: satoshis >= 0 ? 'up' : 'down',
-        voteWeightWei: BigInt(Math.abs(satoshis)),
+        direction: satoshis >= 0n ? 'up' : 'down',
+        voteWeightWei: satoshis < 0n ? -satoshis : satoshis,
       })
       await refreshAfterBurn('vote', () => this.fetchMessage({ payloadDigest }))
     },
   },
   storage: {
     save(storage, _mutation, state): Promise<void> {
-      return storage.put('forum', JSON.stringify(state))
+      const messages = state.messages.map(
+        ({ replies: _replies, ...row }) => row,
+      )
+      return storage.put(
+        'forum',
+        JSON.stringify({ ...state, messages, index: {} }),
+      )
     },
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async restore(storage): Promise<Partial<State>> {
@@ -410,6 +479,15 @@ export const useForumStore = defineStore('forum', {
       const deserializedForum = JSON.parse(forum) as State
       return {
         ...deserializedForum,
+        // Cached observations are unverified after restart, especially old number rows.
+        messages: [],
+        index: {},
+        voteThreshold:
+          typeof deserializedForum.voteThreshold === 'string'
+            ? deserializedForum.voteThreshold
+            : '0',
+        hasFetchedOnce: false,
+        outageStatus: 'ok',
         isRefreshing: false,
       }
     },

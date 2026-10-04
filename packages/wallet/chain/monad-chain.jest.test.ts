@@ -13,16 +13,26 @@
  * `directMessages.send`/`fetchSince` actually encrypt/decrypt, not merely pass a plaintext through.
  */
 import { Wallet, getBytes, hexlify } from "ethers";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import level from "level";
+import {
+  LevelTopicOperationJournal,
+  type OutgoingTopicOperation,
+} from "../storage/topic-operation-journal";
+import { LevelStampAttemptJournal } from "../storage/stamp-attempt-journal";
+import {
+  createMonadWalletMaterial,
+  type MonadRootBundle,
+} from "../monad-wallet-material";
+import type { MonadWalletHandle } from "../monad-wallet-handle";
 import * as viteEnv from "./vite-env";
 import { verifyEcdsa } from "@frank/nakamoto";
 
 import { MonadIdentity } from "../monad-identity";
 import { StoredMonadMessageProto } from "../monad-stamp-client";
-import {
-  MonadTopicPostAbandonedError,
-  MonadTopicPostProto,
-} from "../monad-topic-post-client";
-import { buildTopicPostPayload } from "../monad-topic-post-client";
+import { MonadTopicPostAbandonedError } from "../monad-topic-post-client";
 import { MessageItem, TextItem } from "@frank/cashweb/types/messages";
 import {
   decryptEnvelope,
@@ -38,7 +48,6 @@ import {
   deserializeMessageItems,
   loadMonadChainConfigFromEnv,
   serializeMessageItems,
-  viewToForumMessage,
 } from "./monad-chain";
 import { TopicPostOutcomeUnknownError, WalletHandle } from "./active-chain";
 import { deriveMonadStampChildPublic } from "../monad-stamp-stealth";
@@ -65,6 +74,7 @@ jest.mock("../monad-topic-post-client", () => {
     ...actual,
     MonadTopicPostClient: jest.fn().mockImplementation(() => ({
       submitTopicPost: jest.fn(),
+      resumePendingOperations: jest.fn().mockResolvedValue(undefined),
     })),
     quoteMonadTopicBurnGasReserve: jest.fn().mockResolvedValue(100n),
   };
@@ -75,6 +85,7 @@ jest.mock("../monad-topic-vote-client", () => {
     ...actual,
     MonadTopicVoteClient: jest.fn().mockImplementation(() => ({
       castVote: jest.fn(),
+      resumePendingOperations: jest.fn().mockResolvedValue(undefined),
     })),
   };
 });
@@ -1301,6 +1312,7 @@ describe("createMonadChain: one per-wallet queue for every account-spending oper
       recordedAttempts: () => [],
     }));
     (MonadTopicPostClient as jest.Mock).mockImplementation(() => ({
+      resumePendingOperations: jest.fn().mockResolvedValue(undefined),
       submitTopicPost: () =>
         track("topic-post", async () => ({
           stored: {},
@@ -1319,6 +1331,7 @@ describe("createMonadChain: one per-wallet queue for every account-spending oper
       items: [{ type: "text", text: "x" }],
     });
     await new Promise((resolve) => setImmediate(resolve));
+    allowMockTopicAdmission(wallet);
     const others = [
       chain.directMessages.reconcileAttempts({
         wallet,
@@ -1354,11 +1367,20 @@ describe("createMonadChain: one per-wallet queue for every account-spending oper
   });
 });
 
+function allowMockTopicAdmission(wallet: ReturnType<typeof makeWallet>) {
+  Object.assign(wallet, {
+    walletState: {
+      runOperation: (work: (admission: object) => Promise<unknown>) =>
+        work({ walletBindingId: "topic-test" }),
+    },
+  });
+}
 describe("createMonadChain: topics.post", () => {
   it("submits a topic post via MonadTopicPostClient and returns its payloadDigest", async () => {
     const chain = createMonadChain(TEST_CONFIG);
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(alice);
+    allowMockTopicAdmission(wallet);
 
     const submitTopicPost = jest.fn().mockResolvedValue({
       stored: {},
@@ -1368,6 +1390,7 @@ describe("createMonadChain: topics.post", () => {
     });
     (MonadTopicPostClient as jest.Mock).mockImplementation(() => ({
       submitTopicPost,
+      resumePendingOperations: jest.fn().mockResolvedValue(undefined),
     }));
 
     const result = await chain.topics.post({
@@ -1400,12 +1423,14 @@ describe("createMonadChain: topics.post", () => {
     const wallet = makeWallet(
       MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
     );
+    allowMockTopicAdmission(wallet);
     const abandoned = new MonadTopicPostAbandonedError(
       "The paid post outcome is unknown",
       "feedface"
     );
     (MonadTopicPostClient as jest.Mock).mockImplementation(() => ({
       submitTopicPost: jest.fn().mockRejectedValue(abandoned),
+      resumePendingOperations: jest.fn().mockResolvedValue(undefined),
     }));
 
     const failure = await chain.topics
@@ -1428,6 +1453,7 @@ describe("createMonadChain: topics.vote", () => {
     const chain = createMonadChain(TEST_CONFIG);
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(alice);
+    allowMockTopicAdmission(wallet);
 
     const castVote = jest.fn().mockResolvedValue({
       stored: {},
@@ -1437,6 +1463,7 @@ describe("createMonadChain: topics.vote", () => {
     });
     (MonadTopicVoteClient as jest.Mock).mockImplementation(() => ({
       castVote,
+      resumePendingOperations: jest.fn().mockResolvedValue(undefined),
     }));
 
     await chain.topics.vote({
@@ -1460,132 +1487,69 @@ describe("createMonadChain: topics.vote", () => {
   });
 });
 
-function makeTopicPostProto(payloadHashByte: number): MonadTopicPostProto {
-  return {
-    topic: "general",
-    parentPostHash: new Uint8Array(0),
-    rawBurnTx: new Uint8Array([1, 2, 3]),
-    encryptedPayload: buildTopicPostPayload({
-      topic: "general",
-      entries: [{ kind: "post", title: "Hi", message: "Hello, topic!" }],
-      timestampMs: 1_700_000_000_000,
-    }),
-    payloadHash: new Uint8Array(32).fill(payloadHashByte),
+describe("createMonadChain: canonical topic read wiring", () => {
+  const policy = {
+    network: "monad-testnet",
+    chainId: BigInt(TEST_CONFIG.chainId),
+    burnAddress: TEST_CONFIG.stampBurnAddress,
   };
-}
-
-describe("createMonadChain: topics.fetchByTopic / fetchOne / viewToForumMessage", () => {
-  it("viewToForumMessage decodes a real BroadcastMessage payload into ForumMessage", () => {
-    const post = makeTopicPostProto(0x11);
-    const view = {
-      post: {
-        post,
-        senderAddress: getBytes("0x" + "55".repeat(20)),
-        txHash: getBytes("0x" + "66".repeat(32)),
-        timestamp: 1_700_000_005_000,
-        networkTag: new Uint8Array(0),
-      },
-      voteWeight: 12_345,
-    };
-
-    const message = viewToForumMessage(view);
-
-    expect(message).toBeDefined();
-    expect(message?.topic).toBe("general");
-    expect(message?.satoshis).toBe(12_345);
-    expect(message?.payloadDigest).toBe("11".repeat(32));
-    expect(message?.parentDigest).toBeUndefined();
-    expect(message?.poster).toMatch(/^0x[0-9a-fA-F]{40}$/);
-    expect(message?.entries).toEqual([
-      { kind: "post", title: "Hi", url: "", message: "Hello, topic!" },
-    ]);
-    expect(message?.timestamp).toEqual(new Date(1_700_000_005_000));
-  });
-
-  it("viewToForumMessage returns undefined for a view with no stored post", () => {
-    expect(
-      viewToForumMessage({ post: undefined, voteWeight: 0 })
-    ).toBeUndefined();
-  });
-
-  it("fetchByTopic maps every returned view via viewToForumMessage", async () => {
+  it("passes explicit read policy and preserves exact projected observations", async () => {
     const chain = createMonadChain(TEST_CONFIG);
-    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
-    const wallet = makeWallet(alice);
-    const post = makeTopicPostProto(0x22);
-
-    mockedFetchMonadTopicPostsSince.mockResolvedValueOnce([
-      {
-        post: {
-          post,
-          senderAddress: getBytes("0x" + "77".repeat(20)),
-          txHash: getBytes("0x" + "88".repeat(32)),
-          timestamp: 1_700_000_010_000,
-          networkTag: new Uint8Array(0),
-        },
-        voteWeight: 999,
-      },
-    ]);
-
-    const messages = await chain.topics.fetchByTopic({
-      wallet,
+    const wallet = makeWallet(
+      MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    );
+    const message = {
+      poster: "0x" + "11".repeat(20),
       topic: "general",
-      sinceMs: 42,
-    });
-
+      voteWeightWei: "-9007199254740993",
+      entries: [],
+      payloadDigest: "22".repeat(32),
+      timestamp: new Date(0),
+      visibleTimestamp: { seconds: "0", nanoseconds: 0 },
+      epoch: "01".repeat(16),
+      revision: "18446744073709551615",
+      transactionHash: "33".repeat(32),
+      authorBurnTx: "0x11",
+      blockNumber: "0",
+      transactionIndex: "0",
+    };
+    mockedFetchMonadTopicPostsSince.mockResolvedValueOnce([message]);
+    expect(
+      await chain.topics.fetchByTopic({ wallet, topic: "general", sinceMs: 42 })
+    ).toEqual([message]);
     expect(mockedFetchMonadTopicPostsSince).toHaveBeenCalledWith({
       relayBaseUrl: wallet.relayBaseUrl,
       topic: "general",
       sinceMs: 42,
+      policy,
     });
-    expect(messages).toHaveLength(1);
-    expect(messages[0].payloadDigest).toBe("22".repeat(32));
-  });
-
-  it("fetchOne reads via the chain-level relayBaseUrl (no wallet needed)", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
-    const post = makeTopicPostProto(0x33);
-
-    mockedFetchMonadTopicPostView.mockResolvedValueOnce({
-      post: {
-        post,
-        senderAddress: getBytes("0x" + "99".repeat(20)),
-        txHash: getBytes("0x" + "aa".repeat(32)),
-        timestamp: 1_700_000_020_000,
-        networkTag: new Uint8Array(0),
-      },
-      voteWeight: 1,
-    });
-
-    const message = await chain.topics.fetchOne("33".repeat(32));
-
+    mockedFetchMonadTopicPostView.mockResolvedValueOnce(message);
+    expect(await chain.topics.fetchOne(message.payloadDigest)).toEqual(message);
     expect(mockedFetchMonadTopicPostView).toHaveBeenCalledWith({
       relayBaseUrl: TEST_CONFIG.relayBaseUrl,
-      payloadHashHex: "33".repeat(32),
+      payloadHashHex: message.payloadDigest,
+      policy,
     });
-    expect(message?.payloadDigest).toBe("33".repeat(32));
-  });
-
-  it("fetchOne returns undefined when nothing is stored under that hash", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
-    mockedFetchMonadTopicPostView.mockResolvedValueOnce(undefined);
-    expect(await chain.topics.fetchOne("00".repeat(32))).toBeUndefined();
-  });
-
-  it("discoverTopics reads via the chain-level relayBaseUrl (no wallet needed)", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
-    mockedFetchDiscoveredTopics.mockResolvedValueOnce([
-      { topic: "general", postCount: 3, lastActivityMs: 500 },
-    ]);
-
-    const result = await chain.topics.discoverTopics();
-
+    const topic = {
+      topic: "general",
+      postCount: "18446744073709551615",
+      lastActivityMs: 0,
+      lastActivity: { seconds: "0", nanoseconds: 0 },
+      epoch: message.epoch,
+      revision: message.revision,
+    };
+    mockedFetchDiscoveredTopics.mockResolvedValueOnce([topic]);
+    expect(await chain.topics.discoverTopics()).toEqual([topic]);
     expect(mockedFetchDiscoveredTopics).toHaveBeenCalledWith({
       relayBaseUrl: TEST_CONFIG.relayBaseUrl,
+      policy,
     });
-    expect(result).toEqual([
-      { topic: "general", postCount: 3, lastActivityMs: 500 },
-    ]);
+  });
+  it("propagates discovery failure", async () => {
+    mockedFetchDiscoveredTopics.mockRejectedValueOnce(Error("incomplete"));
+    await expect(
+      createMonadChain(TEST_CONFIG).topics.discoverTopics()
+    ).rejects.toThrow("incomplete");
   });
 });
 
@@ -1921,5 +1885,206 @@ describe("asMonadWallet guard (exercised indirectly via directMessages/topics)",
     await expect(
       chain.directMessages.fetchSince({ wallet: bareWallet, sinceMs: 0 })
     ).rejects.toThrow(/MonadChainWalletHandle/);
+  });
+});
+
+describe("canonical topic owner production composition", () => {
+  const seed = {
+    mnemonic: "test test test test test test test test test test test junk",
+  };
+  it("retains old topic and stamp leases before factory orphan retirement and rejects a distinct same-root opener", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "chain-topic-owner-"));
+    const config = {
+      ...TEST_CONFIG,
+      walletStorageLocation: join(directory, "wallet"),
+      subAccountPoolSize: 5,
+    };
+    let wallet: MonadChainWalletHandle | undefined;
+    try {
+      const firstChain = createMonadChain(config);
+      wallet = await firstChain.createWallet(seed);
+      const original = wallet.pool.records();
+      for (let index = 0; index < 5; index++)
+        wallet.pool.setStatus(index, "in-use");
+      await wallet.pool.flush();
+      const highWater = wallet.pool.nextUnusedIndex();
+      const location = `${
+        config.walletStorageLocation
+      }-${wallet.identity.address.raw.toLowerCase()}`;
+      await wallet.close();
+      const database = level(join(location, "wallet-manifest"));
+      const journal = new LevelTopicOperationJournal(database, () => {});
+      const rows: OutgoingTopicOperation[] = [
+        undefined,
+        "protobuf",
+        "cbor",
+      ].map((format, index) => ({
+        version: 1,
+        kind: "post",
+        requestBytes: [255, index],
+        ...(format ? { writeFormat: format as "protobuf" | "cbor" } : {}),
+        leaseIndex: index,
+        senderAddress: original[index].address,
+        rawTx: "immutable old authority",
+        txHash: "0x" + String(index).padStart(64, "0"),
+        valueWei: "7",
+        direction: "up",
+        payloadHashHex: "ab".repeat(32),
+      }));
+      try {
+        for (const row of rows) await journal.put(row);
+      } finally {
+        await database.close();
+      }
+      const stamp = new LevelStampAttemptJournal(location);
+      await stamp.Open();
+      try {
+        await stamp.put({
+          payloadHashHex: "de".repeat(32),
+          messageBytes: [1],
+          leaseIndices: [3],
+        });
+      } finally {
+        await stamp.Close();
+      }
+      jest.clearAllMocks();
+      const chain = createMonadChain(config);
+      wallet = await chain.createWallet(seed);
+      expect(wallet.pool.records().map((record) => record.status)).toEqual([
+        "in-use",
+        "in-use",
+        "in-use",
+        "in-use",
+        "retired",
+      ]);
+      expect(wallet.pool.records().map((record) => record.address)).toEqual(
+        original.map((record) => record.address)
+      );
+      expect(wallet.pool.nextUnusedIndex()).toBe(highWater);
+      expect(wallet.walletState).toBeUndefined();
+      expect(wallet.topicOperationJournal).toBeUndefined();
+      expect(MonadAccountTxSigner).not.toHaveBeenCalled();
+      expect(MonadTopicPostClient).not.toHaveBeenCalled();
+      expect(MonadTopicVoteClient).not.toHaveBeenCalled();
+      await expect(createMonadChain(config).createWallet(seed)).rejects.toThrow(
+        "manifest already has an owner"
+      );
+      // A rejected second opener must leave all original stores and the owner usable.
+      expect(wallet.pool.records()).toHaveLength(5);
+      await chain.topics.reconcileOperations({ wallet });
+      const privateHandle = (MonadTopicPostClient as jest.Mock).mock
+        .calls[0][0] as MonadWalletHandle;
+      expect(privateHandle.topicOperationJournal!.getAll()).toEqual(rows);
+      await wallet.close();
+      const reopened = level(join(location, "wallet-manifest"));
+      const reopenedJournal = new LevelTopicOperationJournal(
+        reopened,
+        () => {}
+      );
+      try {
+        await reopenedJournal.Open();
+        expect(reopenedJournal.getAll()).toEqual(rows);
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      await wallet?.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+  it("preserves the creator private owner across facades and drains an admitted action on close", async () => {
+    const roots: MonadRootBundle = {
+      evm: {
+        registry: "frank-domain-roots-v1",
+        purpose: "evm-wallet",
+        bytes: new Uint8Array(32).fill(31),
+      },
+      authentication: {
+        registry: "frank-domain-roots-v1",
+        purpose: "identity-authentication",
+        bytes: new Uint8Array(32).fill(32),
+      },
+      messaging: {
+        registry: "frank-domain-roots-v1",
+        purpose: "messaging-encryption",
+        bytes: new Uint8Array(32).fill(33),
+      },
+    };
+    const expected = createMonadWalletMaterial(roots);
+    const chain = createMonadChain(TEST_CONFIG);
+    const wallet = await chain.createWallet(roots);
+    let privateHandle: MonadWalletHandle | undefined;
+    let entered!: () => void, finish!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const paused = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    (MonadTopicPostClient as jest.Mock).mockImplementation(
+      (handle: MonadWalletHandle) => {
+        privateHandle = handle;
+        return {
+          resumePendingOperations: async () => {
+            entered();
+            await paused;
+          },
+        };
+      }
+    );
+    (MonadTopicVoteClient as jest.Mock).mockImplementation(() => ({
+      resumePendingOperations: jest.fn().mockResolvedValue(undefined),
+    }));
+    try {
+      expect(wallet.identity.address.raw).toBe(expected.identity.address.raw);
+      expect((await wallet.getReceiveAddress()).raw).toBe(
+        expected.mainAccount.address
+      );
+      expect(wallet.pool.getRecord(0)!.address).toBe(
+        expected.keyring.deriveSubAccount(0).address
+      );
+      const other = createMonadChain({
+        ...TEST_CONFIG,
+        chainId: 143n,
+        stampBurnAddress: "0x" + "22".repeat(20),
+        nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+      });
+      const action = other.topics.reconcileOperations({ wallet });
+      await started;
+      expect(privateHandle).not.toBe(wallet);
+      expect(privateHandle!.pool).toBe(wallet.pool);
+      expect(privateHandle!.changePool).toBe(wallet.changePool);
+      expect(privateHandle!.leaseManager).toBe(wallet.leaseManager);
+      expect(privateHandle!.provider).toBe(wallet.provider);
+      expect(privateHandle!.forumChainId).toBe(BigInt(TEST_CONFIG.chainId));
+      expect(privateHandle!.forumBurnAddress).toBe(
+        TEST_CONFIG.stampBurnAddress
+      );
+      expect(privateHandle!.cborNetwork).toBe("monad-testnet");
+      expect(wallet.walletState).toBeUndefined();
+      const close = wallet.close();
+      expect(wallet.close()).toBe(close);
+      let closed = false;
+      void close.then(() => {
+        closed = true;
+      });
+      await expect(
+        chain.topics.reconcileOperations({ wallet })
+      ).rejects.toThrow();
+      expect(closed).toBe(false);
+      finish();
+      await action;
+      await close;
+      await expect(
+        privateHandle!.walletState!.runOperation(async () => undefined)
+      ).rejects.toThrow("enclosing wallet admission");
+      expect(() => privateHandle!.walletState!.assertOpen()).toThrow(
+        "closing or closed"
+      );
+    } finally {
+      finish();
+      await wallet.close();
+      expected.dispose();
+    }
   });
 });

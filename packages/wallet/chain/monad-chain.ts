@@ -55,25 +55,10 @@
  * (`ethers.Transaction.from(...).value`), not merely echoed from config -- it is the actual
  * recipient-payment value, even if it ever diverges from `defaultStampValueWei`.
  *
- * ## `topics`: wiring the topic-post/vote/tally clients
+ * ## Canonical Forum topics
  *
- * `post`/`vote` build a fresh `MonadTopicPostClient`/`MonadTopicVoteClient` per call from the
- * wallet's `MonadWalletHandle` bundle (same one-per-call pattern `directMessages` uses -- these
- * clients are cheap to construct and hold no state beyond the bundle itself, so there's no need to
- * cache one per wallet). `fetchByTopic` reads via the wallet's own `relayBaseUrl`; `fetchOne` reads
- * via this chain's own config `relayBaseUrl`, since -- per issue #41's own interface sketch --
- * `fetchOne` takes no `wallet` param at all (reading someone else's public topic post never needed
- * a sender identity to begin with). `viewToForumMessage` adapts `MonadTopicPostViewProto` into the
- * pre-existing `ForumMessage` shape (`../types/forum.ts`), mirroring `../registry/index.ts`'s
- * `parseWrapper` field-for-field (see that function for the Lotus-side precedent this deliberately
- * matches): `poster` <- the burn tx's EIP-55-checksummed sender address (decoded from
- * `senderAddress`'s raw 20 bytes -- `ecrecover`'d server-side, never self-asserted); `satoshis` <-
- * the relay's already-tallied `voteWeight` (wei, despite the pre-existing field's stale
- * UTXO-flavored name -- `PLAN.md`'s own M9 notes flag this exact field as needing a real
- * Monad-side rename, an explicit decision left to #42/#43, not silently made here; this ticket just
- * needs a real number in that slot to produce a working `ForumMessage`, and `voteWeight` already
- * decodes as a plain `number`, not `bigint`, so no precision loss is introduced by reusing it
- * as-is).
+ * Topic reads use complete retained CBOR snapshots and the wallet-specific exact model.
+ * Paid actions reconcile retained canonical operations under wallet admission before funding.
  */
 import {
   JsonRpcProvider,
@@ -100,11 +85,8 @@ import {
   WalletHandle,
 } from "./active-chain";
 import { MessageItem } from "@frank/cashweb/types/messages";
-import { ForumMessage, ForumMessageEntry } from "@frank/cashweb/types/forum";
-// See cashweb/wallet/monad-topic-post-client.ts's identical comment (ticket #51, Vite migration).
-import __pb_broadcast_pb from "@frank/cashweb/registry/broadcast_pb";
-const { BroadcastMessage, ForumPost: BroadcastForumPostPayload } =
-  __pb_broadcast_pb;
+import { ForumMessage, ForumReadPolicy } from "../forum-model";
+import { encodeForumPost } from "@frank/codec";
 
 import { createMonadWalletMaterial } from "../monad-wallet-material";
 import type {
@@ -127,6 +109,10 @@ import {
 } from "../monad-provider";
 import { MonadAccountTxSigner } from "../monad-account-tx";
 import { MonadWalletHandle } from "../monad-wallet-handle";
+import {
+  openExistingPoolMonadTopicOwner,
+  type MonadWalletPersistenceBundle,
+} from "../storage/monad-wallet-bundle";
 import {
   MonadIdentity,
   fetchMonadProfile,
@@ -153,7 +139,6 @@ import {
 import {
   MonadTopicPostClient,
   MonadTopicPostAbandonedError,
-  MonadTopicPostViewProto,
   quoteMonadTopicBurnGasReserve,
 } from "../monad-topic-post-client";
 import { MonadTopicVoteClient } from "../monad-topic-vote-client";
@@ -310,6 +295,12 @@ const walletMaterial = new WeakMap<
 // Facades may receive a handle created by another factory on the same configured network.
 // Its key ownership and send queue travel with that handle, not with the receiving facade.
 const walletSendQueues = new WeakMap<MonadChainWalletHandle, Promise<void>>();
+// The private topic owner and enclosing admission travel with the creator's wallet too.
+const privateTopicWallets = new WeakMap<
+  MonadChainWalletHandle,
+  MonadWalletHandle
+>();
+const enclosingTopicAdmissions = new WeakSet<MonadChainWalletHandle>();
 type SignedNativeTransfer = Awaited<
   ReturnType<MonadAccountTxSigner["buildAndSignTransfer"]>
 >;
@@ -566,54 +557,6 @@ export function deserializeMessageItems(plaintext: string): MessageItem[] {
   return parsed as MessageItem[];
 }
 
-/** Adapts a `MonadTopicPostViewProto` (`../wallet/monad-topic-tally-client.ts`) into the
- * pre-existing `ForumMessage` shape (`../types/forum.ts`) -- mirrors `../registry/index.ts`'s
- * `parseWrapper` field-for-field; see this file's header for the per-field reasoning. Returns
- * `undefined` if `view` doesn't carry a stored post (shouldn't happen for a view actually returned
- * by the relay, but keeps this function total). */
-export function viewToForumMessage(
-  view: MonadTopicPostViewProto
-): ForumMessage | undefined {
-  const stored = view.post;
-  const post = stored?.post;
-  if (stored === undefined || post === undefined) return undefined;
-
-  const entries: ForumMessageEntry[] = [];
-  const broadcastMessage = BroadcastMessage.deserializeBinary(
-    post.encryptedPayload
-  );
-  for (const entry of broadcastMessage.getEntriesList()) {
-    const kind = entry.getKind();
-    const payload = entry.getPayload();
-    if (typeof payload === "string") continue;
-    if (kind === "post") {
-      const forumPost = BroadcastForumPostPayload.deserializeBinary(payload);
-      entries.push({
-        kind: "post",
-        title: forumPost.getTitle(),
-        url: forumPost.getUrl(),
-        message: forumPost.getMessage(),
-      });
-    }
-  }
-
-  const senderAddress =
-    stored.senderAddress.length === 20
-      ? getAddress(hexlify(stored.senderAddress))
-      : hexlify(stored.senderAddress);
-
-  return {
-    poster: senderAddress,
-    topic: post.topic,
-    satoshis: view.voteWeight,
-    entries,
-    payloadDigest: bareHex(post.payloadHash),
-    parentDigest:
-      post.parentPostHash.length > 0 ? bareHex(post.parentPostHash) : undefined,
-    timestamp: new Date(stored.timestamp),
-  };
-}
-
 /** Preparing the account that will burn a topic post/vote failed before anything was posted. The
  * pool's funding is record-before-broadcast, so retrying resumes an already-sent funding
  * transaction instead of sending another; the message says so because the caller shows it as is. */
@@ -729,7 +672,9 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         // The fee quote itself signs a probe, so it belongs behind admission too.
         const gasReserveWei = await quoteMonadTopicBurnGasReserve({
           signer: mainAccountSigner,
-          burnAddress: config.stampBurnAddress,
+          burnAddress: creatorForumPolicy(
+            privateTopicWallets.get(wallet) ?? wallet
+          ).burnAddress,
         });
         return wallet.pool.prepareBurnAccount({
           mainAccountSigner,
@@ -1140,90 +1085,176 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     },
   };
 
+  // The normal handle stays unchanged for DM callers. Only topic code receives this owner.
+  const runTopicExclusive = <T>(
+    wallet: MonadChainWalletHandle,
+    task: (topicWallet: MonadWalletHandle) => Promise<T>
+  ): Promise<T> =>
+    runWalletExclusive(wallet, async () => {
+      enclosingTopicAdmissions.add(wallet);
+      try {
+        const topicWallet = privateTopicWallets.get(wallet) ?? wallet;
+        if (!topicWallet.walletState)
+          throw new Error(
+            "Canonical topics require coherent wallet persistence"
+          );
+        return await task(topicWallet);
+      } finally {
+        enclosingTopicAdmissions.delete(wallet);
+      }
+    });
+  const forumPolicy: ForumReadPolicy = {
+    network:
+      config.networkTag === "MON1"
+        ? "monad-mainnet"
+        : config.networkTag === "MONT"
+        ? "monad-testnet"
+        : config.networkTag,
+    chainId: BigInt(config.chainId),
+    burnAddress: config.stampBurnAddress,
+  };
+  const creatorForumPolicy = (wallet: MonadWalletHandle): ForumReadPolicy => ({
+    network: wallet.cborNetwork ?? forumPolicy.network,
+    chainId: wallet.forumChainId ?? forumPolicy.chainId,
+    burnAddress: wallet.forumBurnAddress ?? forumPolicy.burnAddress,
+  });
+  const reconcileTopicOperations = async (
+    wallet: MonadWalletHandle,
+    admission?: import("../storage/monad-wallet-bundle").MonadWalletOperationAdmission
+  ) => {
+    await new MonadTopicPostClient(wallet).resumePendingOperations(admission);
+    await new MonadTopicVoteClient(wallet).resumePendingOperations(admission);
+  };
   const topics: TopicBroadcastClient = {
+    async reconcileOperations(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      await runTopicExclusive(wallet, async (topicWallet) => {
+        await topicWallet.walletState!.runOperation((admission) =>
+          reconcileTopicOperations(topicWallet, admission)
+        );
+      });
+    },
     async post(params): Promise<{ payloadDigest: string }> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      const client = new MonadTopicPostClient(wallet);
-      return runWalletExclusive(wallet, async () => {
-        const leaseIndex = await prepareTopicBurnAccount(
-          wallet,
-          params.voteWeightWei,
-          params.onPreparationProgress
-        );
-        const result = await client
-          .submitTopicPost({
+      return runTopicExclusive(wallet, async (topicWallet) => {
+        const client = new MonadTopicPostClient(topicWallet);
+        const policy = creatorForumPolicy(topicWallet);
+        return topicWallet.walletState!.runOperation(async (admission) => {
+          await reconcileTopicOperations(topicWallet, admission);
+          if (
+            params.direction !== "up" ||
+            params.voteWeightWei < 1n ||
+            params.voteWeightWei > 9223372036854775807n
+          )
+            throw new Error(
+              "Canonical post burn must be up and within 1..i64::MAX"
+            );
+          const timestampMs = Date.now();
+          encodeForumPost({
+            network: policy.network,
             topic: params.topic,
             entries: params.entries,
-            parentPostHash: params.parentDigest
+            parentHash: params.parentDigest
               ? getBytes(`0x${params.parentDigest}`)
               : undefined,
-            direction: params.direction,
-            burnAddress: config.stampBurnAddress,
-            voteWeightWei: params.voteWeightWei,
-            leaseIndex,
-          })
-          .catch((err: unknown) => {
-            if (err instanceof MonadTopicPostAbandonedError) {
-              throw new TopicPostOutcomeUnknownError(err.message, err);
-            }
-            return asNothingSent(err);
+            authored: {
+              seconds: BigInt(Math.floor(timestampMs / 1000)),
+              nanoseconds: (timestampMs % 1000) * 1000000,
+            },
           });
-        return { payloadDigest: result.payloadHashHex };
+          const leaseIndex = await prepareTopicBurnAccount(
+            wallet,
+            params.voteWeightWei,
+            params.onPreparationProgress
+          );
+          const result = await client
+            .submitTopicPost(
+              {
+                topic: params.topic,
+                entries: params.entries,
+                timestampMs,
+                parentPostHash: params.parentDigest
+                  ? getBytes(`0x${params.parentDigest}`)
+                  : undefined,
+                direction: params.direction,
+                burnAddress: policy.burnAddress,
+                voteWeightWei: params.voteWeightWei,
+                leaseIndex,
+              },
+              admission
+            )
+            .catch((err: unknown) => {
+              if (err instanceof MonadTopicPostAbandonedError) {
+                throw new TopicPostOutcomeUnknownError(err.message, err);
+              }
+              return asNothingSent(err);
+            });
+          return { payloadDigest: result.payloadHashHex };
+        });
       });
     },
 
     async vote(params): Promise<void> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      const client = new MonadTopicVoteClient(wallet);
-      await runWalletExclusive(wallet, async () => {
-        const leaseIndex = await prepareTopicBurnAccount(
-          wallet,
-          params.voteWeightWei,
-          params.onPreparationProgress
-        );
-        await client
-          .castVote({
-            targetPayloadHash: getBytes(`0x${params.payloadDigest}`),
-            direction: params.direction,
-            burnAddress: config.stampBurnAddress,
-            voteWeightWei: params.voteWeightWei,
-            leaseIndex,
-          })
-          .catch(asNothingSent);
+      await runTopicExclusive(wallet, async (topicWallet) => {
+        const client = new MonadTopicVoteClient(topicWallet);
+        const policy = creatorForumPolicy(topicWallet);
+        await topicWallet.walletState!.runOperation(async (admission) => {
+          await reconcileTopicOperations(topicWallet, admission);
+          if (
+            (params.direction !== "up" && params.direction !== "down") ||
+            params.voteWeightWei < 1n ||
+            params.voteWeightWei > 9223372036854775807n
+          )
+            throw new Error("Canonical vote burn must be within 1..i64::MAX");
+          const targetPayloadHash = getBytes(`0x${params.payloadDigest}`);
+          if (targetPayloadHash.length !== 32)
+            throw new Error("Canonical vote requires a T1 digest");
+          const leaseIndex = await prepareTopicBurnAccount(
+            wallet,
+            params.voteWeightWei,
+            params.onPreparationProgress
+          );
+          await client
+            .castVote(
+              {
+                targetPayloadHash,
+                direction: params.direction,
+                burnAddress: policy.burnAddress,
+                voteWeightWei: params.voteWeightWei,
+                leaseIndex,
+              },
+              admission
+            )
+            .catch(asNothingSent);
+        });
       });
     },
 
     async fetchByTopic(params): Promise<ForumMessage[]> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      const views = await fetchMonadTopicPostsSince({
+      return fetchMonadTopicPostsSince({
         relayBaseUrl: wallet.relayBaseUrl,
         topic: params.topic,
         sinceMs: params.sinceMs,
+        policy: creatorForumPolicy(privateTopicWallets.get(wallet) ?? wallet),
       });
-      const messages: ForumMessage[] = [];
-      for (const view of views) {
-        const message = viewToForumMessage(view);
-        if (message !== undefined) messages.push(message);
-      }
-      return messages;
     },
 
     async fetchOne(payloadDigest): Promise<ForumMessage | undefined> {
-      const view = await fetchMonadTopicPostView({
+      return fetchMonadTopicPostView({
         relayBaseUrl: config.relayBaseUrl,
         payloadHashHex: payloadDigest,
+        policy: forumPolicy,
       });
-      return view ? viewToForumMessage(view) : undefined;
     },
-
     async discoverTopics() {
-      // No wallet needed -- same "read via the chain's own configured relayBaseUrl" shape as
-      // `fetchOne` above. `fetchDiscoveredTopics` itself already fails soft (`[]`), so there's
-      // nothing further to catch here.
-      return fetchDiscoveredTopics({ relayBaseUrl: config.relayBaseUrl });
+      return fetchDiscoveredTopics({
+        relayBaseUrl: config.relayBaseUrl,
+        policy: forumPolicy,
+      });
     },
   };
-
   return {
     kind: "monad",
     name: "monad",
@@ -1335,9 +1366,42 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               ? stampAttemptJournal.Close()
               : undefined,
           ]);
+        const pool = new MonadSubAccountPool({
+          keyring,
+          store: subAccountStore,
+        });
+        const changePool = new MonadChangePool({
+          keyring: changeKeyring,
+          store: changeStore,
+        });
+        const leaseManager = new SubAccountLeaseManager(pool);
+        let topicOwner: MonadWalletPersistenceBundle | undefined;
+        let topicOwnerWallet: MonadChainWalletHandle | undefined;
         let destroyProvider: (() => void) | undefined;
         let destroyHttpClient: (() => void) | undefined;
         try {
+          topicOwner = await openExistingPoolMonadTopicOwner({
+            location: storageLocation,
+            pool,
+            changePool,
+            leaseManager,
+            subKeyring: keyring,
+            changeKeyring,
+            stampReferencesLeaseIndex: (index) =>
+              stampAttemptJournal
+                .getAll()
+                .some((attempt) => attempt.leaseIndices.includes(index)),
+            assertEnclosingAdmission: () => {
+              if (
+                topicOwnerWallet === undefined ||
+                !enclosingTopicAdmissions.has(topicOwnerWallet)
+              ) {
+                throw new Error(
+                  "Topic operations require enclosing wallet admission"
+                );
+              }
+            },
+          });
           const demoRpcUrl = await discoverFakeDemoRpc(config);
           const opened = await Promise.allSettled([
             subAccountStore?.Open(),
@@ -1375,16 +1439,16 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             };
           }
 
-          const pool = new MonadSubAccountPool({
-            keyring,
-            store: subAccountStore,
-          });
           pool.ensureUnfundedSize(config.subAccountPoolSize);
-          const pendingLeaseIndices = new Set(
-            stampAttemptJournal
+          // Classification is deliberately irrelevant here: every old obligation pins its lease.
+          const pendingLeaseIndices = new Set([
+            ...stampAttemptJournal
               .getAll()
-              .flatMap((attempt) => attempt.leaseIndices)
-          );
+              .flatMap((attempt) => attempt.leaseIndices),
+            ...topicOwner.topicOperationJournal
+              .getAll()
+              .map((operation) => operation.leaseIndex),
+          ]);
           for (const record of pool.records()) {
             if (
               record.status === "in-use" &&
@@ -1397,11 +1461,6 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             }
           }
           await pool.flush();
-          const changePool = new MonadChangePool({
-            keyring: changeKeyring,
-            store: changeStore,
-          });
-          const leaseManager = new SubAccountLeaseManager(pool);
           const rpcUrl =
             demoRpcUrl ??
             `${config.relayBaseUrl.replace(
@@ -1593,14 +1652,16 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             stampPaymentJournal,
             stampAttemptJournal,
             relayBaseUrl: config.relayBaseUrl,
-            cborNetwork:
-              config.networkTag === "MON1" ? "monad-mainnet" : "monad-testnet",
+            forumBurnAddress: config.stampBurnAddress,
+            forumChainId: BigInt(config.chainId),
+            cborNetwork: forumPolicy.network,
             close() {
               if (closing !== undefined) return closing;
               closedWallets.add(wallet);
               closing = (async () => {
                 await walletSendQueues.get(wallet);
                 try {
+                  await topicOwner!.close();
                   const results = await closeStores();
                   const failure = results.find(
                     (result) => result.status === "rejected"
@@ -1613,6 +1674,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                   provider.destroy();
                   httpClient.destroy();
                   material.dispose();
+                  privateTopicWallets.delete(wallet);
                   walletMaterial.delete(wallet);
                 }
               })();
@@ -1620,6 +1682,12 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             },
           };
           let closing: Promise<void> | undefined;
+          topicOwnerWallet = wallet;
+          privateTopicWallets.set(wallet, {
+            ...wallet,
+            walletState: topicOwner,
+            topicOperationJournal: topicOwner.topicOperationJournal,
+          });
           walletMaterial.set(wallet, material);
           mainAccountAdmissions.set(wallet, admission);
           if (material.messagingRoot !== undefined) typedWallets.add(wallet);
@@ -1628,6 +1696,11 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           }
           return wallet;
         } catch (error) {
+          try {
+            await topicOwner?.close();
+          } catch {
+            /* preserve the original opening error */
+          }
           await closeStores();
           destroyProvider?.();
           destroyHttpClient?.();

@@ -7,6 +7,7 @@
             filled
             class="q-mx-sm q-pa-none"
             v-model="selectedTopic"
+            data-test="forum-topic"
             label="Topic"
             style="width: 250px"
             @keyup.enter.prevent="refreshContent"
@@ -40,6 +41,7 @@
           <q-input
             class="q-mx-sm q-pa-none"
             v-model="threshold"
+            data-test="forum-threshold"
             :label="`Vote Threshold (${chainUnit})`"
             style="width: 250px"
             use-input
@@ -73,6 +75,12 @@
           @click="setTopic(name)"
         >
           <q-item-section>{{ name }}</q-item-section>
+          <q-item-section side v-if="discoveredTopics[name]">
+            <span data-test="forum-topic-count" :data-topic="name">{{
+              discoveredTopics[name].postCount
+            }}</span>
+            <span class="text-caption">{{ $t('forum.postsLabel') }}</span>
+          </q-item-section>
         </q-item>
         <q-item v-if="discoveredTopicNames.length === 0">
           <q-item-section class="text-grey"
@@ -121,6 +129,11 @@ export default defineComponent({
     return {
       topics,
       discoveredTopicNames,
+      discoveredTopics: computed(() =>
+        topicStore.discoveryStatus === 'verified'
+          ? topicStore.discoveredTopics
+          : ({} as typeof topicStore.discoveredTopics),
+      ),
       storeSelectedTopic: selectedTopic,
       storeSortMode: sortMode,
       storeDuration: duration,
@@ -188,9 +201,13 @@ export default defineComponent({
     },
     threshold: {
       set(newVal?: string) {
-        const threshold = Number.parseFloat(newVal ?? '0')
-        const newThreshold = Number.isNaN(threshold) ? 0 : threshold
-        this.setVoteThreshold(newThreshold)
+        const value = String(newVal ?? '0')
+        try {
+          activeChain.fromDisplayAmount(value)
+          this.setVoteThreshold(value)
+        } catch {
+          this.setVoteThreshold('0')
+        }
       },
       get(): string {
         return this.storeVoteThreshold.toString()

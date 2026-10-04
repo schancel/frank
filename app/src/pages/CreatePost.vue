@@ -40,12 +40,14 @@
         <q-input
           label="Offering"
           v-model="offering"
+          data-test="post-offering"
           :suffix="chainUnit"
-          :rules="[val => Number.parseFloat(val) || 'Invalid number']"
+          :rules="[validateOffering]"
           lazy-rules
         />
         <q-select
           label="Topic"
+          data-test="post-topic"
           :disable="!!parentDigest"
           :model-value="topic"
           @update:model-value="setTopic"
@@ -72,7 +74,7 @@
             </q-item>
           </template>
         </q-select>
-        <q-input label="Post Title" v-model="title" />
+        <q-input label="Post Title" v-model="title" data-test="post-title" />
         <q-input
           label="URL"
           v-model="url"
@@ -84,7 +86,12 @@
         card's own width -- so it went side-by-side even when the card itself was narrow, squeezing
         both halves uncomfortably. Stacked vertically instead, always, regardless of viewport. -->
         <q-card-section class="col-12 q-pa-none">
-          <q-input label="Message" v-model="message" type="textarea" />
+          <q-input
+            label="Message"
+            v-model="message"
+            data-test="post-message"
+            type="textarea"
+          />
         </q-card-section>
 
         <q-card-section class="col-12 q-pa-none q-pt-md" v-show="this.message">
@@ -112,6 +119,14 @@
           {{ $t('stampPreparation.postOutcomeUnknown') }}
         </div>
         <q-btn
+          v-if="outcomeUnknown"
+          :label="$t('stampPreparation.refreshStatus')"
+          data-test="post-status-refresh"
+          :loading="refreshingStatus"
+          :disable="refreshingStatus"
+          @click="refreshPostStatus"
+        />
+        <q-btn
           ref="composeFocusTarget"
           @click="back"
           label="back"
@@ -121,6 +136,7 @@
         />
         <q-btn
           type="submit"
+          data-test="post-submit"
           label="Post"
           color="primary"
           class="q-ma-sm"
@@ -149,7 +165,7 @@ import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { activeChain } from '@frank/wallet/chain'
 import type { WalletHandle } from '@frank/wallet/chain'
-import { displayToSafeRawAmount } from 'src/utils/chain-amount'
+import { displayToRawAmount } from 'src/utils/chain-amount'
 import { accountStatus } from '../accounts/session'
 import type { ForumPostReservationStatus } from 'src/stores/forum'
 
@@ -211,6 +227,7 @@ export default defineComponent({
       chainUnit: activeChain.unit,
       posting: false,
       outcomeUnknown: false,
+      refreshingStatus: false,
       preparationStatus: null as string | null,
       activeSubmissionId: null as number | null,
       componentMounted: false,
@@ -237,6 +254,7 @@ export default defineComponent({
     this.routeEpoch += 1
     this.parentRouteEpoch += 1
     this.activeSubmissionId = null
+    this.refreshingStatus = false
     this.parentFocusHandoffId = null
   },
   computed: {
@@ -332,6 +350,7 @@ export default defineComponent({
       }
     },
     'walletRevision'() {
+      this.refreshingStatus = false
       this.routeEpoch += 1
       this.activeSubmissionId = null
       this.activeWallet = null
@@ -344,6 +363,37 @@ export default defineComponent({
     },
   },
   methods: {
+    async refreshPostStatus() {
+      if (this.refreshingStatus) return
+      const routeEpoch = this.routeEpoch
+      const revision = this.walletRevision
+      const current = () =>
+        this.componentMounted &&
+        this.routeEpoch === routeEpoch &&
+        this.walletRevision === revision
+      this.refreshingStatus = true
+      try {
+        const wallet = await useActiveWallet()
+        if (!current()) return
+        await useForumStore().refreshOperationStatus({ wallet })
+        // Reconciliation does not prove which session reservation completed; retain unknown
+        // ownership until an exact operation result can identify it.
+      } catch (error) {
+        if (current()) errorNotify(error)
+      } finally {
+        if (current()) this.refreshingStatus = false
+      }
+    },
+    validateOffering(value: string) {
+      try {
+        const amount = displayToRawAmount(activeChain, String(value))
+        return (
+          (amount > 0n && amount <= 9223372036854775807n) || 'Invalid amount'
+        )
+      } catch {
+        return 'Invalid amount'
+      }
+    },
     submissionDestination(parentDigest: string | undefined) {
       return parentDigest ? `reply:${parentDigest}` : 'top-level'
     },
@@ -389,6 +439,7 @@ export default defineComponent({
       }
     },
     syncParentDigest(parentDigest: string | undefined) {
+      this.refreshingStatus = false
       this.routeEpoch += 1
       this.parentRouteEpoch += 1
       this.parentFocusHandoffId = null
@@ -428,7 +479,14 @@ export default defineComponent({
       const retryOwnedFocus = retryElement?.contains(document.activeElement)
       this.parentLoading = true
       try {
-        await this.fetchMessage({ payloadDigest: requestedParent })
+        await this.fetchMessage({
+          payloadDigest: requestedParent,
+          isCurrent: () =>
+            this.componentMounted &&
+            this.parentRouteEpoch === requestedParentRouteEpoch &&
+            this.parentDigest === requestedParent &&
+            this.activeParentRequestId === requestId,
+        })
       } catch {
         // The visible terminal state supplies the retry path.
       } finally {
@@ -536,9 +594,9 @@ export default defineComponent({
 
       const submittedTopic = this.topic
       const submittedParentDigest = this.parentDigest
-      let submittedOffering: number
+      let submittedOffering: bigint
       try {
-        submittedOffering = displayToSafeRawAmount(
+        submittedOffering = displayToRawAmount(
           activeChain,
           this.offering.toString(),
         )

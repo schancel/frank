@@ -2,6 +2,7 @@
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
+    defaultTopicVoteValue: 100_000_000n,
     name: 'test',
     parseAddress: jest.fn(),
     formatAddress: jest.fn(),

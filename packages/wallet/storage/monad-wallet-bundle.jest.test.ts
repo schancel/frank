@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import level from 'level'
+import { Wallet, Transaction } from 'ethers'
 
 import { MonadHdKeyring } from '../monad-hd-keyring'
 import { MonadChangeKeyring } from '../monad-change-keyring'
@@ -284,5 +285,56 @@ describe('MonadWalletPersistenceBundle', () => {
         'Wallet has 1 in-use funding account(s) without a local exact-set attempt: 0',
       )
     })
+  })
+})
+
+// Historical topic authority is a reference even when no runtime supports its request bytes.
+describe('Forum retention-only journal obligations', () => {
+  it('preserves old rows through actual reopen, orphan checking and terminal compaction', async () => {
+    const location = mkdtempSync(join(tmpdir(), 'forum-retained-bundle-'))
+    let bundle: MonadWalletPersistenceBundle | undefined
+    try {
+      bundle = await openMonadWalletBundle({ location, seed: { mnemonic: TEST_MNEMONIC }, mode: 'create' })
+      bundle.pool.ensureSize(4)
+      const formats = [undefined, 'protobuf', 'cbor'] as const
+      const rows = formats.map((writeFormat, index) => ({
+        version: 1 as const, kind: 'post' as const, requestBytes: [255, index],
+        ...(writeFormat ? { writeFormat } : {}), leaseIndex: index,
+        senderAddress: bundle!.pool.getRecord(index)!.address, rawTx: 'old signed authority',
+        txHash: '0x' + index.toString(16).padStart(64, '0'), valueWei: '7', direction: 'up' as const,
+        payloadHashHex: 'ab'.repeat(32),
+      }))
+      for (const row of rows) {
+        bundle.leaseManager.acquireForIndex(row.leaseIndex)
+        await bundle.topicOperationJournal.put(row)
+      }
+      await bundle.pool.flush()
+      const prior = JSON.stringify(bundle.topicOperationJournal.getAll())
+      await bundle.close()
+      bundle = await openMonadWalletBundle({ location, seed: { mnemonic: TEST_MNEMONIC } })
+      expect(JSON.stringify(bundle.topicOperationJournal.getAll())).toBe(prior)
+      expect(() => bundle!.assertNoOrphanedLeases()).not.toThrow()
+      // All three historical formats pin their indices even when already terminal.
+      for (let index = 0; index < 4; index++) {
+        const key = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC).deriveSubAccount(index)
+        const signer = new Wallet(key.privateKey)
+        const fields = { chainId: 10143n, value: 7n, nonce: 0, gasLimit: 21000n, gasPrice: 1n }
+        const fundingRaw = await signer.signTransaction({ ...fields, to: key.address })
+        const spendRaw = await signer.signTransaction({ ...fields, to: '0x000000000000000000000000000000000000dEaD', nonce: 1 })
+        bundle.pool.recordFundingTransaction(index, { rawTx: fundingRaw, txHash: Transaction.from(fundingRaw).hash!, valueWei: '7' })
+        bundle.pool.recordSpendTransaction(index, { rawTx: spendRaw, txHash: Transaction.from(spendRaw).hash!, valueWei: '7' })
+        bundle.pool.recordRecoveryDisposition(index, { kind: 'none', valueWei: '0' })
+        bundle.pool.setStatus(index, 'retired')
+      }
+      await bundle.pool.flush()
+      expect(await bundle.compactTerminalAccounts(8)).toBe(1)
+      expect(bundle.pool.getRecord(3)).toBeUndefined()
+      expect(JSON.stringify(bundle.topicOperationJournal.getAll())).toBe(prior)
+      expect(bundle.pool.records().map(r => r.status)).toEqual(['retired', 'retired', 'retired'])
+      await bundle.close()
+      bundle = await openMonadWalletBundle({ location, seed: { mnemonic: TEST_MNEMONIC } })
+      expect(JSON.stringify(bundle.topicOperationJournal.getAll())).toBe(prior)
+      expect(bundle.pool.records().map(r => r.status)).toEqual(['retired', 'retired', 'retired'])
+    } finally { await bundle?.close(); rmSync(location, { recursive: true, force: true }) }
   })
 })

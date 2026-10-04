@@ -8,7 +8,7 @@ interface OutgoingTopicOperationBase {
   version: 1
   requestBytes: number[]
   /** Absent on deployed version-1 rows, which are legacy protobuf operations. */
-  writeFormat?: 'protobuf' | 'cbor'
+  writeFormat?: 'protobuf' | 'cbor' | 'forum-cbor'
   leaseIndex: number
   senderAddress: string
   rawTx: string
@@ -100,7 +100,8 @@ export function assertOutgoingTopicOperation(
     value.version !== 1 ||
     (value.writeFormat !== undefined &&
       value.writeFormat !== 'protobuf' &&
-      value.writeFormat !== 'cbor') ||
+      value.writeFormat !== 'cbor' &&
+      value.writeFormat !== 'forum-cbor') ||
     !Array.isArray(value.requestBytes) ||
     value.requestBytes.length === 0 ||
     value.requestBytes.some(

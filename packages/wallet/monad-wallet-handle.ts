@@ -44,9 +44,9 @@ export interface MonadWalletHandle {
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` -- each client
    * trims its own trailing slash, so this may or may not have one. */
   relayBaseUrl: string
-  /** Frank-CBOR network identifier. Defaults to `monad-testnet` for compatibility with existing
-   * test/demo handles; production composition should set it explicitly. */
+  /** Explicit Frank-CBOR network identifier. Canonical Forum operations require it. */
   cborNetwork?: string
-  /** Topic write transport. CBOR remains explicit opt-in until frozen read schemas ship. */
-  topicWriteFormat?: 'protobuf' | 'cbor'
+  /** Exact canonical Forum economic policy; required by paid Forum operations and replay. */
+  forumBurnAddress?: string
+  forumChainId?: bigint
 }

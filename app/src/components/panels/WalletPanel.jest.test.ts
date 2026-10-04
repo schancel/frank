@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { ref } from 'vue'
 import Panel from './WalletPanel.vue'
 import en from '../../i18n/en-us'
+import { mutableMessagingState as messaging } from '../../utils/messaging-state'
 const mockEnsure = jest.fn(async () => ({}))
 const mockReceive = '0x1111111111111111111111111111111111111111'
 const mockRefresh = jest.fn(async () => undefined)
@@ -60,13 +61,26 @@ afterEach(() => {
   mockEnsure.mockClear()
   mockLoaded.value = true
   mockError.value = false
+  messaging.status = 'pending'
 })
-test('normal mode has no fake-funding action and accurately disables messaging', () => {
+test('normal mode has no fake-funding action and reports pending messaging', () => {
   const view = render()
   expect(view.find('[data-test="demo-fund"]').exists()).toBe(false)
-  expect(view.text()).toContain('Messaging is unavailable')
+  const notice = view.get('[data-test="messaging-pending"]')
+  expect(notice.attributes('role')).toBe('status')
+  expect(notice.text()).toContain('Messaging is pending')
+  expect(notice.text()).toContain('Settings > Networking')
   expect(view.text()).toContain('cannot recreate')
   expect(mockEnsure).not.toHaveBeenCalled()
+})
+test('the messaging notice is absent once messaging is ready and returns when it stops', async () => {
+  messaging.status = 'ready'
+  const view = render()
+  expect(view.find('[data-test="messaging-pending"]').exists()).toBe(false)
+  expect(view.text()).not.toContain('Messaging is')
+  messaging.status = 'checking'
+  await flushPromises()
+  expect(view.find('[data-test="messaging-pending"]').exists()).toBe(true)
 })
 test('explicit loopback fake mode funds only the distinct native receive address and refreshes balance', async () => {
   process.env.QCLI_FRANK_FAKE_DEMO = 'true'

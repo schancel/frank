@@ -6,7 +6,7 @@
  * configuration at every participant and the browser admitted fresh directory evidence. It never
  * uses display-profile keys or the legacy envelope, and it stops as soon as the account changes.
  */
-import { reactive, readonly, watch } from 'vue'
+import { watch } from 'vue'
 import type { WalletHandle } from '@frank/wallet/chain'
 import {
   installCanonicalDirectory,
@@ -27,25 +27,22 @@ import {
   fetchInstallationSnapshot,
 } from './directory-provisioning'
 import {
+  idleParticipants,
+  messagingState,
+  mutableMessagingState,
+  type MessagingState,
+} from './messaging-state'
+import {
   checkDirectoryReadiness,
   parseCheckpoint,
   preparePublicExport,
   serializeCheckpoint,
   type DirectoryActivation,
-  type ParticipantStatuses,
   type PublicExportFile,
   type ReadinessDeps,
   type ReadinessReason,
 } from './directory-readiness'
 
-export interface MessagingState {
-  status: 'pending' | 'checking' | 'ready'
-  /** Why messaging is pending; `null` before the first check and while ready. */
-  reason: ReadinessReason | null
-  participants: ParticipantStatuses
-  /** Address of the installed bot, shown once messaging is ready. */
-  peerAddress: string | null
-}
 type Stoppable = { stop: () => void }
 interface Live {
   activation: DirectoryActivation
@@ -120,18 +117,10 @@ function productionDeps(): MessagingDeps {
   }
 }
 
-const idle = (): ParticipantStatuses => ({
-  'relay-a': 'unchecked',
-  'relay-b': 'unchecked',
-  'bot': 'unchecked',
-})
-const state = reactive<MessagingState>({
-  status: 'pending',
-  reason: null,
-  participants: idle(),
-  peerAddress: null,
-})
-export const messagingState = readonly(state)
+const idle = idleParticipants
+const state = mutableMessagingState
+export { messagingState }
+export type { MessagingState }
 
 let deps: MessagingDeps | undefined
 let live: Live | undefined

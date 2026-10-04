@@ -73,6 +73,8 @@ export const en = {
     'Browser preview: encrypted local storage does not protect against malicious code in this origin or theft of the whole browser profile. Keep independent backups. Clearing local data can remove access.',
   messaging_is_unavailable_for_typed_accounts_in:
     'Messaging is unavailable for typed accounts in this preview.',
+  messaging_pending_open_settings_networking:
+    'Messaging is pending for this account. Open Settings > Networking.',
   main_wallet: 'Main wallet',
   frank_account_recovery: 'Frank account recovery',
   backup_shares_were_verified_before_activation_keep:
@@ -171,6 +173,8 @@ export const fr = {
     'Aperçu dans le navigateur : le stockage local chiffré ne protège pas contre le code malveillant de cette origine ni le vol du profil complet du navigateur. Conservez des sauvegardes indépendantes. Effacer les données locales peut supprimer l’accès.',
   messaging_is_unavailable_for_typed_accounts_in:
     'La messagerie est indisponible pour les comptes typés dans cet aperçu.',
+  messaging_pending_open_settings_networking:
+    'La messagerie est en attente pour ce compte. Ouvrez Paramètres > Réseau.',
   main_wallet: 'Portefeuille principal',
   frank_account_recovery: 'Récupération du compte Frank',
   backup_shares_were_verified_before_activation_keep:

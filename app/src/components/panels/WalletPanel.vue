@@ -1,7 +1,12 @@
 <template>
   <div class="full-width column col" data-test="wallet-panel">
-    <p class="q-pa-sm" role="status">
-      {{ $t('accountRecovery.messaging_is_unavailable_for_typed_accounts_in') }}
+    <p
+      v-if="messaging.status !== 'ready'"
+      class="q-pa-sm"
+      role="status"
+      data-test="messaging-pending"
+    >
+      {{ $t('accountRecovery.messaging_pending_open_settings_networking') }}
     </p>
     <q-list>
       <q-item
@@ -88,6 +93,9 @@ import {
   accountStatus as account,
 } from '../../accounts/session'
 import { useBalance } from '../../composables/useBalance'
+// The same readiness state Settings > Networking reports; the notice shows only while messaging
+// really is not ready for this account.
+import { messagingState as messaging } from '../../utils/messaging-state'
 import { ensureDemoBalance } from '@frank/bot/demo/demo-funding'
 const { loaded, hasError, formattedBalance, refresh } = useBalance()
 const fakeChain = String(import.meta.env.QCLI_FRANK_FAKE_DEMO) === 'true'

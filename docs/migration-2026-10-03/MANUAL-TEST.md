@@ -88,11 +88,30 @@ relay-b is installed and reports status, but nothing is homed on it and nothing 
 - The console shows "No registered profile found" for the bot; harmless (#835).
 - UI polish is deferred by decision; findings about look and wording are ticketed, not fixed.
 
+## Persona run (2026-10-04, real headless Chrome on this stack)
+
+Worked: a newcomer can complete create → export → `provision` → `fund` → Check → Add Contact →
+first message (the by-hand `provision` path worked first time). Recovery in a fresh profile with a
+different pair of shares gave the same account and balance, and messaging worked again after one
+Check; the bot's replies came back but the user's own sent messages did not. Enter-spam and
+double-click paid once. Offline send failed cleanly; a cut at the PUT retried and paid once. A
+tampered inbox record was not displayed and nothing was paid ("Payload digest mismatch"). A replayed
+PUT was idempotent; a modified one got 409. A non-installed address could not be added or paid.
+
+Will trip you up (fixes in progress on branch `persona-fixes`, not in this checkout yet):
+- Sending while messaging is not Ready shows "Something went wrong" and discards what you typed.
+- The Send button only works with a real mouse press or Enter in the composer.
+- At phone width the Wallet page has no navigation.
+- Pasting several megabytes and pressing Enter blanks that chat permanently on the device.
+- After any outage nothing recovers until you press Check again; `restart-relays` kills the bot
+  (restart it with `stack.mjs bot-start live`, then Check).
+- The gear icon opens a drawer; click Settings again inside it.
+Everything else found (wording, onboarding, accessibility) is in #838.
+
 ## Not proven
 
-- Account recovery in the rendered app, tampered-ciphertext rejection in the app path, relay
-  kill/restart mid-delivery, and the persona reviews: a persona run is in progress; results will be
-  appended here.
+- Behaviour after the one-hour expiry, and a relay killed mid-delivery with store-and-forward
+  (needs #779). Typed wallets cannot yet spend stamps they receive (#837).
 - The chain RPC proxy now authenticates operator-installed directory subjects (needed for anything
   to work). That is an authority change with no unit test yet; it is under independent review as
   part of #833.

@@ -424,6 +424,9 @@ try {
     return {seen:[...seen].sort((a,b)=>a-b),wireCount:window.__forumWire.length};
   })()`)
   assert.deepEqual(audit.seen, [9, 10, 11, 12, 13, 14, 15])
+  console.log('Canonical normal flow witnesses:', audit)
+  await evaluate(`location.hash='#/forum'`)
+  await until(`document.querySelector('a.post-title') && ${forumState}.isRefreshing===false`)
   // Alter relay observation fields only; immutable post bytes and signed author proof remain exact.
   // The single read slot queues the newer generation behind the old HTTP response.
   let held,
@@ -613,7 +616,12 @@ try {
     })
   }
   interceptResponse = async event => {
-    const query = new URL(event.params.request.url).searchParams
+    const url = new URL(event.params.request.url)
+    const query = url.searchParams
+    if (url.pathname !== '/message/monad/topics' || query.get('topic') !== 'news') {
+      await call('Fetch.continueRequest', { requestId: event.params.requestId })
+      return
+    }
     assert.equal(query.get('topic'), 'news')
     if (query.has('cursor')) {
       assert.ok(pagingFixture, 'continuation requires its original first page')

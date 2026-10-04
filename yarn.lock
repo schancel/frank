@@ -2127,6 +2127,16 @@
   resolved "https://registry.yarnpkg.com/@rtsao/scc/-/scc-1.1.0.tgz#927dd2fae9bc3361403ac2c7a00c32ddce9ad7e8"
   integrity sha512-zt6OdqaDoOnJ1ZYsCYGt9YmWzDXl4vQdKTyJev62gFhRGKdx7mcT54V9KIjg+d2wi9EXsPvAPKe7i7WjfVWB8g==
 
+"@silencelaboratories/dkls-wasm-ll-node@1.2.0":
+  version "1.2.0"
+  resolved "https://registry.yarnpkg.com/@silencelaboratories/dkls-wasm-ll-node/-/dkls-wasm-ll-node-1.2.0.tgz#2d93c59fee9529c311307068d3328e9934b8dff0"
+  integrity sha512-99SdddSs3SWMoYFCPeI3r9Ze41Jl3B10Bm7PnS0e6MfXlFe6sn7TLMkqfulfVp37VvYc3Zx/1+hYwLWc7zuyTg==
+
+"@silencelaboratories/dkls-wasm-ll-web@1.2.0":
+  version "1.2.0"
+  resolved "https://registry.yarnpkg.com/@silencelaboratories/dkls-wasm-ll-web/-/dkls-wasm-ll-web-1.2.0.tgz#8ee4e4af18f53f2b816e8505f6a3b0d944919899"
+  integrity sha512-ZOoDpRzKbL0fmval85PGXH5WC0WOpnXoozl8YDBK6o+Lw8JvQ2Y5/xeu+N5PCts1eFGoSyzZycpJXJ9i6x5+nA==
+
 "@sinclair/typebox@^0.27.8":
   version "0.27.12"
   resolved "https://registry.yarnpkg.com/@sinclair/typebox/-/typebox-0.27.12.tgz#0cacd3cff047a32936b1ace47ea7c86eaab60a7f"

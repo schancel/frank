@@ -115,6 +115,10 @@ pub struct Db {
     monad_topic_lock: Mutex<()>,
     /// Lazy separate store; ordinary legacy startup never opens or modifies preview storage.
     directory_preview_owner: super::directory_preview_owner::Owner,
+    /// Lazy separate store of self-published subjects. Kept out of the registry's own column
+    /// families so an earlier relay version can still open the registry.
+    directory_subjects: std::sync::OnceLock<rocksdb::DB>,
+    directory_subjects_lock: Mutex<()>,
 }
 
 /// Errors indicating something went wrong with the database itself.
@@ -155,7 +159,6 @@ impl Db {
         DbMonadTopicPosts::add_cfs(&mut cfs);
         DbMonadTopicVotes::add_cfs(&mut cfs);
         DbMonadProfiles::add_cfs(&mut cfs);
-        super::directory_subjects::DbDirectorySubjects::add_cfs(&mut cfs);
         let db = Self::open_with_cfs(path, cfs)?;
         db.monad_outbox()
             .migrate_legacy_delivered_ownership(limits)?;
@@ -184,7 +187,23 @@ impl Db {
     pub(crate) fn directory_subjects(
         &self,
     ) -> Result<super::directory_subjects::DbDirectorySubjects<'_>> {
-        super::directory_subjects::DbDirectorySubjects::new(self)
+        if self.directory_subjects.get().is_none() {
+            let _guard = self
+                .directory_subjects_lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self.directory_subjects.get().is_none() {
+                let path = std::fs::canonicalize(self.db.path())
+                    .wrap_err(RocksDb)?
+                    .join(super::directory_subjects::STORE);
+                let _ = self
+                    .directory_subjects
+                    .set(super::directory_subjects::open(&path)?);
+            }
+        }
+        super::directory_subjects::DbDirectorySubjects::new(
+            self.directory_subjects.get().ok_or(RocksDb)?,
+        )
     }
 
     /// Returns `DbTopics`, allowing access to registry metadata.
@@ -234,6 +253,8 @@ impl Db {
             monad_profile_lock: Mutex::new(()),
             monad_topic_lock: Mutex::new(()),
             directory_preview_owner: super::directory_preview_owner::Owner::new(registry_path),
+            directory_subjects: std::sync::OnceLock::new(),
+            directory_subjects_lock: Mutex::new(()),
         })
     }
 

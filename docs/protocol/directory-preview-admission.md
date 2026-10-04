@@ -147,9 +147,11 @@ strict accepted-head requirement; they cannot be downgraded to proof-only
 state. Both kinds require an actual marked enrollment and exact retained
 evidence, so neither creates permission to bootstrap a missing database.
 
-The relay keeps each subject's checkpoint in its own registry database
-(`directory_subjects_v1`, with `directory_addresses_v1` mapping the 20-byte
-address to P). That protects against a lost or partial evidence store, not
+The relay keeps each subject's checkpoint in its own store inside the
+registry path (`directory-subjects-v1.rocksdb`: `directory_subjects_v1`, with
+`directory_addresses_v1` mapping the 20-byte address to P). It is a separate
+store so the registry's own column families stay those an earlier relay
+version can open. That protects against a lost or partial evidence store, not
 against rolling the whole data directory back: a caller that needs that
 protection must retain checkpoints **outside this database's rollback
 domain**. Ordinary RocksDB cannot detect complete disk rollback/deletion on

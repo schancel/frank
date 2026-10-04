@@ -8,9 +8,11 @@ use bitcoinsuite_error::Result;
 use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode, WriteBatch, WriteOptions};
 use serde::{Deserialize, Serialize};
 
-use super::db::{Db, CF};
+use super::db::CF;
 use crate::directory_admission::Checkpoint;
 
+/// Directory inside the registry path holding this store.
+pub(crate) const STORE: &str = "directory-subjects-v1.rocksdb";
 pub(crate) const CF_DIRECTORY_SUBJECTS_V1: &str = "directory_subjects_v1";
 pub(crate) const CF_DIRECTORY_ADDRESSES_V1: &str = "directory_addresses_v1";
 
@@ -23,8 +25,19 @@ pub(crate) struct SubjectRow {
     pub(crate) checkpoint: Checkpoint,
 }
 
+/// Open the store, creating it on first use.
+pub(crate) fn open(path: &std::path::Path) -> Result<rocksdb::DB> {
+    let mut options = rocksdb::Options::default();
+    options.create_if_missing(true);
+    options.create_missing_column_families(true);
+    let cfs = [CF_DIRECTORY_SUBJECTS_V1, CF_DIRECTORY_ADDRESSES_V1]
+        .iter()
+        .map(|name| ColumnFamilyDescriptor::new(*name, rocksdb::Options::default()));
+    Ok(rocksdb::DB::open_cf_descriptors(&options, path, cfs)?)
+}
+
 pub(crate) struct DbDirectorySubjects<'a> {
-    db: &'a Db,
+    db: &'a rocksdb::DB,
     subjects: &'a CF,
     addresses: &'a CF,
 }
@@ -42,25 +55,23 @@ fn key(network: &str, tail: &[u8]) -> Vec<u8> {
 }
 
 impl<'a> DbDirectorySubjects<'a> {
-    pub(crate) fn new(db: &'a Db) -> Result<Self> {
+    pub(crate) fn new(db: &'a rocksdb::DB) -> Result<Self> {
+        let cf = |name: &str| {
+            db.cf_handle(name)
+                .ok_or_else(|| super::db::DbError::NoSuchColumnFamily(name.to_string()))
+        };
         Ok(Self {
             db,
-            subjects: db.cf(CF_DIRECTORY_SUBJECTS_V1)?,
-            addresses: db.cf(CF_DIRECTORY_ADDRESSES_V1)?,
+            subjects: cf(CF_DIRECTORY_SUBJECTS_V1)?,
+            addresses: cf(CF_DIRECTORY_ADDRESSES_V1)?,
         })
     }
 
-    pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
-        for name in [CF_DIRECTORY_SUBJECTS_V1, CF_DIRECTORY_ADDRESSES_V1] {
-            columns.push(ColumnFamilyDescriptor::new(
-                name,
-                rocksdb::Options::default(),
-            ));
-        }
-    }
-
     pub(crate) fn get(&self, network: &str, subject: &[u8]) -> Result<Option<SubjectRow>> {
-        match self.db.get(self.subjects, key(network, subject))? {
+        match self
+            .db
+            .get_pinned_cf(self.subjects, key(network, subject))?
+        {
             Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
             None => Ok(None),
         }
@@ -85,7 +96,7 @@ impl<'a> DbDirectorySubjects<'a> {
         }
         let mut options = WriteOptions::default();
         options.set_sync(true);
-        self.db.rocksdb().write_opt(batch, &options)?;
+        self.db.write_opt(batch, &options)?;
         Ok(())
     }
 
@@ -96,7 +107,7 @@ impl<'a> DbDirectorySubjects<'a> {
         batch.delete_cf(self.addresses, key(network, address));
         let mut options = WriteOptions::default();
         options.set_sync(true);
-        self.db.rocksdb().write_opt(batch, &options)?;
+        self.db.write_opt(batch, &options)?;
         Ok(())
     }
 
@@ -107,7 +118,7 @@ impl<'a> DbDirectorySubjects<'a> {
     ) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
-            .get(self.addresses, key(network, address))?
+            .get_pinned_cf(self.addresses, key(network, address))?
             .map(|bytes| bytes.to_vec())
             .filter(|bytes| bytes.len() == 33))
     }
@@ -115,11 +126,7 @@ impl<'a> DbDirectorySubjects<'a> {
     /// Number of subjects across all networks. One bounded key scan at startup.
     pub(crate) fn count(&self) -> Result<u64> {
         let mut count = 0u64;
-        for row in self
-            .db
-            .rocksdb()
-            .iterator_cf(self.subjects, IteratorMode::Start)
-        {
+        for row in self.db.iterator_cf(self.subjects, IteratorMode::Start) {
             row?;
             count += 1;
         }
@@ -138,7 +145,6 @@ impl<'a> DbDirectorySubjects<'a> {
         let mut out = Vec::new();
         for row in self
             .db
-            .rocksdb()
             .iterator_cf(self.subjects, IteratorMode::From(&from, Direction::Forward))
         {
             let (key, value) = row?;

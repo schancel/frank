@@ -848,4 +848,149 @@ describe('durable unsigned canonical intent', () => {
       ).rejects.toThrow('conflict')
     })
   })
+  it.each(['unsigned', 'signed-member', 'promoted'] as const)(
+    'retains exact unsigned selection and fixed bytes after %s SIGKILL without clean Close',
+    async phase => {
+      await withCanonicalJournal(async (journal, location) => {
+        const {
+          fixture: original,
+          input,
+          raw,
+        } = await unsignedIntentFixture(journal)
+        const fixture = { ...original, prepared: input.prepared }
+        await journal.Close()
+        const moduleUrl = pathToFileURL(
+          join(__dirname, 'stamp-attempt-journal.ts'),
+        ).href
+        const child = spawn(
+          process.execPath,
+          [
+            '--import',
+            'tsx',
+            '--input-type=module',
+            '-e',
+            `
+        import { LevelCanonicalStampAttemptJournal } from ${JSON.stringify(
+          moduleUrl,
+        )};
+        import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport';
+        const input=JSON.parse(process.env.CANONICAL_JOURNAL_FIXTURE);
+        const prepared={...input.prepared};
+        for(const k of ['payload','context','economicBinding']) prepared[k]=new Uint8Array(Buffer.from(prepared[k],'base64'));
+        const request=restoreCanonicalRequest({body:new Uint8Array(Buffer.from(input.body,'base64')),contentType:input.contentType});
+        const journal=new LevelCanonicalStampAttemptJournal(process.env.CANONICAL_JOURNAL_LOCATION);
+        await journal.Open();
+        const row=await journal.prepareIntent({prepared,consumerId:input.consumerId,boundary:input.boundary,construction:new Uint8Array(Buffer.from(input.construction,'base64')),members:input.members});
+        if(process.env.CANONICAL_JOURNAL_PHASE!=='unsigned') await journal.checkpointSignedMember(row.attemptRef,0,input.raw);
+        if(process.env.CANONICAL_JOURNAL_PHASE==='promoted') await journal.promoteIntent(row.attemptRef,request);
+        console.log('DURABLE '+row.attemptRef); setInterval(()=>{},1000);
+      `,
+          ],
+          {
+            cwd: join(__dirname, '../../..'),
+            env: {
+              ...process.env,
+              TSX_TSCONFIG_PATH: join(__dirname, '../../bot/tsconfig.json'),
+              CANONICAL_JOURNAL_LOCATION: location,
+              CANONICAL_JOURNAL_PHASE: phase,
+              CANONICAL_JOURNAL_FIXTURE: JSON.stringify({
+                prepared: {
+                  ...fixture.prepared,
+                  payload: Buffer.from(fixture.prepared.payload).toString(
+                    'base64',
+                  ),
+                  context: Buffer.from(fixture.prepared.context).toString(
+                    'base64',
+                  ),
+                  economicBinding: Buffer.from(
+                    fixture.prepared.economicBinding,
+                  ).toString('base64'),
+                },
+                body: Buffer.from(fixture.request.body).toString('base64'),
+                contentType: fixture.request.contentType,
+                reservations: fixture.reservations,
+                consumerId: fixture.consumerId,
+                boundary: input.boundary,
+                construction: Buffer.from(input.construction).toString(
+                  'base64',
+                ),
+                members: input.members,
+                raw,
+              }),
+            },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        )
+        let stderr = '',
+          output = ''
+        child.stderr!.on('data', chunk => {
+          stderr += chunk.toString()
+        })
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(
+              () =>
+                reject(new Error(`child durable barrier timeout: ${stderr}`)),
+              10000,
+            )
+            child.on('error', error => {
+              clearTimeout(timer)
+              reject(error)
+            })
+            child.on('exit', code => {
+              clearTimeout(timer)
+              reject(new Error(`child exited ${code}: ${stderr}`))
+            })
+            child.stdout!.on('data', chunk => {
+              output += chunk.toString()
+              if (output.includes('DURABLE ')) {
+                clearTimeout(timer)
+                resolve()
+              }
+            })
+          })
+        } finally {
+          const exit = new Promise<void>(resolve => {
+            if (child.exitCode !== null || child.signalCode !== null) resolve()
+            else child.once('exit', () => resolve())
+          })
+          if (child.exitCode === null && child.signalCode === null)
+            child.kill('SIGKILL')
+          await exit
+          await journal.Open()
+        }
+        expect(child.signalCode).toBe('SIGKILL')
+        expect(child.exitCode).toBeNull()
+        if (phase === 'promoted') {
+          const row = journal.lookup(input.prepared)!
+          expect(row.request.body).toEqual(fixture.request.body)
+          expect(row.request.contentType).toBe(fixture.request.contentType)
+          expect(row.reservations).toEqual(fixture.reservations)
+          expect(row.terminal).toBeNull()
+          expect(row.cleanupComplete).toBe(false)
+          expect(journal.getIntents()).toEqual([])
+          await expect(
+            journal.beginReplay({ attemptRef: row.attemptRef }),
+          ).rejects.toThrow('replay')
+        } else {
+          const intent = journal.lookupIntent(input.prepared)!
+          expect(intent.prepared).toEqual(input.prepared)
+          expect(intent.boundary).toBe(input.boundary)
+          expect(intent.construction).toEqual(input.construction)
+          expect(intent.members).toEqual(
+            input.members.map(member => ({
+              ...member,
+              rawTx: phase === 'signed-member' ? raw : null,
+            })),
+          )
+          expect(intent.consumerId).toBe(input.consumerId)
+          expect(journal.getAll()).toEqual([])
+        }
+        if (phase === 'promoted')
+          expect(journal.reconcile([])[0].state).toBe('hold')
+        else expect(journal.lookup(input.prepared)).toBeUndefined()
+      })
+    },
+    20000,
+  )
 })

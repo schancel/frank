@@ -364,7 +364,33 @@ async fn main() -> Result<()> {
         bitcoin_proxy,
     };
 
-    let router = server.into_router();
+    let directory = if let Some(config) = conf.registry.directory.clone() {
+        if !conf.host.ip().is_loopback() {
+            return Err(bitcoinsuite_error::Report::msg(
+                "Directory backend requires authenticated loopback HTTPS front",
+            ));
+        }
+        let (runtime, ready) = cashweb_registry::directory_runtime::DirectoryRuntime::start(
+            Arc::clone(&registry),
+            conf.registry.db_path.clone(),
+            config,
+        )
+        .map_err(|_| bitcoinsuite_error::Report::msg("Directory runtime unavailable"))?;
+        let runtime = Arc::new(runtime);
+        match ready.await {
+            Ok(Ok(())) => Some(runtime),
+            _ => {
+                runtime.begin_shutdown();
+                runtime.wait_stopped().await;
+                return Err(bitcoinsuite_error::Report::msg(
+                    "Directory trust/continuity unavailable",
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    let router = server.into_router_with_directory(directory.clone());
     info!("Listening on {}", conf.host);
     let server = axum::Server::bind(&conf.host)
         .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>());
@@ -373,6 +399,17 @@ async fn main() -> Result<()> {
         result = &mut server => Some(result),
         _ = shutdown_signal() => None,
     };
+    if let Some(runtime) = directory {
+        runtime.begin_shutdown();
+        // A drain observation timeout is not cancellation: retain the owner and keep waiting.
+        if tokio::time::timeout(Duration::from_secs(60), runtime.wait_stopped())
+            .await
+            .is_err()
+        {
+            tracing::warn!("Directory owner still draining");
+            runtime.wait_stopped().await;
+        }
+    }
     if let Some(worker) = outbox_worker {
         worker.shutdown().await;
     }

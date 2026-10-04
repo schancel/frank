@@ -219,6 +219,18 @@ impl Registry {
         }
     }
 
+    /// Open the public admission facade without exposing the registry database.
+    pub fn directory_preview(
+        &self,
+        anchor: crate::directory_admission::Anchor,
+        mode: crate::directory_admission::OpenMode,
+    ) -> std::result::Result<
+        crate::directory_admission::Directory<'_>,
+        crate::directory_admission::AdmissionError,
+    > {
+        self.db.directory_preview(anchor, mode)
+    }
+
     /// Read a signed [`proto::AddressMetadata`] entry from the database.
     /// [`None`] if no such entry exists.
     pub fn get_metadata(

@@ -282,3 +282,48 @@ See the [open issues](https://github.com/schancel/frank/issues) and [PLAN.md](PL
 ## Origins and licensing
 
 Frank is derived from Stamp and CashWeb. The application and extracted protocol packages retain their respective upstream licensing boundaries; consult the package-level documentation and source headers before redistribution.
+
+### Explicit directory Stage A
+
+Directory publication is opt-in and separate from profiles, the trust probe and direct-message
+activation. The three routes are `PUT /directory/v1/:network/:subject/head`, `GET` on that head,
+and `GET /directory/v1/:network/:subject/statements/:t1`. Successful bodies are exact
+`application/vnd.frank.cbor` attestations. `x-frank-directory-evidence` distinguishes
+`fresh-current` from `historical`; historical bytes grant no fresh routing authority.
+
+An operator must supply `[registry.directory]` with an absolute `clock_file` containing trusted
+Unix nanoseconds and a complete `[[registry.directory.principals]]` list (maximum 1024). Each
+principal supplies `network`, `subject`, `revision_zero`, `manifest_identity`, `relay_id`,
+`relay_identity`, the exact authenticated HTTPS `endpoint`, decimal `binding_expiry_ns`,
+`bundle_root`, an external `continuity_file`, and explicit `mode = "new"` or `"reopen"`.
+These are installed trust facts, never values inferred from PUT bytes or a URL. Writable database
+and continuity paths must remain outside the immutable bundle; continuity also remains outside
+the database rollback domain. This Rust continuity envelope retains the full public checkpoint
+and installed identity; it is not the TS demo continuity JSON representation. After enrollment,
+restart with `reopen`; missing/corrupt continuity is operator resolution, never permission to
+reset or enroll again.
+
+The Rust backend requires a loopback bind when directory routes are enabled. In the explicit
+`--directory-admission /absolute/public-config.json` demo mode, adding
+`"routeTransport":{"backendUrl":"http://127.0.0.1:18098"}` starts a distinct HTTPS front after
+stopping the trust probe. It uses the installed bundle's exact endpoint and certificate, reserves
+the bundle listener exclusively, and preserves browser CORS headers. Run the configured Rust
+backend separately and stop it gracefully after stopping the front. The original trust probe's
+3s/5s limits remain intact; the actual directory front allows 70s socket/upstream inactivity,
+while request-body collection stays bounded to 262144 bytes and 5s.
+
+One native owner serves every directory operation for the owning registry, with eight pending
+slots reserved before buffering bodies. Response waiting is 60s, including queue/body time;
+client transport waiting is 65s. Started timeout/disconnect means `outcome-unknown`: the owner
+continues through checkpoint completion. Shutdown closes acceptance, cancels queued jobs and
+waits for the started operation; a 60s drain observation never aborts it. These are operational
+budgets, not freshness extensions or completion guarantees.
+
+`packages/cashweb/relay/directory-client.ts` takes an independently authenticated HTTPS fetch
+function, an existing public `DirectoryStore`, a fresh context provider, and an external
+checkpoint saver. It selects no storage platform and automatically retries nothing. Retain
+`preparePut`'s exact bytes/T1 and prior checkpoint. After an uncertain attempt, explicitly fetch
+and independently admit any required catch-up chain/current, then compare exact retained
+historical evidence using `resolve`. Historical absence while an original operation might still
+run is not proof of cancellation. An old duplicate returns the actual fresh retained head; it
+never resurrects that old record or calls `advance` again at the history cap.

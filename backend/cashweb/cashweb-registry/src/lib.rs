@@ -9,6 +9,7 @@
 //! It allows storing and retrieving metadata by addresses (scripts).
 
 pub mod directory_admission;
+pub mod directory_runtime;
 pub mod disabled_chain_adapter;
 pub mod http;
 pub mod lotus_adapter;

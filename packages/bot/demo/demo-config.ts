@@ -391,6 +391,8 @@ export interface DirectoryDemoConfig {
   intent: 'new' | 'reopen'
   nowNs: bigint
   statementHex?: string
+  /** Explicit loopback backend for the distinct authenticated Stage A HTTPS front. */
+  routeTransport?: { backendUrl: string }
 }
 export function resolveDirectoryDemoConfig(
   input: unknown,
@@ -451,8 +453,14 @@ export function resolveDirectoryDemoConfig(
     throw new DemoConfigError([
       'New enrollment requires separate bounded exact statement bytes',
     ])
+  if (raw.routeTransport !== undefined) {
+    let target: URL
+    try { target = new URL(raw.routeTransport.backendUrl) } catch { throw new DemoConfigError(['Explicit loopback directory backend required']) }
+    if (target.protocol !== 'http:' || target.hostname !== '127.0.0.1' || !target.port || target.username || target.password || target.pathname !== '/' || target.search || target.hash) throw new DemoConfigError(['Explicit loopback directory backend required'])
+  }
   return {
     mode: raw.mode,
+    routeTransport: raw.routeTransport === undefined ? undefined : { backendUrl: raw.routeTransport.backendUrl },
     bundle: {
       runDir: raw.bundle.runDir,
       manifestIdentity: raw.bundle.manifestIdentity,

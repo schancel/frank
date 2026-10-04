@@ -237,6 +237,9 @@ pub struct CashwebdConf {
 pub struct RegistryConf {
     /// Path where the Registry's RocksDB database is stored.
     pub db_path: PathBuf,
+    /// Explicit directory runtime trust configuration. Omitted keeps routes disabled.
+    #[serde(default)]
+    pub directory: Option<DirectoryConf>,
     /// Whether we are on mainnet or regtest net.
     /// This is relevant for address parsing.
     pub net: Net,
@@ -266,6 +269,44 @@ pub struct RegistryConf {
     /// (unlike `pop`) it's safe to default to "none" rather than requiring an explicit value.
     #[serde(default)]
     pub curated_defaults: Vec<CuratedContactConf>,
+}
+
+/// Explicit operator-owned directory installation; no inferred trust or default clock.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DirectoryConf {
+    /// Absolute external file containing trusted Unix nanoseconds as decimal text.
+    pub clock_file: PathBuf,
+    /// Complete installed generation, bounded to 1024 principals by the runtime.
+    pub principals: Vec<DirectoryPrincipalConf>,
+}
+
+/// Public installed trust and continuity identity for one principal.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DirectoryPrincipalConf {
+    /// Exact protocol network.
+    pub network: String,
+    /// Lowercase compressed signing public key.
+    pub subject: String,
+    /// Exact revision-zero type-4 content hash.
+    pub revision_zero: String,
+    /// Independent installation commitment, e.g. the reviewed bundle manifest identity.
+    pub manifest_identity: String,
+    /// Exact authenticated relay ID.
+    pub relay_id: String,
+    /// Exact authenticated relay signing public key.
+    pub relay_identity: String,
+    /// Exact HTTPS endpoint, never normalized for admission.
+    pub endpoint: String,
+    /// Trusted relay binding expiry as decimal Unix nanoseconds.
+    pub binding_expiry_ns: String,
+    /// Full external continuity record, outside database and immutable bundle.
+    pub continuity_file: PathBuf,
+    /// Immutable public trust bundle root; writable state must be outside it.
+    pub bundle_root: PathBuf,
+    /// Explicit `new` or `reopen`; new never follows a missing/corrupt record.
+    pub mode: String,
 }
 
 /// Invalid resource relationship spanning multiple registry proxy families.
@@ -1233,6 +1274,7 @@ mod tests {
                 host: "127.0.0.1:6543".parse()?,
                 url: "https://cashweb.registry".parse()?,
                 registry: RegistryConf {
+                    directory: None,
                     db_path: "/test/path".into(),
                     net: Net::Mainnet,
                     peers: vec![
@@ -1309,6 +1351,7 @@ mod tests {
                 host: "127.0.0.1:6543".parse()?,
                 url: "https://cashweb.registry".parse()?,
                 registry: RegistryConf {
+                    directory: None,
                     db_path: "/test/path".into(),
                     net: Net::Mainnet,
                     peers: vec![

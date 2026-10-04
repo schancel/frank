@@ -62,6 +62,8 @@ module.exports = {
     '^@frank/nakamoto/curve$': '<rootDir>/../packages/nakamoto/src/curve.ts',
     '^@frank/nakamoto/constructors$':
       '<rootDir>/../packages/nakamoto/src/constructors.ts',
+    // Every other nakamoto subpath: the package only exports ESM builds, which Jest cannot load.
+    '^@frank/nakamoto/(.*)$': '<rootDir>/../packages/nakamoto/src/$1',
     '^bitcore-lib-xpi$': '<rootDir>/../packages/bitcore-lib-xpi/index.js',
     '^bitcore-lib-xpi/(.*)$': '<rootDir>/../packages/bitcore-lib-xpi/$1',
     '^@noble/curves/(.*)\\.js$': '@noble/curves/$1',

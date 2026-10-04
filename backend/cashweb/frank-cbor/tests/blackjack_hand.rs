@@ -4,6 +4,9 @@ mod common;
 use frank_cbor::*;
 use serde_json::{json, Value};
 
+/// A well-formed hand game id: exactly 32 lowercase ASCII hex characters.
+const GAME: &str = "00112233445566778899aabbccddeeff";
+
 fn corpus() -> Value {
     serde_json::from_str(include_str!(
         "../../../../docs/protocol/cbor/vectors/blackjack-hand.json"
@@ -255,7 +258,7 @@ fn shared_corpus_reader_projection_and_writer() {
             other => panic!("{id}: result {other}"),
         }
     }
-    assert_eq!((accepted, rejected), (11, 27));
+    assert_eq!((accepted, rejected), (11, 32));
     assert_eq!(actions.len(), 11, "every closed shape is exercised");
 }
 
@@ -325,7 +328,7 @@ fn schema1_items_are_not_hand_items_and_nested_hand_items_are_typed() {
         Err(Error::Context(_))
     ));
     let hit = BlackjackHandFields {
-        game_id: "g".into(),
+        game_id: GAME.into(),
         action: BlackjackHandAction::Hit,
     };
     let frame = encode_blackjack_hand_item(&hit).unwrap();
@@ -401,7 +404,7 @@ fn writer_refuses_invalid_presentation_and_semantics() {
     ];
     for action in refused {
         let item = BlackjackHandFields {
-            game_id: "g".into(),
+            game_id: GAME.into(),
             action,
         };
         assert!(
@@ -409,17 +412,41 @@ fn writer_refuses_invalid_presentation_and_semantics() {
             "{item:?}"
         );
     }
-    let empty_game = BlackjackHandFields {
-        game_id: String::new(),
-        action: Bet,
-    };
-    assert!(matches!(
-        encode_blackjack_hand_item(&empty_game),
-        Err(Error::Codec(_))
-    ));
+    // The game id is exactly 32 lowercase ASCII hex characters.
+    for game_id in [
+        String::new(),
+        "g".to_owned(),
+        "__proto__".to_owned(),
+        GAME[..31].to_owned(),
+        format!("{GAME}0"),
+        GAME.to_uppercase(),
+        format!("{}g", &GAME[..31]),
+        format!("{}\u{e9}", &GAME[..30]),
+    ] {
+        let item = BlackjackHandFields {
+            game_id,
+            action: Bet,
+        };
+        match encode_blackjack_hand_item(&item) {
+            Err(Error::Codec(e)) => {
+                assert_eq!(
+                    format!("{}@{}", e.category, e.stage),
+                    "schema@8.2",
+                    "{item:?}"
+                )
+            }
+            other => panic!("{item:?}: {other:?}"),
+        }
+    }
+    // Schema-1 game ids keep their 1..128 form.
+    assert!(encode_blackjack_item(&BlackjackFields {
+        game_id: "__proto__".into(),
+        action: BlackjackAction::Stand,
+    })
+    .is_ok());
     // The largest allowed maximum bet, 10^40 - 1, round-trips exactly.
     let max = BlackjackHandFields {
-        game_id: "g".into(),
+        game_id: GAME.into(),
         action: ChallengePlayer {
             max_bet_wei: "9".repeat(40),
         },
@@ -431,13 +458,13 @@ fn writer_refuses_invalid_presentation_and_semantics() {
     );
     // Application JSON outside the closed shapes has no typed item.
     for bad in [
-        json!({"type":"blackjack-hand","gameId":"g","action":"bet","wagerWei":"5"}),
-        json!({"type":"blackjack-hand","gameId":"g","action":"welcome"}),
-        json!({"type":"blackjack-hand","gameId":"g","action":"challenge","role":"house","maxBetWei":"5"}),
-        json!({"type":"blackjack-hand","gameId":"g","action":"challenge","role":"player","maxBetWei":"5","commitment":ok}),
-        json!({"type":"blackjack-hand","gameId":"g","action":"challenge","role":"dealer","maxBetWei":"5"}),
-        json!({"type":"blackjack-hand","gameId":"g","action":"challenge","role":"player","maxBetWei":5}),
-        json!({"type":"blackjack-move","gameId":"g","action":"bet"}),
+        json!({"type":"blackjack-hand","gameId":GAME,"action":"bet","wagerWei":"5"}),
+        json!({"type":"blackjack-hand","gameId":GAME,"action":"welcome"}),
+        json!({"type":"blackjack-hand","gameId":GAME,"action":"challenge","role":"house","maxBetWei":"5"}),
+        json!({"type":"blackjack-hand","gameId":GAME,"action":"challenge","role":"player","maxBetWei":"5","commitment":ok}),
+        json!({"type":"blackjack-hand","gameId":GAME,"action":"challenge","role":"dealer","maxBetWei":"5"}),
+        json!({"type":"blackjack-hand","gameId":GAME,"action":"challenge","role":"player","maxBetWei":5}),
+        json!({"type":"blackjack-move","gameId":GAME,"action":"bet"}),
         json!({"type":"blackjack-hand","action":"bet"}),
         Value::Null,
     ] {

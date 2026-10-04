@@ -1577,7 +1577,19 @@ fn blackjack_hand_payload(
         _ => &[0, 1],
     };
     let m = fields(Some(payload), path, required, &[], false, false)?;
-    let game_id = tstr(m.get(0), path, 1, 128)?;
+    // Fixed form, so a game id is always safe to use as a key: 32 lowercase hex characters.
+    let game_path = format!("{path}.0");
+    let game_id = tstr(m.get(0), &game_path, 32, 32)?;
+    if game_id.len() != 32
+        || !game_id
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    {
+        return Err(bad(
+            &game_path,
+            "game id must be 32 lowercase ASCII hex characters",
+        ));
+    }
     let hand = |key, min, max| -> Result<Vec<u32>, CodecError> {
         as_list(m.get(key), path, min, max)?
             .iter()

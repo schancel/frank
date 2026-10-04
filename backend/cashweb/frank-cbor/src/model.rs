@@ -794,7 +794,7 @@ pub enum BlackjackHandAction<H, Q> {
 /// Common game ID plus one closed schema-2 hand action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlackjackHandFields<H, Q> {
-    /// Exact UTF-8 game ID, with no normalization.
+    /// Game ID: exactly 32 lowercase ASCII hex characters.
     pub game_id: String,
     /// The complete selected action shape.
     pub action: BlackjackHandAction<H, Q>,

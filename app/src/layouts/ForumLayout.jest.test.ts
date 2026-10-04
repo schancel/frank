@@ -131,7 +131,7 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
 
     // Delay the rejection on the manual click so we can assert the loading state
     const deferreds: Array<{ reject: (err: Error) => void }> = []
-    mockFetchByTopic.mockImplementation(
+    mockFetchByTopic.mockRejectedValue(create503Error()).mockImplementationOnce(
       () =>
         new Promise((_, reject) => {
           deferreds.push({ reject })

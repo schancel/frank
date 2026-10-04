@@ -256,10 +256,12 @@ describe('Forum.vue outage and degraded states (#533)', () => {
     })
     mockFetchByTopic.mockResolvedValue([initialPost])
 
-    await store.refreshMessages({
-      wallet: testWallet as unknown as WalletHandle,
-      topic: '',
-    })
+    await expect(
+      store.refreshMessages({
+        wallet: testWallet as unknown as WalletHandle,
+        topic: '',
+      }),
+    ).rejects.toThrow('503')
     expect(store.messages).toHaveLength(1)
     expect(store.outageStatus).toBe('ok')
 

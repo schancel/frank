@@ -178,6 +178,7 @@ import {
 import '@frank/wallet/message-item-plugins/built-in'
 import '@frank/wallet/message-item-plugins/blackjack/plugin'
 
+import { messagingState } from '../../../utils/monad-identity-session'
 import { useChatStore } from '../../../stores/chats'
 import { useContactStore } from '../../../stores/contacts'
 import { useMonadWallet } from '../../../utils/clients'
@@ -189,7 +190,7 @@ import {
   BlackjackTable,
   betLimitsDisplay,
   latestDealerTable,
-  peerOffersDealerTable,
+  peerOffersBetControl,
   sendBlackjackWager,
   WagerBroadcastError,
   awaitPayment,
@@ -295,7 +296,8 @@ export default defineComponent({
     // (#422, #425). The signed name is not enough.
     dealerOffersTable(): boolean {
       const contacts = useContactStore()
-      return peerOffersDealerTable(
+      return peerOffersBetControl(
+        messagingState.status === 'ready' ? messagingState.peerAddress : null,
         contacts.getContact(this.address)?.profile,
         this.address,
         contacts.curatedDefaults,

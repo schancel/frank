@@ -152,6 +152,32 @@ export function peerOffersDealerTable(
   }
 }
 
+/**
+ * Whether the bet (challenge) control is offered in the chat with `address`.
+ *
+ * Canonical path: blackjack is peer to peer, so the control is offered to any peer the installed
+ * directory admits. `directoryPeer` is that admitted peer's address while messaging is ready (the
+ * app can message nobody else then); no relay-curated list or profile name is consulted.
+ *
+ * Legacy (untyped) path, when no directory is installed: unchanged, {@link peerOffersDealerTable}.
+ */
+export function peerOffersBetControl(
+  directoryPeer: string | null | undefined,
+  profile: { isBot?: boolean; signedName?: string | null } | null | undefined,
+  address?: string | null,
+  curated?: readonly CuratedDefaultEntry[] | null,
+): boolean {
+  if (!directoryPeer) return peerOffersDealerTable(profile, address, curated)
+  if (!address) return false
+  try {
+    return (
+      toChainDisplayAddress(directoryPeer) === toChainDisplayAddress(address)
+    )
+  } catch {
+    return false
+  }
+}
+
 /** The bet input's starting value: 0.1 MON. Never higher, so an advertised minimum is only a
  * hint in the limits line, not the amount in the box. A table maximum below 0.1 still clamps
  * the start downward so it begins inside the table. */

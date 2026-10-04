@@ -12,6 +12,7 @@ import {
   CURATED_BLACKJACK_DEALER_NAME,
   DEFAULT_BET_WEI,
   defaultBetDisplay,
+  peerOffersBetControl,
   peerOffersDealerTable,
   deliverBetWhenReady,
   latestDealerTable,
@@ -531,5 +532,38 @@ describe('table limits from the dealer welcome (#395)', () => {
     }
 
     expect(peerOffersDealerTable(profile, dealer, curated)).toBe(false)
+  })
+})
+
+describe('peerOffersBetControl', () => {
+  const peer = `0x${'ab'.repeat(20)}`
+  const other = `0x${'cd'.repeat(20)}`
+  const dealerProfile = { isBot: true, signedName: 'Blackjack Dealer' }
+  const curated = [{ address: other, name: 'Blackjack Dealer' }]
+
+  it('canonical path: offers the control to the directory-admitted peer with no profile or curated list', () => {
+    expect(peerOffersBetControl(peer, undefined, peer)).toBe(true)
+    expect(peerOffersBetControl(peer, null, peer, [])).toBe(true)
+  })
+
+  it('canonical path: a peer the directory does not admit gets no control, whatever its profile or curation says', () => {
+    expect(peerOffersBetControl(peer, dealerProfile, other, curated)).toBe(
+      false,
+    )
+    expect(peerOffersBetControl(peer, dealerProfile, undefined, curated)).toBe(
+      false,
+    )
+    expect(
+      peerOffersBetControl(peer, dealerProfile, 'not-an-address', curated),
+    ).toBe(false)
+  })
+
+  it('legacy path (no directory installed): unchanged curated dealer gate', () => {
+    expect(peerOffersBetControl(null, dealerProfile, other, curated)).toBe(true)
+    expect(peerOffersBetControl(undefined, undefined, other, curated)).toBe(
+      false,
+    )
+    expect(peerOffersBetControl(null, dealerProfile, other, [])).toBe(false)
+    expect(peerOffersBetControl(null, dealerProfile, peer, curated)).toBe(false)
   })
 })

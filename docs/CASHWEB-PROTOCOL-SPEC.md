@@ -176,7 +176,7 @@ Identifiers are scoped; equal integers in different columns have no relationship
 | FRNK frame version, explicit slices | `1` for explicit CBOR registration and opt-in topics | SHIPPED |
 | FRNK frame version, other families | `1` in codecs, with no normal production route | IMPLEMENTED-NOT-WIRED |
 | FRNK type IDs, explicit slices | `2`/`4` registration and `9–11` opt-in topics | SHIPPED |
-| FRNK type IDs, other codec structures | `1`, `3`, `5–8`, `16`, `17`; proof-only `0xffff0001`, never production; see [CBOR E5](protocol/cbor/README.md#2-common-envelope) | IMPLEMENTED-NOT-WIRED |
+| FRNK type IDs, other codec structures | `1`, `3`, `5–8`, `16`, `17`, `18`; proof-only `0xffff0001`, never production; see [CBOR E5](protocol/cbor/README.md#2-common-envelope) | IMPLEMENTED-NOT-WIRED |
 | Account key type, explicit registration | type `1` | SHIPPED |
 | Account key types, other codec allocations | `2` Ed25519 and `3` x-only secp256k1 | IMPLEMENTED-NOT-WIRED |
 | Signature algorithm, explicit registration | algorithm `1` strict-DER low-S ECDSA | SHIPPED |
@@ -208,6 +208,14 @@ Identifiers are scoped; equal integers in different columns have no relationship
 encryption-suite field, emit proof-only IDs, infer a suite from nonce length, or consume an
 unallocated number. Allocation requires exact KEM, KDF, AEAD, nonce, associated-data,
 deniability/authentication, error, and vector rules.
+
+Type18/schema1/min-reader1 is the accepted closed typed blackjack item allocation
+from #771, promoted by #782 through the existing TS/Rust codec facades. Its exact
+nine shapes and bounds are normative in [the DM schema](protocol/cbor/direct-message.cddl)
+and [the item profile](protocol/cbor/README.md). This is IMPLEMENTED-NOT-WIRED:
+#780 owns the authenticated application adapter, game/wager/fairness/replay/payout
+proof and safe retirement of production legacy writers. A codec pass grants no
+payment or game authority and does not complete #696.
 
 ## 5. FRNK and canonical validation
 

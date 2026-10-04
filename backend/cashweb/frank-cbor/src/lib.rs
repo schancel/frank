@@ -23,6 +23,7 @@
 //! [`verify_preview_directory_evidence`] verifies bounded signed evidence only; full trusted
 //! directory admission requires a separately reviewed stateful runtime successor.
 
+mod blackjack;
 mod cbor;
 mod crypto;
 mod directory_preview;
@@ -39,6 +40,9 @@ mod schema;
 mod semantic;
 mod validate;
 
+pub use blackjack::{
+    encode_blackjack_item, project_blackjack_item, BlackjackItem, BlackjackProjection,
+};
 pub use cbor::{cbor_map, decode_canonical, encode_canonical, is_valid_canonical, CborValue};
 pub use crypto::{has_low_s, parse_strict_der, verify_algorithm_1};
 pub use directory_preview::{
@@ -71,6 +75,7 @@ pub use model::{
     PaymentMember, PreviewDirectoryRoles, ProfileEntry, ProfileHeader, Projection, RelayBinding,
     RetainedFrame, RetentionReason, SignatureEntry, Timestamp, TypedPayload, ValidationResult,
 };
+pub use model::{BlackjackAction, BlackjackFields, BlackjackMessageItem, BlackjackOutcome};
 pub use model::{
     ForumAggregate, ForumContent, ForumCursor, ForumCursorPosition, ForumDiscoveryEntry,
     ForumDiscoveryPage, ForumEntry, ForumOperationEvidence, ForumOperationStatus, ForumPostContent,

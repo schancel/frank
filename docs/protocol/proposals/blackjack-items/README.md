@@ -1,6 +1,6 @@
 # Provisional typed blackjack message item
 
-Proposal-only materialization of the independently accepted #771 allocation. This directory does not register type 18 in an active codec or enable a runtime writer.
+Historical proposal materialization of the independently accepted #771 allocation. #782 promotes the unchanged CDDL/JSON evidence into the active TS/Rust codec and normative DM schema; this directory remains immutable proposal evidence. #780 owns actual runtime adoption and game/economic proof. No runtime writer is enabled by the codec promotion.
 
 - Owner: @schancel / overnight coordinator. Tier 3; requested strong, ran inherited gpt-6-astra/high.
 - Accepted source artifact SHA-256: `f58473a93079048315d85f3250fb45b0418614568de6edd40e4b17bbbb02b139`.

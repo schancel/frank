@@ -18,7 +18,10 @@ use crate::limits::{
     MAX_FORUM_VIEW_BYTES, TYPE_FORUM_DISCOVERY_PAGE, TYPE_FORUM_OPERATION_STATUS,
     TYPE_FORUM_TOPIC_PAGE, TYPE_FORUM_VIEW,
 };
-use crate::model::{AccountRef, PreviewDirectoryRoles, Timestamp};
+use crate::model::{
+    AccountRef, BlackjackAction, BlackjackFields, BlackjackMessageItem, BlackjackOutcome,
+    PreviewDirectoryRoles, Timestamp,
+};
 use crate::model::{
     ForumAggregate, ForumContent, ForumCursor, ForumCursorPosition, ForumDiscoveryEntry,
     ForumDiscoveryPage, ForumEntry, ForumOperationEvidence, ForumOperationStatus, ForumTopicPage,
@@ -298,6 +301,9 @@ pub(crate) fn check_root_frame_limit(
     frame_length: usize,
     schema_version: u32,
 ) -> bool {
+    if type_id == crate::limits::TYPE_BLACKJACK_ITEM {
+        return frame_length <= crate::limits::MAX_BLACKJACK_FRAME_BYTES;
+    }
     if type_id == TYPE_DIRECTORY_STATEMENT && schema_version >= 4 {
         return frame_length <= MAX_DIRECTORY_ATTESTATION_FRAME_BYTES;
     }
@@ -584,6 +590,7 @@ pub(crate) enum Draft {
         items: Vec<Vec<u8>>,
         unknown: Vec<(u64, CborValue)>,
     },
+    Blackjack(BlackjackMessageItem),
     Text {
         text: String,
         unknown: Vec<(u64, CborValue)>,
@@ -1271,6 +1278,9 @@ pub(crate) fn parse_draft(
                 unknown: map.unknown,
             })
         }
+        crate::limits::TYPE_BLACKJACK_ITEM => {
+            Ok(Draft::Blackjack(blackjack_payload(payload, path)?))
+        }
         crate::limits::TYPE_TEXT_ITEM => {
             let map = fields(Some(payload), path, &[0], &[], true, allow)?;
             Ok(Draft::Text {
@@ -1416,6 +1426,104 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
         | Draft::ForumOperationStatus(_)
         | Draft::Revision { .. }
         | Draft::Container { .. }
-        | Draft::Text { .. } => Ok(()),
+        | Draft::Text { .. }
+        | Draft::Blackjack(_) => Ok(()),
     }
+}
+
+fn blackjack_payload(payload: &CborValue, path: &str) -> Result<BlackjackMessageItem, CodecError> {
+    let CborValue::Map(entries) = payload else {
+        return Err(bad(path, "blackjack payload must be a map"));
+    };
+    let get = |key| entries.iter().find(|(k, _)| *k == key).map(|(_, v)| v);
+    let action = u32_in(get(1), path, 0, 6)?;
+    let (required, optional): (&[u64], &[u64]) = match action {
+        0 => (&[0, 1, 2], &[]),
+        1 => (&[0, 1, 4, 5, 6], &[]),
+        2 => (&[0, 1], &[5]),
+        3 => (&[0, 1], &[]),
+        4 => {
+            if get(3).is_some() == get(5).is_some() {
+                return Err(bad(
+                    path,
+                    "double requires exactly one request/response form",
+                ));
+            }
+            if get(3).is_some() {
+                (&[0, 1, 3], &[])
+            } else {
+                (&[0, 1, 5], &[])
+            }
+        }
+        5 => (&[0, 1, 7, 8, 9], &[]),
+        _ => (&[0, 1, 10, 11], &[12, 13]),
+    };
+    let m = fields(Some(payload), path, required, optional, false, false)?;
+    let game_id = tstr(m.get(0), path, 1, 128)?;
+    let hand = |key, min, max| -> Result<Vec<u32>, CodecError> {
+        as_list(m.get(key), path, min, max)?
+            .iter()
+            .map(|v| u32_in(Some(v), path, 0, 51))
+            .collect()
+    };
+    let hash = |key| bstr(m.get(key), path, 32, 32);
+    let action = match action {
+        0 => BlackjackAction::Bet {
+            wager_tx_hash: hash(2)?,
+        },
+        1 => BlackjackAction::Deal {
+            server_seed_hash: hash(4)?,
+            player_cards: hand(5, 2, 2)?,
+            dealer_up_card: u32_in(m.get(6), path, 0, 51)?,
+        },
+        2 if m.has(5) => BlackjackAction::HitResponse {
+            player_cards: hand(5, 3, 52)?,
+        },
+        2 => BlackjackAction::HitRequest,
+        3 => BlackjackAction::Stand,
+        4 if m.has(3) => BlackjackAction::DoubleRequest {
+            double_wager_tx_hash: hash(3)?,
+        },
+        4 => BlackjackAction::DoubleResponse {
+            player_cards: hand(5, 3, 3)?,
+        },
+        5 => {
+            let seed = tstr(m.get(8), path, 64, 64)?;
+            if !seed
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            {
+                return Err(bad(path, "seed must be 64 lowercase ASCII hex characters"));
+            }
+            let outcome = match u32_in(m.get(9), path, 0, 3)? {
+                0 => BlackjackOutcome::PlayerWin,
+                1 => BlackjackOutcome::DealerWin,
+                2 => BlackjackOutcome::Push,
+                _ => BlackjackOutcome::PlayerBlackjack,
+            };
+            BlackjackAction::Reveal {
+                dealer_cards: hand(7, 2, 52)?,
+                server_seed: seed,
+                outcome,
+            }
+        }
+        _ => {
+            let rules = if m.has(13) {
+                let text = tstr(m.get(13), path, 0, 1200)?;
+                if text.encode_utf16().count() > 400 {
+                    return Err(bad(path, "rules exceed 400 UTF-16 units"));
+                }
+                Some(text)
+            } else {
+                None
+            };
+            BlackjackAction::Welcome {
+                min_wager_wei: hash(10)?,
+                max_wager_wei: hash(11)?,
+                fee_hint_wei: if m.has(12) { Some(hash(12)?) } else { None },
+                rules,
+            }
+        }
+    };
+    Ok(BlackjackFields { game_id, action })
 }

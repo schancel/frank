@@ -3345,7 +3345,7 @@ acc(
 const TOPIC_TYPES = new Set([9, 10, 11])
 // Preserve the original historical reader context when later types are allocated.
 const WITH_TOPICS: SupportedSchema[] = KNOWN_TYPES.filter(
-  typeId => typeId < 12 || typeId > 15,
+  typeId => typeId <= 17 && (typeId < 12 || typeId > 15),
 ).map(typeId => ({
   typeId,
   // Type 4 is read at schema 2 (the stamp key, #198); every other type is at schema 1.

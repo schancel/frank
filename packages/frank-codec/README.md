@@ -228,3 +228,15 @@ chain evidence and never releases a wallet lease. Normal writers/routes and reta
 publication remain #769's server work under #675; #770 owns the whole normal-path
 switch and predecessor removal. Active shared vectors are in
 `docs/protocol/cbor/vectors/forum-content-read.json`.
+
+## Typed blackjack items
+
+Type18/schema1/min-reader1 is supported by default. `BlackjackItem` is the closed
+nine-shape application union; `encodeBlackjackItem` validates strict hash/decimal
+presentation before writing, and `projectBlackjackItem` returns owned exact frame
+bytes plus the application projection without a new parse. Seeds remain ASCII text,
+quantities exact decimal strings, and optional zero fee/empty rules remain present.
+Root and nested4096 limits share the existing graph/item/depth counters, including
+#789's public authenticated-content continuation. The active blackjack corpus
+preserves90 proposal frames/79 writer inputs and adds genuine typed TS/Rust origins.
+This pure seam is for #780; it does not activate game, fairness or payment authority.

@@ -34,6 +34,8 @@ import {
   TYPE_MESSAGE_CONTENT_REVISION,
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
   TYPE_TEXT_MESSAGE_ITEM,
+  TYPE_BLACKJACK_MESSAGE_ITEM,
+  MAX_BLACKJACK_FRAME_BYTES,
   TYPE_TOPIC_POST,
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
@@ -63,6 +65,7 @@ import type {
   ForumCursor,
   ForumAggregate,
   TopicPost,
+  BlackjackMessageItem,
 } from './types'
 
 function fail(
@@ -274,6 +277,8 @@ export function checkRootFrameLimit(
   frameLength: number,
   schemaVersion = 1,
 ): boolean {
+  if (typeId === TYPE_BLACKJACK_MESSAGE_ITEM)
+    return frameLength <= MAX_BLACKJACK_FRAME_BYTES
   if (typeId === TYPE_DIRECTORY_STATEMENT && schemaVersion >= 4)
     return frameLength <= 262_144
   if (typeId === TYPE_DIRECT_MESSAGE_DELIVERY) return frameLength <= 1_048_576
@@ -291,6 +296,106 @@ export function checkRootFrameLimit(
 
 function tooMany(v: FrankValue | undefined, limit: number): boolean {
   return Array.isArray(v) && v.length > limit
+}
+
+/** Closed schema-1 shapes, also closed when projected from a compatible future envelope. */
+function blackjackPayload(payload: FrankValue): BlackjackMessageItem {
+  const P = 'root/payload'
+  if (!isMap(payload)) throw bad(P, 'blackjack payload must be a map')
+  const action = u32ish(payload.get(1n), `${P}.1`, 0, 6)
+  const card = (v: FrankValue | undefined, path: string) =>
+    u32ish(v, path, 0, 51)
+  const hand = (
+    v: FrankValue | undefined,
+    key: number,
+    min: number,
+    max: number,
+  ) =>
+    asList(v, `${P}.${key}`, min, max).map((c, i) =>
+      card(c, `${P}.${key}[${i}]`),
+    )
+  const read = (required: number[], optional: number[] = []) => {
+    const m = fields(payload, P, [0, 1, ...required], optional, false, false)
+    return {
+      m,
+      base: { type: 18 as const, gameId: tstr(m.get(0), `${P}.0`, 1, 128) },
+    }
+  }
+  switch (action) {
+    case 0: {
+      const { m, base } = read([2])
+      return {
+        ...base,
+        action: 'bet',
+        wagerTxHash: bstr(m.get(2), `${P}.2`, 32, 32),
+      }
+    }
+    case 1: {
+      const { m, base } = read([4, 5, 6])
+      return {
+        ...base,
+        action: 'deal',
+        serverSeedHash: bstr(m.get(4), `${P}.4`, 32, 32),
+        playerCards: hand(m.get(5), 5, 2, 2),
+        dealerUpCard: card(m.get(6), `${P}.6`),
+      }
+    }
+    case 2: {
+      const { m, base } = read([], [5])
+      return m.has(5)
+        ? { ...base, action: 'hit', playerCards: hand(m.get(5), 5, 3, 52) }
+        : { ...base, action: 'hit' }
+    }
+    case 3:
+      return { ...read([]).base, action: 'stand' }
+    case 4: {
+      if (payload.has(3n) === payload.has(5n))
+        throw bad(P, 'double requires exactly one request/response form')
+      const { m, base } = read(payload.has(3n) ? [3] : [5])
+      return m.has(3)
+        ? {
+            ...base,
+            action: 'double',
+            doubleWagerTxHash: bstr(m.get(3), `${P}.3`, 32, 32),
+          }
+        : { ...base, action: 'double', playerCards: hand(m.get(5), 5, 3, 3) }
+    }
+    case 5: {
+      const { m, base } = read([7, 8, 9])
+      const seed = tstr(m.get(8), `${P}.8`, 64, 64)
+      if (seed.length !== 64 || !/^[0-9a-f]+$/.test(seed))
+        throw bad(`${P}.8`, 'seed must be 64 lowercase ASCII hex characters')
+      const outcome = [
+        'player_win',
+        'dealer_win',
+        'push',
+        'player_blackjack',
+      ] as const
+      return {
+        ...base,
+        action: 'reveal',
+        dealerCards: hand(m.get(7), 7, 2, 52),
+        serverSeed: seed,
+        outcome: outcome[u32ish(m.get(9), `${P}.9`, 0, 3)],
+      }
+    }
+    default: {
+      const { m, base } = read([10, 11], [12, 13])
+      const result: BlackjackMessageItem = {
+        ...base,
+        action: 'welcome',
+        minWagerWei: bstr(m.get(10), `${P}.10`, 32, 32),
+        maxWagerWei: bstr(m.get(11), `${P}.11`, 32, 32),
+      }
+      if (m.has(12)) result.feeHintWei = bstr(m.get(12), `${P}.12`, 32, 32)
+      if (m.has(13)) {
+        result.rules = tstr(m.get(13), `${P}.13`, 0, 1200)
+        if (result.rules.length > 400)
+          throw bad(`${P}.13`, 'rules exceed 400 UTF-16 units')
+      }
+      return result
+    }
+  }
 }
 
 /** Reads R2-R4 counts from the decoded fields, before typed conversion. */
@@ -955,6 +1060,8 @@ export function parseDraft(
         unknownFields: m.unknown,
       }
     }
+    case TYPE_BLACKJACK_MESSAGE_ITEM:
+      return blackjackPayload(payload)
     default:
       throw new Error(`parseDraft: type ${typeId} has no schema`)
   }

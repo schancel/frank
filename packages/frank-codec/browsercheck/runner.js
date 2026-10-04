@@ -505,6 +505,103 @@ const frankBrowserCheckInstall = function () {
         fail('M6 ' + v.label, 'uncompressed key differs')
     }
 
+    const applicationJson = item =>
+      JSON.stringify(
+        Object.fromEntries(
+          Object.keys(item)
+            .sort()
+            .map(key => [key, item[key]]),
+        ),
+      )
+    const blackjack = globalThis.FRANK_BLACKJACK
+    const blackjackCounts = {
+      total: blackjack.frames.length,
+      accepted: 0,
+      rejected: 0,
+      retained: 0,
+      writerInputs: blackjack.writerInputs.length,
+      typedRustOrigins: 0,
+      typedTsOrigins: 0,
+    }
+    for (const f of blackjack.frames) {
+      const context = codec.defaultContext({
+        ...blackjack.contexts[f.context],
+        operation: f.operation,
+      })
+      try {
+        const result = codec.parseFrame(codec.fromHex(f.frameHex), context)
+        const expected = result.kind === 'retained' ? 'retain' : 'accept'
+        if (f.expected.result !== expected)
+          fail(f.id, 'blackjack result differs')
+        blackjackCounts[result.kind === 'retained' ? 'retained' : 'accepted']++
+        if (codec.toHex(result.frame) !== f.frameHex)
+          fail(f.id, 'blackjack exact bytes differ')
+        if (result.kind === 'retained' && result.reason !== f.expected.reason)
+          fail(f.id, 'retention reason differs')
+        if (f.application) {
+          const projection = codec.projectBlackjackItem(result)
+          if (
+            applicationJson(projection.item) !== applicationJson(f.application)
+          )
+            fail(f.id, 'blackjack projection differs')
+          const written = codec.encodeBlackjackItem(f.application)
+          if (result.schemaVersion === 1 && codec.toHex(written) !== f.frameHex)
+            fail(f.id, 'blackjack public writer differs')
+          if (f.id.startsWith('rust-')) blackjackCounts.typedRustOrigins++
+          if (f.id.startsWith('typescript-')) blackjackCounts.typedTsOrigins++
+        }
+      } catch (e) {
+        blackjackCounts.rejected++
+        if (
+          !(e instanceof codec.FrankCodecError) ||
+          f.expected.result !== 'reject' ||
+          e.category !== f.expected.category ||
+          e.stage !== f.expected.stage
+        )
+          fail(f.id, 'blackjack error differs: ' + e)
+      }
+    }
+    for (const f of blackjack.writerInputs) {
+      let item = { type: 'blackjack-move', gameId: 'bj-writer' }
+      if (f.field === 'wagerTxHash') item.action = 'bet'
+      else if (f.field === 'doubleWagerTxHash') item.action = 'double'
+      else if (f.field === 'serverSeedHash')
+        Object.assign(item, {
+          action: 'deal',
+          playerCards: [0, 1],
+          dealerUpCard: 2,
+        })
+      else
+        item = {
+          type: 'blackjack-move',
+          action: 'welcome',
+          gameId: 'welcome',
+          minWagerWei: '1',
+          maxWagerWei: '9'.repeat(40),
+        }
+      item[f.field] = f.input
+      try {
+        const frame = codec.encodeBlackjackItem(item)
+        if (f.expected.result === 'reject')
+          fail(f.id, 'blackjack writer accepted hostile input')
+        else if (
+          codec.projectBlackjackItem(codec.parseFrame(frame)).item[f.field] !==
+          f.expected.projected
+        )
+          fail(f.id, 'blackjack writer projection differs')
+      } catch (e) {
+        if (f.expected.result !== 'reject')
+          fail(f.id, 'blackjack writer rejected valid input: ' + e)
+      }
+    }
+    if (
+      blackjackCounts.total < 94 ||
+      blackjackCounts.writerInputs !== 79 ||
+      blackjackCounts.typedRustOrigins !== 2 ||
+      blackjackCounts.typedTsOrigins !== 2
+    )
+      fail('blackjack', 'incomplete active typed corpus')
+
     const g = globalThis
     const leaked = ['process', 'Buffer', 'require', 'module', 'global'].filter(
       n => typeof g[n] !== 'undefined',
@@ -514,6 +611,7 @@ const frankBrowserCheckInstall = function () {
       rust: counts.rust,
       registration: registrationCounts,
       forum: { total: forum.frames.length },
+      blackjack: blackjackCounts,
       interoperability: {
         hostileCases: hostile.case_count,
         mutationOffset: crypto.mutation_offset,

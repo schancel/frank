@@ -196,12 +196,13 @@ E5. Type identifiers are never reused. Version 1 reserves:
 |          9 | Topic post                                  | [topic.cddl](topic.cddl)                   |
 |         10 | Topic post submission (post plus its burn)  | [topic.cddl](topic.cddl)                   |
 |         11 | Topic vote submission                       | [topic.cddl](topic.cddl)                   |
-|         12 | Forum single-post observation              | [topic.cddl](topic.cddl)                   |
+|         12 | Forum single-post observation               | [topic.cddl](topic.cddl)                   |
 |         13 | Forum topic page                            | [topic.cddl](topic.cddl)                   |
 |         14 | Forum discovery page                        | [topic.cddl](topic.cddl)                   |
 |         15 | Forum operation status                      | [topic.cddl](topic.cddl)                   |
 |         16 | Container message item                      | [direct-message.cddl](direct-message.cddl) |
 |         17 | UTF-8 text message item                     | [direct-message.cddl](direct-message.cddl) |
+|         18 | Closed typed blackjack message item         | [direct-message.cddl](direct-message.cddl) |
 | 0xffff0001 | Proof-only unknown future message item      | Opaque fixture payload                     |
 
 The CDDL rule for each type's payload is: 1 `direct-message-delivery`; 2
@@ -213,7 +214,7 @@ profile of section 11, is `directory-statement-v3`); 5
 `key-transition-statement`; 8 `message-content-revision`; 9 `topic-post`; 10 `topic-post-submission`; 11
 `topic-vote-submission`; 12 `forum-single-view`; 13 `forum-topic-page`;
 14 `forum-discovery-page`; 15 `forum-operation-status`; 16 `container-message-item`;
-17 `text-message-item`. Type 9 schema 2/min-reader 2 opens field 3 as
+17 `text-message-item`; 18 `blackjack-message-item` (schema1/min-reader1). Type 9 schema 2/min-reader 2 opens field 3 as
 `forum-content`; schema 1 remains the explicitly historical opaque-body schema.
 
 Unassigned identifiers remain reserved and MUST NOT be emitted. The proof-only
@@ -752,12 +753,38 @@ Each recipient may therefore have different encrypted bytes and a different
 payload digest for the same logical message.
 
 A type-16 container message item holds complete child frames as byte strings;
-type 17 is a text item. Unknown item types remain exact child-frame bytes. A
+type 17 is a text item and type 18 is the closed blackjack item. Unknown item types remain exact child-frame bytes. A
 type-5 ciphertext is never opened before stage 10.1, so at `typed` a type-1 root
 reaches no message item: its item graph exists only in `full`, and `typed`
 vectors reach a message-item graph through a type 6, 8, or 16 root. The
 proof fixture MUST contain at least two levels and the permanently reserved
 proof-only unknown type `0xffff0001`.
+
+Type 18 uses the nine closed maps in [direct-message.cddl](direct-message.cddl):
+bet, deal, hit request/response, stand request, double request/response, reveal,
+and welcome. Compatible-future projection remains closed. Every complete type-18
+frame has a 4096-byte stage8.1 limit at both root and nested positions, before
+shape checks. The existing total256 opened-item, cumulative CBOR item/container
+and depth budgets span type8/type16 and authenticated-content continuation.
+
+Game IDs are 1–128 exact UTF-8 bytes, with no normalization; `welcome` is reserved
+iff action6. Card values are 0–51 and unique within each hand; a deal up-card is
+distinct from its two player cards. Wager/double/commitment fields are32 bytes.
+Reveal seed is exactly64 lowercase ASCII hex characters as text; outcome is0–3.
+Welcome quantities are32-byte unsigned big-endian: 1≤min≤max≤10^40−1 and optional
+0≤fee≤10^40−1. Optional absent rules differ from present empty rules; rules are
+at most400 UTF-16 units and1200 UTF-8 bytes. UTF-8 must be well formed.
+
+Pure application writers validate complete presentation grammar before conversion:
+wager/double hashes have literal lowercase `0x` plus64 ASCII hex digits (digits
+may be mixed-case, projected lowercase); commitment is64 bare lowercase hex digits.
+Wei strings have1–40 ASCII decimal digits, then apply quantity bounds; no trimming,
+coercion, floating-point conversion, or partial parsing. Seed remains text.
+Type18 participates in the existing exact type8/T1a and DM transcripts; no new
+standalone item identity/hash domain is allocated. Public projections retain and
+forward the original frame bytes. Syntax grants no hand, wager, fairness, payout,
+or sender authority. #780 owns authenticated runtime adoption and economic proof;
+unsupported structured kinds never become JSON/text17 fallbacks.
 
 Direct-message stamps are payments to recipient-derived addresses. They are not
 burns. A payment member commits to this recipient-specific encrypted-payload
@@ -877,12 +904,12 @@ closed, even inside a compatible future schema.
 
 Types 12–15 use schema 1/min-reader 1 and [topic.cddl](topic.cddl):
 
-| Type | Fields |
-| --- | --- |
-| 12 | 0 network; 1 exact type-9 frame; 2 author address20; 3 author raw burn1–16384; 4 transaction hash32; 5 first-visible timestamp; 6 block u64; 7 transaction index u64; 8 aggregate; 9 observation revision u64; 10 epoch16 |
-| 13 | 0 network; 1 topic; 2 inclusive since; 3 snapshot revision u64; 4 array of type-12 frames; optional 5 next cursor; 6 epoch16; optional 7 exact request cursor |
-| 14 | 0 network; 1 snapshot revision u64; 2 entries of topic0/count-u64-1/last-activity2; optional 3 next cursor; 4 epoch16; optional 5 request cursor |
-| 15 | 0 network; 1 exact submitted type10/11; 2 target T1; 3 transaction hash32; 4 sender20; 5 direction0-down/1-up; 6 value u64; 7 state; optional 8 block u64; optional 9 index u64; 10 revision u64; 11 epoch16 |
+| Type | Fields                                                                                                                                                                                                                    |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 12   | 0 network; 1 exact type-9 frame; 2 author address20; 3 author raw burn1–16384; 4 transaction hash32; 5 first-visible timestamp; 6 block u64; 7 transaction index u64; 8 aggregate; 9 observation revision u64; 10 epoch16 |
+| 13   | 0 network; 1 topic; 2 inclusive since; 3 snapshot revision u64; 4 array of type-12 frames; optional 5 next cursor; 6 epoch16; optional 7 exact request cursor                                                             |
+| 14   | 0 network; 1 snapshot revision u64; 2 entries of topic0/count-u64-1/last-activity2; optional 3 next cursor; 4 epoch16; optional 5 request cursor                                                                          |
+| 15   | 0 network; 1 exact submitted type10/11; 2 target T1; 3 transaction hash32; 4 sender20; 5 direction0-down/1-up; 6 value u64; 7 state; optional 8 block u64; optional 9 index u64; 10 revision u64; 11 epoch16              |
 
 Aggregate is exactly `{0: boolean negative, 1: magnitude32}` with unsigned
 big-endian magnitude and no negative zero. Range is ±(2^256−1); admission
@@ -1330,7 +1357,7 @@ category, and an implementation MUST NOT continue to report a later failure.
         256 fails `resource` before that child's stage 2. The rule applies to any
         root and is labelled stage 8.4.
       - In an open field (a message item), a child of an assigned type other than
-        16 or 17 (types 1 through 11) is `semantic`, checked after its stage 6
+        16, 17 or 18 (assigned non-item types 1 through 15) is `semantic`, checked after its stage 6
         like a required-type mismatch. Otherwise the child runs stages 2
         through 9 with V6 applied to it. Children open depth-first in array
         order, and the first failure wins. An unknown type, an unknown frame version, or a

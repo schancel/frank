@@ -4,12 +4,12 @@
  * (`./hand.ts`) from the conversation's messages, because it needs each message's sender,
  * recipient, stamp value and payload digest, which a single item does not carry.
  */
-import type { BlackjackHandItem } from '@frank/codec'
+import type { BlackjackHandV3Item } from '@frank/codec'
 
 import { handPreviewText } from './hand'
 import { registerMessageItemPlugin } from '../index'
 
-registerMessageItemPlugin<BlackjackHandItem>({
+registerMessageItemPlugin<BlackjackHandV3Item>({
   type: 'blackjack-hand',
   hydrate: raw => raw,
   previewText: handPreviewText,

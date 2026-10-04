@@ -106,6 +106,7 @@ import { openChat } from 'src/utils/routes'
 // lookup is scheduled, in flight, or just fired wait this long so a burst yields one fetch.
 const LOOKUP_DEBOUNCE_MS = 250
 
+import { fetchContactProfile } from 'src/utils/directory-peer'
 type ChainAddress = Parameters<typeof activeChain.fetchProfile>[0]
 
 type AcceptedLookup = {
@@ -219,7 +220,7 @@ export default defineComponent({
         if (generation !== this.lookupGeneration) {
           return
         }
-        const profileInfo = await activeChain.fetchProfile(chainAddress)
+        const profileInfo = await fetchContactProfile(chainAddress)
         if (generation !== this.lookupGeneration) {
           return
         }

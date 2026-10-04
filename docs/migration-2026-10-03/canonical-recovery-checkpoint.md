@@ -151,3 +151,27 @@ Owner agreed #843 design (optional stamps; three limits; threshold counts what t
   the fork ships in the app.
 - Still blocking the owner's test: stuck human-dealer step on `integration-open` `b13df5d`
   (integration lane fixing; coordinator rerun of `stack.mjs e2e` required before hand-over).
+
+## 2026-10-04 ~15:50 PDT — new coordinator session (Antigravity) took over
+
+- Reviewed the integration lane's 13 uncommitted files (stuck dealer step fix): kept and committed
+  locally as `b7d7f14` on `integration-open` (not pushed yet). On chat open the dealer loop resends
+  this user's undelivered free hand steps through the normal retry, and only settles money-carrying
+  ones; the bubble says "not delivered" and has Retry; e2e gains a hand where the dealer's Chrome is
+  killed mid-deal. 4 jest suites, 126 tests PASS (coordinator ran them).
+- Independent review of `b7d7f14`: changes required — two-tab race can pay one extra 0.01 MON
+  stamp automatically; resend also touches abandoned hands (could reopen an old challenge); the next
+  automatic step can overtake a resend; the kill test may not hit the resend path. Fix lane working
+  (Web Lock per outgoing message, resend only the newest own event of an open hand, never
+  challenge/accept automatically, no new payment after a dead attempt without a click).
+- Coordinator e2e on `b7d7f14` (partial, stopped at the owner's request to free memory): messaging,
+  refusal, Qwen, both bot hands passed; first human-dealer hand got past the deal. Not a pass.
+- OWNER: do not run local models on this machine. The launcher's live mode used local Ollama
+  (`qwen2.5:7b`); changed (uncommitted in `integration-open`) to read `~/.frank-demo-qwen.env`
+  (Alibaba Cloud, bot default `qwen3.8-max`). Token verified: one call answered in ~3.2 s. Ollama
+  model unloaded.
+- Relay phase 2: relay lane committed and pushed `open-directory-relay` `9278e70` (forwarding-loop
+  fix + regression test; 5 two-relay/directory tests PASS twice, ~183 s each; clippy clean on touched
+  code). Inbound peer requests are unauthenticated but nothing inbound is trusted (verified copies,
+  re-admitted forwards). Queue-full answers 429 instead of 503. INTERFACE.md still says "quarantined"
+  for conflicting chains; code converges by lowest hash. Independent review dispatched.

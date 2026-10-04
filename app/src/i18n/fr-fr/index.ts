@@ -28,7 +28,7 @@ export default {
     participants: {
       'relay-a': 'Relais A',
       'relay-b': 'Relais B',
-      'bot': 'Bot',
+      'bot': 'Robot',
     },
     participant: {
       unchecked: 'non vérifié',

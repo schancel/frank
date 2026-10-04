@@ -18,7 +18,8 @@ function makePost(
   return {
     poster: '0xposter',
     topic: 'stamp',
-    satoshis: 0,
+    voteWeightWei: '0',
+    visibleTimestamp: { seconds: '1', nanoseconds: 0 }, epoch: '00'.repeat(16), revision: '1', transactionHash: '11'.repeat(32), authorBurnTx: '0x01', blockNumber: '1', transactionIndex: '0',
     entries: [{ kind: 'post', message: 'hello' }],
     payloadDigest: 'deadbeef',
     timestamp: new Date(),
@@ -56,12 +57,12 @@ describe('halfLifeSort', () => {
     const now = Date.now()
     const oldBig = makePost({
       payloadDigest: 'old-big',
-      satoshis: 1000,
+      voteWeightWei: '1000',
       timestamp: new Date(now - 1000 * 60 * 60 * 24 * 10), // 10 days old
     })
     const newSmall = makePost({
       payloadDigest: 'new-small',
-      satoshis: 10,
+      voteWeightWei: '10',
       timestamp: new Date(now),
     })
     const sorted = halfLifeSort([oldBig, newSmall])
@@ -70,8 +71,8 @@ describe('halfLifeSort', () => {
 
   it('does not mutate the input array', () => {
     const posts = [
-      makePost({ payloadDigest: 'a', satoshis: 1 }),
-      makePost({ payloadDigest: 'b', satoshis: 2 }),
+      makePost({ payloadDigest: 'a', voteWeightWei: '1' }),
+      makePost({ payloadDigest: 'b', voteWeightWei: '2' }),
     ]
     const original = [...posts]
     halfLifeSort(posts)
@@ -123,8 +124,8 @@ describe('timeSort', () => {
 
 describe('voteSort', () => {
   it('orders highest satoshis first', () => {
-    const low = makePost({ payloadDigest: 'low', satoshis: 1 })
-    const high = makePost({ payloadDigest: 'high', satoshis: 100 })
+    const low = makePost({ payloadDigest: 'low', voteWeightWei: '1' })
+    const high = makePost({ payloadDigest: 'high', voteWeightWei: '100' })
     expect(voteSort([low, high]).map(p => p.payloadDigest)).toEqual([
       'high',
       'low',
@@ -133,8 +134,8 @@ describe('voteSort', () => {
 
   it('does not mutate the input array', () => {
     const posts = [
-      makePost({ payloadDigest: 'a', satoshis: 1 }),
-      makePost({ payloadDigest: 'b', satoshis: 2 }),
+      makePost({ payloadDigest: 'a', voteWeightWei: '1' }),
+      makePost({ payloadDigest: 'b', voteWeightWei: '2' }),
     ]
     const original = [...posts]
     voteSort(posts)
@@ -145,12 +146,12 @@ describe('voteSort', () => {
 describe('sortPostsByMode', () => {
   const older = makePost({
     payloadDigest: 'older-high-vote',
-    satoshis: 100,
+    voteWeightWei: '100',
     timestamp: new Date('2026-01-01'),
   })
   const newer = makePost({
     payloadDigest: 'newer-low-vote',
-    satoshis: 1,
+    voteWeightWei: '1',
     timestamp: new Date('2026-01-02'),
   })
 
@@ -180,4 +181,22 @@ describe('sortPostsByMode', () => {
       halfLifeSort([older, newer]),
     )
   })
+})
+
+it('orders adjacent wide signed weights exactly and resolves ties deterministically', () => {
+  const positive = 2n ** 255n - 1n
+  const rows = [
+    makePost({payloadDigest:'b',voteWeightWei:positive.toString()}),
+    makePost({payloadDigest:'a',voteWeightWei:positive.toString()}),
+    makePost({payloadDigest:'c',voteWeightWei:(positive-1n).toString()}),
+    makePost({payloadDigest:'e',voteWeightWei:(-positive).toString()}),
+    makePost({payloadDigest:'d',voteWeightWei:(-positive+1n).toString()}),
+  ]
+  expect(voteSort(rows).map(row => row.payloadDigest)).toEqual(['a','b','c','d','e'])
+  expect(voteSort([...rows].reverse())).toEqual(voteSort(rows))
+})
+it('hot ranking uses deterministic exact ties without modifying stored amounts', () => {
+  const rows = [makePost({payloadDigest:'b',voteWeightWei:'9007199254740992',timestamp:'2026-01-01'}), makePost({payloadDigest:'a',voteWeightWei:'9007199254740993',timestamp:'2026-01-01'})]
+  expect(halfLifeSort(rows)[0].payloadDigest).toBe('a')
+  expect(rows[1].voteWeightWei).toBe('9007199254740993')
 })

@@ -19,7 +19,7 @@ import { accountStatus } from '../accounts/session'
 
 const mockPutMessage = jest.fn()
 enableAutoUnmount(afterEach)
-const mockDisplayToSafeRawAmount = jest.fn(() => 1_000_000)
+const mockDisplayToRawAmount = jest.fn(() => 1_000_000n)
 // vue-router's CommonJS build imports this ESM-only diagnostics package. The router behavior is
 // the boundary under test here, not its development reporter.
 jest.mock('nostics', () => ({
@@ -148,8 +148,8 @@ jest.mock('@frank/wallet/chain', () => ({
   },
 }))
 jest.mock('src/utils/chain-amount', () => ({
-  displayToSafeRawAmount: (...args: unknown[]) =>
-    mockDisplayToSafeRawAmount(...args),
+  displayToRawAmount: (...args: unknown[]) =>
+    mockDisplayToRawAmount(...args),
 }))
 jest.mock('../components/forum/ForumMessage.vue', () => ({
   template: '<div />',
@@ -343,7 +343,7 @@ beforeEach(() => {
   forum.index = {}
   forum.fetchMessage.mockReset().mockResolvedValue(undefined)
   forum.clearPostReservations()
-  mockDisplayToSafeRawAmount.mockReset().mockReturnValue(1_000_000)
+  mockDisplayToRawAmount.mockReset().mockReturnValue(1_000_000n)
 })
 
 afterEach(() => {
@@ -1051,8 +1051,8 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
         resolveWallet = resolve
       }),
     )
-    mockDisplayToSafeRawAmount.mockImplementationOnce(
-      (_chain: unknown, amount: string) => Number(amount),
+    mockDisplayToRawAmount.mockImplementationOnce(
+      (_chain: unknown, amount: string) => BigInt(amount),
     )
     const vm = wrapper.vm as unknown as {
       offering: string
@@ -1066,12 +1066,12 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     await posting
     await flushPromises()
 
-    expect(mockDisplayToSafeRawAmount).toHaveBeenCalledWith(
+    expect(mockDisplayToRawAmount).toHaveBeenCalledWith(
       expect.anything(),
       '2',
     )
     expect(mockPutMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ satoshis: 2 }),
+      expect.objectContaining({ satoshis: 2n }),
     )
   })
 

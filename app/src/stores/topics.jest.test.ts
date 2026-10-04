@@ -1,26 +1,17 @@
-/**
- * Unit tests for `stores/topics.ts` (ticket #43): verifies the store's actions call through
- * `activeChain.topics` (ticket #41's seam) with the right arguments, rather than constructing a
- * `RegistryHandler` directly. Per the ticket's own instructions, this mocks `activeChain` itself
- * (`@frank/wallet/chain`) -- not the underlying Monad wallet clients, which are #41's own,
- * already-tested layer (see `@frank/wallet/chain/monad-chain.jest.test.ts`).
- *
- * Special attention to the signed-vote-number -> `{ direction, voteWeightWei }` mapping: Lotus's
- * `RegistryHandler.addOfferings(payloadDigest, vote: number)` folded up/down direction into the
- * sign of a single number (positive => up, negative => down -- see
- * `@frank/cashweb/registry/index.ts`'s `constructBurnTransaction`). This store's own callers
- * (`TopicMessage.vue`'s up/down vote buttons) still produce that signed number, so the store
- * itself is where the conversion into `ActiveChain.topics.vote`'s separate `direction`/
- * `voteWeightWei` happens.
- */
+// Canonical topic store boundary and exact signed paid amounts.
+import { flushPromises } from '@vue/test-utils'
+import { createApp } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 
 import { useTopicStore } from './topics'
-import { ForumMessage } from '@frank/cashweb/types/forum'
+import { ForumMessage } from '@frank/wallet/forum-model'
 import { WalletHandle } from '@frank/wallet/chain'
+
+jest.mock('src/accounts/session', () => ({ accountStatus: { revision: 1, status: 'ready' } }))
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
+    defaultTopicVoteValue: 100_000_000n,
     topics: {
       post: jest.fn(),
       vote: jest.fn(),
@@ -53,7 +44,8 @@ function makeMessage(overrides: Partial<ForumMessage> = {}): ForumMessage {
   return {
     poster: '0xposter',
     topic: 'stamp',
-    satoshis: 100_000_000,
+    voteWeightWei: '100000000',
+    visibleTimestamp: { seconds: '1', nanoseconds: 0 }, epoch: '00'.repeat(16), revision: '1', transactionHash: '11'.repeat(32), authorBurnTx: '0x01', blockNumber: '1', transactionIndex: '0',
     entries: [{ kind: 'post', message: 'hello' }],
     payloadDigest: 'deadbeef',
     timestamp: new Date(),
@@ -121,7 +113,7 @@ describe('useTopicStore: addOffering', () => {
     await store.addOffering({
       wallet: testWallet,
       payloadDigest: 'deadbeef',
-      satoshis: 500,
+      satoshis: 500n,
       topic: 'stamp',
     })
 
@@ -141,7 +133,7 @@ describe('useTopicStore: addOffering', () => {
     await store.addOffering({
       wallet: testWallet,
       payloadDigest: 'deadbeef',
-      satoshis: -500,
+      satoshis: -500n,
       topic: 'stamp',
     })
 
@@ -156,17 +148,17 @@ describe('useTopicStore: addOffering', () => {
   it('refreshes the message via fetchOne after voting', async () => {
     const store = useTopicStore()
     mockedVote.mockResolvedValueOnce(undefined)
-    mockedFetchOne.mockResolvedValueOnce(makeMessage({ satoshis: 600 }))
+    mockedFetchOne.mockResolvedValueOnce(makeMessage({ voteWeightWei: '600' }))
 
     await store.addOffering({
       wallet: testWallet,
       payloadDigest: 'deadbeef',
-      satoshis: 500,
+      satoshis: 500n,
       topic: 'stamp',
     })
 
     expect(mockedFetchOne).toHaveBeenCalledWith('deadbeef')
-    expect(store.getMessage('deadbeef')?.satoshis).toBe(600)
+    expect(store.getMessage('deadbeef')?.voteWeightWei).toBe('600')
   })
 })
 
@@ -189,9 +181,9 @@ describe('useTopicStore: refreshMessages', () => {
     const store = useTopicStore()
     mockedFetchByTopic.mockResolvedValueOnce(undefined)
 
-    await store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
+    await expect(store.refreshMessages({ wallet: testWallet, topic: 'stamp' })).rejects.toThrow('Incomplete topic query')
 
-    expect(store.topics['stamp'].messages).toHaveLength(0)
+    expect(store.ensureTopic('stamp').messages).toHaveLength(0)
   })
 })
 
@@ -223,7 +215,8 @@ describe('useTopicStore: refreshDiscoveredTopics', () => {
     topicState.messages.push({
       poster: '0xposter',
       topic: 'stamp',
-      satoshis: 1,
+      voteWeightWei: '1',
+      visibleTimestamp: { seconds: '1', nanoseconds: 0 }, epoch: '00'.repeat(16), revision: '1', transactionHash: '11'.repeat(32), authorBurnTx: '0x01', blockNumber: '1', transactionIndex: '0',
       entries: [],
       payloadDigest: 'existing',
       timestamp: new Date(),
@@ -245,7 +238,7 @@ describe('useTopicStore: refreshDiscoveredTopics', () => {
     store.ensureTopic('stamp')
     mockedDiscoverTopics.mockResolvedValueOnce([])
 
-    await expect(store.refreshDiscoveredTopics()).resolves.toBeUndefined()
+    await expect(store.refreshDiscoveredTopics()).resolves.toBe(true)
 
     expect(store.getTopics).toEqual(['stamp'])
   })
@@ -277,4 +270,48 @@ describe('useTopicStore: fetchMessage', () => {
 
     expect(result).toBeUndefined()
   })
+})
+
+it('replaces each complete topic query including author and removes absent rows', async () => {
+  const store = useTopicStore()
+  store.setEntries('stamp', [makeMessage(),makeMessage({payloadDigest:'removed'})], 1)
+  mockedFetchByTopic.mockResolvedValue([makeMessage({poster:'new author',voteWeightWei:'9007199254740993'})])
+  await store.refreshMessages({wallet:testWallet,topic:'stamp'})
+  expect(store.getMessage('removed')).toBeUndefined()
+  expect(store.topics.stamp.messages).toHaveLength(1)
+  expect(store.getMessage('deadbeef')).toMatchObject({poster:'new author',voteWeightWei:'9007199254740993'})
+  expect(() => JSON.stringify(store.$state)).not.toThrow()
+})
+it('distinguishes failed discovery from verified empty without adding topics', async () => {
+  const store = useTopicStore()
+  mockedDiscoverTopics.mockRejectedValueOnce(new Error('continuation lost'))
+  expect(await store.refreshDiscoveredTopics()).toBe(false)
+  expect(store.discoveryStatus).toBe('error')
+  expect(store.discoveryError).toBe('continuation lost')
+  expect(store.getTopics).toEqual([])
+  mockedDiscoverTopics.mockResolvedValueOnce([])
+  expect(await store.refreshDiscoveredTopics()).toBe(true)
+  expect(store.discoveryStatus).toBe('verified')
+  expect(store.discoveryError).toBeNull()
+})
+it('cannot publish a delayed old wallet query after a new wallet starts another topic', async () => {
+  const store = useTopicStore()
+  let resolve!: (rows: ForumMessage[]) => void
+  mockedFetchByTopic.mockReturnValueOnce(new Promise<ForumMessage[]>(yes => {resolve=yes})).mockResolvedValueOnce([])
+  const old = store.refreshMessages({wallet:testWallet,topic:'stamp'})
+  await flushPromises()
+  const wallet = {identity:{address:{raw:'0xdef'}}} as unknown as WalletHandle
+  const fresh = store.refreshMessages({wallet,topic:'news'})
+  resolve([makeMessage()]); await old; await fresh
+  expect(store.getMessage('deadbeef')).toBeUndefined()
+})
+
+it('excludes old persisted observations and number inputs through actual restore', async () => {
+  let storageOptions: {restore(storage: unknown): Promise<unknown>} | undefined
+  const pinia = createPinia()
+  pinia.use(({options}) => { storageOptions = options.storage as typeof storageOptions })
+  createApp({}).use(pinia)
+  setActivePinia(pinia); useTopicStore()
+  const restored = await storageOptions!.restore({get: async () => JSON.stringify({topics:[{topic:'stamp',offering:5,threshold:1,messages:['old']}],messageIndex:{old:{satoshis:7}}})})
+  expect(restored).toMatchObject({messageIndex:{},topics:{stamp:{messages:[],threshold:'0',offering:'100000000'}},discoveryStatus:'unverified'})
 })

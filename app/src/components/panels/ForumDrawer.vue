@@ -7,6 +7,7 @@
             filled
             class="q-mx-sm q-pa-none"
             v-model="selectedTopic"
+            data-test="forum-topic"
             label="Topic"
             style="width: 250px"
             @keyup.enter.prevent="refreshContent"
@@ -40,6 +41,7 @@
           <q-input
             class="q-mx-sm q-pa-none"
             v-model="threshold"
+            data-test="forum-threshold"
             :label="`Vote Threshold (${chainUnit})`"
             style="width: 250px"
             use-input
@@ -188,9 +190,13 @@ export default defineComponent({
     },
     threshold: {
       set(newVal?: string) {
-        const threshold = Number.parseFloat(newVal ?? '0')
-        const newThreshold = Number.isNaN(threshold) ? 0 : threshold
-        this.setVoteThreshold(newThreshold)
+        const value = String(newVal ?? '0')
+        try {
+          activeChain.fromDisplayAmount(value)
+          this.setVoteThreshold(value)
+        } catch {
+          this.setVoteThreshold('0')
+        }
       },
       get(): string {
         return this.storeVoteThreshold.toString()

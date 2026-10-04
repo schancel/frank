@@ -1,0 +1,13 @@
+# Canonical recovery checkpoint
+
+2026-10-04. Goal remains active; original primary checkout untouched. Main is febcefa1874c1a323bb2a24f275ede2e7c7ae7f0 (Forum823 and type18 preparation824 landed). No complete encrypted runtime/manual milestone claimed.
+
+Relay frozen760a6a7b4197957b9c9a8e8491fdd5605cd689b6: actual owned compile PASS10.62s; parser3, outbox104, oldHTTP51, economics1, encoder1, directory lifecycle1 PASS. Initial f906 compile failed seven missing Address diagnostics, preserved; repaired one import. These selectors do not replace genuine canonical admission/P-auth/fullcap/concurrent integration.
+
+Wallet frozen20f030c8726211971e223d939ac2999c9eacb420: actual native client/bundle/chain142PASS. Repair serializes the whole direct legacy operation with the canonical owner, delegates an active opaque admission to nested normal chain/topic calls, and rejects foreign/expired tokens. Held-quote concurrency and normal chain progress passed. Independent narrow repair source verification pending. Logs /private/tmp/frank-777-wallet-jest-20f030c.log. Heavy lease explicitly released by both workers; no live gate at checkpoint.
+
+Finite recipient import/terminal ACK authority accepted at https://github.com/schancel/frank/issues/777#issuecomment-5979750327, exact /private/tmp/frank-777-recovery-acceptance.md, after independent proposal review. Mandatory: imported funds remain reconstructible under their actual original bound EVM root after messaging grace/rotation; retained-obligation custody only, no fresh admission/private persistence. Monotonic immutable imports, durable terminal import before ACK. Explicit durable acknowledged fact and retained exact terminal retry evidence, never reservation=false inference; fixed quota accounting unchanged. Actual lost-response/reopen/fullcap/killed-child proofs pending.
+
+Relay worker implementing explicit ACK fact and genuine admission fixtures; wallet worker implementing recipient import and unsigned-intent/partial-member/promoted-body killed-child cuts within finite claims. Heavy gates remain serialized with wrapper and owned dependencies. Transport e4b4 independently reviewed but whole777 candidate still unlanded.
+
+703 packet /private/tmp/frank-703-current-coupling-readiness.md updated to actual immutable20f APIs; no activation before reviewed777 landing. UI778 read-only readiness being prepared in parallel, preserving current branding/accessibility/Wallet/onboarding. Real local Qwen adapter previously succeeded, model-only availability; actual joined UI/model/two-relay/restart testing still required before user testing. Global797 retirement remains full scope, not a DM-only grep closure.

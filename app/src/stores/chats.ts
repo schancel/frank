@@ -1368,7 +1368,10 @@ export const useChatStore = defineStore('chats', {
           onAttemptCreated: async attemptDigest => {
             ownDigest = attemptDigest
             // Strict: this write must be durable before the relay sees any byte of the set.
-            // If it fails, the wallet aborts the send and rolls the attempt back.
+            // If it fails, the send stops before any relay request. The wallet does NOT roll the
+            // attempt back: its payment intent stays journaled, later sends wait behind it, and
+            // reconciliation finishes and delivers those same bytes. `ownDigest` is therefore
+            // kept on the message by the failure path below whenever that later write succeeds.
             await this.setOutgoingState(
               address,
               id,

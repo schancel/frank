@@ -266,6 +266,7 @@ async function fixture() {
     directoryRequests,
     snapshotReads,
     savedExports,
+    exportOf,
     failDirectory,
     failEnroll,
     deps,
@@ -273,7 +274,7 @@ async function fixture() {
     setForeign: (id: Participant['processId'] | undefined) => (foreignAt = id),
     /** The operator's explicit step: approve, install everywhere, and the bot publishes itself. */
     install(exports: { ui: PublicExportFile; bot: PublicExportFile } = files) {
-      approved = buildApprovedBundle(policy, exports)
+      approved = buildApprovedBundle(policy, exports, now)
       deployed.set('approved-bundle.json', bytes(approved))
       heads.set(
         files.bot.subjectP,
@@ -535,5 +536,62 @@ describe('local/demo directory readiness barrier', () => {
 
     f.setNow(BigInt(f.policy.exportValidity.expiresAtNs))
     expect(await reason()).toBe('policy-expired')
+  })
+
+  it('operator approval rejects exports whose public fields, validity or policy time do not match what was signed', async () => {
+    const now = NOW
+    const approve = (
+      ui: PublicExportFile,
+      at = now,
+      bot: PublicExportFile = f.files.bot,
+    ) => buildApprovedBundle(f.policy, { ui, bot }, at)
+    expect(approve(f.files.ui).subjects).toHaveLength(2)
+    // Unsigned convenience fields must agree with the signed statement they describe.
+    expect(() =>
+      approve({ ...f.files.ui, authAddress: f.files.bot.authAddress }),
+    ).toThrow('authAddress')
+    expect(() =>
+      approve({ ...f.files.ui, messagePoint: f.files.bot.messagePoint }),
+    ).toThrow('messagePoint')
+    expect(() =>
+      approve({ ...f.files.ui, stampPoint: f.files.bot.stampPoint }),
+    ).toThrow('stampPoint')
+    expect(() =>
+      approve(f.files.ui, now, {
+        ...f.files.bot,
+        stampPoint: f.files.ui.stampPoint,
+      }),
+    ).toThrow('stampPoint')
+    // The policy must be inside its own validity when the operator approves.
+    expect(() =>
+      approve(f.files.ui, BigInt(f.policy.exportValidity.expiresAtNs)),
+    ).toThrow('validity')
+    expect(() =>
+      approve(f.files.ui, BigInt(f.policy.exportValidity.issuedAtNs) - 1n),
+    ).toThrow('validity')
+    // A statement signed for another validity window cannot be relabelled for this policy.
+    const other = buildBootstrapPolicy({
+      networkTag: f.policy.networkTag,
+      network: f.policy.network,
+      chainId: f.policy.chainId,
+      participants: f.policy.participants,
+      relayTuples: f.policy.relayTuples,
+      exportValidity: {
+        issuedAtNs: f.policy.exportValidity.issuedAtNs,
+        expiresAtNs: (
+          BigInt(f.policy.exportValidity.expiresAtNs) - 1n
+        ).toString(),
+      },
+    })
+    f.deployed.set(
+      'bootstrap-policy.json',
+      new TextEncoder().encode(JSON.stringify(other)),
+    )
+    const relabelled = {
+      ...(await f.exportOf(f.ui)),
+      bootstrapPolicyIdentity: f.policy.policyIdentity,
+    }
+    expect(relabelled.revisionZeroT1).not.toBe(f.files.ui.revisionZeroT1)
+    expect(() => approve(relabelled)).toThrow('signed validity')
   })
 })

@@ -305,7 +305,7 @@ async function sentAndSettled(message, ms = 90000) {
 const hand = () =>
   ev(`(()=>{const all=[...document.querySelectorAll('.blackjack-hand')];const live=all.filter(e=>e.querySelector('[data-testid=blackjack-status]'));const e=live[live.length-1];if(!e)return {bubbles:all.length};
     const q=t=>e.querySelector('[data-testid='+t+']')?.innerText.trim()??null;
-    return {bubbles:all.length,line:q('blackjack-line'),text:e.innerText.trim().replace(/\\s*\\n\\s*/g,' | ').slice(0,500),status:q('blackjack-status'),problem:q('blackjack-problem'),outcome:q('blackjack-outcome'),payout:q('blackjack-payout'),refunded:q('blackjack-refunded'),amountError:q('blackjack-amount-error'),
+    return {bubbles:all.length,newest:e===all[all.length-1],line:q('blackjack-line'),text:e.innerText.trim().replace(/\\s*\\n\\s*/g,' | ').slice(0,500),status:q('blackjack-status'),problem:q('blackjack-problem'),outcome:q('blackjack-outcome'),payout:q('blackjack-payout'),refunded:q('blackjack-refunded'),amountError:q('blackjack-amount-error'),
       amount:e.querySelector('[data-testid=blackjack-bet-amount],[data-testid=blackjack-accept-max]')?.value??null,
       buttons:[...e.querySelectorAll('button[data-testid]')].map(b=>({id:b.getAttribute('data-testid').replace('blackjack-',''),label:b.innerText.trim(),disabled:b.disabled}))}})()`)
 const handButton = id => `(()=>{const live=[...document.querySelectorAll('.blackjack-hand')].filter(e=>e.querySelector('[data-testid=blackjack-status]'));return live[live.length-1].querySelector('[data-testid=blackjack-${id}]')})()`
@@ -477,7 +477,7 @@ const phases = {
     await wait(async () => (await hand()).line, 'a blackjack hand in this chat', Number(process.env.HAND_TIMEOUT_MS ?? 120000))
     // The chat renders its newest bubbles last: give a hand that is still open time to appear
     // before taking an earlier, finished one for the current hand.
-    await wait(async () => { const s = await hand(); return s.line && !(s.outcome || s.refunded) }, 'an open hand', 15000).catch(() => {})
+    await wait(async () => { const s = await hand(); return s.line && s.newest && !(s.outcome || s.refunded) }, 'an open hand', 15000).catch(() => {})
     await delay(1500)
     await shot('hand')
     let state, quiet = 0, n = 0
@@ -485,6 +485,12 @@ const phases = {
     for (;;) {
       if (Date.now() > end) throw Error('the hand did not get further: ' + JSON.stringify(state))
       state = await hand()
+      // While a new message of a hand is being drawn, the newest bubble that shows a hand can
+      // for a moment be an earlier, finished hand. Only the chat's newest blackjack bubble counts.
+      if (!state.newest) {
+        await delay(300)
+        continue
+      }
       if (state.outcome || state.refunded) break
       const offered = (state.buttons ?? []).filter(b => !b.disabled).map(b => b.id)
       const sending = (await bubbles()).some(b => b.sending)
@@ -534,7 +540,7 @@ const phases = {
     // window closes; its payment is only then on the chain.
     await wait(async () => (await bubbles()).every(b => !b.sending && !b.paymentPending), 'messages still being sent', 120000)
     await delay(4000)
-    state = await hand()
+    await wait(async () => (state = await hand()).newest, 'the chat to settle', 15000)
     await ev(`(()=>{const all=[...document.querySelectorAll('.blackjack-hand')];all[all.length-1].scrollIntoView({block:'center'})})()`)
     await delay(300)
     await shot('end')

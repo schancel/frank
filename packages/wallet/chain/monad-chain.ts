@@ -353,6 +353,33 @@ export function installCanonicalDirectory(wallet: NativeWalletHandle, directory:
   canonicalDirectories.set(wallet, directory);
   return () => { if (canonicalDirectories.get(wallet) === directory) canonicalDirectories.delete(wallet); };
 }
+type CanonicalInventoryFunder = (input: {
+  stampValueWei: bigint;
+  recipientStampKey: Uint8Array;
+  onProgress?: (progress: DirectMessagePreparationProgress) => void;
+}) => Promise<string[]>;
+const canonicalInventoryFunders = new WeakMap<object, CanonicalInventoryFunder>();
+/**
+ * Funds receipt-confirmed single-use sender accounts for one canonical stamp of `stampValueWei`,
+ * from the wallet's own EVM main account, through the same pool machinery and owner admission as
+ * every other inventory preparation. Call it before `prepareIntent`, which selects only funded
+ * accounts. Returns the funding transaction hashes (empty when inventory already sufficed).
+ */
+export function prepareCanonicalStampInventory(wallet: NativeWalletHandle, input: Parameters<CanonicalInventoryFunder>[0]): Promise<string[]> {
+  const fund = canonicalInventoryFunders.get(wallet);
+  if (!fund || closedWallets.has(wallet as MonadChainWalletHandle)) throw new Error("Canonical inventory requires live typed persistent custody");
+  return fund({ ...input, recipientStampKey: new Uint8Array(input.recipientStampKey) });
+}
+/**
+ * Scoped canonical message roles of the live typed wallet for one admitted Current of its own
+ * subject. The caller disposes the result. No second copy of the wallet roots is needed.
+ */
+export function createCanonicalMessageRoles(wallet: NativeWalletHandle, current: import("../../directory-admission/src").Current) {
+  const live = wallet as MonadChainWalletHandle;
+  const material = walletMaterial.get(live), installed = installedCanonicalWalletDescriptors.get(wallet);
+  if (!material?.canonicalRoles || !installed || !typedWallets.has(live) || closedWallets.has(live)) throw new Error("Canonical roles require live typed wallet custody");
+  return material.canonicalRoles.create(installed.network, current);
+}
 /** Typed wallets use only the canonical path: pending is an error, never a legacy fallback. */
 function canonicalMessagingFor(wallet: MonadChainWalletHandle) {
   requireOpenWallet(wallet);
@@ -1765,6 +1792,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                   canonicalClientFactories.delete(wallet);
                   canonicalUnavailableWallets.delete(wallet);
                   canonicalMessaging.delete(wallet);
+                  canonicalInventoryFunders.delete(wallet);
                   canonicalDirectories.delete(wallet);
                   installedCanonicalWalletDescriptors.delete(wallet);
                   privateTopicWallets.delete(wallet);
@@ -1794,6 +1822,21 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               return new MonadCanonicalStampClient({ ...wallet, walletState: topicOwner!, canonicalRoles, installedNetworkTag,
                 runCanonicalExclusive: task => runWalletExclusive(wallet, () => task(), true) });
             });
+            // Same ordinary owner path as legacy inventory: wallet queue, then main account.
+            const prepareInventory: CanonicalInventoryFunder = ({ stampValueWei, recipientStampKey, onProgress }) =>
+              runWalletExclusive(wallet, async () => {
+                const mainAccountSigner = new MonadAccountTxSigner({ privateKey: mainAccount.privateKey, provider, httpClient });
+                const preparation = await runMainAccountExclusive(wallet, async () =>
+                  pool.prepareStampInventory({
+                    mainAccountSigner,
+                    provider,
+                    stampValueWei,
+                    gasReserveWei: await quoteMonadStampPaymentGasReserve({ signer: mainAccountSigner, recipientPublicKey: recipientStampKey }),
+                    onProgress,
+                  }));
+                return preparation.fundingTxHashes;
+              });
+            canonicalInventoryFunders.set(wallet, prepareInventory);
             if (storageLocation !== undefined) {
               const links = await LevelCanonicalLinkStore.open(storageLocation);
               canonicalLinks = links;
@@ -1807,20 +1850,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                 client: () => canonicalMonadStampClient(wallet),
                 signDigest: digest => new Uint8Array(identity.signHash(Buffer.from(digest))),
                 directory: () => canonicalDirectories.get(wallet),
-                // Same ordinary owner path as legacy inventory: wallet queue, then main account.
-                prepareInventory: ({ stampValueWei, recipientStampKey, onProgress }) =>
-                  runWalletExclusive(wallet, async () => {
-                    const mainAccountSigner = new MonadAccountTxSigner({ privateKey: mainAccount.privateKey, provider, httpClient });
-                    const preparation = await runMainAccountExclusive(wallet, async () =>
-                      pool.prepareStampInventory({
-                        mainAccountSigner,
-                        provider,
-                        stampValueWei,
-                        gasReserveWei: await quoteMonadStampPaymentGasReserve({ signer: mainAccountSigner, recipientPublicKey: recipientStampKey }),
-                        onProgress,
-                      }));
-                    return preparation.fundingTxHashes;
-                  }),
+                prepareInventory,
               }, config.defaultStampValueWei));
             }
           }

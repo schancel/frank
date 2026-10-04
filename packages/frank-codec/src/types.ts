@@ -405,10 +405,41 @@ export type BlackjackFields<H, Q> = { gameId: string } & (
 )
 
 /** Closed type-18 projection; exact frame bytes remain on the enclosing ParsedFrame. */
-export type BlackjackMessageItem = { type: 18 } & BlackjackFields<
+export type BlackjackMessageItem = { type: 18; schema?: never } & BlackjackFields<
   Uint8Array,
   Uint8Array
 >
+
+/** The ten closed schema-2 shapes of a peer-to-peer hand (docs/protocol/blackjack-p2p.md).
+ * No shape carries an amount of money: a wager, payout or refund is the message's own stamp. */
+export type BlackjackHandFields<H, Q> = { gameId: string } & (
+  | { action: 'challenge'; role: 'dealer'; maxBetWei: Q; commitment: H }
+  | { action: 'challenge'; role: 'player'; maxBetWei: Q; commitment?: never }
+  | { action: 'accept'; maxBetWei: Q; commitment: H }
+  | { action: 'bet' }
+  | {
+      action: 'deal'
+      playerCards: readonly number[]
+      dealerUpCard: number
+    }
+  | { action: 'hit' }
+  | { action: 'stand' }
+  | { action: 'double' }
+  | { action: 'card'; playerCards: readonly number[] }
+  | {
+      action: 'reveal'
+      dealerCards: readonly number[]
+      seed: string
+      outcome: 'player_win' | 'dealer_win' | 'push' | 'player_blackjack'
+    }
+  | { action: 'refund'; ref: H }
+)
+
+/** Closed type-18 schema-2 projection. */
+export type BlackjackHandMessageItem = {
+  type: 18
+  schema: 2
+} & BlackjackHandFields<Uint8Array, Uint8Array>
 
 export type TypedPayload<F, C, P = ForumContent, K = ForumCursor> =
   | DirectMessageDelivery<F>
@@ -429,6 +460,7 @@ export type TypedPayload<F, C, P = ForumContent, K = ForumCursor> =
   | ContainerMessageItem<C>
   | TextMessageItem
   | BlackjackMessageItem
+  | BlackjackHandMessageItem
 
 /** Why a frame was kept only as opaque bytes. */
 export type RetentionReason =

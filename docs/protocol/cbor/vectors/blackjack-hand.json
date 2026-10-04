@@ -1,0 +1,474 @@
+{
+  "format": "blackjack-hand-v2",
+  "allocation": {
+    "typeId": 18,
+    "schemaVersion": 2,
+    "minReaderVersion": 2,
+    "maximumFrameBytes": 4096,
+    "closedPayload": true
+  },
+  "note": "All hashes, seeds and amounts are public fixtures. No frame carries or proves a payment.",
+  "contexts": {
+    "default": {},
+    "schema1": {
+      "readerVersion": 2,
+      "supportedSchemas": [
+        {
+          "typeId": 18,
+          "schemaVersion": 1
+        }
+      ],
+      "opaqueRetentionAllowed": false
+    }
+  },
+  "frames": [
+    {
+      "id": "challenge-as-dealer",
+      "context": "default",
+      "frameHex": "46524e4b010000005da4001201020202035853a5006668616e642d31011002000358200000000000000000000000000000000000000000000000000de0b6b3a7640000045820c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "hand-1",
+        "action": "challenge",
+        "role": "dealer",
+        "maxBetWei": "1000000000000000000",
+        "commitment": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+      }
+    },
+    {
+      "id": "challenge-as-player",
+      "context": "default",
+      "frameHex": "46524e4b010000003aa4001201020202035830a4006668616e642d31011002010358200000000000000000000000000000000000000000000000000000000000000001",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "hand-1",
+        "action": "challenge",
+        "role": "player",
+        "maxBetWei": "1"
+      }
+    },
+    {
+      "id": "accept",
+      "context": "default",
+      "frameHex": "46524e4b010000005ba4001201020202035851a4006668616e642d3101110358200000000000000000000000000000001d6329f1c35ca4bfabb9f560ffffffffff045820c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "hand-1",
+        "action": "accept",
+        "maxBetWei": "9999999999999999999999999999999999999999",
+        "commitment": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+      }
+    },
+    {
+      "id": "bet",
+      "context": "default",
+      "frameHex": "46524e4b0100000014a4001201020202034ba2006668616e642d310112",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "hand-1",
+        "action": "bet"
+      }
+    },
+    {
+      "id": "deal",
+      "context": "default",
+      "frameHex": "46524e4b010000001ba40012010202020352a4006668616e642d3101130582001833060d",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "hand-1",
+        "action": "deal",
+        "playerCards": [
+          0,
+          51
+        ],
+        "dealerUpCard": 13
+      }
+    },
+    {
+      "id": "hit",
+      "context": "default",
+      "frameHex": "46524e4b0100000014a4001201020202034ba2006668616e642d310114",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "hand-1",
+        "action": "hit"
+      }
+    },
+    {
+      "id": "stand",
+      "context": "default",
+      "frameHex": "46524e4b0100000014a4001201020202034ba2006668616e642d310115",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "hand-1",
+        "action": "stand"
+      }
+    },
+    {
+      "id": "double",
+      "context": "default",
+      "frameHex": "46524e4b0100000014a4001201020202034ba2006668616e642d310116",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "hand-1",
+        "action": "double"
+      }
+    },
+    {
+      "id": "card",
+      "context": "default",
+      "frameHex": "46524e4b010000001aa40012010202020351a3006668616e642d310117058300183307",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "hand-1",
+        "action": "card",
+        "playerCards": [
+          0,
+          51,
+          7
+        ]
+      }
+    },
+    {
+      "id": "reveal",
+      "context": "default",
+      "frameHex": "46524e4b0100000068a400120102020203585ea5006c68616e642df09f8eb42dc3a901181807830d181a1827087840303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566303132333435363738396162636465660903",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "hand-🎴-é",
+        "action": "reveal",
+        "dealerCards": [
+          13,
+          26,
+          39
+        ],
+        "seed": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "outcome": "player_blackjack"
+      }
+    },
+    {
+      "id": "refund",
+      "context": "default",
+      "frameHex": "46524e4b0100000039a400120102020203582fa3006668616e642d310118190a5820abababababababababababababababababababababababababababababababab",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "hand-1",
+        "action": "refund",
+        "ref": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "reject-schema1-action-code-with-reader2",
+      "context": "default",
+      "frameHex": "46524e4b0100000014a4001201020202034ba2006668616e642d310103",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-hand-action-code-readable-by-reader1",
+      "context": "default",
+      "frameHex": "46524e4b0100000014a4001201020201034ba2006668616e642d310112",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-hand-action-code-in-schema1",
+      "context": "default",
+      "frameHex": "46524e4b0100000014a4001201010201034ba2006668616e642d310112",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-action-out-of-range",
+      "context": "default",
+      "frameHex": "46524e4b0100000015a4001201020202034ca2006668616e642d3101181a",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-missing-game",
+      "context": "default",
+      "frameHex": "46524e4b010000000ca40012010202020343a10112",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-empty-game",
+      "context": "default",
+      "frameHex": "46524e4b010000000ea40012010202020345a200600112",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-bet-with-amount-field",
+      "context": "default",
+      "frameHex": "46524e4b0100000038a400120102020203582ea3006668616e642d3101120358200000000000000000000000000000000000000000000000000000000000000005",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-challenge-player-with-commitment",
+      "context": "default",
+      "frameHex": "46524e4b010000005da4001201020202035853a5006668616e642d31011002010358200000000000000000000000000000000000000000000000000000000000000005045820c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-challenge-dealer-without-commitment",
+      "context": "default",
+      "frameHex": "46524e4b010000003aa4001201020202035830a4006668616e642d31011002000358200000000000000000000000000000000000000000000000000000000000000005",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-challenge-role",
+      "context": "default",
+      "frameHex": "46524e4b010000003aa4001201020202035830a4006668616e642d31011002020358200000000000000000000000000000000000000000000000000000000000000005",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-challenge-zero-max",
+      "context": "default",
+      "frameHex": "46524e4b010000003aa4001201020202035830a4006668616e642d31011002010358200000000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      }
+    },
+    {
+      "id": "reject-challenge-max-above-limit",
+      "context": "default",
+      "frameHex": "46524e4b010000003aa4001201020202035830a4006668616e642d31011002010358200000000000000000000000000000001d6329f1c35ca4bfabb9f5610000000000",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      }
+    },
+    {
+      "id": "reject-challenge-short-quantity",
+      "context": "default",
+      "frameHex": "46524e4b0100000039a400120102020203582fa4006668616e642d310110020103581f00000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-accept-zero-max",
+      "context": "default",
+      "frameHex": "46524e4b010000005ba4001201020202035851a4006668616e642d3101110358200000000000000000000000000000000000000000000000000000000000000000045820c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      }
+    },
+    {
+      "id": "reject-accept-without-commitment",
+      "context": "default",
+      "frameHex": "46524e4b0100000038a400120102020203582ea3006668616e642d3101110358200000000000000000000000000000000000000000000000000000000000000005",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-deal-one-card",
+      "context": "default",
+      "frameHex": "46524e4b0100000019a40012010202020350a4006668616e642d3101130581000601",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-deal-duplicate-cards",
+      "context": "default",
+      "frameHex": "46524e4b010000001aa40012010202020351a4006668616e642d310113058204040601",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      }
+    },
+    {
+      "id": "reject-deal-up-card-in-hand",
+      "context": "default",
+      "frameHex": "46524e4b010000001aa40012010202020351a4006668616e642d310113058204050604",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      }
+    },
+    {
+      "id": "reject-deal-card-52",
+      "context": "default",
+      "frameHex": "46524e4b010000001ba40012010202020352a4006668616e642d31011305820418340601",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-card-two-cards",
+      "context": "default",
+      "frameHex": "46524e4b0100000018a4001201020202034fa3006668616e642d31011705820102",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-card-duplicate",
+      "context": "default",
+      "frameHex": "46524e4b0100000019a40012010202020350a3006668616e642d3101170583010201",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      }
+    },
+    {
+      "id": "reject-reveal-uppercase-seed",
+      "context": "default",
+      "frameHex": "46524e4b010000005fa4001201020202035855a5006668616e642d3101181807820102087840303132333435363738394142434445463031323334353637383941424344454630313233343536373839414243444546303132333435363738394142434445460900",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-reveal-outcome",
+      "context": "default",
+      "frameHex": "46524e4b010000005fa4001201020202035855a5006668616e642d3101181807820102087840303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566303132333435363738396162636465660904",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-reveal-duplicate-cards",
+      "context": "default",
+      "frameHex": "46524e4b010000005fa4001201020202035855a5006668616e642d3101181807820202087840303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566303132333435363738396162636465660900",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      }
+    },
+    {
+      "id": "reject-refund-short-ref",
+      "context": "default",
+      "frameHex": "46524e4b0100000038a400120102020203582ea3006668616e642d310118190a581f00000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-refund-without-ref",
+      "context": "default",
+      "frameHex": "46524e4b0100000015a4001201020202034ca2006668616e642d31011819",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-hit-with-cards",
+      "context": "default",
+      "frameHex": "46524e4b0100000019a40012010202020350a3006668616e642d3101140583010203",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reader-without-schema2-does-not-read-a-hand-item",
+      "context": "schema1",
+      "frameHex": "46524e4b0100000014a4001201020202034ba2006668616e642d310112",
+      "expected": {
+        "result": "reject",
+        "stage": "7",
+        "category": "unsupported"
+      }
+    }
+  ]
+}

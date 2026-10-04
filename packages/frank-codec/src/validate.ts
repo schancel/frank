@@ -123,7 +123,8 @@ export function defaultContext(
         typeId === TYPE_DIRECTORY_STATEMENT
           ? 3
           : typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
-            typeId === TYPE_TOPIC_POST
+            typeId === TYPE_TOPIC_POST ||
+            typeId === TYPE_BLACKJACK_MESSAGE_ITEM
           ? 2
           : 1,
     })),
@@ -335,6 +336,17 @@ function processFrame(
         'structured Forum content requires per-type schema-2 support',
       )
   }
+  // A blackjack frame that requires reader 2 carries the schema-2 hand shapes. A reader without
+  // per-type schema-2 support must not read it as schema 1.
+  if (
+    env.typeId === TYPE_BLACKJACK_MESSAGE_ITEM &&
+    env.minReaderVersion >= 2 &&
+    highest < 2
+  )
+    return keep(
+      'unsupported-min-reader',
+      'blackjack hand items require per-type schema-2 support',
+    )
   if (
     env.typeId === TYPE_DIRECTORY_STATEMENT &&
     env.schemaVersion >= 4 &&
@@ -422,6 +434,7 @@ function processFrame(
     const d = parseDraft(env.typeId, payload, projection === 'newer-schema', {
       envelope: env.schemaVersion,
       effective: Math.min(env.schemaVersion, highest),
+      minReader: env.minReaderVersion,
     })
     checkAllocated(d)
     return d

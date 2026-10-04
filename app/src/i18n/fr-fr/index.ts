@@ -237,11 +237,14 @@ export default {
     waitPlayer: 'En attente du coup du joueur.',
     waitReveal: 'En attente de la révélation et du paiement du donneur.',
     dealing: 'Distribution…',
-    verified: 'Les cartes correspondent à l’engagement du donneur.',
+    verified:
+      'Les cartes proviennent des engagements des deux joueurs, vérifiés sur cet appareil.',
     badReveal:
       'Le donneur a envoyé une révélation qui ne correspond pas à son engagement. La main n’est pas réglée.',
     noSeed:
       'Cet appareil ne détient pas la graine de cette main et ne peut donc pas distribuer. Vous pouvez rendre la mise.',
+    noSeedPlayer:
+      'Cet appareil ne détient pas votre graine pour cette main et ne peut donc pas jouer votre coup. Utilisez l’appareil sur lequel vous avez misé.',
     refundOwed: 'Le donneur vous doit un remboursement de {amount}.',
     refunded: 'Le donneur a rendu la mise ({amount}).',
     noPayout: 'Rien n’est payé.',

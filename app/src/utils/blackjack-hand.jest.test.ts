@@ -1,6 +1,11 @@
+import { handValue } from '@frank/wallet/message-item-plugins/blackjack/deck'
 import {
+  buildBet,
   commitmentOf,
   dealerStep,
+  foldHand,
+  handView,
+  type HandItem,
 } from '@frank/wallet/message-item-plugins/blackjack/hand'
 import type { MessageItem } from '@frank/cashweb/types/messages'
 import {
@@ -24,18 +29,38 @@ const gid = (name: string) =>
     .join('')
     .padEnd(32, '0')
     .slice(0, 32)
+const PLAYER_SEED = 'cd'.repeat(32)
 let n = 0
+/** The messages written so far for each game, from its latest challenge on. */
+const written = new Map<string, HandChatMessage[]>()
+/** One stored message. The fields a client derives from the hand (the message's place in the
+ * hand's chain, a bet's commitment) are filled in from the messages written before it for the
+ * same game, unless `fields` names them. */
 const message = (
   outbound: boolean,
   fields: Record<string, unknown>,
   stampValueWei = 10n,
   gameId = gid('g1'),
-): HandChatMessage => ({
-  outbound,
-  items: [{ type: 'blackjack-hand', gameId, ...fields } as MessageItem],
-  stampValueWei,
-  payloadDigest: (++n).toString(16).padStart(64, '0'),
-})
+): HandChatMessage => {
+  if (fields.action === 'challenge') written.set(gameId, [])
+  const before = written.get(gameId) ?? []
+  const state = foldHand(chatHandEvents(before, ME, PEER, gameId)).state
+  const derived: Record<string, unknown> =
+    fields.action === 'challenge'
+      ? { seq: 0 }
+      : { seq: state?.count ?? 1, prev: state?.head ?? '0'.repeat(64) }
+  if (fields.action === 'bet') derived.commitment = commitmentOf(PLAYER_SEED)
+  const made: HandChatMessage = {
+    outbound,
+    items: [
+      { type: 'blackjack-hand', gameId, ...derived, ...fields } as MessageItem,
+    ],
+    stampValueWei,
+    payloadDigest: (++n).toString(16).padStart(64, '0'),
+  }
+  written.set(gameId, [...before, made])
+  return made
+}
 
 describe('a chat as blackjack hand events', () => {
   it('takes the direction from who sent the message and ignores other items', () => {
@@ -85,9 +110,8 @@ describe('a chat as blackjack hand events', () => {
       )
     const double = message(true, { action: 'bet' }, 500n, gid('x'))
     double.items.push({
-      type: 'blackjack-hand',
+      ...(double.items[0] as HandItem),
       gameId: gid('y'),
-      action: 'bet',
     } as MessageItem)
     const hands = chatHands(
       [challenge(gid('x')), challenge(gid('y')), double],
@@ -210,7 +234,37 @@ describe('automatic dealer steps', () => {
     expect(automaticDealerSteps(messages, ME, PEER)).toEqual([])
   })
 
-  it('does nothing as the player, or as a dealer without the seed', () => {
+  it('stands on a natural without asking when this user is the player', () => {
+    // The dealer's links for the first cards are in; only the player can see the cards.
+    const play = (seed: string, gameId: string) => {
+      saveSeed(ME, PEER, gameId, seed)
+      const messages = [
+        message(
+          false,
+          { action: 'challenge', role: 'dealer', maxBetWei: '500', commitment: commitmentOf(SEED) },
+          10n,
+          gameId,
+        ),
+      ]
+      const state = () => chatHands(messages, ME, PEER)[0].state
+      messages.push(message(true, { ...buildBet(state(), seed) }, 300n, gameId))
+      messages.push(message(false, { ...dealerStep(state(), SEED)?.item }, 10n, gameId))
+      return { messages, cards: handView(state(), seed).playerCards }
+    }
+    let natural: ReturnType<typeof play> | undefined
+    let plain: ReturnType<typeof play> | undefined
+    for (let i = 0; i < 2000 && !(natural && plain); i++) {
+      const hand = play(i.toString(16).padStart(64, '0'), gid(`n${i}`))
+      if (handValue(hand.cards).blackjack) natural ??= hand
+      else plain ??= hand
+    }
+    const steps = automaticDealerSteps(natural!.messages, ME, PEER)
+    expect(steps.map(step => step.item.action)).toEqual(['stand'])
+    // Any other hand is the player's to play.
+    expect(automaticDealerSteps(plain!.messages, ME, PEER)).toEqual([])
+  })
+
+  it('does nothing as the player before the deal, or as a dealer without the seed', () => {
     saveSeed(ME, PEER, gid('mine'), SEED)
     const asPlayer = [
       message(
@@ -253,6 +307,8 @@ describe('a paying message is sent once across tabs', () => {
     gameId: GAME,
     action: 'refund',
     ref: 'over',
+    seq: 1,
+    prev: '0'.repeat(64),
   } as const
   const ask = (
     stored: HandChatMessage[],
@@ -294,7 +350,6 @@ describe('a paying message is sent once across tabs', () => {
   })
 
   it('refuses a second deal, card or bet the same way', async () => {
-    const bet = { type: 'blackjack-hand', gameId: GAME, action: 'bet' } as const
     const asPlayer = [
       message(
         false,
@@ -308,6 +363,7 @@ describe('a paying message is sent once across tabs', () => {
         GAME,
       ),
     ]
+    const bet = message(true, { action: 'bet' }, 300n, GAME).items[0] as HandItem
     expect(await ask([], asPlayer, bet, 300n)).toBe(true)
     expect(
       await ask([message(true, bet, 300n, GAME)], asPlayer, bet, 300n),

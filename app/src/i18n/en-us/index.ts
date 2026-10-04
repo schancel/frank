@@ -229,11 +229,13 @@ export default {
     waitPlayer: "Waiting for the player's move.",
     waitReveal: 'Waiting for the dealer to reveal and pay.',
     dealing: 'Dealing…',
-    verified: 'The cards match the dealer’s commitment.',
+    verified: 'The cards come from both players’ commitments, checked on this device.',
     badReveal:
       'The dealer sent a reveal that does not match its commitment. The hand is not settled.',
     noSeed:
       'This device does not hold the seed of this hand, so it cannot deal. You can return the bet.',
+    noSeedPlayer:
+      'This device does not hold your seed for this hand, so it cannot make your move. Use the device you placed the bet on.',
     refundOwed: 'The dealer owes you a refund of {amount}.',
     refunded: 'The dealer returned the bet ({amount}).',
     noPayout: 'Nothing is paid out.',

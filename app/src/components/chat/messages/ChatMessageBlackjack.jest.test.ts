@@ -7,16 +7,23 @@ import * as quasar from 'quasar'
 import { defineComponent, h, reactive, ref } from 'vue'
 
 import {
+  buildBet,
   commitmentOf,
   dealerStep,
   foldHand,
+  handView,
+  playerStep,
   type HandEvent,
+  type HandState,
 } from '@frank/wallet/message-item-plugins/blackjack/hand'
 import {
-  deriveDeck,
+  cardLabel,
   handValue,
 } from '@frank/wallet/message-item-plugins/blackjack/deck'
-import { playOutDealer } from '@frank/wallet/message-item-plugins/blackjack/game'
+import {
+  CHAIN_LENGTH,
+  entropyChain,
+} from '@frank/wallet/message-item-plugins/blackjack/entropy'
 import enUS from '../../../i18n/en-us'
 import {
   HAND_FEE_RESERVE_WEI,
@@ -111,30 +118,38 @@ const toMessage = (row: Row) => ({
   stampValueWei: row.stamp ?? 10n,
   payloadDigest: row.digest ?? `m${++n}`,
 })
-/** Finds a seed (with the fixed bet digest) whose stand-pat hand has the wanted outcome. */
-function seedFor(want: (deck: number[]) => boolean): string {
-  for (let i = 1; i < 5000; i++) {
-    const seed = i.toString(16).padStart(64, '0')
-    if (want(deriveDeck(seed, BET_DIGEST, 0))) return seed
-  }
-  throw new Error('no seed')
+/** The fold of a list of stored messages, as the component computes it. */
+const eventsOf = (messages: ReturnType<typeof toMessage>[]): HandEvent[] =>
+  messages.map(m => ({
+    item: m.items[0] as HandEvent['item'],
+    from: m.outbound ? ME : PEER,
+    to: m.outbound ? PEER : ME,
+    stampWei: m.stampValueWei,
+    digest: m.payloadDigest,
+  }))
+const stateOf = (messages: ReturnType<typeof toMessage>[]) =>
+  foldHand(eventsOf(messages)).state
+/** The chain fields of the hand's next message, for a message a test writes by hand. */
+const next = (messages: ReturnType<typeof toMessage>[]) => {
+  const state = stateOf(messages) as HandState
+  return { seq: state.count, prev: state.head }
 }
-const stand = (deck: number[]) =>
-  playOutDealer(deck, [deck[0], deck[2]], 4).outcome
-const plain = (deck: number[]) => !handValue([deck[0], deck[2]]).blackjack
-const WIN = seedFor(d => plain(d) && stand(d) === 'player_win')
-const LOSS = seedFor(d => plain(d) && stand(d) === 'dealer_win')
 
-/** A hand where `dealerIsMe` deals with `seed`; the player's `moves` are applied in order. */
+/** The dealer's seed in every hand here; the player's seed decides the cards. */
+const DEALER = 'd0'.repeat(32)
+
+/** A hand where `dealerIsMe` deals; the player plays with `seed`, its `moves` applied in order.
+ * This user's own seed is kept on the device, as the component keeps it. */
 function hand(
   dealerIsMe: boolean,
   seed: string,
   wager: bigint,
-  moves: string[],
+  moves: ('hit' | 'stand' | 'double')[],
   upTo?: 'reveal',
 ) {
   const dealer = dealerIsMe ? ME : PEER
   const player = dealerIsMe ? PEER : ME
+  saveSeed(ME, PEER, GAME, dealerIsMe ? DEALER : seed)
   const rows: Row[] = []
   const events: HandEvent[] = []
   const push = (
@@ -156,9 +171,10 @@ function hand(
       digest,
     })
   }
+  const state = () => foldHand(events).state
   const dealerActs = (stopBeforeReveal: boolean) => {
     for (;;) {
-      const step = dealerStep(foldHand(events).state, seed)
+      const step = dealerStep(state(), DEALER)
       if (!step || (stopBeforeReveal && step.item.action === 'reveal')) return
       push(
         dealer,
@@ -169,21 +185,43 @@ function hand(
   }
   push(dealer, {
     action: 'challenge',
+    seq: 0,
     role: 'dealer',
     maxBetWei: '1000',
-    commitment: commitmentOf(seed),
+    commitment: commitmentOf(DEALER),
   })
   if (wager > 0n) {
-    push(player, { action: 'bet' }, wager, BET_DIGEST)
+    push(player, { ...buildBet(state(), seed) }, wager, BET_DIGEST)
     dealerActs(true)
     for (const move of moves) {
-      push(player, { action: move }, move === 'double' ? wager : 10n)
+      const item = playerStep(state(), move, seed)
+      if (!item) throw new Error(`cannot ${move}`)
+      push(player, { ...item }, move === 'double' ? wager : 10n)
       dealerActs(true)
     }
     if (upTo === 'reveal') dealerActs(false)
   }
   return rows.map(toMessage)
 }
+
+/** Finds a player seed whose first two cards, stood on, give the wanted result. */
+function seedFor(want: (state: HandState, cards: number[]) => boolean): string {
+  for (let i = 1; i < 5000; i++) {
+    const seed = i.toString(16).padStart(64, '0')
+    const dealt = stateOf(hand(false, seed, 400n, []))
+    const cards = handView(dealt, seed).playerCards
+    if (handValue(cards).blackjack) {
+      if (want(dealt as HandState, cards)) return seed
+      continue
+    }
+    const final = stateOf(hand(false, seed, 400n, ['stand'], 'reveal')) as HandState
+    if (want(final, cards)) return seed
+  }
+  throw new Error('no seed')
+}
+const WIN = seedFor(state => state.outcome === 'player_win')
+const LOSS = seedFor(state => state.outcome === 'dealer_win')
+const NATURAL = seedFor((_state, cards) => handValue(cards).blackjack)
 
 async function mountLast(
   messages: ReturnType<typeof toMessage>[],
@@ -222,13 +260,78 @@ describe('the player', () => {
     expect((input.element as HTMLInputElement).value).toBe('1000')
     await input.setValue('400')
     await button(wrapper, 'bet').trigger('click')
+    // The bet carries the commitment to a fresh seed of the player's own, kept on this device
+    // before it leaves, and its place in the hand's chain.
+    const kept = loadSeed(ME, PEER, GAME) as string
+    expect(kept).not.toBe(WIN)
     expect(followUp(wrapper)).toEqual([
       {
-        items: [{ type: 'blackjack-hand', gameId: GAME, action: 'bet' }],
+        items: [
+          {
+            type: 'blackjack-hand',
+            gameId: GAME,
+            action: 'bet',
+            commitment: commitmentOf(kept),
+            seq: 1,
+            prev: expect.any(String),
+          },
+        ],
         stampValueWei: 400n,
         settled: expect.any(Function),
       },
     ])
+  })
+
+  it('sees its first cards right after the deal, before the dealer can', async () => {
+    const messages = hand(false, WIN, 400n, [])
+    // No message carries a card and the hand's shared state has none yet.
+    expect(stateOf(messages)).toMatchObject({ phase: 'player_turn', playerCards: [] })
+    const mine = handView(stateOf(messages), WIN)
+    const wrapper = await mountLast(messages)
+    expect(wrapper.text()).toContain(mine.playerCards.map(cardLabel).join(' '))
+    expect(wrapper.text()).toContain(cardLabel(mine.dealerUpCard as number))
+    // The same messages on the dealer's device show no card until the player moves.
+    saveSeed(ME, PEER, GAME, DEALER)
+    const dealer = await mountLast(messages.map(m => ({ ...m, outbound: !m.outbound })))
+    expect(dealer.text()).not.toContain(mine.playerCards.map(cardLabel).join(' '))
+    expect(dealer.find('[data-testid="blackjack-status"]').text()).toContain('player')
+  })
+
+  it('opens the link of the card it asks for with a hit, and the rest of its chain to stand', async () => {
+    const messages = hand(false, WIN, 400n, [])
+    const hit = await mountLast(messages)
+    await button(hit, 'hit').trigger('click')
+    expect(followUp(hit)[0].items[0]).toEqual({
+      type: 'blackjack-hand',
+      gameId: GAME,
+      action: 'hit',
+      link: entropyChain(WIN)[4],
+      ...next(messages),
+    })
+    const stand = await mountLast(messages)
+    await button(stand, 'stand').trigger('click')
+    expect(followUp(stand)[0].items[0]).toMatchObject({
+      action: 'stand',
+      link: entropyChain(WIN)[CHAIN_LENGTH],
+    })
+  })
+
+  it('has no buttons on a natural: standing on it is sent without asking', async () => {
+    const wrapper = await mountLast(hand(false, NATURAL, 400n, []))
+    expect(wrapper.findAll('button')).toHaveLength(0)
+    expect(wrapper.text()).toContain('21')
+  })
+
+  it('is told when this device does not hold its seed, and gets no buttons', async () => {
+    const messages = hand(false, WIN, 400n, []).map(m => ({
+      ...m,
+      items: [{ ...m.items[0], gameId: 'e'.repeat(32) }],
+    }))
+    const wrapper = await mountLast(messages)
+    expect(wrapper.find('[data-testid="blackjack-problem"]').text()).toContain(
+      'does not hold your seed',
+    )
+    expect(wrapper.findAll('button')).toHaveLength(0)
   })
 
   it.each([
@@ -343,7 +446,11 @@ describe('the player', () => {
   it('is told when the dealer owes a refund', async () => {
     const messages = hand(false, WIN, 0n, [])
     messages.push(
-      toMessage({ outbound: true, item: { action: 'bet' }, stamp: 1001n }),
+      toMessage({
+        outbound: true,
+        item: { ...buildBet(stateOf(messages), WIN) },
+        stamp: 1001n,
+      }),
     )
     const wrapper = await mountLast(messages)
     expect(wrapper.find('[data-testid="blackjack-problem"]').text()).toContain(
@@ -356,13 +463,13 @@ describe('the player', () => {
     messages.push(
       toMessage({
         outbound: true,
-        item: { action: 'bet' },
+        item: { ...buildBet(stateOf(messages), WIN) },
         stamp: 1001n,
         digest: 'over',
       }),
       toMessage({
         outbound: false,
-        item: { action: 'refund', ref: 'over' },
+        item: { action: 'refund', ref: 'over', ...next(messages) },
         stamp: 1n,
       }),
     )
@@ -377,13 +484,13 @@ describe('the player', () => {
     messages.push(
       toMessage({
         outbound: true,
-        item: { action: 'bet' },
+        item: { ...buildBet(stateOf(messages), WIN) },
         stamp: 400n,
         digest: BET_DIGEST,
       }),
       toMessage({
         outbound: false,
-        item: { action: 'refund', ref: BET_DIGEST },
+        item: { action: 'refund', ref: BET_DIGEST, seq: 2, prev: BET_DIGEST },
         stamp: 3n,
       }),
     )
@@ -398,22 +505,13 @@ describe('the player', () => {
 
   it('is told when the dealer’s reveal does not match its commitment', async () => {
     const messages = hand(false, WIN, 400n, ['stand'])
-    const honest = dealerStep(
-      foldHand(
-        messages.map(m => ({
-          item: m.items[0] as HandEvent['item'],
-          from: m.outbound ? ME : PEER,
-          to: m.outbound ? PEER : ME,
-          stampWei: m.stampValueWei,
-          digest: m.payloadDigest,
-        })),
-      ).state,
-      WIN,
-    )!
+    const honest = dealerStep(stateOf(messages), DEALER)!
+    // A link of another chain: it would give other cards than the ones committed to.
     messages.push(
       toMessage({
         outbound: false,
-        item: { ...honest.item, outcome: 'dealer_win' } as never,
+        item: { ...honest.item, link: 'f'.repeat(64) } as never,
+        stamp: 800n,
       }),
     )
     const wrapper = await mountLast(messages)
@@ -427,17 +525,13 @@ describe('the player', () => {
 })
 
 describe('the dealer', () => {
-  beforeEach(() => {
-    saveSeed(ME, PEER, GAME, WIN)
-  })
-
   it('accepts a player’s challenge with a max bet it can cover, and keeps the seed', async () => {
     // Four times the bet must be spendable: 2000 above the reserve covers a max bet of 500.
     mockBalance.value = RESERVE + 2_000n
     const wrapper = await mountLast([
       toMessage({
         outbound: false,
-        item: { action: 'challenge', role: 'player', maxBetWei: '1000' },
+        item: { action: 'challenge', seq: 0, role: 'player', maxBetWei: '1000' },
       }),
     ])
     expect(wrapper.find('[data-testid="blackjack-line"]').text()).toContain(
@@ -464,13 +558,12 @@ describe('the dealer', () => {
     expect(pay.text()).toBe('Pay 800 MON and reveal')
     await pay.trigger('click')
     expect(followUp(wrapper)[0]).toMatchObject({
-      items: [{ action: 'reveal', seed: WIN, outcome: 'player_win' }],
+      items: [{ action: 'reveal', link: entropyChain(DEALER)[CHAIN_LENGTH] }],
       stampValueWei: 800n,
     })
   })
 
   it('has no pay button when the player lost (that reveal is sent automatically)', async () => {
-    saveSeed(ME, PEER, GAME, LOSS)
     const wrapper = await mountLast(hand(true, LOSS, 400n, ['stand']))
     expect(button(wrapper, 'pay').exists()).toBe(false)
   })
@@ -480,7 +573,7 @@ describe('the dealer', () => {
     messages.push(
       toMessage({
         outbound: false,
-        item: { action: 'bet' },
+        item: { ...buildBet(stateOf(messages), WIN) },
         stamp: 1001n,
         digest: 'over',
       }),
@@ -499,7 +592,7 @@ describe('the dealer', () => {
     messages.push(
       toMessage({
         outbound: false,
-        item: { action: 'bet' },
+        item: { ...buildBet(stateOf(messages), WIN) },
         stamp: 400n,
         digest: BET_DIGEST,
       }),

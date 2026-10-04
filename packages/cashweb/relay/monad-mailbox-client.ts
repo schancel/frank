@@ -1176,9 +1176,10 @@ async function canonicalRoundTrip(
         !/^[\x21-\x7e]+$/.test(cursor))
     )
       canonicalProtocol('Invalid bounded opaque cursor')
+    // Fixed logical header charge: 27 name bytes + ': ' + value + CRLF.
     const allowance =
       response.status === 200 && method === 'GET'
-        ? budget - (cursor?.length ?? 0)
+        ? budget - (cursor === undefined ? 0 : 31 + cursor.length)
         : Math.min(budget, CANONICAL_DM_MAX_STATUS_BYTES)
     if (allowance < 1)
       canonicalProtocol('Cursor exceeds complete page byte budget')

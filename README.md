@@ -109,7 +109,7 @@ The recipient reconstructs the matching private key:
 stamp private key = H(payload digest) + recipient private key  (mod n)
 ```
 
-Stamp then derives child destinations and greedily builds at least two transactions from distinct funding sources. No single transaction or address needs to reveal the complete stamp amount. Frank's Monad path restores this construction: [#60](https://github.com/schancel/frank/issues/60) delivered the EVM stamp-child derivation, the split-payment wire format, and relay verification of each payment.
+Stamp then derives child destinations and greedily builds at least two transactions from distinct funding sources. No single transaction or address needs to reveal the complete stamp amount. Frank's Monad path restores this construction, aiming for two or more payments and accepting one: [#60](https://github.com/schancel/frank/issues/60) delivered the EVM stamp-child derivation, the split-payment wire format, and relay verification of each payment. Spending received stamp-child payments is available in the wallet library and to bots; the app does not sweep them yet.
 
 For EVM, a derived secp256k1 public key becomes an address through:
 

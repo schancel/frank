@@ -1,6 +1,6 @@
 # Draft: [bug] PWA production build fails because src-pwa/manifest.json is missing
 
-Not published. Proposed bug; owner acceptance and finite implementation contract pending.
+Original reproduction draft retained. Finite repair is now preserved as draft PR805 at b304ae7c1bac6d2be0b66fc5e3a0cf1e919ab3b7; production build and real service-worker/offline/update proof PASS. Native Android/iOS packaging remains pending.
 
 ## Summary
 
@@ -29,4 +29,4 @@ Blocks PWA packaging acceptance for the preserved branding candidate. No data-lo
 
 ## Notes
 
-Candidate source was unchanged by verification. Existing branding review explicitly held platform gates. Related #384 covers notifications, not this observed packaging failure. No implementation or external publication is included in this draft.
+Candidate source was unchanged by verification. Existing branding review explicitly held platform gates. Related #384 covers notifications, not this observed packaging failure. The original failure remains valid evidence; see restart-verification-old-machine.md and PR805 for the subsequent bounded repair and verification limits.

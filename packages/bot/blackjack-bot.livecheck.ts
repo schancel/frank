@@ -75,9 +75,10 @@
  * check and the loop guard (never greets itself, the denylist or bot-marked profiles).
  */
 import { randomBytes } from 'crypto'
-import { resolve } from 'path'
+import { readFileSync, writeFileSync } from 'fs'
+import { join, resolve } from 'path'
 
-import { JsonRpcProvider, Provider } from 'ethers'
+import { computeAddress, JsonRpcProvider, Provider } from 'ethers'
 
 import {
   parseEnvelope,
@@ -93,8 +94,16 @@ import {
 } from '@frank/wallet/monad-identity'
 import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
 const { AddressMetadata } = __pb_registry_metadata_pb
-import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
-import { BlackjackMoveItem, Message } from '@frank/cashweb/types/messages'
+import {
+  createMonadChain,
+  deserializeMessageItems,
+  installCanonicalDirectory,
+} from '@frank/wallet/chain/monad-chain'
+import {
+  BlackjackMoveItem,
+  Message,
+  MessageItem,
+} from '@frank/cashweb/types/messages'
 import {
   getMessageItemPlugin,
   MessageItemContext,
@@ -115,13 +124,27 @@ import { MonadSubAccountPool } from '@frank/wallet/monad-account-pool'
 import { MonadAccountTxSigner, MonadTxStatus } from '@frank/wallet/monad-account-tx'
 import {
   loadOrCreateIdentity,
+  loadQwenCanonicalRoots,
+  openQwenCanonicalWallet,
+  openQwenInstalledDirectory,
+  qwenCanonicalChainConfig,
+  readQwenApprovedBundle,
+  readQwenBootstrapPolicy,
   registerAndLog,
   requiredEnv,
   sendDirectMessageItems,
   sendDirectMessageText,
   setUpFundedStampClient,
+  startQwenInstallationServer,
 } from './qwen-bot-common'
-import { botStateDir } from './bot-state-dir'
+import {
+  BlackjackCanonicalOutbox,
+  BlackjackCanonicalStore,
+  canonicalDirectoryFor,
+  canonicalInbound,
+  type CanonicalBlackjackInbound,
+} from './blackjack-canonical'
+import { botStateDir, persistentStateDir } from './bot-state-dir'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 import {
   BlackjackGreeter,
@@ -178,32 +201,128 @@ function playerCardsSoFar(deck: Card[], dealtCount: number): Card[] {
   return [...initial.playerCards, ...deck.slice(4, dealtCount)]
 }
 
-export async function resolveAndReveal(params: {
-  gameId: string
-  record: BlackjackGameRecord
-  identity: MonadIdentity
+/** Legacy transport: every reply is sealed and paid inline through the legacy stamp client. */
+export interface BlackjackLegacyTransport {
   senderPubKey: Buffer
   networkTag: string
   stampValueWei: bigint
   stampClient: MonadStampClient
   pool: MonadSubAccountPool
-  mainAccountSigner: MonadAccountTxSigner
-  provider: Provider
-  state: BlackjackBotStateStore
-}): Promise<void> {
-  const {
-    gameId,
-    record,
-    identity,
-    senderPubKey,
-    networkTag,
-    stampValueWei,
-    stampClient,
-    pool,
-    mainAccountSigner,
-    provider,
-    state,
-  } = params
+  canonical?: undefined
+}
+
+/**
+ * Canonical transport (#780). The sender was authenticated by opening its sealed envelope under
+ * the installed directory before any of this runs.
+ *
+ * The authenticated sender is an identity point; the wager is paid from that wallet's separate
+ * EVM account, and nothing public binds the two. So the two roles the legacy record's single
+ * `playerAddress` played are kept apart: `playerAddress` stays the verified wager sender (where a
+ * payout or refund goes, exactly as before), and the actor binding saved here is who may act.
+ */
+export interface BlackjackCanonicalMove {
+  /** Durably saves one reply to the authenticated sender; the outbox delivers it exactly once. */
+  reply(items: MessageItem[]): Promise<void>
+  actors: {
+    actor(gameId: string): { actor: string; wagerTxHash: string } | undefined
+    bindActor(
+      gameId: string,
+      binding: { actor: string; wagerTxHash: string },
+    ): Promise<void>
+  }
+}
+export interface BlackjackCanonicalTransport {
+  canonical: BlackjackCanonicalMove
+}
+export type BlackjackTransport =
+  | BlackjackLegacyTransport
+  | BlackjackCanonicalTransport
+
+/** The one place a dealer reply leaves through. Legacy calls are byte-for-byte what they were. */
+function replier(
+  params: BlackjackTransport & {
+    identity: MonadIdentity
+    mainAccountSigner: MonadAccountTxSigner
+    provider: Provider
+  },
+): {
+  items(toAddress: string, items: MessageItem[]): Promise<void>
+  text(toAddress: string, text: string): Promise<void>
+} {
+  if (params.canonical) {
+    const { canonical } = params
+    return {
+      items: (_to, items) => canonical.reply(items),
+      text: (_to, text) => canonical.reply([{ type: 'text', text }]),
+    }
+  }
+  const legacy = {
+    stampClient: params.stampClient,
+    pool: params.pool,
+    mainAccountSigner: params.mainAccountSigner,
+    provider: params.provider,
+    fromIdentity: params.identity,
+    toPubKey: params.senderPubKey,
+    stampValueWei: params.stampValueWei,
+    networkTag: params.networkTag,
+  }
+  return {
+    async items(toAddress, items) {
+      await sendDirectMessageItems({
+        stampClient: legacy.stampClient,
+        pool: legacy.pool,
+        mainAccountSigner: legacy.mainAccountSigner,
+        provider: legacy.provider,
+        fromIdentity: legacy.fromIdentity,
+        toAddress,
+        toPubKey: legacy.toPubKey,
+        items,
+        stampValueWei: legacy.stampValueWei,
+        networkTag: legacy.networkTag,
+      })
+    },
+    async text(toAddress, text) {
+      await sendDirectMessageText({
+        stampClient: legacy.stampClient,
+        pool: legacy.pool,
+        mainAccountSigner: legacy.mainAccountSigner,
+        provider: legacy.provider,
+        fromIdentity: legacy.fromIdentity,
+        toAddress,
+        toPubKey: legacy.toPubKey,
+        text,
+        stampValueWei: legacy.stampValueWei,
+        networkTag: legacy.networkTag,
+      })
+    },
+  }
+}
+
+/** The transport fields alone, to hand the same transport on to `resolveAndReveal`. */
+function transportOf(params: BlackjackTransport): BlackjackTransport {
+  return params.canonical
+    ? { canonical: params.canonical }
+    : {
+        senderPubKey: params.senderPubKey,
+        networkTag: params.networkTag,
+        stampValueWei: params.stampValueWei,
+        stampClient: params.stampClient,
+        pool: params.pool,
+      }
+}
+
+export async function resolveAndReveal(
+  params: {
+    gameId: string
+    record: BlackjackGameRecord
+    identity: MonadIdentity
+    mainAccountSigner: MonadAccountTxSigner
+    provider: Provider
+    state: BlackjackBotStateStore
+  } & BlackjackTransport,
+): Promise<void> {
+  const { gameId, record, mainAccountSigner, state } = params
+  const send = replier(params)
   if (record.authority !== 'verified-wager-sender') {
     throw new Error(
       'cannot resolve or pay a blackjack game without verified wager authority',
@@ -256,27 +375,16 @@ export async function resolveAndReveal(params: {
   // A failed reveal message must not cost the winner their payout: the payout is already owed and
   // is attempted (and, if need be, retried from the poll loop) regardless.
   try {
-    await sendDirectMessageItems({
-      stampClient,
-      pool,
-      mainAccountSigner,
-      provider,
-      fromIdentity: identity,
-      toAddress: record.playerAddress,
-      toPubKey: senderPubKey,
-      items: [
-        {
-          type: 'blackjack-move',
-          gameId,
-          action: 'reveal',
-          dealerCards,
-          serverSeed: record.serverSeed,
-          outcome,
-        },
-      ],
-      stampValueWei,
-      networkTag,
-    })
+    await send.items(record.playerAddress, [
+      {
+        type: 'blackjack-move',
+        gameId,
+        action: 'reveal',
+        dealerCards,
+        serverSeed: record.serverSeed,
+        outcome,
+      },
+    ])
   } catch (err) {
     console.error(
       `[blackjack-bot] reveal message for game ${gameId} failed (payout is still owed and will proceed):`,
@@ -593,38 +701,35 @@ async function canCoverWorstCase(params: {
   }
 }
 
-export async function handleMove(params: {
-  action: BlackjackMoveItem['action']
-  hydrated: HydratedBlackjackMove
-  senderAddress: string
-  senderPubKey: Buffer
-  minWagerWei: bigint
-  maxWagerWei?: bigint
-  state: BlackjackBotStateStore
-  identity: MonadIdentity
-  networkTag: string
-  stampValueWei: bigint
-  stampClient: MonadStampClient
-  pool: MonadSubAccountPool
-  mainAccountSigner: MonadAccountTxSigner
-  provider: Provider
-}): Promise<void> {
+export async function handleMove(
+  params: {
+    action: BlackjackMoveItem['action']
+    hydrated: HydratedBlackjackMove
+    /** The authenticated sender: the legacy envelope's verified `from`, or in canonical mode the
+     * identity address of the directory-admitted subject the sealed envelope opened under. */
+    senderAddress: string
+    minWagerWei: bigint
+    maxWagerWei?: bigint
+    state: BlackjackBotStateStore
+    identity: MonadIdentity
+    mainAccountSigner: MonadAccountTxSigner
+    provider: Provider
+  } & BlackjackTransport,
+): Promise<void> {
   const {
     action,
     hydrated,
     senderAddress,
-    senderPubKey,
     minWagerWei,
     maxWagerWei = BLACKJACK_DEFAULT_MAX_WAGER_WEI,
     state,
     identity,
-    networkTag,
-    stampValueWei,
-    stampClient,
-    pool,
     mainAccountSigner,
     provider,
+    canonical,
   } = params
+  const send = replier(params)
+  const transport = transportOf(params)
   let gameId: string
   try {
     gameId = normalizeBlackjackGameId(
@@ -632,35 +737,16 @@ export async function handleMove(params: {
     )
   } catch {
     console.log(`[blackjack-bot] rejecting ${action}: invalid gameId`)
-    await sendDirectMessageText({
-      stampClient,
-      pool,
-      mainAccountSigner,
-      provider,
-      fromIdentity: identity,
-      toAddress: senderAddress,
-      toPubKey: senderPubKey,
-      text: 'Blackjack: gameId must be a nonempty bounded string',
-      stampValueWei,
-      networkTag,
-    })
+    await send.text(
+      senderAddress,
+      'Blackjack: gameId must be a nonempty bounded string',
+    )
     return
   }
 
   async function sendError(text: string) {
     console.log(`[blackjack-bot] rejecting ${action} for game ${gameId}: ${text}`)
-    await sendDirectMessageText({
-      stampClient,
-      pool,
-      mainAccountSigner,
-      provider,
-      fromIdentity: identity,
-      toAddress: senderAddress,
-      toPubKey: senderPubKey,
-      text: formatBlackjackError(gameId, text),
-      stampValueWei,
-      networkTag,
-    })
+    await send.text(senderAddress, formatBlackjackError(gameId, text))
   }
 
   let authenticatedPlayerAddress: string
@@ -675,17 +761,23 @@ export async function handleMove(params: {
 
   /** Refunds a verified transfer (sender == authenticated player, recipient == this dealer) that
    * we are about to reject, claimed by hash so it can happen at most once. Never refunds a hash
-   * that is already claimed (e.g. this game's own stake). Returns text to append to the error. */
+   * that is already claimed (e.g. this game's own stake). Returns text to append to the error.
+   *
+   * The refund always goes back to the address the transfer came from. In legacy mode that is
+   * required to be the authenticated player. In canonical mode the authenticated subject is not
+   * a paying account, so the transfer's own verified sender is the only place it can return to. */
   async function refundRejected(
     txHash: string | undefined,
     transfer: HydratedBlackjackMove['verifiedWager'],
   ): Promise<string> {
     if (!txHash || !transfer) return ''
     let hash: string
+    let refundAddress: string
     try {
       hash = normalizeWagerTxHash(txHash)
+      refundAddress = normalizePlayerAddress(transfer.fromAddress)
       if (
-        normalizePlayerAddress(transfer.fromAddress) !== authenticatedPlayerAddress ||
+        (!canonical && refundAddress !== authenticatedPlayerAddress) ||
         normalizePlayerAddress(transfer.toAddress) !== dealerAddress ||
         transfer.valueWei <= 0n
       ) {
@@ -696,7 +788,7 @@ export async function handleMove(params: {
     }
     const claim = await state.claimRefund({
       txHash: hash,
-      playerAddress: authenticatedPlayerAddress,
+      playerAddress: refundAddress,
       amountWei: transfer.valueWei,
     })
     if (!claim.ok) return ''
@@ -727,7 +819,10 @@ export async function handleMove(params: {
       )
       return
     }
-    if (wagerSenderAddress !== authenticatedPlayerAddress) {
+    // Canonical mode cannot make this comparison: the authenticated subject never sends
+    // transactions (see `BlackjackCanonicalMove`). The payout still goes only to the verified
+    // wager sender, so claiming someone else's transfer can never pay the claimant.
+    if (!canonical && wagerSenderAddress !== authenticatedPlayerAddress) {
       await sendError(
         'your authenticated identity did not send this wager transaction',
       )
@@ -791,6 +886,14 @@ export async function handleMove(params: {
       doubled: false,
       doubleWagerWei: undefined,
     }
+    if (canonical) {
+      // Saved before the game exists, and only while it does not: a binding can never be moved
+      // onto an existing game (that path returned above), and it names the one wager it is for.
+      await canonical.actors.bindActor(gameId, {
+        actor: authenticatedPlayerAddress,
+        wagerTxHash,
+      })
+    }
     const claim = await state.claimWagerAndCreateGame({
       gameId,
       wagerTxHash,
@@ -817,15 +920,7 @@ export async function handleMove(params: {
       return
     }
 
-    await sendDirectMessageItems({
-      stampClient,
-      pool,
-      mainAccountSigner,
-      provider,
-      fromIdentity: identity,
-      toAddress: record.playerAddress,
-      toPubKey: senderPubKey,
-      items: [
+    await send.items(record.playerAddress, [
         {
           type: 'blackjack-move',
           gameId,
@@ -834,24 +929,17 @@ export async function handleMove(params: {
           playerCards,
           dealerUpCard: dealerCards[0],
         },
-      ],
-      stampValueWei,
-      networkTag,
-    })
+      ])
 
     if (handValue(playerCards).blackjack) {
       await resolveAndReveal({
         gameId,
         record,
         identity,
-        senderPubKey,
-        networkTag,
-        stampValueWei,
-        stampClient,
-        pool,
         mainAccountSigner,
         provider,
         state,
+        ...transport,
       })
     }
     return
@@ -884,7 +972,15 @@ export async function handleMove(params: {
     await rejectMove('no in-progress hand found for this gameId')
     return
   }
-  if (record.playerAddress !== authenticatedPlayerAddress) {
+  // Legacy: the payer is the authenticated player. Canonical: the subject bound at the bet, and
+  // only for the wager this record was created from.
+  const binding = canonical?.actors.actor(gameId)
+  const mayAct = canonical
+    ? binding !== undefined &&
+      binding.actor === authenticatedPlayerAddress &&
+      binding.wagerTxHash === record.wagerTxHash
+    : record.playerAddress === authenticatedPlayerAddress
+  if (!mayAct) {
     await rejectMove(
       'only the player who funded this wager can act on this game',
     )
@@ -902,32 +998,17 @@ export async function handleMove(params: {
     const playerCards = playerCardsSoFar(deck, newDealtCount)
     await state.setGame(gameId, { ...record, dealtCount: newDealtCount })
 
-    await sendDirectMessageItems({
-      stampClient,
-      pool,
-      mainAccountSigner,
-      provider,
-      fromIdentity: identity,
-      toAddress: record.playerAddress,
-      toPubKey: senderPubKey,
-      items: [{ type: 'blackjack-move', gameId, action: 'hit', playerCards }],
-      stampValueWei,
-      networkTag,
-    })
+    await send.items(record.playerAddress, [{ type: 'blackjack-move', gameId, action: 'hit', playerCards }])
 
     if (handValue(playerCards).bust) {
       await resolveAndReveal({
         gameId,
         record: { ...record, dealtCount: newDealtCount },
         identity,
-        senderPubKey,
-        networkTag,
-        stampValueWei,
-        stampClient,
-        pool,
         mainAccountSigner,
         provider,
         state,
+        ...transport,
       })
     }
     return
@@ -954,7 +1035,12 @@ export async function handleMove(params: {
       )
       return
     }
-    if (doubleWagerSenderAddress !== authenticatedPlayerAddress) {
+    // The second transfer must come from the same paying account as the first. In legacy mode
+    // that account is the authenticated player (already equal to `record.playerAddress`).
+    if (
+      doubleWagerSenderAddress !==
+      (canonical ? record.playerAddress : authenticatedPlayerAddress)
+    ) {
       await sendError(
         'your authenticated identity did not send this double-down wager transaction',
       )
@@ -1034,18 +1120,7 @@ export async function handleMove(params: {
       return
     }
 
-    await sendDirectMessageItems({
-      stampClient,
-      pool,
-      mainAccountSigner,
-      provider,
-      fromIdentity: identity,
-      toAddress: record.playerAddress,
-      toPubKey: senderPubKey,
-      items: [{ type: 'blackjack-move', gameId, action: 'double', playerCards }],
-      stampValueWei,
-      networkTag,
-    })
+    await send.items(record.playerAddress, [{ type: 'blackjack-move', gameId, action: 'double', playerCards }])
 
     // Doubling is always exactly one more card then an automatic stand -- win, lose, or bust, the
     // hand is over, unlike an ordinary `hit` which only forces a reveal on a bust.
@@ -1053,14 +1128,10 @@ export async function handleMove(params: {
       gameId,
       record: updatedRecord,
       identity,
-      senderPubKey,
-      networkTag,
-      stampValueWei,
-      stampClient,
-      pool,
       mainAccountSigner,
       provider,
       state,
+      ...transport,
     })
     return
   }
@@ -1073,14 +1144,10 @@ export async function handleMove(params: {
       gameId,
       record,
       identity,
-      senderPubKey,
-      networkTag,
-      stampValueWei,
-      stampClient,
-      pool,
       mainAccountSigner,
       provider,
       state,
+      ...transport,
     })
     return
   }
@@ -1100,16 +1167,28 @@ export async function hydrateMoveWithValidatedGameId(
 
 export type StoredRelayMessage = Awaited<ReturnType<typeof fetchMonadMessagesSince>>[number]
 
-export interface BlackjackLoopDeps {
+/** What the poll loop itself reads of an inbox message: its relay time and its payload digest. */
+export interface BlackjackLoopMessage {
+  timestamp: number
+  message?: { payloadHash: Uint8Array }
+}
+
+export interface BlackjackLoopDeps<
+  M extends BlackjackLoopMessage = StoredRelayMessage,
+> {
   state: BlackjackBotStateStore
   mainAccountSigner: MonadAccountTxSigner
   pollIntervalMs: number
   maxHands: number
   idleTimeoutMs: number
-  fetchMessages: (sinceMs: number) => Promise<StoredRelayMessage[]>
+  fetchMessages: (sinceMs: number) => Promise<M[]>
   /** Decrypts/hydrates/handles one not-yet-processed message. Returns what it acted on, or
    * `undefined` when the message was not a blackjack move for this bot. */
-  processMessage: (message: StoredRelayMessage) => Promise<{ action: string; gameId: string } | undefined>
+  processMessage: (message: M) => Promise<{ action: string; gameId: string } | undefined>
+  /** Canonical mode's saved-reply delivery (and welcome). It pays stamps from the typed wallet's
+   * own account, never the payout account, so it runs every poll, payout lane held or not.
+   * Returns how many replies were delivered. Must not throw. */
+  tick?: () => Promise<number>
   /** The welcome greeter's poll (main's greeting flow, #395). Its sends sign from the payer
    * account, so it is invoked only while the payout lane is free -- never while a signed payout
    * is submitting/submitted (a greeting funding tx could otherwise steal the payout's nonce).
@@ -1123,8 +1202,10 @@ export interface BlackjackLoopDeps {
 
 /** The bot's poll loop, extracted from `main()` so its payout hold, idle exit, durable cursor and
  * exit status are testable with fakes. */
-export async function runBlackjackLoop(
-  deps: BlackjackLoopDeps,
+export async function runBlackjackLoop<
+  M extends BlackjackLoopMessage = StoredRelayMessage,
+>(
+  deps: BlackjackLoopDeps<M>,
 ): Promise<{ handsResolved: number; unsettled: string[]; exitCode: number }> {
   const { state, mainAccountSigner, pollIntervalMs, maxHands, idleTimeoutMs } = deps
   const now = deps.now ?? Date.now
@@ -1150,6 +1231,7 @@ export async function runBlackjackLoop(
     // may sign on the payer account. Never throws.
     await settlePayouts({ state, mainAccountSigner, backoff: payoutBackoff, now: now() })
     await retryPendingRefunds(state, mainAccountSigner)
+    if (deps.tick && (await deps.tick()) > 0) lastActivityAt = now()
     // While a signed payout is unconfirmed the payer account is reserved for it (its nonce). Do not
     // consume or advance past any message until it clears; the messages are picked up next poll.
     if (state.hasSignedUnconfirmedPayout()) {
@@ -1240,7 +1322,421 @@ export async function runBlackjackLoop(
   return { handsResolved, unsettled, exitCode: unsettled.length > 0 ? 1 : 0 }
 }
 
+/**
+ * One authenticated canonical inbox message -> at most one dealer action. `message` came out of
+ * the wallet's canonical `fetchSince`, so its envelope already opened under the installed
+ * directory's admitted entries for sender and recipient; a tampered envelope or an uninstalled
+ * sender never reaches this function. Replies are saved to the outbox under keys derived from
+ * the inbound payload digest, then delivered.
+ */
+export async function processCanonicalMessage(params: {
+  message: CanonicalBlackjackInbound
+  identity: MonadIdentity
+  /** Chain reads for wager lookups (the wallet's own provider, through the home relay). */
+  wagerProvider: Provider
+  store: BlackjackCanonicalStore
+  outbox: Pick<BlackjackCanonicalOutbox, 'enqueue' | 'drive'>
+  blockReason?: (address: string) => string | undefined
+  minWagerWei: bigint
+  maxWagerWei: bigint
+  state: BlackjackBotStateStore
+  mainAccountSigner: MonadAccountTxSigner
+  provider: Provider
+}): Promise<{ action: string; gameId: string } | undefined> {
+  const { received } = params.message
+  const sender = received.senderAddress.raw.toLowerCase()
+  if (sender === params.identity.displayAddress.toLowerCase()) return undefined
+  const blocked = params.blockReason?.(sender)
+  if (blocked) {
+    console.log(`[blackjack-bot] ignoring message from ${sender} (${blocked})`)
+    return undefined
+  }
+  const moveRaw = received.items.find(
+    (item): item is BlackjackMoveItem => item.type === 'blackjack-move',
+  )
+  if (!moveRaw) return undefined
+
+  let replies = 0
+  const canonical: BlackjackCanonicalMove = {
+    async reply(items) {
+      await params.outbox.enqueue(
+        `${received.payloadDigest}:${replies++}`,
+        sender,
+        items,
+      )
+    },
+    actors: params.store,
+  }
+  const plugin = getMessageItemPlugin('blackjack-move')
+  if (!plugin) throw new Error('blackjack-move plugin not registered')
+  const context: MessageItemContext = {
+    message: { senderAddress: sender } as unknown as Message,
+    index: received.items.indexOf(moveRaw),
+    provider: params.wagerProvider,
+  }
+  try {
+    let hydrated: HydratedBlackjackMove
+    try {
+      hydrated = await hydrateMoveWithValidatedGameId(moveRaw, validated =>
+        plugin.hydrate(validated, context),
+      )
+    } catch (error) {
+      if (!(error instanceof InvalidBlackjackGameIdError)) throw error
+      console.log(
+        `[blackjack-bot] rejecting ${moveRaw.action} from ${sender}: invalid gameId`,
+      )
+      await canonical.reply([
+        {
+          type: 'text',
+          text: 'Blackjack: gameId must be a nonempty bounded string',
+        },
+      ])
+      return undefined
+    }
+    console.log(
+      `\n[blackjack-bot] ${moveRaw.action} from ${sender} (game ${hydrated.gameId})`,
+    )
+    try {
+      await handleMove({
+        action: moveRaw.action,
+        hydrated,
+        senderAddress: sender,
+        minWagerWei: params.minWagerWei,
+        maxWagerWei: params.maxWagerWei,
+        state: params.state,
+        identity: params.identity,
+        mainAccountSigner: params.mainAccountSigner,
+        provider: params.provider,
+        canonical,
+      })
+    } catch (err) {
+      console.error(
+        `[blackjack-bot] failed to handle ${moveRaw.action} for game ${hydrated.gameId}:`,
+        err,
+      )
+    }
+    return { action: moveRaw.action, gameId: hydrated.gameId }
+  } finally {
+    // Whatever was saved is delivered now rather than a poll interval later.
+    await params.outbox.drive()
+  }
+}
+
+let closeCanonical: Array<() => Promise<void>> = []
+
+/** A configuration the canonical dealer will not start with; `code` is a fixed public word. */
+class BlackjackStartRefusal extends Error {
+  constructor(readonly code: string) {
+    super(`Blackjack bot refusing to start: ${code}`)
+    this.name = 'BlackjackStartRefusal'
+  }
+}
+
+/**
+ * Canonical mode (#780), selected by BLACKJACK_BOT_CANONICAL_ROOTS_JSON. Fixed order:
+ *  1. public configuration is read and checked; the export-only path ends here;
+ *  2. game state and the reply outbox open;
+ *  3. the typed wallet owner opens (signs, funds, replays and sends nothing);
+ *  4. the installed directory opens (own attestation published, peers read lazily) and is
+ *     installed into the wallet's canonical message client;
+ *  5. every payment set the wallet retains must be one the outbox accounts for;
+ *  6. only then does the ordinary dealer loop run.
+ *
+ * The installed directory, export, attestation and status endpoint are the Qwen bot's own
+ * helpers (`qwen-bot-common.ts`), used as they are. Payouts and refunds keep their legacy
+ * journal and payer: a separate operator-funded bankroll key, here signing through the typed
+ * wallet's relay RPC. The typed wallet's own account pays only reply stamps.
+ */
+async function mainCanonical(): Promise<void> {
+  const path = (name: string) => resolve(process.cwd(), requiredEnv(name))
+  const roots = loadQwenCanonicalRoots(
+    path('BLACKJACK_BOT_CANONICAL_ROOTS_JSON'),
+  )
+  const policy = readQwenBootstrapPolicy(
+    path('BLACKJACK_BOT_CANONICAL_POLICY_JSON'),
+  )
+  const stampValueWei = BigInt(
+    process.env.BLACKJACK_BOT_STAMP_VALUE_WEI ??
+      process.env.FRANK_DM_DEFAULT_STAMP_VALUE_WEI ??
+      '10000000000000000',
+  )
+  const minWagerWei = BigInt(
+    process.env.BLACKJACK_BOT_MIN_WAGER_WEI ?? '10000000000000000',
+  )
+  const maxWagerWei = BigInt(
+    process.env.BLACKJACK_BOT_MAX_WAGER_WEI ??
+      BLACKJACK_DEFAULT_MAX_WAGER_WEI.toString(),
+  )
+  const stateDirPath = botStateDir('blackjack', 'BLACKJACK_BOT_STATE_DIR')
+  const walletStateDirPath = persistentStateDir(
+    'blackjack-wallet',
+    'BLACKJACK_BOT_WALLET_STATE_DIR',
+  )
+  const chainConfig = (relayBaseUrl: string) =>
+    qwenCanonicalChainConfig({
+      relayBaseUrl,
+      walletStorageLocation: join(walletStateDirPath, 'canonical'),
+      stampValueWei,
+    })
+  const openWallet = async (relayBaseUrl: string) => {
+    const chain = chainConfig(relayBaseUrl)
+    if (chain.networkTag !== policy.networkTag)
+      throw new BlackjackStartRefusal('chain-not-installed-network')
+    const wallet = await openQwenCanonicalWallet({ chain, roots })
+    closeCanonical.push(() => wallet.close())
+    return wallet
+  }
+
+  const exportPath = process.env.BLACKJACK_BOT_CANONICAL_EXPORT_JSON
+  if (exportPath) {
+    const home = requiredEnv('BLACKJACK_BOT_CANONICAL_HOME')
+    if (home !== 'relay-a' && home !== 'relay-b')
+      throw new BlackjackStartRefusal('home-relay-not-relay-a-or-relay-b')
+    const wallet = await openWallet(
+      policy.relayTuples.find(tuple => tuple.processId === home)!.endpoint,
+    )
+    const exported = wallet.publicExport({
+      policy,
+      home,
+      nowNs: BigInt(Date.now()) * 1_000_000n,
+    })
+    writeFileSync(
+      resolve(process.cwd(), exportPath),
+      JSON.stringify(exported, null, 2) + '\n',
+    )
+    console.log(
+      `[blackjack-bot] public revision-zero export written for ${exported.authAddress} (home ${home}); give it to the operator`,
+    )
+    console.log(
+      `[blackjack-bot] canonical stamp account to fund: ${wallet.accountAddress}`,
+    )
+    return
+  }
+
+  const bundle = readQwenApprovedBundle(
+    path('BLACKJACK_BOT_CANONICAL_BUNDLE_JSON'),
+  )
+  const installedSelf = bundle.subjects.find(subject => subject.role === 'bot')
+  if (!installedSelf) throw new BlackjackStartRefusal('bundle-installs-no-bot')
+  const relayBaseUrl = installedSelf.relay.endpoint
+  const configuredRelay = process.env.E2E_DEMO_RELAY_URL
+  if (
+    configuredRelay &&
+    new URL(configuredRelay).origin !== new URL(relayBaseUrl).origin
+  )
+    throw new BlackjackStartRefusal('relay-url-not-installed-home')
+  const bankrollPath = resolve(
+    process.cwd(),
+    process.env.BLACKJACK_BOT_BANKROLL_WALLET_JSON ??
+      requiredEnv('E2E_DEMO_MAIN_WALLET_JSON'),
+  )
+  let bankrollKey: string
+  try {
+    bankrollKey = (
+      JSON.parse(readFileSync(bankrollPath, 'utf8')) as { privateKey: string }
+    ).privateKey
+    if (typeof bankrollKey !== 'string') throw new Error('no key')
+  } catch {
+    throw new BlackjackStartRefusal('bankroll-wallet-unreadable')
+  }
+  const pollIntervalMs = Number(
+    process.env.BLACKJACK_BOT_POLL_INTERVAL_MS ?? 4000,
+  )
+  const maxHands = Number(process.env.BLACKJACK_BOT_MAX_HANDS ?? 1000)
+  const idleTimeoutMs = Number(
+    process.env.BLACKJACK_BOT_IDLE_TIMEOUT_MS ?? 10 * 60 * 1000,
+  )
+
+  console.log('== Blackjack bot, canonical mode ==')
+  console.log(`Min wager:  ${minWagerWei} wei`)
+  console.log(`Max wager:  ${maxWagerWei} wei`)
+
+  const state = new BlackjackBotStateStore(stateDirPath)
+  await state.Open()
+  closeCanonical.push(() => state.Close())
+  const store = new BlackjackCanonicalStore(stateDirPath)
+  await store.Open()
+  closeCanonical.push(() => store.Close())
+  console.log(`[blackjack-bot] persisted state loaded from ${stateDirPath}`)
+  // The commitment exists before any bet this run can see (see the header, "Fairness scheme").
+  if (!state.getPendingCommitment()) {
+    const serverSeed = generateServerSeed()
+    await state.setPendingCommitment(serverSeed, sha256Hex(serverSeed))
+    console.log('[blackjack-bot] generated initial pending seed commitment')
+  }
+
+  const wallet = await openWallet(relayBaseUrl)
+  const identity = wallet.handle.identity
+  const mainAccountSigner = new MonadAccountTxSigner({
+    privateKey: bankrollKey,
+    provider: wallet.handle.provider,
+    httpClient: wallet.handle.httpClient,
+  })
+  // Two signers on one account would race its nonce; the journaled payout owns the bankroll's.
+  if (
+    [wallet.accountAddress, wallet.identityAddress].some(
+      address =>
+        address.toLowerCase() === mainAccountSigner.address.toLowerCase(),
+    )
+  )
+    throw new BlackjackStartRefusal('bankroll-is-the-typed-wallet')
+
+  const directory = await openQwenInstalledDirectory({
+    wallet,
+    policy,
+    bundle,
+    location: join(stateDirPath, 'canonical-directory'),
+    fetch: (url, init) =>
+      (
+        globalThis as unknown as {
+          fetch: Parameters<typeof openQwenInstalledDirectory>[0]['fetch']
+        }
+      ).fetch(url, init),
+  })
+  closeCanonical.push(() => directory.close())
+  if (wallet.subject !== directory.selfSubject)
+    throw new BlackjackStartRefusal('roots-not-installed-subject')
+  const peerSubjects = bundle.subjects
+    .filter(subject => subject.role === 'ui')
+    .map(subject => subject.subjectP)
+  const messages = createMonadChain(chainConfig(relayBaseUrl)).directMessages
+  installCanonicalDirectory(
+    wallet.handle,
+    canonicalDirectoryFor({ installed: directory, peerSubjects }),
+  )
+  console.log(`Relay:      ${relayBaseUrl}`)
+  console.log(`Blackjack bot identity address: ${wallet.identityAddress}`)
+  console.log(
+    `[blackjack-bot] wagers are verified as transfers to ${identity.displayAddress}; payouts and refunds are paid from the bankroll ${mainAccountSigner.address}; reply stamps are paid from ${wallet.accountAddress}`,
+  )
+  writeFileSync(
+    resolve(
+      process.cwd(),
+      process.env.BLACKJACK_BOT_HANDOFF_JSON ??
+        '/tmp/blackjack-bot-handoff.json',
+    ),
+    JSON.stringify({ address: wallet.identityAddress }, null, 2),
+  )
+  const statusPort = process.env.BLACKJACK_BOT_CANONICAL_STATUS_PORT
+  if (statusPort) {
+    const status = await startQwenInstallationServer({
+      directory,
+      port: Number(statusPort),
+      host: process.env.BLACKJACK_BOT_CANONICAL_STATUS_HOST || undefined,
+    })
+    closeCanonical.push(() => status.close())
+    console.log(
+      `[blackjack-bot] installed configuration ${directory.bundleIdentity} served on port ${status.port}`,
+    )
+  }
+  // The app only offers the bet box to the relay-curated dealer whose signed profile says
+  // "Blackjack Dealer" (#422/#425). The profile is one public statement signed by the identity
+  // key; it carries no message key and enables no legacy message path.
+  if (process.env.BLACKJACK_BOT_CANONICAL_PROFILE !== '0') {
+    try {
+      await registerAndLog({
+        relayBaseUrl,
+        identity,
+        label: 'blackjack-bot',
+        profile: botProfileFields('blackjack'),
+      })
+    } catch {
+      console.warn(
+        '[blackjack-bot] public dealer profile was not registered; the app will not offer its bet box until it is',
+      )
+    }
+  }
+
+  // Step 5: nothing the wallet retains may be unknown to the outbox, unless a send was in flight
+  // when the last run stopped (the outbox adopts exactly that one).
+  if (!store.open().some(row => row.phase === 'sending')) {
+    let orphans: string[]
+    try {
+      orphans = await messages.unattributedAttempts({
+        wallet: wallet.handle,
+        knownDigests: store.digests(),
+      })
+    } catch {
+      throw new BlackjackStartRefusal('wallet-correlation-held')
+    }
+    if (orphans.length > 0)
+      throw new BlackjackStartRefusal('wallet-has-unaccounted-payment-sets')
+  }
+  const outbox = new BlackjackCanonicalOutbox({
+    store,
+    messages,
+    wallet: wallet.handle,
+    stampValueWei,
+  })
+  const guard = botLoopGuardFromEnv({
+    selfAddress: wallet.identityAddress,
+    relayBaseUrl,
+  })
+  const greetingsEnabled = greeterConfigFromEnv(process.env).maxPerRun > 0
+
+  console.log(
+    `\nPolling the canonical inbox of ${wallet.identityAddress} at ${relayBaseUrl} every ${pollIntervalMs}ms ...`,
+  )
+  const result = await runBlackjackLoop<CanonicalBlackjackInbound>({
+    state,
+    mainAccountSigner,
+    pollIntervalMs,
+    maxHands,
+    idleTimeoutMs,
+    fetchMessages: async sinceMs =>
+      canonicalInbound(
+        await messages.fetchSince({ wallet: wallet.handle, sinceMs }),
+      ),
+    tick: async () => {
+      try {
+        // One welcome per installed `ui` subject, once it has published its own entry.
+        if (greetingsEnabled)
+          for (const subject of peerSubjects) {
+            const key = `welcome:${subject}`
+            if (store.has(key) || !(await directory.peerCurrent(subject)))
+              continue
+            await outbox.enqueue(
+              key,
+              computeAddress('0x' + subject),
+              welcomeItems({ minWagerWei, maxWagerWei, stampValueWei }),
+            )
+          }
+      } catch {
+        console.warn('[blackjack-bot] welcome could not be saved; will retry')
+      }
+      return outbox.drive()
+    },
+    processMessage: message =>
+      processCanonicalMessage({
+        message,
+        identity,
+        wagerProvider: wallet.handle.provider,
+        store,
+        outbox,
+        blockReason: address => guard.staticBlockReason(address),
+        minWagerWei,
+        maxWagerWei,
+        state,
+        mainAccountSigner,
+        provider: wallet.handle.provider,
+      }),
+  })
+  console.log(
+    `\nDone. Resolved ${result.handsResolved} hand${result.handsResolved === 1 ? '' : 's'}.`,
+  )
+  if (result.exitCode !== 0) process.exitCode = result.exitCode
+}
+
 async function main() {
+  if (process.env.BLACKJACK_BOT_CANONICAL_ROOTS_JSON) {
+    try {
+      return await mainCanonical()
+    } finally {
+      for (const close of closeCanonical.reverse())
+        await close().catch(() => undefined)
+      closeCanonical = []
+    }
+  }
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
   const networkTag = requiredEnv('FRANK_NETWORK_TAG')
@@ -1522,6 +2018,15 @@ const senderPubKeyCache = new Map<string, Buffer>()
 
 if (process.env.NODE_ENV !== 'test') {
   main().catch(err => {
+    // A refusal carries only a fixed reason word; print it so an operator can act.
+    const refusal = err as { name?: unknown; code?: unknown } | null
+    if (
+      (refusal?.name === 'BlackjackStartRefusal' ||
+        refusal?.name === 'QwenStartRefusal') &&
+      typeof refusal.code === 'string' &&
+      /^[a-z-]{1,64}$/.test(refusal.code)
+    )
+      console.error(`\nBLACKJACK BOT REFUSING TO START: ${refusal.code}`)
     console.error('BLACKJACK BOT FAILED:', err)
     process.exit(1)
   })

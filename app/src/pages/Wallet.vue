@@ -73,15 +73,14 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, ref, watch } from 'vue'
+import { computed, defineComponent } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { copyToClipboard } from 'quasar'
-import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { useReceiveAddress } from 'src/composables/useReceiveAddress'
 import { useBalance } from 'src/composables/useBalance'
 import { openPage } from 'src/utils/routes'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
-import { accountStatus } from '../accounts/session'
 
 // One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
@@ -96,27 +95,9 @@ export default defineComponent({
     const balanceText = computed(() =>
       loaded.value ? formattedBalance.value : '\u2014',
     )
-    const displayAddress = ref('')
-
-    watch(
-      () => [accountStatus.status, accountStatus.revision],
-      async ([status], _previous, onCleanup) => {
-        displayAddress.value = ''
-        if (status !== 'ready') return
-        let current = true
-        onCleanup(() => {
-          current = false
-        })
-        try {
-          const wallet = await useActiveWallet()
-          if (current) displayAddress.value = wallet.identity.displayAddress
-        } catch (err) {
-          if (current)
-            errorNotify(err, { fallbackKey: 'walletPanel.failedLoadAddress' })
-        }
-      },
-      { immediate: true, flush: 'sync' },
-    )
+    // The funded account, i.e. the one the balance above refers to and the Receive page shows
+    // (#834). The identity address is a different account: funding it changes nothing here.
+    const displayAddress = useReceiveAddress('walletPanel.failedLoadAddress')
 
     return {
       displayAddress,

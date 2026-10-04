@@ -76,16 +76,14 @@
 
 <script lang="ts">
 import { navigateBack } from 'src/utils/navigate-back'
-import { computed, defineComponent, ref, watch } from 'vue'
+import { computed, defineComponent } from 'vue'
 import { useRouter } from 'vue-router'
 
 import QrcodeVue from 'qrcode.vue'
 import { copyToClipboard } from 'quasar'
-import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { useReceiveAddress } from 'src/composables/useReceiveAddress'
 import { useBalance } from 'src/composables/useBalance'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
-import { activeChain } from '@frank/wallet/chain'
-import { accountStatus } from '../accounts/session'
 
 export default defineComponent({
   setup() {
@@ -97,31 +95,9 @@ export default defineComponent({
     const balanceText = computed(() =>
       loaded.value ? formattedBalance.value : '\u2014',
     )
-    const displayAddress = ref('')
-
-    watch(
-      () => [accountStatus.status, accountStatus.revision],
-      async ([status], _previous, onCleanup) => {
-        displayAddress.value = ''
-        if (status !== 'ready') return
-        let current = true
-        onCleanup(() => {
-          current = false
-        })
-        try {
-          const wallet = await useActiveWallet()
-          if (!current) return
-          const address = await wallet.getReceiveAddress()
-          if (current)
-            displayAddress.value = activeChain.addressToString(address)
-        } catch (err) {
-          if (current)
-            errorNotify(err, {
-              fallbackKey: 'receiveBitcoinDialog.failedLoadBalance',
-            })
-        }
-      },
-      { immediate: true, flush: 'sync' },
+    // The same funded account the Wallet page shows (#834).
+    const displayAddress = useReceiveAddress(
+      'receiveBitcoinDialog.failedLoadBalance',
     )
 
     return {

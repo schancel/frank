@@ -38,6 +38,9 @@ jest.mock('src/utils/notifications', () => ({
   addressCopiedNotify: jest.fn(),
   errorNotify: jest.fn(),
 }))
+jest.mock('@frank/wallet/chain', () => ({
+  activeChain: { addressToString: ({ raw }: { raw: string }) => raw },
+}))
 jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: (...args: unknown[]) => mockUseActiveWallet(...args),
 }))
@@ -45,10 +48,16 @@ jest.mock('src/composables/useActiveWallet', () => ({
 import Wallet from './Wallet.vue'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 
-const mockWallet = { identity: { displayAddress: '0xabc' } }
+// The identity address is deliberately different from the receive address: funding it does not
+// change the balance this page shows (#834).
+const walletFor = (identity: string, receive: string) => ({
+  identity: { displayAddress: identity },
+  getReceiveAddress: async () => ({ raw: receive }),
+})
+const mockWallet = walletFor('0xIDENTITY-DO-NOT-FUND', '0xabc')
 
 async function flush() {
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 8; i++) {
     await Promise.resolve()
   }
   await nextTick()
@@ -120,6 +129,20 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 
+  it('shows and copies the funded receive account, never the identity address (#834)', async () => {
+    const wrapper = mountWallet()
+    await flush()
+    expect(wrapper.vm.displayAddress).toBe('0xabc')
+    await wrapper.get('[data-testid="wallet-copy-address"]').trigger('click')
+    await flush()
+    expect(mockCopyToClipboard).toHaveBeenCalledTimes(1)
+    expect(mockCopyToClipboard).toHaveBeenCalledWith('0xabc')
+    expect(mockCopyToClipboard).not.toHaveBeenCalledWith(
+      '0xIDENTITY-DO-NOT-FUND',
+    )
+    wrapper.unmount()
+  })
+
   it('shows a dash, not 0, until the balance loads, and an inline error on failure', async () => {
     balance.loaded.value = false
     balance.hasError.value = false
@@ -172,7 +195,7 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 
-  it('clears and replaces the mounted identity address on session replacement', async () => {
+  it('clears and replaces the mounted receive address on session replacement', async () => {
     const wrapper = mountWallet()
     await flush()
     session.status = 'loading'
@@ -182,17 +205,14 @@ describe('Wallet detail page (#570)', () => {
     expect(copy.attributes('disabled')).toBeDefined()
     await copy.trigger('click')
     expect(mockCopyToClipboard).not.toHaveBeenCalled()
-    mockUseActiveWallet.mockResolvedValue({
-      identity: { displayAddress: '0xauthB' },
-      getReceiveAddress: async () => ({ raw: '0xreceiveB' }),
-    })
+    mockUseActiveWallet.mockResolvedValue(walletFor('0xauthB', '0xreceiveB'))
     session.revision++
     session.status = 'ready'
     await flush()
-    expect(wrapper.vm.displayAddress).toBe('0xauthB')
+    expect(wrapper.vm.displayAddress).toBe('0xreceiveB')
     await copy.trigger('click')
-    expect(mockCopyToClipboard).toHaveBeenCalledWith('0xauthB')
-    expect(mockCopyToClipboard).not.toHaveBeenCalledWith('0xreceiveB')
+    expect(mockCopyToClipboard).toHaveBeenCalledWith('0xreceiveB')
+    expect(mockCopyToClipboard).not.toHaveBeenCalledWith('0xauthB')
     wrapper.unmount()
   })
 
@@ -205,19 +225,17 @@ describe('Wallet detail page (#570)', () => {
         }),
     )
     const wrapper = mountWallet()
-    mockUseActiveWallet.mockResolvedValue({
-      identity: { displayAddress: '0xauthB' },
-    })
+    mockUseActiveWallet.mockResolvedValue(walletFor('0xauthB', '0xreceiveB'))
     session.revision++
     await flush()
-    expect(wrapper.vm.displayAddress).toBe('0xauthB')
+    expect(wrapper.vm.displayAddress).toBe('0xreceiveB')
     finish(mockWallet)
     await flush()
-    expect(wrapper.vm.displayAddress).toBe('0xauthB')
+    expect(wrapper.vm.displayAddress).toBe('0xreceiveB')
     wrapper.unmount()
   })
 
-  it('clears the old identity through unavailable and failed replacement acquisition', async () => {
+  it('clears the old address through unavailable and failed replacement acquisition', async () => {
     const wrapper = mountWallet()
     await flush()
     session.status = 'unavailable'

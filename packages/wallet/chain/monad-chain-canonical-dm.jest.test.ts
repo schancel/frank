@@ -10,11 +10,15 @@ import { join } from 'path'
 import { JsonRpcProvider, computeAddress, getBytes } from 'ethers'
 import { parseFrame, recipientPayloadDigest, toHex } from '@frank/codec'
 import {
+  directMessageText,
+  prepareDirectMessage,
+} from '@frank/cashweb/relay/canonical-dm'
+import {
   restoreCanonicalRequest,
   type CanonicalFetch,
 } from '@frank/cashweb/relay/canonical-dm-transport'
 import { openNodeDirectoryStore } from '../../directory-admission/src/node'
-import type { Current, DirectoryStore } from '../../directory-admission/src'
+import type { DirectoryStore } from '../../directory-admission/src'
 import domainVectors from '../../domain-roots/vectors/domain-roots-v1.json'
 import type { MonadRootBundle } from '../monad-wallet-material'
 import type { PublicRevisionZeroInput } from '../monad-wallet-handle'
@@ -23,6 +27,9 @@ import {
   CanonicalMessagingPendingError,
   createMonadChain,
   installCanonicalDirectory,
+  canonicalMonadStampClient,
+  createCanonicalMessageRoles,
+  prepareCanonicalStampInventory,
   prepareMonadRevisionZeroExport,
   type CanonicalDirectory,
   type MonadChainConfig,
@@ -78,6 +85,32 @@ jest.mock('../monad-provider', () => {
     },
   }
 })
+// Offline chain: a submitted transfer is mined at once and moves its value.
+jest.mock('../monad-http', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const ethers = require('ethers')
+  const mined = new Set<string>()
+  return {
+    ...jest.requireActual('../monad-http'),
+    MonadHttpClient: class {
+      async submitRawTransaction(raw: string) {
+        const tx = ethers.Transaction.from(raw)
+        const to = tx.to.toLowerCase()
+        mockBalances.set(to, (mockBalances.get(to) ?? 0n) + tx.value)
+        mockFunded.push({ from: tx.from.toLowerCase(), to, value: tx.value })
+        mined.add(tx.hash)
+        return tx.hash
+      }
+      async getTransactionReceipt(hash: string) {
+        return mined.has(hash) ? { status: 'success' } : undefined
+      }
+      destroy() {
+        return undefined
+      }
+    },
+  }
+})
+const mockFunded: { from: string; to: string; value: bigint }[] = []
 jest.mock('@frank/cashweb/relay/monad-mailbox-client', () => ({
   ...jest.requireActual('@frank/cashweb/relay/monad-mailbox-client'),
   fetchCanonicalInboxPage: jest.fn(),
@@ -108,7 +141,7 @@ function roots(index: number): MonadRootBundle {
   }
 }
 
-async function fixture() {
+async function fixture(funded = true) {
   const directory = mkdtempSync(join(tmpdir(), 'chain-canonical-dm-'))
   const config: MonadChainConfig = {
     networkId: 'monad-testnet',
@@ -128,9 +161,11 @@ async function fixture() {
     bob = (await chain.createWallet(roots(1))) as MonadChainWalletHandle
   // Stand-in for confirmed funding: single-use accounts the offline RPC reports as funded.
   // Each covers its own fee reserve plus 600 wei, so a 1000 wei stamp needs both.
-  for (const record of alice.pool.ensureSize(2))
-    mockBalances.set(record.address.toLowerCase(), 187_500n + 600n)
-  await alice.pool.flush()
+  if (funded) {
+    for (const record of alice.pool.ensureSize(2))
+      mockBalances.set(record.address.toLowerCase(), 187_500n + 600n)
+    await alice.pool.flush()
+  }
   const tuple = {
     relayId: new Uint8Array(16).fill(1),
     endpoint: RELAY + '/',
@@ -266,7 +301,9 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
   let f: Awaited<ReturnType<typeof fixture>>
   beforeEach(async () => {
     jest.clearAllMocks()
-    f = await fixture()
+    mockBalances.clear()
+    mockFunded.length = 0
+    f = await fixture(!expect.getState().currentTestName!.includes('unfunded'))
   })
   afterEach(() => f.close())
 
@@ -478,6 +515,90 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       digest,
     )
   })
-})
 
-export type { Current }
+  it('funds an unfunded typed wallet through the public bridge so a canonical intent can be paid', async () => {
+    const main = (await f.alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 18n)
+    expect(f.alice.pool.records()).toHaveLength(0)
+    const aliceDirectory = await f.directoryFor('alice', f.alice, f.bob)
+    const peer = (await aliceDirectory.peerCurrent({
+      address: f.bob.identity.address.raw,
+    }))!
+    const hashes = await prepareCanonicalStampInventory(f.alice, {
+      stampValueWei: 1_000n,
+      recipientStampKey: peer.current.stampKey.keyBytes,
+    })
+    expect(hashes.length).toBeGreaterThan(0)
+    expect(mockFunded.length).toBe(hashes.length)
+    expect(mockFunded.every(tx => tx.from === main)).toBe(true)
+    const available = f.alice.pool
+      .records()
+      .filter(record => record.status === 'available')
+    expect(available.map(r => r.address.toLowerCase()).sort()).toEqual(
+      mockFunded.map(tx => tx.to).sort(),
+    )
+    // A second call finds the inventory sufficient and funds nothing more.
+    expect(
+      await prepareCanonicalStampInventory(f.alice, {
+        stampValueWei: 1_000n,
+        recipientStampKey: peer.current.stampKey.keyBytes,
+      }),
+    ).toEqual([])
+    // The bridged roles seal for the live wallet, and its own client can pay from the inventory.
+    const senderCurrent = await aliceDirectory.selfCurrent()
+    const roles = createCanonicalMessageRoles(f.alice, senderCurrent)
+    const sealed = prepareDirectMessage({
+      network: 'monad-testnet',
+      senderCurrent,
+      recipientCurrent: peer.current,
+      messageId: new Uint8Array(16).fill(7),
+      items: [directMessageText('funded')],
+      roles,
+    })
+    roles.dispose()
+    const client = canonicalMonadStampClient(f.alice)
+    const intent = await client.prepareIntent({
+      prepared: client.bindPrepared({
+        payload: sealed.payload,
+        context: sealed.context,
+        stampValueWei: 1_000n,
+        economicBinding: Uint8Array.of(1),
+      }),
+      consumerId: 'bridge-test',
+      stampValueWei: 1_000n,
+      senderCurrent,
+      recipientCurrent: peer.current,
+      onIntentDurable: async () => undefined,
+    })
+    expect(intent.members.length).toBeGreaterThan(0)
+    await f.alice.close()
+    expect(() =>
+      prepareCanonicalStampInventory(f.alice, {
+        stampValueWei: 1n,
+        recipientStampKey: peer.current.stampKey.keyBytes,
+      }),
+    ).toThrow('live typed persistent custody')
+    expect(() => createCanonicalMessageRoles(f.alice, senderCurrent)).toThrow(
+      'live typed wallet custody',
+    )
+  })
+
+  it('sends from an unfunded wallet by funding inventory first', async () => {
+    mockBalances.set(
+      (await f.alice.getReceiveAddress()).raw.toLowerCase(),
+      10n ** 18n,
+    )
+    installCanonicalDirectory(
+      f.alice,
+      await f.directoryFor('alice', f.alice, f.bob),
+    )
+    const sent = await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('paid from fresh inventory'),
+    })
+    expect(sent.preparationTxHashes.length).toBeGreaterThan(0)
+    expect(sent.stampPayments.reduce((n, p) => n + p.valueWei, 0n)).toBe(1_000n)
+    expect(f.requests).toHaveLength(1)
+  })
+})

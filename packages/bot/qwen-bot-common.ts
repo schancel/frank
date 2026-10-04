@@ -715,7 +715,7 @@ export interface QwenCanonicalDirectory {
   readonly selfSubject: string
   selfCurrent(): Promise<Current>
   /** `undefined` when that subject is not installed or has no admitted evidence yet. */
-  peerCurrent(subject: string): Promise<Current | undefined>
+  peerCurrent(subject: string, refresh?: boolean): Promise<Current | undefined>
 }
 export type QwenBootstrapPolicy = BootstrapPolicy
 export type QwenApprovedBundle = ApprovedPolicy
@@ -1085,7 +1085,7 @@ export async function openQwenInstalledDirectory(params: {
       selfSubject: self.subjectP,
       bundleIdentity: bundle.bundleIdentity,
       selfCurrent: () => home.store.current(home.context()),
-      async peerCurrent(subjectP) {
+      async peerCurrent(subjectP, refresh = false) {
         const subject = bundle.subjects.find(
           candidate =>
             candidate.role === 'ui' && candidate.subjectP === subjectP,
@@ -1097,6 +1097,7 @@ export async function openQwenInstalledDirectory(params: {
           peer.opened ??= await open(subject)
           // A peer is only ever read; its owner publishes it.
           if (
+            refresh ||
             !(await peer.opened.store.status()) ||
             Date.now() - peer.refreshed >= refreshMs
           ) {
@@ -1262,7 +1263,7 @@ export function setUpCanonicalQwenSender(params: {
       relayBaseUrl: directory.homeEndpoint,
       fetchPage: page => fetchCanonicalInboxPage({ ...mailbox, ...page }),
       selfCurrent: () => directory.selfCurrent(),
-      peerCurrent: peer => directory.peerCurrent(peer),
+      peerCurrent: (peer, refresh) => directory.peerCurrent(peer, refresh),
       roles: self => createCanonicalMessageRoles(wallet.handle, self),
     },
     sender: {

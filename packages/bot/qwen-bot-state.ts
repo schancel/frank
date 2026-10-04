@@ -62,7 +62,12 @@ export interface QwenInboxInput {
   /** Present only on canonical rows (#778): the exact authenticated crypto context bytes. */
   contextHex?: string
 }
-export type QwenInboxRejection = 'wrong-recipient' | 'self' | 'no-text'
+/** `unopenable`: authentication failed deterministically against a freshly read directory. */
+export type QwenInboxRejection =
+  | 'wrong-recipient'
+  | 'self'
+  | 'no-text'
+  | 'unopenable'
 export type QwenInboxRow =
   | (QwenInboxInput & { version: 1; phase: 'pending'; order: number })
   | {
@@ -556,9 +561,12 @@ export class QwenBotStateStore {
                       'contextHex',
                     ])
                   : row.phase !== 'rejected' ||
-                    !['wrong-recipient', 'self', 'no-text'].includes(
-                      row.reason,
-                    ) ||
+                    ![
+                      'wrong-recipient',
+                      'self',
+                      'no-text',
+                      'unopenable',
+                    ].includes(row.reason) ||
                     !onlyKeys(row, [
                       'version',
                       'phase',

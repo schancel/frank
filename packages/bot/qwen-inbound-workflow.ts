@@ -53,8 +53,9 @@ export interface QwenCanonicalInbound {
     maxBytes: number
   }): Promise<CanonicalMailboxPage<CanonicalInboxRecord>>
   selfCurrent(): Promise<Current>
-  /** Fresh admitted Current of an installed peer, or `undefined` when it is not installed. */
-  peerCurrent(subject: string): Promise<Current | undefined>
+  /** Admitted Current of an installed peer, or `undefined` when it is not installed or not
+   * readable now. `refresh` forces a new read from the peer's relay instead of a recent one. */
+  peerCurrent(subject: string, refresh?: boolean): Promise<Current | undefined>
   /** A scoped opening session for the bot's own current directory entry. */
   roles(self: Current): DirectMessageRoles
 }
@@ -324,9 +325,9 @@ export class QwenInboundWorkflow {
         : undefined
     if (!payload || payload.typed?.type !== 5) return 'other'
     const senderSubject = toHex(payload.typed.sender.keyBytes)
-    // The claimed sender is only a conservative ordering key until the envelope opens.
+    // The sender field is unauthenticated until the envelope opens. A row that has not opened
+    // never holds the ordering key for the peer it merely claims to be from.
     const peer = computeAddress('0x' + senderSubject).toLowerCase()
-    if (deferred.has(peer)) return 'other'
     if (toHex(payload.typed.recipient.keyBytes) !== canonical.subject) {
       await state.rejectInbox(context, row.payloadHashHex, 'wrong-recipient')
       return 'other'
@@ -335,18 +336,10 @@ export class QwenInboundWorkflow {
       await state.rejectInbox(context, row.payloadHashHex, 'self')
       return 'other'
     }
-    let prompt: string | undefined
-    try {
-      const sender = await canonical.peerCurrent(senderSubject)
-      // Not an installed peer (yet): never opened, never answered, never discarded.
-      if (!sender) {
-        deferred.add(peer)
-        return 'other'
-      }
-      const self = await canonical.selfCurrent()
+    const open = (sender: Current, self: Current): string | undefined => {
       const roles = canonical.roles(self)
       try {
-        prompt = extractCanonicalPromptText(
+        return extractCanonicalPromptText(
           openDirectMessage({
             mode: 'receive',
             network: canonical.network,
@@ -360,11 +353,44 @@ export class QwenInboundWorkflow {
       } finally {
         roles.dispose()
       }
+    }
+    let sender: Current | undefined
+    let self: Current
+    try {
+      sender = await canonical.peerCurrent(senderSubject)
+      // Not an installed peer, or not readable now: never opened, never answered, retained.
+      if (!sender) return 'other'
+      self = await canonical.selfCurrent()
     } catch {
-      // Tampered, stale-keyed or temporarily unverifiable input reaches no model or payment.
-      deferred.add(peer)
       return 'other'
     }
+    let prompt: string | undefined
+    try {
+      prompt = open(sender, self)
+    } catch {
+      // It did not open under the directory entry held a moment ago. Decide only against a
+      // new read from the relay: unreadable now stays retained; a deterministic failure
+      // against that fresh entry is terminal, so it cannot block anything behind it.
+      let fresh: Current | undefined
+      try {
+        fresh = await canonical.peerCurrent(senderSubject, true)
+        self = await canonical.selfCurrent()
+      } catch {
+        return 'other'
+      }
+      if (!fresh) return 'other'
+      try {
+        prompt = open(fresh, self)
+      } catch {
+        await state.rejectInbox(context, row.payloadHashHex, 'unopenable')
+        console.warn(
+          `[bot] inbox ${row.payloadHashHex} rejected: unopenable under current directory evidence`,
+        )
+        return 'other'
+      }
+    }
+    // Authenticated from here on: this row now orders its peer.
+    if (deferred.has(peer)) return 'other'
     if (state.pendingResponseForPeer(peer)) {
       deferred.add(peer)
       return 'other'

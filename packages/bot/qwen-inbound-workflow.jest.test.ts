@@ -798,6 +798,9 @@ describe('#778 canonical inbound', () => {
   let reply: jest.Mock
   let sent: jest.Mock
   let installed: boolean
+  let refreshes: number
+  let directoryDown: boolean
+  let staleCurrent: typeof bot.current | undefined
   let cleanup: Array<() => Promise<void>>
   let bot: Awaited<ReturnType<typeof principal>>
   let user: Awaited<ReturnType<typeof principal>>
@@ -981,8 +984,13 @@ describe('#778 canonical inbound', () => {
         return { records: pages.shift() ?? [] }
       },
       selfCurrent: async () => bot.current,
-      peerCurrent: async subject =>
-        installed && subject === user.subject ? user.current : undefined,
+      peerCurrent: async (subject, refresh) => {
+        if (refresh) refreshes++
+        if (!installed || subject !== user.subject) return undefined
+        if (directoryDown && refresh) throw new Error('relay unreachable')
+        // A recent read may lag the relay; a forced read never does.
+        return staleCurrent && !refresh ? staleCurrent : user.current
+      },
       roles: self => bot.material.canonicalRoles!.create(NETWORK, self),
     }
     inbound = new QwenInboundWorkflow({
@@ -1007,6 +1015,9 @@ describe('#778 canonical inbound', () => {
     pages = []
     fetches = 0
     installed = true
+    refreshes = 0
+    directoryDown = false
+    staleCurrent = undefined
     reply = jest.fn(async () => ({
       content: 'REPLY_SENTINEL',
       reasoning: 'REASONING_SENTINEL',
@@ -1085,19 +1096,30 @@ describe('#778 canonical inbound', () => {
       },
     ],
   ])(
-    'never reaches the model or a reply when the %s was altered',
+    'rejects a row whose %s was altered without blocking a valid message behind it from the same peer',
     async (_name, mutate) => {
       const altered = await record('PROMPT_SENTINEL', 2, {
         mutate: mutate as never,
       })
-      pages.push([altered])
-      // Structurally valid, so it is retained; only opening can tell it was altered.
+      const valid = await record('PROMPT_SENTINEL', 3)
+      pages.push([altered, valid])
+      // Structurally valid, so it is imported; only opening can tell it was altered.
       await inbound.import()
-      expect(canonicalState.pendingInbox()).toHaveLength(1)
+      expect(canonicalState.pendingInbox()).toHaveLength(2)
+      expect(await inbound.drain(10)).toBe(1)
+      // The altered row was decided against a new directory read and is terminal; the valid
+      // message behind it, from the same peer, is answered exactly once.
+      expect(refreshes).toBe(1)
+      expect(reply).toHaveBeenCalledTimes(1)
+      expect(sent).toHaveBeenCalledTimes(1)
+      expect(canonicalState.pendingInbox()).toEqual([])
+      expect(canonicalState.getResponse(valid.digest)?.phase).toBe('confirmed')
+      await reopenCanonical()
+      pages.push([altered, valid])
+      await inbound.import()
       expect(await inbound.drain(10)).toBe(0)
-      expect(reply).not.toHaveBeenCalled()
-      expect(sent).not.toHaveBeenCalled()
-      expect(canonicalState.pendingInbox()).toHaveLength(1)
+      expect(canonicalState.pendingInbox()).toEqual([])
+      expect(reply).toHaveBeenCalledTimes(1)
       expect(canonicalState.getResponse(altered.digest)).toBeUndefined()
     },
     30000,
@@ -1112,6 +1134,51 @@ describe('#778 canonical inbound', () => {
     expect(reply).not.toHaveBeenCalled()
     expect(canonicalState.pendingInbox()).toHaveLength(1)
     installed = true
+    expect(await inbound.drain(10)).toBe(1)
+    expect(reply).toHaveBeenCalledTimes(1)
+  }, 30000)
+
+  it('does not let a forged frame that only claims the approved sender block that sender', async () => {
+    // Sealed by someone else entirely, with the sender field rewritten to the approved subject
+    // is not constructible here without the codec; an unopenable frame from the approved
+    // subject's own producer with a foreign context is the same case for the drain.
+    const other = await record('OTHER_SENTINEL', 9)
+    const forged = await record('PROMPT_SENTINEL', 8, {
+      mutate: parts => {
+        parts.context = other.context
+      },
+    })
+    const valid = await record('PROMPT_SENTINEL', 10)
+    pages.push([forged, valid])
+    await inbound.import()
+    expect(await inbound.drain(10)).toBe(1)
+    expect(reply).toHaveBeenCalledTimes(1)
+    expect(canonicalState.getResponse(forged.digest)).toBeUndefined()
+    expect(canonicalState.getResponse(valid.digest)?.phase).toBe('confirmed')
+    expect(canonicalState.pendingInbox()).toEqual([])
+  }, 30000)
+
+  it('opens under a newly read directory entry instead of rejecting when its recent read was stale', async () => {
+    // The recent read is another subject's entry, standing in for a superseded statement.
+    staleCurrent = bot.current
+    const first = await record('PROMPT_SENTINEL', 11)
+    pages.push([first])
+    await inbound.import()
+    expect(await inbound.drain(10)).toBe(1)
+    expect(refreshes).toBe(1)
+    expect(reply).toHaveBeenCalledTimes(1)
+  }, 30000)
+
+  it('retains, and does not reject, a row that fails to open while the directory cannot be read afresh', async () => {
+    staleCurrent = bot.current
+    directoryDown = true
+    const first = await record('PROMPT_SENTINEL', 12)
+    pages.push([first])
+    await inbound.import()
+    expect(await inbound.drain(10)).toBe(0)
+    expect(reply).not.toHaveBeenCalled()
+    expect(canonicalState.pendingInbox()).toHaveLength(1)
+    directoryDown = false
     expect(await inbound.drain(10)).toBe(1)
     expect(reply).toHaveBeenCalledTimes(1)
   }, 30000)

@@ -740,8 +740,12 @@ npx tsx qwen-bot.livecheck.ts
   defaults to `monad-testnet`).
 - `QWEN_BOT_MAX_REPLIES`, `QWEN_BOT_IDLE_TIMEOUT_MS`, `QWEN_BOT_POLL_INTERVAL_MS`,
   `QWEN_BOT_MESSAGE_SINCE_MS` and the per-peer reply budget (`FRANK_BOT_MAX_REPLIES_PER_PEER`,
-  `FRANK_BOT_REPLY_WINDOW_MS`) apply as in legacy mode. The legacy bot-marker profile lookup and
-  peer denylist are not consulted: a canonical peer is whoever the operator installed.
+  `FRANK_BOT_REPLY_WINDOW_MS`) and `FRANK_BOT_PEER_DENYLIST` apply as in legacy mode. The legacy
+  bot-marker profile lookup is not consulted: a canonical peer is whoever the operator installed.
+- A configuration the bot will not start with prints `QWEN BOT REFUSING TO START: <reason>` with a
+  fixed reason word (for example `roots-file-permissions`, `approved-bundle-invalid`,
+  `bundle-foreign-policy`, `bundle-not-this-bot`, `forwarding-unavailable`,
+  `relay-url-not-installed-home`). The roots file must not be group- or world-accessible.
 - Use a fresh `QWEN_BOT_STATE_DIR`: a root that already holds a legacy inbox context is refused.
 - Durable roots: `QWEN_BOT_STATE_DIR` (turns, inbox, couplings, and `canonical-directory/` with
   the directory stores and their checkpoint files) and `QWEN_BOT_WALLET_STATE_DIR/canonical-*`

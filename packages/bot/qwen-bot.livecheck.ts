@@ -107,6 +107,7 @@ import {
   loadOrCreateIdentity,
   loadQwenCanonicalRoots,
   openQwenCanonicalWallet,
+  QwenStartRefusal,
   openQwenInstalledDirectory,
   startQwenInstallationServer,
   readQwenApprovedBundle,
@@ -546,9 +547,7 @@ async function mainCanonical(
       stampValueWei,
     })
     if (chain.networkTag !== policy.networkTag)
-      throw new Error(
-        'Configured chain differs from the installed network; refusing to start',
-      )
+      throw new QwenStartRefusal('chain-not-installed-network')
     const wallet = await openQwenCanonicalWallet({ chain, roots })
     closeCanonicalSetup = () => wallet.close()
     return wallet
@@ -558,7 +557,7 @@ async function mainCanonical(
   if (exportPath) {
     const home = requiredEnv('QWEN_BOT_CANONICAL_HOME')
     if (home !== 'relay-a' && home !== 'relay-b')
-      throw new Error('QWEN_BOT_CANONICAL_HOME must be relay-a or relay-b')
+      throw new QwenStartRefusal('home-relay-not-relay-a-or-relay-b')
     // Opening the typed wallet signs, funds and sends nothing; the export is one public
     // statement signed with the identity key.
     const wallet = await openWallet(
@@ -584,16 +583,14 @@ async function mainCanonical(
 
   const bundle = readQwenApprovedBundle(path('QWEN_BOT_CANONICAL_BUNDLE_JSON'))
   const installedSelf = bundle.subjects.find(subject => subject.role === 'bot')
-  if (!installedSelf) throw new Error('Approved bundle installs no bot subject')
+  if (!installedSelf) throw new QwenStartRefusal('bundle-installs-no-bot')
   const relayBaseUrl = installedSelf.relay.endpoint
   const configuredRelay = process.env.E2E_DEMO_RELAY_URL
   if (
     configuredRelay &&
     new URL(configuredRelay).origin !== new URL(relayBaseUrl).origin
   )
-    throw new Error(
-      'E2E_DEMO_RELAY_URL differs from the installed home relay; refusing to start',
-    )
+    throw new QwenStartRefusal('relay-url-not-installed-home')
   const pollIntervalMs = Number(process.env.QWEN_BOT_POLL_INTERVAL_MS ?? 4000)
   const { maxReplies, idleTimeoutMs } = botConfig
   const replyGenerator = createQwenReplyGenerator(botConfig)
@@ -667,8 +664,10 @@ async function mainCanonical(
   })
   // A canonical peer is an operator-installed `ui` subject admitted by the directory; that is
   // the statement that it is not another bot. The legacy profile-marker lookup is not consulted
-  // (and would be a legacy read). The per-peer reply budget still applies.
-  const peerBlockReason = async (_address: string) => undefined
+  // (and would be a legacy read). The operator denylist (FRANK_BOT_PEER_DENYLIST) and the
+  // per-peer reply budget still apply.
+  const peerBlockReason = async (address: string) =>
+    guard.staticBlockReason(address)
   const responses = new QwenResponseWorkflow({
     state,
     context: {
@@ -759,7 +758,15 @@ main()
       }
     }
   })
-  .catch(() => {
+  .catch((error: unknown) => {
+    // A refusal carries only a fixed reason word; print it so an operator can act.
+    const refusal = error as { name?: unknown; code?: unknown } | null
+    if (
+      refusal?.name === 'QwenStartRefusal' &&
+      typeof refusal.code === 'string' &&
+      /^[a-z-]{1,64}$/.test(refusal.code)
+    )
+      console.error(`\nQWEN BOT REFUSING TO START: ${refusal.code}`)
     // Provider errors may contain prompts, tokens or raw response bodies, including in debug mode.
     console.error(
       '\nQWEN BOT FAILED: check QWEN_API_KEY and QWEN_OPENAI_COMPATIBLE_ENDPOINT (or QWEN_BOT_MODE=stub), configuration and durable response state; preserve held rows before restart',

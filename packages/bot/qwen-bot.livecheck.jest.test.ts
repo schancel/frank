@@ -719,10 +719,28 @@ describe('#703/#778 production CLI in canonical mode', () => {
     expect(await withState(state => state.getCoupling(turn))).toEqual(saved)
   }, 90000)
 
+  it('keeps the operator denylist effective: a denylisted installed account is imported but never answered', async () => {
+    const denied = run({ FRANK_BOT_PEER_DENYLIST: ui.authAddress })
+    expect({ status: denied.child.status, ...denied.summary }).toMatchObject({
+      status: 0,
+      generations: 0,
+    })
+    await withState(state => {
+      expect(state.getResponse(turn)).toBeUndefined()
+      expect(state.pendingInbox().map(row => row.payloadHashHex)).toEqual([
+        turn,
+      ])
+    })
+    secrets(denied.child.stdout + denied.child.stderr)
+  }, 60000)
+
   it('refuses to start when the approved bundle is missing, before opening any state', () => {
     rmSync(join(location, 'approved-bundle.json'))
     const refused = run()
     expect(refused.child.status).toBe(1)
+    expect(refused.child.stderr).toContain(
+      'QWEN BOT REFUSING TO START: approved-bundle-invalid',
+    )
     expect(refused.summary).toMatchObject({ generations: 0, pages: 0 })
     expect(existsSync(join(location, 'state'))).toBe(false)
   }, 60000)

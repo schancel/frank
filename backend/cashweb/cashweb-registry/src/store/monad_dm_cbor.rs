@@ -646,32 +646,8 @@ impl Owner {
                 if after.is_some_and(|cursor| hash <= cursor) {
                     continue;
                 }
-                if header.len() > 128 {
-                    return Err(CanonicalError::Unavailable);
-                }
-                let metadata =
-                    decode_canonical(&header).map_err(|_| CanonicalError::Unavailable)?;
-                let [version, owner, active, reserved, charge, confirmed] = array(&metadata)?
-                else {
-                    return Err(CanonicalError::Unavailable);
-                };
-                if number(version)? != 1 {
-                    return Err(CanonicalError::Unavailable);
-                }
-                let owner = Address(fixed(owner)?);
-                let active = boolean(active)?;
-                let reserved = boolean(reserved)?;
-                let _confirmed = boolean(confirmed)?;
-                let charge: u64 = convert(charge)?;
-                if active && !reserved
-                    || charge < 8192
-                    || charge
-                        > (crate::http::monad_message_cbor::MAX_REQUEST_BYTES + 8192 + 64 * 662)
-                            as u64
-                {
-                    return Err(CanonicalError::Unavailable);
-                }
-                if owner != recipient {
+                let metadata = decode_usage_header(&header)?;
+                if metadata.owner != recipient {
                     continue;
                 }
                 let claim = load(db, &hash)?.ok_or(CanonicalError::Unavailable)?;
@@ -689,6 +665,62 @@ impl Owner {
         })
         .map(|rows| rows.unwrap_or_default())
     }
+    /// Original exposure-only recovery horizon. Confirmed value is retained until
+    /// explicit recipient ACK; immutable retry ownership is never removed here.
+    pub(crate) fn expire_unconfirmed_recovery_after(
+        &self,
+        after: Option<[u8; 32]>,
+        limit: usize,
+        now: i64,
+        limits: &MonadOutboxLimits,
+    ) -> Result<Option<[u8; 32]>> {
+        self.with(false, |db| {
+            let mut scanned = 0usize;
+            let mut last = None;
+            let mut exhausted = true;
+            let age = limits
+                .max_unconfirmed_recovery_age
+                .as_millis()
+                .min(i64::MAX as u128) as i64;
+            for item in db.iterator_opt(IteratorMode::Start, prefix_options(b"J")?) {
+                let (key, header) = item.map_err(|_| CanonicalError::Unavailable)?;
+                let hash: [u8; 32] = key
+                    .get(1..)
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or(CanonicalError::Unavailable)?;
+                if after.is_some_and(|cursor| hash <= cursor) {
+                    continue;
+                }
+                if scanned == limit.max(1) {
+                    exhausted = false;
+                    break;
+                }
+                scanned += 1;
+                last = Some(hash);
+                let metadata = decode_usage_header(&header)?;
+                if metadata.active || !metadata.reserved || metadata.confirmed {
+                    continue;
+                }
+                let mut claim = load(db, &hash)?.ok_or(CanonicalError::Unavailable)?;
+                if !matches!(claim.phase, Phase::Terminal(_))
+                    || claim.acknowledged
+                    || claim.members.iter().any(|member| {
+                        matches!(member.state, MonadOutboxMemberState::Confirmed { .. })
+                    })
+                    || now.saturating_sub(claim.updated) <= age
+                {
+                    continue;
+                }
+                claim.reservation = false;
+                let mut batch = WriteBatch::default();
+                append_owner(&mut batch, &hash, &claim)?;
+                write(db, batch)?;
+            }
+            Ok(if exhausted { None } else { last })
+        })
+        .map(Option::flatten)
+    }
+
     pub(crate) fn acknowledge(
         &self,
         recipient: Address,
@@ -810,6 +842,41 @@ fn prefix_options(prefix: &[u8]) -> Result<ReadOptions> {
     Ok(options)
 }
 
+struct UsageHeader {
+    owner: Address,
+    active: bool,
+    reserved: bool,
+    charge: u64,
+    confirmed: bool,
+}
+fn decode_usage_header(raw: &[u8]) -> Result<UsageHeader> {
+    if raw.len() > 128 {
+        return Err(CanonicalError::Unavailable);
+    }
+    let value = decode_canonical(raw).map_err(|_| CanonicalError::Unavailable)?;
+    let [version, owner, active, reserved, charge, confirmed] = array(&value)? else {
+        return Err(CanonicalError::Unavailable);
+    };
+    if number(version)? != 1 {
+        return Err(CanonicalError::Unavailable);
+    }
+    let header = UsageHeader {
+        owner: Address(fixed(owner)?),
+        active: boolean(active)?,
+        reserved: boolean(reserved)?,
+        charge: convert(charge)?,
+        confirmed: boolean(confirmed)?,
+    };
+    if header.active && !header.reserved
+        || header.charge < 8192
+        || header.charge
+            > (crate::http::monad_message_cbor::MAX_REQUEST_BYTES + 8192 + 64 * 662) as u64
+    {
+        return Err(CanonicalError::Unavailable);
+    }
+    Ok(header)
+}
+
 fn financial_usage_locked(
     db: &rocksdb::DB,
     recipient: Address,
@@ -827,27 +894,13 @@ fn financial_usage_locked(
         if inspected > MAX_RETAINED_OWNERS || key.len() != 33 || value.len() > 128 {
             return Err(CanonicalError::Unavailable);
         }
-        let value = decode_canonical(&value).map_err(|_| CanonicalError::Unavailable)?;
-        let [version, owner, active, reserved, charge, confirmed] = array(&value)? else {
-            return Err(CanonicalError::Unavailable);
-        };
-        if number(version)? != 1 {
-            return Err(CanonicalError::Unavailable);
-        }
-        let owner = Address(fixed(owner)?);
-        let charge: u64 = convert(charge)?;
-        if charge < 8192
-            || charge
-                > (crate::http::monad_message_cbor::MAX_REQUEST_BYTES + 8192 + 64 * 662) as u64
-        {
-            return Err(CanonicalError::Unavailable);
-        }
-        let active = boolean(active)?;
-        let reserved = boolean(reserved)?;
-        let confirmed = boolean(confirmed)?;
-        if active && !reserved {
-            return Err(CanonicalError::Unavailable);
-        }
+        let UsageHeader {
+            owner,
+            active,
+            reserved,
+            charge,
+            confirmed,
+        } = decode_usage_header(&value)?;
         let add = |a: u64, b: u64| a.checked_add(b).ok_or(CanonicalError::Unavailable);
         if active {
             usage.active = add(usage.active, 1)?;

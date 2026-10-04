@@ -606,3 +606,410 @@ async fn actual_http_canonical_public_admission_p_authenticated_inbox_and_nonce_
         std::panic::resume_unwind(panic);
     }
 }
+
+// Public child0/1 derivation + independent offline funding keys; no chain authority.
+const PREFIX_T_BODY_HEX: &str = "2d2d6672616e6b2d7072656669782d3737370d0a436f6e74656e742d446973706f736974696f6e3a20666f726d2d646174613b206e616d653d2264656c6976657279220d0a436f6e74656e742d547970653a206170706c69636174696f6e2f766e642e6672616e6b2e63626f720d0a0d0a46524e4b0100000912a400010101020103590907a5006d6d6f6e61642d746573746e657401a20001015821031932bd4a3b404c1477cab87652d75ce112d24e8b1698d8cf5b1834cfc8d33fbb025907a246524e4b0100000799a40005010202020359078ea8006d6d6f6e61642d746573746e657401a20001015821032de89548d6742189952342246af8e438ce63c8ad25a857690e353f3331d6c53702a20001015821036253871fdcfbb0497776db33754caaafad98c1b4b0ae4945ddf8660e27687a1a03010459069da6000201010219ff0003582043bed8daec2f39d9f1af1f292b277a5270772b80e8fb9eef3a99b48689039b6904582102efe3593d7c4ed3419a7055df81219a5d88eea56da4931dd5c2131f22f98c2fee05590649ad4f6a4781a00434ce5a2c2f9b7548a27a614c0f2ee0c482e118a60d1e28971a7fbe3a25c4b7733861ebc9771e4e0950fae81c8af7825b5d8b803440549af6235567b090f7f59dbfd9b6896bca74ab25933f6f32e65b12f5d56facd7f2e591818ebfbd2476c02102b9dfc69b9382a34aca902cabec67dcae8c972db19a00d375c608b8331281d6fea27d75ffd92ff541b5c15878f029034e65501821c82d138618e54857c6b0ce2c14307007a97c561c88a3f7f86b82a778b3b76a9be4a87cd18b1a83eda8d1561aa042f5858f32de17201c32e419c7f8a9c0d5c1dd4979a1817718d03876d5e5fb14e5bba867e9b49cb762d3874a90829786d6e9224c964ba0e52bbc6d241a54825a6120be0a968d2e07d4a5470455b9bd6762055c1f6e016da64e7f834b41b0116151299533a0884aa2f115ce057ea5c408ecd397bdd0219c6718565be9c549d41fd3f94b594947ca0cb43317f9457936bfa1143f9825de08eb63fbdd061c8cd9b458989f838de4af3c724aae1fb9024091b24d3fa17b34f3de321faeab4ae102347d169a0349eeaae665487f51c956adba2a4d8cc2f971651cfa8138a094cedf486d427821282205582781ca1e5d2aaf0bfbee87be13077ea59e0790d89d457889a3f2412acd8bfb3c55f373e4b7745309378f82f9bcb45d8660419f0af46fc4cff76463556787579b24a3b1d9c9605390e5d0f22fd5a95b9022721f86dbd4a7de002218469ae810ae5f1553f4d314f508e50fdbc4e863a7245bca454e75a80c5660101b30348f397de2721cd0ff9886f32d3280d2a79cac461e65692068d3fe6b7f3515764b00e2634a5f58b4064ac5b1246fe51b4f44cf5f157972bae3e7f420506e2bad634ad1d9e55997d469ca26043abe25bfbe950fedb9b42111ddc9b27cf4760d624b7935f653dae159977cb3939226ab29ac8ba8153f1ab6fc940695843d8cc7f80a1495f6f3db8708f4ea5030429936e9affd7415aa6f521a303e863e0e80247efae6e9053388439af8b5f8f205a1876e94b58581e872886211f4021034d75651cc23494fcec95d7b71f4fd5817643a65f14518c939490e113c35285ee1057cd9d5c59b4c8f000a9571b3f2a8bbb192eb0b888cdd7ef8d01fd267dfcd1be487b87535fe7096a8a91cd5e3e8851cfa94a74c322c51d86587e566a4dcf7f43477b4f4fb60d820832830b1c41710c6cfa2bf92aec394185aa80875832f7e8d8847b52518a9998d7f00ca73de2645d4d0d306ad04da2e6790645637b0314e8d7e6f752654b312458c265bb60bdc43e0b9f964df3edf164f85ac6e09a4326645fdee05eac0151ff1ea8c8cfcca5792c3431b5c386d3b41facd34edc90d7c6d5e5d9ce8541021811c620cbb08523bea8d367f36dd4c0614800de5577a2b2278fd473405b8d5e05c38b431a0d6b7c19251c4f4668908dd43900796f7acc4a299b655133100b859193e937d03db3deaa5c0a9efcaf2373a224e890c714ce04d40454d25cec2a24a30c58ee79bdf11ea590d0082b0071cbe66055f3850823183f54bd3cdb7fc319923963a8a9a396985b3c7cd1dd81aef94832aa795ea6a0bad6f60b89d0e2dae21d221d4ca2811dacb28569b2755e2a870c6649581b1eee2ef7389cb207c331a2b7e61d6b9dcd9a8cb4cb9301d8a9902e11df90b63d9137afbb2dfbd4c17958c5dcc79d519fe2a5a99c2391115e41c42642c8669e228f42d1b84749e13d370d5273a5079bbabc6c62cbca3973d1ae2bb1d2786f2de544fb62253033d203c46f2ac90e9f9b1f7bb2d6be01e2b2d53d177a1ebfd6382ae0819a4609922eb6f743450a1db5d98453b132441a73a3e4729d150a2136e938660a8558f72ceaf7bb55836d0ebc8012e90d132550ab99a27f5cbaae8efe5794c1105e9d3cd7ba0d1df5a04f774f0a02b54e2e815203ef154b6df9143c9b86eddd21b32f6ebee88008c1bd9493b8a141cdb3e09e4f801aef36c93432a4c11415b7dc67ac684b4fa46160af80a72a83950d77c1e37a6711c53e78e879775cf2ca6013337978d026fdea24f1881fc7e2eac8e1e4249bcc068e64610aa706fee619372f781d8903f2cb5f413941b9ecba4b05c2d7ac78fc8d04a10f5133c60e4499a7834e8bda518b64f1b6c1d2c6eada6ae5e08da0feed9419f701eaba13c5bbb95374f663ebf9c5d8dcbf42b734bb0776d8580b6fcf420d01c51061a3bc81cf5e8e364bb842cd94e60e5735a13aa49ab9b3149f9d422129dca13a546e4254a4923e92b5ff905582103ff218b7b9816efd78fda57849ebb9c81948df3b625011ff0ab7d6621fdcbcb03065821021ed2dceddc83589ac5335ceeb3b8b114329e49bbad5220986440be03e341341c075840b54790a36571925da0b9afcff467327e49c9cf856afcbb04b567b6e6d5673a859c5001e8a50bc7610c533dc5e87637af173f0aca86dd9e1d58f206f92b6cd1920358209f688f51d6a798d62f4b14a8b1958b14d22916ca0cb8108b91b017f238f7f2d20482a500000158207c0005730f53e3389a0057beb6b4c4ee9374b278d8c6ecb98067139df2246f6b025820000000000000000000000000000000000000000000000000000000000000000103542adf2cb0d2a8f42fd83e2c32912654a8ac76a4550458209d15a0c9d45c50955cc400ff9e8f42bf59caa0514058abad8fe9a678afb0f057a500010158203c4b4d44eb010b6a18af8e7b7a818dd9d6b9b8b3e368374675f6f994a61ed5b70258200000000000000000000000000000000000000000000000000000000000000001035448b7a08b057a00653c3323ce425884549f6d3559045820a11ca14f45b4f73c1ed93e7cc4662762e705dc2f9b007fe68c48d830bda4ced00d0a2d2d6672616e6b2d7072656669782d3737370d0a436f6e74656e742d446973706f736974696f6e3a20666f726d2d646174613b206e616d653d22636f6e74657874220d0a436f6e74656e742d547970653a206170706c69636174696f6e2f63626f720d0a0d0ab000781a6672616e6b2f646d2d63727970746f2d636f6e746578742f7631016d6d6f6e61642d746573746e657402a20001015821032de89548d6742189952342246af8e438ce63c8ad25a857690e353f3331d6c53703a20001015821036253871fdcfbb0497776db33754caaafad98c1b4b0ae4945ddf8660e27687a1a045820ed8493488028b1eed0bbd56edf022a19c6d13ee3e586792115012f14c82d97bb0558209b5957605976ee5d06728184df1d4174abacc4980fa145545ea07dc53e9640e506a2000101582102c05066c3239fc712592940a09c9272ea9b0373bbf548008e17a20c3d2a0161c207a2000101582103e84266f9de81abb5455f18083f781b09367263e3992bf51a9ea571f28619b81b08a20001015821031932bd4a3b404c1477cab87652d75ce112d24e8b1698d8cf5b1834cfc8d33fbb09582103ff218b7b9816efd78fda57849ebb9c81948df3b625011ff0ab7d6621fdcbcb030a5821021ed2dceddc83589ac5335ceeb3b8b114329e49bbad5220986440be03e341341c0b5840b54790a36571925da0b9afcff467327e49c9cf856afcbb04b567b6e6d5673a859c5001e8a50bc7610c533dc5e87637af173f0aca86dd9e1d58f206f92b6cd1920c010d050e020f020d0a2d2d6672616e6b2d7072656669782d3737370d0a436f6e74656e742d446973706f736974696f6e3a20666f726d2d646174613b206e616d653d227472616e73616374696f6e73220d0a436f6e74656e742d547970653a206170706c69636174696f6e2f63626f720d0a0d0a82588c02f88982279f80010282c350942adf2cb0d2a8f42fd83e2c32912654a8ac76a45501a5504f4e44029d15a0c9d45c50955cc400ff9e8f42bf59caa0514058abad8fe9a678afb0f057c080a00167c2cf4fac3609c325b3ae40d05a56be2410b54b2722974a55060b06607a16a07482af1d0d0d7dbd6dbd9a5e1d273f59dd7e0a5caaa6378e9606dadcd7d43f6d588c02f88982279f80010282c3509448b7a08b057a00653c3323ce425884549f6d355901a5504f4e4402a11ca14f45b4f73c1ed93e7cc4662762e705dc2f9b007fe68c48d830bda4ced0c001a0bd0831aa8d4351fb1af1d3fd9900964222c0c32cfa7f91d4c1df33dd23ce838ea07f5600fe1246b00edaa45a8d59ffbf678428a93f1d034abd640684b99439adcb0d0a2d2d6672616e6b2d7072656669782d3737372d2d0d0a";
+fn prefix_fixture() -> ExactRequest {
+    let request = ExactRequest::parse(
+        hex::decode(PREFIX_T_BODY_HEX).unwrap(),
+        "multipart/form-data; boundary=frank-prefix-777".into(),
+    )
+    .unwrap();
+    assert_eq!(
+        hex::encode(request.submission_identity()),
+        "ee88eca4fc7f6f5f0e8509745caecfdbc6f615c45cafe0d7de925aa89a213ff3"
+    );
+    request
+}
+
+async fn private_headers(
+    client: &reqwest::Client,
+    url: &str,
+    root: &std::path::Path,
+    point: &str,
+    binding: &crate::monad_mailbox::MailboxRequestBinding,
+) -> reqwest::header::HeaderMap {
+    use crate::monad_mailbox::{MailboxChallenge, MailboxResource};
+    use bitcoinsuite_core::Sha256;
+    let resource = match binding.resource {
+        MailboxResource::Inbox => "inbox",
+        MailboxResource::Recovery => "recovery",
+        MailboxResource::RecoveryAck => "recovery_ack",
+    };
+    let mut query = format!(
+        "resource={resource}&since={}&limit={}&max_bytes={}",
+        binding.since, binding.limit, binding.max_bytes
+    );
+    if let Some(hash) = binding.recovery_payload_hash {
+        query.push_str(&format!("&recovery_payload_hash={}", hex::encode(hash)));
+    }
+    if let Some(obligation) = binding.recovery_obligation_id {
+        query.push_str(&format!(
+            "&recovery_obligation_id={}",
+            hex::encode(obligation)
+        ));
+    }
+    let response = client
+        .post(format!(
+            "{url}/message/monad/cbor/auth/{}?{query}",
+            binding.recipient.to_hex()
+        ))
+        .header("x-frank-mailbox-subject", point)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let challenge: serde_json::Value =
+        serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(challenge["network_tag"], "4d4f4e54");
+    let token = MailboxChallenge {
+        epoch: hash_hex(challenge["epoch"].as_str().unwrap()).unwrap(),
+        nonce: hash_hex(challenge["nonce"].as_str().unwrap()).unwrap(),
+        token: hash_hex(challenge["token"].as_str().unwrap()).unwrap(),
+        expires_at_ms: challenge["expires_at_ms"].as_i64().unwrap(),
+    };
+    let digest = Sha256::digest(
+        super::super::monad_message::mailbox_auth_preimage(token, binding, b"MONT").into(),
+    );
+    let signature = public_p_signature(root, digest.as_slice().try_into().unwrap(), point).await;
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("x-frank-mailbox-subject", point.parse().unwrap());
+    for (name, field) in [
+        ("x-frank-mailbox-epoch", "epoch"),
+        ("x-frank-mailbox-nonce", "nonce"),
+        ("x-frank-mailbox-token", "token"),
+    ] {
+        headers.insert(name, challenge[field].as_str().unwrap().parse().unwrap());
+    }
+    headers.insert(
+        "x-frank-mailbox-expires-at-ms",
+        token.expires_at_ms.to_string().parse().unwrap(),
+    );
+    headers.insert(
+        "x-frank-mailbox-signature",
+        hex::encode(signature).parse().unwrap(),
+    );
+    headers
+}
+
+#[tokio::test]
+async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reopen() {
+    use crate::monad_mailbox::{MailboxRequestBinding, MailboxResource};
+    use crate::store::monad_dm_cbor::Phase;
+    use crate::store::monad_outbox::MonadOutboxMemberState;
+    use axum::Json;
+    use futures::FutureExt;
+    let fixture = NativeDirectoryFixture::new().await;
+    let request = prefix_fixture();
+    let transactions: Vec<_> = request
+        .raw_transactions()
+        .map(|raw| crate::monad_evm_tx::decode_signed_transaction(raw).unwrap())
+        .collect();
+    assert_eq!(transactions.len(), 2);
+    let reject = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let rpc_reject = reject.clone();
+    let rpc = axum::Router::new().route("/",axum::routing::post(move |Json(query):Json<serde_json::Value>| {
+        let transactions = transactions.clone(); let reject = rpc_reject.clone();
+        async move {
+            let hash = query["params"][0].as_str().unwrap();
+            let index = transactions.iter().position(|transaction| transaction.tx_hash.to_hex()==hash).expect("only exact frozen financial members");
+            let transaction = &transactions[index];
+            let result = match query["method"].as_str().unwrap() {
+                "eth_getTransactionByHash" => serde_json::json!({"hash":hash,"from":transaction.sender.to_hex(),"to":transaction.destination.unwrap().to_hex(),"value":"0x1","input":format!("0x{}",hex::encode(&transaction.input))}),
+                "eth_getTransactionReceipt" if index==1 && !reject.load(std::sync::atomic::Ordering::SeqCst) => serde_json::Value::Null,
+                "eth_getTransactionReceipt" => serde_json::json!({"transactionHash":hash,"blockHash":Hash32([1;32]).to_hex(),"blockNumber":"0x1","transactionIndex":format!("0x{index:x}"),"from":transaction.sender.to_hex(),"to":transaction.destination.unwrap().to_hex(),"gasUsed":"0x5208","status":if index==0 {"0x1"} else {"0x0"},"logs":[]}),
+                other => panic!("unexpected financial RPC {other}"),
+            };
+            Json(serde_json::json!({"jsonrpc":"2.0","id":query["id"],"result":result}))
+        }
+    }));
+    let (rpc_url, rpc_stop, rpc_task) = serve_http(rpc).await;
+    let runtime_server = server(&fixture, &rpc_url);
+    let (url, http_stop, http_task) = serve_http(
+        runtime_server
+            .clone()
+            .into_router_with_directory(Some(fixture.directory.clone())),
+    )
+    .await;
+    let hash: [u8; 32] =
+        hash_hex("9f688f51d6a798d62f4b14a8b1958b14d22916ca0cb8108b91b017f238f7f2d2").unwrap();
+    let recipient = Address::from_hex("0x8dc3750a7789544eb239029b1eb0eaaddebdfe9d").unwrap();
+    let point = fixture.config.principals[1].subject.clone();
+    let outcome = std::panic::AssertUnwindSafe(async {
+        let client = reqwest::Client::new();
+        let put = || {
+            client
+                .put(format!("{url}/message/monad/cbor"))
+                .header("content-type", request.content_type())
+                .body(request.body().to_vec())
+        };
+        assert_eq!(put().send().await.unwrap().status(), StatusCode::ACCEPTED);
+        let pending = fixture.registry.canonical_dm().get(&hash).unwrap().unwrap();
+        assert_eq!(pending.phase, Phase::Pending);
+        assert!(matches!(
+            pending.members[0].state,
+            MonadOutboxMemberState::Confirmed { .. }
+        ));
+        assert!(pending.members[1].exposed);
+        let binding = MailboxRequestBinding {
+            resource: MailboxResource::RecoveryAck,
+            recipient,
+            since: 0,
+            cursor: None,
+            limit: 1,
+            max_bytes: 0,
+            recovery_payload_hash: Some(hash),
+            recovery_obligation_id: Some(pending.obligation_id),
+        };
+        let ack_url = format!(
+            "{url}/message/monad/cbor/recovery-ack/{}/{}/{}",
+            recipient.to_hex(),
+            hex::encode(hash),
+            hex::encode(pending.obligation_id)
+        );
+        let headers = private_headers(&client, &url, fixture.root.path(), &point, &binding).await;
+        assert_eq!(
+            client
+                .post(&ack_url)
+                .headers(headers)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        reject.store(true, std::sync::atomic::Ordering::SeqCst);
+        let response = put().send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let dead: serde_json::Value =
+            serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(dead["phase"], "dead");
+        let terminal = fixture.registry.canonical_dm().get(&hash).unwrap().unwrap();
+        assert!(matches!(terminal.phase, Phase::Terminal(_)));
+        assert!(terminal.recoverable());
+        assert_eq!(terminal.obligation_id, pending.obligation_id);
+        // Even arbitrary elapsed exposure-only age cannot release real confirmed value.
+        assert_eq!(
+            fixture
+                .registry
+                .canonical_dm()
+                .expire_unconfirmed_recovery_after(None, 32, i64::MAX, &Default::default())
+                .unwrap(),
+            None
+        );
+        assert!(
+            fixture
+                .registry
+                .canonical_dm()
+                .get(&hash)
+                .unwrap()
+                .unwrap()
+                .reservation
+        );
+        let recovery_binding = MailboxRequestBinding {
+            resource: MailboxResource::Recovery,
+            since: 0,
+            cursor: None,
+            limit: 20,
+            max_bytes: MAX_REQUEST_BYTES,
+            recovery_payload_hash: None,
+            recovery_obligation_id: None,
+            recipient,
+        };
+        let headers = private_headers(
+            &client,
+            &url,
+            fixture.root.path(),
+            &point,
+            &recovery_binding,
+        )
+        .await;
+        let page = client
+            .get(format!(
+                "{url}/message/monad/cbor/recovery/{}?since=0&limit=20&max_bytes=8388608",
+                recipient.to_hex()
+            ))
+            .headers(headers)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+        let page = page.bytes().await.unwrap();
+        assert!(find(&page, b"\"confirmed_children\":[0]").is_some());
+        assert!(find(&page, b"\"lifecycle\":\"terminal:").is_some());
+        for raw in request.raw_transactions() {
+            assert!(find(&page, raw).is_some());
+        }
+        // Send an actual HTTP ACK but consume no response bytes. The durable owner
+        // is observed solely to place the disconnect after its sync commit.
+        let headers = private_headers(&client, &url, fixture.root.path(), &point, &binding).await;
+        let mut stream = tokio::net::TcpStream::connect(url.strip_prefix("http://").unwrap())
+            .await
+            .unwrap();
+        let path = ack_url.strip_prefix(&url).unwrap();
+        let mut wire = format!(
+            "POST {path} HTTP/1.1\r\nHost: {}\r\nContent-Length: 0\r\nConnection: close\r\n",
+            url.strip_prefix("http://").unwrap()
+        );
+        for (name, value) in &headers {
+            wire.push_str(&format!(
+                "{}: {}\r\n",
+                name.as_str(),
+                value.to_str().unwrap()
+            ));
+        }
+        wire.push_str("\r\n");
+        use tokio::io::AsyncWriteExt;
+        stream.write_all(wire.as_bytes()).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if fixture
+                    .registry
+                    .canonical_dm()
+                    .get(&hash)
+                    .unwrap()
+                    .unwrap()
+                    .acknowledged
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("actual HTTP ACK must sync before disconnect");
+        drop(stream);
+        let acknowledged = fixture.registry.canonical_dm().get(&hash).unwrap().unwrap();
+        assert!(!acknowledged.reservation);
+        assert_eq!(acknowledged.obligation_id, pending.obligation_id);
+        assert_eq!(acknowledged.request.body(), request.body());
+        acknowledged.obligation_id
+    })
+    .catch_unwind()
+    .await;
+    http_stop.send(()).unwrap();
+    http_task.await.unwrap();
+    fixture.stop().await;
+    drop(runtime_server);
+    let obligation = match outcome {
+        Ok(obligation) => obligation,
+        Err(panic) => {
+            rpc_stop.send(()).unwrap();
+            rpc_task.await.unwrap();
+            std::panic::resume_unwind(panic);
+        }
+    };
+    let NativeDirectoryFixture {
+        root,
+        registry,
+        directory,
+        mut config,
+    } = fixture;
+    drop(directory);
+    drop(registry);
+    let registry = Arc::new(crate::registry::Registry::new(
+        crate::store::db::Db::open(root.path().join("db")).unwrap(),
+        Arc::new(crate::disabled_chain_adapter::DisabledChainAdapter),
+        bitcoinsuite_core::Net::Regtest,
+    ));
+    for principal in &mut config.principals {
+        principal.mode = "reopen".into();
+    }
+    let (directory, ready) = crate::directory_runtime::DirectoryRuntime::start(
+        registry.clone(),
+        root.path().join("db"),
+        config.clone(),
+    )
+    .unwrap();
+    ready.await.unwrap().unwrap();
+    let directory = Arc::new(directory);
+    registry
+        .canonical_dm()
+        .attach_directory(directory.clone())
+        .unwrap();
+    let reopened = NativeDirectoryFixture {
+        root,
+        registry,
+        directory,
+        config,
+    };
+    let runtime_server = server(&reopened, &rpc_url);
+    let (url, http_stop, http_task) = serve_http(
+        runtime_server
+            .clone()
+            .into_router_with_directory(Some(reopened.directory.clone())),
+    )
+    .await;
+    let outcome = std::panic::AssertUnwindSafe(async {
+        let client = reqwest::Client::new();
+        let binding = MailboxRequestBinding {
+            resource: MailboxResource::RecoveryAck,
+            recipient,
+            since: 0,
+            cursor: None,
+            limit: 1,
+            max_bytes: 0,
+            recovery_payload_hash: Some(hash),
+            recovery_obligation_id: Some(obligation),
+        };
+        let ack_url = format!(
+            "{url}/message/monad/cbor/recovery-ack/{}/{}/{}",
+            recipient.to_hex(),
+            hex::encode(hash),
+            hex::encode(obligation)
+        );
+        let headers = private_headers(&client, &url, reopened.root.path(), &point, &binding).await;
+        let response = client.post(&ack_url).headers(headers).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response: serde_json::Value =
+            serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(response["acknowledged"], true);
+        let mut wrong = binding.clone();
+        wrong.recovery_obligation_id = Some([0; 32]);
+        let headers = private_headers(&client, &url, reopened.root.path(), &point, &wrong).await;
+        assert_eq!(
+            client
+                .post(format!(
+                    "{url}/message/monad/cbor/recovery-ack/{}/{}/{}",
+                    recipient.to_hex(),
+                    hex::encode(hash),
+                    hex::encode([0; 32])
+                ))
+                .headers(headers)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let retained = reopened
+            .registry
+            .canonical_dm()
+            .get(&hash)
+            .unwrap()
+            .unwrap();
+        assert!(retained.acknowledged && !retained.reservation);
+        assert_eq!(retained.obligation_id, obligation);
+        assert_eq!(retained.request.body(), request.body());
+        assert!(matches!(
+            retained.members[0].state,
+            MonadOutboxMemberState::Confirmed { .. }
+        ));
+        assert!(reopened
+            .registry
+            .canonical_dm()
+            .recovery(recipient, None, 1)
+            .unwrap()
+            .is_empty());
+    })
+    .catch_unwind()
+    .await;
+    http_stop.send(()).unwrap();
+    http_task.await.unwrap();
+    rpc_stop.send(()).unwrap();
+    rpc_task.await.unwrap();
+    reopened.stop().await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}

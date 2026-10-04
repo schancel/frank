@@ -2037,6 +2037,21 @@ mod tests {
                 .state,
             MonadOutboxMemberState::Pending
         );
+        // C0: an advanced nonce is still uncertainty after disk reopen, not
+        // authority to replace the signed set or publish a mailbox delivery.
+        assert!(registry.get_monad_message(&request.payload_hash)?.is_none());
+        drop(registry);
+        let registry = Registry::new(
+            Db::open(tempdir.path().join("db.rocksdb"))?,
+            Arc::new(DisabledChainAdapter),
+            Net::Regtest,
+        );
+        let snapshot = registry
+            .monad_outbox_reconciliation_snapshot(&request.payload_hash)?
+            .unwrap();
+        assert_eq!(snapshot.message, request);
+        assert_eq!(snapshot.members[0].state, MonadOutboxMemberState::Pending);
+        assert!(registry.get_monad_message(&request.payload_hash)?.is_none());
         transport.set_confirmed(tx_hash, true);
         assert!(matches!(
             reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
@@ -2146,6 +2161,25 @@ mod tests {
                     .state,
                 MonadOutboxMemberState::Pending
             );
+            // C0: contradictory RPC evidence cannot publish an inbox or lose the
+            // original exact signed owner across a clean database reopen.
+            assert!(registry.get_monad_message(&request.payload_hash)?.is_none());
+            let sends_before = transport
+                .calls()
+                .iter()
+                .filter(|m| m.as_str() == "eth_sendRawTransaction")
+                .count();
+            drop(registry);
+            let registry = Registry::new(
+                Db::open(tempdir.path().join(&seed))?,
+                Arc::new(DisabledChainAdapter),
+                Net::Regtest,
+            );
+            let snapshot = registry
+                .monad_outbox_reconciliation_snapshot(&request.payload_hash)?
+                .unwrap();
+            assert_eq!(snapshot.message, request);
+            assert!(registry.get_monad_message(&request.payload_hash)?.is_none());
             {
                 let mut specs = transport.specs.lock().unwrap();
                 let spec = specs.get_mut(&canonical.tx_hash).unwrap();
@@ -2162,6 +2196,16 @@ mod tests {
                     .await?,
                 MonadOutboxReconcileOutcome::Delivered(_)
             ));
+            assert!(registry.get_monad_message(&request.payload_hash)?.is_some());
+            assert_eq!(
+                transport
+                    .calls()
+                    .iter()
+                    .filter(|m| m.as_str() == "eth_sendRawTransaction")
+                    .count(),
+                sends_before,
+                "correcting receipt evidence must not broadcast a replacement set"
+            );
         }
         Ok(())
     }
@@ -3747,6 +3791,24 @@ mod tests {
             .monad_outbox_member(&request.payload_hash, 0)?
             .unwrap();
         assert_eq!((member.attempts, member.exposed), (1, true));
+        drop(registry);
+        let registry = Registry::new(
+            Db::open(tempdir.path().join("db.rocksdb"))?,
+            Arc::new(DisabledChainAdapter),
+            Net::Regtest,
+        );
+        let reopened = registry
+            .monad_outbox_member(&request.payload_hash, 0)?
+            .unwrap();
+        assert_eq!((reopened.attempts, reopened.exposed), (1, true));
+        assert_eq!(
+            registry
+                .monad_outbox_reconciliation_snapshot(&request.payload_hash)?
+                .unwrap()
+                .message,
+            request
+        );
+        assert!(registry.get_monad_message(&request.payload_hash)?.is_none());
         Ok(())
     }
 

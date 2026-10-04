@@ -40,3 +40,6 @@ pub mod proto {
     //! Protobuf structs for SignedPayload.
     include!(concat!(env!("OUT_DIR"), "/cashweb.registry.rs"));
 }
+
+#[cfg(test)]
+mod monad_dm_economics_tests;

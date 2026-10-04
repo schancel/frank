@@ -5047,6 +5047,29 @@ mod tests {
             store.claim(&first.payload_hash, &first, &policy(), 4, &limits)?,
             MonadOutboxClaim::ExistingExact(_)
         ));
+        // C0: quota/backpressure does not evict the existing exact obligation;
+        // an altered duplicate remains a conflict after the store is reopened.
+        drop(db);
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        assert!(matches!(
+            store.claim(&first.payload_hash, &first, &policy(), 5, &limits)?,
+            MonadOutboxClaim::ExistingExact(_)
+        ));
+        let mut changed = first.clone();
+        changed.stamp_payments[0].raw_tx.push(0xff);
+        assert_eq!(
+            store.claim(&first.payload_hash, &changed, &policy(), 5, &limits)?,
+            MonadOutboxClaim::Conflict
+        );
+        assert!(matches!(
+            store.claim(&first.payload_hash, &first, &policy(), 5, &limits)?,
+            MonadOutboxClaim::ExistingExact(_)
+        ));
+        assert_eq!(
+            store.claim(&second.payload_hash, &second, &policy(), 5, &limits)?,
+            MonadOutboxClaim::AtCapacity
+        );
         Ok(())
     }
 

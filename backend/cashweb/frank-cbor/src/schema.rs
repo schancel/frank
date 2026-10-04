@@ -35,7 +35,7 @@ use crate::model::{
 pub(crate) struct SchemaVersions {
     pub envelope: u32,
     pub effective: u32,
-    /// The envelope's min reader version; selects the type-18 closed shape set.
+    /// The envelope's min reader version; a type-18 hand shape is read only when it is >= 2.
     pub min_reader: u32,
 }
 
@@ -1282,9 +1282,15 @@ pub(crate) fn parse_draft(
                 unknown: map.unknown,
             })
         }
-        // The hand shapes are a different closed set, not an extension of schema 1. They are
-        // written with min reader 2; a schema-2 frame that still allows reader 1 is schema-1 shaped.
-        crate::limits::TYPE_BLACKJACK_ITEM if schema.effective >= 2 && schema.min_reader >= 2 => {
+        // Schema 2 adds the ten hand shapes to the schema-1 shapes. Their action codes (16..25)
+        // are disjoint from schema 1's (0..6), so the code alone says which closed map applies.
+        // A hand shape is read only from a frame that requires reader 2; anywhere else its action
+        // code is simply out of range for the schema-1 shapes.
+        crate::limits::TYPE_BLACKJACK_ITEM
+            if schema.effective >= 2
+                && schema.min_reader >= 2
+                && is_blackjack_hand_action_code(payload) =>
+        {
             Ok(Draft::BlackjackHand(blackjack_hand_payload(payload, path)?))
         }
         crate::limits::TYPE_BLACKJACK_ITEM => {
@@ -1536,6 +1542,17 @@ fn blackjack_payload(payload: &CborValue, path: &str) -> Result<BlackjackMessage
         }
     };
     Ok(BlackjackFields { game_id, action })
+}
+
+/// True when the payload is a map whose action (key 1) is an integer of at least 16.
+fn is_blackjack_hand_action_code(payload: &CborValue) -> bool {
+    let CborValue::Map(entries) = payload else {
+        return false;
+    };
+    matches!(
+        entries.iter().find(|(k, _)| *k == 1),
+        Some((_, CborValue::Int(code))) if *code >= 16
+    )
 }
 
 /// Closed schema-2 shapes: one peer-to-peer hand. No shape carries an amount of money.

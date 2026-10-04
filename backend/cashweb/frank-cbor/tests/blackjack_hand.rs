@@ -255,12 +255,12 @@ fn shared_corpus_reader_projection_and_writer() {
             other => panic!("{id}: result {other}"),
         }
     }
-    assert_eq!((accepted, rejected), (11, 28));
+    assert_eq!((accepted, rejected), (11, 27));
     assert_eq!(actions.len(), 11, "every closed shape is exercised");
 }
 
 #[test]
-fn reader_without_schema2_rejects_or_retains_and_never_reads_schema1_shapes() {
+fn reader_without_schema2_rejects_hand_action_codes_as_out_of_range() {
     let c = corpus();
     let mut ctx = context(&c, "schema1");
     for f in c["frames"]
@@ -270,32 +270,45 @@ fn reader_without_schema2_rejects_or_retains_and_never_reads_schema1_shapes() {
         .filter(|f| f["expected"]["result"] == "accept")
     {
         let raw = hex::decode(f["frameHex"].as_str().unwrap()).unwrap();
-        ctx.opaque_retention_allowed = false;
-        assert_eq!(outcome(parse_frame(&raw, &ctx)), "unsupported@7");
-        ctx.opaque_retention_allowed = true;
-        let ValidationResult::Retained(r) = parse_frame(&raw, &ctx).unwrap() else {
-            panic!("retain {}", f["id"])
-        };
-        assert_eq!(r.frame, raw);
-        assert_eq!(r.reason.as_str(), "unsupported-min-reader");
+        // Not an unsupported frame and never retained: the code is outside the schema-1 range.
+        for retention in [false, true] {
+            ctx.opaque_retention_allowed = retention;
+            assert_eq!(
+                outcome(parse_frame(&raw, &ctx)),
+                "schema@8.2",
+                "{}",
+                f["id"]
+            );
+        }
     }
-    // A schema-1 `stand` (action 3) that requires reader 2 is not read as schema 1 either.
-    let stand = cbor_map(vec![
-        (0, CborValue::Text("g".into())),
-        (1, CborValue::Int(3)),
-    ]);
-    let raw = encode_frame(
-        EnvelopeFields {
-            type_id: 18,
-            schema_version: 2,
-            min_reader_version: 2,
-        },
-        FramePayload::Value(&stand),
-    )
-    .unwrap();
-    ctx.opaque_retention_allowed = false;
-    assert_eq!(outcome(parse_frame(&raw, &ctx)), "unsupported@7");
-    assert_eq!(outcome(parse_frame(&raw, &default_context())), "schema@8.2");
+}
+
+#[test]
+fn schema1_shaped_frame_requiring_reader2_stays_schema1() {
+    // Frozen: schema 2, min reader 2, action 3.
+    let raw = hex::decode("46524e4b0100000012a40012010202020349a20064626a2d310103").unwrap();
+    let p = parsed(&raw);
+    assert_eq!((p.schema_version, p.min_reader_version), (2, 2));
+    assert!(!is_blackjack_hand_frame(&p));
+    assert!(matches!(
+        project_blackjack_hand_item(&p),
+        Err(Error::Context(_))
+    ));
+    let projected = project_blackjack_item(&p).unwrap();
+    assert_eq!(projected.frame, raw);
+    assert_eq!(
+        projected.item,
+        BlackjackFields {
+            game_id: "bj-1".into(),
+            action: BlackjackAction::Stand,
+        }
+    );
+    // The same holds for a reader without type-18 schema-2 support.
+    let ValidationResult::Parsed(old) = parse_frame(&raw, &context(&corpus(), "schema1")).unwrap()
+    else {
+        panic!("typed")
+    };
+    assert_eq!(project_blackjack_item(&old).unwrap().item, projected.item);
 }
 
 #[test]

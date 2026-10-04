@@ -400,22 +400,6 @@ fn process_frame(
             );
         }
     }
-    // A blackjack frame that requires reader 2 carries the schema-2 hand shapes. A reader without
-    // per-type schema-2 support must not read it as schema 1.
-    if env.type_id == crate::limits::TYPE_BLACKJACK_ITEM
-        && env.min_reader_version >= 2
-        && highest_schema < 2
-    {
-        return keep_or_reject(
-            shared,
-            &mode,
-            RetentionReason::UnsupportedMinReader,
-            "blackjack hand items require per-type schema-2 support".to_string(),
-            frame,
-            Some(&env),
-            location,
-        );
-    }
     // Suite 1 authenticates the complete schema-2 field set. A future type-5 schema needs an
     // updated authenticated context before this reader may project or retain its extensions.
     if env.type_id == crate::limits::TYPE_RECIPIENT_PAYLOAD && env.schema_version > highest_schema {

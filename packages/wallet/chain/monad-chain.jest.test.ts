@@ -20,9 +20,7 @@ import { MonadIdentity } from "../monad-identity";
 import { StoredMonadMessageProto } from "../monad-stamp-client";
 import {
   MonadTopicPostAbandonedError,
-  MonadTopicPostProto,
 } from "../monad-topic-post-client";
-import { buildTopicPostPayload } from "../monad-topic-post-client";
 import { MessageItem, TextItem } from "@frank/cashweb/types/messages";
 import {
   decryptEnvelope,
@@ -38,7 +36,6 @@ import {
   deserializeMessageItems,
   loadMonadChainConfigFromEnv,
   serializeMessageItems,
-  viewToForumMessage,
 } from "./monad-chain";
 import { TopicPostOutcomeUnknownError, WalletHandle } from "./active-chain";
 import { deriveMonadStampChildPublic } from "../monad-stamp-stealth";
@@ -65,6 +62,7 @@ jest.mock("../monad-topic-post-client", () => {
     ...actual,
     MonadTopicPostClient: jest.fn().mockImplementation(() => ({
       submitTopicPost: jest.fn(),
+      resumePendingOperations: jest.fn().mockResolvedValue(undefined),
     })),
     quoteMonadTopicBurnGasReserve: jest.fn().mockResolvedValue(100n),
   };
@@ -75,6 +73,7 @@ jest.mock("../monad-topic-vote-client", () => {
     ...actual,
     MonadTopicVoteClient: jest.fn().mockImplementation(() => ({
       castVote: jest.fn(),
+      resumePendingOperations: jest.fn().mockResolvedValue(undefined),
     })),
   };
 });
@@ -1301,6 +1300,7 @@ describe("createMonadChain: one per-wallet queue for every account-spending oper
       recordedAttempts: () => [],
     }));
     (MonadTopicPostClient as jest.Mock).mockImplementation(() => ({
+      resumePendingOperations: jest.fn().mockResolvedValue(undefined),
       submitTopicPost: () =>
         track("topic-post", async () => ({
           stored: {},
@@ -1319,6 +1319,7 @@ describe("createMonadChain: one per-wallet queue for every account-spending oper
       items: [{ type: "text", text: "x" }],
     });
     await new Promise((resolve) => setImmediate(resolve));
+    allowMockTopicAdmission(wallet);
     const others = [
       chain.directMessages.reconcileAttempts({
         wallet,
@@ -1354,11 +1355,15 @@ describe("createMonadChain: one per-wallet queue for every account-spending oper
   });
 });
 
+function allowMockTopicAdmission(wallet: ReturnType<typeof makeWallet>) {
+  Object.assign(wallet, { walletState: { runOperation: (work: (admission: object) => Promise<unknown>) => work({walletBindingId:"topic-test"}) } });
+}
 describe("createMonadChain: topics.post", () => {
   it("submits a topic post via MonadTopicPostClient and returns its payloadDigest", async () => {
     const chain = createMonadChain(TEST_CONFIG);
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(alice);
+    allowMockTopicAdmission(wallet);
 
     const submitTopicPost = jest.fn().mockResolvedValue({
       stored: {},
@@ -1368,6 +1373,7 @@ describe("createMonadChain: topics.post", () => {
     });
     (MonadTopicPostClient as jest.Mock).mockImplementation(() => ({
       submitTopicPost,
+      resumePendingOperations: jest.fn().mockResolvedValue(undefined),
     }));
 
     const result = await chain.topics.post({
@@ -1400,12 +1406,14 @@ describe("createMonadChain: topics.post", () => {
     const wallet = makeWallet(
       MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
     );
+    allowMockTopicAdmission(wallet);
     const abandoned = new MonadTopicPostAbandonedError(
       "The paid post outcome is unknown",
       "feedface"
     );
     (MonadTopicPostClient as jest.Mock).mockImplementation(() => ({
       submitTopicPost: jest.fn().mockRejectedValue(abandoned),
+      resumePendingOperations: jest.fn().mockResolvedValue(undefined),
     }));
 
     const failure = await chain.topics
@@ -1428,6 +1436,7 @@ describe("createMonadChain: topics.vote", () => {
     const chain = createMonadChain(TEST_CONFIG);
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(alice);
+    allowMockTopicAdmission(wallet);
 
     const castVote = jest.fn().mockResolvedValue({
       stored: {},
@@ -1437,6 +1446,7 @@ describe("createMonadChain: topics.vote", () => {
     });
     (MonadTopicVoteClient as jest.Mock).mockImplementation(() => ({
       castVote,
+      resumePendingOperations: jest.fn().mockResolvedValue(undefined),
     }));
 
     await chain.topics.vote({
@@ -1460,132 +1470,26 @@ describe("createMonadChain: topics.vote", () => {
   });
 });
 
-function makeTopicPostProto(payloadHashByte: number): MonadTopicPostProto {
-  return {
-    topic: "general",
-    parentPostHash: new Uint8Array(0),
-    rawBurnTx: new Uint8Array([1, 2, 3]),
-    encryptedPayload: buildTopicPostPayload({
-      topic: "general",
-      entries: [{ kind: "post", title: "Hi", message: "Hello, topic!" }],
-      timestampMs: 1_700_000_000_000,
-    }),
-    payloadHash: new Uint8Array(32).fill(payloadHashByte),
-  };
-}
-
-describe("createMonadChain: topics.fetchByTopic / fetchOne / viewToForumMessage", () => {
-  it("viewToForumMessage decodes a real BroadcastMessage payload into ForumMessage", () => {
-    const post = makeTopicPostProto(0x11);
-    const view = {
-      post: {
-        post,
-        senderAddress: getBytes("0x" + "55".repeat(20)),
-        txHash: getBytes("0x" + "66".repeat(32)),
-        timestamp: 1_700_000_005_000,
-        networkTag: new Uint8Array(0),
-      },
-      voteWeight: 12_345,
-    };
-
-    const message = viewToForumMessage(view);
-
-    expect(message).toBeDefined();
-    expect(message?.topic).toBe("general");
-    expect(message?.satoshis).toBe(12_345);
-    expect(message?.payloadDigest).toBe("11".repeat(32));
-    expect(message?.parentDigest).toBeUndefined();
-    expect(message?.poster).toMatch(/^0x[0-9a-fA-F]{40}$/);
-    expect(message?.entries).toEqual([
-      { kind: "post", title: "Hi", url: "", message: "Hello, topic!" },
-    ]);
-    expect(message?.timestamp).toEqual(new Date(1_700_000_005_000));
-  });
-
-  it("viewToForumMessage returns undefined for a view with no stored post", () => {
-    expect(
-      viewToForumMessage({ post: undefined, voteWeight: 0 })
-    ).toBeUndefined();
-  });
-
-  it("fetchByTopic maps every returned view via viewToForumMessage", async () => {
+describe("createMonadChain: canonical topic read wiring", () => {
+  const policy = { network: "monad-testnet", chainId: BigInt(TEST_CONFIG.chainId), burnAddress: TEST_CONFIG.stampBurnAddress };
+  it("passes explicit read policy and preserves exact projected observations", async () => {
     const chain = createMonadChain(TEST_CONFIG);
-    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
-    const wallet = makeWallet(alice);
-    const post = makeTopicPostProto(0x22);
-
-    mockedFetchMonadTopicPostsSince.mockResolvedValueOnce([
-      {
-        post: {
-          post,
-          senderAddress: getBytes("0x" + "77".repeat(20)),
-          txHash: getBytes("0x" + "88".repeat(32)),
-          timestamp: 1_700_000_010_000,
-          networkTag: new Uint8Array(0),
-        },
-        voteWeight: 999,
-      },
-    ]);
-
-    const messages = await chain.topics.fetchByTopic({
-      wallet,
-      topic: "general",
-      sinceMs: 42,
-    });
-
-    expect(mockedFetchMonadTopicPostsSince).toHaveBeenCalledWith({
-      relayBaseUrl: wallet.relayBaseUrl,
-      topic: "general",
-      sinceMs: 42,
-    });
-    expect(messages).toHaveLength(1);
-    expect(messages[0].payloadDigest).toBe("22".repeat(32));
+    const wallet = makeWallet(MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX));
+    const message = { poster: "0x" + "11".repeat(20), topic: "general", voteWeightWei: "-9007199254740993", entries: [], payloadDigest: "22".repeat(32), timestamp: new Date(0), visibleTimestamp: { seconds: "0", nanoseconds: 0 }, epoch: "01".repeat(16), revision: "18446744073709551615", transactionHash: "33".repeat(32), authorBurnTx: "0x11", blockNumber: "0", transactionIndex: "0" };
+    mockedFetchMonadTopicPostsSince.mockResolvedValueOnce([message]);
+    expect(await chain.topics.fetchByTopic({wallet,topic:"general",sinceMs:42})).toEqual([message]);
+    expect(mockedFetchMonadTopicPostsSince).toHaveBeenCalledWith({relayBaseUrl:wallet.relayBaseUrl,topic:"general",sinceMs:42,policy});
+    mockedFetchMonadTopicPostView.mockResolvedValueOnce(message);
+    expect(await chain.topics.fetchOne(message.payloadDigest)).toEqual(message);
+    expect(mockedFetchMonadTopicPostView).toHaveBeenCalledWith({relayBaseUrl:TEST_CONFIG.relayBaseUrl,payloadHashHex:message.payloadDigest,policy});
+    const topic = {topic:"general",postCount:"18446744073709551615",lastActivityMs:0,lastActivity:{seconds:"0",nanoseconds:0},epoch:message.epoch,revision:message.revision};
+    mockedFetchDiscoveredTopics.mockResolvedValueOnce([topic]);
+    expect(await chain.topics.discoverTopics()).toEqual([topic]);
+    expect(mockedFetchDiscoveredTopics).toHaveBeenCalledWith({relayBaseUrl:TEST_CONFIG.relayBaseUrl,policy});
   });
-
-  it("fetchOne reads via the chain-level relayBaseUrl (no wallet needed)", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
-    const post = makeTopicPostProto(0x33);
-
-    mockedFetchMonadTopicPostView.mockResolvedValueOnce({
-      post: {
-        post,
-        senderAddress: getBytes("0x" + "99".repeat(20)),
-        txHash: getBytes("0x" + "aa".repeat(32)),
-        timestamp: 1_700_000_020_000,
-        networkTag: new Uint8Array(0),
-      },
-      voteWeight: 1,
-    });
-
-    const message = await chain.topics.fetchOne("33".repeat(32));
-
-    expect(mockedFetchMonadTopicPostView).toHaveBeenCalledWith({
-      relayBaseUrl: TEST_CONFIG.relayBaseUrl,
-      payloadHashHex: "33".repeat(32),
-    });
-    expect(message?.payloadDigest).toBe("33".repeat(32));
-  });
-
-  it("fetchOne returns undefined when nothing is stored under that hash", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
-    mockedFetchMonadTopicPostView.mockResolvedValueOnce(undefined);
-    expect(await chain.topics.fetchOne("00".repeat(32))).toBeUndefined();
-  });
-
-  it("discoverTopics reads via the chain-level relayBaseUrl (no wallet needed)", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
-    mockedFetchDiscoveredTopics.mockResolvedValueOnce([
-      { topic: "general", postCount: 3, lastActivityMs: 500 },
-    ]);
-
-    const result = await chain.topics.discoverTopics();
-
-    expect(mockedFetchDiscoveredTopics).toHaveBeenCalledWith({
-      relayBaseUrl: TEST_CONFIG.relayBaseUrl,
-    });
-    expect(result).toEqual([
-      { topic: "general", postCount: 3, lastActivityMs: 500 },
-    ]);
+  it("propagates discovery failure", async () => {
+    mockedFetchDiscoveredTopics.mockRejectedValueOnce(Error("incomplete"));
+    await expect(createMonadChain(TEST_CONFIG).topics.discoverTopics()).rejects.toThrow("incomplete");
   });
 });
 

@@ -28,6 +28,7 @@ import { join } from 'path'
 import {
   defaultContext,
   topicBurnCommitment,
+  contentHash, encodeForumReadFrame, type Encodable,
   validateFrame,
 } from '@frank/codec'
 
@@ -37,13 +38,7 @@ import { MonadHdKeyring } from '../monad-hd-keyring'
 import { MonadSubAccountPool } from '../monad-account-pool'
 import { SubAccountLeaseManager } from '../monad-account-lease'
 import { MonadTxSubmitter } from '../monad-account-tx'
-import { MonadTopicPostRejectedError } from '../monad-topic-post-client'
-import {
-  MonadTopicPost,
-  MonadTopicVote,
-  StoredMonadTopicPost,
-  StoredMonadTopicVoteEntry,
-} from '../topic_message_pb'
+import { TopicPostOutcomeUnknownError } from './active-chain'
 import {
   MonadChainConfig,
   MonadChainWalletHandle,
@@ -124,6 +119,14 @@ function makeFakeChain(
     return value()
   }
   const p = provider as unknown as Record<string, unknown>
+  p.getTransactionReceipt = jest.fn(async (hash: string) => {
+    const tx = observedBurns.get(hash.toLowerCase())
+    return tx ? {hash:tx.hash,from:tx.from,to:tx.to,status:1,blockNumber:1,index:0} : null
+  })
+  p.getTransaction = jest.fn(async (hash: string) => {
+    const tx = observedBurns.get(hash.toLowerCase())
+    return tx ? {hash:tx.hash,from:tx.from,to:tx.to,chainId:tx.chainId,value:tx.value,data:tx.data,blockNumber:1,index:0} : null
+  })
   p.getNetwork = async () => Network.from(CHAIN_ID)
   p.getBalance = async (address: string) =>
     guard(() => balances.get(address.toLowerCase()) ?? 0n)
@@ -198,15 +201,14 @@ function makeFakeChain(
     provider,
     httpClient,
     relayBaseUrl: CONFIG.relayBaseUrl,
-    topicWriteFormat: 'cbor',
+    cborNetwork: 'monad-testnet',
+    forumBurnAddress: BURN_ADDRESS,
+    forumChainId: BigInt(CHAIN_ID),
     topicOperationJournal,
     walletState,
   }
   if (nativeWallet !== undefined) {
     Object.assign(nativeWallet.httpClient, httpClient)
-    nativeWallet.provider.getTransactionReceipt = jest
-      .fn()
-      .mockResolvedValue(null)
   }
   return {
     wallet,
@@ -233,21 +235,15 @@ function decodePostSubmission(putBody: Uint8Array) {
   return { submission: decoded.typed, post }
 }
 
-function storedPostBytes(putBody: Uint8Array): Uint8Array {
-  const { submission, post } = decodePostSubmission(putBody)
-  const postFrame = submission.postFrame
-  void post
-  return postFrame.frame
-}
-
-function storedVoteBytes(target: Uint8Array): Uint8Array {
-  const stored = new StoredMonadTopicVoteEntry()
-  stored.setTargetPayloadHash(target)
-  stored.setSenderAddress(getBytes('0x' + '11'.repeat(20)))
-  stored.setTxHash(getBytes('0x' + '22'.repeat(32)))
-  stored.setTimestamp(1_700_000_000_000)
-  stored.setWeight(1)
-  return stored.serializeBinary()
+const observedBurns = new Map<string, Transaction>()
+function confirmedStatus(body: Uint8Array): Uint8Array {
+  const parsed = validateFrame(body, defaultContext())
+  if (parsed.kind !== 'parsed' || (parsed.typed?.type !== 10 && parsed.typed?.type !== 11)) throw new Error('Expected canonical operation')
+  const operation = parsed.typed
+  const tx = Transaction.from('0x' + Buffer.from(operation.burnTx).toString('hex'))
+  observedBurns.set(tx.hash!.toLowerCase(),tx)
+  const hash = operation.type === 10 ? contentHash(operation.postFrame) : operation.targetHash
+  return encodeForumReadFrame(15,new Map<number,Encodable>([[0,operation.network],[1,body],[2,hash],[3,getBytes(tx.hash!)],[4,getBytes(tx.from!)],[5,getBytes(tx.data)[5]],[6,tx.value],[7,2],[8,1],[9,0],[10,1],[11,new Uint8Array(16).fill(1)]]))
 }
 
 /** Relay behaviour for the `PUT`s the topic clients make; records each request body. */
@@ -262,18 +258,7 @@ function fakeRelay(behaviour: 'ok' | 'reject-500' = 'ok') {
         response: { status: 500, data: 'relay error (test)' },
       })
     }
-    const isVote = String(req.url).endsWith('/vote')
-    if (isVote) {
-      const decoded = validateFrame(
-        body,
-        defaultContext({ operation: 'typed' }),
-      )
-      if (decoded.kind !== 'parsed' || decoded.typed?.type !== 11) {
-        throw new Error('expected a type-11 CBOR vote')
-      }
-      return { data: storedVoteBytes(decoded.typed.targetHash) }
-    }
-    return { data: storedPostBytes(body) }
+    return { data: confirmedStatus(body), headers: {'content-type':'application/cbor'} }
   })
   ;(axios as unknown as { isAxiosError: unknown }).isAxiosError = (
     e: unknown,
@@ -286,6 +271,7 @@ const ENTRY = { kind: 'post' as const, title: 'T', message: 'hello' }
 beforeEach(() => {
   jest.clearAllMocks()
   mockedAxios.mockReset()
+  observedBurns.clear()
 })
 
 describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
@@ -391,7 +377,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
     expect(puts).toHaveLength(1)
   })
 
-  it('a relay rejection retires the used account and the retry funds one new account (one burn per attempt, never two from one account)', async () => {
+  it('an uncertain relay response retains its account, then exact reconciliation permits a new funded account', async () => {
     const chain = createMonadChain(CONFIG)
     const fake = makeFakeChain()
     const puts = fakeRelay('reject-500')
@@ -404,9 +390,9 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
         direction: 'up',
         voteWeightWei: WEIGHT,
       }),
-    ).rejects.toBeInstanceOf(MonadTopicPostRejectedError)
+    ).rejects.toBeInstanceOf(TopicPostOutcomeUnknownError)
     expect(
-      fake.pool.records().filter(r => r.status === 'retired'),
+      fake.pool.records().filter(r => r.status === 'in-use'),
     ).toHaveLength(1)
 
     puts.length = 0
@@ -665,19 +651,10 @@ describe('main-account native attempt admission (#724)', () => {
 
   function relay() {
     const puts: Uint8Array[] = []
-    mockedAxios.mockImplementation(async (req: Record<string, unknown>) => {
+    mockedAxios.mockImplementation(async (req: Record<string,unknown>) => {
       const body = req.data as Uint8Array
       puts.push(body)
-      if (String(req.url).endsWith('/vote')) {
-        const vote = MonadTopicVote.deserializeBinary(body)
-        return {
-          data: storedVoteBytes(vote.getTargetPayloadHash_asU8()),
-        }
-      }
-      const post = MonadTopicPost.deserializeBinary(body)
-      const stored = new StoredMonadTopicPost()
-      stored.setPost(post)
-      return { data: stored.serializeBinary() }
+      return {data:confirmedStatus(body),headers:{'content-type':'application/cbor'}}
     })
     return puts
   }
@@ -998,7 +975,11 @@ describe('main-account native attempt admission (#724)', () => {
     const restored = await open(original.nativeAttemptStore)
     restored.wallet.provider.getTransactionReceipt = jest
       .fn()
-      .mockResolvedValue({ hash: attempt.txHash, status: 1 })
+      .mockImplementation(async (hash: string) => {
+        if (hash === attempt.txHash) return {hash,status:1}
+        const tx = observedBurns.get(hash.toLowerCase())
+        return tx ? {hash:tx.hash,from:tx.from,to:tx.to,status:1,blockNumber:1,index:0} : null
+      })
     relay()
     await actions[0][1](restored.chain, restored.wallet)
     expect(restored.wallet.provider.getTransactionReceipt).toHaveBeenCalledWith(

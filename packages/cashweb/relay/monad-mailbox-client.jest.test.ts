@@ -20,6 +20,7 @@ import {
 } from '@frank/nakamoto'
 
 import {
+  MAILBOX_AUTH_DOMAIN,
   MailboxChallenge,
   MailboxAuthParams,
   MonadMailboxAuthError,
@@ -875,5 +876,533 @@ describe('recovery listing and ack', () => {
       }),
     ).resolves.toBeUndefined()
     expect(f.relay.hasRecovery(Buffer.alloc(32, 5))).toBe(true)
+  })
+})
+
+// Canonical namespace: real public directory admission, bounded byte streams and exact wire parts.
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  addressFromCompressedPubkey,
+  cborMap,
+  defaultContext,
+  encodeCanonical,
+  encodeFrame,
+  fromHex,
+  toHex,
+  validateFrame,
+  verifyPreviewDirectoryEvidence,
+} from '@frank/codec'
+import { openNodeDirectoryStore } from '@frank/directory-admission/node'
+import type { Context, DirectoryStore } from '@frank/directory-admission'
+import {
+  freezeCanonicalRequest,
+  type CanonicalFetch,
+  type CanonicalStreamResponse,
+} from './canonical-dm-transport'
+import {
+  ackCanonicalRecovery,
+  fetchCanonicalInboxPage,
+  fetchCanonicalRecoveryPage,
+  type CanonicalMailboxAuthParams,
+} from './monad-mailbox-client'
+
+const canonicalWire = JSON.parse(
+  readFileSync(
+    join(__dirname, '../../../docs/protocol/cbor/vectors/dm-runtime.json'),
+    'utf8',
+  ),
+).canonical_facade_final_http_case.wire
+const canonicalRaw = fromHex(
+  '02f88982279f80010282c350942adf2cb0d2a8f42fd83e2c32912654a8ac76a45501a5504f4e44019d15a0c9d45c50955cc400ff9e8f42bf59caa0514058abad8fe9a678afb0f057c001a02d18d2d071778208389595d3110fe779a78cef3d25b7ebdd163df663167466f0a01e371c5d156bb5e4009df9006e84035e8e83c1200196da0cd3441a85e6d0a468',
+)
+const canonicalTxHash = fromHex(
+  '813129d69040c1f275a87a80d85d214d02f3b94649a584999ef662c3d39199f4',
+)
+const canonicalText = (s: string) => new TextEncoder().encode(s)
+const canonicalConcat = (...parts: Uint8Array[]) =>
+  new Uint8Array(Buffer.concat(parts))
+function canonicalDelivery(): Uint8Array {
+  const parsed = validateFrame(
+    fromHex(canonicalWire.delivery),
+    defaultContext(),
+  )
+  if (parsed.kind !== 'parsed' || !(parsed.payload instanceof Map))
+    throw new Error('fixture')
+  const payload = new Map(parsed.payload),
+    value = new Uint8Array(32)
+  value[31] = 1
+  payload.set(4n, [
+    cborMap([
+      [0, 0],
+      [1, canonicalTxHash],
+      [2, value],
+      [3, fromHex(canonicalWire.destination)],
+      [4, fromHex(canonicalWire.t4)],
+    ]),
+  ])
+  return encodeFrame(
+    { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+    payload,
+  )
+}
+function canonicalStream(
+  url: string,
+  status: number,
+  bytes: Uint8Array,
+  headers: Record<string, string> = {},
+): CanonicalStreamResponse {
+  let at = 0
+  return {
+    url,
+    status,
+    headers: { get: name => headers[name.toLowerCase()] ?? null },
+    body: {
+      getReader: () => ({
+        read: async () =>
+          at >= bytes.length
+            ? { done: true }
+            : { done: false, value: bytes.slice(at, (at += 19)) },
+        cancel: async () => undefined,
+        releaseLock: () => undefined,
+      }),
+    },
+  }
+}
+function canonicalNested(
+  parts: readonly { name: string; media: string; bytes: Uint8Array }[],
+  boundary: string,
+): Uint8Array {
+  return canonicalConcat(
+    ...parts.flatMap(part => [
+      canonicalText(
+        `--${boundary}\r\nContent-Disposition: inline; name="${part.name}"\r\nContent-Type: ${part.media}\r\n\r\n`,
+      ),
+      part.bytes,
+      canonicalText('\r\n'),
+    ]),
+    canonicalText(`--${boundary}--\r\n`),
+  )
+}
+function canonicalPage(
+  recovery = false,
+  metadataOverrides: Record<string, unknown> = {},
+): Uint8Array {
+  const request = freezeCanonicalRequest(
+    {
+      delivery: canonicalDelivery(),
+      context: fromHex(canonicalWire.context),
+      transactions: [canonicalRaw],
+    },
+    'test-fixed',
+  )
+  const parts = [
+    {
+      name: 'delivery',
+      media: 'application/vnd.frank.cbor',
+      bytes: request.parts.delivery,
+    },
+    {
+      name: 'context',
+      media: 'application/cbor',
+      bytes: request.parts.context,
+    },
+  ]
+  if (recovery)
+    parts.push(
+      {
+        name: 'transactions',
+        media: 'application/cbor',
+        bytes: encodeCanonical([canonicalRaw]),
+      },
+      {
+        name: 'recovery',
+        media: 'application/json',
+        bytes: canonicalText(
+          JSON.stringify({
+            version: 1,
+            submission_identity: request.identity.submission_identity,
+            payload_hash: request.identity.payload_hash,
+            obligation_id: 'aa'.repeat(32),
+            confirmed_children: [0],
+            lifecycle: 'fully_confirmed',
+            ...metadataOverrides,
+          }),
+        ),
+      },
+    )
+  return canonicalConcat(
+    canonicalText(
+      `--page\r\nContent-Disposition: inline; name="record"\r\nContent-Type: multipart/mixed; boundary=record\r\nX-Frank-Submission-Identity: ${request.identity.submission_identity}\r\nX-Frank-Mailbox-Timestamp-Ms: 1700000100000\r\n\r\n`,
+    ),
+    canonicalNested(parts, 'record'),
+    canonicalText('\r\n--page--\r\n'),
+  )
+}
+
+describe('canonical private mailbox', () => {
+  let root: string,
+    store: DirectoryStore,
+    auth: CanonicalMailboxAuthParams,
+    context: Context
+  let requests: Parameters<CanonicalFetch>[], challenge: MailboxChallenge
+  let challengeOverrides: Partial<MailboxChallenge>,
+    page: Uint8Array,
+    pageHeaders: Record<string, string>,
+    requestStatus: number
+  beforeEach(async () => {
+    root = mkdtempSync(join(tmpdir(), 'canonical-mailbox-'))
+    const signed = verifyPreviewDirectoryEvidence(
+      fromHex(canonicalWire.http_attestations[1]),
+      'monad-testnet',
+    )
+    context = {
+      now: { seconds: 1700000100n, nanoseconds: 0 },
+      relay: signed.statement.relays[0],
+    }
+    store = await openNodeDirectoryStore({
+      location: join(root, 'db'),
+      anchor: {
+        network: 'monad-testnet',
+        subject: signed.statement.subject,
+        revisionZero: signed.statementHash,
+      },
+      mode: { kind: 'new' },
+    })
+    await store.enroll(
+      [
+        {
+          statement: signed.statementFrame.frame,
+          attestation: fromHex(canonicalWire.http_attestations[1]),
+        },
+      ],
+      context,
+    )
+    requests = []
+    challengeOverrides = {}
+    page = canonicalPage()
+    pageHeaders = { 'content-type': 'multipart/mixed; boundary=page' }
+    requestStatus = 200
+    const fetch: CanonicalFetch = async (url, input) => {
+      requests.push([url, input])
+      if (url.includes('/auth/')) {
+        const query = new URL(url).searchParams
+        challenge = {
+          epoch: '11'.repeat(32),
+          nonce: String(requests.length).padStart(64, '0'),
+          expires_at_ms: Date.now() + 59000,
+          token: '33'.repeat(32),
+          signing_domain: MAILBOX_AUTH_DOMAIN,
+          resource: query.get('resource') as MailboxChallenge['resource'],
+          since: Number(query.get('since')),
+          cursor: query.get('cursor'),
+          limit: Number(query.get('limit')),
+          max_bytes: Number(query.get('max_bytes')),
+          network_tag: '4d4f4e54',
+          recovery_payload_hash: query.get('recovery_payload_hash'),
+          recovery_obligation_id: query.get('recovery_obligation_id'),
+          ...challengeOverrides,
+        }
+        return canonicalStream(
+          url,
+          200,
+          canonicalText(JSON.stringify(challenge)),
+          { 'content-type': 'application/json' },
+        )
+      }
+      if (url.endsWith('/ack'))
+        return canonicalStream(
+          url,
+          200,
+          canonicalText(
+            JSON.stringify({
+              version: 1,
+              acknowledged: true,
+              payload_hash: challenge.recovery_payload_hash,
+              obligation_id: challenge.recovery_obligation_id,
+            }),
+          ),
+          { 'content-type': 'application/json' },
+        )
+      return canonicalStream(url, requestStatus, page, pageHeaders)
+    }
+    auth = {
+      relayBaseUrl: signed.statement.relays[0].endpoint,
+      recipient:
+        '0x' +
+        toHex(addressFromCompressedPubkey(signed.statement.subject.keyBytes)),
+      subject: toHex(signed.statement.subject.keyBytes),
+      expectedNetworkTag: 'MONT',
+      getCurrent: () => store.current(context),
+      signDigest: jest.fn(async () => new Uint8Array(70)),
+      fetch,
+      retry: { maxAttempts: 1, sleep: async () => undefined },
+    }
+  })
+  afterEach(async () => {
+    await store.close()
+    rmSync(root, { recursive: true, force: true })
+  })
+  test('genuine admitted Current signs unchanged logical transcript and preserves private pair', async () => {
+    const result = await fetchCanonicalInboxPage(auth)
+    expect(result.records).toHaveLength(1)
+    expect(result.records[0].delivery).toEqual(canonicalDelivery())
+    expect(result.records[0].context).toEqual(fromHex(canonicalWire.context))
+    expect(auth.signDigest).toHaveBeenCalledWith(
+      mailboxAuthDigest(buildMailboxAuthPreimage(challenge, auth.recipient)),
+    )
+    expect(
+      new TextDecoder().decode(
+        buildMailboxAuthPreimage(challenge, auth.recipient),
+      ),
+    ).toContain('/message/monad/inbox/')
+    expect(
+      requests.every(([url]) =>
+        url.startsWith(auth.relayBaseUrl + '/message/monad/cbor/'),
+      ),
+    ).toBe(true)
+    expect(
+      requests.every(
+        ([, input]) =>
+          input.headers['x-frank-mailbox-subject'] === auth.subject,
+      ),
+    ).toBe(true)
+    expect(challenge.limit).toBe(50)
+    expect(challenge.max_bytes).toBe(8 * 1024 * 1024)
+  })
+  test('locator/address and installed network mismatch fail before signing', async () => {
+    await expect(
+      fetchCanonicalInboxPage({ ...auth, subject: '02' + 'ff'.repeat(32) }),
+    ).rejects.toThrow()
+    await expect(
+      fetchCanonicalInboxPage({ ...auth, expectedNetworkTag: 'MON1' }),
+    ).rejects.toThrow()
+    expect(requests).toHaveLength(0)
+    expect(auth.signDigest).not.toHaveBeenCalled()
+  })
+  test.each([
+    { network_tag: '4d4f4e31' },
+    { limit: 51 },
+    { max_bytes: 1 },
+    { signing_domain: 'other' },
+    { recovery_payload_hash: 'aa'.repeat(32) },
+    { epoch: '00' },
+  ])('foreign/malformed challenge is never signed %j', async overrides => {
+    challengeOverrides = overrides
+    await expect(fetchCanonicalInboxPage(auth)).rejects.toThrow()
+    expect(auth.signDigest).not.toHaveBeenCalled()
+    expect(requests).toHaveLength(1)
+  })
+  test('fresh challenge on request401, no profile-registration request', async () => {
+    const original = auth.fetch!
+    let reads = 0
+    auth.fetch = async (url, input) => {
+      const response = await original(url, input)
+      if (input.method === 'GET' && ++reads === 1)
+        return canonicalStream(
+          url,
+          401,
+          canonicalText('{"error":"mailbox_auth_failed"}'),
+          { 'content-type': 'application/json' },
+        )
+      return response
+    }
+    expect((await fetchCanonicalInboxPage(auth)).records).toHaveLength(1)
+    expect(requests).toHaveLength(4)
+    expect(auth.signDigest).toHaveBeenCalledTimes(2)
+  })
+  test('bounded empty page returns no synthetic facts and exact opaque cursor', async () => {
+    page = canonicalText('--page--\r\n')
+    pageHeaders['x-frank-mailbox-next-cursor'] = 'opaque-cursor'
+    const result = await fetchCanonicalInboxPage({
+      ...auth,
+      cursor: 'prior-cursor',
+      maxBytes: 100,
+    })
+    expect(result.records).toEqual([])
+    expect(result.nextCursor).toBe('opaque-cursor')
+    expect(challenge.cursor).toBe('prior-cursor')
+  })
+  test('complete wire including cursor is capped without Content-Length', async () => {
+    page = canonicalText('--page--\r\n')
+    pageHeaders['x-frank-mailbox-next-cursor'] = 'opaque'
+    await expect(
+      fetchCanonicalInboxPage({ ...auth, maxBytes: page.length + 5 }),
+    ).rejects.toThrow(/byte limit|byte budget/)
+  })
+  test.each([false, true])(
+    'complete %s page charges full cursor header: exact fit or one byte over',
+    async recovery => {
+      page = canonicalPage(recovery)
+      const cursor = 'opaque',
+        budget = page.length + 31 + cursor.length
+      pageHeaders['x-frank-mailbox-next-cursor'] = cursor
+      const fetchPage = recovery
+        ? fetchCanonicalRecoveryPage
+        : fetchCanonicalInboxPage
+      const exact = await fetchPage({ ...auth, maxBytes: budget })
+      expect(exact.records).toHaveLength(1)
+      expect(exact.nextCursor).toBe(cursor)
+      const publish = jest.fn()
+      await expect(
+        fetchPage({ ...auth, maxBytes: budget - 1 }).then(publish),
+      ).rejects.toThrow(/byte limit/)
+      expect(publish).not.toHaveBeenCalled()
+      delete pageHeaders['x-frank-mailbox-next-cursor']
+      const absent = await fetchPage({ ...auth, maxBytes: page.length })
+      expect(absent.records).toHaveLength(1)
+      expect(absent.nextCursor).toBeUndefined()
+    },
+  )
+  test('truncated or over-cardinality page yields no partial record/cursor', async () => {
+    page = page.slice(0, -3)
+    pageHeaders['x-frank-mailbox-next-cursor'] = 'next'
+    await expect(fetchCanonicalInboxPage(auth)).rejects.toThrow()
+    page = canonicalPage()
+    page = canonicalConcat(page.slice(0, -10), page)
+    await expect(
+      fetchCanonicalInboxPage({ ...auth, limit: 1 }),
+    ).rejects.toThrow()
+  })
+  test('stream header budget rejects before requesting the remaining page body', async () => {
+    const original = auth.fetch!,
+      reads = jest.fn(async () => ({
+        done: false,
+        value: canonicalText('--page\r\n' + 'a'.repeat(5000)),
+      })),
+      cancel = jest.fn(async () => undefined)
+    auth.fetch = async (url, input) =>
+      input.method === 'GET'
+        ? {
+            url,
+            status: 200,
+            headers: {
+              get: name =>
+                name === 'content-type'
+                  ? 'multipart/mixed; boundary=page'
+                  : null,
+            },
+            body: {
+              getReader: () => ({
+                read: reads,
+                cancel,
+                releaseLock: () => undefined,
+              }),
+            },
+          }
+        : original(url, input)
+    await expect(fetchCanonicalInboxPage(auth)).rejects.toThrow(/header limit/)
+    expect(reads).toHaveBeenCalledTimes(1)
+    expect(cancel).toHaveBeenCalledTimes(1)
+  })
+  test('actual recovery contains raw order and exact index with confirmed-prefix metadata', async () => {
+    page = canonicalPage(true)
+    const result = await fetchCanonicalRecoveryPage(auth)
+    expect(result.records[0].parts.transactions).toEqual([canonicalRaw])
+    expect(result.records[0].confirmedChildren).toEqual([0])
+    expect(challenge.limit).toBe(20)
+    expect(result.records[0].identity.submission_identity).toBe(
+      result.records[0].submissionIdentity,
+    )
+  })
+  test.each([
+    { confirmed_children: [0, 0] },
+    { confirmed_children: [1] },
+    { submission_identity: '00'.repeat(32) },
+    { payload_hash: '00'.repeat(32) },
+    { lifecycle: 'terminal:new_authority' },
+    { lifecycle: ['pending'] },
+    { lifecycle: [['pending']] },
+    { lifecycle: ['fully_confirmed'] },
+    { lifecycle: [['delivered']] },
+    { lifecycle: [] },
+  ])('recovery rejects invalid import metadata %j', async overrides => {
+    page = canonicalPage(true, overrides)
+    await expect(fetchCanonicalRecoveryPage(auth)).rejects.toThrow()
+  })
+  test('oversized recovery context rejects before delivery/context ownership copies', async () => {
+    const original = canonicalPage(true),
+      contextBytes = fromHex(canonicalWire.context),
+      delivery = canonicalDelivery()
+    const at = Buffer.from(original).indexOf(contextBytes)
+    if (at < 0) throw new Error('Fixture exact context location')
+    page = canonicalConcat(
+      original.subarray(0, at),
+      new Uint8Array(7 * 1024 * 1024),
+      original.subarray(at + contextBytes.length),
+    )
+    const originalFetch = auth.fetch!
+    auth.fetch = async (url, input) => {
+      if (input.method !== 'GET') return originalFetch(url, input)
+      let sent = false
+      return {
+        url,
+        status: 200,
+        headers: { get: name => pageHeaders[name] ?? null },
+        body: {
+          getReader: () => ({
+            read: async () =>
+              sent
+                ? { done: true }
+                : ((sent = true), { done: false, value: page }),
+            cancel: async () => undefined,
+            releaseLock: () => undefined,
+          }),
+        },
+      }
+    }
+    let largeCopies = 0,
+      deliveryCopies = 0
+    const originalFrom = Uint8Array.from
+    const spy = jest.spyOn(Uint8Array, 'from').mockImplementation(((
+      source: ArrayLike<number>,
+    ) => {
+      if (source.length > 4096) largeCopies++
+      if (
+        source.length === delivery.length &&
+        delivery.every((byte, i) => source[i] === byte)
+      )
+        deliveryCopies++
+      return originalFrom.call(Uint8Array, source as Uint8Array)
+    }) as typeof Uint8Array.from)
+    try {
+      await expect(fetchCanonicalRecoveryPage(auth)).rejects.toThrow(
+        /Canonical part limits/,
+      )
+      expect(largeCopies).toBe(0)
+      expect(deliveryCopies).toBe(0)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+  test('ack is distinct exact T3/generation identity with original zero-byte signing binding', async () => {
+    const payloadHashHex = canonicalWire.t3,
+      obligationIdHex = 'aa'.repeat(32)
+    await ackCanonicalRecovery({ ...auth, payloadHashHex, obligationIdHex })
+    expect(challenge.max_bytes).toBe(0)
+    expect(challenge.limit).toBe(1)
+    expect(challenge.since).toBe(0)
+    expect(requests[1][0]).toBe(
+      `${auth.relayBaseUrl}/message/monad/cbor/recovery/${auth.recipient}/${payloadHashHex}/${obligationIdHex}/ack`,
+    )
+    expect(requests[1][1].body).toBeUndefined()
+  })
+  test('pre-abort and cancellation during signing prevent publication', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      fetchCanonicalInboxPage({ ...auth, signal: controller.signal }),
+    ).rejects.toThrow(/aborted/)
+    expect(requests).toHaveLength(0)
+    const active = new AbortController()
+    auth.signDigest = async () => {
+      active.abort()
+      return new Uint8Array(70)
+    }
+    await expect(
+      fetchCanonicalInboxPage({ ...auth, signal: active.signal }),
+    ).rejects.toThrow(/aborted/)
+    expect(requests).toHaveLength(1)
   })
 })

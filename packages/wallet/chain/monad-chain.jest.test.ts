@@ -45,6 +45,7 @@ import {
   MAILBOX_RECOVERY_SYNC_INTERVAL_MS,
   MAILBOX_RECOVERY_SYNC_WAIT_MS,
   createMonadChain,
+  prepareMonadRevisionZeroExport,
   deserializeMessageItems,
   loadMonadChainConfigFromEnv,
   serializeMessageItems,
@@ -2087,4 +2088,37 @@ describe("canonical topic owner production composition", () => {
       expected.dispose();
     }
   });
+});
+
+
+it("public revision-zero bridge rejects a valid foreign network descriptor without financial/network effects", async () => {
+  const roots: MonadRootBundle = {
+    evm: { registry: "frank-domain-roots-v1", purpose: "evm-wallet", bytes: new Uint8Array(32).fill(51) },
+    authentication: { registry: "frank-domain-roots-v1", purpose: "identity-authentication", bytes: new Uint8Array(32).fill(52) },
+    messaging: { registry: "frank-domain-roots-v1", purpose: "messaging-encryption", bytes: new Uint8Array(32).fill(53) },
+  };
+  const chain = createMonadChain(TEST_CONFIG), wallet = await chain.createWallet(roots) as MonadChainWalletHandle;
+  const operator = createMonadWalletMaterial(roots);
+  const point = operator.canonicalRoles!.publicGenerationZeroPoints().auth;
+  const process = (label: string) => ({ processId: label, origin: `https://${label}.example`, tuple: {
+    relayId: new Uint8Array(16).fill(1), endpoint: `https://${label}.example`, identity: { keyType: 1, keyBytes: point },
+    expiry: { seconds: 3700n, nanoseconds: 0 }, unknownFields: new Map() } });
+  const input = { networkTag: "MONT" as const, network: "monad-testnet", chainId: 10143n,
+    issuedAt: { seconds: 100n, nanoseconds: 0 }, expiresAt: { seconds: 3700n, nanoseconds: 0 }, now: { seconds: 100n, nanoseconds: 0 },
+    relayA: process("a"), relayB: process("b"), subjectBinding: "A" as const };
+  const statuses = wallet.pool.records();
+  jest.clearAllMocks();
+  try {
+    expect(() => prepareMonadRevisionZeroExport(wallet, { ...input, networkTag: "MON1", network: "monad-mainnet", chainId: 143n })).toThrow("actual installed wallet descriptor");
+    expect(MonadAccountTxSigner).not.toHaveBeenCalled();
+    expect(MonadStampClient).not.toHaveBeenCalled();
+    expect(MonadTopicPostClient).not.toHaveBeenCalled();
+    expect(MonadTopicVoteClient).not.toHaveBeenCalled();
+    expect(wallet.pool.records()).toEqual(statuses);
+    const output = prepareMonadRevisionZeroExport(wallet, input);
+    expect(output.network).toBe("monad-testnet");
+    expect(wallet.pool.records()).toEqual(statuses);
+    await wallet.close();
+    expect(() => prepareMonadRevisionZeroExport(wallet, input)).toThrow("live typed wallet custody");
+  } finally { await wallet.close(); operator.dispose(); }
 });

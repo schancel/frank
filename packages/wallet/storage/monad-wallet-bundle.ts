@@ -1,3 +1,9 @@
+import {
+  CanonicalAttemptJournalError,
+  LevelCanonicalStampAttemptJournal,
+  type CanonicalJournalAttempt,
+  type CanonicalJournalIntent,
+} from './stamp-attempt-journal'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import level, { type LevelDB } from 'level'
 import { join, resolve } from 'path'
@@ -74,6 +80,27 @@ export class MonadWalletOrphanedAccountError extends Error {
   }
 }
 
+/** The canonical journal at this custody location is durably bound to a different public identity
+ * tuple. The existing EVM inventory stays usable, but canonical messaging is refused for this
+ * session: the journal is never rebound, rewritten or replaced, because it may retain the other
+ * identity's payment obligations. Reopening with the originally bound roots restores it. */
+export class CanonicalWalletBindingMismatchError extends Error {
+  readonly code = 'canonical-wallet:foreign-journal-binding'
+  constructor() {
+    super(
+      'canonical-wallet:foreign-journal-binding: canonical messaging is unavailable because the canonical journal in this wallet storage is bound to a different identity; reopen with the originally bound roots',
+    )
+    this.name = 'CanonicalWalletBindingMismatchError'
+  }
+}
+
+/** Read-only obligations that pin pool accounts. For a foreign-bound journal this is an immutable
+ * snapshot taken at open; the journal itself is closed again without any mutation. */
+export interface CanonicalRetainedObligations {
+  getIntents(): CanonicalJournalIntent[]
+  getAll(): CanonicalJournalAttempt[]
+}
+
 /** Opaque proof that a complete high-level operation was admitted before close began. */
 export interface MonadWalletOperationAdmission {
   readonly walletBindingId: string
@@ -86,7 +113,21 @@ export interface MonadWalletPersistenceBundle {
   readonly leaseManager: SubAccountLeaseManager
   readonly changePool: MonadChangePool
   readonly topicOperationJournal: TopicOperationJournal
+  readonly canonicalJournal?: LevelCanonicalStampAttemptJournal
+  readonly canonicalBinding?: { readonly tuple: string; readonly id: string }
+  /** Set instead of `canonicalJournal`/`canonicalBinding` when the on-disk journal belongs to a
+   * different public identity tuple. Canonical consumers must refuse with this error. */
+  readonly canonicalUnavailable?: CanonicalWalletBindingMismatchError
+  /** Pool-pinning obligations of whichever canonical journal exists at this location, including a
+   * foreign-bound one. Protection only; it grants no canonical authority. */
+  readonly canonicalRetained?: CanonicalRetainedObligations
   assertOpen(): void
+  runCanonicalOperation<T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+  ): Promise<T>
+  delegateAdmission(
+    admission: MonadWalletOperationAdmission,
+  ): MonadWalletPersistenceBundle
   /** Admits one complete stateful wallet operation. Close stops admission immediately and waits
    * for every admitted operation before closing stores or releasing root ownership. */
   runOperation<T>(
@@ -103,6 +144,39 @@ export interface MonadWalletPersistenceBundle {
 }
 
 const trustedPersistentBundles = new WeakSet<object>()
+const poolFinancialOperations = new WeakMap<
+  MonadSubAccountPool,
+  {
+    run<T>(
+      operation: (admission?: MonadWalletOperationAdmission) => Promise<T>,
+      admission?: MonadWalletOperationAdmission,
+    ): Promise<T>
+  }
+>()
+/** Every actual owner operation uses the same financial queue, including direct legacy clients. */
+export function runMonadPoolFinancialOperation<T>(
+  pool: MonadSubAccountPool,
+  operation: (admission?: MonadWalletOperationAdmission) => Promise<T>,
+  admission?: MonadWalletOperationAdmission,
+): Promise<T> {
+  const owner = poolFinancialOperations.get(pool)
+  if (!owner) {
+    if (admission !== undefined)
+      throw new Error('Foreign Monad financial admission')
+    return operation()
+  }
+  return owner.run(operation, admission)
+}
+const ordinaryPoolSelectionGuards = new WeakMap<
+  MonadSubAccountPool,
+  () => void
+>()
+/** Retained intent references protect the same pool even for a legacy client lacking a bundle field. */
+export function assertOrdinaryMonadPoolSelection(
+  pool: MonadSubAccountPool,
+): void {
+  ordinaryPoolSelectionGuards.get(pool)?.()
+}
 const poolOwners = new WeakMap<MonadSubAccountPool, object>()
 const manifestOwners = new Map<string, object>()
 
@@ -199,22 +273,48 @@ function makeBundle(params: {
   attachSharedPoolGates?: boolean
   assertEnclosingAdmission?: () => void
   ownerToken?: object
+  canonicalJournal?: LevelCanonicalStampAttemptJournal
+  canonicalBinding?: { readonly tuple: string; readonly id: string }
+  canonicalUnavailable?: CanonicalWalletBindingMismatchError
+  canonicalRetained?: CanonicalRetainedObligations
+  encloseFinancialOperation?: <T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+  ) => Promise<T>
 }): MonadWalletPersistenceBundle {
   const ownerToken = params.ownerToken ?? {}
+  const canonicalRetained: CanonicalRetainedObligations | undefined =
+    params.canonicalRetained ?? params.canonicalJournal
   const existingOwner = poolOwners.get(params.pool)
   if (existingOwner !== undefined && existingOwner !== params.ownerToken) {
     throw new Error('Monad wallet pool already has an owner')
   }
   poolOwners.set(params.pool, ownerToken)
+  ordinaryPoolSelectionGuards.set(params.pool, () => {
+    if (
+      canonicalRetained
+        ?.getIntents()
+        .some(intent =>
+          intent.members.some(
+            m =>
+              params.pool.getRecord(m.reservation.index)?.status ===
+              'available',
+          ),
+        )
+    )
+      throw new Error(
+        'Canonical pre-sign intent requires explicit correlation before ordinary pool operations',
+      )
+  })
   let lifecycle: 'open' | 'closing' | 'closed' = 'open'
   let activeOperations = 0
   let resolveDrained: (() => void) | undefined
   const activeAdmissions = new Set<MonadWalletOperationAdmission>()
   let operationTail: Promise<unknown> = Promise.resolve()
 
-  const runOperation = async <T>(
+  const runOperationImpl = async <T>(
     operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
     admission?: MonadWalletOperationAdmission,
+    canonical = false,
   ): Promise<T> => {
     params.assertEnclosingAdmission?.()
     if (admission !== undefined) {
@@ -235,6 +335,21 @@ function makeBundle(params: {
     activeOperations++
     const run = operationTail.then(() => {
       params.assertEnclosingAdmission?.()
+      if (
+        !canonical &&
+        canonicalRetained
+          ?.getIntents()
+          .some(intent =>
+            intent.members.some(
+              m =>
+                params.pool.getRecord(m.reservation.index)?.status ===
+                'available',
+            ),
+          )
+      )
+        throw new Error(
+          'Canonical pre-sign intent requires explicit correlation before ordinary pool operations',
+        )
       return operation(admitted)
     })
     operationTail = run.then(
@@ -250,6 +365,10 @@ function makeBundle(params: {
     }
   }
 
+  const runOperation = <T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+    admission?: MonadWalletOperationAdmission,
+  ) => runOperationImpl(operation, admission)
   if (params.attachSharedPoolGates !== false) {
     params.pool.attachWalletOperationGate(runOperation)
     params.changePool.attachWalletOperationGate(runOperation)
@@ -283,12 +402,48 @@ function makeBundle(params: {
     leaseManager,
     changePool: params.changePool,
     topicOperationJournal: params.topicJournal,
+    canonicalJournal: params.canonicalJournal,
+    canonicalBinding: params.canonicalBinding,
+    canonicalUnavailable: params.canonicalUnavailable,
+    canonicalRetained,
     assertOpen(): void {
       if (lifecycle !== 'open') {
         throw new Error('Monad wallet bundle is closing or closed')
       }
     },
     runOperation,
+    runCanonicalOperation<T>(
+      operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+    ): Promise<T> {
+      return runOperationImpl(operation, undefined, true)
+    },
+    delegateAdmission(
+      admission: MonadWalletOperationAdmission,
+    ): MonadWalletPersistenceBundle {
+      if (!activeAdmissions.has(admission))
+        throw new Error('Expired or foreign Monad financial admission')
+      const delegated = Object.freeze({
+        ...bundle,
+        assertOpen() {
+          bundle.assertOpen()
+          if (!activeAdmissions.has(admission))
+            throw new Error('Expired Monad financial admission')
+        },
+        runOperation: <T>(
+          operation: (token: MonadWalletOperationAdmission) => Promise<T>,
+          nested?: MonadWalletOperationAdmission,
+        ) => runOperationImpl(operation, nested ?? admission),
+        runCanonicalOperation: <T>(
+          operation: (token: MonadWalletOperationAdmission) => Promise<T>,
+        ) => runOperationImpl(operation, admission, true),
+        close: async () => {
+          throw new Error('Delegated admission cannot close the wallet owner')
+        },
+      })
+      if (params.durability === 'persistent')
+        trustedPersistentBundles.add(delegated)
+      return delegated
+    },
     assertSemanticallyValid: () =>
       validateMonadWalletState({
         pool: params.pool,
@@ -324,13 +479,27 @@ function makeBundle(params: {
         }
         await params.close()
         lifecycle = 'closed'
-        if (poolOwners.get(params.pool) === ownerToken)
+        if (poolOwners.get(params.pool) === ownerToken) {
           poolOwners.delete(params.pool)
+          ordinaryPoolSelectionGuards.delete(params.pool)
+          poolFinancialOperations.delete(params.pool)
+        }
       })()
       return closePromise
     },
   })
 
+  poolFinancialOperations.set(params.pool, {
+    run: <T>(
+      operation: (admission?: MonadWalletOperationAdmission) => Promise<T>,
+      admission?: MonadWalletOperationAdmission,
+    ): Promise<T> => {
+      if (admission !== undefined) return runOperationImpl(operation, admission)
+      if (params.encloseFinancialOperation)
+        return params.encloseFinancialOperation(operation)
+      return runOperation(operation)
+    },
+  })
   if (params.durability === 'persistent') {
     trustedPersistentBundles.add(bundle as object)
   }
@@ -347,6 +516,10 @@ export async function openExistingPoolMonadTopicOwner(params: {
   subKeyring: MonadHdKeyring
   changeKeyring: MonadChangeKeyring
   stampReferencesLeaseIndex: (index: number) => boolean
+  canonicalBinding?: { readonly tuple: string; readonly id: string }
+  encloseFinancialOperation?: <T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+  ) => Promise<T>
   assertEnclosingAdmission: () => void
 }): Promise<MonadWalletPersistenceBundle> {
   if (poolOwners.has(params.pool))
@@ -356,6 +529,9 @@ export async function openExistingPoolMonadTopicOwner(params: {
   let database: LevelDB | undefined
   let manifestClaim: ReturnType<typeof claimManifest> | undefined
   let journalOpen = true
+  let canonicalJournal: LevelCanonicalStampAttemptJournal | undefined
+  let canonicalUnavailable: CanonicalWalletBindingMismatchError | undefined
+  let canonicalRetained: CanonicalRetainedObligations | undefined
   try {
     let topicJournal: TopicOperationJournal
     const assertJournalMutation = () => {
@@ -392,6 +568,37 @@ export async function openExistingPoolMonadTopicOwner(params: {
       )
       await (topicJournal as LevelTopicOperationJournal).Open()
     }
+    if (
+      params.canonicalBinding !== undefined &&
+      params.location !== undefined
+    ) {
+      canonicalJournal = new LevelCanonicalStampAttemptJournal(params.location)
+      await canonicalJournal.Open()
+      try {
+        // First bind persists the tuple; an equal tuple is a no-op. Both conflict outcomes (a
+        // different bound tuple, or unbound retained rows) are decided before any write.
+        await canonicalJournal.bindPublicTuple(params.canonicalBinding.tuple)
+      } catch (error) {
+        if (
+          !(error instanceof CanonicalAttemptJournalError) ||
+          error.code !== 'conflict'
+        )
+          throw error
+        // Same custody, different identity (#716/#722): keep the EVM inventory reachable. The
+        // foreign journal is never rebound, written or replaced. Its retained obligations still
+        // pin their pool accounts through an immutable snapshot, then the handle is released.
+        const foreign = canonicalJournal
+        const intents = foreign.getIntents()
+        const attempts = foreign.getAll()
+        canonicalRetained = Object.freeze({
+          getIntents: () => intents.slice(),
+          getAll: () => attempts.slice(),
+        })
+        canonicalUnavailable = new CanonicalWalletBindingMismatchError()
+        canonicalJournal = undefined
+        await foreign.Close()
+      }
+    }
     return makeBundle({
       durability:
         params.location === undefined ? 'test-only-ephemeral' : 'persistent',
@@ -403,11 +610,33 @@ export async function openExistingPoolMonadTopicOwner(params: {
       topicJournal,
       subKeyring: params.subKeyring,
       changeKeyring: params.changeKeyring,
-      additionalLeaseReference: params.stampReferencesLeaseIndex,
+      canonicalJournal,
+      canonicalUnavailable,
+      canonicalRetained,
+      encloseFinancialOperation: params.encloseFinancialOperation,
+      canonicalBinding:
+        canonicalJournal === undefined ? undefined : params.canonicalBinding,
+      additionalLeaseReference: index =>
+        params.stampReferencesLeaseIndex(index) ||
+        ((canonicalRetained ?? canonicalJournal)
+          ?.getIntents()
+          .some(intent =>
+            intent.members.some(m => m.reservation.index === index),
+          ) ??
+          false) ||
+        ((canonicalRetained ?? canonicalJournal)
+          ?.getAll()
+          .some(
+            attempt =>
+              !attempt.cleanupComplete &&
+              attempt.reservations.some(r => r.index === index),
+          ) ??
+          false),
       attachSharedPoolGates: false,
       assertEnclosingAdmission: params.assertEnclosingAdmission,
       ownerToken,
       close: async () => {
+        await canonicalJournal?.Close()
         await database?.close()
         journalOpen = false
         manifestClaim?.release()
@@ -416,6 +645,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
   } catch (error) {
     // Never close another owner's handles. These were all created by this invocation.
     try {
+      await canonicalJournal?.Close()
       await database?.close()
       manifestClaim?.release()
       if (poolOwners.get(params.pool) === ownerToken)

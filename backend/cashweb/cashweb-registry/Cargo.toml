@@ -109,6 +109,12 @@ hmac = "0.12"
 sha2 = "0.10"
 secp256k1-abc = { git = "https://github.com/raipay/secp256k1-abc" }
 
+# Canonical message routes read the request body incrementally under a byte cap
+# (`hyper::body::HttpBody::data`), and router-level tests read response bodies back. Only usable
+# as a direct dependency even though axum already pulls it in; same version `cashweb-http-utils`
+# depends on.
+hyper = "0.14"
+
 [build-dependencies]
 # Build Protobuf structs
 prost-build = "0.11"
@@ -125,12 +131,3 @@ pretty_assertions = "1.2"
 
 # Temporary directories, automatically removed
 tempdir = "0.3"
-
-# Needed by router-level tests that drive the real `Router` end-to-end (via
-# `tower::ServiceExt::oneshot`) and read back the response body -- only usable as a *direct*
-# dependency (Cargo doesn't expose transitive deps for `use`), even though it's already pulled in
-# transitively via `axum`. Same version `cashweb-http-utils` already depends on directly for the
-# same reason (building/decoding protobuf HTTP bodies). Added independently by both ticket #49
-# (`http::curated_defaults`'s router test) and ticket #72 (`http::monad_topics`'s discovery-route
-# router test) -- one declaration serves both.
-hyper = "0.14"

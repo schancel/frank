@@ -52,6 +52,245 @@ use financial::{
 
 const STARTUP_MIGRATION_PAGE_CLAIMS: usize = 16;
 const STARTUP_MIGRATION_PAGE_BYTES: usize = 32 * 1024 * 1024;
+
+/// Canonical work shares the existing financial primitives, permit owner and durable lease rules.
+pub(crate) async fn reconcile_canonical<T: JsonRpcTransport + Clone>(
+    transport: &T,
+    registry: &Registry,
+    hash: &[u8; 32],
+    config: &MonadOutboxReconcileConfig,
+    permits: &MonadOutboxPermitPool,
+) -> crate::http::monad_message_cbor::Result<crate::store::monad_dm_cbor::Claim> {
+    use crate::http::monad_message_cbor::CanonicalError as Error;
+    let owner = registry.canonical_dm();
+    config.validate().map_err(|_| Error::Unavailable)?;
+    match tokio::time::timeout(config.claim_timeout, async {
+        let _permit = permits.acquire().await;
+        reconcile_canonical_inner(transport, owner, hash, config).await
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            owner.backoff_after_cancelled(hash, now_ms())?;
+            Err(Error::Unavailable)
+        }
+    }
+}
+
+async fn reconcile_canonical_inner<T: JsonRpcTransport + Clone>(
+    transport: &T,
+    owner: &crate::store::monad_dm_cbor::Owner,
+    hash: &[u8; 32],
+    config: &MonadOutboxReconcileConfig,
+) -> crate::http::monad_message_cbor::Result<crate::store::monad_dm_cbor::Claim> {
+    use crate::{http::monad_message_cbor::CanonicalError as Error, store::monad_dm_cbor::Phase};
+    let current = || owner.get(hash)?.ok_or(Error::Unavailable);
+    let claim = current()?;
+    if matches!(claim.phase, Phase::Delivered(_) | Phase::Terminal(_)) {
+        return Ok(claim);
+    }
+    if claim.policy.chain_id != config.expected_chain_id {
+        return Err(Error::Unavailable);
+    }
+    financial::validate_canonical_retained(&claim)?;
+    // This must precede every financial RPC and publication. Missing owner readiness defers work.
+    financial::validate_canonical_admitted_history(owner, &claim).await?;
+    if claim.phase == Phase::FullyConfirmed {
+        return owner.finalize(hash, now_ms());
+    }
+    let payments = financial::canonical_expected_payments(&claim)?;
+    for (index, ((canonical, expected), raw)) in payments
+        .iter()
+        .zip(claim.request.raw_transactions())
+        .enumerate()
+    {
+        let fresh = current()?;
+        if fresh.phase != Phase::Pending {
+            return Ok(fresh);
+        }
+        let member = &fresh.members[index];
+        match member.state {
+            MonadOutboxMemberState::Confirmed { .. } => continue,
+            MonadOutboxMemberState::Terminal(_) => return Err(Error::Unavailable),
+            MonadOutboxMemberState::Pending => {}
+        }
+        let Some(leased) =
+            owner.acquire(hash, index as u32, now_ms(), config.limits.member_lease)?
+        else {
+            return current();
+        };
+        if leased.tx_hash != canonical.tx_hash {
+            return Err(Error::Unavailable);
+        }
+        let expired = |now: i64| {
+            let any_confirmed = fresh
+                .members
+                .iter()
+                .any(|m| matches!(m.state, MonadOutboxMemberState::Confirmed { .. }));
+            let expires = if any_confirmed {
+                fresh.expires
+            } else {
+                fresh.expires.min(
+                    fresh.created.saturating_add(
+                        config
+                            .limits
+                            .max_unconfirmed_claim_age
+                            .as_millis()
+                            .min(i64::MAX as u128) as i64,
+                    ),
+                )
+            };
+            now > expires
+        };
+        let pending_state = |now: i64| {
+            if expired(now) {
+                MonadOutboxMemberState::Terminal(MonadOutboxTerminal::Expired)
+            } else {
+                MonadOutboxMemberState::Pending
+            }
+        };
+        match check_exact_bounded(transport, leased.tx_hash, canonical, expected, config).await {
+            ExactCheck::Confirmed {
+                value_wei,
+                block_number,
+            } => {
+                if !owner.complete(
+                    hash,
+                    index as u32,
+                    leased.lease_generation,
+                    now_ms(),
+                    MonadOutboxMemberState::Confirmed {
+                        value_wei,
+                        block_number,
+                    },
+                    true,
+                    String::new(),
+                )? {
+                    return current();
+                }
+                continue;
+            }
+            ExactCheck::Submitted => {
+                let now = now_ms();
+                owner.complete(
+                    hash,
+                    index as u32,
+                    leased.lease_generation,
+                    now,
+                    pending_state(now),
+                    true,
+                    "exact signed transaction is visible without a receipt".into(),
+                )?;
+                return current();
+            }
+            ExactCheck::Invalid(detail) => {
+                owner.complete(
+                    hash,
+                    index as u32,
+                    leased.lease_generation,
+                    now_ms(),
+                    MonadOutboxMemberState::Terminal(MonadOutboxTerminal::VerificationFailed),
+                    leased.exposed,
+                    detail,
+                )?;
+                return current();
+            }
+            ExactCheck::Infrastructure(detail) => {
+                let now = now_ms();
+                owner.complete(
+                    hash,
+                    index as u32,
+                    leased.lease_generation,
+                    now,
+                    pending_state(now),
+                    leased.exposed,
+                    detail,
+                )?;
+                return current();
+            }
+            ExactCheck::Missing => {}
+        }
+        if now_ms() < leased.next_replay_at_ms {
+            owner.release_lease(hash, index as u32, leased.lease_generation)?;
+            return current();
+        }
+        let now = now_ms();
+        let budget_terminal = if expired(now) {
+            Some(MonadOutboxTerminal::Expired)
+        } else if leased.attempts >= fresh.max_attempts {
+            Some(MonadOutboxTerminal::AttemptsExhausted)
+        } else {
+            None
+        };
+        if let Some(reason) = budget_terminal {
+            owner.complete(
+                hash,
+                index as u32,
+                leased.lease_generation,
+                now,
+                MonadOutboxMemberState::Terminal(reason),
+                leased.exposed,
+                "frozen replay budget exhausted".into(),
+            )?;
+            return current();
+        }
+        if owner
+            .begin_replay(hash, index as u32, leased.lease_generation, now)?
+            .is_none()
+        {
+            return current();
+        }
+        let (state, exposed, detail) = match replay_member(
+            transport,
+            leased.tx_hash,
+            raw,
+            canonical,
+            expected,
+            config,
+        )
+        .await
+        {
+            MemberOutcome::Confirmed {
+                value_wei,
+                block_number,
+            } => (
+                MonadOutboxMemberState::Confirmed {
+                    value_wei,
+                    block_number,
+                },
+                true,
+                String::new(),
+            ),
+            MemberOutcome::Pending(detail) => (pending_state(now_ms()), leased.exposed, detail),
+            MemberOutcome::Submitted(detail) => (pending_state(now_ms()), true, detail),
+            MemberOutcome::Terminal(reason, detail) => (
+                MonadOutboxMemberState::Terminal(reason),
+                leased.exposed,
+                detail,
+            ),
+        };
+        let confirmed = matches!(state, MonadOutboxMemberState::Confirmed { .. });
+        if !owner.complete(
+            hash,
+            index as u32,
+            leased.lease_generation,
+            now_ms(),
+            state,
+            exposed,
+            detail,
+        )? || !confirmed
+        {
+            return current();
+        }
+    }
+    let fresh = current()?;
+    if fresh.phase == Phase::FullyConfirmed {
+        owner.finalize(hash, now_ms())
+    } else {
+        Ok(fresh)
+    }
+}
 #[cfg(test)]
 static PAUSE_STARTUP_AFTER_LEASE_PAGE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -868,7 +1107,7 @@ where
     loop {
         let active = registry.list_active_monad_outboxes_after(after, page_size)?;
         if active.is_empty() {
-            return Ok(());
+            break;
         }
         after = active.last().copied();
         let mut reconciliations = stream::iter(active)
@@ -906,6 +1145,45 @@ where
                         "Monad outbox claim reconciliation failed"
                     );
                 }
+            }
+        }
+    }
+    // Daemon startup creates this worker before attaching the Directory facade. Retained
+    // storage is audited now, while financial work waits for that actual owner to be attached.
+    let owner = registry.canonical_dm();
+    let mut recovery_after = None;
+    loop {
+        recovery_after = owner.expire_unconfirmed_recovery_after(
+            recovery_after,
+            page_size,
+            now_ms(),
+            &config.limits,
+        )?;
+        if recovery_after.is_none() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let mut after = None;
+    loop {
+        let active = owner.active_after(after, page_size)?;
+        if active.is_empty() || owner.directory().is_none() {
+            return Ok(());
+        }
+        after = active.last().copied();
+        let mut reconciliations = stream::iter(active)
+            .map(|hash| async move {
+                (
+                    hash,
+                    reconcile_canonical(transport, registry, &hash, config, permits).await,
+                )
+            })
+            .buffer_unordered(concurrency);
+        while let Some((hash, result)) = reconciliations.next().await {
+            if let Err(err) = result {
+                // Unavailable trust, Directory lifecycle or RPC deadlines defer this retained
+                // owner. No stale Current or protobuf authority is substituted for recovery.
+                tracing::event!(tracing::Level::WARN, payload_hash = %hex::encode(hash), error = %err, "Canonical DM reconciliation deferred");
             }
         }
     }

@@ -1,3 +1,8 @@
+import { deriveRoleLeaves } from '../role-keys/src'
+import * as canonicalMailboxModule from '@frank/cashweb/relay/monad-mailbox-client'
+import { freezeCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
+import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
+import { inspectCanonicalPreparedEnvelope } from './monad-stamp-stealth'
 /**
  * Unit tests for `monad-stamp-client.ts` (ticket #13).
  *
@@ -13,6 +18,7 @@
  */
 import {
   JsonRpcProvider,
+  Wallet,
   SigningKey,
   Transaction,
   computeAddress,
@@ -1564,5 +1570,1087 @@ describe('C0 disk-backed exact attempt ownership', () => {
         fs.rmSync(dir, { recursive: true, force: true })
       }
     },
+  )
+})
+
+// Canonical consumer fixtures use real native directory admission over signed public evidence.
+// Chain balances/fees are offline stubs; this is not deployed payment/finality proof.
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { openNodeDirectoryStore } from '../directory-admission/src/node'
+import {
+  createMonadWalletMaterial,
+  canonicalWalletPublicBinding,
+  type MonadRootBundle,
+} from './monad-wallet-material'
+import domainVectors from '../domain-roots/vectors/domain-roots-v1.json'
+import {
+  openExistingPoolMonadTopicOwner,
+  MonadWalletOperationAdmission,
+} from './storage/monad-wallet-bundle'
+import { LevelSubAccountPoolStore } from './storage/level-sub-account-pool-store'
+import { LevelChangePoolStore } from './storage/level-change-pool-store'
+import {
+  MonadCanonicalStampClient,
+  type CanonicalWorkflowLink,
+} from './monad-stamp-client'
+import {
+  prepareDirectMessage,
+  directMessageText,
+} from '@frank/cashweb/relay/canonical-dm'
+import {
+  decodeCanonical,
+  encodeCanonical,
+  encodeFrame,
+  directorySignatureDigest,
+  paymentCommitment,
+  recipientPayloadDigest,
+  cborMap,
+  toHex,
+} from '@frank/codec'
+import type { PublicRevisionZeroInput } from './monad-wallet-handle'
+
+function canonicalTestRoots(index: number): MonadRootBundle {
+  const outputs = domainVectors.vectors[index].outputs
+  const root = <
+    P extends 'evm-wallet' | 'identity-authentication' | 'messaging-encryption',
+  >(
+    purpose: P,
+  ) => ({
+    registry: 'frank-domain-roots-v1' as const,
+    purpose,
+    bytes: getBytes(`0x${outputs[purpose]}`),
+  })
+  return {
+    evm: root('evm-wallet'),
+    authentication: root('identity-authentication'),
+    messaging: root('messaging-encryption'),
+  }
+}
+function canonicalBarrier() {
+  let resolve!: () => void, reject!: (error: Error) => void
+  const promise = new Promise<void>((yes, no) => {
+    resolve = yes
+    reject = no
+  })
+  return { promise, resolve, reject }
+}
+async function withCanonicalConsumer(
+  run: (
+    f: Awaited<ReturnType<typeof makeCanonicalConsumerFixture>>,
+  ) => Promise<void>,
+) {
+  const fixture = await makeCanonicalConsumerFixture()
+  try {
+    await run(fixture)
+  } finally {
+    await fixture.close()
+  }
+}
+async function makeCanonicalConsumerFixture() {
+  const location = await mkdtemp(join(tmpdir(), 'canonical-consumer-'))
+  const material = createMonadWalletMaterial(canonicalTestRoots(0)),
+    recipient = createMonadWalletMaterial(canonicalTestRoots(1))
+  const publicInput = (
+    m: typeof material,
+    subjectBinding: 'A' | 'B',
+  ): PublicRevisionZeroInput => {
+    const tuple = (label: string) => ({
+      processId: label,
+      origin: `https://${label}.example`,
+      tuple: {
+        relayId: new Uint8Array(16).fill(label === 'a' ? 1 : 2),
+        endpoint: `https://${label}.example`,
+        identity: {
+          keyType: 1,
+          keyBytes: m.canonicalRoles!.publicGenerationZeroPoints().auth,
+        },
+        expiry: { seconds: 3700n, nanoseconds: 0 },
+        unknownFields: new Map(),
+      },
+    })
+    return {
+      networkTag: 'MONT',
+      network: 'monad-testnet',
+      chainId: 10143n,
+      issuedAt: { seconds: 100n, nanoseconds: 0 },
+      expiresAt: { seconds: 3700n, nanoseconds: 0 },
+      now: { seconds: 100n, nanoseconds: 0 },
+      relayA: tuple('a'),
+      relayB: tuple('b'),
+      subjectBinding,
+    }
+  }
+  const senderExport = material.canonicalRoles!.prepareRevisionZero(
+      publicInput(material, 'A'),
+    ),
+    recipientExport = recipient.canonicalRoles!.prepareRevisionZero(
+      publicInput(recipient, 'B'),
+    )
+  const senderDirectory = await openNodeDirectoryStore({
+      location: join(location, 'sender-directory'),
+      anchor: {
+        network: 'monad-testnet',
+        subject: { keyType: 1, keyBytes: senderExport.auth.compressedPoint },
+        revisionZero: senderExport.t1,
+      },
+      mode: { kind: 'new' },
+    }),
+    recipientDirectory = await openNodeDirectoryStore({
+      location: join(location, 'recipient-directory'),
+      anchor: {
+        network: 'monad-testnet',
+        subject: { keyType: 1, keyBytes: recipientExport.auth.compressedPoint },
+        revisionZero: recipientExport.t1,
+      },
+      mode: { kind: 'new' },
+    })
+  const senderCurrent = await senderDirectory.enroll(
+      [
+        {
+          statement: senderExport.statement,
+          attestation: senderExport.attestation,
+        },
+      ],
+      {
+        now: senderExport.configuration.now,
+        relay: senderExport.configuration.relayA.tuple,
+      },
+    ),
+    recipientCurrent = await recipientDirectory.enroll(
+      [
+        {
+          statement: recipientExport.statement,
+          attestation: recipientExport.attestation,
+        },
+      ],
+      {
+        now: recipientExport.configuration.now,
+        relay: recipientExport.configuration.relayB.tuple,
+      },
+    )
+  const seal = (id = 1) =>
+    prepareDirectMessage({
+      network: 'monad-testnet',
+      senderCurrent,
+      recipientCurrent,
+      messageId: new Uint8Array(16).fill(id),
+      items: [directMessageText('exact frozen text')],
+      roles: material.canonicalRoles!.create('monad-testnet', senderCurrent),
+    })
+  const rotateOwnStamp = async (
+    prior: typeof senderCurrent,
+    generation: bigint,
+  ) => {
+    const roots = canonicalTestRoots(0)
+    const leaves = deriveRoleLeaves({
+      authRoot: roots.authentication,
+      messageRoot: roots.messaging,
+      stampRoot: roots.evm,
+      messageGeneration: 0n,
+      stampGeneration: generation,
+    })
+    try {
+      const account = (point: Uint8Array) =>
+        cborMap([
+          [0, 1],
+          [1, point],
+        ])
+      const timestamp = (seconds: bigint) =>
+        cborMap([
+          [0, seconds],
+          [1, 0],
+        ])
+      const tuple = senderExport.configuration.relayA.tuple
+      const statement = encodeFrame(
+        { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+        cborMap([
+          [0, 'monad-testnet'],
+          [1, account(leaves.auth.public.compressedPoint)],
+          [2, generation],
+          [3, timestamp(100n + generation)],
+          [
+            4,
+            [
+              cborMap([
+                [0, tuple.relayId],
+                [1, tuple.endpoint],
+                [2, account(tuple.identity.keyBytes)],
+                [3, timestamp(tuple.expiry.seconds)],
+              ]),
+            ],
+          ],
+          [6, timestamp(3700n)],
+          [8, account(leaves.stamp.public.compressedPoint)],
+          [10, account(leaves.message.public.compressedPoint)],
+          [11, 0],
+          [12, generation],
+          [13, prior.evidence.hash],
+        ]),
+      )
+      const attestation = encodeFrame(
+        { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+        cborMap([
+          [0, statement],
+          [
+            1,
+            [
+              cborMap([
+                [0, 1],
+                [1, account(leaves.auth.public.compressedPoint)],
+                [
+                  2,
+                  new Uint8Array(
+                    material.identity.signHash(
+                      Buffer.from(
+                        directorySignatureDigest('monad-testnet', statement),
+                      ),
+                    ),
+                  ),
+                ],
+              ]),
+            ],
+          ],
+        ]),
+      )
+      return senderDirectory.advance([{ statement, attestation }], {
+        now: { seconds: 100n + generation, nanoseconds: 0 },
+        relay: tuple,
+      })
+    } finally {
+      leaves.dispose()
+    }
+  }
+  const incomingRecovery = async (
+    lifecycle = 'terminal:expired',
+    confirmedChildren = [0],
+  ) => {
+    const saved = prepareDirectMessage({
+      network: 'monad-testnet',
+      senderCurrent: recipientCurrent,
+      recipientCurrent: senderCurrent,
+      messageId: new Uint8Array(16).fill(9),
+      items: [directMessageText('incoming funds remain recoverable')],
+      roles: recipient.canonicalRoles!.create(
+        'monad-testnet',
+        recipientCurrent,
+      ),
+    })
+    const envelope = inspectCanonicalPreparedEnvelope(
+      saved.payload,
+      saved.context,
+    )
+    const digest = recipientPayloadDigest('monad-testnet', saved.payload)
+    const destination = canonicalStampDestination({
+      network: 'monad-testnet',
+      stampKey: envelope.stampKey,
+      sharedPoint: envelope.payload.sharedPoint,
+      childIndex: 0,
+    })
+    const raw = await new Wallet('0x' + '00'.repeat(31) + '01').signTransaction(
+      {
+        type: 2,
+        chainId: 10143n,
+        nonce: 0,
+        gasLimit: 50000n,
+        maxFeePerGas: 2n,
+        maxPriorityFeePerGas: 1n,
+        value: 32n,
+        to: '0x' + toHex(destination.address),
+        data: '0x504f4e4402' + toHex(paymentCommitment(digest, 0)),
+      },
+    )
+    const tx = Transaction.from(raw)
+    const delivery = encodeFrame(
+      { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+      cborMap([
+        [0, 'monad-testnet'],
+        [
+          1,
+          cborMap([
+            [0, 1],
+            [1, envelope.stampKey.keyBytes],
+          ]),
+        ],
+        [2, saved.payload],
+        [3, digest],
+        [
+          4,
+          [
+            cborMap([
+              [0, 0],
+              [1, getBytes(tx.hash!)],
+              [2, getBytes('0x' + tx.value.toString(16).padStart(64, '0'))],
+              [3, destination.address],
+              [4, paymentCommitment(digest, 0)],
+            ]),
+          ],
+        ],
+      ]),
+    )
+    const parts = {
+      delivery,
+      context: saved.context,
+      transactions: [getBytes(raw)],
+    }
+    const request = freezeCanonicalRequest(parts)
+    return {
+      record: {
+        delivery,
+        context: saved.context,
+        parts,
+        identity: request.identity,
+        submissionIdentity: request.identity.submission_identity,
+        timestampMs: 100000,
+        obligationId: 'ab'.repeat(32),
+        confirmedChildren,
+        lifecycle,
+      },
+      senderCurrent: recipientCurrent,
+      recipientCurrent: senderCurrent,
+    }
+  }
+  const subStore = new LevelSubAccountPoolStore(location),
+    changeStore = new LevelChangePoolStore(location)
+  await subStore.Open()
+  await changeStore.Open()
+  const pool = new MonadSubAccountPool({
+      keyring: material.keyring,
+      store: subStore,
+    }),
+    changePool = new MonadChangePool({
+      keyring: material.changeKeyring,
+      store: changeStore,
+    })
+  pool.ensureSize(1)
+  await pool.flush()
+  const leaseManager = new SubAccountLeaseManager(pool)
+  let enclosed = false
+  let queue = Promise.resolve()
+  const state = await openExistingPoolMonadTopicOwner({
+    encloseFinancialOperation: operation => exclusive(operation, false),
+    location,
+    pool,
+    changePool,
+    leaseManager,
+    subKeyring: material.keyring,
+    changeKeyring: material.changeKeyring,
+    canonicalBinding: canonicalWalletPublicBinding(
+      material,
+      'monad-testnet',
+      10143n,
+    ),
+    stampReferencesLeaseIndex: () => false,
+    assertEnclosingAdmission: () => {
+      if (!enclosed) throw new Error('missing outer owner admission')
+    },
+  })
+  const providerCalls = jest.fn(async (req: { method: string }) => {
+    if (req.method === 'getBalance') return 1000000000n
+    if (req.method === 'getTransactionCount') return 0
+    if (req.method === 'estimateGas') return 50000n
+    throw new Error(`unexpected canonical provider ${req.method}`)
+  })
+  const provider = new JsonRpcProvider('http://127.0.0.1:1', CHAIN_ID, {
+    staticNetwork: true,
+    cacheTimeout: -1,
+  })
+  ;(provider as unknown as { _perform: typeof providerCalls })._perform =
+    providerCalls
+  const exclusive = <T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+    canonical = true,
+  ): Promise<T> => {
+    const result = queue.then(async () => {
+      enclosed = true
+      try {
+        return await (canonical
+          ? state.runCanonicalOperation(operation)
+          : state.runOperation(operation))
+      } finally {
+        enclosed = false
+      }
+    })
+    queue = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
+  }
+  const httpClient = makeMockHttpClientForCanonical()
+  const client = new MonadCanonicalStampClient({
+    pool,
+    changePool,
+    leaseManager,
+    provider,
+    httpClient,
+    walletState: state,
+    canonicalRoles: material.canonicalRoles!,
+    installedNetworkTag: 'MONT',
+    relayBaseUrl: 'https://a.example',
+    runCanonicalExclusive: exclusive,
+  })
+  const prepared = (id = 1) => {
+    const saved = seal(id)
+    return client.bindPrepared({
+      payload: saved.payload,
+      context: saved.context,
+      stampValueWei: 32n,
+      economicBinding: Uint8Array.of(1),
+    })
+  }
+  const prepare = (
+    id: number,
+    onIntentDurable: (link: CanonicalWorkflowLink) => Promise<void>,
+  ) =>
+    client.prepareIntent({
+      prepared: prepared(id),
+      consumerId: `workflow-${id}`,
+      stampValueWei: 32n,
+      senderCurrent,
+      recipientCurrent,
+      overrides: {
+        ...FEE_OVERRIDES,
+        maxFeePerGas: 2n,
+        maxPriorityFeePerGas: 1n,
+        chainId: 10143n,
+      },
+      onIntentDurable,
+    })
+  return {
+    location,
+    client,
+    state,
+    incomingRecovery,
+    rotateOwnStamp,
+    material,
+    senderDirectory,
+    senderExport,
+    subStore,
+    pool,
+    leaseManager,
+    providerCalls,
+    provider,
+    httpClient,
+    prepared,
+    prepare,
+    senderCurrent,
+    recipientCurrent,
+    ordinaryOperation: async (operation: () => Promise<void>) => {
+      enclosed = true
+      try {
+        return await state.runOperation(operation)
+      } finally {
+        enclosed = false
+      }
+    },
+    close: async () => {
+      await queue
+      await state.close()
+      await subStore.Close()
+      await changeStore.Close()
+      await senderDirectory.close()
+      await recipientDirectory.close()
+      provider.destroy()
+      material.dispose()
+      recipient.dispose()
+      await rm(location, { recursive: true, force: true })
+    },
+  }
+}
+function makeMockHttpClientForCanonical(): jest.Mocked<MonadTxSubmitter> {
+  return { submitRawTransaction: jest.fn(), getTransactionReceipt: jest.fn() }
+}
+
+describe('canonical durable consumer barriers', () => {
+  it.each(['release', 'reject'] as const)(
+    'starts no actual pool write, signature or callback before Level intent completion: %s',
+    async outcome => {
+      await withCanonicalConsumer(async f => {
+        const db = (
+          f.state.canonicalJournal as unknown as {
+            database: { batch: (...args: unknown[]) => Promise<unknown> }
+          }
+        ).database
+        const original = db.batch.bind(db),
+          entered = canonicalBarrier(),
+          gate = canonicalBarrier()
+        const batch = jest.spyOn(db, 'batch').mockImplementation((...args) => {
+          entered.resolve()
+          return gate.promise.then(() => original(...args))
+        })
+        const poolWrite = jest.spyOn(f.subStore, 'putMany'),
+          sign = jest.spyOn(
+            MonadAccountTxSigner.prototype,
+            'signFrozenUnsigned',
+          ),
+          linked = jest.fn(async () => undefined)
+        const result = f.prepare(1, linked).then(
+          () => null,
+          error => error,
+        )
+        await entered.promise
+        expect(poolWrite).not.toHaveBeenCalled()
+        expect(sign).not.toHaveBeenCalled()
+        expect(linked).not.toHaveBeenCalled()
+        expect(f.httpClient.submitRawTransaction).not.toHaveBeenCalled()
+        if (outcome === 'reject')
+          gate.reject(new Error('actual intent completion rejected'))
+        else gate.resolve()
+        const error = await result
+        batch.mockRestore()
+        poolWrite.mockRestore()
+        sign.mockRestore()
+        if (outcome === 'reject') {
+          expect(error.message).toBe('actual intent completion rejected')
+          expect(linked).not.toHaveBeenCalled()
+        } else {
+          expect(error).toBeNull()
+          expect(linked).toHaveBeenCalledTimes(1)
+          expect(f.pool.getRecord(0)!.status).toBe('in-use')
+        }
+      })
+    },
+    20000,
+  )
+  it('keeps the owner valid after delivered cleanup marks accounts spent', async () => {
+    await withCanonicalConsumer(async f => {
+      let link!: CanonicalWorkflowLink
+      await f.prepare(1, async durable => {
+        link = durable
+      })
+      const attempt = await f.client.finishIntent(
+        f.client.reconcileWorkflowLinks([link])[0].eligibility!,
+      )
+      const body = new TextEncoder().encode(
+        JSON.stringify({
+          version: 1,
+          phase: 'delivered',
+          identity: attempt.request.identity,
+          mailbox_committed_at_ms: 1,
+        }),
+      )
+      const accepted = await f.client.submit(
+        f.client.reconcileWorkflowLinks([link])[0].eligibility!,
+        {
+          fetch: async url => {
+            let done = false
+            return {
+              status: 200,
+              url,
+              headers: {
+                get: name =>
+                  name === 'content-type' ? 'application/json' : null,
+              },
+              body: {
+                getReader: () => ({
+                  read: async () =>
+                    done
+                      ? { done: true }
+                      : ((done = true), { done: false, value: body }),
+                  cancel: async () => undefined,
+                  releaseLock: () => undefined,
+                }),
+              },
+            }
+          },
+        },
+      )
+      expect(accepted.phase).toBe('delivered')
+      await f.client.cleanupTerminal(link.attemptRef, link.consumerId)
+      const record = f.pool.getRecord(0)!
+      expect(record.status).toBe('spent')
+      expect(record.lifecycle?.spend?.rawTx).toBe(
+        `0x${toHex(attempt.request.parts.transactions[0])}`,
+      )
+      expect(() => f.state.assertSemanticallyValid()).not.toThrow()
+      expect(f.client.terminalOutcomes()).toHaveLength(1)
+      await f.client.acknowledgeWorkflow(link.attemptRef, link.consumerId)
+      expect(f.client.wasAcknowledged(link.attemptRef)).toBe(true)
+    })
+  }, 20000)
+  it('retains callback-failed prelease intent and excludes its available account from canonical and topic selection', async () => {
+    await withCanonicalConsumer(async f => {
+      await expect(
+        f.prepare(1, async () => {
+          throw new Error('workflow fsync failed')
+        }),
+      ).rejects.toThrow('workflow fsync failed')
+      expect(f.pool.getRecord(0)!.status).toBe('available')
+      const first = f.state.canonicalJournal!.getIntents()[0]
+      expect(first.members[0].reservation.index).toBe(0)
+      const ordinary = jest.fn(async () => undefined)
+      await expect(f.ordinaryOperation(ordinary)).rejects.toThrow(
+        'Canonical pre-sign intent',
+      )
+      expect(ordinary).not.toHaveBeenCalled()
+      const legacy = new MonadStampClient({
+        pool: f.pool,
+        leaseManager: f.leaseManager,
+        provider: f.provider,
+        httpClient: f.httpClient,
+        relayBaseUrl: 'https://a.example',
+      })
+      await expect(
+        legacy.submitStampedMessage({
+          encryptedPayload: Uint8Array.of(1),
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          stampValueWei: 32n,
+        }),
+      ).rejects.toThrow('Canonical pre-sign intent')
+      const sign = jest.spyOn(
+        MonadAccountTxSigner.prototype,
+        'signFrozenUnsigned',
+      )
+      await expect(f.prepare(2, async () => undefined)).rejects.toThrow()
+      expect(sign).not.toHaveBeenCalled()
+      sign.mockRestore()
+      expect(f.state.canonicalJournal!.getIntents()).toHaveLength(1)
+    })
+  }, 20000)
+  it('holds canonical intent persistence behind a direct legacy quote admission', async () => {
+    await withCanonicalConsumer(async f => {
+      let releaseQuote!: () => void
+      let observedQuote!: () => void
+      const held = new Promise<void>(resolve => {
+        releaseQuote = resolve
+      })
+      const observed = new Promise<void>(resolve => {
+        observedQuote = resolve
+      })
+      f.providerCalls.mockImplementation(async req => {
+        if (req.method === 'getBalance') {
+          observedQuote()
+          await held
+          throw new Error('held legacy quote rejected')
+        }
+        throw new Error(`unexpected held quote ${req.method}`)
+      })
+      const legacy = new MonadStampClient({
+        pool: f.pool,
+        leaseManager: f.leaseManager,
+        provider: f.provider,
+        httpClient: f.httpClient,
+        relayBaseUrl: 'https://a.example',
+      })
+      const write = jest.spyOn(f.subStore, 'putMany')
+      const sign = jest.spyOn(
+        MonadAccountTxSigner.prototype,
+        'buildAndSignTransfer',
+      )
+      const legacyResult = legacy
+        .submitStampedMessage({
+          encryptedPayload: Uint8Array.of(1),
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          stampValueWei: 32n,
+        })
+        .catch(error => error)
+      await observed
+      const callback = jest.fn(async () => {
+        throw new Error('link was not synced')
+      })
+      const canonicalResult = f.prepare(1, callback).catch(error => error)
+      await new Promise(resolve => setImmediate(resolve))
+      expect(f.state.canonicalJournal!.getIntents()).toHaveLength(0)
+      expect(callback).not.toHaveBeenCalled()
+      expect(write).not.toHaveBeenCalled()
+      expect(sign).not.toHaveBeenCalled()
+      f.providerCalls.mockImplementation(async req => {
+        if (req.method === 'getBalance') return 1000000000n
+        if (req.method === 'getTransactionCount') return 0
+        if (req.method === 'estimateGas') return 50000n
+        throw new Error(`unexpected canonical quote ${req.method}`)
+      })
+      releaseQuote()
+      expect(await legacyResult).toBeInstanceOf(Error)
+      expect(await canonicalResult).toBeInstanceOf(Error)
+      expect(callback).toHaveBeenCalledTimes(1)
+      expect(f.state.canonicalJournal!.getIntents()).toHaveLength(1)
+      expect(write).not.toHaveBeenCalled()
+      expect(sign).not.toHaveBeenCalled()
+      await expect(
+        legacy.submitStampedMessage({
+          encryptedPayload: Uint8Array.of(1),
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          stampValueWei: 32n,
+        }),
+      ).rejects.toThrow('Canonical pre-sign intent')
+      write.mockRestore()
+      sign.mockRestore()
+    })
+  }, 20000)
+  it('rejects a foreign live lease before signing the correlated intent', async () => {
+    await withCanonicalConsumer(async f => {
+      const saved = f.prepared(1)
+      await expect(
+        f.prepare(1, async () => {
+          throw new Error('no durable link')
+        }),
+      ).rejects.toThrow()
+      const intent = f.state.canonicalJournal!.getIntents()[0]
+      const foreign = f.leaseManager.acquireForIndex(0)
+      await f.pool.flush()
+      const links = [
+        {
+          attemptRef: intent.attemptRef,
+          consumerId: intent.consumerId,
+          prepared: intent.prepared,
+        },
+      ]
+      const eligibility = f.client.reconcileWorkflowLinks(links)[0].eligibility!
+      const sign = jest.spyOn(
+        MonadAccountTxSigner.prototype,
+        'signFrozenUnsigned',
+      )
+      await expect(f.client.finishIntent(eligibility)).rejects.toThrow(
+        'foreign-lease-hold',
+      )
+      expect(sign).not.toHaveBeenCalled()
+      sign.mockRestore()
+      f.leaseManager.releaseLease(foreign, 'unused')
+      await f.pool.flush()
+      expect(saved.payload.length).toBeGreaterThan(0)
+    })
+  }, 20000)
+  it('rejects extra role-map context keys before provider, selection, callback or signature', async () => {
+    await withCanonicalConsumer(async f => {
+      const prepared = f.prepared(1),
+        context = decodeCanonical(prepared.context) as Map<
+          bigint,
+          Map<bigint, unknown>
+        >
+      context.get(6n)!.set(2n, new Uint8Array(1))
+      f.providerCalls.mockClear()
+      const write = jest.spyOn(f.subStore, 'putMany'),
+        sign = jest.spyOn(MonadAccountTxSigner.prototype, 'signFrozenUnsigned'),
+        callback = jest.fn(async () => undefined)
+      expect(() =>
+        f.client.prepareIntent({
+          prepared: { ...prepared, context: encodeCanonical(context as never) },
+          consumerId: 'workflow-1',
+          stampValueWei: 32n,
+          senderCurrent: f.senderCurrent,
+          recipientCurrent: f.recipientCurrent,
+          onIntentDurable: callback,
+        }),
+      ).toThrow('canonical-stamp:role')
+      expect(f.providerCalls).not.toHaveBeenCalled()
+      expect(write).not.toHaveBeenCalled()
+      expect(sign).not.toHaveBeenCalled()
+      expect(callback).not.toHaveBeenCalled()
+      write.mockRestore()
+      sign.mockRestore()
+    })
+  }, 20000)
+  it('retains public recovery accounts and verifies original custody after directory freshness expires', async () => {
+    await withCanonicalConsumer(async f => {
+      const input = await f.incomingRecovery()
+      const imported = await f.client.importRecovery(input)
+      expect(imported.accounts).toHaveLength(1)
+      expect(imported.accounts[0].valueWei).toBe('32')
+      expect(imported.recipientAcknowledged).toBe(false)
+      expect(Object.keys(imported.accounts[0])).toEqual([
+        'childIndex',
+        'transactionHash',
+        'address',
+        'valueWei',
+      ])
+      await expect(
+        f.senderDirectory.current({
+          now: { seconds: 3701n, nanoseconds: 0 },
+          relay: f.senderExport.configuration.relayA.tuple,
+        }),
+      ).rejects.toThrow()
+      expect(() =>
+        f.client.verifyImportedRecoveryCustody(imported.obligationId),
+      ).not.toThrow()
+      const reopenedMaterial = createMonadWalletMaterial(canonicalTestRoots(0))
+      try {
+        expect(() =>
+          reopenedMaterial.canonicalRoles!.verifyRetainedRecoveryCustody(
+            f.state.canonicalJournal!.retainedRecoveryCustody(
+              imported.obligationId,
+            ),
+          ),
+        ).not.toThrow()
+        expect(() =>
+          reopenedMaterial.canonicalRoles!.verifyRetainedRecoveryCustody({
+            obligationId: imported.obligationId,
+          }),
+        ).toThrow()
+      } finally {
+        reopenedMaterial.dispose()
+      }
+      const foreign = createMonadWalletMaterial(canonicalTestRoots(1))
+      try {
+        expect(() =>
+          foreign.canonicalRoles!.verifyRetainedRecoveryCustody(
+            f.state.canonicalJournal!.retainedRecoveryCustody(
+              imported.obligationId,
+            ),
+          ),
+        ).toThrow('retained-custody')
+      } finally {
+        foreign.dispose()
+      }
+    })
+  }, 20000)
+  it('holds ACK behind real import completion and retains the exact acknowledged row', async () => {
+    await withCanonicalConsumer(async f => {
+      const input = await f.incomingRecovery()
+      const journal = f.state.canonicalJournal!
+      const db = (
+        journal as unknown as {
+          database: { put: (...args: unknown[]) => Promise<void> }
+        }
+      ).database
+      const original = db.put.bind(db),
+        entered = canonicalBarrier(),
+        gate = canonicalBarrier()
+      const write = jest
+        .spyOn(db, 'put')
+        .mockImplementation(async (...args) => {
+          entered.resolve()
+          await gate.promise
+          return original(...args)
+        })
+      const ack = jest
+        .spyOn(canonicalMailboxModule, 'ackCanonicalRecovery')
+        .mockResolvedValue(undefined)
+      const importing = f.client.importRecovery(input)
+      await entered.promise
+      const auth = {
+        expectedNetworkTag: 'MONT' as const,
+        subject: toHex(f.senderExport.auth.compressedPoint),
+        recipient: input.record.identity.recipient,
+        relayBaseUrl: 'https://a.example',
+        getCurrent: async () => f.senderCurrent,
+        signDigest: async (digest: Uint8Array) =>
+          new Uint8Array(f.material.identity.signHash(Buffer.from(digest))),
+      }
+      const acknowledging = f.client.ackImportedRecovery(
+        input.record.obligationId,
+        auth,
+      )
+      expect(journal.getImportedRecoveries()).toEqual([])
+      expect(ack).not.toHaveBeenCalled()
+      gate.resolve()
+      await importing
+      await acknowledging
+      expect(ack).toHaveBeenCalledTimes(1)
+      const row = journal.importedRecovery(input.record.obligationId)!
+      expect(row.recipientAcknowledged).toBe(true)
+      await f.client.ackImportedRecovery(input.record.obligationId, auth)
+      expect(ack).toHaveBeenCalledTimes(1)
+      expect(
+        journal.importedRecovery(input.record.obligationId)!.accounts,
+      ).toEqual(row.accounts)
+      write.mockRestore()
+      ack.mockRestore()
+    })
+  }, 20000)
+  it('retains a pending prefix without ACK and rejects changed terminal account sets', async () => {
+    await withCanonicalConsumer(async f => {
+      const input = await f.incomingRecovery('pending', [])
+      await f.client.importRecovery(input)
+      const auth = {
+        expectedNetworkTag: 'MONT' as const,
+        subject: toHex(f.senderExport.auth.compressedPoint),
+        recipient: input.record.identity.recipient,
+        relayBaseUrl: 'https://a.example',
+        getCurrent: async () => f.senderCurrent,
+        signDigest: async (digest: Uint8Array) =>
+          new Uint8Array(f.material.identity.signHash(Buffer.from(digest))),
+      }
+      const ack = jest
+        .spyOn(canonicalMailboxModule, 'ackCanonicalRecovery')
+        .mockResolvedValue(undefined)
+      await expect(
+        f.client.ackImportedRecovery(input.record.obligationId, auth),
+      ).rejects.toThrow('durable-terminal-import')
+      expect(ack).not.toHaveBeenCalled()
+      await f.client.importRecovery({
+        ...input,
+        record: {
+          ...input.record,
+          lifecycle: 'terminal:expired',
+          confirmedChildren: [0],
+        },
+      })
+      await expect(
+        f.client.importRecovery({
+          ...input,
+          record: {
+            ...input.record,
+            lifecycle: 'terminal:expired',
+            confirmedChildren: [],
+          },
+        }),
+      ).rejects.toThrow('conflict')
+      expect(f.client.importedRecoveries()[0].accounts).toHaveLength(1)
+      ack.mockRestore()
+    })
+  }, 20000)
+  it('settles only the exact retained obligation after two actual stamp rotations', async () => {
+    await withCanonicalConsumer(async f => {
+      const input = await f.incomingRecovery('pending', [])
+      await f.client.importRecovery(input)
+      const first = await f.rotateOwnStamp(f.senderCurrent, 1n)
+      const second = await f.rotateOwnStamp(first, 2n)
+      expect(second.generations[1]).toBe(2n)
+      expect(second.previousStamp!.keyBytes).not.toEqual(
+        f.senderCurrent.stampKey.keyBytes,
+      )
+      expect(() =>
+        f.client.verifyImportedRecoveryCustody(input.record.obligationId),
+      ).not.toThrow()
+      const terminal = {
+        ...input.record,
+        lifecycle: 'terminal:expired',
+        confirmedChildren: [0],
+      }
+      const imported = await f.client.importRecovery({ record: terminal })
+      expect(imported.stampGeneration).toBe('0')
+      expect(imported.accounts).toHaveLength(1)
+      expect(() =>
+        f.client.importRecovery({
+          record: { ...terminal, obligationId: 'ef'.repeat(32) },
+        }),
+      ).toThrow('new-import-admission')
+      await expect(
+        Promise.resolve().then(() =>
+          f.client.importRecovery({
+            record: { ...terminal, confirmedChildren: [] },
+          }),
+        ),
+      ).rejects.toThrow('conflict')
+      const changedRaw = terminal.parts.transactions[0].slice()
+      changedRaw[changedRaw.length - 1] ^= 1
+      await expect(
+        Promise.resolve().then(() =>
+          f.client.importRecovery({
+            record: {
+              ...terminal,
+              parts: { ...terminal.parts, transactions: [changedRaw] },
+            },
+          }),
+        ),
+      ).rejects.toThrow()
+      const changedContext = terminal.context.slice()
+      changedContext[changedContext.length - 1] ^= 1
+      await expect(
+        Promise.resolve().then(() =>
+          f.client.importRecovery({
+            record: {
+              ...terminal,
+              context: changedContext,
+              parts: { ...terminal.parts, context: changedContext },
+            },
+          }),
+        ),
+      ).rejects.toThrow()
+      expect(f.client.importedRecoveries()[0].request.body).toEqual(
+        imported.request.body,
+      )
+      expect(f.client.importedRecoveries()[0].accounts).toEqual(
+        imported.accounts,
+      )
+    })
+  }, 20000)
+  it('retains uncertain remote ACK and repeats the exact obligation after reopen', async () => {
+    await withCanonicalConsumer(async f => {
+      const input = await f.incomingRecovery()
+      const imported = await f.client.importRecovery(input)
+      const auth = {
+        expectedNetworkTag: 'MONT' as const,
+        subject: toHex(f.senderExport.auth.compressedPoint),
+        recipient: input.record.identity.recipient,
+        relayBaseUrl: 'https://a.example',
+        getCurrent: async () => f.senderCurrent,
+        signDigest: async (digest: Uint8Array) =>
+          new Uint8Array(f.material.identity.signHash(Buffer.from(digest))),
+      }
+      const ack = jest
+        .spyOn(canonicalMailboxModule, 'ackCanonicalRecovery')
+        .mockRejectedValueOnce(new Error('remote result lost'))
+        .mockResolvedValue(undefined)
+      await expect(
+        f.client.ackImportedRecovery(input.record.obligationId, auth),
+      ).rejects.toThrow('result lost')
+      expect(f.client.importedRecoveries()[0].recipientAcknowledged).toBe(false)
+      await f.state.canonicalJournal!.Close()
+      await f.state.canonicalJournal!.Open()
+      expect(f.client.importedRecoveries()[0].accounts).toEqual(
+        imported.accounts,
+      )
+      await f.client.ackImportedRecovery(input.record.obligationId, auth)
+      expect(ack).toHaveBeenCalledTimes(2)
+      expect(ack.mock.calls[0][0].payloadHashHex).toBe(
+        ack.mock.calls[1][0].payloadHashHex,
+      )
+      expect(ack.mock.calls[0][0].obligationIdHex).toBe(
+        ack.mock.calls[1][0].obligationIdHex,
+      )
+      expect(f.client.importedRecoveries()[0].recipientAcknowledged).toBe(true)
+      ack.mockRestore()
+    })
+  }, 20000)
+  it.each(['before', 'after'] as const)(
+    'preserves custody through an uncertain local ACK marker: %s commit',
+    async phase => {
+      await withCanonicalConsumer(async f => {
+        const input = await f.incomingRecovery(),
+          imported = await f.client.importRecovery(input)
+        const auth = {
+          expectedNetworkTag: 'MONT' as const,
+          subject: toHex(f.senderExport.auth.compressedPoint),
+          recipient: input.record.identity.recipient,
+          relayBaseUrl: 'https://a.example',
+          getCurrent: async () => f.senderCurrent,
+          signDigest: async (digest: Uint8Array) =>
+            new Uint8Array(f.material.identity.signHash(Buffer.from(digest))),
+        }
+        const journal = f.state.canonicalJournal!
+        const db = (
+          journal as unknown as {
+            database: { put: (...args: unknown[]) => Promise<void> }
+          }
+        ).database
+        const original = db.put.bind(db)
+        const write = jest
+          .spyOn(db, 'put')
+          .mockImplementation(async (...args) => {
+            if (phase === 'after') await original(...args)
+            throw new Error('local acknowledged marker uncertain')
+          })
+        const ack = jest
+          .spyOn(canonicalMailboxModule, 'ackCanonicalRecovery')
+          .mockResolvedValue(undefined)
+        await expect(
+          f.client.ackImportedRecovery(input.record.obligationId, auth),
+        ).rejects.toThrow('marker uncertain')
+        expect(() => f.client.importedRecoveries()).toThrow('corrupt')
+        write.mockRestore()
+        await journal.Close()
+        await journal.Open()
+        expect(f.client.importedRecoveries()[0].accounts).toEqual(
+          imported.accounts,
+        )
+        expect(f.client.importedRecoveries()[0].recipientAcknowledged).toBe(
+          phase === 'after',
+        )
+        expect(() =>
+          f.client.verifyImportedRecoveryCustody(input.record.obligationId),
+        ).not.toThrow()
+        await f.client.ackImportedRecovery(input.record.obligationId, auth)
+        expect(ack).toHaveBeenCalledTimes(phase === 'after' ? 1 : 2)
+        expect(f.client.importedRecoveries()[0].recipientAcknowledged).toBe(
+          true,
+        )
+        ack.mockRestore()
+      })
+    },
+    20000,
   )
 })

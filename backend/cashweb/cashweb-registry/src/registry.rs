@@ -77,6 +77,9 @@ pub struct Registry {
     db: Db,
     /// Lazy private canonical Forum sidecar and serialized publication/snapshot owner.
     forum: crate::forum::Owner,
+    /// Lazy isolated exact canonical DM owner; shares the registry lifetime.
+    canonical_dm: crate::store::monad_dm_cbor::Owner,
+    financial_admission: crate::monad_outbox::financial::AdmissionOwner,
     /// Ecc for verifying secp256k1 signatures.
     ecc: EccSecp256k1,
     /// Chain boundary used for testing and broadcasting burn txs. Lotus-backed today (see
@@ -214,9 +217,12 @@ impl Registry {
     /// Construct new [`Registry`]
     pub fn new(db: Db, chain_adapter: Arc<dyn ChainAdapter>, net: Net) -> Self {
         let forum = crate::forum::Owner::new(db.owned_path().to_path_buf());
+        let canonical_dm = crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf());
         Registry {
             db,
             forum,
+            canonical_dm,
+            financial_admission: Default::default(),
             ecc: EccSecp256k1::default(),
             chain_adapter,
             net,
@@ -237,6 +243,29 @@ impl Registry {
 
     pub(crate) fn forum(&self) -> &crate::forum::Owner {
         &self.forum
+    }
+
+    pub(crate) fn canonical_dm(&self) -> &crate::store::monad_dm_cbor::Owner {
+        &self.canonical_dm
+    }
+
+    pub(crate) fn claim_canonical_dm(
+        &self,
+        input: crate::monad_outbox::financial::CanonicalPaymentInput,
+        now: i64,
+        config: &crate::monad_outbox::MonadOutboxReconcileConfig,
+    ) -> crate::http::monad_message_cbor::Result<crate::store::monad_dm_cbor::Claim> {
+        use crate::http::monad_message_cbor::CanonicalError;
+        let _gate = self
+            .financial_admission
+            .lock()
+            .map_err(|_| CanonicalError::Unavailable)?;
+        let external = self
+            .db
+            .monad_outbox()
+            .admission_usage(input.recipient()?, &config.limits)
+            .map_err(|_| CanonicalError::Unavailable);
+        self.canonical_dm.claim(input, now, config, external)
     }
 
     /// Read a signed [`proto::AddressMetadata`] entry from the database.
@@ -589,9 +618,21 @@ impl Registry {
         now_ms: i64,
         limits: &crate::store::monad_outbox::MonadOutboxLimits,
     ) -> Result<crate::store::monad_outbox::MonadOutboxClaim> {
-        self.db
-            .monad_outbox()
-            .claim(&message.payload_hash, message, policy, now_ms, limits)
+        let _gate = self.financial_admission.lock()?;
+        // Delay snapshot errors until the store's fresh-reservation branch;
+        // an exact retained owner never depends on current admission capacity.
+        let external = self
+            .canonical_dm
+            .financial_usage(policy.recipient)
+            .map_err(Into::into);
+        self.db.monad_outbox().claim_with_external_usage(
+            &message.payload_hash,
+            message,
+            policy,
+            now_ms,
+            limits,
+            external,
+        )
     }
 
     /// Coherently classify all durable owner forms for one candidate request.
@@ -1193,6 +1234,41 @@ impl Registry {
         #[cfg(test)]
         RECIPIENT_SIGNATURE_WORK.set(RECIPIENT_SIGNATURE_WORK.get() + 1);
         let pubkey = self.db.monad_profiles().get_pubkey(&recipient)?;
+        self.verify_recipient_key_observed(pubkey, digest, signature, before_verify)
+    }
+
+    /// Shared existing signature primitive for a P already admitted by the directory owner.
+    /// A supplied point is never admission by itself; canonical callers must check the genuine
+    /// fresh snapshot, network and exact subject before entering this helper.
+    pub(crate) fn verify_admitted_monad_recipient_signature(
+        &self,
+        recipient: Address,
+        admitted_p: Option<&[u8]>,
+        digest: [u8; 32],
+        signature: &[u8],
+    ) -> Result<bool> {
+        let key = admitted_p
+            .filter(|key| {
+                crate::monad_stamp_stealth::recipient_address_from_public_key(key)
+                    .map(|address| address == recipient)
+                    .unwrap_or(false)
+            })
+            .map(<[u8]>::to_vec);
+        #[cfg(test)]
+        RECIPIENT_SIGNATURE_WORK.set(RECIPIENT_SIGNATURE_WORK.get() + 1);
+        self.verify_recipient_key_observed(key, digest, signature, || {})
+    }
+
+    fn verify_recipient_key_observed<F>(
+        &self,
+        pubkey: Option<Vec<u8>>,
+        digest: [u8; 32],
+        signature: &[u8],
+        before_verify: F,
+    ) -> Result<bool>
+    where
+        F: FnOnce(),
+    {
         let registered = pubkey.is_some();
         let candidate = pubkey.unwrap_or_else(|| {
             let secret = self
@@ -1506,6 +1582,8 @@ mod tests {
 
         let registry = Registry {
             forum: crate::forum::Owner::new(db.owned_path().to_path_buf()),
+            canonical_dm: crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf()),
+            financial_admission: Default::default(),
             db,
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
@@ -1902,6 +1980,8 @@ mod tests {
 
         let registry = Registry {
             forum: crate::forum::Owner::new(db.owned_path().to_path_buf()),
+            canonical_dm: crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf()),
+            financial_admission: Default::default(),
             db,
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
@@ -2058,6 +2138,8 @@ mod tests {
 
         let registry = Registry {
             forum: crate::forum::Owner::new(db.owned_path().to_path_buf()),
+            canonical_dm: crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf()),
+            financial_admission: Default::default(),
             db,
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
@@ -2383,6 +2465,8 @@ mod tests {
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
         let registry = Registry {
             forum: crate::forum::Owner::new(db.owned_path().to_path_buf()),
+            canonical_dm: crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf()),
+            financial_admission: Default::default(),
             db,
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(NeverCalledChainAdapter),

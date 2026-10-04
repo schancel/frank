@@ -18,12 +18,17 @@ import { MonadChangePool } from './monad-change-pool'
 import type { StampPaymentJournal } from './storage/stamp-payment-journal'
 import type { StampAttemptJournal } from './storage/stamp-attempt-journal'
 import type { TopicOperationJournal } from './storage/topic-operation-journal'
-import type { MonadWalletPersistenceBundle } from './storage/monad-wallet-bundle'
+import type {
+  MonadWalletPersistenceBundle,
+  MonadWalletOperationAdmission,
+} from './storage/monad-wallet-bundle'
 import type { MonadCanonicalRoleOwner } from './monad-wallet-material'
 
 export interface MonadWalletHandle {
   /** Explicit typed-root capability; absent until canonical composition is activated. */
   canonicalRoles?: MonadCanonicalRoleOwner
+  /** Private active delegation from the existing owner; structural values are rejected. */
+  walletOperationAdmission?: MonadWalletOperationAdmission
   pool: MonadSubAccountPool
   leaseManager: SubAccountLeaseManager
   provider: Provider
@@ -49,4 +54,46 @@ export interface MonadWalletHandle {
   /** Exact canonical Forum economic policy; required by paid Forum operations and replay. */
   forumBurnAddress?: string
   forumChainId?: bigint
+}
+
+/** Present only on the private wallet-owner facade, never inferred from a normal legacy handle. */
+export interface MonadCanonicalWalletHandle extends MonadWalletHandle {
+  walletState: MonadWalletPersistenceBundle
+  canonicalRoles: MonadCanonicalRoleOwner
+  installedNetworkTag: 'MONT' | 'MON1'
+  runCanonicalExclusive<T>(operation: () => Promise<T>): Promise<T>
+}
+
+import type { Timestamp, RelayBinding } from '@frank/codec'
+import type { RolePoint } from '../role-keys/src'
+export interface PublicRevisionZeroProcess {
+  readonly processId: string
+  readonly origin: string
+  readonly tuple: RelayBinding
+}
+export interface PublicRevisionZeroInput {
+  readonly networkTag: 'MONT' | 'MON1'
+  readonly network: string
+  readonly chainId: bigint
+  readonly issuedAt: Timestamp
+  readonly expiresAt: Timestamp
+  readonly now: Timestamp
+  readonly relayA: PublicRevisionZeroProcess
+  readonly relayB: PublicRevisionZeroProcess
+  readonly subjectBinding: 'A' | 'B'
+}
+export interface PublicRevisionZeroExport {
+  readonly kind: 'public-revision-zero-preparation'
+  readonly registry: 'frank-domain-roots-v1'
+  readonly networkTag: 'MONT' | 'MON1'
+  readonly network: string
+  readonly chainId: bigint
+  readonly authAddress: string
+  readonly auth: RolePoint<'auth'>
+  readonly message: RolePoint<'message'>
+  readonly stamp: RolePoint<'stamp'>
+  readonly statement: Uint8Array
+  readonly attestation: Uint8Array
+  readonly t1: Uint8Array
+  readonly configuration: PublicRevisionZeroInput
 }

@@ -354,6 +354,13 @@ impl RegistryServer {
         directory: Option<Arc<crate::directory_runtime::DirectoryRuntime>>,
     ) -> Router {
         let mailbox_enabled = self.monad_mailbox.as_enabled().is_some();
+        let canonical_enabled = mailbox_enabled
+            && directory.as_ref().is_some_and(|directory| {
+                self.registry
+                    .canonical_dm()
+                    .attach_directory(Arc::clone(directory))
+                    .is_ok()
+            });
         let rpc_enabled = self.evm_rpc.is_some() || self.bitcoin_proxy.is_some();
         let bitcoin_proxy_enabled = self.bitcoin_proxy.is_some();
         let router = Router::new()
@@ -512,6 +519,29 @@ impl RegistryServer {
                 "/message/monad/topics/:payload_hash",
                 routing::get(handle_get_monad_topic_post),
             );
+        if canonical_enabled {
+            use crate::http::monad_message_cbor::{
+                handle_ack, handle_challenge, handle_inbox, handle_put, handle_recovery,
+            };
+            router = router
+                .route("/message/monad/cbor", routing::put(handle_put))
+                .route(
+                    "/message/monad/cbor/auth/:recipient",
+                    routing::post(handle_challenge),
+                )
+                .route(
+                    "/message/monad/cbor/inbox/:recipient",
+                    routing::get(handle_inbox),
+                )
+                .route(
+                    "/message/monad/cbor/recovery/:recipient",
+                    routing::get(handle_recovery),
+                )
+                .route(
+                    "/message/monad/cbor/recovery/:recipient/:payload_hash/:obligation_id/ack",
+                    routing::post(handle_ack),
+                );
+        }
         if let Some(runtime) = directory {
             router = router.merge(crate::http::directory::router(runtime));
         }
@@ -533,6 +563,7 @@ impl RegistryServer {
                         header::HeaderName::from_static("x-frank-mailbox-expires-at-ms"),
                         header::HeaderName::from_static("x-frank-mailbox-signature"),
                         header::HeaderName::from_static("x-frank-mailbox-token"),
+                        header::HeaderName::from_static("x-frank-mailbox-subject"),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[0]),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[1]),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[2]),

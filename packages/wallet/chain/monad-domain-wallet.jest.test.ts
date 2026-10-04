@@ -1,12 +1,30 @@
-import { Mnemonic } from 'ethers'
-import { mkdtemp, mkdir, rm } from 'fs/promises'
+import { Mnemonic, Transaction, Wallet, getBytes } from 'ethers'
+import { mkdtemp, mkdir, readdir, rm } from 'fs/promises'
+import level from 'level'
+import {
+  cborMap,
+  decodeCanonical,
+  encodeFrame,
+  fromHex,
+  parseFrame,
+  toHex,
+} from '@frank/codec'
+import { freezeCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
+import dmCorpus from '../../../docs/protocol/cbor/vectors/dm-runtime.json'
+import {
+  LevelCanonicalStampAttemptJournal,
+  type CanonicalPreparedAttempt,
+} from '../storage/stamp-attempt-journal'
+import { CanonicalWalletBindingMismatchError } from '../storage/monad-wallet-bundle'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import vectors from '../../domain-roots/vectors/domain-roots-v1.json'
 import type { DomainPurpose, DomainRoot } from '../../domain-roots/src'
 import { createChain } from './chain-factory'
 import {
+  canonicalMonadStampClient,
   createMonadChain,
+  prepareMonadRevisionZeroExport,
   MonadChainConfig,
   MonadChainWalletHandle,
 } from './monad-chain'
@@ -560,6 +578,203 @@ test('reopens existing EVM inventory after close even when authentication change
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+const CANONICAL_NAMESPACE = 'canonical-stamp-attempts-v1'
+async function canonicalJournalEntries(
+  storage: string,
+): Promise<Array<[string, string]>> {
+  const database = level(join(storage, CANONICAL_NAMESPACE))
+  try {
+    const entries: Array<[string, string]> = []
+    for await (const entry of database.iterator({}) as any) entries.push(entry)
+    return entries
+  } finally {
+    await database.close()
+  }
+}
+
+/** Captured canonical ciphertext with a synthetic offline transaction, pinning pool index 0. */
+async function retainedCanonicalAttempt() {
+  const wire = dmCorpus.canonical_facade_final_http_case.wire
+  const payload = fromHex(wire.payload),
+    context = fromHex(wire.context)
+  const stampKey = (
+    decodeCanonical(context) as Map<bigint, Map<bigint, Uint8Array>>
+  )
+    .get(8n)!
+    .get(1n)!
+  const parsed = parseFrame(payload)
+  if (parsed.kind !== 'parsed' || parsed.typed?.type !== 5)
+    throw new Error('fixture payload')
+  const raw = await new Wallet('0x' + '19'.repeat(32)).signTransaction({
+    chainId: 10143,
+    type: 2,
+    nonce: 0,
+    to: '0x' + wire.destination,
+    value: 1n,
+    gasLimit: 100000n,
+    maxFeePerGas: 2n,
+    maxPriorityFeePerGas: 1n,
+    data: '0x' + wire.t4,
+  })
+  const delivery = encodeFrame(
+    { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+    cborMap([
+      [0, wire.network],
+      [
+        1,
+        cborMap([
+          [0, 1],
+          [1, stampKey],
+        ]),
+      ],
+      [2, payload],
+      [3, fromHex(wire.t3)],
+      [
+        4,
+        [
+          cborMap([
+            [0, 0],
+            [1, getBytes(Transaction.from(raw).hash!)],
+            [2, new Uint8Array(32).map((_, i) => (i === 31 ? 1 : 0))],
+            [3, fromHex(wire.destination)],
+            [4, fromHex(wire.t4)],
+          ]),
+        ],
+      ],
+    ]),
+  )
+  const prepared: CanonicalPreparedAttempt = {
+    walletBindingId: 'wallet-test',
+    accountId: 'account-test',
+    chainId: '10143',
+    network: wire.network,
+    senderSubject: toHex(parsed.typed.sender.keyBytes),
+    recipientSubject: toHex(parsed.typed.recipient.keyBytes),
+    senderT1: wire.sender_t1,
+    recipientT1: wire.recipient_t1,
+    payload,
+    context,
+    economicBinding: Uint8Array.of(0xa1, 0, 1),
+  }
+  return {
+    prepared,
+    request: freezeCanonicalRequest(
+      { delivery, context, transactions: [getBytes(raw)] },
+      'foreign-binding-boundary',
+    ),
+    reservations: [{ id: 'reservation-0', index: 0 }],
+    consumerId: 'workflow-0',
+  }
+}
+
+test('a canonical journal bound to another identity keeps EVM inventory open, refuses canonical messaging and is left untouched', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-825-foreign-'))
+  const storage = join(dir, `wallet-evm-${expected[0].main.toLowerCase()}`)
+  await mkdir(storage)
+  try {
+    const cfg = { ...config, walletStorageLocation: join(dir, 'wallet') }
+    const first = (await createMonadChain(cfg).createWallet(
+      roots(),
+    )) as MonadChainWalletHandle
+    // Matching (first-bound) identity: canonical client is available, unchanged behaviour.
+    expect(canonicalMonadStampClient(first).reconcileWorkflowLinks([])).toEqual(
+      [],
+    )
+    first.pool.setStatus(0, 'retired')
+    await first.close()
+    const journalBefore = await canonicalJournalEntries(storage)
+    expect(journalBefore.map(([key]) => key)).toContain('metadata:binding')
+    const rootsBefore = (await readdir(dir)).sort()
+    const namespacesBefore = (await readdir(storage)).sort()
+
+    const second = (await createMonadChain(cfg).createWallet({
+      ...roots(),
+      authentication: roots(1).authentication,
+    })) as MonadChainWalletHandle
+    expect(second.pool.getRecord(0)!.status).toBe('retired')
+    expect(second.pool.getRecord(0)!.address).toBe(expected[0].pool)
+    expect(second.pool.getRecord(1)!.status).toBe('unfunded')
+    second.pool.setStatus(1, 'retired')
+    await second.pool.flush()
+    let refusal: unknown
+    try {
+      canonicalMonadStampClient(second)
+    } catch (error) {
+      refusal = error
+    }
+    expect(refusal).toBeInstanceOf(CanonicalWalletBindingMismatchError)
+    expect((refusal as CanonicalWalletBindingMismatchError).code).toBe(
+      'canonical-wallet:foreign-journal-binding',
+    )
+    expect(() => prepareMonadRevisionZeroExport(second, {} as never)).toThrow(
+      CanonicalWalletBindingMismatchError,
+    )
+    await second.close()
+    expect(await canonicalJournalEntries(storage)).toEqual(journalBefore)
+    // No second journal or storage root was created for the changed identity.
+    expect((await readdir(dir)).sort()).toEqual(rootsBefore)
+    expect((await readdir(storage)).sort()).toEqual(namespacesBefore)
+
+    const third = (await createMonadChain(cfg).createWallet(
+      roots(),
+    )) as MonadChainWalletHandle
+    expect(third.pool.getRecord(1)!.status).toBe('retired')
+    expect(canonicalMonadStampClient(third).reconcileWorkflowLinks([])).toEqual(
+      [],
+    )
+    await third.close()
+    expect(await canonicalJournalEntries(storage)).toEqual(journalBefore)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}, 20000)
+
+test('a mismatched open leaves a retained canonical attempt and its pinned pool account intact for the original identity', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-825-retained-'))
+  const storage = join(dir, `wallet-evm-${expected[0].main.toLowerCase()}`)
+  await mkdir(storage)
+  try {
+    const cfg = { ...config, walletStorageLocation: join(dir, 'wallet') }
+    const first = (await createMonadChain(cfg).createWallet(
+      roots(),
+    )) as MonadChainWalletHandle
+    first.pool.setStatus(0, 'in-use')
+    await first.pool.flush()
+    await first.close()
+    const journal = new LevelCanonicalStampAttemptJournal(storage)
+    await journal.Open()
+    const retained = await journal.prepare(await retainedCanonicalAttempt())
+    await journal.Close()
+    const journalBefore = await canonicalJournalEntries(storage)
+    expect(journalBefore).toHaveLength(3)
+
+    const second = (await createMonadChain(cfg).createWallet({
+      ...roots(),
+      authentication: roots(1).authentication,
+    })) as MonadChainWalletHandle
+    // The other identity's unresolved obligation still pins its account: an unreferenced
+    // in-use account would have been retired during open.
+    expect(second.pool.getRecord(0)!.status).toBe('in-use')
+    expect(() => canonicalMonadStampClient(second)).toThrow(
+      CanonicalWalletBindingMismatchError,
+    )
+    await second.close()
+    expect(await canonicalJournalEntries(storage)).toEqual(journalBefore)
+
+    const third = (await createMonadChain(cfg).createWallet(
+      roots(),
+    )) as MonadChainWalletHandle
+    expect(third.pool.getRecord(0)!.status).toBe('in-use')
+    expect(canonicalMonadStampClient(third).reconcileWorkflowLinks([])).toEqual(
+      [{ attemptRef: retained.attemptRef, state: 'hold' }],
+    )
+    await third.close()
+    expect(await canonicalJournalEntries(storage)).toEqual(journalBefore)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}, 20000)
 
 test('construction failure closes opened stores and wipes owned messaging root', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-716-failure-'))

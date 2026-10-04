@@ -141,7 +141,7 @@ import {
   BlackjackCanonicalOutbox,
   BlackjackCanonicalStore,
   canonicalDirectoryFor,
-  canonicalInbound,
+  fetchCanonicalInbound,
   type CanonicalBlackjackInbound,
 } from './blackjack-canonical'
 import { botStateDir, persistentStateDir } from './bot-state-dir'
@@ -1683,10 +1683,8 @@ async function mainCanonical(): Promise<void> {
     pollIntervalMs,
     maxHands,
     idleTimeoutMs,
-    fetchMessages: async sinceMs =>
-      canonicalInbound(
-        await messages.fetchSince({ wallet: wallet.handle, sinceMs }),
-      ),
+    fetchMessages: sinceMs =>
+      fetchCanonicalInbound(messages, wallet.handle, sinceMs),
     tick: async () => {
       try {
         // One welcome per installed `ui` subject, once it has published its own entry.

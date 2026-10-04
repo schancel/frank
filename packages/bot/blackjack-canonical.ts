@@ -482,6 +482,23 @@ export interface CanonicalBlackjackInbound {
   received: DirectMessageReceived
 }
 
+/** One inbox read. A failed read (relay down, an installed peer unreadable, directory pending)
+ * yields nothing, so the caller's cursor stays where it is and the same mail is read again. */
+export async function fetchCanonicalInbound(
+  messages: Pick<DirectMessageClient, 'fetchSince'>,
+  wallet: WalletHandle,
+  sinceMs: number,
+): Promise<CanonicalBlackjackInbound[]> {
+  try {
+    return canonicalInbound(await messages.fetchSince({ wallet, sinceMs }))
+  } catch {
+    console.warn(
+      '[blackjack-bot] canonical inbox read failed; nothing was consumed, will retry',
+    )
+    return []
+  }
+}
+
 export function canonicalInbound(
   received: DirectMessageReceived[],
 ): CanonicalBlackjackInbound[] {

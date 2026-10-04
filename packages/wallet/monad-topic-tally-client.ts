@@ -1,243 +1,131 @@
-/**
- * Client-side read/tally functions for Monad topic posts (ticket #33): fetch every post under a
- * topic, and fetch a single post by its `payload_hash` -- each response already carries the
- * relay's own tallied `vote_weight`. Also home to [`fetchDiscoveredTopics`] (ticket #72), the
- * client for the relay's topic-discovery index (`GET /message/monad/topics/discover`) -- grouped
- * here rather than a new file since it hits the same `/message/monad/topics*` route family and
- * decodes the same `topic_message_pb` bindings as the rest of this file.
- *
- * This is the last piece of the topic-broadcast feature (#26/#30/#31/#32/#40, see `PLAN.md`'s M8
- * section): the Lotus reference this mirrors, `app/src/cashweb/registry/index.ts`'s
- * `getBroadcastMessages`/`getBroadcastMessage`, has to *derive* each message's vote weight
- * client-side from its attached burn transactions (`calculateBurnAmount`, summing up-votes minus
- * down-votes) because Lotus's registry never verifies vote burns itself. On Monad, every vote
- * (a post's own initial vote, or a later `MonadTopicVote`) is verified and tallied server-side
- * before it's ever stored (`process_monad_topic_post`/`process_monad_topic_vote`,
- * `http/monad_topics.rs`) -- so this file's job is much simpler than its Lotus counterpart: decode
- * the wire response and hand back the weight the relay already computed, never re-derive it from
- * raw burn txs (this client never even sees the burn txs behind votes it didn't cast itself).
- *
- * ## Which files this mirrors, and why
- *
- * - The list half (`fetchMonadTopicPostsSince`) is structurally `monad-message-feed.ts` (ticket
- *   #37's `GET /message/monad?since=` client) with `topic` added as a required query param and
- *   `MonadTopicPostViews`/`MonadTopicPostView` swapped in for `StoredMonadMessages`/
- *   `StoredMonadMessage` -- including that file's own decode-inline-rather-than-import-a-decoder
- *   style (it imports only the *type* `StoredMonadMessageProto` from `monad-stamp-client.ts`, not
- *   a decode function), which this file follows for the same reason: a `list` response's elements
- *   arrive as already-parsed nested `jspb.Message` instances (`MonadTopicPostViews.getViewsList()`
- *   returns `MonadTopicPostView[]`, not raw bytes each), so there's no `bytes -> decoded` function
- *   to reuse from a bytes-only decoder anyway.
- * - The single-fetch half (`fetchMonadTopicPostView`) mirrors `monad-topic-post-client.ts`'s
- *   private `fetchStoredTopicPostView`/`pollForStoredPost` machinery, which already hits this same
- *   `GET /message/monad/topics/:payload_hash` route -- but purely as ticket #31's own internal
- *   network-failure disambiguation poll (`MonadTopicPostClient.submitTopicPost`'s "no HTTP
- *   response at all" fallback), never exposed as a general read API. This ticket's own task
- *   description calls that out explicitly: write a fresh, public-facing version here rather than
- *   exporting or reusing that private one, since its home file's contract belongs entirely to
- *   ticket #31's post-submission flow, not to general topic reading. This file's
- *   `fetchMonadTopicPostView` and that file's `fetchStoredTopicPostView` end up structurally
- *   similar (same route, same decode shape, same 404-means-"not found" convention) by necessity of
- *   decoding the same wire response, not by importing one from the other.
- *
- * Both functions import only the *types* `MonadTopicPostViewProto`/`StoredMonadTopicPostProto`/
- * `MonadTopicPostProto` from `./monad-topic-post-client` (already defined there for ticket #31),
- * so callers get one consistent plain-object shape for a topic-post view regardless of which
- * client function produced it -- without this file needing to touch that ticket's file at all.
- *
- * ## Route contract (read directly from the Rust source, not assumed)
- *
- * - `GET /message/monad/topics?topic=<topic>&since=<timestamp>`
- *   (`handle_list_monad_topic_posts`, `backend/cashweb/cashweb-registry/src/http/
- *   monad_topics.rs`): its `ListMonadTopicPostsQuery` struct declares `topic: String` (no
- *   `Option`) -- a **required** query param, unlike `since`. Its own doc comment explains why:
- *   "there's no meaningful 'every topic' default the way `GET /message/monad?since=` has one
- *   global feed; topic posts are always browsed per-topic." `since: Option<i64>` defaults to `0`
- *   server-side when omitted (every stored post under `topic`). No gate/auth check at all --
- *   `handle_list_monad_topic_posts` never touches `monad_topic_gate()`, unlike the `PUT` handlers
- *   in the same file. Response body: a serialized `MonadTopicPostViews { repeated
- *   MonadTopicPostView views = 1; }`.
- * - `GET /message/monad/topics/:payload_hash` (`handle_get_monad_topic_post`, same file):
- *   `:payload_hash` is decoded via plain `hex::decode` (the Rust `hex` crate, no `0x`-prefix
- *   handling) -- the path segment must be bare hex, matching every other client in this directory
- *   that builds this same style of URL (`monad-stamp-client.ts`/`monad-topic-post-client.ts`'s own
- *   `toBareHex` helpers). No gate/auth check here either. Response body: a serialized
- *   `MonadTopicPostView { post: StoredMonadTopicPost, vote_weight: sint64 }`. 404 (empty body) if
- *   no post is stored under that hash (`GetMonadTopicPostError::NotFound`).
- *
- * ## Ordering / cursor semantics (read directly from `store/monad_topics.rs`, not assumed)
- *
- * `DbMonadTopicPosts::list_by_topic(topic, since)` scans a secondary index keyed by
- * `SHA256(topic) ++ timestamp.to_be_bytes() ++ payload_hash`, starting from `since`'s encoded key
- * and stopping once the topic-digest prefix no longer matches. Consequences a caller can rely on:
- *
- * - Ordered by `timestamp` ascending (oldest first) -- **not** insertion order, and not reverse-
- *   chronological the way a typical "feed" UI might expect; a caller wanting newest-first must
- *   sort client-side.
- * - `since` is **inclusive** (`timestamp >= since`, matching `ListMonadTopicPostsQuery::since`'s
- *   own doc comment) -- polling again with `since` set to the last-seen post's own `timestamp`
- *   would re-fetch that same post; callers that want to avoid re-processing it should poll with
- *   `since = lastSeenTimestamp + 1`.
- * - The topic filter hashes `topic` (`SHA256`) rather than using it as a raw prefix, specifically
- *   so one topic can never be a false-positive prefix match for another (`store/monad_topics.rs`'s
- *   own module docs: `"topic.one"` vs. `"topic.one.sub"`) -- this file's `topic` param is always
- *   matched exactly, never as a prefix.
- */
 import axios from 'axios'
+import { compareBytes, contentHash, defaultContext, validateFrame, matchForumPage, forumCursorToTransport, toHex, type Timestamp, type ForumCursor } from '@frank/codec'
+import { projectForumView, type ForumReadPolicy, type ForumMessage, type DiscoveredTopic } from './forum-model'
+export type { DiscoveredTopic } from './forum-model'
 
-import __pb_topic_message_pb from './topic_message_pb'
-const { MonadTopicPostView, MonadTopicPostViews, ListTopicsResponse } =
-  __pb_topic_message_pb
-import {
-  MonadTopicPostProto,
-  MonadTopicPostViewProto,
-  StoredMonadTopicPostProto,
-} from './monad-topic-post-client'
-
-/** Decode a single, already-parsed `MonadTopicPostView` protobuf message (as returned by both
- * `MonadTopicPostView.deserializeBinary` and `MonadTopicPostViews.getViewsList()`'s elements) into
- * a {@link MonadTopicPostViewProto}. Field-for-field mirror of
- * `monad-topic-post-client.ts`'s private (unexported) `decodeStoredMonadTopicPostPb`/
- * `decodeMonadTopicPostView` -- written fresh here rather than imported, per this ticket's own
- * task description (see this file's header). */
-function decodeMonadTopicPostViewPb(
-  pb: InstanceType<typeof MonadTopicPostView>,
-): MonadTopicPostViewProto {
-  const storedPb = pb.getPost()
-  let post: StoredMonadTopicPostProto | undefined
-  if (storedPb) {
-    const nested = storedPb.getPost()
-    const nestedPost: MonadTopicPostProto | undefined = nested
-      ? {
-          topic: nested.getTopic(),
-          parentPostHash: nested.getParentPostHash_asU8(),
-          rawBurnTx: nested.getRawBurnTx_asU8(),
-          encryptedPayload: nested.getEncryptedPayload_asU8(),
-          payloadHash: nested.getPayloadHash_asU8(),
+const RESPONSE_BYTES = 4 * 1024 * 1024, STAGING_BYTES = 64 * 1024 * 1024, ROWS = 32768, LIFETIME = 120000
+// Serialize staging across callers: aggregate refresh allocation has the same bound as one query.
+let queue: Promise<unknown> = Promise.resolve()
+function exclusive<T>(work: () => Promise<T>): Promise<T> {
+  const result = queue.then(work); queue = result.then(() => undefined, () => undefined); return result
+}
+class SnapshotRace extends Error {}
+const clock = () => performance.now()
+function timestamp(ms: number): Timestamp {
+  if (!Number.isSafeInteger(ms)) throw new Error('Invalid inclusive since milliseconds')
+  const seconds = Math.floor(ms / 1000)
+  return { seconds: BigInt(seconds), nanoseconds: (ms - seconds * 1000) * 1000000 }
+}
+function compareTime(a: Timestamp,b: Timestamp): number { return a.seconds < b.seconds ? -1 : a.seconds > b.seconds ? 1 : a.nanoseconds - b.nanoseconds }
+async function request(url: string, params: Record<string, unknown>, signal?: AbortSignal, remaining = LIFETIME): Promise<Uint8Array> {
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  signal?.addEventListener('abort', abort, { once: true })
+  if (signal?.aborted) controller.abort()
+  let oversize = false
+  try {
+    const response = await axios({
+      method: 'get', url, params, headers: { Accept: 'application/cbor' },
+      responseType: 'arraybuffer', maxContentLength: RESPONSE_BYTES,
+      maxBodyLength: RESPONSE_BYTES, timeout: Math.max(1, remaining),
+      signal: controller.signal,
+      onDownloadProgress: (progress: { loaded: number; total?: number }) => {
+        if (progress.loaded > RESPONSE_BYTES || (progress.total ?? 0) > RESPONSE_BYTES) {
+          oversize = true
+          controller.abort()
         }
-      : undefined
-    post = {
-      post: nestedPost,
-      senderAddress: storedPb.getSenderAddress_asU8(),
-      txHash: storedPb.getTxHash_asU8(),
-      timestamp: storedPb.getTimestamp(),
-      networkTag: storedPb.getNetworkTag_asU8(),
-      cborPostFrame: storedPb.getCborPostFrame_asU8(),
-    }
-  }
-  return {
-    post,
-    voteWeight: pb.getVoteWeight(),
+      },
+    })
+    if (oversize) throw new Error('Forum response byte limit')
+    if (String(response.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase() !== 'application/cbor') throw new Error('Expected application/cbor')
+    const bytes = new Uint8Array(response.data)
+    if (bytes.byteLength > RESPONSE_BYTES) throw new Error('Forum response byte limit')
+    return bytes
+  } catch (error) {
+    if (oversize) throw new Error('Forum response byte limit')
+    throw error
+  } finally {
+    signal?.removeEventListener('abort', abort)
   }
 }
-
-/** `GET /message/monad/topics?topic=<topic>&since=<sinceMs>`: every stored `MonadTopicPostView`
- * under `topic` at or after `sinceMs` (milliseconds since the Unix epoch; omit for every stored
- * post under `topic`), ordered by `timestamp` ascending -- the server's own contract, see this
- * file's header. Each returned view already carries the relay's tallied `voteWeight`; this
- * function never sums vote entries itself. */
-export async function fetchMonadTopicPostsSince(params: {
-  relayBaseUrl: string
-  topic: string
-  sinceMs?: number
-}): Promise<MonadTopicPostViewProto[]> {
-  const response = await axios({
-    method: 'get',
-    url: `${params.relayBaseUrl.replace(/\/+$/, '')}/message/monad/topics`,
-    params: { topic: params.topic, since: params.sinceMs },
-    headers: { Accept: 'application/x-protobuf' },
-    responseType: 'arraybuffer',
+function parsed(bytes: Uint8Array) {
+  const result = validateFrame(bytes,defaultContext())
+  if(result.kind !== 'parsed') throw new Error('Invalid Forum frame')
+  return result
+}
+async function traverse(params: {relayBaseUrl:string;policy:ForumReadPolicy;topic?:string;sinceMs?:number;signal?:AbortSignal}, family:13|14): Promise<ForumMessage[]|DiscoveredTopic[]> {
+  return exclusive(async () => {
+    for (let attempt = 0; ; attempt++) {
+      const started = clock(); let charged = 0, count = 0, cursor: ForumCursor|undefined
+      let epoch: string|undefined, revision: bigint|undefined, incarnation: bigint|undefined
+      let last: {timestamp:Timestamp;hash:Uint8Array}|string|undefined
+      const seen = new Set<string>(), output: (ForumMessage|DiscoveredTopic)[] = []
+      const since = timestamp(params.sinceMs ?? 0)
+      try {
+        for (;;) {
+          if (clock()-started >= LIFETIME) throw new Error('Forum snapshot lifetime limit')
+          const bytes = await request(params.relayBaseUrl.replace(/\/+$/,'')+'/message/monad/topics'+(family===14?'/discover':''),
+            family===13?{topic:params.topic,since:params.sinceMs ?? 0,cursor:cursor && forumCursorToTransport(cursor.bytes)}:{cursor:cursor && forumCursorToTransport(cursor.bytes)}, params.signal, LIFETIME-(clock()-started))
+          if (clock()-started >= LIFETIME) throw new Error('Forum snapshot lifetime limit')
+          const page = matchForumPage(bytes,{network:params.policy.network,family,topic:params.topic,since,requestCursor:cursor?.bytes}).typed
+          if (!page || (page.type!==13 && page.type!==14)) throw new Error('Expected Forum page')
+          const pageEpoch = toHex(page.epoch)
+          if(epoch!==undefined && (epoch!==pageEpoch || revision!==page.revision)) throw new SnapshotRace('Snapshot changed')
+          epoch=pageEpoch;revision=page.revision
+          const rows = page.type===13?page.rows:page.entries
+          if(rows.length>128 || (rows.length===0 && page.nextCursor)) throw new Error('Invalid page row count')
+          // Reserve encoded buffer and parsed nested-frame/container overhead conservatively.
+          charged += bytes.byteLength * 4
+          for (const row of rows) {
+            let key:string, projected:ForumMessage|DiscoveredTopic
+            if(page.type===13) {
+              const viewFrame = row as typeof page.rows[number]
+              const view = viewFrame.typed
+              if (view?.type !== 12) throw new Error('Expected Forum view')
+              if(view.revision!==revision || toHex(view.epoch)!==epoch) throw new SnapshotRace('View snapshot changed')
+              const hash=contentHash(view.postFrame), tuple={timestamp:view.firstVisible,hash}
+              const previous=last as typeof tuple|undefined
+              if(compareTime(tuple.timestamp,since)<0 || (previous && (compareTime(previous.timestamp,tuple.timestamp)>0 || (compareTime(previous.timestamp,tuple.timestamp)===0 && compareBytes(previous.hash,hash)>=0)))) throw new Error('Nonadvancing topic rows')
+              if(view.postFrame.typed?.type!==9 || view.postFrame.typed.topic!==params.topic) throw new Error('Cross-topic row')
+              key=toHex(hash);last=tuple;projected=projectForumView(viewFrame,params.policy)
+            } else {
+              const entry=row as typeof page.entries[number]
+              if(typeof last==='string' && compareBytes(new TextEncoder().encode(last),new TextEncoder().encode(entry.topic))>=0) throw new Error('Nonadvancing discovery rows')
+              key=entry.topic;last=key;projected={topic:key,postCount:entry.count.toString(),lastActivityMs:Number(entry.lastActivity.seconds)*1000+entry.lastActivity.nanoseconds/1e6,
+                lastActivity:{seconds:entry.lastActivity.seconds.toString(),nanoseconds:entry.lastActivity.nanoseconds},epoch,revision:revision.toString()}
+            }
+            if(seen.has(key)) throw new Error('Duplicate Forum row')
+            seen.add(key); charged += JSON.stringify(projected).length * 2 + key.length * 2 + 256
+            if(++count>ROWS || charged>STAGING_BYTES) throw new Error('Forum staging limit')
+            output.push(projected)
+          }
+          if(charged>STAGING_BYTES) throw new Error('Forum staging limit')
+          const next=page.nextCursor
+          if(!next) return output as ForumMessage[]|DiscoveredTopic[]
+          if(next.revision!==revision || toHex(next.epoch)!==epoch || next.network!==params.policy.network || next.family!==family || (incarnation!==undefined && next.incarnation!==incarnation)) throw new SnapshotRace('Cursor incarnation changed')
+          if(next.family===13) {
+            const tuple=last as {timestamp:Timestamp;hash:Uint8Array}
+            if(next.topic!==params.topic || compareTime(next.since,since)!==0 || compareTime(next.last.timestamp,tuple.timestamp)!==0 || compareBytes(next.last.hash,tuple.hash)) throw new Error('Cursor last tuple mismatch')
+          } else if(next.last!==last) throw new Error('Cursor last topic mismatch')
+          if(cursor && compareBytes(cursor.bytes,next.bytes)===0) throw new Error('Nonadvancing cursor')
+          incarnation=next.incarnation;cursor=next
+        }
+      } catch(error) {
+        const expired = axios.isAxiosError(error) && error.response?.status===410
+        if(attempt>=2 || (!(error instanceof SnapshotRace) && !expired)) throw error
+      }
+    }
   })
-  const decoded = MonadTopicPostViews.deserializeBinary(
-    new Uint8Array(response.data),
-  )
-  return decoded.getViewsList().map(decodeMonadTopicPostViewPb)
 }
-
-/** `GET /message/monad/topics/:payload_hash`: the stored `MonadTopicPostView` for a single post,
- * identified by its bare-hex (no `0x` prefix) `payload_hash` -- mirrors Lotus's
- * `getBroadcastMessage` (see this file's header). Returns `undefined` on a `404` (no post stored
- * under that hash); any other non-2xx response, or a network-level failure, propagates as a thrown
- * error (same 404-vs-everything-else convention `monad-topic-post-client.ts`'s own
- * `fetchStoredTopicPostView` uses for this same route). */
-export async function fetchMonadTopicPostView(params: {
-  relayBaseUrl: string
-  payloadHashHex: string
-}): Promise<MonadTopicPostViewProto | undefined> {
-  try {
-    const response = await axios({
-      method: 'get',
-      url: `${params.relayBaseUrl.replace(/\/+$/, '')}/message/monad/topics/${
-        params.payloadHashHex
-      }`,
-      headers: { Accept: 'application/x-protobuf' },
-      responseType: 'arraybuffer',
-    })
-    return decodeMonadTopicPostViewPb(
-      MonadTopicPostView.deserializeBinary(new Uint8Array(response.data)),
-    )
-  } catch (err) {
-    if (axios.isAxiosError(err) && err.response?.status === 404) {
-      return undefined
-    }
-    throw err
-  }
-}
-
-/** A single discovered topic, as returned by [`fetchDiscoveredTopics`] -- decoded from a
- * `TopicDiscoveryEntry` (ticket #72). */
-export type DiscoveredTopic = {
-  topic: string
-  postCount: number
-  lastActivityMs: number
-}
-
-/** `GET /message/monad/topics/discover` (ticket #72): every distinct topic name the relay has
- * stored at least one post for, each paired with its post count and last-activity timestamp,
- * ordered by `lastActivityMs` descending -- the server's own contract
- * (`handle_list_topics`/`ListTopicsResponse`, `backend/cashweb/cashweb-registry/src/http/
- * monad_topics.rs`).
- *
- * Per the design decision recorded on GitHub issue #72, topics stay emergent/tag-based: there is
- * no separate topic-registration flow, and no separate anti-spam gate for a topic name showing up
- * here -- a topic post already requires a real burn transaction to store, so this endpoint is
- * simply exposing the relay's own bookkeeping of topic names it has observed a post for. No
- * `since`/pagination parameter -- the route returns everything (see the Rust handler's own docs
- * for why: a small keyspace, not something that needs pagination yet).
- *
- * Fail-soft: unlike [`fetchMonadTopicPostView`]/[`fetchMonadTopicPostsSince`] above (which throw
- * on anything but a 404), this swallows *any* failure (network error, non-2xx response, or a
- * malformed/undecodable response body) and returns `[]`, logging the failure via `console.error`.
- * This mirrors ticket #49's `fetchCuratedDefaultContacts` (`monad-identity.ts`) fail-soft
- * convention: discovery is purely additive on top of `app/src/stores/topics.ts`'s hardcoded
- * `defaultTopics` fallback, so a broken/unreachable relay should degrade to "just the defaults",
- * not break the Forum page. */
-export async function fetchDiscoveredTopics(params: {
-  relayBaseUrl: string
-}): Promise<DiscoveredTopic[]> {
-  try {
-    const response = await axios({
-      method: 'get',
-      url: `${params.relayBaseUrl.replace(
-        /\/+$/,
-        '',
-      )}/message/monad/topics/discover`,
-      headers: { Accept: 'application/x-protobuf' },
-      responseType: 'arraybuffer',
-    })
-    const decoded = ListTopicsResponse.deserializeBinary(
-      new Uint8Array(response.data),
-    )
-    return decoded.getEntriesList().map(entry => ({
-      topic: entry.getTopic(),
-      postCount: entry.getPostCount(),
-      lastActivityMs: entry.getLastActivityMs(),
-    }))
-  } catch (err) {
-    console.error(
-      'monad-topic-tally-client: failed to fetch discovered topics',
-      err,
-    )
-    return []
-  }
+export async function fetchMonadTopicPostsSince(params:{relayBaseUrl:string;topic:string;sinceMs?:number;policy:ForumReadPolicy;signal?:AbortSignal}):Promise<ForumMessage[]> { return await traverse(params,13) as ForumMessage[] }
+export async function fetchDiscoveredTopics(params:{relayBaseUrl:string;policy:ForumReadPolicy;signal?:AbortSignal}):Promise<DiscoveredTopic[]> { return await traverse(params,14) as DiscoveredTopic[] }
+export async function fetchMonadTopicPostView(params:{relayBaseUrl:string;payloadHashHex:string;policy:ForumReadPolicy;signal?:AbortSignal}):Promise<ForumMessage|undefined> {
+  return exclusive(async()=>{
+    try {
+      const viewFrame=parsed(await request(params.relayBaseUrl.replace(/\/+$/,'')+'/message/monad/topics/'+params.payloadHashHex,{},params.signal))
+      const message=projectForumView(viewFrame,params.policy)
+      if(message.payloadDigest!==params.payloadHashHex.toLowerCase()) throw new Error('Requested T1 mismatch')
+      return message
+    } catch(error) { if(axios.isAxiosError(error) && error.response?.status===404) return undefined; throw error }
+  })
 }

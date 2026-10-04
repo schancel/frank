@@ -258,6 +258,11 @@ impl Db {
         &self.db
     }
 
+    /// Location owned by this database; private siblings must not add legacy CFs.
+    pub(crate) fn owned_path(&self) -> &Path {
+        self.db.path()
+    }
+
     pub(crate) fn write_batch(&self, write_batch: rocksdb::WriteBatch) -> Result<()> {
         self.db.write(write_batch)?;
         Ok(())

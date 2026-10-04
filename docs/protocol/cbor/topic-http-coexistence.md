@@ -1,14 +1,16 @@
 # Topic HTTP CBOR coexistence
 
-The topic transport is currently a safe, opt-in CBOR predecessor. The production wallet remains
-on protobuf until deterministic-CBOR read models are allocated and frozen.
+The canonical Forum server boundary is implemented by #769; #770 owns the normal wallet/bot
+switch and predecessor retirement. The schema-1 CBOR and protobuf boundaries remain reachable
+for their existing exact operations during that bounded transition.
 
 | Route                             | `application/cbor`                                         | `application/x-protobuf`                              |
 | --------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------- |
-| `PUT /message/monad/topics`       | type-10 submission; exact type-9 frame response            | legacy post and response                              |
-| `PUT /message/monad/topics/vote`  | type-11 submission; empty success response                 | legacy vote and response                              |
-| `GET /message/monad/topics/:hash` | exact stored type-9 frame, when the row originated as CBOR | legacy view, only for a semantically valid legacy row |
-| topic list/discovery reads        | not allocated                                              | legacy rows only                                      |
+| `PUT /message/monad/topics`       | type-10/schema-2 post: exact type-15 operation status; schema-1 post: exact type-9 response | legacy post and response |
+| `PUT /message/monad/topics/vote`  | type-11 canonical Forum target: exact type-15 status; old target: empty success | legacy vote and response |
+| `GET /message/monad/topics/:hash` | type-12 canonical Forum view, or exact historical schema-1 type-9 frame | legacy view, only for a semantically valid legacy row |
+| topic list/discovery reads        | types 13/14 for canonical Forum rows only | legacy rows only |
+| `POST /message/monad/topics/status` | type-10/11 exact request; read-only type-15 status | unsupported |
 
 The decoder is selected only from `Content-Type`; bytes are never sniffed or retried through
 another decoder. CBOR requires the exact bare `application/cbor` value, while legacy protobuf
@@ -24,8 +26,9 @@ which overrides `*/*`, so an exact `q=0` cannot be bypassed by a positive wildca
 Because the offered representations are bare media types, media parameters before the first `q`
 constrain a range and do not match. Parameters after `q` are treated as RFC 7231 accept extensions
 and do not constrain the representation.
-Topic list and discovery reads are protobuf-only and return `406` when this same negotiation
-excludes `application/x-protobuf`; their responses vary on `Accept`.
+Topic list/discovery selects canonical Forum only when `Accept` admits CBOR and excludes
+protobuf. Missing/wildcard/dual-format requests preserve predecessor selection. All
+representation-varying GETs use `Vary: Accept`.
 
 CBOR is enabled in wallet clients only with `topicWriteFormat: 'cbor'`. Omitting the option uses
 protobuf. A CBOR vote may target only an authoritative stored canonical type-9 frame whose T1 hash
@@ -33,7 +36,13 @@ and network equal the type-11 target and network. This check happens before broa
 
 ## Storage boundary
 
-RocksDB remains protobuf-at-rest. A CBOR row stores the existing projection plus the exact type-9
+Canonical Forum retains exact type-10/11 frames in a lazy private sibling RocksDB, with
+synchronous pending admission before broadcast and atomic receipt/publication transitions.
+Derived rows are rebuildable; the legacy database's column families are unchanged. See the
+[private storage contract](../forum-runtime-storage.md) for closed record IDs, pending and
+snapshot bounds, restart/rebuild, and actual predecessor reopening proof.
+
+The predecessor remains protobuf-at-rest. A schema-1 CBOR row stores the projection plus its exact type-9
 frame. The frame is authoritative and is never reconstructed from the projection. Repeated burns
 for one type-9 frame are votes. The author is selected by the unsigned tuple `(uint64 block_number,
 uint64 transaction_index, lexicographic raw stored 32-byte tx_hash)`; numeric comparison is
@@ -44,7 +53,7 @@ timestamp. Admission of the post and mandatory initial vote is one atomic batch.
 The projection's `payload_hash` is the type-9 T1 identity, not the legacy
 `SHA256(encrypted_payload)`. Therefore CBOR rows are intentionally absent from legacy topic and
 discovery indexes, and cannot be returned as `MonadTopicPost` protobuf views. This prevents a
-semantically false legacy response while no CBOR list/read-view schema exists.
+semantically false legacy response. Canonical Forum pages are a separate explicit representation.
 
 ## Outcome recovery
 
@@ -58,14 +67,24 @@ already exist from another transaction; it is never used as confirmation. The le
 `in-use` while that journal entry is unresolved. Legacy recovery may use the protobuf post view
 because it includes transaction-specific sender and burn-transaction evidence.
 
+Canonical Forum status returns state0 for an exact request without retained observation,
+state1 for durable pending authority, and state2 only for that exact operation's retained
+successful receipt and publication. Same transaction hash/different submitted bytes never
+borrows confirmation. A pending operation survives timeout/restart and consumes capacity until
+reconciled by exact client replay; status itself never sends or claims. Observed receipt success
+is not independently verified finality. Unknown post-broadcast outcomes remain recoverable.
+
+Canonical page cursors bind exact query/since, epoch/revision, retained incarnation and last
+tuple; URL transport is unique unpadded base64url. `since` remains signed i64 milliseconds,
+inclusive, converted without precision loss. Expired/restarted cursors return410, malformed
+cursors400, capacity503 and oversized snapshots/rows413. Snapshots remain immutable across
+later votes. #770 owns complete-page accumulation and atomic publication in clients.
+
 ## Removal trigger
 
-Release **R** must allocate and freeze deterministic-CBOR schemas and cross-language vectors for
-the single-post view, topic page, discovery list, and vote recovery/status query. R may then switch
-the normal wallet and bots to CBOR while retaining both formats. R+1 disables protobuf writes after
-one released-client compatibility interval. R+2 removes protobuf projections and read paths only
-for CBOR-origin rows after proving their exact authoritative type-9 bytes remain available.
-Protobuf-origin rows have no type-9 frame and retain exact constrained historical storage, reader
-and export paths until the main specification's legacy reachability/deletion gates clear. Neither
-origin is transcoded into the other. Until R lands, the legacy format and generated bindings remain
-supported and the CBOR writer stays opt-in.
+The immediate successor is **#770**: switch normal post/reply/read/list/discovery/vote and
+transaction reconciliation together, prove the real Forum flow, then retire predecessor
+writers/routes/readers under its explicit retained-authority disposition. #769 does not reset
+development stores or delete pending protobuf/schema-1 wallet journals. Generated bindings
+remain until repository/build and historical reachability proof authorizes removal. No origin
+is transcoded into another identity, and #675 remains open until the complete outcome is proven.

@@ -640,7 +640,7 @@ async function mainCanonical(
     const status = await startQwenInstallationServer({
       directory,
       port: Number(statusPort),
-      host: process.env.QWEN_BOT_CANONICAL_STATUS_HOST,
+      host: process.env.QWEN_BOT_CANONICAL_STATUS_HOST || undefined,
     })
     const closeDirectory = closeCanonicalDirectory
     closeCanonicalDirectory = async () => {

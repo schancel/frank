@@ -1176,7 +1176,7 @@ export async function startQwenInstallationServer(params: {
   >
   port: number
   host?: string
-}): Promise<{ port: number; close(): Promise<void> }> {
+}): Promise<{ port: number; address: string; close(): Promise<void> }> {
   const server: Server = createServer((request, response) => {
     const cors = {
       'access-control-allow-origin': '*',
@@ -1206,10 +1206,13 @@ export async function startQwenInstallationServer(params: {
   })
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
-    server.listen(params.port, params.host ?? '127.0.0.1', resolve)
+    // An unset or empty host means loopback, never every interface.
+    server.listen(params.port, params.host || '127.0.0.1', resolve)
   })
+  const bound = server.address() as { port: number; address: string }
   return {
-    port: (server.address() as { port: number }).port,
+    port: bound.port,
+    address: bound.address,
     close: () => new Promise(resolve => server.close(() => resolve())),
   }
 }

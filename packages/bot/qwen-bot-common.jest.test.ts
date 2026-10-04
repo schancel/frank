@@ -527,6 +527,15 @@ describe('#703/#778 canonical Qwen composition', () => {
       unavailable: false,
     })
     expect((await read('00'.repeat(32))).status).toBe(404)
+    // An empty host (an env variable set to nothing) still binds loopback only.
+    const emptyHost = await startQwenInstallationServer({
+      directory,
+      port: 0,
+      host: '',
+    })
+    cleanup.push(() => emptyHost.close())
+    expect(emptyHost.address).toBe('127.0.0.1')
+    expect(status.address).toBe('127.0.0.1')
     expect(
       (await fetch(`http://127.0.0.1:${status.port}/anything-else`)).status,
     ).toBe(404)

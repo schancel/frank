@@ -1,5 +1,14 @@
 # Manual test: encrypted UI ↔ Qwen over the canonical path
 
+> **2026-10-04 afternoon — this describes the OLD design.** The owner reset the requirements: no
+> operator approval file or installation step, any user messages any address across relays, and
+> blackjack is a peer-to-peer challenge from the message-types menu with stamp wagers. That is being
+> built now (worktrees `open-relay`, `open-client`, `p2p-blackjack`). What is below still runs and
+> shows encrypted UI ↔ Qwen messaging end to end, but it goes through the approval flow hidden in
+> the launcher and is not the design that will ship. This file will be rewritten when the new
+> design has been run live.
+
+
 Last updated 2026-10-04 10:30 PDT. This is the first point that really works end to end. Typed
 blackjack, two-relay forwarding and legacy-path retirement are not in it yet (see "Where it stops").
 

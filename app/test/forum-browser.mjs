@@ -819,8 +819,7 @@ try {
   )
   const discovered = await evaluate(`(() => {
     const topics=document.querySelector('#q-app').__vue_app__.config.globalProperties.$pinia.state.value.topics;
-    JSON.stringify(topics);
-    return topics.discoveredTopics.news;
+    return JSON.parse(JSON.stringify(topics.discoveredTopics.news));
   })()`)
   assert.equal(discovered.postCount, '18446744073709551615')
   assert.equal(discovered.revision, '18446744073709551615')

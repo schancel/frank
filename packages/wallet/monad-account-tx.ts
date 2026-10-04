@@ -164,7 +164,13 @@ export class MonadAccountTxSigner {
       data,
       ...overrides,
     })
-    const transaction = Transaction.from(populated)
+    const { from, ...unsignedFields } = populated
+    if (
+      typeof from !== 'string' ||
+      from.toLowerCase() !== this.address.toLowerCase()
+    )
+      throw new Error('Canonical populated sender mismatch')
+    const transaction = Transaction.from(unsignedFields)
     if (
       transaction.to === null ||
       transaction.chainId <= 0n ||

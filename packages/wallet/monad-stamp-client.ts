@@ -2044,6 +2044,9 @@ export class MonadCanonicalStampClient {
               txHash: tx.hash!,
               valueWei: tx.value.toString(),
             })
+            // The status change below rewrites the same row; make the spend durable first so
+            // the two writes cannot commit out of order.
+            await this.flushCanonicalReservations()
           }
           const live = canonicalLiveLeases
             .get(this.wallet.walletState)

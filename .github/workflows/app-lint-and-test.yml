@@ -46,7 +46,7 @@ jobs:
           node-version: "26"
       - run: yarn install
       - name: Wallet Monad-chain regression
-        run: yarn workspace @frank/wallet test --ci --runInBand chain/monad-chain.jest.test.ts
+        run: yarn workspace @frank/wallet test --ci --runInBand chain/monad-chain.jest.test.ts monad-stamp-client.jest.test.ts storage/stamp-attempt-journal.jest.test.ts
 
   cashweb-message-store:
     runs-on: ubuntu-latest

@@ -2,7 +2,7 @@
   <q-dialog v-model="showBanner">
     <q-card>
       <q-card-section
-        ><div class="text-h6">Welcome to Stamp</div></q-card-section
+        ><div class="text-h6">Welcome to Frank</div></q-card-section
       >
       <q-separator />
       <q-card-section>
@@ -14,7 +14,7 @@
         <p>Please consider becoming a VIP. By subscribing you will:</p>
         <p></p>
         <ul>
-          <li>Receive monthly Lotus tokens to use Stamp</li>
+          <li>Receive monthly Lotus tokens to use Frank</li>
           <li>Be added as a default contact in the next release</li>
           <li>Flair next to your name</li>
         </ul>

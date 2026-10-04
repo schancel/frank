@@ -341,13 +341,13 @@ export default configure(ctx => {
         cleanupOutdatedCaches: true,
       },
       manifest: {
-        name: 'Stamp',
-        short_name: 'Stamp',
+        name: 'Frank',
+        short_name: 'Frank',
         description: ' A Lotus powered internet cryptomessenger',
         display: 'standalone',
         orientation: 'portrait',
-        background_color: '#ffffff',
-        theme_color: '#027be3',
+        background_color: '#f7f7f2',
+        theme_color: '#121218',
         icons: [
           {
             src: 'icons/icon-128x128.png',

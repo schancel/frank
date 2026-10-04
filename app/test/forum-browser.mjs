@@ -312,11 +312,12 @@ try {
   // Drive the real drawer's QInput. One wei above Number's precise integer range.
   const threshold = '0.009007199254740993'
   await input('forum-threshold', threshold)
-  await until(`${forumState}.voteThreshold==='9007199254740993'`)
+  await until(`${forumState}.voteThreshold===${JSON.stringify(threshold)}`)
   assert.equal(
     await evaluate(`${forumState}.voteThreshold`),
-    '9007199254740993',
+    threshold,
   )
+  assert.equal(await evaluate(`document.querySelector('[data-test="forum-threshold"]').value`), threshold)
   await input('forum-threshold', '0')
   await until(`${forumState}.voteThreshold==='0'`)
   const title = 'Forum browser ' + Date.now()

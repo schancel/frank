@@ -532,6 +532,35 @@ impl<'a> Directory<'a> {
         Self::current_result(&state, committed.status()?)
     }
 
+    /// Validate supplied current trust for staging without changing durable state.
+    ///
+    /// Success is only a point-in-time validation, not a fresh authority token or a
+    /// committed checkpoint. Serving still requires `current` or `advance` with fresh
+    /// inputs. This uses the same retained-evidence, clock, quarantine and head policy.
+    pub fn check_current(&self, context: Context<'_>) -> Result<()> {
+        self.ensure_available()?;
+        let _guard = self
+            .db
+            .lock_directory_preview()
+            .map_err(|_| AdmissionError::Unavailable)?;
+        let meta = self.storage(self.header())?;
+        policy::preflight(
+            meta.as_ref().map_or(0, |m| m.retained),
+            meta.as_ref().map_or(0, |m| m.charged),
+            &[],
+        )?;
+        let loaded = self.storage(self.load(meta.as_ref()))?;
+        let now = policy::clock(context.now, loaded.as_ref().map(|s| s.checked))?;
+        if context.relay.is_none() {
+            return Err(AdmissionError::Binding);
+        }
+        let state = loaded.ok_or(AdmissionError::Unenrolled)?;
+        if !state.proof.is_empty() {
+            return Err(AdmissionError::Fork);
+        }
+        state.history.head()?.fresh(now, context.relay)
+    }
+
     /// Recheck the durable head against freshly supplied trust inputs; successful checked-time
     /// advancement is synchronous and durable before returning. An empty batch cannot revive expiry.
     pub fn current(&self, context: Context<'_>) -> Result<Current> {

@@ -724,7 +724,19 @@ export async function main(argv: string[], env: Record<string, string | undefine
             topicWire: 'protobuf',
           }),
         )
-        return 0
+        if (config.routeTransport) {
+          await admission.close(); admission = undefined
+          await fixture.stop(); fixture = undefined
+          assertRunning()
+          const front = await startDirectoryRouteTransport({ bundle: config.bundle, nowNs: config.nowNs, backendUrl: config.routeTransport.backendUrl })
+          try {
+            print(JSON.stringify({ kind: 'demo-directory-route-transport', responseAllowanceMs: 70000 }))
+            if (interrupted === undefined) await new Promise<void>(resolve => {
+              const timer = setInterval(() => { if (interrupted !== undefined) { clearInterval(timer); resolve() } }, 50)
+            })
+          } finally { await front.stop() }
+        }
+        return interrupted ?? 0
       } finally {
         try { await admission?.close() } finally {
           try { await fixture?.stop() } finally {
@@ -774,4 +786,71 @@ if (require.main === module) {
       process.exit(1)
     },
   )
+}
+
+/** Distinct disposable-local directory HTTPS front. The trust probe is stopped before this
+ * exclusive listener starts; neither its 3s/5s limits nor installed relay tuple is changed.
+ */
+export async function startDirectoryRouteTransport(options: {
+  bundle: import('./directory-trust/index').BundleRef
+  nowNs: bigint
+  backendUrl: string
+}): Promise<{ stop(): Promise<void>; endpoint: string }> {
+  const { listenerMaterial, endpoint } = await import('./directory-trust/provision')
+  const { createServer: httpsServer } = await import('node:https')
+  const { request: httpRequest } = await import('node:http')
+  const target = new URL(options.backendUrl)
+  if (target.protocol !== 'http:' || target.hostname !== '127.0.0.1' || !target.port || target.username || target.password || target.pathname !== '/' || target.search || target.hash) throw new Error('Explicit loopback directory backend required')
+  const material = listenerMaterial(options.bundle, options.nowNs)
+  endpoint(material.bundle.trustInputs.endpoint)
+  const publicPort = Number(material.bundle.trustInputs.endpoint.slice(material.bundle.trustInputs.endpoint.lastIndexOf(':') + 1))
+  const sockets = new Set<import('node:stream').Duplex>()
+  const upstreams = new Set<import('node:http').ClientRequest>()
+  let closing = false
+  const server = httpsServer({ key: material.key, cert: material.cert }, (request, response) => {
+    const path = request.url ?? ''
+    if (closing || !/^\/directory\/v1\/[a-z0-9][a-z0-9._-]{0,63}\/(02|03)[0-9a-f]{64}\/(head|statements\/[0-9a-f]{64})$/.test(path) || !['GET', 'PUT', 'OPTIONS'].includes(request.method ?? '')) { response.writeHead(closing ? 503 : 404, { 'Content-Type': 'text/plain' }); response.end(closing ? 'unavailable/not-started' : 'not-found'); return }
+    if (request.method === 'PUT' && request.headers['content-type'] !== 'application/vnd.frank.cbor') { response.writeHead(415); response.end(); return }
+    const upstream = httpRequest({ hostname: '127.0.0.1', port: target.port, path, method: request.method, headers: { 'Content-Type': 'application/vnd.frank.cbor', Accept: 'application/vnd.frank.cbor', ...Object.fromEntries(['origin', 'access-control-request-method', 'access-control-request-headers'].flatMap(name => typeof request.headers[name] === 'string' ? [[name, request.headers[name]]] : [])) } }, reply => {
+      // Preserve route-local static errors and exact CBOR success; no redirect handling.
+      if (reply.statusCode && reply.statusCode >= 300 && reply.statusCode < 400) { reply.destroy(); response.writeHead(503); response.end(); return }
+      const headers: Record<string, string> = { 'Cache-Control': 'no-store' }
+      for (const name of ['content-type', 'x-frank-directory-evidence', 'x-frank-directory-disposition', 'access-control-allow-origin', 'access-control-allow-methods', 'access-control-allow-headers', 'access-control-expose-headers', 'vary']) {
+        const value = reply.headers[name]; if (typeof value === 'string') headers[name] = value
+      }
+      response.writeHead(reply.statusCode ?? 503, headers)
+      let count = 0
+      reply.on('data', (chunk: Buffer) => { count += chunk.length; if (count > 262144) { reply.destroy(); response.destroy() } })
+      reply.on('error', () => response.destroy())
+      reply.pipe(response)
+    })
+    upstreams.add(upstream)
+    upstream.once('close', () => upstreams.delete(upstream))
+    upstream.setTimeout(70000, () => upstream.destroy())
+    upstream.on('error', () => { if (!response.headersSent) { response.writeHead(503); response.end('unavailable/outcome-unknown') } else response.destroy() })
+    const bodyTimer = setTimeout(() => { upstream.destroy(); if (!response.headersSent) { response.writeHead(503); response.end('unavailable/not-started') } }, 5000)
+    let length = 0
+    request.on('data', (chunk: Buffer) => { length += chunk.length; if (length > 262144) upstream.destroy() })
+    request.once('end', () => clearTimeout(bodyTimer))
+    request.once('error', () => { clearTimeout(bodyTimer); upstream.destroy() })
+    request.once('aborted', () => { clearTimeout(bodyTimer); upstream.destroy() })
+    response.once('close', () => { clearTimeout(bodyTimer); if (!response.writableFinished) upstream.destroy() })
+    request.pipe(upstream)
+  })
+  server.headersTimeout = 5000
+  server.requestTimeout = 5000
+  server.setTimeout(70000)
+  server.on('timeout', socket => socket.destroy())
+  server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)) })
+  try {
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(publicPort, '127.0.0.1', resolve) })
+  } catch (error) { material.release(); throw error }
+  let stopped: Promise<void> | undefined
+  return { endpoint: material.bundle.trustInputs.endpoint, stop: () => stopped ??= new Promise<void>(resolve => {
+    closing = true
+    // Stopping the front disconnects waiters, not the native owner. Its main lifecycle drains.
+    for (const upstream of upstreams) upstream.destroy()
+    for (const socket of sockets) socket.destroy()
+    server.close(() => { material.release(); resolve() })
+  }) }
 }

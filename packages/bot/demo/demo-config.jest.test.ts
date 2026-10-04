@@ -70,6 +70,13 @@ describe('explicit directory integration configuration', () => {
     expect(config).not.toHaveProperty('wallet')
     expect(FAKE()).not.toHaveProperty('directory')
   })
+  it('requires an explicit loopback backend for route transport and retains the installed public endpoint', () => {
+    const input = { ...complete(), routeTransport: { backendUrl: 'http://127.0.0.1:18098' } }
+    expect(resolveDirectoryDemoConfig(input).routeTransport!.backendUrl).toBe(input.routeTransport.backendUrl)
+    expect(resolveDirectoryDemoConfig(input).installed.endpoint).toBe(trust.endpoint)
+    for (const backendUrl of ['https://127.0.0.1:18098', 'http://remote.invalid:18098', 'http://127.0.0.1:18098/path', 'http://user@127.0.0.1:18098'])
+      expect(() => resolveDirectoryDemoConfig({ ...complete(), routeTransport: { backendUrl } })).toThrow()
+  })
   it('keeps pending/mismatched participant sets unselected', () => {
     for (const participants of [undefined, { 'relay-a': trust, 'relay-b': null, bot: trust }, { 'relay-a': trust, 'relay-b': trust, bot: { ...trust, rev0T1: '33'.repeat(32) } }])
       expect(() => resolveDirectoryDemoConfig({ ...complete(), participants })).toThrow()

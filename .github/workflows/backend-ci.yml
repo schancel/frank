@@ -50,6 +50,18 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Set up Node for directory integration tests
+      uses: actions/setup-node@v4
+      with:
+        node-version: 24
+
+    - name: Install frozen directory test dependencies
+      run: |
+        npm install --global yarn@1.22.22
+        yarn install --frozen-lockfile --ignore-scripts
+        node node_modules/typescript/bin/tsc -p packages/nakamoto/tsconfig.json
+        node node_modules/typescript/bin/tsc -p packages/crypto-box/tsconfig.json
+
     - name: Install gcc-12 (see the job-level CC/CXX comment above)
       run: |
         sudo apt-get update

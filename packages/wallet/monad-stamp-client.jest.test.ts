@@ -1717,7 +1717,7 @@ async function makeCanonicalConsumerFixture() {
       network: 'monad-testnet',
       senderCurrent,
       recipientCurrent,
-      messageId: new Uint8Array(32).fill(id),
+      messageId: new Uint8Array(16).fill(id),
       items: [directMessageText('exact frozen text')],
       roles: material.canonicalRoles!.create('monad-testnet', senderCurrent),
     })

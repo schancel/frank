@@ -448,3 +448,28 @@ describe('effect-free typed public preparation', () => {
     }
   })
 })
+
+it('rejects a process origin inconsistent with its advertised home tuple before returning public evidence', () => {
+  const material = createMonadWalletMaterial(roots())
+  const input = revisionZeroInput(material)
+  input.relayA.tuple.expiry.nanoseconds = 1
+  input.relayB.tuple.expiry.nanoseconds = 1
+  try {
+    expect(() =>
+      material.canonicalRoles!.prepareRevisionZero({
+        ...input,
+        relayA: { ...input.relayA, origin: 'https://wrong-home.example' },
+      }),
+    ).toThrow('endpoint')
+    // A shared authority key is valid: process route consistency does not require distinct roots.
+    expect(
+      material.canonicalRoles!.prepareRevisionZero(input).configuration.relayA
+        .tuple.identity.keyBytes,
+    ).toEqual(
+      material.canonicalRoles!.prepareRevisionZero(input).configuration.relayB
+        .tuple.identity.keyBytes,
+    )
+  } finally {
+    material.dispose()
+  }
+})

@@ -178,7 +178,12 @@ async function launch() {
     if (m.method === 'Network.requestWillBeSent') net.set(q.requestId, { t: Date.now(), method: q.request.method, url: q.request.url, type: q.type })
     if (m.method === 'Network.responseReceived' && net.has(q.requestId)) Object.assign(net.get(q.requestId), { status: q.response.status })
     if (m.method === 'Network.loadingFailed' && net.has(q.requestId)) Object.assign(net.get(q.requestId), { failed: q.errorText, cors: q.corsErrorStatus?.corsError ?? null, blocked: q.blockedReason ?? null })
-    if (m.method === 'Runtime.consoleAPICalled' && !secretPhase) consoleLines.push({ t: Date.now(), level: q.type, text: q.args.map(a => a.value ?? a.description ?? '').join(' ').slice(0, 500) })
+    if (m.method === 'Runtime.consoleAPICalled' && !secretPhase) {
+      const text = q.args.map(a => a.value ?? a.description ?? '').join(' ').slice(0, 500)
+      consoleLines.push({ t: Date.now(), level: q.type, text })
+      // Which way an undelivered hand message was recovered; the interrupted-hand check reads it.
+      if (/^blackjack: (resending|settling) undelivered /.test(text)) fs.appendFileSync(path.join(STATE, 'run', 'hand-recovery.log'), `${profileName} ${text}\n`)
+    }
     if (m.method === 'Runtime.exceptionThrown' && !secretPhase) consoleLines.push({ t: Date.now(), level: 'exception', text: String(q.exceptionDetails.exception?.description || q.exceptionDetails.text).slice(0, 500) })
     if (m.method === 'Log.entryAdded' && !secretPhase) consoleLines.push({ t: Date.now(), level: 'log:' + q.entry.level, text: (q.entry.text + ' ' + (q.entry.url ?? '')).slice(0, 500) })
     if (p) {
@@ -532,6 +537,9 @@ const phases = {
           report.hand = { killed: true, actions, final: state }
           return
         }
+        const all = await bubbles()
+        const newestHand = all.slice(Math.max(0, all.map(b => /Blackjack challenge/.test(b.text)).lastIndexOf(true)))
+        if (newestHand.some(b => b.sent && !b.sending && !b.paymentPending && !b.failed && b.text.includes(killText))) throw Error(`"${killText}" was delivered before the window could be killed; the interrupted case was not exercised`)
         await delay(40)
         continue
       }

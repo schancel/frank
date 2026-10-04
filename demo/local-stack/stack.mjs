@@ -4,7 +4,7 @@
 // accounts. See README.md in this directory.
 //
 //   node demo/local-stack/stack.mjs build                 build cashwebd (one cargo slot), the app (once per relay), Hardhat
-//   node demo/local-stack/stack.mjs up [live|stub]        wipe state and start everything; Qwen on local Ollama (live) or its stub
+//   node demo/local-stack/stack.mjs up [live|stub]        wipe state and start everything; Qwen via the Alibaba Cloud API in ~/.frank-demo-qwen.env (live) or its stub
 //   node demo/local-stack/stack.mjs status
 //   node demo/local-stack/stack.mjs fund <0xaddress> [MON]
 //   node demo/local-stack/stack.mjs chrome [profile-name] [a|b]   open Chrome with its own throwaway profile (b: the app on relay-b)
@@ -261,12 +261,26 @@ const BOT_SCRIPTS = { qwen: 'qwen-bot.livecheck.ts', blackjack: 'blackjack-p2p-b
 const TSX = join(REPO, 'node_modules', '.bin', 'tsx')
 const BOT_CWD = join(REPO, 'packages', 'bot')
 const STAMP_WEI = '10000000000000000' // 0.01 MON, the app's default stamp
+// Live mode talks to Alibaba Cloud's Qwen API (no local model). The key and endpoint come from the
+// owner's env file, never from this repository: QWEN_ENV_FILE, default ~/.frank-demo-qwen.env, with
+// QWEN_API_KEY and QWEN_OPENAI_COMPATIBLE_ENDPOINT (and optionally QWEN_MODEL; unset = the bot's default).
+const QWEN_ENV_FILE = process.env.QWEN_ENV_FILE ?? join(process.env.HOME ?? '', '.frank-demo-qwen.env')
+function qwenCloud() {
+  if (!existsSync(QWEN_ENV_FILE)) die(`live mode needs the Qwen API settings in ${QWEN_ENV_FILE} (QWEN_API_KEY, QWEN_OPENAI_COMPATIBLE_ENDPOINT), or use "stub"`)
+  const file = Object.fromEntries(readFileSync(QWEN_ENV_FILE, 'utf8').split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#') && l.includes('=')).map(l => {
+    const at = l.indexOf('=')
+    return [l.slice(0, at).replace(/^export\s+/, '').trim(), l.slice(at + 1).trim().replace(/^(['"])(.*)\1$/, '$2')]
+  }))
+  const pick = name => process.env[name] ?? file[name]
+  if (!pick('QWEN_API_KEY') || !pick('QWEN_OPENAI_COMPATIBLE_ENDPOINT')) die(`${QWEN_ENV_FILE} must set QWEN_API_KEY and QWEN_OPENAI_COMPATIBLE_ENDPOINT`)
+  return { QWEN_API_KEY: pick('QWEN_API_KEY'), QWEN_OPENAI_COMPATIBLE_ENDPOINT: pick('QWEN_OPENAI_COMPATIBLE_ENDPOINT'), ...(pick('QWEN_MODEL') ? { QWEN_MODEL: pick('QWEN_MODEL') } : {}) }
+}
 function botEnv(kind, mode) {
   const dir = join(P.bots, kind)
   mkdirSync(dir, { recursive: true })
   const common = { NODE_EXTRA_CA_CERTS: P.ca, MONAD_RELAY_BASE_URL: ORIGINS['relay-a'], E2E_DEMO_RELAY_URL: ORIGINS['relay-a'], MONAD_RPC_CHAIN: NETWORK.network, MONAD_STAMP_BURN_ADDRESS: BURN_ADDRESS, FRANK_DM_DEFAULT_STAMP_VALUE_WEI: STAMP_WEI }
   if (kind === 'qwen') {
-    const model = mode === 'stub' ? { QWEN_BOT_MODE: 'stub' } : { QWEN_BOT_MODE: 'live', QWEN_API_KEY: 'local-ollama-placeholder', QWEN_OPENAI_COMPATIBLE_ENDPOINT: 'http://127.0.0.1:11434/v1', QWEN_MODEL: process.env.QWEN_MODEL ?? 'qwen2.5:7b' }
+    const model = mode === 'stub' ? { QWEN_BOT_MODE: 'stub' } : { QWEN_BOT_MODE: 'live', ...qwenCloud() }
     return { ...common, ...model, QWEN_BOT_CANONICAL_ROOTS_JSON: join(dir, 'roots.json'), QWEN_BOT_STATE_DIR: join(dir, 'state'), QWEN_BOT_WALLET_STATE_DIR: join(dir, 'wallet'), QWEN_BOT_HANDOFF_JSON: join(dir, 'handoff.json'), QWEN_BOT_STAMP_VALUE_WEI: STAMP_WEI, QWEN_BOT_POLL_INTERVAL_MS: '2000' }
   }
   const root = join(dir, 'account-root.hex')
@@ -298,12 +312,8 @@ async function startBot(kind, mode = botMode()) {
   say(`${kind} bot running as ${accounts[kind].address}; log ${join(P.logs, `${kind}-bot.log`)}`)
 }
 async function startBots(mode) {
-  if (mode !== 'live' && mode !== 'stub') die('the Qwen bot mode must be "live" (local Ollama) or "stub"')
-  if (mode === 'live') {
-    const model = process.env.QWEN_MODEL ?? 'qwen2.5:7b'
-    const tags = await fetch('http://127.0.0.1:11434/api/tags').then(r => r.json()).catch(() => null)
-    if (!tags?.models?.some(m => m.name === model)) die(`local Ollama at 127.0.0.1:11434 does not offer ${model}; start it, or use "stub"`)
-  }
+  if (mode !== 'live' && mode !== 'stub') die('the Qwen bot mode must be "live" (Alibaba Cloud Qwen API) or "stub"')
+  if (mode === 'live') qwenCloud() // fail before anything starts if the API settings are missing
   mkdirSync(P.bots, { recursive: true })
   writeFileSync(join(P.bots, 'mode'), mode + '\n')
   // Qwen first: the blackjack bot challenges accounts published after it started, and the other
@@ -406,7 +416,9 @@ function humanHand(challenger, other, role, options, interrupt) {
   const order = [other, challenger]
   const turn = (who, extra = {}) => drive({ ...options, BET: '0.04', ...extra }, who, 'play', account(who === other ? challenger : other).address, 'turn')
   let next = 0
+  const recovery = join(P.run, 'hand-recovery.log')
   if (interrupt) {
+    rmSync(recovery, { force: true })
     // The dealer's window is killed while its deal is on its way, before it is delivered. When
     // the window is opened again the same deal must go out once and the hand must finish.
     turn(other)
@@ -415,6 +427,12 @@ function humanHand(challenger, other, role, options, interrupt) {
   }
   for (let turns = 0; turns < 14 && !existsSync(join(P.run, 'hand-resolved')); turns++, next++) turn(order[next % 2])
   if (!existsSync(join(P.run, 'hand-resolved'))) die(`the hand between ${challenger} and ${other} did not resolve`)
+  if (interrupt) {
+    const lines = existsSync(recovery) ? readFileSync(recovery, 'utf8').trim() : ''
+    say(lines
+      ? `interrupted hand: the reopened dealer recovered the deal by the resend path:\n${lines}`
+      : 'interrupted hand: NOTE the deal was recovered by settling its recorded payment (killed after the payment set was saved), not by the resend path')
+  }
   // What each of them sees at the end.
   for (const who of order) drive({ LABEL: 'result', VIEW_RESULT: '1' }, who, 'play', account(who === other ? challenger : other).address, 'turn')
 }

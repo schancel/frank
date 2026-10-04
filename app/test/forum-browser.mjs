@@ -292,6 +292,20 @@ try {
   )
   await evaluate(`location.hash='#/forum'`)
   await until(`document.querySelector('[data-test="forum-threshold"]')`)
+  console.log('Actual Forum drawer before opening:', await evaluate(`(() => {
+    const button = document.querySelector('button[aria-label="Forum settings"]');
+    const root = document.querySelector('[data-test="forum-topic"]');
+    const field = root.matches('input,textarea') ? root : root.querySelector('input,textarea');
+    return { expanded: button?.getAttribute('aria-expanded'), rootTag: root.tagName, fieldTag: field.tagName, drawerClass: field.closest('.q-drawer')?.className };
+  })()`))
+  await evaluate(`document.querySelector('button[aria-label="Forum settings"]').click()`)
+  await until(`document.querySelector('button[aria-label="Forum settings"]').getAttribute('aria-expanded')==='true'`)
+  await until(`(() => {
+    const root = document.querySelector('[data-test="forum-topic"]');
+    const field = root.matches('input,textarea') ? root : root.querySelector('input,textarea');
+    const box = field.getBoundingClientRect();
+    return box.width > 0 && box.height > 0 && box.left >= 0 && box.right <= innerWidth && !field.closest('[inert]');
+  })()`)
   await input('forum-topic', 'news')
   await pressEnter('[data-test="forum-topic"]')
   await until(`${forumState}.selectedTopic==='news'`)

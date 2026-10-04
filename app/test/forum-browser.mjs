@@ -357,10 +357,112 @@ try {
   await evaluate(refresh)
   await until(`${forumState}.index[${JSON.stringify(digest)}].voteWeightWei==='0'`)
   assert.ok(await evaluate(`Array.from(document.querySelectorAll('a.post-title')).some(e=>e.textContent===${JSON.stringify(title)}&&e.getClientRects().length>0)`),'zero aggregate renders at zero threshold')
+  // Split the actual signed root/reply observations into two canonical pages.
+  // The invented cursor is served by this isolated interception fixture, with exact echo.
+  let continuation, pagingFixture
+  const fulfill = async (event, bytes) => {
+    await call('Fetch.fulfillRequest',{
+      requestId:event.params.requestId,responseCode:200,
+      responseHeaders:[...event.params.responseHeaders.filter(h=>!['content-length','content-encoding','content-type'].includes(h.name.toLowerCase())),
+        {name:'content-type',value:'application/cbor'},{name:'content-length',value:String(bytes.length)}],
+      body:Buffer.from(bytes).toString('base64'),
+    })
+  }
+  interceptResponse=async event=>{
+    const query=new URL(event.params.request.url).searchParams
+    assert.equal(query.get('topic'),'news')
+    if(query.has('cursor')){
+      assert.ok(pagingFixture,'continuation requires its original first page')
+      assert.equal(query.get('cursor'),pagingFixture.cursor,'continuation sends exact retained cursor')
+      assert.equal(query.get('since'),pagingFixture.since,'continuation retains inclusive query')
+      assert.equal(continuation,undefined,'only one bounded terminal continuation')
+      continuation=event
+      return
+    }
+    const {body,base64Encoded}=await call('Fetch.getResponseBody',{requestId:event.params.requestId})
+    const raw=base64Encoded?Buffer.from(body,'base64'):Buffer.from(body)
+    pagingFixture=await evaluate(`(async()=>{
+      const c=await import('/@fs'+${JSON.stringify(codecPath)});
+      const page=c.validateFrame(new Uint8Array(${JSON.stringify([...raw])}),c.defaultContext());
+      if(page.kind!=='parsed'||page.typeId!==13)throw Error('expected actual first topic page');
+      const rows=page.typed.rows.filter(view=>{
+        const title=view.typed.postFrame.typed.content.entries[0].title;
+        return title===${JSON.stringify(title)}||title===${JSON.stringify(title+' reply')};
+      });
+      if(rows.length!==2)throw Error('first fixture response must contain exact signed root and reply');
+      const encoded=rows.map(view=>{
+        view.payload.set(8n,new Map([[0n,false],[1n,c.fromHex('0'.repeat(63)+'7')]]));
+        view.payload.set(9n,18446744073709551615n);
+        return c.encodeForumReadFrame(12,view.payload);
+      });
+      const firstView=rows[0].typed;
+      const cursor=c.encodeForumCursor({family:13,network:page.typed.network,
+        revision:18446744073709551615n,epoch:page.typed.epoch,incarnation:1n,
+        topic:page.typed.topic,since:page.typed.since,
+        last:{timestamp:firstView.firstVisible,hash:c.contentHash(firstView.postFrame)}});
+      const first=new Map(page.payload),terminal=new Map(page.payload);
+      first.set(3n,18446744073709551615n);first.set(4n,[encoded[0]]);first.set(5n,cursor);first.delete(7n);
+      terminal.set(3n,18446744073709551615n);terminal.set(4n,[encoded[1]]);terminal.delete(5n);terminal.set(7n,cursor);
+      return {first:Array.from(c.encodeForumReadFrame(13,first)),terminal:Array.from(c.encodeForumReadFrame(13,terminal)),
+        cursor:c.forumCursorToTransport(cursor),hashes:rows.map(view=>c.toHex(c.contentHash(view.typed.postFrame)))};
+    })()`)
+    pagingFixture.since=query.get('since')
+    await fulfill(event,pagingFixture.first)
+  }
+  const beforePaging=await evaluate(`JSON.stringify(${forumState}.messages)`)
+  await evaluate(`(()=>{window.__pagedRefresh=${refresh}.then(()=>true);return true})()`)
+  for(let n=0;!continuation&&n<200;n++)await new Promise(resolve=>setTimeout(resolve,50))
+  assert.ok(continuation,'actual client traverses first page into held continuation')
+  assert.equal(await evaluate(`JSON.stringify(${forumState}.messages)`),beforePaging,'first-page prefix never publishes')
+  assert.equal(await evaluate(`${forumState}.isRefreshing`),true,'continuation keeps query loading')
+  await fulfill(continuation,pagingFixture.terminal)
+  await evaluate(`window.__pagedRefresh`)
+  for(const hash of pagingFixture.hashes){
+    assert.equal(await evaluate(`${forumState}.index[${JSON.stringify(hash)}].voteWeightWei`),'7','all terminal snapshot observations publish together')
+    assert.equal(await evaluate(`${forumState}.index[${JSON.stringify(hash)}].revision`),'18446744073709551615')
+  }
+  assert.equal(await evaluate(`${forumState}.messages.filter(row=>row.topic==='news').length`),2,'complete query replaces prior retained rows')
+  assert.equal(await evaluate(`${forumState}.isRefreshing`),false)
+  assert.ok(await evaluate(`Array.from(document.querySelectorAll('a.post-title')).some(e=>e.textContent===${JSON.stringify(title)}&&e.getClientRects().length>0)`),'complete multipage snapshot is rendered')
+  // Feed the actual discovery consumer an exact maximum-u64 count.
+  await call('Fetch.disable')
+  interceptResponse=async event=>{
+    const {body,base64Encoded}=await call('Fetch.getResponseBody',{requestId:event.params.requestId})
+    const raw=base64Encoded?Buffer.from(body,'base64'):Buffer.from(body)
+    const encoded=await evaluate(`(async()=>{
+      const c=await import('/@fs'+${JSON.stringify(codecPath)});
+      const page=c.validateFrame(new Uint8Array(${JSON.stringify([...raw])}),c.defaultContext());
+      if(page.kind!=='parsed'||page.typeId!==14||page.typed.nextCursor)throw Error('discovery fixture requires complete type14');
+      const entries=page.payload.get(2n);
+      const news=entries.find(entry=>entry.get(0n)==='news');
+      if(!news)throw Error('normal discovery omitted signed news posts');
+      news.set(1n,18446744073709551615n);
+      page.payload.set(1n,18446744073709551615n);
+      return Array.from(c.encodeForumReadFrame(14,page.payload));
+    })()`)
+    await fulfill(event,encoded)
+  }
+  await call('Fetch.enable',{patterns:[{urlPattern:'*/message/monad/topics/discover*',requestStage:'Response'}]})
+  await evaluate(`(async()=>{
+    const m=await import('/src/stores/topics.ts');
+    const pinia=document.querySelector('#q-app').__vue_app__.config.globalProperties.$pinia;
+    const result=await m.useTopicStore(pinia).refreshDiscoveredTopics();
+    if(result===false)throw Error('complete discovery fixture was not published');
+  })()`)
+  await until(`document.querySelector('[data-test="forum-topic-count"][data-topic="news"]')?.textContent.trim()==='18446744073709551615'`)
+  assert.equal(await evaluate(`document.querySelector('[data-test="forum-topic-count"][data-topic="news"]').textContent.trim()`),'18446744073709551615','maximum u64 discovery count is rendered exactly')
+  assert.ok(await evaluate(`document.querySelector('[data-test="forum-topic-count"][data-topic="news"]').getClientRects().length>0`),'exact count is visible in the actual drawer')
+  const discovered=await evaluate(`(() => {
+    const topics=document.querySelector('#q-app').__vue_app__.config.globalProperties.$pinia.state.value.topics;
+    JSON.stringify(topics);
+    return topics.discoveredTopics.news;
+  })()`)
+  assert.equal(discovered.postCount,'18446744073709551615')
+  assert.equal(discovered.revision,'18446744073709551615')
   await call('Fetch.disable')
   assert.ok(await evaluate(`JSON.stringify(${forumState}).includes(${JSON.stringify(digest)})`))
   assert.equal(allEvents.some(e=>e.method==='Runtime.exceptionThrown'),false)
-  console.log('Rendered CreatePost → list → single → reply → up/down → status; schema-2 and types 10–15 media/bytes; exact drawer threshold:',audit)
+  console.log('Rendered CreatePost → list → single → reply → up/down → status; canonical bytes/media; exact drawer threshold/count; wide signed and zero observations; FIFO generations; held multipage atomic publication:',audit)
 } finally {
   await stop()
   await rm(directory,{recursive:true,force:true})

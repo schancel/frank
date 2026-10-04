@@ -1,7 +1,7 @@
 //! Lazy isolated canonical DM persistence. The original signed request has exactly one owner.
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
@@ -62,6 +62,8 @@ pub(crate) struct Claim {
     pub(crate) backoff_base_ms: u64,
     pub(crate) max_backoff_ms: u64,
     pub(crate) reservation: bool,
+    /// Explicit durable recipient ACK, never inferred from released capacity or delivery.
+    pub(crate) acknowledged: bool,
     /// Admission-time maximum lifecycle footprint, never reclaimed by a transition.
     pub(crate) reserved_charge: u64,
 }
@@ -113,29 +115,32 @@ impl Claim {
 pub(crate) struct Owner {
     path: PathBuf,
     db: Mutex<Option<rocksdb::DB>>,
-    directory: OnceLock<Arc<DirectoryRuntime>>,
+    directory: Mutex<Weak<DirectoryRuntime>>,
 }
 impl Owner {
     pub(crate) fn new(legacy: PathBuf) -> Self {
         Self {
             path: legacy.with_extension("monad-dm-cbor-v1"),
             db: Mutex::new(None),
-            directory: OnceLock::new(),
+            directory: Mutex::new(Weak::new()),
         }
     }
     pub(crate) fn attach_directory(&self, directory: Arc<DirectoryRuntime>) -> Result<()> {
-        if let Some(installed) = self.directory.get() {
-            if !Arc::ptr_eq(installed, &directory) {
+        let mut installed = self
+            .directory
+            .lock()
+            .map_err(|_| CanonicalError::Unavailable)?;
+        if let Some(current) = installed.upgrade() {
+            if !current.same_owner(&directory) {
                 return Err(CanonicalError::Conflict);
             }
             return Ok(());
         }
-        self.directory
-            .set(directory)
-            .map_err(|_| CanonicalError::Conflict)
+        *installed = Arc::downgrade(&directory);
+        Ok(())
     }
-    pub(crate) fn directory(&self) -> Option<&Arc<DirectoryRuntime>> {
-        self.directory.get()
+    pub(crate) fn directory(&self) -> Option<Arc<DirectoryRuntime>> {
+        self.directory.lock().ok()?.upgrade()
     }
     fn with<T>(
         &self,
@@ -651,17 +656,21 @@ impl Owner {
     ) -> Result<()> {
         self.with(false, |db| {
             let mut claim = load(db, &hash)?.ok_or(CanonicalError::Unauthorized)?;
-            if claim.policy.recipient() != Ok(recipient)
-                || claim.obligation_id != obligation
-                || !claim.recoverable()
-            {
+            if claim.policy.recipient() != Ok(recipient) || claim.obligation_id != obligation {
                 return Err(CanonicalError::Unauthorized);
             }
             if !matches!(claim.phase, Phase::Terminal(_)) {
                 return Err(CanonicalError::ActiveObligation);
             }
+            if claim.acknowledged {
+                return Ok(());
+            }
+            if !claim.recoverable() {
+                return Err(CanonicalError::Unauthorized);
+            }
             // Preserve exact terminal owner, but release only this authenticated obligation.
             claim.reservation = false;
+            claim.acknowledged = true;
             claim.updated = now;
             // Keep the confirmed/exposed member history intact. The durable
             // reservation flag records acknowledgment without rewriting facts.
@@ -712,6 +721,7 @@ fn append_owner(batch: &mut WriteBatch, hash: &[u8; 32], claim: &Claim) -> Resul
     {
         return Err(CanonicalError::Unavailable);
     }
+    validate_acknowledged(claim)?;
     let row = encode_claim(claim)?;
     let header = encode_usage_header(claim)?;
     if header.len() > 128 || row.len().saturating_add(33) as u64 > claim.reserved_charge {
@@ -719,6 +729,18 @@ fn append_owner(batch: &mut WriteBatch, hash: &[u8; 32], claim: &Claim) -> Resul
     }
     batch.put(row_key(hash), row);
     batch.put(usage_key(hash), header);
+    Ok(())
+}
+fn validate_acknowledged(claim: &Claim) -> Result<()> {
+    if claim.acknowledged
+        && (claim.reservation
+            || !matches!(claim.phase, Phase::Terminal(_))
+            || !claim.members.iter().any(|member| {
+                member.exposed || matches!(member.state, MonadOutboxMemberState::Confirmed { .. })
+            }))
+    {
+        return Err(CanonicalError::Unavailable);
+    }
     Ok(())
 }
 fn financial_usage_locked(
@@ -960,6 +982,7 @@ fn encode_claim(c: &Claim) -> Result<Vec<u8>> {
         (12, int(c.max_backoff_ms)),
         (13, CborValue::Bool(c.reservation)),
         (14, int(c.reserved_charge)),
+        (15, CborValue::Bool(c.acknowledged)),
     ]))
 }
 fn load(db: &rocksdb::DB, hash: &[u8; 32]) -> Result<Option<Claim>> {
@@ -970,7 +993,7 @@ fn load(db: &rocksdb::DB, hash: &[u8; 32]) -> Result<Option<Claim>> {
         return Ok(None);
     };
     let value = decode_canonical(&raw).map_err(|_| CanonicalError::Unavailable)?;
-    let rows = fields(&value, 15)?;
+    let rows = fields(&value, 16)?;
     let v = |i: usize| &rows[i].1;
     if number(v(0))? != 1 {
         return Err(CanonicalError::Unavailable);
@@ -1047,11 +1070,13 @@ fn load(db: &rocksdb::DB, hash: &[u8; 32]) -> Result<Option<Claim>> {
         max_backoff_ms: convert(v(12))?,
         reservation: boolean(v(13))?,
         reserved_charge: convert(v(14))?,
+        acknowledged: boolean(v(15))?,
     };
     if claim.reserved_charge != reserved_footprint(&claim.request, claim.members.len())? {
         return Err(CanonicalError::Unavailable);
     }
     crate::monad_outbox::financial::validate_canonical_retained(&claim)?;
+    validate_acknowledged(&claim)?;
     let header = db
         .get(usage_key(hash))
         .map_err(|_| CanonicalError::Unavailable)?
@@ -1358,6 +1383,7 @@ mod encoding_tests {
             max_backoff_ms: u64::MAX,
             reservation: true,
             reserved_charge: charge,
+            acknowledged: false,
         };
         for phase in [
             Phase::Pending,

@@ -100,3 +100,471 @@ fn raw_member_ranges_are_bounded_minimal_and_complete_before_ownership() {
     assert!(transaction_ranges(&encoded, 0).is_err());
     assert!(ExactRequest::parse(vec![0; MAX_REQUEST_BYTES + 1], T_CONTENT_TYPE.into()).is_err());
 }
+
+struct NativeDirectoryFixture {
+    root: tempfile::TempDir,
+    registry: Arc<crate::registry::Registry>,
+    directory: Arc<crate::directory_runtime::DirectoryRuntime>,
+    config: cashweb_config::DirectoryConf,
+}
+fn admitted_source() -> serde_json::Value {
+    serde_json::from_str(include_str!(
+        "../../../../../docs/protocol/cbor/vectors/dm-runtime.json"
+    ))
+    .unwrap()
+}
+impl NativeDirectoryFixture {
+    async fn new() -> Self {
+        use crate::{
+            directory_runtime::{DirectoryRuntime, Operation},
+            disabled_chain_adapter::DisabledChainAdapter,
+            registry::Registry,
+            store::db::Db,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let source = admitted_source();
+        let case = &source["canonical_facade_final_http_case"];
+        // Explicit trusted fixture clock; these public captures do NOT grant wall-clock freshness.
+        std::fs::write(root.path().join("clock"), "1700000100000000000\n").unwrap();
+        let principals = case["installed_principals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(index, p)| {
+                let bundle = root.path().join(format!("bundle-{index}"));
+                std::fs::create_dir(&bundle).unwrap();
+                cashweb_config::DirectoryPrincipalConf {
+                    network: p["network"].as_str().unwrap().into(),
+                    subject: p["subject"].as_str().unwrap().into(),
+                    revision_zero: p["rev0T1"].as_str().unwrap().into(),
+                    manifest_identity: "00".repeat(32),
+                    relay_id: p["relayId"].as_str().unwrap().into(),
+                    relay_identity: p["relayIdentity"]["point"].as_str().unwrap().into(),
+                    endpoint: p["endpoint"].as_str().unwrap().into(),
+                    binding_expiry_ns: p["bindingExpiryNs"].as_str().unwrap().into(),
+                    continuity_file: root.path().join(format!("floor-{index}")),
+                    bundle_root: bundle,
+                    mode: "new".into(),
+                }
+            })
+            .collect();
+        let config = cashweb_config::DirectoryConf {
+            clock_file: root.path().join("clock"),
+            principals,
+        };
+        let registry = Arc::new(Registry::new(
+            Db::open(root.path().join("db")).unwrap(),
+            Arc::new(DisabledChainAdapter),
+            bitcoinsuite_core::Net::Regtest,
+        ));
+        let (directory, ready) =
+            DirectoryRuntime::start(registry.clone(), root.path().join("db"), config.clone())
+                .unwrap();
+        ready.await.unwrap().unwrap();
+        let directory = Arc::new(directory);
+        for (index, principal) in config.principals.iter().enumerate() {
+            let exact =
+                hex::decode(case["wire"]["http_attestations"][index].as_str().unwrap()).unwrap();
+            directory
+                .submit(
+                    directory
+                        .reserve(&principal.network, &principal.subject)
+                        .unwrap(),
+                    Operation::Put(exact.clone()),
+                )
+                .wait()
+                .await
+                .unwrap();
+            let actual = directory
+                .submit_snapshot(
+                    directory
+                        .reserve(&principal.network, &principal.subject)
+                        .unwrap(),
+                    crate::directory_runtime::SnapshotOperation::Current,
+                )
+                .wait()
+                .await
+                .unwrap();
+            let crate::directory_runtime::AdmittedSnapshot::Current(actual) = actual else {
+                panic!("actual Current");
+            };
+            assert_eq!(actual.evidence.attestation, exact);
+            assert_eq!(hex::encode(actual.evidence.hash), principal.revision_zero);
+        }
+        registry
+            .canonical_dm()
+            .attach_directory(directory.clone())
+            .unwrap();
+        Self {
+            root,
+            registry,
+            directory,
+            config,
+        }
+    }
+    async fn stop(&self) {
+        self.directory.shutdown();
+        self.directory.wait_stopped().await;
+    }
+}
+
+#[tokio::test]
+async fn genuine_native_directory_exact_transport_owner_and_sealed_payment_boundary() {
+    use crate::monad_outbox::{financial, MonadOutboxReconcileConfig};
+    let fixture = NativeDirectoryFixture::new().await;
+    let request = self::fixture();
+    let (sender, recipient, _) = request_principals(&request, "monad-testnet").unwrap();
+    let sender = current(fixture.registry.canonical_dm(), "monad-testnet", &sender)
+        .await
+        .unwrap();
+    let recipient = current(fixture.registry.canonical_dm(), "monad-testnet", &recipient)
+        .await
+        .unwrap();
+    let input = financial::validate_canonical_payment_set(
+        request.clone(),
+        &sender,
+        &recipient,
+        None,
+        "monad-testnet",
+        10143,
+        1,
+    )
+    .unwrap();
+    let config = MonadOutboxReconcileConfig {
+        expected_chain_id: 10143,
+        ..Default::default()
+    };
+    let claim = fixture
+        .registry
+        .claim_canonical_dm(input, now_ms(), &config)
+        .unwrap();
+    assert!(financial::verify_canonical_confirmed(&claim).is_err());
+    assert!(fixture
+        .registry
+        .canonical_dm()
+        .inbox(claim.policy.recipient().unwrap(), 0, None, 1)
+        .unwrap()
+        .is_empty());
+    assert!(fixture
+        .registry
+        .canonical_dm()
+        .find_request(&request)
+        .unwrap()
+        .unwrap()
+        .request
+        .exact_equal(&request));
+    assert_eq!(claim.policy.sender_t1, sender.evidence.hash);
+    assert_eq!(claim.policy.recipient_t1, recipient.evidence.hash);
+    // No legacy profile/protobuf writer or synthetic Current was involved.
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn weak_directory_hook_preserves_same_owner_rejects_other_live_owner_and_ordinary_drop() {
+    let fixture = NativeDirectoryFixture::new().await;
+    let owner = fixture.registry.canonical_dm();
+    owner
+        .attach_directory(Arc::new(fixture.directory.as_ref().clone()))
+        .unwrap();
+    assert!(owner.directory().is_some()); // a temporary clone cannot replace the live original hook
+    owner.attach_directory(fixture.directory.clone()).unwrap();
+    let other = NativeDirectoryFixture::new().await;
+    assert_eq!(
+        owner.attach_directory(other.directory.clone()),
+        Err(CanonicalError::Conflict)
+    );
+    other.stop().await;
+    fixture.stop().await;
+    let NativeDirectoryFixture {
+        root,
+        registry,
+        directory,
+        mut config,
+    } = fixture;
+    drop(directory);
+    assert!(registry.canonical_dm().directory().is_none());
+    // A real reopened owner may replace only the expired weak hook.
+    for principal in &mut config.principals {
+        principal.mode = "reopen".into();
+    }
+    let (reopened, ready) = crate::directory_runtime::DirectoryRuntime::start(
+        registry.clone(),
+        root.path().join("db"),
+        config,
+    )
+    .unwrap();
+    ready.await.unwrap().unwrap();
+    let reopened = Arc::new(reopened);
+    registry
+        .canonical_dm()
+        .attach_directory(reopened.clone())
+        .unwrap();
+    assert!(registry
+        .canonical_dm()
+        .directory()
+        .unwrap()
+        .same_owner(&reopened));
+    reopened.shutdown();
+    reopened.wait_stopped().await;
+}
+
+#[tokio::test]
+async fn ordinary_directory_drop_releases_registry_before_reopen() {
+    let fixture = NativeDirectoryFixture::new().await;
+    let NativeDirectoryFixture {
+        root,
+        registry,
+        directory,
+        mut config,
+    } = fixture;
+    let weak = Arc::downgrade(&registry);
+    drop(directory);
+    drop(registry);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while weak.upgrade().is_some() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("ordinary owner drop must not retain the registry/database cycle");
+    let registry = Arc::new(crate::registry::Registry::new(
+        crate::store::db::Db::open(root.path().join("db")).unwrap(),
+        Arc::new(crate::disabled_chain_adapter::DisabledChainAdapter),
+        bitcoinsuite_core::Net::Regtest,
+    ));
+    for principal in &mut config.principals {
+        principal.mode = "reopen".into();
+    }
+    let (directory, ready) =
+        crate::directory_runtime::DirectoryRuntime::start(registry, root.path().join("db"), config)
+            .unwrap();
+    ready.await.unwrap().unwrap();
+    directory.shutdown();
+    directory.wait_stopped().await;
+}
+
+async fn serve_http(
+    router: axum::Router,
+) -> (
+    String,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        axum::Server::from_tcp(listener)
+            .unwrap()
+            .serve(router.into_make_service())
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+    (format!("http://{address}"), stop, task)
+}
+fn server(fixture: &NativeDirectoryFixture, rpc: &str) -> super::super::server::RegistryServer {
+    let config = crate::monad_outbox::MonadOutboxReconcileConfig {
+        expected_chain_id: 10143,
+        receipt_poll_attempts: 1,
+        poll_interval: std::time::Duration::ZERO,
+        ..Default::default()
+    };
+    super::super::server::RegistryServer {
+        registry: fixture.registry.clone(),
+        peers: Arc::new(crate::p2p::peers::Peers::new(
+            "http://127.0.0.1:1".into(),
+            vec![],
+        )),
+        pop_gate: Arc::new(crate::http::pop_protection::PopGate::from_conf_if_enabled(
+            &crate::test_instance::placeholder_pop_conf(),
+        )),
+        curated_defaults: Arc::new(vec![]),
+        monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::enabled(
+            crate::monad_http::HttpTransport::new(rpc.parse().unwrap()),
+            Arc::new(config),
+            1,
+            b"MONT".to_vec(),
+        ),
+        evm_rpc: None,
+        bitcoin_proxy: None,
+    }
+}
+async fn public_p_signature(root: &std::path::Path, digest: [u8; 32], point: &str) -> Vec<u8> {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .unwrap();
+    let script = root.join("public-p-signer.cjs");
+    std::fs::write(&script, r#"
+const repo=process.argv[2], digest=process.argv[3], expected=process.argv[4];
+const {createMonadWalletMaterial}=require(repo+'/packages/wallet/monad-wallet-material.ts');
+const vector=require(repo+'/packages/domain-roots/vectors/domain-roots-v1.json').vectors[1];
+const roots=Object.fromEntries([['evm','evm-wallet'],['authentication','identity-authentication'],['messaging','messaging-encryption']].map(([key,purpose])=>[key,{registry:'frank-domain-roots-v1',purpose,bytes:Uint8Array.from(Buffer.from(vector.outputs[purpose],'hex'))}]));
+const material=createMonadWalletMaterial(roots);
+try { if(Buffer.from(material.identity.compressedPubKey).toString('hex')!==expected)throw Error('actual public P derivation mismatch'); process.stdout.write(Buffer.from(material.identity.signHash(Buffer.from(digest,'hex'))).toString('hex')); } finally { material.dispose(); }
+"#).unwrap();
+    let point = point.to_owned();
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("node")
+            .arg("-r")
+            .arg(repo.join("node_modules/tsx/dist/cjs/index.cjs"))
+            .arg(script)
+            .arg(repo)
+            .arg(hex::encode(digest))
+            .arg(point)
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "owned public wallet P signer prerequisite or invocation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    hex::decode(output.stdout).unwrap()
+}
+#[tokio::test]
+async fn actual_http_canonical_public_admission_p_authenticated_inbox_and_nonce_replay() {
+    use crate::monad_http::Hash32;
+    use crate::monad_mailbox::{MailboxChallenge, MailboxRequestBinding, MailboxResource};
+    let fixture = NativeDirectoryFixture::new().await;
+    let request = self::fixture();
+    let raw = request.raw_transactions().next().unwrap().to_vec();
+    let decoded = crate::monad_evm_tx::decode_signed_transaction(&raw).unwrap();
+    let hash = decoded.tx_hash.to_hex();
+    let from = decoded.sender.to_hex();
+    let to = decoded.destination.unwrap().to_hex();
+    let input = format!("0x{}", hex::encode(&decoded.input));
+    let raw_hex = format!("0x{}", hex::encode(raw));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let rpc = axum::Router::new().route("/", axum::routing::post(move |Json(query):Json<serde_json::Value>| {
+        let (hash,from,to,input,raw) = (hash.clone(),from.clone(),to.clone(),input.clone(),raw_hex.clone()); let calls = observed.clone();
+        async move {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(query["params"][0].as_str(), Some(hash.as_str()));
+            let result = match query["method"].as_str().unwrap() {
+                "eth_getTransactionByHash" => serde_json::json!({"hash":hash,"from":from,"to":to,"value":"0x1","input":input}),
+                "eth_getRawTransactionByHash" => serde_json::json!(raw),
+                "eth_getTransactionReceipt" => serde_json::json!({"transactionHash":hash,"blockHash":Hash32([1;32]).to_hex(),"blockNumber":"0x1","transactionIndex":"0x0","from":from,"to":to,"gasUsed":"0x5208","status":"0x1","logs":[]}),
+                other => panic!("unexpected financial RPC {other}"),
+            };
+            Json(serde_json::json!({"jsonrpc":"2.0","id":query["id"],"result":result}))
+        }
+    }));
+    let (rpc_url, rpc_stop, rpc_task) = serve_http(rpc).await;
+    let runtime_server = server(&fixture, &rpc_url);
+    let (url, http_stop, http_task) = serve_http(
+        runtime_server
+            .clone()
+            .into_router_with_directory(Some(fixture.directory.clone())),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let response = client
+        .put(format!("{url}/message/monad/cbor"))
+        .header("content-type", request.content_type())
+        .body(request.body().to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let accepted: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(accepted["phase"], "delivered");
+    assert_eq!(
+        accepted["identity"]["submission_identity"],
+        hex::encode(request.submission_identity())
+    );
+    assert!(accepted["mailbox_committed_at_ms"].as_i64().unwrap() > 0);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    let recipient = accepted["identity"]["recipient"].as_str().unwrap();
+    let point = &fixture.config.principals[1].subject;
+    let challenge:serde_json::Value = client.get(format!("{url}/message/monad/cbor/auth/{recipient}?resource=inbox&since=0&limit=50&max_bytes=8388608")).header("x-frank-mailbox-subject", point).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+    assert_eq!(challenge["network_tag"], "4d4f4e54");
+    let token = MailboxChallenge {
+        epoch: hash_hex(challenge["epoch"].as_str().unwrap()).unwrap(),
+        nonce: hash_hex(challenge["nonce"].as_str().unwrap()).unwrap(),
+        token: hash_hex(challenge["token"].as_str().unwrap()).unwrap(),
+        expires_at_ms: challenge["expires_at_ms"].as_i64().unwrap(),
+    };
+    let binding = MailboxRequestBinding {
+        resource: MailboxResource::Inbox,
+        recipient: Address::from_hex(recipient).unwrap(),
+        since: 0,
+        cursor: None,
+        limit: 50,
+        max_bytes: MAX_REQUEST_BYTES,
+        recovery_payload_hash: None,
+        recovery_obligation_id: None,
+    };
+    let digest = Sha256::digest(
+        super::super::monad_message::mailbox_auth_preimage(token, &binding, b"MONT").into(),
+    );
+    let signature = public_p_signature(
+        fixture.root.path(),
+        digest.as_slice().try_into().unwrap(),
+        point,
+    )
+    .await;
+    let signed = || {
+        client
+            .get(format!(
+                "{url}/message/monad/cbor/inbox/{recipient}?since=0&limit=50&max_bytes=8388608"
+            ))
+            .header("x-frank-mailbox-subject", point)
+            .header(
+                "x-frank-mailbox-epoch",
+                challenge["epoch"].as_str().unwrap(),
+            )
+            .header(
+                "x-frank-mailbox-nonce",
+                challenge["nonce"].as_str().unwrap(),
+            )
+            .header(
+                "x-frank-mailbox-token",
+                challenge["token"].as_str().unwrap(),
+            )
+            .header("x-frank-mailbox-expires-at-ms", token.expires_at_ms)
+            .header("x-frank-mailbox-signature", hex::encode(&signature))
+    };
+    let response = signed().send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let media = response.headers()["content-type"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let boundary = parse_boundary(&media, "multipart/mixed").unwrap();
+    let bytes = response.bytes().await.unwrap();
+    assert!(bytes.starts_with(
+        format!("--{boundary}\r\nContent-Disposition: inline; name=\"record\"").as_bytes()
+    ));
+    assert!(bytes.ends_with(format!("--{boundary}--\r\n").as_bytes()));
+    assert!(find(&bytes, request.delivery()).is_some());
+    assert!(find(&bytes, request.context()).is_some());
+    assert_eq!(
+        signed().send().await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    // A durable exact retry must not make more financial calls or publish a second inbox row.
+    let response = client
+        .put(format!("{url}/message/monad/cbor"))
+        .header("content-type", request.content_type())
+        .body(request.body().to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    drop(client);
+    http_stop.send(()).unwrap();
+    http_task.await.unwrap();
+    rpc_stop.send(()).unwrap();
+    rpc_task.await.unwrap();
+    fixture.stop().await;
+}

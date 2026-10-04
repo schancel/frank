@@ -822,6 +822,10 @@ impl DirectoryRuntime {
             ready,
         ))
     }
+    /// Private composition identity check; it grants no Directory authority or snapshot.
+    pub(crate) fn same_owner(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.owner, &other.owner)
+    }
     /// Reserve pending capacity after cheap route/media/allowlist checks, before body collection.
     pub fn reserve(&self, network: &str, subject: &str) -> Result<Reservation> {
         if !valid_key(network, subject) {

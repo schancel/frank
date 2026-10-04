@@ -56,7 +56,7 @@ export const CANONICAL_TERMINAL_REASONS = [
   'attempts_exhausted',
   // The relay cannot deliver to the relay the recipient lives on. Decided before any payment
   // is broadcast: nothing was spent.
-  'recipient_undeliverable',
+  'undeliverable',
 ] as const
 export type CanonicalTerminalReason =
   (typeof CANONICAL_TERMINAL_REASONS)[number]

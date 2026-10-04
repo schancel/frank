@@ -122,7 +122,7 @@ export class CanonicalRecipientUndeliverableError extends MonadStampTerminalErro
       422,
       'mailbox_terminal',
       false,
-      'recipient_undeliverable',
+      'undeliverable',
     )
     this.name = 'CanonicalRecipientUndeliverableError'
   }
@@ -490,7 +490,7 @@ async function send(
   if (
     status === 'dead' &&
     owner.links.all().find(row => row.digest === digest)?.reason ===
-      'recipient_undeliverable'
+      'undeliverable'
   )
     throw new CanonicalRecipientUndeliverableError()
   if (status === 'dead')

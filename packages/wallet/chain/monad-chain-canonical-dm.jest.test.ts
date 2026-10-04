@@ -249,7 +249,7 @@ async function fixture(funded = true) {
               version: 1,
               phase: 'dead',
               identity,
-              reason: 'recipient_undeliverable',
+              reason: 'undeliverable',
             }
           : { version: 1, phase, identity },
       ),

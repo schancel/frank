@@ -33,10 +33,10 @@ export type DirectoryFetch = (
   init: {
     method: 'GET' | 'PUT'
     headers: Record<string, string>
-    body?: Uint8Array
+    body?: Uint8Array<ArrayBuffer>
     redirect: 'error'
     credentials: 'omit'
-    signal: unknown
+    signal: AbortSignal
   },
 ) => Promise<DirectoryResponse>
 export interface DirectoryClientOptions {
@@ -154,7 +154,7 @@ export function createDirectoryClient(options: DirectoryClientOptions) {
         options.fetch(base + path, {
           method,
           headers: { 'Content-Type': MEDIA, 'Accept': MEDIA },
-          body: bytes,
+          body: bytes ? Uint8Array.from(bytes) : undefined,
           redirect: 'error',
           credentials: 'omit',
           signal: controller.signal,

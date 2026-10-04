@@ -16,6 +16,8 @@ import {
   undeliveredHandMessages,
   type HandChatMessage,
 } from './blackjack-hand'
+import { outgoingLockName } from './outgoing-lock'
+import { FakeLockManager } from './__fakes__/web-locks'
 
 const ME = '0x1111111111111111111111111111111111111111'
 const PEER = '0x2222222222222222222222222222222222222222'
@@ -441,13 +443,21 @@ describe('own hand messages the other side does not have', () => {
         own: ME,
         messages,
         attempted,
+        ordinaryStampWei: 10n,
       })
+    const info = jest.spyOn(console, 'info').mockImplementation(() => undefined)
     expect(await run()).toBe(1)
     expect(s.retryOutgoing).toHaveBeenCalledWith({
       wallet: 'w',
       address: PEER,
       payloadDigest: messages[2].payloadDigest,
+      automatic: true,
     })
+    // A stable line the e2e driver asserts on.
+    expect(info).toHaveBeenCalledWith(
+      `blackjack: resending undelivered deal ${messages[2].payloadDigest}`,
+    )
+    info.mockRestore()
     expect(await run()).toBe(0)
     expect(s.retryOutgoing).toHaveBeenCalledTimes(1)
     expect(s.resumeOutgoing).not.toHaveBeenCalled()
@@ -464,6 +474,7 @@ describe('own hand messages the other side does not have', () => {
           own: ME,
           messages: withDeal({ status }),
           attempted: new Set(),
+          ordinaryStampWei: 10n,
         }),
       ).toBe(0)
     }
@@ -493,6 +504,7 @@ describe('own hand messages the other side does not have', () => {
         own: ME,
         messages: recorded,
         attempted: new Set(),
+        ordinaryStampWei: 10n,
       }),
     ).toBe(1)
     expect(s.resumeOutgoing).toHaveBeenCalledWith({
@@ -508,6 +520,7 @@ describe('own hand messages the other side does not have', () => {
         own: ME,
         messages: bet({ failureReason: 'interrupted' }),
         attempted: new Set(),
+        ordinaryStampWei: 10n,
       }),
     ).toBe(0)
     expect(s.resumeOutgoing).toHaveBeenCalledTimes(1)
@@ -527,8 +540,275 @@ describe('own hand messages the other side does not have', () => {
         own: ME,
         messages,
         attempted: new Set(),
+        ordinaryStampWei: 10n,
       }),
     ).toBe(0)
     warn.mockRestore()
+  })
+
+  const resumeOnce = (
+    s: ReturnType<typeof store>,
+    messages: HandChatMessage[],
+    attempted = new Set<string>(),
+  ) =>
+    resumeHandMessages({
+      store: s,
+      wallet: 'w',
+      address: PEER,
+      own: ME,
+      messages,
+      attempted,
+      ordinaryStampWei: 10n,
+    })
+
+  describe('with Web Locks', () => {
+    let locks: FakeLockManager
+    let uninstall: () => void
+    beforeEach(() => {
+      locks = new FakeLockManager()
+      uninstall = locks.install()
+      jest.spyOn(console, 'info').mockImplementation(() => undefined)
+    })
+    afterEach(() => {
+      uninstall()
+      jest.restoreAllMocks()
+    })
+
+    it('leaves a message another tab is sending alone, uncounted, and resumes it once that tab let go', async () => {
+      const messages = withDeal({
+        status: 'error',
+        delivery: { failureReason: 'interrupted' },
+      })
+      const digest = messages[2].payloadDigest
+      const release = locks.hold(outgoingLockName(digest))
+      const s = store()
+      const attempted = new Set<string>()
+      expect(await resumeOnce(s, messages, attempted)).toBe(0)
+      expect(s.retryOutgoing).not.toHaveBeenCalled()
+      expect(attempted.size).toBe(0)
+      release()
+      await new Promise(resolve => setImmediate(resolve))
+      expect(await resumeOnce(s, messages, attempted)).toBe(1)
+      expect(s.retryOutgoing).toHaveBeenCalledTimes(1)
+    })
+
+    it('a resume the store reports busy is not counted and may be tried again', async () => {
+      const messages = withDeal({
+        status: 'error',
+        delivery: { failureReason: 'interrupted' },
+      })
+      const s = store()
+      s.retryOutgoing.mockResolvedValueOnce({ state: 'busy' })
+      const attempted = new Set<string>()
+      expect(await resumeOnce(s, messages, attempted)).toBe(0)
+      expect(await resumeOnce(s, messages, attempted)).toBe(1)
+      expect(s.retryOutgoing).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  describe('only the last own move of a hand that is still going is resumed by itself', () => {
+    beforeEach(() =>
+      jest.spyOn(console, 'info').mockImplementation(() => undefined),
+    )
+    afterEach(() => jest.restoreAllMocks())
+    const failed = {
+      status: 'error',
+      delivery: { failureReason: 'interrupted' },
+    }
+
+    it('never re-sends a challenge or an accept by itself, but still lists it (the bubble keeps Retry)', async () => {
+      const challenge: HandChatMessage = {
+        ...message(
+          true,
+          {
+            action: 'challenge',
+            role: 'dealer',
+            maxBetWei: '500',
+            commitment: commitmentOf(seed),
+          },
+          10n,
+          gid('c1'),
+        ),
+        ...failed,
+      }
+      const accept: HandChatMessage[] = [
+        {
+          ...message(
+            false,
+            { action: 'challenge', role: 'player', maxBetWei: '500' },
+            10n,
+            gid('a1'),
+          ),
+          status: 'confirmed',
+        },
+        {
+          ...message(
+            true,
+            {
+              action: 'accept',
+              maxBetWei: '500',
+              commitment: commitmentOf(seed),
+            },
+            10n,
+            gid('a1'),
+          ),
+          ...failed,
+        },
+      ]
+      const s = store()
+      for (const messages of [[challenge], accept]) {
+        expect(undeliveredHandMessages(messages, ME, PEER)).toEqual([
+          expect.objectContaining({ state: 'failed', carriesMoney: false }),
+        ])
+        expect(await resumeOnce(s, messages)).toBe(0)
+      }
+      expect(s.retryOutgoing).not.toHaveBeenCalled()
+    })
+
+    it('does not resume an own message that a later own message of the hand overtook', async () => {
+      const messages = withDeal(failed)
+      messages.push({
+        ...message(true, { action: 'card', card: 7 }),
+        status: 'confirmed',
+      })
+      const s = store()
+      expect(await resumeOnce(s, messages)).toBe(0)
+      expect(s.retryOutgoing).not.toHaveBeenCalled()
+    })
+
+    it('does not resume a message of a hand that is over without it (refunded)', async () => {
+      const messages = dealt()
+      const betDigest = messages[1].payloadDigest
+      messages.push(
+        {
+          ...message(true, { action: 'refund', ref: betDigest }, 300n),
+          status: 'confirmed',
+        },
+        {
+          ...message(true, {
+            action: 'deal',
+            playerCards: [1, 2],
+            dealerUpCard: 3,
+          }),
+          ...failed,
+        },
+      )
+      expect(chatHands(messages.slice(0, 3), ME, PEER)[0].state.phase).toBe(
+        'refunded',
+      )
+      const s = store()
+      expect(await resumeOnce(s, messages)).toBe(0)
+      expect(s.retryOutgoing).not.toHaveBeenCalled()
+    })
+
+    it('does not resume a message with no hand behind it', async () => {
+      const s = store()
+      expect(
+        await resumeOnce(s, [
+          { ...message(true, { action: 'stand' }), ...failed },
+        ]),
+      ).toBe(0)
+      expect(s.retryOutgoing).not.toHaveBeenCalled()
+    })
+  })
+
+  it('a hand message with more than an ordinary stamp carries money: it is never re-sent, only settled', async () => {
+    // A reveal folded as owing nothing, or any other step, sent with more than the ordinary stamp.
+    const messages = withDeal({
+      status: 'error',
+      delivery: { failureReason: 'interrupted' },
+    })
+    messages[2].stampValueWei = 500n
+    expect(undeliveredHandMessages(messages, ME, PEER, 10n)).toEqual([
+      expect.objectContaining({ action: 'deal', carriesMoney: true }),
+    ])
+    // A reveal the hand folds as owing nothing is free with an ordinary stamp, money above it.
+    const owesNothing = (): HandChatMessage[] => {
+      for (let i = 0; i < 256; i++) {
+        const s = i.toString(16).padStart(2, '0').repeat(32)
+        const game = gid(`r${i}`)
+        const rows: HandChatMessage[] = [
+          message(
+            true,
+            {
+              action: 'challenge',
+              role: 'dealer',
+              maxBetWei: '500',
+              commitment: commitmentOf(s),
+            },
+            10n,
+            game,
+          ),
+          message(false, { action: 'bet' }, 300n, game),
+        ]
+        for (;;) {
+          const state = chatHands(rows, ME, PEER)[0].state
+          const step = dealerStep(state, s)
+          if (!step && state.phase === 'player_turn') {
+            rows.push(message(false, { action: 'stand' }, 10n, game))
+            continue
+          }
+          if (!step) break
+          if (step.item.action === 'reveal') {
+            if (step.payWei !== undefined) break
+            rows.push({
+              ...message(
+                true,
+                step.item as unknown as Record<string, unknown>,
+                10n,
+                game,
+              ),
+              status: 'error',
+            })
+            return rows
+          }
+          rows.push(
+            message(
+              true,
+              step.item as unknown as Record<string, unknown>,
+              10n,
+              game,
+            ),
+          )
+        }
+      }
+      throw new Error('no seed gives a reveal that owes nothing')
+    }
+    const revealed = owesNothing()
+    expect(undeliveredHandMessages(revealed, ME, PEER, 10n)).toEqual([
+      expect.objectContaining({ action: 'reveal', carriesMoney: false }),
+    ])
+    revealed[revealed.length - 1].stampValueWei = 500n
+    expect(undeliveredHandMessages(revealed, ME, PEER, 10n)).toEqual([
+      expect.objectContaining({ action: 'reveal', carriesMoney: true }),
+    ])
+    const s = store()
+    expect(await resumeOnce(s, messages)).toBe(0)
+    expect(s.retryOutgoing).not.toHaveBeenCalled()
+    expect(s.resumeOutgoing).not.toHaveBeenCalled()
+  })
+
+  it('no automatic dealer step for a hand while an own message of it is not delivered', () => {
+    saveSeed(ME, PEER, gid('g1'), seed)
+    // An own message of the hand that the fold does not advance on (a dealer cannot stand), so
+    // the deal would still be the next step: it waits until that message is delivered.
+    const withOwn = (status: string) => [
+      ...dealt(),
+      { ...message(true, { action: 'stand' }), status },
+    ]
+    expect(automaticDealerSteps(withOwn('confirmed'), ME, PEER)).toEqual([
+      expect.objectContaining({
+        item: expect.objectContaining({ action: 'deal' }),
+      }),
+    ])
+    for (const status of ['error', 'pending', 'payment-pending']) {
+      expect(automaticDealerSteps(withOwn(status), ME, PEER)).toEqual([])
+    }
+    // Another hand's undelivered message does not hold this one up.
+    const other = {
+      ...message(true, { action: 'stand' }, 10n, gid('g2')),
+      status: 'error',
+    }
+    expect(automaticDealerSteps([...dealt(), other], ME, PEER)).toHaveLength(1)
   })
 })

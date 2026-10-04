@@ -23,6 +23,7 @@ import {
   type HandRejection,
   type HandState,
 } from '@frank/wallet/message-item-plugins/blackjack/hand'
+import { heldOutgoingLocks } from './outgoing-lock'
 
 /** What a wallet keeps back for the fees of the messages a hand still needs. */
 export const HAND_FEE_RESERVE_WEI = BET_MESSAGE_FEE_RESERVE_WEI
@@ -52,20 +53,31 @@ export interface UndeliveredHandMessage {
   carriesMoney: boolean
 }
 
+/** Whether a stored message is one of this user's own that the other side does not have yet. A
+ * message without a delivery status (not from the chat store) counts as delivered. */
+const isUndeliveredOwn = (message: HandChatMessage) =>
+  message.outbound &&
+  message.status !== undefined &&
+  message.status !== 'confirmed'
+
 /**
  * This user's own hand messages in a chat that are not delivered: still sending, or failed
  * (also a send cut off by closing the window). A hand's state counts them as sent so that no
  * move is offered twice, so the hand cannot go on until each is delivered or discarded.
+ *
+ * `ordinaryStampWei` is the stamp this user's free messages are sent with; any hand message
+ * whose stamp is above it carries money too, whatever its action (a reveal that pays, or one
+ * folded here as owing nothing but sent with more than an ordinary stamp).
  */
 export function undeliveredHandMessages(
   messages: readonly HandChatMessage[],
   own: string,
   peer: string,
+  ordinaryStampWei?: bigint,
 ): UndeliveredHandMessage[] {
   const undelivered: UndeliveredHandMessage[] = []
   for (const message of messages) {
-    if (!message.outbound || message.status === undefined) continue
-    if (message.status === 'confirmed') continue
+    if (!isUndeliveredOwn(message)) continue
     const item = soleHandItem(message.items)
     if (!item) continue
     let carriesMoney =
@@ -79,6 +91,11 @@ export function undeliveredHandMessages(
         ?.owedWei
       carriesMoney = owed === undefined || owed > 0n
     }
+    if (
+      ordinaryStampWei !== undefined &&
+      (message.stampValueWei ?? 0n) > ordinaryStampWei
+    )
+      carriesMoney = true
     undelivered.push({
       payloadDigest: message.payloadDigest,
       action: item.action,
@@ -92,13 +109,47 @@ export function undeliveredHandMessages(
   return undelivered
 }
 
+/**
+ * Whether an own undelivered hand message may be resumed without the user: it is not a challenge
+ * or an accept (those open a commitment; only the bubble's Retry sends them again), it is the
+ * newest own message of its hand (an older one was overtaken: the hand went on without it), and
+ * its hand, folded without it, exists and is not over (resolved or refunded). Anything else keeps
+ * the bubble's Retry only.
+ */
+export function mayResumeAutomatically(
+  messages: readonly HandChatMessage[],
+  own: string,
+  peer: string,
+  payloadDigest: string,
+): boolean {
+  const message = messages.find(m => m.payloadDigest === payloadDigest)
+  const item = message && soleHandItem(message.items)
+  if (!message || !item) return false
+  if (item.action === 'challenge' || item.action === 'accept') return false
+  const ownOfHand = messages.filter(
+    m => m.outbound && soleHandItem(m.items)?.gameId === item.gameId,
+  )
+  if (ownOfHand[ownOfHand.length - 1] !== message) return false
+  const state = foldHand(
+    chatHandEvents(
+      messages.filter(m => m !== message),
+      own,
+      peer,
+      item.gameId,
+    ),
+  ).state
+  return !!state && state.phase !== 'resolved' && state.phase !== 'refunded'
+}
+
 /** What the chat store offers for an outgoing message that failed. */
 export interface HandResumeStore {
-  /** A fresh send of a failed message; asks before it could pay a second time. */
+  /** A retry nobody clicked (`automatic`): settles an earlier payment first, and builds one only
+   * for a message cut off mid-send that provably has none. */
   retryOutgoing(params: {
     wallet: unknown
     address: string
     payloadDigest: string
+    automatic: true
   }): Promise<{ state: string }>
   /** Settles a failed message's recorded payment; never builds a new one. */
   resumeOutgoing(params: {
@@ -110,18 +161,21 @@ export interface HandResumeStore {
 
 /**
  * Resumes this user's failed hand messages when their chat is open, each at most once per page
- * session (`attempted`), oldest first:
+ * session (`attempted`), oldest first. Only a message that `mayResumeAutomatically` allows is
+ * considered, and one that another tab is sending right now (its outgoing lock is held) is left
+ * alone and not marked attempted:
  *
- * - A message whose stamp is an ordinary stamp (challenge, accept, deal, hit, stand, card, a
- *   reveal that owes nothing) is sent again without asking, through the same retry a person's
- *   Retry button uses: an earlier payment for it is settled first and its bytes re-sent while it
- *   is live, and where a second payment cannot be ruled out nothing is sent and the bubble keeps
- *   its Retry.
- * - A message that carries money (bet, double, paying reveal, refund) is only settled: if a
- *   payment was recorded for it and is still live at the relay the same bytes are re-sent. A new
- *   payment is never built here; the bubble shows Retry and the user decides.
+ * - A message whose stamp is an ordinary stamp (deal, hit, stand, card, a reveal that owes
+ *   nothing) is sent again through `retryOutgoing({ automatic: true })`: an earlier payment for
+ *   it is settled first and its bytes re-sent while it is live; a new payment is built only for a
+ *   message cut off mid-send with provably no payment, never after a payment died or its fate is
+ *   unknown. Otherwise nothing is sent and the bubble keeps its Retry.
+ * - A message that carries money (bet, double, paying reveal, refund, or any stamp above the
+ *   ordinary one) is only settled: if a payment was recorded for it and is still live at the
+ *   relay the same bytes are re-sent. A new payment is never built here; the bubble shows Retry.
  *
- * Returns how many messages it acted on.
+ * Returns how many messages were handed to the store in this call (re-sent or settled, whatever
+ * the outcome); the caller runs again when it is above zero, since the hand may have moved.
  */
 export async function resumeHandMessages(params: {
   store: HandResumeStore
@@ -130,32 +184,67 @@ export async function resumeHandMessages(params: {
   own: string
   messages: readonly HandChatMessage[]
   attempted: Set<string>
+  /** The stamp this user's free messages are sent with. */
+  ordinaryStampWei: bigint
 }): Promise<number> {
-  let acted = 0
-  for (const message of undeliveredHandMessages(
+  const candidates = undeliveredHandMessages(
     params.messages,
     params.own,
     params.address,
-  )) {
+    params.ordinaryStampWei,
+  ).filter(
+    message =>
+      message.state === 'failed' &&
+      !params.attempted.has(`resume:${message.payloadDigest}`) &&
+      mayResumeAutomatically(
+        params.messages,
+        params.own,
+        params.address,
+        message.payloadDigest,
+      ),
+  )
+  if (candidates.length === 0) return 0
+  const sendingElsewhere = await heldOutgoingLocks()
+  let handed = 0
+  for (const message of candidates) {
+    if (sendingElsewhere.has(message.payloadDigest)) continue
     const key = `resume:${message.payloadDigest}`
-    if (message.state !== 'failed' || params.attempted.has(key)) continue
-    params.attempted.add(key)
+    if (params.attempted.has(key)) continue
     const target = {
       wallet: params.wallet,
       address: params.address,
       payloadDigest: message.payloadDigest,
     }
+    if (message.carriesMoney && !message.hasAttempt) continue
+    params.attempted.add(key)
     try {
-      if (!message.carriesMoney) await params.store.retryOutgoing(target)
-      else if (message.hasAttempt) await params.store.resumeOutgoing(target)
-      else continue
-      acted++
+      let outcome: { state: string }
+      if (!message.carriesMoney) {
+        console.info(
+          `blackjack: resending undelivered ${message.action} ${message.payloadDigest}`,
+        )
+        outcome = await params.store.retryOutgoing({
+          ...target,
+          automatic: true,
+        })
+      } else {
+        console.info(
+          `blackjack: settling undelivered ${message.action} ${message.payloadDigest}`,
+        )
+        outcome = await params.store.resumeOutgoing(target)
+      }
+      if (outcome.state === 'busy') {
+        // Someone else (another tab) is sending it right now: not ours to count; try later.
+        params.attempted.delete(key)
+        continue
+      }
+      handed++
     } catch (error) {
       // The message stays failed with its Retry; nothing was paid on a guess.
       console.warn('could not resume a blackjack message', error)
     }
   }
-  return acted
+  return handed
 }
 
 /** The hand events of a chat, in chat order. `gameId` narrows to one hand. A message this user
@@ -265,15 +354,26 @@ export function newGameId(): string {
  * The dealer messages this user must send now that involve no choice and pay nothing beyond an
  * ordinary stamp: dealing, dealing a card, and a reveal that owes the player nothing. Messages
  * that pay (a paying reveal, a refund) are never returned here; the dealer confirms those.
+ * A hand with an own message the other side does not have yet (sending, failed, cut off) gets no
+ * step: that message is the hand's last move until it is delivered or discarded, and the next
+ * step must not reach the other side before it.
  */
 export function automaticDealerSteps(
   messages: readonly HandChatMessage[],
   own: string,
   peer: string,
 ): { key: string; item: BlackjackHandItem }[] {
+  const waiting = new Set<string>()
+  for (const message of messages) {
+    const gameId = isUndeliveredOwn(message)
+      ? soleHandItem(message.items)?.gameId
+      : undefined
+    if (gameId !== undefined) waiting.add(gameId)
+  }
   const steps: { key: string; item: BlackjackHandItem }[] = []
   for (const { state } of chatHands(messages, own, peer)) {
     if (roleOf(state, own) !== 'dealer') continue
+    if (waiting.has(state.gameId)) continue
     const seed = loadSeed(own, peer, state.gameId)
     if (!seed) continue
     const step: DealerStep | undefined = dealerStep(state, seed)

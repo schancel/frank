@@ -408,17 +408,73 @@ describe('Chat.vue automatic dealer steps', () => {
     }
     const self = dealerThis(messages, { chatStore })
     self.runBlackjackDealer = () => methods.runBlackjackDealer.call(self)
+    const info = jest.spyOn(console, 'info').mockImplementation(() => undefined)
     await methods.runBlackjackDealer.call(self)
     await new Promise(resolve => setTimeout(resolve, 0))
+    info.mockRestore()
     expect(chatStore.retryOutgoing).toHaveBeenCalledTimes(1)
     expect(chatStore.retryOutgoing).toHaveBeenCalledWith({
       wallet: {},
       address: '0xPeer',
       payloadDigest: 'pending:1:1:',
+      automatic: true,
     })
     // The cut-off deal is the hand's deal: no second one is built.
     expect(self.sendFollowUpItems).not.toHaveBeenCalled()
     expect(chatStore.resumeOutgoing).not.toHaveBeenCalled()
+  })
+
+  it('while a message is being resumed no other trigger sends a step, and the hand waits until it is delivered', async () => {
+    // An own failed message of the hand that the fold does not advance on (a dealer cannot
+    // stand): the deal is still the hand's next step, so only the resume guard and the
+    // undelivered-message rule keep it from going out ahead of the resumed message.
+    const messages = [
+      ...hand(challenge, [false, { action: 'bet' }, 300n]).map(m => ({
+        ...m,
+        status: 'confirmed',
+      })),
+      {
+        outbound: true,
+        status: 'error',
+        delivery: { failureReason: 'interrupted' },
+        items: [{ type: 'blackjack-hand', gameId: GAME, action: 'stand' }],
+        stampValueWei: 1n,
+        payloadDigest: 'pending:2:1:',
+      },
+    ]
+    let finish: (outcome: { state: string }) => void = () => undefined
+    const chatStore = {
+      retryOutgoing: jest.fn(
+        () =>
+          new Promise<{ state: string }>(resolve => {
+            finish = resolve
+          }),
+      ),
+      resumeOutgoing: jest.fn(),
+    }
+    const self = dealerThis(messages, { chatStore, resumingHand: false })
+    self.runBlackjackDealer = () => methods.runBlackjackDealer.call(self)
+    const info = jest.spyOn(console, 'info').mockImplementation(() => undefined)
+    const first = methods.runBlackjackDealer.call(self)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(chatStore.retryOutgoing).toHaveBeenCalledTimes(1)
+    expect(self.resumingHand).toBe(true)
+    // A watcher fires meanwhile (a message arrived, a send finished).
+    await methods.runBlackjackDealer.call(self)
+    expect(self.sendFollowUpItems).not.toHaveBeenCalled()
+    // The resume ends with the message still not delivered (e.g. its payment is pending).
+    finish({ state: 'payment-pending' })
+    await first
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(self.resumingHand).toBe(false)
+    expect(self.sendFollowUpItems).not.toHaveBeenCalled()
+    // Once it is delivered the hand moves on.
+    messages[messages.length - 1].status = 'confirmed'
+    await methods.runBlackjackDealer.call(self)
+    expect(self.sendFollowUpItems).toHaveBeenCalledTimes(1)
+    expect(self.sendFollowUpItems.mock.calls[0][0].items[0].action).toBe('deal')
+    expect(chatStore.retryOutgoing).toHaveBeenCalledTimes(1)
+    info.mockRestore()
   })
 
   it('does not send while another message is being sent', async () => {

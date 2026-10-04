@@ -196,6 +196,8 @@ export default defineComponent({
       blackjackDialog: false,
       // Automatic dealer steps already attempted in this page session.
       blackjackAttempted: new Set<string>(),
+      // An own undelivered hand message is being resumed; no automatic step meanwhile.
+      resumingHand: false,
     }
   },
   setup() {
@@ -672,20 +674,28 @@ export default defineComponent({
     // nothing) are sent without asking. Each position of a hand is attempted once per page
     // session; a failed send stays in the chat with its Retry.
     async runBlackjackDealer() {
-      if (this.sendingMessage) return
+      if (this.sendingMessage || this.resumingHand) return
       const own = await getOwnCanonicalAddress()
-      if (!own) return
+      if (!own || this.sendingMessage || this.resumingHand) return
       // First finish what this user already decided: a hand message that was cut off (the
       // window closed mid-send) or failed counts as sent in the hand, so nothing else can
       // happen until it is delivered. Free steps are sent again; money is only settled.
-      const resumed = await resumeHandMessages({
-        store: this.chatStore as unknown as HandResumeStore,
-        wallet: useMonadWallet(),
-        address: this.address,
-        own,
-        messages: this.messages,
-        attempted: this.blackjackAttempted,
-      })
+      // While that is awaited no other trigger (watchers, a finished send) may pick a step.
+      this.resumingHand = true
+      let resumed: number
+      try {
+        resumed = await resumeHandMessages({
+          store: this.chatStore as unknown as HandResumeStore,
+          wallet: useMonadWallet(),
+          address: this.address,
+          own,
+          messages: this.messages,
+          attempted: this.blackjackAttempted,
+          ordinaryStampWei: activeChain.fromDisplayAmount(this.stampAmount),
+        })
+      } finally {
+        this.resumingHand = false
+      }
       if (resumed > 0) {
         void this.runBlackjackDealer()
         return
@@ -693,7 +703,7 @@ export default defineComponent({
       const step = automaticDealerSteps(this.messages, own, this.address).find(
         candidate => !this.blackjackAttempted.has(candidate.key),
       )
-      if (!step || this.sendingMessage) return
+      if (!step || this.sendingMessage || this.resumingHand) return
       this.blackjackAttempted.add(step.key)
       await this.sendFollowUpItems({ items: [step.item] })
     },

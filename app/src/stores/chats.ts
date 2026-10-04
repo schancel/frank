@@ -7,6 +7,7 @@ import { desktopNotify } from '../utils/notifications'
 import { store } from '../adapters/level-message-store'
 import { toChainDisplayAddress } from '../utils/chain-address'
 import { formatBalance } from '../utils/formatting'
+import { withOutgoingLock } from '../utils/outgoing-lock'
 import { activeChain } from '@frank/wallet/chain'
 import {
   getMessageItemPreview,
@@ -906,11 +907,17 @@ export const useChatStore = defineStore('chats', {
      *
      * Once a message's exact signed payment set exists, its payload hash is recorded on the
      * message (`delivery.attemptDigest`) before the set is first submitted. Every later attempt
-     * for that message (automatic or manual) first asks the wallet what became of that set
-     * (`directMessages.reconcileAttempts`): while it is `live` the identical bytes are re-sent,
-     * which is free and idempotent; only when it is `dead` (the relay ended it for good) is a
-     * *new* payment built, and only by an explicit manual Retry. If its fate is `unknown`, the user
-     * must confirm first.
+     * for that message (background, automatic or manual) first asks the wallet what became of
+     * that set (`directMessages.reconcileAttempts`): while it is `live` the identical bytes are
+     * re-sent, which is free and idempotent; only when it is `dead` (the relay ended it for good)
+     * is a *new* payment built, and only by a Retry the user clicked. If its fate is `unknown`,
+     * the user must confirm first. A retry nobody clicked (`retryOutgoing({ automatic: true })`)
+     * never builds a payment after `dead` or `unknown` and is never `confirmed`; it builds one
+     * only for a failed message cut off mid-send (`interrupted`) that has no recorded attempt,
+     * after the wallet has shown that it holds no payment nobody points at.
+     *
+     * Each send or retry of a message holds a Web Lock on it for its whole run, shared by all
+     * tabs of the profile; a tab that finds it held reports `busy` and leaves the message alone.
      */
     async sendMessage({
       wallet,
@@ -967,21 +974,26 @@ export const useChatStore = defineStore('chats', {
         onPreparationProgress,
       })
     },
-    /** Manual Retry of a failed outgoing message (`status: 'error'`). See `sendMessage` for the
-     * no-double-payment rule this follows. */
+    /** Retry of a failed outgoing message (`status: 'error'`): the user's Retry, or with
+     * `automatic` a retry nobody clicked. See `sendMessage` for the no-double-payment rule this
+     * follows. */
     async retryOutgoing({
       wallet,
       address,
       payloadDigest,
       confirmed = false,
+      automatic = false,
       onPreparationProgress,
     }: {
       wallet: WalletHandle
       address: string
       /** The message's key in the store (`ChatMessage.payloadDigest`). */
       payloadDigest: string
-      /** The user accepted that this retry may pay a second time. */
+      /** The user accepted that this retry may pay a second time. Ignored when `automatic`. */
       confirmed?: boolean
+      /** Nobody clicked: an earlier payment is only settled, and a payment is built only for a
+       * message cut off mid-send (`interrupted`) that provably has none yet. */
+      automatic?: boolean
       onPreparationProgress?: (
         progress: DirectMessagePreparationProgress,
       ) => void
@@ -1000,7 +1012,8 @@ export const useChatStore = defineStore('chats', {
         address: toChainDisplayAddress(address),
         id: payloadDigest,
         manual: true,
-        confirmed,
+        automatic,
+        confirmed: confirmed && !automatic,
         onPreparationProgress,
       })
     },
@@ -1246,6 +1259,7 @@ export const useChatStore = defineStore('chats', {
       address,
       id,
       manual,
+      automatic = false,
       confirmed = false,
       onPreparationProgress,
     }: {
@@ -1253,6 +1267,8 @@ export const useChatStore = defineStore('chats', {
       address: string
       id: string
       manual: boolean
+      /** A retry nobody clicked (see `retryOutgoing`): it may only build a message's first payment. */
+      automatic?: boolean
       confirmed?: boolean
       onPreparationProgress?: (
         progress: DirectMessagePreparationProgress,
@@ -1269,14 +1285,22 @@ export const useChatStore = defineStore('chats', {
       inflightOutgoing.add(id)
       let recoveredOthers = false
       try {
-        const outcome = await this.runOutgoingExclusive({
-          wallet,
-          address,
-          id,
-          manual,
-          confirmed,
-          onPreparationProgress,
-        })
+        // Another tab of this profile may be sending this very message (its row is saved before
+        // the send starts, and this tab's copy may call it interrupted). Its lock is held for the
+        // whole send: then this tab leaves the message as it is and pays nothing.
+        const locked = await withOutgoingLock(id, () =>
+          this.runOutgoingExclusive({
+            wallet,
+            address,
+            id,
+            manual,
+            automatic: automatic && manual,
+            confirmed: confirmed && !automatic,
+            onPreparationProgress,
+          }),
+        )
+        if (!locked) return { state: 'busy' }
+        const outcome = locked.result
         recoveredOthers =
           outcome.state === 'failed' && outcome.reason === 'recovered'
         return outcome
@@ -1291,6 +1315,7 @@ export const useChatStore = defineStore('chats', {
       address,
       id,
       manual,
+      automatic,
       confirmed,
       onPreparationProgress,
     }: {
@@ -1298,13 +1323,18 @@ export const useChatStore = defineStore('chats', {
       address: string
       id: string
       manual: boolean
+      automatic: boolean
       confirmed: boolean
       onPreparationProgress?: (
         progress: DirectMessagePreparationProgress,
       ) => void
     }): Promise<OutgoingOutcome> {
       const message = this.messages[id]
-      assert(message, 'outgoing message vanished')
+      // Read again under the lock: the message may have changed while it was awaited.
+      if (!message || !walletOwnsMessage(wallet, message))
+        return { state: 'busy' }
+      if (automatic && (!message.outbound || message.status !== 'error'))
+        return { state: 'busy' }
       const recipient = activeChain.parseAddress(address)
       assert(recipient, `Invalid recipient address: ${address}`)
       const previous = message.delivery
@@ -1346,6 +1376,7 @@ export const useChatStore = defineStore('chats', {
         if (!stillCurrent()) return { state: 'busy' }
         if (applied === 'live') return { state: 'payment-pending' }
         if (applied === 'unknown') {
+          // An automatic retry is never `confirmed` (see `runOutgoing`), so it always stops here.
           if (!manual || !confirmed) {
             await this.setOutgoingState(address, id, 'error', {
               attemptDigest: digest,
@@ -1355,7 +1386,7 @@ export const useChatStore = defineStore('chats', {
               ? { state: 'needs-confirmation', reason: 'unverified' }
               : { state: 'failed', reason: 'unverified' }
           }
-        } else if (!manual) {
+        } else if (!manual || automatic) {
           // The old payment can never land. Building a new one is the user's decision (Retry).
           await this.setOutgoingState(address, id, 'error', {
             failureReason: 'rejected',
@@ -1364,6 +1395,10 @@ export const useChatStore = defineStore('chats', {
           return { state: 'failed', reason: 'rejected' }
         }
         // Manual retry of a dead (or user-confirmed unknown) attempt: fall through, new payment.
+      } else if (automatic && previous?.failureReason !== 'interrupted') {
+        // No attempt recorded and not cut off mid-send: an earlier payment for it was given up
+        // (dead) or the send failed for a reason the user must see. Only a click sends it again.
+        return { state: 'failed', reason: previous?.failureReason ?? 'error' }
       } else if (
         manual &&
         !confirmed &&

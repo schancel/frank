@@ -3,6 +3,22 @@
     <q-page-container>
       <q-page class="chat-page-background column no-wrap">
         <div class="col relative-position">
+          <!-- Announces a message that arrives while this chat is open, once. It starts empty
+          and only ever gains the arrivals, so opening a chat does not read out its history.
+          The visible list is deliberately not the live region: its bubbles carry their own
+          status regions (Sending…, failures) and it is rebuilt when older pages load. -->
+          <div
+            class="q-sr-only"
+            role="log"
+            aria-live="polite"
+            aria-relevant="additions"
+            :aria-label="$t('a11y.incomingMessages')"
+            data-testid="incoming-message-log"
+          >
+            <p v-for="arrival in arrivals" :key="arrival.id">
+              {{ arrival.text }}
+            </p>
+          </div>
           <q-scroll-area
             ref="chatScroll"
             @scroll="scrollHandler"
@@ -108,7 +124,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, ref } from 'vue'
+import { defineComponent, markRaw, ref } from 'vue'
 
 import ChatMessageComponent from '../components/chat/messages/ChatMessage.vue'
 import ChatBannerStack from '../components/chat/ChatBannerStack.vue'
@@ -130,6 +146,7 @@ import {
   type DirectMessagePreparationProgress,
 } from '@frank/wallet/chain'
 import { MessageItem } from '@frank/cashweb/types/messages'
+import { getMessageItemPreview } from '@frank/wallet/message-item-plugins'
 
 import { debounce, QScrollArea } from 'quasar'
 
@@ -140,6 +157,21 @@ import { ChatMessage, useChatStore } from 'src/stores/chats'
 import type { OutgoingOutcome } from 'src/stores/chats'
 
 const scrollDuration = 0
+
+// At most this many arrivals of one batch are read out; the rest are in the list itself.
+const ARRIVALS_ANNOUNCED_MAX = 5
+const ARRIVAL_PREVIEW_MAX_CHARS = 300
+
+function arrivalPreview(message: ChatMessage): string {
+  try {
+    return message.items
+      .map(item => getMessageItemPreview(item))
+      .join(' ')
+      .slice(0, ARRIVAL_PREVIEW_MAX_CHARS)
+  } catch {
+    return ''
+  }
+}
 
 // A refusal carries its own translated reason; anything else stays the generic message, since
 // provider and relay text is never shown to the user.
@@ -199,6 +231,8 @@ export default defineComponent({
       scrollDigest: null as string | null,
       chatWidth: 0,
       message: '',
+      // Messages that arrived while this chat was open, for the screen-reader log.
+      arrivals: [] as Array<{ id: string; text: string }>,
       stampPreparationStatus: null as string | null,
       sendingMessage: false,
     }
@@ -218,6 +252,11 @@ export default defineComponent({
       sendDirectMessage: chats.sendMessage,
       chats: chats.chats,
       chatScroll: ref<QScrollArea | null>(null),
+      // Plain bookkeeping for the arrivals log: which list was last looked at, and what was in it.
+      arrivalBaseline: markRaw({
+        source: null as unknown,
+        seen: new Set<string>(),
+      }),
     }
   },
   emits: ['giveLotusClicked', 'sendFileClicked'],
@@ -228,6 +267,8 @@ export default defineComponent({
     // Adjust the chat width when window resizes
     window.addEventListener('resize', debounce(this.resizeHandler, 50))
     this.focusComposeOnOpen()
+    // Everything already here is history, not an arrival.
+    this.announceArrivals()
   },
   updated() {
     this.$nextTick(() => {
@@ -634,6 +675,35 @@ export default defineComponent({
           }),
       })
     },
+    // Fills the screen-reader log with the incoming messages added since the last look. A
+    // different list (another chat, or the store reloaded) is taken as the new baseline without
+    // announcing anything: that is history.
+    announceArrivals() {
+      const baseline = this.arrivalBaseline
+      const list = this.messages
+      if (baseline.source !== list) {
+        baseline.source = list
+        baseline.seen = new Set(list.map(message => message.payloadDigest))
+        this.arrivals = []
+        return
+      }
+      const fresh: ChatMessage[] = []
+      for (const message of list) {
+        if (baseline.seen.has(message.payloadDigest)) continue
+        baseline.seen.add(message.payloadDigest)
+        // Own messages already announce their sending state on the bubble.
+        if (!message.outbound) fresh.push(message)
+      }
+      if (fresh.length === 0) return
+      const name = this.peerName || this.address
+      this.arrivals = fresh.slice(-ARRIVALS_ANNOUNCED_MAX).map(message => ({
+        id: message.payloadDigest,
+        text: this.$t('a11y.incomingMessage', {
+          name,
+          text: arrivalPreview(message),
+        }),
+      }))
+    },
     getContact(outbound: boolean) {
       if (outbound) {
         return this.getProfile.profile
@@ -711,10 +781,12 @@ export default defineComponent({
   watch: {
     'address'() {
       this.focusComposeOnOpen()
+      this.announceArrivals()
     },
     'messages.length'() {
       // Scroll to bottom if user was already there.
       this.scrollBottom()
+      this.announceArrivals()
     },
     'active'(newActive) {
       if (!newActive) {

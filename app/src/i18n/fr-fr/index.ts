@@ -309,6 +309,8 @@ export default {
     resendMessage: 'Renvoyer le message',
     cancelReply: 'Annuler la réponse',
     scrollToLatest: 'Aller aux derniers messages',
+    incomingMessages: 'Nouveaux messages',
+    incomingMessage: 'Message de {name} : {text}',
     copyAddress: "Copier l'adresse",
     connectRelay: 'Se connecter au relais',
     choosePhoto: 'Choisir une photo de profil',

@@ -302,6 +302,8 @@ export default {
     resendMessage: 'Resend message',
     cancelReply: 'Cancel reply',
     scrollToLatest: 'Scroll to latest messages',
+    incomingMessages: 'New messages',
+    incomingMessage: 'Message from {name}: {text}',
     copyAddress: 'Copy address',
     connectRelay: 'Connect to relay',
     choosePhoto: 'Choose profile photo',

@@ -50,6 +50,35 @@
 import axios from 'axios'
 import { cryptoBackend } from '@frank/nakamoto'
 
+import {
+  addressFromCompressedPubkey,
+  compareBytes,
+  toHex,
+  verifyPreviewDirectoryEvidence,
+} from '@frank/codec'
+import type { Current } from '@frank/directory-admission'
+import {
+  awaitCanonicalAbort,
+  canonicalNetworkDescriptor,
+  canonicalMultipartStreamGuard,
+  canonicalObject,
+  CANONICAL_DM_MAX_BYTES,
+  CANONICAL_DM_MAX_STATUS_BYTES,
+  CANONICAL_TERMINAL_REASONS,
+  decodeCanonicalTransactions,
+  defaultCanonicalFetch,
+  describeCanonicalParts,
+  inspectCanonicalPair,
+  installedCanonicalOrigin,
+  parseCanonicalJSON,
+  parseCanonicalMultipart,
+  readCanonicalResponse,
+  type CanonicalExactParts,
+  type CanonicalFetch,
+  type CanonicalMultipartPart,
+  type CanonicalSubmissionEcho,
+} from './canonical-dm-transport'
+
 import __pb_monad_message_pb from './monad_message_pb'
 const { StoredMonadMessages, MonadStampedMessage } = __pb_monad_message_pb
 // Type-only back-edge (erased at compile time), same as `./monad-message-feed.ts` had.
@@ -948,4 +977,604 @@ export async function ackMonadMailboxRecovery(
       }),
     'POST /message/monad/recovery/ack',
   )
+}
+
+// Canonical mailbox keeps the original P signing transcript, with an isolated HTTP namespace.
+export interface CanonicalMailboxAuthParams
+  extends Omit<MailboxAuthParams, 'http'> {
+  /** Installed four-byte authentication tag; distinct from the canonical network identifier. */
+  expectedNetworkTag: 'MONT' | 'MON1'
+  /** Compressed P locator, never admission authority. */
+  subject: string
+  /** Must call the caller-owned public DirectoryStore.current with its trusted clock/relay context. */
+  getCurrent(): Promise<Current>
+  fetch?: CanonicalFetch
+  signal?: AbortSignal
+}
+export interface CanonicalMailboxPageParams extends CanonicalMailboxAuthParams {
+  sinceMs?: number
+  cursor?: string
+  limit?: number
+  maxBytes?: number
+}
+export interface CanonicalInboxRecord {
+  readonly delivery: Uint8Array
+  readonly context: Uint8Array
+  /** Relay metadata: a pair cannot recompute the full raw-set index. */
+  readonly submissionIdentity: string
+  readonly timestampMs: number
+}
+export interface CanonicalRecoveryRecord extends CanonicalInboxRecord {
+  readonly parts: CanonicalExactParts
+  readonly identity: CanonicalSubmissionEcho
+  readonly obligationId: string
+  readonly confirmedChildren: readonly number[]
+  readonly lifecycle: string
+}
+export interface CanonicalMailboxPage<T> {
+  readonly records: readonly T[]
+  readonly nextCursor?: string
+}
+const canonicalHex32 = (value: unknown): value is string =>
+  typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+function canonicalProtocol(message: string): never {
+  throw new MonadMailboxProtocolError(message)
+}
+function canonicalCheckAbort(signal?: AbortSignal): void {
+  if (signal?.aborted) canonicalProtocol('Canonical mailbox request aborted')
+}
+function canonicalPageBinding(
+  params: CanonicalMailboxPageParams,
+  resource: 'inbox' | 'recovery',
+): ChallengeRequest {
+  const since = params.sinceMs ?? 0,
+    limit = params.limit ?? (resource === 'inbox' ? 50 : 20),
+    maxBytes = params.maxBytes ?? CANONICAL_DM_MAX_BYTES
+  if (
+    !Number.isSafeInteger(since) ||
+    since < 0 ||
+    (resource === 'recovery' && since !== 0) ||
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    limit > 100 ||
+    !Number.isSafeInteger(maxBytes) ||
+    maxBytes < 1 ||
+    maxBytes > CANONICAL_DM_MAX_BYTES ||
+    (params.cursor !== undefined &&
+      (params.cursor.length < 1 ||
+        params.cursor.length > 4096 ||
+        !/^[\x21-\x7e]+$/.test(params.cursor)))
+  )
+    canonicalProtocol('Invalid bounded canonical page binding')
+  return { resource, since, cursor: params.cursor, limit, maxBytes }
+}
+async function canonicalCurrent(
+  auth: CanonicalMailboxAuthParams,
+  origin: string,
+): Promise<string> {
+  canonicalCheckAbort(auth.signal)
+  if (
+    !/^(02|03)[0-9a-f]{64}$/.test(auth.subject) ||
+    !/^0x[0-9a-f]{40}$/.test(auth.recipient)
+  )
+    canonicalProtocol('Invalid canonical P locator/address')
+  const subject = hexToBytes(auth.subject, 33, 'P subject')
+  if ('0x' + toHex(addressFromCompressedPubkey(subject)) !== auth.recipient)
+    canonicalProtocol('Canonical P locator/address mismatch')
+  const descriptor = canonicalNetworkDescriptor(auth.expectedNetworkTag)
+  const current = auth.signal
+    ? await awaitCanonicalAbort(auth.getCurrent(), auth.signal)
+    : await auth.getCurrent()
+  canonicalCheckAbort(auth.signal)
+  if (
+    current.kind !== 'current' ||
+    current.evidence.kind !== 'historical-evidence' ||
+    current.status.forked
+  )
+    canonicalProtocol('Fresh admitted Directory Current required')
+  const evidence = verifyPreviewDirectoryEvidence(
+    current.evidence.attestation,
+    descriptor.network,
+  )
+  const statement = evidence.statement
+  const equal = (a: Uint8Array, b: Uint8Array) => compareBytes(a, b) === 0
+  const keyEqual = (
+    a: { keyType: number; keyBytes: Uint8Array },
+    b: { keyType: number; keyBytes: Uint8Array },
+  ) => a.keyType === b.keyType && equal(a.keyBytes, b.keyBytes)
+  const stamp = statement.preview
+  const checked =
+    current.status.checkedTime.seconds * 1000000000n +
+    BigInt(current.status.checkedTime.nanoseconds)
+  const expires =
+    statement.expiry.seconds * 1000000000n +
+    BigInt(statement.expiry.nanoseconds)
+  if (
+    statement.subject.keyType !== 1 ||
+    !equal(statement.subject.keyBytes, subject) ||
+    !equal(evidence.statementFrame.frame, current.evidence.statement) ||
+    !equal(evidence.statementHash, current.evidence.hash) ||
+    !current.status.head ||
+    !equal(current.status.head, evidence.statementHash) ||
+    current.revision !== statement.revision ||
+    current.status.revision !== current.revision ||
+    !keyEqual(current.messageKey, stamp.messageDhKey) ||
+    !keyEqual(current.stampKey, statement.stampKey) ||
+    current.generations[0] !== stamp.mailboxKeyGeneration ||
+    current.generations[1] !== stamp.stampKeyGeneration ||
+    checked >= expires ||
+    !statement.relays.some(relay => relay.endpoint === origin)
+  )
+    canonicalProtocol(
+      'Directory Current does not match installed canonical P authority',
+    )
+  return toHex(evidence.statementHash)
+}
+function canonicalQuery(
+  request: ChallengeRequest,
+  challenge?: MailboxChallenge,
+): string {
+  const query = new URLSearchParams()
+  if (!challenge) query.set('resource', request.resource)
+  query.set('since', String(challenge?.since ?? request.since ?? 0))
+  const cursor = challenge?.cursor ?? request.cursor
+  if (cursor !== undefined && cursor !== null) query.set('cursor', cursor)
+  query.set('limit', String(challenge?.limit ?? request.limit ?? 1))
+  query.set(
+    'max_bytes',
+    String(challenge?.max_bytes ?? request.maxBytes ?? CANONICAL_DM_MAX_BYTES),
+  )
+  if (request.recoveryPayloadHashHex !== undefined)
+    query.set('recovery_payload_hash', request.recoveryPayloadHashHex)
+  if (request.recoveryObligationIdHex !== undefined)
+    query.set('recovery_obligation_id', request.recoveryObligationIdHex)
+  return query.toString()
+}
+async function canonicalRoundTrip(
+  auth: CanonicalMailboxAuthParams,
+  url: string,
+  method: 'GET' | 'POST',
+  headers: Record<string, string>,
+  budget: number,
+): Promise<MailboxHttpResponse> {
+  canonicalCheckAbort(auth.signal)
+  const controller = new AbortController(),
+    abort = () => controller.abort()
+  auth.signal?.addEventListener('abort', abort, { once: true })
+  const timeout = setTimeout(abort, 60000)
+  try {
+    let response
+    try {
+      response = await awaitCanonicalAbort(
+        (auth.fetch ?? defaultCanonicalFetch)(url, {
+          method,
+          headers,
+          signal: controller.signal,
+          redirect: 'error',
+          credentials: 'omit',
+        }),
+        controller.signal,
+      )
+    } catch (error) {
+      canonicalCheckAbort(auth.signal)
+      throw new NetworkFailure(error)
+    }
+    if (response.url !== url)
+      canonicalProtocol('Canonical mailbox response origin/path mismatch')
+    const responseHeaders: Record<string, string | undefined> = {}
+    for (const name of [
+      'content-type',
+      'retry-after',
+      MAILBOX_NEXT_CURSOR_HEADER,
+    ])
+      responseHeaders[name] = response.headers.get(name) ?? undefined
+    const cursor = responseHeaders[MAILBOX_NEXT_CURSOR_HEADER]
+    if (
+      cursor !== undefined &&
+      (cursor.length < 1 ||
+        cursor.length > 4096 ||
+        !/^[\x21-\x7e]+$/.test(cursor))
+    )
+      canonicalProtocol('Invalid bounded opaque cursor')
+    const allowance =
+      response.status === 200 && method === 'GET'
+        ? budget - (cursor?.length ?? 0)
+        : Math.min(budget, CANONICAL_DM_MAX_STATUS_BYTES)
+    if (allowance < 1)
+      canonicalProtocol('Cursor exceeds complete page byte budget')
+    const guard =
+      response.status === 200 && method === 'GET'
+        ? canonicalMultipartStreamGuard(
+            responseHeaders['content-type'] ?? '',
+            Number(new URL(url).searchParams.get('limit')),
+            url.includes('/recovery/') ? 4 : 2,
+          )
+        : undefined
+    return {
+      status: response.status,
+      headers: responseHeaders,
+      data: await readCanonicalResponse(
+        response,
+        allowance,
+        controller.signal,
+        guard,
+      ),
+    }
+  } finally {
+    clearTimeout(timeout)
+    auth.signal?.removeEventListener('abort', abort)
+    controller.abort()
+  }
+}
+async function canonicalSignedRequest(
+  auth: CanonicalMailboxAuthParams,
+  request: ChallengeRequest,
+  path: string,
+): Promise<MailboxHttpResponse> {
+  canonicalCheckAbort(auth.signal)
+  const controller = new AbortController(),
+    abort = () => controller.abort()
+  auth.signal?.addEventListener('abort', abort, { once: true })
+  const timeout = setTimeout(abort, 60000)
+  try {
+    return await awaitCanonicalAbort(
+      canonicalSignedRequestWithin(
+        { ...auth, signal: controller.signal },
+        request,
+        path,
+      ),
+      controller.signal,
+    )
+  } finally {
+    clearTimeout(timeout)
+    auth.signal?.removeEventListener('abort', abort)
+    controller.abort()
+  }
+}
+async function canonicalSignedRequestWithin(
+  auth: CanonicalMailboxAuthParams,
+  request: ChallengeRequest,
+  path: string,
+): Promise<MailboxHttpResponse> {
+  const origin = installedCanonicalOrigin(auth.relayBaseUrl)
+  // Local eligibility precedes the first challenge. Each retry obtains actual fresh Current again.
+  await canonicalCurrent(auth, origin)
+  let phase: 'challenge' | 'request' = 'challenge'
+  return withRetries(
+    auth.retry,
+    'Canonical private mailbox',
+    async () => {
+      phase = 'challenge'
+      const head = await canonicalCurrent(auth, origin)
+      const challengeURL = `${origin}/message/monad/cbor/auth/${
+        auth.recipient
+      }?${canonicalQuery(request)}`
+      const response = await canonicalRoundTrip(
+        auth,
+        challengeURL,
+        'POST',
+        {
+          'x-frank-mailbox-subject': auth.subject,
+          'Accept': 'application/json',
+        },
+        CANONICAL_DM_MAX_STATUS_BYTES,
+      )
+      if (response.status !== 200) return response
+      if (
+        (response.headers['content-type'] ?? '')
+          .split(';')[0]
+          .trim()
+          .toLowerCase() !== 'application/json'
+      )
+        canonicalProtocol('Canonical challenge JSON required')
+      const raw = canonicalObject(
+        parseCanonicalJSON(bodyBytes(response.data)),
+        [
+          'epoch',
+          'nonce',
+          'expires_at_ms',
+          'token',
+          'signing_domain',
+          'resource',
+          'since',
+          'cursor',
+          'limit',
+          'max_bytes',
+          'network_tag',
+          'recovery_payload_hash',
+          'recovery_obligation_id',
+        ],
+      )
+      const challenge = raw as unknown as MailboxChallenge
+      validateChallenge(challenge, request)
+      if (
+        !canonicalHex32(challenge.epoch) ||
+        !canonicalHex32(challenge.nonce) ||
+        !canonicalHex32(challenge.token) ||
+        !Number.isSafeInteger(challenge.expires_at_ms) ||
+        challenge.expires_at_ms <= Date.now() ||
+        challenge.expires_at_ms > Date.now() + 60000 ||
+        challenge.network_tag !==
+          bytesToHex(new TextEncoder().encode(auth.expectedNetworkTag)) ||
+        challenge.recovery_payload_hash !==
+          (request.recoveryPayloadHashHex ?? null) ||
+        challenge.recovery_obligation_id !==
+          (request.recoveryObligationIdHex ?? null)
+      )
+        canonicalProtocol(
+          'Malformed or foreign canonical challenge; refusing to sign',
+        )
+      canonicalCheckAbort(auth.signal)
+      const signing = Promise.resolve(
+        auth.signDigest(
+          mailboxAuthDigest(
+            buildMailboxAuthPreimage(challenge, auth.recipient),
+          ),
+        ),
+      )
+      const signature = auth.signal
+        ? await awaitCanonicalAbort(signing, auth.signal)
+        : await signing
+      canonicalCheckAbort(auth.signal)
+      if (
+        !(signature instanceof Uint8Array) ||
+        signature.length < 8 ||
+        signature.length > 80
+      )
+        canonicalProtocol('Invalid bounded P signature')
+      if (
+        (await canonicalCurrent(auth, origin)) !== head ||
+        Date.now() >= challenge.expires_at_ms
+      )
+        canonicalProtocol('Canonical authority/challenge changed while signing')
+      phase = 'request'
+      const headers = {
+        'x-frank-mailbox-subject': auth.subject,
+        'x-frank-mailbox-epoch': challenge.epoch,
+        'x-frank-mailbox-nonce': challenge.nonce,
+        'x-frank-mailbox-expires-at-ms': String(challenge.expires_at_ms),
+        'x-frank-mailbox-token': challenge.token,
+        'x-frank-mailbox-signature': bytesToHex(signature),
+        'Accept':
+          request.resource === 'recovery_ack'
+            ? 'application/json'
+            : 'multipart/mixed',
+      }
+      const url =
+        `${origin}/message/monad/cbor/${path}` +
+        (request.resource === 'recovery_ack'
+          ? ''
+          : `?${canonicalQuery(request, challenge)}`)
+      return canonicalRoundTrip(
+        auth,
+        url,
+        request.resource === 'recovery_ack' ? 'POST' : 'GET',
+        headers,
+        request.resource === 'recovery_ack'
+          ? CANONICAL_DM_MAX_STATUS_BYTES
+          : request.maxBytes ?? CANONICAL_DM_MAX_BYTES,
+      )
+    },
+    () => phase,
+  )
+}
+function canonicalRecordParts(
+  outer: CanonicalMultipartPart,
+  count: number,
+): readonly CanonicalMultipartPart[] {
+  if (
+    outer.name !== 'record' ||
+    Object.keys(outer.headers).length !== 4 ||
+    !canonicalHex32(outer.headers['x-frank-submission-identity']) ||
+    !/^(0|[1-9][0-9]*)$/.test(
+      outer.headers['x-frank-mailbox-timestamp-ms'] ?? '',
+    ) ||
+    !Number.isSafeInteger(Number(outer.headers['x-frank-mailbox-timestamp-ms']))
+  )
+    canonicalProtocol('Invalid canonical record headers')
+  const parts = parseCanonicalMultipart(
+    outer.bytes,
+    outer.contentType,
+    'multipart/mixed',
+    count,
+  )
+  const names = ['delivery', 'context', 'transactions', 'recovery'],
+    media = [
+      'application/vnd.frank.cbor',
+      'application/cbor',
+      'application/cbor',
+      'application/json',
+    ]
+  if (
+    parts.length !== count ||
+    parts.some(
+      (part, i) =>
+        part.name !== names[i] ||
+        part.contentType !== media[i] ||
+        Object.keys(part.headers).length !== 2,
+    )
+  )
+    canonicalProtocol('Invalid canonical record parts')
+  return parts
+}
+function canonicalPageRecords(
+  response: MailboxHttpResponse,
+  limit: number,
+): readonly CanonicalMultipartPart[] {
+  if (response.status !== 200)
+    canonicalProtocol('Canonical page must use HTTP200')
+  return parseCanonicalMultipart(
+    bodyBytes(response.data),
+    response.headers['content-type'] ?? '',
+    'multipart/mixed',
+    limit,
+  )
+}
+/** Complete page only: opening/financial authority remains with public B and the wallet owner. */
+export async function fetchCanonicalInboxPage(
+  params: CanonicalMailboxPageParams,
+): Promise<CanonicalMailboxPage<CanonicalInboxRecord>> {
+  const binding = canonicalPageBinding(params, 'inbox')
+  const response = await canonicalSignedRequest(
+    params,
+    binding,
+    `inbox/${params.recipient}`,
+  )
+  const seen = new Set<string>()
+  const records = canonicalPageRecords(response, binding.limit!).map(outer => {
+    const parts = canonicalRecordParts(outer, 2)
+    const pair = inspectCanonicalPair({
+      delivery: parts[0].bytes,
+      context: parts[1].bytes,
+    })
+    if (
+      pair.network !==
+        canonicalNetworkDescriptor(params.expectedNetworkTag).network ||
+      pair.recipient !== params.recipient ||
+      seen.has(pair.payload_hash)
+    )
+      canonicalProtocol('Canonical inbox recipient/network/duplicate mismatch')
+    seen.add(pair.payload_hash)
+    return Object.freeze({
+      delivery: Uint8Array.from(parts[0].bytes),
+      context: Uint8Array.from(parts[1].bytes),
+      submissionIdentity: outer.headers['x-frank-submission-identity'],
+      timestampMs: Number(outer.headers['x-frank-mailbox-timestamp-ms']),
+    })
+  })
+  canonicalCheckAbort(params.signal)
+  return Object.freeze({
+    records: Object.freeze(records),
+    nextCursor: response.headers[MAILBOX_NEXT_CURSOR_HEADER],
+  })
+}
+export async function fetchCanonicalRecoveryPage(
+  params: CanonicalMailboxPageParams,
+): Promise<CanonicalMailboxPage<CanonicalRecoveryRecord>> {
+  const binding = canonicalPageBinding(params, 'recovery')
+  const response = await canonicalSignedRequest(
+    params,
+    binding,
+    `recovery/${params.recipient}`,
+  )
+  const seen = new Set<string>()
+  const records = canonicalPageRecords(response, binding.limit!).map(outer => {
+    const parts = canonicalRecordParts(outer, 4)
+    const exact: CanonicalExactParts = {
+      delivery: Uint8Array.from(parts[0].bytes),
+      context: Uint8Array.from(parts[1].bytes),
+      transactions: Object.freeze(
+        decodeCanonicalTransactions(parts[2].bytes).map(raw =>
+          Uint8Array.from(raw),
+        ),
+      ),
+    }
+    const identity = describeCanonicalParts(exact)
+    const metadata = canonicalObject(parseCanonicalJSON(parts[3].bytes), [
+      'version',
+      'submission_identity',
+      'payload_hash',
+      'obligation_id',
+      'confirmed_children',
+      'lifecycle',
+    ])
+    const indices = metadata.confirmed_children,
+      lifecycle = metadata.lifecycle
+    const terminal =
+      typeof lifecycle === 'string' &&
+      lifecycle.startsWith('terminal:') &&
+      CANONICAL_TERMINAL_REASONS.some(
+        reason => lifecycle === `terminal:${reason}`,
+      )
+    if (
+      identity.network !==
+        canonicalNetworkDescriptor(params.expectedNetworkTag).network ||
+      identity.recipient !== params.recipient ||
+      metadata.version !== 1 ||
+      metadata.submission_identity !== identity.submission_identity ||
+      outer.headers['x-frank-submission-identity'] !==
+        identity.submission_identity ||
+      metadata.payload_hash !== identity.payload_hash ||
+      !canonicalHex32(metadata.obligation_id) ||
+      !Array.isArray(indices) ||
+      indices.some(
+        (index, i) =>
+          !Number.isSafeInteger(index) ||
+          index < 0 ||
+          index >= exact.transactions.length ||
+          (i > 0 && index <= indices[i - 1]),
+      ) ||
+      !(
+        ['pending', 'fully_confirmed', 'delivered'].includes(
+          String(lifecycle),
+        ) || terminal
+      ) ||
+      seen.has(metadata.obligation_id)
+    )
+      canonicalProtocol('Canonical recovery identity/metadata mismatch')
+    seen.add(metadata.obligation_id)
+    return Object.freeze({
+      delivery: exact.delivery,
+      context: exact.context,
+      parts: Object.freeze(exact),
+      identity,
+      submissionIdentity: identity.submission_identity,
+      timestampMs: Number(outer.headers['x-frank-mailbox-timestamp-ms']),
+      obligationId: metadata.obligation_id,
+      confirmedChildren: Object.freeze([...indices]) as readonly number[],
+      lifecycle: lifecycle as string,
+    })
+  })
+  canonicalCheckAbort(params.signal)
+  return Object.freeze({
+    records: Object.freeze(records),
+    nextCursor: response.headers[MAILBOX_NEXT_CURSOR_HEADER],
+  })
+}
+/** Caller must durably import recovery before ack. This never acknowledges a wallet workflow. */
+export async function ackCanonicalRecovery(
+  params: CanonicalMailboxAuthParams & {
+    payloadHashHex: string
+    obligationIdHex: string
+  },
+): Promise<void> {
+  if (
+    !canonicalHex32(params.payloadHashHex) ||
+    !canonicalHex32(params.obligationIdHex)
+  )
+    canonicalProtocol('Exact recovery T3/obligation required')
+  const response = await canonicalSignedRequest(
+    params,
+    {
+      resource: 'recovery_ack',
+      since: 0,
+      limit: 1,
+      maxBytes: 0,
+      recoveryPayloadHashHex: params.payloadHashHex,
+      recoveryObligationIdHex: params.obligationIdHex,
+    },
+    `recovery/${params.recipient}/${params.payloadHashHex}/${params.obligationIdHex}/ack`,
+  )
+  if (
+    response.status !== 200 ||
+    (response.headers['content-type'] ?? '')
+      .split(';')[0]
+      .trim()
+      .toLowerCase() !== 'application/json'
+  )
+    canonicalProtocol('Exact durable canonical acknowledgement required')
+  const body = canonicalObject(parseCanonicalJSON(bodyBytes(response.data)), [
+    'version',
+    'acknowledged',
+    'payload_hash',
+    'obligation_id',
+  ])
+  if (
+    body.version !== 1 ||
+    body.acknowledged !== true ||
+    body.payload_hash !== params.payloadHashHex ||
+    body.obligation_id !== params.obligationIdHex
+  )
+    canonicalProtocol('Canonical acknowledgement identity mismatch')
+  canonicalCheckAbort(params.signal)
 }

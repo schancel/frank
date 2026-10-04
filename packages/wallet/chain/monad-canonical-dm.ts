@@ -101,6 +101,9 @@ interface StoredLink {
   prepared: Record<string, string>
   outcome?: 'delivered' | 'dead'
   acknowledged?: boolean
+  /** Saved once a message pointed at this delivered attempt, or the user answered for it. Until
+   * then a delivered attempt is reported as unattributed in every session. */
+  accounted?: boolean
 }
 const PREPARED_BYTES = ['payload', 'context', 'economicBinding'] as const
 function storeLink(digest: string, link: CanonicalWorkflowLink): StoredLink {
@@ -196,13 +199,6 @@ const MAX_INBOX_PAGES = 8
 const queues = new WeakMap<object, Promise<unknown>>()
 const lastRecoverySync = new WeakMap<object, number>()
 
-const resolved = new WeakMap<object, Set<string>>()
-function resolvedNow(owner: CanonicalMessagingOwner): Set<string> {
-  let digests = resolved.get(owner.links)
-  if (!digests) resolved.set(owner.links, (digests = new Set()))
-  return digests
-}
-
 function serial<T>(owner: object, task: () => Promise<T>): Promise<T> {
   const run = (queues.get(owner) ?? Promise.resolve()).then(task, task)
   queues.set(
@@ -276,7 +272,6 @@ async function settle(
         ...row,
         outcome: attempt.terminal.phase === 'delivered' ? 'delivered' : 'dead',
       })
-      resolvedNow(owner).add(row.digest)
       await client.cleanupTerminal(row.attemptRef, row.consumerId)
       await client.acknowledgeWorkflow(row.attemptRef, row.consumerId)
       await owner.links.put({
@@ -312,6 +307,17 @@ async function settle(
       // Outcome unknown: the exact bytes stay journaled and are re-sent on a later pass.
     }
   }
+}
+
+/** Durably marks delivered attempts as accounted for. An attempt with no outcome is never marked:
+ * it may still be delivered, so it has to stay reported. */
+async function account(
+  owner: CanonicalMessagingOwner,
+  matches: (row: StoredLink) => boolean,
+): Promise<void> {
+  for (const row of owner.links.all())
+    if (row.outcome === 'delivered' && !row.accounted && matches(row))
+      await owner.links.put({ ...row, accounted: true })
 }
 
 function statusOf(
@@ -614,19 +620,23 @@ export function canonicalDirectMessages(
         const directory = requireDirectory(owner)
         await settle(owner, directory.fetch, 1)
         const known = new Set(params.knownDigests)
-        return (
-          owner.links
-            .all()
-            // Live in the journal, or delivered in this process: the interface's own contract.
-            .filter(
-              row =>
-                !known.has(row.digest) &&
-                (!row.outcome ||
-                  (row.outcome === 'delivered' &&
-                    resolvedNow(owner).has(row.digest))),
-            )
-            .map(row => row.digest)
-        )
+        // A message points at it: that is saved, so it stays accounted for if the message goes.
+        await account(owner, row => known.has(row.digest))
+        return owner.links
+          .all()
+          .filter(
+            row =>
+              !known.has(row.digest) &&
+              (!row.outcome || (row.outcome === 'delivered' && !row.accounted)),
+          )
+          .map(row => row.digest)
+      }),
+    resolveUnattributedAttempts: (
+      params: Parameters<DirectMessageClient['resolveUnattributedAttempts']>[0],
+    ) =>
+      serial(owner.links, async () => {
+        const answered = new Set(params.payloadDigests)
+        await account(owner, row => answered.has(row.digest))
       }),
     fetchSince: (params: Parameters<DirectMessageClient['fetchSince']>[0]) =>
       fetchSince(owner, params),

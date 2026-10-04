@@ -896,6 +896,12 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       });
     },
 
+    async resolveUnattributedAttempts(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      // The legacy journal keeps delivered attempts only in process memory; nothing to save.
+      await canonicalMessagingFor(wallet)?.resolveUnattributedAttempts(params);
+    },
+
     async reconcileAttempts(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);

@@ -564,41 +564,157 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     )
   })
 
-  it('reports a delivered attempt nobody points at only until the wallet is reopened', async () => {
+  // The app stopped after the wallet saved its link row but before the chat message recorded the
+  // attempt: the message has no digest, and only the wallet can still account for the payment.
+  async function interruptedSend(label: string) {
+    const directory = await f.directoryFor('alice', f.alice, f.bob)
+    installCanonicalDirectory(f.alice, directory)
+    let digest = ''
+    await expect(
+      f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text(label),
+        onAttemptCreated: created => {
+          digest = created
+          throw new Error('app stopped')
+        },
+      }),
+    ).rejects.toThrow()
+    expect(digest).toMatch(/^[0-9a-f]{64}$/)
+    await f.alice.close()
+    return { directory, digest }
+  }
+  async function reopen(directory: CanonicalDirectory) {
+    const wallet = (await f.chain.createWallet(
+      roots(0),
+    )) as MonadChainWalletHandle
+    installCanonicalDirectory(wallet, directory)
+    return wallet
+  }
+  const orphans = (
+    wallet: MonadChainWalletHandle,
+    knownDigests: string[] = [],
+  ) => f.chain.directMessages.unattributedAttempts({ wallet, knownDigests })
+
+  it('keeps reporting a delivered attempt no message recorded across wallet reopens, and never pays for it twice', async () => {
+    const { directory, digest } = await interruptedSend('orphan')
+    expect(f.requests).toHaveLength(0)
+    // Next session: the frozen payment is finished and delivered, and nobody points at it.
+    let wallet = await reopen(directory)
+    try {
+      expect(await orphans(wallet)).toEqual([digest])
+      expect(f.requests).toHaveLength(1)
+      expect(restoreCanonicalRequest(f.requests[0]).identity.payload_hash).toBe(
+        digest,
+      )
+      await wallet.close()
+      // The user did not confirm. After a reload or lock/unlock it must still be reported, so the
+      // app still has to ask before it builds another payment for the same message.
+      for (let session = 0; session < 2; session++) {
+        wallet = await reopen(directory)
+        expect(await orphans(wallet)).toEqual([digest])
+        expect(
+          await f.chain.directMessages.reconcileAttempts({
+            wallet,
+            payloadDigests: [digest],
+          }),
+        ).toEqual({ [digest]: 'delivered' })
+        await wallet.close()
+      }
+      // Nothing was paid or sent again by any of those sessions.
+      expect(f.requests).toHaveLength(1)
+    } finally {
+      await wallet.close()
+    }
+  })
+
+  it('stops reporting a delivered orphan once the user has resolved it, also after reopen', async () => {
+    const { directory, digest } = await interruptedSend('resolved')
+    let wallet = await reopen(directory)
+    try {
+      expect(await orphans(wallet)).toEqual([digest])
+      await wallet.close()
+      wallet = await reopen(directory)
+      await f.chain.directMessages.resolveUnattributedAttempts({
+        wallet,
+        payloadDigests: [digest],
+      })
+      expect(await orphans(wallet)).toEqual([])
+      await wallet.close()
+      wallet = await reopen(directory)
+      expect(await orphans(wallet)).toEqual([])
+      // The durable outcome itself is still answerable.
+      expect(
+        await f.chain.directMessages.reconcileAttempts({
+          wallet,
+          payloadDigests: [digest],
+        }),
+      ).toEqual({ [digest]: 'delivered' })
+      expect(f.requests).toHaveLength(1)
+    } finally {
+      await wallet.close()
+    }
+  })
+
+  it('stops reporting a delivered attempt once a message pointed at it, also after that message is gone and the wallet reopened', async () => {
     const directory = await f.directoryFor('alice', f.alice, f.bob)
     installCanonicalDirectory(f.alice, directory)
     const sent = await f.chain.directMessages.send({
       wallet: f.alice,
       recipient: f.bob.identity.address,
-      items: text('orphan'),
+      items: text('attributed'),
     })
-    expect(
-      await f.chain.directMessages.unattributedAttempts({
-        wallet: f.alice,
-        knownDigests: [],
-      }),
-    ).toEqual([sent.payloadDigest])
+    // Delivered and not yet accounted for by anyone.
+    expect(await orphans(f.alice)).toEqual([sent.payloadDigest])
+    // A saved message points at it.
+    expect(await orphans(f.alice, [sent.payloadDigest])).toEqual([])
     await f.alice.close()
-    const reopened = (await f.chain.createWallet(
-      roots(0),
-    )) as MonadChainWalletHandle
+    const wallet = await reopen(directory)
     try {
-      installCanonicalDirectory(reopened, directory)
-      expect(
-        await f.chain.directMessages.unattributedAttempts({
-          wallet: reopened,
-          knownDigests: [],
-        }),
-      ).toEqual([])
-      // The durable outcome itself is still answerable.
+      // The message was deleted since: the attempt was accounted for and must not block Retry.
+      expect(await orphans(wallet)).toEqual([])
+    } finally {
+      await wallet.close()
+    }
+  })
+
+  it('always reports an attempt with no outcome, even after a resolve request and a reopen', async () => {
+    const directory = await f.directoryFor('alice', f.alice, f.bob)
+    installCanonicalDirectory(f.alice, directory)
+    f.setPhase('retained')
+    let digest = ''
+    await expect(
+      f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('live'),
+        onAttemptCreated: created => void (digest = created),
+      }),
+    ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+    expect(await orphans(f.alice)).toEqual([digest])
+    // A live payment cannot be waved away: it may still be delivered.
+    await f.chain.directMessages.resolveUnattributedAttempts({
+      wallet: f.alice,
+      payloadDigests: [digest],
+    })
+    expect(await orphans(f.alice)).toEqual([digest])
+    await f.alice.close()
+    const wallet = await reopen(directory)
+    try {
+      expect(await orphans(wallet)).toEqual([digest])
+      // Once it is delivered it is reported as a delivered orphan; the early request did not stick.
+      f.setPhase('delivered')
+      expect(await orphans(wallet)).toEqual([digest])
       expect(
         await f.chain.directMessages.reconcileAttempts({
-          wallet: reopened,
-          payloadDigests: [sent.payloadDigest],
+          wallet,
+          payloadDigests: [digest],
         }),
-      ).toEqual({ [sent.payloadDigest]: 'delivered' })
+      ).toEqual({ [digest]: 'delivered' })
+      expect(new Set(f.requests.map(r => toHex(r.body))).size).toBe(1)
     } finally {
-      await reopened.close()
+      await wallet.close()
     }
   })
 

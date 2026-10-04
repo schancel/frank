@@ -1318,11 +1318,7 @@ export const useChatStore = defineStore('chats', {
         previous?.failureReason === 'recovered'
       ) {
         return { state: 'needs-confirmation', reason: 'recovered' }
-      } else if (
-        manual &&
-        !confirmed &&
-        previous?.failureReason === 'interrupted'
-      ) {
+      } else if (manual && previous?.failureReason === 'interrupted') {
         // No attempt is recorded on this message, but the app stopped mid-send: the wallet may
         // hold (or already have resumed) a payment nobody points at. Do not pay again unless
         // there is provably none, or the user says so.
@@ -1332,7 +1328,7 @@ export const useChatStore = defineStore('chats', {
           const attempt = other?.delivery?.attemptDigest
           if (attempt !== undefined) known.add(attempt)
         }
-        let orphans: string[]
+        let orphans: string[] | undefined
         try {
           orphans = await activeChain.directMessages.unattributedAttempts({
             wallet,
@@ -1340,11 +1336,28 @@ export const useChatStore = defineStore('chats', {
           })
         } catch (error) {
           console.warn('could not check for an unattributed payment', error)
-          orphans = ['unchecked']
         }
-        if (orphans.length > 0) {
-          // Leave the message 'interrupted': every unconfirmed Retry must hit this check again.
+        if (!confirmed && (orphans === undefined || orphans.length > 0)) {
+          // Leave the message 'interrupted': every unconfirmed Retry must hit this check again,
+          // in this session and after a reload. Only the user's answer below ends that.
           return { state: 'needs-confirmation', reason: 'unverified' }
+        }
+        if (orphans !== undefined && orphans.length > 0) {
+          // The user chose to pay again. Save that answer for the payments it was about, so they
+          // stop blocking later retries. If it cannot be saved, the wallet keeps reporting them
+          // and the next interrupted message asks again; that never pays without a prompt.
+          try {
+            await activeChain.directMessages.resolveUnattributedAttempts({
+              wallet,
+              payloadDigests: orphans,
+            })
+          } catch (error) {
+            console.warn(
+              'could not save the answer for an unattributed payment',
+              error,
+            )
+          }
+          if (!stillCurrent()) return { state: 'busy' }
         }
       }
 

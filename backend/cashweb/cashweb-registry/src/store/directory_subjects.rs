@@ -50,6 +50,8 @@ pub(crate) struct DbDirectorySubjects<'a> {
     addresses: &'a CF,
     first_accepted: &'a CF,
 }
+/// One first-accepted row: its position, the time in Unix milliseconds, the address.
+pub(crate) type FirstAcceptedRow = ([u8; FIRST_ACCEPTED_POSITION_BYTES], u64, [u8; 20]);
 fn position(accepted_ms: u64, address: &[u8; 20]) -> [u8; FIRST_ACCEPTED_POSITION_BYTES] {
     let mut tail = [0; FIRST_ACCEPTED_POSITION_BYTES];
     tail[..8].copy_from_slice(&accepted_ms.to_be_bytes());
@@ -207,7 +209,7 @@ impl<'a> DbDirectorySubjects<'a> {
         network: &str,
         after: &[u8; FIRST_ACCEPTED_POSITION_BYTES],
         limit: usize,
-    ) -> Result<Vec<([u8; FIRST_ACCEPTED_POSITION_BYTES], u64, [u8; 20])>> {
+    ) -> Result<Vec<FirstAcceptedRow>> {
         let start = prefix(network);
         let from = key(network, after);
         let mut out = Vec::new();

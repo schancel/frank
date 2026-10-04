@@ -399,7 +399,11 @@ import {
 } from '@frank/wallet/storage/monad-wallet-bundle'
 import domainVectors from '../domain-roots/vectors/domain-roots-v1.json'
 import type { QwenCanonicalSender } from './qwen-response-workflow'
-import { qwenCouplingPrepared, type QwenCouplingRow } from './qwen-bot-state'
+import {
+  QWEN_COUPLING_MAX_COUNT,
+  qwenCouplingPrepared,
+  type QwenCouplingRow,
+} from './qwen-bot-state'
 
 const NETWORK = 'monad-testnet'
 const CANONICAL_STAMP_WEI = 32n
@@ -1074,6 +1078,73 @@ describe('#703 canonical outbound coupling', () => {
     expect(await changed.resume('01')).toBe('held')
     expect(f.events()).toEqual(before)
     expect(logs.join()).toContain('account-or-send-context-changed')
+  }, 30000)
+
+  it('holds before any wallet intent when inventory preparation fails, then continues with the same envelope', async () => {
+    const f = await open()
+    f.canonical.prepareInventory = async () => {
+      throw new Error('FUNDING_ERROR_SENTINEL')
+    }
+    expect(await f.run.respond(input)).toBe('held')
+    const saved = f.state.getCoupling('01')
+    expect(saved?.phase).toBe('envelope-ready')
+    expect(f.journal.getIntents()).toEqual([])
+    f.canonical.prepareInventory = async () => undefined
+    expect(await f.run.resume('01')).toBe('confirmed')
+    const events = f.events()
+    expect(count(events, 'seal')).toBe(1)
+    expect(count(events, 'reply')).toBe(1)
+    expect(count(events, 'put:')).toBe(1)
+    expect(logs.join()).toContain('inventory-unavailable')
+    expect(logs.join()).not.toContain('SENTINEL')
+  }, 30000)
+
+  it('applies backpressure instead of evicting a retained envelope when the coupling store is full', async () => {
+    const f = await open()
+    f.relay.mode = 'retained'
+    expect(await f.run.respond(input)).toBe('held')
+    const binding = (
+      f.state.getCoupling('01') as Extract<
+        QwenCouplingRow,
+        { phase: 'intent-linked' }
+      >
+    ).binding
+    const envelope = {
+      messageIdHex: '00'.repeat(16),
+      t3Hex: '00'.repeat(32),
+      contentDigestHex: '00'.repeat(32),
+      stampValueWei: '32',
+    }
+    const seed = async (index: number) => {
+      const hash = (0x1000 + index).toString(16)
+      await f.state.beginResponse({
+        payloadHashHex: hash,
+        senderAddress: `peer-${index}`,
+        senderPubKeyHex: '02',
+        context: canonicalContext,
+      })
+      await f.state.saveResponse(hash, 'REPLY_SENTINEL', [])
+      return f.state.saveCoupling(hash, envelope, {
+        ...binding,
+        payloadHex: binding.payloadHex + index.toString(16).padStart(4, '0'),
+      })
+    }
+    for (let index = 1; index < QWEN_COUPLING_MAX_COUNT; index++)
+      expect(await seed(index)).toBe('saved')
+    expect(await seed(QWEN_COUPLING_MAX_COUNT)).toBe('capacity')
+    expect(f.state.allCouplings()).toHaveLength(QWEN_COUPLING_MAX_COUNT)
+    expect(f.state.getCoupling('01')?.phase).toBe('intent-linked')
+    // The same exact bytes can never be claimed by a second turn.
+    await f.state.beginResponse({
+      payloadHashHex: '2000',
+      senderAddress: 'peer-duplicate',
+      senderPubKeyHex: '02',
+      context: canonicalContext,
+    })
+    await f.state.saveResponse('2000', 'REPLY_SENTINEL', [])
+    await expect(
+      f.state.saveCoupling('2000', envelope, binding),
+    ).rejects.toThrow('Invalid Qwen coupling transition')
   }, 30000)
 
   it('leaves legacy model-started and send-started rows held and never couples them', async () => {

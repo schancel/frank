@@ -127,6 +127,7 @@ async function openTab() {
     mobile: false,
   })
   await call('Network.enable')
+  await call('Page.enable')
   await call('Page.addScriptToEvaluateOnNewDocument', {
     source: `
     window.__forumWire=[];window.__forumResponseCaptures=[];
@@ -152,6 +153,7 @@ async function openTab() {
   `,
   })
   await call('Page.navigate', { url: origin + '/#/setup' })
+  await until(`Array.isArray(window.__forumWire) && Array.isArray(window.__forumResponseCaptures)`)
   await until(
     `document.querySelector('[data-test="new-account"]') || document.querySelector('[data-test="activate-account"]') || document.querySelector('[data-test="account-error"]')`,
   )

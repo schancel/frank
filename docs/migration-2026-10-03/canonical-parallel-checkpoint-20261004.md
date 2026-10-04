@@ -1,0 +1,10 @@
+# Canonical parallel checkpoint
+
+The full goal remains active. Primary dirty checkout and preserved branding refs remain untouched.
+
+- R: frozen intermediate `d633b2210a5a8f58682106d96f1c21aa25de02d9`, based on reviewed main `45e0e643bf9a7ee5a822d2089b98a5a81ee7fb5e`. Owned Cargo compile session93433 is live; no successful compile verdict yet. No routes activated. Existing terminal tombstone quota cannot silently become full-body retention policy; precise outcome accounting remains pending.
+- T: foundation `48ec57797452e92a7fcaca1f67ef656be6c608eb`. Two independent source reviewers confirmed LOW allocation-order defect: restored oversized context is copied before its4096-byte check, despite8MiB total bound. Narrow repair and observed-copy regression authorized; final transport/mailbox candidate unfinished.
+- W: exact journal `57a8ae4f6ee9a34b227ce5fba93a2afe3d0860dc`, two-file delta from inherited foundation `7a816c1`. Twelve actual native Level/Jest tests and focused strict TypeScript passed, including pending and terminal SIGKILL cuts with parent reopen. Independent review found no concrete journal defect. These prove process crash behavior, not power loss or complete wallet activation. Heavy lease released to R. Full handoff `/private/tmp/frank-777-canonical-journal-handoff.md`; journal claim `c9f8eef8-e9f8-46ab-9413-f27cf14ea5ba` remains active.
+- Forum PR823 remains frozen `be8e16f33683d301dc4a299e85014334b6432dec`: six hosted checks passed; backend run37194537001 is live. Local real Chrome and full app1588 tests passed. Merge/claim transfer waits for backend completion. Literal HTTP410 proof in811 is not yet landed.
+
+Read-only packets are being prepared for complete wallet consumer/provisioning ownership and remaining global protobuf/CBC retirement. Neither packet authorizes production edits. Held258 remains held. Joined encrypted UI/Qwen/blackjack, two independent relays/restart/store-forward, and complete retirement are still unproven. Parent must autonomously exercise assembled app before user testing.

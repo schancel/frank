@@ -312,6 +312,11 @@ pub struct DirectoryConf {
     /// First-time publications accepted from one source address per clock hour.
     #[serde(default = "default_directory_enrollments_per_source_per_hour")]
     pub enrollments_per_source_per_hour: u32,
+    /// Addresses of reverse proxies in front of this relay. Only a connection from one of
+    /// these may say, in the last element of `x-forwarded-for`, which client it is for; the
+    /// proxy must append that element itself. Empty: the connecting address is the client.
+    #[serde(default)]
+    pub trusted_proxies: Vec<std::net::IpAddr>,
     /// Removed. Present only to explain the change to operators with an old file.
     #[serde(default, skip_serializing)]
     pub clock_file: Option<RemovedSetting>,

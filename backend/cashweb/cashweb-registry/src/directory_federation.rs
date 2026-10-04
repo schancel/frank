@@ -69,11 +69,10 @@ fn public_endpoint(endpoint: &str) -> Option<Url> {
         return None;
     }
     match url.host()? {
-        url::Host::Domain(name) => {
-            (!name.eq_ignore_ascii_case("localhost") && !name.ends_with(".localhost")
-                && name.contains('.'))
-            .then_some(url)
-        }
+        url::Host::Domain(name) => (!name.eq_ignore_ascii_case("localhost")
+            && !name.ends_with(".localhost")
+            && name.contains('.'))
+        .then_some(url),
         url::Host::Ipv4(ip) => (!ip.is_loopback()
             && !ip.is_private()
             && !ip.is_link_local()
@@ -181,7 +180,12 @@ impl Federation {
         }
     }
     /// Ask peers for a key this relay does not hold. True when it is held afterwards.
-    pub(crate) async fn learn(&self, runtime: &DirectoryRuntime, network: &str, subject: &str) -> bool {
+    pub(crate) async fn learn(
+        &self,
+        runtime: &DirectoryRuntime,
+        network: &str,
+        subject: &str,
+    ) -> bool {
         if runtime.is_published(network, subject) {
             return true;
         }
@@ -354,12 +358,16 @@ impl Federation {
                 .and_then(|rows| rows.put_forward(identity, row, None))
                 .ok()
         };
-        let mut row = registry.directory_subjects().ok()?.forward(identity).ok()??;
+        let mut row = registry
+            .directory_subjects()
+            .ok()?
+            .forward(identity)
+            .ok()??;
         if row.done {
             return Some((row.status, row.response));
         }
-        let retained = serde_json::json!({"version":1,"phase":"retained","identity":row.echo})
-            .to_string();
+        let retained =
+            serde_json::json!({"version":1,"phase":"retained","identity":row.echo}).to_string();
         let give_up = |row: &mut ForwardRow| {
             row.done = true;
             row.status = 200;
@@ -374,9 +382,11 @@ impl Federation {
             .ok()?
             .forward_body(identity)
             .ok()?;
-        let (Some(target), Some(body), true) =
-            (target, body, now.saturating_sub(row.created_ms) < FORWARD_LIFETIME_MS)
-        else {
+        let (Some(target), Some(body), true) = (
+            target,
+            body,
+            now.saturating_sub(row.created_ms) < FORWARD_LIFETIME_MS,
+        ) else {
             give_up(&mut row);
             save(&row)?;
             return Some((row.status, row.response));
@@ -446,7 +456,10 @@ impl Federation {
     /// Retry every forward that is due and drop finished ones after a day.
     pub async fn retry_forwards(self: &Arc<Self>, runtime: &DirectoryRuntime) {
         let registry = runtime.registry().clone();
-        let Ok(forwards) = registry.directory_subjects().and_then(|rows| rows.forwards()) else {
+        let Ok(forwards) = registry
+            .directory_subjects()
+            .and_then(|rows| rows.forwards())
+        else {
             return;
         };
         let now = now_ms();

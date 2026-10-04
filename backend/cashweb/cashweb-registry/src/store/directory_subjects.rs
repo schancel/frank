@@ -67,8 +67,8 @@ pub(crate) fn open(path: &std::path::Path) -> Result<rocksdb::DB> {
         CF_FORWARDS_V1,
         CF_FORWARD_BODIES_V1,
     ]
-        .iter()
-        .map(|name| ColumnFamilyDescriptor::new(*name, rocksdb::Options::default()));
+    .iter()
+    .map(|name| ColumnFamilyDescriptor::new(*name, rocksdb::Options::default()));
     Ok(rocksdb::DB::open_cf_descriptors(&options, path, cfs)?)
 }
 

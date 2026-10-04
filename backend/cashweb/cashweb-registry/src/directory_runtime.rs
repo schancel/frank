@@ -213,6 +213,7 @@ struct Owner {
     info: RelayInfo,
     enrollments_per_source_per_hour: u32,
     sync_interval: Duration,
+    trusted_proxies: Vec<std::net::IpAddr>,
     federation: OnceLock<Arc<crate::directory_federation::Federation>>,
     registry: Arc<Registry>,
     sender: Mutex<Option<mpsc::Sender<Job>>>,
@@ -470,7 +471,9 @@ impl<'a> Worker<'a> {
         }
         // Accounts that live here and copies of accounts that live elsewhere have separate
         // budgets, so entries arriving from peers cannot block sign-ups on this relay.
-        let local = relays.first().is_some_and(|relay| self.info.is_local(relay));
+        let local = relays
+            .first()
+            .is_some_and(|relay| self.info.is_local(relay));
         let (counter, budget) = if local {
             (&self.shared.subjects, self.max_subjects)
         } else {
@@ -731,6 +734,7 @@ impl DirectoryRuntime {
         let info = RelayInfo::from_config(&config)?;
         let enrollments_per_source_per_hour = config.enrollments_per_source_per_hour;
         let config_sync_interval_s = config.sync_interval_s;
+        let trusted_proxies = config.trusted_proxies.clone();
         static OWNERS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
         let address = Arc::as_ptr(&registry) as usize;
         if !OWNERS
@@ -858,6 +862,7 @@ impl DirectoryRuntime {
                     info,
                     enrollments_per_source_per_hour,
                     sync_interval: Duration::from_secs(config_sync_interval_s.max(1)),
+                    trusted_proxies,
                     federation: OnceLock::new(),
                     registry,
                     sender: Mutex::new(Some(sender)),
@@ -878,9 +883,12 @@ impl DirectoryRuntime {
     /// Turn on talking to other relays: copying entries with `peers` and, when `forwarding`,
     /// passing messages on to the relay a recipient's entry names. Once per runtime.
     pub fn enable_federation(&self, peers: Vec<url::Url>, forwarding: bool) {
-        let _ = self.owner.federation.set(Arc::new(
-            crate::directory_federation::Federation::new(peers, forwarding),
-        ));
+        let _ = self
+            .owner
+            .federation
+            .set(Arc::new(crate::directory_federation::Federation::new(
+                peers, forwarding,
+            )));
     }
     /// Present once [`Self::enable_federation`] was called.
     pub fn federation(&self) -> Option<&Arc<crate::directory_federation::Federation>> {
@@ -889,6 +897,10 @@ impl DirectoryRuntime {
     /// Pause between rounds of comparing entries with peers and retrying forwards.
     pub fn sync_interval(&self) -> Duration {
         self.owner.sync_interval
+    }
+    /// Reverse proxies allowed to report the client address.
+    pub fn trusted_proxies(&self) -> &[std::net::IpAddr] {
+        &self.owner.trusted_proxies
     }
     /// Whether shutdown has begun.
     pub fn is_closed(&self) -> bool {

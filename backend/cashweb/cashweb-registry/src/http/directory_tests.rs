@@ -282,7 +282,7 @@ async fn unseen_account_publishes_itself_and_is_found_by_key_and_by_address() {
         )
         .await
         .0,
-        StatusCode::NOT_FOUND
+        StatusCode::BAD_REQUEST
     );
     runtime.begin_shutdown();
     runtime.wait_stopped().await;
@@ -496,6 +496,8 @@ async fn publishing_is_limited_per_source_and_by_a_relay_wide_cap() {
     let (registry, mut config, clock) = setup(root.path());
     config.enrollments_per_source_per_hour = 2;
     config.max_subjects = 4;
+    // The test client connects from loopback and stands in for a listed reverse proxy.
+    config.trusted_proxies = vec!["127.0.0.1".parse().unwrap()];
     let runtime = start(registry, config, &clock).await;
     let routes = router(Arc::new(runtime.clone()));
     let accounts: Vec<Entry> = (60..66).map(|secret| entry(secret, |_| ())).collect();
@@ -513,6 +515,22 @@ async fn publishing_is_limited_per_source_and_by_a_relay_wide_cap() {
             .await
         }
     };
+    // Forgeries and garbage are refused without using up the source's allowance.
+    let forged = signed(60, 99, |_| ());
+    for _ in 0..5 {
+        for bytes in [forged.attestation.clone(), vec![1, 2, 3]] {
+            let refused = request_from(
+                routes.clone(),
+                "PUT",
+                &head(&accounts[0].subject),
+                bytes,
+                MEDIA,
+                Some("203.0.113.7"),
+            )
+            .await;
+            assert_eq!(refused.0, StatusCode::BAD_REQUEST);
+        }
+    }
     assert_eq!(publish(0, "203.0.113.7").await.0, StatusCode::OK);
     assert_eq!(publish(1, "203.0.113.7").await.0, StatusCode::OK);
     let limited = publish(2, "203.0.113.7").await;
@@ -538,66 +556,75 @@ async fn publishing_is_limited_per_source_and_by_a_relay_wide_cap() {
 }
 
 #[tokio::test]
-async fn http_reserves_before_body_and_bounds_collection_without_starting_native_work() {
+async fn slow_uploads_hold_no_queue_slot_and_bodies_are_bounded() {
     let root = tempfile::tempdir().unwrap();
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry, config, &clock).await;
     let path = head(SUBJECT);
     let routes = router(Arc::new(runtime.clone()));
-    let mut held = Vec::new();
-    for _ in 0..8 {
-        held.push(runtime.reserve(NETWORK, SUBJECT).unwrap());
-    }
-    // A never-ending body cannot consume a ninth slot or postpone overload rejection.
-    let (_sender, body) = Body::channel();
-    let response = tokio::time::timeout(
-        Duration::from_millis(100),
-        routes.clone().oneshot(
-            axum::http::Request::builder()
-                .method("PUT")
-                .uri(&path)
-                .header(header::CONTENT_TYPE, MEDIA)
-                .body(body)
-                .unwrap(),
-        ),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(
-        response.headers()["x-frank-directory-disposition"],
-        "not-started"
+        put(&routes, SUBJECT, vector("bootstrap")).await.0,
+        StatusCode::OK
     );
-    drop(held);
+    // Far more stalled uploads than the directory has queue slots, all for a published key.
+    let mut stalled = Vec::new();
+    for _ in 0..32 {
+        let (sender, body) = Body::channel();
+        let routes = routes.clone();
+        let path = path.clone();
+        stalled.push((
+            sender,
+            tokio::spawn(async move {
+                routes
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .method("PUT")
+                            .uri(&path)
+                            .header(header::CONTENT_TYPE, MEDIA)
+                            .body(body)
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+                    .status()
+            }),
+        ));
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Lookups and another account's publication are served while those uploads hang.
+    assert_eq!(get(&routes, &path).await.0, StatusCode::OK);
+    let other = entry(71, |_| ());
+    assert_eq!(
+        put(&routes, &other.subject, other.attestation).await.0,
+        StatusCode::OK
+    );
+    // A stalled upload ends by itself and was never started.
+    let (sender, task) = stalled.remove(0);
+    assert_eq!(task.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
+    drop(sender);
+    for (sender, task) in stalled {
+        drop(sender);
+        task.abort();
+    }
+    // An entry larger than any real one is refused while being read.
     let oversized = request(
         routes.clone(),
         "PUT",
         &path,
-        vec![0; crate::directory_admission::MAX_FRAME_BYTES + 1],
+        vec![0; MAX_ENTRY_BYTES + 1],
         MEDIA,
     )
     .await;
     assert_eq!(oversized.0, StatusCode::TOO_MANY_REQUESTS);
-    assert!(!runtime.is_published(NETWORK, SUBJECT));
-    let (_sender, body) = Body::channel();
-    let response = routes
-        .oneshot(
-            axum::http::Request::builder()
-                .method("PUT")
-                .uri(&path)
-                .header(header::CONTENT_TYPE, MEDIA)
-                .body(body)
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(
-        response.headers()["x-frank-directory-disposition"],
-        "not-started"
-    );
-    assert!(!runtime.is_published(NETWORK, SUBJECT));
+    // When every queue slot is genuinely taken, a complete request is told to retry.
+    let mut held = Vec::new();
+    for _ in 0..8 {
+        held.push(runtime.reserve(NETWORK, SUBJECT).unwrap());
+    }
+    let busy = put(&routes, SUBJECT, vector("bootstrap")).await;
+    assert_eq!(busy.0, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(busy.1["x-frank-directory-disposition"], "not-started");
+    drop(held);
     runtime.begin_shutdown();
     runtime.wait_stopped().await;
 }
@@ -849,4 +876,44 @@ async fn authenticated_https_rust_and_node_client_close_reopen_exact_bytes() {
             assert!(output.contains(&format!("exact HTTPS Rust/Chromium {mode} accepted")));
         }
     }
+}
+
+#[tokio::test]
+async fn forwarded_for_is_ignored_unless_the_connection_is_from_a_listed_proxy() {
+    let root = tempfile::tempdir().unwrap();
+    let (registry, mut config, clock) = setup(root.path());
+    config.enrollments_per_source_per_hour = 1;
+    let runtime = start(registry, config, &clock).await;
+    let routes = router(Arc::new(runtime.clone()));
+    let accounts: Vec<Entry> = (80..83).map(|secret| entry(secret, |_| ())).collect();
+    // No proxy is listed, so a different claimed client address each time changes nothing:
+    // all three come from the one connecting address.
+    let mut statuses = Vec::new();
+    for (account, claimed) in accounts
+        .iter()
+        .zip(["203.0.113.1", "203.0.113.2", "203.0.113.3"])
+    {
+        statuses.push(
+            request_from(
+                routes.clone(),
+                "PUT",
+                &head(&account.subject),
+                account.attestation.clone(),
+                MEDIA,
+                Some(claimed),
+            )
+            .await
+            .0,
+        );
+    }
+    assert_eq!(
+        statuses,
+        [
+            StatusCode::OK,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::TOO_MANY_REQUESTS
+        ]
+    );
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
 }

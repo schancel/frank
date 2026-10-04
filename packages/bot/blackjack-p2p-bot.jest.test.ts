@@ -35,6 +35,7 @@ import {
   type BotStore,
   runBlackjackP2pBot,
 } from './blackjack-p2p-bot'
+import { sinceFeed } from './blackjack-p2p-bot.livecheck'
 
 const BOT = '0xB07b07B07b07b07b07b07B07b07B07b07b07b07B'
 const USER = '0x1111111111111111111111111111111111111111'
@@ -948,5 +949,43 @@ describe('the run loop', () => {
     })
     expect(lines).toEqual(['round failed: relay down'])
     expect(net.paidBy(BOT).map(d => (d.item as HandItem).action)).toEqual(['accept'])
+  })
+})
+
+describe('the new-accounts feed', () => {
+  it('asks for accounts since the last successful call and repeats a failed window', async () => {
+    let clock = 1_000
+    const asked: number[] = []
+    let fail = false
+    const feed = sinceFeed(
+      async since => {
+        asked.push(since)
+        if (fail) throw new Error('relay down')
+        return [USER]
+      },
+      () => clock,
+    )
+    clock = 2_000
+    expect(await feed()).toEqual([USER])
+    clock = 3_000
+    fail = true
+    await expect(feed()).rejects.toThrow('relay down')
+    fail = false
+    clock = 4_000
+    await feed()
+    expect(asked).toEqual([1_000, 2_000, 2_000])
+  })
+
+  it('feeds the bot, which challenges each new account once', async () => {
+    const net = new Net()
+    net.balances.set(BOT, RESERVE + 100_000n)
+    const bot = new BlackjackP2pBot(
+      new NetAccount(net, BOT),
+      new MemoryBotStore(),
+      config({ newAccounts: sinceFeed(async () => [USER, OTHER]), randomBytes: undefined }),
+    )
+    await settle(bot)
+    await settle(bot)
+    expect(net.paidBy(BOT).map(d => d.to)).toEqual([USER, OTHER])
   })
 })

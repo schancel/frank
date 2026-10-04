@@ -8,6 +8,8 @@
  *   BLACKJACK_P2P_PLAYER_RISK_WEI=<wei>      most it has at stake as player in total (default 3 bets)
  *   BLACKJACK_P2P_MAX_OPEN_HANDS=<n>         hands with money at stake at once (default 20)
  *   BLACKJACK_P2P_INTERVAL_MS=<ms>           poll interval (default 3000)
+ *   BLACKJACK_P2P_NEW_ACCOUNTS_URL=<url>     relay URL listing accounts published since a time; the
+ *                                            bot challenges each new one once (see `newAccounts`)
  *   plus the usual MONAD_* / relay variables read by `loadMonadChainConfigFromEnv`.
  *
  *   yarn workspace @frank/bot blackjack:p2p
@@ -40,6 +42,36 @@ import {
 } from './blackjack-p2p-bot'
 import { requiredEnv } from './qwen-bot-common'
 
+/**
+ * Where the bot learns of new accounts. A feed returns the addresses that appeared since the
+ * time it is given (milliseconds); the bot challenges each address once, ever, whatever the feed
+ * repeats. NOT YET CONNECTED: the relay route for "accounts published since T" is being added in
+ * another lane. Until `relayNewAccounts` is replaced with a real reader of that route, setting
+ * BLACKJACK_P2P_NEW_ACCOUNTS_URL stops the launcher with that explanation, and without it the
+ * bot challenges only accounts that message it.
+ */
+export type NewAccountsFeed = (sinceMs: number) => Promise<string[]>
+export interface LauncherDeps {
+  /** Builds the feed for a relay URL. */
+  relayNewAccounts?: (relayUrl: string) => NewAccountsFeed
+}
+
+/** Turns a since-based feed into the bot's `newAccounts`: it asks for what is new since the last
+ * successful call and never loses a batch to a failed one. */
+export function sinceFeed(
+  feed: NewAccountsFeed,
+  now: () => number = Date.now,
+  startMs: number = now(),
+): () => Promise<string[]> {
+  let since = startMs
+  return async () => {
+    const asked = now()
+    const addresses = await feed(since)
+    since = asked
+    return addresses
+  }
+}
+
 /** The one missing piece for a live run; see this file's header. */
 async function installDirectory(_wallet: MonadChainWalletHandle): Promise<void> {
   throw new Error(
@@ -51,7 +83,7 @@ async function installDirectory(_wallet: MonadChainWalletHandle): Promise<void> 
 const optionalWei = (name: string): bigint | undefined =>
   process.env[name] ? BigInt(process.env[name] as string) : undefined
 
-async function main() {
+export async function main(deps: LauncherDeps = {}) {
   const stateDir = process.env.BLACKJACK_P2P_STATE_DIR ?? './.blackjack-p2p'
   const rootHex = requiredEnv('BLACKJACK_P2P_ACCOUNT_ROOT_HEX')
   if (!/^[0-9a-fA-F]{64}$/.test(rootHex))
@@ -71,6 +103,16 @@ async function main() {
   await installDirectory(wallet)
 
   const log = (line: string) => console.log(`[blackjack-p2p] ${line}`)
+  const feedUrl = process.env.BLACKJACK_P2P_NEW_ACCOUNTS_URL
+  if (feedUrl && !deps.relayNewAccounts)
+    throw new Error(
+      'BLACKJACK_P2P_NEW_ACCOUNTS_URL is set but no reader for the relay\'s new-account route is ' +
+        'connected yet (LauncherDeps.relayNewAccounts).',
+    )
+  const newAccounts =
+    feedUrl && deps.relayNewAccounts
+      ? sinceFeed(deps.relayNewAccounts(feedUrl))
+      : undefined
   const bot = new BlackjackP2pBot(
     walletBotAccount(chain as never, wallet as never),
     new FileBotStore(join(stateDir, 'bot-state.json')),
@@ -83,6 +125,7 @@ async function main() {
         : undefined,
       stampWei: config.defaultStampValueWei,
       reserveWei: BET_MESSAGE_FEE_RESERVE_WEI,
+      newAccounts,
       log,
     },
   )
@@ -98,7 +141,8 @@ async function main() {
   await wallet.close()
 }
 
-main().catch(error => {
-  console.error(error)
-  process.exitCode = 1
-})
+if (require.main === module)
+  main().catch(error => {
+    console.error(error)
+    process.exitCode = 1
+  })

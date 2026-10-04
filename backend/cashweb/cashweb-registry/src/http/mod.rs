@@ -2,6 +2,7 @@
 
 pub mod bitcoin_proxy;
 pub mod curated_defaults;
+pub mod directory;
 pub mod error;
 pub mod evm_rpc;
 pub(crate) mod hourly_quota;

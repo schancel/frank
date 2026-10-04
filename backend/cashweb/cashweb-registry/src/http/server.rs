@@ -243,6 +243,10 @@ async fn log_request<B>(
 fn safe_log_path(path: &str) -> Cow<'_, str> {
     let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
     match segments.as_slice() {
+        ["directory", "v1", _, _, "head"] => Cow::Borrowed("/directory/v1/:network/:subject/head"),
+        ["directory", "v1", _, _, "statements", _] => {
+            Cow::Borrowed("/directory/v1/:network/:subject/statements/:t1")
+        }
         ["chain-rpc", _, "cap", _, "rpc"] => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/rpc"),
         ["chain-rpc", _, "cap", _, "ws"] => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/ws"),
         ["chain-rpc", _, "cap", _, "chronik", ..] => {
@@ -267,6 +271,25 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod request_log_tests {
     use super::safe_log_path;
+
+    #[test]
+    fn directory_identity_and_evidence_hash_never_enter_request_log_paths() {
+        let head = "/directory/v1/sentinel-network/sentinel-principal/head";
+        let history = "/directory/v1/sentinel-network/sentinel-principal/statements/sentinel-hash";
+        assert_eq!(safe_log_path(head), "/directory/v1/:network/:subject/head");
+        assert_eq!(
+            safe_log_path(history),
+            "/directory/v1/:network/:subject/statements/:t1"
+        );
+        for path in [
+            head,
+            history,
+            "/directory/v1/sentinel-network/sentinel-principal/unrecognized",
+        ] {
+            let logged = safe_log_path(path);
+            assert!(!logged.contains("sentinel"));
+        }
+    }
 
     #[test]
     fn capability_credentials_never_enter_request_log_paths() {
@@ -322,6 +345,14 @@ mod request_log_tests {
 impl RegistryServer {
     /// Turn this registry server into a [`Router`].
     pub fn into_router(self) -> Router {
+        self.into_router_with_directory(None)
+    }
+
+    /// Add the explicitly configured directory owner without changing legacy constructors.
+    pub fn into_router_with_directory(
+        self,
+        directory: Option<Arc<crate::directory_runtime::DirectoryRuntime>>,
+    ) -> Router {
         let mailbox_enabled = self.monad_mailbox.as_enabled().is_some();
         let rpc_enabled = self.evm_rpc.is_some() || self.bitcoin_proxy.is_some();
         let bitcoin_proxy_enabled = self.bitcoin_proxy.is_some();
@@ -445,7 +476,7 @@ impl RegistryServer {
         } else {
             router
         };
-        router
+        let mut router = router
             // Monad topic post + burn-weighted vote path (ticket #30), additive alongside
             // the plain Monad-message route above -- see `crate::http::monad_topics`'s module docs.
             // Static segments ("topics", "topics/vote") take priority over the `:payload_hash`
@@ -476,7 +507,11 @@ impl RegistryServer {
             .route(
                 "/message/monad/topics/:payload_hash",
                 routing::get(handle_get_monad_topic_post),
-            )
+            );
+        if let Some(runtime) = directory {
+            router = router.merge(crate::http::directory::router(runtime));
+        }
+        router
             .layer(Extension(self))
             .layer(
                 CorsLayer::new()
@@ -502,9 +537,11 @@ impl RegistryServer {
                         header::HeaderName::from_static(RPC_CORS_HEADERS[5]),
                         header::HeaderName::from_static(BITCOIN_PROXY_CORS_HEADERS[0]),
                     ])
-                    .expose_headers([header::HeaderName::from_static(
-                        "x-frank-mailbox-next-cursor",
-                    )])
+                    .expose_headers([
+                        header::HeaderName::from_static("x-frank-mailbox-next-cursor"),
+                        header::HeaderName::from_static("x-frank-directory-evidence"),
+                        header::HeaderName::from_static("x-frank-directory-disposition"),
+                    ])
                     // Topic list/discovery responses negotiate on Accept. tower-http replaces a
                     // handler's Vary values with this CORS list, so retain its three defaults and
                     // add Accept here rather than silently dropping the cache key.

@@ -5,8 +5,12 @@
     "moduleResolution": "bundler",
     "baseUrl": ".",
     "paths": {
-      "@frank/nakamoto": ["../nakamoto/src/index.ts"]
-    }
+      "@frank/nakamoto": ["../nakamoto/src/index.ts"],
+      "@frank/directory-admission": ["../directory-admission/src/index.ts"],
+      "@frank/directory-admission/node": ["../directory-admission/src/node.ts"],
+      "@frank/codec": ["../frank-codec/src/index.ts"]
+    },
+    "lib": ["es2020", "dom"]
   },
   "exclude": ["node_modules"]
 }

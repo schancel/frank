@@ -91,6 +91,113 @@ fn enroll(d: &Directory<'_>, ids: &[&str]) -> Current {
 }
 
 #[test]
+fn directory_preview_check_current_is_nonmutating_and_preserves_current_policy() {
+    let temp = tempdir::TempDir::new("directory-preview-staged-current").unwrap();
+    let db = Db::open(temp.path()).unwrap();
+    let d = db
+        .directory_preview(anchor(), OpenMode::NewEnrollment)
+        .unwrap();
+    let original = enroll(&d, &["bootstrap", "renew"]);
+    let before = d.status().unwrap().unwrap();
+    let metadata = d.header().unwrap().unwrap(); // Includes the private durable sequence.
+    let bootstrap_hash = anchor().revision_zero;
+    let history = d.historical_evidence(bootstrap_hash).unwrap().unwrap();
+    let binding = relay();
+    let future = Context {
+        now: Some(Timestamp {
+            seconds: 1700000120,
+            nanoseconds: 0,
+        }),
+        relay: Some(&binding),
+    };
+    d.check_current(future).unwrap();
+    assert_eq!(d.status().unwrap().unwrap(), before);
+    assert_eq!(d.header().unwrap().unwrap(), metadata);
+    assert_eq!(
+        d.historical_evidence(bootstrap_hash).unwrap().unwrap(),
+        history
+    );
+    assert_eq!(d.current(context(&binding)).unwrap(), original);
+    assert_eq!(
+        d.check_current(Context {
+            now: None,
+            relay: Some(&binding)
+        }),
+        Err(AdmissionError::Clock)
+    );
+    assert_eq!(
+        d.check_current(Context {
+            now: context(&binding).now,
+            relay: None
+        }),
+        Err(AdmissionError::Binding)
+    );
+    let mut wrong = binding.clone();
+    wrong.endpoint = "https://other.example.invalid".into();
+    assert_eq!(
+        d.check_current(context(&wrong)),
+        Err(AdmissionError::Binding)
+    );
+    assert_eq!(
+        d.check_current(Context {
+            now: Some(Timestamp {
+                seconds: 1700000099,
+                nanoseconds: 0
+            }),
+            relay: Some(&binding)
+        }),
+        Err(AdmissionError::Clock)
+    );
+    assert_eq!(
+        d.check_current(Context {
+            now: Some(Timestamp {
+                seconds: 1700008000,
+                nanoseconds: 0
+            }),
+            relay: Some(&binding)
+        }),
+        Err(AdmissionError::Validity)
+    );
+    assert_eq!(d.status().unwrap().unwrap(), before);
+    assert_eq!(d.header().unwrap().unwrap(), metadata);
+    assert_eq!(
+        d.historical_evidence(bootstrap_hash).unwrap().unwrap(),
+        history
+    );
+    // A successful stage did not advance the checkpoint: explicit reopen retains the old floor.
+    let reopened = db
+        .directory_preview(anchor(), OpenMode::Reopen(before.checkpoint))
+        .unwrap();
+    assert_eq!(reopened.status().unwrap().unwrap(), before);
+    let fork = fixture("fork-of-renew");
+    assert_eq!(
+        d.advance(&[candidate(&fork)], context(&binding))
+            .unwrap_err(),
+        AdmissionError::Fork
+    );
+    let quarantine = d.status().unwrap().unwrap();
+    let fork_metadata = d.header().unwrap().unwrap();
+    assert_eq!(d.check_current(future), Err(AdmissionError::Fork));
+    assert_eq!(d.status().unwrap().unwrap(), quarantine);
+    assert_eq!(d.header().unwrap().unwrap(), fork_metadata);
+    assert_eq!(
+        d.historical_evidence(bootstrap_hash).unwrap().unwrap(),
+        history
+    );
+    // A missing durable marker cannot be validated from the caller's remembered status.
+    d.db.rocksdb()
+        .delete_cf(d.db.cf(CF_DIRECTORY_PREVIEW_ENROLLMENT_V1).unwrap(), &d.key)
+        .unwrap();
+    assert_eq!(d.check_current(future), Err(AdmissionError::Unavailable));
+    assert!(d
+        .db
+        .rocksdb()
+        .get_cf(d.db.cf(CF_DIRECTORY_PREVIEW_ENROLLMENT_V1).unwrap(), &d.key)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
 fn directory_preview_concurrent_successors_fork_and_clock_checks_serialize() {
     let temp = tempdir::TempDir::new("directory-preview-races").unwrap();
     let db = Db::open(temp.path()).unwrap();

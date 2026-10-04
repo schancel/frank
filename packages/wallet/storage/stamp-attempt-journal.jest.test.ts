@@ -75,7 +75,14 @@ import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 import { Wallet, Transaction, getBytes } from 'ethers'
-import { cborMap, encodeFrame, fromHex, parseFrame, toHex } from '@frank/codec'
+import {
+  cborMap,
+  decodeCanonical,
+  encodeFrame,
+  fromHex,
+  parseFrame,
+  toHex,
+} from '@frank/codec'
 import {
   freezeCanonicalRequest,
   type CanonicalExactRequest,
@@ -111,6 +118,11 @@ async function canonicalFixture(
 ) {
   const payload = fromHex(captured.payload),
     context = fromHex(captured.context)
+  const decodedContext = decodeCanonical(context) as Map<
+    bigint,
+    Map<bigint, Uint8Array>
+  >
+  const stampKey = decodedContext.get(8n)!.get(1n)!
   const parsed = parseFrame(payload)
   if (parsed.kind !== 'parsed' || parsed.typed?.type !== 5)
     throw new Error('fixture payload')
@@ -135,7 +147,7 @@ async function canonicalFixture(
         1,
         cborMap([
           [0, 1],
-          [1, parsed.typed.recipient.keyBytes],
+          [1, stampKey],
         ]),
       ],
       [2, payload],

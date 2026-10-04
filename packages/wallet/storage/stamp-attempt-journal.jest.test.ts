@@ -69,6 +69,7 @@ it('C0 retains the other exact obligation when one owner is deleted and disk is 
 })
 
 import level, { type LevelDB } from 'level'
+import { durablePut } from './level-durability'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -214,9 +215,10 @@ function delivered(
   }
 }
 
-function database(journal: LevelCanonicalStampAttemptJournal): LevelDB {
+type ProbeLevelDB = LevelDB & { batch(...args: unknown[]): Promise<unknown> }
+function database(journal: LevelCanonicalStampAttemptJournal): ProbeLevelDB {
   // Probe the actual opened Level completion boundary, rather than replacing the journal API.
-  return (journal as unknown as { database: LevelDB }).database
+  return (journal as unknown as { database: ProbeLevelDB }).database
 }
 
 function barrier() {
@@ -529,7 +531,7 @@ describe('canonical exact-attempt storage', () => {
       const key = 'attempt:0000000000000001',
         saved = JSON.parse(await db.get(key))
       saved.request.contentType = 'application/x-protobuf'
-      await db.put(key, JSON.stringify(saved), { sync: true })
+      await durablePut(db, key, JSON.stringify(saved))
       await db.close()
       await expect(journal.Open()).rejects.toThrow('corrupt')
       await legacy.Open()
@@ -537,7 +539,7 @@ describe('canonical exact-attempt storage', () => {
       await legacy.Close()
       const repair = level(join(location, 'canonical-stamp-attempts-v1'))
       saved.request.contentType = row.request.contentType
-      await repair.put(key, JSON.stringify(saved), { sync: true })
+      await durablePut(repair, key, JSON.stringify(saved))
       await repair.close()
       await journal.Open()
       expect(journal.getAll()[0].attemptRef).toBe(row.attemptRef)
@@ -580,6 +582,7 @@ describe('canonical exact-attempt storage', () => {
             cwd: join(__dirname, '../../..'),
             env: {
               ...process.env,
+              TSX_TSCONFIG_PATH: join(__dirname, '../../bot/tsconfig.json'),
               CANONICAL_JOURNAL_LOCATION: location,
               CANONICAL_JOURNAL_PHASE: phase,
               CANONICAL_JOURNAL_FIXTURE: JSON.stringify({

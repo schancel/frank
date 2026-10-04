@@ -434,7 +434,19 @@ function terminalFor(
   )
   if (result.phase !== 'delivered' && result.phase !== 'dead')
     canonicalFail('invalid')
-  return result
+  return result.phase === 'delivered'
+    ? {
+        version: 1,
+        phase: 'delivered',
+        identity: request.identity,
+        mailbox_committed_at_ms: result.mailbox_committed_at_ms,
+      }
+    : {
+        version: 1,
+        phase: 'dead',
+        identity: request.identity,
+        reason: result.reason,
+      }
 }
 
 /** Storage only. It never signs, submits, promotes directory evidence or starts replay on Open.

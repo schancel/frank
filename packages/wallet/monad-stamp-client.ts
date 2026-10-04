@@ -856,6 +856,7 @@ export class MonadStampClient {
   async submitStampedMessage(
     params: StampMonadMessageParams,
   ): Promise<StampMonadMessageResult> {
+    assertOrdinaryMonadPoolSelection(this.pool)
     if (params.encryptedPayload.length === 0) {
       throw new Error('encryptedPayload must not be empty')
     }
@@ -1378,7 +1379,10 @@ import {
   type CanonicalJournalIntent,
   type CanonicalJournalAttempt,
 } from './storage/stamp-attempt-journal'
-import { assertMonadWalletBundleProvenance } from './storage/monad-wallet-bundle'
+import {
+  assertMonadWalletBundleProvenance,
+  assertOrdinaryMonadPoolSelection,
+} from './storage/monad-wallet-bundle'
 
 export interface CanonicalWorkflowLink {
   readonly attemptRef: string

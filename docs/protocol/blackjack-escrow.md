@@ -130,34 +130,53 @@ can no longer hurt the dealer after it has opened.
 Key generation between two users is once per pair (about 4 messages). The locked-reveal messages
 are protocol rounds, not money: they belong on the stampless channel (#843) and need about 256 KB
 per message if signing is Paillier-based. Every round can also be an ordinary stamped message.
-How long a hundred sessions take in a browser is unknown until the package exists.
+At 0.1 s and 5 small messages per session, a hundred sessions is about 10 s and 500 messages.
 
 A cheaper middle: lock only the dealer's draws. Then a player who busts can still refuse to sign
 the dealer's payout, at the cost of its deposit.
 
 ## Open risks
 
-1. **The proof of knowledge.** `@frank/adaptor-signatures` refuses a lock point without a proof
-   that someone knows its secret (experiment 4, last test). Here that is impossible for all but
-   one point. The underlying scheme was designed for exactly this use in DLCs, but the package
-   and the threshold package need a mode for it, and that mode needs a cryptographer's review.
-2. **Volume.** Two-party adaptor pre-signing has to be cheap enough to do a hundred times while
-   a player waits for a card. If not, lock fewer cards.
+1. **The proof of knowledge.** Both packages refuse a lock point without a proof that someone
+   knows its secret (experiment 4, last test). Here that is impossible for all but one point.
+   The underlying scheme is used this way in DLCs, but a mode without the proof needs a
+   cryptographer's ruling. Without it, locked reveals cannot be built; the plain escrow can.
+2. **Volume.** About 10 s of sequential signing per card that can end the hand. If that is too
+   slow, lock fewer cards.
 3. **First funding.** The player funds before the dealer. No pre-signed exit can protect it: an
    exit that works before the dealer funds also works after, as a free way out of a bad hand.
 4. **Schema.** Locked reveals replace schema 3's hash links with commitments and openings
    (a schema 4). States, order of opening and the `seq`/`prev` chain stay.
 5. **No outside review** of any of this cryptography.
 
-## Requirements for `@frank/threshold-ecdsa`
+## Fit with `@frank/threshold-ecdsa` as built
 
-Key generation once per pair, with shares re-derivable from the wallet root and the peer; a
-tweaked key per hand; plain signing; adaptor pre-signing under a point **without** a proof of
-knowledge for that point, in batches of about a hundred with one message each way after a
-message-independent first phase; the pre-signature delivered to both parties in the
-`@frank/adaptor-signatures` byte format; sessions resumable from stored state, with every signing
-nonce marked used before the first message leaves; explicit 32-byte digest in, low-s signature and
-recovery bit out; proofs sound against a malicious peer; usable in a browser without blocking.
+Facts from the package (branch `threshold-ecdsa`): key generation takes 7 messages and 8 to 9
+seconds per party, once per pair; a signing session takes 5 messages of at most 582 bytes and
+about 0.1 s; sessions on one key must run one after another; an adaptor pre-signature needs
+`{point, proof}`; a malicious responder can make the initiator's key share unusable.
+
+- **Plain escrow (joint address, deposits, two signatures after the result): fits as is.** Two
+  sessions per hand, 10 small messages, well under a second.
+- **Locked reveals: blocked by one thing.** The package, like `@frank/adaptor-signatures`, wants a
+  proof that someone knows the lock point's secret. For 51 of 52 lock points nobody does, by
+  design. Giving the dealer a known secret for every point instead (as a DLC oracle has) would
+  let the dealer complete whichever card it likes, so that is not a way round. Needed: an adaptor
+  mode without the proof, reviewed for this use. I ask the reviewer to rule on it.
+- **Volume is acceptable if sequential.** About 100 sessions for a deciding card is roughly 10 s
+  and 500 small messages, one after another. Batching several sessions into one message each way
+  would cut the message count; that is a request, not a requirement.
+- **Roles.** The player extracts, so the player is the initiator and the dealer the responder for
+  the dealer's nonce-0 transfers. For the player's nonce-1 transfers nobody extracts; either role.
+- **A burned key share is one more way of quitting.** The side that burns it locks its own money
+  too. A refund pre-signed before funding cannot cover it: a refund that either side can use at
+  any time is a free exit from a bad hand, and one locked to the other side's secret is no exit.
+  One burned share must not spoil other hands, so either the pair key is regenerated after any
+  failed session (9 s) or a hand is refused while an earlier one with that peer is locked.
+- **Storage.** The 1.7 KB pair record, each session state before each outgoing message, and every
+  pre-signature before the message that relies on it.
+- **Completion.** Completed adaptor signatures carry no recovery bit; both are tried (the
+  experiments already do).
 
 ## What cannot be guaranteed without a contract
 

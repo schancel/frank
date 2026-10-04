@@ -44,6 +44,41 @@ export async function withOutgoingLock<T>(
   )
 }
 
+/**
+ * Asks for the message's lock at once and keeps it until `release()`; `held` says whether it was
+ * granted (always true without the Web Locks API). `release()` resolves once the lock is given
+ * back. Used where the lock must already be asked for before the caller's next synchronous step,
+ * e.g. before a new message's row is first saved.
+ */
+export function acquireOutgoingLock(id: string): {
+  held: Promise<boolean>
+  release: () => Promise<void>
+} {
+  const locks = outgoingLocks()
+  if (!locks)
+    return { held: Promise.resolve(true), release: () => Promise.resolve() }
+  let letGo: () => void = () => undefined
+  const released = new Promise<void>(resolve => (letGo = resolve))
+  let granted: (held: boolean) => void = () => undefined
+  const held = new Promise<boolean>(resolve => (granted = resolve))
+  const done = locks
+    .request(outgoingLockName(id), { ifAvailable: true }, async lock => {
+      granted(!!lock)
+      if (lock) await released
+    })
+    .catch(error => {
+      console.warn('could not take the outgoing message lock', error)
+      granted(false)
+    })
+  return {
+    held,
+    release: () => {
+      letGo()
+      return done
+    },
+  }
+}
+
 /** The store keys of outgoing messages some tab is sending right now (empty without the API or
  * when it cannot be asked). */
 export async function heldOutgoingLocks(): Promise<Set<string>> {

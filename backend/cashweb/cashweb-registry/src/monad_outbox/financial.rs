@@ -28,6 +28,308 @@ use crate::{
 const PAYMENT_COMMITMENT_DOMAIN: &[u8] = b"frank:dm-stamp-payment:v1";
 pub(crate) const MAX_STAMP_PAYMENTS: usize = 64;
 
+/// CPU facts for one exact canonical request. Only this owner can construct them.
+pub(crate) struct CanonicalPaymentInput {
+    request: crate::http::monad_message_cbor::ExactRequest,
+    policy: crate::store::monad_dm_cbor::FrozenCanonicalPolicy,
+    payments: Vec<DecodedSignedTransaction>,
+}
+
+impl CanonicalPaymentInput {
+    pub(crate) fn into_claim(
+        self,
+        now: i64,
+        config: &MonadOutboxReconcileConfig,
+    ) -> crate::http::monad_message_cbor::Result<crate::store::monad_dm_cbor::Claim> {
+        use crate::store::monad_dm_cbor::{Claim, Phase};
+        use rand::RngCore;
+        let mut obligation_id = [0; 32];
+        rand::thread_rng().fill_bytes(&mut obligation_id);
+        let members = self
+            .payments
+            .iter()
+            .enumerate()
+            .map(|(index, payment)| MonadOutboxMember {
+                child_index: index as u32,
+                tx_hash: payment.tx_hash,
+                state: MonadOutboxMemberState::Pending,
+                attempts: 0,
+                exposed: false,
+                lease_generation: 0,
+                lease_until_ms: 0,
+                next_replay_at_ms: now,
+                updated_at_ms: now,
+                last_error: String::new(),
+            })
+            .collect();
+        let millis =
+            |duration: std::time::Duration| duration.as_millis().min(i64::MAX as u128) as i64;
+        Ok(Claim {
+            request: self.request,
+            policy: self.policy,
+            members,
+            phase: Phase::Pending,
+            obligation_id,
+            created: now,
+            updated: now,
+            expires: now.saturating_add(millis(config.limits.max_claim_age)),
+            max_attempts: config.limits.max_member_attempts,
+            backoff_base_ms: millis(config.limits.retry_backoff_base) as u64,
+            max_backoff_ms: millis(config.limits.max_retry_backoff) as u64,
+            reservation: true,
+        })
+    }
+}
+
+/// New admission consumes genuine facade snapshots, never a decoded statement as Current.
+pub(crate) fn validate_canonical_payment_set(
+    request: crate::http::monad_message_cbor::ExactRequest,
+    sender: &crate::directory_admission::Current,
+    recipient: &crate::directory_admission::Current,
+    recipient_evidence: Option<&crate::directory_admission::HistoricalEvidence>,
+    network: &str,
+    chain_id: u64,
+    minimum: u128,
+) -> crate::http::monad_message_cbor::Result<CanonicalPaymentInput> {
+    use crate::{
+        http::monad_message_cbor::CanonicalError as Error,
+        store::monad_dm_cbor::FrozenCanonicalPolicy,
+    };
+    use frank_cbor::{default_context, validate_frame, TypedPayload, ValidationResult};
+    let checks = crate::monad_dm_verify::verify_canonical_stamp(
+        crate::monad_dm_verify::CanonicalStampCheckInput {
+            delivery: request.delivery(),
+            context: request.context(),
+            sender_current: sender,
+            recipient_current: recipient,
+            recipient_evidence,
+        },
+    )
+    .map_err(|_| Error::Invalid)?;
+    let ValidationResult::Parsed(frame) =
+        validate_frame(request.delivery(), &default_context()).map_err(|_| Error::Invalid)?
+    else {
+        return Err(Error::Invalid);
+    };
+    let Some(TypedPayload::DirectMessage {
+        network: frame_network,
+        destination,
+        payload_frame,
+        ..
+    }) = frame.typed.as_deref()
+    else {
+        return Err(Error::Invalid);
+    };
+    let Some(TypedPayload::RecipientPayload {
+        sender: sender_p,
+        recipient: recipient_p,
+        ..
+    }) = payload_frame.typed.as_deref()
+    else {
+        return Err(Error::Invalid);
+    };
+    if frame_network != network {
+        return Err(Error::Invalid);
+    }
+    let policy = FrozenCanonicalPolicy {
+        network: network.to_owned(),
+        chain_id,
+        minimum,
+        sender_p: sender_p.key_bytes.clone(),
+        recipient_p: recipient_p.key_bytes.clone(),
+        sender_m: sender.message_key.key_bytes.clone(),
+        recipient_m: recipient.message_key.key_bytes.clone(),
+        stamp: destination.key_bytes.clone(),
+        sender_t1: sender.evidence.hash,
+        recipient_t1: recipient_evidence.unwrap_or(&recipient.evidence).hash,
+        payload_hash: checks.payload_digest,
+    };
+    let payments = canonical_signed_set(&request, &policy)?;
+    Ok(CanonicalPaymentInput {
+        request,
+        policy,
+        payments,
+    })
+}
+
+/// Reopening revalidates frozen public cryptographic and signed economic facts. Fresh
+/// directory eligibility is checked by the operation owner separately; historical bytes
+/// cannot be promoted into a Current snapshot here.
+fn canonical_signed_set(
+    request: &crate::http::monad_message_cbor::ExactRequest,
+    policy: &crate::store::monad_dm_cbor::FrozenCanonicalPolicy,
+) -> crate::http::monad_message_cbor::Result<Vec<DecodedSignedTransaction>> {
+    use crate::http::monad_message_cbor::CanonicalError as Error;
+    use frank_cbor::{
+        default_context, encode_direct_message_crypto_context, payment_commitment,
+        recipient_payload_digest, validate_frame, AccountRef, DirectMessageCryptoContext,
+        TypedPayload, ValidationResult,
+    };
+    let ValidationResult::Parsed(frame) =
+        validate_frame(request.delivery(), &default_context()).map_err(|_| Error::Invalid)?
+    else {
+        return Err(Error::Invalid);
+    };
+    let Some(TypedPayload::DirectMessage {
+        network,
+        destination,
+        payload_frame,
+        payload_digest,
+        payments,
+        ..
+    }) = frame.typed.as_deref()
+    else {
+        return Err(Error::Invalid);
+    };
+    let Some(TypedPayload::RecipientPayload {
+        schema_version: 2,
+        network: inner_network,
+        sender,
+        recipient,
+        suite: 1,
+        ephemeral_point,
+        shared_point,
+        dleq_proof,
+        ..
+    }) = payload_frame.typed.as_deref()
+    else {
+        return Err(Error::Invalid);
+    };
+    let account = |bytes: &[u8]| AccountRef {
+        key_type: 1,
+        key_bytes: bytes.to_vec(),
+    };
+    if network != &policy.network
+        || inner_network != network
+        || payload_frame.schema_version != 2
+        || payload_frame.min_reader_version != 2
+        || sender != &account(&policy.sender_p)
+        || recipient != &account(&policy.recipient_p)
+        || destination != &account(&policy.stamp)
+        || recipient_payload_digest(network, &payload_frame.frame).map_err(|_| Error::Invalid)?
+            != policy.payload_hash
+        || payload_digest.as_slice() != policy.payload_hash
+        || payments.is_empty()
+        || payments.len() > MAX_STAMP_PAYMENTS
+        || payments.len() != request.transaction_count()
+    {
+        return Err(Error::Invalid);
+    }
+    let sender_m = account(&policy.sender_m);
+    let recipient_m = account(&policy.recipient_m);
+    let context = encode_direct_message_crypto_context(&DirectMessageCryptoContext {
+        network,
+        sender,
+        recipient,
+        sender_directory_hash: &policy.sender_t1,
+        recipient_directory_hash: &policy.recipient_t1,
+        sender_message_key: &sender_m,
+        recipient_message_key: &recipient_m,
+        stamp_key: destination,
+        ephemeral_point,
+        shared_point,
+        dleq_proof,
+    })
+    .map_err(|_| Error::Invalid)?;
+    if context != request.context() {
+        return Err(Error::Invalid);
+    }
+    crate::monad_dm_verify::verify_canonical_stamp_proof(
+        network,
+        destination,
+        ephemeral_point,
+        shared_point,
+        dleq_proof,
+    )
+    .map_err(|_| Error::Invalid)?;
+    let mut hashes = HashSet::new();
+    let mut funding = HashSet::new();
+    let mut destinations = HashSet::new();
+    let mut decoded = Vec::with_capacity(payments.len());
+    let mut total = 0u128;
+    for (position, (member, raw)) in payments.iter().zip(request.raw_transactions()).enumerate() {
+        let signed = decode_signed_transaction(raw).map_err(|_| Error::Invalid)?;
+        let (_, address) = crate::monad_dm_verify::canonical_stamp_destination(
+            network,
+            destination,
+            shared_point,
+            member.child_index,
+        )
+        .map_err(|_| Error::Invalid)?;
+        let commitment = payment_commitment(&policy.payload_hash, member.child_index);
+        if member.child_index as usize != position
+            || signed.chain_id != Some(policy.chain_id)
+            || member.transaction_id.as_slice() != signed.tx_hash.0
+            || !hashes.insert(signed.tx_hash)
+            || !funding.insert(signed.sender)
+            || member.value.len() != 32
+            || member.value[..16].iter().any(|b| *b != 0)
+            || u128::from_be_bytes(member.value[16..].try_into().map_err(|_| Error::Invalid)?)
+                != signed.value_wei
+            || signed.value_wei == 0
+            || signed.destination != Some(Address(address))
+            || member.address.as_slice() != address
+            || member.commitment.as_slice() != commitment
+            || parse_commitment_calldata(BROADCAST_MESSAGE_LOKAD_ID, &signed.input)
+                .map_err(|_| Error::Invalid)?
+                .as_slice()
+                != commitment
+        {
+            return Err(Error::Invalid);
+        }
+        destinations.insert(Address(address));
+        total = total.checked_add(signed.value_wei).ok_or(Error::Invalid)?;
+        decoded.push(signed);
+    }
+    if total < policy.minimum || funding.iter().any(|address| destinations.contains(address)) {
+        return Err(Error::Invalid);
+    }
+    Ok(decoded)
+}
+
+pub(crate) fn validate_canonical_retained(
+    claim: &crate::store::monad_dm_cbor::Claim,
+) -> crate::http::monad_message_cbor::Result<()> {
+    use crate::http::monad_message_cbor::CanonicalError as Error;
+    let payments = canonical_signed_set(&claim.request, &claim.policy)?;
+    if claim.members.len() != payments.len() {
+        return Err(Error::Invalid);
+    }
+    for (index, (member, signed)) in claim.members.iter().zip(payments).enumerate() {
+        if member.child_index as usize != index || member.tx_hash != signed.tx_hash {
+            return Err(Error::Invalid);
+        }
+        if let MonadOutboxMemberState::Confirmed { value_wei, .. } = member.state {
+            if value_wei != signed.value_wei {
+                return Err(Error::Invalid);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn verify_canonical_confirmed(
+    claim: &crate::store::monad_dm_cbor::Claim,
+) -> crate::http::monad_message_cbor::Result<VerifiedSubmission<'_>> {
+    use crate::http::monad_message_cbor::CanonicalError as Error;
+    validate_canonical_retained(claim)?;
+    let mut total = 0u128;
+    for member in &claim.members {
+        let MonadOutboxMemberState::Confirmed { value_wei, .. } = member.state else {
+            return Err(Error::Invalid);
+        };
+        total = total.checked_add(value_wei).ok_or(Error::Invalid)?;
+    }
+    if total < claim.policy.minimum {
+        return Err(Error::Invalid);
+    }
+    Ok(confirmed_submission(
+        SubmissionBinding::Canonical(claim),
+        &claim.members,
+        total,
+    ))
+}
+
 /// CPU-only facts, with no receipt observation or publication authority.
 pub(crate) struct ValidatedPaymentInput<'a> {
     _request: &'a proto::MonadStampedMessage,
@@ -40,17 +342,51 @@ pub(crate) struct ValidatedPaymentInput<'a> {
 /// A local immutable view of a completely validated durable confirmed set.
 /// Its constructor is private; reopening and finalization must revalidate existing facts.
 pub(crate) struct VerifiedSubmission<'a> {
-    message: &'a proto::MonadStampedMessage,
-    _canonical_message: &'a [u8],
-    _payload_hash: &'a [u8],
-    _policy: &'a MonadOutboxPolicy,
+    binding: SubmissionBinding<'a>,
     _members: &'a [MonadOutboxMember],
     _signed_total_value_wei: u128,
 }
 
+#[derive(Clone, Copy)]
+enum SubmissionBinding<'a> {
+    Legacy {
+        message: &'a proto::MonadStampedMessage,
+        _canonical_message: &'a [u8],
+        _payload_hash: &'a [u8],
+        _policy: &'a MonadOutboxPolicy,
+    },
+    Canonical(&'a crate::store::monad_dm_cbor::Claim),
+}
+
 impl<'a> VerifiedSubmission<'a> {
     pub(crate) fn message(&self) -> &'a proto::MonadStampedMessage {
-        self.message
+        match &self.binding {
+            SubmissionBinding::Legacy { message, .. } => message,
+            SubmissionBinding::Canonical(_) => {
+                unreachable!("legacy publication requires legacy authority")
+            }
+        }
+    }
+
+    pub(crate) fn canonical_request(
+        &self,
+    ) -> Option<&'a crate::http::monad_message_cbor::ExactRequest> {
+        match self.binding {
+            SubmissionBinding::Canonical(claim) => Some(&claim.request),
+            SubmissionBinding::Legacy { .. } => None,
+        }
+    }
+}
+
+fn confirmed_submission<'a>(
+    binding: SubmissionBinding<'a>,
+    members: &'a [MonadOutboxMember],
+    signed_total: u128,
+) -> VerifiedSubmission<'a> {
+    VerifiedSubmission {
+        binding,
+        _members: members,
+        _signed_total_value_wei: signed_total,
     }
 }
 
@@ -71,14 +407,16 @@ pub(crate) fn verify_submission<'a>(
         members.len(),
         expected_chain_id,
     )?;
-    Ok(VerifiedSubmission {
-        message,
-        _canonical_message: canonical_message,
-        _payload_hash: payload_hash,
-        _policy: policy,
-        _members: members,
-        _signed_total_value_wei: signed_total_value_wei,
-    })
+    Ok(confirmed_submission(
+        SubmissionBinding::Legacy {
+            message,
+            _canonical_message: canonical_message,
+            _payload_hash: payload_hash,
+            _policy: policy,
+        },
+        members,
+        signed_total_value_wei,
+    ))
 }
 
 #[derive(Debug)]
@@ -888,8 +1226,16 @@ mod tests {
         )?;
         assert!(std::ptr::eq(verified.message(), &request));
         assert!(std::ptr::eq(verified._members, members.as_slice()));
-        assert!(std::ptr::eq(verified._policy, &policy));
-        assert_eq!(verified._canonical_message, canonical);
+        let SubmissionBinding::Legacy {
+            _policy,
+            _canonical_message,
+            ..
+        } = verified.binding
+        else {
+            panic!("legacy confirmed view retains legacy binding");
+        };
+        assert!(std::ptr::eq(_policy, &policy));
+        assert_eq!(_canonical_message, canonical);
         assert_eq!(verified._signed_total_value_wei, 20);
         Ok(())
     }

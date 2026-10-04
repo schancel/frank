@@ -1249,7 +1249,7 @@ fn parse_recovery_payload_hash(value: &str) -> Result<[u8; 32], PrivateMailboxEr
     Ok(payload_hash)
 }
 
-fn mailbox_auth_preimage(
+pub(crate) fn mailbox_auth_preimage(
     challenge: MailboxChallenge,
     binding: &MailboxRequestBinding,
     network_tag: &[u8],
@@ -1305,9 +1305,9 @@ fn private_binding(
     })
 }
 
-struct ParsedPrivateAuthentication {
-    challenge: MailboxChallenge,
-    signature: Vec<u8>,
+pub(crate) struct ParsedPrivateAuthentication {
+    pub(crate) challenge: MailboxChallenge,
+    pub(crate) signature: Vec<u8>,
 }
 
 fn parse_private_authentication(
@@ -1319,6 +1319,20 @@ fn parse_private_authentication(
         .monad_mailbox
         .as_enabled()
         .ok_or(PrivateMailboxError::Unauthorized)?;
+    parse_private_authentication_for_runtime(
+        headers,
+        runtime,
+        binding,
+        crate::monad_mailbox::MailboxNamespace::Legacy,
+    )
+}
+
+pub(crate) fn parse_private_authentication_for_runtime(
+    headers: &HeaderMap,
+    runtime: &crate::monad_mailbox::EnabledMonadMailboxRuntime,
+    binding: &MailboxRequestBinding,
+    namespace: crate::monad_mailbox::MailboxNamespace,
+) -> Result<ParsedPrivateAuthentication, PrivateMailboxError> {
     let parse_hex_header = |name: &'static str| -> Result<[u8; 32], PrivateMailboxError> {
         let value = headers
             .get(name)
@@ -1360,7 +1374,7 @@ fn parse_private_authentication(
         token,
     };
     let authentication_time = now_ms();
-    if !runtime.verify_challenge(binding, challenge, authentication_time) {
+    if !runtime.verify_namespace_challenge(namespace, binding, challenge, authentication_time) {
         return Err(PrivateMailboxError::Unauthorized);
     }
     Ok(ParsedPrivateAuthentication {

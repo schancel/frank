@@ -33,6 +33,13 @@ pub enum MonadMailboxRuntime {
     Enabled(Arc<EnabledMonadMailboxRuntime>),
 }
 
+/// Isolated challenge/cursor state within one shared financial runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MailboxNamespace {
+    Legacy,
+    Canonical,
+}
+
 /// Private resource selected by an authenticated mailbox request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MailboxResource {
@@ -164,6 +171,7 @@ pub struct EnabledMonadMailboxRuntime {
     min_value_wei: u128,
     network_tag: Vec<u8>,
     auth: MailboxAuthState,
+    canonical_auth: MailboxAuthState,
 }
 
 /// Public facts a recipient signs to authorize one private request.
@@ -325,6 +333,7 @@ impl MonadMailboxRuntime {
             min_value_wei,
             network_tag,
             auth: MailboxAuthState::new(),
+            canonical_auth: MailboxAuthState::new(),
         }))
     }
 
@@ -348,6 +357,7 @@ impl MonadMailboxRuntime {
                 epoch: [0x51; 32],
                 secret,
             },
+            canonical_auth: MailboxAuthState::new(),
         }))
     }
 
@@ -389,6 +399,50 @@ impl EnabledMonadMailboxRuntime {
     /// Required EVM chain identity shared by admission and recovery.
     pub fn expected_chain_id(&self) -> u64 {
         self.reconcile.expected_chain_id
+    }
+
+    fn auth_namespace(&self, namespace: MailboxNamespace) -> &MailboxAuthState {
+        match namespace {
+            MailboxNamespace::Legacy => &self.auth,
+            MailboxNamespace::Canonical => &self.canonical_auth,
+        }
+    }
+    pub(crate) fn issue_namespace_challenge(
+        &self,
+        namespace: MailboxNamespace,
+        binding: &MailboxRequestBinding,
+        now_ms: i64,
+    ) -> MailboxChallenge {
+        self.auth_namespace(namespace).issue(binding, now_ms)
+    }
+    pub(crate) fn verify_namespace_challenge(
+        &self,
+        namespace: MailboxNamespace,
+        binding: &MailboxRequestBinding,
+        challenge: MailboxChallenge,
+        now_ms: i64,
+    ) -> bool {
+        self.auth_namespace(namespace)
+            .verify(binding, challenge, now_ms)
+    }
+    pub(crate) fn encode_namespace_cursor(
+        &self,
+        namespace: MailboxNamespace,
+        recipient: Address,
+        cursor: MailboxCursor,
+    ) -> String {
+        self.auth_namespace(namespace)
+            .encode_cursor(recipient, cursor)
+    }
+    pub(crate) fn decode_namespace_cursor(
+        &self,
+        namespace: MailboxNamespace,
+        recipient: Address,
+        resource: MailboxResource,
+        encoded: &str,
+    ) -> Option<MailboxCursor> {
+        self.auth_namespace(namespace)
+            .decode_cursor(recipient, resource, encoded)
     }
 
     /// Issue a stateless short-lived challenge bound to the complete future request.

@@ -1193,6 +1193,41 @@ impl Registry {
         #[cfg(test)]
         RECIPIENT_SIGNATURE_WORK.set(RECIPIENT_SIGNATURE_WORK.get() + 1);
         let pubkey = self.db.monad_profiles().get_pubkey(&recipient)?;
+        self.verify_recipient_key_observed(pubkey, digest, signature, before_verify)
+    }
+
+    /// Shared existing signature primitive for a P already admitted by the directory owner.
+    /// A supplied point is never admission by itself; canonical callers must check the genuine
+    /// fresh snapshot, network and exact subject before entering this helper.
+    pub(crate) fn verify_admitted_monad_recipient_signature(
+        &self,
+        recipient: Address,
+        admitted_p: Option<&[u8]>,
+        digest: [u8; 32],
+        signature: &[u8],
+    ) -> Result<bool> {
+        let key = admitted_p
+            .filter(|key| {
+                crate::monad_stamp_stealth::recipient_address_from_public_key(key)
+                    .map(|address| address == recipient)
+                    .unwrap_or(false)
+            })
+            .map(<[u8]>::to_vec);
+        #[cfg(test)]
+        RECIPIENT_SIGNATURE_WORK.set(RECIPIENT_SIGNATURE_WORK.get() + 1);
+        self.verify_recipient_key_observed(key, digest, signature, || {})
+    }
+
+    fn verify_recipient_key_observed<F>(
+        &self,
+        pubkey: Option<Vec<u8>>,
+        digest: [u8; 32],
+        signature: &[u8],
+        before_verify: F,
+    ) -> Result<bool>
+    where
+        F: FnOnce(),
+    {
         let registered = pubkey.is_some();
         let candidate = pubkey.unwrap_or_else(|| {
             let secret = self

@@ -468,6 +468,7 @@ dependencies = [
  "hmac",
  "hyper",
  "json",
+ "native-tls",
  "pretty_assertions",
  "prost",
  "prost-build",

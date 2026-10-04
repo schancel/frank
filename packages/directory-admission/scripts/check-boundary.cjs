@@ -3,9 +3,120 @@ const fs = require('fs')
 const esbuild = require('esbuild')
 const { execFileSync } = require('child_process')
 const assert = require('assert/strict')
+const ts = require('typescript')
 const { createContext, runInContext } = require('vm')
 const { root, packageRoot } = require('./build-tests.cjs')
+const demoEntries = new Map([
+  ['packages/bot/demo/directory-trust/admission.ts', '/node'],
+  ['packages/bot/demo/directory-trust/browser-admission.ts', '/browser'],
+  ['packages/bot/demo/directory-trust/admission.jest.test.ts', null],
+])
+function checkConsumer(file, text) {
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true)
+  let count = 0
+  function visit(node) {
+    let specifier
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+      specifier = node.moduleSpecifier
+    else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument))
+      specifier = node.argument.literal
+    else if (ts.isExternalModuleReference(node)) specifier = node.expression
+    else if (ts.isCallExpression(node)) specifier = node.arguments[0]
+    if (specifier && ts.isStringLiteralLike(specifier)) {
+      const name = specifier.text
+      const base = '@frank/directory-admission'
+      if (name === base || name.startsWith(base + '/')) {
+        count++
+        const clause = ts.isImportDeclaration(node) && node.importClause
+        const typeOnly =
+          ts.isImportTypeNode(node) ||
+          !!(
+            clause &&
+            (clause.isTypeOnly ||
+              (!clause.name &&
+                clause.namedBindings &&
+                ts.isNamedImports(clause.namedBindings) &&
+                clause.namedBindings.elements.length > 0 &&
+                clause.namedBindings.elements.every(item => item.isTypeOnly)))
+          )
+        if (
+          !demoEntries.has(file) ||
+          (name === base
+            ? !typeOnly
+            : !ts.isImportDeclaration(node) ||
+              !demoEntries.get(file) ||
+              name !== base + demoEntries.get(file))
+        )
+          throw new Error(
+            `unexpected active runtime adoption: ${file}: ${name}`,
+          )
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(source)
+  return count
+}
+function checkConsumerRegressions() {
+  const node = 'packages/bot/demo/directory-trust/admission.ts'
+  const browser = 'packages/bot/demo/directory-trust/browser-admission.ts'
+  const test = 'packages/bot/demo/directory-trust/admission.jest.test.ts'
+  assert.equal(
+    checkConsumer(
+      node,
+      "import {openNodeDirectoryStore} from '@frank/directory-admission/node'",
+    ),
+    1,
+  )
+  assert.equal(
+    checkConsumer(
+      browser,
+      "import {openBrowserDirectoryStore} from '@frank/directory-admission/browser'",
+    ),
+    1,
+  )
+  assert.equal(
+    checkConsumer(
+      test,
+      "import type {Current} from '@frank/directory-admission'",
+    ),
+    1,
+  )
+  assert.equal(
+    checkConsumer(
+      node,
+      "import {type Current} from '@frank/directory-admission'",
+    ),
+    1,
+  )
+  for (const [file, statement] of [
+    [node, "import {Current} from '@frank/directory-admission'"],
+    [node, "import {} from '@frank/directory-admission'"],
+    [node, "import '@frank/directory-admission'"],
+    [node, "import {open} from '@frank/directory-admission/browser'"],
+    [browser, "import {open} from '@frank/directory-admission/node'"],
+    [test, "import {open} from '@frank/directory-admission/node'"],
+    [node, "import type {X} from '@frank/directory-admission/storage/level'"],
+    [node, "export * from '@frank/directory-admission'"],
+    [node, "require('@frank/directory-admission')"],
+    [node, "import('@frank/directory-admission')"],
+    ['app/directory.ts', "import type {X} from '@frank/directory-admission'"],
+    [
+      'packages/bot/runtime.ts',
+      "import {open} from '@frank/directory-admission/node'",
+    ],
+    [
+      node + '.extra.ts',
+      "import {open} from '@frank/directory-admission/node'",
+    ],
+  ])
+    assert.throws(
+      () => checkConsumer(file, statement),
+      /unexpected active runtime adoption/,
+    )
+}
 async function main() {
+  checkConsumerRegressions()
   require('./check-node-consumer.cjs')()
   const manifest = require(path.join(packageRoot, 'package.json'))
   const allowed = ['@frank/codec', 'level']
@@ -75,9 +186,10 @@ async function main() {
       'git',
       [
         'grep',
-        '-n',
-        '-E',
-        '(from |require\\()["\x27]@frank/directory-admission',
+        '-l',
+        '-z',
+        '-F',
+        '@frank/directory-admission',
         '--',
         ':!packages/directory-admission',
         ':!docs',
@@ -87,8 +199,13 @@ async function main() {
   } catch (error) {
     if (error.status !== 1) throw error
   }
-  if (consumers.trim())
-    throw new Error(`unexpected active runtime adoption:\n${consumers}`)
+  const allowedDemoConsumerFiles = consumers
+    .split('\0')
+    .filter(
+      file =>
+        /\.[cm]?[jt]sx?$/.test(file) &&
+        checkConsumer(file, fs.readFileSync(path.join(root, file), 'utf8')) > 0,
+    )
   const example = /```ts\n([\s\S]*?)```/.exec(
     fs.readFileSync(path.join(packageRoot, 'README.md'), 'utf8'),
   )
@@ -115,7 +232,7 @@ async function main() {
     JSON.stringify({
       ok: true,
       browserInputs: Object.keys(result.metafile.inputs).length,
-      runtimeConsumers: 0,
+      allowedDemoConsumerFiles: allowedDemoConsumerFiles.length,
       rootTypesOnly: true,
       publicExample: true,
       bareRealm: true,

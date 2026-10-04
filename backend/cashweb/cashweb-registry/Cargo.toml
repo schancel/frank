@@ -117,6 +117,8 @@ prost-build = "0.11"
 bitcoinsuite-ecc-secp256k1 = { path = "../../bitcoinsuite/bitcoinsuite-ecc-secp256k1" }
 flate2 = "1"
 hex-literal = "0.3"
+# Demo-only pinned HTTPS probe; this exact package is already locked transitively.
+native-tls = "=0.2.10"
 
 # assert_eq! and assert_ne! with colored diffs
 pretty_assertions = "1.2"

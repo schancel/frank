@@ -141,3 +141,56 @@ test('approved public bundle retains independently signed exact original frames 
   approved.subjects[0].statement = approved.subjects[1].statement
   expect(() => parseApprovedPolicy(bytes(approved))).toThrow()
 })
+
+test.each([
+  ['MONT', 'monad-mainnet', '143'],
+  ['MONT', 'monad-testnet', '143'],
+  ['MON1', 'monad-testnet', '10143'],
+  ['MON1', 'monad-mainnet', '10143'],
+  ['MONT', 'other-bounded-network', '10143'],
+])('bootstrap rejects crossed/unknown actual descriptor %s/%s/%s', (networkTag, network, chainId) => {
+  expect(() => parseBootstrapPolicy(bytes({ ...bootstrap(), networkTag, network, chainId }))).toThrow()
+})
+test('bootstrap accepts the actual installed mainnet descriptor without changing generic configurations', () => {
+  const p = { ...bootstrap(), networkTag: 'MON1', network: 'monad-mainnet', chainId: '143' }
+  expect(parseBootstrapPolicy(bytes(p)).networkTag).toBe('MON1')
+  const s = snapshot()
+  s.configuration.principals[0].network = 'lotus-mainnet'
+  s.states[0].network = 'lotus-mainnet'
+  s.publicConfigurationIdentity = configurationIdentity(s.configuration)
+  expect(parseInstallationSnapshot(bytes(s)).configuration.principals[0].network).toBe('lotus-mainnet')
+})
+test('arbitrary valid fragmentation including many empty and one-byte chunks stays accepted', async () => {
+  const body = bytes(snapshot())
+  let empty = 0, offset = 0
+  // pull produces one chunk at a time; the fixture does not prequeue an array.
+  const stream = new ReadableStream<Uint8Array>({ pull(c) {
+    if (empty++ < 20000) { c.enqueue(new Uint8Array(0)); return }
+    if (offset < body.length) { c.enqueue(body.subarray(offset, ++offset)); return }
+    c.close()
+  } }, { highWaterMark: 0 })
+  const request = async () => reply(stream)
+  const copy = jest.spyOn(Uint8Array, 'from')
+  try {
+    expect(await fetchInstallationSnapshot(participant(), hash, new AbortController().signal, request as typeof fetch)).toEqual(snapshot())
+    // Independent of fragmentation count: previous retention copied every tiny/empty chunk.
+    expect(copy.mock.calls.filter(([input]) => input instanceof Uint8Array && input.length <= 1)).toHaveLength(0)
+  } finally { copy.mockRestore() }
+})
+test('many tiny chunks followed by stream failure cancel the reader and dispose bounded storage', async () => {
+  const cancel = jest.fn()
+  let count = 0
+  const stream = new ReadableStream<Uint8Array>({ pull(c) {
+    if (++count <= 20000) c.enqueue(Uint8Array.of(32))
+    else c.enqueue(new Uint8Array(PROVISIONING_BODY_LIMIT))
+  }, cancel }, { highWaterMark: 0 })
+  await expect(fetchInstallationSnapshot(participant(), hash, new AbortController().signal, (async () => reply(stream)) as typeof fetch)).rejects.toThrow()
+  expect(cancel).toHaveBeenCalledTimes(1)
+})
+
+test('header rejection cancels the unconsumed response body', async () => {
+  const cancel = jest.fn()
+  const request = async () => reply(new ReadableStream({ cancel }), { 'content-type': 'text/plain' })
+  await expect(fetchInstallationSnapshot(participant(), hash, new AbortController().signal, request as typeof fetch)).rejects.toThrow()
+  expect(cancel).toHaveBeenCalledTimes(1)
+})

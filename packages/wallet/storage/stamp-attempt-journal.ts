@@ -1,6 +1,16 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
+import { compareBytes, decodeCanonical, parseFrame, toHex } from '@frank/codec'
+import { hexlify, Transaction } from 'ethers'
+import {
+  restoreCanonicalRequest,
+  equalCanonicalRequests,
+  decodeCanonicalAcceptedStatus,
+  type CanonicalExactRequest,
+  type CanonicalAcceptedBody,
+} from '@frank/cashweb/relay/canonical-dm-transport'
+import { durableBatch, durablePut, openDurableLevel } from './level-durability'
 
 export interface OutgoingStampAttempt {
   payloadHashHex: string
@@ -59,5 +69,947 @@ export class LevelStampAttemptJournal implements StampAttemptJournal {
   }
   getAll(): OutgoingStampAttempt[] {
     return Array.from(this.attempts.values())
+  }
+}
+
+/** Separate versioned namespace; opening it never rewrites the legacy exact-set journal. */
+const CANONICAL_NAMESPACE = 'canonical-stamp-attempts-v1'
+const CANONICAL_MANIFEST = 'manifest'
+const CANONICAL_MAX_BODY = 8 * 1024 * 1024
+
+export interface CanonicalPreparedAttempt {
+  readonly walletBindingId: string
+  readonly accountId: string
+  readonly chainId: string
+  readonly network: string
+  readonly senderSubject: string
+  readonly recipientSubject: string
+  readonly senderT1: string
+  readonly recipientT1: string
+  readonly payload: Uint8Array
+  readonly context: Uint8Array
+  /** Exact caller-owned frozen economic policy/context; the journal does not confer authority. */
+  readonly economicBinding: Uint8Array
+}
+
+export interface CanonicalAttemptReservation {
+  readonly id: string
+  readonly index: number
+}
+
+export type CanonicalAttemptTerminal = Exclude<
+  CanonicalAcceptedBody,
+  { phase: 'retained' }
+>
+
+export interface CanonicalJournalAttempt {
+  readonly version: 1
+  readonly attemptRef: string
+  readonly prepared: CanonicalPreparedAttempt
+  readonly request: CanonicalExactRequest
+  readonly reservations: readonly CanonicalAttemptReservation[]
+  readonly consumerId: string
+  readonly terminal: CanonicalAttemptTerminal | null
+  readonly cleanupComplete: boolean
+  readonly acknowledged: boolean
+}
+
+export interface CanonicalAttemptCorrelation {
+  readonly attemptRef: string
+  readonly prepared: CanonicalPreparedAttempt
+  readonly request: CanonicalExactRequest
+  readonly reservations: readonly CanonicalAttemptReservation[]
+  readonly consumerId: string
+}
+
+/** Opaque process-local eligibility. A reopened journal never inherits replay permission. */
+export interface CanonicalReplayEligibility {
+  readonly attemptRef: string
+}
+
+export type CanonicalAttemptReconciliation =
+  | {
+      readonly attemptRef: string
+      readonly state: 'ready'
+      readonly eligibility: CanonicalReplayEligibility
+    }
+  | {
+      readonly attemptRef: string
+      readonly state: 'terminal'
+      readonly attempt: CanonicalJournalAttempt
+    }
+  | {
+      readonly attemptRef: string
+      readonly state: 'hold'
+      readonly reason: 'missing' | 'orphan' | 'mismatch' | 'ambiguous'
+    }
+
+interface CanonicalManifest {
+  version: 1
+  nextSequence: number
+  acknowledgedThrough: number
+}
+
+type StoredBinding = Omit<
+  CanonicalPreparedAttempt,
+  'payload' | 'context' | 'economicBinding'
+> & {
+  economicBinding: string
+}
+
+interface StoredCanonicalAttempt {
+  version: 1
+  attemptRef: string
+  sequence: number
+  binding: StoredBinding
+  /** One original full body owner; exact part/raw bytes are derived only by the strict parser. */
+  request: { body: string; contentType: string }
+  reservations: CanonicalAttemptReservation[]
+  consumerId: string
+  terminal: CanonicalAttemptTerminal | null
+  cleanupComplete: boolean
+  acknowledged: boolean
+}
+
+export class CanonicalAttemptJournalError extends Error {
+  constructor(
+    readonly code:
+      | 'invalid'
+      | 'conflict'
+      | 'capacity'
+      | 'closed'
+      | 'corrupt'
+      | 'replay'
+      | 'cleanup',
+  ) {
+    super(`canonical-attempt-journal:${code}`)
+    this.name = 'CanonicalAttemptJournalError'
+  }
+}
+
+function canonicalFail(code: CanonicalAttemptJournalError['code']): never {
+  throw new CanonicalAttemptJournalError(code)
+}
+
+function exactObject(
+  value: unknown,
+  keys: readonly string[],
+): asserts value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    canonicalFail('invalid')
+  const actual = Object.keys(value)
+  if (actual.length !== keys.length || actual.some(key => !keys.includes(key)))
+    canonicalFail('invalid')
+}
+
+function boundedName(value: unknown): asserts value is string {
+  if (typeof value !== 'string' || !/^[a-zA-Z0-9._:-]{1,128}$/.test(value))
+    canonicalFail('invalid')
+}
+
+function boundedBytes(
+  value: unknown,
+  max: number,
+): asserts value is Uint8Array {
+  if (
+    !(value instanceof Uint8Array) ||
+    value.length === 0 ||
+    value.length > max
+  )
+    canonicalFail('invalid')
+}
+
+function base64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('base64')
+}
+
+function fromBase64(value: unknown, max: number): Uint8Array {
+  if (
+    typeof value !== 'string' ||
+    value.length > 4 * Math.ceil(max / 3) ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      value,
+    )
+  )
+    canonicalFail('invalid')
+  const result = new Uint8Array(Buffer.from(value, 'base64'))
+  boundedBytes(result, max)
+  if (base64(result) !== value) canonicalFail('invalid')
+  return result
+}
+
+function refForSequence(sequence: number): string {
+  return `canonical-v1:${sequence.toString().padStart(16, '0')}`
+}
+
+function attemptKey(sequence: number): string {
+  return `attempt:${sequence.toString().padStart(16, '0')}`
+}
+
+function payloadFromRequest(request: CanonicalExactRequest): Uint8Array {
+  const parsed = parseFrame(request.parts.delivery)
+  if (parsed.kind !== 'parsed' || parsed.typed?.type !== 1)
+    canonicalFail('invalid')
+  return new Uint8Array(parsed.typed.payloadFrame.frame)
+}
+
+function bindingOf(prepared: CanonicalPreparedAttempt): StoredBinding {
+  return {
+    walletBindingId: prepared.walletBindingId,
+    accountId: prepared.accountId,
+    chainId: prepared.chainId,
+    network: prepared.network,
+    senderSubject: prepared.senderSubject,
+    recipientSubject: prepared.recipientSubject,
+    senderT1: prepared.senderT1,
+    recipientT1: prepared.recipientT1,
+    economicBinding: base64(prepared.economicBinding),
+  }
+}
+
+function assertPrepared(
+  prepared: CanonicalPreparedAttempt,
+  request?: CanonicalExactRequest,
+): void {
+  exactObject(prepared, [
+    'walletBindingId',
+    'accountId',
+    'chainId',
+    'network',
+    'senderSubject',
+    'recipientSubject',
+    'senderT1',
+    'recipientT1',
+    'payload',
+    'context',
+    'economicBinding',
+  ])
+  boundedName(prepared.walletBindingId)
+  boundedName(prepared.accountId)
+  if (
+    typeof prepared.chainId !== 'string' ||
+    !/^[1-9][0-9]{0,19}$/.test(prepared.chainId) ||
+    typeof prepared.network !== 'string' ||
+    !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(prepared.network)
+  )
+    canonicalFail('invalid')
+  for (const subject of [prepared.senderSubject, prepared.recipientSubject]) {
+    if (typeof subject !== 'string' || !/^(02|03)[0-9a-f]{64}$/.test(subject))
+      canonicalFail('invalid')
+  }
+  for (const t1 of [prepared.senderT1, prepared.recipientT1]) {
+    if (typeof t1 !== 'string' || !/^[0-9a-f]{64}$/.test(t1))
+      canonicalFail('invalid')
+  }
+  boundedBytes(prepared.payload, CANONICAL_MAX_BODY)
+  boundedBytes(prepared.context, 4096)
+  boundedBytes(prepared.economicBinding, 16384)
+  const parsed = parseFrame(prepared.payload)
+  if (
+    parsed.kind !== 'parsed' ||
+    parsed.schemaVersion !== 2 ||
+    parsed.typed?.type !== 5 ||
+    parsed.typed.suite !== 1 ||
+    parsed.typed.network !== prepared.network ||
+    parsed.typed.sender.keyType !== 1 ||
+    parsed.typed.recipient.keyType !== 1 ||
+    toHex(parsed.typed.sender.keyBytes) !== prepared.senderSubject ||
+    toHex(parsed.typed.recipient.keyBytes) !== prepared.recipientSubject
+  )
+    canonicalFail('invalid')
+  const context = decodeCanonical(prepared.context)
+  if (
+    !(context instanceof Map) ||
+    context.size !== 16 ||
+    context.get(0n) !== 'frank/dm-crypto-context/v1' ||
+    context.get(1n) !== prepared.network ||
+    context.get(12n) !== 1n ||
+    context.get(13n) !== 5n ||
+    context.get(14n) !== 2n ||
+    context.get(15n) !== 2n
+  )
+    canonicalFail('invalid')
+  for (const [key, expected] of [
+    [2n, prepared.senderSubject],
+    [3n, prepared.recipientSubject],
+  ] as const) {
+    const subject = context.get(key)
+    if (
+      !(subject instanceof Map) ||
+      subject.size !== 2 ||
+      subject.get(0n) !== 1n ||
+      !(subject.get(1n) instanceof Uint8Array) ||
+      toHex(subject.get(1n) as Uint8Array) !== expected
+    )
+      canonicalFail('invalid')
+  }
+  for (const [key, expected] of [
+    [4n, prepared.senderT1],
+    [5n, prepared.recipientT1],
+  ] as const) {
+    const t1 = context.get(key)
+    if (!(t1 instanceof Uint8Array) || toHex(t1) !== expected)
+      canonicalFail('invalid')
+  }
+  if (
+    request !== undefined &&
+    request.parts.transactions.some(
+      raw =>
+        Transaction.from(hexlify(raw)).chainId.toString() !== prepared.chainId,
+    )
+  )
+    canonicalFail('conflict')
+  if (
+    request !== undefined &&
+    (request.identity.network !== prepared.network ||
+      request.identity.sender_t1 !== prepared.senderT1 ||
+      request.identity.recipient_t1 !== prepared.recipientT1 ||
+      compareBytes(prepared.context, request.parts.context) !== 0 ||
+      compareBytes(prepared.payload, payloadFromRequest(request)) !== 0)
+  )
+    canonicalFail('conflict')
+}
+
+function preparedOf(
+  row: StoredCanonicalAttempt,
+  request: CanonicalExactRequest,
+): CanonicalPreparedAttempt {
+  return {
+    ...row.binding,
+    economicBinding: fromBase64(row.binding.economicBinding, 16384),
+    payload: payloadFromRequest(request),
+    context: new Uint8Array(request.parts.context),
+  }
+}
+
+function samePrepared(
+  a: CanonicalPreparedAttempt,
+  b: CanonicalPreparedAttempt,
+): boolean {
+  return (
+    JSON.stringify(bindingOf(a)) === JSON.stringify(bindingOf(b)) &&
+    compareBytes(a.payload, b.payload) === 0 &&
+    compareBytes(a.context, b.context) === 0
+  )
+}
+
+function assertReservations(
+  value: unknown,
+  count: number,
+): asserts value is CanonicalAttemptReservation[] {
+  if (
+    !Array.isArray(value) ||
+    value.length !== count ||
+    count < 1 ||
+    count > 64
+  )
+    canonicalFail('invalid')
+  const ids = new Set<string>(),
+    indices = new Set<number>()
+  for (const item of value) {
+    exactObject(item, ['id', 'index'])
+    boundedName(item.id)
+    if (
+      !Number.isSafeInteger(item.index) ||
+      (item.index as number) < 0 ||
+      ids.has(item.id) ||
+      indices.has(item.index as number)
+    )
+      canonicalFail('invalid')
+    ids.add(item.id)
+    indices.add(item.index as number)
+  }
+}
+
+function terminalFor(
+  value: unknown,
+  request: CanonicalExactRequest,
+): CanonicalAttemptTerminal {
+  const encoded = new TextEncoder().encode(JSON.stringify(value))
+  const result = decodeCanonicalAcceptedStatus(
+    200,
+    'application/json',
+    encoded,
+    request,
+  )
+  if (result.phase !== 'delivered' && result.phase !== 'dead')
+    canonicalFail('invalid')
+  return result
+}
+
+/** Storage only. It never signs, submits, promotes directory evidence or starts replay on Open.
+ * One Level owner serializes journal mutations; callers correlate their wallet/workflow records
+ * before explicitly beginning replay. Integration into the bundle remains the Stage C owner's job. */
+export class LevelCanonicalStampAttemptJournal {
+  private database?: LevelDB
+  private state: 'closed' | 'opening' | 'open' | 'closing' | 'faulted' =
+    'closed'
+  private faulted = false
+  private tail: Promise<void> = Promise.resolve()
+  private manifest: CanonicalManifest = {
+    version: 1,
+    nextSequence: 1,
+    acknowledgedThrough: 0,
+  }
+  private readonly rows = new Map<string, StoredCanonicalAttempt>()
+  private readonly eligibility = new WeakMap<
+    CanonicalReplayEligibility,
+    { row: StoredCanonicalAttempt; epoch: number }
+  >()
+  private readonly replaying = new Set<string>()
+  private readonly activeReplayTokens = new WeakMap<
+    CanonicalReplayEligibility,
+    { ref: string; generation: number }
+  >()
+  private generation = 0
+  private epoch = 0
+  private readonly maxRecords: number
+  private readonly maxBytes: number
+
+  constructor(
+    private readonly location: string,
+    limits: { maxRecords?: number; maxBytes?: number } = {},
+  ) {
+    this.maxRecords = limits.maxRecords ?? 1024
+    this.maxBytes = limits.maxBytes ?? 64 * 1024 * 1024
+    if (
+      !Number.isSafeInteger(this.maxRecords) ||
+      this.maxRecords < 1 ||
+      !Number.isSafeInteger(this.maxBytes) ||
+      this.maxBytes < 1
+    )
+      canonicalFail('invalid')
+  }
+
+  async Open(): Promise<void> {
+    if (this.state !== 'closed') canonicalFail('closed')
+    this.state = 'opening'
+    const database = level(join(this.location, CANONICAL_NAMESPACE))
+    try {
+      await openDurableLevel(database, this.location, CANONICAL_NAMESPACE)
+      let manifest: CanonicalManifest | undefined
+      const rows = new Map<string, StoredCanonicalAttempt>()
+      for await (const [key, encoded] of database.iterator({}) as any) {
+        if (
+          typeof encoded !== 'string' ||
+          encoded.length > 4 * Math.ceil(CANONICAL_MAX_BODY / 3) + 65536
+        )
+          canonicalFail('corrupt')
+        const value: unknown = JSON.parse(encoded)
+        if (key === CANONICAL_MANIFEST) {
+          exactObject(value, ['version', 'nextSequence', 'acknowledgedThrough'])
+          if (
+            value.version !== 1 ||
+            !Number.isSafeInteger(value.nextSequence) ||
+            (value.nextSequence as number) < 1 ||
+            !Number.isSafeInteger(value.acknowledgedThrough) ||
+            (value.acknowledgedThrough as number) < 0 ||
+            (value.acknowledgedThrough as number) >=
+              (value.nextSequence as number)
+          )
+            canonicalFail('corrupt')
+          manifest = value as unknown as CanonicalManifest
+        } else {
+          const row = this.validateRow(value)
+          if (key !== attemptKey(row.sequence) || rows.has(row.attemptRef))
+            canonicalFail('corrupt')
+          rows.set(row.attemptRef, row)
+        }
+      }
+      if (manifest === undefined) {
+        if (rows.size !== 0) canonicalFail('corrupt')
+        manifest = { version: 1, nextSequence: 1, acknowledgedThrough: 0 }
+        await durablePut(database, CANONICAL_MANIFEST, JSON.stringify(manifest))
+      }
+      if (
+        rows.size !==
+        manifest.nextSequence - manifest.acknowledgedThrough - 1
+      )
+        canonicalFail('corrupt')
+      const submissions = new Set<string>(),
+        owners = new Set<string>(),
+        reservationIds = new Set<string>(),
+        leaseIndices = new Set<number>()
+      for (const row of rows.values()) {
+        if (
+          row.sequence <= manifest.acknowledgedThrough ||
+          row.sequence >= manifest.nextSequence
+        )
+          canonicalFail('corrupt')
+        const next = this.publicRow(row)
+        const owner = `${next.prepared.network}:${next.prepared.recipientSubject}:${next.request.identity.payload_hash}`
+        if (
+          submissions.has(next.request.identity.submission_identity) ||
+          owners.has(owner)
+        )
+          canonicalFail('corrupt')
+        submissions.add(next.request.identity.submission_identity)
+        owners.add(owner)
+        if (!next.cleanupComplete)
+          for (const reservation of next.reservations) {
+            if (
+              reservationIds.has(reservation.id) ||
+              leaseIndices.has(reservation.index)
+            )
+              canonicalFail('corrupt')
+            reservationIds.add(reservation.id)
+            leaseIndices.add(reservation.index)
+          }
+      }
+      this.database = database
+      this.manifest = manifest
+      this.rows.clear()
+      for (const [ref, row] of rows) this.rows.set(ref, row)
+      this.replaying.clear()
+      this.epoch++
+      this.generation++
+      this.faulted = false
+      this.state = 'open'
+    } catch (error) {
+      await database.close()
+      this.state = 'closed'
+      if (
+        error instanceof CanonicalAttemptJournalError &&
+        error.code === 'corrupt'
+      )
+        throw error
+      throw new CanonicalAttemptJournalError('corrupt')
+    }
+  }
+
+  async Close(): Promise<void> {
+    if (this.state !== 'open' && this.state !== 'faulted')
+      canonicalFail('closed')
+    this.state = 'closing'
+    await this.tail
+    try {
+      await this.database!.close()
+    } finally {
+      this.database = undefined
+      this.rows.clear()
+      this.replaying.clear()
+      this.epoch++
+      this.generation++
+      this.state = 'closed'
+    }
+  }
+
+  private assertOpen(): void {
+    if (this.faulted) canonicalFail('corrupt')
+    if (this.state !== 'open') canonicalFail('closed')
+  }
+
+  private async persist(write: () => Promise<unknown>): Promise<void> {
+    try {
+      await write()
+    } catch (error) {
+      // A rejected I/O callback may still have committed bytes. Require reopen/correlation;
+      // never let a stale in-memory map authorize another signed set after uncertain storage.
+      this.faulted = true
+      this.state = 'faulted'
+      this.epoch++
+      this.replaying.clear()
+      throw error
+    }
+  }
+
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    this.assertOpen()
+    const result = this.tail.then(() => {
+      if (this.faulted) canonicalFail('corrupt')
+      return operation()
+    })
+    this.tail = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
+  }
+
+  private publicRow(row: StoredCanonicalAttempt): CanonicalJournalAttempt {
+    const request = restoreCanonicalRequest({
+      body: fromBase64(row.request.body, CANONICAL_MAX_BODY),
+      contentType: row.request.contentType,
+    })
+    return {
+      version: 1,
+      attemptRef: row.attemptRef,
+      prepared: preparedOf(row, request),
+      request,
+      reservations: row.reservations.map(item => ({ ...item })),
+      consumerId: row.consumerId,
+      terminal:
+        row.terminal === null ? null : JSON.parse(JSON.stringify(row.terminal)),
+      cleanupComplete: row.cleanupComplete,
+      acknowledged: row.acknowledged,
+    }
+  }
+
+  private validateRow(value: unknown): StoredCanonicalAttempt {
+    exactObject(value, [
+      'version',
+      'attemptRef',
+      'sequence',
+      'binding',
+      'request',
+      'reservations',
+      'consumerId',
+      'terminal',
+      'cleanupComplete',
+      'acknowledged',
+    ])
+    if (
+      value.version !== 1 ||
+      !Number.isSafeInteger(value.sequence) ||
+      (value.sequence as number) < 1 ||
+      value.attemptRef !== refForSequence(value.sequence as number) ||
+      typeof value.cleanupComplete !== 'boolean' ||
+      typeof value.acknowledged !== 'boolean'
+    )
+      canonicalFail('invalid')
+    exactObject(value.binding, [
+      'walletBindingId',
+      'accountId',
+      'chainId',
+      'network',
+      'senderSubject',
+      'recipientSubject',
+      'senderT1',
+      'recipientT1',
+      'economicBinding',
+    ])
+    exactObject(value.request, ['body', 'contentType'])
+    if (
+      typeof value.request.contentType !== 'string' ||
+      value.request.contentType.length > 256
+    )
+      canonicalFail('invalid')
+    boundedName(value.consumerId)
+    const row = value as unknown as StoredCanonicalAttempt
+    const request = restoreCanonicalRequest({
+      body: fromBase64(row.request.body, CANONICAL_MAX_BODY),
+      contentType: row.request.contentType,
+    })
+    assertPrepared(preparedOf(row, request), request)
+    assertReservations(row.reservations, request.parts.transactions.length)
+    if (row.terminal === null) {
+      if (row.cleanupComplete || row.acknowledged) canonicalFail('invalid')
+    } else {
+      row.terminal = terminalFor(row.terminal, request)
+      if (row.acknowledged && !row.cleanupComplete) canonicalFail('invalid')
+    }
+    return row
+  }
+
+  /** Effect-free full prepared identity lookup, including immutable policy and exact bytes. */
+  lookup(
+    prepared: CanonicalPreparedAttempt,
+  ): CanonicalJournalAttempt | undefined {
+    this.assertOpen()
+    assertPrepared(prepared)
+    for (const row of this.rows.values()) {
+      const attempt = this.publicRow(row)
+      if (samePrepared(attempt.prepared, prepared)) return attempt
+      if (compareBytes(attempt.prepared.payload, prepared.payload) === 0)
+        canonicalFail('conflict')
+    }
+    return undefined
+  }
+
+  getAll(): CanonicalJournalAttempt[] {
+    this.assertOpen()
+    return Array.from(this.rows.values()).map(row => this.publicRow(row))
+  }
+
+  /** Resolves only after the actual durable database barrier. No network callback is accepted. */
+  prepare(input: {
+    prepared: CanonicalPreparedAttempt
+    request: CanonicalExactRequest
+    reservations: readonly CanonicalAttemptReservation[]
+    consumerId: string
+  }): Promise<CanonicalJournalAttempt> {
+    // Snapshot before any await; caller mutation cannot change the promised durable identity.
+    const request = restoreCanonicalRequest({
+      body: new Uint8Array(input.request.body),
+      contentType: input.request.contentType,
+    })
+    if (!equalCanonicalRequests(input.request, request))
+      canonicalFail('conflict')
+    assertPrepared(input.prepared, request)
+    assertReservations(input.reservations, request.parts.transactions.length)
+    boundedName(input.consumerId)
+    const binding = bindingOf(input.prepared)
+    const reservations = input.reservations.map(item => ({ ...item }))
+    const consumerId = input.consumerId
+    return this.serialize(async () => {
+      const candidatePrepared = {
+        ...binding,
+        economicBinding: fromBase64(binding.economicBinding, 16384),
+        payload: payloadFromRequest(request),
+        context: new Uint8Array(request.parts.context),
+      }
+      for (const old of this.rows.values()) {
+        const prior = this.publicRow(old)
+        if (samePrepared(prior.prepared, candidatePrepared)) {
+          if (
+            !equalCanonicalRequests(prior.request, request) ||
+            prior.consumerId !== consumerId ||
+            JSON.stringify(prior.reservations) !== JSON.stringify(reservations)
+          )
+            canonicalFail('conflict')
+          return prior
+        }
+        // Full tuple/index collision and reservation conflicts hold rather than create a new set.
+        if (
+          prior.request.identity.submission_identity ===
+            request.identity.submission_identity ||
+          (prior.prepared.network === binding.network &&
+            prior.prepared.recipientSubject === binding.recipientSubject &&
+            prior.request.identity.payload_hash ===
+              request.identity.payload_hash) ||
+          (!prior.cleanupComplete &&
+            prior.reservations.some(a =>
+              reservations.some(b => a.id === b.id || a.index === b.index),
+            ))
+        )
+          canonicalFail('conflict')
+      }
+      const sequence = this.manifest.nextSequence
+      if (sequence >= Number.MAX_SAFE_INTEGER) canonicalFail('capacity')
+      const row: StoredCanonicalAttempt = {
+        version: 1,
+        attemptRef: refForSequence(sequence),
+        sequence,
+        binding,
+        request: {
+          body: base64(request.body),
+          contentType: request.contentType,
+        },
+        reservations,
+        consumerId,
+        terminal: null,
+        cleanupComplete: false,
+        acknowledged: false,
+      }
+      // Reserve the bounded terminal response now, so a full journal can still record outcomes.
+      const retainedBytes = (item: StoredCanonicalAttempt) =>
+        Buffer.byteLength(JSON.stringify(item)) +
+        (item.terminal === null ? 16384 : 0)
+      const bytes =
+        retainedBytes(row) +
+        Array.from(this.rows.values()).reduce(
+          (n, item) => n + retainedBytes(item),
+          0,
+        )
+      if (this.rows.size >= this.maxRecords || bytes > this.maxBytes)
+        canonicalFail('capacity')
+      const manifest = { ...this.manifest, nextSequence: sequence + 1 }
+      await this.persist(() =>
+        durableBatch(this.database!, [
+          {
+            type: 'put',
+            key: attemptKey(sequence),
+            value: JSON.stringify(row),
+          },
+          {
+            type: 'put',
+            key: CANONICAL_MANIFEST,
+            value: JSON.stringify(manifest),
+          },
+        ]),
+      )
+      this.rows.set(row.attemptRef, row)
+      this.manifest = manifest
+      this.epoch++
+      return this.publicRow(row)
+    })
+  }
+
+  /** Correlates exact external workflow/reservation ownership. Missing/duplicate/mismatched
+   * records remain held; this operation itself has no replay or payment effect. */
+  reconcile(
+    expected: readonly CanonicalAttemptCorrelation[],
+  ): CanonicalAttemptReconciliation[] {
+    this.assertOpen()
+    this.epoch++ // A new correlation snapshot invalidates every earlier unused eligibility.
+    const result: CanonicalAttemptReconciliation[] = []
+    const refs = new Set([
+      ...this.rows.keys(),
+      ...expected.map(item => item.attemptRef),
+    ])
+    for (const ref of refs) {
+      const matches = expected.filter(item => item.attemptRef === ref)
+      const row = this.rows.get(ref)
+      if (matches.length > 1) {
+        result.push({ attemptRef: ref, state: 'hold', reason: 'ambiguous' })
+        continue
+      }
+      if (row === undefined) {
+        result.push({ attemptRef: ref, state: 'hold', reason: 'missing' })
+        continue
+      }
+      if (matches.length === 0) {
+        result.push({ attemptRef: ref, state: 'hold', reason: 'orphan' })
+        continue
+      }
+      const attempt = this.publicRow(row),
+        match = matches[0]
+      try {
+        assertPrepared(match.prepared, match.request)
+        assertReservations(
+          match.reservations,
+          match.request.parts.transactions.length,
+        )
+        if (
+          !samePrepared(attempt.prepared, match.prepared) ||
+          !equalCanonicalRequests(attempt.request, match.request) ||
+          attempt.consumerId !== match.consumerId ||
+          JSON.stringify(attempt.reservations) !==
+            JSON.stringify(match.reservations)
+        )
+          canonicalFail('conflict')
+      } catch {
+        result.push({ attemptRef: ref, state: 'hold', reason: 'mismatch' })
+        continue
+      }
+      if (attempt.terminal !== null) {
+        result.push({ attemptRef: ref, state: 'terminal', attempt })
+        continue
+      }
+      const eligibility = Object.freeze({ attemptRef: ref })
+      this.eligibility.set(eligibility, { row, epoch: this.epoch })
+      result.push({ attemptRef: ref, state: 'ready', eligibility })
+    }
+    return result
+  }
+
+  beginReplay(
+    eligibility: CanonicalReplayEligibility,
+  ): Promise<CanonicalJournalAttempt> {
+    return this.serialize(async () => {
+      const admitted = this.eligibility.get(eligibility)
+      this.eligibility.delete(eligibility)
+      if (
+        admitted === undefined ||
+        admitted.epoch !== this.epoch ||
+        this.rows.get(eligibility.attemptRef) !== admitted.row ||
+        admitted.row.terminal !== null ||
+        this.replaying.has(eligibility.attemptRef)
+      )
+        canonicalFail('replay')
+      this.replaying.add(eligibility.attemptRef)
+      this.activeReplayTokens.set(eligibility, {
+        ref: eligibility.attemptRef,
+        generation: this.generation,
+      })
+      return this.publicRow(admitted.row)
+    })
+  }
+
+  endReplay(eligibility: CanonicalReplayEligibility): void {
+    this.assertOpen()
+    const active = this.activeReplayTokens.get(eligibility)
+    if (active === undefined || active.generation !== this.generation)
+      canonicalFail('replay')
+    this.activeReplayTokens.delete(eligibility)
+    this.replaying.delete(active.ref)
+  }
+
+  recordTerminal(
+    attemptRef: string,
+    terminal: CanonicalAttemptTerminal,
+  ): Promise<CanonicalJournalAttempt> {
+    const copy = JSON.parse(JSON.stringify(terminal))
+    return this.serialize(async () => {
+      const old = this.rows.get(attemptRef)
+      if (old === undefined) canonicalFail('conflict')
+      const accepted = terminalFor(copy, this.publicRow(old).request)
+      if (old.terminal !== null) {
+        if (JSON.stringify(old.terminal) !== JSON.stringify(accepted))
+          canonicalFail('conflict')
+        return this.publicRow(old)
+      }
+      const row = { ...old, terminal: accepted }
+      await this.persist(() =>
+        durablePut(
+          this.database!,
+          attemptKey(row.sequence),
+          JSON.stringify(row),
+        ),
+      )
+      this.rows.set(attemptRef, row)
+      this.replaying.delete(attemptRef)
+      this.epoch++
+      return this.publicRow(row)
+    })
+  }
+
+  /** The bundle invokes this only after reconciling/retiring the already-owned live leases. */
+  completeCleanup(attemptRef: string): Promise<void> {
+    return this.serialize(async () => {
+      const old = this.rows.get(attemptRef)
+      if (old === undefined || old.terminal === null) canonicalFail('cleanup')
+      if (old.cleanupComplete) return
+      const row = { ...old, cleanupComplete: true }
+      await this.persist(() =>
+        durablePut(
+          this.database!,
+          attemptKey(row.sequence),
+          JSON.stringify(row),
+        ),
+      )
+      this.rows.set(attemptRef, row)
+      this.epoch++
+    })
+  }
+
+  /** Only this linked consumer's durable acknowledgement advances the contiguous frontier.
+   * Out-of-order acknowledged results remain retained until every predecessor is acknowledged. */
+  acknowledge(attemptRef: string, consumerId: string): Promise<void> {
+    boundedName(consumerId)
+    return this.serialize(async () => {
+      const old = this.rows.get(attemptRef)
+      if (
+        old === undefined ||
+        old.consumerId !== consumerId ||
+        old.terminal === null ||
+        !old.cleanupComplete
+      )
+        canonicalFail('cleanup')
+      const row = { ...old, acknowledged: true }
+      const rows = new Map(this.rows)
+      rows.set(attemptRef, row)
+      let frontier = this.manifest.acknowledgedThrough
+      const removed: StoredCanonicalAttempt[] = []
+      while (frontier + 1 < this.manifest.nextSequence) {
+        const next = rows.get(refForSequence(frontier + 1))
+        if (next === undefined || !next.acknowledged) break
+        removed.push(next)
+        frontier++
+      }
+      const manifest = { ...this.manifest, acknowledgedThrough: frontier }
+      await this.persist(() =>
+        durableBatch(this.database!, [
+          {
+            type: 'put',
+            key: attemptKey(row.sequence),
+            value: JSON.stringify(row),
+          },
+          ...removed.map(item => ({
+            type: 'del' as const,
+            key: attemptKey(item.sequence),
+          })),
+          {
+            type: 'put',
+            key: CANONICAL_MANIFEST,
+            value: JSON.stringify(manifest),
+          },
+        ]),
+      )
+      this.rows.set(attemptRef, row)
+      for (const item of removed) this.rows.delete(item.attemptRef)
+      this.manifest = manifest
+      this.epoch++
+    })
   }
 }

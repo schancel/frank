@@ -6,7 +6,14 @@
  * bot exports. Nothing here contacts a process or grants trust; the operator installs the output
  * into both relays, the bot and the app deployment by hand. Used by `scripts/directory-operator.mts`.
  */
-import { encodeCanonical, fromHex, toHex, type Encodable } from '@frank/codec'
+import { computeAddress } from 'ethers'
+import {
+  encodeCanonical,
+  fromHex,
+  toHex,
+  verifyPreviewDirectoryEvidence,
+  type Encodable,
+} from '@frank/codec'
 import { sha256 } from '@frank/crypto-box'
 import {
   bundleIdentity,
@@ -76,10 +83,20 @@ export function buildBootstrapPolicy(
   )
 }
 
-/** Approve exactly one UI export and one bot export made against `policy`. */
+const nanoseconds = (t: { seconds: bigint; nanoseconds: number }) =>
+  t.seconds * 1_000_000_000n + BigInt(t.nanoseconds)
+const fromBase64url = (value: string): Uint8Array =>
+  Uint8Array.from(Buffer.from(value, 'base64url'))
+
+/**
+ * Approve exactly one UI export and one bot export made against `policy`, at operator time
+ * `nowNs`. Every descriptive field of an export is checked against the statement its subject
+ * actually signed, so the operator never approves a label the signature does not cover.
+ */
 export function buildApprovedBundle(
   policy: BootstrapPolicy,
   exports: { ui: PublicExportFile; bot: PublicExportFile },
+  nowNs: bigint,
 ): ApprovedPolicy {
   const checked = parseBootstrapPolicy(encode(policy))
   if (
@@ -87,6 +104,11 @@ export function buildApprovedBundle(
     checked.policyIdentity !== policy.policyIdentity
   )
     throw new Error('Bootstrap policy identity mismatch')
+  if (
+    nowNs < BigInt(checked.exportValidity.issuedAtNs) ||
+    nowNs >= BigInt(checked.exportValidity.expiresAtNs)
+  )
+    throw new Error('The bootstrap policy is outside its validity period')
   const subject = (role: 'ui' | 'bot', file: PublicExportFile): Subject => {
     if (
       file.version !== 1 ||
@@ -101,6 +123,30 @@ export function buildApprovedBundle(
       t => t.processId === file.homeProcessId,
     )
     if (!tuple) throw new Error(`The ${role} export names an unknown relay`)
+    const signed = verifyPreviewDirectoryEvidence(
+      fromBase64url(file.attestation),
+      file.network,
+    ).statement
+    const mismatch = (field: string) =>
+      new Error(`The ${role} export ${field} differs from its signed statement`)
+    if (toHex(signed.subject.keyBytes) !== file.subjectP)
+      throw mismatch('subjectP')
+    if (
+      computeAddress('0x' + file.subjectP).toLowerCase() !==
+      file.authAddress.toLowerCase()
+    )
+      throw mismatch('authAddress')
+    if (toHex(signed.preview.messageDhKey.keyBytes) !== file.messagePoint)
+      throw mismatch('messagePoint')
+    if (toHex(signed.stampKey.keyBytes) !== file.stampPoint)
+      throw mismatch('stampPoint')
+    if (
+      nanoseconds(signed.timestamp).toString() !==
+        checked.exportValidity.issuedAtNs ||
+      nanoseconds(signed.expiry).toString() !==
+        checked.exportValidity.expiresAtNs
+    )
+      throw mismatch('signed validity')
     return {
       role,
       network: file.network,

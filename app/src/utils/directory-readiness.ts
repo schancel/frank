@@ -121,6 +121,16 @@ export interface ReadinessDeps {
     save(key: string, checkpoint: Checkpoint): void
   }
   directoryFetch: DirectoryFetch
+  /**
+   * Remove a store database that exists but holds no admitted record, so a failed first
+   * enrollment can be retried. A database with any record must be reported `retained`.
+   */
+  discardUnenrolled(name: string): Promise<'absent' | 'discarded' | 'retained'>
+  /** This device's own previously derived public export, per account and policy. */
+  exports: {
+    load(key: string): string | null
+    save(key: string, value: string): void
+  }
 }
 
 export interface DirectoryActivation {
@@ -152,6 +162,10 @@ const base64url = (bytes: Uint8Array): string =>
     .replace(/=/g, '')
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
+const fromBase64url = (value: string): Uint8Array =>
+  Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')), c =>
+    c.charCodeAt(0),
+  )
 const timestamp = (ns: bigint): Timestamp => ({
   seconds: ns / 1_000_000_000n,
   nanoseconds: Number(ns % 1_000_000_000n),
@@ -216,16 +230,63 @@ type Loaded =
       ok: true
       policy: BootstrapPolicy
       home: 'relay-a' | 'relay-b'
-      exported: PublicRevisionZeroExport
       file: PublicExportFile
+      exportKey: string
     }
 
-/** Load the operator policy and derive this account's exact public export. Signs, sends nothing. */
+const EXPORT_FIELDS = [
+  'version',
+  'kind',
+  'bootstrapPolicyIdentity',
+  'networkTag',
+  'network',
+  'chainId',
+  'subjectP',
+  'authAddress',
+  'messagePoint',
+  'stampPoint',
+  'revisionZeroT1',
+  'statement',
+  'attestation',
+  'homeProcessId',
+] as const
+function savedExport(text: string | null): PublicExportFile | undefined {
+  if (text === null) return undefined
+  try {
+    const value = JSON.parse(text) as Record<string, unknown>
+    if (
+      Object.keys(value).length !== EXPORT_FIELDS.length ||
+      EXPORT_FIELDS.some(field =>
+        field === 'version'
+          ? value[field] !== 1
+          : typeof value[field] !== 'string',
+      ) ||
+      value.kind !== 'public-revision-zero-export'
+    )
+      return undefined
+    return value as unknown as PublicExportFile
+  } catch {
+    return undefined
+  }
+}
+const accountIdOf = (account: unknown): string | undefined =>
+  (account as { receipt?: { context?: { accountId?: unknown } } } | null)
+    ?.receipt?.context?.accountId as string | undefined
+
+/**
+ * Load the operator policy and this account's exact public export.
+ *
+ * `sign` is true only for an explicit user action: the export is then derived from the live
+ * wallet, which signs the revision-zero statement. Otherwise only the export this device saved
+ * after an earlier explicit check is used, and nothing is signed.
+ */
 async function loadOwnExport(
   deps: ReadinessDeps,
   signal: AbortSignal,
+  sign: boolean,
 ): Promise<Loaded> {
-  if (deps.session.state.status !== 'ready' || !deps.session.state.account)
+  const accountId = accountIdOf(deps.session.state.account)
+  if (deps.session.state.status !== 'ready' || typeof accountId !== 'string')
     return { ok: false, reason: 'account-unavailable' }
   let bytes: Uint8Array | null
   try {
@@ -248,6 +309,17 @@ async function loadOwnExport(
     return { ok: false, reason: 'policy-expired' }
   const home = homeProcess(policy, deps.relayBaseUrl)
   if (!home) return { ok: false, reason: 'relay-not-in-policy' }
+  const exportKey = `${accountId}:${policy.policyIdentity}`
+  if (!sign) {
+    const file = savedExport(deps.exports.load(exportKey))
+    if (
+      !file ||
+      file.bootstrapPolicyIdentity !== policy.policyIdentity ||
+      file.homeProcessId !== home
+    )
+      return { ok: false, reason: 'enrollment-required' }
+    return { ok: true, policy, home, file, exportKey }
+  }
   try {
     const exported = await prepareExplicitPublicExport(
       deps.session,
@@ -259,8 +331,8 @@ async function loadOwnExport(
       ok: true,
       policy,
       home,
-      exported,
       file: publicExportFile(policy, exported, home),
+      exportKey,
     }
   } catch {
     return { ok: false, reason: 'account-unavailable' }
@@ -274,7 +346,7 @@ export async function preparePublicExport(
 ): Promise<
   { ok: true; file: PublicExportFile } | { ok: false; reason: ReadinessReason }
 > {
-  const loaded = await loadOwnExport(deps, signal)
+  const loaded = await loadOwnExport(deps, signal, true)
   return loaded.ok ? { ok: true, file: loaded.file } : loaded
 }
 
@@ -290,8 +362,9 @@ function sameParticipants(a: Participant[], b: Participant[]): boolean {
 }
 
 /**
- * Run the whole barrier once. `allowEnrollment` is true only for the explicit Settings action;
- * automatic checks (app start) reopen existing admitted stores and never enroll.
+ * Run the whole barrier once. `allowEnrollment` is true only for the explicit Settings action.
+ * Automatic checks (app start) sign nothing: they use the export this device saved earlier, reopen
+ * stores that already hold admitted state, and never enroll or repair.
  */
 export async function checkDirectoryReadiness(
   deps: ReadinessDeps,
@@ -310,7 +383,7 @@ export async function checkDirectoryReadiness(
     deps.session.state.status === 'ready' &&
     deps.session.state.revision === revision &&
     deps.session.state.account === account
-  const own = await loadOwnExport(deps, signal)
+  const own = await loadOwnExport(deps, signal, options.allowEnrollment)
   if (!own.ok) return pending(own.reason)
 
   let bundleBytes: Uint8Array | null
@@ -350,6 +423,9 @@ export async function checkDirectoryReadiness(
     origin(ui.relay.endpoint) !== origin(deps.relayBaseUrl)
   )
     return pending('forwarding-unavailable')
+  // Saved only once the operator approved exactly these bytes; later starts reuse it unsigned.
+  if (options.allowEnrollment)
+    deps.exports.save(own.exportKey, JSON.stringify(own.file))
 
   const readAll = async (): Promise<
     Map<Participant['processId'], InstallationSnapshot> | undefined
@@ -398,8 +474,20 @@ export async function checkDirectoryReadiness(
   }
   const admit = async (subject: Subject, attestation?: Uint8Array) => {
     const key = storeName(subject)
-    const checkpoint = deps.checkpoints.load(key)
-    if (!checkpoint && !options.allowEnrollment) return 'enrollment-required'
+    const saved = deps.checkpoints.load(key)
+    const committed = saved?.kind === 'CommittedPrefix'
+    if (!committed && !options.allowEnrollment) return 'enrollment-required'
+    let checkpoint = saved
+    if (!committed) {
+      // No acknowledged admission was ever saved for this store. A database left behind by a
+      // failed first enrollment holds no record and is removed so enrollment can run again. A
+      // database that holds records is admitted state: it is kept, and it can be reopened only
+      // with its saved checkpoint, never replaced by a fresh enrollment.
+      const found = await deps.discardUnenrolled(key)
+      if (found !== 'retained') checkpoint = null
+      else if (!saved)
+        throw new Error('Admitted directory store has no saved checkpoint')
+    }
     const tuple = binding(subject.relay)
     if (!checkpoint && !attestation) {
       // A peer that has not published yet must not leave an empty store behind: without a saved
@@ -454,7 +542,7 @@ export async function checkDirectoryReadiness(
   let self: Exclude<Awaited<ReturnType<typeof admit>>, string>,
     peer: Exclude<Awaited<ReturnType<typeof admit>>, string>
   try {
-    const a = await admit(ui, own.exported.attestation)
+    const a = await admit(ui, fromBase64url(own.file.attestation))
     const b = typeof a === 'string' ? a : await admit(bot)
     if (typeof a === 'string' || typeof b === 'string') {
       await closeAll()
@@ -499,6 +587,16 @@ export async function checkDirectoryReadiness(
   } catch {
     await closeAll()
     return pending('account-unavailable')
+  }
+  // The export may have been loaded from storage rather than derived: it must be this wallet's.
+  if (
+    (
+      wallet as unknown as { identity?: { address?: { raw?: string } } }
+    ).identity?.address?.raw?.toLowerCase() !==
+    computeAddress('0x' + ui.subjectP).toLowerCase()
+  ) {
+    await closeAll()
+    return pending('bundle-not-this-account')
   }
   if (!sameAccount()) {
     await closeAll()

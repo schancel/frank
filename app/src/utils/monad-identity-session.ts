@@ -17,6 +17,7 @@ import type { DirectoryFetch } from '@frank/cashweb/relay/directory-client'
 import { fromHex } from '@frank/codec'
 import { accountSession, accountStatus } from '../accounts/session'
 import { setDirectoryPeer } from './directory-peer'
+import { discardUnenrolledDirectoryStore } from './directory-store-reset'
 import {
   startDirectMessagePolling,
   startOutgoingReconciliation,
@@ -61,6 +62,7 @@ export interface MessagingDeps {
 }
 
 const CHECKPOINT_PREFIX = 'frank-directory-checkpoint:'
+const EXPORT_PREFIX = 'frank-directory-export:'
 const accountIdOf = (account: unknown): string | undefined =>
   (account as { receipt?: { context?: { accountId?: string } } } | null)
     ?.receipt?.context?.accountId
@@ -105,6 +107,12 @@ function productionDeps(): MessagingDeps {
       },
       directoryFetch: ((url, init) =>
         fetch(url, init as RequestInit)) as DirectoryFetch,
+      discardUnenrolled: discardUnenrolledDirectoryStore,
+      exports: {
+        load: key => window.localStorage.getItem(EXPORT_PREFIX + key),
+        save: (key, value) =>
+          window.localStorage.setItem(EXPORT_PREFIX + key, value),
+      },
     },
     install: installCanonicalDirectory,
     startPolling: startDirectMessagePolling,

@@ -888,7 +888,7 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
       if (answer.status !== 200) throw putFailure(answer.status)
     }
   }
-  async function publishOnce(): Promise<DirectoryEntry> {
+  async function publishOnce(reread = true): Promise<DirectoryEntry> {
     const binding = await relayBinding()
     const served = await getEntry(`/${selfSubject}/head`, 'fresh-current')
     const servedHead = served ? parse(served, selfAddress) : undefined
@@ -948,6 +948,14 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         nanos(input.expiresAt) > nanos(head.expiry) + 3600n * SECOND
       ) {
         renewTriedAt = Date.now()
+        // Sign only against the head the relay holds right now, never a remembered one: another
+        // device of this account may have renewed meanwhile, and two children of one head are a
+        // fork. If the head moved, start over from it (once).
+        const fresh = await getEntry(`/${selfSubject}/head`, 'fresh-current')
+        if (fresh && !same(parse(fresh, selfAddress).hash, head.hash)) {
+          if (reread) return publishOnce(false)
+          throw new OpenDirectoryError('unreachable', selfAddress)
+        }
         const signedAt = deps.nowNs()
         let last = 0n
         try {
@@ -993,7 +1001,7 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     return entry(admitted.handle, admitted.current)
   }
   const publish = (): Promise<DirectoryEntry> =>
-    (publishing ??= publishOnce()
+    (publishing ??= publishOnce(true)
       .then(entry => {
         published = true
         return entry

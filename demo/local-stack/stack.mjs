@@ -12,7 +12,8 @@
 //   node demo/local-stack/stack.mjs bot-stop
 //   node demo/local-stack/stack.mjs restart-relays
 //   node demo/local-stack/stack.mjs fund <0xaddress> [MON]
-//   node demo/local-stack/stack.mjs chrome           open a throwaway-profile Chrome on the app
+//   node demo/local-stack/stack.mjs chrome [driven]  open Chrome on the app (empty profile, or the driver's)
+//   node demo/local-stack/stack.mjs provision <ui-export.json> [live|stub]   bot export + install + fund bot + start bot
 //   node demo/local-stack/stack.mjs e2e [live|stub] ["message"]   everything, driven in headless Chrome
 //   node demo/local-stack/stack.mjs down
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
@@ -371,13 +372,25 @@ async function status() {
   say(`  logs        ${P.logs}   state ${STATE}`)
 }
 const chromeArgs = profile => ['--no-first-run', '--no-default-browser-check', '--disable-background-networking', `--user-data-dir=${profile}`, `--ignore-certificate-errors-spki-list=${spkiList().join(',')}`]
-function chrome() {
+function chrome(which) {
   const binary = process.env.CHROME_BIN ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-  const profile = join(STATE, 'chrome-profile-manual')
+  // "driven" opens the profile the driver used (account already created, installed and funded by
+  // "e2e"); the default is an empty profile for doing every step by hand.
+  const profile = which === 'driven' ? P.chromeProfile : join(STATE, 'chrome-profile-manual')
   const child = spawn(binary, [...chromeArgs(profile), `${ORIGINS.app}/`], { detached: true, stdio: 'ignore' })
   child.unref()
-  say(`Chrome started (pid ${child.pid}) with throwaway profile ${profile}; it trusts only this stack's certificates.`)
-  say('Quit that Chrome window when finished; "up" does not reuse this profile after a restart of the stack.')
+  say(`Chrome started (pid ${child.pid}) with profile ${profile}; it trusts only this stack's certificates.`)
+  say('Quit that Chrome window before running the driver again or "up"; "up" deletes both profiles.')
+}
+/** After a person exported the UI evidence by hand: everything the operator and the bot then do. */
+async function provision(ui, mode = 'live') {
+  if (!ui || !existsSync(ui)) die('usage: provision <frank-ui-public-export.json> [live|stub]')
+  const stampAccount = botExport()
+  if (!stampAccount) die('the bot did not print its stamp account')
+  await install(ui)
+  await fund(stampAccount)
+  await botStart(mode)
+  say('now: fund the address on the app\'s Receive page ("fund <address>"), then Settings -> Networking -> "Check installation"')
 }
 
 // The whole flow from clean state, with the browser steps driven in headless Chrome.
@@ -422,7 +435,8 @@ const commands = {
   },
   'restart-relays': restartRelays,
   'fund': () => (/^0x[0-9a-fA-F]{40}$/.test(args[0] ?? '') ? fund(args[0], args[1]) : die('usage: fund <0xaddress> [MON]')),
-  chrome,
+  'chrome': () => chrome(args[0]),
+  'provision': () => provision(args[0], args[1]),
   'e2e': () => e2e(args[0], args[1]),
   'chrome-args': () => say(JSON.stringify(chromeArgs(args[0] ?? P.chromeProfile))),
 }

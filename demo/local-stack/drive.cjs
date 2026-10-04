@@ -267,15 +267,33 @@ const phases = {
     await launch()
     await resume()
     await openNetworking()
-    // App start does not enroll or re-check with authority; the explicit action enables messaging.
-    await click('[data-test=directory-check]')
-    await delay(300)
-    await wait(async () => !(await ev('document.querySelector("[data-test=directory-check]").disabled')), 'check to finish', 90000)
-    const state = await panel()
-    note('panel before chat', state)
+    // After a reload the app resumes messaging on its own only if this device completed an
+    // explicit Check before. Give that a moment, and press Check only if it did not happen.
+    await wait(async () => (await panel()).peerAddress, 'messaging resumed after reload', 15000).catch(() => {})
+    let state = await panel()
+    note('panel after reload, before any action', state)
+    report.resumedWithoutCheck = !!state.peerAddress
+    if (!state.peerAddress) {
+      await click('[data-test=directory-check]')
+      await delay(300)
+      await wait(async () => !(await ev('document.querySelector("[data-test=directory-check]").disabled')), 'check to finish', 90000)
+      state = await panel()
+      note('panel after pressing Check', state)
+    }
     const peer = /0x[0-9a-fA-F]{40}/.exec(state.peerAddress ?? '')?.[0]
     if (!peer) throw Error('messaging is not ready: ' + JSON.stringify(state))
-    await ev(`location.hash = ${JSON.stringify('#/chat/' + peer)}`)
+    // The path a person takes: Add Contact with the address the panel shows, then open the chat.
+    await ev('location.hash = "#/add-contact"')
+    await wait(() => has('.q-card input'), 'Add Contact page')
+    await ev('document.querySelector(".q-card input").focus()')
+    await rpc('Input.insertText', { text: peer })
+    const addButton = `[...document.querySelectorAll('.q-card__actions button')].find(b => b.innerText.trim().toLowerCase() === 'add')`
+    await wait(() => ev(`(()=>{const b=${addButton};return !!b && !b.disabled})()`), 'Add enabled for the installed bot address', 30000)
+    await shot('08a-add-contact')
+    await ev(`${addButton}.click()`)
+    await delay(1500)
+    note('after Add Contact', { route: await ev('location.hash') })
+    if (!(await ev('location.hash')).toLowerCase().includes(peer.toLowerCase())) await ev(`location.hash = ${JSON.stringify('#/chat/' + peer)}`)
     const composer = '.q-footer textarea, textarea[placeholder]'
     await wait(() => has(composer), 'chat composer')
     await delay(1000)

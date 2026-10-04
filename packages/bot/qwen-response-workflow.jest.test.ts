@@ -1063,10 +1063,13 @@ describe('#703 canonical outbound coupling', () => {
     expect(logs.join()).toContain('wallet-attempt-missing')
   }, 30000)
 
-  it('holds a saved envelope when the stamp policy changes, without sealing again', async () => {
+  it('holds an unlinked envelope when the stamp policy changes, without sealing again or preparing an intent', async () => {
     let f = await open()
-    f.relay.mode = 'retained'
+    f.canonical.prepareInventory = async () => {
+      throw new Error('no inventory yet')
+    }
     expect(await f.run.respond(input)).toBe('held')
+    expect(f.state.getCoupling('01')?.phase).toBe('envelope-ready')
     const before = f.events()
     f = await reopenAll()
     const changed = new QwenResponseWorkflow({
@@ -1078,7 +1081,39 @@ describe('#703 canonical outbound coupling', () => {
     })
     expect(await changed.resume('01')).toBe('held')
     expect(f.events()).toEqual(before)
+    expect(f.journal.getIntents()).toEqual([])
+    expect(f.state.getCoupling('01')?.phase).toBe('envelope-ready')
     expect(logs.join()).toContain('account-or-send-context-changed')
+  }, 30000)
+
+  it('still collects the outcome of an already linked attempt after the configuration changes', async () => {
+    let f = await open()
+    f.relay.mode = 'retained'
+    expect(await f.run.respond(input)).toBe('held')
+    expect(f.state.getCoupling('01')?.phase).toBe('intent-linked')
+    f = await reopenAll()
+    // The relay accepted the original request; a changed stamp value and relay URL must not
+    // strand its delivery, and must not produce a second envelope, signature or request body.
+    const changed = new QwenResponseWorkflow({
+      state: f.state,
+      context: {
+        ...canonicalContext,
+        stampValueWei: '33',
+        relayBaseUrl: 'http://127.0.0.1:2',
+      },
+      systemPrompt: 'SYSTEM_SENTINEL',
+      generator: { reply: jest.fn() },
+      canonical: f.canonical,
+    })
+    expect(await changed.resume('01')).toBe('confirmed')
+    const events = f.events()
+    expect(count(events, 'seal')).toBe(1)
+    expect(distinct(events, 'sign:')).toBe(1)
+    expect(distinct(events, 'put:')).toBe(1)
+    expect(f.state.getResponse('01')?.phase).toBe('confirmed')
+    expect(f.state.getCoupling('01')?.phase).toBe('settled')
+    // A new turn under the changed context is an ordinary new effect.
+    expect(logs.join()).not.toContain('account-or-send-context-changed')
   }, 30000)
 
   it('holds before any wallet intent when inventory preparation fails, then continues with the same envelope', async () => {

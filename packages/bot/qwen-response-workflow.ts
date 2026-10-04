@@ -124,12 +124,18 @@ export class QwenResponseWorkflow {
     return reason
   }
 
-  private rowContextHold(row: QwenResponseRow): string | undefined {
+  private rowContextHold(
+    row: QwenResponseRow,
+    linkedAttempt = false,
+  ): string | undefined {
     const { context } = this.options
     const sameContext = (
       Object.keys(context) as Array<keyof QwenResponseContext>
     ).every(key => row.context[key] === context[key])
-    if (!sameContext) return 'account-or-send-context-changed'
+    // Continuing an exact, already linked wallet attempt is not a new effect: its bytes,
+    // payment and account are fixed, and its outcome must still be collected after a
+    // configuration change. Anything that would need a new seal or intent stays held.
+    if (!sameContext && !linkedAttempt) return 'account-or-send-context-changed'
     if (row.phase === 'model-started') return 'model-result-unknown'
     if (row.phase === 'send-started') return 'send-outcome-unknown'
     return undefined
@@ -288,7 +294,11 @@ export class QwenResponseWorkflow {
       if (coupling?.phase === 'terminal') await this.retire(canonical, coupling)
       return 'duplicate'
     }
-    const hold = this.rowContextHold(row)
+    const existing = state.getCoupling(payloadHashHex)
+    const hold = this.rowContextHold(
+      row,
+      existing !== undefined && 'attemptRef' in existing,
+    )
     if (hold) return this.held(row, hold)
     if (row.phase !== 'response-ready') return 'held'
     // All workflow correlation precedes replay and any new envelope or payment.
@@ -342,7 +352,10 @@ export class QwenResponseWorkflow {
       if (saved === 'capacity') return this.held(row, 'coupling-capacity')
       coupling = state.getCoupling(payloadHashHex)!
     }
-    if (coupling.stampValueWei !== stampValueWei.toString())
+    if (
+      coupling.phase === 'envelope-ready' &&
+      coupling.stampValueWei !== stampValueWei.toString()
+    )
       return this.held(row, 'account-or-send-context-changed')
 
     if (coupling.phase === 'envelope-ready') {

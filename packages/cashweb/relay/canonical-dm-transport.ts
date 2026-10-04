@@ -207,6 +207,102 @@ export function parseCanonicalMultipart(
     at = next + delimiter.length
   }
 }
+/** Incremental header/cardinality guard over the reader's fixed scratch buffer.
+ * Full parsing still runs only after EOF; this guard never publishes partial records. */
+export function canonicalMultipartStreamGuard(
+  contentType: string,
+  maxParts: number,
+  maxInnerParts: number,
+): (prefix: Uint8Array) => void {
+  class Guard {
+    private at = 0
+    private count = 0
+    private state: 'opening' | 'boundary' | 'header' | 'body' | 'closed' =
+      'opening'
+    private scanned = 0
+    private child: Guard | undefined
+    private readonly opening: Uint8Array
+    private readonly delimiter: Uint8Array
+    constructor(
+      private readonly boundary: string,
+      private readonly limit: number,
+      private readonly nested: boolean,
+    ) {
+      this.opening = text(`--${boundary}`)
+      this.delimiter = text(`\r\n--${boundary}`)
+    }
+    inspect(bytes: Uint8Array): void {
+      for (;;) {
+        if (this.state === 'closed') return
+        if (this.state === 'opening') {
+          if (bytes.length < this.opening.length) return
+          if (!same(bytes.subarray(0, this.opening.length), this.opening))
+            invalid('Multipart preamble is forbidden')
+          this.at = this.opening.length
+          this.state = 'boundary'
+        }
+        if (this.state === 'boundary') {
+          if (bytes.length < this.at + 2) return
+          if (same(bytes.subarray(this.at, this.at + 2), text('--'))) {
+            this.state = 'closed'
+            return
+          }
+          if (!same(bytes.subarray(this.at, this.at + 2), text('\r\n')))
+            invalid('Invalid multipart boundary')
+          if (++this.count > this.limit) invalid('Multipart part limit')
+          this.at += 2
+          this.scanned = this.at
+          this.state = 'header'
+        }
+        if (this.state === 'header') {
+          const end = indexOf(bytes, text('\r\n\r\n'), this.scanned)
+          if (end < 0) {
+            if (bytes.length - this.at > 4099) invalid('Multipart header limit')
+            this.scanned = Math.max(this.at, bytes.length - 3)
+            return
+          }
+          if (end - this.at > 4096) invalid('Multipart header limit')
+          if (this.nested) {
+            const headers = utf8(bytes.subarray(this.at, end)).split('\r\n')
+            const childType = headers
+              .find(line => line.startsWith('Content-Type: '))
+              ?.slice(14)
+            if (!childType) invalid('Nested multipart Content-Type required')
+            this.child = new Guard(
+              boundaryOf(childType, 'multipart/mixed'),
+              maxInnerParts,
+              false,
+            )
+          }
+          this.at = end + 4
+          this.scanned = this.at
+          this.state = 'body'
+        }
+        if (this.state === 'body') {
+          const next = indexOf(bytes, this.delimiter, this.scanned)
+          if (next < 0) {
+            this.child?.inspect(bytes.subarray(this.at))
+            this.scanned = Math.max(
+              this.at,
+              bytes.length - this.delimiter.length + 1,
+            )
+            return
+          }
+          this.child?.inspect(bytes.subarray(this.at, next))
+          this.child = undefined
+          this.at = next + this.delimiter.length
+          this.state = 'boundary'
+        }
+      }
+    }
+  }
+  const guard = new Guard(
+    boundaryOf(contentType, 'multipart/mixed'),
+    maxParts,
+    true,
+  )
+  return prefix => guard.inspect(prefix)
+}
 function field(
   map: ReadonlyMap<bigint, unknown>,
   key: number,
@@ -720,10 +816,12 @@ export function awaitCanonicalAbort<T>(
   pending: Promise<T>,
   signal: AbortSignal,
 ): Promise<T> {
-  if (signal.aborted)
+  if (signal.aborted) {
+    void pending.catch(() => undefined)
     return Promise.reject(
       new CanonicalTransportError('uncertain', 'Canonical request aborted'),
     )
+  }
   return new Promise((resolve, reject) => {
     const abort = () =>
       reject(
@@ -740,6 +838,7 @@ export async function readCanonicalResponse(
   response: CanonicalStreamResponse,
   limit: number,
   signal: AbortSignal,
+  inspect?: (prefix: Uint8Array) => void,
 ): Promise<Uint8Array> {
   if (
     !Number.isSafeInteger(limit) ||
@@ -780,6 +879,7 @@ export async function readCanonicalResponse(
         invalid('Actual response byte limit')
       scratch.set(chunk.value, length)
       length += chunk.value.length
+      inspect?.(scratch.subarray(0, length))
     }
   } finally {
     void reader.cancel().catch(() => undefined)
@@ -789,6 +889,8 @@ export async function readCanonicalResponse(
 /** One explicit same-byte PUT. Retries/terminal persistence belong to the owning wallet. */
 export async function submitCanonicalRequest(input: {
   installedRelayOrigin: string
+  /** From the installed relay binding, never inferred from a response. */
+  expectedNetworkTag: 'MONT' | 'MON1'
   request: CanonicalExactRequest
   fetch?: CanonicalFetch
   signal?: AbortSignal
@@ -796,6 +898,11 @@ export async function submitCanonicalRequest(input: {
   const request = restoreCanonicalRequest(input.request)
   if (!equalCanonicalRequests(request, input.request))
     invalid('Frozen request descriptor mismatch')
+  if (
+    request.identity.network !==
+    canonicalNetworkDescriptor(input.expectedNetworkTag).network
+  )
+    invalid('Frozen request differs from installed Monad network')
   const url =
     installedCanonicalOrigin(input.installedRelayOrigin) + '/message/monad/cbor'
   const controller = new AbortController(),

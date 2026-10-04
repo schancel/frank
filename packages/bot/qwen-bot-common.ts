@@ -100,6 +100,29 @@ import { openPersistentStampPool } from './stamp-pool-seed'
 import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
 import { serializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { MessageItem } from '@frank/cashweb/types/messages'
+import { randomBytes } from 'crypto'
+import {
+  directMessageText,
+  prepareDirectMessage,
+} from '@frank/cashweb/relay/canonical-dm'
+import {
+  canonicalNetworkDescriptor,
+  type CanonicalFetch,
+} from '@frank/cashweb/relay/canonical-dm-transport'
+import type { MonadTxOverrides } from '@frank/wallet/monad-account-tx'
+import {
+  canonicalMonadStampClient,
+  createMonadChain,
+  type MonadChainConfig,
+} from '@frank/wallet/chain/monad-chain'
+import {
+  createMonadWalletMaterial,
+  type MonadRootBundle,
+} from '@frank/wallet/monad-wallet-material'
+import type {
+  QwenCanonicalCurrents,
+  QwenCanonicalSender,
+} from './qwen-response-workflow'
 
 export function requiredEnv(name: string): string {
   const value = process.env[name]
@@ -649,4 +672,162 @@ export async function sendDirectMessageText(params: {
     ...params,
     items: [{ type: 'text', text: params.text }],
   })
+}
+
+/** Installed-directory input for canonical replies. An implementation returns fresh admitted
+ * snapshots of the bot's own and the peer's current directory entry, or `undefined` when the
+ * peer has no admitted entry. Enrollment, trust installation and freshness policy are not owned
+ * here (#778); this composition only consumes their result. */
+export interface QwenCanonicalDirectory {
+  currents(peerAddress: string): Promise<QwenCanonicalCurrents | undefined>
+}
+
+export interface CanonicalQwenSetup {
+  /** The typed economic account that pays reply stamps. Public; safe to log. */
+  accountAddress: string
+  /** The #703 outbound boundary handed to `QwenResponseWorkflow`. */
+  sender: QwenCanonicalSender
+  /** Closes the one wallet owner and wipes the sealing material. */
+  close(): Promise<void>
+}
+
+const ROOT_PURPOSES = {
+  evm: 'evm-wallet',
+  authentication: 'identity-authentication',
+  messaging: 'messaging-encryption',
+} as const
+
+/** Loads an operator-provisioned typed root bundle. It NEVER creates one: a new identity needs
+ * directory enrollment and trust installation, which are outside this bot (#778). Failures name
+ * only the path, never file contents. */
+export function loadQwenCanonicalRoots(rootsJsonPath: string): MonadRootBundle {
+  const invalid = () =>
+    new Error(
+      `Qwen canonical roots at ${rootsJsonPath} are missing or not a frank-domain-roots-v1 bundle`,
+    )
+  let saved: { registry?: unknown; roots?: Record<string, unknown> }
+  try {
+    saved = JSON.parse(readFileSync(rootsJsonPath, 'utf8'))
+  } catch {
+    throw invalid()
+  }
+  if (
+    !saved ||
+    saved.registry !== 'frank-domain-roots-v1' ||
+    !saved.roots ||
+    typeof saved.roots !== 'object'
+  )
+    throw invalid()
+  const root = <P extends (typeof ROOT_PURPOSES)[keyof typeof ROOT_PURPOSES]>(
+    purpose: P,
+  ) => {
+    const hex = saved.roots![purpose]
+    if (typeof hex !== 'string' || !/^[0-9a-f]{64}$/.test(hex)) throw invalid()
+    return {
+      registry: 'frank-domain-roots-v1' as const,
+      purpose,
+      bytes: new Uint8Array(Buffer.from(hex, 'hex')),
+    }
+  }
+  return {
+    evm: root(ROOT_PURPOSES.evm),
+    authentication: root(ROOT_PURPOSES.authentication),
+    messaging: root(ROOT_PURPOSES.messaging),
+  }
+}
+
+/**
+ * #703 canonical sender composition. Opens the one typed wallet owner through the public chain
+ * factory and takes its canonical consumer through the wallet's own bridge; nothing here signs,
+ * funds, resumes or contacts the relay. Replay of retained attempts happens only later, after
+ * the caller has opened Qwen's response state and `QwenResponseWorkflow.recover()` has
+ * correlated every retained wallet record with a saved turn.
+ *
+ * The legacy `setUpDurableFundedStampClient`/`sendDirectMessageItems` helpers above are left
+ * exactly as they were for the other bots and for Qwen's greeting path.
+ */
+export async function setUpCanonicalQwenSender(params: {
+  chain: MonadChainConfig
+  roots: MonadRootBundle
+  directory: QwenCanonicalDirectory
+  /** Optional wallet-owned inventory preparation; see `QwenCanonicalSender.prepareInventory`. */
+  prepareInventory?: () => Promise<void>
+  overrides?: MonadTxOverrides
+  /** Deterministic no-network test seam. Production callers omit it. */
+  fetch?: CanonicalFetch
+  label: string
+}): Promise<CanonicalQwenSetup> {
+  if (params.chain.networkTag !== 'MONT' && params.chain.networkTag !== 'MON1')
+    throw new Error('Qwen canonical sender requires an installed Monad network')
+  if (params.chain.walletStorageLocation === false)
+    throw new Error('Qwen canonical sender requires durable wallet storage')
+  const network = canonicalNetworkDescriptor(params.chain.networkTag).network
+  // Sealing capability only. It derives no account, pool or signer and is never persisted.
+  const material = createMonadWalletMaterial(params.roots)
+  let wallet:
+    | Awaited<ReturnType<ReturnType<typeof createMonadChain>['createWallet']>>
+    | undefined
+  try {
+    const roles = material.canonicalRoles
+    if (!roles) throw new Error('Qwen canonical sender requires typed roots')
+    const accountAddress = material.mainAccount.address
+    const opened = await createMonadChain(params.chain).createWallet(
+      params.roots,
+    )
+    wallet = opened
+    const client = canonicalMonadStampClient(opened)
+    console.log(`[${params.label}] canonical stamp account: ${accountAddress}`)
+    let closed = false
+    return {
+      accountAddress,
+      sender: {
+        wallet: client,
+        currents: row => params.directory.currents(row.senderAddress),
+        seal: (row, currents) => {
+          const session = roles.create(network, currents.senderCurrent)
+          try {
+            const sealed = prepareDirectMessage({
+              network,
+              senderCurrent: currents.senderCurrent,
+              recipientCurrent: currents.recipientCurrent,
+              messageId: new Uint8Array(randomBytes(16)),
+              items: [directMessageText(row.response)],
+              roles: session,
+            })
+            // Only opaque bytes and public identity leave this function. The authenticated
+            // plaintext fields of the producer result are never copied or stored.
+            return {
+              payload: sealed.payload,
+              context: sealed.context,
+              t3: sealed.t3,
+              messageId: sealed.messageId,
+              contentDigest: sealed.contentDigest,
+            }
+          } finally {
+            session.dispose()
+          }
+        },
+        prepareInventory: params.prepareInventory,
+        overrides: params.overrides,
+        fetch: params.fetch,
+      },
+      close: async () => {
+        if (closed) return
+        closed = true
+        try {
+          await opened.close()
+        } finally {
+          material.dispose()
+        }
+      },
+    }
+  } catch (error) {
+    try {
+      await wallet?.close()
+    } catch {
+      // Preserve the setup error.
+    }
+    material.dispose()
+    throw error
+  }
 }

@@ -1830,6 +1830,7 @@ async function makeCanonicalConsumerFixture() {
     pool,
     leaseManager,
     providerCalls,
+    provider,
     httpClient,
     prepared,
     prepare,
@@ -1927,6 +1928,20 @@ describe('canonical durable consumer barriers', () => {
         'Canonical pre-sign intent',
       )
       expect(ordinary).not.toHaveBeenCalled()
+      const legacy = new MonadStampClient({
+        pool: f.pool,
+        leaseManager: f.leaseManager,
+        provider: f.provider,
+        httpClient: f.httpClient,
+        relayBaseUrl: 'https://a.example',
+      })
+      await expect(
+        legacy.submitStampedMessage({
+          encryptedPayload: Uint8Array.of(1),
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          stampValueWei: 32n,
+        }),
+      ).rejects.toThrow('Canonical pre-sign intent')
       const sign = jest.spyOn(
         MonadAccountTxSigner.prototype,
         'signFrozenUnsigned',

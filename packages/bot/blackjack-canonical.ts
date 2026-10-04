@@ -252,7 +252,10 @@ export class BlackjackCanonicalStore {
     return this.actors.get(gameId)
   }
 
-  async bindActor(gameId: string, binding: BlackjackActorBinding): Promise<void> {
+  async bindActor(
+    gameId: string,
+    binding: BlackjackActorBinding,
+  ): Promise<void> {
     await this.synced([
       {
         type: 'put',
@@ -302,7 +305,9 @@ export class BlackjackCanonicalOutbox {
     if (this.reported.has(key)) return
     this.reported.add(key)
     console.warn(
-      `[${this.options.label ?? 'blackjack-bot'}] reply ${row.key} waiting: ${reason}`,
+      `[${this.options.label ?? 'blackjack-bot'}] reply ${
+        row.key
+      } waiting: ${reason}`,
     )
   }
 
@@ -370,12 +375,19 @@ export class BlackjackCanonicalOutbox {
         if (status === 'dead') {
           await store.advance(row.seq, 'dead')
           console.error(
-            `[${this.options.label ?? 'blackjack-bot'}] reply ${row.key} can never be delivered (payment set ${row.digest} ended by the relay); it is NOT re-sent`,
+            `[${this.options.label ?? 'blackjack-bot'}] reply ${
+              row.key
+            } can never be delivered (payment set ${
+              row.digest
+            } ended by the relay); it is NOT re-sent`,
           )
           continue
         }
         // Live, or not known to the wallet: never a reason to pay again.
-        this.note(row, status === 'live' ? 'delivery-pending' : 'attempt-unknown')
+        this.note(
+          row,
+          status === 'live' ? 'delivery-pending' : 'attempt-unknown',
+        )
         return delivered
       }
       // Queued: no payment set exists for this row.

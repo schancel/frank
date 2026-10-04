@@ -212,7 +212,21 @@ async function input(name, value) {
 }
 
 async function pressEnter(selector) {
-  await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`)
+  const target = await evaluate(`(() => {
+    const root = document.querySelector(${JSON.stringify(selector)});
+    const input = root?.matches('input,textarea') ? root : root?.querySelector('input,textarea');
+    if (!input) throw new Error('Missing marked input: ' + ${JSON.stringify(
+      selector,
+    )});
+    input.focus();
+    return { rootTag: root.tagName, inputTag: input.tagName, focused: document.activeElement === input };
+  })()`)
+  assert.equal(
+    target.focused,
+    true,
+    'Enter must target the actual marked input',
+  )
+  console.log('Actual marked input for Enter:', target)
   await call('Input.dispatchKeyEvent', {
     type: 'keyDown',
     key: 'Enter',
@@ -279,7 +293,7 @@ try {
   await evaluate(`location.hash='#/forum'`)
   await until(`document.querySelector('[data-test="forum-threshold"]')`)
   await input('forum-topic', 'news')
-  await pressEnter('[data-test="forum-topic"] input')
+  await pressEnter('[data-test="forum-topic"]')
   await until(`${forumState}.selectedTopic==='news'`)
   // Drive the real drawer's QInput. One wei above Number's precise integer range.
   const threshold = '0.009007199254740993'

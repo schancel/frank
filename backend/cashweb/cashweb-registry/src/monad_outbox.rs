@@ -1151,6 +1151,19 @@ where
     // Daemon startup creates this worker before attaching the Directory facade. Retained
     // storage is audited now, while financial work waits for that actual owner to be attached.
     let owner = registry.canonical_dm();
+    let mut recovery_after = None;
+    loop {
+        recovery_after = owner.expire_unconfirmed_recovery_after(
+            recovery_after,
+            page_size,
+            now_ms(),
+            &config.limits,
+        )?;
+        if recovery_after.is_none() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
     let mut after = None;
     loop {
         let active = owner.active_after(after, page_size)?;

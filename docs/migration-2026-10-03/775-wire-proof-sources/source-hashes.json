@@ -1,0 +1,26 @@
+{
+  "driver.cjs": {
+    "archived_as": "driver.cjs.source.txt",
+    "sha256": "e98908827a17356378deb8f69a6f75fbdf892179c9299fe68ce743267c92d04d"
+  },
+  "browser.ts": {
+    "archived_as": "browser.ts.source.txt",
+    "sha256": "4b349974558b75994eab3df1e67c60288b82e5e999108fa2dd6dc4af64b81e32"
+  },
+  "buffer-inject.js": {
+    "archived_as": "buffer-inject.js.source.txt",
+    "sha256": "79b3dd241b713a9ec6c8132e16b7245fa2f96cb1da6b0dd2c340279e5f8f9c01"
+  },
+  "native/Cargo.toml": {
+    "archived_as": "native-Cargo.toml.source.txt",
+    "sha256": "d101edaa67f3c12abcc5bed609d7a85cdc3c4cfecead59966ddaf5793fc89586"
+  },
+  "native/src/main.rs": {
+    "archived_as": "native-main.rs.source.txt",
+    "sha256": "9e468d0cab99294193dd89f733bc31d7df99ebdf5ef431fd0abfa9e15d8919e4"
+  },
+  "tamper.cjs": {
+    "archived_as": "tamper.cjs.source.txt",
+    "sha256": "853cc7dc81b32d4f07e01a55ea1977f0373cd760483905c42e892f4da5421f4e"
+  }
+}

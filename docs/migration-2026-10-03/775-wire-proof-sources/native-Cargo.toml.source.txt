@@ -1,0 +1,13 @@
+[package]
+name="frank-775-b-public-proof"
+version="0.0.0"
+edition="2021"
+[dependencies]
+cashweb-registry={path="/Users/shammah/repos/frank/.worktrees/dm-facade-final-20261003/backend/cashweb/cashweb-registry"}
+frank-cbor={path="/Users/shammah/repos/frank/.worktrees/dm-facade-final-20261003/backend/cashweb/frank-cbor"}
+cashweb-config={path="/Users/shammah/repos/frank/.worktrees/dm-facade-final-20261003/backend/cashweb/cashweb-config"}
+bitcoinsuite-core={path="/Users/shammah/repos/frank/.worktrees/dm-facade-final-20261003/backend/bitcoinsuite/bitcoinsuite-core"}
+axum="0.5"
+tokio={version="1.17",features=["full"]}
+serde_json="1.0"
+hex="0.4"

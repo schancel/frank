@@ -1,0 +1,46 @@
+
+use std::{sync::Arc,path::PathBuf};
+use cashweb_registry::{registry::Registry,store::db::Db,disabled_chain_adapter::DisabledChainAdapter,directory_runtime::DirectoryRuntime,directory_admission::{Anchor,OpenMode,Checkpoint,Candidate,Context,Timestamp},http::directory::router,monad_dm_verify::{verify_canonical_stamp,CanonicalStampCheckInput}};
+use frank_cbor::{decode_canonical,encode_canonical,CborValue,validate_frame,default_context,ValidationResult,encode_frame,EnvelopeFields,FramePayload,AccountRef,RelayBinding,verify_preview_directory_evidence,TypedPayload};
+use bitcoinsuite_core::Net;
+#[tokio::main]
+async fn main(){
+ let a:Vec<String>=std::env::args().collect();let repo=&a[1];let root=PathBuf::from(&a[2]);
+ if a.get(3).map(String::as_str)!=Some("verify-only") {
+ let config:cashweb_config::DirectoryConf=serde_json::from_slice(&std::fs::read(root.join("native.json")).unwrap()).unwrap();
+ let registry=Arc::new(Registry::new(Db::open(root.join("runtime-db")).unwrap(),Arc::new(DisabledChainAdapter),Net::Regtest));
+ let(runtime,ready)=DirectoryRuntime::start(registry,root.join("runtime-db"),config).unwrap();ready.await.unwrap().unwrap();
+ let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();listener.set_nonblocking(true).unwrap();let address=listener.local_addr().unwrap();
+ let(stop,stopped)=tokio::sync::oneshot::channel::<()>();let task=tokio::spawn(axum::Server::from_tcp(listener).unwrap().serve(router(Arc::new(runtime.clone())).into_make_service()).with_graceful_shutdown(async{let _=stopped.await;}));
+ let output=tokio::process::Command::new("node").arg("--import").arg(format!("{repo}/node_modules/tsx/dist/loader.mjs")).arg(root.join("driver.cjs")).arg(repo).arg(&root).arg("check").arg(format!("http://{address}")).env("TSX_TSCONFIG_PATH",format!("{repo}/packages/bot/tsconfig.json")).output().await.unwrap();
+ print!("{}",String::from_utf8_lossy(&output.stdout));eprint!("{}",String::from_utf8_lossy(&output.stderr));stop.send(()).unwrap();task.await.unwrap().unwrap();runtime.begin_shutdown();runtime.wait_stopped().await;assert!(output.status.success(),"Node/browser proof failed");
+ }
+ let v:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("capture.json")).unwrap()).unwrap();let inputs:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("inputs.json")).unwrap()).unwrap();
+ let proof_db=Registry::new(Db::open(root.join("proof-db")).unwrap(),Arc::new(DisabledChainAdapter),Net::Regtest);let mut currents=Vec::new();
+ for (i,p) in inputs["parties"].as_array().unwrap().iter().enumerate(){
+  let b=|s:&str|hex::decode(p[s].as_str().unwrap()).unwrap();
+  // Installed P/T1 come from the independently prepared manifest, not HTTP projections.
+  let anchor=Anchor{network:p["network"].as_str().unwrap().into(),subject:AccountRef{key_type:1,key_bytes:b("subject")},revision_zero:b("t1").try_into().unwrap()};
+  let att=hex::decode(v["http_attestations"][i].as_str().unwrap()).unwrap();let evidence=verify_preview_directory_evidence(&att,&anchor.network).unwrap();
+  let Some(TypedPayload::DirectoryStatement{relays,..})=evidence.statement_frame().typed.as_deref() else{panic!("directory")};
+  let trust=&p["bundle"]["trustInputs"];let installed_relay=RelayBinding{relay_id:hex::decode(trust["relayId"].as_str().unwrap()).unwrap(),endpoint:p["endpoint"].as_str().unwrap().into(),identity:AccountRef{key_type:1,key_bytes:hex::decode(trust["relayIdentity"]["point"].as_str().unwrap()).unwrap()},expiry:Timestamp{seconds:1700007200,nanoseconds:0},unknown:vec![]};assert_eq!(relays[0],installed_relay);
+  let now=Timestamp{seconds:1700000100,nanoseconds:0};let candidate=Candidate{statement:&evidence.statement_frame().frame,attestation:&att};
+  let floor=root.join(format!("proof-floor-{i}"));if !floor.exists(){let prospective=Checkpoint::for_enrollment(&anchor,candidate,now).unwrap();std::fs::write(&floor,serde_json::to_vec(&prospective).unwrap()).unwrap();std::fs::File::open(&floor).unwrap().sync_all().unwrap();
+  {let directory=proof_db.directory_preview(anchor.clone(),OpenMode::NewEnrollment).unwrap();let current=directory.advance(&[candidate],Context{now:Some(now),relay:Some(&installed_relay)}).unwrap();std::fs::write(&floor,serde_json::to_vec(&current.status.checkpoint).unwrap()).unwrap();std::fs::File::open(&floor).unwrap().sync_all().unwrap();}
+  }
+  let checkpoint=serde_json::from_slice(&std::fs::read(&floor).unwrap()).unwrap();let directory=proof_db.directory_preview(anchor,OpenMode::Reopen(checkpoint)).unwrap();currents.push(directory.current(Context{now:Some(now),relay:Some(&installed_relay)}).unwrap());
+ }
+ let delivery=hex::decode(v["delivery"].as_str().unwrap()).unwrap();let context=hex::decode(v["context"].as_str().unwrap()).unwrap();
+ let checks=verify_canonical_stamp(CanonicalStampCheckInput{delivery:&delivery,context:&context,sender_current:&currents[0],recipient_current:&currents[1],recipient_evidence:None}).unwrap();assert_eq!(hex::encode(checks.payload_digest),v["t3"].as_str().unwrap());assert_eq!(hex::encode(&checks.payments[0].commitment),v["t4"].as_str().unwrap());
+ let mut changed=context.clone();let last=changed.len()-1;changed[last]^=1;assert!(verify_canonical_stamp(CanonicalStampCheckInput{delivery:&delivery,context:&changed,sender_current:&currents[0],recipient_current:&currents[1],recipient_evidence:None}).is_err());
+
+ let check=|d:&[u8],c:&[u8]|verify_canonical_stamp(CanonicalStampCheckInput{delivery:d,context:c,sender_current:&currents[0],recipient_current:&currents[1],recipient_evidence:None});
+ fn change(value:&mut CborValue){match value{CborValue::Bytes(b)=>b[0]^=1,CborValue::Text(t)=>t.push('x'),CborValue::Int(i)=>*i+=1,CborValue::Map(m)=>change(&mut m[0].1),_=>panic!("context mutation")}}
+ let CborValue::Map(fields)=decode_canonical(&context).unwrap() else{panic!("context")};
+ for i in 0..fields.len(){let mut altered=fields.clone();change(&mut altered[i].1);let altered=encode_canonical(&CborValue::Map(altered)).unwrap();assert!(check(&delivery,&altered).is_err(),"context field {}",fields[i].0);}
+ let ValidationResult::Parsed(root)=validate_frame(&delivery,&default_context()).unwrap() else{panic!("delivery")};
+ fn field(v:&mut CborValue,k:u64)->&mut CborValue{let CborValue::Map(entries)=v else{panic!("map")}; &mut entries.iter_mut().find(|(key,_)|*key==k).unwrap().1}
+ for key in [3,4]{let mut altered=root.payload.clone();if key==3{change(field(&mut altered,3));}else{let CborValue::Array(members)=field(&mut altered,4)else{panic!("payments")};change(field(&mut members[0],4));}let frame=encode_frame(EnvelopeFields{type_id:1,schema_version:1,min_reader_version:1},FramePayload::Value(&altered)).unwrap();assert!(check(&frame,&context).is_err(),"T3/T4 mutation");}
+ println!("PASS captured-wire independent native hostile context bindings and T3/T4 rejects");
+ println!("PASS independent native public admission/reopen and exact captured context/T1/T3/T3a/T3b/T4; no AEAD/payment claim");
+}

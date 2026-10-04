@@ -1,0 +1,5 @@
+# Preserved actual-wire proof source evidence
+
+Exact source bytes from the disposable #775 finalB proof drivers, archived as inert text. These are local fixture proof sources, not runtime code or production enrollment authority. Their absolute paths and private generated inputs are historical; reproducing the gate requires a fresh owned workspace, installed operator fixture, current public APIs and the coordinator native/browser lease. No private generated TLS keys, stores, roots or dependency caches are archived here.
+
+Capture SHA2569bcb5b2355217fb2473832b010bb9a1b07ea1241cae18e28bcc311dc9eaea27c; exact public wire/evidence/tamper data is in finalB dm-runtime.json final_http_case. Sources prove actual Node/browser/native public admission, owned role crypto and captured native partial checks. Node-authenticated transfer is not browser TLS; native stamp/context verification is not native AEAD or payment authority. Full real UI/Qwen/relays and autonomous user-flow testing remain mandatory.

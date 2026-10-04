@@ -1,0 +1,33 @@
+
+import {openBrowserDirectoryStore} from '@frank/directory-admission/browser'
+import {fromHex,toHex,verifyPreviewDirectoryEvidence,cborMap,encodeFrame} from '@frank/codec'
+import {createMonadWalletMaterial} from '/Users/shammah/repos/frank/.worktrees/dm-facade-final-20261003/packages/wallet/monad-wallet-material'
+import {admissionAnchor,admissionContext,continuityJSON,parseContinuity} from '/Users/shammah/repos/frank/.worktrees/dm-facade-final-20261003/packages/bot/demo/directory-trust/browser-admission'
+import {prepareDirectMessage,directMessageText} from '/Users/shammah/repos/frank/.worktrees/dm-facade-final-20261003/packages/cashweb/relay/canonical-dm'
+import inputs from '/private/tmp/frank-775-b-proof/browser-input.json'
+import blackjack from '/Users/shammah/repos/frank/.worktrees/dm-facade-final-20261003/docs/protocol/cbor/vectors/blackjack-items.json'
+const network='monad-testnet', now=1700000100000000000n
+const roots=(i:number)=>Object.fromEntries([['evm','evm-wallet'],['authentication','identity-authentication'],['messaging','messaging-encryption']].map(([k,purpose])=>[k,{registry:'frank-domain-roots-v1',purpose,bytes:fromHex((inputs.rootOutputs[i] as any)[purpose])}])) as any
+async function main(){
+ const stores:any[]=[],materials:any[]=[],currents:any[]=[],checkpoints:string[]=[]
+ try{
+  for(let i=0;i<2;i++){
+   const p=inputs.parties[i],trust={...p.bundle.trustInputs,bindingExpiryNs:BigInt(p.bundle.trustInputs.bindingExpiryNs)},installation={manifestIdentity:p.bundle.manifestIdentity,trustInputs:trust,witnessHex:p.bundle.witnessHex};
+   const candidate={statement:fromHex(p.statement),attestation:fromHex(inputs.http[i])};
+   if(toHex(candidate.attestation)!==p.attestation)throw Error('authenticated capture bytes changed')
+   let store=await openBrowserDirectoryStore({name:'dm-b-public-'+i,anchor:admissionAnchor(trust),mode:{kind:'new'}});stores.push(store)
+   const prospective=await store.checkpointForEnrollment(candidate,{seconds:1700000100n,nanoseconds:0});
+   if(continuityJSON(installation,prospective)!==p.prospective)throw Error('external prospective floor mismatch')
+   await store.enroll([candidate],admissionContext(trust,now));await store.close()
+   store=await openBrowserDirectoryStore({name:'dm-b-public-'+i,anchor:admissionAnchor(trust),mode:{kind:'reopen',checkpoint:parseContinuity(p.prospective,installation)}});stores[i]=store
+   const current=await store.current(admissionContext(trust,now));currents.push(current);checkpoints.push(continuityJSON(installation,current.status.checkpoint))
+   materials.push(createMonadWalletMaterial(roots(i)))
+  }
+  const points=currents.flatMap((c,i)=>[inputs.parties[i].subject,toHex(c.messageKey.keyBytes),toHex(c.stampKey.keyBytes)]);if(new Set(points).size!==6)throw Error('roles/principals not distinct')
+  const frames=blackjack.frames.filter(x=>x.frozen).map(x=>fromHex(x.frameHex));const item=frames[0],nested=encodeFrame({typeId:16,schemaVersion:1,minReaderVersion:1},cborMap([[0,[item]]])),opaque=encodeFrame({typeId:60000,schemaVersion:1,minReaderVersion:1},cborMap([[0,'future']]));
+  const roles=materials[0].canonicalRoles.create(network,currents[0]);const prepared=prepareDirectMessage({network,senderCurrent:currents[0],recipientCurrent:currents[1],messageId:new Uint8Array(16).fill(18),items:[...frames.flatMap(frame=>[frame,encodeFrame({typeId:16,schemaVersion:1,minReaderVersion:1},cborMap([[0,[frame]]]))]),directMessageText('actual HTTP admitted browser to Node'),opaque],roles});
+  roles.dispose();let disposed=false;try{roles.sealMessage({recipientPublicKey:currents[1].messageKey.keyBytes,plaintext:new Uint8Array(),context:new Uint8Array()})}catch(e){disposed=String(e).includes('disposed')};if(!disposed)throw Error('sender capability survived operation')
+  return {ok:true,failures:[],leakedNodeGlobals:['Buffer','process','require'].filter(k=>k in globalThis),fixture:{network,payload:toHex(prepared.payload),context:toHex(prepared.context),t3:toHex(prepared.t3),sender_t1:toHex(prepared.senderT1),recipient_t1:toHex(prepared.recipientT1),type18_frames:frames.map(toHex),browser_checkpoints:checkpoints,roles:points,proof_scope:'browser public admission and owned suite1 crypto on independently Node-authenticated actual HTTP bytes'}}
+ }finally{for(const store of stores)await store.close();for(const material of materials)material.dispose()}
+}
+main().then(r=>document.getElementById('result')!.textContent=JSON.stringify(r)).catch(e=>document.getElementById('result')!.textContent=JSON.stringify({ok:false,failures:[String(e)],leakedNodeGlobals:[]}))

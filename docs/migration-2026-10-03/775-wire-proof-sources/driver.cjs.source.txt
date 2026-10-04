@@ -1,0 +1,64 @@
+
+const fs=require('fs'),path=require('path'),net=require('net'),https=require('https'),tls=require('tls'),crypto=require('crypto'),assert=require('assert/strict');
+const [repo,root,mode,backend]=process.argv.slice(2),load=p=>require(path.join(repo,p));
+const codec=load('packages/frank-codec/src/index.ts'),provision=load('packages/bot/demo/directory-trust/provision.ts'),{createMonadWalletMaterial}=load('packages/wallet/monad-wallet-material.ts'),{deriveRoleLeaves}=load('packages/role-keys/src/index.ts');
+const rootsSource=JSON.parse(fs.readFileSync(path.join(repo,'packages/domain-roots/vectors/domain-roots-v1.json')));
+const roots=i=>Object.fromEntries([['evm','evm-wallet'],['authentication','identity-authentication'],['messaging','messaging-encryption']].map(([k,purpose])=>[k,{registry:'frank-domain-roots-v1',purpose,bytes:codec.fromHex(rootsSource.vectors[i].outputs[purpose])}]));
+const now=1700000100000000000n,network='monad-testnet';
+const durable=(f,s)=>{const fd=fs.openSync(f,'w',0o600);try{fs.writeFileSync(fd,s);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}};
+async function main(){
+ if(mode==='prepare'){
+  const source=JSON.parse(fs.readFileSync(path.join(repo,'docs/protocol/proposals/suite1-directory/vectors.json'))),base=source.records.find(x=>x.id==='bootstrap');const parties=[],native=[];
+  for(let i=0;i<2;i++){
+   const temp=net.createServer();await new Promise(r=>temp.listen(0,'127.0.0.1',r));const port=temp.address().port;await new Promise(r=>temp.close(r));
+   const input=roots(i),material=createMonadWalletMaterial(input),leaves=deriveRoleLeaves({authRoot:input.authentication,messageRoot:input.messaging,stampRoot:input.evm,messageGeneration:0n,stampGeneration:0n});
+   try{
+    const account=b=>new Map([[0n,1n],[1n,b]]),subject=codec.toHex(material.identity.compressedPubKey),endpoint='https://127.0.0.1:'+port,relayId=('0'+(i+1)).repeat(16);
+    const payload=new Map(codec.validateFrame(codec.fromHex(base.type4_hex),codec.previewDirectoryContext()).payload);payload.set(0n,network);payload.set(1n,account(material.identity.compressedPubKey));payload.set(2n,0n);payload.set(3n,new Map([[0n,1700000000n],[1n,0n]]));payload.set(6n,new Map([[0n,1700003000n],[1n,0n]]));payload.set(8n,account(leaves.stamp.public.compressedPoint));payload.set(10n,account(leaves.message.public.compressedPoint));payload.set(11n,0n);payload.set(12n,0n);payload.set(13n,null);
+    payload.set(4n,[new Map([[0n,codec.fromHex(relayId)],[1n,endpoint],[2n,account(material.identity.compressedPubKey)],[3n,new Map([[0n,1700007200n],[1n,0n]])]])]);
+    const statement=codec.encodeFrame({typeId:4,schemaVersion:4,minReaderVersion:4},payload),signature=material.identity.signHash(Buffer.from(codec.directorySignatureDigest(network,statement)));
+    const attestation=codec.encodeFrame({typeId:2,schemaVersion:1,minReaderVersion:1},new Map([[0n,statement],[1n,[new Map([[0n,1n],[1n,account(material.identity.compressedPubKey)],[2n,new Uint8Array(signature)]])]]]));
+    const t1=codec.toHex(codec.contentHash(codec.validateFrame(statement,codec.previewDirectoryContext()))),trust={network,subject,rev0T1:t1,relayId,relayIdentity:{keyType:1,point:subject},endpoint,bindingExpiryNs:1700007200000000000n};
+    const bundle=provision.initBundle({mode:'synthetic-demo',runDir:path.join(root,'directory-trust-b'+i),trustInputs:trust,nowNs:now,witnessHex:codec.toHex(attestation)});
+    const party={network,subject,t1,endpoint,statement:codec.toHex(statement),attestation:codec.toHex(attestation),rootIndex:i,bundle:{...bundle,trustInputs:provision.trustJSON(trust)}};parties.push(party);
+    native.push({network,subject,revision_zero:t1,manifest_identity:bundle.manifestIdentity,relay_id:relayId,relay_identity:subject,endpoint,binding_expiry_ns:String(trust.bindingExpiryNs),continuity_file:path.join(root,'native-floor-'+i),bundle_root:bundle.runDir,mode:'new'});
+   }finally{leaves.dispose();material.dispose();}
+  }
+  durable(path.join(root,'clock'),String(now)+'\n');durable(path.join(root,'native.json'),JSON.stringify({clock_file:path.join(root,'clock'),principals:native}));durable(path.join(root,'inputs.json'),JSON.stringify({parties}));console.log('prepared independent installed P/M/Pprime principals');return;
+ }
+ const input=JSON.parse(fs.readFileSync(path.join(root,'inputs.json'))),fronts=[],agents=[],stores=[],snapshots=[],http=[];
+ const {openNodeDirectoryStore}=load('packages/directory-admission/src/node.ts'),{admissionAnchor,admissionContext,continuityJSON,parseContinuity}=load('packages/bot/demo/directory-trust/browser-admission.ts'),{createDirectoryClient}=load('packages/cashweb/relay/directory-client.ts');
+ try{
+  for(let i=0;i<2;i++){
+   const p=input.parties[i],trust=provision.parseTrust(p.bundle.trustInputs),bundle=provision.reopenBundle(p.bundle,now),installation={manifestIdentity:bundle.manifestIdentity,trustInputs:trust,witnessHex:bundle.witnessHex};
+   fronts.push(await load('packages/bot/demo/demo.ts').startDirectoryRouteTransport({bundle,nowNs:now,backendUrl:backend}));
+   const agent=new https.Agent({ca:bundle.tls.caPem,rejectUnauthorized:true,keepAlive:false,maxCachedSessions:0});agents.push(agent);
+   const fetcher=(url,init)=>new Promise((resolve,reject)=>{const req=https.request(url,{agent,method:init.method,headers:init.headers,checkServerIdentity:(host,peer)=>{const e=tls.checkServerIdentity(host,peer);if(e)return e;const c=new crypto.X509Certificate(peer.raw);if(provision.sha256(c.raw)!==bundle.tls.leafSha256||provision.spki(c)!==bundle.tls.leafSpkiSha256)return Error('pin');}},res=>{const it=res[Symbol.asyncIterator]();resolve({status:res.statusCode,url,headers:{get:n=>res.headers[n]??null},body:{getReader:()=>({read:()=>it.next(),cancel:async()=>res.destroy()})}});});req.on('error',reject);init.signal.addEventListener('abort',()=>req.destroy(Error('deadline')),{once:true});req.end(init.body);});
+   const floor=path.join(root,'node-floor-'+i),location=path.join(root,'node-db-'+i);let store=await openNodeDirectoryStore({location,anchor:admissionAnchor(trust),mode:fs.existsSync(floor)?{kind:'reopen',checkpoint:parseContinuity(fs.readFileSync(floor,'utf8'),installation)}:{kind:'new'}});stores.push(store);
+   const client=s=>createDirectoryClient({network,subject:p.subject,endpoint:p.endpoint,store:s,context:()=>admissionContext(trust,now),fetch:fetcher,saveCheckpoint:async cp=>durable(floor,continuityJSON(installation,cp))});
+   await client(store).put(await client(store).preparePut(codec.fromHex(p.attestation)));await store.close();store=await openNodeDirectoryStore({location,anchor:admissionAnchor(trust),mode:{kind:'reopen',checkpoint:parseContinuity(fs.readFileSync(floor,'utf8'),installation)}});stores[i]=store;
+   const head=await client(store).current();assert.equal(head.t1,p.t1);const history=await client(store).historical(head.t1);assert.equal(codec.toHex(history.frame),p.attestation);http.push(codec.toHex(history.frame));
+   snapshots.push(await store.current(admissionContext(trust,now)));
+   // External prospective enrollment continuity is durable before Chrome admission.
+   const prospective=await store.checkpointForEnrollment({statement:codec.fromHex(p.statement),attestation:history.frame},{seconds:1700000100n,nanoseconds:0});
+   p.prospective=continuityJSON(installation,prospective);durable(path.join(root,'browser-floor-'+i),p.prospective);
+  }
+  const browserInput={parties:input.parties,http,rootOutputs:rootsSource.vectors.slice(0,2).map(x=>x.outputs)};durable(path.join(root,'browser-input.json'),JSON.stringify(browserInput));
+  const esbuild=require(require.resolve('esbuild',{paths:[repo]}));const aliases={'@frank/codec':path.join(repo,'packages/frank-codec/src/index.ts'),'@frank/crypto-box':path.join(repo,'packages/crypto-box/src/index.ts'),'@frank/nakamoto':path.join(repo,'packages/nakamoto/src/index.ts'),'@frank/nakamoto/hd':path.join(repo,'packages/nakamoto/src/hd.ts'),'@frank/nakamoto/keys':path.join(repo,'packages/nakamoto/src/keys.ts'),'@frank/nakamoto/curve':path.join(repo,'packages/nakamoto/src/curve.ts'),'@frank/nakamoto/constructors':path.join(repo,'packages/nakamoto/src/constructors.ts'),'@frank/directory-admission/browser':path.join(repo,'packages/directory-admission/src/browser.ts')};
+  const build=await esbuild.build({entryPoints:[path.join(root,'browser.ts')],bundle:true,platform:'browser',write:false,metafile:true,alias:aliases,inject:[path.join(root,'buffer-inject.js')]});assert(!Object.keys(build.metafile.inputs).some(p=>/node_modules\/(level|leveldown)|src\/node\.ts/.test(p)),'browser native storage leak');
+  durable(path.join(root,'browser.js'),build.outputFiles[0].text);durable(path.join(root,'browser.html'),'<div id="result">running</div><script src="browser.js"></script>');
+  const {runChrome}=load('packages/frank-codec/browsercheck/check-chrome.js');const NativeWebSocket=globalThis.WebSocket;globalThis.WebSocket=class extends NativeWebSocket{constructor(...args){super(...args);this.addEventListener('message',e=>{try{const message=JSON.parse(String(e.data));const text=message.result?.result?.value;if(typeof text==='string'&&text.includes('failures'))durable(path.join(root,'browser-observation.json'),text)}catch{}})}};const browser=await runChrome({chrome:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',page:path.join(root,'browser.html'),expected:{},timeoutMs:90000});const capture=browser.fixture;
+  for(let i=0;i<2;i++)durable(path.join(root,'browser-floor-'+i),capture.browser_checkpoints[i]);
+  const recipientMaterial=createMonadWalletMaterial(roots(1));
+  try{
+   const {openDirectMessage}=load('packages/cashweb/relay/canonical-dm.ts');const receive=()=>({network,payload:codec.fromHex(capture.payload),context:codec.fromHex(capture.context),mode:'receive',senderCurrent:snapshots[0],recipientCurrent:snapshots[1],roles:recipientMaterial.canonicalRoles.create(network,snapshots[1])});
+   const opened=openDirectMessage(receive());assert.equal(opened.items[0].typed.type,18);assert.equal(opened.items[1].typed.type,16);assert.equal(opened.items[18].typed.text,'actual HTTP admitted browser to Node');assert.equal(opened.items[19].kind,'retained');for(let i=0;i<9;i++){assert.equal(codec.toHex(opened.items[i*2].frame),capture.type18_frames[i]);assert.equal(codec.toHex(opened.items[i*2+1].typed.items[0].frame),capture.type18_frames[i]);assert.equal(opened.items[i*2].typed.type,18);}
+   const bad=receive();bad.context=new Uint8Array(bad.context);bad.context[bad.context.length-1]^=1;assert.throws(()=>openDirectMessage(bad));assert.throws(()=>bad.roles.openMessage({envelope:new Uint8Array(),senderPublicKey:snapshots[0].messageKey.keyBytes,context:new Uint8Array()}),/disposed/);
+   assert.equal(codec.toHex(opened.items[0].frame),capture.type18_frames[0]);capture.content=codec.toHex(opened.content);capture.revision=codec.toHex(opened.revision);capture.http_attestations=http;
+   const parsed=codec.parseFrame(opened.payload),stampKey=snapshots[1].stampKey;const destination=load('packages/cashweb/relay/canonical-dm-stamp.ts').canonicalStampDestination({network,stampKey,sharedPoint:parsed.typed.sharedPoint,childIndex:0});capture.destination=codec.toHex(destination.address);capture.t4=codec.toHex(codec.paymentCommitment(opened.t3,0));
+   const account=a=>codec.cborMap([[0,a.keyType],[1,a.keyBytes]]);capture.delivery=codec.toHex(codec.encodeFrame({typeId:1,schemaVersion:1,minReaderVersion:1},codec.cborMap([[0,network],[1,account(stampKey)],[2,opened.payload],[3,opened.t3],[4,[codec.cborMap([[0,0],[1,new Uint8Array(32).fill(1)],[2,new Uint8Array(32).fill(1)],[3,destination.address],[4,codec.fromHex(capture.t4)]])]]])));
+   durable(path.join(root,'capture.json'),JSON.stringify(capture,null,2));console.log('PASS actual HTTP strict Node public admission/reopen + owned Chrome seal/Node open type18/text/opaque + bad-context disposal');
+  }finally{recipientMaterial.dispose();}
+ }finally{for(const s of stores)await s.close();for(const a of agents)a.destroy();for(const f of fronts)await f.stop();}
+}
+main().catch(e=>{console.error(e);process.exitCode=1});

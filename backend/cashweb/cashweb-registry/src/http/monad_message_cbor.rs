@@ -685,16 +685,51 @@ pub(crate) async fn admitted_point(
     recipient: Address,
     point: Vec<u8>,
 ) -> Option<Vec<u8>> {
-    if crate::monad_stamp_stealth::recipient_address_from_public_key(&point).ok()? != recipient {
-        return None;
+    admitted_point_or_busy(server, descriptor, recipient, point)
+        .await
+        .ok()
+        .flatten()
+}
+/// As [`admitted_point`], but tells "the directory owner could not answer now" (queue full, not
+/// ready, or an outcome it cannot report) apart from "not admitted". Only the former is an error.
+pub(crate) async fn admitted_point_or_busy(
+    server: &super::server::RegistryServer,
+    descriptor: &crate::network_tag::MonadNetworkDescriptor,
+    recipient: Address,
+    point: Vec<u8>,
+) -> std::result::Result<Option<Vec<u8>>, crate::directory_runtime::RuntimeError> {
+    use crate::directory_runtime::{AdmittedSnapshot, RuntimeError, SnapshotOperation};
+    if crate::monad_stamp_stealth::recipient_address_from_public_key(&point).ok() != Some(recipient)
+    {
+        return Ok(None);
     }
-    let current = current(
-        server.registry.canonical_dm(),
-        descriptor.cbor_identifier,
-        &point,
-    )
-    .await
-    .ok()?;
+    let Some(directory) = server.registry.canonical_dm().directory() else {
+        return Ok(None);
+    };
+    let reservation = match directory.reserve(descriptor.cbor_identifier, &hex::encode(&point)) {
+        Ok(reservation) => reservation,
+        Err(error @ (RuntimeError::Busy | RuntimeError::NotStarted)) => return Err(error),
+        Err(_) => return Ok(None),
+    };
+    let current = match directory
+        .submit_snapshot(reservation, SnapshotOperation::Current)
+        .wait()
+        .await
+    {
+        Ok(AdmittedSnapshot::Current(current)) => current,
+        Ok(_) => return Ok(None),
+        Err(
+            error @ (RuntimeError::Busy | RuntimeError::NotStarted | RuntimeError::OutcomeUnknown),
+        ) => return Err(error),
+        Err(_) => return Ok(None),
+    };
+    Ok(verified_point(descriptor, point, &current))
+}
+fn verified_point(
+    descriptor: &crate::network_tag::MonadNetworkDescriptor,
+    point: Vec<u8>,
+    current: &crate::directory_admission::Current,
+) -> Option<Vec<u8>> {
     let verified = frank_cbor::verify_preview_directory_evidence(
         &current.evidence.attestation,
         descriptor.cbor_identifier,
@@ -1121,4 +1156,4 @@ pub(crate) async fn handle_ack(
 
 #[cfg(test)]
 #[path = "monad_message_cbor_tests.rs"]
-mod tests;
+pub(crate) mod tests;

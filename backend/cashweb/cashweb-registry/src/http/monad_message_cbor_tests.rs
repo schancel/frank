@@ -118,11 +118,11 @@ fn genuine_fixture() -> ExactRequest {
     request
 }
 
-struct NativeDirectoryFixture {
-    root: tempfile::TempDir,
-    registry: Arc<crate::registry::Registry>,
-    directory: Arc<crate::directory_runtime::DirectoryRuntime>,
-    config: cashweb_config::DirectoryConf,
+pub(crate) struct NativeDirectoryFixture {
+    pub(crate) root: tempfile::TempDir,
+    pub(crate) registry: Arc<crate::registry::Registry>,
+    pub(crate) directory: Arc<crate::directory_runtime::DirectoryRuntime>,
+    pub(crate) config: cashweb_config::DirectoryConf,
 }
 fn admitted_source() -> serde_json::Value {
     serde_json::from_str(include_str!(
@@ -131,7 +131,12 @@ fn admitted_source() -> serde_json::Value {
     .unwrap()
 }
 impl NativeDirectoryFixture {
-    async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
+        Self::publishing(|_| true).await
+    }
+    /// Every principal is installed; only those `publishes` selects publish their evidence, so
+    /// the others stay installed but not admitted.
+    pub(crate) async fn publishing(publishes: impl Fn(usize) -> bool) -> Self {
         use crate::{
             directory_runtime::{DirectoryRuntime, Operation},
             disabled_chain_adapter::DisabledChainAdapter,
@@ -181,6 +186,9 @@ impl NativeDirectoryFixture {
         ready.await.unwrap().unwrap();
         let directory = Arc::new(directory);
         for (index, principal) in config.principals.iter().enumerate() {
+            if !publishes(index) {
+                continue;
+            }
             let exact =
                 hex::decode(case["wire"]["http_attestations"][index].as_str().unwrap()).unwrap();
             directory
@@ -220,7 +228,7 @@ impl NativeDirectoryFixture {
             config,
         }
     }
-    async fn stop(&self) {
+    pub(crate) async fn stop(&self) {
         self.directory.begin_shutdown();
         self.directory.wait_stopped().await;
     }
@@ -459,7 +467,11 @@ fn server(fixture: &NativeDirectoryFixture, rpc: &str) -> super::super::server::
         bitcoin_proxy: None,
     }
 }
-async fn public_p_signature(root: &std::path::Path, digest: [u8; 32], point: &str) -> Vec<u8> {
+pub(crate) async fn public_p_signature(
+    root: &std::path::Path,
+    digest: [u8; 32],
+    point: &str,
+) -> Vec<u8> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../..")
         .canonicalize()

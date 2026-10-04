@@ -609,15 +609,32 @@ export interface HandMessage {
   payloadDigest: string
 }
 
-/** The hand events a message carries (normally one). */
+/**
+ * The one hand item of a message. A message's stamp is one amount of money, so a message may
+ * carry at most one hand item: with two or more, none of them counts and no money is credited to
+ * any hand.
+ */
+export function soleHandItem(
+  items: readonly { type: string }[],
+): HandItem | undefined {
+  const hand = items.filter(
+    (item): item is HandItem => item.type === 'blackjack-hand',
+  )
+  return hand.length === 1 ? hand[0] : undefined
+}
+
+/** The hand event a message carries: none, or exactly one. */
 export function handEventsOf(message: HandMessage): HandEvent[] {
-  return message.items
-    .filter((item): item is HandItem => item.type === 'blackjack-hand')
-    .map(item => ({
-      item,
-      from: message.senderAddress,
-      to: message.recipientAddress,
-      stampWei: message.stampValueWei ?? 0n,
-      digest: message.payloadDigest,
-    }))
+  const item = soleHandItem(message.items)
+  return item
+    ? [
+        {
+          item,
+          from: message.senderAddress,
+          to: message.recipientAddress,
+          stampWei: message.stampValueWei ?? 0n,
+          digest: message.payloadDigest,
+        },
+      ]
+    : []
 }

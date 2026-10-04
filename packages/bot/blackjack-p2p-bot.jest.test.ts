@@ -49,6 +49,8 @@ interface Delivered {
   from: string
   to: string
   item: { type: string }
+  /** Further items of the same message. */
+  extra?: { type: string }[]
   stampWei: bigint
   digest: string
   time: number
@@ -146,7 +148,7 @@ class NetAccount implements BotAccount {
       .filter(d => d.to === this.address && d.time >= sinceMs)
       .map(d => ({
         from: d.from,
-        items: [d.item],
+        items: [d.item, ...(d.extra ?? [])],
         stampValueWei: d.stampWei,
         payloadDigest: d.digest,
         receivedTime: d.time,
@@ -453,6 +455,36 @@ describe('the bot challenges accounts it has not met', () => {
     user.send({ type: 'text', text: 'still here' })
     await settle(bot)
     expect(net.paidBy(BOT)).toHaveLength(1)
+  })
+})
+
+describe('one stamp is one bet', () => {
+  const openHands = async (bot: BlackjackP2pBot, user: User, count: number) => {
+    const ids = Array.from({ length: count }, (_, i) => `many-${i}`)
+    for (const gameId of ids) {
+      user.send({ gameId, action: 'challenge', role: 'player', maxBetWei: '500' })
+      await settle(bot)
+    }
+    return ids
+  }
+  const oneMessage = (net: Net, ids: string[], stampWei: bigint) => {
+    const [first, ...rest] = ids.map(gameId => ({ type: 'blackjack-hand', gameId, action: 'bet' }))
+    net.deliver({ from: USER, to: BOT, item: first, extra: rest, stampWei, digest: 'multi' })
+  }
+
+  it.each([
+    ['an over-max stamp', 600n],
+    ['a valid stamp', 500n],
+  ])('a message with several bet items and %s credits no hand and is refunded to none', async (_n, stamp) => {
+    const { net, bot, user } = setup()
+    const ids = await openHands(bot, user, 3)
+    const before = net.paidBy(BOT).length
+    oneMessage(net, ids, stamp)
+    await settle(bot)
+    await settle(bot)
+    expect(net.paidBy(BOT)).toHaveLength(before)
+    for (const gameId of ids)
+      expect(bot.hand(USER, gameId)).toMatchObject({ phase: 'open', wagerWei: 0n, rejected: [] })
   })
 })
 

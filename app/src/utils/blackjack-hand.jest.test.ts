@@ -63,6 +63,18 @@ describe('a chat as blackjack hand events', () => {
     expect(chatHandEvents(messages, ME, PEER, 'other')).toEqual([])
   })
 
+  it('credits nothing when one message carries more than one hand item', () => {
+    const challenge = (gameId: string) =>
+      message(false, { action: 'challenge', role: 'dealer', maxBetWei: '500', commitment: commitmentOf(SEED) }, 10n, gameId)
+    const double = message(true, { action: 'bet' }, 500n, 'x')
+    double.items.push({ type: 'blackjack-hand', gameId: 'y', action: 'bet' } as MessageItem)
+    const hands = chatHands([challenge('x'), challenge('y'), double], ME, PEER)
+    expect(hands.map(h => [h.state.phase, h.state.wagerWei])).toEqual([
+      ['open', 0n],
+      ['open', 0n],
+    ])
+  })
+
   it('keeps hands of one chat apart', () => {
     const messages = [
       message(

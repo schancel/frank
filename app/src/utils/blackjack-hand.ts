@@ -16,6 +16,7 @@ import {
   foldHand,
   roleOf,
   seedFromBytes,
+  soleHandItem,
   type DealerStep,
   type HandEvent,
   type HandRejection,
@@ -43,19 +44,18 @@ export function chatHandEvents(
   gameId?: string,
 ): HandEvent[] {
   const events: HandEvent[] = []
-  for (const message of messages)
-    for (const item of message.items)
-      if (
-        item.type === 'blackjack-hand' &&
-        (gameId === undefined || item.gameId === gameId)
-      )
-        events.push({
-          item,
-          from: message.outbound ? own : peer,
-          to: message.outbound ? peer : own,
-          stampWei: message.stampValueWei ?? 0n,
-          digest: message.payloadDigest,
-        })
+  for (const message of messages) {
+    // At most one hand item per message counts (one stamp is one amount of money).
+    const item = soleHandItem(message.items)
+    if (item && (gameId === undefined || item.gameId === gameId))
+      events.push({
+        item,
+        from: message.outbound ? own : peer,
+        to: message.outbound ? peer : own,
+        stampWei: message.stampValueWei ?? 0n,
+        digest: message.payloadDigest,
+      })
+  }
   return events
 }
 

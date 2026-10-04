@@ -7,6 +7,7 @@ import {
   challengeLimitWei,
   checkWager,
   handEventsOf,
+  soleHandItem,
   commitmentOf,
   dealerStep,
   DEALER_COVER_MULTIPLE,
@@ -776,6 +777,21 @@ describe('what a wallet may send', () => {
     expect(checkWager(state, 501n, 10_000n, RESERVE)).toBe('above-max-bet')
     expect(checkWager(state, 500n, 699n, RESERVE)).toBe('above-own-limit')
     expect(checkWager(state, 500n, 700n, RESERVE)).toBeUndefined()
+  })
+
+  it('credits nothing when one message carries more than one hand item', () => {
+    // One stamp can be one bet. Two hand items in one message would count it twice.
+    const message = {
+      items: [item({ action: 'bet' }), { type: 'text' }, { ...item({ action: 'bet' }), gameId: 'game-2' }],
+      senderAddress: BOB,
+      recipientAddress: ALICE,
+      stampValueWei: 500n,
+      payloadDigest: 'd9',
+    }
+    expect(handEventsOf(message)).toEqual([])
+    expect(soleHandItem(message.items)).toBeUndefined()
+    expect(soleHandItem([{ type: 'text' }])).toBeUndefined()
+    expect(soleHandItem([{ type: 'text' }, item({ action: 'bet' })])).toEqual(item({ action: 'bet' }))
   })
 
   it('reads hand events from a message and nothing from other items', () => {

@@ -1211,7 +1211,14 @@ mod tests {
         owner
             .with("monad-testnet", policy, true, |s| {
                 for nonce in 0..129 {
-                    publish(s, nonce, None, false);
+                    let topic_post = crate::store::forum::tests::distinct_post(nonce, "test.topic");
+                    s.store.admit(topic_post.clone())?;
+                    s.store.confirm(
+                        &topic_post.checked.decoded.tx_hash.0,
+                        &facts(&topic_post, nonce, 0),
+                        topic_post.first_seen,
+                    )?;
+                    s.revision += 1;
                     let op = crate::store::forum::tests::distinct_post(
                         1000 + nonce,
                         &format!("topic.{nonce:03}"),

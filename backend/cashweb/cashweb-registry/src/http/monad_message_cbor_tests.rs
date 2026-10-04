@@ -640,6 +640,12 @@ async fn actual_http_canonical_public_admission_p_authenticated_inbox_and_nonce_
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    let hash = hash_hex(accepted["identity"]["payload_hash"].as_str().unwrap()).unwrap();
+    let delivered = fixture.registry.canonical_dm().get(&hash).unwrap().unwrap();
+    let ack_binding = MailboxRequestBinding {resource:MailboxResource::RecoveryAck,recipient:binding.recipient,since:0,cursor:None,limit:1,max_bytes:0,recovery_payload_hash:Some(hash),recovery_obligation_id:Some(delivered.obligation_id)};
+    let headers = private_headers(&client,&url,fixture.root.path(),point,&ack_binding).await;
+    assert_eq!(client.post(format!("{url}/message/monad/cbor/recovery/{}/{}/{}/ack",recipient,hex::encode(hash),hex::encode(delivered.obligation_id))).headers(headers).send().await.unwrap().status(),StatusCode::CONFLICT);
+    assert!(!fixture.registry.canonical_dm().get(&hash).unwrap().unwrap().acknowledged);
     drop(client);
     }).catch_unwind().await;
     http_stop.send(()).unwrap();
@@ -977,6 +983,22 @@ async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reop
         let response: serde_json::Value =
             serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(response["acknowledged"], true);
+        let headers = private_headers(&client, &url, reopened.root.path(), &point, &binding).await;
+        assert_eq!(
+            client
+                .post(format!(
+                    "{url}/message/monad/cbor/recovery/{}/{}/{}/ack",
+                    Address([0; 20]).to_hex(),
+                    hex::encode(hash),
+                    hex::encode(obligation)
+                ))
+                .headers(headers)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
         let mut wrong = binding.clone();
         wrong.recovery_obligation_id = Some([0; 32]);
         let headers = private_headers(&client, &url, reopened.root.path(), &point, &wrong).await;

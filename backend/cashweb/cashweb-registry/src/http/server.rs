@@ -247,6 +247,9 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
         ["directory", "v1", _, _, "statements", _] => {
             Cow::Borrowed("/directory/v1/:network/:subject/statements/:t1")
         }
+        ["directory-installation", _] => {
+            Cow::Borrowed("/directory-installation/:manifest_identity")
+        }
         ["chain-rpc", _, "cap", _, "rpc"] => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/rpc"),
         ["chain-rpc", _, "cap", _, "ws"] => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/ws"),
         ["chain-rpc", _, "cap", _, "chronik", ..] => {

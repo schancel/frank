@@ -25,7 +25,7 @@
   <q-page-container>
     <q-page class="q-ma-none q-pa-sm">
       <q-card>
-        <q-splitter :model-value="110" unit="px" disable>
+        <q-splitter :model-value="130" unit="px" disable>
           <template #before>
             <q-tabs v-model="tab" vertical class="text-primary">
               <q-tab
@@ -42,6 +42,11 @@
                 name="storage"
                 icon="save"
                 :label="$t('persistentStorage.tab')"
+              />
+              <q-tab
+                name="recovery"
+                icon="security"
+                :label="$t('accountRecovery.frank_account_recovery')"
               />
             </q-tabs>
           </template>
@@ -92,6 +97,57 @@
               <q-tab-panel name="storage">
                 <persistent-storage-panel />
               </q-tab-panel>
+              <q-tab-panel name="recovery">
+                <div v-if="account.account" class="q-pa-sm">
+                  <div class="text-subtitle1 text-weight-medium q-mb-sm">
+                    {{ $t('accountRecovery.frank_account_recovery') }}
+                  </div>
+                  <p class="text-body2 text-grey-8">
+                    {{
+                      $t(
+                        'accountRecovery.backup_shares_were_verified_before_activation_keep',
+                      )
+                    }}
+                  </p>
+                  <q-input
+                    :model-value="account.account.descriptor"
+                    readonly
+                    outlined
+                    class="q-my-md"
+                    :label="$t('accountRecovery.public_recovery_descriptor')"
+                    data-test="recovery-descriptor"
+                  />
+                  <div class="row items-center q-gutter-sm q-my-sm">
+                    <q-btn
+                      color="primary"
+                      outline
+                      :label="$t('accountRecovery.copy_public_descriptor')"
+                      data-test="copy-descriptor"
+                      @click="copyDescriptor"
+                    />
+                    <span
+                      role="status"
+                      aria-live="polite"
+                      data-test="copy-status"
+                      class="text-caption"
+                    >
+                      {{ copyStatus }}
+                    </span>
+                  </div>
+                  <p
+                    class="text-caption text-grey-8 q-mt-md"
+                    style="overflow-wrap: anywhere"
+                  >
+                    {{ $t('accountRecovery.fingerprint') }}:
+                    {{ account.account.fingerprint }}
+                  </p>
+                </div>
+                <div v-else class="q-pa-sm">
+                  <p class="text-grey-7">
+                    {{ $t('accountRecovery.balance_unavailable') }}
+                  </p>
+                </div>
+              </q-tab-panel>
             </q-tab-panels>
           </template>
         </q-splitter>
@@ -125,6 +181,7 @@ import { QInput } from 'quasar'
 import { useAppearanceStore } from 'src/stores/appearance'
 import { useContactStore } from 'src/stores/contacts'
 import { storeToRefs } from 'pinia'
+import { accountStatus as account } from 'src/accounts/session'
 import PersistentStoragePanel from 'src/components/settings/PersistentStoragePanel.vue'
 const msToMinutes = 60000
 
@@ -138,6 +195,18 @@ export default defineComponent({
     const { darkMode: storeDarkMode, locale: storeLocale } =
       storeToRefs(appearanceStore)
 
+    const copyStatus = ref('')
+    async function copyDescriptor() {
+      if (!account.account) return
+      try {
+        await navigator.clipboard.writeText(account.account.descriptor)
+        copyStatus.value = 'Public descriptor copied.'
+      } catch {
+        copyStatus.value =
+          'Copy unavailable. Save the displayed public descriptor manually.'
+      }
+    }
+
     return {
       darkMode: ref(storeDarkMode.value),
       updateInterval: ref(storeUpdateInterval.value / msToMinutes),
@@ -149,6 +218,9 @@ export default defineComponent({
       storeUpdateInterval,
       storeLocale,
       localeOptions,
+      account,
+      copyStatus,
+      copyDescriptor,
     }
   },
   data() {

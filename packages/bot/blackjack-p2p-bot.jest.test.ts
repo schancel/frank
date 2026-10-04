@@ -42,6 +42,8 @@ const OTHER = '0x2222222222222222222222222222222222222222'
 const STAMP = 10n
 const RESERVE = 1_000n
 const sha = (text: string) => createHash('sha256').update(text).digest('hex')
+/** A well-formed game id (32 lowercase hex characters) for a readable name. */
+const gid = (name: string) => sha(`game:${name}`).slice(0, 32)
 
 class Crash extends Error {}
 
@@ -280,7 +282,7 @@ async function userPlaysAgainstBotDealer(
   tick: () => Promise<void>,
   wager: bigint,
   betDigest: string,
-  gameId = 'g-user',
+  gameId = gid('g-user'),
 ) {
   user.send({ gameId, action: 'challenge', role: 'player', maxBetWei: '500' })
   await tick()
@@ -311,7 +313,7 @@ describe('the bot accepts any challenge in the opposite role', () => {
     expect(user.fromBot().map(i => i.action)).toEqual(['accept', 'deal', 'reveal'])
     // The only stamp above the ordinary one is the payout.
     expect(net.paidBy(BOT).map(d => d.stampWei)).toEqual([STAMP, STAMP, 600n])
-    expect(bot.hand(USER, 'g-user')).toEqual(state)
+    expect(bot.hand(USER, gid('g-user'))).toEqual(state)
   })
 
   it('pays nothing beyond the ordinary stamp when the player loses', async () => {
@@ -323,23 +325,23 @@ describe('the bot accepts any challenge in the opposite role', () => {
 
   it('accepts at most what it can cover: a quarter of its spendable balance', async () => {
     const { bot, user } = setup(RESERVE + 400n)
-    user.send({ gameId: 'g', action: 'challenge', role: 'player', maxBetWei: '500' })
+    user.send({ gameId: gid('g'), action: 'challenge', role: 'player', maxBetWei: '500' })
     await settle(bot)
-    expect(user.hand('g').state).toMatchObject({ phase: 'open', maxBetWei: 100n })
+    expect(user.hand(gid('g')).state).toMatchObject({ phase: 'open', maxBetWei: 100n })
   })
 
   it('does not accept when it cannot cover even a minimum bet', async () => {
     const { net, bot, user } = setup(RESERVE + 4n * STAMP - 1n)
-    user.send({ gameId: 'g', action: 'challenge', role: 'player', maxBetWei: '500' })
+    user.send({ gameId: gid('g'), action: 'challenge', role: 'player', maxBetWei: '500' })
     await settle(bot)
     expect(net.paidBy(BOT)).toEqual([])
-    expect(user.hand('g').state?.phase).toBe('challenged')
+    expect(user.hand(gid('g')).state?.phase).toBe('challenged')
   })
 
   it('plays when challenged by a dealer: it bets, draws below 17, and stands', async () => {
     const { net, bot, user } = setup()
     const seed = 'c4'.repeat(32)
-    const gameId = 'g-deal'
+    const gameId = gid('g-deal')
     user.send({
       gameId,
       action: 'challenge',
@@ -375,7 +377,7 @@ describe('the bot accepts any challenge in the opposite role', () => {
   it('bets no more than it can spend', async () => {
     const { net, bot, user } = setup(RESERVE + 120n)
     user.send({
-      gameId: 'g',
+      gameId: gid('g'),
       action: 'challenge',
       role: 'dealer',
       maxBetWei: '2000',
@@ -441,7 +443,7 @@ describe('the bot challenges accounts it has not met', () => {
 
   it('does not invite an account that already challenged it', async () => {
     const { net, bot, user } = setup()
-    user.send({ gameId: 'g', action: 'challenge', role: 'player', maxBetWei: '500' })
+    user.send({ gameId: gid('g'), action: 'challenge', role: 'player', maxBetWei: '500' })
     await settle(bot)
     expect(net.paidBy(BOT).map(d => (d.item as HandItem).action)).toEqual(['accept'])
   })
@@ -460,7 +462,7 @@ describe('the bot challenges accounts it has not met', () => {
 
 describe('one stamp is one bet', () => {
   const openHands = async (bot: BlackjackP2pBot, user: User, count: number) => {
-    const ids = Array.from({ length: count }, (_, i) => `many-${i}`)
+    const ids = Array.from({ length: count }, (_, i) => gid(`many-${i}`))
     for (const gameId of ids) {
       user.send({ gameId, action: 'challenge', role: 'player', maxBetWei: '500' })
       await settle(bot)
@@ -488,17 +490,54 @@ describe('one stamp is one bet', () => {
   })
 })
 
+describe('a hostile game id', () => {
+  it.each(['__proto__', 'constructor', 'toString', 'not-hex', ''])(
+    'does not stop the bot: %j is ignored and later messages are still handled',
+    async gameId => {
+      const { net, bot, user } = setup()
+      user.send({ gameId, action: 'challenge', role: 'player', maxBetWei: '500' })
+      user.send({ gameId, action: 'bet' }, 100n)
+      await settle(bot)
+      await settle(bot)
+      user.send({ gameId: gid('after'), action: 'challenge', role: 'player', maxBetWei: '500' })
+      await settle(bot)
+      expect(user.hand(gid('after')).state?.phase).toBe('open')
+      // Nothing was paid or recorded for the hostile id.
+      expect(net.paidBy(BOT).every(d => (d.item as HandItem).gameId !== gameId)).toBe(true)
+      expect(bot.hand(USER, gameId)).toBeUndefined()
+    },
+  )
+
+  it('skips a message it cannot process and moves past it', async () => {
+    const { net, account, bot, user } = setup()
+    const real = account.receive.bind(account)
+    // A message whose items blow up when read.
+    account.receive = async since => {
+      const messages = await real(since)
+      return messages.map(m =>
+        m.payloadDigest === 'poison'
+          ? { ...m, items: new Proxy([], { get: () => { throw new Error('poison') } }) as never }
+          : m,
+      )
+    }
+    net.deliver({ from: USER, to: BOT, item: { type: 'text' }, stampWei: 1n, digest: 'poison' })
+    user.send({ gameId: gid('after'), action: 'challenge', role: 'player', maxBetWei: '500' })
+    await settle(bot)
+    expect(user.hand(gid('after')).state?.phase).toBe('open')
+  })
+})
+
 describe('refunds', () => {
   it('returns a bet above the max bet, once, as a reply whose stamp equals it', async () => {
     const { net, bot, user } = setup()
-    user.send({ gameId: 'g', action: 'challenge', role: 'player', maxBetWei: '500' })
+    user.send({ gameId: gid('g'), action: 'challenge', role: 'player', maxBetWei: '500' })
     await settle(bot)
-    user.send({ gameId: 'g', action: 'bet' }, 501n, 'over')
+    user.send({ gameId: gid('g'), action: 'bet' }, 501n, 'over')
     await settle(bot)
     await settle(bot)
     const refunds = net.paidBy(BOT).filter(d => (d.item as HandItem).action === 'refund')
     expect(refunds).toMatchObject([{ stampWei: 501n, item: { ref: 'over' } }])
-    expect(user.hand('g').state).toMatchObject({
+    expect(user.hand(gid('g')).state).toMatchObject({
       phase: 'open',
       rejected: [{ digest: 'over', stampWei: 501n, refundedWei: 501n }],
     })
@@ -508,39 +547,39 @@ describe('refunds', () => {
     // Enough to accept two hands of 500 each, but not to cover both once both are bet.
     const { net, bot, user } = setup(RESERVE + 2_100n)
     const second = new User(net, OTHER)
-    user.send({ gameId: 'a', action: 'challenge', role: 'player', maxBetWei: '500' })
-    second.send({ gameId: 'b', action: 'challenge', role: 'player', maxBetWei: '500' })
+    user.send({ gameId: gid('a'), action: 'challenge', role: 'player', maxBetWei: '500' })
+    second.send({ gameId: gid('b'), action: 'challenge', role: 'player', maxBetWei: '500' })
     await settle(bot)
-    expect(user.hand('a').state?.maxBetWei).toBe(500n)
-    expect(second.hand('b').state?.maxBetWei).toBe(500n)
-    user.send({ gameId: 'a', action: 'bet' }, 500n, WIN_BET)
-    second.send({ gameId: 'b', action: 'bet' }, 500n, 'second-bet')
+    expect(user.hand(gid('a')).state?.maxBetWei).toBe(500n)
+    expect(second.hand(gid('b')).state?.maxBetWei).toBe(500n)
+    user.send({ gameId: gid('a'), action: 'bet' }, 500n, WIN_BET)
+    second.send({ gameId: gid('b'), action: 'bet' }, 500n, 'second-bet')
     await settle(bot)
-    expect(user.hand('a').state?.phase).toBe('player_turn')
-    expect(second.hand('b').state).toMatchObject({ phase: 'refunded', refundedWei: 500n })
+    expect(user.hand(gid('a')).state?.phase).toBe('player_turn')
+    expect(second.hand(gid('b')).state).toMatchObject({ phase: 'refunded', refundedWei: 500n })
   })
 })
 
 describe('a payment is made exactly once', () => {
   it('re-sends the same bytes, not a second payment, when the relay answer is lost', async () => {
     const { net, account, bot, user } = setup()
-    user.send({ gameId: 'g', action: 'challenge', role: 'player', maxBetWei: '500' })
+    user.send({ gameId: gid('g'), action: 'challenge', role: 'player', maxBetWei: '500' })
     await settle(bot)
-    user.send({ gameId: 'g', action: 'bet' }, 300n, WIN_BET)
+    user.send({ gameId: gid('g'), action: 'bet' }, 300n, WIN_BET)
     await settle(bot)
-    user.send({ gameId: 'g', action: 'stand' })
+    user.send({ gameId: gid('g'), action: 'stand' })
     account.fault = 'lost'
     await bot.tick()
     account.fault = 'none'
     await settle(bot)
     expect(net.paidBy(BOT).filter(d => d.stampWei === 600n)).toHaveLength(1)
     expect([...net.attempts.values()].filter(a => a.message.stampWei === 600n)).toHaveLength(1)
-    expect(user.hand('g').state).toMatchObject({ phase: 'resolved', paidWei: 600n })
+    expect(user.hand(gid('g')).state).toMatchObject({ phase: 'resolved', paidWei: 600n })
   })
 
   it('sends again from scratch when a send failed before any payment existed', async () => {
     const { net, account, bot, user } = setup()
-    user.send({ gameId: 'g', action: 'challenge', role: 'player', maxBetWei: '500' })
+    user.send({ gameId: gid('g'), action: 'challenge', role: 'player', maxBetWei: '500' })
     account.fault = 'unreachable'
     await bot.tick()
     expect(bot.outbox()).toMatchObject([{ phase: 'sending' }])
@@ -548,12 +587,12 @@ describe('a payment is made exactly once', () => {
     account.fault = 'none'
     await settle(bot)
     expect(net.attempts.size).toBe(1)
-    expect(user.hand('g').state?.phase).toBe('open')
+    expect(user.hand(gid('g')).state?.phase).toBe('open')
   })
 
   it('never pays again for a payment set the relay ended', async () => {
     const { net, account, bot, user } = setup()
-    user.send({ gameId: 'g', action: 'challenge', role: 'player', maxBetWei: '500' })
+    user.send({ gameId: gid('g'), action: 'challenge', role: 'player', maxBetWei: '500' })
     account.fault = 'dead'
     await bot.tick()
     account.fault = 'none'
@@ -566,7 +605,7 @@ describe('a payment is made exactly once', () => {
 
   it('holds everything while two payment attempts are unexplained', async () => {
     const { net, account, bot, user } = setup()
-    user.send({ gameId: 'g', action: 'challenge', role: 'player', maxBetWei: '500' })
+    user.send({ gameId: gid('g'), action: 'challenge', role: 'player', maxBetWei: '500' })
     account.fault = 'unreachable'
     await bot.tick()
     account.fault = 'none'
@@ -657,19 +696,19 @@ describe('a payment is made exactly once', () => {
       })
     }
     const refundScript = async (user: User, tick: () => Promise<void>) => {
-      user.send({ gameId: 'g', action: 'challenge', role: 'player', maxBetWei: '500' })
+      user.send({ gameId: gid('g'), action: 'challenge', role: 'player', maxBetWei: '500' })
       await tick()
-      user.send({ gameId: 'g', action: 'bet' }, 777n, 'over')
+      user.send({ gameId: gid('g'), action: 'bet' }, 777n, 'over')
       await tick()
       await tick()
-      expect(user.hand('g').state?.rejected).toEqual([
+      expect(user.hand(gid('g')).state?.rejected).toEqual([
         { digest: 'over', stampWei: 777n, refundedWei: 777n },
       ])
     }
     const playerScript = async (user: User, tick: () => Promise<void>) => {
       const seed = 'c4'.repeat(32)
       user.send({
-        gameId: 'g',
+        gameId: gid('g'),
         action: 'challenge',
         role: 'dealer',
         maxBetWei: '2000',
@@ -677,11 +716,11 @@ describe('a payment is made exactly once', () => {
       })
       for (let i = 0; i < 20; i++) {
         await tick()
-        const step = dealerStep(user.hand('g').state, seed)
+        const step = dealerStep(user.hand(gid('g')).state, seed)
         if (!step) break
         user.send(step.item, step.payWei ?? STAMP)
       }
-      expect(user.hand('g').state?.phase).toBe('resolved')
+      expect(user.hand(gid('g')).state?.phase).toBe('resolved')
     }
 
     it.each([
@@ -723,11 +762,11 @@ describe('a payment is made exactly once', () => {
       const open = () =>
         new BlackjackP2pBot(new NetAccount(net, BOT), new FileBotStore(path), config())
       await userPlaysAgainstBotDealer(user, () => settle(open()), 300n, WIN_BET)
-      expect(user.hand('g-user').state).toMatchObject({ phase: 'resolved', paidWei: 600n })
+      expect(user.hand(gid('g-user')).state).toMatchObject({ phase: 'resolved', paidWei: 600n })
       const reopened = open()
       await settle(reopened)
       expect(net.paidBy(BOT)).toHaveLength(3)
-      expect(reopened.hand(USER, 'g-user')?.phase).toBe('resolved')
+      expect(reopened.hand(USER, gid('g-user'))?.phase).toBe('resolved')
     })
   })
 })
@@ -743,7 +782,7 @@ describe('the run loop', () => {
       if (++rounds === 1) throw new Error('relay down')
       return real(since)
     }
-    user.send({ gameId: 'g', action: 'challenge', role: 'player', maxBetWei: '500' })
+    user.send({ gameId: gid('g'), action: 'challenge', role: 'player', maxBetWei: '500' })
     await runBlackjackP2pBot({
       bot,
       intervalMs: 5,

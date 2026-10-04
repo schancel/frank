@@ -119,13 +119,31 @@ export interface BotState {
   outbox: OutboxRow[]
 }
 
+/** A map with no prototype: no key (a peer, a game id) can ever name an inherited property. */
+const bare = <T>(entries: Record<string, T> = {}): Record<string, T> =>
+  Object.assign(Object.create(null), entries)
+
 export const emptyBotState = (): BotState => ({
   since: 0,
-  hands: {},
-  seeds: {},
-  challenged: {},
+  hands: bare(),
+  seeds: bare(),
+  challenged: bare(),
   outbox: [],
 })
+
+/** A loaded state with every keyed map rebuilt without a prototype. */
+function bareState(loaded: BotState): BotState {
+  const hands = bare<Record<string, StoredEvent[]>>()
+  for (const [peer, games] of Object.entries(loaded.hands ?? {}))
+    hands[peer] = bare(games)
+  return {
+    since: loaded.since ?? 0,
+    hands,
+    seeds: bare(loaded.seeds),
+    challenged: bare(loaded.challenged),
+    outbox: loaded.outbox ?? [],
+  }
+}
 
 /** Durable bot state. `save` returns only once the state would survive a kill. */
 export interface BotStore {
@@ -191,7 +209,7 @@ export class BlackjackP2pBot {
     private readonly store: BotStore,
     private readonly config: BotConfig,
   ) {
-    this.state = store.load()
+    this.state = bareState(store.load())
     this.reserveWei = config.reserveWei ?? BET_MESSAGE_FEE_RESERVE_WEI
     this.random = config.randomBytes ?? (n => new Uint8Array(randomBytes(n)))
     this.log = config.log ?? (() => undefined)
@@ -207,14 +225,16 @@ export class BlackjackP2pBot {
   }
 
   private events(peer: string, gameId: string): HandEvent[] {
-    return (this.state.hands[lower(peer)]?.[gameId] ?? []).map(e => ({
+    const games = this.state.hands[lower(peer)]
+    const log = games && Object.hasOwn(games, gameId) ? games[gameId] : []
+    return log.map(e => ({
       ...e,
       stampWei: BigInt(e.stampWei),
     }))
   }
 
   private record(peer: string, event: HandEvent): void {
-    const games = (this.state.hands[lower(peer)] ??= {})
+    const games = (this.state.hands[lower(peer)] ??= bare())
     const log = (games[event.item.gameId] ??= [])
     if (log.some(e => e.digest === event.digest)) return
     log.push({ ...event, stampWei: event.stampWei.toString() })
@@ -320,17 +340,24 @@ export class BlackjackP2pBot {
   private async receive(): Promise<void> {
     const messages = await this.account.receive(this.state.since)
     for (const message of messages) {
-      for (const event of handEventsOf({
-        items: message.items,
-        senderAddress: message.from,
-        recipientAddress: this.account.address,
-        stampValueWei: message.stampValueWei,
-        payloadDigest: message.payloadDigest,
-      }))
-        this.record(message.from, event)
+      // One message can never stop the loop: whatever goes wrong with it, the cursor passes it.
+      try {
+        for (const event of handEventsOf({
+          items: message.items,
+          senderAddress: message.from,
+          recipientAddress: this.account.address,
+          stampValueWei: message.stampValueWei,
+          payloadDigest: message.payloadDigest,
+        }))
+          this.record(message.from, event)
+        // An account the bot has never dealt with: challenge it once.
+        await this.challengeOnce(message.from, false)
+      } catch (error) {
+        this.log(
+          `message ${message.payloadDigest} skipped: ${(error as Error).message}`,
+        )
+      }
       this.state.since = Math.max(this.state.since, message.receivedTime)
-      // An account the bot has never dealt with: challenge it once.
-      await this.challengeOnce(message.from, false)
     }
     this.save()
   }

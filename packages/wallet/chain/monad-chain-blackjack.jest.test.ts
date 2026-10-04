@@ -71,7 +71,7 @@ async function challenge(
   role: HandRole,
   maxBetWei: bigint,
 ): Promise<{ gameId: string; dealer: Seat; player: Seat }> {
-  const gameId = `game-${++games}`
+  const gameId = (++games).toString(16).padStart(32, '0')
   const challenged = challenger.peer
   const dealer = role === 'dealer' ? challenger : challenged
   const player = role === 'dealer' ? challenged : challenger
@@ -308,7 +308,7 @@ describe('two typed wallets play blackjack through stamped messages', () => {
     await spend(alice, RESERVE + 400_000n)
     const asDealer = (maxBetWei: bigint, spendableWei: bigint) =>
       buildChallenge({
-        gameId: 'limits',
+        gameId: 'ab'.repeat(16),
         role: 'dealer',
         maxBetWei,
         spendableWei,
@@ -320,7 +320,7 @@ describe('two typed wallets play blackjack through stamped messages', () => {
     expect('item' in asDealer(100_000n, await alice.balance())).toBe(true)
     // A challenging player may name at most what it can send.
     const asPlayer = (maxBetWei: bigint, spendableWei: bigint) =>
-      buildChallenge({ gameId: 'limits', role: 'player', maxBetWei, spendableWei, reserveWei: RESERVE })
+      buildChallenge({ gameId: 'ab'.repeat(16), role: 'player', maxBetWei, spendableWei, reserveWei: RESERVE })
     expect(asPlayer(400_001n, await alice.balance())).toEqual({ error: 'above-own-limit' })
     expect('item' in asPlayer(400_000n, await alice.balance())).toBe(true)
 

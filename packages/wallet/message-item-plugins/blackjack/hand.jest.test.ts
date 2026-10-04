@@ -31,7 +31,7 @@ import {
 const ALICE = '0xAAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa'
 const BOB = '0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB'
 const EVE = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE'
-const GAME = 'game-1'
+const GAME = '0123456789abcdef0123456789abcdef'
 const STAMP = 10n
 const WAGER = 1_000n
 
@@ -782,7 +782,7 @@ describe('what a wallet may send', () => {
   it('credits nothing when one message carries more than one hand item', () => {
     // One stamp can be one bet. Two hand items in one message would count it twice.
     const message = {
-      items: [item({ action: 'bet' }), { type: 'text' }, { ...item({ action: 'bet' }), gameId: 'game-2' }],
+      items: [item({ action: 'bet' }), { type: 'text' }, { ...item({ action: 'bet' }), gameId: 'f'.repeat(32) }],
       senderAddress: BOB,
       recipientAddress: ALICE,
       stampValueWei: 500n,
@@ -793,6 +793,13 @@ describe('what a wallet may send', () => {
     expect(soleHandItem([{ type: 'text' }])).toBeUndefined()
     expect(soleHandItem([{ type: 'text' }, item({ action: 'bet' })])).toEqual(item({ action: 'bet' }))
   })
+
+  it.each(['__proto__', 'constructor', 'game-1', 'A'.repeat(32), 'a'.repeat(31), ''])(
+    'reads no hand item whose game id is %j',
+    gameId => {
+      expect(soleHandItem([{ ...item({ action: 'bet' }), gameId }])).toBeUndefined()
+    },
+  )
 
   it('reads hand events from a message and nothing from other items', () => {
     const bet = item({ action: 'bet' })

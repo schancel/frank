@@ -264,7 +264,7 @@ describe('Chat.vue blackjack challenge', () => {
 
 describe('Chat.vue automatic dealer steps', () => {
   const SEED = 'cd'.repeat(32)
-  const GAME = 'auto-game'
+  const GAME = '0123456789abcdef0123456789abcdef'
   const hand = (...fields: [boolean, Record<string, unknown>, bigint][]) =>
     fields.map(([outbound, item, stampValueWei], i) => ({
       outbound,

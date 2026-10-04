@@ -81,7 +81,7 @@ describe('the bot is an ordinary account on a real typed wallet', () => {
   }
 
   it('deals and pays when a user challenges it as player', async () => {
-    const gameId = 'user-plays'
+    const gameId = '11'.repeat(16)
     const challenge = buildChallenge({
       gameId,
       role: 'player',
@@ -123,7 +123,7 @@ describe('the bot is an ordinary account on a real typed wallet', () => {
   })
 
   it('bets and plays when a user challenges it as dealer', async () => {
-    const gameId = 'user-deals'
+    const gameId = '22'.repeat(16)
     const seed = seedFromBytes(new Uint8Array(32).fill(9))
     const challenge = buildChallenge({
       gameId,

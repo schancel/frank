@@ -609,6 +609,11 @@ export interface HandMessage {
   payloadDigest: string
 }
 
+/** A game id is exactly 32 lowercase hex characters, so it is always safe to use as a key. */
+export function isGameId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{32}$/.test(value)
+}
+
 /**
  * The one hand item of a message. A message's stamp is one amount of money, so a message may
  * carry at most one hand item: with two or more, none of them counts and no money is credited to
@@ -620,7 +625,8 @@ export function soleHandItem(
   const hand = items.filter(
     (item): item is HandItem => item.type === 'blackjack-hand',
   )
-  return hand.length === 1 ? hand[0] : undefined
+  // The codec only produces well-formed game ids; anything else is not a hand item at all.
+  return hand.length === 1 && isGameId(hand[0].gameId) ? hand[0] : undefined
 }
 
 /** The hand event a message carries: none, or exactly one. */

@@ -94,7 +94,7 @@ const t = (key: string, params: Record<string, unknown> = {}) => {
   )
 }
 
-const GAME = 'g1'
+const GAME = '0123456789abcdef0123456789abcdef'
 const BET_DIGEST = 'be'.repeat(32)
 let n = 0
 type Row = {
@@ -470,7 +470,7 @@ describe('the dealer', () => {
   it('is told when this device does not hold the seed', async () => {
     const messages = hand(true, LOSS, 400n, ['stand']).map(m => ({
       ...m,
-      items: [{ ...m.items[0], gameId: 'elsewhere' }],
+      items: [{ ...m.items[0], gameId: 'e'.repeat(32) }],
     }))
     const wrapper = await mountLast(messages)
     expect(wrapper.find('[data-testid="blackjack-problem"]').text()).toContain(

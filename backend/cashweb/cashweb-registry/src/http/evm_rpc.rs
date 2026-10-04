@@ -1129,12 +1129,48 @@ fn parse_hex_header(headers: &HeaderMap, name: &'static str) -> Result<[u8; 32],
     Ok(decoded)
 }
 
+/// The installed directory subject whose address is `customer`, when the directory owner
+/// currently admits it. A canonical account has no legacy profile key on this relay, so this is
+/// the only key its RPC proxy signature can be checked against. Installation alone is not enough:
+/// the subject must have published evidence the owner admits as fresh.
+pub(crate) async fn admitted_customer(
+    server: &RegistryServer,
+    network_tag: &[u8],
+    customer: Address,
+) -> Option<Vec<u8>> {
+    let descriptor = crate::network_tag::monad_network(network_tag)?;
+    let directory = server.registry.canonical_dm().directory()?;
+    let point = directory
+        .installed_subjects(descriptor.cbor_identifier)
+        .into_iter()
+        .filter_map(|subject| hex::decode(subject).ok())
+        .find(|point| {
+            crate::monad_stamp_stealth::recipient_address_from_public_key(point)
+                .map(|address| address == customer)
+                .unwrap_or(false)
+        })?;
+    super::monad_message_cbor::admitted_point(server, descriptor, customer, point).await
+}
+
 pub(crate) fn authenticate(
     headers: &HeaderMap,
     server: &RegistryServer,
     auth: &RpcAuthState,
     network_tag: &[u8],
     binding: &RpcBinding,
+) -> Result<(), RpcRejection> {
+    authenticate_with(headers, server, auth, network_tag, binding, None)
+}
+
+/// `admitted` is a key from [`admitted_customer`]; without one the customer's legacy profile key
+/// is used, exactly as before.
+pub(crate) fn authenticate_with(
+    headers: &HeaderMap,
+    server: &RegistryServer,
+    auth: &RpcAuthState,
+    network_tag: &[u8],
+    binding: &RpcBinding,
+    admitted: Option<&[u8]>,
 ) -> Result<(), RpcRejection> {
     let challenge = RpcChallenge {
         epoch: parse_hex_header(headers, RPC_EPOCH_HEADER)?,
@@ -1160,10 +1196,18 @@ pub(crate) fn authenticate(
     let signature = hex::decode(signature)
         .map_err(|_| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
     let digest: [u8; 32] = Sha256::digest(auth_preimage(challenge, binding, network_tag)).into();
-    let valid = server
-        .registry
-        .verify_monad_recipient_signature(binding.customer, digest, &signature)
-        .map_err(|_| rpc_error(StatusCode::INTERNAL_SERVER_ERROR, "rpc_auth_unavailable"))?;
+    let valid = match admitted {
+        Some(point) => server.registry.verify_admitted_monad_recipient_signature(
+            binding.customer,
+            Some(point),
+            digest,
+            &signature,
+        ),
+        None => server
+            .registry
+            .verify_monad_recipient_signature(binding.customer, digest, &signature),
+    }
+    .map_err(|_| rpc_error(StatusCode::INTERNAL_SERVER_ERROR, "rpc_auth_unavailable"))?;
     if !valid {
         return Err(rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"));
     }
@@ -1332,12 +1376,14 @@ pub(crate) async fn handle_issue_rpc_capability(
         body_sha256: body_hash(&body),
         resource: RpcResource::Capability,
     };
-    authenticate(
+    let admitted = admitted_customer(&server, &runtime.network_tag, customer).await;
+    authenticate_with(
         &headers,
         &server,
         &runtime.auth,
         &runtime.network_tag,
         &binding,
+        admitted.as_deref(),
     )?;
     let ttl_ms = i64::try_from(runtime.capability_ttl.as_millis()).unwrap_or(i64::MAX);
     let (token, expires_at_ms) =
@@ -1959,12 +2005,14 @@ async fn proxy_rpc_inner(
                 body_sha256: body_hash(&body),
                 resource: RpcResource::Rpc,
             };
-            authenticate(
+            let admitted = admitted_customer(&server, &runtime.network_tag, customer).await;
+            authenticate_with(
                 &headers,
                 &server,
                 &runtime.auth,
                 &runtime.network_tag,
                 &binding,
+                admitted.as_deref(),
             )
             .map_err(|error| preflight_broadcast_error(error, cost.broadcast))?;
         }

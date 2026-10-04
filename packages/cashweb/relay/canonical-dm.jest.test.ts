@@ -277,8 +277,8 @@ test('authenticated type18 shares the 256-item graph cap across containers', () 
     }
   }
 })
-test('higher type18 minimum reader preserves exact closed fields with the actual reader99', () => {
-  // This historical vector rejects reader1; DM reader99 applies the supported closed projection.
+test('higher type18 minimum reader preserves exact closed fields with the actual reader2', () => {
+  // This historical vector rejects reader1; DM reader2 applies the supported closed projection.
   const record = blackjackCorpus.frames.find(
     value => value.id === 'higher-min-reader-reject',
   )

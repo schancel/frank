@@ -982,4 +982,427 @@ mod tests {
             .unwrap()
             .is_none());
     }
+
+    #[derive(Debug, Clone)]
+    struct ProofTransport {
+        op: Observation,
+        entered: std::sync::Arc<tokio::sync::Semaphore>,
+        release: std::sync::Arc<tokio::sync::Semaphore>,
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl JsonRpcTransport for ProofTransport {
+        async fn call(
+            &self,
+            method: &str,
+            params: serde_json::Value,
+        ) -> std::result::Result<serde_json::Value, crate::monad_http::MonadRpcError> {
+            use serde_json::json;
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.fail {
+                return Err(crate::monad_http::MonadRpcError::InvalidResponse {
+                    method: method.into(),
+                    reason: "controlled uncertain response".into(),
+                });
+            }
+            let hash = self.op.checked.decoded.tx_hash.to_hex();
+            match method {
+                "eth_sendRawTransaction" => {
+                    assert_eq!(
+                        params[0].as_str().unwrap(),
+                        format!("0x{}", hex::encode(self.op.event.burn_tx()))
+                    );
+                    self.entered.add_permits(1);
+                    self.release.acquire().await.unwrap().forget();
+                    Ok(json!(hash))
+                }
+                "eth_getTransactionReceipt" => Ok(json!({"transactionHash": hash,
+                    "blockHash": format!("0x{}", hex::encode([0x22;32])),
+                    "blockNumber":"0x1", "transactionIndex":"0x0",
+                    "from":self.op.checked.decoded.sender.to_hex(),
+                    "to":Address([0x44;20]).to_hex(), "contractAddress":null,
+                    "gasUsed":"0x5208", "status":"0x1", "logs":[]})),
+                "eth_getTransactionByHash" => Ok(json!({"hash":hash,
+                    "from":self.op.checked.decoded.sender.to_hex(),
+                    "to":Address([0x44;20]).to_hex(), "value":"0x7",
+                    "input":format!("0x{}",hex::encode(&self.op.checked.decoded.input))})),
+                _ => panic!("unexpected RPC {method}"),
+            }
+        }
+    }
+
+    fn proof_transport(op: Observation, fail: bool) -> ProofTransport {
+        ProofTransport {
+            op,
+            entered: std::sync::Arc::new(tokio::sync::Semaphore::new(0)),
+            release: std::sync::Arc::new(tokio::sync::Semaphore::new(0)),
+            calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            fail,
+        }
+    }
+
+    fn proof_poll() -> PollConfig {
+        PollConfig {
+            interval: Duration::from_millis(1),
+            max_attempts: 1,
+        }
+    }
+
+    fn proof_parsed(frame: &[u8]) -> frank_cbor::ParsedFrame {
+        let ValidationResult::Parsed(parsed) =
+            frank_cbor::validate_frame(frame, &frank_cbor::default_context()).unwrap()
+        else {
+            panic!()
+        };
+        parsed
+    }
+
+    #[tokio::test]
+    async fn proof_concurrent_owner_duplicates_and_exact_event_conflict_publish_once() {
+        use crate::store::forum::tests::{
+            optional_observation, proof_reservations, proof_retained_records,
+        };
+        use std::sync::{atomic::Ordering, Arc};
+        let dir = tempdir::TempDir::new("forum-proof-concurrency").unwrap();
+        let owner = Arc::new(Owner::new(dir.path().join("db.rocksdb")));
+        let policy = policy(10143, Address([0x44; 20]));
+        let op = optional_observation(811);
+        let transport = proof_transport(op.clone(), false);
+        let mut tasks = Vec::new();
+        for _ in 0..2 {
+            let owner = owner.clone();
+            let transport = transport.clone();
+            let frame = op.frame().to_vec();
+            tasks.push(tokio::spawn(async move {
+                owner
+                    .submit("monad-testnet", policy, &frame, &transport, proof_poll())
+                    .await
+            }));
+        }
+        tokio::time::timeout(Duration::from_secs(5), transport.entered.acquire_many(2))
+            .await
+            .unwrap()
+            .unwrap()
+            .forget();
+        let before = owner
+            .with("monad-testnet", policy, true, |s| {
+                assert_eq!(s.revision, 1);
+                assert_eq!(s.store.pending_count(), 1);
+                assert_eq!(
+                    proof_reservations(&s.store, op.event.target_hash()),
+                    (
+                        crate::store::forum::Magnitude::from_u64(7),
+                        crate::store::forum::Magnitude::default()
+                    )
+                );
+                let retained = s.store.operation(&op.checked.decoded.tx_hash.0)?.unwrap();
+                assert_eq!(retained.frame(), op.frame());
+                assert!(retained.confirmed.is_none());
+                assert!(s
+                    .store
+                    .post(op.event.target_hash())?
+                    .unwrap()
+                    .visible
+                    .is_none());
+                Ok(proof_retained_records(&s.store))
+            })
+            .unwrap()
+            .unwrap();
+        let parsed = proof_parsed(op.frame());
+        let CborValue::Map(mut fields) = parsed.payload else {
+            panic!()
+        };
+        fields.iter_mut().find(|(k, _)| *k == 99).unwrap().1 = CborValue::Bytes(vec![1, 2, 3]);
+        let conflict = frank_cbor::encode_frame(
+            frank_cbor::EnvelopeFields {
+                type_id: 10,
+                schema_version: 2,
+                min_reader_version: 1,
+            },
+            frank_cbor::FramePayload::Value(&cbor_map(fields)),
+        )
+        .unwrap();
+        assert_eq!(
+            request("monad-testnet", policy, &conflict)
+                .unwrap()
+                .checked
+                .decoded
+                .tx_hash,
+            op.checked.decoded.tx_hash
+        );
+        assert!(matches!(
+            owner
+                .submit("monad-testnet", policy, &conflict, &transport, proof_poll())
+                .await,
+            Err(ForumError::Conflict)
+        ));
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 2);
+        owner
+            .with("monad-testnet", policy, true, |s| {
+                assert_eq!(proof_retained_records(&s.store), before);
+                Ok(())
+            })
+            .unwrap();
+        transport.release.add_permits(2);
+        let first = tokio::time::timeout(Duration::from_secs(5), tasks.remove(0))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let second = tokio::time::timeout(Duration::from_secs(5), tasks.remove(0))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(first, second);
+        let published = owner
+            .with("monad-testnet", policy, true, |s| {
+                assert_eq!(s.revision, 2);
+                assert_eq!(s.store.pending_count(), 0);
+                assert_eq!(
+                    proof_reservations(&s.store, op.event.target_hash()),
+                    (
+                        crate::store::forum::Magnitude::default(),
+                        crate::store::forum::Magnitude::default()
+                    )
+                );
+                let post = s.store.post(op.event.target_hash())?.unwrap();
+                assert!(post.visible.is_some());
+                assert_eq!(
+                    post.aggregate.magnitude,
+                    crate::store::forum::Magnitude::from_u64(7)
+                );
+                Ok(proof_retained_records(&s.store))
+            })
+            .unwrap()
+            .unwrap();
+        let calls = transport.calls.load(Ordering::SeqCst);
+        assert_eq!(
+            owner
+                .submit(
+                    "monad-testnet",
+                    policy,
+                    op.frame(),
+                    &transport,
+                    proof_poll()
+                )
+                .await
+                .unwrap(),
+            first
+        );
+        assert_eq!(transport.calls.load(Ordering::SeqCst), calls);
+        owner
+            .with("monad-testnet", policy, true, |s| {
+                assert_eq!(s.revision, 2);
+                assert_eq!(proof_retained_records(&s.store), published);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn proof_real_owner_reopen_changes_epoch_and_expires_both_page_families() {
+        let dir = tempdir::TempDir::new("forum-proof-owner-epoch").unwrap();
+        let path = dir.path().join("db.rocksdb");
+        let policy = policy(10143, Address([0x44; 20]));
+        let owner = Owner::new(path.clone());
+        owner
+            .with("monad-testnet", policy, true, |s| {
+                for nonce in 0..129 {
+                    let topic_post = crate::store::forum::tests::distinct_post(nonce, "test.topic");
+                    s.store.admit(topic_post.clone())?;
+                    s.store.confirm(
+                        &topic_post.checked.decoded.tx_hash.0,
+                        &facts(&topic_post, nonce, 0),
+                        topic_post.first_seen,
+                    )?;
+                    s.revision += 1;
+                    let op = crate::store::forum::tests::distinct_post(
+                        1000 + nonce,
+                        &format!("topic.{nonce:03}"),
+                    );
+                    s.store.admit(op.clone())?;
+                    s.store.confirm(
+                        &op.checked.decoded.tx_hash.0,
+                        &facts(&op, nonce, 0),
+                        op.first_seen,
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let queries = [
+            Query::Topic {
+                topic: "test.topic".into(),
+                since: Timestamp {
+                    seconds: 0,
+                    nanoseconds: 0,
+                },
+            },
+            Query::Discovery,
+        ];
+        let mut retained = Vec::new();
+        for query in &queries {
+            let frame = owner
+                .page("monad-testnet", policy, query.clone(), None)
+                .unwrap();
+            let parsed = proof_parsed(&frame);
+            let cursor = match parsed.typed.as_deref().unwrap() {
+                TypedPayload::ForumTopicPage(p) => p.next_cursor.as_ref().unwrap().clone(),
+                TypedPayload::ForumDiscoveryPage(p) => p.next_cursor.as_ref().unwrap().clone(),
+                _ => panic!(),
+            };
+            owner
+                .page("monad-testnet", policy, query.clone(), Some(&cursor.bytes))
+                .unwrap();
+            retained.push(cursor);
+        }
+        drop(owner);
+        let owner = Owner::new(path);
+        for (query, cursor) in queries.iter().zip(&retained) {
+            let frame = owner
+                .page("monad-testnet", policy, query.clone(), None)
+                .unwrap();
+            let parsed = proof_parsed(&frame);
+            let epoch = match parsed.typed.as_deref().unwrap() {
+                TypedPayload::ForumTopicPage(p) => &p.epoch,
+                TypedPayload::ForumDiscoveryPage(p) => &p.epoch,
+                _ => panic!(),
+            };
+            assert_ne!(epoch, &cursor.epoch);
+            assert!(matches!(
+                owner.page("monad-testnet", policy, query.clone(), Some(&cursor.bytes)),
+                Err(ForumError::Expired)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn proof_revision_exhaustion_preserves_pending_obligation_and_never_wraps() {
+        use crate::store::forum::tests::{
+            optional_observation, proof_reservations, proof_retained_records,
+        };
+        use std::sync::atomic::Ordering;
+        let dir = tempdir::TempDir::new("forum-proof-revision").unwrap();
+        let owner = Owner::new(dir.path().join("db.rocksdb"));
+        let policy = policy(10143, Address([0x44; 20]));
+        owner
+            .with("monad-testnet", policy, true, |s| {
+                s.revision = u64::MAX - 2;
+                Ok(())
+            })
+            .unwrap();
+        let op = optional_observation(811);
+        let uncertain = proof_transport(op.clone(), true);
+        assert!(matches!(
+            owner
+                .submit(
+                    "monad-testnet",
+                    policy,
+                    op.frame(),
+                    &uncertain,
+                    proof_poll()
+                )
+                .await,
+            Err(ForumError::OutcomeUnknown(_))
+        ));
+        let before = owner
+            .with("monad-testnet", policy, true, |s| {
+                assert_eq!(s.revision, u64::MAX - 1);
+                assert_eq!(s.store.pending_count(), 1);
+                assert_eq!(
+                    proof_reservations(&s.store, op.event.target_hash()),
+                    (
+                        crate::store::forum::Magnitude::from_u64(7),
+                        crate::store::forum::Magnitude::default()
+                    )
+                );
+                assert_eq!(
+                    s.store
+                        .operation(&op.checked.decoded.tx_hash.0)?
+                        .unwrap()
+                        .frame(),
+                    op.frame()
+                );
+                Ok(proof_retained_records(&s.store))
+            })
+            .unwrap()
+            .unwrap();
+        let extra = optional_observation(812);
+        let calls = uncertain.calls.load(Ordering::SeqCst);
+        assert!(matches!(
+            owner
+                .submit(
+                    "monad-testnet",
+                    policy,
+                    extra.frame(),
+                    &uncertain,
+                    proof_poll()
+                )
+                .await,
+            Err(ForumError::Capacity)
+        ));
+        assert_eq!(uncertain.calls.load(Ordering::SeqCst), calls);
+        owner
+            .with("monad-testnet", policy, true, |s| {
+                assert_eq!(s.revision, u64::MAX - 1);
+                assert_eq!(s.store.pending_count(), 1);
+                assert_eq!(
+                    proof_reservations(&s.store, op.event.target_hash()),
+                    (
+                        crate::store::forum::Magnitude::from_u64(7),
+                        crate::store::forum::Magnitude::default()
+                    )
+                );
+                assert_eq!(proof_retained_records(&s.store), before);
+                Ok(())
+            })
+            .unwrap();
+        let confirmed = proof_transport(op.clone(), false);
+        confirmed.release.add_permits(1);
+        owner
+            .submit(
+                "monad-testnet",
+                policy,
+                op.frame(),
+                &confirmed,
+                proof_poll(),
+            )
+            .await
+            .unwrap();
+        owner
+            .with("monad-testnet", policy, true, |s| {
+                assert_eq!(s.revision, u64::MAX);
+                assert_eq!(s.store.pending_count(), 0);
+                assert_eq!(
+                    proof_reservations(&s.store, op.event.target_hash()),
+                    (
+                        crate::store::forum::Magnitude::default(),
+                        crate::store::forum::Magnitude::default()
+                    )
+                );
+                assert!(s
+                    .store
+                    .operation(&op.checked.decoded.tx_hash.0)?
+                    .unwrap()
+                    .confirmed
+                    .is_some());
+                Ok(())
+            })
+            .unwrap();
+        assert!(matches!(
+            owner
+                .submit(
+                    "monad-testnet",
+                    policy,
+                    extra.frame(),
+                    &uncertain,
+                    proof_poll()
+                )
+                .await,
+            Err(ForumError::Capacity)
+        ));
+    }
 }

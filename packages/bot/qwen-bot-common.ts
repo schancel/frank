@@ -113,6 +113,7 @@ import type { MonadTxOverrides } from '@frank/wallet/monad-account-tx'
 import {
   canonicalMonadStampClient,
   createMonadChain,
+  loadMonadChainConfigFromEnv,
   type MonadChainConfig,
 } from '@frank/wallet/chain/monad-chain'
 import {
@@ -691,6 +692,45 @@ export interface CanonicalQwenSetup {
   close(): Promise<void>
 }
 
+/** The env-configured chain row with Qwen's own relay and a durable canonical wallet root. */
+export function qwenCanonicalChainConfig(params: {
+  relayBaseUrl: string
+  walletStorageLocation: string
+  stampValueWei: bigint
+}): MonadChainConfig {
+  return {
+    ...loadMonadChainConfigFromEnv(),
+    relayBaseUrl: params.relayBaseUrl,
+    walletStorageLocation: params.walletStorageLocation,
+    defaultStampValueWei: params.stampValueWei,
+  }
+}
+
+/** Loads the operator-installed directory source named by `QWEN_BOT_CANONICAL_DIRECTORY_MODULE`.
+ * This is a deliberately narrow interim seam: trust installation and the admitted directory
+ * runtime are owned by #778, which replaces this loader with its installed store. */
+export async function openQwenCanonicalDirectory(
+  modulePath: string,
+  input: { relayBaseUrl: string; networkTag: string; stateDir: string },
+): Promise<QwenCanonicalDirectory & { close(): Promise<void> }> {
+  const loaded = (await import(modulePath)) as {
+    openQwenCanonicalDirectory?: (
+      input: unknown,
+    ) => Promise<QwenCanonicalDirectory & { close?: () => Promise<void> }>
+  }
+  if (typeof loaded.openQwenCanonicalDirectory !== 'function')
+    throw new Error(
+      'Qwen canonical directory module must export openQwenCanonicalDirectory',
+    )
+  const directory = await loaded.openQwenCanonicalDirectory(input)
+  if (!directory || typeof directory.currents !== 'function')
+    throw new Error('Qwen canonical directory module returned no directory')
+  return {
+    currents: peer => directory.currents(peer),
+    close: async () => directory.close?.(),
+  }
+}
+
 const ROOT_PURPOSES = {
   evm: 'evm-wallet',
   authentication: 'identity-authentication',
@@ -764,9 +804,7 @@ export async function setUpCanonicalQwenSender(params: {
   const network = canonicalNetworkDescriptor(params.chain.networkTag).network
   // Sealing capability only. It derives no account, pool or signer and is never persisted.
   const material = createMonadWalletMaterial(params.roots)
-  let wallet:
-    | Awaited<ReturnType<ReturnType<typeof createMonadChain>['createWallet']>>
-    | undefined
+  let wallet: { close(): Promise<void> } | undefined
   try {
     const roles = material.canonicalRoles
     if (!roles) throw new Error('Qwen canonical sender requires typed roots')

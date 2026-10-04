@@ -72,9 +72,19 @@
  *                                  Survives restarts; preserve held response rows (see README).
  *   QWEN_BOT_WALLET_STATE_DIR   -- durable HD seed, sender/change pools, and exact stamp journals
  *                                  (default ~/.frank-bots/qwen-wallet, or $XDG_STATE_HOME/frank-bots/qwen-wallet).
+ *
+ * Canonical replies (#703, opt-in until the #778 cutover):
+ *   QWEN_BOT_CANONICAL_ROOTS_JSON       -- operator-provisioned frank-domain-roots-v1 bundle. When
+ *                                          set, every Qwen reply is sealed once through the shared
+ *                                          canonical producer and paid through one durable wallet
+ *                                          attempt; the legacy combined send is never used for a
+ *                                          reply. The bot never creates this file.
+ *   QWEN_BOT_CANONICAL_DIRECTORY_MODULE -- installed-directory source (see
+ *                                          `openQwenCanonicalDirectory` in qwen-bot-common.ts).
+ * Greetings and inbound import are unchanged by this mode.
  */
 import { writeFileSync } from 'fs'
-import { resolve } from 'path'
+import { join, resolve } from 'path'
 
 import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
 const { AddressMetadata } = __pb_registry_metadata_pb
@@ -89,9 +99,13 @@ import { createQwenReplyGenerator, qwenBotConfigFromEnv } from './qwen-reply'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 import {
   loadOrCreateIdentity,
+  loadQwenCanonicalRoots,
+  openQwenCanonicalDirectory,
+  qwenCanonicalChainConfig,
   registerAndLog,
   requiredEnv,
   sendDirectMessageText,
+  setUpCanonicalQwenSender,
   setUpDurableFundedStampClient,
 } from './qwen-bot-common'
 import { botProfileFields } from './bot-directory'
@@ -113,6 +127,8 @@ const SYSTEM_PROMPT =
 
 let closeFundedSetup: (() => Promise<void>) | undefined
 let closeBotState: (() => Promise<void>) | undefined
+let closeCanonicalSetup: (() => Promise<void>) | undefined
+let closeCanonicalDirectory: (() => Promise<void>) | undefined
 
 async function main() {
   // Validated first so a missing key fails immediately, naming the variable (#314).
@@ -250,38 +266,82 @@ async function main() {
   let greetingsSent = 0
   let lastActivityAt = Date.now()
 
-  const responses = new QwenResponseWorkflow({
+  // #703: the canonical wallet owner opens only after Qwen's response state, and opening it has
+  // no signing, funding, replay or relay effect. Retained attempts are replayed only after
+  // `responses.recover()` below has correlated every wallet record with a saved turn.
+  const canonicalRootsPath = process.env.QWEN_BOT_CANONICAL_ROOTS_JSON
+  let canonical:
+    | Awaited<ReturnType<typeof setUpCanonicalQwenSender>>
+    | undefined
+  if (canonicalRootsPath) {
+    const chain = qwenCanonicalChainConfig({
+      relayBaseUrl,
+      walletStorageLocation: join(walletStateDirPath, 'canonical'),
+      stampValueWei,
+    })
+    if (chain.networkTag !== networkTag)
+      throw new Error(
+        'Qwen canonical network differs from FRANK_NETWORK_TAG; refusing to start',
+      )
+    const directory = await openQwenCanonicalDirectory(
+      resolve(
+        process.cwd(),
+        requiredEnv('QWEN_BOT_CANONICAL_DIRECTORY_MODULE'),
+      ),
+      { relayBaseUrl, networkTag, stateDir: stateDirPath },
+    )
+    closeCanonicalDirectory = () => directory.close()
+    canonical = await setUpCanonicalQwenSender({
+      chain,
+      roots: loadQwenCanonicalRoots(resolve(process.cwd(), canonicalRootsPath)),
+      directory,
+      label: 'bot',
+    })
+    closeCanonicalSetup = canonical.close
+  }
+
+  const responseOptions = {
     state,
     context: {
       botAddress: canonicalMonadEnvelopeAddress(identity.displayAddress),
-      fundingAddress: canonicalMonadEnvelopeAddress(mainAccountSigner.address),
+      // The account that pays reply stamps: the typed canonical account, or the legacy funder.
+      fundingAddress: canonicalMonadEnvelopeAddress(
+        canonical ? canonical.accountAddress : mainAccountSigner.address,
+      ),
       networkTag,
       relayBaseUrl,
       stampValueWei: stampValueWei.toString(),
     },
     systemPrompt: SYSTEM_PROMPT,
     generator: replyGenerator,
-    send: async row => {
-      const result = await sendDirectMessageText({
-        stampClient,
-        pool,
-        mainAccountSigner,
-        provider,
-        fromIdentity: identity,
-        toAddress: row.senderAddress,
-        toPubKey: Buffer.from(row.senderPubKeyHex, 'hex'),
-        text: row.response,
-        stampValueWei,
-        networkTag,
-      })
-      // Stamp results also contain wallet/protobuf details (including BigInts). Only the
-      // delivery proof belongs in the durable response receipt.
-      return {
-        payloadHashHex: result.payloadHashHex,
-        txHashes: [...result.txHashes],
-      }
-    },
-  })
+  }
+  const responses = new QwenResponseWorkflow(
+    canonical
+      ? { ...responseOptions, canonical: canonical.sender }
+      : {
+          ...responseOptions,
+          send: async row => {
+            const result = await sendDirectMessageText({
+              stampClient,
+              pool,
+              mainAccountSigner,
+              provider,
+              fromIdentity: identity,
+              toAddress: row.senderAddress,
+              toPubKey: Buffer.from(row.senderPubKeyHex, 'hex'),
+              text: row.response,
+              stampValueWei,
+              networkTag,
+            })
+            // Stamp results also contain wallet/protobuf details (including BigInts). Only the
+            // delivery proof belongs in the durable response receipt.
+            return {
+              payloadHashHex: result.payloadHashHex,
+              txHashes: [...result.txHashes],
+            }
+          },
+        },
+  )
 
   const inbound = new QwenInboundWorkflow({
     state,
@@ -301,6 +361,16 @@ async function main() {
     peerBlockReason: address => guard.peerBlockReason(address),
     reserveReply: address => guard.reserveReply(address),
   })
+
+  // Correlate saved turns with retained wallet records before any replay or new reply effect.
+  if (canonical) {
+    const hold = await responses.recover()
+    console.log(
+      `[bot] canonical wallet correlation ${hold ? 'held' : 'complete'}`,
+    )
+    // Opening the typed owner and directory is not idleness.
+    lastActivityAt = Date.now()
+  }
 
   // Surface nonretryable ambiguity once on startup. Only ready rows enter periodic recovery.
   for (const row of state.pendingResponses()) {
@@ -342,12 +412,16 @@ async function main() {
     // Recovery does not depend on a mailbox entry or operator restart. A transient profile
     // lookup failure/budget limit leaves ready rows eligible for the next poll; held sends
     // never enter this retry path. Each row is reconsidered at most once per poll.
+    if (canonical) await responses.recover()
     for (const row of state.pendingResponses()) {
       if (repliesSent >= maxReplies) break
+      if (row.phase !== 'response-ready') continue
+      // A turn that already owns a sealed envelope continues its exact attempt; that is not a
+      // new reply decision, so it neither re-asks the peer guard nor spends reply budget.
       if (
-        row.phase !== 'response-ready' ||
-        (await guard.peerBlockReason(row.senderAddress)) ||
-        !guard.reserveReply(row.senderAddress)
+        !state.getCoupling(row.payloadHashHex) &&
+        ((await guard.peerBlockReason(row.senderAddress)) ||
+          !guard.reserveReply(row.senderAddress))
       )
         continue
       if ((await responses.resume(row.payloadHashHex)) === 'confirmed') {
@@ -484,7 +558,12 @@ main()
     try {
       await closeBotState?.()
     } finally {
-      await closeFundedSetup?.()
+      try {
+        await closeCanonicalSetup?.()
+        await closeCanonicalDirectory?.()
+      } finally {
+        await closeFundedSetup?.()
+      }
     }
   })
   .catch(() => {

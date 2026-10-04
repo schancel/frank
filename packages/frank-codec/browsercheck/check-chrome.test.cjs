@@ -1,0 +1,506 @@
+const { test } = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const { EventEmitter, once } = require('node:events')
+const { PassThrough } = require('node:stream')
+const { spawn, execFileSync } = require('node:child_process')
+const {
+  runChrome,
+  ownedProcesses,
+  corpusExpectation,
+} = require('./check-chrome.js')
+
+const expected = corpusExpectation()
+const passing = () => ({
+  ...structuredClone(expected),
+  ok: true,
+  failures: [],
+  leakedNodeGlobals: [],
+})
+
+// Only native I/O is replaced: the real launcher runs startup -> navigation ->
+// DOM validation -> explicit close -> native status -> ownership/profile cleanup.
+function fixture(mode = 'pass', result = passing()) {
+  const child = Object.assign(new EventEmitter(), {
+    pid: 987654,
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+  })
+  let alive = true,
+    profile,
+    removedWhileAlive = false
+  const commands = [],
+    logs = [],
+    signals = []
+  const exit = (code, signal = null) => {
+    alive = false
+    child.emit('exit', code, signal)
+  }
+  class Socket extends EventEmitter {
+    constructor() {
+      super()
+      this.readyState = 1
+    }
+    addEventListener(...args) {
+      this.on(...args)
+    }
+    close() {
+      this.readyState = 3
+    }
+    send(raw) {
+      const { id, method, params } = JSON.parse(raw)
+      commands.push({ method, params })
+      queueMicrotask(() => {
+        if (mode === 'rpc-hang') return
+        let value = {}
+        if (method === 'Target.getTargets')
+          value = {
+            targetInfos: [
+              { type: 'page', url: 'about:blank', targetId: 'owned' },
+            ],
+          }
+        if (method === 'Target.attachToTarget') value = { sessionId: 'session' }
+        if (method === 'Page.navigate') {
+          if (mode === 'launcher-interrupt') return process.emit('SIGTERM')
+          if (mode === 'navigation-error') value = { errorText: 'blocked' }
+          if (mode === 'page-exception')
+            return this.emit('message', {
+              data: JSON.stringify({
+                method: 'Runtime.exceptionThrown',
+                params: { description: 'broken page' },
+              }),
+            })
+          if (mode === 'cdp-close') return this.emit('close')
+          if (mode === 'early-exit') return exit(0)
+        }
+        if (method === 'Runtime.evaluate') {
+          value = {
+            result: {
+              value:
+                mode === 'missing-result'
+                  ? undefined
+                  : mode === 'malformed'
+                  ? '{'
+                  : JSON.stringify(result),
+            },
+          }
+          if (mode === 'evaluation-error')
+            value.exceptionDetails = { text: 'exception' }
+        }
+        this.emit('message', { data: JSON.stringify({ id, result: value }) })
+        if (method === 'Browser.close') {
+          if (mode === 'close-timeout') return
+          if (mode === 'signal') return exit(null, 'SIGTERM')
+          if (mode === 'nonzero') return exit(7)
+          exit(0)
+        }
+      })
+    }
+  }
+  const native = {
+    WebSocket: Socket,
+    spawn(command, args, options) {
+      assert.equal(command, '/fixture/chrome')
+      assert.equal(options.detached, true)
+      assert.ok(args.includes('--remote-debugging-address=127.0.0.1'))
+      assert.ok(!args.includes('--dump-dom'))
+      profile = args.find(a => a.startsWith('--user-data-dir=')).slice(16)
+      assert.ok(fs.existsSync(profile))
+      setImmediate(() => {
+        if (mode === 'launch-error') {
+          alive = false
+          return child.emit('error', new Error('ENOENT'))
+        }
+        if (
+          [
+            'startup-timeout',
+            'kill-required',
+            'unreaped',
+            'ownership-error',
+          ].includes(mode)
+        )
+          return
+        if (mode === 'output-flood') {
+          child.stdout.write(Buffer.alloc(100000, 120))
+          child.stderr.write(Buffer.alloc(100000, 120))
+        }
+        const host =
+          mode === 'remote-endpoint' ? 'example.invalid' : '127.0.0.1'
+        child.stderr.write(
+          `\nDevTools listening on ws://${host}:1234/devtools/browser/fixture\n`,
+        )
+      })
+      return child
+    },
+    ownedProcesses() {
+      return {
+        members() {
+          if (mode === 'ownership-error')
+            throw Error('ownership absence cannot be established')
+          if (alive && !fs.existsSync(profile)) removedWhileAlive = true
+          return alive ? [{ pid: child.pid }] : []
+        },
+        signal(signal) {
+          signals.push(signal)
+          if (
+            mode === 'unreaped' ||
+            (mode === 'kill-required' && signal === 'SIGTERM')
+          )
+            return
+          exit(null, signal)
+        },
+      }
+    },
+  }
+  return {
+    commands,
+    logs,
+    signals,
+    run: () =>
+      runChrome(
+        {
+          chrome: '/fixture/chrome',
+          page: '/fixture/full corpus.html',
+          expected,
+          timeoutMs: 150,
+          log: line => logs.push(line),
+        },
+        native,
+      ),
+    cleaned() {
+      assert.equal(removedWhileAlive, false)
+      assert.equal(fs.existsSync(profile), false)
+      assert.equal(alive, false)
+    },
+    retained() {
+      assert.equal(alive, true)
+      assert.equal(removedWhileAlive, false)
+      assert.ok(fs.existsSync(profile))
+      // This fixture has no native process. Dispose only its freshly created path.
+      alive = false
+      fs.rmSync(profile, { recursive: true })
+    },
+  }
+}
+
+test('full committed corpus, explicit close, native exit and disposable cleanup', async () => {
+  const f = fixture()
+  assert.deepEqual(await f.run(), passing())
+  assert.equal(f.commands.at(-1).method, 'Browser.close')
+  assert.equal(
+    f.commands.find(c => c.method === 'Page.navigate').params.url,
+    'file:///fixture/full%20corpus.html',
+  )
+  assert.deepEqual(f.signals, [])
+  f.cleaned()
+})
+
+for (const [mode, error] of [
+  ['launch-error', /ENOENT/],
+  ['launcher-interrupt', /launcher interrupted/],
+  ['startup-timeout', /timeout during startup/],
+  ['rpc-hang', /timeout/],
+  ['missing-result', /timeout during page/],
+  ['close-timeout', /timeout during close/],
+  ['signal', /unexpected Chrome exit/],
+  ['nonzero', /unexpected Chrome exit/],
+  ['early-exit', /unexpected Chrome exit/],
+  ['remote-endpoint', /loopback/],
+  ['navigation-error', /blocked/],
+  ['page-exception', /page exception/],
+  ['cdp-close', /CDP closed/],
+  ['evaluation-error', /evaluation failed/],
+  ['malformed', /JSON/],
+])
+  test(`fails closed: ${mode}`, async () => {
+    const f = fixture(mode)
+    await assert.rejects(f.run(), error)
+    f.cleaned()
+  })
+
+for (const [name, mutate] of [
+  [
+    'ok false',
+    r => {
+      r.ok = false
+    },
+  ],
+  [
+    'failure despite ok',
+    r => {
+      r.failures.push('failed')
+    },
+  ],
+  [
+    'Node global',
+    r => {
+      r.leakedNodeGlobals.push('process')
+    },
+  ],
+  [
+    'partial historical count',
+    r => {
+      r.typescript.total--
+    },
+  ],
+  [
+    'wrong historical outcome',
+    r => {
+      r.typescript.rejected--
+    },
+  ],
+  [
+    'missing Rust corpus',
+    r => {
+      delete r.rust
+    },
+  ],
+  [
+    'partial registration',
+    r => {
+      r.registration.total--
+    },
+  ],
+  [
+    'partial Forum',
+    r => {
+      r.forum.total--
+    },
+  ],
+  [
+    'partial interoperability',
+    r => {
+      r.interoperability.hostileCases--
+    },
+  ],
+])
+  test(`rejects result: ${name}`, async () => {
+    const result = passing()
+    mutate(result)
+    const f = fixture('pass', result)
+    await assert.rejects(f.run())
+    assert.ok(!f.commands.some(c => c.method === 'Browser.close'))
+    f.cleaned()
+  })
+
+test('native diagnostics are retained and bounded without hiding startup', async () => {
+  const f = fixture('output-flood')
+  await f.run()
+  assert.ok(f.logs.join('\n').length < 140000)
+  assert.equal(
+    f.logs.filter(l => l.includes('further output truncated')).length,
+    2,
+  )
+  f.cleaned()
+})
+
+test('deadline escalates only owned members from TERM to KILL', async () => {
+  const f = fixture('kill-required')
+  await assert.rejects(f.run(), /timeout/)
+  assert.deepEqual(f.signals, ['SIGTERM', 'SIGKILL'])
+  f.cleaned()
+})
+
+test('unreaped members fail and retain the disposable profile', async () => {
+  const f = fixture('unreaped')
+  await assert.rejects(f.run(), /processes remain; profile retained/)
+  f.retained()
+})
+
+test('unestablished ownership fails closed and retains its profile', async () => {
+  const f = fixture('ownership-error')
+  await assert.rejects(f.run(), /ownership absence cannot be established/)
+  assert.deepEqual(f.signals, [])
+  f.retained()
+})
+
+test('owned group survives leader exit, but is never reacquired after absence', () => {
+  let table = '501 1 500 original-helper\n900 1 900 unrelated'
+  const owner = ownedProcesses(500, () => table)
+  assert.deepEqual(
+    owner.members().map(p => p.pid),
+    [501],
+  )
+  table = '900 1 900 unrelated'
+  assert.deepEqual(owner.members(), [])
+  table =
+    '500 1 500 reused-leader\n501 500 500 reused-helper\n900 1 900 unrelated'
+  assert.deepEqual(owner.members(), [])
+})
+
+test('malformed process observations cannot establish absence', () => {
+  for (const table of ['', 'bad', '1 NaN 1 unknown-parent'])
+    assert.throws(
+      () => ownedProcesses(500, () => table).members(),
+      /unusable process table/,
+    )
+})
+
+test('real ownership includes descendants, not an unrelated sibling', async () => {
+  const args = ['-e', 'setInterval(()=>{},1000)']
+  const child = spawn(
+    process.execPath,
+    [
+      '-e',
+      `
+    const c = require('node:child_process').spawn(process.execPath,
+      ['-e', 'setInterval(()=>{},1000)'], {stdio:'ignore'})
+    process.send(c.pid)
+    c.on('exit', () => process.exit(0))
+    process.on('SIGTERM', () => c.kill('SIGTERM'))
+  `,
+    ],
+    {
+      detached: true,
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    },
+  )
+  const sibling = spawn(process.execPath, args, {
+    detached: true,
+    stdio: 'ignore',
+  })
+  const childExit = once(child, 'exit'),
+    siblingExit = once(sibling, 'exit')
+  try {
+    const [descendant] = await once(child, 'message')
+    const owner = ownedProcesses(child.pid)
+    assert.ok(owner.members().some(p => p.pid === child.pid))
+    assert.ok(owner.members().some(p => p.pid === descendant))
+    assert.ok(!owner.members().some(p => p.pid === sibling.pid))
+    owner.signal('SIGTERM')
+    await childExit
+    assert.deepEqual(owner.members(), [])
+    process.kill(sibling.pid, 0)
+  } finally {
+    if (child.exitCode === null && child.signalCode === null)
+      child.kill('SIGKILL')
+    sibling.kill('SIGTERM')
+    await Promise.all([childExit, siblingExit])
+  }
+})
+
+test('full runner cleans a reparented same-group helper before deleting its profile', async () => {
+  const row = pid => {
+    try {
+      return execFileSync('ps', [
+        '-p',
+        String(pid),
+        '-o',
+        'pid=,ppid=,pgid=,lstart=',
+      ])
+        .toString()
+        .trim()
+        .match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)
+    } catch (error) {
+      if (error.status === 1) return null
+      throw error
+    }
+  }
+  const sibling = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
+    detached: true,
+    stdio: 'ignore',
+  })
+  const siblingExit = once(sibling, 'exit')
+  let root,
+    rootExit,
+    exited = false,
+    helper,
+    birth,
+    first,
+    profile,
+    cleanupSafe
+  try {
+    await assert.rejects(
+      runChrome(
+        {
+          chrome: '/fixture/early-exit',
+          page: '/fixture/full.html',
+          expected,
+          timeoutMs: 3000,
+          log(line) {
+            if (!line.startsWith('chrome lifecycle: ')) return
+            const event = JSON.parse(line.slice('chrome lifecycle: '.length))
+            if (event.stage === 'launch') profile = event.profile
+            if (event.stage === 'cleanup') cleanupSafe = row(helper) === null
+          },
+        },
+        {
+          WebSocket: class {
+            constructor() {
+              throw Error('no CDP before early native exit')
+            }
+          },
+          spawn() {
+            root = spawn(
+              process.execPath,
+              [
+                '-e',
+                `
+          const helper = require('node:child_process').spawn(process.execPath,
+            ['-e', 'setInterval(()=>{},1000)'], {stdio:'ignore'})
+          console.log(helper.pid)
+          helper.unref()
+          setTimeout(()=>process.exit(7),10)
+        `,
+              ],
+              { detached: true, stdio: ['ignore', 'pipe', 'pipe'] },
+            )
+            rootExit = once(root, 'exit')
+            root.once('exit', () => {
+              exited = true
+            })
+            root.stdout.once('data', buffer => {
+              helper = Number(buffer.toString().trim())
+              birth = row(helper)?.[4]
+            })
+            return root
+          },
+          ownedProcesses(pid) {
+            const owner = ownedProcesses(pid)
+            return {
+              members() {
+                // Deterministically make the first ownership observation AFTER exit,
+                // even on a slow CI host. Merely adding an eager scan cannot fix this.
+                if (!exited) return []
+                if (!first) first = row(helper)
+                return owner.members()
+              },
+              signal: owner.signal,
+            }
+          },
+        },
+      ),
+      /unexpected Chrome exit/,
+    )
+    assert.ok(first, 'helper survives its unobserved leader')
+    assert.equal(Number(first[2]), 1, 'helper reparented')
+    assert.equal(
+      Number(first[3]),
+      root.pid,
+      'original detached process group survives',
+    )
+    assert.equal(
+      cleanupSafe,
+      true,
+      'profile cleanup must follow helper absence',
+    )
+    assert.equal(fs.existsSync(profile), false)
+    process.kill(sibling.pid, 0)
+  } finally {
+    if (root && !exited) root.kill('SIGKILL')
+    // Fail-before cleanup is identity checked; never signal a reused PID.
+    if (helper && birth && row(helper)?.[4] === birth)
+      process.kill(helper, 'SIGKILL')
+    for (let i = 0; helper && row(helper)?.[4] === birth && i < 50; i++)
+      await new Promise(resolve => setTimeout(resolve, 20))
+    assert.ok(
+      !helper || row(helper)?.[4] !== birth,
+      'exact fixture helper absent',
+    )
+    sibling.kill('SIGTERM')
+    await siblingExit
+    if (rootExit) await rootExit
+    if (profile && fs.existsSync(profile))
+      fs.rmSync(profile, { recursive: true })
+  }
+})

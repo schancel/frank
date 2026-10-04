@@ -11,7 +11,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "format": "prettier --config ../../app/.prettierrc.json --check \"src/**/*.ts\" \"test/**/*.ts\" \"fixtures/**/*.ts\" \"browsercheck/*.js\" package.json tsconfig.json tsconfig.jest.json jest.config.js .eslintrc.js",
     "build:browser": "node browsercheck/build.js",
-    "check:browser": "node browsercheck/build.js && node browsercheck/check-vm.js && node browsercheck/check-chrome.js",
+    "check:browser": "node --test browsercheck/check-chrome.test.cjs && node browsercheck/build.js && node browsercheck/check-vm.js && node browsercheck/check-chrome.js",
     "lint": "eslint . --ext .ts,.js",
     "crosscheck": "python3 scripts/crosscheck.py"
   },

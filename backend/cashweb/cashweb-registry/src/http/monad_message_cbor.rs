@@ -23,7 +23,7 @@ pub(crate) async fn handle_put(
     headers: HeaderMap,
     RawBody(mut body): RawBody,
 ) -> Result<Response> {
-    use hyper::body::HttpBody;
+    use axum::body::HttpBody;
     let runtime = server
         .monad_mailbox
         .as_enabled()
@@ -1066,7 +1066,7 @@ pub(crate) async fn handle_ack(
     headers: HeaderMap,
     RawBody(mut body): RawBody,
 ) -> Result<Response> {
-    use hyper::body::HttpBody;
+    use axum::body::HttpBody;
     if query.is_some() {
         return Err(CanonicalError::Invalid);
     }

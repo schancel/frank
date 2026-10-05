@@ -1,0 +1,50 @@
+[package]
+name = "dkls23-ll"
+license = "SLL"
+version = "1.0.3"
+edition = "2021"
+publish = false
+
+
+[dependencies]
+sl-mpc-mate = { workspace = true, features = ["serde"] }
+sl-oblivious = { workspace = true, features = ["serde"] }
+sha2.workspace = true
+k256 = { workspace = true, features = ["ecdsa", "serde"] }
+merlin.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+derivation-path.workspace = true
+zeroize.workspace = true
+serde = "1"
+bytemuck = { version = "1.14.1", features = [
+    "derive",
+    "min_const_generics",
+    "extern_crate_alloc",
+] }
+
+[dev-dependencies]
+serde_json = "1"
+ciborium = "0.2.1"
+bincode = { version = "2.0.0-rc.3", features = ["serde"] }
+
+[workspace]
+members = [".", "wrapper/wasm-ll"]
+
+
+[workspace.dependencies]
+sha2 = "0.10.8"
+k256 = "0.13.2"
+merlin = "3.0.0"
+rand = "0.8"
+rand_chacha = "0.3"
+thiserror = "1.0"
+derivation-path = "0.2.0"
+zeroize = "1.6.1"
+
+sl-mpc-mate = { git = "https://github.com/silence-laboratories/sl-crypto.git", rev = "f366497" }
+sl-oblivious = { git = "https://github.com/silence-laboratories/sl-crypto.git", rev = "f366497" }
+
+[profile.release]
+lto = true
+opt-level = 'z'

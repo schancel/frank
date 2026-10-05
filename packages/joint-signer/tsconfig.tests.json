@@ -1,0 +1,10 @@
+{
+  // Typechecks the test suites as well as the sources. ts-jest uses tsconfig.jest.json.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "isolatedModules": true,
+    "types": ["node", "jest"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules"]
+}

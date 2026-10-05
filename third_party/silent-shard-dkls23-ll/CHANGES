@@ -1,0 +1,93 @@
+CHANGES MADE TO THE SILENCE LABORATORIES LIBRARY
+===============================================
+
+This directory contains a MODIFIED version of Silence Laboratories'
+`silent-shard-dkls23-ll` library (see UPSTREAM for the exact origin).
+
+The modifications listed below were made by the Frank project, independently
+and without any involvement from Silence Laboratories. Silence Laboratories
+has not reviewed, endorsed or approved them. The modified library remains
+under the Silence Laboratories License Agreement (LICENSE.md): non-commercial
+use only.
+
+"This software library is licensed under the Silence Laboratories License
+Agreement, Copyright (c) Silence Laboratories Pte. Ltd. All Rights Reserved."
+
+None of the changes has been reviewed by a cryptographer. Do not use this
+for real funds.
+
+
+2026-10-04  Frank project
+-------------------------
+
+Unchanged: key generation (src/dkg.rs and its wasm binding), the OT and
+multiplication primitives (fetched from sl-crypto, not vendored), the message
+formats of key generation and of plain signing rounds 1 to 4, and
+src/dsg_ot_variant.rs.
+
+1. Signing sessions bound to one digest (src/dsg.rs, src/error.rs)
+
+   Upstream produces, after round 3, a pre-signature that does not depend on
+   the message; `create_partial_signature(pre, hash)` then signs any digest,
+   and using one pre-signature for two digests reveals the private key.
+
+   - `State` has three new fields: `binding`, `bound_hash`, `spent`.
+   - New `State::new_bound(rng, keyshare, chain_path, message_hash, binding)`.
+     `State::new` is unchanged and creates an unbound session as before.
+   - `handle_msg1`: for a bound session, `final_session_id` additionally
+     covers `binding`. Two parties that disagree on it fail upstream's
+     existing session-id check in round 2, before either reveals its nonce
+     share. Unbound sessions compute `final_session_id` exactly as upstream.
+   - `handle_msg3` refuses a bound session (new error `BoundSession`). Its
+     body moved, unchanged, into `round3(msgs, r_override)`; with
+     `r_override = None` the computation is upstream's.
+   - New `State::finish_bound(msgs)`: round 3 followed directly by the
+     partial signature for the session's digest. The nonce share, the mask
+     and the derived key share are zeroed before it returns, on success and
+     on failure, and a session that ran it cannot run it again.
+   - New `plain_binding(message_hash, context)`.
+   - New errors `SignError::BoundSession` and `SignError::InvalidLock`, with
+     the matching arms in `From<SignError> for SignOTVariantError`.
+   - New tests in `dsg::bound_tests`.
+
+2. Adaptor pre-signing (src/adaptor.rs, new file; `pub mod adaptor` in
+   src/lib.rs; test vector frank-vectors/pedersen-h.hex)
+
+   A two-party protocol that outputs an ECDSA adaptor ("encrypted")
+   signature in the 162-byte encoding of the DLC specification, locked to a
+   point T. It reuses rounds 1 and 2 of the signing protocol through
+   `State` and differs as described at the top of src/adaptor.rs: each party
+   commits in round 1 to r_i*T and to the announcement of a joint
+   discrete-log-equality proof, opens them in round 3 with a proof that
+   r_i*T matches its nonce share, the signature's r is taken from k*T, and
+   the result is verified as an encrypted signature. The lock point comes
+   only from a lock whose proofs of knowledge are verified
+   (`VerifiedLock::verify`), in the lock format of Frank's
+   `@frank/threshold-ecdsa`; the party holding the lock must additionally
+   present its own opening of it (`LockOpening`). A session is bound to one
+   digest and one lock and never returns an ordinary signature.
+
+3. JavaScript bindings (wrapper/wasm-ll)
+
+   - src/sign.rs: `new SignSession(keyshare, chain_path, message_hash,
+     context, seed?)` now takes the digest and a context and creates a bound
+     session; `lastMessage()` no longer takes a digest; the `Pre` state is
+     gone (round 3 stores the partial signature, not a pre-signature);
+     malformed messages are reported as errors instead of trapping.
+   - src/adaptor.rs (new): class `AdaptorSignSession` and function
+     `verifyLock`.
+   - src/message.rs: new `Message::try_decode_vector`.
+   - src/lib.rs: `sign_ot_variant` is no longer compiled or exported
+     (`SignSessionOTVariant` is not available from this build): its
+     `lastMessage(hash)` has the pre-signature hazard of item 1. The file
+     wrapper/wasm-ll/src/sign_ot_variant.rs is kept unmodified and unused.
+   - src/errors.rs: the OT-variant error mapping was removed with it.
+   - wrapper/wasm-ll/tests/tests.ts and wrapper/wasm-ll/README.md are
+     upstream's and describe the UPSTREAM JavaScript API, not this build's.
+
+4. Build (build-wasm.sh, pkg/; new)
+
+   `build-wasm.sh` builds the node and web packages with cargo and
+   wasm-bindgen-cli 0.2.92 into pkg/. The built files are committed; their
+   SHA-256 hashes are in pkg/SHA256SUMS. Upstream builds with wasm-pack and
+   wasm-opt; this build does not run wasm-opt.

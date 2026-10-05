@@ -1,0 +1,12 @@
+{
+  "allowed": [
+    "@frank/adaptor-signatures",
+    "@frank/threshold-ecdsa",
+    "@noble/curves",
+    "@noble/hashes"
+  ],
+  "optional": [],
+  "planned": [],
+  "plannedOptional": [],
+  "note": "The silence-dkls backend loads a WebAssembly module built from third_party/silent-shard-dkls23-ll (our fork of Silence Laboratories' DKLs23 library, under the Silence Laboratories Non-Commercial Use License, not MIT). It is not an npm dependency. Noble versions match @frank/threshold-ecdsa. ethers is a test-only dependency."
+}

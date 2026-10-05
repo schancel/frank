@@ -45,7 +45,14 @@ export default () => {
     }
 
     await accountSession.initialize()
-    if (to.path === '/setup' || to.path === '/changelog') return
+    // Release notes and legal notices are readable without an account.
+    if (
+      to.path === '/setup' ||
+      to.path === '/changelog' ||
+      to.path === '/about'
+    ) {
+      return
+    }
     if (accountStatus.status !== 'ready') return '/setup'
   }
 

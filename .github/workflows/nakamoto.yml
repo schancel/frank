@@ -7,6 +7,7 @@ on:
       - "packages/nakamoto/**"
       - "packages/crypto-box/**"
       - "packages/adaptor-signatures/**"
+      - "packages/threshold-ecdsa/**"
       - "packages/codex32/**"
       - "packages/domain-roots/**"
       - "packages/account-recovery/**"
@@ -21,6 +22,7 @@ on:
       - "packages/nakamoto/**"
       - "packages/crypto-box/**"
       - "packages/adaptor-signatures/**"
+      - "packages/threshold-ecdsa/**"
       - "packages/codex32/**"
       - "packages/domain-roots/**"
       - "packages/account-recovery/**"
@@ -47,6 +49,9 @@ jobs:
         run: yarn test && yarn typecheck && yarn lint && yarn format && yarn check:shared && yarn check:deps && yarn check:bundle
       - name: adaptor-signatures
         working-directory: packages/adaptor-signatures
+        run: yarn test --runInBand && yarn typecheck && ../../node_modules/.bin/prettier --config ../../app/.prettierrc.json --check .
+      - name: threshold-ecdsa
+        working-directory: packages/threshold-ecdsa
         run: yarn test --runInBand && yarn typecheck && ../../node_modules/.bin/prettier --config ../../app/.prettierrc.json --check .
       - name: codex32
         working-directory: packages/codex32

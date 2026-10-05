@@ -1091,13 +1091,17 @@ impl SolanaProxyConf {
             .checked_mul(self.max_concurrency)
             .map_or(true, |bytes| bytes > MAX_AGGREGATE_RPC_RESPONSE_BYTES)
         {
-            return Err(SolanaProxyConfigError::InvalidLimit("aggregate response bytes"));
+            return Err(SolanaProxyConfigError::InvalidLimit(
+                "aggregate response bytes",
+            ));
         }
         if self.timeout_ms == 0 || self.timeout_ms > 120_000 {
             return Err(SolanaProxyConfigError::InvalidLimit("timeout_ms"));
         }
         if self.customer_units_per_hour == 0 {
-            return Err(SolanaProxyConfigError::InvalidLimit("customer_units_per_hour"));
+            return Err(SolanaProxyConfigError::InvalidLimit(
+                "customer_units_per_hour",
+            ));
         }
         if self.capability_ttl_ms < 60_000 || self.capability_ttl_ms > 24 * 60 * 60 * 1000 {
             return Err(SolanaProxyConfigError::InvalidLimit("capability_ttl_ms"));
@@ -1127,9 +1131,7 @@ impl SolanaProxyConf {
                 ));
             }
             if chain.expected_genesis_hash.len() < 40 || chain.expected_genesis_hash.len() > 45 {
-                return Err(SolanaProxyConfigError::InvalidGenesisHash(
-                    chain.id.clone(),
-                ));
+                return Err(SolanaProxyConfigError::InvalidGenesisHash(chain.id.clone()));
             }
             let pinned_genesis_hash = protocol
                 .identity_probes
@@ -1605,14 +1607,16 @@ continuity_file = "/var/lib/frank/continuity"
                 "solana-devnet".to_string()
             ))
         );
-        solana.chains[0].expected_genesis_hash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZAA".to_string();
+        solana.chains[0].expected_genesis_hash =
+            "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZAA".to_string();
         assert_eq!(
             solana.validate(),
             Err(SolanaProxyConfigError::GenesisHashMismatch(
                 "solana-devnet".to_string()
             ))
         );
-        solana.chains[0].expected_genesis_hash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG".to_string();
+        solana.chains[0].expected_genesis_hash =
+            "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG".to_string();
 
         let wrong_solana = SolanaProxyConf {
             enabled: true,
@@ -1640,7 +1644,9 @@ continuity_file = "/var/lib/frank/continuity"
         solana.max_concurrency = 5;
         assert_eq!(
             solana.validate(),
-            Err(SolanaProxyConfigError::InvalidLimit("aggregate response bytes"))
+            Err(SolanaProxyConfigError::InvalidLimit(
+                "aggregate response bytes"
+            ))
         );
         solana.max_concurrency = 4;
         assert_eq!(solana.validate(), Ok(()));
@@ -1964,7 +1970,9 @@ continuity_file = "/var/lib/frank/continuity"
                 "{name}"
             );
             assert_eq!(
-                conf.registry.bitcoin_proxy.chains[0].chronik_upstream_env.as_deref(),
+                conf.registry.bitcoin_proxy.chains[0]
+                    .chronik_upstream_env
+                    .as_deref(),
                 Some("XEC_TESTNET_CHRONIK_URL"),
                 "{name}"
             );
@@ -1976,8 +1984,7 @@ continuity_file = "/var/lib/frank/continuity"
                 "{name}"
             );
             assert_eq!(
-                conf.registry.solana_proxy.chains[0].upstream_env,
-                "SOLANA_DEVNET_HTTP_RPC_URL",
+                conf.registry.solana_proxy.chains[0].upstream_env, "SOLANA_DEVNET_HTTP_RPC_URL",
                 "{name}"
             );
             conf.registry.solana_proxy.validate().unwrap();

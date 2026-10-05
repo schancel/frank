@@ -14,7 +14,6 @@ use crate::{
         handle_issue_rpc_challenge, handle_proxy_rpc, handle_proxy_rpc_capability, handle_proxy_ws,
         EvmRpcRuntime, RPC_CORS_HEADERS,
     },
-    http::solana_proxy::SolanaProxyRuntime,
     http::monad_message::{
         handle_ack_private_monad_recovery, handle_get_private_monad_messages,
         handle_get_private_monad_recovery, handle_issue_mailbox_challenge,
@@ -28,6 +27,7 @@ use crate::{
         handle_list_topics, handle_put_monad_topic_post, handle_put_monad_topic_vote,
     },
     http::pop_protection::{self, MonadReceiptVerifier, PopChallenge, PopGate, PopGateConfigError},
+    http::solana_proxy::SolanaProxyRuntime,
     monad_http::{Address as MonadAddress, HttpTransport},
     monad_mailbox::MonadMailboxRuntime,
     p2p::{peers::Peers, relay_info::RelayInfo},
@@ -376,9 +376,8 @@ impl RegistryServer {
                     .attach_directory(Arc::clone(directory))
                     .is_ok()
             });
-        let rpc_enabled = self.evm_rpc.is_some()
-            || self.bitcoin_proxy.is_some()
-            || self.solana_proxy.is_some();
+        let rpc_enabled =
+            self.evm_rpc.is_some() || self.bitcoin_proxy.is_some() || self.solana_proxy.is_some();
         let bitcoin_proxy_enabled = self.bitcoin_proxy.is_some();
         let router = Router::new()
             .route("/chains", routing::get(handle_get_chains))

@@ -183,7 +183,8 @@ impl RelayInfo {
         }
         let endpoint = url::Url::parse(&config.endpoint).map_err(|_| RuntimeError::Trust)?;
         let is_loopback = endpoint.scheme() == "http"
-            && (endpoint.host_str() == Some("127.0.0.1") || endpoint.host_str() == Some("localhost"));
+            && (endpoint.host_str() == Some("127.0.0.1")
+                || endpoint.host_str() == Some("localhost"));
         if (endpoint.scheme() != "https" && !is_loopback)
             || endpoint.host_str().is_none()
             || !endpoint.username().is_empty()

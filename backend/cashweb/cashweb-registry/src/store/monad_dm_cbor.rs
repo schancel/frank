@@ -159,7 +159,9 @@ impl Owner {
             broadcast,
         }
     }
-    pub(crate) fn subscribe_finalized(&self) -> tokio::sync::broadcast::Receiver<FinalizedEnvelope> {
+    pub(crate) fn subscribe_finalized(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<FinalizedEnvelope> {
         self.broadcast.subscribe()
     }
     pub(crate) fn attach_directory(&self, directory: Arc<DirectoryRuntime>) -> Result<()> {
@@ -521,41 +523,42 @@ impl Owner {
     }
     /// Validation and mailbox publication are one locked operation. No caller can mint the view.
     pub(crate) fn finalize(&self, hash: &[u8; 32], now: i64) -> Result<Claim> {
-        let (claim, newly_finalized) = self.with(false, |db| {
-            let mut claim = load(db, hash)?.ok_or(CanonicalError::Unavailable)?;
-            if matches!(claim.phase, Phase::Delivered(_)) {
-                return Ok((claim, false));
-            }
-            if claim.phase != Phase::FullyConfirmed {
-                return Err(CanonicalError::Unavailable);
-            }
-            let verified = crate::monad_outbox::financial::verify_canonical_confirmed(&claim)?;
-            let _exact = verified
-                .canonical_request()
-                .ok_or(CanonicalError::Unavailable)?;
-            claim.phase = Phase::Delivered(now);
-            claim.updated = now;
-            claim.reservation = false;
-            let mut batch = WriteBatch::default();
-            append_owner(&mut batch, hash, &claim)?;
-            let recipient = claim.policy.recipient()?;
-            let sender = claim.policy.sender()?;
-            let mut inbox = b"I".to_vec();
-            inbox.extend_from_slice(&recipient.0);
-            inbox.extend_from_slice(&now.to_be_bytes());
-            inbox.extend_from_slice(hash);
-            batch.put(inbox, hash);
-            if sender != recipient {
-                let mut outbox = b"O".to_vec();
-                outbox.extend_from_slice(&sender.0);
-                outbox.extend_from_slice(&now.to_be_bytes());
-                outbox.extend_from_slice(hash);
-                batch.put(outbox, hash);
-            }
-            write(db, batch)?;
-            Ok((claim, true))
-        })?
-        .ok_or(CanonicalError::Unavailable)?;
+        let (claim, newly_finalized) = self
+            .with(false, |db| {
+                let mut claim = load(db, hash)?.ok_or(CanonicalError::Unavailable)?;
+                if matches!(claim.phase, Phase::Delivered(_)) {
+                    return Ok((claim, false));
+                }
+                if claim.phase != Phase::FullyConfirmed {
+                    return Err(CanonicalError::Unavailable);
+                }
+                let verified = crate::monad_outbox::financial::verify_canonical_confirmed(&claim)?;
+                let _exact = verified
+                    .canonical_request()
+                    .ok_or(CanonicalError::Unavailable)?;
+                claim.phase = Phase::Delivered(now);
+                claim.updated = now;
+                claim.reservation = false;
+                let mut batch = WriteBatch::default();
+                append_owner(&mut batch, hash, &claim)?;
+                let recipient = claim.policy.recipient()?;
+                let sender = claim.policy.sender()?;
+                let mut inbox = b"I".to_vec();
+                inbox.extend_from_slice(&recipient.0);
+                inbox.extend_from_slice(&now.to_be_bytes());
+                inbox.extend_from_slice(hash);
+                batch.put(inbox, hash);
+                if sender != recipient {
+                    let mut outbox = b"O".to_vec();
+                    outbox.extend_from_slice(&sender.0);
+                    outbox.extend_from_slice(&now.to_be_bytes());
+                    outbox.extend_from_slice(hash);
+                    batch.put(outbox, hash);
+                }
+                write(db, batch)?;
+                Ok((claim, true))
+            })?
+            .ok_or(CanonicalError::Unavailable)?;
 
         if newly_finalized {
             if let (Ok(sender), Ok(recipient)) = (claim.policy.sender(), claim.policy.recipient()) {
@@ -709,7 +712,9 @@ impl Owner {
             }
 
             fn next_entry(
-                iter: &mut impl Iterator<Item = std::result::Result<(Box<[u8]>, Box<[u8]>), rocksdb::Error>>,
+                iter: &mut impl Iterator<
+                    Item = std::result::Result<(Box<[u8]>, Box<[u8]>), rocksdb::Error>,
+                >,
                 prefix: &[u8],
                 since: i64,
                 after: Option<(i64, [u8; 32])>,
@@ -726,7 +731,8 @@ impl Owner {
                     }
                     let timestamp = i64::from_be_bytes(key[21..29].try_into().unwrap());
                     let hash: [u8; 32] = key[29..].try_into().unwrap();
-                    if timestamp < since || after.is_some_and(|cursor| (timestamp, hash) <= cursor) {
+                    if timestamp < since || after.is_some_and(|cursor| (timestamp, hash) <= cursor)
+                    {
                         continue;
                     }
                     if value.as_ref() != hash {

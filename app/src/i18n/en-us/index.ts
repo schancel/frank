@@ -51,6 +51,7 @@ export default {
   },
   chatInput: {
     giveLotusSecretly: 'Give Lotus Secretly',
+    sendStealth: 'Send Stealth',
     attachImage: 'Attach Image',
     blackjackChallenge: 'Blackjack challenge',
     placeHolder: 'Write a message...',
@@ -380,6 +381,16 @@ export default {
     memoHint: 'Attach a memo to the payment.',
     memoPlaceholder: 'Enter the memo...',
     sendBtnLabel: 'Send',
+    cancelBtnLabel: 'Cancel',
+  },
+  sendStealthDialog: {
+    sendStealthTo: 'Send Stealth to',
+    chainLabel: 'Chain',
+    amountHint: 'Amount to send in message payload',
+    amountPlaceholder: '0.0',
+    memoHint: 'Encrypted message memo (optional)',
+    memoPlaceholder: 'Enter memo...',
+    sendBtnLabel: 'Send Stealth',
     cancelBtnLabel: 'Cancel',
   },
   sendFileDialog: {

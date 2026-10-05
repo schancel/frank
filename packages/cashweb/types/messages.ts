@@ -20,9 +20,20 @@ export interface P2PKHSendItem {
 
 export interface StealthItem {
   type: 'stealth'
+  /** Target blockchain network identifier (e.g. 'monad-testnet', 'solana-testnet', 'ecash-testnet'). */
+  chainId?: string
+  /** Transferred value / amount */
   amount: number
+  /** Raw signed transaction for EVM / Monad (hex string). */
+  rawTx?: string
+  /** Serialized signed transaction for Solana (base64 or hex string). */
+  solanaTx?: string
+  /** Optional transaction memo. */
+  memo?: string
+  /** UTXO-specific outpoint fields (Lotus / eCash compatibility). */
   txId?: string
   outputIndex?: number
+  ephemeralPubKey?: string
 }
 
 export interface ImageItem {

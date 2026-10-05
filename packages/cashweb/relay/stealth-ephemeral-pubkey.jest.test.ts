@@ -87,3 +87,20 @@ it('rejects a secret outside (0, n), a non-32-byte secret, and a missing flag', 
   ).toThrow('stealth-ephemeral-pubkey:compressed')
   expect(kept.toString('hex')).toBe(SEC1_SECRET)
 })
+
+it('serializes and deserializes multi-chain stealth payment entries', () => {
+  const entry = new stealth.StealthPaymentEntry()
+  entry.setEphemeralPubKey(Buffer.alloc(33, 0x02))
+  entry.setChainId('monad-testnet')
+  entry.addTransactions(Buffer.from('0x02signedevmtx', 'utf-8'))
+  entry.addTransactions(Buffer.from('0x02secondtx', 'utf-8'))
+
+  const serialized = entry.serializeBinary()
+  const roundtripped = stealth.StealthPaymentEntry.deserializeBinary(serialized)
+
+  expect(roundtripped.getChainId()).toBe('monad-testnet')
+  expect(roundtripped.getTransactionsList().length).toBe(2)
+  expect(Buffer.from(roundtripped.getTransactionsList_asU8()[0]).toString('utf-8')).toBe(
+    '0x02signedevmtx',
+  )
+})

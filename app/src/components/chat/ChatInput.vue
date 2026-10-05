@@ -35,6 +35,21 @@
               </q-item-section>
             </q-item>
 
+            <!-- Send Stealth: encrypted transfer inside direct message payload -->
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="send-stealth-menu-item"
+              @click="sendStealthClicked"
+            >
+              <q-item-section avatar side>
+                <q-icon name="visibility_off" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('chatInput.sendStealth') }}
+              </q-item-section>
+            </q-item>
+
             <!-- <q-item clickable>
               <q-item-section avatar>
                 <q-icon name="insert_emoticon" />
@@ -159,6 +174,7 @@ export default defineComponent({
     'sendMessage',
     'sendFileClicked',
     'blackjackClicked',
+    'sendStealthClicked',
   ],
   methods: {
     /** Public focus target for chat-level focus handoffs. */
@@ -193,6 +209,9 @@ export default defineComponent({
     },
     blackjackClicked() {
       this.$emit('blackjackClicked')
+    },
+    sendStealthClicked() {
+      this.$emit('sendStealthClicked')
     },
     addEmoji(value: { id: string }) {
       // TODO: This needs to be cursor position aware

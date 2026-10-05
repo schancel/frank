@@ -90,6 +90,23 @@ describe('ChatInput offers a blackjack challenge in the message-type menu', () =
   )
 })
 
+describe('ChatInput offers Send Stealth in the message-type menu', () => {
+  it.each([
+    ['no extra props', {}],
+    ['a chat that is being sent to', { disable: true }],
+  ])(
+    'has the stealth menu entry next to Attach Image for %s, and it asks the page for the stealth dialog',
+    async (_n, props) => {
+      const w = mount(ChatInput, { props, global: globalOptions })
+      const entry = w.find('[data-testid="send-stealth-menu-item"]')
+      expect(entry.exists()).toBe(true)
+      expect(entry.text()).toBe(enUS.chatInput.sendStealth)
+      await entry.trigger('click')
+      expect(w.emitted('sendStealthClicked')).toHaveLength(1)
+    },
+  )
+})
+
 describe('ChatInput has no separate blackjack toolbar button (#395)', () => {
   it.each([
     ['no extra props', {}],

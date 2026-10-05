@@ -1,8 +1,11 @@
 <template>
   <div class="q-mb-sm">
     <q-banner rounded :class="[banner, 'text-center']">
-      <q-icon name="local_florist" size="sm" />
-      {{ formatSats(amount) }}
+      <q-icon name="visibility_off" size="sm" class="q-mr-xs" />
+      <span>{{ formatSats(amount) }}</span>
+      <q-badge v-if="chainId" color="primary" class="q-ml-sm" data-testid="stealth-chain-badge">
+        {{ chainId }}
+      </q-badge>
     </q-banner>
   </div>
 </template>
@@ -18,6 +21,10 @@ export default defineComponent({
     amount: {
       type: Number,
       required: true,
+    },
+    chainId: {
+      type: String,
+      default: undefined,
     },
   },
   setup() {

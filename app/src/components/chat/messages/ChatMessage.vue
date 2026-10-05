@@ -38,6 +38,7 @@
             <chat-message-stealth
               v-else-if="item.type == 'stealth'"
               :amount="item.amount"
+              :chain-id="item.chainId"
             />
             <chat-message-image
               v-else-if="item.type == 'image'"

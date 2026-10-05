@@ -7,21 +7,21 @@
 
     <!-- On the latest message of the hand, render the current running hand state -->
     <template v-if="state && isLatest">
-      <div v-if="state.playerCards.length" class="text-caption">
+      <div v-if="view.playerCards.length" class="text-caption">
         {{
           $t('blackjackP2p.playerHand', {
-            cards: cardLabels(state.playerCards),
+            cards: cardLabels(view.playerCards),
             total: playerTotal,
           })
         }}
       </div>
       <div
-        v-if="state.dealerUpCard !== undefined && state.phase !== 'resolved'"
+        v-if="view.dealerUpCard !== undefined && state.phase !== 'resolved'"
         class="text-caption"
       >
         {{
           $t('blackjackP2p.dealerShows', {
-            card: cardLabel(state.dealerUpCard),
+            card: cardLabel(view.dealerUpCard),
           })
         }}
       </div>
@@ -297,11 +297,14 @@ import {
 } from '@frank/wallet/message-item-plugins/blackjack/deck'
 import {
   buildAccept,
+  buildBet,
   checkWager,
   dealerStep,
   foldHand,
+  handView,
   maxDealerBetWei,
   playerMoves,
+  playerStep,
   refundBetStep,
   refundShortfallWei,
   roleOf,
@@ -334,6 +337,10 @@ type Move = 'hit' | 'stand' | 'double'
  *
  * Money is only ever the stamp of the message a button sends: the bet, the equal second bet of a
  * double, the dealer's payout and a refund.
+ *
+ * No message states a card. Each side keeps a seed of its own and the hand's messages open one
+ * link of it per card; the cards shown are computed from the links opened so far. Right after
+ * the deal the player sees its first cards before the dealer does: its first move opens them.
  */
 export default defineComponent({
   name: 'ChatMessageBlackjack',
@@ -409,8 +416,13 @@ export default defineComponent({
     stake(): bigint {
       return this.state ? totalStakeWei(this.state) : 0n
     },
+    // The cards this user can see: those both sides opened, plus, for the player right after
+    // the deal, the first cards its own seed already gives.
+    view(): { playerCards: number[]; dealerUpCard?: number } {
+      return handView(this.state, this.seed)
+    },
     playerTotal(): number {
-      return handValue(this.state?.playerCards ?? []).total
+      return handValue(this.view.playerCards).total
     },
     dealerTotal(): number {
       return handValue(this.state?.dealerCards ?? []).total
@@ -465,9 +477,13 @@ export default defineComponent({
     },
     moves(): Move[] {
       if (this.role !== 'player') return []
-      return playerMoves(this.state).filter(
+      const moves = playerMoves(this.state, this.seed).filter(
         (move): move is Move => move !== 'bet',
       )
+      // A natural can only stand, and that is sent without asking.
+      return moves.length === 1 && this.view.playerCards.length === 2
+        ? []
+        : moves
     },
     canAffordDouble(): boolean {
       return (
@@ -632,7 +648,9 @@ export default defineComponent({
       if (
         this.role === 'player' &&
         state.phase === 'dealer_turn' &&
-        this.folded.rejected.some(r => r.error === 'bad-reveal')
+        this.folded.rejected.some(
+          r => r.error === 'bad-reveal' || r.error === 'bad-link',
+        )
       )
         return this.$t('blackjackP2p.badReveal')
       if (
@@ -641,6 +659,8 @@ export default defineComponent({
         ['awaiting_deal', 'awaiting_card', 'dealer_turn'].includes(state.phase)
       )
         return this.$t('blackjackP2p.noSeed')
+      if (this.role === 'player' && !this.seed && state.phase === 'player_turn')
+        return this.$t('blackjackP2p.noSeedPlayer')
       // Counted by what refunds actually paid: a short refund leaves the rest owed.
       const owed = refundShortfallWei(state)
       if (this.role === 'player' && owed > 0n)
@@ -735,17 +755,19 @@ export default defineComponent({
     },
     onBet() {
       if (!this.state || this.amountError || this.amountWei === null) return
-      this.send(
-        { type: 'blackjack-hand', gameId: this.state.gameId, action: 'bet' },
-        this.amountWei,
-      )
+      const seed = newSeed()
+      const bet = buildBet(this.state, seed)
+      if (!bet) return
+      // The player's seed is kept before its commitment leaves this device with the bet.
+      saveSeed(this.own, this.address, this.state.gameId, seed)
+      this.send(bet, this.amountWei)
     },
     onMove(move: Move) {
-      if (!this.state) return
-      this.send(
-        { type: 'blackjack-hand', gameId: this.state.gameId, action: move },
-        move === 'double' ? this.state.wagerWei : undefined,
-      )
+      if (!this.state || !this.seed) return
+      // The move opens the link of the card it asks for (or, to stand or double, the rest).
+      const item = playerStep(this.state, move, this.seed)
+      if (!item) return
+      this.send(item, move === 'double' ? this.state.wagerWei : undefined)
     },
     onPay() {
       const step = this.payStep

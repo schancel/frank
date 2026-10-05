@@ -30,13 +30,16 @@ import { handValue } from '@frank/wallet/message-item-plugins/blackjack/deck'
 import { BET_MESSAGE_FEE_RESERVE_WEI } from '@frank/wallet/message-item-plugins/blackjack/game'
 import {
   buildAccept,
+  buildBet,
   buildChallenge,
   dealerStep,
   foldHand,
   handEventsOf,
+  handView,
   maxDealerBetWei,
   maxPlayerBetWei,
   playerMoves,
+  playerStep,
   refundBetStep,
   roleOf,
   seedFromBytes,
@@ -115,8 +118,9 @@ export interface BotState {
   since: number
   /** Hand logs, per peer address (lowercase) and game. */
   hands: Record<string, Record<string, StoredEvent[]>>
-  /** The dealer seeds this account committed to, per peer and game (`peer|gameId`), so a seed is
-   * never shared between two hands. Never sent before the reveal. */
+  /** The seeds this account committed to, as dealer or as player, per peer and game
+   * (`peer|gameId`), so a seed is never shared between two hands. A seed is never sent: the hand
+   * only ever opens links of its hash chain. */
   seeds: Record<string, string>
   /** Accounts this bot has already challenged on its own initiative. */
   challenged: Record<string, true>
@@ -580,7 +584,7 @@ export class BlackjackP2pBot {
           continue
         /** Queues the hand's next message under the key of what it is for. */
         const queue = (item: HandItem, stampWei: bigint) =>
-          this.enqueue(messageKey(hand, item, state), hand, to, item, stampWei)
+          this.enqueue(messageKey(hand, item), hand, to, item, stampWei)
         // Finished hands with nothing owed need no balance and no message.
         if (
           (state.phase === 'resolved' || state.phase === 'refunded') &&
@@ -647,8 +651,8 @@ export class BlackjackP2pBot {
           continue
         }
         if (role !== 'player') continue
-        const moves = playerMoves(state)
-        const base = { type: 'blackjack-hand' as const, gameId }
+        const held = this.state.seeds[`${peer}|${gameId}`]
+        const moves = playerMoves(state, held)
         if (moves.includes('bet')) {
           // The challenger picked the roles, so the bot plays. What it risks is bounded: one
           // open hand per account, a small bet, and a limit on its total at stake as player.
@@ -664,15 +668,22 @@ export class BlackjackP2pBot {
               `not betting in ${gameId}: at most ${maxRisk} wei at stake as player`,
             )
           else if (wager >= this.config.stampWei) {
-            queue({ ...base, action: 'bet' }, wager)
+            // The player's own seed is kept before its commitment leaves with the bet.
+            const bet = buildBet(state, held ?? this.newSeed(peer, gameId))
+            if (!bet) continue
+            queue(bet, wager)
             open.peers.add(peer)
             open.count++
             open.playerRiskWei += wager
           } else this.logOnce(`bet|${hand}`, `cannot afford a bet in ${gameId}`)
         } else if (moves.length) {
-          // The player's choices are few: draw below 17, otherwise stand.
-          const action = handValue(state.playerCards).total < 17 ? 'hit' : 'stand'
-          queue({ ...base, action }, this.config.stampWei)
+          // The player's choices are few: draw below 17, otherwise stand. Right after the deal
+          // only the player can see its cards; its first move opens them to the dealer.
+          const cards = handView(state, held).playerCards
+          const action =
+            moves.includes('hit') && handValue(cards).total < 17 ? 'hit' : 'stand'
+          const move = held ? playerStep(state, action, held) : undefined
+          if (move) queue(move, this.config.stampWei)
         }
       }
     this.save()
@@ -681,14 +692,14 @@ export class BlackjackP2pBot {
 
 /** The outbox key of a hand's message: what it pays or which move it is. The same debt or move
  * always gives the same key, so it is queued, and paid, once. */
-function messageKey(hand: string, item: HandItem, state: HandState): string {
+function messageKey(hand: string, item: HandItem): string {
   switch (item.action) {
     case 'refund':
       return `refund|${hand}|${item.ref}`
     case 'card':
-      return `card|${hand}|${item.playerCards.length}`
     case 'hit':
-      return `hit|${hand}|${state.playerCards.length}`
+      // One per position in the hand's chain.
+      return `${item.action}|${hand}|${item.seq}`
     default:
       return `${item.action}|${hand}`
   }

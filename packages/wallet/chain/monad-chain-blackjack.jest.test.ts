@@ -16,11 +16,14 @@ import {
 import { handValue } from '../message-item-plugins/blackjack/deck'
 import {
   buildAccept,
+  buildBet,
   buildChallenge,
   checkWager,
   dealerStep,
+  handView,
   maxDealerBetWei,
   playerMoves,
+  playerStep,
   refundBetStep,
   seedFromBytes,
   totalStakeWei,
@@ -42,21 +45,44 @@ jest.mock('@frank/cashweb/relay/monad-mailbox-client', () =>
   require('./canonical-two-wallets.testutil').offlineMailboxModule(),
 )
 
-// Cards: the scripted hands below fix the deck so that each outcome is certain. Everything else
-// is real, including the commitment check on reveal. With no script the real derivation runs
-// (see the unscripted hand), and `hand.jest.test.ts` covers the derivation itself.
+// Cards: the scripted hands below fix the cards so that each outcome is certain. Everything else
+// is real, including both sides' commitments and the check of every opened link. With no script
+// the real derivation runs (see the unscripted hand); `hand.jest.test.ts` and
+// `entropy.jest.test.ts` cover the derivation itself.
 let mockScriptedDeck: number[] | undefined
-jest.mock('../message-item-plugins/blackjack/deck', () => {
-  const actual = jest.requireActual('../message-item-plugins/blackjack/deck')
+jest.mock('../message-item-plugins/blackjack/entropy', () => {
+  const actual = jest.requireActual('../message-item-plugins/blackjack/entropy')
   return {
     ...actual,
-    deriveDeck: (...args: [string, string, number]) =>
-      mockScriptedDeck ?? actual.deriveDeck(...args),
+    drawCard: (...args: [string, number, string, string, number[]]) =>
+      mockScriptedDeck ? mockScriptedDeck[args[1]] : actual.drawCard(...args),
   }
 })
-/** A full deck that starts with the given cards. Rank is `card % 13`: 0 ace, 9..12 tens. */
+/** The cards in the order they are drawn: player, dealer up, player, the player's further cards,
+ * then the dealer's hole card and draws. Rank is `card % 13`: 0 ace, 9..12 tens. */
 function deckStarting(...first: number[]): number[] {
   return [...first, ...Array.from({ length: 52 }, (_, i) => i).filter(c => !first.includes(c))]
+}
+/** The player's bet, with a fresh seed of its own kept before its commitment leaves. */
+async function bet(player: Seat, gameId: string, wagerWei: bigint): Promise<void> {
+  const seed = player.seeds.get(gameId) ?? freshSeed()
+  player.seeds.set(gameId, seed)
+  const state = player.hand(gameId)
+  const item =
+    buildBet(state, seed) ??
+    // Not the hand's turn for a bet: sent anyway, as a careless client might.
+    ({ ...rawNext(player, gameId), action: 'bet', commitment: 'c'.repeat(64) } as HandItem)
+  await player.send(item, wagerWei)
+}
+/** The chain fields of the hand's next message, for items built by hand. */
+function rawNext(seat: Seat, gameId: string) {
+  const state = seat.hand(gameId)
+  return {
+    type: 'blackjack-hand' as const,
+    gameId,
+    seq: state?.count ?? 1,
+    prev: state?.head ?? '0'.repeat(64),
+  }
 }
 
 type Move = 'hit' | 'stand' | 'double'
@@ -125,16 +151,18 @@ async function playHand(
   expect(
     checkWager(player.hand(gameId)!, wagerWei, await player.balance(), RESERVE),
   ).toBeUndefined()
-  await player.send({ type: 'blackjack-hand', gameId, action: 'bet' }, wagerWei)
+  await bet(player, gameId, wagerWei)
   await dealer.poll()
   for (;;) {
     await dealerActs(dealer, gameId)
     const state = player.hand(gameId)!
-    const moves = playerMoves(state)
+    const seed = player.seeds.get(gameId)!
+    const moves = playerMoves(state, seed)
     if (moves.length === 0) break
-    const move = strategy(state)
+    // Right after the deal only the player can see its cards.
+    const move = strategy({ ...state, ...handView(state, seed) })
     await player.send(
-      { type: 'blackjack-hand', gameId, action: move },
+      playerStep(state, move, seed)!,
       move === 'double' ? state.wagerWei : STAMP,
     )
     await dealer.poll()
@@ -156,7 +184,7 @@ describe('two typed wallets play blackjack through stamped messages', () => {
 
 
   const WAGER = 40_000n
-  // Deal order: player, dealer (up), player, dealer (hole), then draws.
+  // Draw order: player, dealer (up), player, the player's further cards, dealer (hole), draws.
   const scripts: {
     name: string
     deck: number[]
@@ -167,9 +195,9 @@ describe('two typed wallets play blackjack through stamped messages', () => {
     { name: 'win', deck: deckStarting(9, 35, 22, 6), moves: ['stand'], outcome: 'player_win', owed: WAGER * 2n },
     { name: 'loss', deck: deckStarting(9, 35, 6, 22), moves: ['stand'], outcome: 'dealer_win', owed: 0n },
     { name: 'push', deck: deckStarting(9, 22, 7, 20), moves: ['stand'], outcome: 'push', owed: WAGER },
-    { name: 'blackjack', deck: deckStarting(0, 35, 12, 6), moves: [], outcome: 'player_blackjack', owed: (WAGER * 5n) / 2n },
-    { name: 'double', deck: deckStarting(4, 9, 5, 19, 22), moves: ['double'], outcome: 'player_win', owed: WAGER * 4n },
-    { name: 'bust', deck: deckStarting(9, 22, 5, 19, 35), moves: ['hit'], outcome: 'dealer_win', owed: 0n },
+    { name: 'blackjack', deck: deckStarting(0, 35, 12, 6), moves: ['stand'], outcome: 'player_blackjack', owed: (WAGER * 5n) / 2n },
+    { name: 'double', deck: deckStarting(4, 9, 5, 22, 19), moves: ['double'], outcome: 'player_win', owed: WAGER * 4n },
+    { name: 'bust', deck: deckStarting(9, 22, 5, 35, 19), moves: ['hit'], outcome: 'dealer_win', owed: 0n },
   ]
 
   describe.each(['dealer', 'player'] as const)('the challenger is the %s', role => {
@@ -214,7 +242,9 @@ describe('two typed wallets play blackjack through stamped messages', () => {
   it('plays an unscripted hand with the real deck derivation, verified on reveal', async () => {
     mockScriptedDeck = undefined
     const final = await playHand(bob, 'dealer', WAGER, state =>
-      handValue(state.playerCards).total < 17 ? 'hit' : 'stand',
+      handValue(state.playerCards).total < 17 && !handValue(state.playerCards).blackjack
+        ? 'hit'
+        : 'stand',
     )
     expect(final.phase).toBe('resolved')
     expect(final.paidWei).toBe(final.owedWei! > 0n ? final.owedWei : STAMP)
@@ -223,7 +253,7 @@ describe('two typed wallets play blackjack through stamped messages', () => {
   it('refunds a bet above the max bet with a reply whose stamp equals it, then plays on', async () => {
     mockScriptedDeck = deckStarting(9, 35, 22, 6)
     const { gameId, dealer, player } = await challenge(alice, 'dealer', WAGER)
-    await player.send({ type: 'blackjack-hand', gameId, action: 'bet' }, WAGER + 1n)
+    await bet(player, gameId, WAGER + 1n)
     await dealer.poll()
     expect(dealer.hand(gameId)).toMatchObject({ phase: 'open', wagerWei: 0n })
     expect(await dealerActs(dealer, gameId)).toBe(1)
@@ -237,7 +267,7 @@ describe('two typed wallets play blackjack through stamped messages', () => {
     ])
     // Nothing more is owed; the hand is still open for a proper bet.
     expect(await dealerActs(dealer, gameId)).toBe(0)
-    await player.send({ type: 'blackjack-hand', gameId, action: 'bet' }, WAGER)
+    await bet(player, gameId, WAGER)
     await dealer.poll()
     expect(await dealerActs(dealer, gameId)).toBe(1)
     expect(dealer.hand(gameId)?.phase).toBe('player_turn')
@@ -247,12 +277,12 @@ describe('two typed wallets play blackjack through stamped messages', () => {
     mockScriptedDeck = deckStarting(9, 35, 22, 6)
     const { gameId, dealer, player } = await challenge(alice, 'dealer', WAGER)
     // Out of turn: the player stands before betting. The dealer has nothing to send.
-    await player.send({ type: 'blackjack-hand', gameId, action: 'stand' })
+    await player.send({ ...rawNext(player, gameId), action: 'stand', link: 'a'.repeat(64) })
     await dealer.poll()
     expect(dealer.hand(gameId)?.phase).toBe('open')
     expect(await dealerActs(dealer, gameId)).toBe(0)
 
-    await player.send({ type: 'blackjack-hand', gameId, action: 'bet' }, WAGER)
+    await bet(player, gameId, WAGER)
     await dealer.poll()
     expect(await dealerActs(dealer, gameId)).toBe(1)
     const afterDeal = dealer.hand(gameId)
@@ -266,27 +296,21 @@ describe('two typed wallets play blackjack through stamped messages', () => {
     expect(await dealerActs(dealer, gameId)).toBe(0)
 
     // Out of turn: the dealer's own move types sent by the player change nothing.
-    await player.send({ type: 'blackjack-hand', gameId, action: 'card', playerCards: [9, 22, 0] })
-    await player.send({
-      type: 'blackjack-hand',
-      gameId,
-      action: 'reveal',
-      dealerCards: [35, 6],
-      seed: 'a'.repeat(64),
-      outcome: 'player_blackjack',
-    })
+    await player.send({ ...rawNext(player, gameId), action: 'card', link: 'a'.repeat(64) })
+    await player.send({ ...rawNext(player, gameId), action: 'reveal', link: 'a'.repeat(64) })
     await dealer.poll()
     expect(dealer.hand(gameId)).toEqual(afterDeal)
     expect(await dealerActs(dealer, gameId)).toBe(0)
     expect(dealer.paid).toHaveLength(dealerPaid)
 
-    // Tampered: the dealer claims it won. The player's hand does not settle on it.
-    await player.send({ type: 'blackjack-hand', gameId, action: 'stand' })
+    // Tampered: the dealer opens a link of another chain, which would give other cards. The
+    // player's hand does not settle on it.
+    await player.send(playerStep(player.hand(gameId), 'stand', player.seeds.get(gameId)!)!)
     await dealer.poll()
     const honest = dealerStep(dealer.hand(gameId), dealer.seeds.get(gameId)!)!
     expect(honest.payWei).toBe(WAGER * 2n)
     const playerBefore = player.hand(gameId)
-    await dealer.send({ ...honest.item, outcome: 'dealer_win' } as HandItem)
+    await dealer.send({ ...honest.item, link: 'f'.repeat(64) } as HandItem)
     await player.poll()
     expect(player.hand(gameId)).toEqual(playerBefore)
     expect(player.hand(gameId)?.phase).toBe('dealer_turn')
@@ -338,7 +362,7 @@ describe('two typed wallets play blackjack through stamped messages', () => {
       checkWager(accepted, accepted.maxBetWei + 1n, await player.balance(), RESERVE),
     ).toBe('above-max-bet')
     // ...and a player that sends it anyway is refunded, not dealt.
-    await player.send({ type: 'blackjack-hand', gameId, action: 'bet' }, accepted.maxBetWei + 1n)
+    await bet(player, gameId, accepted.maxBetWei + 1n)
     await dealer.poll()
     expect(dealer.hand(gameId)?.phase).toBe('open')
     const step = dealerStep(dealer.hand(gameId), dealer.seeds.get(gameId)!)!
@@ -347,7 +371,7 @@ describe('two typed wallets play blackjack through stamped messages', () => {
 
   it('lets the dealer return the bet instead of dealing', async () => {
     const { gameId, dealer, player } = await challenge(bob, 'player', WAGER)
-    await player.send({ type: 'blackjack-hand', gameId, action: 'bet' }, WAGER)
+    await bet(player, gameId, WAGER)
     await dealer.poll()
     const step = refundBetStep(dealer.hand(gameId))!
     await dealer.send(step.item, step.payWei)

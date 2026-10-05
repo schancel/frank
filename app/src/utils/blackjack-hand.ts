@@ -1,7 +1,7 @@
 /**
  * App glue for peer-to-peer blackjack. The rules live in the shared state machine
  * (`@frank/wallet/message-item-plugins/blackjack/hand`); this file only turns a chat's stored
- * messages into its events and keeps a dealer's seeds on this device.
+ * messages into its events and keeps this user's seeds on this device.
  *
  * A hand's state is always folded from the chat store's messages, never from rendered bubbles,
  * so it does not matter which messages are currently on screen.
@@ -15,6 +15,9 @@ import {
   applyHandEvent,
   dealerStep,
   foldHand,
+  handView,
+  playerMoves,
+  playerStep,
   roleOf,
   seedFromBytes,
   soleHandItem,
@@ -302,10 +305,11 @@ const memorySeeds = new Map<string, string>()
 const seedKey = (own: string, peer: string, gameId: string) =>
   `${own.toLowerCase()}|${peer.toLowerCase()}|${gameId}`
 
-/** Keeps a dealer's seed for a hand on this device, under the dealer's own account, the chat and
- * the game: a seed is never shared between two hands, and another account used in the same
- * browser profile does not find it under its own name. Without the seed the dealer cannot deal
- * or reveal (it can still refund the bet). */
+/** Keeps this user's seed for a hand on this device, under its own account, the chat and the
+ * game: a seed is never shared between two hands, and another account used in the same browser
+ * profile does not find it under its own name. Both roles have one: the dealer's is committed
+ * to in its challenge or accept, the player's in its bet. Without the seed a dealer cannot deal
+ * or reveal (it can still refund the bet) and a player cannot move. */
 export function saveSeed(
   own: string,
   peer: string,
@@ -351,9 +355,11 @@ export function newGameId(): string {
 }
 
 /**
- * The dealer messages this user must send now that involve no choice and pay nothing beyond an
- * ordinary stamp: dealing, dealing a card, and a reveal that owes the player nothing. Messages
- * that pay (a paying reveal, a refund) are never returned here; the dealer confirms those.
+ * The messages this user must send now that involve no choice and pay nothing beyond an ordinary
+ * stamp. As dealer: dealing, opening the link of a card, and a reveal that owes the player
+ * nothing. As player: standing on a natural, which is final as dealt and only needs opening to
+ * the dealer. Messages that pay (a paying reveal, a refund) are never returned here; the dealer
+ * confirms those.
  * A hand with an own message the other side does not have yet (sending, failed, cut off) gets no
  * step: that message is the hand's last move until it is delivered or discarded, and the next
  * step must not reach the other side before it.
@@ -372,10 +378,20 @@ export function automaticDealerSteps(
   }
   const steps: { key: string; item: BlackjackHandItem }[] = []
   for (const { state } of chatHands(messages, own, peer)) {
-    if (roleOf(state, own) !== 'dealer') continue
     if (waiting.has(state.gameId)) continue
     const seed = loadSeed(own, peer, state.gameId)
     if (!seed) continue
+    if (roleOf(state, own) === 'player') {
+      const moves = playerMoves(state, seed)
+      const stand =
+        moves.length === 1 && moves[0] === 'stand'
+          ? playerStep(state, 'stand', seed)
+          : undefined
+      if (stand && handView(state, seed).playerCards.length === 2)
+        steps.push({ key: `${state.gameId}:${state.seen.length}`, item: stand })
+      continue
+    }
+    if (roleOf(state, own) !== 'dealer') continue
     const step: DealerStep | undefined = dealerStep(state, seed)
     if (step && step.payWei === undefined)
       // One attempt per position in the hand: a failed send is retried by the user, not by a loop.

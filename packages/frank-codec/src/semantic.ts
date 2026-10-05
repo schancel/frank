@@ -187,6 +187,17 @@ export function checkSemantics(
   const P = 'root/payload'
   switch (typed.type) {
     case 18: {
+      if (typed.schema === 3) {
+        if (typed.action === 'challenge' || typed.action === 'accept') {
+          const max = typed.maxBetWei.reduce(
+            (n, b) => (n << 8n) | BigInt(b),
+            0n,
+          )
+          if (max < 1n || max > 10n ** 40n - 1n)
+            throw semantic('blackjack max bet range')
+        }
+        break
+      }
       if (typed.schema === 2) {
         const hand =
           'playerCards' in typed

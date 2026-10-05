@@ -41,9 +41,11 @@ mod semantic;
 mod validate;
 
 pub use blackjack::{
-    encode_blackjack_hand_item, encode_blackjack_item, is_blackjack_hand_frame,
-    project_blackjack_hand_item, project_blackjack_item, BlackjackHandItem,
-    BlackjackHandProjection, BlackjackItem, BlackjackProjection,
+    encode_blackjack_hand_item, encode_blackjack_hand_v3_item, encode_blackjack_item,
+    is_blackjack_hand_frame, is_blackjack_hand_v3_frame, project_blackjack_hand_item,
+    project_blackjack_hand_v3_item, project_blackjack_item, BlackjackHandItem,
+    BlackjackHandProjection, BlackjackHandV3Item, BlackjackHandV3Projection, BlackjackItem,
+    BlackjackProjection,
 };
 pub use cbor::{cbor_map, decode_canonical, encode_canonical, is_valid_canonical, CborValue};
 pub use crypto::{has_low_s, parse_strict_der, verify_algorithm_1};
@@ -79,6 +81,9 @@ pub use model::{
 };
 pub use model::{BlackjackAction, BlackjackFields, BlackjackMessageItem, BlackjackOutcome};
 pub use model::{BlackjackHandAction, BlackjackHandFields, BlackjackHandMessageItem};
+pub use model::{
+    BlackjackHandV3Action, BlackjackHandV3Fields, BlackjackHandV3MessageItem, BlackjackHandV3Move,
+};
 pub use model::{
     ForumAggregate, ForumContent, ForumCursor, ForumCursorPosition, ForumDiscoveryEntry,
     ForumDiscoveryPage, ForumEntry, ForumOperationEvidence, ForumOperationStatus, ForumPostContent,

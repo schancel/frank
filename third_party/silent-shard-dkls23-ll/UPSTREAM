@@ -1,0 +1,28 @@
+Upstream repository: https://github.com/silence-laboratories/silent-shard-dkls23-ll
+Upstream tag:        v1.2.0
+Upstream commit:     f5a2a3dae69859dafcd2c77fc8a9e90510b616b5  (2025-03-18, "DSG OT variant (#51)")
+Forked on:           2026-10-04
+
+Why this commit: it is the commit upstream tagged `v1.2.0` (and `1.2.0`), dated
+the day the npm packages @silencelaboratories/dkls-wasm-ll-{node,web,bundler}
+1.2.0 were published (2025-03-18). The npm packages' JavaScript API (classes
+KeygenSession, Keyshare, Message, SignSession, SignSessionOTVariant and their
+methods) is the API of `wrapper/wasm-ll` at this commit. The published wasm was
+not reproduced byte for byte.
+
+Files taken from upstream at that commit, unchanged in the first commit that
+added this directory:
+  Cargo.toml  Cargo.lock  LICENSE.md  README.md  rustfmt.toml  src/  wrapper/
+
+Not taken: .github/, .dockerignore, .gitignore, CHANGELOG.md, Dockerfile, ci/,
+docs/ (the paper PDF).
+
+Rust dependencies are not vendored. Cargo fetches them, including
+sl-mpc-mate and sl-oblivious from
+https://github.com/silence-laboratories/sl-crypto.git at rev f366497, as
+pinned by Cargo.toml and Cargo.lock.
+
+Licence: LICENSE.md in this directory (Silence Laboratories' Non-Commercial
+Use License Agreement). It applies to everything under this directory,
+including the changes listed in CHANGES. It is NOT the MIT licence of the rest
+of this repository.

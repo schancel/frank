@@ -168,3 +168,28 @@ bh-double = {0: hand-id, 1: 22}
 bh-card = {0: hand-id, 1: 23, 5: [3*52 card]}
 bh-reveal = {0: hand-id, 1: 24, 7: [2*52 card], 8: tstr .size 64, 9: 0..3}
 bh-refund = {0: hand-id, 1: 25, 10: hash32}
+
+; Active type18 / schema3 / min-reader2: the same hand with entropy from both sides.
+; Schema 3 ADDS these closed maps (ten actions) to the ones above. Action codes 32..41 are
+; disjoint from schema 1's 0..6 and schema 2's 16..25. A schema-3 map is read only
+; when the reader supports type18 schema 3 AND the frame requires reader 2 (writers
+; emit schema3/min-reader2); in a schema-1 or schema-2 frame, and for any reader
+; without schema-3 support, codes 32..41 are out of range (stage8.2 schema).
+; No map states a card, an outcome or an amount of money: both sides compute the
+; cards from the links opened so far.
+; Key 11 seq counts the hand's messages before this one; key 12 prev is the payload
+; digest of the previous one. A challenge is message 0 and has no prev.
+; Stage8.2: hand-id is exactly 32 lowercase ASCII hex characters.
+; Stage9: 1 <= max bet <= 10^40-1 (challenge, accept).
+; Writers: commitment/ref/prev/link are bare exactly64 lowercase hex; max bet 1..40
+;   ASCII digits.
+hand-seq = 1..255
+blackjack-hand-v3-item = bh3-challenge-dealer / bh3-challenge-player / bh3-accept /
+                         bh3-bet / bh3-move / bh3-refund
+bh3-challenge-dealer = {0: hand-id, 1: 32, 2: 0, 3: evm-quantity, 4: hash32, 11: 0}
+bh3-challenge-player = {0: hand-id, 1: 32, 2: 1, 3: evm-quantity, 11: 0}
+bh3-accept = {0: hand-id, 1: 33, 3: evm-quantity, 4: hash32, 11: hand-seq, 12: hash32}
+bh3-bet = {0: hand-id, 1: 34, 4: hash32, 11: hand-seq, 12: hash32}
+; 35 deal, 36 hit, 37 stand, 38 double, 39 card, 40 reveal; key 13 is the entropy link.
+bh3-move = {0: hand-id, 1: 35..40, 11: hand-seq, 12: hash32, 13: hash32}
+bh3-refund = {0: hand-id, 1: 41, 10: hash32, 11: hand-seq, 12: hash32}

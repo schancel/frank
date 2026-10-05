@@ -12,9 +12,12 @@ import {
 } from '@frank/wallet/chain/canonical-two-wallets.testutil'
 import { handValue } from '@frank/wallet/message-item-plugins/blackjack/deck'
 import {
+  buildBet,
   buildChallenge,
   dealerStep,
+  handView,
   playerMoves,
+  playerStep,
   seedFromBytes,
   type HandItem,
 } from '@frank/wallet/message-item-plugins/blackjack/hand'
@@ -99,11 +102,16 @@ describe('the bot is an ordinary account on a real typed wallet', () => {
       player: user.address,
       maxBetWei: MAX_BET,
     })
-    await user.send({ type: 'blackjack-hand', gameId, action: 'bet' }, MAX_BET)
+    // The user's own seed: its commitment goes out with the bet, its links with each move.
+    const seed = seedFromBytes(new Uint8Array(32).fill(5))
+    await user.send(buildBet(user.hand(gameId), seed)!, MAX_BET)
     await botTurn()
-    for (let i = 0; i < 10 && playerMoves(user.hand(gameId)).length; i++) {
-      const action = handValue(user.hand(gameId)!.playerCards).total < 17 ? 'hit' : 'stand'
-      await user.send({ type: 'blackjack-hand', gameId, action })
+    for (let i = 0; i < 10; i++) {
+      const moves = playerMoves(user.hand(gameId), seed)
+      if (!moves.length) break
+      const cards = handView(user.hand(gameId), seed).playerCards
+      const action = moves.includes('hit') && handValue(cards).total < 17 ? 'hit' : 'stand'
+      await user.send(playerStep(user.hand(gameId), action, seed)!)
       await botTurn()
     }
     const final = user.hand(gameId)!
@@ -178,13 +186,13 @@ describe('the bot is an ordinary account on a real typed wallet', () => {
     await botTurn()
     expect(user.events).toHaveLength(1)
     // And the hand it offered is playable.
-    await user.send({ type: 'blackjack-hand', gameId, action: 'bet' }, 20_000n)
+    const seed = seedFromBytes(new Uint8Array(32).fill(6))
+    await user.send(buildBet(user.hand(gameId), seed)!, 20_000n)
     await botTurn()
-    expect(['player_turn', 'dealer_turn', 'resolved']).toContain(user.hand(gameId)!.phase)
-    if (user.hand(gameId)!.phase === 'player_turn') {
-      await user.send({ type: 'blackjack-hand', gameId, action: 'stand' })
-      await botTurn()
-    }
+    // The bot dealt its links; the cards open to it with the user's first move.
+    expect(user.hand(gameId)!.phase).toBe('player_turn')
+    await user.send(playerStep(user.hand(gameId), 'stand', seed)!)
+    await botTurn()
     expect(user.hand(gameId)!.phase).toBe('resolved')
     expect(bot.hand(user.address, gameId)).toEqual(user.hand(gameId))
   })

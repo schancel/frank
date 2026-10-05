@@ -45,14 +45,14 @@ export default () => {
     }
 
     await accountSession.initialize()
+    // Release notes and legal notices are readable without an account.
     if (
       to.path === '/setup' ||
       to.path === '/changelog' ||
+      to.path === '/about' ||
       to.path === '/' ||
       to.path.startsWith('/forum') ||
       to.path.startsWith('/topic')
-    ) {
-      return
     }
     if (accountStatus.status !== 'ready') return '/setup'
   }

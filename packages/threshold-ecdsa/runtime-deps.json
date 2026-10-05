@@ -1,0 +1,7 @@
+{
+  "allowed": ["@frank/adaptor-signatures", "@noble/curves", "@noble/hashes"],
+  "optional": [],
+  "planned": [],
+  "plannedOptional": [],
+  "note": "Curve helpers and the adaptor-signature format come from @frank/adaptor-signatures; Noble versions exactly match its pinned curve backend. ethers is a test-only dependency."
+}

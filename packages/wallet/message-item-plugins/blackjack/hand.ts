@@ -6,19 +6,32 @@
  * the item, the message's own verified stamp value and the message's payload digest. Money is only
  * ever the stamp of a message; no amount is read from an item.
  *
- * Card rules, the deck derivation and the dealer's play are the existing ones (`./deck.ts`,
- * `playOutDealer` in `./game.ts`). The dealer commits to its seed before the bet exists; the
- * player's contribution to the shuffle is the payload digest of the bet message.
+ * No message states a card. Both sides commit to a hash chain before any money moves and open one
+ * link per card (`./entropy.ts`); the state machine computes every card and the outcome from the
+ * links opened so far. The card rules and the dealer's play are the existing ones (`./deck.ts`,
+ * `playOutDealer` in `./game.ts`).
+ *
+ * The hand's messages form a chain: each names its position (`seq`) and the digest of the message
+ * before it (`prev`), so a replayed or reordered message never counts.
  */
-import type { BlackjackHandItem } from '@frank/codec'
+import type { BlackjackHandV3Item } from '@frank/codec'
 
-import { Card, deriveDeck, handValue, sha256Hex } from './deck'
-import { BlackjackOutcome, dealInitialCards, playOutDealer } from './game'
+import { Card, handValue } from './deck'
+import {
+  CHAIN_LENGTH,
+  drawCard,
+  entropyChain,
+  linkAt,
+  linksUpTo,
+  verifyLink,
+  type OpenedLink,
+} from './entropy'
+import { BlackjackOutcome, playOutDealer } from './game'
 
 export type HandRole = 'dealer' | 'player'
 
-/** The application shape of a type-18 schema-2 item. */
-export type HandItem = BlackjackHandItem
+/** The application shape of a type-18 schema-3 item. */
+export type HandItem = BlackjackHandV3Item
 export type HandAction = HandItem['action']
 
 /** One message of a hand, as either side sees it. */
@@ -40,7 +53,7 @@ export type HandPhase =
   | 'open'
   | 'awaiting_deal'
   | 'player_turn'
-  /** The player hit or doubled; waiting for the dealer's card. */
+  /** The player hit or doubled; waiting for the dealer's link for that card. */
   | 'awaiting_card'
   /** The player is done; waiting for the dealer's reveal (whose stamp is the payout). */
   | 'dealer_turn'
@@ -54,9 +67,12 @@ export type HandRejection =
   | 'hand-exists'
   | 'wrong-sender'
   | 'wrong-phase'
+  /** Not the hand's next message: its `seq` or `prev` does not continue the chain. */
+  | 'out-of-order'
   | 'bad-amount'
-  | 'bad-cards'
   | 'bad-commitment'
+  /** The link does not belong to the chain its sender committed to, or is not the one due. */
+  | 'bad-link'
   | 'bad-reveal'
   | 'bad-ref'
 
@@ -69,17 +85,29 @@ export interface HandState {
   challenger: HandRole
   /** The challenge's max bet; the dealer's accept may lower it. */
   maxBetWei: bigint
+  /** The dealer's commitment: link 0 of its entropy chain. */
   commitment?: string
+  /** The player's commitment, from the bet. */
+  playerCommitment?: string
+  /** The last link each side has opened (position 0 is the commitment itself). */
+  dealerLink?: OpenedLink
+  playerLink?: OpenedLink
+  /** Digest of the hand's last accepted message, and how many there are: the next message must
+   * carry `prev` = `head` and `seq` = `count`. */
+  head: string
+  count: number
   betDigest?: string
   /** The accepted bet: the bet message's own stamp. */
   wagerWei: bigint
   doubled: boolean
   /** Why the hand is in `awaiting_card`. */
   pending?: 'hit' | 'double'
+  /** The cards both sides can compute so far, in draw order: player, dealer up, player, then
+   * the player's further cards. Empty until the player's first move opens its links. */
+  draws: Card[]
   playerCards: Card[]
   dealerUpCard?: Card
   dealerCards: Card[]
-  seed?: string
   outcome?: BlackjackOutcome
   /** `resolved` only: what the dealer owed and what the reveal's stamp actually paid. */
   owedWei?: bigint
@@ -104,9 +132,6 @@ const HEX64 = /^[0-9a-f]{64}$/
 const WEI = /^[0-9]{1,40}$/
 const wei = (value: unknown): bigint | undefined =>
   typeof value === 'string' && WEI.test(value) ? BigInt(value) : undefined
-const validCards = (cards: readonly number[]) =>
-  cards.every(c => Number.isInteger(c) && c >= 0 && c <= 51) &&
-  new Set(cards).size === cards.length
 
 /** The stake that is at risk in the hand: the wager, twice that after a double. */
 export function totalStakeWei(
@@ -155,19 +180,89 @@ export function maxPlayerBetWei(spendableWei: bigint, reserveWei: bigint): bigin
   return free > 0n ? free : 0n
 }
 
-/** A fresh dealer seed (64 lowercase hex characters) from 32 random bytes. */
+/** A fresh seed (64 lowercase hex characters) from 32 random bytes. Each side of a hand needs
+ * one: the dealer before it challenges or accepts, the player before it bets. */
 export function seedFromBytes(bytes: Uint8Array): string {
-  if (bytes.length !== 32) throw new Error('a dealer seed needs 32 random bytes')
+  if (bytes.length !== 32) throw new Error('a seed needs 32 random bytes')
   return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
 }
 
-/** The commitment a dealer publishes before the bet: SHA-256 of the seed text. */
+/** The commitment a side publishes before money moves: link 0 of its seed's entropy chain. */
 export function commitmentOf(seed: string): string {
-  return sha256Hex(seed)
+  return entropyChain(seed)[0]
 }
 
-function deckOf(seed: string, betDigest: string): Card[] {
-  return deriveDeck(seed, betDigest, 0)
+/** Who must send the hand's next message, if anyone. A side that withholds a link is the side
+ * named here for as long as the hand does not move. */
+export function awaitedRole(state: HandState | undefined): HandRole | undefined {
+  switch (state?.phase) {
+    case 'challenged':
+    case 'awaiting_deal':
+    case 'awaiting_card':
+    case 'dealer_turn':
+      return 'dealer'
+    case 'open':
+    case 'player_turn':
+      return 'player'
+    default:
+      return undefined
+  }
+}
+
+/** The first three cards (player, dealer up, player), once both sides' third links are known. */
+function initialDraws(
+  gameId: string,
+  dealer: OpenedLink,
+  player: OpenedLink,
+): Card[] | undefined {
+  const draws: Card[] = []
+  for (let k = 0; k < 3; k++) {
+    const d = linkAt(dealer, k + 1)
+    const p = linkAt(player, k + 1)
+    if (d === undefined || p === undefined) return undefined
+    draws.push(drawCard(gameId, k, d, p, draws))
+  }
+  return draws
+}
+
+/**
+ * The end of a hand, once the player is done and the dealer's last link is known: the dealer's
+ * cards and the outcome. After a player bust the dealer draws nothing and shows only its up card
+ * (the player never opened the links a hole card would need). Otherwise the dealer's hole card
+ * and its further cards are the next draws, played by the shared dealer rule.
+ */
+function settle(
+  state: HandState,
+  dealerLast: OpenedLink,
+): { dealerCards: Card[]; outcome: BlackjackOutcome } | undefined {
+  const [first, up, second, ...hits] = state.draws
+  if (up === undefined || second === undefined) return undefined
+  if (handValue(state.playerCards).bust)
+    return { dealerCards: [up], outcome: 'dealer_win' }
+  const player = state.playerLink
+  if (!player || player.index !== CHAIN_LENGTH) return undefined
+  if (dealerLast.index !== CHAIN_LENGTH) return undefined
+  const dealerLinks = linksUpTo(dealerLast)
+  const playerLinks = linksUpTo(player)
+  const drawn = [...state.draws]
+  const rest: Card[] = []
+  for (let k = drawn.length; k < CHAIN_LENGTH; k++) {
+    const card = drawCard(
+      state.gameId,
+      k,
+      dealerLinks[k + 1],
+      playerLinks[k + 1],
+      drawn,
+    )
+    drawn.push(card)
+    rest.push(card)
+  }
+  // The dealing order `playOutDealer` expects: player, up, player, hole, hits, dealer's draws.
+  const [hole, ...more] = rest
+  const deck = [first, up, second, hole, ...hits, ...more]
+  const played = playOutDealer(deck, state.playerCards, 4 + hits.length)
+  if (played.dealerCards.some(card => card === undefined)) return undefined
+  return { dealerCards: played.dealerCards, outcome: played.outcome }
 }
 
 function reject(state: HandState | undefined, error: HandRejection): HandResult {
@@ -188,6 +283,7 @@ export function applyHandEvent(
     if (prev) return reject(prev, 'hand-exists')
     const maxBetWei = wei(item.maxBetWei)
     if (same(from, to)) return reject(prev, 'wrong-sender')
+    if (item.seq !== 0) return reject(prev, 'out-of-order')
     if (maxBetWei === undefined || maxBetWei <= 0n)
       return reject(prev, 'bad-amount')
     if (item.role === 'dealer' && !HEX64.test(item.commitment))
@@ -196,8 +292,11 @@ export function applyHandEvent(
       gameId: item.gameId,
       challenger: item.role,
       maxBetWei,
+      head: digest,
+      count: 1,
       wagerWei: 0n,
       doubled: false,
+      draws: [],
       playerCards: [],
       dealerCards: [],
       rejected: [],
@@ -212,6 +311,7 @@ export function applyHandEvent(
               dealer: from,
               player: to,
               commitment: item.commitment,
+              dealerLink: { index: 0, link: item.commitment },
             }
           : { ...base, phase: 'challenged', dealer: to, player: from },
     }
@@ -221,8 +321,15 @@ export function applyHandEvent(
   const fromDealer = same(from, prev.dealer) && same(to, prev.player)
   const fromPlayer = same(from, prev.player) && same(to, prev.dealer)
   if (!fromDealer && !fromPlayer) return reject(prev, 'wrong-sender')
+  /** The message is accepted: it becomes the head of the hand's chain. */
   const next = (changes: Partial<HandState>): HandResult => ({
-    state: { ...prev, ...changes, seen: [...prev.seen, digest] },
+    state: {
+      ...prev,
+      ...changes,
+      head: digest,
+      count: prev.count + 1,
+      seen: [...prev.seen, digest],
+    },
   })
   /** The player's money that the hand does not accept is owed back by the dealer. */
   const owedBack = (error: HandRejection): HandResult =>
@@ -237,6 +344,33 @@ export function applyHandEvent(
         }
       : reject(prev, error)
 
+  if (item.action === 'refund') {
+    // A refund is tied to the message whose money it returns, not to a place in the chain.
+    if (!fromDealer) return reject(prev, 'wrong-sender')
+    if (prev.phase === 'awaiting_deal' && item.ref === prev.betDigest)
+      return next({ phase: 'refunded', refundedWei: stampWei })
+    const index = prev.rejected.findIndex(
+      r => r.digest === item.ref && r.refundedWei === undefined,
+    )
+    if (index < 0) return reject(prev, 'bad-ref')
+    return {
+      state: {
+        ...prev,
+        rejected: prev.rejected.map((r, i) =>
+          i === index ? { ...r, refundedWei: stampWei } : r,
+        ),
+        seen: [...prev.seen, digest],
+      },
+    }
+  }
+
+  const moneyFromPlayer =
+    fromPlayer && (item.action === 'bet' || item.action === 'double')
+  // Everything else must be the hand's next message: a replayed, reordered or forked message
+  // names another position or another predecessor.
+  if (item.seq !== prev.count || item.prev !== prev.head)
+    return moneyFromPlayer ? owedBack('out-of-order') : reject(prev, 'out-of-order')
+
   switch (item.action) {
     case 'accept': {
       if (!fromDealer) return reject(prev, 'wrong-sender')
@@ -249,148 +383,251 @@ export function applyHandEvent(
       )
         return reject(prev, 'bad-amount')
       if (!HEX64.test(item.commitment)) return reject(prev, 'bad-commitment')
-      return next({ phase: 'open', maxBetWei, commitment: item.commitment })
+      return next({
+        phase: 'open',
+        maxBetWei,
+        commitment: item.commitment,
+        dealerLink: { index: 0, link: item.commitment },
+      })
     }
     case 'bet': {
       if (!fromPlayer) return reject(prev, 'wrong-sender')
       if (prev.phase !== 'open') return owedBack('wrong-phase')
       if (stampWei <= 0n || stampWei > prev.maxBetWei)
         return owedBack('bad-amount')
+      if (!HEX64.test(item.commitment)) return owedBack('bad-commitment')
       return next({
         phase: 'awaiting_deal',
         wagerWei: stampWei,
         betDigest: digest,
+        playerCommitment: item.commitment,
+        playerLink: { index: 0, link: item.commitment },
       })
     }
     case 'deal': {
       if (!fromDealer) return reject(prev, 'wrong-sender')
       if (prev.phase !== 'awaiting_deal') return reject(prev, 'wrong-phase')
-      const cards = [...item.playerCards]
-      if (cards.length !== 2 || !validCards([...cards, item.dealerUpCard]))
-        return reject(prev, 'bad-cards')
+      // The dealer opens its links for the first three cards. The cards stay unknown to it until
+      // the player's first move opens the player's.
+      if (!prev.dealerLink || !verifyLink(item.link, 3, prev.dealerLink))
+        return reject(prev, 'bad-link')
       return next({
-        phase: handValue(cards).blackjack ? 'dealer_turn' : 'player_turn',
-        playerCards: cards,
-        dealerUpCard: item.dealerUpCard,
+        phase: 'player_turn',
+        dealerLink: { index: 3, link: item.link },
       })
     }
     case 'hit':
-    case 'stand': {
-      if (!fromPlayer) return reject(prev, 'wrong-sender')
-      if (prev.phase !== 'player_turn') return reject(prev, 'wrong-phase')
-      return item.action === 'hit'
-        ? next({ phase: 'awaiting_card', pending: 'hit' })
-        : next({ phase: 'dealer_turn' })
-    }
+    case 'stand':
     case 'double': {
       if (!fromPlayer) return reject(prev, 'wrong-sender')
-      if (prev.phase !== 'player_turn' || prev.playerCards.length !== 2)
-        return owedBack('wrong-phase')
-      if (stampWei !== prev.wagerWei) return owedBack('bad-amount')
-      return next({ phase: 'awaiting_card', pending: 'double', doubled: true })
+      const refuse = (error: HandRejection) =>
+        item.action === 'double' ? owedBack(error) : reject(prev, error)
+      if (prev.phase !== 'player_turn') return refuse('wrong-phase')
+      if (!prev.playerLink || !prev.dealerLink) return refuse('wrong-phase')
+      // A hit opens the link of the card it asks for; a stand or a double ends the player's
+      // choices and opens the rest of its chain.
+      const cardsOut = Math.max(prev.draws.length, 3)
+      const index = item.action === 'hit' ? cardsOut + 1 : CHAIN_LENGTH
+      if (!verifyLink(item.link, index, prev.playerLink)) return refuse('bad-link')
+      const playerLink = { index, link: item.link }
+      const draws = prev.draws.length
+        ? prev.draws
+        : initialDraws(prev.gameId, prev.dealerLink, playerLink)
+      if (!draws) return refuse('bad-link')
+      const playerCards = prev.draws.length ? prev.playerCards : [draws[0], draws[2]]
+      // A natural is final as dealt: the only move is to stand.
+      if (item.action !== 'stand' && handValue(playerCards).blackjack)
+        return refuse('wrong-phase')
+      if (item.action === 'double') {
+        if (playerCards.length !== 2) return owedBack('wrong-phase')
+        if (stampWei !== prev.wagerWei) return owedBack('bad-amount')
+      }
+      const opened = { playerLink, draws, playerCards, dealerUpCard: draws[1] }
+      if (item.action === 'stand') return next({ ...opened, phase: 'dealer_turn' })
+      return next({
+        ...opened,
+        phase: 'awaiting_card',
+        pending: item.action,
+        ...(item.action === 'double' ? { doubled: true } : {}),
+      })
     }
     case 'card': {
       if (!fromDealer) return reject(prev, 'wrong-sender')
       if (prev.phase !== 'awaiting_card') return reject(prev, 'wrong-phase')
-      const cards = [...item.playerCards]
-      const had = prev.playerCards
+      const k = prev.draws.length
+      const playerLink = prev.playerLink && linkAt(prev.playerLink, k + 1)
       if (
-        cards.length !== had.length + 1 ||
-        had.some((card, i) => cards[i] !== card) ||
-        !validCards([...cards, prev.dealerUpCard as Card])
+        !prev.dealerLink ||
+        playerLink === undefined ||
+        !verifyLink(item.link, k + 1, prev.dealerLink)
       )
-        return reject(prev, 'bad-cards')
+        return reject(prev, 'bad-link')
+      const card = drawCard(prev.gameId, k, item.link, playerLink, prev.draws)
+      const cards = [...prev.playerCards, card]
       const done = handValue(cards).bust || prev.pending === 'double'
       return next({
         phase: done ? 'dealer_turn' : 'player_turn',
         pending: undefined,
+        dealerLink: { index: k + 1, link: item.link },
+        draws: [...prev.draws, card],
         playerCards: cards,
       })
     }
     case 'reveal': {
       if (!fromDealer) return reject(prev, 'wrong-sender')
       if (prev.phase !== 'dealer_turn') return reject(prev, 'wrong-phase')
-      if (
-        !HEX64.test(item.seed) ||
-        commitmentOf(item.seed) !== prev.commitment ||
-        !prev.betDigest
-      )
-        return reject(prev, 'bad-reveal')
-      const expected = replay(item.seed, prev.betDigest, prev.playerCards.length)
-      if (
-        !sameCards(expected.playerCards, prev.playerCards) ||
-        expected.dealerUpCard !== prev.dealerUpCard ||
-        !sameCards(expected.dealerCards, item.dealerCards) ||
-        expected.outcome !== item.outcome
-      )
-        return reject(prev, 'bad-reveal')
+      if (!prev.dealerLink || !verifyLink(item.link, CHAIN_LENGTH, prev.dealerLink))
+        return reject(prev, 'bad-link')
+      const dealerLink = { index: CHAIN_LENGTH, link: item.link }
+      const end = settle(prev, dealerLink)
+      if (!end) return reject(prev, 'bad-reveal')
       return next({
         phase: 'resolved',
-        seed: item.seed,
-        dealerCards: expected.dealerCards,
-        outcome: expected.outcome,
-        owedWei: payoutWei(expected.outcome, prev.wagerWei, prev.doubled),
+        dealerLink,
+        dealerCards: end.dealerCards,
+        outcome: end.outcome,
+        owedWei: payoutWei(end.outcome, prev.wagerWei, prev.doubled),
         paidWei: stampWei,
       })
     }
-    case 'refund': {
-      if (!fromDealer) return reject(prev, 'wrong-sender')
-      if (prev.phase === 'awaiting_deal' && item.ref === prev.betDigest)
-        return next({ phase: 'refunded', refundedWei: stampWei })
-      const index = prev.rejected.findIndex(
-        r => r.digest === item.ref && r.refundedWei === undefined,
-      )
-      if (index < 0) return reject(prev, 'bad-ref')
-      return next({
-        rejected: prev.rejected.map((r, i) =>
-          i === index ? { ...r, refundedWei: stampWei } : r,
-        ),
-      })
-    }
   }
 }
 
-const sameCards = (a: readonly number[], b: readonly number[]) =>
-  a.length === b.length && a.every((card, i) => card === b[i])
-
-/** The hand a seed and a bet digest determine, for a player who holds `playerCount` cards. */
-function replay(seed: string, betDigest: string, playerCount: number) {
-  const deck = deckOf(seed, betDigest)
-  const initial = dealInitialCards(deck)
-  const playerCards = [...initial.playerCards, ...deck.slice(4, 2 + playerCount)]
-  const played = playOutDealer(deck, playerCards, 2 + playerCount)
-  return {
-    playerCards,
-    dealerUpCard: initial.dealerCards[0],
-    dealerCards: played.dealerCards,
-    outcome: played.outcome,
-  }
+/** Does this event continue the hand from `state` (or, for a refund, return money it owes)? */
+function fitsNext(state: HandState | undefined, event: HandEvent): boolean {
+  const { item } = event
+  if (!state) return item.action === 'challenge'
+  if (item.action === 'challenge') return false
+  if (item.action === 'refund')
+    return (
+      (state.phase === 'awaiting_deal' && item.ref === state.betDigest) ||
+      state.rejected.some(r => r.digest === item.ref && r.refundedWei === undefined)
+    )
+  return item.seq === state.count && item.prev === state.head
 }
 
-/** Fold a whole conversation's hand messages, in the order given. */
+/**
+ * Fold a whole conversation's hand messages. The order given matters only where the chain leaves
+ * a choice: each step takes the message that continues the chain (`seq`, `prev`), so messages
+ * that were delivered or stored out of order still fold the same way on both sides. Of two
+ * messages that continue the same point (a fork by their sender), the one the other side built
+ * on wins; otherwise the earlier in the given order. What never fits is rejected.
+ */
 export function foldHand(events: readonly HandEvent[]): {
   state: HandState | undefined
-  rejected: { digest: string; error: HandRejection }[]
+  rejected: { digest: string; error: HandRejection; from: string }[]
 } {
   let state: HandState | undefined
-  const rejected: { digest: string; error: HandRejection }[] = []
-  for (const event of events) {
+  const rejected: { digest: string; error: HandRejection; from: string }[] = []
+  const pending = [...events]
+  const apply = (index: number) => {
+    const [event] = pending.splice(index, 1)
     const result = applyHandEvent(state, event)
     state = result.state
-    if (result.error) rejected.push({ digest: event.digest, error: result.error })
+    if (result.error)
+      rejected.push({ digest: event.digest, error: result.error, from: event.from })
+  }
+  while (pending.length) {
+    const fits = pending.flatMap((event, i) => (fitsNext(state, event) ? [i] : []))
+    if (fits.length) {
+      const builtOn = fits.find(i =>
+        pending.some(
+          other =>
+            other.item.action !== 'challenge' &&
+            other.item.prev === pending[i].digest &&
+            !same(other.from, pending[i].from),
+        ),
+      )
+      apply(builtOn ?? fits[0])
+      continue
+    }
+    // Nothing continues the chain. Whatever is left is rejected, money first, so that a refund
+    // of rejected money finds what it returns.
+    const other = pending.findIndex(event => event.item.action !== 'refund')
+    apply(other < 0 ? 0 : other)
   }
   return { state, rejected }
 }
 
-/** What the player may send now. A bet's and a double's stamp is the money. */
+/** The cards a side can see. Both sides compute the same cards from the links opened so far,
+ * except for one moment: after the deal the player holds both sides' links for the first three
+ * cards and sees them before its first move opens them to the dealer. */
+export function handView(
+  state: HandState | undefined,
+  seed?: string,
+): { playerCards: Card[]; dealerUpCard?: Card; dealerCards: Card[] } {
+  if (!state) return { playerCards: [], dealerCards: [] }
+  if (
+    state.phase === 'player_turn' &&
+    state.draws.length === 0 &&
+    seed &&
+    state.dealerLink &&
+    commitmentOf(seed) === state.playerCommitment
+  ) {
+    const draws = initialDraws(state.gameId, state.dealerLink, {
+      index: 3,
+      link: entropyChain(seed)[3],
+    })
+    if (draws)
+      return {
+        playerCards: [draws[0], draws[2]],
+        dealerUpCard: draws[1],
+        dealerCards: [],
+      }
+  }
+  return {
+    playerCards: state.playerCards,
+    dealerUpCard: state.dealerUpCard,
+    dealerCards: state.dealerCards,
+  }
+}
+
+/** What the player may send now, given the seed it committed to in its bet. A bet's and a
+ * double's stamp is the money. Without its seed a player can bet but cannot move. */
 export function playerMoves(
   state: HandState | undefined,
+  seed?: string,
 ): ('bet' | 'hit' | 'stand' | 'double')[] {
   if (state?.phase === 'open') return ['bet']
   if (state?.phase !== 'player_turn') return []
-  return state.playerCards.length === 2
-    ? ['hit', 'stand', 'double']
-    : ['hit', 'stand']
+  if (!seed || commitmentOf(seed) !== state.playerCommitment) return []
+  const cards = handView(state, seed).playerCards
+  if (cards.length < 2) return []
+  // A natural is final as dealt: standing opens it to the dealer.
+  if (handValue(cards).blackjack) return ['stand']
+  return cards.length === 2 ? ['hit', 'stand', 'double'] : ['hit', 'stand']
+}
+
+/** The fields every message after the challenge carries: its place in the hand's chain. */
+function chained(state: HandState) {
+  return {
+    type: 'blackjack-hand' as const,
+    gameId: state.gameId,
+    seq: state.count,
+    prev: state.head,
+  }
+}
+
+/** The player's bet: its commitment goes out with the money, before any card can be known. */
+export function buildBet(
+  state: HandState | undefined,
+  seed: string,
+): HandItem | undefined {
+  if (state?.phase !== 'open') return undefined
+  return { ...chained(state), action: 'bet', commitment: commitmentOf(seed) }
+}
+
+/** The player's move, with the link it opens: a hit opens the link of the card it asks for, a
+ * stand or a double the rest of the player's chain. */
+export function playerStep(
+  state: HandState | undefined,
+  move: 'hit' | 'stand' | 'double',
+  seed: string,
+): HandItem | undefined {
+  if (!state || !playerMoves(state, seed).includes(move)) return undefined
+  const index =
+    move === 'hit' ? Math.max(state.draws.length, 3) + 1 : CHAIN_LENGTH
+  return { ...chained(state), action: move, link: entropyChain(seed)[index] }
 }
 
 /** A message the dealer must send, and the stamp it must carry when the stamp is money. */
@@ -402,52 +639,39 @@ export interface DealerStep {
 
 /**
  * The dealer's next message, if it is the dealer's turn. No choice is involved in any of these:
- * the cards come from the committed seed and the bet's digest, and the amounts from the hand.
- * The same state always gives the same step, so a retry after a crash sends the same message.
+ * each opens the next link of the chain the dealer committed to, and the amounts come from the
+ * hand. The same state always gives the same step, so a retry after a crash sends the same
+ * message.
  */
 export function dealerStep(
   state: HandState | undefined,
   seed: string,
 ): DealerStep | undefined {
   if (!state) return undefined
-  const base = { type: 'blackjack-hand' as const, gameId: state.gameId }
+  const base = chained(state)
   const owed = state.rejected.find(r => r.refundedWei === undefined)
   if (owed)
     return {
       item: { ...base, action: 'refund', ref: owed.digest },
       payWei: owed.stampWei,
     }
-  if (!state.betDigest || commitmentOf(seed) !== state.commitment)
-    return undefined
+  if (!HEX64.test(seed)) return undefined
+  const chain = entropyChain(seed)
+  if (chain[0] !== state.commitment) return undefined
   switch (state.phase) {
-    case 'awaiting_deal': {
-      const dealt = replay(seed, state.betDigest, 2)
+    case 'awaiting_deal':
+      return { item: { ...base, action: 'deal', link: chain[3] } }
+    case 'awaiting_card':
       return {
-        item: {
-          ...base,
-          action: 'deal',
-          playerCards: dealt.playerCards,
-          dealerUpCard: dealt.dealerUpCard,
-        },
+        item: { ...base, action: 'card', link: chain[state.draws.length + 1] },
       }
-    }
-    case 'awaiting_card': {
-      const dealt = replay(seed, state.betDigest, state.playerCards.length + 1)
-      return {
-        item: { ...base, action: 'card', playerCards: dealt.playerCards },
-      }
-    }
     case 'dealer_turn': {
-      const dealt = replay(seed, state.betDigest, state.playerCards.length)
-      const owedWei = payoutWei(dealt.outcome, state.wagerWei, state.doubled)
+      const link = chain[CHAIN_LENGTH]
+      const end = settle(state, { index: CHAIN_LENGTH, link })
+      if (!end) return undefined
+      const owedWei = payoutWei(end.outcome, state.wagerWei, state.doubled)
       return {
-        item: {
-          ...base,
-          action: 'reveal',
-          dealerCards: dealt.dealerCards,
-          seed,
-          outcome: dealt.outcome,
-        },
+        item: { ...base, action: 'reveal', link },
         ...(owedWei > 0n ? { payWei: owedWei } : {}),
       }
     }
@@ -461,12 +685,7 @@ export function dealerStep(
 export function refundBetStep(state: HandState | undefined): DealerStep | undefined {
   if (state?.phase !== 'awaiting_deal' || !state.betDigest) return undefined
   return {
-    item: {
-      type: 'blackjack-hand',
-      gameId: state.gameId,
-      action: 'refund',
-      ref: state.betDigest,
-    },
+    item: { ...chained(state), action: 'refund', ref: state.betDigest },
     payWei: state.wagerWei,
   }
 }
@@ -563,6 +782,7 @@ export function buildChallenge(input: {
     type: 'blackjack-hand' as const,
     gameId: input.gameId,
     action: 'challenge' as const,
+    seq: 0,
     maxBetWei: input.maxBetWei.toString(),
   }
   if (input.role === 'player') return { item: { ...base, role: 'player' } }
@@ -593,8 +813,7 @@ export function buildAccept(input: {
   if (max <= 0n) return { error: 'above-own-limit' }
   return {
     item: {
-      type: 'blackjack-hand',
-      gameId: input.state.gameId,
+      ...chained(input.state),
       action: 'accept',
       maxBetWei: max.toString(),
       commitment: commitmentOf(input.seed),

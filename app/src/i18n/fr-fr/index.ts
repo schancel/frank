@@ -175,11 +175,14 @@ export default {
     waitPlayer: 'En attente du coup du joueur.',
     waitReveal: 'En attente de la révélation et du paiement du donneur.',
     dealing: 'Distribution…',
-    verified: 'Les cartes correspondent à l’engagement du donneur.',
+    verified:
+      'Les cartes proviennent des engagements des deux joueurs, vérifiés sur cet appareil.',
     badReveal:
       'Le donneur a envoyé une révélation qui ne correspond pas à son engagement. La main n’est pas réglée.',
     noSeed:
       'Cet appareil ne détient pas la graine de cette main et ne peut donc pas distribuer. Vous pouvez rendre la mise.',
+    noSeedPlayer:
+      'Cet appareil ne détient pas votre graine pour cette main et ne peut donc pas jouer votre coup. Utilisez l’appareil sur lequel vous avez misé.',
     refundOwed: 'Le donneur vous doit un remboursement de {amount}.',
     refunded: 'Le donneur a rendu la mise ({amount}).',
     noPayout: 'Rien n’est payé.',
@@ -714,6 +717,24 @@ export default {
     copyTxHash: 'Copier le hash de transaction',
     localChainNotice: 'Pile locale / shim de chaîne',
     txHashCopied: 'Hash de transaction copié dans le presse-papiers',
+  },
+  about: {
+    title: 'À propos',
+    menu: 'À propos et licences',
+    thirdPartyTitle: 'Logiciels tiers',
+    dklsName:
+      'Bibliothèque de signature à deux parties DKLs23 (Silence Laboratories)',
+    dklsModified:
+      'Frank inclut une version modifiée de la bibliothèque DKLs23 de Silence Laboratories. Le projet Frank l’a modifiée le {date}, de façon indépendante et sans aucune participation de Silence Laboratories.',
+    dklsChanges:
+      'Ce qui a été modifié : une session de signature est liée à un seul message, et la pré-signature à adaptateur à deux parties a été ajoutée.',
+    dklsNonCommercial:
+      'Ce composant ne peut être utilisé qu’à des fins non commerciales. La licence MIT de Frank ne s’y applique pas.',
+    dklsSource:
+      'Le code source de la bibliothèque modifiée se trouve dans le dépôt de Frank, dans le dossier {path}.',
+    licenseHeading: 'Licence de la bibliothèque DKLs23',
+    licenseIntro:
+      'Le texte intégral de la licence, avec ses conditions et son avertissement, tel que publié par Silence Laboratories (en anglais uniquement) :',
   },
   close: 'Fermer',
 }

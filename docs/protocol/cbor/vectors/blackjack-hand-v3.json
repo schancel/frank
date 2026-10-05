@@ -1,0 +1,524 @@
+{
+  "format": "blackjack-hand-v3",
+  "allocation": {
+    "typeId": 18,
+    "schemaVersion": 3,
+    "minReaderVersion": 2,
+    "maximumFrameBytes": 4096,
+    "closedPayload": true
+  },
+  "note": "All hashes and amounts are public fixtures. No frame carries or proves a payment, a card or an outcome.",
+  "contexts": {
+    "default": {},
+    "schema2": {
+      "readerVersion": 2,
+      "supportedSchemas": [
+        {
+          "typeId": 18,
+          "schemaVersion": 2
+        }
+      ],
+      "opaqueRetentionAllowed": false
+    }
+  },
+  "frames": [
+    {
+      "id": "challenge-as-dealer",
+      "context": "default",
+      "frameHex": "46524e4b010000007ba4001201030202035871a6007820303031313232333334343535363637373838393961616262636364646565666601182002000358200000000000000000000000000000000000000000000000000de0b6b3a7640000045820c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00b00",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "00112233445566778899aabbccddeeff",
+        "action": "challenge",
+        "seq": 0,
+        "role": "dealer",
+        "maxBetWei": "1000000000000000000",
+        "commitment": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+      }
+    },
+    {
+      "id": "challenge-as-player",
+      "context": "default",
+      "frameHex": "46524e4b0100000058a400120103020203584ea50078203030313132323333343435353636373738383939616162626363646465656666011820020103582000000000000000000000000000000000000000000000000000000000000000010b00",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "00112233445566778899aabbccddeeff",
+        "action": "challenge",
+        "seq": 0,
+        "role": "player",
+        "maxBetWei": "1"
+      }
+    },
+    {
+      "id": "accept",
+      "context": "default",
+      "frameHex": "46524e4b010000009ca4001201030202035892a600782030303131323233333434353536363737383839396161626263636464656566660118210358200000000000000000000000000000001d6329f1c35ca4bfabb9f560ffffffffff045820c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00b010c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "00112233445566778899aabbccddeeff",
+        "action": "accept",
+        "seq": 1,
+        "prev": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+        "maxBetWei": "9999999999999999999999999999999999999999",
+        "commitment": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+      }
+    },
+    {
+      "id": "bet",
+      "context": "default",
+      "frameHex": "46524e4b0100000079a400120103020203586fa50078203030313132323333343435353636373738383939616162626363646465656666011822045820c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00b020c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "00112233445566778899aabbccddeeff",
+        "action": "bet",
+        "seq": 2,
+        "prev": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+        "commitment": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+      }
+    },
+    {
+      "id": "deal",
+      "context": "default",
+      "frameHex": "46524e4b0100000079a400120103020203586fa500782030303131323233333434353536363737383839396161626263636464656566660118230b030c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "00112233445566778899aabbccddeeff",
+        "action": "deal",
+        "seq": 3,
+        "prev": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+        "link": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "id": "hit",
+      "context": "default",
+      "frameHex": "46524e4b0100000079a400120103020203586fa500782030303131323233333434353536363737383839396161626263636464656566660118240b040c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "00112233445566778899aabbccddeeff",
+        "action": "hit",
+        "seq": 4,
+        "prev": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+        "link": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "id": "stand",
+      "context": "default",
+      "frameHex": "46524e4b010000007aa4001201030202035870a500782030303131323233333434353536363737383839396161626263636464656566660118250b18180c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "00112233445566778899aabbccddeeff",
+        "action": "stand",
+        "seq": 24,
+        "prev": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+        "link": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "id": "double",
+      "context": "default",
+      "frameHex": "46524e4b0100000079a400120103020203586fa500782030303131323233333434353536363737383839396161626263636464656566660118260b040c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "00112233445566778899aabbccddeeff",
+        "action": "double",
+        "seq": 4,
+        "prev": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+        "link": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "id": "card",
+      "context": "default",
+      "frameHex": "46524e4b0100000079a400120103020203586fa500782030303131323233333434353536363737383839396161626263636464656566660118270b050c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "00112233445566778899aabbccddeeff",
+        "action": "card",
+        "seq": 5,
+        "prev": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+        "link": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "id": "reveal",
+      "context": "default",
+      "frameHex": "46524e4b010000007aa4001201030202035870a500782066666666666666666666666666666666666666666666666666666666666666660118280b18ff0c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "ffffffffffffffffffffffffffffffff",
+        "action": "reveal",
+        "seq": 255,
+        "prev": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+        "link": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "id": "refund",
+      "context": "default",
+      "frameHex": "46524e4b0100000079a400120103020203586fa500782030303131323233333434353536363737383839396161626263636464656566660118290a5820abababababababababababababababababababababababababababababababab0b030c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+      "expected": {
+        "result": "accept"
+      },
+      "application": {
+        "type": "blackjack-hand",
+        "gameId": "00112233445566778899aabbccddeeff",
+        "action": "refund",
+        "seq": 3,
+        "prev": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+        "ref": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "reject-v3-action-code-in-schema2",
+      "context": "default",
+      "frameHex": "46524e4b0100000079a400120102020203586fa500782030303131323233333434353536363737383839396161626263636464656566660118240b040c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-v3-action-code-in-schema1",
+      "context": "default",
+      "frameHex": "46524e4b0100000079a400120101020103586fa500782030303131323233333434353536363737383839396161626263636464656566660118240b040c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-action-out-of-range",
+      "context": "default",
+      "frameHex": "46524e4b0100000079a400120103020203586fa5007820303031313232333334343535363637373838393961616262636364646565666601182a0b040c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-missing-game",
+      "context": "default",
+      "frameHex": "46524e4b0100000056a400120103020203584ca40118240b040c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-game-uppercase",
+      "context": "default",
+      "frameHex": "46524e4b0100000079a400120103020203586fa500782030303131323233333434353536363737383839394141424243434444454546460118240b040c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-game-short",
+      "context": "default",
+      "frameHex": "46524e4b0100000078a400120103020203586ea500781f303131323233333434353536363737383839396161626263636464656566660118240b040c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-hit-without-seq",
+      "context": "default",
+      "frameHex": "46524e4b0100000077a400120103020203586da400782030303131323233333434353536363737383839396161626263636464656566660118240c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-hit-without-prev",
+      "context": "default",
+      "frameHex": "46524e4b0100000056a400120103020203584ca400782030303131323233333434353536363737383839396161626263636464656566660118240b040d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-hit-without-link",
+      "context": "default",
+      "frameHex": "46524e4b0100000056a400120103020203584ca400782030303131323233333434353536363737383839396161626263636464656566660118240b040c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-hit-seq-zero",
+      "context": "default",
+      "frameHex": "46524e4b0100000079a400120103020203586fa500782030303131323233333434353536363737383839396161626263636464656566660118240b000c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-hit-seq-256",
+      "context": "default",
+      "frameHex": "46524e4b010000007ba4001201030202035871a500782030303131323233333434353536363737383839396161626263636464656566660118240b1901000c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-hit-short-link",
+      "context": "default",
+      "frameHex": "46524e4b0100000078a400120103020203586ea500782030303131323233333434353536363737383839396161626263636464656566660118240b040c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d581f00000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-hit-long-prev",
+      "context": "default",
+      "frameHex": "46524e4b010000007aa4001201030202035870a500782030303131323233333434353536363737383839396161626263636464656566660118240b040c58210000000000000000000000000000000000000000000000000000000000000000000d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-hit-text-link",
+      "context": "default",
+      "frameHex": "46524e4b0100000099a400120103020203588fa500782030303131323233333434353536363737383839396161626263636464656566660118240b040c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d784030313233343536373839616263646566303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-hit-with-cards",
+      "context": "default",
+      "frameHex": "46524e4b010000007ea4001201030202035874a6007820303031313232333334343535363637373838393961616262636364646565666601182405830102030b040c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-deal-with-cards",
+      "context": "default",
+      "frameHex": "46524e4b010000007fa4001201030202035875a700782030303131323233333434353536363737383839396161626263636464656566660118230582000106020b030c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-reveal-with-outcome",
+      "context": "default",
+      "frameHex": "46524e4b010000007ba4001201030202035871a6007820303031313232333334343535363637373838393961616262636364646565666601182809000b090c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-reveal-with-seed",
+      "context": "default",
+      "frameHex": "46524e4b01000000bca40012010302020358b2a60078203030313132323333343435353636373738383939616162626363646465656666011828087840303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566303132333435363738396162636465660b090c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-challenge-with-prev",
+      "context": "default",
+      "frameHex": "46524e4b010000007ba4001201030202035871a60078203030313132323333343435353636373738383939616162626363646465656666011820020103582000000000000000000000000000000000000000000000000000000000000000050b000c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-challenge-seq-one",
+      "context": "default",
+      "frameHex": "46524e4b0100000058a400120103020203584ea50078203030313132323333343435353636373738383939616162626363646465656666011820020103582000000000000000000000000000000000000000000000000000000000000000050b01",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-challenge-player-with-commitment",
+      "context": "default",
+      "frameHex": "46524e4b010000007ba4001201030202035871a6007820303031313232333334343535363637373838393961616262636364646565666601182002010358200000000000000000000000000000000000000000000000000000000000000005045820c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00b00",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-challenge-dealer-without-commitment",
+      "context": "default",
+      "frameHex": "46524e4b0100000058a400120103020203584ea50078203030313132323333343435353636373738383939616162626363646465656666011820020003582000000000000000000000000000000000000000000000000000000000000000050b00",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-challenge-role",
+      "context": "default",
+      "frameHex": "46524e4b0100000058a400120103020203584ea50078203030313132323333343435353636373738383939616162626363646465656666011820020203582000000000000000000000000000000000000000000000000000000000000000050b00",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-challenge-zero-max",
+      "context": "default",
+      "frameHex": "46524e4b0100000058a400120103020203584ea50078203030313132323333343435353636373738383939616162626363646465656666011820020103582000000000000000000000000000000000000000000000000000000000000000000b00",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      }
+    },
+    {
+      "id": "reject-challenge-max-above-limit",
+      "context": "default",
+      "frameHex": "46524e4b0100000058a400120103020203584ea5007820303031313232333334343535363637373838393961616262636364646565666601182002010358200000000000000000000000000000001d6329f1c35ca4bfabb9f56100000000000b00",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      }
+    },
+    {
+      "id": "reject-accept-zero-max",
+      "context": "default",
+      "frameHex": "46524e4b010000009ca4001201030202035892a600782030303131323233333434353536363737383839396161626263636464656566660118210358200000000000000000000000000000000000000000000000000000000000000000045820c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00b010c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+      "expected": {
+        "result": "reject",
+        "stage": "9",
+        "category": "semantic"
+      }
+    },
+    {
+      "id": "reject-accept-without-commitment",
+      "context": "default",
+      "frameHex": "46524e4b0100000079a400120103020203586fa5007820303031313232333334343535363637373838393961616262636364646565666601182103582000000000000000000000000000000000000000000000000000000000000000050b010c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-bet-without-commitment",
+      "context": "default",
+      "frameHex": "46524e4b0100000056a400120103020203584ca400782030303131323233333434353536363737383839396161626263636464656566660118220b020c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-bet-with-amount-field",
+      "context": "default",
+      "frameHex": "46524e4b010000009ca4001201030202035892a600782030303131323233333434353536363737383839396161626263636464656566660118220358200000000000000000000000000000000000000000000000000000000000000005045820c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00b020c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-refund-without-ref",
+      "context": "default",
+      "frameHex": "46524e4b0100000056a400120103020203584ca400782030303131323233333434353536363737383839396161626263636464656566660118290b030c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-refund-short-ref",
+      "context": "default",
+      "frameHex": "46524e4b0100000078a400120103020203586ea500782030303131323233333434353536363737383839396161626263636464656566660118290a581f000000000000000000000000000000000000000000000000000000000000000b030c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reader-without-schema3-rejects-a-v3-action-code",
+      "context": "schema2",
+      "frameHex": "46524e4b0100000079a400120103020203586fa500782030303131323233333434353536363737383839396161626263636464656566660118240b040c5820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d10d58200123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    }
+  ]
+}

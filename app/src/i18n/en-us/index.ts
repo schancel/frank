@@ -171,11 +171,13 @@ export default {
     waitPlayer: "Waiting for the player's move.",
     waitReveal: 'Waiting for the dealer to reveal and pay.',
     dealing: 'Dealing…',
-    verified: 'The cards match the dealer’s commitment.',
+    verified: 'The cards come from both players’ commitments, checked on this device.',
     badReveal:
       'The dealer sent a reveal that does not match its commitment. The hand is not settled.',
     noSeed:
       'This device does not hold the seed of this hand, so it cannot deal. You can return the bet.',
+    noSeedPlayer:
+      'This device does not hold your seed for this hand, so it cannot make your move. Use the device you placed the bet on.',
     refundOwed: 'The dealer owes you a refund of {amount}.',
     refunded: 'The dealer returned the bet ({amount}).',
     noPayout: 'Nothing is paid out.',
@@ -717,6 +719,23 @@ export default {
     copyTxHash: 'Copy transaction hash',
     localChainNotice: 'Local stack / chain shim',
     txHashCopied: 'Transaction hash copied to clipboard',
+  },
+  about: {
+    title: 'About',
+    menu: 'About and licences',
+    thirdPartyTitle: 'Third-party software',
+    dklsName: 'DKLs23 two-party signing library (Silence Laboratories)',
+    dklsModified:
+      'Frank includes a modified version of the DKLs23 library by Silence Laboratories. The Frank project changed it on {date}, independently and without any involvement from Silence Laboratories.',
+    dklsChanges:
+      'What was changed: a signing session is tied to one message, and two-party adaptor pre-signing was added.',
+    dklsNonCommercial:
+      'This component may be used for non-commercial purposes only. Frank’s own MIT licence does not apply to it.',
+    dklsSource:
+      'The source code of the modified library is in the Frank repository, in the folder {path}.',
+    licenseHeading: 'Licence of the DKLs23 library',
+    licenseIntro:
+      'The full licence text, including its conditions and disclaimer, as published by Silence Laboratories (English only):',
   },
   close: 'Close',
 }

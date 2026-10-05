@@ -64,6 +64,23 @@
 
           <q-item-section>{{ $t('SettingPanel.changeLog') }}</q-item-section>
         </q-item>
+
+        <q-item
+          clickable
+          v-ripple
+          data-test="open-about"
+          @click="
+            $router.push('/about').catch(() => {
+              // Don't care. Probably duplicate route
+            })
+          "
+        >
+          <q-item-section avatar>
+            <q-icon name="info" />
+          </q-item-section>
+
+          <q-item-section>{{ $t('about.menu') }}</q-item-section>
+        </q-item>
       </q-list>
     </q-scroll-area>
   </div>

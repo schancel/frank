@@ -626,6 +626,8 @@ pub enum TypedPayload {
     BlackjackItem(BlackjackMessageItem),
     /// Type 18 schema 2 with min reader 2, the closed peer-to-peer hand item shapes.
     BlackjackHandItem(BlackjackHandMessageItem),
+    /// Type 18 schema 3, the closed hand shapes with entropy from both sides.
+    BlackjackHandV3Item(BlackjackHandV3MessageItem),
     /// Type 17.
     TextItem {
         /// Field 0.
@@ -802,3 +804,87 @@ pub struct BlackjackHandFields<H, Q> {
 
 /// Closed type-18 schema-2 wire projection; exact frame bytes stay on ParsedFrame.
 pub type BlackjackHandMessageItem = BlackjackHandFields<Vec<u8>, Vec<u8>>;
+
+/// The six schema-3 moves that open one entropy link; they share one closed shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlackjackHandV3Move {
+    /// Deal.
+    Deal,
+    /// Hit.
+    Hit,
+    /// Stand.
+    Stand,
+    /// Double; the amount is the carrying message's stamp.
+    Double,
+    /// Card.
+    Card,
+    /// Reveal.
+    Reveal,
+}
+
+/// Codec-owned closed schema-3 shapes of one peer-to-peer hand with entropy from both sides:
+/// ten actions, the challenge in its two role forms. H and Q distinguish bytes from text. No
+/// shape states a card, an outcome or an amount of money: both sides compute the cards from the
+/// links opened so far. `prev` is the payload digest of the hand's previous message; a
+/// challenge is message 0 and has none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlackjackHandV3Action<H, Q> {
+    /// Challenge by the dealer (role 0), with the commitment.
+    ChallengeDealer {
+        /// Positive maximum bet.
+        max_bet_wei: Q,
+        /// Exact 32-byte commitment.
+        commitment: H,
+    },
+    /// Challenge by the player (role 1); it carries no commitment.
+    ChallengePlayer {
+        /// Positive maximum bet.
+        max_bet_wei: Q,
+    },
+    /// Acceptance of a challenge.
+    Accept {
+        /// Positive maximum bet.
+        max_bet_wei: Q,
+        /// Exact 32-byte commitment.
+        commitment: H,
+        /// Payload digest of the previous message.
+        prev: H,
+    },
+    /// Bet; the amount is the carrying message's stamp.
+    Bet {
+        /// Exact 32-byte commitment.
+        commitment: H,
+        /// Payload digest of the previous message.
+        prev: H,
+    },
+    /// Deal, hit, stand, double, card or reveal: one opened entropy link.
+    Move {
+        /// Which of the six moves this is.
+        kind: BlackjackHandV3Move,
+        /// Exact 32-byte entropy link.
+        link: H,
+        /// Payload digest of the previous message.
+        prev: H,
+    },
+    /// Refund notice; the amount is the carrying message's stamp.
+    Refund {
+        /// Exact 32-byte reference.
+        reference: H,
+        /// Payload digest of the previous message.
+        prev: H,
+    },
+}
+
+/// Common game ID and chain position plus one closed schema-3 hand action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlackjackHandV3Fields<H, Q> {
+    /// Game ID: exactly 32 lowercase ASCII hex characters.
+    pub game_id: String,
+    /// Number of messages of this hand before this one: 0 for a challenge, otherwise 1..=255.
+    pub seq: u32,
+    /// The complete selected action shape.
+    pub action: BlackjackHandV3Action<H, Q>,
+}
+
+/// Closed type-18 schema-3 wire projection; exact frame bytes stay on ParsedFrame.
+pub type BlackjackHandV3MessageItem = BlackjackHandV3Fields<Vec<u8>, Vec<u8>>;

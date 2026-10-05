@@ -95,12 +95,11 @@ pub fn default_context() -> ValidationContext {
             .copied()
             .map(|type_id| SupportedSchema {
                 type_id,
-                schema_version: if type_id == TYPE_DIRECTORY_STATEMENT {
-                    3
-                } else if type_id == TYPE_RECIPIENT_PAYLOAD
-                    || type_id == TYPE_TOPIC_POST
+                schema_version: if type_id == TYPE_DIRECTORY_STATEMENT
                     || type_id == crate::limits::TYPE_BLACKJACK_ITEM
                 {
+                    3
+                } else if type_id == TYPE_RECIPIENT_PAYLOAD || type_id == TYPE_TOPIC_POST {
                     2
                 } else {
                     1
@@ -1231,6 +1230,7 @@ fn open_children(
         }),
         Draft::Blackjack(item) => Ok(TypedPayload::BlackjackItem(item)),
         Draft::BlackjackHand(item) => Ok(TypedPayload::BlackjackHandItem(item)),
+        Draft::BlackjackHandV3(item) => Ok(TypedPayload::BlackjackHandV3Item(item)),
         Draft::Text { text, unknown } => Ok(TypedPayload::TextItem { text, unknown }),
     }
 }

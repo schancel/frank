@@ -222,6 +222,7 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
         type: 'blackjack-hand',
         gameId: expect.stringMatching(/^[0-9a-f]{32}$/),
         action: 'challenge',
+        seq: 0,
         role: 'player',
         maxBetWei: (10n ** 17n).toString(),
       },

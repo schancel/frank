@@ -42,6 +42,7 @@ import {
   commitmentOf,
   dealerStep,
   foldHand,
+  playerStep,
 } from '@frank/wallet/message-item-plugins/blackjack/hand'
 import {
   HAND_FEE_RESERVE_WEI,
@@ -230,6 +231,7 @@ describe('Chat.vue blackjack challenge', () => {
       type: 'blackjack-hand',
       gameId: item.gameId,
       action: 'challenge',
+      seq: 0,
       role: 'player',
       maxBetWei: '1000',
     })
@@ -271,6 +273,7 @@ describe('Chat.vue sends a hand message only while it is still the next one', ()
         type: 'blackjack-hand',
         gameId: GAME,
         action: 'challenge',
+        seq: 0,
         role: 'dealer',
         maxBetWei: '500',
         commitment: 'c'.repeat(64),
@@ -279,7 +282,15 @@ describe('Chat.vue sends a hand message only while it is still the next one', ()
     stampValueWei: 1n,
     payloadDigest: 'challenge',
   }
-  const bet = { type: 'blackjack-hand', gameId: GAME, action: 'bet' }
+  // The hand's second message: it names the challenge as the one before it.
+  const bet = {
+    type: 'blackjack-hand',
+    gameId: GAME,
+    action: 'bet',
+    seq: 1,
+    prev: 'challenge',
+    commitment: 'b'.repeat(64),
+  }
   beforeEach(() => jest.mocked(errorNotify).mockReset())
 
   it('sends a bet once: with the bet already in the chat a second click sends nothing', async () => {
@@ -322,7 +333,25 @@ describe('Chat.vue sends a hand message only while it is still the next one', ()
     const self = fakeThis({ address: '0xPeer', messages: [challenge] })
     await expect(
       methods.sendFollowUpItems.call(self, {
-        items: [{ type: 'blackjack-hand', gameId: GAME, action: 'stand' }],
+        items: [
+          {
+            type: 'blackjack-hand',
+            gameId: GAME,
+            action: 'stand',
+            seq: 1,
+            prev: 'challenge',
+            link: 'a'.repeat(64),
+          },
+        ],
+      }),
+    ).resolves.toBe(false)
+    expect(self.sendDirectMessage).not.toHaveBeenCalled()
+    // Nor for a message that names another place in the hand than the next one: a second tab
+    // that has not seen the latest message builds on a stale one.
+    await expect(
+      methods.sendFollowUpItems.call(self, {
+        items: [{ ...bet, prev: 'something older' }],
+        stampValueWei: 300n,
       }),
     ).resolves.toBe(false)
     expect(self.sendDirectMessage).not.toHaveBeenCalled()
@@ -332,17 +361,27 @@ describe('Chat.vue sends a hand message only while it is still the next one', ()
 describe('Chat.vue automatic dealer steps', () => {
   const SEED = 'cd'.repeat(32)
   const GAME = '0123456789abcdef0123456789abcdef'
+  const PLAYER_SEED = 'ef'.repeat(32)
+  const digestOf = (i: number) => `${i}`.padStart(64, 'a')
   const hand = (...fields: [boolean, Record<string, unknown>, bigint][]) =>
     fields.map(([outbound, item, stampValueWei], i) => ({
       outbound,
       items: [{ type: 'blackjack-hand', gameId: GAME, ...item }],
       stampValueWei,
-      payloadDigest: `${i}`.padStart(64, 'a'),
+      payloadDigest: digestOf(i),
     }))
+  /** The player's bet as the hand's second message. */
+  const betItem = {
+    action: 'bet',
+    seq: 1,
+    prev: digestOf(0),
+    commitment: commitmentOf(PLAYER_SEED),
+  }
   const challenge: [boolean, Record<string, unknown>, bigint] = [
     true,
     {
       action: 'challenge',
+      seq: 0,
       role: 'dealer',
       maxBetWei: '500',
       commitment: commitmentOf(SEED),
@@ -365,7 +404,7 @@ describe('Chat.vue automatic dealer steps', () => {
   beforeAll(() => saveSeed('0xMe', '0xPeer', GAME, SEED))
 
   it('deals as soon as the bet is in, once', async () => {
-    const self = dealerThis(hand(challenge, [false, { action: 'bet' }, 300n]))
+    const self = dealerThis(hand(challenge, [false, betItem, 300n]))
     await methods.runBlackjackDealer.call(self)
     expect(self.sendFollowUpItems).toHaveBeenCalledTimes(1)
     const sent = self.sendFollowUpItems.mock.calls[0][0]
@@ -478,7 +517,7 @@ describe('Chat.vue automatic dealer steps', () => {
   })
 
   it('does not send while another message is being sent', async () => {
-    const self = dealerThis(hand(challenge, [false, { action: 'bet' }, 300n]), {
+    const self = dealerThis(hand(challenge, [false, betItem, 300n]), {
       sendingMessage: true,
     })
     await methods.runBlackjackDealer.call(self)
@@ -488,7 +527,7 @@ describe('Chat.vue automatic dealer steps', () => {
   it('never pays without the dealer: a refund and a paying reveal wait for a button', async () => {
     // A bet above the max is owed back.
     const refundOwed = dealerThis(
-      hand(challenge, [false, { action: 'bet' }, 501n]),
+      hand(challenge, [false, betItem, 501n]),
     )
     await methods.runBlackjackDealer.call(refundOwed)
     expect(refundOwed.sendFollowUpItems).not.toHaveBeenCalled()
@@ -500,10 +539,10 @@ describe('Chat.vue automatic dealer steps', () => {
         from: '0xMe',
         to: '0xPeer',
         stampWei: 1n,
-        digest: 'c',
+        digest: digestOf(0),
       },
       {
-        item: { type: 'blackjack-hand', gameId: GAME, action: 'bet' },
+        item: { type: 'blackjack-hand', gameId: GAME, ...betItem },
         from: '0xPeer',
         to: '0xMe',
         stampWei: 300n,
@@ -512,20 +551,21 @@ describe('Chat.vue automatic dealer steps', () => {
     ] as Parameters<typeof foldHand>[0]
     const rows: [boolean, Record<string, unknown>, bigint][] = [
       challenge,
-      [false, { action: 'bet' }, 300n],
+      [false, betItem, 300n],
     ]
     for (;;) {
       const state = foldHand(events).state
       const step = dealerStep(state, SEED)
       if (!step && state?.phase === 'player_turn') {
+        const stand = playerStep(state, 'stand', PLAYER_SEED)!
         events.push({
-          item: { type: 'blackjack-hand', gameId: GAME, action: 'stand' },
+          item: stand,
           from: '0xPeer',
           to: '0xMe',
           stampWei: 1n,
           digest: 's',
         })
-        rows.push([false, { action: 'stand' }, 1n])
+        rows.push([false, stand as unknown as Record<string, unknown>, 1n])
         continue
       }
       if (!step || step.item.action === 'reveal') break

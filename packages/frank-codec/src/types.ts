@@ -441,6 +441,42 @@ export type BlackjackHandMessageItem = {
   schema: 2
 } & BlackjackHandFields<Uint8Array, Uint8Array>
 
+/** The ten closed schema-3 shapes of a peer-to-peer hand with entropy from both sides
+ * (docs/protocol/blackjack-p2p.md). No shape states a card or an outcome: both sides compute them
+ * from the links opened so far. `seq` and `prev` chain the hand's messages: `seq` counts the
+ * messages before this one, `prev` is the payload digest of the previous one. A challenge is
+ * message 0 and has no `prev`. No shape carries an amount of money. */
+export type BlackjackHandV3Fields<H, Q> = { gameId: string; seq: number } & (
+  | {
+      action: 'challenge'
+      role: 'dealer'
+      maxBetWei: Q
+      commitment: H
+      prev?: never
+    }
+  | {
+      action: 'challenge'
+      role: 'player'
+      maxBetWei: Q
+      commitment?: never
+      prev?: never
+    }
+  | { action: 'accept'; maxBetWei: Q; commitment: H; prev: H }
+  | { action: 'bet'; commitment: H; prev: H }
+  | {
+      action: 'deal' | 'hit' | 'stand' | 'double' | 'card' | 'reveal'
+      link: H
+      prev: H
+    }
+  | { action: 'refund'; ref: H; prev: H }
+)
+
+/** Closed type-18 schema-3 projection. */
+export type BlackjackHandV3MessageItem = {
+  type: 18
+  schema: 3
+} & BlackjackHandV3Fields<Uint8Array, Uint8Array>
+
 export type TypedPayload<F, C, P = ForumContent, K = ForumCursor> =
   | DirectMessageDelivery<F>
   | DirectoryAttestation<F>
@@ -461,6 +497,7 @@ export type TypedPayload<F, C, P = ForumContent, K = ForumCursor> =
   | TextMessageItem
   | BlackjackMessageItem
   | BlackjackHandMessageItem
+  | BlackjackHandV3MessageItem
 
 /** Why a frame was kept only as opaque bytes. */
 export type RetentionReason =

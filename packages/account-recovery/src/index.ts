@@ -388,8 +388,7 @@ function snapshotRecoveryInput(
 ): RecoverCodex32AccountInput {
   try {
     return {
-      descriptor:
-        value.descriptor !== undefined ? value.descriptor : undefined,
+      descriptor: value.descriptor !== undefined ? value.descriptor : undefined,
       shares: value.shares,
     }
   } catch {

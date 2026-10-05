@@ -598,7 +598,10 @@ describe('Codex32 account ceremony', () => {
         randomBytes: length => new Uint8Array(length).fill(9),
       })
       if (split.ok) {
-        expectRecoveryError(() => recoverCodex32Shares(split.value), 'bad-format')
+        expectRecoveryError(
+          () => recoverCodex32Shares(split.value),
+          'bad-format',
+        )
       }
 
       pending.cancel()

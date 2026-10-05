@@ -391,6 +391,7 @@ export default {
   },
   sendStealthDialog: {
     sendStealthTo: 'Send Stealth to',
+    subtitle: 'Encrypted direct transfer (invisible to relay)',
     chainLabel: 'Chain',
     amountHint: 'Amount to send in message payload',
     amountPlaceholder: '0.0',

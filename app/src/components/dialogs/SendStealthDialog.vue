@@ -12,7 +12,7 @@
         }}
       </div>
       <div class="text-caption text-grey-7">
-        Encrypted direct transfer (invisible to relay)
+        {{ $t('sendStealthDialog.subtitle') }}
       </div>
     </q-card-section>
 

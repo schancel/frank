@@ -12,6 +12,7 @@ import {
   automaticDealerSteps,
   chatHandEvents,
   chatHands,
+  deriveBlackjackSeed,
   handItemStillNext,
   loadSeed,
   newGameId,
@@ -21,8 +22,13 @@ import {
   undeliveredHandMessages,
   type HandChatMessage,
 } from './blackjack-hand'
+import { messagingWallet } from './monad-identity-session'
 import { outgoingLockName } from './outgoing-lock'
 import { FakeLockManager } from './__fakes__/web-locks'
+
+jest.mock('./monad-identity-session', () => ({
+  messagingWallet: jest.fn(),
+}))
 
 const ME = '0x1111111111111111111111111111111111111111'
 const PEER = '0x2222222222222222222222222222222222222222'
@@ -156,36 +162,61 @@ describe('a chat as blackjack hand events', () => {
   })
 })
 
-describe('dealer seeds on this device', () => {
-  it('keeps a seed for the page session when storage is unavailable', () => {
+describe('deterministic blackjack seeds on this device', () => {
+  it('keeps a seed in memory cache', () => {
     saveSeed(ME, PEER, gid('session-only'), SEED)
     expect(loadSeed(ME, PEER, gid('session-only'))).toBe(SEED)
   })
 
-  it('saves and loads a seed, and makes fresh ones', () => {
-    const stored = new Map<string, string>()
-    Object.defineProperty(globalThis, 'localStorage', {
-      configurable: true,
-      value: {
-        getItem: (key: string) => stored.get(key) ?? null,
-        setItem: (key: string, value: string) => void stored.set(key, value),
-      },
-    })
+  it('derives seed deterministically from wallet secret and game ID', () => {
+    const privKey =
+      '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef'
+    const s1 = deriveBlackjackSeed(gid('game-1'), ME, privKey)
+    const s2 = deriveBlackjackSeed(gid('game-1'), ME, privKey)
+    expect(s1).toBe(s2)
+    expect(s1).toMatch(/^[0-9a-f]{64}$/)
+
+    // Different game ID yields different seed
+    const s3 = deriveBlackjackSeed(gid('game-2'), ME, privKey)
+    expect(s3).not.toBe(s1)
+
+    // Different own address yields different seed
+    const s4 = deriveBlackjackSeed(gid('game-1'), PEER, privKey)
+    expect(s4).not.toBe(s1)
+  })
+
+  it('saves and loads a seed, and re-derives from wallet if missing in cache', () => {
     expect(loadSeed(ME, PEER, gid('nope'))).toBeUndefined()
     saveSeed(ME, PEER, gid('g-seed'), SEED)
     expect(loadSeed(ME, PEER, gid('g-seed'))).toBe(SEED)
-    expect(
-      stored.get(
-        `frank.blackjack.seed.${ME.toLowerCase()}|${PEER.toLowerCase()}|${gid(
-          'g-seed',
-        )}`,
-      ),
-    ).toBe(SEED)
-    // Another chat with the same game id does not get this seed.
+
+    // Another chat with the same game id does not get this seed from memory cache
     expect(loadSeed(ME, ME, gid('g-seed'))).toBeUndefined()
-    // Another account on this browser does not get it either.
+    // Another account does not get it either
     expect(loadSeed(PEER, PEER, gid('g-seed'))).toBeUndefined()
     expect(loadSeed('0xOtherAccount', PEER, gid('g-seed'))).toBeUndefined()
+
+    // When not in memory, re-derives from wallet
+    const fakeKey =
+      '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    const mockWallet = {
+      identity: {
+        toPrivateKeyHex: () => fakeKey,
+      },
+    }
+    const mockedMessagingWallet = messagingWallet as jest.Mock
+    mockedMessagingWallet.mockReturnValue(mockWallet)
+
+    const expectedSeed = deriveBlackjackSeed(gid('uncached'), ME, fakeKey)
+    const loaded = loadSeed(ME, PEER, gid('uncached'))
+    expect(loaded).toBe(expectedSeed)
+    // Now it is cached in memory
+    expect(loadSeed(ME, PEER, gid('uncached'))).toBe(expectedSeed)
+
+    // newSeed with gameId and own derives deterministically
+    expect(newSeed(gid('uncached'), ME)).toBe(expectedSeed)
+
+    mockedMessagingWallet.mockReturnValue(undefined)
     expect(newSeed()).toMatch(/^[0-9a-f]{64}$/)
     expect(newSeed()).not.toBe(newSeed())
     expect(newGameId()).toMatch(/^[0-9a-f]{32}$/)

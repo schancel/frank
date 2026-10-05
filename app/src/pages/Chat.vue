@@ -496,6 +496,7 @@ export default defineComponent({
       if (this.sendingMessage) {
         return
       }
+      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
       const rawPrice = this.getAcceptancePrice(this.address)
       const acceptancePrice =
         typeof rawPrice === 'number' && Number.isFinite(rawPrice)
@@ -738,8 +739,14 @@ export default defineComponent({
       role: HandRole
       maxBetWei: bigint
     }) {
+      const own = await getOwnCanonicalAddress()
+      if (role === 'dealer' && !own) {
+        errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')))
+        return
+      }
       const gameId = newGameId()
-      const seed = role === 'dealer' ? newSeed() : undefined
+      const seed =
+        role === 'dealer' ? newSeed(gameId, own ?? undefined) : undefined
       let spendableWei: bigint
       try {
         spendableWei = await activeChain.nativeTransfers.getBalance({
@@ -761,13 +768,8 @@ export default defineComponent({
         errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')))
         return
       }
-      if (seed) {
+      if (seed && own) {
         // The seed is kept under this account's own name before its commitment leaves.
-        const own = await getOwnCanonicalAddress()
-        if (!own) {
-          errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')))
-          return
-        }
         saveSeed(own, this.address, gameId, seed)
       }
       this.blackjackDialog = false
@@ -784,12 +786,18 @@ export default defineComponent({
       // window closed mid-send) or failed counts as sent in the hand, so nothing else can
       // happen until it is delivered. Free steps are sent again; money is only settled.
       // While that is awaited no other trigger (watchers, a finished send) may pick a step.
+      let wallet: ReturnType<typeof useMonadWallet>
+      try {
+        wallet = useMonadWallet()
+      } catch {
+        return
+      }
       this.resumingHand = true
       let resumed: number
       try {
         resumed = await resumeHandMessages({
           store: this.chatStore as unknown as HandResumeStore,
-          wallet: useMonadWallet(),
+          wallet,
           address: this.address,
           own,
           messages: this.messages,

@@ -4,6 +4,7 @@ import { join } from 'path'
 import {
   DM_CRYPTO_CONTEXT_DOMAIN,
   cborMap,
+  decodeDirectMessageCryptoContext,
   encodeDirectMessageCryptoContext,
   encodeFrame,
   toHex,
@@ -145,5 +146,11 @@ describe('DM crypto context v1', () => {
         dleqProof: bytes(63, 1),
       }),
     ).toThrow('two scalars in 1..n-1')
+  })
+
+  it('round-trips through decodeDirectMessageCryptoContext', () => {
+    const encoded = encodeDirectMessageCryptoContext(VECTOR)
+    const decoded = decodeDirectMessageCryptoContext(encoded)
+    expect(decoded).toEqual(VECTOR)
   })
 })

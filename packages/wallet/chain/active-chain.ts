@@ -135,6 +135,10 @@ export interface DirectMessageReceived {
    * messages only). When present, no display profile is needed to show the message. */
   senderPublicKey?: Uint8Array;
   recipientAddress: ChainAddress;
+  /** Compressed signing key of recipient when admitted through directory. */
+  recipientPublicKey?: Uint8Array;
+  /** True for outbound/sent messages retrieved from the both-directions mailbox. */
+  outbound?: boolean;
   items: MessageItem[];
   /** Bare (no `0x`) hex `payload_hash` of the stamped message this was decoded from. */
   payloadDigest: string;
@@ -247,6 +251,12 @@ export interface DirectMessageClient {
       payloadDigest: string
     ) => void;
   }): Promise<DirectMessageReceived[]>;
+  /** Subscribes to real-time both-direction mailbox pushes over WebSocket. */
+  subscribeMailboxStream?(params: {
+    wallet: WalletHandle;
+    onRecord: (record: DirectMessageReceived) => void;
+    onError?: (error: Error) => void;
+  }): () => void;
   listRecoveredStampPayments(params: {
     wallet: WalletHandle;
   }): Promise<RecoveredStampPaymentInfo[]>;

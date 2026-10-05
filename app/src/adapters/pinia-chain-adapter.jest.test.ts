@@ -150,6 +150,23 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(wrapper).toBeUndefined()
       expect(consoleErrorSpy).toHaveBeenCalled()
     })
+
+    it('adapts outbound record placing it under recipient address with outbound flag', async () => {
+      const record = makeRecord({
+        outbound: true,
+        senderAddress: { raw: SENDER_ADDRESS },
+        recipientAddress: { raw: RECIPIENT_ADDRESS },
+        recipientPublicKey: PUB_KEY_BYTES,
+      })
+      const wrapper = await toReceivedMessageWrapper(record)
+      expect(wrapper).toBeDefined()
+      expect(wrapper?.outbound).toBe(true)
+      expect(wrapper?.senderAddress).toBe(SENDER_ADDRESS)
+      expect(wrapper?.copartyAddress).toBe(RECIPIENT_ADDRESS)
+      expect(wrapper?.message.outbound).toBe(true)
+      expect(wrapper?.message.status).toBe('confirmed')
+      expect(wrapper?.message.destinationAddress).toBe(RECIPIENT_ADDRESS)
+    })
   })
 
   describe('canonical receive from a sender never seen before, without a display profile', () => {

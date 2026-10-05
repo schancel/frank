@@ -26,7 +26,11 @@ import {
   type HandRejection,
   type HandState,
 } from '@frank/wallet/message-item-plugins/blackjack/hand'
+import { hkdf } from '@noble/hashes/hkdf.js'
+import { sha256 } from '@noble/hashes/sha256.js'
+import { fromHex } from '@frank/codec'
 import { heldOutgoingLocks } from './outgoing-lock'
+import { messagingWallet } from './monad-identity-session'
 
 /** What a wallet keeps back for the fees of the messages a hand still needs. */
 export const HAND_FEE_RESERVE_WEI = BET_MESSAGE_FEE_RESERVE_WEI
@@ -299,15 +303,35 @@ export function chatHands(
   return hands
 }
 
-const SEED_PREFIX = 'frank.blackjack.seed.'
 const memorySeeds = new Map<string, string>()
 
 const seedKey = (own: string, peer: string, gameId: string) =>
   `${own.toLowerCase()}|${peer.toLowerCase()}|${gameId}`
 
-/** Keeps this user's seed for a hand on this device, under its own account, the chat and the
- * game: a seed is never shared between two hands, and another account used in the same browser
- * profile does not find it under its own name. Both roles have one: the dealer's is committed
+function toSecretBytes(walletSecret: Uint8Array | string): Uint8Array {
+  if (walletSecret instanceof Uint8Array) return walletSecret
+  const hex = walletSecret.startsWith('0x')
+    ? walletSecret.slice(2)
+    : walletSecret
+  if (/^[0-9a-fA-F]*$/.test(hex) && hex.length % 2 === 0) {
+    return fromHex(hex.toLowerCase())
+  }
+  return new TextEncoder().encode(walletSecret)
+}
+
+/** Derives a blackjack game seed deterministically from wallet secret material and game ID. */
+export function deriveBlackjackSeed(
+  gameId: string,
+  ownSalt: string,
+  walletSecret: Uint8Array | string,
+): string {
+  const secretBytes = toSecretBytes(walletSecret)
+  const info = `frank/bj/v3${gameId}${ownSalt.toLowerCase()}`
+  return seedFromBytes(hkdf(sha256, secretBytes, undefined, info, 32))
+}
+
+/** Keeps this user's seed for a hand in memory, under its own account, the chat and the
+ * game: a seed is never shared between two hands. Both roles have one: the dealer's is committed
  * to in its challenge or accept, the player's in its bet. Without the seed a dealer cannot deal
  * or reveal (it can still refund the bet) and a player cannot move. */
 export function saveSeed(
@@ -318,11 +342,6 @@ export function saveSeed(
 ): void {
   const key = seedKey(own, peer, gameId)
   memorySeeds.set(key, seed)
-  try {
-    localStorage.setItem(SEED_PREFIX + key, seed)
-  } catch {
-    // Storage unavailable: the seed lives for this page session only.
-  }
 }
 
 export function loadSeed(
@@ -333,18 +352,32 @@ export function loadSeed(
   const key = seedKey(own, peer, gameId)
   const held = memorySeeds.get(key)
   if (held) return held
-  try {
-    return localStorage.getItem(SEED_PREFIX + key) ?? undefined
-  } catch {
-    return undefined
+  const wallet = messagingWallet() as any
+  const secret =
+    wallet?.identity?.toPrivateKeyHex?.() ??
+    wallet?.toPrivateKeyHex?.()
+  if (secret) {
+    const seed = deriveBlackjackSeed(gameId, own, secret)
+    memorySeeds.set(key, seed)
+    return seed
   }
+  return undefined
 }
 
 function randomBytes(length: number): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(length))
 }
 
-export function newSeed(): string {
+export function newSeed(gameId?: string, own?: string): string {
+  if (gameId && own) {
+    const wallet = messagingWallet() as any
+    const secret =
+      wallet?.identity?.toPrivateKeyHex?.() ??
+      wallet?.toPrivateKeyHex?.()
+    if (secret) {
+      return deriveBlackjackSeed(gameId, own, secret)
+    }
+  }
   return seedFromBytes(randomBytes(32))
 }
 

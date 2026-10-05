@@ -32,6 +32,7 @@ import {
 } from './ids.js'
 import { fail, type SuiteFailure, type SuiteResult } from './result.js'
 import { associatedData, messageKeys, sharedSecret } from './schedule.js'
+import { selfOpenEphemeral } from './self-open.js'
 
 const GENERATOR = Uint8Array.from([
   0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95,
@@ -50,6 +51,7 @@ export interface SealArgs {
   readonly ephemeralSecret?: Uint8Array
   readonly salt?: Uint8Array
   readonly paddingBytes?: Uint8Array
+  readonly selfOpenKey?: Uint8Array
 }
 
 export interface OpenArgs {
@@ -254,10 +256,22 @@ export function seal(args: SealArgs): SuiteResult<Uint8Array> {
   const padding = paddingOf(args.padding, args.paddingBytes)
   if (!padding.ok) return padding
 
-  const ephemeral =
-    args.ephemeralSecret === undefined
-      ? freshScalar()
-      : loadScalar(args.ephemeralSecret)
+  let ephemeral: SuiteResult<Loaded>
+  if (args.ephemeralSecret !== undefined) {
+    ephemeral = loadScalar(args.ephemeralSecret)
+  } else if (args.selfOpenKey !== undefined) {
+    const ephScalar = selfOpenEphemeral({
+      selfOpenKey: args.selfOpenKey,
+      salt: salt.value,
+      recipientPublicKey: recipient.value,
+      senderPublicKey: sender.value,
+    })
+    if (ephScalar === null) return fail({ code: 'random' })
+    ephemeral = loadScalar(ephScalar)
+    ephScalar.fill(0)
+  } else {
+    ephemeral = freshScalar()
+  }
   if (!ephemeral.ok) return ephemeral
 
   const enc = ephemeral.value.publicKey

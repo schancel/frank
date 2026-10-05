@@ -740,7 +740,7 @@ export default defineComponent({
     onAccept() {
       const state = this.state
       if (!state || this.amountError || this.balance === null) return
-      const seed = newSeed()
+      const seed = newSeed(state.gameId, this.own)
       const built = buildAccept({
         state,
         spendableWei: this.balance,
@@ -755,7 +755,7 @@ export default defineComponent({
     },
     onBet() {
       if (!this.state || this.amountError || this.amountWei === null) return
-      const seed = newSeed()
+      const seed = newSeed(this.state.gameId, this.own)
       const bet = buildBet(this.state, seed)
       if (!bet) return
       // The player's seed is kept before its commitment leaves this device with the bet.

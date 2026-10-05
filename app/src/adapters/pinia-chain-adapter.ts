@@ -69,35 +69,44 @@ export async function toReceivedMessageWrapper(
     )
     return undefined
   }
-  // A canonical sender was admitted through the installed directory, which supplies its key.
-  // A relay-served display profile must not decide whether its message is shown.
-  let senderPubKey = record.senderPublicKey
-  if (senderPubKey === undefined) {
-    const senderProfile = await activeChain.fetchProfile(record.senderAddress)
-    if (senderProfile === undefined) {
-      console.error(
-        `direct-message polling: no profile found for sender ${record.senderAddress.raw}, skipping message ${record.payloadDigest}`,
-      )
-      return undefined
+  const isOutbound = record.outbound === true
+  const copartyChainAddress = isOutbound
+    ? record.recipientAddress
+    : record.senderAddress
+  let copartyPubKey = isOutbound
+    ? record.recipientPublicKey
+    : record.senderPublicKey
+  if (copartyPubKey === undefined) {
+    const copartyProfile = await activeChain.fetchProfile(copartyChainAddress)
+    if (copartyProfile === undefined) {
+      if (!isOutbound) {
+        console.error(
+          `direct-message polling: no profile found for sender ${record.senderAddress.raw}, skipping message ${record.payloadDigest}`,
+        )
+        return undefined
+      }
+      copartyPubKey = record.senderPublicKey ?? new Uint8Array(33)
+    } else {
+      copartyPubKey = copartyProfile.pubKey
     }
-    senderPubKey = senderProfile.pubKey
   }
 
-  const copartyAddress = activeChain.formatAddress(record.senderAddress)
+  const copartyAddress = activeChain.formatAddress(copartyChainAddress)
   const destinationAddress = activeChain.formatAddress(record.recipientAddress)
+  const senderAddress = activeChain.formatAddress(record.senderAddress)
   const stampValue = Number(record.stampValueWei)
 
   return {
-    outbound: false,
-    senderAddress: copartyAddress,
+    outbound: isOutbound,
+    senderAddress,
     copartyAddress,
     copartyPubKey: profilePubKeyFromBytes(
-      senderPubKey,
+      copartyPubKey,
     ) as ReceivedMessageWrapper['copartyPubKey'],
     index: record.payloadDigest,
     stampValue,
     message: {
-      outbound: false,
+      outbound: isOutbound,
       status: 'confirmed',
       items: record.items,
       serverTime: record.receivedTime,
@@ -105,7 +114,7 @@ export async function toReceivedMessageWrapper(
       outpoints: [],
       stampValueWei: record.stampValueWei,
       stampPayments: record.stampPayments,
-      senderAddress: copartyAddress,
+      senderAddress,
       destinationAddress,
     },
   }
@@ -353,11 +362,26 @@ export function startDirectMessagePolling({
     }
   }
 
+  const unsubscribeStream = activeChain.directMessages.subscribeMailboxStream?.({
+    wallet,
+    onRecord: async record => {
+      if (stopped) return
+      const wrapper = await toReceivedMessageWrapper(record)
+      if (wrapper && !stopped) {
+        await chats.receiveMessages([wrapper])
+      }
+    },
+    onError: err => {
+      console.warn('direct-message stream error', err)
+    },
+  })
+
   void poll()
 
   return {
     stop: () => {
       stopped = true
+      unsubscribeStream?.()
       // A stopped poller (e.g. the wallet was switched) must not leave its last problem on screen.
       mailboxStatus.setOk()
       if (timer !== undefined) clearTimeout(timer)

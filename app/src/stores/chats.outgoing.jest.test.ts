@@ -1210,13 +1210,23 @@ describe('outgoing direct messages (#269, #270)', () => {
       {
         type: 'blackjack-hand' as const,
         gameId: GAME,
+        seq: 2,
+        prev: '02'.repeat(32),
         action: 'deal' as const,
+        link: 'c'.repeat(64),
         playerCards: [1, 2],
         dealerUpCard: 3,
       },
     ]
     const BET = [
-      { type: 'blackjack-hand' as const, gameId: GAME, action: 'bet' as const },
+      {
+        type: 'blackjack-hand' as const,
+        gameId: GAME,
+        seq: 1,
+        prev: '01'.repeat(32),
+        action: 'bet' as const,
+        commitment: 'b'.repeat(64),
+      },
     ]
     /** The hand's earlier messages, already delivered: this user dealing (a challenge as dealer
      * and the peer's bet) or playing (the peer's challenge as dealer). */
@@ -1228,6 +1238,7 @@ describe('outgoing direct messages (#269, #270)', () => {
           {
             type: 'blackjack-hand' as const,
             gameId: GAME,
+            seq: 0,
             action: 'challenge' as const,
             role: 'dealer' as const,
             maxBetWei: '500',

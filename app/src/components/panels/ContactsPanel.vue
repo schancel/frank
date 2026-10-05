@@ -4,7 +4,7 @@
     data-testid="contacts-panel"
     data-test="contacts-panel"
   >
-    <q-scroll-area class="q-px-none col">
+    <q-scroll-area class="q-px-none col contacts-scroll-area">
       <q-list>
         <q-separator />
         <q-item>
@@ -54,7 +54,7 @@
             data-test="contact-list-row"
             @click="startChat(item.address)"
           >
-            <q-item-section avatar>
+            <q-item-section avatar style="min-width: 44px; padding-right: 8px">
               <q-avatar rounded size="40px">
                 <img
                   :src="
@@ -63,15 +63,15 @@
                 />
               </q-avatar>
             </q-item-section>
-            <q-item-section>
-              <q-item-label lines="1" class="text-weight-medium">
-                {{ item.contact?.profile?.name || formatAddr(item.address) }}
+            <q-item-section style="min-width: 0" class="col">
+              <q-item-label lines="1" class="text-weight-medium ellipsis">
+                {{ item.contact?.profile?.name || formatAddrCompact(item.address) }}
               </q-item-label>
-              <q-item-label caption lines="1">
-                {{ formatAddr(item.address) }}
+              <q-item-label caption lines="1" class="ellipsis">
+                {{ formatAddrCompact(item.address) }}
               </q-item-label>
             </q-item-section>
-            <q-item-section side>
+            <q-item-section side style="padding-left: 4px">
               <div class="row items-center no-wrap">
                 <q-btn
                   flat
@@ -157,6 +157,13 @@ export default defineComponent({
       return parsed ? activeChain.formatAddress(parsed) : address
     }
 
+    function formatAddrCompact(address: string): string {
+      if (!address) return ''
+      return address.length > 13
+        ? `${address.slice(0, 6)}...${address.slice(-4)}`
+        : address
+    }
+
     function startChat(address: string) {
       openChat(router, address)
     }
@@ -174,6 +181,7 @@ export default defineComponent({
       filteredContacts,
       profileAvatar,
       formatAddr,
+      formatAddrCompact,
       startChat,
       openAddContact,
       deleteContact,
@@ -181,3 +189,10 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped lang="scss">
+.contacts-scroll-area :deep(.q-scrollarea__content) {
+  max-width: 100%;
+  min-width: 0;
+}
+</style>

@@ -28,8 +28,8 @@ use crate::{
     http::{
         evm_rpc::{
             authenticate, body_hash, broadcast_error, now_ms, preflight_broadcast_error,
-            quota_error, rpc_error, RpcAuthState, RpcBinding, RpcCapabilityBody,
-            RpcChallengeBody, RpcRejection, RpcResource, RPC_AUTH_DOMAIN, RPC_CUSTOMER_HEADER,
+            quota_error, rpc_error, RpcAuthState, RpcBinding, RpcCapabilityBody, RpcChallengeBody,
+            RpcRejection, RpcResource, RPC_AUTH_DOMAIN, RPC_CUSTOMER_HEADER,
         },
         hourly_quota::{normalize_quota_ip, FixedHourQuota},
         server::RegistryServer,
@@ -361,18 +361,16 @@ fn validate_call(call: &Value) -> Result<CallCost, RpcRejection> {
     }
 
     let cost = match method {
-        "getGenesisHash"
-        | "getLatestBlockhash"
-        | "getSlot"
-        | "getBlockHeight"
-        | "getEpochInfo"
-        | "getVersion"
-        | "getHealth" => CallCost {
+        "getGenesisHash" | "getLatestBlockhash" | "getSlot" | "getBlockHeight" | "getEpochInfo"
+        | "getVersion" | "getHealth" => CallCost {
             units: 1,
             anonymous: true,
             broadcast: false,
         },
-        "getBalance" | "getAccountInfo" | "getSignatureStatuses" | "getTransaction"
+        "getBalance"
+        | "getAccountInfo"
+        | "getSignatureStatuses"
+        | "getTransaction"
         | "getFeeForMessage" => CallCost {
             units: 2,
             anonymous: true,
@@ -421,10 +419,7 @@ fn validate_body(
             items.iter().collect()
         }
         Value::Array(_) => {
-            return Err(rpc_error(
-                StatusCode::BAD_REQUEST,
-                "rpc_batch_limit",
-            ));
+            return Err(rpc_error(StatusCode::BAD_REQUEST, "rpc_batch_limit"));
         }
         object => vec![object],
     };
@@ -664,7 +659,8 @@ async fn proxy_rpc_inner(
                 cost.broadcast,
             ));
         }
-        let peer_ip = peer_ip(peer).map_err(|error| preflight_broadcast_error(error, cost.broadcast))?;
+        let peer_ip =
+            peer_ip(peer).map_err(|error| preflight_broadcast_error(error, cost.broadcast))?;
         runtime
             .anonymous_quota
             .charge(peer_ip, cost.units, unix_seconds())
@@ -802,12 +798,11 @@ mod tests {
             ..SolanaProxyConf::default()
         };
         let upstream_url = format!("http://{addr}");
-        let runtime = SolanaProxyRuntime::from_conf_with_env(&conf, vec![], |_| {
-            Some(upstream_url.clone())
-        })
-        .await
-        .unwrap()
-        .expect("must start");
+        let runtime =
+            SolanaProxyRuntime::from_conf_with_env(&conf, vec![], |_| Some(upstream_url.clone()))
+                .await
+                .unwrap()
+                .expect("must start");
         assert!(runtime.has_chain("solana-devnet"));
         assert_eq!(runtime.chain_ids(), vec!["solana-devnet"]);
     }
@@ -842,10 +837,9 @@ mod tests {
             ..SolanaProxyConf::default()
         };
         let upstream_url = format!("http://{addr}");
-        let result = SolanaProxyRuntime::from_conf_with_env(&conf, vec![], |_| {
-            Some(upstream_url.clone())
-        })
-        .await;
+        let result =
+            SolanaProxyRuntime::from_conf_with_env(&conf, vec![], |_| Some(upstream_url.clone()))
+                .await;
         assert!(matches!(
             result,
             Err(SolanaProxyStartError::GenesisHashMismatch { id }) if id == "solana-devnet"

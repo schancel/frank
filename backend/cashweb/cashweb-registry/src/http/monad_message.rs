@@ -5588,7 +5588,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn always_delivers_to_inbox_even_when_broadcast_fails_or_is_rejected() -> Result<(), Report> {
+    async fn always_delivers_to_inbox_even_when_broadcast_fails_or_is_rejected(
+    ) -> Result<(), Report> {
         let message = valid_signed_message(0x81, 0x51);
         let (_tempdir, registry) = test_registry();
         let config = crate::monad_outbox::MonadOutboxReconcileConfig::default();
@@ -5631,7 +5632,11 @@ mod tests {
         )?;
         assert_eq!(inbox_page.messages.len(), 1);
         assert_eq!(
-            inbox_page.messages[0].message.as_ref().unwrap().payload_hash,
+            inbox_page.messages[0]
+                .message
+                .as_ref()
+                .unwrap()
+                .payload_hash,
             message.payload_hash
         );
         Ok(())
@@ -5648,7 +5653,10 @@ mod tests {
         // Return null for getTransactionReceipt (pending) and sendRawTransaction succeeds
         let decoded = decode_signed_transaction(&message.stamp_payments[0].raw_tx).unwrap();
         transport.set("eth_getTransactionReceipt", serde_json::Value::Null);
-        transport.set("eth_sendRawTransaction", serde_json::json!(decoded.tx_hash.to_hex()));
+        transport.set(
+            "eth_sendRawTransaction",
+            serde_json::json!(decoded.tx_hash.to_hex()),
+        );
 
         let stored = admit_monad_message(
             &transport,
@@ -5674,7 +5682,11 @@ mod tests {
         )?;
         assert_eq!(inbox_page.messages.len(), 1);
         assert_eq!(
-            inbox_page.messages[0].message.as_ref().unwrap().payload_hash,
+            inbox_page.messages[0]
+                .message
+                .as_ref()
+                .unwrap()
+                .payload_hash,
             message.payload_hash
         );
         Ok(())
@@ -5689,7 +5701,12 @@ mod tests {
 
         // Create claim and mark terminal
         registry.claim_monad_outbox(&message, &policy, 10, &limits)?;
-        let lease = match registry.acquire_monad_outbox_reconcile_lease(&message.payload_hash, 0, 11, &limits)? {
+        let lease = match registry.acquire_monad_outbox_reconcile_lease(
+            &message.payload_hash,
+            0,
+            11,
+            &limits,
+        )? {
             crate::store::monad_outbox::MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
             other => panic!("expected lease, got {other:?}"),
         };
@@ -5717,7 +5734,11 @@ mod tests {
         )?;
         assert_eq!(inbox_page.messages.len(), 1);
         assert_eq!(
-            inbox_page.messages[0].message.as_ref().unwrap().payload_hash,
+            inbox_page.messages[0]
+                .message
+                .as_ref()
+                .unwrap()
+                .payload_hash,
             message.payload_hash
         );
         Ok(())

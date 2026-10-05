@@ -201,9 +201,9 @@ fn canonical_signed_set(
 ) -> crate::http::monad_message_cbor::Result<Vec<DecodedSignedTransaction>> {
     use crate::http::monad_message_cbor::CanonicalError as Error;
     use frank_cbor::{
-        encode_direct_message_crypto_context, payment_commitment,
-        recipient_payload_digest, relay_context, validate_frame, AccountRef, DirectMessageCryptoContext,
-        TypedPayload, ValidationResult,
+        encode_direct_message_crypto_context, payment_commitment, recipient_payload_digest,
+        relay_context, validate_frame, AccountRef, DirectMessageCryptoContext, TypedPayload,
+        ValidationResult,
     };
     let ValidationResult::Parsed(frame) =
         validate_frame(request.delivery(), &relay_context()).map_err(|_| Error::Invalid)?

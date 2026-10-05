@@ -702,7 +702,9 @@ fn private_binding(
     };
     let since = query.since.unwrap_or(0);
     if !(0..=9_007_199_254_740_991).contains(&since)
-        || (resource != MailboxResource::Inbox && resource != MailboxResource::Mailbox && since != 0)
+        || (resource != MailboxResource::Inbox
+            && resource != MailboxResource::Mailbox
+            && since != 0)
     {
         return Err(CanonicalError::Invalid);
     }
@@ -713,9 +715,14 @@ fn private_binding(
         MailboxResource::RecoveryAck => 1,
         MailboxResource::MailboxStream => 1,
     });
-    let max_bytes = query
-        .max_bytes
-        .unwrap_or(if ack || resource == MailboxResource::MailboxStream { 0 } else { MAX_REQUEST_BYTES });
+    let max_bytes =
+        query
+            .max_bytes
+            .unwrap_or(if ack || resource == MailboxResource::MailboxStream {
+                0
+            } else {
+                MAX_REQUEST_BYTES
+            });
     if limit == 0
         || limit > 100
         || (ack && (limit != 1 || max_bytes != 0 || query.cursor.is_some()))
@@ -939,7 +946,9 @@ pub(crate) async fn handle_challenge(
         Some("recovery") => MailboxResource::Recovery,
         Some("recovery_ack") => MailboxResource::RecoveryAck,
         Some("mailbox") => MailboxResource::Mailbox,
-        Some("mailbox_ws") | Some("mailbox_stream") | Some("mailbox-ws") => MailboxResource::MailboxStream,
+        Some("mailbox_ws") | Some("mailbox_stream") | Some("mailbox-ws") => {
+            MailboxResource::MailboxStream
+        }
         _ => return Err(CanonicalError::Invalid),
     };
     let binding = private_binding(runtime, recipient, resource, &query)?;

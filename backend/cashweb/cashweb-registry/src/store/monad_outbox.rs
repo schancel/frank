@@ -2901,7 +2901,9 @@ impl<'a> DbMonadOutbox<'a> {
             for payment in &message.stamp_payments {
                 let member = self
                     .get_member(&payload_hash, payment.child_index)?
-                    .ok_or_else(|| CorruptRecord("fully-confirmed child row missing".to_string()))?;
+                    .ok_or_else(|| {
+                        CorruptRecord("fully-confirmed child row missing".to_string())
+                    })?;
                 members.push(member);
             }
             let verified = if let Some(expected_chain_id) = expected_chain_id {

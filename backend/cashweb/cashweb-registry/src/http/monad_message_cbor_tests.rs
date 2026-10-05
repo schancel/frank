@@ -75,7 +75,10 @@ fn immutable_multipart_rejects_ambiguous_headers_framing_and_trailing_bytes() {
 
 #[test]
 fn raw_member_ranges_are_bounded_minimal_and_complete_before_ownership() {
-    assert_eq!(transaction_ranges(&[0x80], 0).unwrap(), Vec::<std::ops::Range<usize>>::new());
+    assert_eq!(
+        transaction_ranges(&[0x80], 0).unwrap(),
+        Vec::<std::ops::Range<usize>>::new()
+    );
     for bytes in [
         vec![0x98, 1, 0x41, 1],
         vec![0x81, 0x58, 1, 1],

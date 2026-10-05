@@ -1355,8 +1355,10 @@ pub(crate) async fn handle_issue_rpc_challenge(
             .as_deref()
             .is_some_and(|runtime| runtime.has_rpc_chain(&chain_id))
         {
-            return crate::http::bitcoin_proxy::issue_rpc_challenge(chain_id, headers, server, body)
-                .await;
+            return crate::http::bitcoin_proxy::issue_rpc_challenge(
+                chain_id, headers, server, body,
+            )
+            .await;
         }
         if server
             .solana_proxy
@@ -1592,10 +1594,8 @@ pub(crate) async fn handle_proxy_rpc_capability(
         .as_deref()
         .is_some_and(|runtime| runtime.has_chain(&chain_id))
     {
-        crate::http::solana_proxy::proxy_rpc_capability(
-            chain_id, capability, headers, server, body,
-        )
-        .await
+        crate::http::solana_proxy::proxy_rpc_capability(chain_id, capability, headers, server, body)
+            .await
     } else {
         Err(rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))
     }
@@ -2129,14 +2129,16 @@ async fn proxy_rpc_inner(
             .as_deref()
             .is_some_and(|runtime| runtime.has_rpc_chain(&chain_id))
         {
-            return crate::http::bitcoin_proxy::proxy_rpc(chain_id, peer, headers, server, body).await;
+            return crate::http::bitcoin_proxy::proxy_rpc(chain_id, peer, headers, server, body)
+                .await;
         }
         if server
             .solana_proxy
             .as_deref()
             .is_some_and(|runtime| runtime.has_chain(&chain_id))
         {
-            return crate::http::solana_proxy::proxy_rpc(chain_id, peer, headers, server, body).await;
+            return crate::http::solana_proxy::proxy_rpc(chain_id, peer, headers, server, body)
+                .await;
         }
         return Err(rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"));
     };

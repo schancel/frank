@@ -3,6 +3,10 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { ref } from 'vue'
 import Panel from './WalletPanel.vue'
 import { accountSession } from '../../accounts/session'
+import en from '../../i18n/en-us'
+
+const t = (key: string) =>
+  key.split('.').reduce((v: any, p) => v?.[p], en) ?? key
 
 jest.mock('../../composables/useBalance', () => ({
   useBalance: () => ({
@@ -28,7 +32,7 @@ function render() {
   return mount(Panel, {
     global: {
       mocks: {
-        $t: (key: string) => key,
+        $t: t,
         $router: { push: jest.fn() },
       },
       stubs: {

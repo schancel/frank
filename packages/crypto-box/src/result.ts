@@ -67,6 +67,15 @@ export type SuiteFailure =
   | SenderKey
   | BytesExpected
   | AeadFailed
+  | NotSelfOpenable
+
+/**
+ * The envelope's ephemeral `enc` is not the one derived from the caller's
+ * self-open key: a legacy random-ephemeral envelope, or not sealed by this key.
+ */
+export interface NotSelfOpenable {
+  readonly code: 'not-self-openable'
+}
 
 export type SuiteResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -86,6 +95,7 @@ const CODES: ReadonlySet<string> = new Set([
   'sender-key',
   'bytes',
   'aead',
+  'not-self-openable',
 ])
 
 export function isSuiteError(value: unknown): value is SuiteFailure {

@@ -7,7 +7,8 @@
     "paths": {
       "@frank/nakamoto": ["../nakamoto/src/index.ts"],
       "@frank/nakamoto/*": ["../nakamoto/src/*.ts"],
-      "@frank/crypto-box": ["../crypto-box/src/index.ts"]
+      "@frank/crypto-box": ["../crypto-box/src/index.ts"],
+      "@frank/cashweb/*": ["../cashweb/*"]
     }
   },
   "exclude": ["node_modules"]

@@ -44,8 +44,23 @@ import {
   directorySignatureDigest,
   MAX_DIRECTORY_VALIDITY_NS,
 } from '@frank/codec'
-import { seal, open, SUITE_AUTH_XCHACHA } from '@frank/crypto-box'
+import {
+  seal,
+  open,
+  openAsSender,
+  randomBytes,
+  selfOpenEphemeral,
+  selfOpenKeyFromRoot,
+  SUITE_AUTH_XCHACHA,
+} from '@frank/crypto-box'
 import type { SuiteResult } from '@frank/crypto-box'
+import {
+  openOwnDirectMessage,
+  type OpenOwnDirectMessageInput,
+} from '@frank/cashweb/relay/canonical-dm'
+
+export { openOwnDirectMessage }
+export type { OpenOwnDirectMessageInput }
 
 /** Owned, scoped operations: no secret arrays or general-purpose borrow escape. */
 export interface MonadCanonicalRoles {
@@ -61,6 +76,16 @@ export interface MonadCanonicalRoles {
   openMessage(input: {
     envelope: Uint8Array
     senderPublicKey: Uint8Array
+    context: Uint8Array
+  }): SuiteResult<Uint8Array>
+  openOwnMessage(input: {
+    envelope: Uint8Array
+    recipientPublicKey: Uint8Array
+    context: Uint8Array
+  }): SuiteResult<Uint8Array>
+  openOwnDirectMessage(input: {
+    envelope: Uint8Array
+    recipientPublicKey: Uint8Array
     context: Uint8Array
   }): SuiteResult<Uint8Array>
   dispose(): void
@@ -412,6 +437,7 @@ function roleOwner(
       )
         throw new Error('canonical-roles:local-mismatch')
       const leaves = deriveRoleLeaves(derivation)
+      const selfOpenKey = selfOpenKeyFromRoot(messageRoot.bytes)
       let closed = false
       const session: MonadCanonicalRoles = Object.freeze({
         auth: leaves.auth.public,
@@ -425,16 +451,34 @@ function roleOwner(
           const recipientPublicKey = new Uint8Array(input.recipientPublicKey)
           const plaintext = new Uint8Array(input.plaintext)
           const context = new Uint8Array(input.context)
-          return leaves.message.useSecret(secret =>
-            seal({
-              suiteId: SUITE_AUTH_XCHACHA,
-              senderPublicKey: leaves.message.public.compressedPoint,
-              senderPrivateKey: secret,
-              recipientPublicKey,
-              plaintext,
-              context,
-            }),
-          )
+          const salt = randomBytes(32)
+          const ephemeralSecret = selfOpenEphemeral({
+            selfOpenKey,
+            salt,
+            recipientPublicKey,
+            senderPublicKey: leaves.message.public.compressedPoint,
+          })
+          if (ephemeralSecret === null) {
+            salt.fill(0)
+            return { ok: false as const, error: { code: 'random' as const } }
+          }
+          try {
+            return leaves.message.useSecret(secret =>
+              seal({
+                suiteId: SUITE_AUTH_XCHACHA,
+                senderPublicKey: leaves.message.public.compressedPoint,
+                senderPrivateKey: secret,
+                recipientPublicKey,
+                plaintext,
+                context,
+                salt,
+                ephemeralSecret,
+              }),
+            )
+          } finally {
+            ephemeralSecret.fill(0)
+            salt.fill(0)
+          }
         },
         openMessage(input: Parameters<MonadCanonicalRoles['openMessage']>[0]) {
           if (closed) throw new Error('canonical-roles:disposed')
@@ -465,8 +509,46 @@ function roleOwner(
             }),
           )
         },
+        openOwnMessage(
+          input: Parameters<MonadCanonicalRoles['openOwnMessage']>[0],
+        ) {
+          if (closed) throw new Error('canonical-roles:disposed')
+          const ownedEnvelope = new Uint8Array(input.envelope)
+          const recipientPublicKey = new Uint8Array(input.recipientPublicKey)
+          const context = new Uint8Array(input.context)
+          try {
+            const envelope = decodeCanonical(ownedEnvelope)
+            if (
+              !(envelope instanceof Map) ||
+              envelope.get(0n) !== 2n ||
+              envelope.get(1n) !== 1n
+            )
+              return {
+                ok: false as const,
+                error: { code: 'envelope' as const },
+              }
+          } catch {
+            return { ok: false as const, error: { code: 'envelope' as const } }
+          }
+          return leaves.message.useSecret(secret =>
+            openAsSender({
+              envelope: ownedEnvelope,
+              selfOpenKey,
+              senderPrivateKey: secret,
+              senderPublicKey: leaves.message.public.compressedPoint,
+              recipientPublicKey,
+              context,
+            }),
+          )
+        },
+        openOwnDirectMessage(
+          input: Parameters<MonadCanonicalRoles['openOwnDirectMessage']>[0],
+        ) {
+          return session.openOwnMessage(input)
+        },
         dispose() {
           closed = true
+          selfOpenKey.fill(0)
           leaves.dispose()
           sessions.delete(session)
         },

@@ -59,7 +59,7 @@ export interface OpenArgs {
   readonly context: Uint8Array
 }
 
-interface Loaded {
+export interface Loaded {
   readonly key: PrivateKey
   readonly publicKey: Uint8Array
 }
@@ -85,11 +85,11 @@ function csprng(length: number): Uint8Array | null {
   return out
 }
 
-function wipe(key: PrivateKey): void {
+export function wipe(key: PrivateKey): void {
   key.bytes.fill(0)
 }
 
-function loadScalar(bytes: Uint8Array): SuiteResult<Loaded> {
+export function loadScalar(bytes: Uint8Array): SuiteResult<Loaded> {
   if (!isPlainBytes(bytes)) return fail({ code: 'bytes' })
   if (bytes.length !== 32)
     return fail({ code: 'bad-length', actual: bytes.length })
@@ -115,7 +115,7 @@ function freshScalar(): SuiteResult<Loaded> {
   return fail({ code: 'random' })
 }
 
-function dh(key: PrivateKey, point: Uint8Array): SuiteResult<Uint8Array> {
+export function dh(key: PrivateKey, point: Uint8Array): SuiteResult<Uint8Array> {
   const shared = ecdh(key, point)
   if (!shared.ok) return fail(mapCurve(shared.error))
   if (shared.value.point.length !== ENC_LENGTH) {
@@ -124,7 +124,7 @@ function dh(key: PrivateKey, point: Uint8Array): SuiteResult<Uint8Array> {
   return { ok: true, value: shared.value.point }
 }
 
-function requirePoint(bytes: Uint8Array): SuiteResult<Uint8Array> {
+export function requirePoint(bytes: Uint8Array): SuiteResult<Uint8Array> {
   if (!isPlainBytes(bytes)) return fail({ code: 'bytes' })
   if (bytes.length !== ENC_LENGTH) {
     return fail({ code: 'bad-length', actual: bytes.length })
@@ -132,7 +132,7 @@ function requirePoint(bytes: Uint8Array): SuiteResult<Uint8Array> {
   return { ok: true, value: bytes }
 }
 
-function requireMessage(bytes: Uint8Array): SuiteResult<Uint8Array> {
+export function requireMessage(bytes: Uint8Array): SuiteResult<Uint8Array> {
   if (!isPlainBytes(bytes)) return fail({ code: 'bytes' })
   if (bytes.length > MAX_MESSAGE) return fail({ code: 'too-large' })
   return { ok: true, value: bytes }
@@ -172,7 +172,7 @@ function paddingOf(
   return { ok: true, value: bytes }
 }
 
-function selectSuite(suiteId: number): SuiteResult<SuiteSpec> {
+export function selectSuite(suiteId: number): SuiteResult<SuiteSpec> {
   if (suiteId === RESERVED_PROOF_SUITE_ID) {
     return fail({ code: 'reserved-suite', suiteId })
   }
@@ -227,7 +227,7 @@ function finish(
   }
 }
 
-function unpad(inner: Uint8Array): SuiteResult<Uint8Array> {
+export function unpad(inner: Uint8Array): SuiteResult<Uint8Array> {
   if (inner.length < 4) return fail({ code: 'open-failed' })
   const length = readU32(inner, 0)
   if (length > MAX_MESSAGE || 4 + length > inner.length) {

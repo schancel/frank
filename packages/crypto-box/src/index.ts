@@ -24,6 +24,12 @@ export { isSuiteError } from './result.js'
 export { hmacSha256, randomBytes, sha256 } from './primitives.js'
 export { open, seal } from './seal.js'
 export type { OpenArgs, SealArgs } from './seal.js'
+export {
+  openAsSender,
+  selfOpenEphemeral,
+  selfOpenKeyFromRoot,
+} from './self-open.js'
+export type { OpenAsSenderArgs } from './self-open.js'
 export type { SuiteFailure, SuiteResult } from './result.js'
 export type { SuiteSpec } from './ids.js'
 

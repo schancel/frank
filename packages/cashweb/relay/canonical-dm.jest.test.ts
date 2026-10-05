@@ -12,13 +12,21 @@ import {
   cborMap,
   encodeFrame,
 } from '@frank/codec'
-import { open, seal } from '@frank/crypto-box'
+import {
+  open,
+  openAsSender,
+  randomBytes,
+  seal,
+  selfOpenEphemeral,
+  selfOpenKeyFromRoot,
+} from '@frank/crypto-box'
 import directoryVectors from '../../../docs/protocol/proposals/suite1-directory/vectors.json'
 import corpus from '../../../docs/protocol/cbor/vectors/dm-runtime.json'
 import blackjackCorpus from '../../../docs/protocol/cbor/vectors/blackjack-items.json'
 import {
   prepareDirectMessage,
   openDirectMessage,
+  openOwnDirectMessage,
   directMessageText,
   DirectMessageRoles,
 } from './canonical-dm'
@@ -138,6 +146,86 @@ test('actual suite1 roundtrip retains exact text and opaque items despite callba
   expect(toHex(result.items[0].frame)).toBe(toHex(text))
   expect(toHex(result.items[1].frame)).toBe(toHex(opaque))
   expect(toHex(result.messageId)).toBe('07'.repeat(16))
+})
+test('openOwnDirectMessage opens outbound message sealed with deterministic ephemeral key', () => {
+  const selfOpenKey = selfOpenKeyFromRoot(new Uint8Array(32).fill(0x33))
+  const role = roles()
+  role.sealMessage = input => {
+    const salt = randomBytes(32)
+    const ephemeralSecret = selfOpenEphemeral({
+      selfOpenKey,
+      salt,
+      recipientPublicKey: input.recipientPublicKey,
+      senderPublicKey: current.messageKey.keyBytes,
+    })!
+    return seal({
+      ...input,
+      suiteId: 1,
+      senderPrivateKey: fromHex(v.message_secret_test_only),
+      senderPublicKey: current.messageKey.keyBytes,
+      salt,
+      ephemeralSecret,
+    })
+  }
+  role.openOwnMessage = input =>
+    openAsSender({
+      ...input,
+      selfOpenKey,
+      senderPrivateKey: fromHex(v.message_secret_test_only),
+      senderPublicKey: current.messageKey.keyBytes,
+    })
+
+  const text = directMessageText('self-open-test')
+  const messageId = new Uint8Array(16).fill(0x42)
+  const prepared = prepareDirectMessage({
+    network: corpus.network,
+    senderCurrent: current,
+    recipientCurrent: current,
+    messageId,
+    items: [text],
+    roles: role,
+  })
+
+  // Sender opens its own message.
+  const selfOpened = openOwnDirectMessage({
+    network: corpus.network,
+    payload: prepared.payload,
+    context: prepared.context,
+    roles: role,
+    senderCurrent: current,
+    recipientCurrent: current,
+  })
+  expect(selfOpened.mode).toBe('send')
+  expect(toHex(selfOpened.items[0].frame)).toBe(toHex(text))
+  expect(toHex(selfOpened.messageId)).toBe('42'.repeat(16))
+
+  // Recipient also can open the same message normally.
+  const recipientOpened = openDirectMessage({
+    ...receive(role),
+    payload: prepared.payload,
+    context: prepared.context,
+  })
+  expect(toHex(recipientOpened.items[0].frame)).toBe(toHex(text))
+
+  // Opening an envelope not sealed with self-open key throws crypto error.
+  const legacyRole = roles()
+  legacyRole.openOwnMessage = input =>
+    openAsSender({
+      ...input,
+      selfOpenKey,
+      senderPrivateKey: fromHex(v.message_secret_test_only),
+      senderPublicKey: current.messageKey.keyBytes,
+    })
+  expect(() =>
+    openOwnDirectMessage({
+      network: corpus.network,
+      payload: fromHex(v.payload), // legacy vector not sealed with selfOpenKey
+      context: fromHex(v.context),
+      roles: legacyRole,
+      senderCurrent: current,
+      recipientCurrent: current,
+    }),
+  ).toThrow('canonical-dm:crypto')
 })
 // Reuse reviewed #782 bytes, not a second blackjack writer or game engine.
 const blackjackFrames = blackjackCorpus.frames.filter(record => record.frozen)

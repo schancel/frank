@@ -58,9 +58,10 @@ describe('SettingsPanel wallet-action split (#399)', () => {
         mocks: { $t: (key: string) => key, $router: router },
         stubs: {
           QDialog: true,
+          Codex32BackupDialog: true,
           QScrollArea: { template: '<div><slot /></div>' },
           QList: { template: '<div><slot /></div>' },
-          QItem: { template: '<button><slot /></button>' },
+          QItem: { template: '<button v-bind="$attrs"><slot /></button>' },
           QItemLabel: { template: '<span><slot /></span>' },
           QIcon: true,
           QItemSection: { template: '<div><slot /></div>' },
@@ -146,6 +147,18 @@ describe('SettingsPanel wallet-action split (#399)', () => {
   it('renders standard 50px settings header', () => {
     const { wrapper } = mountPanel()
     expect(wrapper.text()).toContain('leftDrawer.settings')
+    wrapper.unmount()
+  })
+
+  it('renders prominent Codex32 backup button and triggers dialog', async () => {
+    const { wrapper } = mountPanel()
+    const backupBtn = wrapper.find('[data-test="backup-codex32-button"]')
+    expect(backupBtn.exists()).toBe(true)
+    expect(backupBtn.text()).toContain('accountRecovery.backup_account_codex32')
+
+    expect((wrapper.vm as any).showBackupDialog).toBe(false)
+    await backupBtn.trigger('click')
+    expect((wrapper.vm as any).showBackupDialog).toBe(true)
     wrapper.unmount()
   })
 })

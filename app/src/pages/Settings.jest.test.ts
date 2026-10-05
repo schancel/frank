@@ -21,7 +21,6 @@ jest.mock('src/accounts/session', () => ({
 }))
 
 import SettingsPage from './Settings.vue'
-import { accountSession, accountStatus } from 'src/accounts/session'
 
 // See navigate-back.jest.test.ts: vue-router 5's ESM-only dev-only dependencies.
 // The panel's own behaviour is covered by its test; Settings only mounts it.
@@ -167,49 +166,12 @@ it('has no directory installation controls and retains storage controls', async 
   expect(wrapper.find('[data-test="settings-back"]').exists()).toBe(true)
 })
 
-describe('Frank account recovery & Codex32 backup', () => {
-  const originalAccount = accountStatus.account
-
-  afterEach(() => {
-    accountStatus.account = originalAccount
-  })
-
-  it('renders prominent Codex32 backup button and secondary descriptor expansion', async () => {
-    accountStatus.account = {
-      descriptor: 'frankdesc1testdescriptor',
-      fingerprint: 'abcd1234',
-    } as any
-    const router = await openDirectly('#/settings')
-    const wrapper = mountSettings(router)
-    await wrapper.setData({ tab: 'recovery' })
-
-    const backupBtn = wrapper.find('[data-test="backup-codex32-button"]')
-    expect(backupBtn.exists()).toBe(true)
-
-    const advancedExpansion = wrapper.find(
-      '[data-test="advanced-recovery-details"]',
-    )
-    expect(advancedExpansion.exists()).toBe(true)
-    expect(
-      advancedExpansion.find('[data-test="recovery-descriptor"]').exists(),
-    ).toBe(true)
-  })
-
-  it('opens Codex32 backup dialog when backup button is clicked', async () => {
-    accountStatus.account = {
-      descriptor: 'frankdesc1testdescriptor',
-      fingerprint: 'abcd1234',
-    } as any
-    accountSession.backupCodex32 = jest
-      .fn()
-      .mockResolvedValue(['share1', 'share2', 'share3'])
-
-    const router = await openDirectly('#/settings')
-    const wrapper = mountSettings(router)
-    await wrapper.setData({ tab: 'recovery' })
-
-    expect(wrapper.vm.showBackupDialog).toBe(false)
-    await wrapper.find('[data-test="backup-codex32-button"]').trigger('click')
-    expect(wrapper.vm.showBackupDialog).toBe(true)
-  })
+it('does not contain account recovery tab, backup button, or descriptor', async () => {
+  const router = await openDirectly('#/settings')
+  const wrapper = mountSettings(router)
+  expect(wrapper.find('[data-test="recovery-descriptor"]').exists()).toBe(false)
+  expect(wrapper.find('[data-test="backup-codex32-button"]').exists()).toBe(
+    false,
+  )
+  expect(wrapper.text()).not.toContain('accountRecovery.frank_account_recovery')
 })

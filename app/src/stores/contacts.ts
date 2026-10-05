@@ -53,7 +53,7 @@ export const pendingRelayData = {
     avatar: '',
   },
   inbox: {
-    acceptancePrice: NaN,
+    acceptancePrice: defaultAcceptancePrice,
   },
   notify: true,
   lastUpdateTime: 0,
@@ -269,7 +269,10 @@ export const useContactStore = defineStore('contacts', {
     getAcceptancePrice: state => (address: string) => {
       const apiAddress = toChainDisplayAddress(address)
 
-      return state.contacts[apiAddress]?.inbox.acceptancePrice
+      const price = state.contacts[apiAddress]?.inbox.acceptancePrice
+      return typeof price === 'number' && Number.isFinite(price)
+        ? price
+        : defaultAcceptancePrice
     },
     getPubKey: state => (address: string) => {
       const apiAddress = toChainDisplayAddress(address)

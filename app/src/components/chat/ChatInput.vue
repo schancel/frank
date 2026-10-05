@@ -254,7 +254,8 @@ export default defineComponent({
         return Math.max(1, Math.min(100, Number(multiple)))
       },
       set(value: number) {
-        const raw = activeChain.defaultStampValue * BigInt(value)
+        const intVal = Number.isFinite(value) ? Math.round(value) : 1
+        const raw = activeChain.defaultStampValue * BigInt(intVal)
         this.$emit('update:stampAmount', activeChain.toDisplayAmount(raw))
       },
     },

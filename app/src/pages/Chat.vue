@@ -496,10 +496,14 @@ export default defineComponent({
       if (this.sendingMessage) {
         return
       }
-      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+      const rawPrice = this.getAcceptancePrice(this.address)
       const acceptancePrice =
-        this.getAcceptancePrice(this.address) ?? defaultAcceptancePrice
-      if (stampValue < BigInt(acceptancePrice)) {
+        typeof rawPrice === 'number' && Number.isFinite(rawPrice)
+          ? BigInt(Math.trunc(rawPrice))
+          : typeof rawPrice === 'bigint'
+          ? rawPrice
+          : BigInt(defaultAcceptancePrice)
+      if (stampValue < acceptancePrice) {
         insufficientStampNotify()
       }
       if (!message) {

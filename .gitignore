@@ -10,3 +10,5 @@ __pycache__/
 *.pyc
 .worktrees/
 scratchpad/
+.blackjack-p2p/
+*.blackjack-p2p/

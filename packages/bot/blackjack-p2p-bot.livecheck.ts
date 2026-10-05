@@ -20,7 +20,9 @@
  * then message any address that has published an entry. Nothing about another account is
  * configured.
  */
-import { join } from 'path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { randomBytes } from 'crypto'
+import { join, resolve } from 'path'
 
 import { deriveDomainRoot } from '../domain-roots/src'
 import {
@@ -42,6 +44,41 @@ import {
   publishBotDirectoryEntry,
 } from './bot-open-directory'
 import { requiredEnv } from './qwen-bot-common'
+
+function loadRootEnvIfPresent() {
+  const candidates = [
+    resolve(process.cwd(), '.env'),
+    resolve(process.cwd(), '../../.env'),
+    resolve(__dirname, '../../.env'),
+  ]
+  for (const envPath of candidates) {
+    if (existsSync(envPath)) {
+      try {
+        const text = readFileSync(envPath, 'utf8')
+        for (const rawLine of text.split('\n')) {
+          const line = rawLine.trim()
+          if (!line || line.startsWith('#')) continue
+          const eq = line.indexOf('=')
+          if (eq <= 0) continue
+          const key = line.slice(0, eq).trim()
+          let val = line.slice(eq + 1).trim()
+          if (
+            (val.startsWith('"') && val.endsWith('"')) ||
+            (val.startsWith("'") && val.endsWith("'"))
+          ) {
+            val = val.slice(1, -1)
+          }
+          if (!(key in process.env)) {
+            process.env[key] = val
+          }
+        }
+      } catch {
+        // ignore errors reading .env
+      }
+      break
+    }
+  }
+}
 
 /**
  * Where the bot learns of new accounts. A feed returns the addresses that appeared since the
@@ -130,8 +167,19 @@ const optionalWei = (name: string): bigint | undefined =>
 
 /** Opens the bot's typed wallet from the environment. No relay request is made here. */
 export async function openBlackjackBotWallet() {
+  loadRootEnvIfPresent()
   const stateDir = process.env.BLACKJACK_P2P_STATE_DIR ?? './.blackjack-p2p'
-  const rootHex = requiredEnv('BLACKJACK_P2P_ACCOUNT_ROOT_HEX')
+  let rootHex = process.env.BLACKJACK_P2P_ACCOUNT_ROOT_HEX
+  const rootFile = join(stateDir, 'account-root.hex')
+  if (!rootHex && existsSync(rootFile)) {
+    rootHex = readFileSync(rootFile, 'utf8').trim()
+  }
+  if (!rootHex) {
+    mkdirSync(stateDir, { recursive: true })
+    rootHex = randomBytes(32).toString('hex')
+    writeFileSync(rootFile, rootHex, { mode: 0o600 })
+    console.log(`[blackjack-p2p] Generated new bot account root: ${rootFile}`)
+  }
   if (!/^[0-9a-fA-F]{64}$/.test(rootHex))
     throw new Error('BLACKJACK_P2P_ACCOUNT_ROOT_HEX must be 64 hex characters')
   const accountRoot = Uint8Array.from(Buffer.from(rootHex, 'hex'))

@@ -626,11 +626,8 @@ impl Store {
                         (2, time_value(last)),
                     ]))?,
                 );
-                let index_key = Self::topic_index_key(
-                    &post.topic,
-                    Some(visible),
-                    Some(op.event.target_hash()),
-                );
+                let index_key =
+                    Self::topic_index_key(&post.topic, Some(visible), Some(op.event.target_hash()));
                 batch.put(index_key, op.event.target_hash());
             } else if post.visible != Some(visible) {
                 return Err(ForumError::Unavailable);

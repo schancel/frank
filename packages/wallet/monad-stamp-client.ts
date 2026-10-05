@@ -178,6 +178,7 @@ export interface MonadStampedMessageProto {
 }
 
 /**
+ * @deprecated Legacy protobuf DM transport type. Canonical CBOR envelope is the active path.
  * `StoredMonadMessage` from `monad_message.proto` — what both `PUT /message/monad`'s success
  * response and `GET /message/monad/:payload_hash` return. The old sender/hash assertions are
  * reserved at fields 2 and 3; `timestamp = 4`, `network_tag = 5`.
@@ -197,8 +198,11 @@ export interface StoredMonadMessageProto {
   networkTag: Uint8Array
 }
 
-/** Encode a {@link MonadStampedMessageProto} to protobuf wire-format bytes, via the generated
- * `MonadStampedMessage` class. */
+/**
+ * @deprecated Legacy protobuf DM transport helper. Canonical CBOR envelope is the active path.
+ * Encode a {@link MonadStampedMessageProto} to protobuf wire-format bytes, via the generated
+ * `MonadStampedMessage` class.
+ */
 export function encodeMonadStampedMessage(
   msg: MonadStampedMessageProto,
 ): Uint8Array {
@@ -216,8 +220,11 @@ export function encodeMonadStampedMessage(
   return pb.serializeBinary()
 }
 
-/** Decode protobuf wire-format bytes into a {@link MonadStampedMessageProto}. Round-trips with
- * {@link encodeMonadStampedMessage}. */
+/**
+ * @deprecated Legacy protobuf DM transport helper. Canonical CBOR envelope is the active path.
+ * Decode protobuf wire-format bytes into a {@link MonadStampedMessageProto}. Round-trips with
+ * {@link encodeMonadStampedMessage}.
+ */
 export function decodeMonadStampedMessage(
   bytes: Uint8Array,
 ): MonadStampedMessageProto {
@@ -232,8 +239,11 @@ export function decodeMonadStampedMessage(
   }
 }
 
-/** Decode protobuf wire-format bytes into a {@link StoredMonadMessageProto} — what the relay
- * returns from both `PUT /message/monad` and `GET /message/monad/:payload_hash`. */
+/**
+ * @deprecated Legacy protobuf DM transport helper. Canonical CBOR envelope is the active path.
+ * Decode protobuf wire-format bytes into a {@link StoredMonadMessageProto} — what the relay
+ * returns from both `PUT /message/monad` and `GET /message/monad/:payload_hash`.
+ */
 export function decodeStoredMonadMessage(
   bytes: Uint8Array,
 ): StoredMonadMessageProto {
@@ -849,6 +859,9 @@ export class MonadStampClient {
   }
 
   /**
+   * @deprecated Legacy protobuf DM transport (PUT /message/monad). Canonical CBOR envelope
+   * (submitCanonicalRequest via /message/monad/cbor) is the active path.
+   *
    * Stamps `params.encryptedPayload` onto Monad end-to-end: computes `h_m`, builds the calldata,
    * leases distinct funding accounts, builds+signs the payments, `PUT`s the assembled message to
    * the relay, and releases the lease per this file's header's documented policy. Throws

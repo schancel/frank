@@ -1018,8 +1018,12 @@ fn validate_payment_wire_cardinality(bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// `PUT /message/monad`: decode a [`proto::MonadStampedMessage`], recover its sender, verify its
-/// Monad stamp (broadcasting it, per ticket #19), and store it on success.
+/// `PUT /message/monad`: Legacy protobuf DM transport (deprecated in favor of canonical CBOR
+/// `/message/monad/cbor`). Decodes a [`proto::MonadStampedMessage`], recovers its sender, verifies its
+/// Monad stamp (broadcasting it, per ticket #19), and stores it on success.
+#[deprecated(
+    note = "Legacy protobuf DM transport; canonical CBOR (/message/monad/cbor) is the active path"
+)]
 pub async fn handle_put_monad_message(
     BoundedProtobufBody(body): BoundedProtobufBody<MAX_MONAD_MESSAGE_BODY_BYTES>,
     Extension(server): Extension<RegistryServer>,

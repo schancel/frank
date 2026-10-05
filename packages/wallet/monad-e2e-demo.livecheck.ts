@@ -77,7 +77,7 @@ import { MonadStampClient } from './monad-stamp-client'
 import {
   MonadIdentity,
   mailboxAuthFor,
-  registerMonadIdentity,
+  registerMonadIdentityCbor,
 } from './monad-identity'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 
@@ -141,7 +141,7 @@ async function main() {
   const recipientIdentity = MonadIdentity.fromPrivateKeyHex(
     mainWallet.privateKey,
   )
-  await registerMonadIdentity({ relayBaseUrl, identity: recipientIdentity })
+  await registerMonadIdentityCbor({ relayBaseUrl, identity: recipientIdentity })
   console.log(`Recipient identity: ${recipientIdentity.address.raw}`)
 
   const provider = new JsonRpcProvider(rpcUrl)

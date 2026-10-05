@@ -35,7 +35,7 @@ import {
   loadMonadChainConfigFromEnv,
 } from '@frank/wallet/chain/monad-chain'
 import {
-  registerMonadIdentity,
+  registerMonadIdentityCbor,
   MonadIdentity,
 } from '@frank/wallet/monad-identity'
 import { requiredEnv } from './qwen-bot-common'
@@ -71,7 +71,7 @@ async function main() {
   // Tonight's fix, exercised directly: without this, the bot could never resolve my pubkey to
   // decrypt my message or encrypt its reply (MonadChain.directMessages.fetchSince calls
   // fetchMonadProfile on the sender's address).
-  await registerMonadIdentity({
+  await registerMonadIdentityCbor({
     relayBaseUrl: config.relayBaseUrl,
     identity: wallet.identity as MonadIdentity,
   })

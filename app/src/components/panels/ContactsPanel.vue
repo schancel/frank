@@ -5,13 +5,11 @@
     data-test="contacts-panel"
   >
     <q-scroll-area class="q-px-none col contacts-scroll-area">
-      <q-list>
+      <q-list class="full-width">
         <q-separator />
         <q-item>
           <q-item-section>
-            <q-item-label>{{
-              $t('contactBookDialog.contacts')
-            }}</q-item-label>
+            <q-item-label>{{ $t('contactBookDialog.contacts') }}</q-item-label>
           </q-item-section>
           <q-space />
           <q-btn
@@ -63,9 +61,11 @@
                 />
               </q-avatar>
             </q-item-section>
-            <q-item-section style="min-width: 0" class="col">
+            <q-item-section class="col" style="min-width: 0">
               <q-item-label lines="1" class="text-weight-medium ellipsis">
-                {{ item.contact?.profile?.name || formatAddrCompact(item.address) }}
+                {{
+                  item.contact?.profile?.name || formatAddrCompact(item.address)
+                }}
               </q-item-label>
               <q-item-label caption lines="1" class="ellipsis">
                 {{ formatAddrCompact(item.address) }}
@@ -91,7 +91,11 @@
                   icon="delete"
                   color="grey"
                   class="q-ml-xs"
-                  :aria-label="$t('a11y.deleteContact', { name: item.contact?.profile?.name || '' })"
+                  :aria-label="
+                    $t('a11y.deleteContact', {
+                      name: item.contact?.profile?.name || '',
+                    })
+                  "
                   @click.stop="deleteContact(item.address)"
                 />
               </div>
@@ -192,7 +196,7 @@ export default defineComponent({
 
 <style scoped lang="scss">
 .contacts-scroll-area :deep(.q-scrollarea__content) {
-  max-width: 100%;
-  min-width: 0;
+  width: 100%;
+  min-width: 100%;
 }
 </style>

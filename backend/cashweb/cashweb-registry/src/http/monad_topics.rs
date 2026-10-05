@@ -1301,6 +1301,7 @@ mod tests {
             "/message/monad/topics/discover",
         ];
         let mut continuations = Vec::new();
+        let mut cursors = Vec::new();
         for path in paths {
             let response = router
                 .clone()
@@ -1351,6 +1352,7 @@ mod tests {
                 "retained cursor must work before restart"
             );
             continuations.push(continuation);
+            cursors.push(cursor);
         }
         drop(router);
         let registry = Registry::new(
@@ -1359,7 +1361,7 @@ mod tests {
             Net::Regtest,
         );
         let router = test_server(registry).into_router();
-        for continuation in continuations {
+        for continuation in &continuations {
             let response = router
                 .clone()
                 .oneshot(
@@ -1373,8 +1375,40 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 response.status(),
+                StatusCode::OK,
+                "stateless cursor must survive restart without expiring"
+            );
+            let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+            let ValidationResult::Parsed(_) =
+                frank_cbor::validate_frame(&body, &frank_cbor::default_context()).unwrap()
+            else {
+                panic!()
+            };
+        }
+        for (path, cursor) in paths.iter().zip(&cursors) {
+            let mut decoded = frank_cbor::decode_forum_cursor(cursor).unwrap();
+            decoded.epoch = vec![0x99; 16];
+            let expired_bytes = frank_cbor::encode_forum_cursor(&decoded).unwrap();
+            let encoded = frank_cbor::forum_cursor_to_transport(&expired_bytes).unwrap();
+            let expired_uri = format!(
+                "{path}{}cursor={encoded}",
+                if path.contains('?') { "&" } else { "?" }
+            );
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(&expired_uri)
+                        .header(ACCEPT, "application/cbor")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
                 StatusCode::GONE,
-                "actual restarted Owner must reject old retained incarnation at public HTTP"
+                "cursor with expired epoch must return 410 Gone"
             );
             let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
             assert!(String::from_utf8_lossy(&body).contains("forum_cursor_expired"));

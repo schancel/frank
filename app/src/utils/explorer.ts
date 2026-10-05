@@ -30,9 +30,7 @@ function readEnv(key: string): string | undefined {
 function isLocalAddress(url?: string): boolean {
   if (!url) return false
   return (
-    url.includes(':18545') ||
-    url.includes(':18546') ||
-    url.includes(':8545')
+    url.includes(':18545') || url.includes(':18546') || url.includes(':8545')
   )
 }
 
@@ -86,10 +84,7 @@ export function isLocalRpcChain(options?: ExplorerOptions): boolean {
       return true
     }
     // In non-test mode or when explicitly set, check relay base url for local chain ports
-    if (
-      config.relayBaseUrl &&
-      /(18545|18546|8545)/.test(config.relayBaseUrl)
-    ) {
+    if (config.relayBaseUrl && /(18545|18546|8545)/.test(config.relayBaseUrl)) {
       return true
     }
   } catch {

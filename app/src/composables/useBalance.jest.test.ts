@@ -536,4 +536,13 @@ describe('useBalance', () => {
     expect(newWrapper.text()).toBe('100 MON')
     newWrapper.unmount()
   })
+
+  it('allows useBalance().refresh() to be invoked outside an active component instance', async () => {
+    mockGetBalance.mockResolvedValue(500n)
+    const api = useBalance()
+    await api.refresh()
+    expect(mockGetBalance).toHaveBeenCalled()
+    expect(api.balance.value).toBe(500n)
+    expect(api.formattedBalance.value).toBe('500 MON')
+  })
 })

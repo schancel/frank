@@ -225,6 +225,7 @@ export default {
     nextAvatar: 'Next avatar',
     chooseFile: 'Choose a file',
     openInExplorer: 'Open transaction in block explorer',
+    copyTxHash: 'Copy transaction hash',
   },
   leftDrawer: {
     noForums: 'No forums discovered yet.',
@@ -677,6 +678,9 @@ export default {
     txType: 'Type',
     txAddress: 'Address',
     txAmount: 'Amount',
+    copyTxHash: 'Copy transaction hash (Local chain shim)',
+    localChainNotice: 'Local stack / chain shim',
+    txHashCopied: 'Transaction hash copied to clipboard',
   },
   close: 'Close',
 }

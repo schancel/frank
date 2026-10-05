@@ -29,7 +29,7 @@ function installProductionVisibilityCss(): void {
   const css = readFileSync(join(process.cwd(), 'src/css/app.scss'), 'utf8')
   const srOnly = css.match(/\.q-sr-only\s*\{[^}]*\}/)?.[0] ?? ''
   const focus =
-    css.match(/\.outgoing-focus-target:focus\s*\{[^}]*\}/)?.[0] ?? ''
+    css.match(/\.outgoing-focus-target:focus-visible\s*\{[^}]*\}/)?.[0] ?? ''
   const style = document.createElement('style')
   style.setAttribute('data-testid', 'retry-focus-rules')
   style.textContent = `${srOnly}\n${focus}`
@@ -65,7 +65,7 @@ function parseHex(hex: string): [number, number, number] {
 function focusRingRgb(): [number, number, number] {
   const css = readFileSync(join(process.cwd(), 'src/css/app.scss'), 'utf8')
   const focus =
-    css.match(/\.outgoing-focus-target:focus\s*\{[^}]*\}/)?.[0] ?? ''
+    css.match(/\.outgoing-focus-target:focus-visible\s*\{[^}]*\}/)?.[0] ?? ''
   const color =
     focus.match(/outline:\s*2px solid\s+([^;]+);/)?.[1]?.trim() ?? ''
   if (color === 'black' || color === '#000' || color === '#000000') {
@@ -188,5 +188,16 @@ describe('Retry focus stays visible (#429)', () => {
 
     wrapper.unmount()
     host.remove()
+  })
+
+  it('uses :focus-visible instead of plain :focus to prevent mouse-click outlines', () => {
+    const css = readFileSync(join(process.cwd(), 'src/css/app.scss'), 'utf8')
+    expect(css).toMatch(
+      /\.outgoing-focus-target:focus-visible\s*\{[^}]*outline:\s*2px solid/,
+    )
+    expect(css).toMatch(
+      /\.outgoing-focus-target:focus:not\(:focus-visible\)\s*\{[^}]*outline:\s*none/,
+    )
+    expect(css).not.toMatch(/\.outgoing-focus-target:focus\s*\{/)
   })
 })

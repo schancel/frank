@@ -231,6 +231,7 @@ export default {
     nextAvatar: 'Avatar suivant',
     chooseFile: 'Choisir un fichier',
     openInExplorer: "Ouvrir la transaction dans l'explorateur de blocs",
+    copyTxHash: 'Copier le hash de transaction',
   },
   leftDrawer: {
     noForums: 'Aucun forum découvert pour le moment.',
@@ -703,6 +704,9 @@ export default {
     txType: 'Type',
     txAddress: 'Adresse',
     txAmount: 'Montant',
+    copyTxHash: 'Copier le hash de transaction (shim de chaîne locale)',
+    localChainNotice: 'Pile locale / shim de chaîne',
+    txHashCopied: 'Hash de transaction copié dans le presse-papiers',
   },
   close: 'Fermer',
 }

@@ -539,7 +539,8 @@ impl RegistryServer {
             );
         if canonical_enabled {
             use crate::http::monad_message_cbor::{
-                handle_ack, handle_challenge, handle_inbox, handle_put, handle_recovery,
+                handle_ack, handle_challenge, handle_inbox, handle_mailbox, handle_mailbox_ws,
+                handle_put, handle_recovery,
             };
             router = router
                 .route("/message/monad/cbor", routing::put(handle_put))
@@ -550,6 +551,14 @@ impl RegistryServer {
                 .route(
                     "/message/monad/cbor/inbox/:recipient",
                     routing::get(handle_inbox),
+                )
+                .route(
+                    "/message/monad/cbor/mailbox/:address",
+                    routing::get(handle_mailbox),
+                )
+                .route(
+                    "/message/monad/cbor/mailbox/:address/ws",
+                    routing::get(handle_mailbox_ws),
                 )
                 .route(
                     "/message/monad/cbor/recovery/:recipient",

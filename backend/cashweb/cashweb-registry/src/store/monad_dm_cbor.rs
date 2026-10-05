@@ -36,10 +36,41 @@ pub(crate) struct FrozenCanonicalPolicy {
     pub(crate) payload_hash: [u8; 32],
 }
 impl FrozenCanonicalPolicy {
+    pub(crate) fn sender(&self) -> Result<Address> {
+        crate::monad_stamp_stealth::recipient_address_from_public_key(&self.sender_p)
+            .map_err(|_| CanonicalError::Unavailable)
+    }
+
     pub(crate) fn recipient(&self) -> Result<Address> {
         crate::monad_stamp_stealth::recipient_address_from_public_key(&self.recipient_p)
             .map_err(|_| CanonicalError::Unavailable)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MailboxDirection {
+    In,
+    Out,
+}
+
+impl MailboxDirection {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::In => "in",
+            Self::Out => "out",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FinalizedEnvelope {
+    pub(crate) sender: Address,
+    pub(crate) recipient: Address,
+    pub(crate) payload_hash: [u8; 32],
+    pub(crate) submission_identity: [u8; 32],
+    pub(crate) timestamp: i64,
+    pub(crate) delivery: Vec<u8>,
+    pub(crate) context: Vec<u8>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Phase {
@@ -116,14 +147,20 @@ pub(crate) struct Owner {
     path: PathBuf,
     db: Mutex<Option<rocksdb::DB>>,
     directory: Mutex<Weak<DirectoryRuntime>>,
+    broadcast: tokio::sync::broadcast::Sender<FinalizedEnvelope>,
 }
 impl Owner {
     pub(crate) fn new(legacy: PathBuf) -> Self {
+        let (broadcast, _) = tokio::sync::broadcast::channel(1024);
         Self {
             path: legacy.with_extension("monad-dm-cbor-v1"),
             db: Mutex::new(None),
             directory: Mutex::new(Weak::new()),
+            broadcast,
         }
+    }
+    pub(crate) fn subscribe_finalized(&self) -> tokio::sync::broadcast::Receiver<FinalizedEnvelope> {
+        self.broadcast.subscribe()
     }
     pub(crate) fn attach_directory(&self, directory: Arc<DirectoryRuntime>) -> Result<()> {
         let mut installed = self
@@ -484,10 +521,10 @@ impl Owner {
     }
     /// Validation and mailbox publication are one locked operation. No caller can mint the view.
     pub(crate) fn finalize(&self, hash: &[u8; 32], now: i64) -> Result<Claim> {
-        self.with(false, |db| {
+        let (claim, newly_finalized) = self.with(false, |db| {
             let mut claim = load(db, hash)?.ok_or(CanonicalError::Unavailable)?;
             if matches!(claim.phase, Phase::Delivered(_)) {
-                return Ok(claim);
+                return Ok((claim, false));
             }
             if claim.phase != Phase::FullyConfirmed {
                 return Err(CanonicalError::Unavailable);
@@ -501,15 +538,41 @@ impl Owner {
             claim.reservation = false;
             let mut batch = WriteBatch::default();
             append_owner(&mut batch, hash, &claim)?;
+            let recipient = claim.policy.recipient()?;
+            let sender = claim.policy.sender()?;
             let mut inbox = b"I".to_vec();
-            inbox.extend_from_slice(&claim.policy.recipient()?.0);
+            inbox.extend_from_slice(&recipient.0);
             inbox.extend_from_slice(&now.to_be_bytes());
             inbox.extend_from_slice(hash);
             batch.put(inbox, hash);
+            if sender != recipient {
+                let mut outbox = b"O".to_vec();
+                outbox.extend_from_slice(&sender.0);
+                outbox.extend_from_slice(&now.to_be_bytes());
+                outbox.extend_from_slice(hash);
+                batch.put(outbox, hash);
+            }
             write(db, batch)?;
-            Ok(claim)
+            Ok((claim, true))
         })?
-        .ok_or(CanonicalError::Unavailable)
+        .ok_or(CanonicalError::Unavailable)?;
+
+        if newly_finalized {
+            if let (Ok(sender), Ok(recipient)) = (claim.policy.sender(), claim.policy.recipient()) {
+                let envelope = FinalizedEnvelope {
+                    sender,
+                    recipient,
+                    payload_hash: claim.policy.payload_hash,
+                    submission_identity: claim.request.submission_identity(),
+                    timestamp: now,
+                    delivery: claim.request.delivery().to_vec(),
+                    context: claim.request.context().to_vec(),
+                };
+                let _ = self.broadcast.send(envelope);
+            }
+        }
+
+        Ok(claim)
     }
     pub(crate) fn consume_challenge(
         &self,
@@ -616,6 +679,107 @@ impl Owner {
                     break;
                 }
             }
+            Ok(result)
+        })
+        .map(|rows| rows.unwrap_or_default())
+    }
+    pub(crate) fn mailbox(
+        &self,
+        address: Address,
+        since: i64,
+        after: Option<(i64, [u8; 32])>,
+        limit: usize,
+    ) -> Result<Vec<(Claim, MailboxDirection)>> {
+        self.with(false, |db| {
+            let mut i_prefix = b"I".to_vec();
+            i_prefix.extend_from_slice(&address.0);
+            let mut o_prefix = b"O".to_vec();
+            o_prefix.extend_from_slice(&address.0);
+
+            let mut i_iter = db
+                .iterator_opt(IteratorMode::Start, prefix_options(&i_prefix)?)
+                .fuse();
+            let mut o_iter = db
+                .iterator_opt(IteratorMode::Start, prefix_options(&o_prefix)?)
+                .fuse();
+
+            let mut result = Vec::new();
+            if limit == 0 {
+                return Ok(result);
+            }
+
+            fn next_entry(
+                iter: &mut impl Iterator<Item = std::result::Result<(Box<[u8]>, Box<[u8]>), rocksdb::Error>>,
+                prefix: &[u8],
+                since: i64,
+                after: Option<(i64, [u8; 32])>,
+            ) -> Result<Option<(i64, [u8; 32])>> {
+                for item in iter {
+                    let (key, value) = item.map_err(|_| CanonicalError::Unavailable)?;
+                    #[cfg(test)]
+                    record_read(&key, &value);
+                    if !key.starts_with(prefix) {
+                        continue;
+                    }
+                    if key.len() != 61 {
+                        return Err(CanonicalError::Unavailable);
+                    }
+                    let timestamp = i64::from_be_bytes(key[21..29].try_into().unwrap());
+                    let hash: [u8; 32] = key[29..].try_into().unwrap();
+                    if timestamp < since || after.is_some_and(|cursor| (timestamp, hash) <= cursor) {
+                        continue;
+                    }
+                    if value.as_ref() != hash {
+                        return Err(CanonicalError::Unavailable);
+                    }
+                    return Ok(Some((timestamp, hash)));
+                }
+                Ok(None)
+            }
+
+            let mut i_cand = next_entry(&mut i_iter, &i_prefix, since, after)?;
+            let mut o_cand = next_entry(&mut o_iter, &o_prefix, since, after)?;
+
+            while result.len() < limit {
+                let (take_i, timestamp, hash) = match (i_cand, o_cand) {
+                    (Some(i_pos), Some(o_pos)) => {
+                        if i_pos <= o_pos {
+                            (true, i_pos.0, i_pos.1)
+                        } else {
+                            (false, o_pos.0, o_pos.1)
+                        }
+                    }
+                    (Some(i_pos), None) => (true, i_pos.0, i_pos.1),
+                    (None, Some(o_pos)) => (false, o_pos.0, o_pos.1),
+                    (None, None) => break,
+                };
+
+                if take_i {
+                    i_cand = next_entry(&mut i_iter, &i_prefix, since, after)?;
+                } else {
+                    o_cand = next_entry(&mut o_iter, &o_prefix, since, after)?;
+                }
+
+                let claim = load(db, &hash)?.ok_or(CanonicalError::Unavailable)?;
+                if claim.phase != Phase::Delivered(timestamp) {
+                    return Err(CanonicalError::Unavailable);
+                }
+
+                let direction = if take_i {
+                    if claim.policy.recipient() != Ok(address) {
+                        return Err(CanonicalError::Unavailable);
+                    }
+                    MailboxDirection::In
+                } else {
+                    if claim.policy.sender() != Ok(address) {
+                        return Err(CanonicalError::Unavailable);
+                    }
+                    MailboxDirection::Out
+                };
+
+                result.push((claim, direction));
+            }
+
             Ok(result)
         })
         .map(|rows| rows.unwrap_or_default())

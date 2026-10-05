@@ -1560,6 +1560,8 @@ pub(crate) async fn handle_issue_mailbox_challenge(
             MailboxResource::Inbox => "inbox",
             MailboxResource::Recovery => "recovery",
             MailboxResource::RecoveryAck => "recovery_ack",
+            MailboxResource::Mailbox => "mailbox",
+            MailboxResource::MailboxStream => "mailbox_ws",
         },
         since,
         cursor: params.cursor,
@@ -1610,7 +1612,9 @@ pub(crate) async fn handle_get_private_monad_messages(
             timestamp,
             payload_hash,
         }),
-        Some(MailboxCursor::Recovery { .. }) => return Err(PrivateMailboxError::Unauthorized),
+        Some(MailboxCursor::Recovery { .. }) | Some(MailboxCursor::Mailbox { .. }) => {
+            return Err(PrivateMailboxError::Unauthorized)
+        }
         None => None,
     };
     let page = server
@@ -1670,7 +1674,9 @@ pub(crate) async fn handle_get_private_monad_recovery(
     authenticate_private_recipient(authentication, &server, &binding)?;
     let cursor = match binding.cursor.as_ref().map(|cursor| cursor.position) {
         Some(MailboxCursor::Recovery { payload_hash }) => Some(payload_hash),
-        Some(MailboxCursor::Inbox { .. }) => return Err(PrivateMailboxError::Unauthorized),
+        Some(MailboxCursor::Inbox { .. }) | Some(MailboxCursor::Mailbox { .. }) => {
+            return Err(PrivateMailboxError::Unauthorized)
+        }
         None => None,
     };
     // Recovery JSON hex-encodes canonical protobuf bytes. Limiting materialized protobuf to half

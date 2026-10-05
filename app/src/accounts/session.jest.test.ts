@@ -351,3 +351,18 @@ test('an unchanged account keeps its published identity across wallet acquisitio
   expect(f.session.state.account).not.toBe(account)
   expect(f.session.state.account?.receipt.context.accountId).toBe('b')
 })
+
+test('getActiveWalletRoot and backupCodex32 split active wallet root into 2-of-3 shares', async () => {
+  const f = fixture()
+  await f.session.initialize()
+  const root = await f.session.getActiveWalletRoot()
+  expect(root).toBeInstanceOf(Uint8Array)
+  expect(root.length).toBe(32)
+
+  const shares = await f.session.backupCodex32(2, 3)
+  expect(shares).toHaveLength(3)
+  for (const share of shares) {
+    expect(share.startsWith('ms12frnk')).toBe(true)
+    expect(share.length).toBe(127)
+  }
+})

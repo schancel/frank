@@ -34,8 +34,9 @@
   },
   "dependencies": {
     "@frank/account-recovery": "*",
-    "@frank/bot": "*",
     "@frank/account-vault": "*",
+    "@frank/bot": "*",
+    "@frank/codex32": "*",
     "@frank/domain-roots": "*",
     "@capacitor/core": "2.5.0",
     "@electron/remote": "^2.0.8",

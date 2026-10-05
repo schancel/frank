@@ -55,6 +55,14 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn
+            outline
+            no-caps
+            label="Backup account (Codex32)"
+            color="primary"
+            data-testid="backup-codex32-button"
+            @click="openBackupDialog"
+          />
+          <q-btn
             :label="$t('walletPanel.receive')"
             color="primary"
             data-testid="wallet-receive-action"
@@ -68,6 +76,14 @@
           />
         </q-card-actions>
       </q-card>
+
+      <codex32-backup-dialog
+        v-model="showBackupDialog"
+        :loading="backupLoading"
+        :error="backupError"
+        :shares="backupShares"
+        @close="closeBackupDialog"
+      />
     </q-page>
   </q-page-container>
 </template>
@@ -82,15 +98,26 @@ import { useBalance } from 'src/composables/useBalance'
 import { openPage } from 'src/utils/routes'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 import { accountStatus } from '../accounts/session'
+import { useCodex32Backup } from 'src/composables/useCodex32Backup'
+import Codex32BackupDialog from 'src/components/wallet/Codex32BackupDialog.vue'
 
 // One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
 // initiation is deliberately absent until the stealth design (#71) lands -- no dead controls.
 export default defineComponent({
+  components: { Codex32BackupDialog },
   setup() {
     const router = useRouter()
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
     const { formattedBalance, loaded, hasError } = useBalance()
+    const {
+      showBackupDialog,
+      backupLoading,
+      backupError,
+      backupShares,
+      openBackupDialog,
+      closeBackupDialog,
+    } = useCodex32Backup()
     // An em dash (not "0") until the first successful fetch: an unloaded or failed balance must
     // not look like a real zero.
     const balanceText = computed(() =>
@@ -122,6 +149,12 @@ export default defineComponent({
       displayAddress,
       balanceText,
       hasError,
+      showBackupDialog,
+      backupLoading,
+      backupError,
+      backupShares,
+      openBackupDialog,
+      closeBackupDialog,
       async copyAddress() {
         if (!displayAddress.value) return
         try {

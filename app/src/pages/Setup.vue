@@ -156,7 +156,7 @@
                 :label="$t('accountRecovery.restore_account')"
                 data-test="restore-account"
                 :disable="!mayBegin || busy"
-                @click="changeMode('descriptor')"
+                @click="startRestore"
               />
               <q-btn
                 flat
@@ -269,70 +269,8 @@
               @click="nextShare"
             />
           </template>
-          <template v-else-if="mode === 'save-descriptor'">
-            <p>
-              {{
-                $t('accountRecovery.save_two_independent_copies_of_this_public')
-              }}
-            </p>
-            <q-input
-              :model-value="descriptor"
-              readonly
-              :label="$t('accountRecovery.public_frankdesc_descriptor')"
-              data-test="public-descriptor"
-            />
-            <q-btn
-              flat
-              no-caps
-              :label="$t('accountRecovery.copy_public_descriptor')"
-              @click="copy(descriptor)"
-            />
-            <q-checkbox
-              v-model="descriptorSaved"
-              :label="
-                $t('accountRecovery.i_saved_two_independent_copies_of_the')
-              "
-              data-test="descriptor-saved"
-            />
-            <q-btn
-              color="primary"
-              no-caps
-              :label="$t('accountRecovery.confirm_my_saved_backups')"
-              data-test="confirm-backups"
-              :disable="!descriptorSaved"
-              @click="changeMode('confirm')"
-            />
-          </template>
-          <q-form v-else-if="mode === 'descriptor'" @submit="pinDescriptor">
-            <p>
-              {{
-                $t(
-                  'accountRecovery.enter_the_public_frankdesc_descriptor_from_an',
-                )
-              }}
-            </p>
-            <q-input
-              v-model="descriptorInput"
-              :label="
-                $t('accountRecovery.independently_saved_frankdesc_descriptor')
-              "
-              :maxlength="76"
-              autocomplete="off"
-              :spellcheck="false"
-              data-test="restore-descriptor"
-            />
-            <q-btn
-              type="submit"
-              color="primary"
-              no-caps
-              :label="$t('accountRecovery.pin_expected_account')"
-              data-test="pin-descriptor"
-              :disable="busy || !descriptorInput"
-              :loading="busy"
-            />
-          </q-form>
           <q-form
-            v-else-if="mode === 'confirm' || mode === 'restore-shares'"
+            v-else-if="mode === 'confirm' || mode === 'restore-shares' || mode === 'restore'"
             @submit="confirm"
           >
             <p v-if="mode === 'confirm'">
@@ -350,7 +288,7 @@
                 )
               }}
             </p>
-            <p class="recovery-text" data-test="pinned-descriptor">
+            <p v-if="descriptor" class="recovery-text" data-test="pinned-descriptor">
               {{ $t('accountRecovery.expected_account') }} {{ descriptor }}
             </p>
             <q-input
@@ -430,6 +368,7 @@ type Mode =
   | 'save-descriptor'
   | 'descriptor'
   | 'confirm'
+  | 'restore'
   | 'restore-shares'
 const mode = ref<Mode>('choice')
 const heading = ref<HTMLElement>()
@@ -479,6 +418,10 @@ function focus() {
   void nextTick(() => heading.value?.focus())
 }
 function changeMode(value: Mode) {
+  if (value === 'restore') {
+    void startRestore()
+    return
+  }
   mode.value = value
   error.value = ''
   focus()
@@ -542,7 +485,14 @@ function nextShare() {
   if (++shareIndex.value < shareCount.value) {
     shownShare.value = ceremony.share(shareIndex.value)
     focus()
-  } else changeMode('save-descriptor')
+  } else changeMode('confirm')
+}
+function startRestore() {
+  return run(async () => {
+    if (!mayBegin.value) return
+    descriptor.value = await ceremony.beginRestore()
+    if (alive) changeMode('restore-shares')
+  })
 }
 function pinDescriptor() {
   return run(async () => {

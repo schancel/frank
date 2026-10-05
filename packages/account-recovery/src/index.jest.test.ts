@@ -9,8 +9,10 @@ import * as codex32 from '@frank/codex32'
 import {
   AccountRecoveryError,
   beginCodex32Signup,
+  beginCodex32Restore,
   destroyAccountDomainRoots,
   recoverCodex32Account,
+  recoverCodex32Shares,
   type RecoveryDescriptor,
 } from './index.js'
 
@@ -475,5 +477,131 @@ describe('Codex32 account ceremony', () => {
       share: 1,
     })
     destroyAccountDomainRoots(roots)
+  })
+
+  describe('direct recovery from shares without descriptor (Issue #848)', () => {
+    it('recovers domain roots and metadata directly from shares alone via recoverCodex32Shares', () => {
+      const pending = beginCodex32Signup({
+        threshold: 2,
+        identifier: 'frnk',
+        indices: ['q', 'p', 'z'],
+        randomBytes: deterministicRandom(42),
+      })
+      const shares = pending.shares
+      const confirmed = pending.confirmWithMetadata(shares.slice(0, 2))
+
+      // Direct recovery with shares only, no descriptor
+      const recovered = recoverCodex32Shares(shares.slice(1, 3))
+      expect(recovered.metadata.descriptor.publicRecoveryFingerprint).toEqual(
+        confirmed.metadata.descriptor.publicRecoveryFingerprint,
+      )
+      expect(recovered.metadata.masterRetirementId).toEqual(
+        confirmed.metadata.masterRetirementId,
+      )
+      for (const purpose of DOMAIN_PURPOSES) {
+        expect(recovered.roots[purpose].bytes).toEqual(
+          confirmed.roots[purpose].bytes,
+        )
+      }
+
+      destroyAccountDomainRoots(confirmed.roots)
+      destroyAccountDomainRoots(recovered.roots)
+    })
+
+    it('recovers domain roots via recoverCodex32Account without descriptor', () => {
+      const pending = beginCodex32Signup({
+        threshold: 2,
+        identifier: 'frnk',
+        indices: ['q', 'p', 'z'],
+        randomBytes: deterministicRandom(99),
+      })
+      const shares = pending.shares
+      const confirmed = pending.confirm(shares.slice(0, 2))
+
+      // recoverCodex32Account with descriptor omitted
+      const recovered = recoverCodex32Account({
+        shares: shares.slice(1, 3),
+      })
+      for (const purpose of DOMAIN_PURPOSES) {
+        expect(recovered[purpose].bytes).toEqual(confirmed[purpose].bytes)
+      }
+
+      destroyAccountDomainRoots(confirmed)
+      destroyAccountDomainRoots(recovered)
+    })
+
+    it('beginCodex32Restore without descriptor restores valid roots and metadata', () => {
+      const pending = beginCodex32Signup({
+        threshold: 2,
+        identifier: 'frnk',
+        indices: ['q', 'p', 'z'],
+        randomBytes: deterministicRandom(77),
+      })
+      const shares = pending.shares
+      const confirmed = pending.confirmWithMetadata(shares.slice(0, 2))
+
+      // beginCodex32Restore called with no arguments / descriptor
+      const restore = beginCodex32Restore()
+      expect(restore.descriptor).toBeUndefined()
+
+      const recovered = restore.recover(shares.slice(1, 3))
+      expect(recovered.metadata.descriptor.publicRecoveryFingerprint).toEqual(
+        confirmed.metadata.descriptor.publicRecoveryFingerprint,
+      )
+      for (const purpose of DOMAIN_PURPOSES) {
+        expect(recovered.roots[purpose].bytes).toEqual(
+          confirmed.roots[purpose].bytes,
+        )
+      }
+
+      destroyAccountDomainRoots(confirmed.roots)
+      destroyAccountDomainRoots(recovered.roots)
+    })
+
+    it('rejects corrupted shares during direct recovery without descriptor', () => {
+      expectRecoveryError(() => recoverCodex32Shares([]), 'insufficient-shares')
+
+      const pending = beginCodex32Signup({
+        threshold: 2,
+        identifier: 'frnk',
+        indices: ['q', 'p', 'z'],
+        randomBytes: deterministicRandom(12),
+      })
+      const shares = pending.shares
+
+      // Insufficient shares
+      expectRecoveryError(
+        () => recoverCodex32Shares([shares[0]!]),
+        'wrong-share-count',
+      )
+
+      // Duplicate shares
+      expectRecoveryError(
+        () => recoverCodex32Shares([shares[0]!, shares[0]!]),
+        'duplicate-share',
+      )
+
+      // Corrupted checksum
+      const badShare =
+        shares[0]!.slice(0, -1) + (shares[0]!.endsWith('q') ? 'p' : 'q')
+      expectRecoveryError(
+        () => recoverCodex32Shares([badShare, shares[1]!]),
+        'bad-checksum',
+      )
+
+      // Corrupted master payload validation hash
+      const split = codex32.splitCodex32({
+        threshold: 2,
+        identifier: 'frnk',
+        indices: ['q', 'p'],
+        secret: new Uint8Array(64), // Invalid master validation hash
+        randomBytes: length => new Uint8Array(length).fill(9),
+      })
+      if (split.ok) {
+        expectRecoveryError(() => recoverCodex32Shares(split.value), 'bad-format')
+      }
+
+      pending.cancel()
+    })
   })
 })

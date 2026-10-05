@@ -1,12 +1,19 @@
 <template>
   <q-page-container>
     <q-page class="chat-page-background">
-      <div class="column items-center q-pa-xl">
+      <div class="column items-center q-py-lg q-px-md">
         <q-avatar size="96px" rounded :style="contactColorStyle">
-          <img :src="profileAvatar(contact.profile.avatar, address)" />
+          <img :src="profileAvatar(contact?.profile?.avatar, address)" />
         </q-avatar>
         <div class="text-h6 q-mt-md" :style="contactNameColorStyle">
-          {{ contact.profile.name || $t('chatRightDrawer.unknownContact') }}
+          {{ contact?.profile?.name || $t('chatRightDrawer.unknownContact') }}
+        </div>
+        <div
+          v-if="contact?.profile?.bio"
+          class="text-body2 text-grey-7 q-mt-xs text-center"
+          style="max-width: 400px"
+        >
+          {{ contact.profile.bio }}
         </div>
         <q-btn
           flat
@@ -17,6 +24,17 @@
           class="text-caption q-mt-xs"
           @click="copyAddress()"
         />
+        <div class="q-mt-md">
+          <q-btn
+            color="primary"
+            rounded
+            no-caps
+            icon="chat"
+            :label="$t('chatList.directMessages')"
+            data-test="info-start-chat"
+            @click="$emit('chat')"
+          />
+        </div>
       </div>
 
       <q-separator />
@@ -97,7 +115,7 @@ export default defineComponent({
     ClearHistoryDialog,
     DeleteChatDialog,
   },
-  emits: ['deleted'],
+  emits: ['deleted', 'chat'],
   setup() {
     const contactStore = useContactStore()
     return {

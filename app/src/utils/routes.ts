@@ -22,3 +22,8 @@ export function openChat(router: Router, address: string) {
   const chatRoute = `/chat/${address}`
   return openPage(router, chatRoute)
 }
+
+export function openContactProfile(router: Router, address: string) {
+  const infoRoute = `/chat/${address}?info=true`
+  return openPage(router, infoRoute)
+}

@@ -56,7 +56,7 @@
             v-ripple
             class="q-py-sm full-width"
             data-test="contact-list-row"
-            @click="startChat(item.address)"
+            @click="openProfile(item.address)"
           >
             <q-item-section avatar style="min-width: 44px; padding-right: 8px">
               <q-avatar rounded size="40px">
@@ -130,7 +130,7 @@ import { storeToRefs } from 'pinia'
 import { useContactStore, ContactState } from 'src/stores/contacts'
 import { profileAvatar } from 'src/utils/avatar'
 import { activeChain } from '@frank/wallet/chain'
-import { openChat, openPage } from 'src/utils/routes'
+import { openChat, openContactProfile, openPage } from 'src/utils/routes'
 
 export default defineComponent({
   setup() {
@@ -174,6 +174,10 @@ export default defineComponent({
         : address
     }
 
+    function openProfile(address: string) {
+      openContactProfile(router, address)
+    }
+
     function startChat(address: string) {
       openChat(router, address)
     }
@@ -192,6 +196,7 @@ export default defineComponent({
       profileAvatar,
       formatAddr,
       formatAddrCompact,
+      openProfile,
       startChat,
       openAddContact,
       deleteContact,

@@ -6,7 +6,12 @@
  * returns you to wherever you were before you entered the settings flow at all.
  */
 import type { Router } from 'vue-router'
-import { openPage, openChat, settingsRoutes } from './routes'
+import {
+  openPage,
+  openChat,
+  openContactProfile,
+  settingsRoutes,
+} from './routes'
 
 function makeRouter(currentPath: string): Router {
   return {
@@ -52,5 +57,19 @@ describe('openChat', () => {
     const router = makeRouter('/receive')
     openChat(router, '0xabc')
     expect(router.replace).toHaveBeenCalledWith('/chat/0xabc')
+  })
+})
+
+describe('openContactProfile', () => {
+  it('builds a /chat/:address?info=true route and opens it via openPage', () => {
+    const router = makeRouter('/forum')
+    openContactProfile(router, '0xabc')
+    expect(router.push).toHaveBeenCalledWith('/chat/0xabc?info=true')
+  })
+
+  it('replaces rather than pushes when opening profile from a settings route', () => {
+    const router = makeRouter('/settings')
+    openContactProfile(router, '0xabc')
+    expect(router.replace).toHaveBeenCalledWith('/chat/0xabc?info=true')
   })
 })

@@ -18,7 +18,7 @@
             dense
             icon="arrow_back"
             :aria-label="$t('a11y.closeInfo')"
-            @click="infoOpen = false"
+            @click="closeInfo"
           />
           <q-toolbar-title class="h6">{{
             $t('chatLayout.infoTitle')
@@ -87,7 +87,7 @@
               @hide="chatMenuOpen = false"
             >
               <q-list style="min-width: 180px">
-                <q-item clickable v-close-popup @click="infoOpen = true">
+                <q-item clickable v-close-popup @click="openInfo">
                   <q-item-section avatar><q-icon name="info" /></q-item-section>
                   <q-item-section>{{ $t('chatLayout.info') }}</q-item-section>
                 </q-item>
@@ -169,6 +169,7 @@
       :address="address"
       :contact="getContact(address)"
       @deleted="onChatDeleted"
+      @chat="closeInfo"
     />
   </div>
 </template>
@@ -228,8 +229,8 @@ export default defineComponent({
       sendFileOpen: false as boolean,
       address: (this.$route.params.address as string) || '',
       // Full-pane Info swap, not a side drawer -- see this file's template header comment above
-      // `router-view`/`chat-info-view` for why.
-      infoOpen: false,
+      // `router-view`/`chat-info-view` for why. Can be directly opened via ?info=true query param.
+      infoOpen: this.$route.query?.info === 'true',
       chatMenuOpen: false,
       // See this file's `provide()` and ChatMessageSuffixButtons.vue's own header -- gates
       // per-message delete behind an explicit mode instead of it being an always-hoverable action.
@@ -245,14 +246,28 @@ export default defineComponent({
     next: () => void,
   ) {
     this.address = (to.params.address as string) || ''
-    // Switching chats while Info/select mode is active would otherwise leave the *previous*
-    // chat's state showing under the new address -- always land back on a plain chat view for a
-    // freshly-navigated-to address.
-    this.infoOpen = false
+    // If navigating with ?info=true, show the info page; otherwise reset to plain chat view
+    this.infoOpen = to.query?.info === 'true'
     this.selectMode = false
     next()
   },
   methods: {
+    openInfo() {
+      this.infoOpen = true
+      if (this.$route.query?.info !== 'true') {
+        void this.$router.replace({
+          query: { ...(this.$route.query ?? {}), info: 'true' },
+        })
+      }
+    },
+    closeInfo() {
+      this.infoOpen = false
+      if (this.$route.query?.info) {
+        const query = { ...this.$route.query }
+        delete query.info
+        void this.$router.replace({ query })
+      }
+    },
     toSendFileDialog(args: unknown) {
       this.image = args
       this.sendFileOpen = true

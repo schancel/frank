@@ -86,25 +86,6 @@ jobs:
         echo "$(pwd)/bin" >> $GITHUB_PATH
       shell: bash
 
-    - name: Checkout flatbuffers repository
-      uses: actions/checkout@v4
-      with:
-        path: flatbuffers
-        repository: google/flatbuffers
-        # v2.0.0 fails to build on modern GCC (Ubuntu 24.04 runners ship GCC 13) due to a
-        # -Werror=stringop-overflow false positive in reflection.cpp. v2.0.8 is the last patch
-        # release on the 2.0.x branch (matches bitcoinsuite-bitcoind-nng's `flatbuffers = "2.0"`
-        # Cargo requirement) and upstream already added `-Wno-error=stringop-overflow` there.
-        ref: v2.0.8
-
-    - name: Cache flatc
-      uses: actions/cache@v4
-      with:
-        path: |
-          flatbuffers/build
-        key: ${{ runner.os }}-flatbuffers-ninja-v2.0.8
-        restore-keys: |
-          ${{ runner.os }}-flatbuffers-ninja-
 
     - name: Install Protoc
       uses: arduino/setup-protoc@v3
@@ -125,27 +106,6 @@ jobs:
       run: ./docs/protocol/check-protobuf-inventory.sh --check
       shell: bash
 
-    - name: Install ninja
-      uses: seanmiddleditch/gha-setup-ninja@master
-      with:
-        version: 1.10.2
-
-    - name: Build flatc if not cached
-      working-directory: ./flatbuffers
-      run: |
-        if [ ! -d "build" ]; then
-          mkdir build
-          cd build
-          # Only build the flatc binary itself, not flatbuffers' own test suite (the default
-          # "all" target) -- v2.0.8's flattests target fails to compile on GCC 13 due to a
-          # missing #include <cstdint> in tests/reflection_test.h, an unrelated upstream test-only
-          # bug we don't need to fix since we only consume the flatc binary here.
-          cmake -G "Ninja" -DCMAKE_BUILD_TYPE=Release ..
-          ninja flatc
-          cd ..
-        fi
-        cp ./build/flatc ../bin/
-      shell: bash
 
     - name: Set up sccache
       uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
@@ -192,20 +152,10 @@ jobs:
         which cargo-make || cargo install cargo-make
       shell: bash
 
-    - name: Make bitcoinsuite nng
-      working-directory: ./backend/bitcoinsuite
-      run: |
-        cargo make --cwd bitcoinsuite-bitcoind-nng generate-fb
-
     # `cargo make` with no task name runs cargo-make's default `dev-test-flow`, which builds
-    # AND tests every bitcoinsuite member -- including bitcoinsuite-bitcoind-nng's own Lotus-
-    # specific NNG pub/sub interface tests (`pub_interface`/`rpc_interface`), which spin up a
-    # real bitcoind/lotusd instance. Now that lotusd's upstream download is permanently gone
-    # (see ensure-bitcoind.sh's comment) those tests can never pass here, and they were never
-    # something Frank needs anyway (PLAN.md constraint 1: no lotusd for anything actually
-    # shipped) -- bitcoinsuite only needs to be BUILT here as a library for cashweb-registry to
-    # link against. `build` (build only, still depends on `ensure-bitcoind` for the ABC/BCH
-    # downloads cashweb-registry's own tests want) is the right task, not the default flow.
+    # AND tests every bitcoinsuite member. `build` (build only, still depends on `ensure-bitcoind`
+    # for the ABC/BCH downloads cashweb-registry's own tests want) is the right task, not the
+    # default test flow.
     - name: Make bitcoinsuite libraries & download nodes
       working-directory: ./backend/bitcoinsuite
       run: |

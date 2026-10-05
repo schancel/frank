@@ -106,23 +106,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bitcoinsuite-bitcoind-nng"
-version = "0.1.0"
-dependencies = [
- "bitcoinsuite-bitcoind",
- "bitcoinsuite-core",
- "bitcoinsuite-error",
- "bitcoinsuite-test-utils",
- "flatbuffers",
- "hex",
- "json",
- "nng",
- "tempdir",
- "thiserror",
- "tokio",
-]
-
-[[package]]
 name = "bitcoinsuite-chronik-client"
 version = "0.1.0"
 dependencies = [
@@ -295,15 +278,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cmake"
-version = "0.1.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a31c789563b815f77f4250caee12365734369f942439b7defd71e18a48197130"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "convert_case"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -433,17 +407,6 @@ name = "fixedbitset"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
-
-[[package]]
-name = "flatbuffers"
-version = "2.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86b428b715fdbdd1c364b84573b5fdc0f84f8e423661b9f398735278bc7f2b6a"
-dependencies = [
- "bitflags",
- "smallvec",
- "thiserror",
-]
 
 [[package]]
 name = "fnv"
@@ -896,26 +859,6 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "tempfile",
-]
-
-[[package]]
-name = "nng"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20a18ed7ec1c8ff1658bcfea2ce76dcedf8be21dd9e8dd2e9762ba9632d16203"
-dependencies = [
- "log",
- "nng-sys",
-]
-
-[[package]]
-name = "nng-sys"
-version = "1.4.0-rc.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50d0e7f39a8fd1792a710da9351320e864dc799cf439960e332c977b2f876da6"
-dependencies = [
- "cmake",
- "version_check",
 ]
 
 [[package]]

@@ -9,7 +9,11 @@
     "skipLibCheck": true,
     "strict": true,
     "target": "es2020",
-    "types": []
+    "types": [],
+    "paths": {
+      "@frank/nakamoto/bech32": ["../nakamoto/src/bech32.ts"],
+      "@frank/nakamoto/convert-bits": ["../nakamoto/src/convert-bits.ts"]
+    }
   },
   "include": ["src/**/*"],
   "exclude": ["**/*.jest.test.ts"]

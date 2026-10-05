@@ -74,13 +74,45 @@
             <q-item-label caption>{{ $t('walletPanel.solana') }}</q-item-label>
           </q-item-section>
         </q-item>
+
+        <q-separator class="q-my-sm" />
+
+        <div class="q-pa-sm">
+          <q-btn
+            outline
+            no-caps
+            color="primary"
+            class="full-width"
+            label="Backup account (Codex32)"
+            data-test="backup-codex32-button"
+            @click="openBackupDialog"
+          />
+        </div>
       </q-list>
     </q-scroll-area>
+
+    <codex32-backup-dialog
+      v-model="showBackupDialog"
+      :loading="backupLoading"
+      :error="backupError"
+      :shares="backupShares"
+      @close="closeBackupDialog"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { useBalance } from '../../composables/useBalance'
+import { useCodex32Backup } from '../../composables/useCodex32Backup'
+import Codex32BackupDialog from '../wallet/Codex32BackupDialog.vue'
 
 const { loaded, hasError, formattedBalance } = useBalance()
+const {
+  showBackupDialog,
+  backupLoading,
+  backupError,
+  backupShares,
+  openBackupDialog,
+  closeBackupDialog,
+} = useCodex32Backup()
 </script>

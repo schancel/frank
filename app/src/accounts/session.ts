@@ -7,6 +7,7 @@ import {
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
 import { Platform } from 'quasar'
 import type { DomainRoot } from '@frank/domain-roots'
+import { createMasterPayload, splitCodex32 } from '@frank/codex32'
 import {
   openAccountCustody,
   CustodyError,
@@ -259,6 +260,39 @@ export function createAccountSession(deps: {
       await session.initialize()
       if (state.status !== 'ready' || !wallet) throw new CustodyError('locked')
       return wallet
+    },
+    async getActiveWalletRoot(): Promise<Uint8Array> {
+      await session.initialize()
+      if (!custody || closed || state.status !== 'ready') throw new CustodyError('locked')
+      const capability = await custody.openActive()
+      try {
+        const roots = capability.takeRoots()
+        const evmRoot = roots.find(r => r.purpose === 'evm-wallet')
+        if (!evmRoot) throw new CustodyError('locked')
+        return new Uint8Array(evmRoot.bytes)
+      } finally {
+        capability.close()
+      }
+    },
+    async backupCodex32(threshold: 2 | 3 = 2, count: 3 | 5 = 3): Promise<string[]> {
+      const root = await this.getActiveWalletRoot()
+      let master: { ok: boolean; value?: Uint8Array } | undefined
+      try {
+        master = createMasterPayload(root)
+        if (!master.ok || !master.value) throw new Error('Failed to create master payload')
+        const split = splitCodex32({
+          threshold,
+          identifier: 'frnk',
+          indices: ['q', 'p', 'z', 'r', 'y'].slice(0, count),
+          secret: master.value,
+          randomBytes: length => crypto.getRandomValues(new Uint8Array(length)),
+        })
+        if (!split.ok) throw new Error(split.error.code)
+        return split.value
+      } finally {
+        root.fill(0)
+        master?.value?.fill(0)
+      }
     },
     async snapshot() {
       await this.initialize()

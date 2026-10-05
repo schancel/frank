@@ -78,9 +78,13 @@ export interface RecoveredCodex32Account {
   readonly metadata: RecoveryPublicMetadata
 }
 
-export interface PendingCodex32Restore {
+export interface PendingCodex32Restore<
+  T extends PublicRecoveryDescriptor | undefined =
+    | PublicRecoveryDescriptor
+    | undefined,
+> {
   /** Immutable snapshot; selecting another descriptor requires a new ceremony. */
-  readonly descriptor: PublicRecoveryDescriptor
+  readonly descriptor: T
   /** Invalid M can retry; a valid M with a different fingerprint consumes the ceremony. */
   recover(shares: readonly string[]): RecoveredCodex32Account
   cancel(): void
@@ -94,7 +98,7 @@ export interface BeginCodex32SignupInput {
 }
 
 export interface RecoverCodex32AccountInput {
-  readonly descriptor: RecoveryDescriptor
+  readonly descriptor?: RecoveryDescriptor
   readonly shares: readonly string[]
 }
 
@@ -197,9 +201,14 @@ export function recoverCodex32Account(
   input: RecoverCodex32AccountInput,
 ): AccountDomainRoots {
   const recovery = snapshotRecoveryInput(input)
-  const descriptor = snapshotDescriptor(recovery.descriptor)
+  const descriptor =
+    recovery.descriptor !== undefined
+      ? snapshotDescriptor(recovery.descriptor)
+      : undefined
   const shares = snapshotShares(recovery.shares)
-  assertCeremonyFamily(descriptor, shares)
+  if (descriptor !== undefined) {
+    assertCeremonyFamily(descriptor, shares)
+  }
   const recovered = unwrap(recoverCodex32Exact(shares))
   try {
     return deriveValidatedRoots(recovered.secret)
@@ -210,15 +219,48 @@ export function recoverCodex32Account(
 }
 
 /**
+ * Direct recovery from Codex32 shares without a descriptor.
+ * Reconstructs M = R || V directly from shares, validates the master payload,
+ * and derives the 5 domain roots and public metadata.
+ */
+export function recoverCodex32Shares(
+  candidateShares: readonly string[],
+): RecoveredCodex32Account {
+  const shares = snapshotShares(candidateShares)
+  const recovered = unwrap(recoverCodex32Exact(shares))
+  try {
+    const metadata = deriveRecoveryPublicMetadata(recovered.secret)
+    return Object.freeze({
+      roots: deriveValidatedRoots(recovered.secret),
+      metadata,
+    })
+  } finally {
+    recovered.secret.fill(0)
+    recovered.payloadSymbols.fill(0)
+  }
+}
+
+/**
  * Pin an independently trusted decoded descriptor before accepting shares.
  * The caller owns descriptor provenance and ceremony/account binding. This API
  * checks equality with that authority; decoding a descriptor does not authenticate it.
+ * If omitted, shares are recovered directly without descriptor pinning.
  */
 export function beginCodex32Restore(
   value: PublicRecoveryDescriptor,
-): PendingCodex32Restore {
-  const descriptor = snapshotPublicDescriptor(value)
-  const expected = descriptor.publicRecoveryFingerprint
+): PendingCodex32Restore<PublicRecoveryDescriptor>
+export function beginCodex32Restore(
+  value?: undefined,
+): PendingCodex32Restore<undefined>
+export function beginCodex32Restore(
+  value?: PublicRecoveryDescriptor,
+): PendingCodex32Restore<PublicRecoveryDescriptor | undefined>
+export function beginCodex32Restore(
+  value?: PublicRecoveryDescriptor,
+): PendingCodex32Restore<any> {
+  const descriptor =
+    value !== undefined ? snapshotPublicDescriptor(value) : undefined
+  const expected = descriptor?.publicRecoveryFingerprint
   let active = true
   return Object.freeze({
     descriptor,
@@ -231,6 +273,7 @@ export function beginCodex32Restore(
         // Master validation happens inside metadata derivation before fingerprinting.
         const metadata = deriveRecoveryPublicMetadata(recovered.secret)
         if (
+          expected !== undefined &&
           !equalBytes(metadata.descriptor.publicRecoveryFingerprint, expected)
         ) {
           active = false
@@ -344,7 +387,11 @@ function snapshotRecoveryInput(
   value: RecoverCodex32AccountInput,
 ): RecoverCodex32AccountInput {
   try {
-    return { descriptor: value.descriptor, shares: value.shares }
+    return {
+      descriptor:
+        value.descriptor !== undefined ? value.descriptor : undefined,
+      shares: value.shares,
+    }
   } catch {
     throw new AccountRecoveryError('bad-format')
   }

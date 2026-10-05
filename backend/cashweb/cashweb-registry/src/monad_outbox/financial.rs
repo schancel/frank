@@ -97,11 +97,16 @@ impl CanonicalPaymentInput {
             |duration: std::time::Duration| duration.as_millis().min(i64::MAX as u128) as i64;
         let reserved_charge =
             crate::store::monad_dm_cbor::reserved_footprint(&self.request, self.payments.len())?;
+        let phase = if self.payments.is_empty() {
+            Phase::FullyConfirmed
+        } else {
+            Phase::Pending
+        };
         Ok(Claim {
             request: self.request,
             policy: self.policy,
             members,
-            phase: Phase::Pending,
+            phase,
             obligation_id,
             created: now,
             updated: now,
@@ -130,7 +135,7 @@ pub(crate) fn validate_canonical_payment_set(
         http::monad_message_cbor::CanonicalError as Error,
         store::monad_dm_cbor::FrozenCanonicalPolicy,
     };
-    use frank_cbor::{default_context, validate_frame, TypedPayload, ValidationResult};
+    use frank_cbor::{relay_context, validate_frame, TypedPayload, ValidationResult};
     let checks = crate::monad_dm_verify::verify_canonical_stamp(
         crate::monad_dm_verify::CanonicalStampCheckInput {
             delivery: request.delivery(),
@@ -142,7 +147,7 @@ pub(crate) fn validate_canonical_payment_set(
     )
     .map_err(|_| Error::Invalid)?;
     let ValidationResult::Parsed(frame) =
-        validate_frame(request.delivery(), &default_context()).map_err(|_| Error::Invalid)?
+        validate_frame(request.delivery(), &relay_context()).map_err(|_| Error::Invalid)?
     else {
         return Err(Error::Invalid);
     };
@@ -196,12 +201,12 @@ fn canonical_signed_set(
 ) -> crate::http::monad_message_cbor::Result<Vec<DecodedSignedTransaction>> {
     use crate::http::monad_message_cbor::CanonicalError as Error;
     use frank_cbor::{
-        default_context, encode_direct_message_crypto_context, payment_commitment,
-        recipient_payload_digest, validate_frame, AccountRef, DirectMessageCryptoContext,
+        encode_direct_message_crypto_context, payment_commitment,
+        recipient_payload_digest, relay_context, validate_frame, AccountRef, DirectMessageCryptoContext,
         TypedPayload, ValidationResult,
     };
     let ValidationResult::Parsed(frame) =
-        validate_frame(request.delivery(), &default_context()).map_err(|_| Error::Invalid)?
+        validate_frame(request.delivery(), &relay_context()).map_err(|_| Error::Invalid)?
     else {
         return Err(Error::Invalid);
     };
@@ -244,7 +249,6 @@ fn canonical_signed_set(
         || recipient_payload_digest(network, &payload_frame.frame).map_err(|_| Error::Invalid)?
             != policy.payload_hash
         || payload_digest.as_slice() != policy.payload_hash
-        || payments.is_empty()
         || payments.len() > MAX_STAMP_PAYMENTS
         || payments.len() != request.transaction_count()
     {
@@ -316,7 +320,9 @@ fn canonical_signed_set(
         total = total.checked_add(signed.value_wei).ok_or(Error::Invalid)?;
         decoded.push(signed);
     }
-    if total < policy.minimum || funding.iter().any(|address| destinations.contains(address)) {
+    if (!payments.is_empty() && total < policy.minimum)
+        || funding.iter().any(|address| destinations.contains(address))
+    {
         return Err(Error::Invalid);
     }
     Ok(decoded)
@@ -464,7 +470,7 @@ pub(crate) fn verify_canonical_confirmed(
         };
         total = total.checked_add(value_wei).ok_or(Error::Invalid)?;
     }
-    if total < claim.policy.minimum {
+    if !claim.members.is_empty() && total < claim.policy.minimum {
         return Err(Error::Invalid);
     }
     Ok(confirmed_submission(

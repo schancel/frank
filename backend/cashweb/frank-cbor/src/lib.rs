@@ -89,7 +89,7 @@ pub use registration::{
     registration_from_ms, split_timestamp_ms, uncompressed_pubkey, uncompressed_pubkey_xy,
 };
 pub use validate::{
-    begin_direct_message_validation, default_context, validate_frame,
+    begin_direct_message_validation, default_context, relay_context, validate_frame,
     DirectMessageValidatedContent, DirectMessageValidationSession, Operation, PriorStatement,
     SupportedSchema, ValidationContext,
 };

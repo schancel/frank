@@ -921,13 +921,13 @@ fn financial_usage_locked(
 }
 
 fn find_request_locked(db: &rocksdb::DB, request: &ExactRequest) -> Result<Option<Claim>> {
-    use frank_cbor::{default_context, validate_frame, TypedPayload, ValidationResult};
+    use frank_cbor::{relay_context, validate_frame, TypedPayload, ValidationResult};
     let mut identity_key = b"S".to_vec();
     identity_key.extend_from_slice(&request.submission_identity());
     let indexed = db
         .get(identity_key)
         .map_err(|_| CanonicalError::Unavailable)?;
-    let ValidationResult::Parsed(frame) = validate_frame(request.delivery(), &default_context())
+    let ValidationResult::Parsed(frame) = validate_frame(request.delivery(), &relay_context())
         .map_err(|_| CanonicalError::Invalid)?
     else {
         return Err(CanonicalError::Invalid);

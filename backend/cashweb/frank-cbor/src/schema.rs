@@ -946,8 +946,21 @@ pub(crate) fn parse_draft(
     }
     match type_id {
         TYPE_DIRECT_MESSAGE => {
-            let map = fields(Some(payload), path, &[0, 1, 2, 3, 4], &[], true, allow)?;
-            let payments = as_list(map.get(4), &format!("{path}.4"), 1, MAX_PAYMENT_MEMBERS)?;
+            let (required, optional): (&[u64], &[u64]) = if schema.effective >= 2 {
+                (&[0, 1, 2, 3], &[4])
+            } else {
+                (&[0, 1, 2, 3, 4], &[])
+            };
+            let map = fields(Some(payload), path, required, optional, true, allow)?;
+            let payments = match map.get(4) {
+                Some(value) => as_list(
+                    Some(value),
+                    &format!("{path}.4"),
+                    if schema.effective >= 2 { 0 } else { 1 },
+                    MAX_PAYMENT_MEMBERS,
+                )?,
+                None => &[],
+            };
             let mut parsed = Vec::with_capacity(payments.len());
             for (i, item) in payments.iter().enumerate() {
                 parsed.push(payment_member(item, &format!("{path}.4[{i}]"))?);

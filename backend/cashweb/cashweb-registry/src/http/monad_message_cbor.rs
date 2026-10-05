@@ -288,7 +288,7 @@ fn undeliverable_response(
 fn request_principals(request: &ExactRequest, network: &str) -> Result<Principals> {
     use frank_cbor::{TypedPayload, ValidationResult};
     let ValidationResult::Parsed(frame) =
-        frank_cbor::validate_frame(request.delivery(), &frank_cbor::default_context())
+        frank_cbor::validate_frame(request.delivery(), &frank_cbor::relay_context())
             .map_err(|_| CanonicalError::Invalid)?
     else {
         return Err(CanonicalError::Invalid);
@@ -604,7 +604,7 @@ fn length(bytes: &[u8], position: &mut usize, major: u8) -> Result<usize> {
 fn transaction_ranges(bytes: &[u8], offset: usize) -> Result<Vec<Range<usize>>> {
     let mut position = 0;
     let count = length(bytes, &mut position, 4)?;
-    if !(1..=64).contains(&count) {
+    if count > 64 {
         return Err(CanonicalError::TooLarge);
     }
     let mut ranges = Vec::with_capacity(count);

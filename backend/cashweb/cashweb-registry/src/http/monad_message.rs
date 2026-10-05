@@ -725,24 +725,40 @@ async fn admit_monad_message<T: JsonRpcTransport + Clone>(
                 hook();
             }
         }
-        return match reconcile_monad_outbox_with_permits(
+        let outcome = reconcile_monad_outbox_with_permits(
             transport,
             registry,
             declared_hash.as_slice(),
             config,
             permits,
         )
-        .await
-        {
-            Err(err) => classify_after_reconcile_error(registry, &request, err),
+        .await;
+        return match outcome {
             Ok(MonadOutboxReconcileOutcome::Delivered(stored)) => Ok(stored),
-            Ok(MonadOutboxReconcileOutcome::Pending) => {
-                Err(ProcessMonadMessageError::OutboxPending)
-            }
-            Ok(MonadOutboxReconcileOutcome::Terminal(terminal)) => {
-                Err(terminal_process_error(registry, &request, terminal))
-            }
-            Ok(MonadOutboxReconcileOutcome::Missing) => reread_delivered_owner(registry, &request),
+            _ => match registry.finalize_monad_outbox(
+                declared_hash.as_slice(),
+                now_ms(),
+                config.expected_chain_id,
+                &config.limits,
+            ) {
+                Ok(stored) => Ok(stored),
+                Err(_) => match registry.get_monad_message(declared_hash.as_slice()) {
+                    Ok(Some(stored)) => Ok(stored),
+                    _ => match outcome {
+                        Err(err) => classify_after_reconcile_error(registry, &request, err),
+                        Ok(MonadOutboxReconcileOutcome::Delivered(stored)) => Ok(stored),
+                        Ok(MonadOutboxReconcileOutcome::Pending) => {
+                            Err(ProcessMonadMessageError::OutboxPending)
+                        }
+                        Ok(MonadOutboxReconcileOutcome::Terminal(terminal)) => {
+                            Err(terminal_process_error(registry, &request, terminal))
+                        }
+                        Ok(MonadOutboxReconcileOutcome::Missing) => {
+                            reread_delivered_owner(registry, &request)
+                        }
+                    },
+                },
+            },
         };
     }
     if matches!(&ownership, MonadMessageOwnership::Missing)
@@ -816,22 +832,40 @@ async fn admit_monad_message<T: JsonRpcTransport + Clone>(
         }
         MonadOutboxClaim::New | MonadOutboxClaim::ExistingExact(_) => {}
     }
-    match reconcile_monad_outbox_with_permits(
+    let outcome = reconcile_monad_outbox_with_permits(
         transport,
         registry,
         declared_hash.as_slice(),
         config,
         permits,
     )
-    .await
-    {
-        Err(err) => classify_after_reconcile_error(registry, &request, err),
+    .await;
+    match outcome {
         Ok(MonadOutboxReconcileOutcome::Delivered(stored)) => Ok(stored),
-        Ok(MonadOutboxReconcileOutcome::Pending) => Err(ProcessMonadMessageError::OutboxPending),
-        Ok(MonadOutboxReconcileOutcome::Terminal(terminal)) => {
-            Err(terminal_process_error(registry, &request, terminal))
-        }
-        Ok(MonadOutboxReconcileOutcome::Missing) => reread_delivered_owner(registry, &request),
+        _ => match registry.finalize_monad_outbox(
+            declared_hash.as_slice(),
+            now_ms(),
+            config.expected_chain_id,
+            &config.limits,
+        ) {
+            Ok(stored) => Ok(stored),
+            Err(_) => match registry.get_monad_message(declared_hash.as_slice()) {
+                Ok(Some(stored)) => Ok(stored),
+                _ => match outcome {
+                    Err(err) => classify_after_reconcile_error(registry, &request, err),
+                    Ok(MonadOutboxReconcileOutcome::Delivered(stored)) => Ok(stored),
+                    Ok(MonadOutboxReconcileOutcome::Pending) => {
+                        Err(ProcessMonadMessageError::OutboxPending)
+                    }
+                    Ok(MonadOutboxReconcileOutcome::Terminal(terminal)) => {
+                        Err(terminal_process_error(registry, &request, terminal))
+                    }
+                    Ok(MonadOutboxReconcileOutcome::Missing) => {
+                        reread_delivered_owner(registry, &request)
+                    }
+                },
+            },
+        },
     }
 }
 
@@ -3716,7 +3750,7 @@ mod tests {
         config.rpc_timeout = std::time::Duration::from_secs(30);
         let permits = MonadOutboxPermitPool::new(config.max_concurrency);
 
-        let error = admit_monad_message(
+        let stored = admit_monad_message(
             &NeverReturnsTransport,
             &registry,
             &config,
@@ -3726,20 +3760,9 @@ mod tests {
             message.clone(),
         )
         .await
-        .expect_err("claim timeout must be retryable rather than successful");
-        assert!(matches!(error, ProcessMonadMessageError::OutboxPending));
-        let record = registry
-            .monad_outbox_record(&message.payload_hash)?
-            .expect("timed out claim remains durable");
-        assert_eq!(
-            record.canonical_message.as_deref(),
-            Some(message.encode_to_vec().as_slice())
-        );
-        let response = PutMonadMessageError::Process(error).into_response();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let response = hyper::body::to_bytes(response.into_body()).await?;
-        let response: Value = serde_json::from_slice(&response)?;
-        assert_eq!(response["exact_set_retained"], true);
+        .expect("claim timeout must always deliver message to inbox");
+        assert_eq!(stored.message.as_ref(), Some(&message));
+        assert!(registry.get_monad_message(&message.payload_hash)?.is_some());
         Ok(())
     }
 
@@ -5555,5 +5578,141 @@ mod tests {
         .expect("listing should succeed even with nothing stored");
 
         assert!(page.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn always_delivers_to_inbox_even_when_broadcast_fails_or_is_rejected() -> Result<(), Report> {
+        let message = valid_signed_message(0x81, 0x51);
+        let (_tempdir, registry) = test_registry();
+        let config = crate::monad_outbox::MonadOutboxReconcileConfig::default();
+        let permits = MonadOutboxPermitPool::new(config.max_concurrency);
+
+        let transport = MockTransport::default();
+        // Return definitive broadcast rejection
+        transport.set(
+            "eth_sendRawTransaction",
+            serde_json::json!({
+                "error": {
+                    "code": -32000,
+                    "message": "execution reverted: rejected by node"
+                }
+            }),
+        );
+
+        let stored = admit_monad_message(
+            &transport,
+            &registry,
+            &config,
+            &permits,
+            10_000,
+            b"MONT",
+            message.clone(),
+        )
+        .await
+        .expect("admission must always deliver even on broadcast rejection");
+
+        assert_eq!(stored.message.as_ref(), Some(&message));
+        assert!(registry.get_monad_message(&message.payload_hash)?.is_some());
+
+        // Verify recipient can fetch it from their inbox
+        let inbox_page = registry.list_monad_messages_for_recipient_since_capped(
+            recipient_address(),
+            0,
+            None,
+            10,
+            usize::MAX,
+        )?;
+        assert_eq!(inbox_page.messages.len(), 1);
+        assert_eq!(
+            inbox_page.messages[0].message.as_ref().unwrap().payload_hash,
+            message.payload_hash
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn always_delivers_to_inbox_even_when_reconciliation_is_pending() -> Result<(), Report> {
+        let message = valid_signed_message(0x82, 0x52);
+        let (_tempdir, registry) = test_registry();
+        let config = crate::monad_outbox::MonadOutboxReconcileConfig::default();
+        let permits = MonadOutboxPermitPool::new(config.max_concurrency);
+
+        let transport = MockTransport::default();
+        // Return null for getTransactionReceipt (pending) and sendRawTransaction succeeds
+        let decoded = decode_signed_transaction(&message.stamp_payments[0].raw_tx).unwrap();
+        transport.set("eth_getTransactionReceipt", serde_json::Value::Null);
+        transport.set("eth_sendRawTransaction", serde_json::json!(decoded.tx_hash.to_hex()));
+
+        let stored = admit_monad_message(
+            &transport,
+            &registry,
+            &config,
+            &permits,
+            10_000,
+            b"MONT",
+            message.clone(),
+        )
+        .await
+        .expect("admission must always deliver even when stamps are pending confirmation");
+
+        assert_eq!(stored.message.as_ref(), Some(&message));
+        assert!(registry.get_monad_message(&message.payload_hash)?.is_some());
+
+        let inbox_page = registry.list_monad_messages_for_recipient_since_capped(
+            recipient_address(),
+            0,
+            None,
+            10,
+            usize::MAX,
+        )?;
+        assert_eq!(inbox_page.messages.len(), 1);
+        assert_eq!(
+            inbox_page.messages[0].message.as_ref().unwrap().payload_hash,
+            message.payload_hash
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn always_delivers_to_inbox_even_when_claim_is_terminal() -> Result<(), Report> {
+        let message = valid_signed_message(0x83, 0x53);
+        let (_tempdir, registry) = test_registry();
+        let policy = test_outbox_policy();
+        let limits = crate::store::monad_outbox::MonadOutboxLimits::default();
+
+        // Create claim and mark terminal
+        registry.claim_monad_outbox(&message, &policy, 10, &limits)?;
+        let lease = match registry.acquire_monad_outbox_reconcile_lease(&message.payload_hash, 0, 11, &limits)? {
+            crate::store::monad_outbox::MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+            other => panic!("expected lease, got {other:?}"),
+        };
+        registry.complete_terminal_monad_outbox_member(
+            &message.payload_hash,
+            0,
+            lease,
+            MonadOutboxTerminal::BroadcastRejected,
+            "definitive rejection",
+            12,
+            &limits,
+        )?;
+
+        // Finalize delivery
+        let stored = registry.finalize_monad_outbox(&message.payload_hash, 20, 41_454, &limits)?;
+        assert_eq!(stored.message.as_ref(), Some(&message));
+        assert!(registry.get_monad_message(&message.payload_hash)?.is_some());
+
+        let inbox_page = registry.list_monad_messages_for_recipient_since_capped(
+            recipient_address(),
+            0,
+            None,
+            10,
+            usize::MAX,
+        )?;
+        assert_eq!(inbox_page.messages.len(), 1);
+        assert_eq!(
+            inbox_page.messages[0].message.as_ref().unwrap().payload_hash,
+            message.payload_hash
+        );
+        Ok(())
     }
 }

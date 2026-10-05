@@ -29,10 +29,15 @@ const mockProfileStore = {
 }
 const mockRefreshDiscoveredTopics = jest.fn()
 const mockRouterPush = jest.fn()
+const mockRouterReplace = jest.fn()
 
 jest.mock('vue-router', () => ({
   useRoute: () => mockRoute,
-  useRouter: () => ({ push: mockRouterPush }),
+  useRouter: () => ({
+    push: mockRouterPush,
+    replace: mockRouterReplace,
+    currentRoute: { value: mockRoute },
+  }),
 }))
 jest.mock('src/stores/chats', () => ({
   useChatStore: () => ({ totalUnread: 0, getSortedChatOrder: [] }),
@@ -97,12 +102,13 @@ function mountDrawer(setup = true, relayConnected?: boolean) {
         QTab: QTabStub,
         QTooltip: true,
         QBadge: true,
-        QScrollArea: true,
+        QScrollArea: { template: '<div><slot /></div>' },
+        QSpace: true,
         QList: { template: '<div><slot /></div>' },
         QItem: { template: '<div><slot /></div>' },
         QItemLabel: { template: '<span v-bind="$attrs"><slot /></span>' },
         QItemSection: { template: '<div><slot /></div>' },
-        QBtn: { template: '<button data-testid="relay-reconnect" />' },
+        QBtn: { template: '<button v-bind="$attrs"><slot /></button>' },
         QSeparator: true,
       },
     },
@@ -239,6 +245,21 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
       mountDrawer(true, true)
 
       expect(mockRefreshDiscoveredTopics).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('forum header consistency', () => {
+    it('renders standard header with title and new post button', async () => {
+      mockRouterPush.mockReset()
+      const wrapper = mountDrawer()
+      const forumPanel = wrapper.get('#rail-panel-forum')
+      expect(forumPanel.text()).toContain('leftDrawer.forum')
+
+      const newPostBtn = forumPanel.find('button[aria-label="a11y.newPost"]')
+      expect(newPostBtn.exists()).toBe(true)
+
+      await newPostBtn.trigger('click')
+      expect(mockRouterPush).toHaveBeenCalledWith('/new-post')
     })
   })
 })

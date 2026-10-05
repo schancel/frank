@@ -2,7 +2,13 @@
   <div class="full-width column col" data-test="wallet-panel">
     <q-scroll-area class="col">
       <q-list>
-        <q-item-label header>{{ $t('walletPanel.title') }}</q-item-label>
+        <q-separator />
+        <q-item>
+          <q-item-section>
+            <q-item-label>{{ $t('walletPanel.title') }}</q-item-label>
+          </q-item-section>
+        </q-item>
+        <q-separator />
 
         <!-- Monad Main Wallet -->
         <q-item

@@ -9,7 +9,7 @@
         <q-separator />
         <q-item>
           <q-item-section>
-            <q-item-label class="text-weight-bold">{{
+            <q-item-label>{{
               $t('contactBookDialog.contacts')
             }}</q-item-label>
           </q-item-section>
@@ -17,7 +17,7 @@
           <q-btn
             dense
             flat
-            icon="person_add"
+            icon="add"
             :aria-label="$t('a11y.addContact')"
             data-test="panel-add-contact"
             @click="openAddContact"

@@ -145,6 +145,20 @@
         <q-scroll-area class="q-px-none col">
           <q-list v-bind="$attrs">
             <q-separator />
+            <q-item>
+              <q-item-section>
+                <q-item-label>{{ $t('leftDrawer.forum') }}</q-item-label>
+              </q-item-section>
+              <q-space />
+              <q-btn
+                dense
+                flat
+                icon="add"
+                :aria-label="$t('a11y.newPost')"
+                @click="openNewPost"
+              />
+            </q-item>
+            <q-separator />
             <q-item
               v-for="name in discoveredTopicNames"
               :key="name"
@@ -194,6 +208,7 @@
             @click="relayConnectOpen = true"
           >
             <q-btn
+              data-testid="relay-reconnect"
               icon="email"
               flat
               round
@@ -254,6 +269,9 @@ export default defineComponent({
       markRailNavigation()
       maybeRefreshTopics()
       return router.push('/forum')
+    }
+    function openNewPost() {
+      openPage(router, '/new-post')
     }
     function openActiveOrRecentChat() {
       const address =
@@ -377,6 +395,7 @@ export default defineComponent({
       tab,
       openActiveOrRecentChat,
       openForumTab,
+      openNewPost,
       discoveredTopicNames,
       selectedForumTopic,
       browseForumTopic,

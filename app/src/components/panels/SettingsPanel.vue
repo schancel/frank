@@ -7,6 +7,14 @@
     tabindex="-1"
     data-test="settings-panel"
   >
+    <q-separator />
+    <q-item>
+      <q-item-section>
+        <q-item-label>{{ $t('leftDrawer.settings') }}</q-item-label>
+      </q-item-section>
+    </q-item>
+    <q-separator />
+
     <contact-card
       :address="myAddress"
       :name="profile.name"

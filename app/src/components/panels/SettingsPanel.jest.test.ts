@@ -41,6 +41,7 @@ describe('SettingsPanel wallet-action split (#399)', () => {
           QScrollArea: { template: '<div><slot /></div>' },
           QList: { template: '<div><slot /></div>' },
           QItem: { template: '<button><slot /></button>' },
+          QItemLabel: { template: '<span><slot /></span>' },
           QIcon: true,
           QItemSection: { template: '<div><slot /></div>' },
           QSeparator: true,
@@ -79,6 +80,12 @@ describe('SettingsPanel wallet-action split (#399)', () => {
     expect(action).toBeDefined()
     await action!.trigger('click')
     expect(router.push).toHaveBeenCalledWith('/wipe-wallet')
+    wrapper.unmount()
+  })
+
+  it('renders standard 50px settings header', () => {
+    const { wrapper } = mountPanel()
+    expect(wrapper.text()).toContain('leftDrawer.settings')
     wrapper.unmount()
   })
 })

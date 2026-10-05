@@ -21,13 +21,12 @@ describe('ngrok launcher helper', () => {
   })
 
   describe('renderDemoNgrokYaml', () => {
-    it('generates valid v3 YAML with relay and app ports', () => {
+    it('generates v3 YAML with app tunnel by default for single-domain setups', () => {
       const yaml = renderDemoNgrokYaml({ relayPort: 8098, appPort: 8080 })
       expect(yaml).toContain('version: "3"')
-      expect(yaml).toContain('relay:')
-      expect(yaml).toContain('addr: 8098')
       expect(yaml).toContain('app:')
       expect(yaml).toContain('addr: 8080')
+      expect(yaml).not.toContain('relay:')
       expect(yaml).not.toContain('authtoken:')
       expect(yaml).not.toContain('domain:')
     })
@@ -42,15 +41,39 @@ describe('ngrok launcher helper', () => {
       expect(yaml).toContain('authtoken: test-token-123')
     })
 
-    it('includes custom domains when provided', () => {
+    it('includes both tunnels when distinct custom domains are provided', () => {
       const yaml = renderDemoNgrokYaml({
         relayPort: 8098,
         appPort: 8080,
         relayDomain: 'relay.example.ngrok.app',
         appDomain: 'app.example.ngrok.app',
       })
-      expect(yaml).toContain('domain: relay.example.ngrok.app')
+      expect(yaml).toContain('app:')
       expect(yaml).toContain('domain: app.example.ngrok.app')
+      expect(yaml).toContain('relay:')
+      expect(yaml).toContain('domain: relay.example.ngrok.app')
+    })
+
+    it('includes both tunnels when explicitly requested', () => {
+      const yaml = renderDemoNgrokYaml({
+        relayPort: 8098,
+        appPort: 8080,
+        includeRelay: true,
+        includeApp: true,
+      })
+      expect(yaml).toContain('app:')
+      expect(yaml).toContain('relay:')
+    })
+
+    it('generates relay-only tunnel when includeApp is false', () => {
+      const yaml = renderDemoNgrokYaml({
+        relayPort: 8098,
+        appPort: 8080,
+        includeApp: false,
+      })
+      expect(yaml).not.toContain('app:')
+      expect(yaml).toContain('relay:')
+      expect(yaml).toContain('addr: 8098')
     })
   })
 

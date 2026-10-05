@@ -225,6 +225,20 @@ const WIN = seedFor(state => state.outcome === 'player_win')
 const LOSS = seedFor(state => state.outcome === 'dealer_win')
 const NATURAL = seedFor((_state, cards) => handValue(cards).blackjack)
 
+function seedForMoves(moves: ('hit' | 'stand' | 'double')[]): string {
+  for (let i = 1; i < 5000; i++) {
+    const seed = i.toString(16).padStart(64, '0')
+    try {
+      const final = stateOf(hand(true, seed, 400n, moves, 'reveal'))
+      if (final && (final as HandState).phase === 'resolved') return seed
+    } catch {
+      continue
+    }
+  }
+  throw new Error('no seed for moves')
+}
+const HIT_SEED = seedForMoves(['hit', 'stand'])
+
 async function mountLast(
   messages: ReturnType<typeof toMessage>[],
   index = messages.length - 1,
@@ -680,8 +694,8 @@ describe('older bubbles', () => {
   })
 
   it('an older hit/card bubble permanently shows the card dealt', async () => {
-    saveSeed(ME, PEER, GAME, WIN)
-    const messages = hand(true, WIN, 400n, ['hit', 'stand'], 'reveal')
+    saveSeed(ME, PEER, GAME, HIT_SEED)
+    const messages = hand(true, HIT_SEED, 400n, ['hit', 'stand'], 'reveal')
     const cardIndex = messages.findIndex(m => m.items[0].action === 'card')
     expect(cardIndex).toBeGreaterThan(-1)
     const wrapper = await mountLast(messages, cardIndex)

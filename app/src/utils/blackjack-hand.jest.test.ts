@@ -5,6 +5,7 @@ import {
   dealerStep,
   foldHand,
   handView,
+  playerStep,
   type HandItem,
 } from '@frank/wallet/message-item-plugins/blackjack/hand'
 import type { MessageItem } from '@frank/cashweb/types/messages'
@@ -836,11 +837,22 @@ describe('own hand messages the other side does not have', () => {
           ),
           message(false, { action: 'bet' }, 300n, game),
         ]
+        let iterations = 0
         for (;;) {
+          if (++iterations > 20) break
           const state = chatHands(rows, ME, PEER)[0].state
           const step = dealerStep(state, s)
           if (!step && state.phase === 'player_turn') {
-            rows.push(message(false, { action: 'stand' }, 10n, game))
+            const stand = playerStep(state, 'stand', PLAYER_SEED)
+            if (!stand) break
+            rows.push(
+              message(
+                false,
+                stand as unknown as Record<string, unknown>,
+                10n,
+                game,
+              ),
+            )
             continue
           }
           if (!step) break

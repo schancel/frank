@@ -18,14 +18,22 @@ RUN apt-get update \
 WORKDIR /build
 COPY package.json yarn.lock ./
 COPY app/package.json app/package.json
-COPY packages/cashweb/package.json packages/cashweb/package.json
-COPY packages/wallet/package.json packages/wallet/package.json
-COPY packages/bot/package.json packages/bot/package.json
-COPY packages/bn.js/package.json packages/bn.js/package.json
+COPY packages/account-recovery/package.json packages/account-recovery/package.json
+COPY packages/account-vault/package.json packages/account-vault/package.json
+COPY packages/adaptor-signatures/package.json packages/adaptor-signatures/package.json
 COPY packages/bitcore-lib-xpi/package.json packages/bitcore-lib-xpi/package.json
+COPY packages/bn.js/package.json packages/bn.js/package.json
+COPY packages/bot/package.json packages/bot/package.json
+COPY packages/cashweb/package.json packages/cashweb/package.json
+COPY packages/codex32/package.json packages/codex32/package.json
 COPY packages/crypto-box/package.json packages/crypto-box/package.json
+COPY packages/directory-admission/package.json packages/directory-admission/package.json
+COPY packages/domain-roots/package.json packages/domain-roots/package.json
 COPY packages/frank-codec/package.json packages/frank-codec/package.json
 COPY packages/nakamoto/package.json packages/nakamoto/package.json
+COPY packages/role-keys/package.json packages/role-keys/package.json
+COPY packages/swap-protocol/package.json packages/swap-protocol/package.json
+COPY packages/wallet/package.json packages/wallet/package.json
 RUN yarn install --frozen-lockfile
 
 COPY . .

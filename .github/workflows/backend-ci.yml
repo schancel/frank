@@ -46,6 +46,14 @@ jobs:
     env:
       CC: gcc-12
       CXX: g++-12
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
 
     steps:
     - uses: actions/checkout@v4
@@ -139,6 +147,9 @@ jobs:
         cp ./build/flatc ../bin/
       shell: bash
 
+    - name: Set up sccache
+      uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
     - name: Set-up Rust toolchain
       # actions-rs/toolchain is unmaintained (org archived, runs on the deprecated node12
       # runtime); dtolnay/rust-toolchain is the actively-maintained drop-in replacement.
@@ -147,32 +158,38 @@ jobs:
         toolchain: stable
         components: rustfmt, clippy
 
-    - name: Get Rust version for cache
-      id: rust-version
-      run: |
-        echo "::set-output name=rust_version::$(rustc --version)"
-      shell: bash
+    - name: Restore compatible Cargo dependencies and build artifacts
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      continue-on-error: true
+      with:
+        cache-provider: github
+        shared-key: frank-backend-cargo-v1-${{ runner.os }}-${{ runner.arch }}-rust-stable-${{ hashFiles('backend/**/Cargo.lock', 'backend/**/Cargo.toml') }}
+        workspaces: |
+          backend/bitcoinsuite -> ../../target
+          backend/cashweb -> ../../target
+        cache-targets: true
+        cache-bin: false
+        cache-workspace-crates: false
+        cache-all-crates: false
+        cache-on-failure: false
+        save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
-    - name: Cache Rust dependencies
+    - name: Cache cargo-make binary
+      id: cargo-make-cache
       uses: actions/cache@v4
       with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          ./target
-        key: ${{ runner.os }}-cargodeps-${{steps.rust-version.outputs.rust_version}}-${{ hashFiles('backend/bitcoinsuite/Cargo.lock') }}-${{ hashFiles('backend/cashweb/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargodeps-${{steps.rust-version.outputs.rust_version}}-${{ hashFiles('backend/bitcoinsuite/Cargo.lock') }}-
-          ${{ runner.os }}-cargodeps-${{steps.rust-version.outputs.rust_version}}-
-          ${{ runner.os }}-cargodeps-
+        path: ~/.cargo/bin/cargo-make
+        key: ${{ runner.os }}-cargo-make
 
-    - name: Install cargo-make
+    - name: Install cargo-make on cache miss
+      if: steps.cargo-make-cache.outputs.cache-hit != 'true'
       # Was previously built from a pinned git checkout (sagiegurari/cargo-make @ 0.35.10), which
       # no longer compiles: its own source hits a hard-denied lint (`unused_mut`) that used to be
       # a warning under an older rustc. Installing from crates.io instead resolves a modern,
       # toolchain-compatible version automatically rather than needing this pin bumped by hand
       # every time the runner's Rust toolchain moves forward.
-      run: cargo install cargo-make
+      run: |
+        which cargo-make || cargo install cargo-make
       shell: bash
 
     - name: Make bitcoinsuite nng

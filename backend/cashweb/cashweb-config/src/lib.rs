@@ -1669,6 +1669,18 @@ continuity_file = "/var/lib/frank/continuity"
                 "{name}"
             );
             conf.registry.evm_rpc.validate().unwrap();
+            assert!(conf.registry.bitcoin_proxy.enabled, "{name}");
+            assert_eq!(conf.registry.bitcoin_proxy.chains.len(), 1, "{name}");
+            assert_eq!(
+                conf.registry.bitcoin_proxy.chains[0].id, "xec-testnet",
+                "{name}"
+            );
+            assert_eq!(
+                conf.registry.bitcoin_proxy.chains[0].chronik_upstream_env.as_deref(),
+                Some("XEC_TESTNET_CHRONIK_URL"),
+                "{name}"
+            );
+            conf.registry.bitcoin_proxy.validate().unwrap();
             assert_eq!(
                 conf.registry.validate_rpc_resource_limits(),
                 Ok(()),

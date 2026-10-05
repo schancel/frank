@@ -904,6 +904,51 @@ async fn actual_http_canonical_public_admission_p_authenticated_inbox_and_nonce_
     assert!(bytes.ends_with(format!("--{boundary}--\r\n").as_bytes()));
     assert!(find(&bytes, request.delivery()).is_some());
     assert!(find(&bytes, request.context()).is_some());
+
+    // Verify both-direction mailbox HTTP endpoint for recipient:
+    let mailbox_binding = MailboxRequestBinding {
+        resource: MailboxResource::Mailbox,
+        recipient: Address::from_hex(recipient).unwrap(),
+        since: 0,
+        cursor: None,
+        limit: 50,
+        max_bytes: MAX_REQUEST_BYTES,
+        recovery_payload_hash: None,
+        recovery_obligation_id: None,
+    };
+    let mailbox_headers = private_headers(&client, &url, fixture.root.path(), point, &mailbox_binding).await;
+    let mailbox_resp = client
+        .get(format!("{url}/message/monad/cbor/mailbox/{recipient}?since=0&limit=50&max_bytes=8388608"))
+        .headers(mailbox_headers)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(mailbox_resp.status(), StatusCode::OK);
+    let mailbox_bytes = mailbox_resp.bytes().await.unwrap();
+    assert!(find(&mailbox_bytes, b"X-Frank-Mailbox-Direction: in").is_some());
+    assert!(find(&mailbox_bytes, request.delivery()).is_some());
+
+    // Verify both-direction mailbox store rows for sender (O) and recipient (I):
+    let sender_account = &fixture.accounts[0];
+    let sender = crate::monad_stamp_stealth::recipient_address_from_public_key(
+        &hex::decode(&sender_account.subject).unwrap(),
+    )
+    .unwrap();
+    let sender_mailbox = fixture
+        .registry
+        .canonical_dm()
+        .mailbox(sender, 0, None, 10)
+        .unwrap();
+    assert_eq!(sender_mailbox.len(), 1);
+    assert_eq!(sender_mailbox[0].1, crate::store::monad_dm_cbor::MailboxDirection::Out);
+    let recipient_mailbox = fixture
+        .registry
+        .canonical_dm()
+        .mailbox(Address::from_hex(recipient).unwrap(), 0, None, 10)
+        .unwrap();
+    assert_eq!(recipient_mailbox.len(), 1);
+    assert_eq!(recipient_mailbox[0].1, crate::store::monad_dm_cbor::MailboxDirection::In);
+
     assert_eq!(
         signed().send().await.unwrap().status(),
         StatusCode::UNAUTHORIZED
@@ -964,6 +1009,8 @@ async fn private_headers(
         MailboxResource::Inbox => "inbox",
         MailboxResource::Recovery => "recovery",
         MailboxResource::RecoveryAck => "recovery_ack",
+        MailboxResource::Mailbox => "mailbox",
+        MailboxResource::MailboxStream => "mailbox_ws",
     };
     let mut query = format!(
         "resource={resource}&since={}&limit={}&max_bytes={}",

@@ -49,6 +49,11 @@ pub(crate) enum MailboxResource {
     Recovery,
     /// Recipient acknowledgement of one exact terminal recovery obligation.
     RecoveryAck,
+    /// Both-direction canonical mailbox (sent and received) ordered by
+    /// `(timestamp, payload_hash)`.
+    Mailbox,
+    /// Authenticated websocket push of newly delivered both-direction mailbox records.
+    MailboxStream,
 }
 
 impl MailboxResource {
@@ -57,6 +62,8 @@ impl MailboxResource {
             Self::Inbox => 1,
             Self::Recovery => 2,
             Self::RecoveryAck => 3,
+            Self::Mailbox => 4,
+            Self::MailboxStream => 5,
         }
     }
 }
@@ -76,6 +83,14 @@ pub(crate) enum MailboxCursor {
         /// Exact outbox payload hash.
         payload_hash: [u8; 32],
     },
+    /// Composite both-direction mailbox ordering key. A payload hash appears at most once per
+    /// mailbox address, so `(timestamp, payload_hash)` is a unique position across directions.
+    Mailbox {
+        /// Stored mailbox commit time.
+        timestamp: i64,
+        /// Tie-breaker within one timestamp.
+        payload_hash: [u8; 32],
+    },
 }
 
 impl MailboxCursor {
@@ -83,12 +98,17 @@ impl MailboxCursor {
         match self {
             Self::Inbox { .. } => MailboxResource::Inbox,
             Self::Recovery { .. } => MailboxResource::Recovery,
+            Self::Mailbox { .. } => MailboxResource::Mailbox,
         }
     }
 
     fn append_position(self, bytes: &mut Vec<u8>) {
         match self {
             Self::Inbox {
+                timestamp,
+                payload_hash,
+            }
+            | Self::Mailbox {
                 timestamp,
                 payload_hash,
             } => {
@@ -128,6 +148,8 @@ impl MailboxRequestBinding {
             MailboxResource::Inbox => (b"GET", b"inbox/"),
             MailboxResource::Recovery => (b"GET", b"recovery/"),
             MailboxResource::RecoveryAck => (b"POST", b"recovery-ack/"),
+            MailboxResource::Mailbox => (b"GET", b"mailbox/"),
+            MailboxResource::MailboxStream => (b"GET", b"mailbox-ws/"),
         };
         bytes.extend_from_slice(method);
         bytes.extend_from_slice(b"\0/message/monad/");
@@ -280,16 +302,16 @@ impl MailboxAuthState {
         encoded: &str,
     ) -> Option<MailboxCursor> {
         let position_len = match resource {
-            MailboxResource::Inbox => 8 + 32,
+            MailboxResource::Inbox | MailboxResource::Mailbox => 8 + 32,
             MailboxResource::Recovery => 32,
-            MailboxResource::RecoveryAck => return None,
+            MailboxResource::RecoveryAck | MailboxResource::MailboxStream => return None,
         };
         let unsigned_len = 2 + 20 + position_len;
         let decoded_len = unsigned_len + 32;
         if encoded.len() != decoded_len * 2 {
             return None;
         }
-        // The longest cursor is the inbox form: version/resource + recipient + timestamp/hash
+        // The longest cursor is the inbox/mailbox form: version/resource + recipient + timestamp/hash
         // position + MAC. Validate encoded length before touching a decoder so attacker-sized
         // query strings never drive proportional heap allocation.
         let mut decoded = [0u8; 94];
@@ -310,8 +332,12 @@ impl MailboxAuthState {
                 timestamp: i64::from_be_bytes(bytes[22..30].try_into().ok()?),
                 payload_hash,
             },
+            MailboxResource::Mailbox => MailboxCursor::Mailbox {
+                timestamp: i64::from_be_bytes(bytes[22..30].try_into().ok()?),
+                payload_hash,
+            },
             MailboxResource::Recovery => MailboxCursor::Recovery { payload_hash },
-            MailboxResource::RecoveryAck => return None,
+            MailboxResource::RecoveryAck | MailboxResource::MailboxStream => return None,
         })
     }
 }
@@ -628,6 +654,13 @@ mod tests {
                 MailboxResource::Recovery,
                 MailboxCursor::Recovery {
                     payload_hash: [8; 32],
+                },
+            ),
+            (
+                MailboxResource::Mailbox,
+                MailboxCursor::Mailbox {
+                    timestamp: 11,
+                    payload_hash: [9; 32],
                 },
             ),
         ] {

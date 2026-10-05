@@ -702,25 +702,33 @@ fn private_binding(
     };
     let since = query.since.unwrap_or(0);
     if !(0..=9_007_199_254_740_991).contains(&since)
-        || (resource != MailboxResource::Inbox && since != 0)
+        || (resource != MailboxResource::Inbox && resource != MailboxResource::Mailbox && since != 0)
     {
         return Err(CanonicalError::Invalid);
     }
     let ack = resource == MailboxResource::RecoveryAck;
     let limit = query.limit.unwrap_or(match resource {
-        MailboxResource::Inbox => 50,
+        MailboxResource::Inbox | MailboxResource::Mailbox => 50,
         MailboxResource::Recovery => 20,
         MailboxResource::RecoveryAck => 1,
+        MailboxResource::MailboxStream => 1,
     });
     let max_bytes = query
         .max_bytes
-        .unwrap_or(if ack { 0 } else { MAX_REQUEST_BYTES });
+        .unwrap_or(if ack || resource == MailboxResource::MailboxStream { 0 } else { MAX_REQUEST_BYTES });
     if limit == 0
         || limit > 100
         || (ack && (limit != 1 || max_bytes != 0 || query.cursor.is_some()))
         || (!ack
+            && resource != MailboxResource::MailboxStream
             && (max_bytes == 0
                 || max_bytes > MAX_REQUEST_BYTES
+                || query.recovery_payload_hash.is_some()
+                || query.recovery_obligation_id.is_some()))
+        || (resource == MailboxResource::MailboxStream
+            && (limit != 1
+                || max_bytes != 0
+                || query.cursor.is_some()
                 || query.recovery_payload_hash.is_some()
                 || query.recovery_obligation_id.is_some()))
     {
@@ -930,6 +938,8 @@ pub(crate) async fn handle_challenge(
         Some("inbox") => MailboxResource::Inbox,
         Some("recovery") => MailboxResource::Recovery,
         Some("recovery_ack") => MailboxResource::RecoveryAck,
+        Some("mailbox") => MailboxResource::Mailbox,
+        Some("mailbox_ws") | Some("mailbox_stream") | Some("mailbox-ws") => MailboxResource::MailboxStream,
         _ => return Err(CanonicalError::Invalid),
     };
     let binding = private_binding(runtime, recipient, resource, &query)?;
@@ -975,6 +985,7 @@ fn record_bytes(
     claim: &crate::store::monad_dm_cbor::Claim,
     outer: &str,
     recovery: bool,
+    direction: Option<&str>,
 ) -> Result<Vec<u8>> {
     use crate::{store::monad_dm_cbor::Phase, store::monad_outbox::MonadOutboxMemberState};
     let lifecycle = match claim.phase {
@@ -1022,7 +1033,11 @@ fn record_bytes(
     if !(0..=9_007_199_254_740_991).contains(&timestamp) {
         return Err(CanonicalError::Unavailable);
     }
-    let headers = format!("--{outer}\r\nContent-Disposition: inline; name=\"record\"\r\nContent-Type: multipart/mixed; boundary={boundary}\r\nX-Frank-Submission-Identity: {}\r\nX-Frank-Mailbox-Timestamp-Ms: {timestamp}\r\n\r\n", hex::encode(claim.request.submission_identity()));
+    let direction_header = match direction {
+        Some(dir) => format!("X-Frank-Mailbox-Direction: {dir}\r\n"),
+        None => String::new(),
+    };
+    let headers = format!("--{outer}\r\nContent-Disposition: inline; name=\"record\"\r\nContent-Type: multipart/mixed; boundary={boundary}\r\nX-Frank-Submission-Identity: {}\r\nX-Frank-Mailbox-Timestamp-Ms: {timestamp}\r\n{direction_header}\r\n", hex::encode(claim.request.submission_identity()));
     let mut length = headers.len();
     let mut inner_headers = Vec::new();
     for (name, media, bytes) in &parts {
@@ -1056,7 +1071,7 @@ async fn page(
     headers: &HeaderMap,
     recipient: Address,
     query: &PrivateQuery,
-    recovery: bool,
+    resource: crate::monad_mailbox::MailboxResource,
 ) -> Result<Response> {
     use crate::monad_mailbox::{MailboxCursor, MailboxNamespace, MailboxResource};
     if query.resource.is_some() {
@@ -1069,31 +1084,30 @@ async fn page(
     let _cpu = runtime
         .try_acquire_private_read()
         .ok_or(CanonicalError::Capacity)?;
-    let binding = private_binding(
-        runtime,
-        recipient,
-        if recovery {
-            MailboxResource::Recovery
-        } else {
-            MailboxResource::Inbox
-        },
-        query,
-    )?;
+    let binding = private_binding(runtime, recipient, resource, query)?;
     authenticate(server, headers, &binding).await?;
     let owner = server.registry.canonical_dm();
-    let fetch =
-        |after: Option<MailboxCursor>| -> Result<Option<crate::store::monad_dm_cbor::Claim>> {
-            let records = if recovery {
-                owner.recovery(
+    let recovery = resource == MailboxResource::Recovery;
+    let fetch = |after: Option<MailboxCursor>| -> Result<
+        Option<(
+            crate::store::monad_dm_cbor::Claim,
+            Option<crate::store::monad_dm_cbor::MailboxDirection>,
+        )>,
+    > {
+        match resource {
+            MailboxResource::Recovery => {
+                let records = owner.recovery(
                     recipient,
                     after.map(|cursor| match cursor {
                         MailboxCursor::Recovery { payload_hash } => payload_hash,
                         _ => unreachable!("validated cursor resource"),
                     }),
                     1,
-                )?
-            } else {
-                owner.inbox(
+                )?;
+                Ok(records.into_iter().next().map(|claim| (claim, None)))
+            }
+            MailboxResource::Inbox => {
+                let records = owner.inbox(
                     recipient,
                     binding.since,
                     after.map(|cursor| match cursor {
@@ -1104,22 +1118,56 @@ async fn page(
                         _ => unreachable!("validated cursor resource"),
                     }),
                     1,
-                )?
-            };
-            Ok(records.into_iter().next())
-        };
+                )?;
+                Ok(records.into_iter().next().map(|claim| (claim, None)))
+            }
+            MailboxResource::Mailbox => {
+                let records = owner.mailbox(
+                    recipient,
+                    binding.since,
+                    after.map(|cursor| match cursor {
+                        MailboxCursor::Mailbox {
+                            timestamp,
+                            payload_hash,
+                        } => (timestamp, payload_hash),
+                        _ => unreachable!("validated cursor resource"),
+                    }),
+                    1,
+                )?;
+                Ok(records
+                    .into_iter()
+                    .next()
+                    .map(|(claim, dir)| (claim, Some(dir))))
+            }
+            MailboxResource::RecoveryAck | MailboxResource::MailboxStream => unreachable!(),
+        }
+    };
     let position = |claim: &crate::store::monad_dm_cbor::Claim| -> Result<MailboxCursor> {
-        if recovery {
-            Ok(MailboxCursor::Recovery {
+        match resource {
+            MailboxResource::Recovery => Ok(MailboxCursor::Recovery {
                 payload_hash: claim.policy.payload_hash,
-            })
-        } else if let crate::store::monad_dm_cbor::Phase::Delivered(timestamp) = claim.phase {
-            Ok(MailboxCursor::Inbox {
-                timestamp,
-                payload_hash: claim.policy.payload_hash,
-            })
-        } else {
-            Err(CanonicalError::Unavailable)
+            }),
+            MailboxResource::Inbox => {
+                if let crate::store::monad_dm_cbor::Phase::Delivered(timestamp) = claim.phase {
+                    Ok(MailboxCursor::Inbox {
+                        timestamp,
+                        payload_hash: claim.policy.payload_hash,
+                    })
+                } else {
+                    Err(CanonicalError::Unavailable)
+                }
+            }
+            MailboxResource::Mailbox => {
+                if let crate::store::monad_dm_cbor::Phase::Delivered(timestamp) = claim.phase {
+                    Ok(MailboxCursor::Mailbox {
+                        timestamp,
+                        payload_hash: claim.policy.payload_hash,
+                    })
+                } else {
+                    Err(CanonicalError::Unavailable)
+                }
+            }
+            MailboxResource::RecoveryAck | MailboxResource::MailboxStream => unreachable!(),
         }
     };
     let boundary = fresh_boundary(&[], "frank-page")?;
@@ -1131,7 +1179,7 @@ async fn page(
     let mut next_cursor = None;
     let mut candidate = fetch(binding.cursor.as_ref().map(|cursor| cursor.position))?;
     let mut count = 0;
-    while let Some(claim) = candidate {
+    while let Some((claim, dir)) = candidate {
         let at = position(&claim)?;
         // One-record lookahead: a page never allocates limit full request bodies in advance.
         let following = fetch(Some(at))?;
@@ -1139,7 +1187,7 @@ async fn page(
             .as_ref()
             .map(|_| runtime.encode_namespace_cursor(MailboxNamespace::Canonical, recipient, at));
         let charge = cursor.as_ref().map_or(0, |token| 31 + token.len());
-        let record = record_bytes(&claim, &boundary, recovery)?;
+        let record = record_bytes(&claim, &boundary, recovery, dir.map(|d| d.as_str()))?;
         if bytes
             .len()
             .checked_add(record.len())
@@ -1190,7 +1238,7 @@ pub(crate) async fn handle_inbox(
         &headers,
         Address::from_hex(&recipient).map_err(|_| CanonicalError::Unauthorized)?,
         &query,
-        false,
+        crate::monad_mailbox::MailboxResource::Inbox,
     )
     .await
 }
@@ -1205,9 +1253,188 @@ pub(crate) async fn handle_recovery(
         &headers,
         Address::from_hex(&recipient).map_err(|_| CanonicalError::Unauthorized)?,
         &query,
-        true,
+        crate::monad_mailbox::MailboxResource::Recovery,
     )
     .await
+}
+pub(crate) async fn handle_mailbox(
+    axum::extract::Path(address): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<PrivateQuery>,
+    Extension(server): Extension<super::server::RegistryServer>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    page(
+        &server,
+        &headers,
+        Address::from_hex(&address).map_err(|_| CanonicalError::Unauthorized)?,
+        &query,
+        crate::monad_mailbox::MailboxResource::Mailbox,
+    )
+    .await
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct PrivateWsQuery {
+    #[serde(default)]
+    pub(crate) epoch: Option<String>,
+    #[serde(default)]
+    pub(crate) nonce: Option<String>,
+    #[serde(default)]
+    pub(crate) token: Option<String>,
+    #[serde(default)]
+    pub(crate) expires_at_ms: Option<String>,
+    #[serde(default)]
+    pub(crate) signature: Option<String>,
+    #[serde(default)]
+    pub(crate) subject: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct MailboxWsPush {
+    pub(crate) direction: &'static str,
+    pub(crate) submission_identity: String,
+    pub(crate) payload_hash: String,
+    pub(crate) timestamp_ms: i64,
+    pub(crate) delivery: String,
+    pub(crate) context: String,
+}
+
+pub(crate) async fn handle_mailbox_ws(
+    axum::extract::Path(address): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<PrivateWsQuery>,
+    mut headers: HeaderMap,
+    Extension(server): Extension<super::server::RegistryServer>,
+    ws: axum::extract::ws::WebSocketUpgrade,
+) -> Result<Response> {
+    use crate::monad_mailbox::{MailboxRequestBinding, MailboxResource};
+
+    let address = Address::from_hex(&address).map_err(|_| CanonicalError::Unauthorized)?;
+    let runtime = server
+        .monad_mailbox
+        .as_enabled()
+        .ok_or(CanonicalError::Unauthorized)?;
+    let _cpu = runtime
+        .try_acquire_private_read()
+        .ok_or(CanonicalError::Capacity)?;
+
+    let binding = MailboxRequestBinding {
+        resource: MailboxResource::MailboxStream,
+        recipient: address,
+        since: 0,
+        cursor: None,
+        limit: 1,
+        max_bytes: 0,
+        recovery_payload_hash: None,
+        recovery_obligation_id: None,
+    };
+
+    if let Some(epoch) = query.epoch {
+        headers.insert(
+            "x-frank-mailbox-epoch",
+            epoch.parse().map_err(|_| CanonicalError::Unauthorized)?,
+        );
+    }
+    if let Some(nonce) = query.nonce {
+        headers.insert(
+            "x-frank-mailbox-nonce",
+            nonce.parse().map_err(|_| CanonicalError::Unauthorized)?,
+        );
+    }
+    if let Some(token) = query.token {
+        headers.insert(
+            "x-frank-mailbox-token",
+            token.parse().map_err(|_| CanonicalError::Unauthorized)?,
+        );
+    }
+    if let Some(expires_at_ms) = query.expires_at_ms {
+        headers.insert(
+            "x-frank-mailbox-expires-at-ms",
+            expires_at_ms
+                .parse()
+                .map_err(|_| CanonicalError::Unauthorized)?,
+        );
+    }
+    if let Some(signature) = query.signature {
+        headers.insert(
+            "x-frank-mailbox-signature",
+            signature
+                .parse()
+                .map_err(|_| CanonicalError::Unauthorized)?,
+        );
+    }
+    if let Some(subject) = query.subject {
+        headers.insert(
+            "x-frank-mailbox-subject",
+            subject.parse().map_err(|_| CanonicalError::Unauthorized)?,
+        );
+    }
+
+    authenticate(&server, &headers, &binding).await?;
+
+    let mut rx = server.registry.canonical_dm().subscribe_finalized();
+    Ok(ws.on_upgrade(move |mut socket| async move {
+        loop {
+            tokio::select! {
+                msg = socket.recv() => {
+                    match msg {
+                        Some(Ok(axum::extract::ws::Message::Close(_))) | None => break,
+                        Some(Ok(axum::extract::ws::Message::Ping(data))) => {
+                            if socket.send(axum::extract::ws::Message::Pong(data)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(Err(_)) => break,
+                        _ => {}
+                    }
+                }
+                res = rx.recv() => {
+                    match res {
+                        Ok(envelope) => {
+                            if envelope.recipient == address {
+                                let push = MailboxWsPush {
+                                    direction: "in",
+                                    submission_identity: hex::encode(envelope.submission_identity),
+                                    payload_hash: hex::encode(envelope.payload_hash),
+                                    timestamp_ms: envelope.timestamp,
+                                    delivery: hex::encode(&envelope.delivery),
+                                    context: hex::encode(&envelope.context),
+                                };
+                                let json = match serde_json::to_string(&push) {
+                                    Ok(j) => j,
+                                    Err(_) => continue,
+                                };
+                                if socket.send(axum::extract::ws::Message::Text(json)).await.is_err() {
+                                    break;
+                                }
+                            } else if envelope.sender == address {
+                                let push = MailboxWsPush {
+                                    direction: "out",
+                                    submission_identity: hex::encode(envelope.submission_identity),
+                                    payload_hash: hex::encode(envelope.payload_hash),
+                                    timestamp_ms: envelope.timestamp,
+                                    delivery: hex::encode(&envelope.delivery),
+                                    context: hex::encode(&envelope.context),
+                                };
+                                let json = match serde_json::to_string(&push) {
+                                    Ok(j) => j,
+                                    Err(_) => continue,
+                                };
+                                if socket.send(axum::extract::ws::Message::Text(json)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }))
 }
 pub(crate) async fn handle_ack(
     axum::extract::Path((recipient, hash, obligation)): axum::extract::Path<(

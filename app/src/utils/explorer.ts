@@ -30,17 +30,7 @@ function readEnv(key: string): string | undefined {
 function isLocalAddress(url?: string): boolean {
   if (!url) return false
   return (
-    url.includes('127.0.0.1') ||
-    url.includes('localhost') ||
-    url.includes('[::1]') ||
-    url.includes(':18545') ||
-    url.includes(':18546') ||
-    url.includes(':18098') ||
-    url.includes(':18099') ||
-    url.includes(':18440') ||
-    url.includes(':18441') ||
-    url.includes(':18443') ||
-    url.includes(':18444')
+    url.includes(':18545') || url.includes(':18546') || url.includes(':8545')
   )
 }
 
@@ -74,33 +64,9 @@ export function isLocalRpcChain(options?: ExplorerOptions): boolean {
   if (options?.relayBaseUrl && isLocalAddress(options.relayBaseUrl)) {
     return true
   }
+  // Explicit local chain RPC URL checks
   if (options?.rpcUrl && isLocalAddress(options.rpcUrl)) {
     return true
-  }
-
-  // Check local stack ports in window.location if running in browser
-  if (typeof window !== 'undefined' && window.location) {
-    const port = window.location.port
-    if (
-      port === '18440' ||
-      port === '18441' ||
-      port === '18545' ||
-      port === '18546'
-    ) {
-      return true
-    }
-    // In non-test browser runtime, check if host is loopback/localhost
-    if (typeof process === 'undefined' || process.env?.NODE_ENV !== 'test') {
-      const host = window.location.hostname
-      if (
-        host === 'localhost' ||
-        host === '127.0.0.1' ||
-        host === '[::1]' ||
-        host.endsWith('.local')
-      ) {
-        return true
-      }
-    }
   }
 
   // Check configured chain environment if available
@@ -117,13 +83,8 @@ export function isLocalRpcChain(options?: ExplorerOptions): boolean {
     ) {
       return true
     }
-    // In non-test mode or when explicitly set, check relay base url for local stack ports
-    if (
-      config.relayBaseUrl &&
-      /(18440|18441|18443|18444|18098|18099|18545|18546)/.test(
-        config.relayBaseUrl,
-      )
-    ) {
+    // In non-test mode or when explicitly set, check relay base url for local chain ports
+    if (config.relayBaseUrl && /(18545|18546|8545)/.test(config.relayBaseUrl)) {
       return true
     }
   } catch {

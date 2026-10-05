@@ -1,42 +1,66 @@
 <template>
-  <q-card class="q-px-sm q-pb-md dialog-medium">
-    <q-card-section>
-      <div class="text-h6">
+  <q-card class="dialog-medium">
+    <q-card-section class="row items-center q-pb-none">
+      <div class="text-h6 text-weight-medium">
         {{ title }}
       </div>
+      <div class="col" />
+      <q-btn
+        icon="close"
+        flat
+        round
+        dense
+        v-close-popup
+        :aria-label="$t('close')"
+      />
     </q-card-section>
-    <q-card-section>
-      <div v-if="stampPayments.length" class="q-px-md q-pb-md">
+
+    <q-card-section v-if="stampPayments.length" class="q-pt-sm q-pb-xs">
+      <div class="q-pa-md bg-grey-1 rounded-borders">
         <div class="text-caption text-grey-7">
           {{ $t('transactionDialog.totalStampPayment') }}
         </div>
-        <div class="text-h6">{{ formattedTotal }}</div>
+        <div class="text-h6 text-weight-bold text-primary">
+          {{ formattedTotal }}
+        </div>
       </div>
-      <q-list v-if="stampPayments.length" separator>
-        <q-item v-for="(payment, idx) in stampPayments" :key="payment.txHash">
+    </q-card-section>
+
+    <q-card-section v-if="stampPayments.length" class="q-pt-none q-pb-none">
+      <q-list separator class="rounded-borders">
+        <q-item
+          v-for="(payment, idx) in stampPayments"
+          :key="payment.txHash"
+          class="q-px-none q-py-sm"
+        >
           <q-item-section>
-            <q-item-label overline>{{
-              $t('transactionDialog.stampPaymentN', { n: idx + 1 })
-            }}</q-item-label>
-            <q-item-label>{{ formatValue(payment.valueWei) }}</q-item-label>
-            <q-item-label caption lines="1">
+            <div class="row items-center justify-between no-wrap">
+              <q-item-label overline class="text-weight-bold text-uppercase">
+                {{ $t('transactionDialog.stampPaymentN', { n: idx + 1 }) }}
+              </q-item-label>
+              <span class="text-weight-bold text-body2">{{
+                formatValue(payment.valueWei)
+              }}</span>
+            </div>
+            <q-item-label caption lines="1" class="q-mt-xs">
               {{
                 $t('transactionDialog.sentTo', {
                   address: payment.destinationAddress,
                 })
               }}
             </q-item-label>
-            <q-item-label lines="1">
+            <q-item-label lines="1" class="q-mt-xs">
               <a
                 v-if="transactionExplorerUrl(payment.txHash)"
                 :href="transactionExplorerUrl(payment.txHash)"
                 target="_blank"
                 rel="noopener noreferrer"
+                class="ellipsis block text-primary"
                 >{{ payment.txHash }}</a
               >
               <span
                 v-else
-                class="text-caption text-grey-7"
+                class="text-caption text-grey-7 ellipsis block"
                 data-testid="local-chain-notice"
               >
                 {{ payment.txHash }} ({{
@@ -45,79 +69,88 @@
               </span>
             </q-item-label>
           </q-item-section>
-          <q-item-section side>
-            <q-btn
-              v-if="transactionExplorerUrl(payment.txHash)"
-              flat
-              round
-              icon="open_in_new"
-              :aria-label="$t('a11y.openInExplorer')"
-              :href="transactionExplorerUrl(payment.txHash)"
-              target="_blank"
-            />
-            <q-btn
-              v-else
-              flat
-              round
-              icon="content_copy"
-              :aria-label="$t('a11y.copyTxHash')"
-              @click="copyTxHash(payment.txHash)"
-            >
-              <q-tooltip>{{ $t('transactionDialog.copyTxHash') }}</q-tooltip>
-            </q-btn>
+          <q-item-section side class="q-pl-sm">
+            <div class="row items-center no-wrap q-gutter-xs">
+              <q-btn
+                flat
+                round
+                dense
+                icon="content_copy"
+                :aria-label="$t('a11y.copyTxHash')"
+                @click="copyTxHash(payment.txHash)"
+              >
+                <q-tooltip>{{ $t('transactionDialog.copyTxHash') }}</q-tooltip>
+              </q-btn>
+              <q-btn
+                v-if="transactionExplorerUrl(payment.txHash)"
+                flat
+                round
+                dense
+                icon="open_in_new"
+                :aria-label="$t('a11y.openInExplorer')"
+                :href="transactionExplorerUrl(payment.txHash)"
+                target="_blank"
+              />
+            </div>
           </q-item-section>
         </q-item>
       </q-list>
-      <q-tabs v-model="tab" class="text-primary">
-        <q-tab v-for="n in outpoints.length" :key="n" :name="n" :label="n" />
-      </q-tabs>
-      <q-tab-panels v-model="tab" animated>
-        <q-tab-panel
-          v-for="(outpoint, idx) in outpoints"
-          :key="outpoint.txId"
-          :name="idx + 1"
-        >
-          <q-item-section class="q-py-lg">
-            <span class="text-bold">
-              {{ $t('transactionDialog.txId') }}
-            </span>
-            <q-item-label>
-              <a
-                v-if="transactionExplorerUrl(outpoint.txId)"
-                :href="transactionExplorerUrl(outpoint.txId)"
-                target="_blank"
-                rel="noopener noreferrer"
-                >{{ outpoint.txId }}</a
-              >
-              <span
-                v-else
-                class="text-caption text-grey-7"
-                data-testid="local-chain-notice-outpoint"
-              >
-                {{ outpoint.txId }} ({{
-                  $t('transactionDialog.localChainNotice')
-                }})
-              </span>
-            </q-item-label>
-            <span class="text-bold">
-              {{ $t('transactionDialog.txType') }}
-            </span>
-            <q-item-label>{{ outpoint.type }}</q-item-label>
-            <span class="text-bold">
-              {{ $t('transactionDialog.txAddress') }}
-            </span>
-            {{ extractAddress(outpoint.address) }}
-            <span class="text-bold">
-              {{ $t('transactionDialog.txAmount') }}
-            </span>
-            {{ outpoint.satoshis }}
-          </q-item-section>
-        </q-tab-panel>
-      </q-tab-panels>
     </q-card-section>
 
-    <q-card-actions align="right">
-      <q-btn flat :label="$t('close')" color="primary" v-close-popup />
+    <!-- Legacy / UTXO outpoints if present -->
+    <template v-if="outpoints.length">
+      <q-card-section class="q-pt-sm">
+        <q-tabs v-model="tab" class="text-primary">
+          <q-tab v-for="n in outpoints.length" :key="n" :name="n" :label="n" />
+        </q-tabs>
+        <q-tab-panels v-model="tab" animated>
+          <q-tab-panel
+            v-for="(outpoint, idx) in outpoints"
+            :key="outpoint.txId"
+            :name="idx + 1"
+          >
+            <q-item-section class="q-py-md">
+              <span class="text-bold">
+                {{ $t('transactionDialog.txId') }}
+              </span>
+              <q-item-label>
+                <a
+                  v-if="transactionExplorerUrl(outpoint.txId)"
+                  :href="transactionExplorerUrl(outpoint.txId)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >{{ outpoint.txId }}</a
+                >
+                <span
+                  v-else
+                  class="text-caption text-grey-7"
+                  data-testid="local-chain-notice-outpoint"
+                >
+                  {{ outpoint.txId }} ({{
+                    $t('transactionDialog.localChainNotice')
+                  }})
+                </span>
+              </q-item-label>
+              <span class="text-bold">
+                {{ $t('transactionDialog.txType') }}
+              </span>
+              <q-item-label>{{ outpoint.type }}</q-item-label>
+              <span class="text-bold">
+                {{ $t('transactionDialog.txAddress') }}
+              </span>
+              {{ extractAddress(outpoint.address) }}
+              <span class="text-bold">
+                {{ $t('transactionDialog.txAmount') }}
+              </span>
+              {{ outpoint.satoshis }}
+            </q-item-section>
+          </q-tab-panel>
+        </q-tab-panels>
+      </q-card-section>
+    </template>
+
+    <q-card-actions align="right" class="q-pa-md">
+      <q-btn flat :label="$t('close')" color="primary" v-close-popup no-caps />
     </q-card-actions>
   </q-card>
 </template>

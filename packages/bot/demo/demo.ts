@@ -610,6 +610,7 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
         ngrokRelayDomain: config.ngrokRelayDomain,
         ngrokAppDomain: config.ngrokAppDomain,
         ngrokAuthtoken: config.ngrokAuthtoken,
+        startApp: options.startApp,
         supervisor,
       })
       writePidFile()

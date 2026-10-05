@@ -330,13 +330,13 @@ export default configure(ctx => {
       // access (including single-domain tunnel setups) can reach relay endpoints and WebSockets
       // through the same dev server origin without CORS or loopback binding constraints.
       proxy: {
-        '/chains': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}` },
-        '/peers': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}` },
-        '/metadata': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}` },
-        '/messages': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}` },
-        '/message': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}`, ws: true },
-        '/chain-rpc': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}`, ws: true },
-        '/directory': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}` },
+        '/chains': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}`, changeOrigin: true },
+        '/peers': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}`, changeOrigin: true },
+        '/metadata': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}`, changeOrigin: true },
+        '/messages': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}`, changeOrigin: true },
+        '/message': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}`, ws: true, changeOrigin: true },
+        '/chain-rpc': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}`, ws: true, changeOrigin: true },
+        '/directory': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}`, changeOrigin: true },
       },
     },
 

@@ -25,6 +25,8 @@ export interface RenderNgrokConfigParams {
   relayDomain?: string
   appDomain?: string
   authtoken?: string
+  includeRelay?: boolean
+  includeApp?: boolean
 }
 
 export interface StartNgrokOptions {
@@ -32,6 +34,7 @@ export interface StartNgrokOptions {
   logDir: string
   relayPort: number
   appPort: number
+  startApp?: boolean
   ngrokBin?: string
   ngrokConfig?: string
   ngrokRelayDomain?: string
@@ -93,18 +96,31 @@ export function renderDemoNgrokYaml(params: RenderNgrokConfigParams): string {
     lines.push(`  authtoken: ${params.authtoken}`)
   }
   lines.push('tunnels:')
-  lines.push('  relay:')
-  lines.push('    proto: http')
-  lines.push(`    addr: ${params.relayPort}`)
-  if (params.relayDomain) {
-    lines.push(`    domain: ${params.relayDomain}`)
+
+  const hasDistinctDomains = Boolean(
+    params.relayDomain && params.appDomain && params.relayDomain !== params.appDomain,
+  )
+  const includeApp = params.includeApp ?? (hasDistinctDomains || true)
+  const includeRelay = params.includeRelay ?? (hasDistinctDomains || !includeApp)
+
+  if (includeApp) {
+    lines.push('  app:')
+    lines.push('    proto: http')
+    lines.push(`    addr: ${params.appPort}`)
+    if (params.appDomain) {
+      lines.push(`    domain: ${params.appDomain}`)
+    }
   }
-  lines.push('  app:')
-  lines.push('    proto: http')
-  lines.push(`    addr: ${params.appPort}`)
-  if (params.appDomain) {
-    lines.push(`    domain: ${params.appDomain}`)
+
+  if (includeRelay) {
+    lines.push('  relay:')
+    lines.push('    proto: http')
+    lines.push(`    addr: ${params.relayPort}`)
+    if (params.relayDomain) {
+      lines.push(`    domain: ${params.relayDomain}`)
+    }
   }
+
   lines.push('')
   return lines.join('\n')
 }
@@ -116,12 +132,23 @@ export function renderDemoNgrokYaml(params: RenderNgrokConfigParams): string {
 export async function startNgrok(options: StartNgrokOptions): Promise<NgrokResult> {
   const ngrokBin = options.ngrokBin || 'ngrok'
   const demoConfigPath = join(options.stateDir, 'ngrok.yml')
+
+  const hasDistinctDomains = Boolean(
+    options.ngrokRelayDomain &&
+      options.ngrokAppDomain &&
+      options.ngrokRelayDomain !== options.ngrokAppDomain,
+  )
+  const includeApp = hasDistinctDomains || (options.startApp ?? true)
+  const includeRelay = hasDistinctDomains || !includeApp
+
   const demoYaml = renderDemoNgrokYaml({
     relayPort: options.relayPort,
     appPort: options.appPort,
     relayDomain: options.ngrokRelayDomain,
     appDomain: options.ngrokAppDomain,
     authtoken: options.ngrokAuthtoken,
+    includeRelay,
+    includeApp,
   })
   writeFileSync(demoConfigPath, demoYaml, 'utf8')
 
@@ -167,8 +194,8 @@ export async function startNgrok(options: StartNgrokOptions): Promise<NgrokResul
           const appTunnel = body.tunnels.find(t => t.name === 'app')
           const fallback = body.tunnels[0]
           return {
-            publicRelayUrl: relayTunnel?.public_url ?? fallback?.public_url,
-            publicAppUrl: appTunnel?.public_url ?? fallback?.public_url,
+            publicRelayUrl: relayTunnel?.public_url ?? appTunnel?.public_url ?? fallback?.public_url,
+            publicAppUrl: appTunnel?.public_url ?? relayTunnel?.public_url ?? fallback?.public_url,
           }
         }
       }

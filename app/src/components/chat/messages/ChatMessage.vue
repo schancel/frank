@@ -54,6 +54,7 @@
               :payload-digest="payloadDigest"
               @sendFollowUp="handleSendFollowUp"
               @retry="resend()"
+              @playAgain="$emit('playAgain')"
             />
             <chat-message-digital-goods
               v-else-if="item.type == 'digital-goods'"
@@ -147,7 +148,7 @@ export default defineComponent({
     TransactionDialog,
     DeleteMessageDialog,
   },
-  emits: ['replyClicked', 'replyDivClick', 'sendFollowUp'],
+  emits: ['replyClicked', 'replyDivClick', 'sendFollowUp', 'playAgain'],
   data() {
     return {
       transactionDialog: false,

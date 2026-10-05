@@ -32,6 +32,7 @@
                   @replyClicked="({ payloadDigest }) => setReply(payloadDigest)"
                   @replyDivClick="scrollToMessage"
                   @sendFollowUp="sendFollowUpItems"
+                  @playAgain="blackjackDialog = true"
                 />
               </template>
             </div>

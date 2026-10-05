@@ -119,6 +119,8 @@ export default {
     retry: 'Renvoyer',
     notNext:
       'Ce coup de blackjack a déjà été envoyé ou n’est plus possible. Rien n’a été envoyé.',
+    cardDealtN: 'Carte : {card}',
+    playAgain: 'Rejouer',
     challengeTitle: 'Défier pour une main de blackjack',
     roleDealer: 'Je distribue',
     rolePlayer: 'Je joue, l’autre distribue',
@@ -709,7 +711,7 @@ export default {
     txType: 'Type',
     txAddress: 'Adresse',
     txAmount: 'Montant',
-    copyTxHash: 'Copier le hash de transaction (shim de chaîne locale)',
+    copyTxHash: 'Copier le hash de transaction',
     localChainNotice: 'Pile locale / shim de chaîne',
     txHashCopied: 'Hash de transaction copié dans le presse-papiers',
   },

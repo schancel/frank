@@ -182,6 +182,22 @@ export interface RaffleItem {
   message?: string
 }
 
+export interface SwapOfferItem {
+  type: 'swap-offer'
+  swapId: string
+  offeredChain: string
+  offeredAsset: string
+  offeredAmount: string
+  requestedChain: string
+  requestedAsset: string
+  requestedAmount: string
+  status: 'pending' | 'accepted' | 'settled' | 'cancelled' | 'expired'
+  initiatorAddress: string
+  recipientAddress: string
+  createdAt: number
+  expiresAt?: number
+}
+
 export type MessageItem =
   | StealthItem
   | P2PKHSendItem
@@ -192,6 +208,7 @@ export type MessageItem =
   | BlackjackHandItem
   | DigitalGoodsItem
   | RaffleItem
+  | SwapOfferItem
 
 /** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the
  * message so the failure and its manual Retry survive a reload. */

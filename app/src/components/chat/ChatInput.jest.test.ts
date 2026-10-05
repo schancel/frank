@@ -107,6 +107,23 @@ describe('ChatInput offers Send Stealth in the message-type menu', () => {
   )
 })
 
+describe('ChatInput offers atomic swap in the message-type menu', () => {
+  it.each([
+    ['no extra props', {}],
+    ['a chat that is being sent to', { disable: true }],
+  ])(
+    'has the swap menu entry in message menu for %s, and emits offerSwapClicked',
+    async (_n, props) => {
+      const w = mount(ChatInput, { props, global: globalOptions })
+      const entry = w.find('[data-testid="offer-swap-menu-item"]')
+      expect(entry.exists()).toBe(true)
+      expect(entry.text()).toBe(enUS.chatInput.offerSwap)
+      await entry.trigger('click')
+      expect(w.emitted('offerSwapClicked')).toHaveLength(1)
+    },
+  )
+})
+
 describe('ChatInput has no separate blackjack toolbar button (#395)', () => {
   it.each([
     ['no extra props', {}],

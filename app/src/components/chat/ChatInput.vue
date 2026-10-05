@@ -50,6 +50,21 @@
               </q-item-section>
             </q-item>
 
+            <!-- Offer Swap: cross-chain atomic swap offer -->
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="offer-swap-menu-item"
+              @click="offerSwapClicked"
+            >
+              <q-item-section avatar side>
+                <q-icon name="swap_horiz" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('chatInput.offerSwap') }}
+              </q-item-section>
+            </q-item>
+
             <!-- <q-item clickable>
               <q-item-section avatar>
                 <q-icon name="insert_emoticon" />
@@ -175,8 +190,12 @@ export default defineComponent({
     'sendFileClicked',
     'blackjackClicked',
     'sendStealthClicked',
+    'offerSwapClicked',
   ],
   methods: {
+    offerSwapClicked() {
+      this.$emit('offerSwapClicked')
+    },
     /** Public focus target for chat-level focus handoffs. */
     focus() {
       ;(this.$refs.inputBox as { focus?: () => void } | undefined)?.focus?.()

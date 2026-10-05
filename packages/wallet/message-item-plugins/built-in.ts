@@ -14,10 +14,19 @@ import {
   P2PKHSendItem,
   ReplyItem,
   StealthItem,
+  SwapOfferItem,
   TextItem,
 } from '@frank/cashweb/types/messages'
 
 import { registerMessageItemPlugin } from './index'
+
+registerMessageItemPlugin<SwapOfferItem, SwapOfferItem>({
+  type: 'swap-offer',
+  hydrate: raw => raw,
+  previewText: raw =>
+    `Atomic swap offer: ${raw.offeredAmount} ${raw.offeredAsset} (${raw.offeredChain}) for ${raw.requestedAmount} ${raw.requestedAsset} (${raw.requestedChain})`,
+  tallyValue: raw => raw.offeredAmount,
+})
 
 registerMessageItemPlugin<TextItem, TextItem>({
   type: 'text',

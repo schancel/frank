@@ -94,6 +94,7 @@
         @giveLotusClicked="$emit('giveLotusClicked')"
         @blackjackClicked="blackjackDialog = true"
         @sendStealthClicked="stealthDialog = true"
+        @offerSwapClicked="swapDialog = true"
         ref="chatInput"
         v-model:message="message"
         v-model:stamp-amount="stampAmount"
@@ -120,6 +121,16 @@
         @send="sendStealthPayment"
       />
     </q-dialog>
+    <!-- Offer Swap dialog: cross-chain atomic swap offer -->
+    <q-dialog v-model="swapDialog">
+      <offer-swap-dialog
+        v-if="swapDialog"
+        :contact="contact"
+        :address="address"
+        :busy="sendingMessage"
+        @offer="sendSwapOffer"
+      />
+    </q-dialog>
   </div>
 </template>
 
@@ -131,6 +142,7 @@ import ChatBannerStack from '../components/chat/ChatBannerStack.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
 import BlackjackChallengeForm from '../components/chat/BlackjackChallengeForm.vue'
 import SendStealthDialog from '../components/dialogs/SendStealthDialog.vue'
+import OfferSwapDialog from '../components/dialogs/OfferSwapDialog.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
@@ -177,6 +189,7 @@ export default defineComponent({
     ChatInput,
     BlackjackChallengeForm,
     SendStealthDialog,
+    OfferSwapDialog,
     ChatBannerStack,
   },
   beforeRouteUpdate(
@@ -209,6 +222,7 @@ export default defineComponent({
       sendingMessage: false,
       blackjackDialog: false,
       stealthDialog: false,
+      swapDialog: false,
       // Automatic dealer steps already attempted in this page session.
       blackjackAttempted: new Set<string>(),
       // An own undelivered hand message is being resumed; no automatic step meanwhile.
@@ -552,6 +566,29 @@ export default defineComponent({
           text: memo,
         })
       }
+      this.sendingMessage = true
+      try {
+        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
+        await this.sendDirectMessage({
+          wallet: useMonadWallet(),
+          address: this.address,
+          items,
+          stampValue,
+          onPreparationProgress: this.showStampPreparation,
+        })
+      } catch (err) {
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
+      } finally {
+        this.stampPreparationStatus = null
+        this.sendingMessage = false
+      }
+      if (!this.bottom) {
+        this.$nextTick(this.buttonScrollBottom)
+      }
+    },
+    async sendSwapOffer(item: MessageItem) {
+      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+      const items: MessageItem[] = [item]
       this.sendingMessage = true
       try {
         this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')

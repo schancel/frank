@@ -52,6 +52,7 @@ export default {
   chatInput: {
     giveLotusSecretly: 'Give Lotus Secretly',
     sendStealth: 'Send Stealth',
+    offerSwap: 'Offer Atomic Swap',
     attachImage: 'Attach Image',
     blackjackChallenge: 'Blackjack challenge',
     placeHolder: 'Write a message...',
@@ -392,6 +393,23 @@ export default {
     memoPlaceholder: 'Enter memo...',
     sendBtnLabel: 'Send Stealth',
     cancelBtnLabel: 'Cancel',
+  },
+  offerSwapDialog: {
+    title: 'Offer Atomic Swap to',
+    subtitle: 'Trustless cross-chain atomic exchange',
+    youPay: 'You offer (pay)',
+    youReceive: 'You receive',
+    offeredChain: 'Offered chain',
+    requestedChain: 'Requested chain',
+    offerBtnLabel: 'Offer Swap',
+    cancelBtnLabel: 'Cancel',
+  },
+  chatMessageSwap: {
+    title: 'Atomic Swap Offer',
+    offered: 'Offered',
+    for: 'For',
+    accept: 'Accept Swap',
+    cancel: 'Cancel Offer',
   },
   sendFileDialog: {
     sendFile: 'Send File',

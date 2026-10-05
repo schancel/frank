@@ -3,7 +3,8 @@
 //!
 //! Nothing here is a captured fixture. `packages/wallet/canonical-relay-joined-driver.ts` runs
 //! one wallet phase per Node process against this test's live listeners. The only shared inputs
-//! are the checked-in public domain-root vectors and the admitted Directory attestations.
+//! are the checked-in public domain-root vectors and the two accounts' own signed directory
+//! entries, which each account publishes itself over HTTP. No account is configured on the relay.
 //! The chain is an owned in-process JSON-RPC fake: no funded-chain finality is claimed.
 use super::*;
 use crate::monad_evm_tx::DecodedSignedTransaction;
@@ -206,13 +207,35 @@ struct Joined {
 }
 impl Joined {
     async fn start(mode: ChainMode) -> Self {
-        let fixture = NativeDirectoryFixture::new().await;
+        // The relay starts knowing no account at all: its configuration is only its own tuple.
+        let fixture = NativeDirectoryFixture::publishing(|_| false).await;
         let chain = JoinedChain::new(mode);
         let (rpc_url, rpc_stop, rpc_task) = serve_http(chain.router()).await;
         let (url, http_stop, http_task) = serve_http(
             server(&fixture, &rpc_url).into_router_with_directory(Some(fixture.directory.clone())),
         )
         .await;
+        // Each account publishes its own signed entry over the public route, as a wallet does.
+        let attestations =
+            &admitted_source()["canonical_facade_final_http_case"]["wire"]["http_attestations"];
+        let client = reqwest::Client::new();
+        for (index, account) in fixture.accounts.iter().enumerate() {
+            let head = format!(
+                "{url}/directory/v1/{}/{}/head",
+                account.network, account.subject
+            );
+            assert_eq!(client.get(&head).send().await.unwrap().status(), 404);
+            let entry = hex::decode(attestations[index].as_str().unwrap()).unwrap();
+            let published = client
+                .put(&head)
+                .header("content-type", "application/vnd.frank.cbor")
+                .body(entry.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(published.status(), 200, "account {index} publishes itself");
+            assert_eq!(published.bytes().await.unwrap().as_ref(), entry);
+        }
         let work = fixture.root.path().join("joined-wallet");
         std::fs::create_dir(&work).unwrap();
         let source = admitted_source();
@@ -263,7 +286,9 @@ impl Joined {
             freeze["identity"]["submission_identity"].as_str().unwrap()
         );
         let owner = self.fixture.registry.canonical_dm();
-        let (sender, recipient, _) = request_principals(&request, "monad-testnet").unwrap();
+        let Principals {
+            sender, recipient, ..
+        } = request_principals(&request, "monad-testnet").unwrap();
         let sender = current(owner, "monad-testnet", &sender).await.unwrap();
         let recipient = current(owner, "monad-testnet", &recipient).await.unwrap();
         crate::monad_dm_verify::verify_canonical_stamp(
@@ -480,4 +505,371 @@ async fn joined_real_wallet_terminal_prefix_is_imported_and_acknowledged_by_reci
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);
     }
+}
+
+/// One relay of a two-relay network: its own database, directory and HTTP listener.
+struct RelayNode {
+    fixture: NativeDirectoryFixture,
+    address: std::net::SocketAddr,
+    peer: String,
+    rpc_url: String,
+    /// Held from the moment the address is chosen, so no other test can take the port.
+    listener: Option<std::net::TcpListener>,
+    stop: Option<(
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    )>,
+}
+impl RelayNode {
+    fn url(&self) -> String {
+        format!("http://{}", self.address)
+    }
+    /// Start (or start again) listening on this relay's fixed address.
+    async fn listen(&mut self) {
+        self.fixture
+            .directory
+            .enable_federation(vec![self.peer.parse().unwrap()], true);
+        let listener = match self.listener.take() {
+            Some(listener) => listener,
+            None => loop {
+                match std::net::TcpListener::bind(self.address) {
+                    Ok(listener) => break listener,
+                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+                }
+            },
+        };
+        listener.set_nonblocking(true).unwrap();
+        let router = server(&self.fixture, &self.rpc_url)
+            .into_router_with_directory(Some(self.fixture.directory.clone()));
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            axum::Server::from_tcp(listener)
+                .unwrap()
+                .serve(router.into_make_service())
+                .with_graceful_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await
+                .unwrap();
+        });
+        self.stop = Some((stop, task));
+    }
+    /// Stop answering, as a relay that is down does.
+    async fn down(&mut self) {
+        let (stop, task) = self.stop.take().unwrap();
+        stop.send(()).unwrap();
+        task.await.unwrap();
+    }
+    /// A full restart: the process state is dropped and everything is reopened from disk.
+    async fn restart(mut self) -> Self {
+        if self.stop.is_some() {
+            self.down().await;
+        }
+        let Self {
+            fixture,
+            address,
+            peer,
+            rpc_url,
+            ..
+        } = self;
+        let mut node = Self {
+            fixture: fixture.reopen().await,
+            address,
+            peer,
+            rpc_url,
+            listener: None,
+            stop: None,
+        };
+        node.listen().await;
+        node
+    }
+    async fn sync(&self) {
+        let directory = &self.fixture.directory;
+        directory
+            .federation()
+            .unwrap()
+            .clone()
+            .sync(directory)
+            .await;
+    }
+    /// What the relay's timer does for messages waiting to be passed on.
+    async fn retry_forwards(&self) {
+        let directory = &self.fixture.directory;
+        directory
+            .federation()
+            .unwrap()
+            .clone()
+            .retry_forwards(directory)
+            .await;
+    }
+    fn pending_forwards(&self) -> usize {
+        self.fixture
+            .registry
+            .directory_subjects()
+            .unwrap()
+            .forwards()
+            .unwrap()
+            .iter()
+            .filter(|(_, row)| !row.done)
+            .count()
+    }
+    fn claim(&self, freeze: &serde_json::Value) -> Option<crate::store::monad_dm_cbor::Claim> {
+        let hash = hash_hex(freeze["identity"]["payload_hash"].as_str().unwrap()).unwrap();
+        self.fixture.registry.canonical_dm().get(&hash).unwrap()
+    }
+}
+
+/// Sender's relay (A) and recipient's relay (B), configured as each other's peer, sharing one
+/// chain. The sender publishes only on A and the recipient only on B.
+struct TwoRelays {
+    a: RelayNode,
+    b: RelayNode,
+    chain: Arc<JoinedChain>,
+    work: tempfile::TempDir,
+    rpc: (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    ),
+}
+impl TwoRelays {
+    async fn start() -> Self {
+        let chain = JoinedChain::new(ChainMode::Mine);
+        let (rpc_url, rpc_stop, rpc_task) = serve_http(chain.router()).await;
+        let reserve = || std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let (listener_a, listener_b) = (reserve(), reserve());
+        let address_a = listener_a.local_addr().unwrap();
+        let address_b = listener_b.local_addr().unwrap();
+        let mut nodes = Vec::new();
+        for (home, address, peer, listener) in [
+            (0, address_a, address_b, listener_a),
+            (1, address_b, address_a, listener_b),
+        ] {
+            let mut node = RelayNode {
+                fixture: NativeDirectoryFixture::homed(home, |_| false).await,
+                address,
+                peer: format!("http://{peer}"),
+                rpc_url: rpc_url.clone(),
+                listener: Some(listener),
+                stop: None,
+            };
+            node.listen().await;
+            nodes.push(node);
+        }
+        let (b, a) = (nodes.pop().unwrap(), nodes.pop().unwrap());
+        // Each account publishes its own entry on its own relay only.
+        let attestations =
+            &admitted_source()["canonical_facade_final_http_case"]["wire"]["http_attestations"];
+        let client = reqwest::Client::new();
+        for (index, node) in [&a, &b].into_iter().enumerate() {
+            let account = &node.fixture.accounts[index];
+            let published = client
+                .put(format!(
+                    "{}/directory/v1/{}/{}/head",
+                    node.url(),
+                    account.network,
+                    account.subject
+                ))
+                .header("content-type", "application/vnd.frank.cbor")
+                .body(hex::decode(attestations[index].as_str().unwrap()).unwrap())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(published.status(), 200);
+        }
+        Self {
+            a,
+            b,
+            chain,
+            work: tempfile::tempdir().unwrap(),
+            rpc: (rpc_stop, rpc_task),
+        }
+    }
+    /// Point the wallet at one relay, as a device configured for that relay is.
+    fn wallet_uses(&self, relay: &RelayNode) {
+        let source = admitted_source();
+        let roots: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(repo_root().join("packages/domain-roots/vectors/domain-roots-v1.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            self.work.path().join("config.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "relayHttp": relay.url(),
+                "rpcUrl": relay.rpc_url,
+                "workDir": self.work.path(),
+                "clockSeconds": JOINED_CLOCK_SECONDS,
+                "principals": source["canonical_facade_final_http_case"]["installed_principals"],
+                "domainRoots": [roots["vectors"][0]["outputs"], roots["vectors"][1]["outputs"]],
+                "stampValueWei": JOINED_STAMP_VALUE_WEI.to_string(),
+                "poolSize": 2,
+                "text": JOINED_TEXT,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    async fn wallet(&self, relay: &RelayNode, phase: &str) -> serde_json::Value {
+        self.wallet_uses(relay);
+        wallet_phase(self.work.path(), phase).await
+    }
+    /// The recipient reads its inbox on its own relay and must find exactly the one message.
+    async fn recipient_has_exactly_one(&self, freeze: &serde_json::Value) {
+        let read = self.wallet(&self.b, "recipient-read").await;
+        let inbox = read["inbox"].as_array().unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0]["t3"], freeze["identity"]["payload_hash"]);
+        assert_eq!(inbox[0]["texts"], serde_json::json!([JOINED_TEXT]));
+        // One logical delivery: one mailbox record on the recipient's relay, none on the
+        // sender's, and each payment broadcast once.
+        assert!(matches!(
+            self.b.claim(freeze).unwrap().phase,
+            Phase::Delivered(_)
+        ));
+        assert!(self.a.claim(freeze).is_none());
+        assert_eq!(self.chain.broadcasts().len(), 2);
+        assert_eq!(self.chain.count("eth_sendRawTransaction"), 2);
+        assert_eq!(self.a.pending_forwards(), 0);
+    }
+    async fn stop(mut self) {
+        for node in [&mut self.a, &mut self.b] {
+            if node.stop.is_some() {
+                node.down().await;
+            }
+            node.fixture.stop().await;
+        }
+        self.rpc.0.send(()).unwrap();
+        self.rpc.1.await.unwrap();
+    }
+}
+/// The two-relay tests each start six listeners and several wallet processes; they run one at a
+/// time so a relay restarting on its fixed port cannot meet another test's relay there.
+static TWO_RELAYS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+async fn guarded<F: std::future::Future<Output = TwoRelays>>(test: F) {
+    let _one_at_a_time = TWO_RELAYS.lock().await;
+    test.await.stop().await;
+}
+
+#[tokio::test]
+async fn two_relays_user_on_one_messages_user_on_the_other_who_reads_it_there() {
+    guarded(async {
+        let pair = TwoRelays::start().await;
+        // Relay A has never seen the recipient. Asked for its address, it learns the entry
+        // from its peer.
+        let recipient = &pair.b.fixture.accounts[1];
+        assert!(!pair
+            .a
+            .fixture
+            .directory
+            .is_published(&recipient.network, &recipient.subject));
+        let address = crate::monad_stamp_stealth::recipient_address_from_public_key(
+            &hex::decode(&recipient.subject).unwrap(),
+        )
+        .unwrap()
+        .to_hex();
+        let found = reqwest::get(format!(
+            "{}/directory/v1/{}/address/{address}",
+            pair.a.url(),
+            recipient.network
+        ))
+        .await
+        .unwrap();
+        assert_eq!(found.status(), 200);
+        assert_eq!(
+            found.headers()["x-frank-directory-subject"],
+            recipient.subject.as_str()
+        );
+        // The sender's wallet talks only to relay A.
+        let freeze = pair.wallet(&pair.a, "sender-freeze").await;
+        let mut sent = pair.wallet(&pair.a, "sender-submit").await;
+        if sent["accepted"]["phase"] == "retained" {
+            sent = pair.wallet(&pair.a, "sender-submit").await;
+        }
+        assert_eq!(sent["accepted"]["phase"], "delivered");
+        assert_eq!(sent["accepted"]["identity"], freeze["identity"]);
+        // The recipient's wallet talks only to relay B.
+        pair.recipient_has_exactly_one(&freeze).await;
+        pair
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn two_relays_recipient_relay_down_then_restarted_gets_the_message_exactly_once() {
+    guarded(async {
+        let mut pair = TwoRelays::start().await;
+        pair.a.sync().await;
+        let freeze = pair.wallet(&pair.a, "sender-freeze").await;
+        // The recipient's relay goes down before the message is sent.
+        pair.b.down().await;
+        let held = pair.wallet(&pair.a, "sender-submit").await;
+        assert_eq!(held["accepted"]["phase"], "retained");
+        assert_eq!(held["accepted"]["identity"], freeze["identity"]);
+        assert!(held["terminal"].is_null());
+        assert_eq!(pair.a.pending_forwards(), 1);
+        assert_eq!(pair.chain.count("eth_sendRawTransaction"), 0);
+        // The same bytes arriving back at relay A as a forward (as they would if another relay
+        // disagreed about where the recipient lives) are not passed on again from here: a
+        // retryable 503, and no new attempt at forwarding.
+        let rows = pair.a.fixture.registry.directory_subjects().unwrap();
+        let (identity, row) = rows.forwards().unwrap().into_iter().next().unwrap();
+        let bounced = reqwest::Client::new()
+            .put(format!("{}/message/monad/cbor", pair.a.url()))
+            .header("content-type", &row.content_type)
+            .header(crate::directory_federation::FORWARDED_HEADER, "1")
+            .body(rows.forward_body(&identity).unwrap().unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bounced.status(), 503);
+        let after = rows.forward(&identity).unwrap().unwrap();
+        assert_eq!((after.attempts, after.done), (row.attempts, false));
+        pair.a.retry_forwards().await;
+        assert_eq!(pair.a.pending_forwards(), 1);
+        // It comes back as a fresh process. Relay A's timer passes the message on; nobody
+        // re-sends it.
+        pair.b = pair.b.restart().await;
+        for _ in 0..40 {
+            if pair.a.pending_forwards() == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            pair.a.retry_forwards().await;
+        }
+        // More timer rounds, and the sender asking again, deliver nothing a second time.
+        pair.a.retry_forwards().await;
+        let again = pair.wallet(&pair.a, "sender-submit").await;
+        assert_eq!(again["accepted"]["phase"], "delivered");
+        pair.recipient_has_exactly_one(&freeze).await;
+        pair
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn two_relays_sender_relay_restarted_mid_forward_still_delivers_exactly_once() {
+    guarded(async {
+        let mut pair = TwoRelays::start().await;
+        pair.a.sync().await;
+        let freeze = pair.wallet(&pair.a, "sender-freeze").await;
+        pair.b.down().await;
+        let held = pair.wallet(&pair.a, "sender-submit").await;
+        assert_eq!(held["accepted"]["phase"], "retained");
+        assert_eq!(pair.a.pending_forwards(), 1);
+        // The sender's relay is killed with the message still waiting, and started again.
+        pair.a = pair.a.restart().await;
+        assert_eq!(pair.a.pending_forwards(), 1);
+        pair.b.listen().await;
+        for _ in 0..40 {
+            if pair.a.pending_forwards() == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            pair.a.retry_forwards().await;
+        }
+        pair.a.retry_forwards().await;
+        pair.recipient_has_exactly_one(&freeze).await;
+        pair
+    })
+    .await;
 }

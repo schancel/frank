@@ -64,6 +64,9 @@ fn valid_point(key: &AccountRef) -> bool {
         && secp256k1_abc::PublicKey::from_slice(&key.key_bytes).is_ok()
 }
 
+/// Longest signed validity of one directory entry: 366 days, in nanoseconds.
+const MAX_DIRECTORY_VALIDITY_NS: i128 = 31_622_400_000_000_000;
+
 fn nanos(t: &Timestamp) -> i128 {
     i128::from(t.seconds) * 1_000_000_000 + i128::from(t.nanoseconds)
 }
@@ -107,8 +110,9 @@ pub(crate) fn check_statement(typed: &TypedPayload) -> Result<(), CodecError> {
         ));
     }
     let duration = nanos(expiry) - nanos(timestamp);
-    if duration <= 0 || duration > 3_600_000_000_000 || nanos(&relay.expiry) < nanos(expiry) {
-        return Err(semantic("directory preview validity must be positive, at most one hour and covered by relay expiry"));
+    if duration <= 0 || duration > MAX_DIRECTORY_VALIDITY_NS || nanos(&relay.expiry) < nanos(expiry)
+    {
+        return Err(semantic("directory preview validity must be positive, at most 366 days and covered by relay expiry"));
     }
     if *revision == 0 {
         if roles.predecessor.is_some()

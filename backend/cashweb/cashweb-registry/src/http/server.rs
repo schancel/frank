@@ -243,12 +243,22 @@ async fn log_request<B>(
 fn safe_log_path(path: &str) -> Cow<'_, str> {
     let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
     match segments.as_slice() {
-        ["directory", "v1", _, _, "head"] => Cow::Borrowed("/directory/v1/:network/:subject/head"),
+        ["directory", "v1", _, subject, "head"] if *subject != "address" => {
+            Cow::Borrowed("/directory/v1/:network/:subject/head")
+        }
         ["directory", "v1", _, _, "statements", _] => {
             Cow::Borrowed("/directory/v1/:network/:subject/statements/:t1")
         }
-        ["directory-installation", _] => {
-            Cow::Borrowed("/directory-installation/:manifest_identity")
+        ["relay", "v1", "info"] => Cow::Borrowed("/relay/v1/info"),
+        ["directory", "v1", _, "subjects"] => Cow::Borrowed("/directory/v1/:network/subjects"),
+        ["directory", "v1", _, _, "chain"] => {
+            Cow::Borrowed("/directory/v1/:network/:subject/chain")
+        }
+        ["directory", "v1", _, _, "announce"] => {
+            Cow::Borrowed("/directory/v1/:network/:subject/announce")
+        }
+        ["directory", "v1", _, "address", _] => {
+            Cow::Borrowed("/directory/v1/:network/address/:address")
         }
         ["chain-rpc", _, "cap", _, "rpc"] => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/rpc"),
         ["chain-rpc", _, "cap", _, "ws"] => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/ws"),
@@ -567,6 +577,7 @@ impl RegistryServer {
                         header::HeaderName::from_static("x-frank-mailbox-signature"),
                         header::HeaderName::from_static("x-frank-mailbox-token"),
                         header::HeaderName::from_static("x-frank-mailbox-subject"),
+                        header::HeaderName::from_static("x-frank-rpc-subject"),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[0]),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[1]),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[2]),
@@ -576,9 +587,11 @@ impl RegistryServer {
                         header::HeaderName::from_static(BITCOIN_PROXY_CORS_HEADERS[0]),
                     ])
                     .expose_headers([
+                        header::CONTENT_TYPE,
                         header::HeaderName::from_static("x-frank-mailbox-next-cursor"),
                         header::HeaderName::from_static("x-frank-directory-evidence"),
                         header::HeaderName::from_static("x-frank-directory-disposition"),
+                        header::HeaderName::from_static("x-frank-directory-subject"),
                     ])
                     // Topic list/discovery responses negotiate on Accept. tower-http replaces a
                     // handler's Vary values with this CORS list, so retain its three defaults and

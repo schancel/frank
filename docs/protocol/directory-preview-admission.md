@@ -13,11 +13,20 @@ untouched. Parent #133/#696 and held #258 are not completed by this stage.
 There is no trusted-record setter, caller `verified` flag, secret-key input,
 network fetch, ambient clock, URL-derived identity or automatic re-anchoring.
 
+Entries are self-published: every record must be signed by P, the key whose
+hash is the account address. The anchor the caller passes is the hash of the
+first valid revision 0 that P signed for itself. The relay
+(`directory_runtime`) pins it when P first publishes, or when a peer relay
+replicates P's chain, and keeps one continuity row per subject in its own
+database; a client pins it on first lookup of the address. No operator
+installs or approves an account, and the relay reads the system clock.
+
 | Operation | Required input | Result/authority |
 | --- | --- | --- |
 | Open `NewEnrollment` | Installed network, full P, exact revision-zero T1 | Refuses any existing subject state; no fresh authority |
 | Open `Reopen(checkpoint)` | Same installed anchor and external minimum continuity checkpoint | Authenticates all retained evidence and prefix continuity; missing state is unavailable |
 | `advance` | Ordered exact bare type4/type2 pairs, trusted ns time, authenticated relay tuple | Durable fresh terminal `Current`, or rejection; verified forks alone persist quarantine |
+| `advance_declared` / `current_declared` | As above without a relay tuple | Same, for a relay's replicated routing table: the head may name any relay and its own binding must be unexpired |
 | `current` | Fresh trusted time/relay context | Rechecks durable state; persists successful checked-time advancement before returning |
 | `historical_evidence(T1)` | Exact accepted record identity | Original bare/wrapper bytes only; never fresh routing/stamp authority |
 | `status` | Open handle | Validated counters, head, stamp pair, checked time and checkpoint; no freshness |
@@ -138,9 +147,15 @@ strict accepted-head requirement; they cannot be downgraded to proof-only
 state. Both kinds require an actual marked enrollment and exact retained
 evidence, so neither creates permission to bootstrap a missing database.
 
-The caller must durably retain checkpoints and new-versus-reopen intent
-**outside this database's rollback domain**. Ordinary RocksDB cannot detect
-complete disk rollback/deletion on its own. A checkpoint that was itself
+The relay keeps each subject's checkpoint in its own store inside the
+registry path (`directory-subjects-v1.rocksdb`: `directory_subjects_v1`, with
+`directory_addresses_v1` mapping the 20-byte address to P). It is a separate
+store so the registry's own column families stay those an earlier relay
+version can open. That protects against a lost or partial evidence store, not
+against rolling the whole data directory back: a caller that needs that
+protection must retain checkpoints **outside this database's rollback
+domain**. Ordinary RocksDB cannot detect complete disk rollback/deletion on
+its own. A checkpoint that was itself
 rolled back cannot protect later observations. The installed anchor alone
 cannot distinguish an old complete valid database. `Db::open` may create its
 generic database path; a subsequent preview `Reopen` still refuses missing

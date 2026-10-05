@@ -66,9 +66,10 @@ error, before projecting legacy prior authority: old transition proofs grant
 no preview migration authority, even when the subject changes.
 
 The runtime successor under #133/#696 MUST enforce the reviewed preview
-policy before any head, route or DM use: caller-installed trusted anchor;
-authenticated relay tuple; trusted nanosecond clock, freshness and rollback
-protection; contiguous revision and exact predecessor linkage; schema order;
+policy before any head, route or DM use: an anchor that is the first valid
+revision 0 signed by P itself (pinned on first publication or first lookup,
+never replaced afterwards); an unexpired relay binding; nanosecond clock,
+freshness and rollback protection; contiguous revision and exact predecessor linkage; schema order;
 independent generation increments and cumulative no-reuse (including point
 negation); fork handling; S10a current/previous stamp state; and atomic bounded
 historical catch-up. Charge each exact statement plus one stable validating

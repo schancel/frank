@@ -458,6 +458,18 @@ process.stdin.on('end', () => {
       await handle.done
     }, 30000)
 
+    it('when app is started, the summary reports it running at the app URL', async () => {
+      const { handle } = await running()
+      const runningHandle: DemoHandle = { ...handle, appStarted: true }
+      const lines: string[] = []
+      printSummary(runningHandle, l => lines.push(l))
+      const text = lines.join('\n')
+      expect(text).toContain('App:     Running at http://localhost:8080 (dev server automatically started; browser launched)')
+      expect(text).not.toContain('Start the app in another terminal')
+      await handle.stop()
+      await handle.done
+    }, 30000)
+
     it('after startup, the relay dying stops everything, prints a banner and exits non-zero', async () => {
       const { handle } = await running()
       process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL')

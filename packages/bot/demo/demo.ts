@@ -58,6 +58,7 @@ export interface DemoHandle {
   done: Promise<number>
   /** Names of children that exited unexpectedly (they are not restarted). */
   unhealthy(): string[]
+  appStarted?: boolean
 }
 
 /** Thrown from startDemo when a stop was requested (a signal) before startup finished. */
@@ -85,6 +86,10 @@ export interface StartOptions {
    * SIGHUP (terminal closed). Nothing is killed because of it beyond this launcher's own children.
    */
   watchParent?: { pid: number; current?: () => number; intervalMs?: number }
+  /**
+   * Whether to launch the Quasar dev server. Default false in startDemo options unless explicitly passed.
+   */
+  startApp?: boolean
 }
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
@@ -555,6 +560,46 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     }
     abortIfStopping()
 
+    let appStarted = false
+    if (options.startApp) {
+      const appEnv: Record<string, string> = {
+        QCLI_MONAD_RELAY_BASE_URL: config.relayUrl,
+        QCLI_MONAD_RPC_CHAIN: 'monad-testnet',
+        QCLI_MONAD_STAMP_BURN_ADDRESS: config.stampBurnAddress,
+        QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI: config.minStampWei,
+        ...(config.fakeChain
+          ? {
+              QCLI_FRANK_FAKE_DEMO: 'true',
+              QCLI_FRANK_DEMO_CONTROL_URL: config.rpcUrl,
+            }
+          : {}),
+      }
+      const quasarBin = join(REPO_ROOT, 'node_modules', '@quasar', 'app-vite', 'bin', 'quasar.js')
+      const appCommandPath = existsSync(quasarBin) ? process.execPath : 'yarn'
+      const appArgs = existsSync(quasarBin) ? [quasarBin, 'dev'] : ['dev:browser']
+
+      supervisor.start({
+        name: 'app',
+        command: appCommandPath,
+        args: appArgs,
+        cwd: join(REPO_ROOT, 'app'),
+        logPath: join(logDir, 'app.log'),
+        env: appEnv,
+        onLine: line => {
+          if (
+            line.includes('App •') ||
+            line.includes('Running at') ||
+            line.includes('http://localhost:8080')
+          ) {
+            print(`[demo] ${line.trim()}`)
+          }
+        },
+      })
+      writePidFile()
+      appStarted = true
+      print(`[demo] started app dev server at http://localhost:${config.appPort}`)
+    }
+
     started = true
     return {
       config,
@@ -565,6 +610,7 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
       stop,
       done,
       unhealthy: () => [...unhealthy],
+      appStarted,
     }
   } catch (err) {
     requestStop(err instanceof DemoAborted ? err.exitCode : 1)
@@ -627,9 +673,13 @@ export function printSummary(handle: DemoHandle, print: (line: string) => void):
       ? '  Qwen:    STUB mode (offline canned replies; set QWEN_API_KEY for a real model)'
       : '  Qwen:    live model',
   )
-  print(`  App URL: ${appUrl}  (the app dev server's port is fixed in app/quasar.config.js)`)
-  print('  Start the app in another terminal, from the repo root, with exactly this:')
-  for (const line of appCommand(config, handle.relayUrl)) print(`    ${line}`)
+  if (handle.appStarted) {
+    print(`  App:     Running at ${appUrl} (dev server automatically started; browser launched)`)
+  } else {
+    print(`  App URL: ${appUrl}  (the app dev server's port is fixed in app/quasar.config.js)`)
+    print('  Start the app in another terminal, from the repo root, with exactly this:')
+    for (const line of appCommand(config, handle.relayUrl)) print(`    ${line}`)
+  }
   print(
     config.fakeChain
       ? '  The fake chain and the relay accept requests from any origin, so the browser reaches them directly.'
@@ -757,9 +807,11 @@ export async function main(argv: string[], env: Record<string, string | undefine
       // `yarn demo` runs inside packages/bot; relative paths mean relative to where the user typed it.
       cwd: env.INIT_CWD ?? process.cwd(),
     })
+    const startApp = !argv.includes('--no-app') && env.FRANK_DEMO_NO_APP !== '1'
     const handle = await startDemo(config, {
       print,
       env,
+      startApp,
       // Started by `yarn demo`: stop the stack if yarn is killed without forwarding the signal.
       watchParent: env.npm_lifecycle_event ? { pid: process.ppid } : undefined,
     })

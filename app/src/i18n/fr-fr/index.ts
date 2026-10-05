@@ -248,6 +248,11 @@ export default {
   walletPanel: {
     title: 'Portefeuilles',
     mainWallet: 'Portefeuille principal',
+    renameWallet: 'Renommer le portefeuille',
+    walletName: 'Nom du portefeuille',
+    saveName: 'Enregistrer',
+    cancel: 'Annuler',
+    resetDefault: 'Rétablir par défaut',
     testnet: 'Réseau de test',
     monad: 'Monad',
     monadTestnet: 'Monad Testnet',

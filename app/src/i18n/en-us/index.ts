@@ -242,6 +242,11 @@ export default {
   walletPanel: {
     title: 'Wallets',
     mainWallet: 'Main wallet',
+    renameWallet: 'Rename wallet',
+    walletName: 'Wallet name',
+    saveName: 'Save',
+    cancel: 'Cancel',
+    resetDefault: 'Reset to default',
     testnet: 'Testnet',
     monad: 'Monad',
     monadTestnet: 'Monad Testnet',

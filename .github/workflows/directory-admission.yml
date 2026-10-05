@@ -67,9 +67,29 @@ jobs:
       CC: gcc-12
       CXX: g++-12
       CARGO_BUILD_JOBS: '2'
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v4
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@stable
+      - name: Restore compatible Cargo dependencies and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        continue-on-error: true
+        with:
+          cache-provider: github
+          shared-key: frank-directory-admission-cargo-v1-${{ runner.os }}-${{ runner.arch }}-rust-stable-${{ hashFiles('backend/cashweb/**/Cargo.lock', 'backend/cashweb/**/Cargo.toml', 'backend/bitcoinsuite/**/Cargo.lock', 'backend/bitcoinsuite/**/Cargo.toml') }}
+          workspaces: |
+            backend/cashweb -> target
+          cache-targets: true
+          cache-bin: false
+          cache-workspace-crates: false
+          cache-all-crates: false
+          cache-on-failure: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Native build prerequisites matching the existing backend toolchain
         run: |
           sudo apt-get update

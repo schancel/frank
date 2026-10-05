@@ -12,3 +12,5 @@ __pycache__/
 scratchpad/
 .blackjack-p2p/
 *.blackjack-p2p/
+.wallets/
+*.wallet.json

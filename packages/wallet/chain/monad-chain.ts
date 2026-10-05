@@ -257,10 +257,28 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
       fakeDemoEnabled && rawChainId !== undefined
         ? chainId ?? -1n
         : protocolIdentity?.chainId ?? chainId ?? DEFAULT_MONAD_CHAIN_ID,
-    relayBaseUrl:
-      readEnv("MONAD_RELAY_BASE_URL") ??
-      readEnv("E2E_DEMO_RELAY_URL") ??
-      "http://127.0.0.1:8098",
+    relayBaseUrl: (() => {
+      const configured =
+        readEnv("MONAD_RELAY_BASE_URL") ??
+        readEnv("E2E_DEMO_RELAY_URL");
+      if (typeof window !== "undefined" && window.location && window.location.origin) {
+        const isRemote =
+          window.location.hostname !== "127.0.0.1" &&
+          window.location.hostname !== "localhost";
+        if (isRemote) {
+          if (!configured) return window.location.origin;
+          try {
+            const parsed = new URL(configured);
+            if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
+              return window.location.origin;
+            }
+          } catch {
+            // keep configured
+          }
+        }
+      }
+      return configured ?? "http://127.0.0.1:8098";
+    })(),
     networkTag:
       (fakeDemoEnabled ? readEnv("FRANK_NETWORK_TAG") : undefined) ??
       protocolIdentity?.networkTag ??

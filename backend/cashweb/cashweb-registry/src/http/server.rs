@@ -609,6 +609,7 @@ impl RegistryServer {
                         header::HeaderName::from_static(RPC_CORS_HEADERS[4]),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[5]),
                         header::HeaderName::from_static(BITCOIN_PROXY_CORS_HEADERS[0]),
+                        header::HeaderName::from_static("ngrok-skip-browser-warning"),
                     ])
                     .expose_headers([
                         header::CONTENT_TYPE,

@@ -92,6 +92,57 @@ export const DEMO_VARS: readonly DemoVar[] = [
     description: 'Port of the fake-chain RPC (only with FRANK_DEMO_FAKE_CHAIN=1).',
   },
   {
+    name: 'FRANK_DEMO_NGROK',
+    scope: 'launcher',
+    default: '0',
+    description:
+      'Set to 1 (same as the --ngrok flag) to automatically expose the demo stack via local ngrok tunnels.',
+  },
+  {
+    name: 'FRANK_DEMO_NGROK_BIN',
+    scope: 'launcher',
+    default: 'ngrok',
+    description: 'Executable name or path for the ngrok CLI.',
+  },
+  {
+    name: 'FRANK_DEMO_NGROK_CONFIG',
+    scope: 'launcher',
+    default: 'unset',
+    description: 'Path to an existing ngrok configuration file to merge with the demo tunnels.',
+  },
+  {
+    name: 'FRANK_DEMO_NGROK_RELAY_DOMAIN',
+    scope: 'launcher',
+    default: 'unset',
+    description: 'Domain or hostname for the ngrok relay tunnel (e.g. relay-subdomain.ngrok-free.app).',
+  },
+  {
+    name: 'FRANK_DEMO_NGROK_APP_DOMAIN',
+    scope: 'launcher',
+    default: 'unset',
+    description: 'Domain or hostname for the ngrok app tunnel (e.g. app-subdomain.ngrok-free.app).',
+  },
+  {
+    name: 'FRANK_DEMO_PUBLIC_RELAY_URL',
+    scope: 'relay, app',
+    default: 'unset = http://127.0.0.1:<port>',
+    description:
+      'Public base URL of the relay. If unset and FRANK_DEMO_NGROK=1, auto-discovered from ngrok. When set, the app connects to this URL instead of loopback.',
+  },
+  {
+    name: 'FRANK_DEMO_PUBLIC_APP_URL',
+    scope: 'app',
+    default: 'unset = http://localhost:<port>',
+    description: 'Public URL of the frontend app. If unset and FRANK_DEMO_NGROK=1, auto-discovered from ngrok.',
+  },
+  {
+    name: 'NGROK_AUTHTOKEN',
+    scope: 'launcher',
+    default: 'unset',
+    description: 'ngrok authtoken; only needed if not already configured in your local ngrok configuration.',
+    secret: true,
+  },
+  {
     name: 'CASHWEBD_BIN',
     scope: 'relay',
     default: 'built with Cargo',
@@ -355,6 +406,14 @@ export interface DemoBot {
 
 export interface DemoConfig {
   fakeChain: boolean
+  ngrok: boolean
+  ngrokBin: string
+  ngrokConfig?: string
+  ngrokRelayDomain?: string
+  ngrokAppDomain?: string
+  ngrokAuthtoken?: string
+  publicRelayUrl?: string
+  publicAppUrl?: string
   stateDir: string
   relayPort: number
   relayUrl: string
@@ -508,6 +567,7 @@ export function resolveDemoConfig(params: {
   env: Record<string, string | undefined>
   envFile: Record<string, string>
   fakeChainFlag: boolean
+  ngrokFlag?: boolean
   /** Used to place the default state dir and resolve relative paths. */
   home?: string
   cwd?: string
@@ -521,6 +581,22 @@ export function resolveDemoConfig(params: {
   const problems: string[] = []
   const noFaucet = merged.FRANK_DEMO_NO_FAUCET === '1'
   const fakeChain = params.fakeChainFlag || merged.FRANK_DEMO_FAKE_CHAIN === '1'
+  const ngrok = params.ngrokFlag || merged.FRANK_DEMO_NGROK === '1' || merged.FRANK_DEMO_NGROK === 'true'
+  const ngrokBin = merged.FRANK_DEMO_NGROK_BIN || 'ngrok'
+  const ngrokConfig = merged.FRANK_DEMO_NGROK_CONFIG ? resolve(cwd, merged.FRANK_DEMO_NGROK_CONFIG) : undefined
+  const ngrokRelayDomain = merged.FRANK_DEMO_NGROK_RELAY_DOMAIN || undefined
+  const ngrokAppDomain = merged.FRANK_DEMO_NGROK_APP_DOMAIN || undefined
+  const ngrokAuthtoken = merged.NGROK_AUTHTOKEN || undefined
+
+  const publicRelayUrl = merged.FRANK_DEMO_PUBLIC_RELAY_URL || undefined
+  if (publicRelayUrl && !/^https?:\/\//.test(publicRelayUrl)) {
+    problems.push(`FRANK_DEMO_PUBLIC_RELAY_URL must be an http(s) URL, got "${publicRelayUrl}"`)
+  }
+  const publicAppUrl = merged.FRANK_DEMO_PUBLIC_APP_URL || undefined
+  if (publicAppUrl && !/^https?:\/\//.test(publicAppUrl)) {
+    problems.push(`FRANK_DEMO_PUBLIC_APP_URL must be an http(s) URL, got "${publicAppUrl}"`)
+  }
+
   const stateDir = resolve(cwd, merged.FRANK_DEMO_STATE_DIR || join(home, '.frank-demo'))
   const relayPort = port('FRANK_DEMO_RELAY_PORT', merged.FRANK_DEMO_RELAY_PORT, 8098, problems)
   const fakeRpcPort = port('FRANK_DEMO_FAKE_RPC_PORT', merged.FRANK_DEMO_FAKE_RPC_PORT, 8545, problems)
@@ -748,9 +824,17 @@ export function resolveDemoConfig(params: {
         ]),
   ]
 
-  const secrets = [fakeChain ? undefined : rpcUrl, wsRpcUrl, qwenKey].filter((v): v is string => !!v)
+  const secrets = [fakeChain ? undefined : rpcUrl, wsRpcUrl, qwenKey, ngrokAuthtoken].filter((v): v is string => !!v)
   return {
     fakeChain,
+    ngrok,
+    ngrokBin,
+    ngrokConfig,
+    ngrokRelayDomain,
+    ngrokAppDomain,
+    ngrokAuthtoken,
+    publicRelayUrl,
+    publicAppUrl,
     stateDir,
     relayPort,
     relayUrl,

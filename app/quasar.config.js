@@ -311,6 +311,7 @@ export default configure(ctx => {
     devServer: {
       open: true, // opens browser window automatically
       port: 8080,
+      allowedHosts: true,
       // Found live while working on the chat redesign (2026-09-28): this repo's git-worktree
       // workflow (packages/frank_worktree_node_modules_symlink_bug.md) symlinks a worktree's
       // node_modules/@frank/* entries -- and reuses third-party packages -- from wherever the
@@ -324,6 +325,18 @@ export default configure(ctx => {
       // one checkout's absolute path into this committed config.
       fs: {
         strict: false,
+      },
+      // Reverse-proxy relay routes directly to the local relay daemon so that public/ngrok frontend
+      // access (including single-domain tunnel setups) can reach relay endpoints and WebSockets
+      // through the same dev server origin without CORS or loopback binding constraints.
+      proxy: {
+        '/chains': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}` },
+        '/peers': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}` },
+        '/metadata': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}` },
+        '/messages': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}` },
+        '/message': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}`, ws: true },
+        '/chain-rpc': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}`, ws: true },
+        '/directory': { target: `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT || 8098}` },
       },
     },
 

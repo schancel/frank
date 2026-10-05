@@ -93,6 +93,17 @@ test('independently pinned descriptor mismatch consumes restore rather than chan
   a.ceremony.cancel()
   b.ceremony.cancel()
 })
+test('restore without descriptor recovers valid roots and stages account', async () => {
+  const f = await signup()
+  const restore = createAccountCeremony()
+  const res = await restore.beginRestore()
+  expect(res).toBe('')
+  await restore.confirm(f.shares.slice(0, 2), 'Restored Account')
+  expect(accountSession.stage).toHaveBeenCalledTimes(1)
+  const staged = jest.mocked(accountSession.stage).mock.calls[0][0]
+  expect(staged.displayName).toBe('Restored Account')
+  f.ceremony.cancel()
+})
 test('cancel during legacy-state check never stages recovered roots', async () => {
   const f = await signup()
   let resolve!: () => void

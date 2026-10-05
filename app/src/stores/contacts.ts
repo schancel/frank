@@ -1,3 +1,4 @@
+import { fetchContactProfile } from '../utils/directory-peer'
 import { defineStore } from 'pinia'
 
 import { useChatStore } from './chats'
@@ -88,8 +89,8 @@ type Profile = {
   avatar: string | null
   pubKey: ProfilePubKey | null
   /** The signed profile carried the self-declared bot marker (#311). `undefined` = not looked up
-   * yet; only an explicit `true` counts. The blackjack bet control also requires the curated
-   * dealer name (#422). A copied name plus this flag is still not a verified dealer key (#217). */
+   * yet; only an explicit `true` counts. A copied name plus this flag is still not a verified
+   * key (#217). */
   isBot?: boolean
 }
 
@@ -386,7 +387,7 @@ export const useContactStore = defineStore('contacts', {
           console.error(`Invalid ${activeChain.name} address: ${address}`)
           return
         }
-        const profileInfo = await activeChain.fetchProfile(chainAddress)
+        const profileInfo = await fetchContactProfile(chainAddress)
         if (!profileInfo) {
           return
         }
@@ -493,7 +494,7 @@ export const useContactStore = defineStore('contacts', {
       const botUnknown =
         oldContactInfo.profile && oldContactInfo.profile.isBot === undefined
       // A profile saved before signed-name provenance has a fresh picture and bot flag, so the
-      // hourly skip would leave the wager gate closed. Unknown provenance must be fetched. A
+      // hourly skip would leave it unknown forever. Unknown provenance must be fetched. A
       // known blank signed name is not unknown and must not be refreshed just to fill it.
       const signedNameUnknown =
         oldContactInfo.profile &&
@@ -510,7 +511,7 @@ export const useContactStore = defineStore('contacts', {
         if (!chainAddress) {
           throw new Error(`Invalid ${activeChain.name} address: ${address}`)
         }
-        const profileInfo = await activeChain.fetchProfile(chainAddress)
+        const profileInfo = await fetchContactProfile(chainAddress)
         if (!profileInfo) {
           throw new Error(`No registered profile found for ${address}`)
         }

@@ -7,6 +7,7 @@ import { desktopNotify } from '../utils/notifications'
 import { store } from '../adapters/level-message-store'
 import { toChainDisplayAddress } from '../utils/chain-address'
 import { formatBalance } from '../utils/formatting'
+import { acquireOutgoingLock, withOutgoingLock } from '../utils/outgoing-lock'
 import { activeChain } from '@frank/wallet/chain'
 import {
   getMessageItemPreview,
@@ -58,6 +59,7 @@ import {
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import { useProfileStore } from './my-profile'
 import { useContactStore } from './contacts'
+import { useBalance } from '../composables/useBalance'
 import { mapObjIndexed, pathOr } from 'ramda'
 import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
 import {
@@ -295,6 +297,13 @@ function isInsufficientFundsError(error: unknown): boolean {
   )
 }
 
+/** The original failure a `CanonicalMessagingHoldError` was raised for, if it carries one. */
+function heldCause(error: unknown): unknown {
+  return error instanceof Error && error.name === 'CanonicalMessagingHoldError'
+    ? (error as { cause?: unknown }).cause
+    : undefined
+}
+
 /** Maps a failed send to the reason class shown to the user, and says whether the message must
  * keep its payment attempt (so a later retry asks the wallet about it instead of paying again). */
 function classifySendFailure(
@@ -320,8 +329,17 @@ function classifySendFailure(
   if (isInsufficientFundsError(error)) {
     return { reason: 'insufficient-funds' }
   }
+  // An earlier payment that could not be finished holds this send. Show why it could not be
+  // finished; whatever payment set this message already has stays on it.
+  const held = heldCause(error)
+  if (isInsufficientFundsError(held)) {
+    return { reason: 'insufficient-funds', keepDigest: ownDigest }
+  }
   return {
-    reason: isNoResponseError(error) ? 'unreachable' : 'error',
+    reason:
+      isNoResponseError(error) || isNoResponseError(held)
+        ? 'unreachable'
+        : 'error',
     // Any failure after the payment set was journaled leaves that set on the message.
     keepDigest: ownDigest,
   }
@@ -890,11 +908,17 @@ export const useChatStore = defineStore('chats', {
      *
      * Once a message's exact signed payment set exists, its payload hash is recorded on the
      * message (`delivery.attemptDigest`) before the set is first submitted. Every later attempt
-     * for that message (automatic or manual) first asks the wallet what became of that set
-     * (`directMessages.reconcileAttempts`): while it is `live` the identical bytes are re-sent,
-     * which is free and idempotent; only when it is `dead` (the relay ended it for good) is a
-     * *new* payment built, and only by an explicit manual Retry. If its fate is `unknown`, the user
-     * must confirm first.
+     * for that message (background, automatic or manual) first asks the wallet what became of
+     * that set (`directMessages.reconcileAttempts`): while it is `live` the identical bytes are
+     * re-sent, which is free and idempotent; only when it is `dead` (the relay ended it for good)
+     * is a *new* payment built, and only by a Retry the user clicked. If its fate is `unknown`,
+     * the user must confirm first. A retry nobody clicked (`retryOutgoing({ automatic: true })`)
+     * never builds a payment after `dead` or `unknown` and is never `confirmed`; it builds one
+     * only for a failed message cut off mid-send (`interrupted`) that has no recorded attempt,
+     * after the wallet has shown that it holds no payment nobody points at.
+     *
+     * Each send or retry of a message holds a Web Lock on it for its whole run, shared by all
+     * tabs of the profile; a tab that finds it held reports `busy` and leaves the message alone.
      */
     async sendMessage({
       wallet,
@@ -942,30 +966,48 @@ export const useChatStore = defineStore('chats', {
       })
       // Enqueue the first durable save synchronously. Clear called after this composer action is
       // therefore ordered after the row, while the optimistic bubble remains visible immediately.
-      await this.saveOutgoing(displayAddress, pendingMessageId)
-      return this.runOutgoing({
-        wallet,
-        address: displayAddress,
-        id: pendingMessageId,
-        manual: false,
-        onPreparationProgress,
-      })
+      // The message's lock is asked for first and the row is written only once it is held, so
+      // another tab that loads the row always finds the send locked (see `runOutgoing`).
+      const lock = acquireOutgoingLock(pendingMessageId)
+      try {
+        await serializeDeliveryMutation(async () => {
+          await lock.held
+          return this.saveOutgoingExclusive(displayAddress, pendingMessageId)
+        })
+        return await this.runOutgoing({
+          wallet,
+          address: displayAddress,
+          id: pendingMessageId,
+          manual: false,
+          // A fresh id is never locked by anyone else; if the lock could not be had at all the
+          // send takes it the ordinary way.
+          lockHeld: await lock.held,
+          onPreparationProgress,
+        })
+      } finally {
+        await lock.release()
+      }
     },
-    /** Manual Retry of a failed outgoing message (`status: 'error'`). See `sendMessage` for the
-     * no-double-payment rule this follows. */
+    /** Retry of a failed outgoing message (`status: 'error'`): the user's Retry, or with
+     * `automatic` a retry nobody clicked. See `sendMessage` for the no-double-payment rule this
+     * follows. */
     async retryOutgoing({
       wallet,
       address,
       payloadDigest,
       confirmed = false,
+      automatic = false,
       onPreparationProgress,
     }: {
       wallet: WalletHandle
       address: string
       /** The message's key in the store (`ChatMessage.payloadDigest`). */
       payloadDigest: string
-      /** The user accepted that this retry may pay a second time. */
+      /** The user accepted that this retry may pay a second time. Ignored when `automatic`. */
       confirmed?: boolean
+      /** Nobody clicked: an earlier payment is only settled, and a payment is built only for a
+       * message cut off mid-send (`interrupted`) that provably has none yet. */
+      automatic?: boolean
       onPreparationProgress?: (
         progress: DirectMessagePreparationProgress,
       ) => void
@@ -984,8 +1026,45 @@ export const useChatStore = defineStore('chats', {
         address: toChainDisplayAddress(address),
         id: payloadDigest,
         manual: true,
-        confirmed,
+        automatic,
+        confirmed: confirmed && !automatic,
         onPreparationProgress,
+      })
+    },
+    /**
+     * Settles a failed outgoing message's recorded payment without the user: asks the wallet
+     * what became of it and re-sends the same bytes while it is still live at the relay. It
+     * never builds a new payment; a message with no recorded payment is left as it is.
+     */
+    async resumeOutgoing({
+      wallet,
+      address,
+      payloadDigest,
+    }: {
+      wallet: WalletHandle
+      address: string
+      payloadDigest: string
+    }): Promise<OutgoingOutcome> {
+      const message = this.messages[payloadDigest]
+      if (
+        !message ||
+        !message.outbound ||
+        message.status !== 'error' ||
+        !walletOwnsMessage(wallet, message)
+      ) {
+        return { state: 'busy' }
+      }
+      if (message.delivery?.attemptDigest === undefined) {
+        return {
+          state: 'failed',
+          reason: message.delivery?.failureReason ?? 'error',
+        }
+      }
+      return this.runOutgoing({
+        wallet,
+        address: toChainDisplayAddress(address),
+        id: payloadDigest,
+        manual: false,
       })
     },
     /** Best-effort durable write of one outgoing message's current state. */
@@ -1161,6 +1240,64 @@ export const useChatStore = defineStore('chats', {
         }
       }
     },
+    /**
+     * Brings this tab's copy of an outgoing message in line with its durable row, read after every
+     * queued write of this tab. `gone`: the row no longer exists or is delivered (another tab
+     * sent it, or it was discarded); the local copy is dropped. `changed`: the row's state differs
+     * (another tab recorded a payment, or failed differently); the local copy now has the row's
+     * state. `unreadable`: the store could not be read; nothing is changed. A store without point
+     * reads (test doubles) is taken as `same`.
+     */
+    async refreshOutgoingFromStore(
+      address: string,
+      id: string,
+    ): Promise<'same' | 'changed' | 'gone' | 'unreadable'> {
+      return serializeDeliveryMutation(async () => {
+        const messageStore = await store
+        if (typeof messageStore?.getMessage !== 'function') return 'same'
+        let row: MessageWrapper | undefined
+        try {
+          row = await messageStore.getMessage(id)
+        } catch (error) {
+          console.warn('could not read the stored outgoing message', error)
+          return 'unreadable'
+        }
+        const message = this.messages[id]
+        if (!message) return 'gone'
+        const stored = row?.message
+        if (!stored || stored.status === 'confirmed') {
+          delete this.messages[id]
+          const chat = this.chats[toChainDisplayAddress(address)]
+          if (chat) {
+            chat.messages = chat.messages.filter(m => m.payloadDigest !== id)
+            recomputeChatAccounting(chat, this.activeChatAddr)
+          }
+          return 'gone'
+        }
+        const storedDigest = stored.delivery?.attemptDigest
+        const localDigest = message.delivery?.attemptDigest
+        // A payment recorded here but not on disk (its write failed) is never forgotten, and a row
+        // still 'pending' without a payment only says a send was started, which this copy knows.
+        if (storedDigest === undefined) {
+          if (localDigest !== undefined || stored.status === 'pending')
+            return 'same'
+        } else if (storedDigest === localDigest) return 'same'
+        // The same reading of a stored row as on load: a send that is not running any more is
+        // pending with a recorded payment.
+        const status =
+          stored.status === 'pending' ? 'payment-pending' : stored.status
+        const delivery: OutgoingDelivery = { ...stored.delivery }
+        if (
+          status === message.status &&
+          storedDigest === localDigest &&
+          delivery.failureReason === message.delivery?.failureReason
+        )
+          return 'same'
+        message.status = status
+        message.delivery = delivery
+        return 'changed'
+      })
+    },
     /** Applies what the wallet knows about a message's earlier payment attempt. */
     async applyAttemptStatus({
       address,
@@ -1194,14 +1331,20 @@ export const useChatStore = defineStore('chats', {
       address,
       id,
       manual,
+      automatic = false,
       confirmed = false,
+      lockHeld = false,
       onPreparationProgress,
     }: {
       wallet: WalletHandle
       address: string
       id: string
       manual: boolean
+      /** A retry nobody clicked (see `retryOutgoing`): it may only build a message's first payment. */
+      automatic?: boolean
       confirmed?: boolean
+      /** The caller already holds this message's lock (see `sendMessage`). */
+      lockHeld?: boolean
       onPreparationProgress?: (
         progress: DirectMessagePreparationProgress,
       ) => void
@@ -1217,14 +1360,24 @@ export const useChatStore = defineStore('chats', {
       inflightOutgoing.add(id)
       let recoveredOthers = false
       try {
-        const outcome = await this.runOutgoingExclusive({
-          wallet,
-          address,
-          id,
-          manual,
-          confirmed,
-          onPreparationProgress,
-        })
+        // Another tab of this profile may be sending this very message (its row is saved before
+        // the send starts, and this tab's copy may call it interrupted). Its lock is held for the
+        // whole send: then this tab leaves the message as it is and pays nothing.
+        const run = () =>
+          this.runOutgoingExclusive({
+            wallet,
+            address,
+            id,
+            manual,
+            automatic: automatic && manual,
+            confirmed: confirmed && !automatic,
+            onPreparationProgress,
+          })
+        const locked = lockHeld
+          ? { result: await run() }
+          : await withOutgoingLock(id, run)
+        if (!locked) return { state: 'busy' }
+        const outcome = locked.result
         recoveredOthers =
           outcome.state === 'failed' && outcome.reason === 'recovered'
         return outcome
@@ -1239,6 +1392,7 @@ export const useChatStore = defineStore('chats', {
       address,
       id,
       manual,
+      automatic,
       confirmed,
       onPreparationProgress,
     }: {
@@ -1246,13 +1400,31 @@ export const useChatStore = defineStore('chats', {
       address: string
       id: string
       manual: boolean
+      automatic: boolean
       confirmed: boolean
       onPreparationProgress?: (
         progress: DirectMessagePreparationProgress,
       ) => void
     }): Promise<OutgoingOutcome> {
+      // A Retry (clicked or automatic) acts on this tab's copy of the message, which can be stale:
+      // another tab may have sent it (and removed its row) or recorded a payment for it since
+      // this tab loaded. Read the durable row first, under the lock, and never act on an old copy.
+      if (manual) {
+        const fresh = await this.refreshOutgoingFromStore(address, id)
+        if (fresh === 'gone' || fresh === 'unreadable') return { state: 'busy' }
+        if (
+          fresh === 'changed' &&
+          this.messages[id]?.delivery?.attemptDigest === undefined
+        )
+          return { state: 'busy' }
+        // 'changed' with a recorded payment now: go on, and settle that payment below.
+      }
       const message = this.messages[id]
-      assert(message, 'outgoing message vanished')
+      // Read again under the lock: the message may have changed while it was awaited.
+      if (!message || !walletOwnsMessage(wallet, message))
+        return { state: 'busy' }
+      if (automatic && (!message.outbound || message.status !== 'error'))
+        return { state: 'busy' }
       const recipient = activeChain.parseAddress(address)
       assert(recipient, `Invalid recipient address: ${address}`)
       const previous = message.delivery
@@ -1294,6 +1466,7 @@ export const useChatStore = defineStore('chats', {
         if (!stillCurrent()) return { state: 'busy' }
         if (applied === 'live') return { state: 'payment-pending' }
         if (applied === 'unknown') {
+          // An automatic retry is never `confirmed` (see `runOutgoing`), so it always stops here.
           if (!manual || !confirmed) {
             await this.setOutgoingState(address, id, 'error', {
               attemptDigest: digest,
@@ -1303,7 +1476,7 @@ export const useChatStore = defineStore('chats', {
               ? { state: 'needs-confirmation', reason: 'unverified' }
               : { state: 'failed', reason: 'unverified' }
           }
-        } else if (!manual) {
+        } else if (!manual || automatic) {
           // The old payment can never land. Building a new one is the user's decision (Retry).
           await this.setOutgoingState(address, id, 'error', {
             failureReason: 'rejected',
@@ -1312,17 +1485,17 @@ export const useChatStore = defineStore('chats', {
           return { state: 'failed', reason: 'rejected' }
         }
         // Manual retry of a dead (or user-confirmed unknown) attempt: fall through, new payment.
+      } else if (automatic && previous?.failureReason !== 'interrupted') {
+        // No attempt recorded and not cut off mid-send: an earlier payment for it was given up
+        // (dead) or the send failed for a reason the user must see. Only a click sends it again.
+        return { state: 'failed', reason: previous?.failureReason ?? 'error' }
       } else if (
         manual &&
         !confirmed &&
         previous?.failureReason === 'recovered'
       ) {
         return { state: 'needs-confirmation', reason: 'recovered' }
-      } else if (
-        manual &&
-        !confirmed &&
-        previous?.failureReason === 'interrupted'
-      ) {
+      } else if (manual && previous?.failureReason === 'interrupted') {
         // No attempt is recorded on this message, but the app stopped mid-send: the wallet may
         // hold (or already have resumed) a payment nobody points at. Do not pay again unless
         // there is provably none, or the user says so.
@@ -1332,7 +1505,7 @@ export const useChatStore = defineStore('chats', {
           const attempt = other?.delivery?.attemptDigest
           if (attempt !== undefined) known.add(attempt)
         }
-        let orphans: string[]
+        let orphans: string[] | undefined
         try {
           orphans = await activeChain.directMessages.unattributedAttempts({
             wallet,
@@ -1340,11 +1513,28 @@ export const useChatStore = defineStore('chats', {
           })
         } catch (error) {
           console.warn('could not check for an unattributed payment', error)
-          orphans = ['unchecked']
         }
-        if (orphans.length > 0) {
-          // Leave the message 'interrupted': every unconfirmed Retry must hit this check again.
+        if (!confirmed && (orphans === undefined || orphans.length > 0)) {
+          // Leave the message 'interrupted': every unconfirmed Retry must hit this check again,
+          // in this session and after a reload. Only the user's answer below ends that.
           return { state: 'needs-confirmation', reason: 'unverified' }
+        }
+        if (orphans !== undefined && orphans.length > 0) {
+          // The user chose to pay again. Save that answer for the payments it was about, so they
+          // stop blocking later retries. If it cannot be saved, the wallet keeps reporting them
+          // and the next interrupted message asks again; that never pays without a prompt.
+          try {
+            await activeChain.directMessages.resolveUnattributedAttempts({
+              wallet,
+              payloadDigests: orphans,
+            })
+          } catch (error) {
+            console.warn(
+              'could not save the answer for an unattributed payment',
+              error,
+            )
+          }
+          if (!stillCurrent()) return { state: 'busy' }
         }
       }
 
@@ -1368,7 +1558,10 @@ export const useChatStore = defineStore('chats', {
           onAttemptCreated: async attemptDigest => {
             ownDigest = attemptDigest
             // Strict: this write must be durable before the relay sees any byte of the set.
-            // If it fails, the wallet aborts the send and rolls the attempt back.
+            // If it fails, the send stops before any relay request. The wallet does NOT roll the
+            // attempt back: its payment intent stays journaled, later sends wait behind it, and
+            // reconciliation finishes and delivers those same bytes. `ownDigest` is therefore
+            // kept on the message by the failure path below whenever that later write succeeds.
             await this.setOutgoingState(
               address,
               id,
@@ -1956,6 +2149,25 @@ export const useChatStore = defineStore('chats', {
         }
         this.lastReceived = message.serverTime
         chat.totalValue += messageValue
+      }
+      const hasIncomingConfirmedStamps = deliverableWrappers.some(wrapper => {
+        if (outboundMatches.has(wrapper.index) || wrapper.outbound) {
+          return false
+        }
+        return (
+          (wrapper.message.stampValueWei !== undefined &&
+            wrapper.message.stampValueWei > 0n) ||
+          (wrapper.message.stampPayments !== undefined &&
+            wrapper.message.stampPayments.length > 0) ||
+          (wrapper.stampValue !== undefined && wrapper.stampValue > 0)
+        )
+      })
+      if (hasIncomingConfirmedStamps) {
+        try {
+          void useBalance().refresh()
+        } catch {
+          // ignore
+        }
       }
       return {
         suppressedReceipts: receipts.filter(receipt =>

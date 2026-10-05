@@ -9,7 +9,7 @@ import {
 import { DOMAIN_PURPOSES, DERIVATION_REGISTRY_ID } from '@frank/domain-roots'
 
 jest.mock('@frank/wallet/chain', () => ({
-  activeChain: { createWallet: jest.fn() },
+  activeChain: { createWallet: jest.fn(), isTestnet: true },
 }))
 
 const deferred = <T>() => {
@@ -323,4 +323,69 @@ test('failed pending cleanup leaves independently authenticated active account u
   expect(f.wallet.close).not.toHaveBeenCalled()
   await f.session.retry()
   expect(f.session.state.pendingError).toBeNull()
+})
+
+test('an unchanged account keeps its published identity across wallet acquisitions, and a replacement changes it', async () => {
+  const f = fixture()
+  // Real custody builds a new snapshot object on every read.
+  const fresh = (revision: number, accountId: string): CustodySnapshot => ({
+    schema: 1,
+    revision,
+    active: {
+      ...f.account,
+      receipt: { operationId: 'attempt-' + accountId, context: { accountId } },
+    } as PublicAccount,
+    pending: null,
+  })
+  f.custody.snapshot.mockImplementation(async () => fresh(1, 'a'))
+  await f.session.initialize()
+  const account = f.session.state.account,
+    revision = f.session.state.revision
+  await f.session.getWallet()
+  await f.session.getWallet()
+  expect(f.session.state.account).toBe(account)
+  expect(f.session.state.revision).toBe(revision)
+  f.custody.snapshot.mockImplementation(async () => fresh(2, 'b'))
+  f.capability.account = fresh(2, 'b').active as PublicAccount
+  await f.session.getWallet()
+  expect(f.session.state.account).not.toBe(account)
+  expect(f.session.state.account?.receipt.context.accountId).toBe('b')
+})
+
+test('getActiveWalletRoot and backupCodex32 split active wallet root into 2-of-3 shares', async () => {
+  const f = fixture()
+  await f.session.initialize()
+  const root = await f.session.getActiveWalletRoot()
+  expect(root).toBeInstanceOf(Uint8Array)
+  expect(root.length).toBe(32)
+
+  const shares = await f.session.backupCodex32(2, 3)
+  expect(shares).toHaveLength(3)
+  for (const share of shares) {
+    expect(share.startsWith('ms12frnk')).toBe(true)
+    expect(share.length).toBe(127)
+  }
+})
+
+test('getActiveDomainRoot and getChainAddress derive valid addresses for ecash and solana', async () => {
+  const f = fixture()
+  f.capability.takeRoots = jest.fn(() =>
+    DOMAIN_PURPOSES.map((purpose, i) => ({
+      registry: DERIVATION_REGISTRY_ID,
+      purpose,
+      bytes: new Uint8Array(32).fill(i + 1),
+    })),
+  )
+  await f.session.initialize()
+
+  const ecashRoot = await f.session.getActiveDomainRoot('ecash-bch-wallet')
+  expect(ecashRoot).toBeInstanceOf(Uint8Array)
+  expect(ecashRoot.length).toBe(32)
+
+  const ecashAddr = await f.session.getChainAddress('ecash')
+  expect(ecashAddr.startsWith('ectest:')).toBe(true)
+
+  const solanaAddr = await f.session.getChainAddress('solana')
+  expect(typeof solanaAddr).toBe('string')
+  expect(solanaAddr.length).toBeGreaterThan(30)
 })

@@ -2,137 +2,222 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { ref } from 'vue'
 import Panel from './WalletPanel.vue'
+import RenameWalletDialog from '../wallet/RenameWalletDialog.vue'
+import { useWalletNames } from '../../composables/useWalletNames'
 import en from '../../i18n/en-us'
-const mockEnsure = jest.fn(async () => ({}))
-const mockReceive = '0x1111111111111111111111111111111111111111'
-const mockRefresh = jest.fn(async () => undefined)
+
 const mockLoaded = ref(true)
 const mockError = ref(false)
-jest.mock('@frank/bot/demo/demo-funding', () => ({
-  ensureDemoBalance: (...args: unknown[]) => mockEnsure(...args),
+const mockFormattedBalance = ref('0 MON')
+const mockRouterPush = jest.fn()
+const mockRoute = ref({ path: '/wallet', query: { chain: 'monad' } })
+
+jest.mock('vue-router', () => ({
+  useRouter: () => ({ push: mockRouterPush }),
+  useRoute: () => mockRoute.value,
 }))
-jest.mock('../../accounts/session', () => ({
-  accountStatus: {
-    status: 'ready',
-    revision: 1,
-    account: {
-      descriptor: 'PUBLIC-DESCRIPTOR',
-      fingerprint: 'PUBLIC-FINGERPRINT',
-    },
-  },
-  accountSession: {
-    getWallet: async () => ({
-      identity: { address: { raw: 'AUTH-ADDRESS-DO-NOT-FUND' } },
-      getReceiveAddress: async () => ({ raw: mockReceive }),
-    }),
-  },
-}))
+
 jest.mock('../../composables/useBalance', () => ({
   useBalance: () => ({
     loaded: mockLoaded,
     hasError: mockError,
-    formattedBalance: ref('0 MON'),
-    refresh: mockRefresh,
+    formattedBalance: mockFormattedBalance,
+    refresh: jest.fn(),
   }),
 }))
+
 const t = (key: string) =>
-  key.split('.').reduce((value: any, part) => value[part], en)
+  key.split('.').reduce((value: any, part) => value?.[part], en) ?? key
+
 function render() {
   return mount(Panel, {
     global: {
-      mocks: { $t: t, $router: { push: jest.fn() } },
+      mocks: { $t: t, $router: { push: mockRouterPush } },
       stubs: {
+        QScrollArea: { template: '<div><slot /></div>' },
         QList: { template: '<div><slot /></div>' },
         QItem: { template: '<button><slot /></button>' },
-        QItemSection: { template: '<span><slot /></span>' },
+        QItemSection: {
+          props: ['avatar', 'side'],
+          template: '<span :class="{ \'q-item-section--side\': side, \'q-item-section--avatar\': avatar }"><slot /></span>',
+        },
         QItemLabel: { template: '<span><slot /></span>' },
-        QBtn: { props: ['label'], template: '<button>{{label}}</button>' },
-        QInput: true,
+        QSeparator: { template: '<hr />' },
         QIcon: true,
+        QBtn: {
+          props: ['label', 'disable'],
+          template: '<button :disabled="disable">{{ label }}<slot /></button>',
+        },
+        QBadge: true,
+        Codex32BackupDialog: true,
+        RenameWalletDialog: true,
       },
       directives: { ripple: {} },
     },
   })
 }
+
+beforeEach(() => {
+  localStorage.clear()
+  const { clearAllCustomNames } = useWalletNames()
+  clearAllCustomNames()
+})
+
 afterEach(() => {
-  delete process.env.QCLI_FRANK_FAKE_DEMO
-  delete process.env.QCLI_FRANK_DEMO_CONTROL_URL
-  mockEnsure.mockClear()
   mockLoaded.value = true
   mockError.value = false
+  mockFormattedBalance.value = '0 MON'
+  const { clearAllCustomNames } = useWalletNames()
+  clearAllCustomNames()
 })
-test('normal mode has no fake-funding action and accurately disables messaging', () => {
+
+test('renders list of wallets without recovery banners or demo buttons', () => {
   const view = render()
-  expect(view.find('[data-test="demo-fund"]').exists()).toBe(false)
-  expect(view.text()).toContain('Messaging is unavailable')
-  expect(view.text()).toContain('cannot recreate')
-  expect(mockEnsure).not.toHaveBeenCalled()
+  expect(view.find('[data-test="wallet-row"]').exists()).toBe(true)
+  expect(view.find('[data-test="ecash-wallet-row"]').exists()).toBe(true)
+  expect(view.find('[data-test="solana-wallet-row"]').exists()).toBe(true)
+  expect(view.text()).toContain('Wallets')
+  expect(view.text()).toContain('Main wallet')
+  expect(view.text()).toContain('eCash')
+  expect(view.text()).toContain('Solana')
+  // No informative text walls or demo buttons
+  expect(view.text()).not.toContain('Messaging is unavailable')
+  expect(view.find('[data-test="recovery-descriptor"]').exists()).toBe(false)
+  expect(view.find('[data-test="testnet-badge"]').exists()).toBe(true)
+  expect(view.find('[data-test="ecash-testnet-badge"]').exists()).toBe(true)
+  expect(view.find('[data-test="solana-testnet-badge"]').exists()).toBe(true)
+  expect(view.text()).toContain('0 tXEC')
+  expect(view.text()).toContain('0 tSOL')
 })
-test('explicit loopback fake mode funds only the distinct native receive address and refreshes balance', async () => {
-  process.env.QCLI_FRANK_FAKE_DEMO = 'true'
-  process.env.QCLI_FRANK_DEMO_CONTROL_URL = 'http://127.0.0.1:8545'
-  const view = render()
-  await view.get('[data-test="demo-fund"]').trigger('click')
-  await flushPromises()
-  expect(mockEnsure).toHaveBeenCalledWith(
-    { fakeChain: true, rpcUrl: 'http://127.0.0.1:8545' },
-    mockReceive,
-  )
-  expect(mockRefresh).toHaveBeenCalledTimes(1)
-})
-test('remote URLs cannot expose a funding action even with the fake flag', () => {
-  process.env.QCLI_FRANK_FAKE_DEMO = 'true'
-  process.env.QCLI_FRANK_DEMO_CONTROL_URL = 'https://example.invalid'
-  expect(render().find('[data-test="demo-fund"]').exists()).toBe(false)
-  expect(mockEnsure).not.toHaveBeenCalled()
-})
-test('an unavailable fake capability reports bounded failure without changing the account', async () => {
-  process.env.QCLI_FRANK_FAKE_DEMO = 'true'
-  process.env.QCLI_FRANK_DEMO_CONTROL_URL = 'http://127.0.0.1:8545'
-  mockEnsure.mockRejectedValueOnce(new Error('PRIVATE-ERROR-SENTINEL'))
-  const view = render()
-  await view.get('[data-test="demo-fund"]').trigger('click')
-  await flushPromises()
-  expect(view.get('[data-test="fund-status"]').text()).toContain(
-    'Your account remains active',
-  )
-  expect(view.text()).not.toContain('PRIVATE-ERROR-SENTINEL')
-})
-test('cached success becomes visibly stale after a failed refresh', async () => {
+
+test('displays formatted live balance and handles loading and stale states', async () => {
   const view = render()
   expect(view.find('[data-test="balance-stale"]').exists()).toBe(false)
+  expect(view.get('[data-test="wallet-balance"]').text()).toBe('0 MON')
+
   mockError.value = true
   await flushPromises()
   expect(view.get('[data-test="wallet-balance"]').text()).toBe('0 MON')
-  expect(view.get('[data-test="balance-stale"]').text()).toContain(
-    'out of date',
-  )
+  expect(view.get('[data-test="balance-stale"]').text()).toContain('out of date')
+
   mockLoaded.value = false
   await flushPromises()
-  expect(view.get('[data-test="wallet-balance"]').text()).toContain(
-    'unavailable',
-  )
+  expect(view.get('[data-test="wallet-balance"]').text()).toContain('unavailable')
+
   mockError.value = false
   await flushPromises()
   expect(view.get('[data-test="wallet-balance"]').text()).toContain('Loading')
 })
-test('clipboard denial is visible and announced when fake demo is disabled', async () => {
-  Object.defineProperty(navigator, 'clipboard', {
-    configurable: true,
-    value: {
-      writeText: jest.fn(async () => {
-        throw new Error('denied')
-      }),
-    },
-  })
+
+test('clicking wallet rows navigates to the respective chain', async () => {
+  mockRouterPush.mockClear()
   const view = render()
-  await view.get('[data-test="copy-descriptor"]').trigger('click')
+
+  await view.find('[data-test="wallet-row"]').trigger('click')
+  expect(mockRouterPush).toHaveBeenCalledWith('/wallet')
+
+  await view.find('[data-test="ecash-wallet-row"]').trigger('click')
+  expect(mockRouterPush).toHaveBeenCalledWith({
+    path: '/wallet',
+    query: { chain: 'ecash' },
+  })
+
+  await view.find('[data-test="solana-wallet-row"]').trigger('click')
+  expect(mockRouterPush).toHaveBeenCalledWith({
+    path: '/wallet',
+    query: { chain: 'solana' },
+  })
+})
+
+test('reorganizes wallet list item layout: no side section for chain name, chain is caption below name', () => {
+  const view = render()
+
+  // Monad row
+  const monadRow = view.find('[data-test="wallet-row"]')
+  expect(monadRow.find('.q-item-section--side').exists()).toBe(false)
+  const monadChain = monadRow.find('[data-test="wallet-chain"]')
+  expect(monadChain.exists()).toBe(true)
+  expect(monadChain.text()).toBe('Monad Testnet')
+
+  // eCash row
+  const ecashRow = view.find('[data-test="ecash-wallet-row"]')
+  expect(ecashRow.find('.q-item-section--side').exists()).toBe(false)
+  const ecashChain = ecashRow.find('[data-test="ecash-wallet-chain"]')
+  expect(ecashChain.exists()).toBe(true)
+  expect(ecashChain.text()).toBe('eCash Testnet')
+
+  // Solana row
+  const solanaRow = view.find('[data-test="solana-wallet-row"]')
+  expect(solanaRow.find('.q-item-section--side').exists()).toBe(false)
+  const solanaChain = solanaRow.find('[data-test="solana-wallet-chain"]')
+  expect(solanaChain.exists()).toBe(true)
+  expect(solanaChain.text()).toBe('Solana Testnet')
+})
+
+test('renders clean default names without repeating testnet in name and badge', () => {
+  const view = render()
+
+  // Default names should not contain "Testnet"
+  expect(view.find('[data-test="wallet-name-text"]').text()).toBe('Main wallet')
+  expect(view.find('[data-test="ecash-wallet-name-text"]').text()).toBe('eCash')
+  expect(view.find('[data-test="solana-wallet-name-text"]').text()).toBe('Solana')
+
+  // Badges still indicate Testnet
+  expect(view.find('[data-test="testnet-badge"]').exists()).toBe(true)
+  expect(view.find('[data-test="ecash-testnet-badge"]').exists()).toBe(true)
+  expect(view.find('[data-test="solana-testnet-badge"]').exists()).toBe(true)
+})
+
+test('allows viewing and updating custom wallet names', async () => {
+  const { setCustomName, resetCustomName } = useWalletNames()
+  setCustomName('monad', 'Trading Bot')
+  setCustomName('ecash', 'Personal Stash')
+  setCustomName('solana', 'Solana Vault')
+
+  const view = render()
+  expect(view.find('[data-test="wallet-name-text"]').text()).toBe('Trading Bot')
+  expect(view.find('[data-test="ecash-wallet-name-text"]').text()).toBe('Personal Stash')
+  expect(view.find('[data-test="solana-wallet-name-text"]').text()).toBe('Solana Vault')
+
+  // Resetting returns to default concise names
+  resetCustomName('monad')
+  resetCustomName('ecash')
   await flushPromises()
-  expect(view.find('[data-test="demo-fund"]').exists()).toBe(false)
-  expect(view.get('[data-test="copy-status"]').attributes('aria-live')).toBe(
-    'polite',
-  )
-  expect(view.get('[data-test="copy-status"]').text()).toContain(
-    'Copy unavailable',
-  )
+  expect(view.find('[data-test="wallet-name-text"]').text()).toBe('Main wallet')
+  expect(view.find('[data-test="ecash-wallet-name-text"]').text()).toBe('eCash')
+  expect(view.find('[data-test="solana-wallet-name-text"]').text()).toBe('Solana Vault')
+})
+
+test('opens rename dialog on edit icon click and handles save and reset', async () => {
+  const view = render()
+  const renameDialog = view.findComponent(RenameWalletDialog)
+  expect(renameDialog.exists()).toBe(true)
+  expect(renameDialog.props('modelValue')).toBe(false)
+
+  // Clicking rename button for monad opens dialog
+  await view.find('[data-test="rename-monad-btn"]').trigger('click')
+  expect(renameDialog.props('modelValue')).toBe(true)
+  expect(renameDialog.props('chain')).toBe('monad')
+  expect(renameDialog.props('defaultName')).toBe('Main wallet')
+
+  // Emitting save from dialog updates wallet name
+  await renameDialog.vm.$emit('save', 'Primary Monad')
+  await flushPromises()
+  expect(view.find('[data-test="wallet-name-text"]').text()).toBe('Primary Monad')
+
+  // Double clicking eCash name opens dialog for eCash
+  await view.find('[data-test="ecash-wallet-name-text"]').trigger('dblclick')
+  expect(renameDialog.props('modelValue')).toBe(true)
+  expect(renameDialog.props('chain')).toBe('ecash')
+  expect(renameDialog.props('defaultName')).toBe('eCash')
+
+  // Emitting save for eCash
+  await renameDialog.vm.$emit('save', 'Coffee Wallet')
+  await flushPromises()
+  expect(view.find('[data-test="ecash-wallet-name-text"]').text()).toBe('Coffee Wallet')
+
+  // Emitting reset for eCash restores default
+  await renameDialog.vm.$emit('reset')
+  await flushPromises()
+  expect(view.find('[data-test="ecash-wallet-name-text"]').text()).toBe('eCash')
 })

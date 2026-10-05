@@ -199,6 +199,12 @@ describe('inline bubble footer (#391)', () => {
     )
     expect(css).toMatch(/\.chat-message-text p \{[^}]*display:\s*inline/)
     expect(css).not.toMatch(/\.chat-message-body p \{/)
+    expect(css).toMatch(
+      /\.outgoing-focus-target:focus-visible\s*\{[^}]*outline:\s*2px solid/,
+    )
+    expect(css).toMatch(
+      /\.outgoing-focus-target:focus:not\(:focus-visible\)\s*\{[^}]*outline:\s*none/,
+    )
   })
 
   it('keeps a long message and an incoming bubble on the same inline cluster', async () => {

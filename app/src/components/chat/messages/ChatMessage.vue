@@ -48,10 +48,12 @@
               :text="item.text"
             />
             <chat-message-blackjack
-              v-else-if="item.type == 'blackjack-move'"
+              v-else-if="item.type == 'blackjack-hand'"
               :item="item"
               :address="address"
+              :payload-digest="payloadDigest"
               @sendFollowUp="handleSendFollowUp"
+              @retry="resend()"
             />
             <chat-message-digital-goods
               v-else-if="item.type == 'digital-goods'"

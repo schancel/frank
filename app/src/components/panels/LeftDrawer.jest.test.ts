@@ -18,8 +18,7 @@ const balance = {
 const mockWalletStore = {
   seedPhrase:
     'apple banana cherry dinosaur elephant fox grape hat ice joke kite lemon' as
-      | string
-      | null,
+      string | null,
   seedConfirmedAt: 123456789 as number | null,
 }
 const mockProfileStore = {
@@ -28,10 +27,16 @@ const mockProfileStore = {
   },
 }
 const mockRefreshDiscoveredTopics = jest.fn()
+const mockRouterPush = jest.fn()
+const mockRouterReplace = jest.fn()
 
 jest.mock('vue-router', () => ({
   useRoute: () => mockRoute,
-  useRouter: () => ({ push: jest.fn() }),
+  useRouter: () => ({
+    push: mockRouterPush,
+    replace: mockRouterReplace,
+    currentRoute: { value: mockRoute },
+  }),
 }))
 jest.mock('src/stores/chats', () => ({
   useChatStore: () => ({ totalUnread: 0, getSortedChatOrder: [] }),
@@ -62,6 +67,9 @@ jest.mock('src/utils/runtime-mode', () => ({
 }))
 jest.mock('../chat/ChatList.vue', () => ({ template: '<div />' }))
 jest.mock('../chat/ChatListLink.vue', () => ({ template: '<div />' }))
+jest.mock('../panels/ContactsPanel.vue', () => ({
+  template: '<div data-test="contacts-panel" />',
+}))
 jest.mock('../panels/SettingsPanel.vue', () => ({
   template: '<div data-test="settings-panel" />',
 }))
@@ -77,13 +85,15 @@ const QTabStub = defineComponent({
   template: '<button v-bind="$attrs"><slot /></button>',
 })
 
-function mountDrawer(setup = true, relayConnected = true) {
+function mountDrawer(setup = true, relayConnected?: boolean) {
   return shallowMount(LeftDrawer, {
     global: {
       mocks: {
         $status: { setup },
         $t: (key: string) => key,
-        $relay: { connected: relayConnected },
+        ...(relayConnected !== undefined
+          ? { $relay: { connected: relayConnected } }
+          : {}),
       },
       stubs: {
         QDialog: true,
@@ -91,12 +101,13 @@ function mountDrawer(setup = true, relayConnected = true) {
         QTab: QTabStub,
         QTooltip: true,
         QBadge: true,
-        QScrollArea: true,
+        QScrollArea: { template: '<div><slot /></div>' },
+        QSpace: true,
         QList: { template: '<div><slot /></div>' },
         QItem: { template: '<div><slot /></div>' },
         QItemLabel: { template: '<span v-bind="$attrs"><slot /></span>' },
         QItemSection: { template: '<div><slot /></div>' },
-        QBtn: { template: '<button data-testid="relay-reconnect" />' },
+        QBtn: { template: '<button v-bind="$attrs"><slot /></button>' },
         QSeparator: true,
       },
     },
@@ -127,11 +138,14 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     expect(wrapper.get('[role="tablist"]').attributes('content-class')).toBe(
       'settings-pin-content',
     )
-    expect(html.indexOf('rail-tab-contacts')).toBeLessThan(
-      html.indexOf('rail-tab-wallet'),
+    expect(html.indexOf('rail-tab-chats')).toBeLessThan(
+      html.indexOf('rail-tab-contacts'),
     )
-    expect(html.indexOf('rail-tab-wallet')).toBeLessThan(
+    expect(html.indexOf('rail-tab-contacts')).toBeLessThan(
       html.indexOf('rail-tab-forum'),
+    )
+    expect(html.indexOf('rail-tab-forum')).toBeLessThan(
+      html.indexOf('rail-tab-wallet'),
     )
     expect(html.indexOf('rail-tab-wallet')).toBeLessThan(
       html.indexOf('rail-tab-settings'),
@@ -148,7 +162,25 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     expect(vm(mountDrawer()).tab).toBe('forum')
     // Other routes never override the highlight (a later direct click must win).
     mockRoute.path = '/chat/addr1'
+    expect(vm(mountDrawer()).tab).toBe('chats')
+    mockRoute.path = '/chat'
+    expect(vm(mountDrawer()).tab).toBe('chats')
+    mockRoute.path = '/add-contact'
     expect(vm(mountDrawer()).tab).toBe('contacts')
+  })
+
+  it('navigates to /chat when clicking chats rail tab with no active chats', async () => {
+    mockRouterPush.mockReset()
+    const wrapper = mountDrawer()
+    await wrapper.get('#rail-tab-chats').trigger('click')
+    expect(mockRouterPush).toHaveBeenCalledWith('/chat')
+  })
+
+  it('navigates to /settings when clicking settings rail tab', async () => {
+    mockRouterPush.mockReset()
+    const wrapper = mountDrawer()
+    await wrapper.get('#rail-tab-settings').trigger('click')
+    expect(mockRouterPush).toHaveBeenCalledWith('/settings')
   })
 
   it('hides the legacy footer until setup is complete', () => {
@@ -165,6 +197,13 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     const signedIn = mountDrawer(true, false)
     expect(signedIn.find('[data-testid="drawer-balance"]').exists()).toBe(true)
     expect(signedIn.find('[data-testid="relay-reconnect"]').exists()).toBe(true)
+  })
+
+  it('renders drawer balance without relay reconnect button in Monad mode', () => {
+    runtime.legacy = false
+    const wrapper = mountDrawer(true)
+    expect(wrapper.find('[data-testid="drawer-balance"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="relay-reconnect"]').exists()).toBe(false)
   })
 
   it('announces unavailable and retained last-known legacy balances', async () => {
@@ -196,6 +235,7 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     })
 
     it('defers topic discovery when account setup is not complete', () => {
+      mockRoute.path = '/setup'
       mockAccountStatus.status = 'fresh'
       mockProfileStore.profile.name = ''
 
@@ -211,6 +251,21 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
       mountDrawer(true, true)
 
       expect(mockRefreshDiscoveredTopics).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('forum header consistency', () => {
+    it('renders standard header with title and new post button', async () => {
+      mockRouterPush.mockReset()
+      const wrapper = mountDrawer()
+      const forumPanel = wrapper.get('#rail-panel-forum')
+      expect(forumPanel.text()).toContain('leftDrawer.forum')
+
+      const newPostBtn = forumPanel.find('button[aria-label="a11y.newPost"]')
+      expect(newPostBtn.exists()).toBe(true)
+
+      await newPostBtn.trigger('click')
+      expect(mockRouterPush).toHaveBeenCalledWith('/new-post')
     })
   })
 })

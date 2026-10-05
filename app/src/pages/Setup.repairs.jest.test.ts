@@ -6,6 +6,14 @@ import { inspectLegacyWallet } from '../accounts/legacy'
 import { usePersistentStorageStore } from '../stores/persistent-storage'
 import en from '../i18n/en-us'
 
+const mockImportBip39Wallet = jest.fn(
+  async (phrase: string, chosenPath?: string) => ({
+    path: chosenPath ?? "m/44'/60'/1'/0/0",
+    address: '0x8C8d35429F74ec245F8Ef2f4Fd1e551cFF97d650',
+    label: 'Canonical Frank',
+  }),
+)
+
 jest.mock('../accounts/session', () => ({
   accountStatus: jest.requireActual('vue').reactive({
     status: 'fresh',
@@ -18,7 +26,15 @@ jest.mock('../accounts/session', () => ({
   accountSession: {
     retry: jest.fn(async () => undefined),
     activatePending: jest.fn(async () => undefined),
+    stage: jest.fn(async () => undefined),
+    snapshot: jest.fn(async () => ({
+      revision: 0,
+      active: null,
+      pending: null,
+    })),
+    setBip39Params: jest.fn(),
   },
+  importBip39Wallet: (...args: any[]) => mockImportBip39Wallet(...args),
 }))
 jest.mock('../accounts/ceremony', () => ({
   createAccountCeremony: () => ({ cancel: jest.fn() }),
@@ -54,7 +70,14 @@ function render() {
           template: '<button :disabled="disable">{{ label }}</button>',
         },
         QCheckbox: true,
-        QForm: { template: '<form><slot /></form>' },
+        QForm: {
+          template: '<form @submit.prevent="$emit(\'submit\')"><slot /></form>',
+        },
+        QInput: {
+          props: ['modelValue'],
+          template:
+            '<textarea :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+        },
       },
     },
   })
@@ -159,3 +182,41 @@ test.each(['denied', 'hanging'])(
     view.unmount()
   },
 )
+
+test('choice screen labels the import button "Import BIP39 seed"', () => {
+  const view = render()
+  const importBtn = view.get('[data-test="legacy-recovery"]')
+  expect(importBtn.text()).toBe('Import BIP39 seed')
+  view.unmount()
+})
+
+test('submitting BIP-39 phrase in legacy mode runs derivation scanner, stages/activates wallet, and navigates to /wallet', async () => {
+  mockImportBip39Wallet.mockClear()
+  mockPush.mockClear()
+  const view = render()
+
+  // Switch to legacy / import seed mode
+  await view.get('[data-test="legacy-recovery"]').trigger('click')
+  await flushPromises()
+
+  expect(view.find('form').exists()).toBe(true)
+
+  // Input phrase
+  const phraseInput = view.get('[data-test="legacy-phrase"]')
+  await phraseInput.setValue(
+    'test test test test test test test test test test test junk',
+  )
+  await flushPromises()
+
+  // Submit form
+  await view.get('form').trigger('submit')
+  await flushPromises()
+
+  expect(mockImportBip39Wallet).toHaveBeenCalledWith(
+    'test test test test test test test test test test test junk',
+    "m/44'/60'/1'/0/0",
+  )
+  expect(mockPush).toHaveBeenCalledWith('/wallet')
+  view.unmount()
+}, 10000)
+

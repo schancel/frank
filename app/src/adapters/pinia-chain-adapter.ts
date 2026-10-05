@@ -69,12 +69,18 @@ export async function toReceivedMessageWrapper(
     )
     return undefined
   }
-  const senderProfile = await activeChain.fetchProfile(record.senderAddress)
-  if (senderProfile === undefined) {
-    console.error(
-      `direct-message polling: no profile found for sender ${record.senderAddress.raw}, skipping message ${record.payloadDigest}`,
-    )
-    return undefined
+  // A canonical sender was admitted through the installed directory, which supplies its key.
+  // A relay-served display profile must not decide whether its message is shown.
+  let senderPubKey = record.senderPublicKey
+  if (senderPubKey === undefined) {
+    const senderProfile = await activeChain.fetchProfile(record.senderAddress)
+    if (senderProfile === undefined) {
+      console.error(
+        `direct-message polling: no profile found for sender ${record.senderAddress.raw}, skipping message ${record.payloadDigest}`,
+      )
+      return undefined
+    }
+    senderPubKey = senderProfile.pubKey
   }
 
   const copartyAddress = activeChain.formatAddress(record.senderAddress)
@@ -86,7 +92,7 @@ export async function toReceivedMessageWrapper(
     senderAddress: copartyAddress,
     copartyAddress,
     copartyPubKey: profilePubKeyFromBytes(
-      senderProfile.pubKey,
+      senderPubKey,
     ) as ReceivedMessageWrapper['copartyPubKey'],
     index: record.payloadDigest,
     stampValue,

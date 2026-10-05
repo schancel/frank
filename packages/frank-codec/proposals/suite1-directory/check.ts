@@ -214,7 +214,14 @@ function generate(): Corpus {
     ['bootstrap-predecessor', [[13, new Uint8Array(32)]]],
     ['future-issue', [[3, time(NOW + 1n)]]],
     ['expired', [[6, time(NOW)]]],
-    ['long-validity', [[6, time(1700003601n)]]],
+    // One second past the 366-day cap, with a relay binding that still covers it.
+    [
+      'long-validity',
+      [
+        [6, time(1700000000n + 31622401n)],
+        [4, [new Map(relay).set(3, time(1700000000n + 31626000n))]],
+      ],
+    ],
     ['short-binding', [[4, [new Map(relay).set(3, time(NOW))]]]],
     ['wrong-relay', [[4, [new Map(relay).set(2, key(8))]]]],
     ['profile-field', [[9, []]]],
@@ -984,7 +991,7 @@ function outcome(c: Case, corpus: Corpus, historicalLink = false): string {
       issued <= now &&
         (historicalLink || now < expiry) &&
         expiry > issued &&
-        expiry - issued <= 3600000000000n,
+        expiry - issued <= 31622400000000000n,
       'validity',
     )
     const bindings = at(p, 4)

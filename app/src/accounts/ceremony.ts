@@ -88,13 +88,13 @@ export function createAccountCeremony() {
     share(index: number) {
       return signup?.shares[index] ?? ''
     },
-    async beginRestore(text: string) {
+    async beginRestore(text?: string) {
       cancel()
-      // Pin the independent descriptor before accepting any shares.
-      const descriptor = decodeRecoveryDescriptor(text)
+      // Pin the independent descriptor before accepting any shares if provided.
+      const descriptor = text ? decodeRecoveryDescriptor(text) : undefined
       await capture()
       restore = beginCodex32Restore(descriptor)
-      return encodeRecoveryDescriptor(descriptor)
+      return descriptor ? encodeRecoveryDescriptor(descriptor) : ''
     },
     async confirm(shares: readonly string[], name: string) {
       const displayName = requireValidProfileDisplayName(name)

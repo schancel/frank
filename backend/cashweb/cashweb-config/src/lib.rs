@@ -237,7 +237,8 @@ pub struct CashwebdConf {
 pub struct RegistryConf {
     /// Path where the Registry's RocksDB database is stored.
     pub db_path: PathBuf,
-    /// Explicit directory runtime trust configuration. Omitted keeps routes disabled.
+    /// Open directory: this relay's own tuple and publishing limits. Omitted keeps the
+    /// directory and canonical message routes disabled.
     #[serde(default)]
     pub directory: Option<DirectoryConf>,
     /// Whether we are on mainnet or regtest net.
@@ -271,42 +272,135 @@ pub struct RegistryConf {
     pub curated_defaults: Vec<CuratedContactConf>,
 }
 
-/// Explicit operator-owned directory installation; no inferred trust or default clock.
+/// The open directory: accounts publish their own signed entries, the relay only names itself.
+///
+/// There is no per-account configuration. `clock_file` and `principals` from the earlier
+/// operator-installed design are still recognised so an old file fails with a clear message
+/// instead of an unknown-field error; see [`DirectoryConf::validate`].
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DirectoryConf {
-    /// Absolute external file containing trusted Unix nanoseconds as decimal text.
-    pub clock_file: PathBuf,
-    /// Complete installed generation, bounded to 1024 principals by the runtime.
-    pub principals: Vec<DirectoryPrincipalConf>,
+    /// Exact protocol network this relay accepts entries for, e.g. `monad-testnet`.
+    #[serde(default)]
+    pub network: String,
+    /// This relay's 16-byte identifier, lowercase hex.
+    #[serde(default)]
+    pub relay_id: String,
+    /// This relay's compressed secp256k1 public key, lowercase hex.
+    #[serde(default)]
+    pub relay_identity: String,
+    /// This relay's public HTTPS origin, without a trailing slash.
+    #[serde(default)]
+    pub endpoint: String,
+    /// When the relay tuple above stops being valid, as decimal Unix nanoseconds. Entries
+    /// cannot outlive it, so set it comfortably in the future.
+    #[serde(default)]
+    pub binding_expiry_ns: String,
+    /// Most accounts that live on this relay.
+    #[serde(default = "default_directory_max_subjects")]
+    pub max_subjects: u64,
+    /// Most keys of accounts that live on other relays this relay will hold copies of. A
+    /// separate budget, so copies from peers cannot block sign-ups here.
+    #[serde(default = "default_directory_max_subjects")]
+    pub max_replicated_subjects: u64,
+    /// Accept a message for a recipient on another relay and forward it there.
+    #[serde(default = "default_true")]
+    pub forwarding: bool,
+    /// Seconds between rounds of comparing entries with peers and retrying forwards.
+    #[serde(default = "default_directory_sync_interval_s")]
+    pub sync_interval_s: u64,
+    /// First-time publications accepted from one source address per clock hour.
+    #[serde(default = "default_directory_enrollments_per_source_per_hour")]
+    pub enrollments_per_source_per_hour: u32,
+    /// Addresses of reverse proxies in front of this relay. Only a connection from one of
+    /// these may say, in the last element of `x-forwarded-for`, which client it is for; the
+    /// proxy must append that element itself. Empty: the connecting address is the client.
+    #[serde(default)]
+    pub trusted_proxies: Vec<std::net::IpAddr>,
+    /// Removed. Present only to explain the change to operators with an old file.
+    #[serde(default, skip_serializing)]
+    pub clock_file: Option<RemovedSetting>,
+    /// Removed. Present only to explain the change to operators with an old file.
+    #[serde(default, skip_serializing)]
+    pub principals: Option<RemovedSetting>,
 }
 
-/// Public installed trust and continuity identity for one principal.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct DirectoryPrincipalConf {
-    /// Exact protocol network.
-    pub network: String,
-    /// Lowercase compressed signing public key.
-    pub subject: String,
-    /// Exact revision-zero type-4 content hash.
-    pub revision_zero: String,
-    /// Independent installation commitment, e.g. the reviewed bundle manifest identity.
-    pub manifest_identity: String,
-    /// Exact authenticated relay ID.
-    pub relay_id: String,
-    /// Exact authenticated relay signing public key.
-    pub relay_identity: String,
-    /// Exact HTTPS endpoint, never normalized for admission.
-    pub endpoint: String,
-    /// Trusted relay binding expiry as decimal Unix nanoseconds.
-    pub binding_expiry_ns: String,
-    /// Full external continuity record, outside database and immutable bundle.
-    pub continuity_file: PathBuf,
-    /// Immutable public trust bundle root; writable state must be outside it.
-    pub bundle_root: PathBuf,
-    /// Explicit `new` or `reopen`; new never follows a missing/corrupt record.
-    pub mode: String,
+const fn default_directory_max_subjects() -> u64 {
+    1_000_000
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_directory_sync_interval_s() -> u64 {
+    30
+}
+
+const fn default_directory_enrollments_per_source_per_hour() -> u32 {
+    30
+}
+
+/// Placeholder that accepts any value of a setting which no longer exists.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RemovedSetting;
+
+impl<'de> Deserialize<'de> for RemovedSetting {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        serde::de::IgnoredAny::deserialize(deserializer).map(|_| Self)
+    }
+}
+
+impl Serialize for RemovedSetting {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_unit()
+    }
+}
+
+/// Why a `[registry.directory]` section cannot be used.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DirectoryConfError {
+    /// The file still carries the operator-installed account list or clock file.
+    RemovedSettings,
+    /// A required relay field is absent.
+    Missing(&'static str),
+}
+
+impl fmt::Display for DirectoryConfError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RemovedSettings => formatter.write_str(
+                "registry.directory.clock_file and [[registry.directory.principals]] were \
+                 removed: accounts now publish their own directory entries and the relay uses \
+                 the system clock. Delete them and keep only network, relay_id, relay_identity, \
+                 endpoint and binding_expiry_ns",
+            ),
+            Self::Missing(field) => write!(formatter, "registry.directory.{field} is required"),
+        }
+    }
+}
+
+impl Error for DirectoryConfError {}
+
+impl DirectoryConf {
+    /// Reject old operator-installed files and incomplete relay tuples with a plain message.
+    pub fn validate(&self) -> Result<(), DirectoryConfError> {
+        if self.clock_file.is_some() || self.principals.is_some() {
+            return Err(DirectoryConfError::RemovedSettings);
+        }
+        for (field, value) in [
+            ("network", &self.network),
+            ("relay_id", &self.relay_id),
+            ("relay_identity", &self.relay_identity),
+            ("endpoint", &self.endpoint),
+            ("binding_expiry_ns", &self.binding_expiry_ns),
+        ] {
+            if value.is_empty() {
+                return Err(DirectoryConfError::Missing(field));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Invalid resource relationship spanning multiple registry proxy families.
@@ -1069,6 +1163,46 @@ mod tests {
         InitialMetadataDownloadConf, MonadMailboxConf, MonadMailboxConfigError, MonadMailboxMode,
         PopConf, ProtocolChainFamily, ProtocolProxyCapability, RegistryConf, RegistryConfigError,
     };
+
+    #[test]
+    fn directory_section_is_only_the_relay_tuple_and_old_files_get_a_plain_error() {
+        let minimal: crate::DirectoryConf = toml::from_str(
+            r#"
+network = "monad-testnet"
+relay_id = "000102030405060708090a0b0c0d0e0f"
+relay_identity = "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13"
+endpoint = "https://relay.example.org"
+binding_expiry_ns = "1893456000000000000"
+"#,
+        )
+        .unwrap();
+        minimal.validate().unwrap();
+        assert_eq!(minimal.max_subjects, 1_000_000);
+        assert_eq!(minimal.enrollments_per_source_per_hour, 30);
+
+        let old: crate::DirectoryConf = toml::from_str(
+            r#"
+clock_file = "/var/lib/frank/clock"
+[[principals]]
+network = "monad-testnet"
+subject = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+mode = "new"
+continuity_file = "/var/lib/frank/continuity"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            old.validate(),
+            Err(crate::DirectoryConfError::RemovedSettings)
+        );
+        assert!(old
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("accounts now publish their own directory entries"));
+        // A misspelt setting is still an error rather than silently ignored.
+        assert!(toml::from_str::<crate::DirectoryConf>("netwrok = \"x\"").is_err());
+    }
 
     #[test]
     fn evm_rpc_is_disabled_when_omitted_and_validates_enabled_rows() -> Result<()> {

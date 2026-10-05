@@ -1,8 +1,7 @@
 /** @jest-environment jsdom */
-// Mounted Chat.vue (#310, #395): the TEMPLATE wiring of blackjack. The dealer's bubbles place bets
-// through what Chat.vue `provide`s (the idle-waiting, chat-guarded delivery), so replacing
-// `sendFollowUpWhenIdle` with `sendFollowUpItems` fails here; and the compose bar has no blackjack
-// control in any chat (the toolbar "Play blackjack" button is gone).
+// Mounted Chat.vue: the TEMPLATE wiring of blackjack. A challenge is offered from the composer's
+// message-type menu in every chat with any contact (no dealer, bot or curated-list gate); it opens
+// the challenge form, whose submit sends a challenge through the chat's normal send pipeline.
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import * as quasar from 'quasar'
@@ -27,8 +26,9 @@ jest.mock('../utils/notifications', () => ({
   insufficientStampNotify: jest.fn(),
   desktopNotify: jest.fn(),
 }))
+// The active wallet, as the own-address lookup reads it.
 jest.mock('../composables/useActiveWallet', () => ({
-  useActiveWallet: jest.fn(),
+  useActiveWallet: jest.fn(async () => mockUseMonadWallet()),
 }))
 
 // jsdom has no TextEncoder/TextDecoder (the wallet/relay modules Chat.vue imports need them).
@@ -43,9 +43,7 @@ const { activeChain } = require('@frank/wallet/chain')
 
 const DEALER = '0x3e3e3e3e3e3E3E3E3e3e3E3E3e3e3E3E3e3E3E3e'
 const SELF = '0x1a1A1A1A1a1A1A1a1A1a1a1a1a1a1a1A1A1a1a1a'
-const items = [
-  { type: 'blackjack-move', gameId: 'g', action: 'bet', wagerTxHash: '0xh' },
-]
+const items = [{ type: 'text', text: 'hello' }]
 
 const passthrough = (tag = 'div') =>
   defineComponent({
@@ -82,20 +80,28 @@ const InputStub = defineComponent({
   props: ['disable'],
   setup: () => () => h('div', { 'data-stub': 'chat-input' }),
 })
-const BannerStub = defineComponent({
-  props: ['address', 'name', 'submit'],
-  setup: () => () => h('div', { 'data-stub': 'unsent' }),
+// Menu entries keep their attributes and clicks.
+stubs.QItem = defineComponent({
+  inheritAttrs: false,
+  setup:
+    (_, { attrs, slots }) =>
+    () =>
+      h('div', attrs, slots.default?.()),
 })
-// Stands in for a chat bubble and captures what Chat.vue provides to the dealer's bubbles.
-let provided: any
+stubs.QDialog = defineComponent({
+  props: ['modelValue'],
+  setup:
+    (props, { slots }) =>
+    () =>
+      props.modelValue ? h('div', slots.default?.()) : null,
+})
+const FormStub = defineComponent({
+  props: ['busy'],
+  emits: ['submit'],
+  setup: () => () => h('div', { 'data-stub': 'challenge-form' }),
+})
 const Bubble = defineComponent({
-  inject: { blackjackChat: { from: 'blackjackChat', default: null } },
-  setup() {
-    return () => h('div', { 'data-stub': 'bubble' })
-  },
-  mounted() {
-    provided = (this as any).blackjackChat
-  },
+  setup: () => () => h('div', { 'data-stub': 'bubble' }),
 })
 const Blank = defineComponent({ setup: () => () => h('div') })
 
@@ -133,7 +139,6 @@ async function mountChat(
       ],
     } as never
   }
-  provided = undefined
   const wrapper = mount(ChatPage as never, {
     global: {
       plugins: [pinia],
@@ -141,7 +146,7 @@ async function mountChat(
       directives: { 'close-popup': {}, 'touch-swipe': {} },
       stubs: {
         ...(options.realInput ? {} : { ChatInput: InputStub }),
-        BlackjackUnsentWagers: BannerStub,
+        BlackjackChallengeForm: FormStub,
         ChatMessageComponent: Bubble,
         ChatMessageReply: Blank,
         ChatBannerStack: Blank,
@@ -157,7 +162,6 @@ async function mountChat(
   return {
     wrapper,
     input: wrapper.findComponent(InputStub),
-    banner: wrapper.findComponent(BannerStub),
     chats,
   }
 }
@@ -171,19 +175,19 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
   })
 
   it.each([
-    ['a bot-marked dealer', { isBot: true }],
+    ['a bot-marked contact', { isBot: true }],
     ['a plain profile', { isBot: false }],
     ['a profile with no marker', {}],
     ['a chat with no contact', undefined],
   ])(
-    'the compose bar has no blackjack control for %s (toolbar button removed)',
+    'the message-type menu offers a blackjack challenge for %s',
     async (_name, profile) => {
       const { wrapper } = await mountChat(profile, { realInput: true })
-      expect(
-        wrapper.find('[data-testid="blackjack-menu-button"]').exists(),
-      ).toBe(false)
+      expect(wrapper.find('[data-testid="blackjack-menu-item"]').exists()).toBe(
+        true,
+      )
+      // No separate toolbar button, and the compose bar itself is still there.
       expect(wrapper.find('[data-icon="casino"]').exists()).toBe(false)
-      // The compose bar itself is still there.
       expect(wrapper.find('[data-icon="send"]').exists()).toBe(true)
     },
   )
@@ -192,49 +196,39 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
     const { input } = await mountChat({ isBot: true })
     expect(Object.keys(input.props())).toEqual(['disable'])
     expect(input.attributes()).not.toHaveProperty('address')
-    expect(input.attributes()).not.toHaveProperty('blackjack-enabled')
   })
 
-  it('binds the peer name and address to the unsent banner', async () => {
-    const { banner } = await mountChat({ isBot: true })
-    expect(banner.props('address')).toBe(DEALER)
-    expect(banner.props('name')).toBe('Dealer')
-  })
+  it('opens the challenge form from the menu and sends its challenge through the normal send', async () => {
+    const { wrapper } = await mountChat(undefined, { realInput: true })
+    expect(wrapper.findComponent(FormStub).exists()).toBe(false)
+    await wrapper.find('[data-testid="blackjack-menu-item"]').trigger('click')
+    const form = wrapper.findComponent(FormStub)
+    expect(form.exists()).toBe(true)
 
-  it.each([
-    ['the banner submit', (c: any) => c.banner.props('submit')],
-    ['the bubbles submit', () => provided.submit],
-  ])(
-    '%s is the idle-waiting, chat-guarded delivery (not the raw send)',
-    async (_name, pick) => {
-      const mounted = await mountChat({ isBot: true })
-      const submit = pick(mounted) as (p: unknown) => Promise<void>
-      // The raw sendFollowUpItems ignores the chat guard; sendFollowUpWhenIdle refuses a different chat.
-      await expect(
-        submit({ items, address: '0xSomeOtherChat' }),
-      ).rejects.toThrow(/chat changed/)
-    },
-  )
-
-  it('provides the dealer bubbles the stamp this chat will pay', async () => {
-    await mountChat({ isBot: true })
-    expect(typeof provided.stampWei()).toBe('bigint')
-    expect(provided.stampWei()).toBeGreaterThan(0n)
-  })
-
-  it('delivers through the real send pipeline for the right chat, and throws when it fails', async () => {
-    const mounted = await mountChat({ isBot: true })
-    const vm = mounted.wrapper.vm as any
-    vm.sendDirectMessage = jest.fn().mockRejectedValue(new Error('relay down'))
-    const submit = provided.submit as (p: unknown) => Promise<void>
-    await expect(submit({ items, address: DEALER })).rejects.toThrow(
-      /could not be sent/,
-    )
+    const vm = wrapper.vm as any
+    jest
+      .spyOn(activeChain.nativeTransfers, 'getBalance')
+      .mockResolvedValue(10n ** 18n)
     vm.sendDirectMessage = jest
       .fn()
       .mockResolvedValue({ state: 'sent', payloadDigest: 'd' })
-    await expect(submit({ items, address: DEALER })).resolves.toBeUndefined()
+    form.vm.$emit('submit', { role: 'player', maxBetWei: 10n ** 17n })
+    await flushPromises()
     expect(vm.sendDirectMessage).toHaveBeenCalledTimes(1)
+    const sent = vm.sendDirectMessage.mock.calls[0][0]
+    expect(sent.address).toBe(DEALER)
+    expect(sent.items).toEqual([
+      {
+        type: 'blackjack-hand',
+        gameId: expect.stringMatching(/^[0-9a-f]{32}$/),
+        action: 'challenge',
+        role: 'player',
+        maxBetWei: (10n ** 17n).toString(),
+      },
+    ])
+    // A challenge carries the chat's ordinary stamp, nothing more.
+    expect(sent.stampValue).toBe(activeChain.fromDisplayAmount(vm.stampAmount))
+    expect(wrapper.findComponent(FormStub).exists()).toBe(false)
   })
 
   it('submits the mounted composer to the ordinary stamped store path for self-chat', async () => {

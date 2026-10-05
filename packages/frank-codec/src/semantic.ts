@@ -3,6 +3,7 @@ import { FrankCodecError } from './errors'
 import { utf8Encode } from './utf8'
 import { isCompressedPoint } from './point'
 import { contentHash } from './hash'
+import { MAX_DIRECTORY_VALIDITY_NS } from './constants'
 import type {
   AccountRef,
   DirectoryStatement,
@@ -186,6 +187,30 @@ export function checkSemantics(
   const P = 'root/payload'
   switch (typed.type) {
     case 18: {
+      if (typed.schema === 2) {
+        const hand =
+          'playerCards' in typed
+            ? typed.playerCards
+            : 'dealerCards' in typed
+            ? typed.dealerCards
+            : undefined
+        if (hand && new Set(hand).size !== hand.length)
+          throw semantic('blackjack hand contains duplicate cards')
+        if (
+          typed.action === 'deal' &&
+          typed.playerCards.includes(typed.dealerUpCard)
+        )
+          throw semantic('deal up-card duplicates a player card')
+        if (typed.action === 'challenge' || typed.action === 'accept') {
+          const max = typed.maxBetWei.reduce(
+            (n, b) => (n << 8n) | BigInt(b),
+            0n,
+          )
+          if (max < 1n || max > 10n ** 40n - 1n)
+            throw semantic('blackjack max bet range')
+        }
+        break
+      }
       if ((typed.gameId === 'welcome') !== (typed.action === 'welcome'))
         throw semantic('welcome gameId is reserved iff action is welcome')
       const cards =
@@ -479,11 +504,11 @@ function checkPreviewStatement(st: DirectoryStatement<ParsedFrame>): void {
   const duration = nanos(expiry) - nanos(st.timestamp)
   if (
     duration <= 0n ||
-    duration > 3_600_000_000_000n ||
+    duration > MAX_DIRECTORY_VALIDITY_NS ||
     nanos(relay.expiry) < nanos(expiry)
   )
     throw semantic(
-      'directory preview validity must be positive, at most one hour and covered by relay expiry',
+      'directory preview validity must be positive, at most 366 days and covered by relay expiry',
     )
   if (st.revision === 0n) {
     if (

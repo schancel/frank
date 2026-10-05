@@ -75,10 +75,36 @@ pub(crate) async fn handle_put(
         if request.transaction_count() > runtime.reconcile().limits.max_members {
             return Err(CanonicalError::Invalid);
         }
-        let (sender, recipient, recipient_t1) =
-            request_principals(&request, descriptor.cbor_identifier)?;
-        let sender_current = current(owner, descriptor.cbor_identifier, &sender).await?;
-        let recipient_current = current(owner, descriptor.cbor_identifier, &recipient).await?;
+        let principals = request_principals(&request, descriptor.cbor_identifier)?;
+        // The recipient's own entry says which relay holds its mailbox. When this relay cannot
+        // deliver there, say so as a final answer: nothing is retained, no payment is broadcast.
+        let Some(recipient_current) =
+            deliverable_recipient(owner, descriptor.cbor_identifier, &principals.recipient).await?
+        else {
+            return undeliverable_response(
+                &request,
+                descriptor.cbor_identifier,
+                &principals,
+                "undeliverable",
+            );
+        };
+        // A sender whose own entry is missing or expired can republish and send a new message;
+        // this one can never be verified.
+        let Some(sender_current) =
+            sender_entry(owner, descriptor.cbor_identifier, &principals.sender).await?
+        else {
+            return undeliverable_response(
+                &request,
+                descriptor.cbor_identifier,
+                &principals,
+                "sender_unpublished",
+            );
+        };
+        let Principals {
+            recipient,
+            recipient_t1,
+            ..
+        } = principals;
         let historical = if recipient_current.evidence.hash == recipient_t1 {
             None
         } else {
@@ -131,6 +157,7 @@ fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
     }
     Ok(value)
 }
+#[cfg(test)]
 async fn current(
     owner: &crate::store::monad_dm_cbor::Owner,
     network: &str,
@@ -172,10 +199,93 @@ async fn history(
         _ => Err(CanonicalError::Unavailable),
     }
 }
-fn request_principals(
+/// What a submission says about itself, read from its own bytes before any directory lookup.
+pub(crate) struct Principals {
+    pub(crate) sender: Vec<u8>,
+    pub(crate) recipient: Vec<u8>,
+    pub(crate) sender_t1: [u8; 32],
+    pub(crate) recipient_t1: [u8; 32],
+    pub(crate) payload_hash: [u8; 32],
+}
+/// The recipient's current entry when its mailbox is on this relay. `None` when this relay can
+/// never deliver the message: the recipient has no current entry here, or its entry names
+/// another relay. A directory that is merely busy is an error the sender may retry.
+async fn deliverable_recipient(
+    owner: &crate::store::monad_dm_cbor::Owner,
+    network: &str,
+    subject: &[u8],
+) -> Result<Option<crate::directory_admission::Current>> {
+    use crate::directory_runtime::{AdmittedSnapshot, RuntimeError, SnapshotOperation};
+    let directory = owner.directory().ok_or(CanonicalError::Unavailable)?;
+    let reservation = directory
+        .reserve(network, &hex::encode(subject))
+        .map_err(|_| CanonicalError::Unavailable)?;
+    match directory
+        .submit_snapshot(reservation, SnapshotOperation::Current)
+        .wait()
+        .await
+    {
+        Ok(AdmittedSnapshot::Current(current)) => {
+            Ok(Some(current).filter(|current| directory.info().is_local(&current.relay)))
+        }
+        Ok(_) => Err(CanonicalError::Unavailable),
+        Err(RuntimeError::Busy | RuntimeError::NotStarted | RuntimeError::OutcomeUnknown) => {
+            Err(CanonicalError::Unavailable)
+        }
+        // Permanent for this request: never published here, expired, or quarantined.
+        Err(RuntimeError::NotFound | RuntimeError::Expired | RuntimeError::Forked) => Ok(None),
+        // Anything else is this relay's own trouble (clock, storage); the sender may retry.
+        Err(_) => Err(CanonicalError::Unavailable),
+    }
+}
+/// The sender's current entry, or `None` when it has none here: never published, expired or
+/// quarantined. That is final for this request; a relay fault is an error the sender may retry.
+async fn sender_entry(
+    owner: &crate::store::monad_dm_cbor::Owner,
+    network: &str,
+    subject: &[u8],
+) -> Result<Option<crate::directory_admission::Current>> {
+    use crate::directory_runtime::{AdmittedSnapshot, RuntimeError, SnapshotOperation};
+    let directory = owner.directory().ok_or(CanonicalError::Unavailable)?;
+    let reservation = directory
+        .reserve(network, &hex::encode(subject))
+        .map_err(|_| CanonicalError::Unavailable)?;
+    match directory
+        .submit_snapshot(reservation, SnapshotOperation::Current)
+        .wait()
+        .await
+    {
+        Ok(AdmittedSnapshot::Current(current)) => Ok(Some(current)),
+        Err(RuntimeError::NotFound | RuntimeError::Expired | RuntimeError::Forked) => Ok(None),
+        _ => Err(CanonicalError::Unavailable),
+    }
+}
+/// A final answer for a submission this relay will never deliver, in the shape of the other
+/// dead answers. Nothing was retained and no payment was broadcast.
+fn undeliverable_response(
     request: &ExactRequest,
     network: &str,
-) -> Result<(Vec<u8>, Vec<u8>, [u8; 32])> {
+    principals: &Principals,
+    reason: &str,
+) -> Result<Response> {
+    let recipient =
+        crate::monad_stamp_stealth::recipient_address_from_public_key(&principals.recipient)
+            .map_err(|_| CanonicalError::Invalid)?;
+    let identity = SubmissionEcho::new(
+        request,
+        network,
+        recipient,
+        &principals.payload_hash,
+        &principals.sender_t1,
+        &principals.recipient_t1,
+    );
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({"version":1,"phase":"dead","identity":identity,"reason":reason})),
+    )
+        .into_response())
+}
+fn request_principals(request: &ExactRequest, network: &str) -> Result<Principals> {
     use frank_cbor::{TypedPayload, ValidationResult};
     let ValidationResult::Parsed(frame) =
         frank_cbor::validate_frame(request.delivery(), &frank_cbor::default_context())
@@ -205,25 +315,23 @@ fn request_principals(
     else {
         return Err(CanonicalError::Invalid);
     };
-    let recipient_t1 = context
-        .iter()
-        .find_map(|(key, value)| {
-            if *key == 5 {
-                if let CborValue::Bytes(hash) = value {
-                    hash.as_slice().try_into().ok()
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        })
-        .ok_or(CanonicalError::Invalid)?;
-    Ok((
-        sender.key_bytes.clone(),
-        recipient.key_bytes.clone(),
-        recipient_t1,
-    ))
+    let hash = |wanted: u64| -> Result<[u8; 32]> {
+        context
+            .iter()
+            .find_map(|(key, value)| match value {
+                CborValue::Bytes(hash) if *key == wanted => hash.as_slice().try_into().ok(),
+                _ => None,
+            })
+            .ok_or(CanonicalError::Invalid)
+    };
+    Ok(Principals {
+        sender: sender.key_bytes.clone(),
+        recipient: recipient.key_bytes.clone(),
+        sender_t1: hash(4)?,
+        recipient_t1: hash(5)?,
+        payload_hash: frank_cbor::recipient_payload_digest(network, &payload_frame.frame)
+            .map_err(|_| CanonicalError::Invalid)?,
+    })
 }
 fn terminal_reason(reason: crate::store::monad_outbox::MonadOutboxTerminal) -> &'static str {
     use crate::store::monad_outbox::MonadOutboxTerminal::*;
@@ -655,36 +763,82 @@ fn private_binding(
         recovery_obligation_id,
     })
 }
+/// The caller's key when it is `recipient`'s and has a current entry. `Err` means the directory
+/// could not answer right now, which is not a verdict on the caller.
 async fn admitted_subject(
     server: &super::server::RegistryServer,
     headers: &HeaderMap,
     recipient: Address,
-) -> Option<Vec<u8>> {
-    let runtime = server.monad_mailbox.as_enabled()?;
-    let descriptor = crate::network_tag::monad_network(runtime.network_tag())?;
+) -> Result<Option<Vec<u8>>> {
+    let Some(runtime) = server.monad_mailbox.as_enabled() else {
+        return Ok(None);
+    };
+    let Some(descriptor) = crate::network_tag::monad_network(runtime.network_tag()) else {
+        return Ok(None);
+    };
     if descriptor.evm_chain_id != runtime.expected_chain_id() {
-        return None;
+        return Ok(None);
     }
-    let point = single_header(headers, "x-frank-mailbox-subject").ok()?;
+    let Ok(point) = single_header(headers, "x-frank-mailbox-subject") else {
+        return Ok(None);
+    };
     if point.len() != 66
         || !(point.starts_with("02") || point.starts_with("03"))
         || !point
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     {
-        return None;
+        return Ok(None);
     }
-    let point = hex::decode(point).ok()?;
-    if crate::monad_stamp_stealth::recipient_address_from_public_key(&point).ok()? != recipient {
-        return None;
+    let Ok(point) = hex::decode(point) else {
+        return Ok(None);
+    };
+    admitted_point_or_busy(server, descriptor, recipient, point)
+        .await
+        .map_err(|_| CanonicalError::Unavailable)
+}
+/// `point` only when it is `recipient`'s key and that key has a published, unexpired,
+/// self-consistent entry in the directory. Shared with the chain RPC proxy. "The directory owner
+/// could not answer now" (queue full, not ready, or an outcome it cannot report) is an error,
+/// distinct from "not admitted".
+pub(crate) async fn admitted_point_or_busy(
+    server: &super::server::RegistryServer,
+    descriptor: &crate::network_tag::MonadNetworkDescriptor,
+    recipient: Address,
+    point: Vec<u8>,
+) -> std::result::Result<Option<Vec<u8>>, crate::directory_runtime::RuntimeError> {
+    use crate::directory_runtime::{AdmittedSnapshot, RuntimeError, SnapshotOperation};
+    if crate::monad_stamp_stealth::recipient_address_from_public_key(&point).ok() != Some(recipient)
+    {
+        return Ok(None);
     }
-    let current = current(
-        server.registry.canonical_dm(),
-        descriptor.cbor_identifier,
-        &point,
-    )
-    .await
-    .ok()?;
+    let Some(directory) = server.registry.canonical_dm().directory() else {
+        return Ok(None);
+    };
+    let reservation = match directory.reserve(descriptor.cbor_identifier, &hex::encode(&point)) {
+        Ok(reservation) => reservation,
+        Err(error @ (RuntimeError::Busy | RuntimeError::NotStarted)) => return Err(error),
+        Err(_) => return Ok(None),
+    };
+    let current = match directory
+        .submit_snapshot(reservation, SnapshotOperation::Current)
+        .wait()
+        .await
+    {
+        Ok(AdmittedSnapshot::Current(current)) => current,
+        Ok(_) => return Ok(None),
+        Err(
+            error @ (RuntimeError::Busy | RuntimeError::NotStarted | RuntimeError::OutcomeUnknown),
+        ) => return Err(error),
+        Err(_) => return Ok(None),
+    };
+    Ok(verified_point(descriptor, point, &current))
+}
+fn verified_point(
+    descriptor: &crate::network_tag::MonadNetworkDescriptor,
+    point: Vec<u8>,
+    current: &crate::directory_admission::Current,
+) -> Option<Vec<u8>> {
     let verified = frank_cbor::verify_preview_directory_evidence(
         &current.evidence.attestation,
         descriptor.cbor_identifier,
@@ -723,7 +877,7 @@ async fn authenticate(
         MailboxNamespace::Canonical,
     )
     .map_err(|_| CanonicalError::Unauthorized)?;
-    let point = admitted_subject(server, headers, binding.recipient).await;
+    let point = admitted_subject(server, headers, binding.recipient).await?;
     let digest = Sha256::digest(
         super::monad_message::mailbox_auth_preimage(
             parsed.challenge,
@@ -780,7 +934,7 @@ pub(crate) async fn handle_challenge(
     };
     let binding = private_binding(runtime, recipient, resource, &query)?;
     if admitted_subject(&server, &headers, recipient)
-        .await
+        .await?
         .is_none()
     {
         // Preserve the existing strict ECC unknown-key primitive; never reveal a profile lookup.
@@ -1111,4 +1265,4 @@ pub(crate) async fn handle_ack(
 
 #[cfg(test)]
 #[path = "monad_message_cbor_tests.rs"]
-mod tests;
+pub(crate) mod tests;

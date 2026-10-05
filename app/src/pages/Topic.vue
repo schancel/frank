@@ -178,7 +178,12 @@ export default defineComponent({
   methods: {
     async refreshContent() {
       try {
-        const wallet = await useActiveWallet()
+        let wallet
+        try {
+          wallet = await useActiveWallet()
+        } catch {
+          // Public reading requires no active wallet
+        }
         await this.refreshMessages({ wallet, topic: this.topic })
       } catch (error) {
         // Handled: no unhandled browser exception during topic polling

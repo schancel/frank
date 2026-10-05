@@ -14,7 +14,33 @@ const demoEntries = new Map([
   ['packages/cashweb/relay/canonical-dm.jest.test.ts', '/node'],
   ['packages/cashweb/relay/directory-client.ts', null],
   ['packages/cashweb/relay/directory-client.jest.test.ts', '/node'],
+  ['packages/cashweb/relay/monad-mailbox-client.ts', null],
+  ['packages/cashweb/relay/monad-mailbox-client.jest.test.ts', '/node'],
+  // The open directory: shared client logic takes its stores from the caller; the Node storage
+  // helper (bots, tests) and the app's messaging session are the only places that open one.
+  ['packages/cashweb/relay/open-directory.ts', null],
+  ['packages/cashweb/relay/open-directory-node.ts', '/node'],
+  ['app/src/utils/monad-identity-session.ts', '/browser'],
+  ['app/src/utils/monad-identity-session.jest.test.ts', '/browser'],
+  // The Qwen bot uses the same open directory through the Node storage helper; its workflows
+  // only name the public Current type. Two workflow tests admit fixtures through a Node store.
+  ['packages/bot/qwen-bot-common.ts', null],
+  ['packages/bot/qwen-inbound-workflow.ts', null],
+  ['packages/bot/qwen-response-workflow.ts', null],
+  ['packages/bot/qwen-inbound-workflow.jest.test.ts', '/node'],
+  ['packages/bot/qwen-response-workflow.jest.test.ts', '/node'],
 ])
+// A jest test may replace its own allowlisted entry with a mock; nothing else may call it in.
+function isJestMock(node, file) {
+  return (
+    /\.jest\.test\.[cm]?[jt]sx?$/.test(file) &&
+    ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) &&
+    ts.isIdentifier(node.expression.expression) &&
+    node.expression.expression.text === 'jest' &&
+    node.expression.name.text === 'mock'
+  )
+}
 function checkConsumer(file, text) {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true)
   let count = 0
@@ -47,7 +73,7 @@ function checkConsumer(file, text) {
           !demoEntries.has(file) ||
           (name === base
             ? !typeOnly
-            : !ts.isImportDeclaration(node) ||
+            : !(ts.isImportDeclaration(node) || isJestMock(node, file)) ||
               !demoEntries.get(file) ||
               name !== base + demoEntries.get(file))
         )

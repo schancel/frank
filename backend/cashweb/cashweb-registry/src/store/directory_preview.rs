@@ -462,6 +462,29 @@ impl<'a> Directory<'a> {
     /// stay private; a failed terminal check cannot advance the durable head or stamp pair.
     /// A verified competing child is the sole rejection that durably retains a fork proof.
     pub fn advance(&self, candidates: &[Candidate<'_>], context: Context<'_>) -> Result<Current> {
+        self.advance_with(candidates, context.now, BindingPolicy::Exact(context.relay))
+    }
+
+    /// As [`Self::advance`], for a relay's routing table: the head may name any relay.
+    pub fn advance_declared(
+        &self,
+        candidates: &[Candidate<'_>],
+        now: Option<Timestamp>,
+    ) -> Result<Current> {
+        self.advance_with(candidates, now, BindingPolicy::Declared)
+    }
+
+    /// As [`Self::current`], for a relay's routing table: the head may name any relay.
+    pub fn current_declared(&self, now: Option<Timestamp>) -> Result<Current> {
+        self.advance_with(&[], now, BindingPolicy::Declared)
+    }
+
+    fn advance_with(
+        &self,
+        candidates: &[Candidate<'_>],
+        now: Option<Timestamp>,
+        binding: BindingPolicy<'_>,
+    ) -> Result<Current> {
         self.ensure_available()?;
         let _guard = self
             .db
@@ -479,9 +502,9 @@ impl<'a> Directory<'a> {
             }
         }
         let loaded = self.storage(self.load(meta.as_ref()))?;
-        let now = policy::clock(context.now, loaded.as_ref().map(|s| s.checked))?;
+        let now = policy::clock(now, loaded.as_ref().map(|s| s.checked))?;
         // Missing trust input never poisons a subject, including with a valid signed competitor.
-        if context.relay.is_none() {
+        if matches!(binding, BindingPolicy::Exact(None)) {
             return Err(AdmissionError::Binding);
         }
         let mut state = loaded.unwrap_or(State {
@@ -510,6 +533,12 @@ impl<'a> Directory<'a> {
             match state.history.classify(&self.anchor, &r)? {
                 Transition::Duplicate => (),
                 Transition::Append => state.history.append(r),
+                // On a relay the first accepted child of a revision wins. A second, different
+                // child (two devices renewing at once) is refused and nothing is recorded, so
+                // honest use can never quarantine an account; the client re-reads and adopts.
+                Transition::Fork if matches!(binding, BindingPolicy::Declared) => {
+                    return Err(AdmissionError::Fork);
+                }
                 Transition::Fork => {
                     let mut proof = state.history.records.split_off(accepted);
                     proof.push(r);
@@ -526,7 +555,7 @@ impl<'a> Directory<'a> {
                 }
             }
         }
-        state.history.head()?.fresh(now, context.relay)?;
+        state.history.head()?.fresh(now, binding)?;
         state.checked = now;
         let committed = self.storage(self.commit(&mut state, meta.as_ref()))?;
         Self::current_result(&state, committed.status()?)
@@ -558,7 +587,10 @@ impl<'a> Directory<'a> {
         if !state.proof.is_empty() {
             return Err(AdmissionError::Fork);
         }
-        state.history.head()?.fresh(now, context.relay)
+        state
+            .history
+            .head()?
+            .fresh(now, BindingPolicy::Exact(context.relay))
     }
 
     /// Recheck the durable head against freshly supplied trust inputs; successful checked-time
@@ -574,6 +606,7 @@ impl<'a> Directory<'a> {
             message_key: h.message.clone(),
             stamp_key: h.stamp.clone(),
             previous_stamp: state.history.previous.clone(),
+            relay: h.relay.clone(),
             revision: h.revision,
             generations: h.generations,
             status,
@@ -611,6 +644,21 @@ impl<'a> Directory<'a> {
         self.storage(self.load(meta.as_ref()))?
             .map(|s| s.metadata(&self.anchor).status())
             .transpose()
+    }
+
+    /// Every retained record in stored order: the accepted chain, then any fork proof. This is
+    /// what one relay hands another; the receiver verifies each record itself.
+    pub fn retained(&self) -> Result<Vec<HistoricalEvidence>> {
+        self.ensure_available()?;
+        let _guard = self
+            .db
+            .lock_directory_preview()
+            .map_err(|_| AdmissionError::Unavailable)?;
+        let meta = self.storage(self.header())?;
+        let state = self
+            .storage(self.load(meta.as_ref()))?
+            .ok_or(AdmissionError::Unenrolled)?;
+        Ok(state.records().map(|r| r.evidence.clone()).collect())
     }
 
     /// Bounded exact fork proof for external investigation. These are not accepted history.

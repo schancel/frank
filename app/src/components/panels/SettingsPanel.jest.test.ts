@@ -19,19 +19,39 @@ jest.mock('src/composables/useActiveWallet', () => ({
 }))
 jest.mock('./ContactCard.vue', () => ({ template: '<div />' }))
 
+const mockRouterPush = jest.fn()
+const mockRouterReplace = jest.fn()
+let mockCurrentPath = '/forum'
+jest.mock('vue-router', () => ({
+  useRouter: () => ({
+    push: mockRouterPush,
+    replace: mockRouterReplace,
+    currentRoute: { value: { path: mockCurrentPath } },
+  }),
+}))
+
+let mockWidth = 1024
+jest.mock('quasar', () => ({
+  useQuasar: () => ({ screen: { width: mockWidth } }),
+}))
+
 import SettingsPanel from './SettingsPanel.vue'
 
 describe('SettingsPanel wallet-action split (#399)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     mockLegacyFlag = undefined
+    mockRouterPush.mockReset()
+    mockRouterReplace.mockReset()
+    mockCurrentPath = '/forum'
+    mockWidth = 1024
   })
 
   function mountPanel() {
     const router = {
-      push: jest.fn(),
-      replace: jest.fn(),
-      currentRoute: { value: { path: '/forum' } },
+      push: mockRouterPush,
+      replace: mockRouterReplace,
+      currentRoute: { value: { path: mockCurrentPath } },
     }
     const wrapper = shallowMount(SettingsPanel, {
       global: {
@@ -41,6 +61,7 @@ describe('SettingsPanel wallet-action split (#399)', () => {
           QScrollArea: { template: '<div><slot /></div>' },
           QList: { template: '<div><slot /></div>' },
           QItem: { template: '<button><slot /></button>' },
+          QItemLabel: { template: '<span><slot /></span>' },
           QIcon: true,
           QItemSection: { template: '<div><slot /></div>' },
           QSeparator: true,
@@ -63,6 +84,46 @@ describe('SettingsPanel wallet-action split (#399)', () => {
     wrapper.unmount()
   })
 
+  it('navigates to settings and profile via openPage', async () => {
+    const { wrapper } = mountPanel()
+    const settingsBtn = wrapper
+      .findAll('button')
+      .find(b => b.text() === 'SettingPanel.settings')
+    expect(settingsBtn).toBeDefined()
+    await settingsBtn!.trigger('click')
+    expect(mockRouterPush).toHaveBeenCalledWith('/settings')
+
+    const profileBtn = wrapper
+      .findAll('button')
+      .find(b => b.text() === 'SettingPanel.profile')
+    expect(profileBtn).toBeDefined()
+    await profileBtn!.trigger('click')
+    expect(mockRouterPush).toHaveBeenCalledWith('/profile')
+    wrapper.unmount()
+  })
+
+  it('emits closeDrawer on narrow screen when navigating', async () => {
+    mockWidth = 390
+    const { wrapper } = mountPanel()
+    const settingsBtn = wrapper
+      .findAll('button')
+      .find(b => b.text() === 'SettingPanel.settings')
+    await settingsBtn!.trigger('click')
+    expect(wrapper.emitted('closeDrawer')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('does not emit closeDrawer on desktop when navigating', async () => {
+    mockWidth = 1024
+    const { wrapper } = mountPanel()
+    const settingsBtn = wrapper
+      .findAll('button')
+      .find(b => b.text() === 'SettingPanel.settings')
+    await settingsBtn!.trigger('click')
+    expect(wrapper.emitted('closeDrawer')).toBeUndefined()
+    wrapper.unmount()
+  })
+
   it('does not offer legacy relay deletion in default Monad settings', () => {
     const { wrapper, router } = mountPanel()
     expect(wrapper.text()).not.toContain('SettingPanel.wipeAndSave')
@@ -79,6 +140,12 @@ describe('SettingsPanel wallet-action split (#399)', () => {
     expect(action).toBeDefined()
     await action!.trigger('click')
     expect(router.push).toHaveBeenCalledWith('/wipe-wallet')
+    wrapper.unmount()
+  })
+
+  it('renders standard 50px settings header', () => {
+    const { wrapper } = mountPanel()
+    expect(wrapper.text()).toContain('leftDrawer.settings')
     wrapper.unmount()
   })
 })

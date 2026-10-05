@@ -287,10 +287,10 @@ export const useForumStore = defineStore('forum', {
       topic,
     }: {
       topic: string
-      wallet: WalletHandle
+      wallet?: WalletHandle
     }) {
       const token = {
-        wallet: wallet.identity.address.raw.toLowerCase(),
+        wallet: wallet ? wallet.identity.address.raw.toLowerCase() : 'public',
         chain: activeChain,
         revision: accountStatus.revision,
         status: accountStatus.status,
@@ -307,7 +307,9 @@ export const useForumStore = defineStore('forum', {
         this.duration === token.duration
       this.isRefreshing = true
       try {
-        const from = Date.now() - this.duration
+        // Bucket the since timestamp to 1 minute so fast topic switching or reloads
+        // reuse the relay's cached query snapshot rather than exhausting its 16-slot capacity.
+        const from = Math.floor((Date.now() - this.duration) / 60000) * 60000
         const names = await this.topicsToFetch(topic, current)
         if (!current()) return
         // Sequential query staging bounds aggregate memory instead of allocating one full

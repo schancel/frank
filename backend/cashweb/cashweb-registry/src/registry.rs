@@ -241,6 +241,12 @@ impl Registry {
         self.db.directory_preview(anchor, mode)
     }
 
+    pub(crate) fn directory_subjects(
+        &self,
+    ) -> Result<crate::store::directory_subjects::DbDirectorySubjects<'_>> {
+        self.db.directory_subjects()
+    }
+
     pub(crate) fn forum(&self) -> &crate::forum::Owner {
         &self.forum
     }

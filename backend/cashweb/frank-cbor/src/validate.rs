@@ -97,7 +97,10 @@ pub fn default_context() -> ValidationContext {
                 type_id,
                 schema_version: if type_id == TYPE_DIRECTORY_STATEMENT {
                     3
-                } else if type_id == TYPE_RECIPIENT_PAYLOAD || type_id == TYPE_TOPIC_POST {
+                } else if type_id == TYPE_RECIPIENT_PAYLOAD
+                    || type_id == TYPE_TOPIC_POST
+                    || type_id == crate::limits::TYPE_BLACKJACK_ITEM
+                {
                     2
                 } else {
                     1
@@ -487,6 +490,7 @@ fn process_frame(
             SchemaVersions {
                 envelope: parsed.schema_version,
                 effective: parsed.schema_version.min(highest_schema),
+                min_reader: parsed.min_reader_version,
             },
         )?;
         check_allocated(&draft)?;
@@ -1215,6 +1219,7 @@ fn open_children(
             unknown,
         }),
         Draft::Blackjack(item) => Ok(TypedPayload::BlackjackItem(item)),
+        Draft::BlackjackHand(item) => Ok(TypedPayload::BlackjackHandItem(item)),
         Draft::Text { text, unknown } => Ok(TypedPayload::TextItem { text, unknown }),
     }
 }

@@ -49,3 +49,6 @@ export async function identifyLegacyAccount(phrase: string): Promise<string> {
   const { MonadIdentity } = await import('@frank/wallet/monad-identity')
   return MonadIdentity.fromSeed({ mnemonic: canonical }).displayAddress
 }
+
+export { importBip39Wallet } from './session'
+

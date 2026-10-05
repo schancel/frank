@@ -219,8 +219,9 @@ describe("createMonadChain: basic chain properties", () => {
 
   it("exposes the Monad name/unit", () => {
     expect(chain.kind).toBe("monad");
-    expect(chain.name).toBe("monad");
-    expect(chain.unit).toBe("MON");
+    expect(chain.name).toBe("Monad Testnet");
+    expect(chain.unit).toBe("MONT");
+    expect(chain.isTestnet).toBe(true);
     expect(chain.defaultTopicVoteValue).toBe(
       TEST_CONFIG.defaultTopicVoteValueWei
     );
@@ -353,6 +354,16 @@ describe("createMonadChain: createWallet", () => {
         "legal winner thank year wave sausage worth useful legal winner thank yellow",
     });
     expect(walletA.identity.address.raw).not.toBe(walletB.identity.address.raw);
+  });
+
+  it("derives identity address according to specified candidate path in seed", async () => {
+    const standardEvmWallet = await chain.createWallet({
+      mnemonic: seed.mnemonic,
+      path: "m/44'/60'/0'/0/0",
+    });
+    expect(standardEvmWallet.identity.address.raw).toBe(
+      "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    );
   });
 
   it("pre-derives unfunded accounts without moving funds on wallet open", async () => {
@@ -2100,12 +2111,11 @@ it("public revision-zero bridge rejects a valid foreign network descriptor witho
   const chain = createMonadChain(TEST_CONFIG), wallet = await chain.createWallet(roots) as MonadChainWalletHandle;
   const operator = createMonadWalletMaterial(roots);
   const point = operator.canonicalRoles!.publicGenerationZeroPoints().auth;
-  const process = (label: string) => ({ processId: label, origin: `https://${label}.example`, tuple: {
-    relayId: new Uint8Array(16).fill(1), endpoint: `https://${label}.example`, identity: { keyType: 1, keyBytes: point },
-    expiry: { seconds: 3700n, nanoseconds: 0 }, unknownFields: new Map() } });
+  const relay = { relayId: new Uint8Array(16).fill(1), endpoint: "https://a.example", identity: { keyType: 1, keyBytes: point },
+    expiry: { seconds: 3700n, nanoseconds: 0 }, unknownFields: new Map() };
   const input = { networkTag: "MONT" as const, network: "monad-testnet", chainId: 10143n,
     issuedAt: { seconds: 100n, nanoseconds: 0 }, expiresAt: { seconds: 3700n, nanoseconds: 0 }, now: { seconds: 100n, nanoseconds: 0 },
-    relayA: process("a"), relayB: process("b"), subjectBinding: "A" as const };
+    relay };
   const statuses = wallet.pool.records();
   jest.clearAllMocks();
   try {

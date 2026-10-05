@@ -3,13 +3,21 @@
 import { enableAutoUnmount, shallowMount } from '@vue/test-utils'
 enableAutoUnmount(afterEach)
 import { nextTick, ref } from 'vue'
-import { accountStatus } from '../accounts/session'
+const mockGetChainAddress = jest.fn(async (chain: string) => {
+  if (chain === 'ecash') return 'ecash:qz3fjd36tzd3qr6p7cqjytx4ftl9f4mghqdsk9xhj9'
+  if (chain === 'solana') return 'AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9'
+  return '0xabc'
+})
 
 jest.mock('../accounts/session', () => ({
   accountStatus: jest
     .requireActual('vue')
     .reactive({ status: 'ready', revision: 1 }),
+  accountSession: {
+    getChainAddress: (chain: string) => mockGetChainAddress(chain),
+  },
 }))
+import { accountStatus } from '../accounts/session'
 const session = accountStatus as { status: string; revision: number }
 
 const balance = {
@@ -20,6 +28,10 @@ const balance = {
 const openPage = jest.fn()
 const mockCopyToClipboard = jest.fn()
 const mockUseActiveWallet = jest.fn()
+const mockRoute = ref<{ query: Record<string, string>; path: string }>({
+  query: { chain: 'monad' },
+  path: '/wallet',
+})
 
 jest.mock('src/composables/useBalance', () => ({
   useBalance: () => balance,
@@ -29,6 +41,7 @@ jest.mock('src/composables/useBalance', () => ({
 // needs the composable to exist.
 jest.mock('vue-router', () => ({
   useRouter: () => ({ push: jest.fn(), replace: jest.fn() }),
+  useRoute: () => mockRoute.value,
 }))
 jest.mock('src/utils/routes', () => ({
   openPage: (...args: unknown[]) => openPage(...args),
@@ -65,8 +78,8 @@ function mountWallet() {
         // The copy button lives in q-input's named #after slot; a generic stub drops it.
         QInput: { template: '<div><slot /><slot name="after" /></div>' },
         QBtn: {
-          props: ['disable'],
-          template: '<button :disabled="disable"><slot /></button>',
+          props: ['disable', 'label'],
+          template: '<button :disabled="disable">{{ label }}<slot /></button>',
         },
         ...Object.fromEntries(
           [
@@ -76,6 +89,7 @@ function mountWallet() {
             'q-card-section',
             'q-card-actions',
             'q-separator',
+            'q-badge',
           ].map(n => [n, { template: '<div><slot /></div>' }]),
         ),
       },
@@ -85,6 +99,7 @@ function mountWallet() {
 
 describe('Wallet detail page (#570)', () => {
   beforeEach(() => {
+    mockRoute.value = { query: { chain: 'monad' }, path: '/wallet' }
     session.status = 'ready'
     session.revision = 1
     balance.formattedBalance.value = '1 MON'
@@ -102,11 +117,18 @@ describe('Wallet detail page (#570)', () => {
   it('shows the wallet, its chain, balance and address', async () => {
     const wrapper = mountWallet()
     await flush()
-    expect(wrapper.get('[data-testid="wallet-name"]').text()).toBe(
+    expect(wrapper.get('[data-testid="wallet-name"]').text()).toContain(
       'walletPanel.mainWallet',
     )
+    expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="wallet-chain"]').text()).toBe(
-      'walletPanel.monad',
+      'walletPanel.monadTestnet',
+    )
+    expect(wrapper.get('[data-testid="wallet-receive-action"]').text()).toBe(
+      'walletPanel.receiveMont',
+    )
+    expect(wrapper.get('[data-testid="wallet-send-action"]').text()).toBe(
+      'walletPanel.sendMont',
     )
     const region = wrapper.get('[data-testid="wallet-balance"]')
     expect(region.text()).toBe('1 MON')
@@ -250,4 +272,63 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
     spy.mockRestore()
   })
+
+  it('renders eCash wallet details and address when selected', async () => {
+    mockRoute.value = { query: { chain: 'ecash' }, path: '/wallet' }
+    const wrapper = mountWallet()
+    await flush()
+
+    expect(wrapper.get('[data-testid="wallet-name"]').text()).toContain(
+      'walletPanel.ecashTestnet',
+    )
+    expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="wallet-chain"]').text()).toBe(
+      'walletPanel.ecashTestnet',
+    )
+    expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe(
+      'walletPanel.zeroTxec',
+    )
+    expect(
+      (wrapper.vm as unknown as { displayAddress: string }).displayAddress,
+    ).toBe('ecash:qz3fjd36tzd3qr6p7cqjytx4ftl9f4mghqdsk9xhj9')
+
+    const receiveBtn = wrapper.get('[data-testid="wallet-receive-action"]')
+    const sendBtn = wrapper.get('[data-testid="wallet-send-action"]')
+    expect(receiveBtn.text()).toBe('walletPanel.receiveTxec')
+    expect(sendBtn.text()).toBe('walletPanel.sendTxec')
+    expect(receiveBtn.attributes('disabled')).toBeDefined()
+    expect(sendBtn.attributes('disabled')).toBeDefined()
+
+    wrapper.unmount()
+  })
+
+  it('renders Solana wallet details and address when selected', async () => {
+    mockRoute.value = { query: { chain: 'solana' }, path: '/wallet' }
+    const wrapper = mountWallet()
+    await flush()
+
+    expect(wrapper.get('[data-testid="wallet-name"]').text()).toContain(
+      'walletPanel.solanaTestnet',
+    )
+    expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="wallet-chain"]').text()).toBe(
+      'walletPanel.solanaTestnet',
+    )
+    expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe(
+      'walletPanel.zeroTsol',
+    )
+    expect(
+      (wrapper.vm as unknown as { displayAddress: string }).displayAddress,
+    ).toBe('AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9')
+
+    const receiveBtn = wrapper.get('[data-testid="wallet-receive-action"]')
+    const sendBtn = wrapper.get('[data-testid="wallet-send-action"]')
+    expect(receiveBtn.text()).toBe('walletPanel.receiveTsol')
+    expect(sendBtn.text()).toBe('walletPanel.sendTsol')
+    expect(receiveBtn.attributes('disabled')).toBeDefined()
+    expect(sendBtn.attributes('disabled')).toBeDefined()
+
+    wrapper.unmount()
+  })
 })
+

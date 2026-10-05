@@ -66,11 +66,10 @@ export interface MonadCanonicalWalletHandle extends MonadWalletHandle {
 
 import type { Timestamp, RelayBinding } from '@frank/codec'
 import type { RolePoint } from '../role-keys/src'
-export interface PublicRevisionZeroProcess {
-  readonly processId: string
-  readonly origin: string
-  readonly tuple: RelayBinding
-}
+/**
+ * What an account signs into its own directory entry: the one relay it lives on and how long the
+ * entry is valid. The relay tuple is the one that relay publishes at `/relay/v1/info`.
+ */
 export interface PublicRevisionZeroInput {
   readonly networkTag: 'MONT' | 'MON1'
   readonly network: string
@@ -78,9 +77,14 @@ export interface PublicRevisionZeroInput {
   readonly issuedAt: Timestamp
   readonly expiresAt: Timestamp
   readonly now: Timestamp
-  readonly relayA: PublicRevisionZeroProcess
-  readonly relayB: PublicRevisionZeroProcess
-  readonly subjectBinding: 'A' | 'B'
+  readonly relay: RelayBinding
+}
+/** A later revision of the same entry: a renewal, or a move to another relay. No key changes. */
+export interface PublicNextRevisionInput extends PublicRevisionZeroInput {
+  /** Revision being signed; the current head's revision plus one. */
+  readonly revision: bigint
+  /** T1 of the current head statement. */
+  readonly predecessor: Uint8Array
 }
 export interface PublicRevisionZeroExport {
   readonly kind: 'public-revision-zero-preparation'
@@ -96,4 +100,10 @@ export interface PublicRevisionZeroExport {
   readonly attestation: Uint8Array
   readonly t1: Uint8Array
   readonly configuration: PublicRevisionZeroInput
+}
+export interface PublicNextRevisionExport
+  extends Omit<PublicRevisionZeroExport, 'kind' | 'configuration'> {
+  readonly kind: 'public-next-revision-preparation'
+  readonly revision: bigint
+  readonly configuration: PublicNextRevisionInput
 }

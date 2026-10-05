@@ -1,8 +1,9 @@
-//! Opt-in authenticated preview directory history. No network, provisioning or runtime defaults.
+//! Authenticated directory history for one subject. No network access or runtime defaults.
 //!
-//! Callers install the revision-zero anchor and authenticate the HTTPS relay independently.
+//! The caller supplies the revision-zero anchor: a relay pins the hash of the first valid
+//! revision 0 a key publishes for itself, a client pins the first one it sees for an address.
 //! A returned current record is a point-in-time result, not a reusable authorization token.
-//! See `docs/protocol/directory-preview-admission.md` for the external continuity boundary.
+//! See `docs/protocol/directory-preview-admission.md` for the continuity boundary.
 
 pub(crate) mod policy;
 
@@ -16,7 +17,9 @@ pub const MAX_CHARGED_BYTES: usize = 16_777_216;
 /// Both complete frames are independently bounded.
 pub const MAX_FRAME_BYTES: usize = 262_144;
 
-/// Explicit caller-installed trust; never inferred from a response or self-signature.
+/// The pinned start of one subject's chain. Every record must be signed by `subject`; the
+/// anchor only fixes which revision 0 the chain grows from, so a later, different revision 0
+/// for the same key is refused instead of replacing history.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Anchor {
     /// Expected network.
@@ -126,6 +129,16 @@ pub struct Context<'a> {
     pub relay: Option<&'a RelayBinding>,
 }
 
+/// How the head's relay binding is judged when deciding whether it is current.
+#[derive(Clone, Copy, Debug)]
+pub enum BindingPolicy<'a> {
+    /// The head must name exactly this relay tuple (a client talking to one known relay).
+    Exact(Option<&'a RelayBinding>),
+    /// The head may name any relay; its own binding must simply be unexpired. This is what a
+    /// relay uses for the replicated routing table, where the entry says where the account lives.
+    Declared,
+}
+
 /// Authentication/storage failures are not directory acceptance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AdmissionError {
@@ -228,6 +241,8 @@ pub struct Current {
     pub stamp_key: AccountRef,
     /// Immediately previous stamp, preserved by renewals and M-only rotations.
     pub previous_stamp: Option<AccountRef>,
+    /// The relay this entry says the account lives on.
+    pub relay: RelayBinding,
     /// Exact wire revision.
     pub revision: u64,
     /// Exact message/stamp generations (not derivation indices).

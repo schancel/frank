@@ -74,7 +74,12 @@ describe("createChain", () => {
           walletStorageLocation: false,
         },
       })
-    ).resolves.toMatchObject({ kind: "monad", name: "monad" });
+    ).resolves.toMatchObject({
+      kind: "monad",
+      name: "Monad Testnet",
+      unit: "MONT",
+      isTestnet: true,
+    });
   });
 
   it("creates a Solana chain with the shared codecs and wallet API", async () => {

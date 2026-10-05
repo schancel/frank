@@ -33,6 +33,8 @@ export const MAX_FORUM_ROWS = 128
 export const MAX_FORUM_ENTRIES = 64
 export const MAX_FORUM_CURSOR_BYTES = 2_048
 export const MAX_FORUM_CURSOR_TRANSPORT = 2_731
+/** Longest signed validity of one directory entry: 366 days, in nanoseconds. */
+export const MAX_DIRECTORY_VALIDITY_NS = 31_622_400_000_000_000n
 export const MAX_RELAY_BINDINGS = 32
 export const MAX_SIGNATURES = 16
 export const MAX_JOURNAL_FACTS = 4_096

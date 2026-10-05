@@ -38,9 +38,6 @@ jest.mock('../utils/notifications', () => ({
   errorNotify: jest.fn(),
   insufficientStampNotify: jest.fn(),
 }))
-jest.mock('../utils/blackjack-bet', () => ({
-  deliverBetWhenReady: jest.fn(),
-}))
 jest.mock('../composables/useActiveWallet', () => ({
   useActiveWallet: () => ({}),
 }))
@@ -147,7 +144,6 @@ function mountChat(host: HTMLElement = document.body) {
       stubs: {
         ChatInput: InputStub,
         ChatBannerStack: Blank,
-        BlackjackUnsentWagers: Blank,
         ChatMessageReply: Blank,
         ChatMessageComponent: Blank,
       },

@@ -4,6 +4,7 @@
       <q-btn
         flat
         dense
+        no-caps
         icon="menu"
         :aria-label="$t('accountRecovery.open_navigation')"
         @click="$emit('toggleMyDrawerOpen')"
@@ -22,8 +23,8 @@
         <h1 id="account-heading" ref="heading" tabindex="-1" class="text-h5">
           {{
             mode === 'legacy'
-              ? 'Legacy recovery/migration'
-              : 'Your Frank account'
+              ? $t('accountRecovery.import_bip39_seed')
+              : $t('accountRecovery.frank_account')
           }}
         </h1>
         <p role="status" aria-live="polite" data-test="account-status">
@@ -48,6 +49,9 @@
             {{ $t('accountRecovery.saved_account_data_could_not_be_opened') }}
           </p>
           <q-btn
+            outline
+            color="primary"
+            no-caps
             :label="$t('accountRecovery.retry_opening_account')"
             :loading="busy"
             data-test="retry-account"
@@ -64,6 +68,9 @@
           </p>
           <q-btn
             v-if="account.pendingError"
+            outline
+            color="primary"
+            no-caps
             :label="$t('accountRecovery.retry_opening_account')"
             data-test="retry-pending"
             :disable="busy"
@@ -74,31 +81,50 @@
           </p>
           <p>{{ account.pending.account.displayName }}</p>
           <p class="recovery-text">{{ account.pending.account.descriptor }}</p>
-          <q-btn
-            v-if="account.pendingReady"
-            color="primary"
-            :label="$t('accountRecovery.activate_account')"
-            data-test="activate-account"
-            :disable="busy"
-            :loading="busy"
-            @click="activate"
-          />
-          <p v-else>
-            {{
-              $t(
-                'accountRecovery.the_attempt_is_incomplete_or_awaiting_cleanup',
-              )
-            }}
-          </p>
-          <q-btn
-            flat
-            :label="$t('accountRecovery.cancel_pending_attempt')"
-            data-test="cancel-pending"
-            :disable="busy"
-            @click="cancelPending"
-          />
+          <div v-if="account.pendingReady" class="row q-gutter-sm q-mt-md items-center">
+            <q-btn
+              color="primary"
+              no-caps
+              :label="$t('accountRecovery.activate_account')"
+              data-test="activate-account"
+              :disable="busy"
+              :loading="busy"
+              @click="activate"
+            />
+            <q-btn
+              outline
+              color="primary"
+              no-caps
+              :label="$t('accountRecovery.cancel_pending_attempt')"
+              data-test="cancel-pending"
+              :disable="busy"
+              @click="cancelPending"
+            />
+          </div>
+          <div v-else class="q-mt-md">
+            <p>
+              {{
+                $t(
+                  'accountRecovery.the_attempt_is_incomplete_or_awaiting_cleanup',
+                )
+              }}
+            </p>
+            <q-btn
+              outline
+              color="primary"
+              no-caps
+              :label="$t('accountRecovery.cancel_pending_attempt')"
+              data-test="cancel-pending"
+              :disable="busy"
+              @click="cancelPending"
+            />
+          </div>
           <q-btn
             v-if="account.status === 'ready'"
+            class="q-mt-md"
+            outline
+            color="primary"
+            no-caps
             :label="$t('accountRecovery.return_to_wallet')"
             @click="$router.push('/wallet')"
           />
@@ -135,9 +161,10 @@
                 data-test="replace-ack"
               />
             </div>
-            <div class="q-gutter-sm">
+            <div class="row q-gutter-sm items-center">
               <q-btn
                 color="primary"
+                no-caps
                 :label="$t('accountRecovery.new_account')"
                 data-test="new-account"
                 :disable="!mayBegin || busy"
@@ -145,14 +172,18 @@
               />
               <q-btn
                 outline
+                color="primary"
+                no-caps
                 :label="$t('accountRecovery.restore_account')"
                 data-test="restore-account"
                 :disable="!mayBegin || busy"
-                @click="changeMode('descriptor')"
+                @click="startRestore"
               />
               <q-btn
-                flat
-                :label="$t('accountRecovery.legacy_recovery_migration')"
+                outline
+                color="primary"
+                no-caps
+                :label="$t('accountRecovery.import_bip39_seed')"
                 data-test="legacy-recovery"
                 :disable="!mayBegin || busy"
                 @click="changeMode('legacy')"
@@ -161,12 +192,14 @@
             <q-btn
               v-if="account.status === 'ready'"
               class="q-mt-md"
-              flat
+              outline
+              color="primary"
+              no-caps
               :label="$t('accountRecovery.return_to_wallet')"
               @click="$router.push('/wallet')"
             />
           </template>
-          <q-form v-else-if="mode === 'legacy'" @submit="identifyLegacy">
+          <q-form v-else-if="mode === 'legacy'" @submit="submitLegacyPhrase">
             <p>
               {{
                 $t(
@@ -177,6 +210,9 @@
             <q-input
               v-model="legacyPhrase"
               type="textarea"
+              outlined
+              autogrow
+              :rows="3"
               :label="$t('accountRecovery.legacy_bip39_recovery_phrase')"
               autocomplete="off"
               autocorrect="off"
@@ -184,13 +220,35 @@
               :maxlength="512"
               data-test="legacy-phrase"
             />
-            <q-btn
-              type="submit"
-              :label="$t('accountRecovery.identify_legacy_account_locally')"
-              data-test="identify-legacy"
-              :disable="busy || !legacyPhrase"
-              :loading="busy"
-            />
+            <p
+              v-if="detectedAccount"
+              role="status"
+              aria-live="polite"
+              class="q-mt-sm text-positive"
+              data-test="detected-account"
+            >
+              {{ detectedAccount }}
+            </p>
+            <div class="row q-gutter-sm q-mt-md items-center">
+              <q-btn
+                type="submit"
+                color="primary"
+                no-caps
+                :label="$t('accountRecovery.import_bip39_seed')"
+                data-test="identify-legacy"
+                :disable="busy || !legacyPhrase"
+                :loading="busy"
+              />
+              <q-btn
+                outline
+                color="primary"
+                no-caps
+                :label="$t('accountRecovery.cancel_and_start_again')"
+                data-test="cancel-ceremony"
+                :disable="busy"
+                @click="cancel"
+              />
+            </div>
           </q-form>
           <q-form v-else-if="mode === 'policy'" @submit="beginNew">
             <p v-if="legacyAddress">
@@ -206,14 +264,26 @@
               :options="policies"
               data-test="backup-policy"
             />
-            <q-btn
-              type="submit"
-              color="primary"
-              :label="$t('accountRecovery.generate_frank_account_backups')"
-              data-test="generate-backups"
-              :disable="!policy || busy"
-              :loading="busy"
-            />
+            <div class="row q-gutter-sm q-mt-md items-center">
+              <q-btn
+                type="submit"
+                color="primary"
+                no-caps
+                :label="$t('accountRecovery.generate_frank_account_backups')"
+                data-test="generate-backups"
+                :disable="!policy || busy"
+                :loading="busy"
+              />
+              <q-btn
+                outline
+                color="primary"
+                no-caps
+                :label="$t('accountRecovery.cancel_and_start_again')"
+                data-test="cancel-ceremony"
+                :disable="busy"
+                @click="cancel"
+              />
+            </div>
           </q-form>
           <template v-else-if="mode === 'backup'">
             <p>
@@ -230,88 +300,44 @@
             <q-input
               :model-value="shownShare"
               type="textarea"
+              outlined
               readonly
               :label="$t('accountRecovery.frank_account_backup_share')"
               autocomplete="off"
               data-test="backup-share"
             />
-            <q-btn
-              flat
-              :label="$t('accountRecovery.copy_this_share')"
-              @click="copy(shownShare)"
-            />
-            <q-btn
-              color="primary"
-              :label="
-                shareIndex + 1 < shareCount
-                  ? 'Saved this share — next'
-                  : 'Saved all shares'
-              "
-              data-test="next-share"
-              @click="nextShare"
-            />
+            <div class="row q-gutter-sm q-mt-md items-center">
+              <q-btn
+                outline
+                color="primary"
+                no-caps
+                :label="$t('accountRecovery.copy_this_share')"
+                @click="copy(shownShare)"
+              />
+              <q-btn
+                color="primary"
+                no-caps
+                :label="
+                  shareIndex + 1 < shareCount
+                    ? 'Saved this share — next'
+                    : 'Saved all shares'
+                "
+                data-test="next-share"
+                @click="nextShare"
+              />
+              <q-btn
+                outline
+                color="primary"
+                no-caps
+                :label="$t('accountRecovery.cancel_and_start_again')"
+                data-test="cancel-ceremony"
+                :disable="busy"
+                @click="cancel"
+              />
+            </div>
           </template>
-          <template v-else-if="mode === 'save-descriptor'">
-            <p>
-              {{
-                $t('accountRecovery.save_two_independent_copies_of_this_public')
-              }}
-            </p>
-            <q-input
-              :model-value="descriptor"
-              readonly
-              :label="$t('accountRecovery.public_frankdesc_descriptor')"
-              data-test="public-descriptor"
-            />
-            <q-btn
-              flat
-              :label="$t('accountRecovery.copy_public_descriptor')"
-              @click="copy(descriptor)"
-            />
-            <q-checkbox
-              v-model="descriptorSaved"
-              :label="
-                $t('accountRecovery.i_saved_two_independent_copies_of_the')
-              "
-              data-test="descriptor-saved"
-            />
-            <q-btn
-              color="primary"
-              :label="$t('accountRecovery.confirm_my_saved_backups')"
-              data-test="confirm-backups"
-              :disable="!descriptorSaved"
-              @click="changeMode('confirm')"
-            />
-          </template>
-          <q-form v-else-if="mode === 'descriptor'" @submit="pinDescriptor">
-            <p>
-              {{
-                $t(
-                  'accountRecovery.enter_the_public_frankdesc_descriptor_from_an',
-                )
-              }}
-            </p>
-            <q-input
-              v-model="descriptorInput"
-              :label="
-                $t('accountRecovery.independently_saved_frankdesc_descriptor')
-              "
-              :maxlength="76"
-              autocomplete="off"
-              :spellcheck="false"
-              data-test="restore-descriptor"
-            />
-            <q-btn
-              type="submit"
-              color="primary"
-              :label="$t('accountRecovery.pin_expected_account')"
-              data-test="pin-descriptor"
-              :disable="busy || !descriptorInput"
-              :loading="busy"
-            />
-          </q-form>
           <q-form
-            v-else-if="mode === 'confirm' || mode === 'restore-shares'"
+            v-else-if="mode === 'confirm' || mode === 'restore-shares' || mode === 'restore'"
             @submit="confirm"
           >
             <p v-if="mode === 'confirm'">
@@ -329,12 +355,13 @@
                 )
               }}
             </p>
-            <p class="recovery-text" data-test="pinned-descriptor">
+            <p v-if="descriptor" class="recovery-text" data-test="pinned-descriptor">
               {{ $t('accountRecovery.expected_account') }} {{ descriptor }}
             </p>
             <q-input
               v-model="shareInput"
               type="textarea"
+              outlined
               :label="$t('accountRecovery.saved_codex32_shares_one_per_line')"
               :maxlength="6000"
               autocomplete="off"
@@ -344,29 +371,34 @@
             />
             <q-input
               v-model="displayName"
+              outlined
+              class="q-mt-sm"
               :label="$t('accountRecovery.display_name')"
               :maxlength="80"
               autocomplete="off"
               data-test="display-name"
             />
-            <q-btn
-              type="submit"
-              color="primary"
-              :label="$t('accountRecovery.verify_backups_and_stage_account')"
-              data-test="verify-backups"
-              :disable="busy || !shareInput || !displayName.trim()"
-              :loading="busy"
-            />
+            <div class="row q-gutter-sm q-mt-md items-center">
+              <q-btn
+                type="submit"
+                color="primary"
+                no-caps
+                :label="$t('accountRecovery.verify_backups_and_stage_account')"
+                data-test="verify-backups"
+                :disable="busy || !shareInput || !displayName.trim()"
+                :loading="busy"
+              />
+              <q-btn
+                outline
+                color="primary"
+                no-caps
+                :label="$t('accountRecovery.cancel_and_start_again')"
+                data-test="cancel-ceremony"
+                :disable="busy"
+                @click="cancel"
+              />
+            </div>
           </q-form>
-          <q-btn
-            v-if="mode !== 'choice'"
-            flat
-            class="q-mt-md"
-            :label="$t('accountRecovery.cancel_and_start_again')"
-            data-test="cancel-ceremony"
-            :disable="busy"
-            @click="cancel"
-          />
         </template>
         <p class="q-mt-lg text-caption">
           {{
@@ -384,7 +416,11 @@
 /* global defineProps, defineEmits */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { accountSession, accountStatus as account } from '../accounts/session'
+import {
+  accountSession,
+  accountStatus as account,
+  importBip39Wallet,
+} from '../accounts/session'
 import {
   createAccountCeremony,
   recoveryErrorMessage,
@@ -407,6 +443,7 @@ type Mode =
   | 'save-descriptor'
   | 'descriptor'
   | 'confirm'
+  | 'restore'
   | 'restore-shares'
 const mode = ref<Mode>('choice')
 const heading = ref<HTMLElement>()
@@ -428,6 +465,7 @@ const shareInput = ref('')
 const displayName = ref('')
 const legacyPhrase = ref('')
 const legacyAddress = ref('')
+const detectedAccount = ref('')
 const replaceAccepted = ref(false)
 let alive = true
 let request = 0
@@ -451,11 +489,16 @@ function clearSecrets() {
   shownShare.value = ''
   shareInput.value = ''
   legacyPhrase.value = ''
+  detectedAccount.value = ''
 }
 function focus() {
   void nextTick(() => heading.value?.focus())
 }
 function changeMode(value: Mode) {
+  if (value === 'restore') {
+    void startRestore()
+    return
+  }
   mode.value = value
   error.value = ''
   focus()
@@ -519,7 +562,14 @@ function nextShare() {
   if (++shareIndex.value < shareCount.value) {
     shownShare.value = ceremony.share(shareIndex.value)
     focus()
-  } else changeMode('save-descriptor')
+  } else changeMode('confirm')
+}
+function startRestore() {
+  return run(async () => {
+    if (!mayBegin.value) return
+    descriptor.value = await ceremony.beginRestore()
+    if (alive) changeMode('restore-shares')
+  })
 }
 function pinDescriptor() {
   return run(async () => {
@@ -547,18 +597,34 @@ function confirm() {
     }
   })
 }
-function identifyLegacy() {
+function submitLegacyPhrase() {
   return run(async () => {
     let phrase = legacyPhrase.value
     legacyPhrase.value = ''
     try {
-      legacyAddress.value = await identifyLegacyAccount(phrase)
+      const { scanBip39Accounts } = await import('@frank/wallet/bip39-import')
+      let provider: any = undefined
+      try {
+        const { activeChain } = await import('@frank/wallet/chain')
+        provider = (activeChain as any).provider
+      } catch {
+        // provider unavailable
+      }
+      const scanned = await scanBip39Accounts({ phrase, provider })
+      const detectedInfo = `${scanned.address} (${scanned.label})`
+      detectedAccount.value = detectedInfo
+
+      await importBip39Wallet(phrase, scanned.path)
+      void usePersistentStorageStore().afterActivation()
+      emit('setupCompleted')
+      await router.push('/wallet')
     } finally {
       phrase = ''
     }
-    if (alive) changeMode('policy')
   })
 }
+const identifyLegacy = submitLegacyPhrase
+
 function activate() {
   return run(async () => {
     const pending = account.pending

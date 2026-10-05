@@ -69,9 +69,12 @@ body {
 // Quasar's .q-message-stamp is opacity .6, and --q-primary matches the sent
 // bubble, so that ring composites away. Black still clears 3:1 on both sent
 // bubbles after that composite.
-.outgoing-focus-target:focus {
+.outgoing-focus-target:focus-visible {
   outline: 2px solid #000;
   outline-offset: 2px;
+}
+.outgoing-focus-target:focus:not(:focus-visible) {
+  outline: none;
 }
 
 // Telegram-style footer (#391). The cluster floats to the end of the last

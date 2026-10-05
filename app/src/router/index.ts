@@ -45,7 +45,15 @@ export default () => {
     }
 
     await accountSession.initialize()
-    if (to.path === '/setup' || to.path === '/changelog') return
+    if (
+      to.path === '/setup' ||
+      to.path === '/changelog' ||
+      to.path === '/' ||
+      to.path.startsWith('/forum') ||
+      to.path.startsWith('/topic')
+    ) {
+      return
+    }
     if (accountStatus.status !== 'ready') return '/setup'
   }
 

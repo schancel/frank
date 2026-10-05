@@ -23,7 +23,6 @@ const EXEMPT = new Set([
 ])
 
 const BASELINE: Record<string, number> = {
-  'components/chat/messages/ChatMessageBlackjack.vue': 4,
   'components/chat/messages/ChatMessageRaffle.vue': 9,
   'components/context_menus/ChatMessageMenu.vue': 6,
   'components/dialogs/RelayConnectDialog.vue': 3,

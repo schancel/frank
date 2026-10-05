@@ -156,7 +156,12 @@ export default defineComponent({
     }
     const retryRefresh = async () => {
       try {
-        const wallet = await useActiveWallet()
+        let wallet
+        try {
+          wallet = await useActiveWallet()
+        } catch {
+          // Public reading requires no active wallet
+        }
         await forumStore.refreshMessages({
           wallet,
           topic: selectedTopic.value,

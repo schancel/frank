@@ -40,6 +40,20 @@
             $t('chatLayout.selectMessagesTitle')
           }}</q-toolbar-title>
         </template>
+        <template v-else-if="!address">
+          <q-btn
+            class="q-px-sm"
+            flat
+            dense
+            @click="() => $emit('toggleMyDrawerOpen')"
+            icon="menu"
+            :aria-label="$t('a11y.openNavigation')"
+            :aria-expanded="myDrawerOpen"
+          />
+          <q-toolbar-title class="h6">{{
+            $t('chatList.directMessages')
+          }}</q-toolbar-title>
+        </template>
         <template v-else>
           <q-btn
             class="q-px-sm"
@@ -212,7 +226,7 @@ export default defineComponent({
   data() {
     return {
       sendFileOpen: false as boolean,
-      address: this.$route.params.address as string,
+      address: (this.$route.params.address as string) || '',
       // Full-pane Info swap, not a side drawer -- see this file's template header comment above
       // `router-view`/`chat-info-view` for why.
       infoOpen: false,
@@ -230,7 +244,7 @@ export default defineComponent({
     from: RouteLocationNormalized,
     next: () => void,
   ) {
-    this.address = to.params.address as string
+    this.address = (to.params.address as string) || ''
     // Switching chats while Info/select mode is active would otherwise leave the *previous*
     // chat's state showing under the new address -- always land back on a plain chat view for a
     // freshly-navigated-to address.
@@ -253,24 +267,32 @@ export default defineComponent({
   },
   computed: {
     contactProfile() {
-      return this.getContact(this.address)?.profile
+      return this.address ? this.getContact(this.address)?.profile : undefined
     },
     contactName(): string {
+      if (!this.address) {
+        return ''
+      }
       return sameCanonicalAddress(this.address, this.ownAddress)
         ? this.$t('selfChat.you')
         : this.contactProfile?.name ?? this.address
     },
     presentedAvatar(): string | undefined {
+      if (!this.address) {
+        return undefined
+      }
       return sameCanonicalAddress(this.address, this.ownAddress)
         ? this.myProfile.profile.avatar || this.contactProfile?.avatar
         : this.contactProfile?.avatar
     },
     notifications: {
       get(): boolean {
-        return this.getNotify(this.address) ?? false
+        return this.address ? (this.getNotify(this.address) ?? false) : false
       },
       set(value: boolean) {
-        this.setNotify({ address: this.address, value })
+        if (this.address) {
+          this.setNotify({ address: this.address, value })
+        }
       },
     },
     // Ticket #50: a spoofing/impersonation cue -- a colored ring around the contact's avatar,

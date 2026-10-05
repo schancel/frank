@@ -51,6 +51,12 @@ module.exports = {
   moduleNameMapper: {
     // Resolve workspace packages from this checkout. Worktrees intentionally share the root
     // node_modules directory, whose workspace symlinks otherwise point at another checkout.
+    '^@frank/account-recovery$':
+      '<rootDir>/../packages/account-recovery/src/index.ts',
+    '^@frank/account-vault$':
+      '<rootDir>/../packages/account-vault/src/index.ts',
+    '^@frank/domain-roots$': '<rootDir>/../packages/domain-roots/src/index.ts',
+    '^@frank/codex32$': '<rootDir>/../packages/codex32/src/index.ts',
     '^@frank/cashweb/(.*)$': '<rootDir>/../packages/cashweb/$1',
     '^@frank/wallet/(.*)$': '<rootDir>/../packages/wallet/$1',
     // Same source map cashweb's jest uses. The package export points at dist,
@@ -62,6 +68,8 @@ module.exports = {
     '^@frank/nakamoto/curve$': '<rootDir>/../packages/nakamoto/src/curve.ts',
     '^@frank/nakamoto/constructors$':
       '<rootDir>/../packages/nakamoto/src/constructors.ts',
+    // Every other nakamoto subpath: the package only exports ESM builds, which Jest cannot load.
+    '^@frank/nakamoto/(.*)$': '<rootDir>/../packages/nakamoto/src/$1',
     '^bitcore-lib-xpi$': '<rootDir>/../packages/bitcore-lib-xpi/index.js',
     '^bitcore-lib-xpi/(.*)$': '<rootDir>/../packages/bitcore-lib-xpi/$1',
     '^@noble/curves/(.*)\\.js$': '@noble/curves/$1',
@@ -88,6 +96,7 @@ module.exports = {
     // transitively pull in @frank/wallet/chain, which imports the real `vite-env.ts` (a genuine
     // `import.meta.env` reference Jest can never parse) via this exact relative specifier.
     '^\\./vite-env$': '<rootDir>/../packages/wallet/chain/vite-env.node.ts',
+    '.*utils/avatar$': '<rootDir>/src/utils/avatar.node.ts',
   },
   transform: {
     // See https://jestjs.io/docs/en/configuration.html#transformignorepatterns-array-string

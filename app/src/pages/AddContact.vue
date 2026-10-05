@@ -57,7 +57,14 @@
                 <q-item-label>{{
                   $t('newContactDialog.notFound')
                 }}</q-item-label>
-                <!-- TODO: Error information here -->
+                <q-item-label
+                  v-if="lookupFailure"
+                  caption
+                  data-test="contact-lookup-reason"
+                  >{{
+                    $t(`newContactDialog.lookup.${lookupFailure}`)
+                  }}</q-item-label
+                >
               </q-item-section>
             </q-item>
           </q-card-section>
@@ -89,7 +96,6 @@
 </template>
 
 <script lang="ts">
-import { navigateBack } from 'src/utils/navigate-back'
 import { defineComponent, markRaw, ref } from 'vue'
 import { QInput } from 'quasar'
 
@@ -98,6 +104,7 @@ import {
   defaultRelayData,
   useContactStore,
 } from 'src/stores/contacts'
+import { useChatStore } from 'src/stores/chats'
 import { activeChain } from '@frank/wallet/chain'
 import { profilePubKeyFromBytes } from 'src/utils/profile-pubkey'
 import { openChat } from 'src/utils/routes'
@@ -106,6 +113,11 @@ import { openChat } from 'src/utils/routes'
 // lookup is scheduled, in flight, or just fired wait this long so a burst yields one fetch.
 const LOOKUP_DEBOUNCE_MS = 250
 
+import {
+  contactLookupFailure,
+  fetchContactProfile,
+  type ContactLookupFailure,
+} from 'src/utils/directory-peer'
 type ChainAddress = Parameters<typeof activeChain.fetchProfile>[0]
 
 type AcceptedLookup = {
@@ -122,6 +134,8 @@ export default defineComponent({
       // generation is still the latest, which is the single staleness mechanism.
       lookupGeneration: 0,
       lookupPending: false,
+      // Why the directory has no usable entry for the typed address, when it said so.
+      lookupFailure: null as ContactLookupFailure | null,
     }
   },
   setup() {
@@ -161,6 +175,7 @@ export default defineComponent({
       this.cancelScheduledLookup()
       this.acceptedLookup = null
       this.lookupPending = false
+      this.lookupFailure = null
       if (newAddress.trim() === '') {
         return
       }
@@ -219,12 +234,13 @@ export default defineComponent({
         if (generation !== this.lookupGeneration) {
           return
         }
-        const profileInfo = await activeChain.fetchProfile(chainAddress)
+        const profileInfo = await fetchContactProfile(chainAddress)
         if (generation !== this.lookupGeneration) {
           return
         }
         this.lookupPending = false
         if (!profileInfo) {
+          this.lookupFailure = contactLookupFailure(chainAddress)
           return
         }
         const returnedProfileAddress = activeChain.formatAddress(
@@ -262,7 +278,38 @@ export default defineComponent({
       openChat(this.$router, resolvedAddress)
     },
     cancel() {
-      navigateBack(this.$router)
+      const from = this.$route?.query?.from
+      if (typeof from === 'string' && from.startsWith('/chat')) {
+        void this.$router.push(from)
+        return
+      }
+      const previous = (window.history.state as { back?: unknown } | null)?.back
+      if (typeof previous === 'string' && previous.startsWith('/chat')) {
+        this.$router.back()
+        return
+      }
+      let address: string | undefined
+      try {
+        const chatStore = useChatStore()
+        address =
+          chatStore.activeChatAddr ?? chatStore.getSortedChatOrder[0]?.address
+      } catch {
+        // Pinia not active in test environment
+      }
+      if (address) {
+        void this.$router.push(`/chat/${address}`)
+        return
+      }
+      if (
+        typeof previous === 'string' &&
+        previous.length > 0 &&
+        previous !== '/' &&
+        previous !== '/forum'
+      ) {
+        this.$router.back()
+        return
+      }
+      void this.$router.push('/chat')
     },
   },
   mounted() {

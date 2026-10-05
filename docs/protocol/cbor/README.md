@@ -26,7 +26,7 @@ null (13). P, P' and M MUST be valid compressed type-1 secp256k1 points with
 pairwise distinct x coordinates (including rejection of point negations).
 The relay identity MUST also be a valid compressed type-1 point, its endpoint
 MUST satisfy S4 and use `https:`, and its expiry MUST cover statement expiry.
-Statement validity MUST be positive and at most 3600 seconds, calculated at
+Statement validity MUST be positive and at most 366 days (31622400 seconds), calculated at
 nanosecond precision. Revision zero requires null predecessor and zero
 generations; other revisions require a 32-byte predecessor and generations
 no greater than revision. These are stateless necessities, not evidence that
@@ -66,9 +66,10 @@ error, before projecting legacy prior authority: old transition proofs grant
 no preview migration authority, even when the subject changes.
 
 The runtime successor under #133/#696 MUST enforce the reviewed preview
-policy before any head, route or DM use: caller-installed trusted anchor;
-authenticated relay tuple; trusted nanosecond clock, freshness and rollback
-protection; contiguous revision and exact predecessor linkage; schema order;
+policy before any head, route or DM use: an anchor that is the first valid
+revision 0 signed by P itself (pinned on first publication or first lookup,
+never replaced afterwards); an unexpired relay binding; nanosecond clock,
+freshness and rollback protection; contiguous revision and exact predecessor linkage; schema order;
 independent generation increments and cumulative no-reuse (including point
 negation); fork handling; S10a current/previous stamp state; and atomic bounded
 historical catch-up. Charge each exact statement plus one stable validating
@@ -214,7 +215,8 @@ profile of section 11, is `directory-statement-v3`); 5
 `key-transition-statement`; 8 `message-content-revision`; 9 `topic-post`; 10 `topic-post-submission`; 11
 `topic-vote-submission`; 12 `forum-single-view`; 13 `forum-topic-page`;
 14 `forum-discovery-page`; 15 `forum-operation-status`; 16 `container-message-item`;
-17 `text-message-item`; 18 `blackjack-message-item` (schema1/min-reader1). Type 9 schema 2/min-reader 2 opens field 3 as
+17 `text-message-item`; 18 `blackjack-message-item` (schema1/min-reader1) and `blackjack-hand-item` (schema2/min-reader2, the peer-to-peer
+hand of [../blackjack-p2p.md](../blackjack-p2p.md); vectors in `vectors/blackjack-hand.json`). Type 9 schema 2/min-reader 2 opens field 3 as
 `forum-content`; schema 1 remains the explicitly historical opaque-body schema.
 
 Unassigned identifiers remain reserved and MUST NOT be emitted. The proof-only

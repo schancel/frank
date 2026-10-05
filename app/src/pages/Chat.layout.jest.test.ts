@@ -117,7 +117,6 @@ async function mountChat(messages: ReturnType<typeof message>[] = []) {
       components: stubs,
       stubs: {
         ChatInput: Blank,
-        BlackjackUnsentWagers: Blank,
         ChatMessageComponent: MessageStub,
         ChatMessageReply: Blank,
         ChatBannerStack: BannerStackStub,

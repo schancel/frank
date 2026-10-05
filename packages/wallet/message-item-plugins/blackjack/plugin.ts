@@ -21,6 +21,8 @@ import {
   reduceBlackjackState,
 } from './game'
 import { registerMessageItemPlugin, type MessageItemContext } from '../index'
+// The peer-to-peer hand item registers with the same import as the schema-1 move item.
+import './hand-plugin'
 
 /** Looks up `wagerTxHash` on-chain and reports what it actually shows -- confirmed or not, real
  * sender/recipient/value -- without judging whether it's "enough" or "to the right place" (that's

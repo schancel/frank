@@ -39,6 +39,7 @@ export default {
     degradedTitle: 'Connection degraded',
     degradedBanner: 'Some forum topics could not be updated.',
     retry: 'Retry',
+    loginSignUp: 'Log in / Sign up',
   },
   chatLayout: {
     info: 'Info',
@@ -51,6 +52,7 @@ export default {
   chatInput: {
     giveLotusSecretly: 'Give Lotus Secretly',
     attachImage: 'Attach Image',
+    blackjackChallenge: 'Blackjack challenge',
     placeHolder: 'Write a message...',
     emojiPickerTitle: 'Select an emoji',
     stampPrice: 'Stamp Price',
@@ -91,26 +93,6 @@ export default {
     explainerCountUnverified:
       'The round did not announce its size, so the number of entrants is not checked.',
   },
-  blackjackDealer: {
-    silentTitle: 'The dealer has not answered',
-    silentBody:
-      'Your move was sent and paid for, but no reply has come back. The dealer may be offline, and a move sent while it was offline may never be seen.',
-    silentWait: 'Wait for the dealer to come back before trying again.',
-    silentNoResend:
-      'This wager cannot be re-sent from here: it would be paid twice.',
-    silentRefund:
-      'Your wager is not refunded automatically (only a bet the dealer rejects is). If the dealer stays offline, contact whoever runs it.',
-    resendConfirm:
-      'Send my {action} again. I understand it is paid again and, if the first one also arrives, it may be played twice.',
-    resend: 'Send my move again',
-  },
-  blackjackHand: {
-    bet: 'Your bet: {amount} MON',
-    betUnverified: 'Your bet',
-    betWaiting: 'Waiting for the dealer to deal.',
-    payout:
-      'Payout: {amount} MON (wager back plus any winnings), sent by the dealer after it reveals the hand.',
-  },
   persistentStorage: {
     tab: 'Storage',
     heading: 'Persistent storage',
@@ -128,81 +110,87 @@ export default {
     confirmSeed: 'Confirm my recovery phrase',
     seedConfirmed: 'Your recovery phrase is confirmed.',
   },
-  blackjackWelcome: {
-    title: 'Blackjack table',
-  },
-  blackjackBet: {
-    doubleUnavailable:
-      'Cannot double down: the original wager or chat is not ready.',
-    doublePending:
-      'Your double-down payment is saved. Waiting for the dealer; recovery controls appear in this chat if it remains unanswered.',
-    doublePaidTitle: 'Double-down paid, awaiting delivery or reply',
-    doubleSignedBody:
-      'Your additional {amount} MON double-down wager to {name} ({address}) may have been paid. Check payment before retrying; no new stake will be sent.',
-    doublePendingBody:
-      'Your additional {amount} MON double-down wager to {name} ({address}) is paid. Retry sends the same double move with the same payment. Keep this record until the dealer confirms the double or you verify its outcome.',
-    playAgainTitle: 'Play again',
-    faucetHint:
-      'Need MON to play? This app uses testnet MON, which has no real value. The demo faucet funds new profiles automatically; if nothing arrived, ask the demo operator to send you some.',
-    title: 'Start a blackjack hand',
-    amountLabel: 'Bet amount',
-    amountAria: 'Bet amount in MON',
-    limits: 'Table limits: {min} to {max} MON',
-    notice:
-      'Your bet is a real transfer of MON to {name} ({address}). Only use it with a blackjack dealer.',
-    confirm: 'I understand {amount} MON will be sent to {name} ({address})',
-    submit: 'Deal me in with {name} {address} ({amount} MON)',
-    sending: 'Sending your bet…',
-    sent: 'Bet sent. Waiting for the dealer to deal.',
+  blackjackP2p: {
+    notDeliveredYet:
+      'The other side does not have this message yet: it is still being sent.',
     notDelivered:
-      'Wager paid, bet not delivered: {message} Use Retry in the chat to send the bet again.',
-    errorFormat: 'Enter a bet as a plain decimal number',
-    errorInvalid: 'Enter a valid MON amount to bet',
-    errorZero: 'Bet must be greater than zero',
-    errorMin: 'Bet is below the table minimum ({min} MON)',
-    errorMax: 'Bet is above the table maximum ({max} MON)',
-    errorBalanceUnknown:
-      'Your balance is not loaded yet. Try again in a moment.',
-    errorBalance:
-      'Not enough balance: this bet needs {needed} MON (bet plus about {rest} MON for the message stamp and fees), you have {balance} MON.',
-    errorUnsent:
-      'Finish the unsent wager in the chat before starting a new bet.',
-    errorFunds: 'Insufficient funds: {message}',
-    errorSend: 'Could not place the bet: {message}',
-    unsentTitle: 'Wager paid, bet not delivered',
-    unsentBody:
-      'Your {amount} MON wager to {name} ({address}) was paid, but the bet message did not reach the dealer.',
-    unsentTx: 'Transaction: {hash}',
-    unsentRetry: 'Retry sending the bet',
-    unsentRetrying: 'Sending the bet…',
-    unsentFailed: 'Still not delivered: {message}',
-    confirming: 'Waiting for your payment to be confirmed on the network…',
-    errorPaymentFailed:
-      'The payment transaction failed on the network, so no wager was placed.',
-    paymentPending:
-      'Your payment is still confirming. It is saved in the chat; use Check payment there.',
-    paymentUnknown:
-      'The network has not shown your payment yet. It may still arrive, so it is saved in the chat; use Check payment there. Do not assume nothing was paid.',
-    unsentSigned: 'Payment not confirmed',
-    unsentSignedBody:
-      'A {amount} MON wager to {name} ({address}) was sent, but the network has not confirmed it yet.',
-    unsentDealerSilent: 'Waiting for the dealer',
-    unsentDealerSilentBody:
-      'Your bet for {amount} MON to {name} ({address}) was delivered but the dealer has not answered.',
-    unsentDealerUnconfirmed: 'The dealer could not verify your payment yet',
-    checkPayment: 'Check payment',
-    checking: 'Checking the network…',
-    paymentStillPending: 'The payment is still pending on the network.',
-    paymentNotFound:
-      'The network does not know this payment (yet). If you are sure it was never sent, you can discard this record.',
-    paymentFailedRemoved:
-      'The payment transaction failed on the network; nothing was paid. The record was removed.',
-    dismiss: 'Discard this record',
-    dismissWarning:
-      'If this wager was actually paid, discarding the record can lose the money. Discard only if you are sure it was not paid or was refunded.',
-    dismissConfirm: 'Yes, discard it',
-    dismissCancel: 'Keep it',
-    loadError: 'Saved wager records could not be read: {message}',
+      'The other side does not have this message: it was not sent. {reason}',
+    retry: 'Send it again',
+    notNext:
+      'This blackjack move was already sent or is no longer possible. Nothing was sent.',
+    challengeTitle: 'Challenge to a hand of blackjack',
+    roleDealer: 'I deal',
+    rolePlayer: 'I play, they deal',
+    maxBet: 'Maximum bet',
+    limitDealer:
+      'You can offer up to {amount}: a dealer must be able to pay a doubled win (4× the bet) from its own balance.',
+    limitPlayer: 'You can bet up to {amount}: what you can spend now.',
+    sendChallenge: 'Send challenge',
+    challengeRefused:
+      'This challenge is more than your balance covers. Nothing was sent.',
+    balanceUnknown: 'Your balance is not loaded yet.',
+    enterAmount: 'Enter an amount greater than zero.',
+    belowStamp: 'The amount cannot be below the minimum stamp ({amount}).',
+    aboveOwnLimit: 'That is more than you can cover (at most {amount}).',
+    aboveMaxBet: 'That is above the maximum bet of this hand ({amount}).',
+    lineChallengeDealer:
+      'Blackjack challenge: the sender deals. Maximum bet {amount}.',
+    lineChallengePlayer:
+      'Blackjack challenge: the sender plays, you deal. Maximum bet {amount}.',
+    lineAccept: 'Challenge accepted. Maximum bet {amount}.',
+    line: {
+      bet: 'Bet placed: the stamp of this message is the bet.',
+      deal: 'Cards dealt.',
+      hit: 'Hit.',
+      stand: 'Stand.',
+      double: 'Double down: the stamp of this message is the second bet.',
+      card: 'Card dealt.',
+      reveal: 'Hand revealed: the stamp of this message is the payout, if any.',
+      refund: 'Refund: the stamp of this message is the money returned.',
+    },
+    playerHand: 'Player: {cards} ({total})',
+    dealerHand: 'Dealer: {cards} ({total})',
+    dealerShows: 'Dealer shows: {card}',
+    wager: 'At stake: {amount}',
+    accept: 'Accept and deal',
+    betAmount: 'Your bet (at most {max})',
+    bet: 'Place bet',
+    hit: 'Hit',
+    stand: 'Stand',
+    double: 'Double down (+{amount})',
+    payAndReveal: 'Pay {amount} and reveal',
+    refund: 'Refund {amount}',
+    refundBet: 'Return the bet ({amount}) instead of dealing',
+    waitAccept: 'Waiting for the other side to accept.',
+    waitBet: 'Waiting for the bet.',
+    waitDealer: 'Waiting for the dealer.',
+    waitPlayer: "Waiting for the player's move.",
+    waitReveal: 'Waiting for the dealer to reveal and pay.',
+    dealing: 'Dealing…',
+    verified: 'The cards match the dealer’s commitment.',
+    badReveal:
+      'The dealer sent a reveal that does not match its commitment. The hand is not settled.',
+    noSeed:
+      'This device does not hold the seed of this hand, so it cannot deal. You can return the bet.',
+    refundOwed: 'The dealer owes you a refund of {amount}.',
+    refunded: 'The dealer returned the bet ({amount}).',
+    noPayout: 'Nothing is paid out.',
+    paid: 'The dealer paid {amount}.',
+    shortPaid: 'The dealer owed {owed} but paid {paid}.',
+    outcome: {
+      player: {
+        player_win: 'You win.',
+        dealer_win: 'The dealer wins.',
+        push: 'Push: your stake comes back.',
+        player_blackjack: 'Blackjack! You win 3:2.',
+      },
+      dealer: {
+        player_win: 'The player wins.',
+        dealer_win: 'You win.',
+        push: 'Push: the stake goes back.',
+        player_blackjack: 'The player has blackjack and wins 3:2.',
+      },
+    },
   },
   a11y: {
     openNavigation: 'Open navigation menu',
@@ -237,23 +225,36 @@ export default {
     nextAvatar: 'Next avatar',
     chooseFile: 'Choose a file',
     openInExplorer: 'Open transaction in block explorer',
+    copyTxHash: 'Copy transaction hash',
   },
   leftDrawer: {
     noForums: 'No forums discovered yet.',
     settings: 'Settings',
+    chats: 'Direct Messages',
     contacts: 'Contacts',
     forum: 'Forum',
     wallet: 'Wallet',
     railLabel: 'Sidebar sections',
+    chatsUnreadOne: 'Direct Messages, {count} unread message',
+    chatsUnreadOther: 'Direct Messages, {count} unread messages',
     contactsUnreadOne: 'Contacts, {count} unread message',
     contactsUnreadOther: 'Contacts, {count} unread messages',
   },
   walletPanel: {
     title: 'Wallets',
     mainWallet: 'Main wallet',
+    renameWallet: 'Rename wallet',
+    walletName: 'Wallet name',
+    saveName: 'Save',
+    cancel: 'Cancel',
+    resetDefault: 'Reset to default',
+    testnet: 'Testnet',
     monad: 'Monad',
+    monadTestnet: 'Monad Testnet',
     send: 'Send MON',
     receive: 'Receive MON',
+    sendMont: 'Send MONT',
+    receiveMont: 'Receive MONT',
     showSeed: 'Show recovery phrase',
     confirmSeed: 'Confirm recovery phrase',
     balanceLoading: 'Loading balance…',
@@ -261,6 +262,22 @@ export default {
     balanceStale: '{balance} (last known)',
     failedLoadAddress: 'Failed to load the Monad wallet address',
     unableCopyAddress: 'Unable to copy the Monad address',
+    ecash: 'eCash',
+    ecashTestnet: 'eCash Testnet',
+    solana: 'Solana',
+    solanaTestnet: 'Solana Testnet',
+    zeroXec: '0 XEC',
+    zeroTxec: '0 tXEC',
+    zeroSol: '0 SOL',
+    zeroTsol: '0 tSOL',
+    sendXec: 'Send XEC',
+    receiveXec: 'Receive XEC',
+    sendTxec: 'Send tXEC',
+    receiveTxec: 'Receive tXEC',
+    sendSol: 'Send SOL',
+    receiveSol: 'Receive SOL',
+    sendTsol: 'Send tSOL',
+    receiveTsol: 'Receive tSOL',
   },
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...',
@@ -269,6 +286,8 @@ export default {
     balance: 'Balance',
     balanceStale: '(last known)',
     directMessages: 'Direct Messages',
+    selectChatOrAddContact:
+      'Select a conversation or add a contact to start messaging.',
   },
   selfChat: {
     you: 'You',
@@ -303,6 +322,22 @@ export default {
     sendAgain: 'Send again',
   },
   mailboxStatus: {
+    directory: {
+      'device-clock':
+        'Messaging is off: this device’s date and time look wrong. Check the clock; retrying.',
+      'account-unavailable':
+        'Messaging is off: this account could not be opened for messaging. Retrying.',
+      'relay-unreachable':
+        "Messaging is off: can't reach the server to publish your account. Retrying.",
+      'relay-rejected':
+        'Messaging is off: the server refused to store your account’s address entry. Retrying.',
+      'relay-misconfigured':
+        'Messaging is off: the server did not describe itself correctly, so your account could not be published. Retrying.',
+      'entry-refused':
+        'Messaging is off: the server holds a conflicting or invalid entry for your account. Retrying.',
+      'storage':
+        'Messaging is off: this device could not save its address book records. Retrying.',
+    },
     unavailable:
       'Messaging service unavailable: this relay does not offer messaging, so you will not receive messages.',
     unreachable:
@@ -467,6 +502,18 @@ export default {
     replace: 'Replace this account',
   },
   newContactDialog: {
+    lookup: {
+      'clock':
+        'This device’s date and time look wrong, so this address could not be checked. Check the clock and try again.',
+      'not-published':
+        'This address has not published itself yet, so it cannot receive messages. Ask its owner to open the app once.',
+      'unreachable':
+        "Can't reach the server to look this address up. Try again in a moment.",
+      'refused':
+        'The server returned an entry for this address that is not signed by it, has expired or conflicts with one seen before. It was not used.',
+      'messaging-off':
+        'Your own account is still being published. Contacts can be added once messaging is on.',
+    },
     newContact: 'New Contact',
     enterBitcoinCashAddress: 'Enter address (0x...)',
     loading: 'Looking up contact',
@@ -636,6 +683,9 @@ export default {
     txType: 'Type',
     txAddress: 'Address',
     txAmount: 'Amount',
+    copyTxHash: 'Copy transaction hash (Local chain shim)',
+    localChainNotice: 'Local stack / chain shim',
+    txHashCopied: 'Transaction hash copied to clipboard',
   },
   close: 'Close',
 }

@@ -88,15 +88,11 @@
           </div>
         </div>
       </div>
-      <blackjack-unsent-wagers
-        :address="address"
-        :name="peerName"
-        :submit="sendFollowUpWhenIdle"
-      />
       <!-- Message box -->
       <chat-input
         @sendFileClicked="toSendFileDialog"
         @giveLotusClicked="$emit('giveLotusClicked')"
+        @blackjackClicked="blackjackDialog = true"
         ref="chatInput"
         v-model:message="message"
         v-model:stamp-amount="stampAmount"
@@ -104,6 +100,15 @@
         @sendMessage="sendMessage"
       />
     </q-footer>
+    <!-- A blackjack challenge from the composer's message-type menu: any chat, any contact. -->
+    <q-dialog v-model="blackjackDialog">
+      <q-card v-if="blackjackDialog" data-testid="blackjack-dialog">
+        <blackjack-challenge-form
+          :busy="sendingMessage"
+          @submit="sendBlackjackChallenge"
+        />
+      </q-card>
+    </q-dialog>
   </div>
 </template>
 
@@ -113,13 +118,28 @@ import { defineComponent, ref } from 'vue'
 import ChatMessageComponent from '../components/chat/messages/ChatMessage.vue'
 import ChatBannerStack from '../components/chat/ChatBannerStack.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
-import BlackjackUnsentWagers from '../components/chat/BlackjackUnsentWagers.vue'
+import BlackjackChallengeForm from '../components/chat/BlackjackChallengeForm.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
-import type { BlackjackChatContext } from '../components/chat/messages/ChatMessageBlackjack.vue'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import { defaultAcceptancePrice, defaultStampAmount } from '../utils/constants'
-import { deliverBetWhenReady } from '../utils/blackjack-bet'
+import {
+  automaticDealerSteps,
+  handItemStillNext,
+  HAND_FEE_RESERVE_WEI,
+  storedOutgoingMessages,
+  resumeHandMessages,
+  type HandResumeStore,
+  newGameId,
+  newSeed,
+  saveSeed,
+} from '../utils/blackjack-hand'
+import { getOwnCanonicalAddress } from '../utils/own-address'
+import {
+  buildChallenge,
+  soleHandItem,
+  type HandRole,
+} from '@frank/wallet/message-item-plugins/blackjack/hand'
 import { useMonadWallet } from '../utils/clients'
 import {
   activeChain,
@@ -134,6 +154,7 @@ import { useContactStore } from 'src/stores/contacts'
 import { useProfileStore } from 'src/stores/my-profile'
 import { ChatMessage, useChatStore } from 'src/stores/chats'
 import type { OutgoingOutcome } from 'src/stores/chats'
+import { useBalance } from 'src/composables/useBalance'
 
 const scrollDuration = 0
 
@@ -142,7 +163,7 @@ export default defineComponent({
     ChatMessageComponent,
     ChatMessageReply,
     ChatInput,
-    BlackjackUnsentWagers,
+    BlackjackChallengeForm,
     ChatBannerStack,
   },
   beforeRouteUpdate(
@@ -153,21 +174,6 @@ export default defineComponent({
     this.address = to.params.address as string
     this.messagesToShow = 30
     next()
-  },
-  // What the dealer's bubbles need to place a bet from inside a message (#395): the same awaited,
-  // idle-waiting delivery the unsent-wager banner retries with, and the stamp this chat will pay.
-  provide() {
-    const blackjackChat: BlackjackChatContext = {
-      submit: payload => this.sendFollowUpWhenIdle(payload),
-      stampWei: () => {
-        try {
-          return activeChain.fromDisplayAmount(this.stampAmount)
-        } catch {
-          return null
-        }
-      },
-    }
-    return { blackjackChat }
   },
   beforeUnmount() {
     window.removeEventListener('resize', this.resizeHandler)
@@ -188,14 +194,21 @@ export default defineComponent({
       message: '',
       stampPreparationStatus: null as string | null,
       sendingMessage: false,
+      blackjackDialog: false,
+      // Automatic dealer steps already attempted in this page session.
+      blackjackAttempted: new Set<string>(),
+      // An own undelivered hand message is being resumed; no automatic step meanwhile.
+      resumingHand: false,
     }
   },
   setup() {
     const chats = useChatStore()
     const contacts = useContactStore()
     const myProfile = useProfileStore()
+    const { refresh: refreshBalance } = useBalance()
 
     return {
+      refreshBalance,
       getAcceptancePrice: contacts.getAcceptancePrice,
       getStampAmount: chats.getStampAmount,
       setStampAmount: chats.setStampAmount,
@@ -203,6 +216,7 @@ export default defineComponent({
       getProfile: myProfile,
       getMessageByPayload: chats.getMessageByPayload,
       sendDirectMessage: chats.sendMessage,
+      chatStore: chats,
       chats: chats.chats,
       chatScroll: ref<QScrollArea | null>(null),
     }
@@ -215,6 +229,7 @@ export default defineComponent({
     // Adjust the chat width when window resizes
     window.addEventListener('resize', debounce(this.resizeHandler, 50))
     this.focusComposeOnOpen()
+    void this.runBlackjackDealer()
   },
   updated() {
     this.$nextTick(() => {
@@ -559,6 +574,33 @@ export default defineComponent({
       }
       const stampValue =
         stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
+      // A blackjack message is sent only while it is still the hand's next message, judged on
+      // the messages saved on this device too, so a payout, refund, bet or deal that another
+      // tab already sent (or is still sending) is not sent a second time from this one.
+      const handItem = soleHandItem(items)
+      if (handItem) {
+        this.sendingMessage = true
+        let stillNext = false
+        try {
+          const own = await getOwnCanonicalAddress()
+          stillNext =
+            !!own &&
+            (await handItemStillNext({
+              item: handItem,
+              stampWei: stampValue,
+              own,
+              peer: this.address,
+              memory: this.messages,
+              stored: () => storedOutgoingMessages(this.address),
+            }))
+        } finally {
+          this.sendingMessage = false
+        }
+        if (!stillNext) {
+          errorNotify(new Error(this.$t('blackjackP2p.notNext')))
+          return false
+        }
+      }
       this.sendingMessage = true
       let outcome: OutgoingOutcome
       try {
@@ -586,24 +628,87 @@ export default defineComponent({
       // is "not sent", which keeps a bet's unsent-wager record and a purchase's guard honest.
       return outcome.state === 'sent' || outcome.state === 'payment-pending'
     },
-    // For value-bearing follow-ups whose payment is already on its way (the first blackjack bet:
-    // its wager transfer takes seconds): `sendFollowUpItems` drops a call made while another send
-    // is in flight, which would strand the wager, so wait for the chat to go idle first.
-    async sendFollowUpWhenIdle(payload: {
-      items: MessageItem[]
-      stampValueWei?: bigint
-      address: string
+    // The challenge form's submit: build the challenge against this wallet's spendable balance
+    // and send it as an ordinary message. A dealer's seed is kept on this device before its
+    // commitment leaves it.
+    async sendBlackjackChallenge({
+      role,
+      maxBetWei,
+    }: {
+      role: HandRole
+      maxBetWei: bigint
     }) {
-      await deliverBetWhenReady({
-        betAddress: payload.address,
-        currentAddress: () => this.address,
-        isBusy: () => this.sendingMessage,
-        send: () =>
-          this.sendFollowUpItems({
-            items: payload.items,
-            stampValueWei: payload.stampValueWei,
-          }),
+      const gameId = newGameId()
+      const seed = role === 'dealer' ? newSeed() : undefined
+      let spendableWei: bigint
+      try {
+        spendableWei = await activeChain.nativeTransfers.getBalance({
+          wallet: useMonadWallet(),
+        })
+      } catch (err) {
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
+        return
+      }
+      const built = buildChallenge({
+        gameId,
+        role,
+        maxBetWei,
+        spendableWei,
+        reserveWei: HAND_FEE_RESERVE_WEI,
+        seed,
       })
+      if ('error' in built) {
+        errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')))
+        return
+      }
+      if (seed) {
+        // The seed is kept under this account's own name before its commitment leaves.
+        const own = await getOwnCanonicalAddress()
+        if (!own) {
+          errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')))
+          return
+        }
+        saveSeed(own, this.address, gameId, seed)
+      }
+      this.blackjackDialog = false
+      await this.sendFollowUpItems({ items: [built.item] })
+    },
+    // Dealer steps that involve no choice and pay nothing (deal, card, a reveal that owes
+    // nothing) are sent without asking. Each position of a hand is attempted once per page
+    // session; a failed send stays in the chat with its Retry.
+    async runBlackjackDealer() {
+      if (this.sendingMessage || this.resumingHand) return
+      const own = await getOwnCanonicalAddress()
+      if (!own || this.sendingMessage || this.resumingHand) return
+      // First finish what this user already decided: a hand message that was cut off (the
+      // window closed mid-send) or failed counts as sent in the hand, so nothing else can
+      // happen until it is delivered. Free steps are sent again; money is only settled.
+      // While that is awaited no other trigger (watchers, a finished send) may pick a step.
+      this.resumingHand = true
+      let resumed: number
+      try {
+        resumed = await resumeHandMessages({
+          store: this.chatStore as unknown as HandResumeStore,
+          wallet: useMonadWallet(),
+          address: this.address,
+          own,
+          messages: this.messages,
+          attempted: this.blackjackAttempted,
+          ordinaryStampWei: activeChain.fromDisplayAmount(this.stampAmount),
+        })
+      } finally {
+        this.resumingHand = false
+      }
+      if (resumed > 0) {
+        void this.runBlackjackDealer()
+        return
+      }
+      const step = automaticDealerSteps(this.messages, own, this.address).find(
+        candidate => !this.blackjackAttempted.has(candidate.key),
+      )
+      if (!step || this.sendingMessage || this.resumingHand) return
+      this.blackjackAttempted.add(step.key)
+      await this.sendFollowUpItems({ items: [step.item] })
     },
     getContact(outbound: boolean) {
       if (outbound) {
@@ -682,10 +787,29 @@ export default defineComponent({
   watch: {
     'address'() {
       this.focusComposeOnOpen()
+      void this.runBlackjackDealer()
     },
-    'messages.length'() {
+    'messages.length'(newLen: number, oldLen: number) {
       // Scroll to bottom if user was already there.
       this.scrollBottom()
+      void this.runBlackjackDealer()
+      if (newLen && oldLen !== undefined && newLen > oldLen) {
+        const newMsgs = this.messages.slice(oldLen)
+        const hasIncomingConfirmedStamps = newMsgs.some(
+          msg =>
+            !msg.outbound &&
+            msg.status === 'confirmed' &&
+            ((msg.stampValueWei !== undefined && msg.stampValueWei > 0n) ||
+              (msg.stampPayments !== undefined &&
+                msg.stampPayments.length > 0)),
+        )
+        if (hasIncomingConfirmedStamps) {
+          void this.refreshBalance?.()
+        }
+      }
+    },
+    'sendingMessage'(sending: boolean) {
+      if (!sending) void this.runBlackjackDealer()
     },
     'active'(newActive) {
       if (!newActive) {

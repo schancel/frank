@@ -46,6 +46,7 @@ export function createRoutes(): RouteRecordRaw[] {
           path: 'chat',
           component: () => import('layouts/ChatLayout.vue'),
           children: [
+            { path: '', component: () => import('pages/ChatPlaceholder.vue') },
             { path: ':address', component: () => import('pages/Chat.vue') },
           ],
         },

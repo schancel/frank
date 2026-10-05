@@ -7,6 +7,14 @@
     tabindex="-1"
     data-test="settings-panel"
   >
+    <q-separator />
+    <q-item>
+      <q-item-section>
+        <q-item-label>{{ $t('leftDrawer.settings') }}</q-item-label>
+      </q-item-section>
+    </q-item>
+    <q-separator />
+
     <contact-card
       :address="myAddress"
       :name="profile.name"
@@ -49,15 +57,7 @@
           <q-item-section>{{ $t('SettingPanel.wipeAndSave') }}</q-item-section>
         </q-item>
 
-        <q-item
-          clickable
-          v-ripple
-          @click="
-            $router.push('/changelog').catch(() => {
-              // Don't care. Probably duplicate route
-            })
-          "
-        >
+        <q-item clickable v-ripple @click="openChangelog">
           <q-item-section avatar>
             <q-icon name="change_history" />
           </q-item-section>
@@ -70,7 +70,15 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, onMounted, ref } from 'vue'
+import {
+  computed,
+  defineComponent,
+  getCurrentInstance,
+  onMounted,
+  ref,
+} from 'vue'
+import { useRouter } from 'vue-router'
+import { useQuasar } from 'quasar'
 
 import ContactCard from './ContactCard.vue'
 import { openPage } from '../../utils/routes'
@@ -78,12 +86,82 @@ import { useProfileStore } from 'src/stores/my-profile'
 import { storeToRefs } from 'pinia'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
+import { isNarrowWidth } from '../../utils/layout'
 
 export default defineComponent({
-  setup() {
+  components: {
+    ContactCard,
+  },
+  props: {
+    drawerOpen: {
+      type: Boolean,
+      default: () => false,
+    },
+  },
+  emits: ['update:drawerOpen', 'closeDrawer'],
+  model: {
+    prop: 'drawerOpen',
+    event: 'update:drawerOpen',
+  },
+  setup(props, { emit }) {
     const myProfile = useProfileStore()
     const { profile, inbox } = storeToRefs(myProfile)
     const myAddress = ref('')
+    const router = useRouter()
+    const $q = useQuasar()
+    const instance = getCurrentInstance()
+
+    function getRouter() {
+      return (
+        (router && router.push ? router : null) ||
+        (instance?.proxy as any)?.$router
+      )
+    }
+
+    function maybeCloseDrawer(target: string) {
+      const current = getRouter()?.currentRoute?.value?.path
+      if (current === target) return
+      const width =
+        $q?.screen?.width ?? (instance?.proxy as any)?.$q?.screen?.width
+      if (width !== undefined && isNarrowWidth(width)) {
+        emit('closeDrawer')
+      }
+    }
+
+    function openSettings() {
+      const r = getRouter()
+      maybeCloseDrawer('/settings')
+      if (r) {
+        return openPage(r, '/settings')
+      }
+    }
+
+    function openProfile() {
+      const r = getRouter()
+      maybeCloseDrawer('/profile')
+      if (r) {
+        return openPage(r, '/profile')
+      }
+    }
+
+    function deleteForever() {
+      const r = getRouter()
+      maybeCloseDrawer('/wipe-wallet')
+      if (r) {
+        return openPage(r, '/wipe-wallet')
+      }
+    }
+
+    function openChangelog() {
+      const r = getRouter()
+      maybeCloseDrawer('/changelog')
+      if (r) {
+        return r.push('/changelog').catch(() => {
+          // Don't care. Probably duplicate route
+        })
+      }
+    }
+
     onMounted(async () => {
       try {
         myAddress.value = (await useActiveWallet()).identity.displayAddress
@@ -91,47 +169,23 @@ export default defineComponent({
         // The setup route may render this panel before a seed exists.
       }
     })
+
+    const drawerOpenModel = computed({
+      get: () => props.drawerOpen,
+      set: (value: boolean) => emit('update:drawerOpen', value),
+    })
+
     return {
       legacyLotusMode: legacyLotusModeEnabled(),
       profile,
       inbox,
       myAddress,
+      openSettings,
+      openProfile,
+      deleteForever,
+      openChangelog,
+      drawerOpenModel,
     }
-  },
-  components: {
-    ContactCard,
-  },
-  emits: ['update:drawerOpen'],
-  props: {
-    drawerOpen: {
-      type: Boolean,
-      default: () => false,
-    },
-  },
-  model: {
-    prop: 'drawerOpen',
-    event: 'update:drawerOpen',
-  },
-  methods: {
-    openSettings() {
-      openPage(this.$router, '/settings')
-    },
-    openProfile() {
-      openPage(this.$router, '/profile')
-    },
-    deleteForever() {
-      openPage(this.$router, '/wipe-wallet')
-    },
-  },
-  computed: {
-    drawerOpenModel: {
-      get() {
-        return this.drawerOpen
-      },
-      set(value: boolean) {
-        this.$emit('update:drawerOpen', value)
-      },
-    },
   },
 })
 </script>

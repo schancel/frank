@@ -2,14 +2,14 @@
 use std::{
     path::PathBuf,
     sync::Mutex,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use frank_cbor::{
     cbor_map, decode_forum_cursor, encode_forum_cursor, encode_forum_read_frame, CborValue,
     ForumCursor, ForumCursorPosition, Timestamp,
 };
-use rand::RngCore;
+use rocksdb::{Direction, IteratorMode};
 
 use crate::{
     monad_http::{Address, JsonRpcTransport},
@@ -18,7 +18,7 @@ use crate::{
         check_topic_burn_before_broadcast, parse_topic_event, TopicBurnPolicy, TopicEvent,
     },
     monad_topic_verify::VoteDirection,
-    store::forum::{invalid, time_value, ForumError, Observation, Post, Result, Store},
+    store::forum::{invalid, time_key, time_value, ForumError, Observation, Post, Result, Store},
 };
 
 pub(crate) fn now() -> Timestamp {
@@ -43,7 +43,6 @@ struct State {
     epoch: [u8; 16],
     revision: u64,
     incarnation: u64,
-    snapshots: Vec<Snapshot>,
     unavailable: bool,
 }
 
@@ -51,23 +50,6 @@ struct State {
 pub(crate) enum Query {
     Topic { topic: String, since: Timestamp },
     Discovery,
-}
-
-#[derive(Debug)]
-struct Row {
-    value: CborValue,
-    position: ForumCursorPosition,
-    charge: usize,
-}
-
-#[derive(Debug)]
-struct Snapshot {
-    query: Query,
-    revision: u64,
-    incarnation: u64,
-    created: Instant,
-    rows: Vec<Row>,
-    charge: usize,
 }
 
 impl Owner {
@@ -103,13 +85,23 @@ impl Owner {
             }
             let store = Store::open(&self.path, network, policy)?;
             let mut epoch = [0; 16];
-            rand::thread_rng().fill_bytes(&mut epoch);
+            use bitcoinsuite_core::{Hashed, Sha256};
+            let digest = Sha256::digest(
+                [
+                    b"forum-epoch-v1",
+                    network.as_bytes(),
+                    &policy.expected_chain_id.to_be_bytes(),
+                    &policy.burn_address.0,
+                ]
+                .concat()
+                .into(),
+            );
+            epoch.copy_from_slice(&digest.as_slice()[..16]);
             *guard = Some(State {
                 store,
                 epoch,
                 revision: 0,
                 incarnation: 0,
-                snapshots: Vec::new(),
                 unavailable: false,
             });
         }
@@ -271,6 +263,10 @@ fn request(network: &str, policy: TopicBurnPolicy, frame: &[u8]) -> Result<Obser
 
 impl State {
     fn view(&self, post: &Post) -> Result<Vec<u8>> {
+        self.view_row(post, &self.epoch, self.revision)
+    }
+
+    fn view_row(&self, post: &Post, epoch: &[u8], revision: u64) -> Result<Vec<u8>> {
         let author = self
             .store
             .operation(&post.author.ok_or(ForumError::Unavailable)?)?
@@ -306,8 +302,8 @@ impl State {
                         (1, CborValue::Bytes(post.aggregate.magnitude.0.to_vec())),
                     ]),
                 ),
-                (9, CborValue::Int(self.revision.into())),
-                (10, CborValue::Bytes(self.epoch.to_vec())),
+                (9, CborValue::Int(revision.into())),
+                (10, CborValue::Bytes(epoch.to_vec())),
             ]),
         )
         .map_err(|_| ForumError::Unavailable)
@@ -356,203 +352,240 @@ impl State {
         encode_forum_read_frame(15, &cbor_map(fields)).map_err(|_| ForumError::Unavailable)
     }
 
-    fn cursor(&self, snapshot: &Snapshot, position: ForumCursorPosition) -> Result<Vec<u8>> {
-        encode_forum_cursor(&ForumCursor {
-            bytes: Vec::new(),
-            network: self.store.network.clone(),
-            revision: snapshot.revision,
-            epoch: self.epoch.to_vec(),
-            incarnation: snapshot.incarnation,
-            position,
-        })
-        .map_err(invalid)
-    }
-
-    fn materialize(&self, query: Query, incarnation: u64) -> Result<Snapshot> {
-        let mut snapshot = Snapshot {
-            query: query.clone(),
-            revision: self.revision,
-            incarnation,
-            created: Instant::now(),
-            rows: Vec::new(),
-            charge: 4096,
-        };
-        let occupied: usize = self.snapshots.iter().map(|s| s.charge).sum();
-        // Empty queries still retain their snapshot/index overhead. Reserve it
-        // before construction, just as every later row reserves its capacity.
-        if occupied
-            .checked_add(snapshot.charge)
-            .ok_or(ForumError::SnapshotTooLarge)?
-            > 256 * 1024 * 1024
-        {
-            return Err(ForumError::SnapshotTooLarge);
-        }
-        let mut push = |row: Row| -> Result<()> {
-            let next = snapshot
-                .charge
-                .checked_add(row.charge + std::mem::size_of::<Row>() * 2)
-                .ok_or(ForumError::SnapshotTooLarge)?;
-            if next > 64 * 1024 * 1024 || occupied + next > 256 * 1024 * 1024 {
-                return Err(ForumError::SnapshotTooLarge);
-            }
-            snapshot
-                .rows
-                .try_reserve_exact(1)
-                .map_err(|_| ForumError::SnapshotTooLarge)?;
-            snapshot.rows.push(row);
-            snapshot.charge = next;
-            Ok(())
-        };
-        match query {
-            Query::Topic { topic, since } => {
-                self.store.visit_posts(&topic, since, |hash, post| {
-                    let frame = self.view(&post)?;
-                    let charge = frame.capacity() + topic.len() + 32 + 256;
-                    push(Row {
-                        value: CborValue::Bytes(frame),
-                        position: ForumCursorPosition::Topic {
-                            topic: topic.clone(),
-                            since,
-                            timestamp: post.visible.ok_or(ForumError::Unavailable)?,
-                            hash: hash.to_vec(),
-                        },
-                        charge,
-                    })
-                })?
-            }
-            Query::Discovery => self.store.visit_topics(|topic, count, last| {
-                let charge = topic.capacity() * 2 + 512;
-                push(Row {
-                    value: cbor_map(vec![
-                        (0, CborValue::Text(topic.clone())),
-                        (1, CborValue::Int(count.into())),
-                        (2, time_value(last)),
-                    ]),
-                    position: ForumCursorPosition::Discovery { topic },
-                    charge,
-                })
-            })?,
-        }
-        Ok(snapshot)
-    }
-
-    fn page_frame(
-        &self,
-        snapshot: &Snapshot,
-        start: usize,
-        end: usize,
-        request: Option<&[u8]>,
-    ) -> Result<Vec<u8>> {
-        let rows = snapshot.rows[start..end]
-            .iter()
-            .map(|r| r.value.clone())
-            .collect();
-        let next = if end < snapshot.rows.len() && end > start {
-            Some(self.cursor(snapshot, snapshot.rows[end - 1].position.clone())?)
-        } else {
-            None
-        };
-        let (id, mut fields, next_key, echo_key) = match &snapshot.query {
-            Query::Topic { topic, since } => (
-                13,
-                vec![
-                    (0, CborValue::Text(self.store.network.clone())),
-                    (1, CborValue::Text(topic.clone())),
-                    (2, time_value(*since)),
-                    (3, CborValue::Int(snapshot.revision.into())),
-                    (4, CborValue::Array(rows)),
-                    (6, CborValue::Bytes(self.epoch.to_vec())),
-                ],
-                5,
-                7,
-            ),
-            Query::Discovery => (
-                14,
-                vec![
-                    (0, CborValue::Text(self.store.network.clone())),
-                    (1, CborValue::Int(snapshot.revision.into())),
-                    (2, CborValue::Array(rows)),
-                    (4, CborValue::Bytes(self.epoch.to_vec())),
-                ],
-                3,
-                5,
-            ),
-        };
-        if let Some(next) = next {
-            fields.push((next_key, CborValue::Bytes(next)));
-        }
-        if let Some(request) = request {
-            fields.push((echo_key, CborValue::Bytes(request.to_vec())));
-        }
-        encode_forum_read_frame(id, &cbor_map(fields)).map_err(|_| ForumError::RowTooLarge)
-    }
-
     fn page(&mut self, query: Query, raw: Option<&[u8]>) -> Result<Vec<u8>> {
-        let now = Instant::now();
-        self.snapshots
-            .retain(|s| now.duration_since(s.created) < Duration::from_secs(120));
-        let (index, start) = if let Some(raw) = raw {
+        let (request_cursor, page_epoch, page_revision, incarnation) = if let Some(raw) = raw {
             let cursor = decode_forum_cursor(raw).map_err(invalid)?;
             if cursor.epoch != self.epoch {
                 return Err(ForumError::Expired);
             }
-            let index = self
-                .snapshots
-                .iter()
-                .position(|s| s.incarnation == cursor.incarnation)
-                .ok_or(ForumError::Expired)?;
-            let snapshot = &self.snapshots[index];
-            if cursor.network != self.store.network
-                || cursor.revision != snapshot.revision
-                || snapshot.query != query
-            {
-                return Err(invalid("cursor query binding"));
+            if cursor.network != self.store.network {
+                return Err(invalid("cursor network binding"));
             }
-            let row = snapshot
-                .rows
-                .iter()
-                .position(|r| r.position == cursor.position)
-                .ok_or_else(|| invalid("cursor tuple not retained"))?;
-            (index, row + 1)
-        } else if let Some(index) = self
-            .snapshots
-            .iter()
-            .position(|s| s.query == query && s.revision == self.revision)
-        {
-            (index, 0)
+            let epoch = cursor.epoch.clone();
+            let revision = cursor.revision;
+            let incarnation = cursor.incarnation;
+            (Some(cursor), epoch, revision, incarnation)
         } else {
-            self.incarnation = self
-                .incarnation
-                .checked_add(1)
-                .ok_or(ForumError::SnapshotCapacity)?;
-            if self.snapshots.len() >= 16 {
-                return Err(ForumError::SnapshotCapacity);
-            }
-            let snapshot = self.materialize(query, self.incarnation)?;
-            if snapshot.created.elapsed() >= Duration::from_secs(120) {
-                return Err(ForumError::Expired);
-            }
-            self.snapshots.push(snapshot);
-            (self.snapshots.len() - 1, 0)
+            (None, self.epoch.to_vec(), self.revision, 0)
         };
-        let snapshot = &self.snapshots[index];
-        // Bound construction before cloning payloads, then let the shared codec enforce
-        // complete encoded size and cumulative item/depth budgets. Drop each attempted
-        // page before constructing the next; retain no unmetered database snapshot.
-        let mut end = start;
-        let mut budget = 4096;
-        while end < snapshot.rows.len() && end - start < 128 {
-            if budget + snapshot.rows[end].charge > 4 * 1024 * 1024 {
-                break;
+
+        match query {
+            Query::Topic { topic, since } => {
+                let mut after_cursor: Option<(Timestamp, [u8; 32])> = None;
+                if let Some(cursor) = &request_cursor {
+                    let ForumCursorPosition::Topic {
+                        topic: cur_topic,
+                        since: cur_since,
+                        timestamp,
+                        hash,
+                    } = &cursor.position
+                    else {
+                        return Err(invalid("cursor query binding"));
+                    };
+                    if cur_topic != &topic || cur_since != &since {
+                        return Err(invalid("cursor query binding"));
+                    }
+                    if hash.len() != 32 {
+                        return Err(invalid("cursor post hash length"));
+                    }
+                    let hash_arr: [u8; 32] = hash.as_slice().try_into().map_err(invalid)?;
+                    let post = self
+                        .store
+                        .post(&hash_arr)?
+                        .ok_or_else(|| invalid("cursor tuple not retained"))?;
+                    if post.visible != Some(*timestamp) || post.topic != topic {
+                        return Err(invalid("cursor tuple not retained"));
+                    }
+                    after_cursor = Some((*timestamp, hash_arr));
+                }
+
+                let prefix = Store::topic_index_prefix(&topic);
+                let start_key = if let Some((ts, hash)) = after_cursor {
+                    Store::topic_index_key(&topic, Some(ts), Some(&hash))
+                } else {
+                    Store::topic_index_key(&topic, Some(since), None)
+                };
+
+                let mut rows = Vec::new();
+                let mut budget = 4096;
+                let mut last_position: Option<ForumCursorPosition> = None;
+                let mut has_more = false;
+
+                for item in self
+                    .store
+                    .db()
+                    .iterator(IteratorMode::From(&start_key, Direction::Forward))
+                {
+                    let (k, v) = item.map_err(|_| ForumError::Unavailable)?;
+                    if !k.starts_with(&prefix) {
+                        break;
+                    }
+                    if after_cursor.is_some() && k.as_ref() == start_key.as_slice() {
+                        continue;
+                    }
+
+                    let hash: [u8; 32] =
+                        v.as_ref().try_into().map_err(|_| ForumError::Unavailable)?;
+                    let post = self.store.post(&hash)?.ok_or(ForumError::Unavailable)?;
+                    let visible = post.visible.ok_or(ForumError::Unavailable)?;
+                    if post.topic != topic {
+                        continue;
+                    }
+                    if time_key(visible) < time_key(since) {
+                        continue;
+                    }
+
+                    if rows.len() >= 128 {
+                        has_more = true;
+                        break;
+                    }
+
+                    let view_frame = self.view_row(&post, &page_epoch, page_revision)?;
+                    let charge = view_frame.len() + topic.len() + 32 + 256;
+                    if budget + charge > 4 * 1024 * 1024 && !rows.is_empty() {
+                        has_more = true;
+                        break;
+                    }
+                    budget += charge;
+                    last_position = Some(ForumCursorPosition::Topic {
+                        topic: topic.clone(),
+                        since,
+                        timestamp: visible,
+                        hash: hash.to_vec(),
+                    });
+                    rows.push(CborValue::Bytes(view_frame));
+                }
+
+                let next = if has_more {
+                    if let Some(pos) = last_position {
+                        let cursor = ForumCursor {
+                            bytes: vec![],
+                            network: self.store.network.clone(),
+                            revision: page_revision,
+                            epoch: page_epoch.clone(),
+                            incarnation,
+                            position: pos,
+                        };
+                        Some(encode_forum_cursor(&cursor).map_err(invalid)?)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let mut fields = vec![
+                    (0, CborValue::Text(self.store.network.clone())),
+                    (1, CborValue::Text(topic)),
+                    (2, time_value(since)),
+                    (3, CborValue::Int(page_revision.into())),
+                    (4, CborValue::Array(rows)),
+                    (6, CborValue::Bytes(page_epoch)),
+                ];
+                if let Some(next) = next {
+                    fields.push((5, CborValue::Bytes(next)));
+                }
+                if let Some(request) = raw {
+                    fields.push((7, CborValue::Bytes(request.to_vec())));
+                }
+                encode_forum_read_frame(13, &cbor_map(fields)).map_err(|_| ForumError::RowTooLarge)
             }
-            budget += snapshot.rows[end].charge;
-            end += 1;
-        }
-        loop {
-            match self.page_frame(snapshot, start, end, raw) {
-                Ok(frame) if frame.len() <= 4 * 1024 * 1024 => return Ok(frame),
-                _ if end > start + 1 => end -= 1,
-                _ => return Err(ForumError::RowTooLarge),
+            Query::Discovery => {
+                let mut after_topic: Option<String> = None;
+                if let Some(cursor) = &request_cursor {
+                    let ForumCursorPosition::Discovery { topic: cur_topic } = &cursor.position
+                    else {
+                        return Err(invalid("cursor query binding"));
+                    };
+                    if self.store.discovery_entry(cur_topic)?.is_none() {
+                        return Err(invalid("cursor tuple not retained"));
+                    }
+                    after_topic = Some(cur_topic.clone());
+                }
+
+                let start_key = if let Some(ref t) = after_topic {
+                    let mut k = vec![b'd'];
+                    k.extend_from_slice(t.as_bytes());
+                    k
+                } else {
+                    vec![b'd']
+                };
+
+                let mut rows = Vec::new();
+                let mut budget = 4096;
+                let mut last_position: Option<ForumCursorPosition> = None;
+                let mut has_more = false;
+
+                for item in self
+                    .store
+                    .db()
+                    .iterator(IteratorMode::From(&start_key, Direction::Forward))
+                {
+                    let (k, v) = item.map_err(|_| ForumError::Unavailable)?;
+                    if k.first() != Some(&b'd') {
+                        break;
+                    }
+                    if after_topic.is_some() && k.as_ref() == start_key.as_slice() {
+                        continue;
+                    }
+
+                    let topic = std::str::from_utf8(&k[1..])
+                        .map_err(|_| ForumError::Unavailable)?
+                        .to_string();
+                    let (count, last) = self.store.decode_discovery_entry(&v)?;
+
+                    if rows.len() >= 128 {
+                        has_more = true;
+                        break;
+                    }
+
+                    let charge = topic.len() * 2 + 512;
+                    if budget + charge > 4 * 1024 * 1024 && !rows.is_empty() {
+                        has_more = true;
+                        break;
+                    }
+                    budget += charge;
+                    last_position = Some(ForumCursorPosition::Discovery {
+                        topic: topic.clone(),
+                    });
+                    rows.push(cbor_map(vec![
+                        (0, CborValue::Text(topic)),
+                        (1, CborValue::Int(count.into())),
+                        (2, time_value(last)),
+                    ]));
+                }
+
+                let next = if has_more {
+                    if let Some(pos) = last_position {
+                        let cursor = ForumCursor {
+                            bytes: vec![],
+                            network: self.store.network.clone(),
+                            revision: page_revision,
+                            epoch: page_epoch.clone(),
+                            incarnation,
+                            position: pos,
+                        };
+                        Some(encode_forum_cursor(&cursor).map_err(invalid)?)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let mut fields = vec![
+                    (0, CborValue::Text(self.store.network.clone())),
+                    (1, CborValue::Int(page_revision.into())),
+                    (2, CborValue::Array(rows)),
+                    (4, CborValue::Bytes(page_epoch)),
+                ];
+                if let Some(next) = next {
+                    fields.push((3, CborValue::Bytes(next)));
+                }
+                if let Some(request) = raw {
+                    fields.push((5, CborValue::Bytes(request.to_vec())));
+                }
+                encode_forum_read_frame(14, &cbor_map(fields)).map_err(|_| ForumError::RowTooLarge)
             }
         }
     }
@@ -586,7 +619,6 @@ mod tests {
                 epoch: [1; 16],
                 revision: 0,
                 incarnation: 0,
-                snapshots: vec![],
                 unavailable: false,
             },
         )
@@ -647,11 +679,31 @@ mod tests {
                 }
             };
             let first = state.page(query.clone(), None).unwrap();
-            let expected = state.snapshots[0]
-                .rows
-                .iter()
-                .map(|r| r.value.clone())
-                .collect::<Vec<_>>();
+            let mut expected = Vec::new();
+            match &query {
+                Query::Topic { topic, since } => {
+                    state
+                        .store
+                        .visit_posts(topic, *since, |_, post| {
+                            expected.push(CborValue::Bytes(state.view(&post)?));
+                            Ok(())
+                        })
+                        .unwrap();
+                }
+                Query::Discovery => {
+                    state
+                        .store
+                        .visit_topics(|topic, count, last| {
+                            expected.push(cbor_map(vec![
+                                (0, CborValue::Text(topic)),
+                                (1, CborValue::Int(count.into())),
+                                (2, time_value(last)),
+                            ]));
+                            Ok(())
+                        })
+                        .unwrap();
+                }
+            }
             let mut observed = Vec::new();
             let mut frame = first;
             let mut request: Option<Vec<u8>> = None;
@@ -715,112 +767,27 @@ mod tests {
     }
 
     #[test]
-    fn actual_charged_snapshots_reserve_empty_query_overhead() {
+    fn stateless_topic_paging_has_no_capacity_ceiling_or_503() {
         let (_dir, mut state) = setup();
-        let row_overhead = std::mem::size_of::<Row>() * 2;
-        let mut charged = 4096;
-        let mut nonce = 0;
-        let publish_sized = |state: &mut State, nonce: u64, title_len: usize| {
-            let op = crate::store::forum::tests::sized_post(nonce, "test.topic", title_len);
-            state.store.admit(op.clone()).unwrap();
+        for i in 0..32 {
             state
-                .store
-                .confirm(
-                    &op.checked.decoded.tx_hash.0,
-                    &facts(&op, nonce, 0),
-                    Timestamp {
-                        seconds: 200,
-                        nanoseconds: 0,
+                .page(
+                    Query::Topic {
+                        topic: format!("topic.{i}"),
+                        since: Timestamp {
+                            seconds: 0,
+                            nanoseconds: 0,
+                        },
                     },
+                    None,
                 )
                 .unwrap();
-            state.revision += 1;
-            let post = state.store.post(op.event.target_hash()).unwrap().unwrap();
-            let frame = state.view(&post).unwrap();
-            frame.capacity() + post.topic.len() + 32 + 256 + row_overhead
-        };
-        let large_title = 262_000;
-        let large_charge = publish_sized(&mut state, nonce, large_title);
-        charged += large_charge;
-        nonce += 1;
-        let target = 64 * 1024 * 1024 - 512;
-        while target - charged > 2 * (large_charge + 128) {
-            charged += publish_sized(&mut state, nonce, large_title);
-            nonce += 1;
         }
-        // Exact frame capacities let valid final titles approach the quota without
-        // assigning fictional charges. Nonce/CBOR integer width variations are bounded
-        // by the explicitly asserted 256-byte margin below.
-        let fixed = large_charge - large_title;
-        let title = (target - charged) / 2 - fixed - 64;
-        charged += publish_sized(&mut state, nonce, title);
-        nonce += 1;
-        let title = target - charged - fixed - 64;
-        charged += publish_sized(&mut state, nonce, title);
-        assert!(charged <= target + 128 && charged >= target - 256);
-        for seconds in 0..4 {
-            let query = Query::Topic {
-                topic: "test.topic".into(),
-                since: Timestamp {
-                    seconds,
-                    nanoseconds: 0,
-                },
-            };
-            state.page(query, None).unwrap();
-        }
-        assert_eq!(state.snapshots.len(), 4);
-        let actual = state.snapshots[0].charge;
-        assert!(actual > 64 * 1024 * 1024 - 1024);
-        for snapshot in &state.snapshots {
-            assert_eq!(snapshot.charge, actual);
-            assert!(snapshot.charge <= 64 * 1024 * 1024);
-            assert!(!snapshot.rows.is_empty());
-        }
-        let occupied: usize = state.snapshots.iter().map(|s| s.charge).sum();
-        assert!(occupied <= 256 * 1024 * 1024);
-        assert!(occupied + 4096 > 256 * 1024 * 1024);
-        let empty = Query::Topic {
-            topic: "empty.topic".into(),
-            since: Timestamp {
-                seconds: 0,
-                nanoseconds: 0,
-            },
-        };
-        assert!(matches!(
-            state.page(empty.clone(), None),
-            Err(ForumError::SnapshotTooLarge)
-        ));
-        assert_eq!(
-            state.snapshots.len(),
-            4,
-            "failed empty construction must not publish or evict"
-        );
-        let nonempty = Query::Topic {
-            topic: "test.topic".into(),
-            since: Timestamp {
-                seconds: 4,
-                nanoseconds: 0,
-            },
-        };
-        assert!(matches!(
-            state.page(nonempty.clone(), None),
-            Err(ForumError::SnapshotTooLarge)
-        ));
-        assert_eq!(state.snapshots.len(), 4);
-        assert_eq!(
-            state.incarnation, 6,
-            "failed allocations consume incarnations"
-        );
-        state.snapshots.truncate(3); // Controls have genuine remaining room.
-        state.page(empty, None).unwrap();
-        assert!(state.snapshots.last().unwrap().rows.is_empty());
-        state.snapshots.truncate(3);
-        state.page(nonempty, None).unwrap();
-        assert!(!state.snapshots.last().unwrap().rows.is_empty());
+        assert!(state.page(Query::Discovery, None).is_ok());
     }
 
     #[test]
-    fn retained_snapshot_is_immutable_after_new_votes() {
+    fn exact_terminal_cursor_echo_and_query_binding() {
         let (_dir, mut state) = setup();
         let post = publish(&mut state, 0, None, false);
         let query = Query::Topic {
@@ -830,65 +797,27 @@ mod tests {
                 nanoseconds: 0,
             },
         };
-        let first = state.page(query.clone(), None).unwrap();
-        let frozen = state.snapshots[0].rows[0].value.clone();
-        publish(&mut state, 1, Some(*post.event.target_hash()), true);
-        let second = state.page(query, None).unwrap();
-        assert_ne!(first, second);
-        assert_eq!(state.snapshots[0].rows[0].value, frozen);
-        assert_ne!(
-            state.snapshots[0].rows[0].value,
-            state.snapshots[1].rows[0].value
-        );
-        assert_eq!(state.snapshots.len(), 2);
-    }
-
-    #[test]
-    fn expired_incarnation_cannot_resume_recreated_query_at_same_revision() {
-        for discovery in [false, true] {
-            let (_dir, mut state) = setup();
-            publish(&mut state, 0, None, false);
-            let query = if discovery {
-                Query::Discovery
-            } else {
-                Query::Topic {
-                    topic: "test.topic".into(),
-                    since: Timestamp {
-                        seconds: 0,
-                        nanoseconds: 0,
-                    },
-                }
-            };
-            state.page(query.clone(), None).unwrap();
-            let snapshot = &state.snapshots[0];
-            let cursor = state
-                .cursor(snapshot, snapshot.rows[0].position.clone())
-                .unwrap();
-            state.snapshots[0].created = Instant::now() - Duration::from_secs(121);
-            state.page(query.clone(), None).unwrap();
-            assert!(matches!(
-                state.page(query, Some(&cursor)),
-                Err(ForumError::Expired)
-            ));
-        }
-    }
-
-    #[test]
-    fn exact_terminal_cursor_echo_and_query_binding() {
-        let (_dir, mut state) = setup();
-        publish(&mut state, 0, None, false);
-        let query = Query::Topic {
-            topic: "test.topic".into(),
-            since: Timestamp {
-                seconds: 0,
-                nanoseconds: 0,
-            },
-        };
         state.page(query.clone(), None).unwrap();
-        let snapshot = &state.snapshots[0];
-        let cursor = state
-            .cursor(snapshot, snapshot.rows[0].position.clone())
-            .unwrap();
+        let cursor = encode_forum_cursor(&ForumCursor {
+            bytes: Vec::new(),
+            network: state.store.network.clone(),
+            revision: state.revision,
+            epoch: state.epoch.to_vec(),
+            incarnation: 0,
+            position: ForumCursorPosition::Topic {
+                topic: "test.topic".into(),
+                since: Timestamp {
+                    seconds: 0,
+                    nanoseconds: 0,
+                },
+                timestamp: Timestamp {
+                    seconds: 200,
+                    nanoseconds: 0,
+                },
+                hash: post.event.target_hash().to_vec(),
+            },
+        })
+        .unwrap();
         let terminal = state.page(query.clone(), Some(&cursor)).unwrap();
         let ValidationResult::Parsed(parsed) =
             frank_cbor::validate_frame(&terminal, &frank_cbor::default_context()).unwrap()
@@ -913,35 +842,84 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_count_and_incarnation_do_not_wrap_or_evict_live_queries() {
-        let (_dir, mut state) = setup();
-        for i in 0..16 {
-            state
-                .page(
-                    Query::Topic {
-                        topic: format!("topic.{i}"),
-                        since: Timestamp {
-                            seconds: 0,
-                            nanoseconds: 0,
-                        },
-                    },
-                    None,
-                )
+    fn cursors_survive_relay_restarts_without_expiring() {
+        let dir = tempdir::TempDir::new("forum-restart").unwrap();
+        let db_path = dir.path().join("db.rocksdb");
+        let policy = policy(10143, Address([0x44; 20]));
+        let op = observation(0, None, false);
+        {
+            let owner = Owner::new(db_path.clone());
+            owner
+                .with("monad-testnet", policy, true, |s| {
+                    s.store.admit(op.clone()).unwrap();
+                    s.store
+                        .confirm(
+                            &op.checked.decoded.tx_hash.0,
+                            &facts(&op, 0, 0),
+                            Timestamp {
+                                seconds: 200,
+                                nanoseconds: 0,
+                            },
+                        )
+                        .unwrap();
+                    s.revision += 1;
+                    Ok(())
+                })
                 .unwrap();
         }
-        assert!(matches!(
-            state.page(Query::Discovery, None),
-            Err(ForumError::SnapshotCapacity)
-        ));
-        assert_eq!(state.snapshots.len(), 16);
-        assert_eq!(state.incarnation, 17);
-        state.snapshots.clear();
-        state.incarnation = u64::MAX;
-        assert!(matches!(
-            state.page(Query::Discovery, None),
-            Err(ForumError::SnapshotCapacity)
-        ));
-        assert_eq!(state.incarnation, u64::MAX);
+        let epoch = {
+            use bitcoinsuite_core::{Hashed, Sha256};
+            let d = Sha256::digest(
+                [
+                    b"forum-epoch-v1",
+                    b"monad-testnet".as_slice(),
+                    &policy.expected_chain_id.to_be_bytes(),
+                    &policy.burn_address.0,
+                ]
+                .concat()
+                .into(),
+            );
+            d.as_slice()[..16].to_vec()
+        };
+        let cursor = encode_forum_cursor(&ForumCursor {
+            bytes: Vec::new(),
+            network: "monad-testnet".into(),
+            revision: 1,
+            epoch,
+            incarnation: 0,
+            position: ForumCursorPosition::Topic {
+                topic: "test.topic".into(),
+                since: Timestamp {
+                    seconds: 0,
+                    nanoseconds: 0,
+                },
+                timestamp: Timestamp {
+                    seconds: 200,
+                    nanoseconds: 0,
+                },
+                hash: op.event.target_hash().to_vec(),
+            },
+        })
+        .unwrap();
+
+        let owner2 = Owner::new(db_path);
+        let res = owner2.page(
+            "monad-testnet",
+            policy,
+            Query::Topic {
+                topic: "test.topic".into(),
+                since: Timestamp {
+                    seconds: 0,
+                    nanoseconds: 0,
+                },
+            },
+            Some(&cursor),
+        );
+        assert!(
+            res.is_ok(),
+            "stateless cursor must survive restart without expiring: {:?}",
+            res.err()
+        );
     }
 
     #[test]
@@ -1203,7 +1181,7 @@ mod tests {
     }
 
     #[test]
-    fn proof_real_owner_reopen_changes_epoch_and_expires_both_page_families() {
+    fn proof_real_owner_reopen_preserves_epoch_and_resumes_both_page_families() {
         let dir = tempdir::TempDir::new("forum-proof-owner-epoch").unwrap();
         let path = dir.path().join("db.rocksdb");
         let policy = policy(10143, Address([0x44; 20]));
@@ -1271,11 +1249,13 @@ mod tests {
                 TypedPayload::ForumDiscoveryPage(p) => &p.epoch,
                 _ => panic!(),
             };
-            assert_ne!(epoch, &cursor.epoch);
-            assert!(matches!(
-                owner.page("monad-testnet", policy, query.clone(), Some(&cursor.bytes)),
-                Err(ForumError::Expired)
-            ));
+            assert_eq!(epoch, &cursor.epoch);
+            assert!(
+                owner
+                    .page("monad-testnet", policy, query.clone(), Some(&cursor.bytes))
+                    .is_ok(),
+                "cursor must resume successfully after reopen"
+            );
         }
     }
 

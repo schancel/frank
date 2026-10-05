@@ -16,6 +16,7 @@ export default {
     degradedTitle: 'Connexion dégradée',
     degradedBanner: 'Certains sujets du forum n’ont pas pu être mis à jour.',
     retry: 'Réessayer',
+    loginSignUp: 'Connexion / Inscription',
   },
   agree: "D'accord",
   chat: {
@@ -52,6 +53,7 @@ export default {
   chatInput: {
     giveLotusSecretly: 'Donner des lotus secrêtement',
     attachImage: 'Attacher une image',
+    blackjackChallenge: 'Défi de blackjack',
     placeHolder: 'Ecrire un message...',
     emojiPickerTitle: 'Choisir un emoji',
     stampPrice: 'Prix du timbre',
@@ -92,26 +94,6 @@ export default {
     explainerCountUnverified:
       "Le tirage n'a pas annoncé sa taille : le nombre de participants n'est pas vérifié.",
   },
-  blackjackDealer: {
-    silentTitle: "Le croupier n'a pas répondu",
-    silentBody:
-      "Votre coup a été envoyé et payé, mais aucune réponse n'est revenue. Le croupier est peut-être hors ligne, et un coup envoyé pendant qu'il était hors ligne peut ne jamais être vu.",
-    silentWait: 'Attendez que le croupier soit de retour avant de réessayer.',
-    silentNoResend:
-      'Cette mise ne peut pas être renvoyée depuis ici : elle serait payée deux fois.',
-    silentRefund:
-      "Votre mise n'est pas remboursée automatiquement (seule une mise refusée par le croupier l'est). Si le croupier reste hors ligne, contactez la personne qui l'exploite.",
-    resendConfirm:
-      "Renvoyer mon coup ({action}). Je comprends qu'il est payé de nouveau et que, si le premier arrive aussi, il peut être joué deux fois.",
-    resend: 'Renvoyer mon coup',
-  },
-  blackjackHand: {
-    bet: 'Votre mise : {amount} MON',
-    betUnverified: 'Votre mise',
-    betWaiting: 'En attente de la distribution par le croupier.',
-    payout:
-      'Gain : {amount} MON (mise remboursée plus gains éventuels), envoyé par le croupier après la révélation de la main.',
-  },
   persistentStorage: {
     tab: 'Stockage',
     heading: 'Stockage persistant',
@@ -129,85 +111,92 @@ export default {
     confirmSeed: 'Confirmer ma phrase de récupération',
     seedConfirmed: 'Votre phrase de récupération est confirmée.',
   },
-  blackjackWelcome: {
-    title: 'Table de blackjack',
-  },
-  blackjackBet: {
-    doubleUnavailable:
-      'Impossible de doubler : la mise initiale ou la discussion n’est pas prête.',
-    doublePending:
-      'Le paiement pour doubler est enregistré. En attente du croupier ; des options de récupération apparaîtront dans cette discussion si le coup reste sans réponse.',
-    doublePaidTitle: 'Double payé, en attente de livraison ou de réponse',
-    doubleSignedBody:
-      'Votre mise supplémentaire de {amount} MON pour doubler auprès de {name} ({address}) a peut-être été payée. Vérifiez le paiement avant de réessayer ; aucune nouvelle mise ne sera envoyée.',
-    doublePendingBody:
-      'Votre mise supplémentaire de {amount} MON pour doubler auprès de {name} ({address}) est payée. Réessayer envoie le même coup avec le même paiement. Conservez cet enregistrement jusqu’à la confirmation du croupier ou la vérification du résultat.',
-    playAgainTitle: 'Rejouer',
-    faucetHint:
-      'Il vous faut des MON pour jouer ? Cette application utilise des MON de testnet, sans valeur réelle. Le faucet de démonstration alimente automatiquement les nouveaux profils ; si rien n’est arrivé, demandez à l’opérateur de la démo de vous en envoyer.',
-    title: 'Commencer une main de blackjack',
-    amountLabel: 'Montant de la mise',
-    amountAria: 'Montant de la mise en MON',
-    limits: 'Limites de la table : {min} à {max} MON',
-    notice:
-      'Votre mise est un vrai transfert de MON vers {name} ({address}). À utiliser uniquement avec un croupier de blackjack.',
-    confirm:
-      'Je comprends que {amount} MON seront envoyés à {name} ({address})',
-    submit: 'Distribuez-moi avec {name} {address} ({amount} MON)',
-    sending: 'Envoi de votre mise…',
-    sent: 'Mise envoyée. En attente de la distribution.',
+  blackjackP2p: {
+    notDeliveredYet:
+      'L’autre joueur n’a pas encore ce message : l’envoi est en cours.',
     notDelivered:
-      'Mise payée, pari non livré : {message} Utilisez Réessayer dans la conversation pour renvoyer le pari.',
-    errorFormat: 'Saisissez la mise sous forme de nombre décimal simple',
-    errorInvalid: 'Saisissez un montant valide en MON',
-    errorZero: 'La mise doit être supérieure à zéro',
-    errorMin: 'La mise est inférieure au minimum de la table ({min} MON)',
-    errorMax: 'La mise dépasse le maximum de la table ({max} MON)',
-    errorBalanceUnknown:
-      "Votre solde n'est pas encore chargé. Réessayez dans un instant.",
-    errorBalance:
-      'Solde insuffisant : ce pari nécessite {needed} MON (la mise plus environ {rest} MON pour le timbre du message et les frais), vous avez {balance} MON.',
-    errorUnsent:
-      "Terminez la mise non envoyée dans la conversation avant d'en commencer une autre.",
-    errorFunds: 'Fonds insuffisants : {message}',
-    errorSend: 'Impossible de placer la mise : {message}',
-    unsentTitle: 'Mise payée, pari non livré',
-    unsentBody:
-      "Votre mise de {amount} MON vers {name} ({address}) a été payée, mais le message de pari n'est pas parvenu au croupier.",
-    unsentTx: 'Transaction : {hash}',
-    unsentRetry: "Réessayer d'envoyer le pari",
-    unsentRetrying: 'Envoi du pari…',
-    unsentFailed: 'Toujours pas livré : {message}',
-    confirming:
-      'En attente de la confirmation de votre paiement par le réseau…',
-    errorPaymentFailed:
-      "La transaction de paiement a échoué sur le réseau : aucune mise n'a été placée.",
-    paymentPending:
-      'Votre paiement est encore en cours de confirmation. Il est conservé dans la conversation ; utilisez Vérifier le paiement.',
-    paymentUnknown:
-      "Le réseau n'a pas encore vu votre paiement. Il peut encore arriver : il est conservé dans la conversation ; utilisez Vérifier le paiement. Ne supposez pas que rien n'a été payé.",
-    unsentSigned: 'Paiement non confirmé',
-    unsentSignedBody:
-      "Une mise de {amount} MON vers {name} ({address}) a été envoyée, mais le réseau ne l'a pas encore confirmée.",
-    unsentDealerSilent: 'En attente du croupier',
-    unsentDealerSilentBody:
-      "Votre pari de {amount} MON vers {name} ({address}) a été livré, mais le croupier n'a pas répondu.",
-    unsentDealerUnconfirmed:
-      "Le croupier n'a pas encore pu vérifier votre paiement",
-    checkPayment: 'Vérifier le paiement',
-    checking: 'Vérification auprès du réseau…',
-    paymentStillPending: 'Le paiement est toujours en attente sur le réseau.',
-    paymentNotFound:
-      "Le réseau ne connaît pas (encore) ce paiement. Si vous êtes certain qu'il n'a jamais été envoyé, vous pouvez supprimer cet enregistrement.",
-    paymentFailedRemoved:
-      "La transaction de paiement a échoué sur le réseau ; rien n'a été payé. L'enregistrement a été supprimé.",
-    dismiss: 'Supprimer cet enregistrement',
-    dismissWarning:
-      "Si cette mise a réellement été payée, supprimer l'enregistrement peut faire perdre l'argent. Ne le faites que si vous êtes sûr qu'elle n'a pas été payée ou a été remboursée.",
-    dismissConfirm: 'Oui, le supprimer',
-    dismissCancel: 'Le garder',
-    loadError:
-      'Les enregistrements de mises sauvegardés sont illisibles : {message}',
+      'L’autre joueur n’a pas ce message : il n’a pas été envoyé. {reason}',
+    retry: 'Renvoyer',
+    notNext:
+      'Ce coup de blackjack a déjà été envoyé ou n’est plus possible. Rien n’a été envoyé.',
+    challengeTitle: 'Défier pour une main de blackjack',
+    roleDealer: 'Je distribue',
+    rolePlayer: 'Je joue, l’autre distribue',
+    maxBet: 'Mise maximale',
+    limitDealer:
+      'Vous pouvez proposer jusqu’à {amount} : le donneur doit pouvoir payer un gain doublé (4× la mise) avec son propre solde.',
+    limitPlayer:
+      'Vous pouvez miser jusqu’à {amount} : ce que vous pouvez dépenser maintenant.',
+    sendChallenge: 'Envoyer le défi',
+    challengeRefused:
+      'Ce défi dépasse ce que votre solde couvre. Rien n’a été envoyé.',
+    balanceUnknown: 'Votre solde n’est pas encore chargé.',
+    enterAmount: 'Saisissez un montant supérieur à zéro.',
+    belowStamp:
+      'Le montant ne peut pas être inférieur au timbre minimal ({amount}).',
+    aboveOwnLimit:
+      'C’est plus que ce que vous pouvez couvrir (au plus {amount}).',
+    aboveMaxBet:
+      'C’est au-dessus de la mise maximale de cette main ({amount}).',
+    lineChallengeDealer:
+      'Défi de blackjack : l’expéditeur distribue. Mise maximale {amount}.',
+    lineChallengePlayer:
+      'Défi de blackjack : l’expéditeur joue, vous distribuez. Mise maximale {amount}.',
+    lineAccept: 'Défi accepté. Mise maximale {amount}.',
+    line: {
+      bet: 'Mise placée : le timbre de ce message est la mise.',
+      deal: 'Cartes distribuées.',
+      hit: 'Carte.',
+      stand: 'Reste.',
+      double: 'Double : le timbre de ce message est la seconde mise.',
+      card: 'Carte distribuée.',
+      reveal:
+        'Main révélée : le timbre de ce message est le paiement, s’il y en a un.',
+      refund: 'Remboursement : le timbre de ce message est l’argent rendu.',
+    },
+    playerHand: 'Joueur : {cards} ({total})',
+    dealerHand: 'Donneur : {cards} ({total})',
+    dealerShows: 'Le donneur montre : {card}',
+    wager: 'En jeu : {amount}',
+    accept: 'Accepter et distribuer',
+    betAmount: 'Votre mise (au plus {max})',
+    bet: 'Miser',
+    hit: 'Carte',
+    stand: 'Rester',
+    double: 'Doubler (+{amount})',
+    payAndReveal: 'Payer {amount} et révéler',
+    refund: 'Rembourser {amount}',
+    refundBet: 'Rendre la mise ({amount}) au lieu de distribuer',
+    waitAccept: 'En attente de l’acceptation de l’autre partie.',
+    waitBet: 'En attente de la mise.',
+    waitDealer: 'En attente du donneur.',
+    waitPlayer: 'En attente du coup du joueur.',
+    waitReveal: 'En attente de la révélation et du paiement du donneur.',
+    dealing: 'Distribution…',
+    verified: 'Les cartes correspondent à l’engagement du donneur.',
+    badReveal:
+      'Le donneur a envoyé une révélation qui ne correspond pas à son engagement. La main n’est pas réglée.',
+    noSeed:
+      'Cet appareil ne détient pas la graine de cette main et ne peut donc pas distribuer. Vous pouvez rendre la mise.',
+    refundOwed: 'Le donneur vous doit un remboursement de {amount}.',
+    refunded: 'Le donneur a rendu la mise ({amount}).',
+    noPayout: 'Rien n’est payé.',
+    paid: 'Le donneur a payé {amount}.',
+    shortPaid: 'Le donneur devait {owed} mais a payé {paid}.',
+    outcome: {
+      player: {
+        player_win: 'Vous gagnez.',
+        dealer_win: 'Le donneur gagne.',
+        push: 'Égalité : votre mise vous revient.',
+        player_blackjack: 'Blackjack ! Vous gagnez 3:2.',
+      },
+      dealer: {
+        player_win: 'Le joueur gagne.',
+        dealer_win: 'Vous gagnez.',
+        push: 'Égalité : la mise est rendue.',
+        player_blackjack: 'Le joueur a un blackjack et gagne 3:2.',
+      },
+    },
   },
   a11y: {
     openNavigation: 'Ouvrir le menu de navigation',
@@ -242,23 +231,36 @@ export default {
     nextAvatar: 'Avatar suivant',
     chooseFile: 'Choisir un fichier',
     openInExplorer: "Ouvrir la transaction dans l'explorateur de blocs",
+    copyTxHash: 'Copier le hash de transaction',
   },
   leftDrawer: {
     noForums: 'Aucun forum découvert pour le moment.',
     settings: 'Paramètres',
+    chats: 'Messages directs',
     contacts: 'Contacts',
     forum: 'Forum',
     wallet: 'Portefeuille',
     railLabel: 'Sections de la barre latérale',
+    chatsUnreadOne: 'Messages directs, {count} message non lu',
+    chatsUnreadOther: 'Messages directs, {count} messages non lus',
     contactsUnreadOne: 'Contacts, {count} message non lu',
     contactsUnreadOther: 'Contacts, {count} messages non lus',
   },
   walletPanel: {
     title: 'Portefeuilles',
     mainWallet: 'Portefeuille principal',
+    renameWallet: 'Renommer le portefeuille',
+    walletName: 'Nom du portefeuille',
+    saveName: 'Enregistrer',
+    cancel: 'Annuler',
+    resetDefault: 'Rétablir par défaut',
+    testnet: 'Réseau de test',
     monad: 'Monad',
+    monadTestnet: 'Monad Testnet',
     send: 'Envoyer des MON',
     receive: 'Recevoir des MON',
+    sendMont: 'Envoyer des MONT',
+    receiveMont: 'Recevoir des MONT',
     showSeed: 'Afficher la phrase de récupération',
     confirmSeed: 'Confirmer la phrase de récupération',
     balanceLoading: 'Chargement du solde…',
@@ -266,6 +268,22 @@ export default {
     balanceStale: '{balance} (dernière valeur connue)',
     failedLoadAddress: 'Échec du chargement de l’adresse du portefeuille Monad',
     unableCopyAddress: 'Impossible de copier l’adresse Monad',
+    ecash: 'eCash',
+    ecashTestnet: 'eCash Testnet',
+    solana: 'Solana',
+    solanaTestnet: 'Solana Testnet',
+    zeroXec: '0 XEC',
+    zeroTxec: '0 tXEC',
+    zeroSol: '0 SOL',
+    zeroTsol: '0 tSOL',
+    sendXec: 'Envoyer des XEC',
+    receiveXec: 'Recevoir des XEC',
+    sendTxec: 'Envoyer des tXEC',
+    receiveTxec: 'Recevoir des tXEC',
+    sendSol: 'Envoyer des SOL',
+    receiveSol: 'Recevoir des SOL',
+    sendTsol: 'Envoyer des tSOL',
+    receiveTsol: 'Recevoir des tSOL',
   },
   chatList: {
     noContactMessage: 'Ajoutez des contacts depuis le tiroir ci-dessus...',
@@ -274,6 +292,8 @@ export default {
     balance: 'Solde',
     balanceStale: '(dernière valeur connue)',
     directMessages: 'Messages privés',
+    selectChatOrAddContact:
+      'Sélectionnez une conversation ou ajoutez un contact pour commencer à échanger.',
   },
   selfChat: {
     you: 'Vous',
@@ -309,6 +329,22 @@ export default {
     sendAgain: 'Renvoyer',
   },
   mailboxStatus: {
+    directory: {
+      'device-clock':
+        'Messagerie désactivée : la date et l’heure de cet appareil semblent incorrectes. Vérifiez l’horloge ; nouvelle tentative en cours.',
+      'account-unavailable':
+        'Messagerie désactivée : ce compte n’a pas pu être ouvert pour la messagerie. Nouvelle tentative en cours.',
+      'relay-unreachable':
+        'Messagerie désactivée : impossible de joindre le serveur pour publier votre compte. Nouvelle tentative en cours.',
+      'relay-rejected':
+        'Messagerie désactivée : le serveur a refusé d’enregistrer l’adresse de votre compte. Nouvelle tentative en cours.',
+      'relay-misconfigured':
+        'Messagerie désactivée : le serveur ne s’est pas décrit correctement, votre compte n’a donc pas pu être publié. Nouvelle tentative en cours.',
+      'entry-refused':
+        'Messagerie désactivée : le serveur détient une entrée invalide ou contradictoire pour votre compte. Nouvelle tentative en cours.',
+      'storage':
+        'Messagerie désactivée : cet appareil n’a pas pu enregistrer ses données d’annuaire. Nouvelle tentative en cours.',
+    },
     unavailable:
       'Service de messagerie indisponible : ce relais ne propose pas la messagerie, vous ne recevrez donc pas de messages.',
     unreachable:
@@ -486,6 +522,18 @@ export default {
     replace: 'Remplacer ce compte',
   },
   newContactDialog: {
+    lookup: {
+      'clock':
+        'La date et l’heure de cet appareil semblent incorrectes, cette adresse n’a donc pas pu être vérifiée. Vérifiez l’horloge et réessayez.',
+      'not-published':
+        'Cette adresse ne s’est pas encore publiée et ne peut donc pas recevoir de messages. Demandez à son propriétaire d’ouvrir l’application une fois.',
+      'unreachable':
+        'Impossible de joindre le serveur pour rechercher cette adresse. Réessayez dans un instant.',
+      'refused':
+        'Le serveur a renvoyé pour cette adresse une entrée qui n’est pas signée par elle, qui a expiré ou qui contredit une entrée déjà vue. Elle n’a pas été utilisée.',
+      'messaging-off':
+        'Votre propre compte est encore en cours de publication. Les contacts pourront être ajoutés une fois la messagerie activée.',
+    },
     newContact: 'Nouveau contact',
     enterBitcoinCashAddress: 'Entrez une adresse Lotus...',
     loading: 'Recherche du contact',
@@ -661,6 +709,9 @@ export default {
     txType: 'Type',
     txAddress: 'Adresse',
     txAmount: 'Montant',
+    copyTxHash: 'Copier le hash de transaction (shim de chaîne locale)',
+    localChainNotice: 'Pile locale / shim de chaîne',
+    txHashCopied: 'Hash de transaction copié dans le presse-papiers',
   },
   close: 'Fermer',
 }

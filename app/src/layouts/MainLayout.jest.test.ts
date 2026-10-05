@@ -9,7 +9,17 @@ import MainLayout from './MainLayout.vue'
 
 // Stores are plain reactive objects; storeToRefs just needs to turn them into refs.
 jest.mock('pinia', () => ({
+  defineStore: (_id: string, def: any) => () => (typeof def === 'function' ? def() : def),
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
+}))
+jest.mock('../components/panels/ContactsPanel.vue', () => ({
+  template: '<div data-testid="contacts-panel" />',
+}))
+jest.mock('src/stores/contacts', () => ({
+  useContactStore: () => ({
+    contacts: [],
+    getContact: jest.fn(),
+  }),
 }))
 const mockRouterRef: { current: any } = { current: undefined }
 jest.mock('vue-router', () => ({
@@ -253,14 +263,14 @@ async function openDrawer(w: VueWrapper) {
 }
 
 describe('MainLayout closes the mobile overlay on navigation', () => {
-  it('stays open when switching rail tabs (forum, contacts) on a narrow screen', async () => {
+  it('stays open when switching rail tabs (forum, chats) on a narrow screen', async () => {
     const { wrapper, router } = await mountLayout(390)
     await openDrawer(wrapper)
     await tabs(wrapper)[2].trigger('click')
     await flushPromises()
     expect(router.push).toHaveBeenCalledWith('/forum')
     expect(open(wrapper)).toBe('true')
-    await wrapper.get('#rail-tab-contacts').trigger('click')
+    await wrapper.get('#rail-tab-chats').trigger('click')
     await flushPromises()
     expect(router.push).toHaveBeenCalledWith('/chat/addr1')
     expect(open(wrapper)).toBe('true')
@@ -337,37 +347,39 @@ describe('LeftDrawer icon rail accessible names', () => {
     const { wrapper } = await mountLayout(1024)
     const labels = tabs(wrapper).map(t => t.attributes('aria-label'))
     expect(labels).toEqual([
-      'Contacts, 3 unread messages',
-      'Wallet',
+      'Direct Messages, 3 unread messages',
+      'Contacts',
       'Forum',
+      'Wallet',
       'Settings',
     ])
     for (const [i, name] of [
+      'Direct Messages',
       'Contacts',
-      'Wallet',
       'Forum',
+      'Wallet',
       'Settings',
     ].entries()) {
       expect(tabs(wrapper)[i].find('[data-testid="tooltip"]').text()).toBe(name)
     }
   })
 
-  it('announces the unread count in the Contacts tab label, singular and plural', async () => {
+  it('announces the unread count in the Chats tab label, singular and plural', async () => {
     mockUnread.value = 1
     const one = await mountLayout(1024)
-    expect(one.wrapper.get('#rail-tab-contacts').attributes('aria-label')).toBe(
-      'Contacts, 1 unread message',
+    expect(one.wrapper.get('#rail-tab-chats').attributes('aria-label')).toBe(
+      'Direct Messages, 1 unread message',
     )
     mockUnread.value = 3
     const many = await mountLayout(1024)
     expect(
-      many.wrapper.get('#rail-tab-contacts').attributes('aria-label'),
-    ).toBe('Contacts, 3 unread messages')
+      many.wrapper.get('#rail-tab-chats').attributes('aria-label'),
+    ).toBe('Direct Messages, 3 unread messages')
     mockUnread.value = 0
     const none = await mountLayout(1024)
     expect(
-      none.wrapper.get('#rail-tab-contacts').attributes('aria-label'),
-    ).toBe('Contacts')
+      none.wrapper.get('#rail-tab-chats').attributes('aria-label'),
+    ).toBe('Direct Messages')
   })
 })
 

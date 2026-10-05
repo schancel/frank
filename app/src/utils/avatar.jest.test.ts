@@ -1,0 +1,231 @@
+/** @jest-environment jsdom */
+import {
+  MAX_AVATAR_BYTES,
+  MAX_AVATAR_DIMENSION,
+  isAvatarTooLarge,
+  calculateTargetDimensions,
+  resizeImageToCanvas,
+  canvasToCompressedDataUrl,
+  resizeAndCompressImage,
+  compressAvatarDataUrl,
+  compressAvatarFile,
+} from './avatar-resize'
+
+describe('avatar resizing and compression utilities', () => {
+  describe('isAvatarTooLarge', () => {
+    it('returns false for undefined, null, or empty string', () => {
+      expect(isAvatarTooLarge(undefined)).toBe(false)
+      expect(isAvatarTooLarge(null)).toBe(false)
+      expect(isAvatarTooLarge('')).toBe(false)
+    })
+
+    it('returns false for avatars under or equal to MAX_AVATAR_BYTES (4096)', () => {
+      const underLimit = 'data:image/webp;base64,' + 'A'.repeat(2000)
+      expect(isAvatarTooLarge(underLimit)).toBe(false)
+      const exactLimit = 'A'.repeat(MAX_AVATAR_BYTES)
+      expect(isAvatarTooLarge(exactLimit)).toBe(false)
+    })
+
+    it('returns true for avatars exceeding MAX_AVATAR_BYTES', () => {
+      const overLimit = 'data:image/png;base64,' + 'A'.repeat(5000)
+      expect(isAvatarTooLarge(overLimit)).toBe(true)
+    })
+  })
+
+  describe('calculateTargetDimensions', () => {
+    it('preserves dimensions when both are within maxDimension', () => {
+      expect(calculateTargetDimensions(64, 64, 80)).toEqual({ width: 64, height: 64 })
+      expect(calculateTargetDimensions(80, 50, 80)).toEqual({ width: 80, height: 50 })
+    })
+
+    it('scales down wider images maintaining aspect ratio', () => {
+      expect(calculateTargetDimensions(400, 200, 80)).toEqual({ width: 80, height: 40 })
+      expect(calculateTargetDimensions(512, 512, 80)).toEqual({ width: 80, height: 80 })
+    })
+
+    it('scales down taller images maintaining aspect ratio', () => {
+      expect(calculateTargetDimensions(200, 400, 80)).toEqual({ width: 40, height: 80 })
+      expect(calculateTargetDimensions(300, 600, 96)).toEqual({ width: 48, height: 96 })
+    })
+
+    it('handles zero or negative dimensions safely', () => {
+      expect(calculateTargetDimensions(0, 0, 80)).toEqual({ width: 80, height: 80 })
+    })
+  })
+
+  describe('resizeImageToCanvas', () => {
+    it('creates a canvas with constrained dimensions and draws image', () => {
+      const mockDrawImage = jest.fn()
+      const mockFillRect = jest.fn()
+      HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+        drawImage: mockDrawImage,
+        fillRect: mockFillRect,
+        fillStyle: '',
+      })) as any
+
+      const img = document.createElement('img')
+      Object.defineProperty(img, 'naturalWidth', { value: 600 })
+      Object.defineProperty(img, 'naturalHeight', { value: 300 })
+
+      const canvas = resizeImageToCanvas(img, 80)
+      expect(canvas.width).toBe(80)
+      expect(canvas.height).toBe(40)
+      expect(mockDrawImage).toHaveBeenCalledWith(img, 0, 0, 80, 40)
+    })
+  })
+
+  describe('canvasToCompressedDataUrl', () => {
+    it('returns compressed webp data URL when supported and within limit', () => {
+      const expectedDataUrl = 'data:image/webp;base64,AAA'
+      HTMLCanvasElement.prototype.toDataURL = jest.fn((format: string) => {
+        if (format === 'image/webp') return expectedDataUrl
+        return 'data:image/png;base64,XXX'
+      })
+
+      const canvas = document.createElement('canvas')
+      canvas.width = 80
+      canvas.height = 80
+
+      const result = canvasToCompressedDataUrl(canvas, 4096)
+      expect(result).toBe(expectedDataUrl)
+      expect(result.length).toBeLessThanOrEqual(4096)
+    })
+
+    it('falls back to jpeg when webp is not supported or too large', () => {
+      const jpegDataUrl = 'data:image/jpeg;base64,BBB'
+      HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+        drawImage: jest.fn(),
+        fillRect: jest.fn(),
+        fillStyle: '',
+      })) as any
+      HTMLCanvasElement.prototype.toDataURL = jest.fn((format: string) => {
+        if (format === 'image/webp') return 'data:image/png;base64,not-webp' // browser fallback
+        if (format === 'image/jpeg') return jpegDataUrl
+        return 'data:image/png;base64,large'
+      })
+
+      const canvas = document.createElement('canvas')
+      canvas.width = 80
+      canvas.height = 80
+
+      const result = canvasToCompressedDataUrl(canvas, 4096)
+      expect(result).toBe(jpegDataUrl)
+    })
+  })
+
+  describe('resizeAndCompressImage', () => {
+    it('resizes and stays under MAX_AVATAR_BYTES limit', () => {
+      HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+        drawImage: jest.fn(),
+        fillRect: jest.fn(),
+        fillStyle: '',
+      })) as any
+
+      const mockToDataUrl = jest.fn((format: string) => {
+        return 'data:image/webp;base64,' + 'M'.repeat(1500)
+      })
+      HTMLCanvasElement.prototype.toDataURL = mockToDataUrl
+
+      const img = document.createElement('img')
+      Object.defineProperty(img, 'naturalWidth', { value: 1024 })
+      Object.defineProperty(img, 'naturalHeight', { value: 1024 })
+
+      const result = resizeAndCompressImage(img, { maxDimension: 80, maxBytes: 4096 })
+      expect(result).toMatch(/^data:image\/webp;base64,/)
+      expect(result.length).toBeLessThanOrEqual(4096)
+    })
+  })
+
+  describe('compressAvatarDataUrl', () => {
+    it('compresses data URL through Image and canvas', async () => {
+      const compressedUrl = 'data:image/webp;base64,COMPRESSED'
+      HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+        drawImage: jest.fn(),
+        fillRect: jest.fn(),
+        fillStyle: '',
+      })) as any
+      HTMLCanvasElement.prototype.toDataURL = jest.fn(() => compressedUrl)
+
+      // Mock Image behavior
+      const originalImage = window.Image
+      class MockImage {
+        crossOrigin = ''
+        width = 500
+        height = 500
+        naturalWidth = 500
+        naturalHeight = 500
+        complete = false
+        private _src = ''
+        onload: (() => void) | null = null
+        onerror: (() => void) | null = null
+
+        get src() {
+          return this._src
+        }
+        set src(val: string) {
+          this._src = val
+          this.complete = true
+          setTimeout(() => {
+            if (this.onload) this.onload()
+          }, 0)
+        }
+      }
+      window.Image = MockImage as any
+
+      try {
+        const inputUrl = 'data:image/png;base64,' + 'A'.repeat(5000)
+        const result = await compressAvatarDataUrl(inputUrl, { maxBytes: 4096 })
+        expect(result).toBe(compressedUrl)
+        expect(result.length).toBeLessThanOrEqual(4096)
+      } finally {
+        window.Image = originalImage
+      }
+    })
+  })
+
+  describe('compressAvatarFile', () => {
+    it('reads and compresses a file object', async () => {
+      const compressedUrl = 'data:image/webp;base64,COMPRESSED_FILE'
+      HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+        drawImage: jest.fn(),
+        fillRect: jest.fn(),
+        fillStyle: '',
+      })) as any
+      HTMLCanvasElement.prototype.toDataURL = jest.fn(() => compressedUrl)
+
+      const originalImage = window.Image
+      class MockImage {
+        crossOrigin = ''
+        width = 400
+        height = 400
+        naturalWidth = 400
+        naturalHeight = 400
+        complete = false
+        private _src = ''
+        onload: (() => void) | null = null
+        onerror: (() => void) | null = null
+
+        get src() {
+          return this._src
+        }
+        set src(val: string) {
+          this._src = val
+          this.complete = true
+          setTimeout(() => {
+            if (this.onload) this.onload()
+          }, 0)
+        }
+      }
+      window.Image = MockImage as any
+
+      try {
+        const blob = new Blob(['fake image data'], { type: 'image/png' })
+        const file = new File([blob], 'avatar.png', { type: 'image/png' })
+        const result = await compressAvatarFile(file, { maxBytes: 4096 })
+        expect(result).toBe(compressedUrl)
+      } finally {
+        window.Image = originalImage
+      }
+    })
+  })
+})

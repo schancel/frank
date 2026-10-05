@@ -7,11 +7,11 @@ import { defineComponent, h, nextTick } from 'vue'
 import enUS from 'src/i18n/en-us'
 import frFR from 'src/i18n/fr-fr'
 import { activeChain } from '@frank/wallet/chain'
-import { peerOffersDealerTable } from 'src/utils/blackjack-bet'
 import { openChat } from 'src/utils/routes'
 import AddContact from './AddContact.vue'
 
 const mockAddContactToStore = jest.fn()
+import { setDirectoryLookup } from 'src/utils/directory-peer'
 jest.mock('src/stores/contacts', () => ({
   defaultRelayData: { profile: { name: '', bio: '', avatar: '' } },
   useContactStore: () => ({ addContact: mockAddContactToStore }),
@@ -67,7 +67,7 @@ const chain = activeChain as unknown as {
   fetchProfile: jest.Mock
 }
 const mockOpenChat = openChat as jest.Mock
-const mockRouter = { go: jest.fn(), push: jest.fn() }
+const mockRouter = { go: jest.fn(), push: jest.fn(), back: jest.fn() }
 
 function translate(key: string, params: Record<string, unknown> = {}): string {
   const value = key
@@ -143,11 +143,11 @@ async function settle(): Promise<void> {
   await nextTick()
 }
 
-function mountPage(): VueWrapper {
+function mountPage(route: { query?: Record<string, string> } = {}): VueWrapper {
   return mount(AddContact, {
     global: {
       components: quasarStubs,
-      mocks: { $t: translate, $router: mockRouter },
+      mocks: { $t: translate, $router: mockRouter, $route: route },
     },
   })
 }
@@ -166,6 +166,8 @@ async function typeAndFire(wrapper: VueWrapper, value: string): Promise<void> {
 
 const addButton = (w: VueWrapper) =>
   w.findAll('button').find(b => b.text() === 'Add')!
+const cancelButton = (w: VueWrapper) =>
+  w.findAll('button').find(b => b.text() === 'Cancel')!
 const isBusy = (w: VueWrapper) => w.find('input').attributes('aria-busy')
 const status = (w: VueWrapper) => w.find('[role="status"]').text()
 const skeletons = (w: VueWrapper) => w.findAll('[aria-hidden="true"]')
@@ -180,6 +182,7 @@ describe('AddContact latest lookup', () => {
     mockOpenChat.mockReset()
     mockRouter.go.mockReset()
     mockRouter.push.mockReset()
+    mockRouter.back.mockReset()
     chain.parseAddress.mockReset()
     chain.formatAddress.mockReset()
     chain.fetchProfile.mockReset()
@@ -224,6 +227,41 @@ describe('AddContact latest lookup', () => {
     expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
   })
 
+  it('offers any address with a published directory entry even though it has no display profile', async () => {
+    chain.fetchProfile.mockResolvedValue(undefined)
+    const published = new Set([ADDRESS_A, ADDRESS_B])
+    setDirectoryLookup(async address => {
+      if (!published.has(address))
+        throw Object.assign(new Error('unknown'), { code: 'not-published' })
+      return { subject: '02' + '02'.repeat(32) }
+    })
+    try {
+      await typeAndFire(wrapper, 'a')
+      expect(addButton(wrapper).attributes('disabled')).toBeUndefined()
+      await addButton(wrapper).trigger('click')
+      expect(mockAddContactToStore).toHaveBeenCalledTimes(1)
+      expect(mockAddContactToStore.mock.calls[0][0].address).toBe(ADDRESS_A)
+      expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+
+      // Not one special peer: another published address is offered just the same.
+      wrapper.unmount()
+      wrapper = mountPage()
+      await typeAndFire(wrapper, 'b')
+      expect(addButton(wrapper).attributes('disabled')).toBeUndefined()
+
+      // An address that has not published is not offered, and the page says why.
+      wrapper.unmount()
+      wrapper = mountPage()
+      await typeAndFire(wrapper, 'c')
+      expect(addButton(wrapper).attributes('disabled')).toBeDefined()
+      expect(
+        wrapper.get('[data-test="contact-lookup-reason"]').text(),
+      ).toContain('has not published itself yet')
+    } finally {
+      setDirectoryLookup(null)
+    }
+  })
+
   it('commits dealer signed-name provenance from the first validated fetch', async () => {
     chain.fetchProfile.mockResolvedValue({
       ...profile(ADDRESS_A, 'Blackjack Dealer'),
@@ -236,14 +274,9 @@ describe('AddContact latest lookup', () => {
     expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
     const storedProfile = mockAddContactToStore.mock.calls[0][0].contact.profile
     expect(storedProfile.signedName).toBe('Blackjack Dealer')
-    expect(
-      peerOffersDealerTable(storedProfile, ADDRESS_A, [
-        { address: ADDRESS_A, name: 'Blackjack Dealer' },
-      ]),
-    ).toBe(true)
   })
 
-  it('exercises an already-canonical address input and validates dealer eligibility (#434)', async () => {
+  it('exercises an already-canonical address input (#434)', async () => {
     chain.fetchProfile.mockResolvedValue({
       ...profile(ADDRESS_A, 'Blackjack Dealer'),
       bot: true,
@@ -271,16 +304,6 @@ describe('AddContact latest lookup', () => {
     })
     const storedProfile = mockAddContactToStore.mock.calls[0][0].contact.profile
     expect(storedProfile.signedName).toBe('Blackjack Dealer')
-    expect(
-      peerOffersDealerTable(storedProfile, ADDRESS_A, [
-        { address: ADDRESS_A, name: 'Blackjack Dealer' },
-      ]),
-    ).toBe(true)
-    expect(
-      peerOffersDealerTable(storedProfile, ADDRESS_B, [
-        { address: ADDRESS_B, name: 'Blackjack Dealer' },
-      ]),
-    ).toBe(false)
     expect(mockOpenChat).toHaveBeenCalledTimes(1)
     expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
   })
@@ -305,11 +328,6 @@ describe('AddContact latest lookup', () => {
       const storedProfile =
         mockAddContactToStore.mock.calls[0][0].contact.profile
       expect(storedProfile.signedName).toBe(name ?? null)
-      expect(
-        peerOffersDealerTable(storedProfile, ADDRESS_A, [
-          { address: ADDRESS_A, name: 'Blackjack Dealer' },
-        ]),
-      ).toBe(false)
     },
   )
 
@@ -673,5 +691,54 @@ describe('AddContact latest lookup', () => {
     expect(enUS.newContactDialog.found).toContain('{name}')
     expect(frFR.newContactDialog.loading).toBeTruthy()
     expect(frFR.newContactDialog.found).toContain('{name}')
+  })
+
+  describe('cancel navigation', () => {
+    it('returns to originating chat if from query parameter is provided', async () => {
+      wrapper.unmount()
+      wrapper = mountPage({ query: { from: '/chat/0x123' } })
+      await cancelButton(wrapper).trigger('click')
+      expect(mockRouter.push).toHaveBeenCalledWith('/chat/0x123')
+      expect(mockRouter.push).not.toHaveBeenCalledWith('/')
+      expect(mockRouter.push).not.toHaveBeenCalledWith('/forum')
+    })
+
+    it('uses router.back() when history.state.back points to a chat', async () => {
+      const origState = window.history.state
+      try {
+        Object.defineProperty(window.history, 'state', {
+          value: { back: '/chat/0xabc' },
+          configurable: true,
+        })
+        await cancelButton(wrapper).trigger('click')
+        expect(mockRouter.back).toHaveBeenCalledTimes(1)
+        expect(mockRouter.push).not.toHaveBeenCalledWith('/')
+        expect(mockRouter.push).not.toHaveBeenCalledWith('/forum')
+      } finally {
+        Object.defineProperty(window.history, 'state', {
+          value: origState,
+          configurable: true,
+        })
+      }
+    })
+
+    it('falls back to /chat instead of /forum when no prior chat or history exists', async () => {
+      const origState = window.history.state
+      try {
+        Object.defineProperty(window.history, 'state', {
+          value: null,
+          configurable: true,
+        })
+        await cancelButton(wrapper).trigger('click')
+        expect(mockRouter.push).toHaveBeenCalledWith('/chat')
+        expect(mockRouter.push).not.toHaveBeenCalledWith('/')
+        expect(mockRouter.push).not.toHaveBeenCalledWith('/forum')
+      } finally {
+        Object.defineProperty(window.history, 'state', {
+          value: origState,
+          configurable: true,
+        })
+      }
+    })
   })
 })

@@ -14,7 +14,17 @@ import MainLayout from './MainLayout.vue'
 
 // Stores are plain reactive objects; storeToRefs just needs to turn them into refs.
 jest.mock('pinia', () => ({
+  defineStore: (_id: string, def: any) => () => (typeof def === 'function' ? def() : def),
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
+}))
+jest.mock('../components/panels/ContactsPanel.vue', () => ({
+  template: '<div data-testid="contacts-panel" />',
+}))
+jest.mock('src/stores/contacts', () => ({
+  useContactStore: () => ({
+    contacts: [],
+    getContact: jest.fn(),
+  }),
 }))
 const mockRouterRef: { current: any } = { current: undefined }
 jest.mock('vue-router', () => ({
@@ -167,16 +177,17 @@ function installLeftDrawerStyles() {
   const source = readFileSync(filename, 'utf8')
   // vue-jest intentionally omits styles. Inject the two production rules that form this layout
   // contract so their computed result is checked on Quasar's real internal DOM shape.
+  const walletRule = source.match(/\.wallet-rail-tab\s*\{[^}]+\}/)?.[0]
   const settingsRule = source.match(/\.settings-rail-tab\s*\{[^}]+\}/)?.[0]
   const contentRule = source.match(
     /\.icon-rail\s+:deep\(\.settings-pin-content\)\s*\{[^}]+\}/,
   )?.[0]
-  if (!settingsRule || !contentRule) {
-    throw new Error('LeftDrawer Settings pin styles are missing')
+  if (!walletRule || !contentRule) {
+    throw new Error('LeftDrawer rail pin styles are missing')
   }
   const style = document.createElement('style')
   style.dataset.test = 'left-drawer-styles'
-  style.textContent = `${settingsRule}\n${contentRule.replace(
+  style.textContent = `${walletRule}\n${settingsRule || ''}\n${contentRule.replace(
     ':deep(.settings-pin-content)',
     '.settings-pin-content',
   )}`
@@ -203,9 +214,10 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
     expect(list?.getAttribute('aria-orientation')).toBe('vertical')
     const tabs = tabsOf(document.body)
     expect(tabs.map(t => t.getAttribute('aria-label'))).toEqual([
-      'Contacts, 3 unread messages',
-      'Wallet',
+      'Direct Messages, 3 unread messages',
+      'Contacts',
       'Forum',
+      'Wallet',
       'Settings',
     ])
     for (const tab of tabs) {
@@ -213,9 +225,10 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
       expect(panel?.getAttribute('role')).toBe('tabpanel')
       expect(panel?.getAttribute('aria-labelledby')).toBe(tab.id)
     }
-    // Contacts is the default selection; only its panel is displayed.
+    // Chats is the default selection; only its panel is displayed.
     expect(tabs.map(t => t.getAttribute('aria-selected'))).toEqual([
       'true',
+      'false',
       'false',
       'false',
       'false',
@@ -225,23 +238,24 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
         document.getElementById(t.getAttribute('aria-controls')!)!.style
           .display !== 'none',
     )
-    expect(shown).toEqual([true, false, false, false])
+    expect(shown).toEqual([true, false, false, false, false])
     wrapper.unmount()
   })
 
-  it('renders the Quasar tab content as a column so Settings can consume remaining rail height', async () => {
+  it('renders the Quasar tab content as a column so Wallet and Settings pin to the bottom', async () => {
     const { wrapper } = await mountReal(1024)
     installLeftDrawerStyles()
     const content = document.querySelector<HTMLElement>(
       '.q-tabs__content.settings-pin-content',
     )
+    const wallet = document.getElementById('rail-tab-wallet')!
     const settings = document.getElementById('rail-tab-settings')!
 
     expect(content).not.toBeNull()
     expect(getComputedStyle(content!).display).toBe('flex')
     expect(getComputedStyle(content!).flexDirection).toBe('column')
     expect(getComputedStyle(content!).overflowY).toBe('auto')
-    expect(getComputedStyle(settings).marginTop).toBe('auto')
+    expect(getComputedStyle(wallet).marginTop).toBe('auto')
     expect(content!.lastElementChild).toBe(settings)
     wrapper.unmount()
   })
@@ -255,14 +269,15 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
     const tabs = tabsOf(document.body)
     expect(tabs.map(t => t.getAttribute('aria-selected'))).toEqual([
       'false',
-      'true',
       'false',
+      'false',
+      'true',
       'false',
     ])
     expect(
       document.getElementById('rail-panel-wallet')!.style.display,
     ).not.toBe('none')
-    expect(document.getElementById('rail-panel-contacts')!.style.display).toBe(
+    expect(document.getElementById('rail-panel-chats')!.style.display).toBe(
       'none',
     )
     wrapper.unmount()
@@ -280,11 +295,12 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
       'false',
       'true',
       'false',
+      'false',
     ])
     expect(document.getElementById('rail-panel-forum')!.style.display).not.toBe(
       'none',
     )
-    expect(document.getElementById('rail-panel-contacts')!.style.display).toBe(
+    expect(document.getElementById('rail-panel-chats')!.style.display).toBe(
       'none',
     )
     wrapper.unmount()

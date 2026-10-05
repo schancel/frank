@@ -59,6 +59,12 @@ jest.mock('../adapters/level-message-store', () => ({
 jest.mock('../utils/notifications', () => ({
   desktopNotify: jest.fn(),
 }))
+const mockBalanceRefresh = jest.fn()
+jest.mock('../composables/useBalance', () => ({
+  useBalance: () => ({
+    refresh: mockBalanceRefresh,
+  }),
+}))
 const mockOwnAddress = jest.fn()
 jest.mock('../utils/own-address', () => ({
   ...jest.requireActual('../utils/own-address'),
@@ -1370,6 +1376,13 @@ describe('stores/chats.ts (ticket #42)', () => {
         }),
         { advanceCursor: false },
       )
+    })
+
+    it('refreshes the active balance when an incoming message with a confirmed stamp arrives', async () => {
+      const chats = useChatStore()
+      mockBalanceRefresh.mockClear()
+      await chats.receiveMessages([makeWrapper({ index: 'stamp-refresh-test' })])
+      expect(mockBalanceRefresh).toHaveBeenCalled()
     })
 
     it('returns durable suppressions to the delivery caller without recreating the row', async () => {

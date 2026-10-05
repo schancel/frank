@@ -200,15 +200,20 @@ impl Record {
     pub(crate) fn fresh(
         &self,
         now: Timestamp,
-        relay: Option<&RelayBinding>,
+        binding: BindingPolicy<'_>,
     ) -> Result<(), AdmissionError> {
         if nanos(self.issued) > nanos(now) || nanos(now) >= nanos(self.expiry) {
             return Err(AdmissionError::Validity);
         }
-        if relay != Some(&self.relay) {
-            return Err(AdmissionError::Binding);
+        match binding {
+            BindingPolicy::Exact(relay) if relay != Some(&self.relay) => {
+                Err(AdmissionError::Binding)
+            }
+            BindingPolicy::Declared if nanos(now) >= nanos(self.relay.expiry) => {
+                Err(AdmissionError::Binding)
+            }
+            _ => Ok(()),
         }
-        Ok(())
     }
 }
 

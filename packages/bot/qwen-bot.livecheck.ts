@@ -95,6 +95,7 @@ import {
   mailboxAuthFor,
 } from '@frank/wallet/monad-identity'
 import { canonicalMonadEnvelopeAddress } from '@frank/cashweb/relay/monad-message-envelope'
+import { installedCanonicalOrigin } from '@frank/cashweb/relay/canonical-dm-transport'
 import { botStateDir, persistentStateDir } from './bot-state-dir'
 import { createQwenReplyGenerator, qwenBotConfigFromEnv } from './qwen-reply'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
@@ -520,20 +521,10 @@ async function main() {
 async function mainCanonical(
   botConfig: ReturnType<typeof qwenBotConfigFromEnv>,
 ): Promise<void> {
-  // The canonical mailbox and submissions need the relay's exact HTTPS root origin.
+  // The canonical mailbox and submissions need the relay's exact canonical root origin (or loopback HTTP in dev/demo).
   let relayBaseUrl: string
   try {
-    const relay = new URL(requiredEnv('E2E_DEMO_RELAY_URL'))
-    if (
-      relay.protocol !== 'https:' ||
-      relay.username ||
-      relay.password ||
-      relay.pathname !== '/' ||
-      relay.search ||
-      relay.hash
-    )
-      throw new Error('not an https root origin')
-    relayBaseUrl = relay.origin
+    relayBaseUrl = installedCanonicalOrigin(requiredEnv('E2E_DEMO_RELAY_URL'))
   } catch {
     throw new QwenStartRefusal('relay-url-not-https-origin')
   }
@@ -601,6 +592,17 @@ async function mainCanonical(
   )
   // Nothing is imported or answered until the relay holds this bot's own signed entry.
   await publishQwenDirectoryEntry({ directory, label: 'bot' })
+
+  try {
+    await registerAndLog({
+      relayBaseUrl,
+      identity: wallet.handle.identity,
+      label: 'bot',
+      profile: botProfileFields('qwen'),
+    })
+  } catch {
+    // Non-fatal if metadata registration is skipped or fails
+  }
 
   const inboxContext = {
     botAddress: canonical.identityAddress,

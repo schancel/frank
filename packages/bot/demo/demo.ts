@@ -19,9 +19,9 @@ import { dirname, join, resolve } from 'path'
 
 import { formatEther, Wallet } from 'ethers'
 
-import { fetchMonadProfilesSince } from '@frank/wallet/monad-identity'
+import { fetchMonadProfilesSince, MonadIdentity } from '@frank/wallet/monad-identity'
 
-import { loadOrCreateIdentity } from '../qwen-bot-common'
+import { loadOrCreateIdentity, loadQwenCanonicalRoots } from '../qwen-bot-common'
 import { ensurePrivateDir } from '../stamp-pool-seed'
 import { collectCuratedEntries, renderCuratedDefaultsToml } from '../print-curated-defaults'
 import { BOT_PROFILES } from '../bot-directory'
@@ -444,6 +444,17 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     const addresses: Record<string, string> = {}
     const identityEnv: Record<string, string> = {}
     for (const bot of config.bots) {
+      if (bot.env.QWEN_BOT_CANONICAL_ROOTS_JSON && bot.identityJson) {
+        mkdirSync(dirname(bot.env.QWEN_BOT_CANONICAL_ROOTS_JSON), { recursive: true, mode: 0o700 })
+        const roots = loadQwenCanonicalRoots(bot.env.QWEN_BOT_CANONICAL_ROOTS_JSON)
+        const identity = MonadIdentity.fromDomainRoot(roots.authentication)
+        mkdirSync(dirname(bot.identityJson), { recursive: true, mode: 0o700 })
+        writeFileSync(
+          bot.identityJson,
+          JSON.stringify({ privateKeyHex: identity.toPrivateKeyHex() }, null, 2),
+          { mode: 0o600 },
+        )
+      }
       if (!bot.identityJson) continue
       mkdirSync(dirname(bot.identityJson), { recursive: true, mode: 0o700 })
       addresses[bot.name] = loadOrCreateIdentity(bot.identityJson, bot.name).displayAddress

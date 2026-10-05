@@ -337,7 +337,7 @@ export const APP_DEV_PORT = 8080
 /** A duration far longer than any demo, in place of the bots' 10-minute idle exit. */
 export const NEVER_IDLE_MS = String(30 * 24 * 60 * 60 * 1000)
 
-const INBOX_POLLING = /Polling .*\/message\/monad\/inbox/
+const INBOX_POLLING = /Polling .*(inbox|\/message\/monad\/inbox)/
 
 export type BotName = 'blackjack' | 'raffle' | 'vendor' | 'qwen' | 'faucet'
 
@@ -706,6 +706,7 @@ export function resolveDemoConfig(params: {
       env: {
         ...common,
         ...stampWallet,
+        QWEN_BOT_CANONICAL_ROOTS_JSON: join(stateDir, 'bots', 'qwen', 'roots.json'),
         QWEN_BOT_MODE: qwenMode,
         ...(qwenMode === 'live'
           ? {

@@ -849,7 +849,7 @@ describe('#703/#778 production CLI in canonical mode on the open directory', () 
   }, 90000)
 
   it('refuses a relay URL that is not an HTTPS root origin before creating roots or opening any state', () => {
-    for (const url of ['http://127.0.0.1:8098', `${RELAY}/path`, undefined]) {
+    for (const url of ['http://example.com', `${RELAY}/path`, undefined]) {
       const refused = run({
         E2E_DEMO_RELAY_URL: url,
         QWEN_BOT_CANONICAL_ROOTS_JSON: join(location, 'unused', 'roots.json'),

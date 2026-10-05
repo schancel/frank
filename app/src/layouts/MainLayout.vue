@@ -2,8 +2,9 @@
   <q-layout view="lHr lpr lFr">
     <q-drawer
       v-model="myDrawerOpen"
-      :width="splitterRatio"
+      :width="drawerWidth"
       :breakpoint="drawerBreakpoint"
+      :class="{ 'no-transition': isDragging }"
       show-if-above
       @keydown.esc="closeOverlayOnEscape"
     >
@@ -11,7 +12,11 @@
       own `v-bind="$attrs"` on `<chat-list>` -- LeftDrawer.vue declares no `emits` of its own, so
       this listener lands in its `$attrs` and forwards straight through). See ChatList.vue's own
       comment on `setActiveChat` for why. -->
-      <left-drawer @closeDrawer="closeDrawerForNavigation" />
+      <left-drawer
+        @closeDrawer="closeDrawerForNavigation"
+        @updateWidth="onDrawerWidthUpdate"
+        @resizing="onDrawerResizing"
+      />
     </q-drawer>
     <router-view
       @toggleContactDrawerOpen="toggleContactDrawerOpen"
@@ -73,6 +78,8 @@ export default defineComponent({
       // Set in beforeUnmount: a restore still in flight must not touch a dead layout's page.
       disposed: false,
       trueSplitterRatio: compactCutoff,
+      desktopDrawerWidth: compactCutoff,
+      isDragging: false,
       // See `drawerBreakpoint`'s own comment above for why this can't just be `true`.
       myDrawerOpen: !isNarrowWidth(this.$q.screen.width),
       contactDrawerOpen: false as boolean,
@@ -135,6 +142,20 @@ export default defineComponent({
       this.railNavigation = false
       this.flushPendingRestore()
     })
+  },
+  mounted() {
+    try {
+      const saved = localStorage.getItem('frank:sidebar-width')
+      if (saved) {
+        const parsed = parseInt(saved, 10)
+        if (parsed >= 260 && parsed <= 960) {
+          this.desktopDrawerWidth = parsed
+          this.trueSplitterRatio = parsed
+        }
+      }
+    } catch {
+      // ignore
+    }
   },
   beforeUnmount() {
     this.disposed = true
@@ -309,10 +330,36 @@ export default defineComponent({
       }
       this.myDrawerOpen = !this.myDrawerOpen
     },
+    onDrawerWidthUpdate(width: number) {
+      if (isNarrowWidth(this.screenWidth)) return
+      this.desktopDrawerWidth = width
+      this.trueSplitterRatio = width
+      try {
+        localStorage.setItem('frank:sidebar-width', String(width))
+      } catch {
+        // ignore
+      }
+    },
+    onDrawerResizing(val: boolean) {
+      this.isDragging = val
+    },
   },
   computed: {
+    screenWidth(): number {
+      const q = (this as unknown as { $q?: { screen?: { width?: number } } }).$q
+      return (
+        q?.screen?.width ??
+        (typeof window !== 'undefined' ? window.innerWidth : 1024)
+      )
+    },
     overlayOpen(): boolean {
-      return this.myDrawerOpen && isNarrowWidth(this.$q.screen.width)
+      return this.myDrawerOpen && isNarrowWidth(this.screenWidth)
+    },
+    drawerWidth(): number {
+      if (isNarrowWidth(this.screenWidth)) {
+        return compactCutoff
+      }
+      return this.desktopDrawerWidth
     },
     splitterRatio: {
       get(): number {
@@ -345,5 +392,13 @@ export default defineComponent({
 // draw a focus ring around the whole page.
 .q-page-container[tabindex='-1']:focus {
   outline: none;
+}
+.no-transition,
+.no-transition .q-drawer {
+  transition: none !important;
+}
+body.resizing-drawer {
+  user-select: none !important;
+  cursor: col-resize !important;
 }
 </style>

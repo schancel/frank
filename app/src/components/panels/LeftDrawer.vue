@@ -1,5 +1,5 @@
 <template>
-  <div class="row no-wrap full-height">
+  <div class="row no-wrap full-height relative-position left-drawer-root">
     <!-- Relay reconnect dialog -->
     <q-dialog v-if="legacyRelayEnabled" v-model="relayConnectOpen">
       <relay-connect-dialog />
@@ -100,6 +100,7 @@
         v-if="$status.setup"
         v-show="tab == 'settings'"
         v-bind="{ ...$attrs, ...panelAttrs('settings') }"
+        @closeDrawer="$emit('closeDrawer')"
       />
       <div v-if="!$status.setup" class="drawer-header-item">
         <chat-list-link title="Login/Sign Up" route="/setup" icon="login" />
@@ -109,6 +110,7 @@
         v-show="tab == 'chats' && $status.setup"
         v-bind="{ ...$attrs, ...panelAttrs('chats') }"
         :compact="false"
+        @closeDrawer="$emit('closeDrawer')"
       />
 
       <contacts-panel
@@ -220,6 +222,14 @@
         </q-item>
       </q-list>
     </div>
+
+    <!-- Desktop resize drag handle -->
+    <div
+      v-if="!isNarrow"
+      class="drawer-resize-handle"
+      data-testid="drawer-resize-handle"
+      @mousedown="startResize"
+    />
   </div>
 </template>
 
@@ -235,6 +245,7 @@ import SettingsPanel from '../panels/SettingsPanel.vue'
 import WalletPanel from '../panels/WalletPanel.vue'
 import RelayConnectDialog from '../dialogs/RelayConnectDialog.vue'
 
+import { isNarrowWidth } from '../../utils/layout'
 import { openChat, openPage } from '../../utils/routes'
 import { useChatStore } from 'src/stores/chats'
 import { useTopicStore } from 'src/stores/topics'
@@ -248,6 +259,13 @@ const compactCutoff = 325
 
 export default defineComponent({
   setup() {
+    const q = inject<{ screen?: { width?: number } } | null>('_q_', null)
+    const isNarrow = computed(() =>
+      isNarrowWidth(
+        q?.screen?.width ??
+          (typeof window !== 'undefined' ? window.innerWidth : 1024),
+      ),
+    )
     const chats = useChatStore()
     const { totalUnread } = storeToRefs(chats)
     const route = useRoute()
@@ -414,9 +432,11 @@ export default defineComponent({
       balanceText,
       balanceStale,
       loaded,
+      isNarrow,
       legacyRelayEnabled: legacyLotusModeEnabled(),
     }
   },
+  emits: ['closeDrawer', 'updateWidth', 'resizing'],
   components: {
     ChatListLink,
     ChatList,
@@ -477,6 +497,30 @@ export default defineComponent({
     },
     openReceive() {
       openPage(this.$router, '/receive')
+    },
+    startResize(e: MouseEvent) {
+      if (this.isNarrow) return
+      e.preventDefault()
+      this.$emit('resizing', true)
+      document.body.classList.add('resizing-drawer')
+
+      const onMouseMove = (moveEvent: MouseEvent) => {
+        const maxWidth = Math.max(260, Math.min(960, window.innerWidth - 120))
+        const newWidth = Math.round(
+          Math.max(260, Math.min(maxWidth, moveEvent.clientX)),
+        )
+        this.$emit('updateWidth', newWidth)
+      }
+
+      const onMouseUp = () => {
+        this.$emit('resizing', false)
+        document.body.classList.remove('resizing-drawer')
+        window.removeEventListener('mousemove', onMouseMove)
+        window.removeEventListener('mouseup', onMouseUp)
+      }
+
+      window.addEventListener('mousemove', onMouseMove)
+      window.addEventListener('mouseup', onMouseUp)
     },
   },
   computed: {
@@ -540,5 +584,21 @@ export default defineComponent({
   min-height: 50px;
   max-height: 50px;
   box-sizing: border-box;
+}
+
+.drawer-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 50;
+  background: transparent;
+  transition: background-color 0.15s ease-in-out;
+  &:hover,
+  &:active {
+    background-color: var(--q-primary);
+  }
 }
 </style>

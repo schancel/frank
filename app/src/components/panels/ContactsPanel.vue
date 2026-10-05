@@ -4,14 +4,12 @@
     data-testid="contacts-panel"
     data-test="contacts-panel"
   >
-    <q-scroll-area class="q-px-none col">
-      <q-list>
+    <q-scroll-area class="q-px-none col contacts-scroll-area">
+      <q-list class="full-width">
         <q-separator />
         <q-item>
           <q-item-section>
-            <q-item-label>{{
-              $t('contactBookDialog.contacts')
-            }}</q-item-label>
+            <q-item-label>{{ $t('contactBookDialog.contacts') }}</q-item-label>
           </q-item-section>
           <q-space />
           <q-btn
@@ -54,7 +52,7 @@
             data-test="contact-list-row"
             @click="startChat(item.address)"
           >
-            <q-item-section avatar>
+            <q-item-section avatar style="min-width: 44px; padding-right: 8px">
               <q-avatar rounded size="40px">
                 <img
                   :src="
@@ -63,15 +61,17 @@
                 />
               </q-avatar>
             </q-item-section>
-            <q-item-section>
-              <q-item-label lines="1" class="text-weight-medium">
-                {{ item.contact?.profile?.name || formatAddr(item.address) }}
+            <q-item-section class="col" style="min-width: 0">
+              <q-item-label lines="1" class="text-weight-medium ellipsis">
+                {{
+                  item.contact?.profile?.name || formatAddrCompact(item.address)
+                }}
               </q-item-label>
-              <q-item-label caption lines="1">
-                {{ formatAddr(item.address) }}
+              <q-item-label caption lines="1" class="ellipsis">
+                {{ formatAddrCompact(item.address) }}
               </q-item-label>
             </q-item-section>
-            <q-item-section side>
+            <q-item-section side style="padding-left: 4px">
               <div class="row items-center no-wrap">
                 <q-btn
                   flat
@@ -91,7 +91,11 @@
                   icon="delete"
                   color="grey"
                   class="q-ml-xs"
-                  :aria-label="$t('a11y.deleteContact', { name: item.contact?.profile?.name || '' })"
+                  :aria-label="
+                    $t('a11y.deleteContact', {
+                      name: item.contact?.profile?.name || '',
+                    })
+                  "
                   @click.stop="deleteContact(item.address)"
                 />
               </div>
@@ -157,6 +161,13 @@ export default defineComponent({
       return parsed ? activeChain.formatAddress(parsed) : address
     }
 
+    function formatAddrCompact(address: string): string {
+      if (!address) return ''
+      return address.length > 13
+        ? `${address.slice(0, 6)}...${address.slice(-4)}`
+        : address
+    }
+
     function startChat(address: string) {
       openChat(router, address)
     }
@@ -174,6 +185,7 @@ export default defineComponent({
       filteredContacts,
       profileAvatar,
       formatAddr,
+      formatAddrCompact,
       startChat,
       openAddContact,
       deleteContact,
@@ -181,3 +193,10 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped lang="scss">
+.contacts-scroll-area :deep(.q-scrollarea__content) {
+  width: 100%;
+  min-width: 100%;
+}
+</style>

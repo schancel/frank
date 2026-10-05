@@ -83,6 +83,8 @@ export interface HDSeed {
   mnemonic: string;
   /** Optional BIP-39 25th-word passphrase. Defaults to none. */
   passphrase?: string;
+  /** Optional candidate derivation path. Defaults to MONAD_IDENTITY_DERIVATION_PATH. */
+  path?: string;
 }
 
 /** The generic per-user wallet handle every `ActiveChain` method that needs a sender identity

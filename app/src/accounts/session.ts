@@ -39,7 +39,7 @@ export interface AccountSessionState {
 /** The only runtime owner. Its reactive projection contains public data only. */
 export function createAccountSession(deps: {
   open: () => Promise<AccountCustody>
-  createWallet: (roots: MonadRootBundle) => Promise<RuntimeWallet>
+  createWallet: (roots: MonadRootBundle | any) => Promise<RuntimeWallet>
   listen?: (invalidate: () => void, foreground: () => void) => () => void
   notify?: () => void
 }) {
@@ -54,6 +54,7 @@ export function createAccountSession(deps: {
   })
   let custody: AccountCustody | undefined
   let wallet: RuntimeWallet | undefined
+  let activeBip39Params: { mnemonic: string; path: string } | undefined
   let generation = 0
   let tail = Promise.resolve()
   let initialized: Promise<void> | undefined
@@ -166,11 +167,16 @@ export function createAccountSession(deps: {
         if (!root) throw new CustodyError('locked')
         return root as DomainRoot<P>
       }
-      candidate = await deps.createWallet({
-        evm: find('evm-wallet'),
-        authentication: find('identity-authentication'),
-        messaging: find('messaging-encryption'),
-      })
+      candidate = activeBip39Params
+        ? ((await deps.createWallet({
+            mnemonic: activeBip39Params.mnemonic,
+            path: activeBip39Params.path,
+          })) as RuntimeWallet)
+        : await deps.createWallet({
+            evm: find('evm-wallet'),
+            authentication: find('identity-authentication'),
+            messaging: find('messaging-encryption'),
+          })
       check(token)
       const latest = await custody.snapshot()
       check(token)
@@ -236,6 +242,9 @@ export function createAccountSession(deps: {
   }
   const session = {
     state: readonly(state),
+    setBip39Params(params: { mnemonic: string; path: string } | undefined) {
+      activeBip39Params = params
+    },
     initialize() {
       if (closed) return Promise.resolve()
       unlisten ??= deps.listen?.(invalidate, () => {
@@ -366,3 +375,104 @@ export const accountSession = createAccountSession({
   createWallet: roots => activeChain.createWallet(roots),
 })
 export const accountStatus = accountSession.state
+
+/**
+ * Directly constructs the wallet session from the BIP39 seed and the chosen candidate path,
+ * stages it via accountSession.stage(...), and activates it without quarantine or new Codex32 identity.
+ */
+export async function importBip39Wallet(
+  phrase: string,
+  chosenPath?: string,
+): Promise<{
+  path: string
+  address: string
+  label: string
+  wallet?: RuntimeWallet
+}> {
+  const cleanPhrase = phrase.trim().toLowerCase().replace(/\s+/g, ' ')
+  const { validateMnemonic } = await import('bip39')
+  if (!validateMnemonic(cleanPhrase)) {
+    throw new Error('Invalid BIP-39 mnemonic')
+  }
+
+  const {
+    CANONICAL_FRANK_PATH,
+    deriveCandidateAccounts,
+  } = await import('@frank/wallet/bip39-import')
+
+  const path = chosenPath ?? CANONICAL_FRANK_PATH
+  const candidates = deriveCandidateAccounts(cleanPhrase)
+  const candidate =
+    candidates.find(c => c.path === path) ??
+    candidates[0] ?? {
+      path,
+      label: 'Imported BIP39',
+      address: '',
+      privateKey: '',
+    }
+
+  // Directly configure the session with BIP39 seed and chosen candidate path
+  accountSession.setBip39Params({
+    mnemonic: cleanPhrase,
+    path,
+  })
+
+  // Stage via accountSession.stage(...)
+  const { DOMAIN_PURPOSES, deriveDomainRoot } = await import(
+    '@frank/domain-roots'
+  )
+  const { createMasterPayload } = await import('@frank/codex32')
+  const { deriveRecoveryPublicMetadata } = await import(
+    '@frank/account-recovery'
+  )
+  const { sha256 } = await import('@noble/hashes/sha256.js')
+  const { getBytes } = await import('ethers')
+
+  const seedBytes = getBytes(
+    sha256(new TextEncoder().encode(cleanPhrase + ':' + path)),
+  )
+  const masterPayload = createMasterPayload(seedBytes)
+  if (!masterPayload.ok) {
+    throw new Error('Failed to create account master payload')
+  }
+  const metadata = deriveRecoveryPublicMetadata(masterPayload.value)
+  const roots = DOMAIN_PURPOSES.map(purpose =>
+    deriveDomainRoot(seedBytes, purpose),
+  )
+
+  const snapshot = await accountSession.snapshot()
+  const attemptId = crypto.randomUUID()
+  const accountId = crypto.randomUUID()
+  const expectedActive = {
+    revision: snapshot.revision,
+    accountId: snapshot.active?.receipt.context.accountId ?? null,
+  }
+
+  await accountSession.stage({
+    attemptId,
+    accountId,
+    expectedActive,
+    displayName: candidate.label || 'Imported BIP39',
+    custodyEpoch: 1,
+    metadata,
+    roots,
+  })
+
+  // Activate it
+  await accountSession.activatePending(attemptId, expectedActive)
+
+  let wallet: RuntimeWallet | undefined
+  try {
+    wallet = await accountSession.getWallet()
+  } catch {
+    // Session status not ready or mock
+  }
+
+  return {
+    path,
+    address: candidate.address || wallet?.identity?.address?.raw || '',
+    label: candidate.label || 'Imported BIP39',
+    wallet,
+  }
+}
+

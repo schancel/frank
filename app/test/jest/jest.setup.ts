@@ -15,6 +15,23 @@ if (typeof globalThis.TextDecoder === 'undefined') {
   globalThis.TextDecoder = util.TextDecoder
 }
 
+// jsdom cross-realm Buffer/Uint8Array compatibility for ethers and Node crypto
+const originalHasInstance = Function.prototype[Symbol.hasInstance]
+Object.defineProperty(Uint8Array, Symbol.hasInstance, {
+  value: function (instance: any) {
+    return (
+      originalHasInstance.call(this, instance) ||
+      (instance != null &&
+        (Buffer.isBuffer(instance) ||
+          instance.constructor?.name === 'Uint8Array' ||
+          instance.constructor?.name === 'Buffer' ||
+          Object.prototype.toString.call(instance) === '[object Uint8Array]'))
+    )
+  },
+  configurable: true,
+  writable: true,
+})
+
 // jest speedup when errors are part of the game
 // Error.stackTraceLimit = 0
 

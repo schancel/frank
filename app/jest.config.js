@@ -51,6 +51,12 @@ module.exports = {
   moduleNameMapper: {
     // Resolve workspace packages from this checkout. Worktrees intentionally share the root
     // node_modules directory, whose workspace symlinks otherwise point at another checkout.
+    '^@frank/account-recovery$':
+      '<rootDir>/../packages/account-recovery/src/index.ts',
+    '^@frank/account-vault$':
+      '<rootDir>/../packages/account-vault/src/index.ts',
+    '^@frank/domain-roots$': '<rootDir>/../packages/domain-roots/src/index.ts',
+    '^@frank/codex32$': '<rootDir>/../packages/codex32/src/index.ts',
     '^@frank/cashweb/(.*)$': '<rootDir>/../packages/cashweb/$1',
     '^@frank/wallet/(.*)$': '<rootDir>/../packages/wallet/$1',
     // Same source map cashweb's jest uses. The package export points at dist,

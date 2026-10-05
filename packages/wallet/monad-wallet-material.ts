@@ -16,6 +16,8 @@ import type {
 } from './monad-wallet-handle'
 import {
   Wallet,
+  HDNodeWallet,
+  Mnemonic,
   sha256,
   hexlify,
   toUtf8Bytes,
@@ -609,8 +611,26 @@ export function createMonadWalletMaterial(
   }
 }
 
-/** @deprecated Compatibility adapter only. #699 switches callers and removes this leaf. */
-function legacyMnemonicWalletMaterial(seed: HDSeed): MonadWalletMaterial {
+export function legacyMnemonicWalletMaterial(seed: HDSeed): MonadWalletMaterial {
+  if (seed.path) {
+    const computedSeed = Mnemonic.fromPhrase(
+      seed.mnemonic,
+      seed.passphrase ?? '',
+    ).computeSeed()
+    const node = HDNodeWallet.fromSeed(computedSeed).derivePath(seed.path)
+    const identity = MonadIdentity.fromPrivateKeyHex(node.privateKey)
+    return {
+      identity,
+      mainAccount: new Wallet(node.privateKey),
+      keyring: MonadHdKeyring.fromMnemonic(seed.mnemonic, seed.passphrase),
+      changeKeyring: MonadChangeKeyring.fromMnemonic(
+        seed.mnemonic,
+        seed.passphrase,
+      ),
+      fingerprint: `bip39:${node.address.toLowerCase()}`,
+      dispose() {},
+    }
+  }
   const identity = MonadIdentity.fromSeed(seed)
   return {
     identity,

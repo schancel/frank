@@ -23,7 +23,7 @@
         <h1 id="account-heading" ref="heading" tabindex="-1" class="text-h5">
           {{
             mode === 'legacy'
-              ? $t('accountRecovery.legacy_recovery_migration')
+              ? 'Import BIP39 seed'
               : 'Your Frank account'
           }}
         </h1>
@@ -161,7 +161,7 @@
               <q-btn
                 flat
                 no-caps
-                :label="$t('accountRecovery.legacy_recovery_migration')"
+                label="Import BIP39 seed"
                 data-test="legacy-recovery"
                 :disable="!mayBegin || busy"
                 @click="changeMode('legacy')"
@@ -176,7 +176,7 @@
               @click="$router.push('/wallet')"
             />
           </template>
-          <q-form v-else-if="mode === 'legacy'" @submit="identifyLegacy">
+          <q-form v-else-if="mode === 'legacy'" @submit="submitLegacyPhrase">
             <p>
               {{
                 $t(
@@ -196,12 +196,21 @@
               :maxlength="512"
               data-test="legacy-phrase"
             />
+            <p
+              v-if="detectedAccount"
+              role="status"
+              aria-live="polite"
+              class="q-mt-sm text-positive"
+              data-test="detected-account"
+            >
+              {{ detectedAccount }}
+            </p>
             <q-btn
               class="q-mt-md"
               type="submit"
               color="primary"
               no-caps
-              :label="$t('accountRecovery.identify_legacy_account_locally')"
+              label="Import BIP39 seed"
               data-test="identify-legacy"
               :disable="busy || !legacyPhrase"
               :loading="busy"
@@ -407,7 +416,11 @@
 /* global defineProps, defineEmits */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { accountSession, accountStatus as account } from '../accounts/session'
+import {
+  accountSession,
+  accountStatus as account,
+  importBip39Wallet,
+} from '../accounts/session'
 import {
   createAccountCeremony,
   recoveryErrorMessage,
@@ -451,6 +464,7 @@ const shareInput = ref('')
 const displayName = ref('')
 const legacyPhrase = ref('')
 const legacyAddress = ref('')
+const detectedAccount = ref('')
 const replaceAccepted = ref(false)
 let alive = true
 let request = 0
@@ -474,6 +488,7 @@ function clearSecrets() {
   shownShare.value = ''
   shareInput.value = ''
   legacyPhrase.value = ''
+  detectedAccount.value = ''
 }
 function focus() {
   void nextTick(() => heading.value?.focus())
@@ -570,18 +585,34 @@ function confirm() {
     }
   })
 }
-function identifyLegacy() {
+function submitLegacyPhrase() {
   return run(async () => {
     let phrase = legacyPhrase.value
     legacyPhrase.value = ''
     try {
-      legacyAddress.value = await identifyLegacyAccount(phrase)
+      const { scanBip39Accounts } = await import('@frank/wallet/bip39-import')
+      let provider: any = undefined
+      try {
+        const { activeChain } = await import('@frank/wallet/chain')
+        provider = (activeChain as any).provider
+      } catch {
+        // provider unavailable
+      }
+      const scanned = await scanBip39Accounts({ phrase, provider })
+      const detectedInfo = `${scanned.address} (${scanned.label})`
+      detectedAccount.value = detectedInfo
+
+      await importBip39Wallet(phrase, scanned.path)
+      void usePersistentStorageStore().afterActivation()
+      emit('setupCompleted')
+      await router.push('/wallet')
     } finally {
       phrase = ''
     }
-    if (alive) changeMode('policy')
   })
 }
+const identifyLegacy = submitLegacyPhrase
+
 function activate() {
   return run(async () => {
     const pending = account.pending

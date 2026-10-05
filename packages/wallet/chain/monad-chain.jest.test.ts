@@ -355,6 +355,16 @@ describe("createMonadChain: createWallet", () => {
     expect(walletA.identity.address.raw).not.toBe(walletB.identity.address.raw);
   });
 
+  it("derives identity address according to specified candidate path in seed", async () => {
+    const standardEvmWallet = await chain.createWallet({
+      mnemonic: seed.mnemonic,
+      path: "m/44'/60'/0'/0/0",
+    });
+    expect(standardEvmWallet.identity.address.raw).toBe(
+      "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    );
+  });
+
   it("pre-derives unfunded accounts without moving funds on wallet open", async () => {
     const wallet = (await chain.createWallet(seed)) as MonadChainWalletHandle;
     const records = wallet.pool.ensureSize(0);

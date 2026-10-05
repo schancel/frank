@@ -311,7 +311,8 @@ export function createAccountSession(deps: {
             pubKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) ?? [],
           )
           const hash160 = ripemd160(sha256(pubKeyBytes))
-          return encodeCashAddress('ecash', 'p2pkh', hash160)
+          const prefix = activeChain.isTestnet ? 'ectest' : 'ecash'
+          return encodeCashAddress(prefix, 'p2pkh', hash160)
         } else {
           const { Keypair } = await import('@solana/web3.js')
           const kp = await Keypair.fromSeed(root)

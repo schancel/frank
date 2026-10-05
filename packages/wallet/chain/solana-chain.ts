@@ -18,10 +18,21 @@ export interface SolanaChainConfig {
 }
 
 export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
+  const isTestnet =
+    config.networkId === "solana-testnet" ||
+    config.networkId.includes("testnet") ||
+    config.networkId.includes("devnet");
+  const name = isTestnet ? "Solana Testnet" : "Solana";
+  const unit = isTestnet ? "tSOL" : "SOL";
+  const network = isTestnet ? "testnet" : "mainnet";
+
   return {
     kind: "solana",
-    name: "solana",
-    unit: "SOL",
+    name,
+    unit,
+    networkId: config.networkId,
+    network,
+    isTestnet,
     capabilities: {
       profiles: false,
       directMessages: false,

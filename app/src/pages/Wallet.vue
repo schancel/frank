@@ -3,22 +3,32 @@
     <q-page class="q-ma-none q-pa-sm">
       <q-card>
         <q-card-section>
-          <div class="text-h6" data-testid="wallet-name">
-            {{
-              selectedChain === 'ecash'
-                ? $t('walletPanel.ecash')
-                : selectedChain === 'solana'
-                  ? $t('walletPanel.solana')
-                  : $t('walletPanel.mainWallet')
-            }}
+          <div class="text-h6 row items-center" data-testid="wallet-name">
+            <span>
+              {{
+                selectedChain === 'ecash'
+                  ? (isTestnet ? $t('walletPanel.ecashTestnet') : $t('walletPanel.ecash'))
+                  : selectedChain === 'solana'
+                    ? (isTestnet ? $t('walletPanel.solanaTestnet') : $t('walletPanel.solana'))
+                    : $t('walletPanel.mainWallet')
+              }}
+            </span>
+            <q-badge
+              v-if="isTestnet"
+              color="orange"
+              text-color="black"
+              :label="$t('walletPanel.testnet')"
+              class="q-ml-sm text-bold"
+              data-testid="wallet-testnet-badge"
+            />
           </div>
           <div class="text-caption" data-testid="wallet-chain">
             {{
               selectedChain === 'ecash'
-                ? $t('walletPanel.ecash')
+                ? (isTestnet ? $t('walletPanel.ecashTestnet') : $t('walletPanel.ecash'))
                 : selectedChain === 'solana'
-                  ? $t('walletPanel.solana')
-                  : $t('walletPanel.monad')
+                  ? (isTestnet ? $t('walletPanel.solanaTestnet') : $t('walletPanel.solana'))
+                  : (isTestnet ? $t('walletPanel.monadTestnet') : $t('walletPanel.monad'))
             }}
           </div>
         </q-card-section>
@@ -32,9 +42,9 @@
           >
             {{
               selectedChain === 'ecash'
-                ? $t('walletPanel.zeroXec')
+                ? (isTestnet ? $t('walletPanel.zeroTxec') : $t('walletPanel.zeroXec'))
                 : selectedChain === 'solana'
-                  ? $t('walletPanel.zeroSol')
+                  ? (isTestnet ? $t('walletPanel.zeroTsol') : $t('walletPanel.zeroSol'))
                   : balanceText
             }}
           </div>
@@ -76,10 +86,10 @@
             no-caps
             :label="
               selectedChain === 'ecash'
-                ? $t('walletPanel.receiveXec')
+                ? (isTestnet ? $t('walletPanel.receiveTxec') : $t('walletPanel.receiveXec'))
                 : selectedChain === 'solana'
-                  ? $t('walletPanel.receiveSol')
-                  : $t('walletPanel.receive')
+                  ? (isTestnet ? $t('walletPanel.receiveTsol') : $t('walletPanel.receiveSol'))
+                  : (isTestnet ? $t('walletPanel.receiveMont') : $t('walletPanel.receive'))
             "
             color="primary"
             :disable="selectedChain !== 'monad'"
@@ -90,10 +100,10 @@
             no-caps
             :label="
               selectedChain === 'ecash'
-                ? $t('walletPanel.sendXec')
+                ? (isTestnet ? $t('walletPanel.sendTxec') : $t('walletPanel.sendXec'))
                 : selectedChain === 'solana'
-                  ? $t('walletPanel.sendSol')
-                  : $t('walletPanel.send')
+                  ? (isTestnet ? $t('walletPanel.sendTsol') : $t('walletPanel.sendSol'))
+                  : (isTestnet ? $t('walletPanel.sendMont') : $t('walletPanel.send'))
             "
             color="primary"
             :disable="selectedChain !== 'monad'"
@@ -116,6 +126,7 @@ import { useBalance } from 'src/composables/useBalance'
 import { openPage } from 'src/utils/routes'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 import { accountSession, accountStatus } from '../accounts/session'
+import { activeChain } from '@frank/wallet/chain'
 
 // One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
@@ -124,6 +135,7 @@ export default defineComponent({
   setup() {
     const route = useRoute()
     const router = useRouter()
+    const isTestnet = computed(() => activeChain.isTestnet ?? false)
     const selectedChain = computed<'monad' | 'ecash' | 'solana'>(() => {
       const chain = (route?.query?.chain as string)?.toLowerCase()
       if (chain === 'ecash' || chain === 'solana') return chain
@@ -168,6 +180,7 @@ export default defineComponent({
 
     return {
       selectedChain,
+      isTestnet,
       displayAddress,
       balanceText,
       hasError,

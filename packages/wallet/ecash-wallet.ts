@@ -23,6 +23,9 @@ export type EcashAddressPrefix = "ecash" | "ectest" | "ecregtest";
 export const ECASH_MAINNET_CHECKPOINT_HEIGHT = 661_648;
 export const ECASH_MAINNET_CHECKPOINT_HASH =
   "000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d";
+export const ECASH_TESTNET_CHECKPOINT_HEIGHT = 1_421_481;
+export const ECASH_TESTNET_CHECKPOINT_HASH =
+  "00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d40b";
 const ECASH_MAINNET_PREFIX: EcashAddressPrefix = "ecash";
 
 type EcashCheckpointClient = Pick<ChronikClient, "block">;
@@ -80,10 +83,13 @@ async function verifyEcashChronikEndpoints(params: {
   );
 }
 
-function canonicalEcashMainnetAddress(input: string): string {
+function canonicalEcashAddress(
+  input: string,
+  expectedPrefix: EcashAddressPrefix = "ecash"
+): string {
   try {
     const parsed = Address.fromCashAddress(input.toLowerCase());
-    if (parsed.prefix !== ECASH_MAINNET_PREFIX) throw new Error("wrong prefix");
+    if (parsed.prefix !== expectedPrefix) throw new Error("wrong prefix");
     return parsed.toString().toLowerCase();
   } catch {
     throw new Error("Invalid eCash address for the configured network");
@@ -125,7 +131,7 @@ export type EcashWalletFactory = (params: {
 
 export interface EcashWalletOptions {
   chronik: ChronikClient;
-  networkId: "ecash-mainnet";
+  networkId: "ecash-mainnet" | "ecash-testnet" | "xec-mainnet" | "xec-testnet";
   /** Test seam for independently checking every URL reported by a failover client. */
   checkpointClientFactory?: (url: string) => EcashCheckpointClient;
   nativeAttemptStore?: NativeTransactionAttemptStore;
@@ -229,14 +235,21 @@ export class EcashWallet implements NativeWalletHandle {
     });
     const backend = await createBackend();
     await backend.syncAndDiscoverAddresses();
-    const primaryAddress = canonicalEcashMainnetAddress(
-      backend.getReceiveAddress(0)
+    const isTestnet =
+      params.networkId === "ecash-testnet" || params.networkId === "xec-testnet";
+    const addressPrefix: EcashAddressPrefix = isTestnet ? "ectest" : "ecash";
+    const checkpointHash = isTestnet
+      ? ECASH_TESTNET_CHECKPOINT_HASH
+      : ECASH_MAINNET_CHECKPOINT_HASH;
+    const primaryAddress = canonicalEcashAddress(
+      backend.getReceiveAddress(0),
+      addressPrefix
     );
     return new EcashWallet(
       backend,
       primaryAddress,
       params.networkId,
-      ECASH_MAINNET_CHECKPOINT_HASH,
+      checkpointHash,
       params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore,
       params.getTransactionStatus ?? (async () => "unknown")
     );
@@ -254,9 +267,13 @@ export class EcashWallet implements NativeWalletHandle {
       // Discover first so receiveIndex points at the next unused address. Merely displaying an
       // address never consumes an HD index, avoiding restoration gaps from abandoned QR screens.
       await this.backend.syncAndDiscoverAddresses();
+      const isTestnet =
+        this.networkId === "ecash-testnet" || this.networkId === "xec-testnet";
+      const expectedPrefix: EcashAddressPrefix = isTestnet ? "ectest" : "ecash";
       return {
-        raw: canonicalEcashMainnetAddress(
-          this.backend.getReceiveAddress(this.backend.receiveIndex)
+        raw: canonicalEcashAddress(
+          this.backend.getReceiveAddress(this.backend.receiveIndex),
+          expectedPrefix
         ),
       };
     });
@@ -396,7 +413,10 @@ export class EcashWallet implements NativeWalletHandle {
     }
     let recipient: string;
     try {
-      recipient = canonicalEcashMainnetAddress(params.recipient.raw);
+      const isTestnet =
+        this.networkId === "ecash-testnet" || this.networkId === "xec-testnet";
+      const expectedPrefix: EcashAddressPrefix = isTestnet ? "ectest" : "ecash";
+      recipient = canonicalEcashAddress(params.recipient.raw, expectedPrefix);
     } catch {
       throw new Error("Invalid eCash recipient for the configured network");
     }

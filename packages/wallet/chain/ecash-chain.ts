@@ -15,7 +15,7 @@ import type { ChronikClient } from "chronik-client";
 
 export interface EcashChainConfig {
   /** eCash network identity. Additional networks require a reviewed genesis/prefix profile. */
-  networkId: "ecash-mainnet";
+  networkId: "ecash-mainnet" | "ecash-testnet" | "xec-mainnet" | "xec-testnet";
   /** Initialized SDK-compatible Chronik client; callers own endpoint selection and lifecycle. */
   chronik: ChronikClient;
   /** Test/embedding seam; production uses ecash-wallet's HD wallet implementation. */
@@ -24,6 +24,7 @@ export interface EcashChainConfig {
 }
 
 const ECASH_MAINNET_PREFIX: EcashAddressPrefix = "ecash";
+const ECASH_TESTNET_PREFIX: EcashAddressPrefix = "ectest";
 
 async function getEcashTransactionStatus(
   config: EcashChainConfig,
@@ -53,7 +54,10 @@ function parseEcashAddress(
 ): { raw: string } | undefined {
   try {
     const parsed = Address.fromCashAddress(input.toLowerCase());
-    if (parsed.prefix !== ECASH_MAINNET_PREFIX) return undefined;
+    const isTestnet =
+      config.networkId === "ecash-testnet" || config.networkId === "xec-testnet";
+    const expectedPrefix = isTestnet ? ECASH_TESTNET_PREFIX : ECASH_MAINNET_PREFIX;
+    if (parsed.prefix !== expectedPrefix) return undefined;
     return { raw: parsed.toString().toLowerCase() };
   } catch {
     return undefined;
@@ -69,10 +73,19 @@ export interface EcashChain
 }
 
 export function createEcashChain(config: EcashChainConfig): EcashChain {
+  const isTestnet =
+    config.networkId === "ecash-testnet" || config.networkId === "xec-testnet";
+  const name = isTestnet ? "eCash Testnet" : "eCash";
+  const unit = isTestnet ? "tXEC" : "XEC";
+  const network = isTestnet ? "testnet" : "mainnet";
+
   return {
     kind: "ecash",
-    name: "eCash",
-    unit: "XEC",
+    name,
+    unit,
+    networkId: config.networkId,
+    network,
+    isTestnet,
     capabilities: {
       profiles: false,
       directMessages: false,

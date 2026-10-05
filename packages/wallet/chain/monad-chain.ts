@@ -1275,18 +1275,20 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               "Canonical post burn must be up and within 1..i64::MAX"
             );
           const timestampMs = Date.now();
-          encodeForumPost({
-            network: policy.network,
-            topic: params.topic,
-            entries: params.entries,
-            parentHash: params.parentDigest
-              ? getBytes(`0x${params.parentDigest}`)
-              : undefined,
-            authored: {
-              seconds: BigInt(Math.floor(timestampMs / 1000)),
-              nanoseconds: (timestampMs % 1000) * 1000000,
-            },
-          });
+          if (params.entries.length > 0) {
+            encodeForumPost({
+              network: policy.network,
+              topic: params.topic,
+              entries: params.entries,
+              parentHash: params.parentDigest
+                ? getBytes(`0x${params.parentDigest}`)
+                : undefined,
+              authored: {
+                seconds: BigInt(Math.floor(timestampMs / 1000)),
+                nanoseconds: (timestampMs % 1000) * 1000000,
+              },
+            });
+          }
           const leaseIndex = await prepareTopicBurnAccount(
             wallet,
             params.voteWeightWei,
@@ -1384,10 +1386,22 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       });
     },
   };
+  const isTestnet =
+    config.rpcChain === "monad-testnet" ||
+    config.chainId === 10143 ||
+    config.chainId === 10143n ||
+    config.networkTag === "MONT";
+  const name = isTestnet ? "Monad Testnet" : "Monad";
+  const unit = isTestnet ? "MONT" : "MON";
+  const network = isTestnet ? "testnet" : "mainnet";
+
   return {
     kind: "monad",
-    name: "monad",
-    unit: "MON",
+    name,
+    unit,
+    networkId: config.networkId,
+    network,
+    isTestnet,
     capabilities: {
       profiles: true,
       directMessages: true,

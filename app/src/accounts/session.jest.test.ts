@@ -9,7 +9,7 @@ import {
 import { DOMAIN_PURPOSES, DERIVATION_REGISTRY_ID } from '@frank/domain-roots'
 
 jest.mock('@frank/wallet/chain', () => ({
-  activeChain: { createWallet: jest.fn() },
+  activeChain: { createWallet: jest.fn(), isTestnet: true },
 }))
 
 const deferred = <T>() => {
@@ -383,7 +383,7 @@ test('getActiveDomainRoot and getChainAddress derive valid addresses for ecash a
   expect(ecashRoot.length).toBe(32)
 
   const ecashAddr = await f.session.getChainAddress('ecash')
-  expect(ecashAddr.startsWith('ecash:')).toBe(true)
+  expect(ecashAddr.startsWith('ectest:')).toBe(true)
 
   const solanaAddr = await f.session.getChainAddress('solana')
   expect(typeof solanaAddr).toBe('string')

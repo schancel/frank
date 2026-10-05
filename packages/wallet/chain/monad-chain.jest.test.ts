@@ -219,8 +219,9 @@ describe("createMonadChain: basic chain properties", () => {
 
   it("exposes the Monad name/unit", () => {
     expect(chain.kind).toBe("monad");
-    expect(chain.name).toBe("monad");
-    expect(chain.unit).toBe("MON");
+    expect(chain.name).toBe("Monad Testnet");
+    expect(chain.unit).toBe("MONT");
+    expect(chain.isTestnet).toBe(true);
     expect(chain.defaultTopicVoteValue).toBe(
       TEST_CONFIG.defaultTopicVoteValueWei
     );

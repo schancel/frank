@@ -17,6 +17,18 @@ export type { SolanaChainConfig } from "./solana-chain";
 export const activeChain: ActiveChain = MonadChain;
 
 export {
+  PROTOCOL_CHAINS,
+  getChainRegistryEntry,
+  getChainRegistryByKind,
+} from "./chains-registry";
+export type {
+  ChainRegistryEntry,
+  SupportedChainFamily,
+  SupportedChainKind,
+  SupportedNetwork,
+} from "./chains-registry";
+
+export {
   NativeTransactionSubmissionError,
   TopicPostOutcomeUnknownError,
 } from "./active-chain";

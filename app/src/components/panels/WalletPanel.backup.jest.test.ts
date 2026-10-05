@@ -49,6 +49,7 @@ function render() {
         QSeparator: { template: '<hr />' },
         QIcon: true,
         QTooltip: true,
+        QBadge: true,
         QInput: {
           props: ['modelValue', 'label'],
           template: '<input :value="modelValue" @input="$emit(\'update:modelValue\', Number($event.target.value))" />',

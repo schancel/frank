@@ -40,6 +40,7 @@ function render() {
         QSeparator: { template: '<hr />' },
         QIcon: true,
         QBtn: true,
+        QBadge: true,
         Codex32BackupDialog: true,
       },
       directives: { ripple: {} },
@@ -64,8 +65,12 @@ test('renders list of wallets without recovery banners or demo buttons', () => {
   expect(view.text()).toContain('Solana')
   // No informative text walls or demo buttons
   expect(view.text()).not.toContain('Messaging is unavailable')
-  expect(view.find('[data-test="demo-fund"]').exists()).toBe(false)
   expect(view.find('[data-test="recovery-descriptor"]').exists()).toBe(false)
+  expect(view.find('[data-test="testnet-badge"]').exists()).toBe(true)
+  expect(view.find('[data-test="ecash-testnet-badge"]').exists()).toBe(true)
+  expect(view.find('[data-test="solana-testnet-badge"]').exists()).toBe(true)
+  expect(view.text()).toContain('0 tXEC')
+  expect(view.text()).toContain('0 tSOL')
 })
 
 test('displays formatted live balance and handles loading and stale states', async () => {

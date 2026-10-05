@@ -78,8 +78,8 @@ function mountWallet() {
         // The copy button lives in q-input's named #after slot; a generic stub drops it.
         QInput: { template: '<div><slot /><slot name="after" /></div>' },
         QBtn: {
-          props: ['disable'],
-          template: '<button :disabled="disable"><slot /></button>',
+          props: ['disable', 'label'],
+          template: '<button :disabled="disable">{{ label }}<slot /></button>',
         },
         ...Object.fromEntries(
           [
@@ -89,6 +89,7 @@ function mountWallet() {
             'q-card-section',
             'q-card-actions',
             'q-separator',
+            'q-badge',
           ].map(n => [n, { template: '<div><slot /></div>' }]),
         ),
       },
@@ -116,11 +117,18 @@ describe('Wallet detail page (#570)', () => {
   it('shows the wallet, its chain, balance and address', async () => {
     const wrapper = mountWallet()
     await flush()
-    expect(wrapper.get('[data-testid="wallet-name"]').text()).toBe(
+    expect(wrapper.get('[data-testid="wallet-name"]').text()).toContain(
       'walletPanel.mainWallet',
     )
+    expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="wallet-chain"]').text()).toBe(
-      'walletPanel.monad',
+      'walletPanel.monadTestnet',
+    )
+    expect(wrapper.get('[data-testid="wallet-receive-action"]').text()).toBe(
+      'walletPanel.receiveMont',
+    )
+    expect(wrapper.get('[data-testid="wallet-send-action"]').text()).toBe(
+      'walletPanel.sendMont',
     )
     const region = wrapper.get('[data-testid="wallet-balance"]')
     expect(region.text()).toBe('1 MON')
@@ -270,14 +278,15 @@ describe('Wallet detail page (#570)', () => {
     const wrapper = mountWallet()
     await flush()
 
-    expect(wrapper.get('[data-testid="wallet-name"]').text()).toBe(
-      'walletPanel.ecash',
+    expect(wrapper.get('[data-testid="wallet-name"]').text()).toContain(
+      'walletPanel.ecashTestnet',
     )
+    expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="wallet-chain"]').text()).toBe(
-      'walletPanel.ecash',
+      'walletPanel.ecashTestnet',
     )
     expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe(
-      'walletPanel.zeroXec',
+      'walletPanel.zeroTxec',
     )
     expect(
       (wrapper.vm as unknown as { displayAddress: string }).displayAddress,
@@ -285,6 +294,8 @@ describe('Wallet detail page (#570)', () => {
 
     const receiveBtn = wrapper.get('[data-testid="wallet-receive-action"]')
     const sendBtn = wrapper.get('[data-testid="wallet-send-action"]')
+    expect(receiveBtn.text()).toBe('walletPanel.receiveTxec')
+    expect(sendBtn.text()).toBe('walletPanel.sendTxec')
     expect(receiveBtn.attributes('disabled')).toBeDefined()
     expect(sendBtn.attributes('disabled')).toBeDefined()
 
@@ -296,14 +307,15 @@ describe('Wallet detail page (#570)', () => {
     const wrapper = mountWallet()
     await flush()
 
-    expect(wrapper.get('[data-testid="wallet-name"]').text()).toBe(
-      'walletPanel.solana',
+    expect(wrapper.get('[data-testid="wallet-name"]').text()).toContain(
+      'walletPanel.solanaTestnet',
     )
+    expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="wallet-chain"]').text()).toBe(
-      'walletPanel.solana',
+      'walletPanel.solanaTestnet',
     )
     expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe(
-      'walletPanel.zeroSol',
+      'walletPanel.zeroTsol',
     )
     expect(
       (wrapper.vm as unknown as { displayAddress: string }).displayAddress,
@@ -311,6 +323,8 @@ describe('Wallet detail page (#570)', () => {
 
     const receiveBtn = wrapper.get('[data-testid="wallet-receive-action"]')
     const sendBtn = wrapper.get('[data-testid="wallet-send-action"]')
+    expect(receiveBtn.text()).toBe('walletPanel.receiveTsol')
+    expect(sendBtn.text()).toBe('walletPanel.sendTsol')
     expect(receiveBtn.attributes('disabled')).toBeDefined()
     expect(sendBtn.attributes('disabled')).toBeDefined()
 

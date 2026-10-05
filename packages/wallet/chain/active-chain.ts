@@ -355,6 +355,9 @@ export interface NativeAssetChain {
   readonly name: string;
   /** Display denomination, e.g. `'MON'`. */
   readonly unit: string;
+  readonly networkId?: string;
+  readonly network?: "mainnet" | "testnet" | "regtest";
+  readonly isTestnet?: boolean;
   readonly capabilities: ChainCapabilities;
   toDisplayAmount(raw: bigint): string;
   fromDisplayAmount(display: string): bigint;

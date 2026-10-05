@@ -17,8 +17,17 @@
             <q-icon name="account_balance_wallet" />
           </q-item-section>
           <q-item-section>
-            <q-item-label data-test="wallet-name">
-              {{ $t('walletPanel.mainWallet') }}
+            <q-item-label data-test="wallet-name" class="row items-center">
+              <span>{{ $t('walletPanel.mainWallet') }}</span>
+              <q-badge
+                v-if="isTestnet"
+                outline
+                color="amber-9"
+                class="q-ml-xs text-bold"
+                data-test="testnet-badge"
+              >
+                {{ $t('walletPanel.testnet') }}
+              </q-badge>
             </q-item-label>
             <q-item-label caption role="status" data-test="wallet-balance">
               {{
@@ -34,7 +43,7 @@
           </q-item-section>
           <q-item-section side>
             <q-item-label caption data-test="wallet-chain">
-              {{ $t('walletPanel.monad') }}
+              {{ isTestnet ? $t('walletPanel.monadTestnet') : $t('walletPanel.monad') }}
             </q-item-label>
           </q-item-section>
         </q-item>
@@ -62,11 +71,22 @@
             <q-icon name="toll" />
           </q-item-section>
           <q-item-section>
-            <q-item-label>{{ $t('walletPanel.ecash') }}</q-item-label>
-            <q-item-label caption>{{ $t('walletPanel.zeroXec') }}</q-item-label>
+            <q-item-label class="row items-center">
+              <span>{{ isTestnet ? $t('walletPanel.ecashTestnet') : $t('walletPanel.ecash') }}</span>
+              <q-badge
+                v-if="isTestnet"
+                outline
+                color="amber-9"
+                class="q-ml-xs text-bold"
+                data-test="ecash-testnet-badge"
+              >
+                {{ $t('walletPanel.testnet') }}
+              </q-badge>
+            </q-item-label>
+            <q-item-label caption>{{ isTestnet ? $t('walletPanel.zeroTxec') : $t('walletPanel.zeroXec') }}</q-item-label>
           </q-item-section>
           <q-item-section side>
-            <q-item-label caption>{{ $t('walletPanel.ecash') }}</q-item-label>
+            <q-item-label caption>{{ isTestnet ? $t('walletPanel.ecashTestnet') : $t('walletPanel.ecash') }}</q-item-label>
           </q-item-section>
         </q-item>
 
@@ -83,11 +103,22 @@
             <q-icon name="account_balance" />
           </q-item-section>
           <q-item-section>
-            <q-item-label>{{ $t('walletPanel.solana') }}</q-item-label>
-            <q-item-label caption>{{ $t('walletPanel.zeroSol') }}</q-item-label>
+            <q-item-label class="row items-center">
+              <span>{{ isTestnet ? $t('walletPanel.solanaTestnet') : $t('walletPanel.solana') }}</span>
+              <q-badge
+                v-if="isTestnet"
+                outline
+                color="amber-9"
+                class="q-ml-xs text-bold"
+                data-test="solana-testnet-badge"
+              >
+                {{ $t('walletPanel.testnet') }}
+              </q-badge>
+            </q-item-label>
+            <q-item-label caption>{{ isTestnet ? $t('walletPanel.zeroTsol') : $t('walletPanel.zeroSol') }}</q-item-label>
           </q-item-section>
           <q-item-section side>
-            <q-item-label caption>{{ $t('walletPanel.solana') }}</q-item-label>
+            <q-item-label caption>{{ isTestnet ? $t('walletPanel.solanaTestnet') : $t('walletPanel.solana') }}</q-item-label>
           </q-item-section>
         </q-item>
 
@@ -124,9 +155,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { activeChain } from '@frank/wallet/chain'
 import { useBalance } from '../../composables/useBalance'
 import { useCodex32Backup } from '../../composables/useCodex32Backup'
 import Codex32BackupDialog from '../wallet/Codex32BackupDialog.vue'
+
+const isTestnet = computed(() => activeChain.isTestnet ?? false)
 
 const router = useRouter()
 const route = useRoute()

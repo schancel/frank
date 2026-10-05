@@ -96,6 +96,7 @@ module.exports = {
     // transitively pull in @frank/wallet/chain, which imports the real `vite-env.ts` (a genuine
     // `import.meta.env` reference Jest can never parse) via this exact relative specifier.
     '^\\./vite-env$': '<rootDir>/../packages/wallet/chain/vite-env.node.ts',
+    '.*utils/avatar$': '<rootDir>/src/utils/avatar.node.ts',
   },
   transform: {
     // See https://jestjs.io/docs/en/configuration.html#transformignorepatterns-array-string

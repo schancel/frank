@@ -229,10 +229,13 @@ export default {
   leftDrawer: {
     noForums: 'No forums discovered yet.',
     settings: 'Settings',
+    chats: 'Direct Messages',
     contacts: 'Contacts',
     forum: 'Forum',
     wallet: 'Wallet',
     railLabel: 'Sidebar sections',
+    chatsUnreadOne: 'Direct Messages, {count} unread message',
+    chatsUnreadOther: 'Direct Messages, {count} unread messages',
     contactsUnreadOne: 'Contacts, {count} unread message',
     contactsUnreadOther: 'Contacts, {count} unread messages',
   },

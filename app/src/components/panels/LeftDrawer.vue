@@ -28,21 +28,16 @@
         content-class="settings-pin-content"
         :aria-label="$t('leftDrawer.railLabel')"
       >
-        <!-- Navigates to the active (or most recently used) chat, so this tab actually shows
-        something different from "forum" in the main pane -- an earlier version of this fix
-        removed navigation entirely to stop it fighting with "forum" over `/`, but that also made
-        clicking it a visible no-op whenever you were already on /forum (same main content, same
-        chat-list underneath, nothing about the click was ever observable). openActiveOrRecentChat
-        navigates to a genuinely different, contacts-focused route instead of re-using `/`. -->
+        <!-- Navigates to the active (or most recently used) chat -->
         <q-tab
-          name="contacts"
-          id="rail-tab-contacts"
-          aria-controls="rail-panel-contacts"
-          icon="contacts"
-          :aria-label="contactsLabel()"
+          name="chats"
+          id="rail-tab-chats"
+          aria-controls="rail-panel-chats"
+          icon="forum"
+          :aria-label="chatsLabel()"
           @click="openActiveOrRecentChat"
         >
-          <q-tooltip>{{ $t('leftDrawer.contacts') }}</q-tooltip>
+          <q-tooltip>{{ $t('leftDrawer.chats') }}</q-tooltip>
           <q-badge
             floating
             color="secondary"
@@ -54,29 +49,37 @@
         </q-tab>
 
         <q-tab
-          name="wallet"
-          id="rail-tab-wallet"
-          aria-controls="rail-panel-wallet"
-          icon="account_balance_wallet"
-          :aria-label="$t('leftDrawer.wallet')"
+          name="contacts"
+          id="rail-tab-contacts"
+          aria-controls="rail-panel-contacts"
+          icon="contacts"
+          :aria-label="$t('leftDrawer.contacts')"
         >
-          <q-tooltip>{{ $t('leftDrawer.wallet') }}</q-tooltip>
+          <q-tooltip>{{ $t('leftDrawer.contacts') }}</q-tooltip>
         </q-tab>
-        <!-- Per-owner decision (2026-09-27, following #61): the flat groupchat-style Topics list
-        is hidden in favor of the Forum's threaded view -- both still work (stores/topics.ts and
-        stores/forum.ts share the same activeChain.topics data), but only Forum is surfaced in nav
-        now. This tab navigates straight to /forum rather than switching local drawer content,
-        since Forum is a full page/route, not another sidebar-list mode like contacts/settings. -->
+
         <q-tab
           name="forum"
           id="rail-tab-forum"
           aria-controls="rail-panel-forum"
-          icon="forum"
+          icon="dynamic_feed"
           :aria-label="$t('leftDrawer.forum')"
           @click="openForumTab"
         >
           <q-tooltip>{{ $t('leftDrawer.forum') }}</q-tooltip>
         </q-tab>
+
+        <q-tab
+          name="wallet"
+          id="rail-tab-wallet"
+          aria-controls="rail-panel-wallet"
+          icon="account_balance_wallet"
+          class="wallet-rail-tab"
+          :aria-label="$t('leftDrawer.wallet')"
+        >
+          <q-tooltip>{{ $t('leftDrawer.wallet') }}</q-tooltip>
+        </q-tab>
+
         <q-tab
           name="settings"
           id="rail-tab-settings"
@@ -90,8 +93,7 @@
       </q-tabs>
     </div>
 
-    <!-- List column: whatever the active rail icon selects (settings, chats, wallet or forum) --
-    no longer sharing a column with the tab icons themselves. -->
+    <!-- List column: whatever the active rail icon selects (settings, chats, contacts, wallet or forum) -->
     <div class="column full-height col list-column">
       <settings-panel
         v-if="$status.setup"
@@ -103,9 +105,15 @@
       </div>
 
       <chat-list
-        v-show="tab == 'contacts' && $status.setup"
-        v-bind="{ ...$attrs, ...panelAttrs('contacts') }"
+        v-show="tab == 'chats' && $status.setup"
+        v-bind="{ ...$attrs, ...panelAttrs('chats') }"
         :compact="false"
+      />
+
+      <contacts-panel
+        v-if="$status.setup"
+        v-show="tab == 'contacts'"
+        v-bind="panelAttrs('contacts')"
       />
 
       <wallet-panel
@@ -206,6 +214,7 @@ import { storeToRefs } from 'pinia'
 
 import ChatList from '../chat/ChatList.vue'
 import ChatListLink from '../chat/ChatListLink.vue'
+import ContactsPanel from '../panels/ContactsPanel.vue'
 import SettingsPanel from '../panels/SettingsPanel.vue'
 import WalletPanel from '../panels/WalletPanel.vue'
 import RelayConnectDialog from '../dialogs/RelayConnectDialog.vue'
@@ -326,7 +335,7 @@ export default defineComponent({
     // Composition API's own, more direct seam onto routing state (vs. the Options API
     // string-path watcher an earlier attempt used, which didn't reliably fire in at least one
     // real session).
-    const tab = ref<'contacts' | 'wallet' | 'settings' | 'forum'>('contacts')
+    const tab = ref<'chats' | 'contacts' | 'wallet' | 'settings' | 'forum'>('chats')
     watch(
       () => tab.value,
       newTab => {
@@ -355,8 +364,10 @@ export default defineComponent({
           tab.value = 'wallet'
         } else if (path.startsWith('/settings')) {
           tab.value = 'settings'
-        } else if (path.startsWith('/chat') || path.startsWith('/add-contact')) {
+        } else if (path.startsWith('/add-contact') || path.startsWith('/contacts')) {
           tab.value = 'contacts'
+        } else if (path.startsWith('/chat')) {
+          tab.value = 'chats'
         }
       },
       { immediate: true },
@@ -379,6 +390,7 @@ export default defineComponent({
   components: {
     ChatListLink,
     ChatList,
+    ContactsPanel,
     SettingsPanel,
     WalletPanel,
     RelayConnectDialog,
@@ -412,19 +424,22 @@ export default defineComponent({
     contactClicked(address: string) {
       openChat(this.$router, address)
     },
-    contactsLabel(): string {
+    chatsLabel(): string {
       const n = this.totalUnread
-      if (!n) return this.$t('leftDrawer.contacts')
+      if (!n) return this.$t('leftDrawer.chats')
       return this.$t(
         n === 1
-          ? 'leftDrawer.contactsUnreadOne'
-          : 'leftDrawer.contactsUnreadOther',
+          ? 'leftDrawer.chatsUnreadOne'
+          : 'leftDrawer.chatsUnreadOther',
         { count: n },
       )
     },
+    contactsLabel(): string {
+      return this.$t('leftDrawer.contacts')
+    },
     // Tabpanel wiring for the rail (see the tablist comment in the template). Without the rail
     // (signed-out: no tabs rendered) the list is just content, so no dangling aria-labelledby.
-    panelAttrs(name: 'settings' | 'contacts' | 'wallet' | 'forum') {
+    panelAttrs(name: 'settings' | 'chats' | 'contacts' | 'wallet' | 'forum') {
       if (!this.$status.setup) return {}
       return {
         'id': `rail-panel-${name}`,
@@ -471,12 +486,15 @@ export default defineComponent({
   background: var(--q-color-bg-active);
 }
 
-.settings-rail-tab {
+.wallet-rail-tab {
   margin-top: auto;
 }
 
+.settings-rail-tab {
+}
+
 // Quasar's vertical-tab rule uses `display: block !important` on this internal element, so the
-// Settings tab's auto margin only consumes the remaining rail height after restoring a column
+// Wallet/Settings tabs' auto margin only consumes the remaining rail height after restoring a column
 // flex context here. Keep short rails scrollable instead of making Settings unreachable.
 .icon-rail :deep(.settings-pin-content) {
   display: flex !important;

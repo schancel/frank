@@ -63,6 +63,9 @@ jest.mock('src/utils/runtime-mode', () => ({
 }))
 jest.mock('../chat/ChatList.vue', () => ({ template: '<div />' }))
 jest.mock('../chat/ChatListLink.vue', () => ({ template: '<div />' }))
+jest.mock('../panels/ContactsPanel.vue', () => ({
+  template: '<div data-test="contacts-panel" />',
+}))
 jest.mock('../panels/SettingsPanel.vue', () => ({
   template: '<div data-test="settings-panel" />',
 }))
@@ -130,11 +133,14 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     expect(wrapper.get('[role="tablist"]').attributes('content-class')).toBe(
       'settings-pin-content',
     )
-    expect(html.indexOf('rail-tab-contacts')).toBeLessThan(
-      html.indexOf('rail-tab-wallet'),
+    expect(html.indexOf('rail-tab-chats')).toBeLessThan(
+      html.indexOf('rail-tab-contacts'),
     )
-    expect(html.indexOf('rail-tab-wallet')).toBeLessThan(
+    expect(html.indexOf('rail-tab-contacts')).toBeLessThan(
       html.indexOf('rail-tab-forum'),
+    )
+    expect(html.indexOf('rail-tab-forum')).toBeLessThan(
+      html.indexOf('rail-tab-wallet'),
     )
     expect(html.indexOf('rail-tab-wallet')).toBeLessThan(
       html.indexOf('rail-tab-settings'),
@@ -151,17 +157,17 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     expect(vm(mountDrawer()).tab).toBe('forum')
     // Other routes never override the highlight (a later direct click must win).
     mockRoute.path = '/chat/addr1'
-    expect(vm(mountDrawer()).tab).toBe('contacts')
+    expect(vm(mountDrawer()).tab).toBe('chats')
     mockRoute.path = '/chat'
-    expect(vm(mountDrawer()).tab).toBe('contacts')
+    expect(vm(mountDrawer()).tab).toBe('chats')
     mockRoute.path = '/add-contact'
     expect(vm(mountDrawer()).tab).toBe('contacts')
   })
 
-  it('navigates to /chat when clicking contacts rail tab with no active chats', async () => {
+  it('navigates to /chat when clicking chats rail tab with no active chats', async () => {
     mockRouterPush.mockReset()
     const wrapper = mountDrawer()
-    await wrapper.get('#rail-tab-contacts').trigger('click')
+    await wrapper.get('#rail-tab-chats').trigger('click')
     expect(mockRouterPush).toHaveBeenCalledWith('/chat')
   })
 

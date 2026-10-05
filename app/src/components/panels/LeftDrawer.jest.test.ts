@@ -28,10 +28,11 @@ const mockProfileStore = {
   },
 }
 const mockRefreshDiscoveredTopics = jest.fn()
+const mockRouterPush = jest.fn()
 
 jest.mock('vue-router', () => ({
   useRoute: () => mockRoute,
-  useRouter: () => ({ push: jest.fn() }),
+  useRouter: () => ({ push: mockRouterPush }),
 }))
 jest.mock('src/stores/chats', () => ({
   useChatStore: () => ({ totalUnread: 0, getSortedChatOrder: [] }),
@@ -151,6 +152,17 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     // Other routes never override the highlight (a later direct click must win).
     mockRoute.path = '/chat/addr1'
     expect(vm(mountDrawer()).tab).toBe('contacts')
+    mockRoute.path = '/chat'
+    expect(vm(mountDrawer()).tab).toBe('contacts')
+    mockRoute.path = '/add-contact'
+    expect(vm(mountDrawer()).tab).toBe('contacts')
+  })
+
+  it('navigates to /chat when clicking contacts rail tab with no active chats', async () => {
+    mockRouterPush.mockReset()
+    const wrapper = mountDrawer()
+    await wrapper.get('#rail-tab-contacts').trigger('click')
+    expect(mockRouterPush).toHaveBeenCalledWith('/chat')
   })
 
   it('hides the legacy footer until setup is complete', () => {

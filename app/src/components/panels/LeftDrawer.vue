@@ -249,9 +249,11 @@ export default defineComponent({
     function openActiveOrRecentChat() {
       const address =
         chats.activeChatAddr ?? chats.getSortedChatOrder[0]?.address
+      markRailNavigation()
       if (address) {
-        markRailNavigation()
         router.push(`/chat/${address}`)
+      } else {
+        router.push('/chat')
       }
     }
 
@@ -353,7 +355,7 @@ export default defineComponent({
           tab.value = 'wallet'
         } else if (path.startsWith('/settings')) {
           tab.value = 'settings'
-        } else if (path.startsWith('/chat')) {
+        } else if (path.startsWith('/chat') || path.startsWith('/add-contact')) {
           tab.value = 'contacts'
         }
       },

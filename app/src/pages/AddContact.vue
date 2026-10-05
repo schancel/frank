@@ -96,7 +96,6 @@
 </template>
 
 <script lang="ts">
-import { navigateBack } from 'src/utils/navigate-back'
 import { defineComponent, markRaw, ref } from 'vue'
 import { QInput } from 'quasar'
 
@@ -105,6 +104,7 @@ import {
   defaultRelayData,
   useContactStore,
 } from 'src/stores/contacts'
+import { useChatStore } from 'src/stores/chats'
 import { activeChain } from '@frank/wallet/chain'
 import { profilePubKeyFromBytes } from 'src/utils/profile-pubkey'
 import { openChat } from 'src/utils/routes'
@@ -278,7 +278,38 @@ export default defineComponent({
       openChat(this.$router, resolvedAddress)
     },
     cancel() {
-      navigateBack(this.$router)
+      const from = this.$route?.query?.from
+      if (typeof from === 'string' && from.startsWith('/chat')) {
+        void this.$router.push(from)
+        return
+      }
+      const previous = (window.history.state as { back?: unknown } | null)?.back
+      if (typeof previous === 'string' && previous.startsWith('/chat')) {
+        this.$router.back()
+        return
+      }
+      let address: string | undefined
+      try {
+        const chatStore = useChatStore()
+        address =
+          chatStore.activeChatAddr ?? chatStore.getSortedChatOrder[0]?.address
+      } catch {
+        // Pinia not active in test environment
+      }
+      if (address) {
+        void this.$router.push(`/chat/${address}`)
+        return
+      }
+      if (
+        typeof previous === 'string' &&
+        previous.length > 0 &&
+        previous !== '/' &&
+        previous !== '/forum'
+      ) {
+        this.$router.back()
+        return
+      }
+      void this.$router.push('/chat')
     },
   },
   mounted() {

@@ -8,6 +8,11 @@ import en from '../../i18n/en-us'
 const t = (key: string) =>
   key.split('.').reduce((v: any, p) => v?.[p], en) ?? key
 
+jest.mock('vue-router', () => ({
+  useRouter: () => ({ push: jest.fn() }),
+  useRoute: () => ({ path: '/wallet', query: {} }),
+}))
+
 jest.mock('../../composables/useBalance', () => ({
   useBalance: () => ({
     loaded: ref(true),

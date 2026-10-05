@@ -339,7 +339,7 @@ export class PayloadConstructor {
     // Encrypt entries
     const cipher = forge.cipher.createCipher('AES-CBC', key)
     cipher.start({ iv })
-    const rawBuffer = forge.util.createBuffer(plainText)
+    const rawBuffer = forge.util.createBuffer(Buffer.from(plainText))
     cipher.update(rawBuffer)
     cipher.finish()
     const cipherText = Uint8Array.from(
@@ -357,7 +357,7 @@ export class PayloadConstructor {
     // Encrypt entries
     const cipher = forge.cipher.createDecipher('AES-CBC', key)
     cipher.start({ iv })
-    const rawBuffer = forge.util.createBuffer(cipherText)
+    const rawBuffer = forge.util.createBuffer(Buffer.from(cipherText))
     cipher.update(rawBuffer)
     cipher.finish()
     const plainText = Uint8Array.from(Buffer.from(cipher.output.toHex(), 'hex')) // TODO: Faster

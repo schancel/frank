@@ -67,7 +67,7 @@ const chain = activeChain as unknown as {
   fetchProfile: jest.Mock
 }
 const mockOpenChat = openChat as jest.Mock
-const mockRouter = { go: jest.fn(), push: jest.fn() }
+const mockRouter = { go: jest.fn(), push: jest.fn(), back: jest.fn() }
 
 function translate(key: string, params: Record<string, unknown> = {}): string {
   const value = key
@@ -143,11 +143,11 @@ async function settle(): Promise<void> {
   await nextTick()
 }
 
-function mountPage(): VueWrapper {
+function mountPage(route: { query?: Record<string, string> } = {}): VueWrapper {
   return mount(AddContact, {
     global: {
       components: quasarStubs,
-      mocks: { $t: translate, $router: mockRouter },
+      mocks: { $t: translate, $router: mockRouter, $route: route },
     },
   })
 }
@@ -166,6 +166,8 @@ async function typeAndFire(wrapper: VueWrapper, value: string): Promise<void> {
 
 const addButton = (w: VueWrapper) =>
   w.findAll('button').find(b => b.text() === 'Add')!
+const cancelButton = (w: VueWrapper) =>
+  w.findAll('button').find(b => b.text() === 'Cancel')!
 const isBusy = (w: VueWrapper) => w.find('input').attributes('aria-busy')
 const status = (w: VueWrapper) => w.find('[role="status"]').text()
 const skeletons = (w: VueWrapper) => w.findAll('[aria-hidden="true"]')
@@ -180,6 +182,7 @@ describe('AddContact latest lookup', () => {
     mockOpenChat.mockReset()
     mockRouter.go.mockReset()
     mockRouter.push.mockReset()
+    mockRouter.back.mockReset()
     chain.parseAddress.mockReset()
     chain.formatAddress.mockReset()
     chain.fetchProfile.mockReset()
@@ -688,5 +691,54 @@ describe('AddContact latest lookup', () => {
     expect(enUS.newContactDialog.found).toContain('{name}')
     expect(frFR.newContactDialog.loading).toBeTruthy()
     expect(frFR.newContactDialog.found).toContain('{name}')
+  })
+
+  describe('cancel navigation', () => {
+    it('returns to originating chat if from query parameter is provided', async () => {
+      wrapper.unmount()
+      wrapper = mountPage({ query: { from: '/chat/0x123' } })
+      await cancelButton(wrapper).trigger('click')
+      expect(mockRouter.push).toHaveBeenCalledWith('/chat/0x123')
+      expect(mockRouter.push).not.toHaveBeenCalledWith('/')
+      expect(mockRouter.push).not.toHaveBeenCalledWith('/forum')
+    })
+
+    it('uses router.back() when history.state.back points to a chat', async () => {
+      const origState = window.history.state
+      try {
+        Object.defineProperty(window.history, 'state', {
+          value: { back: '/chat/0xabc' },
+          configurable: true,
+        })
+        await cancelButton(wrapper).trigger('click')
+        expect(mockRouter.back).toHaveBeenCalledTimes(1)
+        expect(mockRouter.push).not.toHaveBeenCalledWith('/')
+        expect(mockRouter.push).not.toHaveBeenCalledWith('/forum')
+      } finally {
+        Object.defineProperty(window.history, 'state', {
+          value: origState,
+          configurable: true,
+        })
+      }
+    })
+
+    it('falls back to /chat instead of /forum when no prior chat or history exists', async () => {
+      const origState = window.history.state
+      try {
+        Object.defineProperty(window.history, 'state', {
+          value: null,
+          configurable: true,
+        })
+        await cancelButton(wrapper).trigger('click')
+        expect(mockRouter.push).toHaveBeenCalledWith('/chat')
+        expect(mockRouter.push).not.toHaveBeenCalledWith('/')
+        expect(mockRouter.push).not.toHaveBeenCalledWith('/forum')
+      } finally {
+        Object.defineProperty(window.history, 'state', {
+          value: origState,
+          configurable: true,
+        })
+      }
+    })
   })
 })

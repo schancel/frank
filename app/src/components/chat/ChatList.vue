@@ -13,7 +13,7 @@
             flat
             icon="add"
             :aria-label="$t('a11y.addContact')"
-            @click="() => openPage($router, '/add-contact')"
+            @click="openAddContact"
           />
         </q-item>
         <q-separator />
@@ -64,6 +64,13 @@ export default defineComponent({
     return {
       getSortedChatOrder,
       openPage,
+      openAddContact() {
+        const from = router.currentRoute.value.fullPath
+        const target = from.startsWith('/chat')
+          ? `/add-contact?from=${encodeURIComponent(from)}`
+          : '/add-contact'
+        openPage(router, target)
+      },
       setActiveChat(address: string) {
         openChat(router, address)
         // Direct user feedback (2026-09-29, ticket #123): on a narrow/mobile viewport the

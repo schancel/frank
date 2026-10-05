@@ -9,7 +9,9 @@
           clickable
           v-ripple
           data-test="wallet-row"
-          @click="$router.push('/wallet')"
+          :active="selectedChain === 'monad'"
+          active-class="active-chat-list-item"
+          @click="selectWallet('monad')"
         >
           <q-item-section avatar>
             <q-icon name="account_balance_wallet" />
@@ -48,7 +50,14 @@
         <q-separator class="q-my-sm" />
 
         <!-- eCash Wallet -->
-        <q-item clickable v-ripple data-test="ecash-wallet-row">
+        <q-item
+          clickable
+          v-ripple
+          data-test="ecash-wallet-row"
+          :active="selectedChain === 'ecash'"
+          active-class="active-chat-list-item"
+          @click="selectWallet('ecash')"
+        >
           <q-item-section avatar>
             <q-icon name="toll" />
           </q-item-section>
@@ -62,7 +71,14 @@
         </q-item>
 
         <!-- Solana Wallet -->
-        <q-item clickable v-ripple data-test="solana-wallet-row">
+        <q-item
+          clickable
+          v-ripple
+          data-test="solana-wallet-row"
+          :active="selectedChain === 'solana'"
+          active-class="active-chat-list-item"
+          @click="selectWallet('solana')"
+        >
           <q-item-section avatar>
             <q-icon name="account_balance" />
           </q-item-section>
@@ -102,9 +118,34 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useBalance } from '../../composables/useBalance'
 import { useCodex32Backup } from '../../composables/useCodex32Backup'
 import Codex32BackupDialog from '../wallet/Codex32BackupDialog.vue'
+
+const router = useRouter()
+const route = useRoute()
+
+const selectedChain = computed(() => {
+  const currentPath = route?.path ?? ''
+  if (currentPath && currentPath.startsWith('/wallet')) {
+    const chain = route?.query?.chain
+    if (chain === 'ecash' || chain === 'solana') return chain
+    return 'monad'
+  }
+  return null
+})
+
+function selectWallet(chain: 'monad' | 'ecash' | 'solana') {
+  if (router) {
+    if (chain === 'monad') {
+      router.push('/wallet')
+    } else {
+      router.push({ path: '/wallet', query: { chain } })
+    }
+  }
+}
 
 const { loaded, hasError, formattedBalance } = useBalance()
 const {
@@ -116,3 +157,10 @@ const {
   closeBackupDialog,
 } = useCodex32Backup()
 </script>
+
+<style lang="scss" scoped>
+.active-chat-list-item {
+  background: var(--q-color-bg-active);
+  color: #f0409b;
+}
+</style>

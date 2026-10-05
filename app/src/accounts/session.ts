@@ -261,17 +261,57 @@ export function createAccountSession(deps: {
       if (state.status !== 'ready' || !wallet) throw new CustodyError('locked')
       return wallet
     },
-    async getActiveWalletRoot(): Promise<Uint8Array> {
+    async getActiveDomainRoot<P extends DomainRoot['purpose']>(
+      purpose: P,
+    ): Promise<Uint8Array> {
       await session.initialize()
       if (!custody || closed || state.status !== 'ready') throw new CustodyError('locked')
       const capability = await custody.openActive()
+      let roots: readonly DomainRoot[] = []
       try {
-        const roots = capability.takeRoots()
-        const evmRoot = roots.find(r => r.purpose === 'evm-wallet')
-        if (!evmRoot) throw new CustodyError('locked')
-        return new Uint8Array(evmRoot.bytes)
+        roots = capability.takeRoots()
+        const found = roots.find(r => r.purpose === purpose)
+        if (!found) throw new CustodyError('locked')
+        return new Uint8Array(found.bytes)
       } finally {
+        roots.forEach(r => r.bytes.fill(0))
         capability.close()
+      }
+    },
+    async getActiveWalletRoot(): Promise<Uint8Array> {
+      return this.getActiveDomainRoot('evm-wallet')
+    },
+    async getChainAddress(chain: 'monad' | 'ecash' | 'solana'): Promise<string> {
+      if (chain === 'monad') {
+        const wallet = await session.getWallet()
+        return wallet.identity.displayAddress
+      }
+      const purpose = chain === 'ecash' ? 'ecash-bch-wallet' : 'solana-wallet'
+      const root = await this.getActiveDomainRoot(purpose)
+      try {
+        if (chain === 'ecash') {
+          const { HDNodeWallet } = await import('ethers')
+          const { encodeCashAddress } = await import('ecashaddrjs')
+          const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
+          const { sha256 } = await import('@noble/hashes/sha256.js')
+          const hdNode = HDNodeWallet.fromSeed(root).derivePath(
+            "m/44'/1899'/0'/0/0",
+          )
+          const pubKeyHex = hdNode.publicKey.startsWith('0x')
+            ? hdNode.publicKey.slice(2)
+            : hdNode.publicKey
+          const pubKeyBytes = Uint8Array.from(
+            pubKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) ?? [],
+          )
+          const hash160 = ripemd160(sha256(pubKeyBytes))
+          return encodeCashAddress('ecash', 'p2pkh', hash160)
+        } else {
+          const { Keypair } = await import('@solana/web3.js')
+          const kp = await Keypair.fromSeed(root)
+          return kp.publicKey.toBase58()
+        }
+      } finally {
+        root.fill(0)
       }
     },
     async backupCodex32(threshold: 2 | 3 = 2, count: 3 | 5 = 3): Promise<string[]> {

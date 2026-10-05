@@ -366,3 +366,26 @@ test('getActiveWalletRoot and backupCodex32 split active wallet root into 2-of-3
     expect(share.length).toBe(127)
   }
 })
+
+test('getActiveDomainRoot and getChainAddress derive valid addresses for ecash and solana', async () => {
+  const f = fixture()
+  f.capability.takeRoots = jest.fn(() =>
+    DOMAIN_PURPOSES.map((purpose, i) => ({
+      registry: DERIVATION_REGISTRY_ID,
+      purpose,
+      bytes: new Uint8Array(32).fill(i + 1),
+    })),
+  )
+  await f.session.initialize()
+
+  const ecashRoot = await f.session.getActiveDomainRoot('ecash-bch-wallet')
+  expect(ecashRoot).toBeInstanceOf(Uint8Array)
+  expect(ecashRoot.length).toBe(32)
+
+  const ecashAddr = await f.session.getChainAddress('ecash')
+  expect(ecashAddr.startsWith('ecash:')).toBe(true)
+
+  const solanaAddr = await f.session.getChainAddress('solana')
+  expect(typeof solanaAddr).toBe('string')
+  expect(solanaAddr.length).toBeGreaterThan(30)
+})

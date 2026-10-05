@@ -259,6 +259,10 @@ export default {
     solana: 'Solana',
     zeroXec: '0 XEC',
     zeroSol: '0 SOL',
+    sendXec: 'Envoyer des XEC',
+    receiveXec: 'Recevoir des XEC',
+    sendSol: 'Envoyer des SOL',
+    receiveSol: 'Recevoir des SOL',
   },
   chatList: {
     noContactMessage: 'Ajoutez des contacts depuis le tiroir ci-dessus...',
@@ -267,6 +271,8 @@ export default {
     balance: 'Solde',
     balanceStale: '(dernière valeur connue)',
     directMessages: 'Messages privés',
+    selectChatOrAddContact:
+      'Sélectionnez une conversation ou ajoutez un contact pour commencer à échanger.',
   },
   selfChat: {
     you: 'Vous',

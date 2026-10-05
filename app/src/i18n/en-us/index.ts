@@ -253,6 +253,10 @@ export default {
     solana: 'Solana',
     zeroXec: '0 XEC',
     zeroSol: '0 SOL',
+    sendXec: 'Send XEC',
+    receiveXec: 'Receive XEC',
+    sendSol: 'Send SOL',
+    receiveSol: 'Receive SOL',
   },
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...',
@@ -261,6 +265,8 @@ export default {
     balance: 'Balance',
     balanceStale: '(last known)',
     directMessages: 'Direct Messages',
+    selectChatOrAddContact:
+      'Select a conversation or add a contact to start messaging.',
   },
   selfChat: {
     you: 'You',

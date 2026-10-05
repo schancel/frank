@@ -7,6 +7,13 @@ import en from '../../i18n/en-us'
 const mockLoaded = ref(true)
 const mockError = ref(false)
 const mockFormattedBalance = ref('0 MON')
+const mockRouterPush = jest.fn()
+const mockRoute = ref({ path: '/wallet', query: { chain: 'monad' } })
+
+jest.mock('vue-router', () => ({
+  useRouter: () => ({ push: mockRouterPush }),
+  useRoute: () => mockRoute.value,
+}))
 
 jest.mock('../../composables/useBalance', () => ({
   useBalance: () => ({
@@ -23,7 +30,7 @@ const t = (key: string) =>
 function render() {
   return mount(Panel, {
     global: {
-      mocks: { $t: t, $router: { push: jest.fn() } },
+      mocks: { $t: t, $router: { push: mockRouterPush } },
       stubs: {
         QScrollArea: { template: '<div><slot /></div>' },
         QList: { template: '<div><slot /></div>' },
@@ -77,3 +84,24 @@ test('displays formatted live balance and handles loading and stale states', asy
   await flushPromises()
   expect(view.get('[data-test="wallet-balance"]').text()).toContain('Loading')
 })
+
+test('clicking wallet rows navigates to the respective chain', async () => {
+  mockRouterPush.mockClear()
+  const view = render()
+
+  await view.find('[data-test="wallet-row"]').trigger('click')
+  expect(mockRouterPush).toHaveBeenCalledWith('/wallet')
+
+  await view.find('[data-test="ecash-wallet-row"]').trigger('click')
+  expect(mockRouterPush).toHaveBeenCalledWith({
+    path: '/wallet',
+    query: { chain: 'ecash' },
+  })
+
+  await view.find('[data-test="solana-wallet-row"]').trigger('click')
+  expect(mockRouterPush).toHaveBeenCalledWith({
+    path: '/wallet',
+    query: { chain: 'solana' },
+  })
+})
+

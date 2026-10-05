@@ -102,45 +102,74 @@
                   <div class="text-subtitle1 text-weight-medium q-mb-sm">
                     {{ $t('accountRecovery.frank_account_recovery') }}
                   </div>
-                  <p class="text-body2 text-grey-8">
-                    {{
-                      $t(
-                        'accountRecovery.backup_shares_were_verified_before_activation_keep',
-                      )
-                    }}
-                  </p>
-                  <q-input
-                    :model-value="account.account.descriptor"
-                    readonly
-                    outlined
-                    class="q-my-md"
-                    :label="$t('accountRecovery.public_recovery_descriptor')"
-                    data-test="recovery-descriptor"
-                  />
-                  <div class="row items-center q-gutter-sm q-my-sm">
+                  <div class="q-my-md">
                     <q-btn
+                      unelevated
+                      no-caps
                       color="primary"
-                      outline
-                      :label="$t('accountRecovery.copy_public_descriptor')"
-                      data-test="copy-descriptor"
-                      @click="copyDescriptor"
+                      icon="security"
+                      class="full-width q-py-sm"
+                      :label="$t('accountRecovery.backup_account_codex32')"
+                      data-test="backup-codex32-button"
+                      @click="openBackupDialog"
                     />
-                    <span
-                      role="status"
-                      aria-live="polite"
-                      data-test="copy-status"
-                      class="text-caption"
-                    >
-                      {{ copyStatus }}
-                    </span>
+                    <div class="text-caption text-grey-8 q-mt-xs">
+                      {{ $t('accountRecovery.write_down_each_paper_share') }}
+                    </div>
                   </div>
-                  <p
-                    class="text-caption text-grey-8 q-mt-md"
-                    style="overflow-wrap: anywhere"
+
+                  <q-expansion-item
+                    icon="info"
+                    :label="$t('accountRecovery.public_recovery_descriptor')"
+                    :caption="$t('accountRecovery.advanced_details')"
+                    class="q-mt-md text-grey-9"
+                    header-class="text-weight-medium"
+                    data-test="advanced-recovery-details"
                   >
-                    {{ $t('accountRecovery.fingerprint') }}:
-                    {{ account.account.fingerprint }}
-                  </p>
+                    <div class="q-pa-sm">
+                      <p class="text-caption text-grey-8">
+                        {{
+                          $t(
+                            'accountRecovery.backup_shares_were_verified_before_activation_keep',
+                          )
+                        }}
+                      </p>
+                      <q-input
+                        :model-value="account.account.descriptor"
+                        readonly
+                        outlined
+                        class="q-my-md"
+                        :label="
+                          $t('accountRecovery.public_recovery_descriptor')
+                        "
+                        data-test="recovery-descriptor"
+                      />
+                      <div class="row items-center q-gutter-sm q-my-sm">
+                        <q-btn
+                          color="primary"
+                          outline
+                          :label="$t('accountRecovery.copy_public_descriptor')"
+                          data-test="copy-descriptor"
+                          @click="copyDescriptor"
+                        />
+                        <span
+                          role="status"
+                          aria-live="polite"
+                          data-test="copy-status"
+                          class="text-caption"
+                        >
+                          {{ copyStatus }}
+                        </span>
+                      </div>
+                      <p
+                        class="text-caption text-grey-8 q-mt-md"
+                        style="overflow-wrap: anywhere"
+                      >
+                        {{ $t('accountRecovery.fingerprint') }}:
+                        {{ account.account.fingerprint }}
+                      </p>
+                    </div>
+                  </q-expansion-item>
                 </div>
                 <div v-else class="q-pa-sm">
                   <p class="text-grey-7">
@@ -166,6 +195,17 @@
           />
         </q-card-actions>
       </q-card>
+      <codex32-backup-dialog
+        v-model="showBackupDialog"
+        :loading="backupLoading"
+        :error="backupError"
+        :shares="backupShares"
+        :threshold="threshold"
+        :count="count"
+        @cycle-scheme="cycleScheme"
+        @change-scheme="setScheme"
+        @close="closeBackupDialog"
+      />
     </q-page>
   </q-page-container>
 </template>
@@ -183,10 +223,12 @@ import { useContactStore } from 'src/stores/contacts'
 import { storeToRefs } from 'pinia'
 import { accountStatus as account } from 'src/accounts/session'
 import PersistentStoragePanel from 'src/components/settings/PersistentStoragePanel.vue'
+import Codex32BackupDialog from 'src/components/wallet/Codex32BackupDialog.vue'
+import { useCodex32Backup } from 'src/composables/useCodex32Backup'
 const msToMinutes = 60000
 
 export default defineComponent({
-  components: { PersistentStoragePanel },
+  components: { PersistentStoragePanel, Codex32BackupDialog },
   emits: ['toggleMyDrawerOpen'],
   setup() {
     const appearanceStore = useAppearanceStore()
@@ -194,6 +236,19 @@ export default defineComponent({
     const { updateInterval: storeUpdateInterval } = storeToRefs(contactStore)
     const { darkMode: storeDarkMode, locale: storeLocale } =
       storeToRefs(appearanceStore)
+
+    const {
+      showBackupDialog,
+      backupLoading,
+      backupError,
+      backupShares,
+      threshold,
+      count,
+      openBackupDialog,
+      closeBackupDialog,
+      cycleScheme,
+      setScheme,
+    } = useCodex32Backup()
 
     const copyStatus = ref('')
     async function copyDescriptor() {
@@ -221,6 +276,16 @@ export default defineComponent({
       account,
       copyStatus,
       copyDescriptor,
+      showBackupDialog,
+      backupLoading,
+      backupError,
+      backupShares,
+      threshold,
+      count,
+      openBackupDialog,
+      closeBackupDialog,
+      cycleScheme,
+      setScheme,
     }
   },
   data() {

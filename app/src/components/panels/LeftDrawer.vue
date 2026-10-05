@@ -87,6 +87,7 @@
           icon="settings"
           class="settings-rail-tab"
           :aria-label="$t('leftDrawer.settings')"
+          @click="openSettingsTab"
         >
           <q-tooltip>{{ $t('leftDrawer.settings') }}</q-tooltip>
         </q-tab>
@@ -98,7 +99,7 @@
       <settings-panel
         v-if="$status.setup"
         v-show="tab == 'settings'"
-        v-bind="panelAttrs('settings')"
+        v-bind="{ ...$attrs, ...panelAttrs('settings') }"
       />
       <div v-if="!$status.setup" class="drawer-header-item">
         <chat-list-link title="Login/Sign Up" route="/setup" icon="login" />
@@ -255,6 +256,10 @@ export default defineComponent({
       maybeRefreshTopics()
       return router.push('/forum')
     }
+    function openSettingsTab() {
+      markRailNavigation()
+      return router.push('/settings')
+    }
     function openActiveOrRecentChat() {
       const address =
         chats.activeChatAddr ?? chats.getSortedChatOrder[0]?.address
@@ -335,7 +340,9 @@ export default defineComponent({
     // Composition API's own, more direct seam onto routing state (vs. the Options API
     // string-path watcher an earlier attempt used, which didn't reliably fire in at least one
     // real session).
-    const tab = ref<'chats' | 'contacts' | 'wallet' | 'settings' | 'forum'>('chats')
+    const tab = ref<'chats' | 'contacts' | 'wallet' | 'settings' | 'forum'>(
+      'chats',
+    )
     watch(
       () => tab.value,
       newTab => {
@@ -364,7 +371,10 @@ export default defineComponent({
           tab.value = 'wallet'
         } else if (path.startsWith('/settings')) {
           tab.value = 'settings'
-        } else if (path.startsWith('/add-contact') || path.startsWith('/contacts')) {
+        } else if (
+          path.startsWith('/add-contact') ||
+          path.startsWith('/contacts')
+        ) {
           tab.value = 'contacts'
         } else if (path.startsWith('/chat')) {
           tab.value = 'chats'
@@ -377,6 +387,7 @@ export default defineComponent({
       tab,
       openActiveOrRecentChat,
       openForumTab,
+      openSettingsTab,
       discoveredTopicNames,
       selectedForumTopic,
       browseForumTopic,
@@ -428,9 +439,7 @@ export default defineComponent({
       const n = this.totalUnread
       if (!n) return this.$t('leftDrawer.chats')
       return this.$t(
-        n === 1
-          ? 'leftDrawer.chatsUnreadOne'
-          : 'leftDrawer.chatsUnreadOther',
+        n === 1 ? 'leftDrawer.chatsUnreadOne' : 'leftDrawer.chatsUnreadOther',
         { count: n },
       )
     },

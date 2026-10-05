@@ -8,6 +8,7 @@ use cashweb_registry::{
     http::{
         bitcoin_proxy::BitcoinProxyRuntime, curated_defaults::build_curated_defaults,
         evm_rpc::EvmRpcRuntime, pop_protection::PopGate, server::RegistryServer,
+        solana_proxy::SolanaProxyRuntime,
     },
     lotus_adapter::LotusAdapter,
     monad_http::HttpTransport,
@@ -142,6 +143,10 @@ fn read_and_validate_conf_with_env(
         .validate()
         .wrap_err("Invalid registry.bitcoin_proxy configuration")?;
     conf.registry
+        .solana_proxy
+        .validate()
+        .wrap_err("Invalid registry.solana_proxy configuration")?;
+    conf.registry
         .validate_rpc_resource_limits()
         .wrap_err("Invalid registry RPC resource limits")?;
     // An enabled mailbox admits only envelopes carrying the relay's network tag; an unset tag would
@@ -240,6 +245,7 @@ async fn main() -> Result<()> {
     let registry = Arc::new(Registry::new(db, chain_adapter, conf.registry.net));
     let evm_rpc_conf = conf.registry.evm_rpc.clone();
     let bitcoin_proxy_conf = conf.registry.bitcoin_proxy.clone();
+    let solana_proxy_conf = conf.registry.solana_proxy.clone();
     let (monad_mailbox, outbox_worker): (MonadMailboxRuntime, Option<MonadOutboxWorker>) =
         match mailbox_mode {
             MonadMailboxMode::Disabled => {
@@ -353,6 +359,13 @@ async fn main() -> Result<()> {
     )
     .await
     .wrap_err("Starting Bitcoin-family RPC/indexer proxy")?;
+    let solana_proxy = SolanaProxyRuntime::from_conf_with_env(
+        &solana_proxy_conf,
+        cashweb_registry::network_tag::frank_network_tag().to_vec(),
+        |name| std::env::var(name).ok(),
+    )
+    .await
+    .wrap_err("Starting Solana-family JSON-RPC proxy")?;
 
     let server = RegistryServer {
         registry: Arc::clone(&registry),
@@ -362,6 +375,7 @@ async fn main() -> Result<()> {
         monad_mailbox,
         evm_rpc,
         bitcoin_proxy,
+        solana_proxy,
     };
 
     let directory = if let Some(config) = conf.registry.directory.clone() {

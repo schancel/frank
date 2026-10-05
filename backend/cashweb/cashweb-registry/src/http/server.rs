@@ -14,6 +14,7 @@ use crate::{
         handle_issue_rpc_challenge, handle_proxy_rpc, handle_proxy_rpc_capability, handle_proxy_ws,
         EvmRpcRuntime, RPC_CORS_HEADERS,
     },
+    http::solana_proxy::SolanaProxyRuntime,
     http::monad_message::{
         handle_ack_private_monad_recovery, handle_get_private_monad_messages,
         handle_get_private_monad_recovery, handle_issue_mailbox_challenge,
@@ -85,6 +86,11 @@ async fn handle_get_chains(Extension(server): Extension<RegistryServer>) -> Json
             if chronik {
                 capabilities.push(ProtocolProxyCapability::Chronik);
             }
+        }
+    }
+    if let Some(runtime) = &server.solana_proxy {
+        for id in runtime.chain_ids() {
+            configured.insert(id, vec![ProtocolProxyCapability::JsonRpc]);
         }
     }
     let mut chains = configured
@@ -166,6 +172,8 @@ pub struct RegistryServer {
     pub evm_rpc: Option<Arc<EvmRpcRuntime>>,
     /// Optional Bitcoin-family JSON-RPC and Chronik runtime.
     pub bitcoin_proxy: Option<Arc<BitcoinProxyRuntime>>,
+    /// Optional Solana JSON-RPC runtime.
+    pub solana_proxy: Option<Arc<SolanaProxyRuntime>>,
 }
 
 /// Relevant parts of an HTTP request to put new address metadata.
@@ -368,7 +376,9 @@ impl RegistryServer {
                     .attach_directory(Arc::clone(directory))
                     .is_ok()
             });
-        let rpc_enabled = self.evm_rpc.is_some() || self.bitcoin_proxy.is_some();
+        let rpc_enabled = self.evm_rpc.is_some()
+            || self.bitcoin_proxy.is_some()
+            || self.solana_proxy.is_some();
         let bitcoin_proxy_enabled = self.bitcoin_proxy.is_some();
         let router = Router::new()
             .route("/chains", routing::get(handle_get_chains))

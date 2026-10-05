@@ -64,6 +64,15 @@ chronik_upstream_env = "XEC_TESTNET_CHRONIK_URL"
 checkpoint_height = 1421481
 checkpoint_hash = "00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d40b"
 
+[registry.solana_proxy]
+enabled = true
+
+[[registry.solana_proxy.chains]]
+id = "solana-devnet"
+upstream_env = "SOLANA_DEVNET_HTTP_RPC_URL"
+expected_genesis_hash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
+
+
 
 # Operator-curated default contacts (ticket #49), advertised to fresh clients via
 # `GET /metadata/monad/curated-defaults`. Optional -- omit entirely for "no curated defaults"

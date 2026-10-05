@@ -13,3 +13,4 @@ pub mod monad_profile;
 pub mod monad_topics;
 pub mod pop_protection;
 pub mod server;
+pub mod solana_proxy;

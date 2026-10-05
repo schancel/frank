@@ -182,6 +182,39 @@
         { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
         { "kind": "operator-block-checkpoint", "capability": "chronik" }
       ]
+    },
+    {
+      "id": "solana-mainnet",
+      "family": "solana",
+      "network": "mainnet",
+      "caip2": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "genesis-hash", "capability": "json-rpc", "expected": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d" }
+      ]
+    },
+    {
+      "id": "solana-devnet",
+      "family": "solana",
+      "network": "devnet",
+      "caip2": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "genesis-hash", "capability": "json-rpc", "expected": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG" }
+      ]
+    },
+    {
+      "id": "solana-testnet",
+      "family": "solana",
+      "network": "testnet",
+      "caip2": "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z",
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "genesis-hash", "capability": "json-rpc", "expected": "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY" }
+      ]
     }
   ]
 }

@@ -165,7 +165,7 @@ diff -u <(printf '%s\n' -) "$args_file"
 # The launcher must run `--check-config` itself, before starting the daemon.
 [[ "$(cat "$fixture_root/check.log")" == "check-config" ]] || exit 1
 [[ "$(grep -c '^\[registry\.monad_mailbox\]$' "$config_file")" -eq 1 ]] || exit 1
-[[ "$(grep -c '^enabled = true$' "$config_file")" -eq 2 ]] || exit 1
+[[ "$(grep -c '^enabled = true$' "$config_file")" -eq 4 ]] || exit 1
 # The endpoint is secret-bearing: it reaches the daemon only through its environment, never the
 # generated config, and the network tag defaults to Monad testnet's MONT.
 [[ "$(grep -c '^rpc_url' "$config_file")" -eq 0 ]] || exit 1

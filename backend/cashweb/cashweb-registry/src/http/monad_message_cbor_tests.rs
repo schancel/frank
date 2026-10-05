@@ -482,6 +482,7 @@ fn server(fixture: &NativeDirectoryFixture, rpc: &str) -> super::super::server::
         ),
         evm_rpc: None,
         bitcoin_proxy: None,
+        solana_proxy: None,
     }
 }
 pub(crate) async fn public_p_signature(

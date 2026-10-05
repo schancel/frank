@@ -225,6 +225,15 @@ chronik_upstream_env = "XEC_TESTNET_CHRONIK_URL"
 checkpoint_height = 1421481
 checkpoint_hash = "00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d40b"
 ` : ''}
+${getSolanaDevnetUrl() ? `
+[registry.solana_proxy]
+enabled = true
+
+[[registry.solana_proxy.chains]]
+id = "solana-devnet"
+upstream_env = "SOLANA_DEVNET_HTTP_RPC_URL"
+expected_genesis_hash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
+` : ''}
 ${defaults.map(([kind, bot]) => `\n[[registry.curated_defaults]]\naddress = "${bot.address}"\nname = "${BOT_NAMES[kind]}"\n`).join('')}`
 }
 const loadDotEnv = () => {
@@ -254,11 +263,17 @@ const getChronikUrl = () =>
   DOTENV.XEC_TESTNET_CHRONIK_URL ||
   ''
 
+const getSolanaDevnetUrl = () =>
+  process.env.SOLANA_DEVNET_HTTP_RPC_URL ||
+  DOTENV.SOLANA_DEVNET_HTTP_RPC_URL ||
+  ''
+
 const relayEnv = () => ({
   MONAD_TESTNET_HTTP_RPC_URL: getChainRpcUrl(),
   FRANK_NETWORK_TAG: process.env.FRANK_NETWORK_TAG || DOTENV.FRANK_NETWORK_TAG || NETWORK.networkTag,
   MONAD_STAMP_BURN_ADDRESS: process.env.MONAD_STAMP_BURN_ADDRESS || DOTENV.MONAD_STAMP_BURN_ADDRESS || BURN_ADDRESS,
   ...(getChronikUrl() ? { XEC_TESTNET_CHRONIK_URL: getChronikUrl() } : {}),
+  ...(getSolanaDevnetUrl() ? { SOLANA_DEVNET_HTTP_RPC_URL: getSolanaDevnetUrl() } : {}),
 })
 async function startRelay(name) {
   const bin = cashwebdPath()

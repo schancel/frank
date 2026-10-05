@@ -4,7 +4,7 @@
 use crate::directory_admission::{Current, HistoricalEvidence};
 use frank_cbor::{
     address_from_compressed_pubkey, default_context, encode_direct_message_crypto_context,
-    payment_commitment, recipient_payload_digest, validate_frame,
+    payment_commitment, recipient_payload_digest, relay_context, validate_frame,
     verify_preview_directory_evidence, AccountRef, DirectMessageCryptoContext, PaymentMember,
     Timestamp, TypedPayload, ValidationResult,
 };
@@ -213,7 +213,7 @@ pub fn verify_canonical_stamp(input: CanonicalStampCheckInput<'_>) -> Result<Can
     if input.context.len() > 4096 {
         return Err(CanonicalStampError::Encoding);
     }
-    let parsed = validate_frame(input.delivery, &default_context())
+    let parsed = validate_frame(input.delivery, &relay_context())
         .map_err(|_| CanonicalStampError::Encoding)?;
     let ValidationResult::Parsed(root) = parsed else {
         return Err(CanonicalStampError::Encoding);

@@ -112,6 +112,17 @@ pub fn default_context() -> ValidationContext {
     }
 }
 
+/// Validation context for relay direct-message admission, supporting schema version 2 (e.g. zero-stamp messages).
+pub fn relay_context() -> ValidationContext {
+    let mut ctx = default_context();
+    for s in &mut ctx.supported_schemas {
+        if s.type_id == crate::limits::TYPE_DIRECT_MESSAGE {
+            s.schema_version = 2;
+        }
+    }
+    ctx
+}
+
 enum Mode {
     Root,
     Open,

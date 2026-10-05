@@ -75,8 +75,8 @@ fn immutable_multipart_rejects_ambiguous_headers_framing_and_trailing_bytes() {
 
 #[test]
 fn raw_member_ranges_are_bounded_minimal_and_complete_before_ownership() {
+    assert_eq!(transaction_ranges(&[0x80], 0).unwrap(), Vec::<std::ops::Range<usize>>::new());
     for bytes in [
-        vec![0x80],
         vec![0x98, 1, 0x41, 1],
         vec![0x81, 0x58, 1, 1],
         vec![0x81, 0x40],
@@ -655,6 +655,130 @@ async fn final_answer(fixture: NativeDirectoryFixture, busy: bool) -> (u16, Stri
         &body["error"]
     };
     (status, detail.as_str().unwrap().to_owned())
+}
+
+#[tokio::test]
+async fn zero_stamp_message_is_admitted_and_delivered_immediately() {
+    let fixture = NativeDirectoryFixture::new().await;
+    let genuine = genuine_fixture();
+    let mut ctx = frank_cbor::default_context();
+    ctx.reader_version = 2;
+    ctx.supported_schemas.push(frank_cbor::SupportedSchema {
+        type_id: 1,
+        schema_version: 2,
+    });
+    let frank_cbor::ValidationResult::Parsed(parsed) =
+        frank_cbor::validate_frame(genuine.delivery(), &ctx).unwrap()
+    else {
+        panic!("delivery must parse");
+    };
+    let frank_cbor::CborValue::Map(mut entries) = parsed.payload else {
+        panic!("payload must be a map");
+    };
+    for (k, v) in &mut entries {
+        if *k == 4 {
+            *v = frank_cbor::CborValue::Array(vec![]);
+        }
+    }
+    let zero_delivery = frank_cbor::encode_frame(
+        frank_cbor::EnvelopeFields {
+            type_id: 1,
+            schema_version: 2,
+            min_reader_version: 1,
+        },
+        frank_cbor::FramePayload::Value(&frank_cbor::CborValue::Map(entries)),
+    )
+    .unwrap();
+    let boundary = "frank-zero-stamp-test-777";
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"delivery\"\r\nContent-Type: application/vnd.frank.cbor\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(&zero_delivery);
+    body.extend_from_slice(
+        format!(
+            "\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"context\"\r\nContent-Type: application/cbor\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(genuine.context());
+    body.extend_from_slice(
+        format!(
+            "\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"transactions\"\r\nContent-Type: application/cbor\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.push(0x80);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let request = ExactRequest::parse(
+        body,
+        format!("multipart/form-data; boundary={boundary}").into(),
+    )
+    .unwrap();
+    assert_eq!(request.transaction_count(), 0);
+
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let rpc = axum::Router::new().route(
+        "/",
+        axum::routing::post(move |Json(_): Json<serde_json::Value>| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Json(serde_json::json!({"jsonrpc":"2.0","id":1,"result":null})) }
+        }),
+    );
+    let (rpc_url, rpc_stop, rpc_task) = serve_http(rpc).await;
+    let (url, http_stop, http_task) = serve_http(
+        server(&fixture, &rpc_url).into_router_with_directory(Some(fixture.directory.clone())),
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .put(format!("{url}/message/monad/cbor"))
+        .header("content-type", request.content_type())
+        .body(request.body().to_vec())
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let resp_body: serde_json::Value =
+        serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+
+    http_stop.send(()).unwrap();
+    http_task.await.unwrap();
+    rpc_stop.send(()).unwrap();
+    rpc_task.await.unwrap();
+
+    assert_eq!(status, 200, "resp: {:?}", resp_body);
+    assert_eq!(resp_body["version"], 1);
+    assert_eq!(resp_body["phase"], "delivered");
+
+    // Zero EVM RPC transactions were made!
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    // Verify it is in the recipient inbox
+    let recipient_account = &fixture.accounts[1];
+    let recipient = crate::monad_stamp_stealth::recipient_address_from_public_key(
+        &hex::decode(&recipient_account.subject).unwrap(),
+    )
+    .unwrap();
+    let inbox = fixture
+        .registry
+        .canonical_dm()
+        .inbox(recipient, 0, None, 10)
+        .unwrap();
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(
+        inbox[0].policy.payload_hash,
+        request_principals(&request, "monad-testnet")
+            .unwrap()
+            .payload_hash
+    );
+
+    fixture.stop().await;
 }
 
 #[tokio::test]

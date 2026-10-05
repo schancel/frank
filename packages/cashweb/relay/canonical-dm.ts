@@ -53,6 +53,16 @@ export interface DirectMessageRoles {
     senderPublicKey: Uint8Array
     context: Uint8Array
   }): SuiteResult<Uint8Array>
+  openOwnMessage?(input: {
+    envelope: Uint8Array
+    recipientPublicKey: Uint8Array
+    context: Uint8Array
+  }): SuiteResult<Uint8Array>
+  openOwnDirectMessage?(input: {
+    envelope: Uint8Array
+    recipientPublicKey: Uint8Array
+    context: Uint8Array
+  }): SuiteResult<Uint8Array>
   dispose(): void
 }
 
@@ -354,10 +364,26 @@ export type OpenDirectMessageInput = OpenInput &
 
 export interface OpenedDirectMessage extends PreparedDirectMessage {
   /** Neither variant grants mailbox admission, delivery status, or stamp credit. */
-  readonly mode: 'receive' | 'archive'
+  readonly mode: 'receive' | 'archive' | 'send'
   /** Exact retained item frames, with semantic projections only after complete validation. */
   readonly items: readonly ChildFrame[]
 }
+
+export type OpenOwnDirectMessageInput = OpenInput &
+  (
+    | {
+        mode?: 'send'
+        senderCurrent: Current
+        recipientCurrent: Current
+        senderEvidence?: HistoricalEvidence
+        recipientEvidence?: HistoricalEvidence
+      }
+    | {
+        mode: 'archive'
+        senderEvidence: HistoricalEvidence
+        recipientEvidence: HistoricalEvidence
+      }
+  )
 
 /** Opens an exact attempt; never re-seals ciphertext or upgrades historical evidence to Current. */
 export function openDirectMessage(
@@ -481,6 +507,139 @@ export function openDirectMessage(
       mode: { enumerable: true, value: input.mode },
       // Parse a copy of the already validated revision only to return fresh owned projections.
       // Acceptance above uses the one-shot aggregate continuation, never this independent parse.
+      items: {
+        enumerable: true,
+        get: () => {
+          const revision = parseFrame(bytes.revision)
+          if (revision.kind !== 'parsed' || revision.typed?.type !== 8)
+            throw new DirectMessageError('context')
+          return revision.typed.items
+        },
+      },
+    })
+    return Object.freeze(result)
+  } catch (error) {
+    session?.abort()
+    input.roles.dispose()
+    throw error
+  } finally {
+    plaintext?.fill(0)
+  }
+}
+
+/** Opens an exact attempt sent by this account; never re-seals ciphertext. */
+export function openOwnDirectMessage(
+  input: OpenOwnDirectMessageInput,
+): OpenedDirectMessage {
+  input = { ...input }
+  let session: ReturnType<typeof beginDirectMessageValidation> | undefined
+  let plaintext: Uint8Array | undefined
+  try {
+    const payload = copy(input.payload)
+    const suppliedContext = copy(input.context)
+    const root = parseFrame(payload)
+    if (root.kind !== 'parsed' || root.typeId !== 5)
+      throw new DirectMessageError('context')
+    session = beginDirectMessageValidation(payload, defaultContext())
+    if (session.payload.typeId !== 5) throw new DirectMessageError('context')
+    const encrypted = session.payload.typed
+    if (encrypted?.type !== 5 || encrypted.schemaVersion !== 2)
+      throw new DirectMessageError('context')
+
+    let sender: PreviewDirectoryEvidence
+    let recipient: PreviewDirectoryEvidence
+    const mode = input.mode ?? 'send'
+    if (input.mode === 'archive') {
+      sender = evidence(input.network, input.senderEvidence)
+      recipient = evidence(input.network, input.recipientEvidence)
+    } else {
+      const senderHead = current(input.network, input.senderCurrent)
+      sender =
+        input.senderEvidence === undefined
+          ? senderHead
+          : evidence(input.network, input.senderEvidence)
+      recipient =
+        input.recipientEvidence !== undefined
+          ? evidence(input.network, input.recipientEvidence)
+          : current(input.network, input.recipientCurrent)
+
+      if (
+        !accountEqual(
+          sender.statement.subject,
+          senderHead.statement.subject,
+        ) ||
+        !accountEqual(
+          sender.statement.preview.messageDhKey,
+          senderHead.statement.preview.messageDhKey,
+        )
+      )
+        throw new DirectMessageError('current')
+      unexpired(sender, input.senderCurrent.status.checkedTime)
+    }
+
+    if (
+      encrypted.network !== input.network ||
+      !accountEqual(encrypted.sender, sender.statement.subject) ||
+      !accountEqual(encrypted.recipient, recipient.statement.subject)
+    )
+      throw new DirectMessageError('context')
+
+    localRoles(input.roles, sender, false)
+    const context = cryptoContext(input.network, sender, recipient, encrypted)
+    if (!equal(context, suppliedContext))
+      throw new DirectMessageError('context')
+
+    const openOwn =
+      input.roles.openOwnMessage ?? input.roles.openOwnDirectMessage
+    if (!openOwn) throw new DirectMessageError('roles')
+    const opened = openOwn.call(input.roles, {
+      envelope: copy(encrypted.cryptoBoxEnvelope),
+      recipientPublicKey: copy(recipient.statement.preview.messageDhKey.keyBytes),
+      context: copy(context),
+    })
+    if (!opened.ok) throw new DirectMessageError('crypto')
+    plaintext = copy(opened.value)
+    opened.value.fill(0)
+
+    const continuation = session
+    session = undefined
+    const completed = continuation.completeAuthenticatedContent(plaintext)
+    const content = completed.content.typed
+    if (content?.type !== 6 || content.revisionFrame.typed?.type !== 8)
+      throw new DirectMessageError('context')
+    if (content.network !== encrypted.network)
+      throw new DirectMessageError('network')
+    if (
+      !equal(
+        content.contentDigest,
+        messageContentDigest(content.revisionFrame.frame),
+      )
+    )
+      throw new DirectMessageError('digest')
+    verifyCanonicalStampProof({
+      network: input.network,
+      stampKey: recipient.statement.stampKey,
+      ephemeralPoint: encrypted.ephemeralPoint,
+      sharedPoint: encrypted.sharedPoint,
+      dleqProof: encrypted.dleqProof,
+    })
+    const bytes = ownedBytes({
+      payload,
+      context,
+      t3: recipientPayloadDigest(input.network, payload),
+      messageId: content.messageId,
+      contentDigest: content.contentDigest,
+      senderT1: sender.statementHash,
+      recipientT1: recipient.statementHash,
+      content: completed.content.frame,
+      revision: content.revisionFrame.frame,
+    })
+    const result = Object.defineProperties(
+      {},
+      Object.getOwnPropertyDescriptors(bytes),
+    ) as OpenedDirectMessage
+    Object.defineProperties(result, {
+      mode: { enumerable: true, value: mode },
       items: {
         enumerable: true,
         get: () => {

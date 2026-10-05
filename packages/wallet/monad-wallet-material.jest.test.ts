@@ -14,6 +14,7 @@ import {
 } from '@frank/codec'
 import {
   createMonadWalletMaterial,
+  openOwnDirectMessage,
   type MonadRootBundle,
 } from './monad-wallet-material'
 
@@ -171,6 +172,56 @@ test('typed roots own separate roles, scoped seal/open, and caller mutations can
       context,
     })
     expect(opened).toEqual({ ok: true, value: plain })
+    // Sender can open its own message via openOwnMessage and openOwnDirectMessage.
+    const ownOpened = sender.openOwnMessage({
+      envelope: sealed.value,
+      recipientPublicKey: recipient.message.compressedPoint,
+      context,
+    })
+    expect(ownOpened).toEqual({ ok: true, value: plain })
+
+    const ownDirectOpened = sender.openOwnDirectMessage({
+      envelope: sealed.value,
+      recipientPublicKey: recipient.message.compressedPoint,
+      context,
+    })
+    expect(ownDirectOpened).toEqual({ ok: true, value: plain })
+
+    // Another wallet instance initialized with the same roots can open the same message as sender.
+    const restoredWallet = createMonadWalletMaterial(roots())
+    try {
+      const restoredSender = restoredWallet.canonicalRoles!.create(
+        'monad',
+        a.current,
+      )
+      const restoredOpened = restoredSender.openOwnMessage({
+        envelope: sealed.value,
+        recipientPublicKey: recipient.message.compressedPoint,
+        context,
+      })
+      expect(restoredOpened).toEqual({ ok: true, value: plain })
+    } finally {
+      restoredWallet.dispose()
+    }
+
+    // Opening with wrong recipient fails.
+    expect(
+      sender.openOwnMessage({
+        envelope: sealed.value,
+        recipientPublicKey: sender.message.compressedPoint,
+        context,
+      }).ok,
+    ).toBe(false)
+
+    // Opening with wrong context fails.
+    expect(
+      sender.openOwnMessage({
+        envelope: sealed.value,
+        recipientPublicKey: recipient.message.compressedPoint,
+        context: new Uint8Array([0]),
+      }).ok,
+    ).toBe(false)
+    expect(typeof openOwnDirectMessage).toBe('function')
     expect(
       recipient.openMessage({
         envelope: sealed.value,

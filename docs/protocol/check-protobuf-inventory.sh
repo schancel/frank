@@ -60,8 +60,6 @@ classify() {
       owner="CashWeb relay client" family="legacy stealth transport" disposition="transport-only" group="relay-stealth" ;;
     packages/cashweb/signed_payload/proto/payload.proto)
       owner="CashWeb signed-payload client" family="Lotus signed payload and burn evidence" disposition="retained constrained legacy reader" group="lotus-signed-payload-client" ;;
-    packages/wallet/proto/topic_message.proto)
-      owner="wallet Monad topics" family="Monad topic post vote and discovery" disposition="retained constrained legacy reader" group="monad-topic-mirror" ;;
     *)
       echo "unclassified tracked protobuf source: $1" >&2
       exit 1 ;;
@@ -79,7 +77,6 @@ binding_source() {
     packages/cashweb/relay/relay_pb.*) binding_proto="packages/cashweb/relay/proto/relay.proto" binding_generator="packages/cashweb/relay/generate_protobufs.sh" ;;
     packages/cashweb/relay/stealth_pb.*) binding_proto="packages/cashweb/relay/proto/stealth.proto" binding_generator="packages/cashweb/relay/generate_protobufs.sh" ;;
     packages/cashweb/signed_payload/payload_pb.*) binding_proto="packages/cashweb/signed_payload/proto/payload.proto" binding_generator="packages/cashweb/signed_payload/generate_protobufs.sh" ;;
-    packages/wallet/topic_message_pb.*) binding_proto="packages/wallet/proto/topic_message.proto" binding_generator="packages/wallet/generate_protobufs.sh" ;;
     *)
       echo "unclassified tracked generated protobuf binding: $1" >&2
       exit 1 ;;

@@ -4,6 +4,7 @@ import {
   fetchMonadProfile,
   MonadIdentity,
   registerMonadIdentity,
+  registerMonadIdentityCbor,
 } from '@frank/wallet/monad-identity'
 import { validateProfileDisplayName } from '@frank/wallet/profile-display-name'
 
@@ -31,9 +32,11 @@ jest.mock('@frank/wallet/monad-identity', () => ({
   ...jest.requireActual('@frank/wallet/monad-identity'),
   fetchMonadProfile: jest.fn(),
   registerMonadIdentity: jest.fn(),
+  registerMonadIdentityCbor: jest.fn(),
 }))
 const mockFetch = fetchMonadProfile as jest.Mock
 const mockRegister = registerMonadIdentity as jest.Mock
+const mockRegisterCbor = registerMonadIdentityCbor as jest.Mock
 
 describe('bot profiles (#317)', () => {
   it('gives every bot a valid, distinct display name, a bio and the bot marker', () => {
@@ -101,14 +104,15 @@ describe('registerAndLog idempotency (#317)', () => {
   beforeEach(() => {
     mockFetch.mockReset()
     mockRegister.mockReset()
+    mockRegisterCbor.mockReset()
     jest.spyOn(console, 'log').mockImplementation(() => undefined)
   })
 
   it('registers name, bio, avatar and the bot marker when nothing is registered', async () => {
     mockFetch.mockResolvedValue(undefined)
     await call()
-    expect(mockRegister).toHaveBeenCalledTimes(1)
-    expect(mockRegister.mock.calls[0][0].profile).toMatchObject({
+    expect(mockRegisterCbor).toHaveBeenCalledTimes(1)
+    expect(mockRegisterCbor.mock.calls[0][0].profile).toMatchObject({
       name: 'Picture Shop',
       bot: true,
       avatar: expect.stringMatching(/^data:image\/png;base64,/),
@@ -119,7 +123,7 @@ describe('registerAndLog idempotency (#317)', () => {
     mockFetch.mockResolvedValue(remote)
     await call()
     await call()
-    expect(mockRegister).not.toHaveBeenCalled()
+    expect(mockRegisterCbor).not.toHaveBeenCalled()
   })
 
   it('re-registers when any field differs, including a pre-marker bot profile', async () => {
@@ -129,10 +133,10 @@ describe('registerAndLog idempotency (#317)', () => {
       { ...remote, avatar: undefined },
       { ...remote, bot: undefined },
     ]) {
-      mockRegister.mockClear()
+      mockRegisterCbor.mockClear()
       mockFetch.mockResolvedValue(changed)
       await call()
-      expect(mockRegister).toHaveBeenCalledTimes(1)
+      expect(mockRegisterCbor).toHaveBeenCalledTimes(1)
     }
   })
 

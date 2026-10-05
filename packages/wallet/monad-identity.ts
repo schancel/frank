@@ -545,8 +545,12 @@ export async function registerMonadIdentityCbor(params: {
   })
 }
 
-/** `PUT /metadata/:addr` (no POP payment proof) -- mirrors `lotus-identity.ts`'s
- * `registerIdentity` exactly, just Monad-addressed. Uses legacy protobuf encoding. */
+/**
+ * @deprecated Legacy protobuf registration. Default onboarding and wallet identity
+ * registration must use {@link registerMonadIdentityCbor} (schema 3 deterministic CBOR).
+ * `PUT /metadata/:addr` (no POP payment proof) -- mirrors `lotus-identity.ts`'s
+ * `registerIdentity` exactly, just Monad-addressed. Uses legacy protobuf encoding.
+ */
 export async function registerMonadIdentity(params: {
   relayBaseUrl: string
   identity: MonadIdentity

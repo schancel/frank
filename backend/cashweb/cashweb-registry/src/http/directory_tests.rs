@@ -598,7 +598,8 @@ async fn forged_entries_are_refused_and_publish_nothing() {
 }
 
 #[tokio::test]
-async fn conflicting_first_entry_and_a_second_renewal_of_the_same_revision_are_refused_first_wins() {
+async fn conflicting_first_entry_and_a_second_renewal_of_the_same_revision_are_refused_first_wins()
+{
     let root = tempfile::tempdir().unwrap();
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry, config, &clock).await;

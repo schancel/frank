@@ -88,6 +88,7 @@ import {
   MonadIdentity,
   MonadProfileFields,
   registerMonadIdentity,
+  registerMonadIdentityCbor,
 } from '@frank/wallet/monad-identity'
 import type { ProfileInfo } from '@frank/wallet/chain/active-chain'
 import {
@@ -234,7 +235,7 @@ export async function registerAndLog(params: {
     )
     return
   }
-  await registerMonadIdentity({
+  await registerMonadIdentityCbor({
     relayBaseUrl: params.relayBaseUrl,
     identity: params.identity,
     profile: wanted,

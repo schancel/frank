@@ -1,5 +1,7 @@
 //! Module containing [`RegistryServer`] to run the registry HTTP server.
 
+#[allow(deprecated)]
+use crate::http::monad_message::handle_put_monad_message;
 use crate::{
     http::bitcoin_proxy::{
         issue_chronik_challenge, proxy_chronik, proxy_chronik_capability, BitcoinProxyRuntime,
@@ -15,7 +17,6 @@ use crate::{
     http::monad_message::{
         handle_ack_private_monad_recovery, handle_get_private_monad_messages,
         handle_get_private_monad_recovery, handle_issue_mailbox_challenge,
-        handle_put_monad_message,
     },
     http::monad_profile::{
         fetch_profile_raw_or_not_found, handle_get_monad_profile, handle_list_monad_profiles,
@@ -412,13 +413,24 @@ impl RegistryServer {
                 "/metadata/monad/search",
                 routing::get(handle_search_monad_profiles),
             )
-            .route("/messages/:topic", routing::get(handle_get_messages))
-            .route("/messages", routing::get(handle_get_all_messages))
-            .route("/message", routing::put(handle_put_message))
-            .route("/message/:payload_hash", routing::get(handle_get_message));
+            // Protobuf topic endpoints are deprecated and dead; canonical CBOR topic
+            // endpoints (/message/monad/topics) are the only active routes.
+            .route(
+                "/messages/:topic",
+                routing::any(|| async { StatusCode::GONE }),
+            )
+            .route("/messages", routing::any(|| async { StatusCode::GONE }))
+            .route("/message", routing::any(|| async { StatusCode::GONE }))
+            .route(
+                "/message/:payload_hash",
+                routing::any(|| async { StatusCode::GONE }),
+            );
         // Private mailbox rows are never exposed by the legacy unauthenticated GET routes.
         // Authenticated recipient reads are installed separately once their challenge is proven.
+        // Note: The /message/monad protobuf transport is deprecated; canonical CBOR
+        // (/message/monad/cbor) is the active path.
         let router = if mailbox_enabled {
+            #[allow(deprecated)]
             router
                 .route(
                     "/message/monad",
@@ -929,6 +941,10 @@ async fn handle_get_metadata_range(
     }))
 }
 
+#[allow(dead_code)]
+#[deprecated(
+    note = "Protobuf topic endpoints are deprecated and retired; use /message/monad/topics (CBOR)"
+)]
 async fn handle_get_messages(
     Path(topic): Path<String>,
     Query(params): Query<MessagesQuery>,
@@ -951,6 +967,10 @@ async fn handle_get_messages(
     Ok(Protobuf(payload_page))
 }
 
+#[allow(dead_code)]
+#[deprecated(
+    note = "Protobuf topic endpoints are deprecated and retired; use /message/monad/topics (CBOR)"
+)]
 async fn handle_get_all_messages(
     Query(params): Query<MessagesQuery>,
     Extension(server): Extension<RegistryServer>,
@@ -972,6 +992,10 @@ async fn handle_get_all_messages(
     Ok(Protobuf(payload_page))
 }
 
+#[allow(dead_code)]
+#[deprecated(
+    note = "Protobuf topic endpoints are deprecated and retired; use /message/monad/topics (CBOR)"
+)]
 async fn handle_get_message(
     Path(hex_hash): Path<String>,
     Extension(server): Extension<RegistryServer>,
@@ -982,6 +1006,10 @@ async fn handle_get_message(
     Ok(Protobuf(message.to_proto()))
 }
 
+#[allow(dead_code)]
+#[deprecated(
+    note = "Protobuf topic endpoints are deprecated and retired; use /message/monad/topics (CBOR)"
+)]
 async fn handle_put_message(
     Protobuf(message): Protobuf<cashweb_payload::proto::SignedPayload>,
     Extension(server): Extension<RegistryServer>,

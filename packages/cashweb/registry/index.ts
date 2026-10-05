@@ -322,6 +322,10 @@ export class RegistryHandler {
     })
   }
 
+  /**
+   * @deprecated Legacy protobuf topic broadcast endpoint (/message) is deprecated and dead.
+   * Canonical CBOR topic endpoints (/message/monad/topics) are the active routes.
+   */
   async createBroadcast(
     topic: string,
     entries: ForumMessageEntry[],
@@ -401,6 +405,10 @@ export class RegistryHandler {
     return payloadDigest.toString('hex')
   }
 
+  /**
+   * @deprecated Legacy protobuf topic offering endpoint (/messages) is deprecated and dead.
+   * Canonical CBOR topic endpoints (/message/monad/topics) are the active routes.
+   */
   async addOfferings(payloadDigest: string, vote: number) {
     // Topic should not be required, but it is a sanity check on the backend to
     // make sure the vote and the post have the same information.
@@ -500,6 +508,10 @@ export class RegistryHandler {
     return parsedMessage
   }
 
+  /**
+   * @deprecated Legacy protobuf topic read endpoint (/messages) is deprecated and dead.
+   * Canonical CBOR topic endpoints (/message/monad/topics) are the active routes.
+   */
   async getBroadcastMessages(topic: string, from?: number, to?: number) {
     const server = this.chooseServer()
     const url = `${server}/messages`
@@ -530,6 +542,10 @@ export class RegistryHandler {
     return messages
   }
 
+  /**
+   * @deprecated Legacy protobuf topic single-message endpoint (/messages/:payloadDigest) is deprecated and dead.
+   * Canonical CBOR topic endpoints (/message/monad/topics) are the active routes.
+   */
   async getBroadcastMessage(payloadDigest: string) {
     const server = this.chooseServer()
     const url = `${server}/messages/${payloadDigest}`

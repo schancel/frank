@@ -58,10 +58,8 @@ module.exports = {
     '^@frank/crypto-box$': '<rootDir>/../packages/crypto-box/src/index.ts',
     '^@frank/codec$': '<rootDir>/../packages/frank-codec/src/index.ts',
     '^@frank/codec/(.*)$': '<rootDir>/../packages/frank-codec/src/$1',
+    '^@frank/nakamoto/(.*)$': '<rootDir>/../packages/nakamoto/src/$1',
     '^@frank/nakamoto$': '<rootDir>/../packages/nakamoto/src/index.ts',
-    '^@frank/nakamoto/curve$': '<rootDir>/../packages/nakamoto/src/curve.ts',
-    '^@frank/nakamoto/constructors$':
-      '<rootDir>/../packages/nakamoto/src/constructors.ts',
     '^bitcore-lib-xpi$': '<rootDir>/../packages/bitcore-lib-xpi/index.js',
     '^bitcore-lib-xpi/(.*)$': '<rootDir>/../packages/bitcore-lib-xpi/$1',
     '^@noble/curves/(.*)\\.js$': '@noble/curves/$1',

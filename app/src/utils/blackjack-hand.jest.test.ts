@@ -5,6 +5,7 @@ import {
   dealerStep,
   foldHand,
   handView,
+  playerStep,
   type HandItem,
 } from '@frank/wallet/message-item-plugins/blackjack/hand'
 import type { MessageItem } from '@frank/cashweb/types/messages'
@@ -276,14 +277,21 @@ describe('automatic dealer steps', () => {
       const messages = [
         message(
           false,
-          { action: 'challenge', role: 'dealer', maxBetWei: '500', commitment: commitmentOf(SEED) },
+          {
+            action: 'challenge',
+            role: 'dealer',
+            maxBetWei: '500',
+            commitment: commitmentOf(SEED),
+          },
           10n,
           gameId,
         ),
       ]
       const state = () => chatHands(messages, ME, PEER)[0].state
       messages.push(message(true, { ...buildBet(state(), seed) }, 300n, gameId))
-      messages.push(message(false, { ...dealerStep(state(), SEED)?.item }, 10n, gameId))
+      messages.push(
+        message(false, { ...dealerStep(state(), SEED)?.item }, 10n, gameId),
+      )
       return { messages, cards: handView(state(), seed).playerCards }
     }
     let natural: ReturnType<typeof play> | undefined
@@ -398,7 +406,8 @@ describe('a paying message is sent once across tabs', () => {
         GAME,
       ),
     ]
-    const bet = message(true, { action: 'bet' }, 300n, GAME).items[0] as HandItem
+    const bet = message(true, { action: 'bet' }, 300n, GAME)
+      .items[0] as HandItem
     expect(await ask([], asPlayer, bet, 300n)).toBe(true)
     expect(
       await ask([message(true, bet, 300n, GAME)], asPlayer, bet, 300n),
@@ -828,11 +837,22 @@ describe('own hand messages the other side does not have', () => {
           ),
           message(false, { action: 'bet' }, 300n, game),
         ]
+        let iterations = 0
         for (;;) {
+          if (++iterations > 20) break
           const state = chatHands(rows, ME, PEER)[0].state
           const step = dealerStep(state, s)
           if (!step && state.phase === 'player_turn') {
-            rows.push(message(false, { action: 'stand' }, 10n, game))
+            const stand = playerStep(state, 'stand', PLAYER_SEED)
+            if (!stand) break
+            rows.push(
+              message(
+                false,
+                stand as unknown as Record<string, unknown>,
+                10n,
+                game,
+              ),
+            )
             continue
           }
           if (!step) break

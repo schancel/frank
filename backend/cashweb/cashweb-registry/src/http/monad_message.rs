@@ -5234,6 +5234,7 @@ mod tests {
             .unwrap()
             .to_ascii_lowercase();
         for header in [
+            "accept",
             MAILBOX_SIGNATURE_HEADER,
             MAILBOX_TOKEN_HEADER,
             MAILBOX_NONCE_HEADER,

@@ -354,8 +354,7 @@ export function loadSeed(
   if (held) return held
   const wallet = messagingWallet() as any
   const secret =
-    wallet?.identity?.toPrivateKeyHex?.() ??
-    wallet?.toPrivateKeyHex?.()
+    wallet?.identity?.toPrivateKeyHex?.() ?? wallet?.toPrivateKeyHex?.()
   if (secret) {
     const seed = deriveBlackjackSeed(gameId, own, secret)
     memorySeeds.set(key, seed)
@@ -372,8 +371,7 @@ export function newSeed(gameId?: string, own?: string): string {
   if (gameId && own) {
     const wallet = messagingWallet() as any
     const secret =
-      wallet?.identity?.toPrivateKeyHex?.() ??
-      wallet?.toPrivateKeyHex?.()
+      wallet?.identity?.toPrivateKeyHex?.() ?? wallet?.toPrivateKeyHex?.()
     if (secret) {
       return deriveBlackjackSeed(gameId, own, secret)
     }

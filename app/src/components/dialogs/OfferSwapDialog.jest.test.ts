@@ -35,11 +35,13 @@ describe('OfferSwapDialog', () => {
           QCardActions: { template: '<div><slot /></div>' },
           QSelect: {
             props: ['modelValue', 'options'],
-            template: '<select :value="modelValue"><option v-for="o in options" :key="o.value" :value="o.value">{{ o.label }}</option></select>',
+            template:
+              '<select :value="modelValue"><option v-for="o in options" :key="o.value" :value="o.value">{{ o.label }}</option></select>',
           },
           QInput: {
             props: ['modelValue'],
-            template: '<input :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+            template:
+              '<input :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
           },
           QBtn: {
             props: ['disable'],
@@ -81,7 +83,6 @@ describe('OfferSwapDialog', () => {
       requestedAmount: '1.25',
     })
     expect((wrapper.vm as any).canOffer).toBe(true)
-
     ;(wrapper.vm as any).offerSwap()
 
     const emitted = wrapper.emitted('offer')

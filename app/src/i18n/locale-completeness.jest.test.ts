@@ -40,6 +40,7 @@ const SAME_IN_FRENCH = new Set([
   'contactBookDialog.contacts',
   'chatRightDrawer.notifications',
   'transactionDialog.txType',
+  'sendStealthDialog.amountPlaceholder',
 ])
 
 const placeholders = (text: string) =>

@@ -429,18 +429,26 @@ export default defineComponent({
     },
     dealPlayerCards(): number[] {
       const item = this.item
-      return item.action === 'deal' && 'playerCards' in item
-        ? [...(item.playerCards as number[])]
-        : []
+      if (item.action === 'deal' && 'playerCards' in item) {
+        return [...(item.playerCards as number[])]
+      }
+      if (item.action === 'deal') {
+        return this.view.playerCards
+      }
+      return []
     },
     dealPlayerTotal(): number {
       return handValue(this.dealPlayerCards).total
     },
     dealUpCard(): number | undefined {
       const item = this.item
-      return item.action === 'deal' && 'dealerUpCard' in item
-        ? (item.dealerUpCard as number)
-        : undefined
+      if (item.action === 'deal' && 'dealerUpCard' in item) {
+        return item.dealerUpCard as number
+      }
+      if (item.action === 'deal') {
+        return this.view.dealerUpCard
+      }
+      return undefined
     },
     itemCard(): number | undefined {
       const item = this.item
@@ -455,16 +463,25 @@ export default defineComponent({
         ) {
           return item.playerCards[item.playerCards.length - 1] as number
         }
+        if (this.view.playerCards.length >= 3) {
+          return this.view.playerCards[this.view.playerCards.length - 1]
+        }
       }
       return undefined
     },
     cardPlayerCards(): number[] {
       const item = this.item
-      return item.action === 'card' &&
+      if (
+        item.action === 'card' &&
         'playerCards' in item &&
         Array.isArray(item.playerCards)
-        ? [...(item.playerCards as number[])]
-        : []
+      ) {
+        return [...(item.playerCards as number[])]
+      }
+      if (item.action === 'card') {
+        return this.view.playerCards
+      }
+      return []
     },
     cardPlayerTotal(): number {
       return handValue(this.cardPlayerCards).total

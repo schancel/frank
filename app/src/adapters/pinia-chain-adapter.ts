@@ -362,19 +362,21 @@ export function startDirectMessagePolling({
     }
   }
 
-  const unsubscribeStream = activeChain.directMessages.subscribeMailboxStream?.({
-    wallet,
-    onRecord: async record => {
-      if (stopped) return
-      const wrapper = await toReceivedMessageWrapper(record)
-      if (wrapper && !stopped) {
-        await chats.receiveMessages([wrapper])
-      }
+  const unsubscribeStream = activeChain.directMessages.subscribeMailboxStream?.(
+    {
+      wallet,
+      onRecord: async record => {
+        if (stopped) return
+        const wrapper = await toReceivedMessageWrapper(record)
+        if (wrapper && !stopped) {
+          await chats.receiveMessages([wrapper])
+        }
+      },
+      onError: err => {
+        console.warn('direct-message stream error', err)
+      },
     },
-    onError: err => {
-      console.warn('direct-message stream error', err)
-    },
-  })
+  )
 
   void poll()
 

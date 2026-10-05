@@ -214,7 +214,9 @@ function seedFor(want: (state: HandState, cards: number[]) => boolean): string {
       if (want(dealt as HandState, cards)) return seed
       continue
     }
-    const final = stateOf(hand(false, seed, 400n, ['stand'], 'reveal')) as HandState
+    const final = stateOf(
+      hand(false, seed, 400n, ['stand'], 'reveal'),
+    ) as HandState
     if (want(final, cards)) return seed
   }
   throw new Error('no seed')
@@ -222,6 +224,20 @@ function seedFor(want: (state: HandState, cards: number[]) => boolean): string {
 const WIN = seedFor(state => state.outcome === 'player_win')
 const LOSS = seedFor(state => state.outcome === 'dealer_win')
 const NATURAL = seedFor((_state, cards) => handValue(cards).blackjack)
+
+function seedForMoves(moves: ('hit' | 'stand' | 'double')[]): string {
+  for (let i = 1; i < 5000; i++) {
+    const seed = i.toString(16).padStart(64, '0')
+    try {
+      const final = stateOf(hand(true, seed, 400n, moves, 'reveal'))
+      if (final && (final as HandState).phase === 'resolved') return seed
+    } catch {
+      continue
+    }
+  }
+  throw new Error('no seed for moves')
+}
+const HIT_SEED = seedForMoves(['hit', 'stand'])
 
 async function mountLast(
   messages: ReturnType<typeof toMessage>[],
@@ -285,16 +301,25 @@ describe('the player', () => {
   it('sees its first cards right after the deal, before the dealer can', async () => {
     const messages = hand(false, WIN, 400n, [])
     // No message carries a card and the hand's shared state has none yet.
-    expect(stateOf(messages)).toMatchObject({ phase: 'player_turn', playerCards: [] })
+    expect(stateOf(messages)).toMatchObject({
+      phase: 'player_turn',
+      playerCards: [],
+    })
     const mine = handView(stateOf(messages), WIN)
     const wrapper = await mountLast(messages)
     expect(wrapper.text()).toContain(mine.playerCards.map(cardLabel).join(' '))
     expect(wrapper.text()).toContain(cardLabel(mine.dealerUpCard as number))
     // The same messages on the dealer's device show no card until the player moves.
     saveSeed(ME, PEER, GAME, DEALER)
-    const dealer = await mountLast(messages.map(m => ({ ...m, outbound: !m.outbound })))
-    expect(dealer.text()).not.toContain(mine.playerCards.map(cardLabel).join(' '))
-    expect(dealer.find('[data-testid="blackjack-status"]').text()).toContain('player')
+    const dealer = await mountLast(
+      messages.map(m => ({ ...m, outbound: !m.outbound })),
+    )
+    expect(dealer.text()).not.toContain(
+      mine.playerCards.map(cardLabel).join(' '),
+    )
+    expect(dealer.find('[data-testid="blackjack-status"]').text()).toContain(
+      'player',
+    )
   })
 
   it('opens the link of the card it asks for with a hit, and the rest of its chain to stand', async () => {
@@ -533,7 +558,12 @@ describe('the dealer', () => {
     const wrapper = await mountLast([
       toMessage({
         outbound: false,
-        item: { action: 'challenge', seq: 0, role: 'player', maxBetWei: '1000' },
+        item: {
+          action: 'challenge',
+          seq: 0,
+          role: 'player',
+          maxBetWei: '1000',
+        },
       }),
     ])
     expect(wrapper.find('[data-testid="blackjack-line"]').text()).toContain(
@@ -664,8 +694,8 @@ describe('older bubbles', () => {
   })
 
   it('an older hit/card bubble permanently shows the card dealt', async () => {
-    saveSeed(ME, PEER, GAME, WIN)
-    const messages = hand(true, WIN, 400n, ['hit', 'stand'], 'reveal')
+    saveSeed(ME, PEER, GAME, HIT_SEED)
+    const messages = hand(true, HIT_SEED, 400n, ['hit', 'stand'], 'reveal')
     const cardIndex = messages.findIndex(m => m.items[0].action === 'card')
     expect(cardIndex).toBeGreaterThan(-1)
     const wrapper = await mountLast(messages, cardIndex)

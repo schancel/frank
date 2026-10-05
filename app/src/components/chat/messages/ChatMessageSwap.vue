@@ -15,22 +15,33 @@
 
       <div class="q-my-sm">
         <div class="row items-center q-mb-xs">
-          <span class="text-caption text-grey-7 q-mr-xs">{{ $t('chatMessageSwap.offered') }}:</span>
-          <span class="text-weight-bold">{{ offeredAmount }} {{ offeredAsset }}</span>
+          <span class="text-caption text-grey-7 q-mr-xs"
+            >{{ $t('chatMessageSwap.offered') }}:</span
+          >
+          <span class="text-weight-bold"
+            >{{ offeredAmount }} {{ offeredAsset }}</span
+          >
           <q-badge outline color="primary" class="q-ml-xs">
             {{ offeredChain }}
           </q-badge>
         </div>
         <div class="row items-center">
-          <span class="text-caption text-grey-7 q-mr-xs">{{ $t('chatMessageSwap.for') }}:</span>
-          <span class="text-weight-bold">{{ requestedAmount }} {{ requestedAsset }}</span>
+          <span class="text-caption text-grey-7 q-mr-xs"
+            >{{ $t('chatMessageSwap.for') }}:</span
+          >
+          <span class="text-weight-bold"
+            >{{ requestedAmount }} {{ requestedAsset }}</span
+          >
           <q-badge outline color="secondary" class="q-ml-xs">
             {{ requestedChain }}
           </q-badge>
         </div>
       </div>
 
-      <div v-if="status === 'pending'" class="row justify-end q-mt-sm q-gutter-xs">
+      <div
+        v-if="status === 'pending'"
+        class="row justify-end q-mt-sm q-gutter-xs"
+      >
         <q-btn
           v-if="outbound"
           flat

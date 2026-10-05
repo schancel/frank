@@ -171,7 +171,8 @@ export default {
     waitPlayer: "Waiting for the player's move.",
     waitReveal: 'Waiting for the dealer to reveal and pay.',
     dealing: 'Dealing…',
-    verified: 'The cards come from both players’ commitments, checked on this device.',
+    verified:
+      'The cards come from both players’ commitments, checked on this device.',
     badReveal:
       'The dealer sent a reveal that does not match its commitment. The hand is not settled.',
     noSeed:
@@ -390,6 +391,7 @@ export default {
   },
   sendStealthDialog: {
     sendStealthTo: 'Send Stealth to',
+    subtitle: 'Encrypted direct transfer (invisible to relay)',
     chainLabel: 'Chain',
     amountHint: 'Amount to send in message payload',
     amountPlaceholder: '0.0',

@@ -104,7 +104,9 @@ pub(crate) fn check_statement(typed: &TypedPayload) -> Result<(), CodecError> {
         return Err(semantic("directory preview requires exactly one relay"));
     }
     let relay = &relays[0];
-    if !relay.endpoint.starts_with("https:") || !valid_point(&relay.identity) {
+    let is_loopback = relay.endpoint.starts_with("http://127.0.0.1")
+        || relay.endpoint.starts_with("http://localhost");
+    if (!relay.endpoint.starts_with("https:") && !is_loopback) || !valid_point(&relay.identity) {
         return Err(semantic(
             "directory preview requires HTTPS and a valid type-1 relay point",
         ));

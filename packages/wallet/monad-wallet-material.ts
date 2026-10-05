@@ -780,8 +780,11 @@ function copyEntryInput(
   )
     throw new Error('canonical-rev0:tuple')
   const endpoint = new URL(tuple.endpoint)
+  const isLoopback =
+    endpoint.protocol === 'http:' &&
+    (endpoint.hostname === '127.0.0.1' || endpoint.hostname === 'localhost')
   if (
-    endpoint.protocol !== 'https:' ||
+    (!isLoopback && endpoint.protocol !== 'https:') ||
     endpoint.username ||
     endpoint.password ||
     endpoint.hash

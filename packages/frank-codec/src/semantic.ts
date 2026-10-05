@@ -502,8 +502,11 @@ function checkPreviewStatement(st: DirectoryStatement<ParsedFrame>): void {
   if (st.relays.length !== 1)
     throw semantic('directory preview requires exactly one relay')
   const relay = st.relays[0]
+  const isLoopback =
+    relay.endpoint.startsWith('http://127.0.0.1') ||
+    relay.endpoint.startsWith('http://localhost')
   if (
-    !relay.endpoint.startsWith('https:') ||
+    (!isLoopback && !relay.endpoint.startsWith('https:')) ||
     relay.identity.keyType !== 1 ||
     !isCompressedPoint(relay.identity.keyBytes)
   )

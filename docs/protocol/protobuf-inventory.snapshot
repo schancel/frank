@@ -3120,6 +3120,20 @@ descriptor: |
         type_name: ".stealth.StealthOutpoints"
         json_name: "outpoints"
       }
+      field {
+        name: "chain_id"
+        number: 3
+        label: LABEL_OPTIONAL
+        type: TYPE_STRING
+        json_name: "chainId"
+      }
+      field {
+        name: "transactions"
+        number: 4
+        label: LABEL_REPEATED
+        type: TYPE_BYTES
+        json_name: "transactions"
+      }
     }
     syntax: "proto3"
   }
@@ -3318,13 +3332,13 @@ generated_binding: packages/cashweb/relay/stealth_pb.d.ts
 source_proto: packages/cashweb/relay/proto/stealth.proto
 generator_script: packages/cashweb/relay/generate_protobufs.sh
 historical_generator_versions: unknown
-sha256: 2cb01634fea861edae9fbc847e51e9f654e9018e6a55d2c9dce61c17367c0686
+sha256: c16d4c71db7bbf7b4f76f18cf54316f523fd7d53560cffec90256518bda418ff
 ---
 generated_binding: packages/cashweb/relay/stealth_pb.js
 source_proto: packages/cashweb/relay/proto/stealth.proto
 generator_script: packages/cashweb/relay/generate_protobufs.sh
 historical_generator_versions: unknown
-sha256: e4958ae8349e74e0d34f817801e9141c03ea9b9b2cc351bb004a55e3252dd23b
+sha256: b5cc6e956ff0b39e8c99e822d205dcd8cee599e35ab233c47503c760d72b6458
 ---
 generated_binding: packages/cashweb/signed_payload/payload_pb.d.ts
 source_proto: packages/cashweb/signed_payload/proto/payload.proto

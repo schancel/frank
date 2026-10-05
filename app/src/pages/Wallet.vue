@@ -57,7 +57,7 @@
           <q-btn
             outline
             no-caps
-            label="Backup account (Codex32)"
+            :label="$t('accountRecovery.backup_account_codex32')"
             color="primary"
             data-testid="backup-codex32-button"
             @click="openBackupDialog"

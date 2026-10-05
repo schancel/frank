@@ -23,8 +23,8 @@
         <h1 id="account-heading" ref="heading" tabindex="-1" class="text-h5">
           {{
             mode === 'legacy'
-              ? 'Import BIP39 seed'
-              : 'Your Frank account'
+              ? $t('accountRecovery.import_bip39_seed')
+              : $t('accountRecovery.frank_account')
           }}
         </h1>
         <p role="status" aria-live="polite" data-test="account-status">
@@ -161,7 +161,7 @@
               <q-btn
                 flat
                 no-caps
-                label="Import BIP39 seed"
+                :label="$t('accountRecovery.import_bip39_seed')"
                 data-test="legacy-recovery"
                 :disable="!mayBegin || busy"
                 @click="changeMode('legacy')"
@@ -210,7 +210,7 @@
               type="submit"
               color="primary"
               no-caps
-              label="Import BIP39 seed"
+              :label="$t('accountRecovery.import_bip39_seed')"
               data-test="identify-legacy"
               :disable="busy || !legacyPhrase"
               :loading="busy"

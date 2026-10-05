@@ -9,17 +9,20 @@
       data-test="backup-codex32-dialog"
     >
       <q-card-section>
-        <div class="text-h6">Backup account (Codex32)</div>
+        <div class="text-h6">
+          {{ $t('accountRecovery.backup_account_codex32') }}
+        </div>
         <div class="text-caption text-grey-8">
-          Write down each paper share. Any 2 of these 3 shares can restore your
-          account.
+          {{ $t('accountRecovery.write_down_each_paper_share') }}
         </div>
       </q-card-section>
 
       <q-card-section class="q-pt-none">
         <div v-if="loading" class="text-center q-pa-md">
           <q-spinner color="primary" size="2em" />
-          <div class="q-mt-sm">Generating Codex32 backup shares…</div>
+          <div class="q-mt-sm">
+            {{ $t('accountRecovery.generating_codex32_backup_shares') }}
+          </div>
         </div>
         <div
           v-else-if="error"
@@ -35,7 +38,7 @@
             class="q-pa-sm bg-grey-2 rounded-borders"
           >
             <div class="text-weight-bold text-caption q-mb-xs">
-              Share {{ index + 1 }} of {{ shares.length }}
+              {{ `${$t('accountRecovery.share')} ${index + 1} / ${shares.length}` }}
             </div>
             <div
               class="text-caption text-mono"
@@ -51,7 +54,7 @@
                 no-caps
                 size="sm"
                 color="primary"
-                label="Copy"
+                :label="$t('accountRecovery.copy_share')"
                 data-test="copy-share"
                 @click="copyShare(share, index)"
               />
@@ -71,7 +74,7 @@
         <q-btn
           flat
           no-caps
-          label="Close"
+          :label="$t('close')"
           color="primary"
           data-test="close-backup-dialog"
           @click="$emit('close')"

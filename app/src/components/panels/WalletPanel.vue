@@ -83,7 +83,7 @@
             no-caps
             color="primary"
             class="full-width"
-            label="Backup account (Codex32)"
+            :label="$t('accountRecovery.backup_account_codex32')"
             data-test="backup-codex32-button"
             @click="openBackupDialog"
           />

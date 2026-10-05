@@ -91,6 +91,13 @@ export const en = {
   request_persistent_storage: 'Request persistent storage',
   frank_account_backup_shares_were_verified_before:
     'Frank account backup shares were verified before activation. Keep your independent shares and public descriptor. They cannot be reconstructed from this device.',
+  import_bip39_seed: 'Import BIP39 seed',
+  backup_account_codex32: 'Backup account (Codex32)',
+  write_down_each_paper_share:
+    'Write down each paper share. Any 2 of these 3 shares can restore your account.',
+  generating_codex32_backup_shares: 'Generating Codex32 backup shares…',
+  share: 'Share',
+  copy_share: 'Copy',
 }
 
 export const fr = {
@@ -189,4 +196,11 @@ export const fr = {
   request_persistent_storage: 'Demander le stockage persistant',
   frank_account_backup_shares_were_verified_before:
     'Les parts de sauvegarde du compte Frank ont été vérifiées avant l’activation. Conservez vos parts indépendantes et votre descripteur public. Cet appareil ne permet pas de les reconstruire.',
+  import_bip39_seed: 'Importer la graine BIP39',
+  backup_account_codex32: 'Sauvegarder le compte (Codex32)',
+  write_down_each_paper_share:
+    'Notez chaque part papier. N’importe quelles 2 de ces 3 parts permettent de restaurer votre compte.',
+  generating_codex32_backup_shares: 'Génération des parts de sauvegarde Codex32…',
+  share: 'Part',
+  copy_share: 'Copier',
 }

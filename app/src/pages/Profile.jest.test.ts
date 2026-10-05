@@ -24,6 +24,8 @@ jest.mock('@frank/wallet/monad-identity', () => ({
   registerMonadIdentityCbor: jest.fn(),
 }))
 
+import { errorNotify } from 'src/utils/notifications'
+
 jest.mock('src/utils/notifications', () => ({
   errorNotify: jest.fn(),
 }))
@@ -35,6 +37,7 @@ jest.mock('src/utils/navigate-back', () => ({
 describe('Profile.vue', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    HTMLCanvasElement.prototype.getContext = jest.fn(() => null)
   })
 
   it('renders profile editor and actions without legacy protobuf registration', () => {
@@ -107,5 +110,109 @@ describe('Profile.vue', () => {
         relayBaseUrl: 'https://127.0.0.1:18443',
       }),
     )
+  })
+
+  it('validates avatar size before submitting and rejects oversized avatar with error notification', async () => {
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: {
+          Profile: { template: '<div data-test="profile-component"></div>' },
+          'q-page-container': { template: '<div><slot /></div>' },
+          'q-page': { template: '<div><slot /></div>' },
+          'q-card': { template: '<div><slot /></div>' },
+          'q-card-section': { template: '<div><slot /></div>' },
+          'q-card-actions': { template: '<div><slot /></div>' },
+          'q-btn': { template: '<button><slot /></button>' },
+        },
+      },
+    })
+
+    // Set oversized avatar that cannot be compressed or remains oversized
+    ;(wrapper.vm as any).avatar = 'data:image/png;base64,' + 'X'.repeat(10000)
+    await (wrapper.vm as any).updateRelayData()
+
+    expect(errorNotify).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ fallbackKey: 'profileDialog.avatarTooLarge' }),
+    )
+    expect(mockSetRelayData).not.toHaveBeenCalled()
+    expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
+  })
+
+  it('compresses oversized avatar when compression succeeds before submitting', async () => {
+    const mockWallet = {
+      identity: { address: { raw: '0x1234567890123456789012345678901234567890' } },
+      relayBaseUrl: 'https://127.0.0.1:18443',
+    }
+    ;(useActiveWallet as jest.Mock).mockResolvedValue(mockWallet)
+
+    const compressedAvatar = 'data:image/webp;base64,TINY'
+    HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+      drawImage: jest.fn(),
+      fillRect: jest.fn(),
+      fillStyle: '',
+    })) as any
+    HTMLCanvasElement.prototype.toDataURL = jest.fn(() => compressedAvatar)
+
+    const originalImage = window.Image
+    class MockImage {
+      crossOrigin = ''
+      width = 500
+      height = 500
+      naturalWidth = 500
+      naturalHeight = 500
+      complete = true
+      _src = ''
+      onload: (() => void) | null = null
+      get src() {
+        return this._src
+      }
+      set src(val: string) {
+        this._src = val
+        if (this.onload) this.onload()
+      }
+    }
+    window.Image = MockImage as any
+
+    try {
+      const wrapper = mount(ProfilePage, {
+        global: {
+          mocks: {
+            $t: (key: string) => key,
+            $router: { push: jest.fn() },
+            $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+          },
+          stubs: {
+            Profile: { template: '<div data-test="profile-component"></div>' },
+            'q-page-container': { template: '<div><slot /></div>' },
+            'q-page': { template: '<div><slot /></div>' },
+            'q-card': { template: '<div><slot /></div>' },
+            'q-card-section': { template: '<div><slot /></div>' },
+            'q-card-actions': { template: '<div><slot /></div>' },
+            'q-btn': { template: '<button><slot /></button>' },
+          },
+        },
+      })
+
+      ;(wrapper.vm as any).avatar = 'data:image/png;base64,' + 'X'.repeat(6000)
+      await (wrapper.vm as any).updateRelayData()
+
+      expect(mockSetRelayData).toHaveBeenCalledWith({
+        profile: expect.objectContaining({ avatar: compressedAvatar }),
+        inbox: expect.objectContaining({ acceptancePrice: 100 }),
+      })
+      expect(registerMonadIdentityCbor).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profile: expect.objectContaining({ avatar: compressedAvatar }),
+        }),
+      )
+    } finally {
+      window.Image = originalImage
+    }
   })
 })

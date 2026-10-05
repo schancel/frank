@@ -49,6 +49,7 @@ import {
 
 import { validateProfileDisplayName } from '@frank/wallet/profile-display-name'
 import { profileNameError } from '../utils/profile-name'
+import { isAvatarTooLarge, compressAvatarDataUrl } from '../utils/avatar'
 import Profile from '../components/Profile.vue'
 import { errorNotify } from '../utils/notifications'
 import { navigateBack } from '../utils/navigate-back'
@@ -128,6 +129,21 @@ export default defineComponent({
         return
       }
       this.name = name.normalized
+
+      // Avatar validation and compression before submitting
+      if (this.avatar && isAvatarTooLarge(this.avatar)) {
+        try {
+          this.avatar = await compressAvatarDataUrl(this.avatar)
+        } catch {
+          // compression failed
+        }
+      }
+      if (this.avatar && isAvatarTooLarge(this.avatar)) {
+        errorNotify(new Error('avatar too large'), {
+          fallbackKey: 'profileDialog.avatarTooLarge',
+        })
+        return
+      }
 
       // Save locally to store first
       this.setRelayData(this.relayData)

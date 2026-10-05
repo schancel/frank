@@ -420,3 +420,47 @@ describe('raffle defaults stay consistent between the launcher and the bot (#363
     ).toBe('7')
   })
 })
+
+describe('ngrok configuration', () => {
+  it('defaults ngrok to disabled with standard ngrok binary and undefined public URLs', () => {
+    const config = FAKE()
+    expect(config.ngrok).toBe(false)
+    expect(config.ngrokBin).toBe('ngrok')
+    expect(config.publicRelayUrl).toBeUndefined()
+    expect(config.publicAppUrl).toBeUndefined()
+  })
+
+  it('enables ngrok via FRANK_DEMO_NGROK=1, true, or ngrokFlag', () => {
+    expect(FAKE({ FRANK_DEMO_NGROK: '1' }).ngrok).toBe(true)
+    expect(FAKE({ FRANK_DEMO_NGROK: 'true' }).ngrok).toBe(true)
+    expect(
+      resolveDemoConfig({
+        env: {},
+        envFile: {},
+        fakeChainFlag: true,
+        ngrokFlag: true,
+      }).ngrok,
+    ).toBe(true)
+  })
+
+  it('rejects malformed public URLs', () => {
+    expect(() => FAKE({ FRANK_DEMO_PUBLIC_RELAY_URL: 'not-a-url' })).toThrow(
+      'FRANK_DEMO_PUBLIC_RELAY_URL must be an http(s) URL',
+    )
+    expect(() => FAKE({ FRANK_DEMO_PUBLIC_APP_URL: 'not-a-url' })).toThrow(
+      'FRANK_DEMO_PUBLIC_APP_URL must be an http(s) URL',
+    )
+  })
+
+  it('accepts valid public URLs and marks NGROK_AUTHTOKEN as secret', () => {
+    const config = FAKE({
+      FRANK_DEMO_PUBLIC_RELAY_URL: 'https://relay.ngrok-free.app',
+      FRANK_DEMO_PUBLIC_APP_URL: 'https://app.ngrok-free.app',
+      NGROK_AUTHTOKEN: 'secret-token-xyz',
+    })
+    expect(config.publicRelayUrl).toBe('https://relay.ngrok-free.app')
+    expect(config.publicAppUrl).toBe('https://app.ngrok-free.app')
+    expect(config.secrets).toContain('secret-token-xyz')
+  })
+})
+

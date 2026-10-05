@@ -39,6 +39,7 @@ import {
   writeRunRecord,
 } from './run-lock'
 import { SupervisedChild, Supervisor } from './supervisor'
+import { startNgrok } from './ngrok'
 
 const BOT_DIR = resolve(__dirname, '..')
 const REPO_ROOT = resolve(BOT_DIR, '..', '..')
@@ -47,6 +48,8 @@ const RELAY_SCRIPT = join(REPO_ROOT, 'backend', 'cashweb', 'run-local-monad.sh')
 export interface DemoHandle {
   config: DemoConfig
   relayUrl: string
+  publicRelayUrl?: string
+  publicAppUrl?: string
   /** Identity bots' addresses by bot name. */
   addresses: Record<string, string>
   fakeRpc?: FakeRpc
@@ -239,6 +242,13 @@ export async function checkPrerequisites(config: DemoConfig): Promise<string[]> 
   }
   if (config.fakeChain && !(await portIsFree(config.fakeRpcPort))) {
     problems.push(`port ${config.fakeRpcPort} is in use; set FRANK_DEMO_FAKE_RPC_PORT to use another`)
+  }
+  if (config.ngrok) {
+    if (spawnSync(config.ngrokBin, ['version']).error) {
+      problems.push(
+        `ngrok was requested (FRANK_DEMO_NGROK=1 or --ngrok), but "${config.ngrokBin}" was not found: install ngrok (https://ngrok.com) or set FRANK_DEMO_NGROK_BIN`,
+      )
+    }
   }
   return problems
 }
@@ -585,10 +595,39 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     }
     abortIfStopping()
 
+    let publicRelayUrl = config.publicRelayUrl
+    let publicAppUrl = config.publicAppUrl
+
+    if (config.ngrok) {
+      print('[demo] starting ngrok tunnels...')
+      const ngrokResult = await startNgrok({
+        stateDir: config.stateDir,
+        logDir,
+        relayPort: config.relayPort,
+        appPort: config.appPort,
+        ngrokBin: config.ngrokBin,
+        ngrokConfig: config.ngrokConfig,
+        ngrokRelayDomain: config.ngrokRelayDomain,
+        ngrokAppDomain: config.ngrokAppDomain,
+        ngrokAuthtoken: config.ngrokAuthtoken,
+        supervisor,
+      })
+      writePidFile()
+      publicRelayUrl ??= ngrokResult.publicRelayUrl
+      publicAppUrl ??= ngrokResult.publicAppUrl
+      print(
+        `[demo] ngrok tunnels active: app -> ${publicAppUrl ?? `http://localhost:${config.appPort}`}, relay -> ${publicRelayUrl ?? config.relayUrl}`,
+      )
+    }
+    abortIfStopping()
+
     let appStarted = false
     if (options.startApp) {
+      const effectiveRelayUrl = publicRelayUrl ?? config.relayUrl
       const appEnv: Record<string, string> = {
-        QCLI_MONAD_RELAY_BASE_URL: config.relayUrl,
+        QCLI_MONAD_RELAY_BASE_URL: effectiveRelayUrl,
+        QCLI_E2E_DEMO_RELAY_URL: effectiveRelayUrl,
+        FRANK_DEMO_RELAY_PORT: String(config.relayPort),
         QCLI_MONAD_RPC_CHAIN: 'monad-testnet',
         QCLI_MONAD_STAMP_BURN_ADDRESS: config.stampBurnAddress,
         QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI: config.minStampWei,
@@ -629,6 +668,8 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     return {
       config,
       relayUrl: config.relayUrl,
+      publicRelayUrl,
+      publicAppUrl,
       addresses,
       fakeRpc,
       logDir,
@@ -659,7 +700,7 @@ export function printSummary(handle: DemoHandle, print: (line: string) => void):
   const appUrl = `http://localhost:${config.appPort}`
   print('')
   print(`Frank demo is running (launcher pid ${process.pid}).`)
-  print(`  Relay:   ${handle.relayUrl}`)
+  print(`  Relay:   ${handle.relayUrl}${handle.publicRelayUrl ? ` (public: ${handle.publicRelayUrl})` : ''}`)
   print(
     `  Chain:   ${
       config.fakeChain
@@ -699,11 +740,15 @@ export function printSummary(handle: DemoHandle, print: (line: string) => void):
       : '  Qwen:    live model',
   )
   if (handle.appStarted) {
-    print(`  App:     Running at ${appUrl} (dev server automatically started; browser launched)`)
+    print(
+      `  App:     Running at ${appUrl}${handle.publicAppUrl ? ` (public: ${handle.publicAppUrl})` : ''} (dev server automatically started; browser launched)`,
+    )
   } else {
-    print(`  App URL: ${appUrl}  (the app dev server's port is fixed in app/quasar.config.js)`)
+    print(
+      `  App URL: ${appUrl}${handle.publicAppUrl ? ` (public: ${handle.publicAppUrl})` : ''}  (the app dev server's port is fixed in app/quasar.config.js)`,
+    )
     print('  Start the app in another terminal, from the repo root, with exactly this:')
-    for (const line of appCommand(config, handle.relayUrl)) print(`    ${line}`)
+    for (const line of appCommand(config, handle.publicRelayUrl ?? handle.relayUrl)) print(`    ${line}`)
   }
   print(
     config.fakeChain
@@ -829,6 +874,7 @@ export async function main(argv: string[], env: Record<string, string | undefine
       env,
       envFile: readEnvFile(envFilePath),
       fakeChainFlag: argv.includes('--fake-chain'),
+      ngrokFlag: argv.includes('--ngrok'),
       // `yarn demo` runs inside packages/bot; relative paths mean relative to where the user typed it.
       cwd: env.INIT_CWD ?? process.cwd(),
     })

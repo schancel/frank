@@ -733,7 +733,8 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         !/^([0-9a-f]{2}){16,64}$/.test(info.relayId) ||
         typeof info.endpoint !== 'string' ||
         // The relay may only describe itself: an entry is never signed for some other host.
-        new URL(info.endpoint).protocol !== 'https:' ||
+        (!['https:', 'http:'].includes(new URL(info.endpoint).protocol) ||
+          (new URL(info.endpoint).protocol === 'http:' && !['127.0.0.1', 'localhost'].includes(new URL(info.endpoint).hostname))) ||
         info.endpoint.replace(/\/$/, '') !== origin ||
         typeof info.relayKey !== 'string' ||
         !directoryAddress(info.relayKey) ||

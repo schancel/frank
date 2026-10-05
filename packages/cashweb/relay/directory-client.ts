@@ -117,15 +117,18 @@ export function createDirectoryClient(options: DirectoryClientOptions) {
   )
     throw new Error('Exact directory identity required')
   const origin = new URL(endpoint)
+  const isLoopback =
+    origin.protocol === 'http:' &&
+    (origin.hostname === '127.0.0.1' || origin.hostname === 'localhost')
   if (
-    origin.protocol !== 'https:' ||
+    (!isLoopback && origin.protocol !== 'https:') ||
     origin.username ||
     origin.password ||
     origin.search ||
     origin.hash ||
     origin.pathname !== '/'
   )
-    throw new Error('Installed HTTPS origin required')
+    throw new Error('Installed origin required')
   const base = origin.origin + `/directory/v1/${network}/${subject}`
   const context = () => {
     const ctx = snapshot(options.context())

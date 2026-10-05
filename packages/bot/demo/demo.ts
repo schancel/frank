@@ -455,11 +455,25 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
       throw new DemoConfigError(curated.errors)
     }
     const curatedToml = renderCuratedDefaultsToml(curated.entries)
+    const directoryToml = [
+      '',
+      '[registry.directory]',
+      'network = "monad-testnet"',
+      'relay_id = "0102030405060708090a0b0c0d0e0f10"',
+      'relay_identity = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"',
+      `endpoint = "${config.relayUrl}"`,
+      'binding_expiry_ns = "1893456000000000000"',
+      'enrollments_per_source_per_hour = 100000',
+      '',
+    ].join('\n')
     const curatedPath = join(config.stateDir, 'relay-curated.toml')
-    writeFileSync(curatedPath, curatedToml, { mode: 0o600 })
+    writeFileSync(curatedPath, curatedToml + directoryToml, { mode: 0o600 })
     print('[demo] curated default contacts for the relay config (already applied to this demo relay):')
     print(curatedToml.trimEnd())
     abortIfStopping()
+
+    const prebuiltBin = join(REPO_ROOT, 'backend', 'cashweb', 'target', 'debug', 'cashwebd-exe')
+    const effectiveCashwebdBin = config.cashwebdBin ?? (existsSync(prebuiltBin) ? prebuiltBin : undefined)
 
     const relayDb = join(config.stateDir, 'relay', 'registry.rocksdb')
     mkdirSync(dirname(relayDb), { recursive: true, mode: 0o700 })
@@ -480,7 +494,7 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
         FRANK_RELAY_DB_PATH: relayDb,
         FRANK_RELAY_EXTRA_TOML: curatedPath,
         FRANK_RUN_LOCAL_SKIP_DOTENV: '1',
-        ...(config.cashwebdBin ? { CASHWEBD_BIN: config.cashwebdBin } : {}),
+        ...(effectiveCashwebdBin ? { CASHWEBD_BIN: effectiveCashwebdBin } : {}),
         ...config.toolchainEnv,
       },
     })
@@ -807,7 +821,9 @@ export async function main(argv: string[], env: Record<string, string | undefine
       // `yarn demo` runs inside packages/bot; relative paths mean relative to where the user typed it.
       cwd: env.INIT_CWD ?? process.cwd(),
     })
-    const startApp = !argv.includes('--no-app') && env.FRANK_DEMO_NO_APP !== '1'
+    const startApp =
+      (env.npm_lifecycle_event === 'demo' || argv.includes('--app')) &&
+      !argv.includes('--no-app')
     const handle = await startDemo(config, {
       print,
       env,

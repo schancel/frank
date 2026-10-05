@@ -803,8 +803,11 @@ export const defaultCanonicalFetch: CanonicalFetch = (url, input) => {
 }
 export function installedCanonicalOrigin(origin: string): string {
   const parsed = new URL(origin)
+  const isLoopback =
+    parsed.protocol === 'http:' &&
+    (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost')
   if (
-    parsed.protocol !== 'https:' ||
+    (!isLoopback && parsed.protocol !== 'https:') ||
     parsed.username ||
     parsed.password ||
     parsed.search ||
@@ -812,7 +815,7 @@ export function installedCanonicalOrigin(origin: string): string {
     parsed.pathname !== '/' ||
     parsed.origin !== origin.replace(/\/$/, '')
   )
-    invalid('Exact installed HTTPS origin required')
+    invalid('Exact installed origin required')
   return parsed.origin
 }
 export function awaitCanonicalAbort<T>(

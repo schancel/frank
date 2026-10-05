@@ -129,6 +129,9 @@ export type DirectMessagePreparationProgress =
  * isn't `ReceivedMessageWrapper` (`../types/user-interface.ts`). */
 export interface DirectMessageReceived {
   senderAddress: ChainAddress;
+  /** Compressed signing key of a sender admitted through the installed directory (canonical
+   * messages only). When present, no display profile is needed to show the message. */
+  senderPublicKey?: Uint8Array;
   recipientAddress: ChainAddress;
   items: MessageItem[];
   /** Bare (no `0x`) hex `payload_hash` of the stamped message this was decoded from. */
@@ -201,13 +204,23 @@ export interface DirectMessageClient {
     /** Idempotent re-PUT budget per live attempt; defaults to a single try (callers back off). */
     maxPutAttempts?: number;
   }): Promise<Record<string, DirectMessageAttemptStatus>>;
-  /** Payload hashes of every attempt the wallet can still account for (live in its journal, or
-   * resolved in this process) that is not in `knownDigests`: payments no message points at.
-   * Re-sends live attempts first, so a just-resumed one is included. */
+  /** Payload hashes of every attempt the wallet can still account for that is not in
+   * `knownDigests`: payments no message points at. Re-sends live attempts first, so a
+   * just-resumed one is included. An attempt with no outcome yet is always reported. A delivered
+   * one is reported in every session, also after the wallet is reopened, until a message points
+   * at it (it was once in `knownDigests`) or `resolveUnattributedAttempts` names it. (The legacy
+   * untyped Monad path only remembers delivered attempts for the life of the process.) */
   unattributedAttempts(params: {
     wallet: WalletHandle;
     knownDigests: string[];
   }): Promise<string[]>;
+  /** Durably records the user's answer for delivered attempts reported by
+   * `unattributedAttempts`: they stop being reported. Call it only after the user explicitly
+   * chose what to do about them. Attempts with no outcome yet are left as they are. */
+  resolveUnattributedAttempts(params: {
+    wallet: WalletHandle;
+    payloadDigests: string[];
+  }): Promise<void>;
   /** Returns messages at or after `sinceMs`, ordered by time. If a later inbox page could not be
    * fetched, the result is cut back to a prefix ending on a complete timestamp group and
    * `onTruncated` is called: advancing `sinceMs` to `lastReceivedTime + 1` is then safe and the

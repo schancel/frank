@@ -66,6 +66,7 @@
   },
   "devDependencies": {
     "bitcore-lib-xpi": "*",
+    "fake-indexeddb": "^6.2.5",
     "sass": "^1.105.0",
     "rollup-plugin-polyfill-node": "^0.13.0",
     "@rollup/plugin-inject": "^5.0.5",

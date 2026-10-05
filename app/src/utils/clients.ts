@@ -2,6 +2,7 @@ import assert from 'assert'
 import type RelayClient from '@frank/cashweb/relay'
 import type { Wallet } from '@frank/cashweb/legacy-wallet'
 import type { WalletHandle } from '@frank/wallet/chain'
+import { messagingWallet } from './monad-identity-session'
 
 let wallet: Wallet | null = null
 export function useWallet(newWallet?: Wallet) {
@@ -21,7 +22,12 @@ export function useRelayClient(newRelayClient?: RelayClient) {
   return relayClient
 }
 
-/** Legacy DM access fails closed for typed accounts until #696. */
+/** The live typed wallet, available once this account's directory entry is published. */
 export function useMonadWallet(_newWallet?: WalletHandle): WalletHandle {
-  throw new Error('Messaging is unavailable for typed accounts in this preview')
+  const wallet = messagingWallet()
+  if (!wallet)
+    throw new Error(
+      'Messaging is not available yet: your account is still being published to the server.',
+    )
+  return wallet
 }

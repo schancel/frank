@@ -108,7 +108,10 @@ test('real typed wallets discover the built-in fake transport and fund/send only
     ).toBe(0n)
     await expect(
       chain.directMessages.fetchSince({ wallet: sender, sinceMs: 0 }),
-    ).rejects.toThrow('#696')
+    ).rejects.toThrow(
+      // Still fail-closed with no legacy fallback; the app cutover (#778) reworded it.
+      'Canonical direct messages require persistent typed wallet storage',
+    )
     await sender.close()
     expect(sender.provider.destroyed).toBe(true)
     await expect(sender.getBalance()).rejects.toThrow('closed')

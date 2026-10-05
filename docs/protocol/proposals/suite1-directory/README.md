@@ -100,16 +100,25 @@ history needed to prove no key reuse and to open dependent messages. A cache
 of a projection alone is insufficient. Persist an accepted update and its
 stamp state together before acknowledging it.
 
-1. **Bootstrap:** require a trusted, caller-installed `(network, P, exact T1)`
-   anchor; self-signature, relay response, URL and highest timestamp are not
-   anchors. The pinned revision-0 record requires both generations 0 and
-   predecessor null. It may be expired when first encountered: authenticate it
+1. **Bootstrap:** entries are self-published. An account's entry is signed by
+   P, the key whose hash is the account address, and nobody else approves it.
+   The `(network, P, exact T1)` anchor is the first valid revision-0 record
+   that P signed for itself: a relay pins it when P first publishes there or
+   when a peer relay replicates it, and a client pins it the first time it
+   looks the address up (trust on first use, bound to the address). After
+   that the anchor never moves: every later revision must chain from it, and
+   a second, different revision 0 for the same P is refused. A record not
+   signed by P, a URL and a highest timestamp are never anchors. The pinned
+   revision-0 record requires both generations 0 and predecessor null. It may be expired when first encountered: authenticate it
    as a historical link and verify every successor through a fresh head under
    the atomic catch-up rule below. A revision-0 record used directly as the
-   head must itself be fresh. Initial previous stamp is null. A missing anchor,
-   missing trusted clock or missing trusted relay tuple fails closed. A reset
-   is not a bootstrap opportunity: if any durable state existed, restore and
-   verify it or require explicit operator re-anchoring outside this profile.
+   head must itself be fresh. Initial previous stamp is null. A missing anchor
+   or missing clock fails closed. The relay binding inside an entry is the
+   account's own statement of which relay it lives on: a relay holding the
+   replicated routing table accepts any binding that has not expired, while a
+   client that already knows which relay it is talking to may require the
+   exact tuple. A reset is not a bootstrap opportunity: if any durable state
+   existed, restore and verify it rather than pinning a different revision 0.
 2. **Update:** fully authenticate first; require the same network and P,
    revision exactly prior+1, predecessor exactly prior's T1, and issue time
    >= prior issue time; same-subject schema version must never decrease. An identical already-current exact frame is an
@@ -134,7 +143,7 @@ stamp state together before acknowledging it.
    type-7 proof is not sufficient to enable that missing policy. No recovery
    authority can be introduced and consumed in the same update.
 5. **Validity:** trusted Unix time with nanosecond precision is caller input.
-   Every record requires `issue <= now`, `0 < expiry-issue <= 3600 seconds`, and
+   Every record requires `issue <= now`, `0 < expiry-issue <= 366 days`, and
    every binding expiry >= statement expiry. The final head additionally
    requires `now < expiry`; expired intermediate links are allowed only inside
    atomic catch-up or archive verification. No implicit clock-skew allowance.
@@ -192,16 +201,19 @@ storage by the same byte budget. Per-frame 256 KiB and frozen decoder budgets
 still apply. Commit counters atomically with history. At either cap, reject
 extensions; never prune no-reuse/predecessor evidence, reset counters or treat
 an existing account as a new bootstrap to continue. A separately reviewed
-compaction/migration is required before operating past the bound. With hourly
-renewals the count bound permits roughly 170 days from bootstrap; this is an
-intentional preview limit, not a permanent directory design.
+compaction/migration is required before operating past the bound. An account
+renews by publishing a new revision before its entry expires; with validity
+of up to 366 days the count bound is not reached in ordinary use.
 
-Bootstrap pins prevent undetected stale bootstrap only to the extent that the
-caller obtained a fresh anchor. The 1-hour validity is a proposed preview bound,
-not a global convergence guarantee. A provider can withhold a newer record;
-partitions remain possible within the bound. This is not the target federation
-freshness or provider fencing protocol. Authorization to populate that trust
-configuration is a deployment prerequisite outside this corpus.
+Lookup is replicated. Relays copy accepted entries to their peer relays and
+periodically compare what they hold, so an address published on one relay can
+be looked up on another; a relay asked for an address it does not hold asks
+its peers before answering that it is unknown. Replication is eventually
+consistent. Every relay verifies every record itself, so a peer can withhold
+a newer record but cannot forge one. Two different signed successors of the
+same revision are a fork: every relay that sees both quarantines the chain
+rather than choosing the newer timestamp. A relay can serve a stale entry for
+up to that entry's remaining validity.
 
 ## Stamp grace, message retirement, and restart
 

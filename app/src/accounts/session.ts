@@ -60,8 +60,17 @@ export function createAccountSession(deps: {
   let unlisten: (() => void) | undefined
   let closed = false
   const publish = (snapshot: CustodySnapshot) => {
+    // Custody returns a new object for every snapshot. Consumers hold `state.account` across
+    // `getWallet()` (which revalidates) and compare it by identity to detect an account change, so
+    // an unchanged account at an unchanged revision must keep its published object.
+    const unchanged =
+      state.account !== null &&
+      snapshot.active !== null &&
+      state.revision === snapshot.revision &&
+      state.account.receipt.context.accountId ===
+        snapshot.active.receipt.context.accountId
     state.revision = snapshot.revision
-    state.account = snapshot.active
+    if (!unchanged) state.account = snapshot.active
     state.pending = snapshot.pending
   }
   const fail = (error: unknown) => {

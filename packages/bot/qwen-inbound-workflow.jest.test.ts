@@ -35,6 +35,7 @@ jest.mock('@frank/cashweb/relay/monad-message-envelope', () => ({
       : 'PROMPT_SENTINEL',
 }))
 jest.mock('./qwen-prompt', () => ({
+  ...jest.requireActual('./qwen-prompt'),
   extractPromptText: (text: string) => text || undefined,
 }))
 
@@ -757,4 +758,509 @@ it('refuses to bind pre-existing response ownership to another account before an
   } finally {
     await old.Close()
   }
+})
+
+// ---------------------------------------------------------------------------------------------
+// #778 canonical inbound. Real shared producer/opener, real Node directory admission over signed
+// public evidence, real role keys from typed roots and real Level state. The mailbox page source
+// and the reply send are local stand-ins; payments inside the delivery frame are not verified
+// here (the relay's admission owns that) and no funds or relay are involved.
+// ---------------------------------------------------------------------------------------------
+import { Transaction, Wallet, computeAddress, getBytes } from 'ethers'
+import {
+  cborMap,
+  encodeFrame,
+  paymentCommitment,
+  recipientPayloadDigest,
+  toHex,
+} from '@frank/codec'
+import {
+  directMessageText,
+  prepareDirectMessage,
+} from '@frank/cashweb/relay/canonical-dm'
+import type { CanonicalInboxRecord } from '@frank/cashweb/relay/monad-mailbox-client'
+import { openNodeDirectoryStore } from '@frank/directory-admission/node'
+import type { PublicRevisionZeroInput } from '@frank/wallet/monad-wallet-handle'
+import {
+  createMonadWalletMaterial,
+  type MonadRootBundle,
+} from '@frank/wallet/monad-wallet-material'
+import domainVectors from '../domain-roots/vectors/domain-roots-v1.json'
+import type { QwenCanonicalInbound } from './qwen-inbound-workflow'
+
+describe('#778 canonical inbound', () => {
+  const NETWORK = 'monad-testnet'
+  let root: string
+  let canonicalState: QwenBotStateStore
+  let inbound: QwenInboundWorkflow
+  let pages: CanonicalInboxRecord[][]
+  let fetches: number
+  let reply: jest.Mock
+  let sent: jest.Mock
+  /** Whether the sender's own entry can be read from the relay right now. */
+  let published: boolean
+  let refreshes: number
+  let directoryDown: boolean
+  let staleCurrent: typeof bot.current | undefined
+  let cleanup: Array<() => Promise<void>>
+  let bot: Awaited<ReturnType<typeof principal>>
+  let user: Awaited<ReturnType<typeof principal>>
+  let other: Awaited<ReturnType<typeof principal>>
+  const entries = () =>
+    new Map([
+      [user.subject, user.current],
+      [other.subject, other.current],
+    ])
+  let canonicalContext: {
+    botAddress: string
+    networkTag: string
+    relayBaseUrl: string
+  }
+
+  function bundle(index: number): MonadRootBundle {
+    // Two vector accounts; any further account uses its own arbitrary distinct roots.
+    const fill = (n: number) => Buffer.alloc(32, n).toString('hex')
+    const outputs = domainVectors.vectors[index]?.outputs ?? {
+      'evm-wallet': fill(0x41),
+      'identity-authentication': fill(0x42),
+      'messaging-encryption': fill(0x43),
+    }
+    const one = <
+      P extends
+        | 'evm-wallet'
+        | 'identity-authentication'
+        | 'messaging-encryption',
+    >(
+      purpose: P,
+    ) => ({
+      registry: 'frank-domain-roots-v1' as const,
+      purpose,
+      bytes: getBytes(`0x${outputs[purpose]}`),
+    })
+    return {
+      evm: one('evm-wallet'),
+      authentication: one('identity-authentication'),
+      messaging: one('messaging-encryption'),
+    }
+  }
+  /** One account with its own self-signed entry naming `relay`, admitted in its own store. */
+  async function principal(index: number, relay: 'a' | 'b') {
+    const material = createMonadWalletMaterial(bundle(index))
+    const input: PublicRevisionZeroInput = {
+      networkTag: 'MONT',
+      network: NETWORK,
+      chainId: 10143n,
+      issuedAt: { seconds: 100n, nanoseconds: 0 },
+      expiresAt: { seconds: 3700n, nanoseconds: 0 },
+      now: { seconds: 100n, nanoseconds: 0 },
+      relay: {
+        relayId: new Uint8Array(16).fill(relay === 'a' ? 1 : 2),
+        endpoint: `https://${relay}.example`,
+        identity: {
+          keyType: 1,
+          keyBytes: material.canonicalRoles!.publicGenerationZeroPoints().auth,
+        },
+        expiry: { seconds: 3700n, nanoseconds: 0 },
+        unknownFields: new Map(),
+      },
+    }
+    const exported = material.canonicalRoles!.prepareRevisionZero(input)
+    const store = await openNodeDirectoryStore({
+      location: join(root, `directory-${index}`),
+      anchor: {
+        network: NETWORK,
+        subject: { keyType: 1, keyBytes: exported.auth.compressedPoint },
+        revisionZero: exported.t1,
+      },
+      mode: { kind: 'new' },
+    })
+    const current = await store.enroll(
+      [{ statement: exported.statement, attestation: exported.attestation }],
+      { now: input.now, relay: input.relay },
+    )
+    cleanup.push(async () => {
+      await store.close()
+      material.dispose()
+    })
+    return {
+      material,
+      current,
+      subject: toHex(exported.auth.compressedPoint),
+      address: computeAddress(
+        '0x' + toHex(exported.auth.compressedPoint),
+      ).toLowerCase(),
+    }
+  }
+
+  /** A real sealed message wrapped in the exact type-1 delivery frame a relay page carries. */
+  async function record(
+    text: string,
+    id: number,
+    options: {
+      from?: typeof user
+      to?: typeof bot
+      mutate?: (parts: { payload: Uint8Array; context: Uint8Array }) => void
+      wrongDigest?: boolean
+    } = {},
+  ): Promise<CanonicalInboxRecord & { digest: string }> {
+    const from = options.from ?? user,
+      to = options.to ?? bot
+    const sealed = prepareDirectMessage({
+      network: NETWORK,
+      senderCurrent: from.current,
+      recipientCurrent: to.current,
+      messageId: new Uint8Array(16).fill(id),
+      items: [directMessageText(text)],
+      roles: from.material.canonicalRoles!.create(NETWORK, from.current),
+    })
+    const parts = { payload: sealed.payload, context: sealed.context }
+    options.mutate?.(parts)
+    const digest = recipientPayloadDigest(NETWORK, parts.payload)
+    const raw = await new Wallet('0x' + '00'.repeat(31) + '01').signTransaction(
+      {
+        type: 2,
+        chainId: 10143n,
+        nonce: id,
+        gasLimit: 50000n,
+        maxFeePerGas: 2n,
+        maxPriorityFeePerGas: 1n,
+        value: 32n,
+        to: '0x' + '11'.repeat(20),
+        data: '0x504f4e4402' + toHex(paymentCommitment(digest, 0)),
+      },
+    )
+    const tx = Transaction.from(raw)
+    const delivery = encodeFrame(
+      { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+      cborMap([
+        [0, NETWORK],
+        [
+          1,
+          cborMap([
+            [0, 1],
+            [1, to.current.stampKey.keyBytes],
+          ]),
+        ],
+        [2, parts.payload],
+        [3, options.wrongDigest ? new Uint8Array(32).fill(9) : digest],
+        [
+          4,
+          [
+            cborMap([
+              [0, 0],
+              [1, getBytes(tx.hash!)],
+              [2, getBytes('0x' + tx.value.toString(16).padStart(64, '0'))],
+              [3, getBytes('0x' + '11'.repeat(20))],
+              [4, paymentCommitment(digest, 0)],
+            ]),
+          ],
+        ],
+      ]),
+    )
+    return {
+      delivery,
+      context: parts.context,
+      submissionIdentity: 'ab'.repeat(32),
+      timestampMs: 1000 + id,
+      digest: toHex(digest),
+    }
+  }
+
+  function make() {
+    const responses = new QwenResponseWorkflow({
+      state: canonicalState,
+      context: {
+        ...canonicalContext,
+        fundingAddress: bot.address,
+        stampValueWei: '1',
+      },
+      systemPrompt: 'system',
+      generator: { reply },
+      send: sent,
+    })
+    const source: QwenCanonicalInbound = {
+      network: NETWORK,
+      subject: bot.subject,
+      recipient: bot.address,
+      relayBaseUrl: canonicalContext.relayBaseUrl,
+      fetchPage: async () => {
+        fetches++
+        return { records: pages.shift() ?? [] }
+      },
+      selfCurrent: async () => bot.current,
+      peerCurrent: async (subject, refresh) => {
+        if (refresh) refreshes++
+        // Any sender key is looked up; nothing about a sender is configured.
+        const entry = entries().get(subject)
+        if (!published || !entry) return undefined
+        if (directoryDown && refresh) throw new Error('relay unreachable')
+        // A recent read may lag the relay; a forced read never does.
+        return staleCurrent && !refresh ? staleCurrent : entry
+      },
+      roles: self => bot.material.canonicalRoles!.create(NETWORK, self),
+    }
+    inbound = new QwenInboundWorkflow({
+      state: canonicalState,
+      context: canonicalContext,
+      responses,
+      canonical: source,
+      peerBlockReason: async () => undefined,
+      reserveReply: () => true,
+    })
+  }
+  async function reopenCanonical() {
+    await canonicalState.Close()
+    canonicalState = new QwenBotStateStore(join(root, 'bot'))
+    await canonicalState.Open()
+    make()
+  }
+
+  beforeEach(async () => {
+    root = mkdtempSync(join(tmpdir(), 'qwen-canonical-inbox-'))
+    cleanup = []
+    pages = []
+    fetches = 0
+    published = true
+    refreshes = 0
+    directoryDown = false
+    staleCurrent = undefined
+    reply = jest.fn(async () => ({
+      content: 'REPLY_SENTINEL',
+      reasoning: 'REASONING_SENTINEL',
+    }))
+    sent = jest.fn(async () => ({ payloadHashHex: 'ee', txHashes: ['tx'] }))
+    bot = await principal(0, 'a')
+    user = await principal(1, 'b')
+    other = await principal(2, 'b')
+    canonicalContext = {
+      botAddress: bot.address,
+      networkTag: 'MONT',
+      relayBaseUrl: 'https://a.example',
+    }
+    canonicalState = new QwenBotStateStore(join(root, 'bot'))
+    await canonicalState.Open()
+    await canonicalState.initializeInbox(canonicalContext, 0)
+    make()
+  })
+  afterEach(async () => {
+    await canonicalState.Close()
+    for (const close of cleanup.reverse()) await close()
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('imports the exact page durably before any effect, opens it with the bot role keys and answers once', async () => {
+    const first = await record('PROMPT_SENTINEL', 1)
+    pages.push([first])
+    await inbound.import()
+    // Durable before the model, the directory or the reply path is touched.
+    expect(reply).not.toHaveBeenCalled()
+    expect(canonicalState.pendingInbox()).toEqual([
+      expect.objectContaining({
+        payloadHashHex: first.digest,
+        encryptedPayloadHex: toHex(first.delivery),
+        contextHex: toHex(first.context),
+        timestamp: 1001,
+      }),
+    ])
+    expect(JSON.stringify(canonicalState.pendingInbox())).not.toContain(
+      'SENTINEL',
+    )
+    await reopenCanonical()
+    expect(await inbound.drain(10)).toBe(1)
+    expect(reply).toHaveBeenCalledTimes(1)
+    expect(reply.mock.calls[0][0]).toEqual([
+      { role: 'system', content: 'system' },
+      { role: 'user', content: 'PROMPT_SENTINEL' },
+    ])
+    expect(sent).toHaveBeenCalledTimes(1)
+    // The peer and its key come from the sender's own verified entry — not from a profile lookup
+    // or any configured list.
+    expect(canonicalState.getResponse(first.digest)).toMatchObject({
+      phase: 'confirmed',
+      senderAddress: user.address,
+      senderPubKeyHex: user.subject,
+    })
+    expect(canonicalState.pendingInbox()).toEqual([])
+    // The relay may return the same record again; it is terminal by its payload digest.
+    pages.push([first])
+    await inbound.import()
+    expect(canonicalState.pendingInbox()).toEqual([])
+    expect(await inbound.drain(10)).toBe(0)
+    expect(reply).toHaveBeenCalledTimes(1)
+    expect(sent).toHaveBeenCalledTimes(1)
+  }, 30000)
+
+  it.each([
+    [
+      'ciphertext',
+      (parts: { payload: Uint8Array }) => {
+        parts.payload[parts.payload.length - 200] ^= 1
+      },
+    ],
+    [
+      'authenticated context',
+      (parts: { context: Uint8Array }) => {
+        parts.context[parts.context.length - 1] ^= 1
+      },
+    ],
+  ])(
+    'rejects a row whose %s was altered without blocking a valid message behind it from the same peer',
+    async (_name, mutate) => {
+      const altered = await record('PROMPT_SENTINEL', 2, {
+        mutate: mutate as never,
+      })
+      const valid = await record('PROMPT_SENTINEL', 3)
+      pages.push([altered, valid])
+      // Structurally valid, so it is imported; only opening can tell it was altered.
+      await inbound.import()
+      expect(canonicalState.pendingInbox()).toHaveLength(2)
+      expect(await inbound.drain(10)).toBe(1)
+      // The altered row was decided against a new directory read and is terminal; the valid
+      // message behind it, from the same peer, is answered exactly once.
+      expect(refreshes).toBe(1)
+      expect(reply).toHaveBeenCalledTimes(1)
+      expect(sent).toHaveBeenCalledTimes(1)
+      expect(canonicalState.pendingInbox()).toEqual([])
+      expect(canonicalState.getResponse(valid.digest)?.phase).toBe('confirmed')
+      await reopenCanonical()
+      pages.push([altered, valid])
+      await inbound.import()
+      expect(await inbound.drain(10)).toBe(0)
+      expect(canonicalState.pendingInbox()).toEqual([])
+      expect(reply).toHaveBeenCalledTimes(1)
+      expect(canonicalState.getResponse(altered.digest)).toBeUndefined()
+    },
+    30000,
+  )
+
+  it('retains, without opening, a message from a sender with no readable directory entry, then answers once its entry is published', async () => {
+    published = false
+    const first = await record('PROMPT_SENTINEL', 3)
+    pages.push([first])
+    await inbound.import()
+    expect(await inbound.drain(10)).toBe(0)
+    expect(reply).not.toHaveBeenCalled()
+    expect(canonicalState.pendingInbox()).toHaveLength(1)
+    published = true
+    expect(await inbound.drain(10)).toBe(1)
+    expect(reply).toHaveBeenCalledTimes(1)
+  }, 30000)
+
+  it('answers any sender whose entry verifies: two unrelated senders, each replied to under its own key', async () => {
+    const first = await record('PROMPT_SENTINEL', 20)
+    const second = await record('PROMPT_SENTINEL', 21, { from: other })
+    pages.push([first, second])
+    await inbound.import()
+    expect(await inbound.drain(10)).toBe(2)
+    expect(reply).toHaveBeenCalledTimes(2)
+    expect(canonicalState.getResponse(first.digest)).toMatchObject({
+      phase: 'confirmed',
+      senderAddress: user.address,
+      senderPubKeyHex: user.subject,
+    })
+    expect(canonicalState.getResponse(second.digest)).toMatchObject({
+      phase: 'confirmed',
+      senderAddress: other.address,
+      senderPubKeyHex: other.subject,
+    })
+    expect(sent.mock.calls.map(call => call[0].senderPubKeyHex)).toEqual([
+      user.subject,
+      other.subject,
+    ])
+  }, 30000)
+
+  it('does not let a forged frame that only claims a sender block that sender', async () => {
+    // Sealed by someone else entirely, with the sender field rewritten to that sender's key
+    // is not constructible here without the codec; an unopenable frame from the sender's own
+    // producer with a foreign context is the same case for the drain.
+    const foreign = await record('OTHER_SENTINEL', 9)
+    const forged = await record('PROMPT_SENTINEL', 8, {
+      mutate: parts => {
+        parts.context = foreign.context
+      },
+    })
+    const valid = await record('PROMPT_SENTINEL', 10)
+    pages.push([forged, valid])
+    await inbound.import()
+    expect(await inbound.drain(10)).toBe(1)
+    expect(reply).toHaveBeenCalledTimes(1)
+    expect(canonicalState.getResponse(forged.digest)).toBeUndefined()
+    expect(canonicalState.getResponse(valid.digest)?.phase).toBe('confirmed')
+    expect(canonicalState.pendingInbox()).toEqual([])
+  }, 30000)
+
+  it('opens under a newly read directory entry instead of rejecting when its recent read was stale', async () => {
+    // The recent read is another subject's entry, standing in for a superseded statement.
+    staleCurrent = bot.current
+    const first = await record('PROMPT_SENTINEL', 11)
+    pages.push([first])
+    await inbound.import()
+    expect(await inbound.drain(10)).toBe(1)
+    expect(refreshes).toBe(1)
+    expect(reply).toHaveBeenCalledTimes(1)
+  }, 30000)
+
+  it('retains, and does not reject, a row that fails to open while the directory cannot be read afresh', async () => {
+    staleCurrent = bot.current
+    directoryDown = true
+    const first = await record('PROMPT_SENTINEL', 12)
+    pages.push([first])
+    await inbound.import()
+    expect(await inbound.drain(10)).toBe(0)
+    expect(reply).not.toHaveBeenCalled()
+    expect(canonicalState.pendingInbox()).toHaveLength(1)
+    directoryDown = false
+    expect(await inbound.drain(10)).toBe(1)
+    expect(reply).toHaveBeenCalledTimes(1)
+  }, 30000)
+
+  it('rejects a frame addressed to another recipient and refuses a page whose digest does not match its payload', async () => {
+    const foreign = await record('PROMPT_SENTINEL', 4, { from: bot, to: user })
+    pages.push([foreign])
+    await inbound.import()
+    expect(await inbound.drain(10)).toBe(0)
+    expect(canonicalState.pendingInbox()).toEqual([])
+    expect(reply).not.toHaveBeenCalled()
+
+    pages.push([await record('PROMPT_SENTINEL', 5, { wrongDigest: true })])
+    await expect(inbound.import()).rejects.toThrow('Qwen inbox read failed')
+    expect(canonicalState.pendingInbox()).toEqual([])
+    expect(reply).not.toHaveBeenCalled()
+  }, 30000)
+
+  it('keeps a later turn from the same peer pending, in order, behind a held earlier turn', async () => {
+    const first = await record('PROMPT_SENTINEL', 6),
+      second = await record('PROMPT_SENTINEL', 7)
+    pages.push([first, second])
+    sent.mockRejectedValueOnce(new Error('SEND_ERROR_SENTINEL'))
+    await inbound.import()
+    expect(await inbound.drain(10)).toBe(0)
+    expect(reply).toHaveBeenCalledTimes(1)
+    expect(canonicalState.getResponse(first.digest)?.phase).toBe('send-started')
+    expect(
+      canonicalState.pendingInbox().map(row => row.payloadHashHex),
+    ).toEqual([second.digest])
+    await reopenCanonical()
+    expect(await inbound.drain(10)).toBe(0)
+    expect(reply).toHaveBeenCalledTimes(1)
+    expect(sent).toHaveBeenCalledTimes(1)
+  }, 30000)
+
+  it('leaves legacy rows untouched in canonical mode', async () => {
+    expect(
+      await canonicalState.importInboxPage(canonicalContext, 0, [
+        {
+          payloadHashHex: 'aa'.repeat(32),
+          encryptedPayloadHex: Buffer.from(
+            `${user.address}|${bot.address}|valid`,
+          ).toString('hex'),
+          timestamp: 1,
+          networkTagHex: Buffer.from('MONT').toString('hex'),
+        },
+      ]),
+    ).toBe('committed')
+    expect(await inbound.drain(10)).toBe(0)
+    expect(reply).not.toHaveBeenCalled()
+    expect(canonicalState.pendingInbox()).toHaveLength(1)
+  }, 30000)
 })

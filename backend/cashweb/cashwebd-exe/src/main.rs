@@ -275,6 +275,7 @@ async fn main() -> Result<()> {
                 (runtime, Some(worker))
             }
         };
+    let peer_urls = conf.registry.peers.clone();
     let our_peers = conf
         .registry
         .peers
@@ -365,25 +366,50 @@ async fn main() -> Result<()> {
     };
 
     let directory = if let Some(config) = conf.registry.directory.clone() {
-        if !conf.host.ip().is_loopback() {
-            return Err(bitcoinsuite_error::Report::msg(
-                "Directory backend requires authenticated loopback HTTPS front",
-            ));
-        }
+        let forwarding = config.forwarding;
+        config
+            .validate()
+            .map_err(|error| bitcoinsuite_error::Report::msg(error.to_string()))?;
         let (runtime, ready) = cashweb_registry::directory_runtime::DirectoryRuntime::start(
             Arc::clone(&registry),
-            conf.registry.db_path.clone(),
             config,
         )
-        .map_err(|_| bitcoinsuite_error::Report::msg("Directory runtime unavailable"))?;
+        .map_err(|_| {
+            bitcoinsuite_error::Report::msg(
+                "registry.directory is invalid: relay_id must be 32 hex characters, \
+                 relay_identity a compressed secp256k1 key in hex, endpoint an https origin \
+                 without a trailing slash, binding_expiry_ns decimal Unix nanoseconds",
+            )
+        })?;
         let runtime = Arc::new(runtime);
         match ready.await {
-            Ok(Ok(())) => Some(runtime),
+            Ok(Ok(())) => {
+                // Copy entries with the configured peers and pass messages on to them.
+                runtime.enable_federation(peer_urls.clone(), forwarding);
+                let expiry = runtime.info().binding.expiry.seconds;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|now| now.as_secs() as i64)
+                    .unwrap_or(0);
+                let days = (expiry - now) / 86_400;
+                if days < 400 {
+                    tracing::warn!(
+                        "registry.directory.binding_expiry_ns is {days} days away. Accounts \
+                         cannot publish entries that outlive it and the relay refuses to start \
+                         once it has passed. Set it at least 400 days ahead."
+                    );
+                }
+                tokio::spawn(cashweb_registry::directory_federation::Federation::spawn(
+                    runtime.as_ref().clone(),
+                ));
+                Some(runtime)
+            }
             _ => {
                 runtime.begin_shutdown();
                 runtime.wait_stopped().await;
                 return Err(bitcoinsuite_error::Report::msg(
-                    "Directory trust/continuity unavailable",
+                    "Directory could not start: registry.directory.binding_expiry_ns is in the \
+                     past or the directory database could not be read",
                 ));
             }
         }

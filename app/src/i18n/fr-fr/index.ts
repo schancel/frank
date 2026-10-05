@@ -309,6 +309,22 @@ export default {
     sendAgain: 'Renvoyer',
   },
   mailboxStatus: {
+    directory: {
+      'device-clock':
+        'Messagerie désactivée : la date et l’heure de cet appareil semblent incorrectes. Vérifiez l’horloge ; nouvelle tentative en cours.',
+      'account-unavailable':
+        'Messagerie désactivée : ce compte n’a pas pu être ouvert pour la messagerie. Nouvelle tentative en cours.',
+      'relay-unreachable':
+        'Messagerie désactivée : impossible de joindre le serveur pour publier votre compte. Nouvelle tentative en cours.',
+      'relay-rejected':
+        'Messagerie désactivée : le serveur a refusé d’enregistrer l’adresse de votre compte. Nouvelle tentative en cours.',
+      'relay-misconfigured':
+        'Messagerie désactivée : le serveur ne s’est pas décrit correctement, votre compte n’a donc pas pu être publié. Nouvelle tentative en cours.',
+      'entry-refused':
+        'Messagerie désactivée : le serveur détient une entrée invalide ou contradictoire pour votre compte. Nouvelle tentative en cours.',
+      'storage':
+        'Messagerie désactivée : cet appareil n’a pas pu enregistrer ses données d’annuaire. Nouvelle tentative en cours.',
+    },
     unavailable:
       'Service de messagerie indisponible : ce relais ne propose pas la messagerie, vous ne recevrez donc pas de messages.',
     unreachable:
@@ -486,6 +502,18 @@ export default {
     replace: 'Remplacer ce compte',
   },
   newContactDialog: {
+    lookup: {
+      'clock':
+        'La date et l’heure de cet appareil semblent incorrectes, cette adresse n’a donc pas pu être vérifiée. Vérifiez l’horloge et réessayez.',
+      'not-published':
+        'Cette adresse ne s’est pas encore publiée et ne peut donc pas recevoir de messages. Demandez à son propriétaire d’ouvrir l’application une fois.',
+      'unreachable':
+        'Impossible de joindre le serveur pour rechercher cette adresse. Réessayez dans un instant.',
+      'refused':
+        'Le serveur a renvoyé pour cette adresse une entrée qui n’est pas signée par elle, qui a expiré ou qui contredit une entrée déjà vue. Elle n’a pas été utilisée.',
+      'messaging-off':
+        'Votre propre compte est encore en cours de publication. Les contacts pourront être ajoutés une fois la messagerie activée.',
+    },
     newContact: 'Nouveau contact',
     enterBitcoinCashAddress: 'Entrez une adresse Lotus...',
     loading: 'Recherche du contact',

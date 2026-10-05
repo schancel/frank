@@ -26,6 +26,8 @@ import {
   MonadStampRecoveredAttemptError,
   MonadStampTerminalError,
 } from '@frank/wallet/monad-stamp-client'
+import { MonadRpcError } from '@frank/wallet/monad-http'
+import { CanonicalMessagingHoldError } from '@frank/wallet/chain/monad-canonical-dm'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { MessageWrapper } from '@frank/cashweb/types/messages'
 import {
@@ -823,6 +825,118 @@ describe('outgoing direct messages (#269, #270)', () => {
       ).resolves.toEqual({ state: 'sent', payloadDigest: '78'.repeat(32) })
     })
 
+    // The wallet as the app sees it: a delivered payment nobody points at stays reported in every
+    // session until the user's answer is saved. `reload()` is a new app session over this state.
+    function durableOrphan() {
+      let reported = [HASH]
+      const unattributed = jest
+        .spyOn(activeChain.directMessages, 'unattributedAttempts')
+        .mockImplementation(async () => [...reported])
+      const resolve = jest
+        .spyOn(activeChain.directMessages, 'resolveUnattributedAttempts')
+        .mockImplementation(async ({ payloadDigests }) => {
+          reported = reported.filter(digest => !payloadDigests.includes(digest))
+        })
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+      return { unattributed, resolve, send }
+    }
+
+    it('an unconfirmed Retry keeps asking across reloads and never pays or saves an answer', async () => {
+      await seedInterrupted()
+      const { resolve, send } = durableOrphan()
+      for (let session = 0; session < 3; session++) {
+        const restored = await reload()
+        await expect(
+          restored.retryOutgoing({
+            wallet,
+            address: PEER,
+            payloadDigest: only(restored)[0].payloadDigest,
+          }),
+        ).resolves.toEqual({
+          state: 'needs-confirmation',
+          reason: 'unverified',
+        })
+      }
+      expect(send).not.toHaveBeenCalled()
+      expect(resolve).not.toHaveBeenCalled()
+    })
+
+    it('a confirmed Retry saves the answer before it pays, so the same payment does not block a later message', async () => {
+      await seedInterrupted()
+      const { resolve, send } = durableOrphan()
+      const restored = await reload()
+      const order: string[] = []
+      resolve.mockImplementationOnce(async () => void order.push('resolve'))
+      send.mockImplementationOnce(async () => {
+        order.push('send')
+        return okResult('78'.repeat(32))
+      })
+      await expect(
+        restored.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: only(restored)[0].payloadDigest,
+          confirmed: true,
+        }),
+      ).resolves.toEqual({ state: 'sent', payloadDigest: '78'.repeat(32) })
+      expect(resolve).toHaveBeenCalledTimes(1)
+      expect(resolve).toHaveBeenCalledWith({ wallet, payloadDigests: [HASH] })
+      expect(order).toEqual(['resolve', 'send'])
+      expect(send).toHaveBeenCalledTimes(1)
+    })
+
+    it('after the answer is saved, another interrupted message in a later session retries without a prompt', async () => {
+      await seedInterrupted()
+      const { resolve, send } = durableOrphan()
+      let restored = await reload()
+      send.mockResolvedValueOnce(okResult('78'.repeat(32)))
+      await restored.retryOutgoing({
+        wallet,
+        address: PEER,
+        payloadDigest: only(restored)[0].payloadDigest,
+        confirmed: true,
+      })
+      await seedInterrupted()
+      restored = await reload()
+      const second = only(restored).find(
+        message => message.delivery?.failureReason === 'interrupted',
+      )!
+      send.mockResolvedValueOnce(okResult('9a'.repeat(32)))
+      await expect(
+        restored.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: second.payloadDigest,
+        }),
+      ).resolves.toEqual({ state: 'sent', payloadDigest: '9a'.repeat(32) })
+      expect(resolve).toHaveBeenCalledTimes(1)
+      expect(send).toHaveBeenCalledTimes(2)
+    })
+
+    it('a confirmed Retry whose check failed pays once and saves no answer it could not see', async () => {
+      await seedInterrupted()
+      const restored = await reload()
+      jest
+        .spyOn(activeChain.directMessages, 'unattributedAttempts')
+        .mockRejectedValue(new Error('journal unreadable'))
+      const resolve = jest.spyOn(
+        activeChain.directMessages,
+        'resolveUnattributedAttempts',
+      )
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockResolvedValueOnce(okResult('78'.repeat(32)))
+      await expect(
+        restored.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: only(restored)[0].payloadDigest,
+          confirmed: true,
+        }),
+      ).resolves.toEqual({ state: 'sent', payloadDigest: '78'.repeat(32) })
+      expect(resolve).not.toHaveBeenCalled()
+    })
+
     it('an interrupted message with provably no unattributed payment retries without a prompt', async () => {
       await seedInterrupted()
       const restored = await reload()
@@ -856,6 +970,69 @@ describe('outgoing direct messages (#269, #270)', () => {
         }),
       ).resolves.toEqual({ state: 'needs-confirmation', reason: 'unverified' })
       expect(send).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('F5: an earlier payment that cannot be finished keeps its failure reason', () => {
+    const held = (cause?: unknown) =>
+      new CanonicalMessagingHoldError(
+        'An earlier payment could not be finished yet.',
+        cause,
+      )
+    it.each([
+      [
+        'not enough funds',
+        new MonadRpcError('insufficient-funds', 'rejected by node', undefined),
+        'insufficient-funds',
+      ],
+      [
+        'no response',
+        Object.assign(new Error('no response'), { isAxiosError: true }),
+        'unreachable',
+      ],
+      ['anything else', new Error('signer unavailable'), 'error'],
+      ['no cause', undefined, 'error'],
+    ])(
+      '%s behind the hold is shown as that reason',
+      async (_, cause, reason) => {
+        jest
+          .spyOn(activeChain.directMessages, 'send')
+          .mockRejectedValue(held(cause))
+        const chats = useChatStore()
+        await expect(
+          chats.sendMessage({ wallet, address: PEER, items: TEXT }),
+        ).resolves.toEqual({ state: 'failed', reason })
+        expect(only(chats)[0].delivery).toEqual(
+          expect.objectContaining({ failureReason: reason }),
+        )
+        // This message never got a payment of its own.
+        expect(only(chats)[0].delivery?.attemptDigest).toBeUndefined()
+      },
+    )
+
+    it('keeps this message’s own payment attempt when the hold comes after it was journaled', async () => {
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async (params: SendParams) => {
+          await params.onAttemptCreated?.(HASH)
+          throw held(
+            new MonadRpcError(
+              'insufficient-funds',
+              'rejected by node',
+              undefined,
+            ),
+          )
+        })
+      const chats = useChatStore()
+      await expect(
+        chats.sendMessage({ wallet, address: PEER, items: TEXT }),
+      ).resolves.toEqual({ state: 'failed', reason: 'insufficient-funds' })
+      expect(only(chats)[0].delivery).toEqual(
+        expect.objectContaining({
+          failureReason: 'insufficient-funds',
+          attemptDigest: HASH,
+        }),
+      )
     })
   })
 

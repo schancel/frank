@@ -295,6 +295,13 @@ function isInsufficientFundsError(error: unknown): boolean {
   )
 }
 
+/** The original failure a `CanonicalMessagingHoldError` was raised for, if it carries one. */
+function heldCause(error: unknown): unknown {
+  return error instanceof Error && error.name === 'CanonicalMessagingHoldError'
+    ? (error as { cause?: unknown }).cause
+    : undefined
+}
+
 /** Maps a failed send to the reason class shown to the user, and says whether the message must
  * keep its payment attempt (so a later retry asks the wallet about it instead of paying again). */
 function classifySendFailure(
@@ -320,8 +327,17 @@ function classifySendFailure(
   if (isInsufficientFundsError(error)) {
     return { reason: 'insufficient-funds' }
   }
+  // An earlier payment that could not be finished holds this send. Show why it could not be
+  // finished; whatever payment set this message already has stays on it.
+  const held = heldCause(error)
+  if (isInsufficientFundsError(held)) {
+    return { reason: 'insufficient-funds', keepDigest: ownDigest }
+  }
   return {
-    reason: isNoResponseError(error) ? 'unreachable' : 'error',
+    reason:
+      isNoResponseError(error) || isNoResponseError(held)
+        ? 'unreachable'
+        : 'error',
     // Any failure after the payment set was journaled leaves that set on the message.
     keepDigest: ownDigest,
   }
@@ -1318,11 +1334,7 @@ export const useChatStore = defineStore('chats', {
         previous?.failureReason === 'recovered'
       ) {
         return { state: 'needs-confirmation', reason: 'recovered' }
-      } else if (
-        manual &&
-        !confirmed &&
-        previous?.failureReason === 'interrupted'
-      ) {
+      } else if (manual && previous?.failureReason === 'interrupted') {
         // No attempt is recorded on this message, but the app stopped mid-send: the wallet may
         // hold (or already have resumed) a payment nobody points at. Do not pay again unless
         // there is provably none, or the user says so.
@@ -1332,7 +1344,7 @@ export const useChatStore = defineStore('chats', {
           const attempt = other?.delivery?.attemptDigest
           if (attempt !== undefined) known.add(attempt)
         }
-        let orphans: string[]
+        let orphans: string[] | undefined
         try {
           orphans = await activeChain.directMessages.unattributedAttempts({
             wallet,
@@ -1340,11 +1352,28 @@ export const useChatStore = defineStore('chats', {
           })
         } catch (error) {
           console.warn('could not check for an unattributed payment', error)
-          orphans = ['unchecked']
         }
-        if (orphans.length > 0) {
-          // Leave the message 'interrupted': every unconfirmed Retry must hit this check again.
+        if (!confirmed && (orphans === undefined || orphans.length > 0)) {
+          // Leave the message 'interrupted': every unconfirmed Retry must hit this check again,
+          // in this session and after a reload. Only the user's answer below ends that.
           return { state: 'needs-confirmation', reason: 'unverified' }
+        }
+        if (orphans !== undefined && orphans.length > 0) {
+          // The user chose to pay again. Save that answer for the payments it was about, so they
+          // stop blocking later retries. If it cannot be saved, the wallet keeps reporting them
+          // and the next interrupted message asks again; that never pays without a prompt.
+          try {
+            await activeChain.directMessages.resolveUnattributedAttempts({
+              wallet,
+              payloadDigests: orphans,
+            })
+          } catch (error) {
+            console.warn(
+              'could not save the answer for an unattributed payment',
+              error,
+            )
+          }
+          if (!stillCurrent()) return { state: 'busy' }
         }
       }
 
@@ -1368,7 +1397,10 @@ export const useChatStore = defineStore('chats', {
           onAttemptCreated: async attemptDigest => {
             ownDigest = attemptDigest
             // Strict: this write must be durable before the relay sees any byte of the set.
-            // If it fails, the wallet aborts the send and rolls the attempt back.
+            // If it fails, the send stops before any relay request. The wallet does NOT roll the
+            // attempt back: its payment intent stays journaled, later sends wait behind it, and
+            // reconciliation finishes and delivers those same bytes. `ownDigest` is therefore
+            // kept on the message by the failure path below whenever that later write succeeds.
             await this.setOutgoingState(
               address,
               id,

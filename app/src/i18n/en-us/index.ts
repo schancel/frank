@@ -303,6 +303,22 @@ export default {
     sendAgain: 'Send again',
   },
   mailboxStatus: {
+    directory: {
+      'device-clock':
+        'Messaging is off: this device’s date and time look wrong. Check the clock; retrying.',
+      'account-unavailable':
+        'Messaging is off: this account could not be opened for messaging. Retrying.',
+      'relay-unreachable':
+        "Messaging is off: can't reach the server to publish your account. Retrying.",
+      'relay-rejected':
+        'Messaging is off: the server refused to store your account’s address entry. Retrying.',
+      'relay-misconfigured':
+        'Messaging is off: the server did not describe itself correctly, so your account could not be published. Retrying.',
+      'entry-refused':
+        'Messaging is off: the server holds a conflicting or invalid entry for your account. Retrying.',
+      'storage':
+        'Messaging is off: this device could not save its address book records. Retrying.',
+    },
     unavailable:
       'Messaging service unavailable: this relay does not offer messaging, so you will not receive messages.',
     unreachable:
@@ -467,6 +483,18 @@ export default {
     replace: 'Replace this account',
   },
   newContactDialog: {
+    lookup: {
+      'clock':
+        'This device’s date and time look wrong, so this address could not be checked. Check the clock and try again.',
+      'not-published':
+        'This address has not published itself yet, so it cannot receive messages. Ask its owner to open the app once.',
+      'unreachable':
+        "Can't reach the server to look this address up. Try again in a moment.",
+      'refused':
+        'The server returned an entry for this address that is not signed by it, has expired or conflicts with one seen before. It was not used.',
+      'messaging-off':
+        'Your own account is still being published. Contacts can be added once messaging is on.',
+    },
     newContact: 'New Contact',
     enterBitcoinCashAddress: 'Enter address (0x...)',
     loading: 'Looking up contact',

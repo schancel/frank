@@ -486,7 +486,7 @@ const statusText = computed(() =>
   busy.value
     ? 'Account operation in progress.'
     : account.status === 'ready'
-    ? 'Local account ready. Messaging is unavailable in this typed-account preview.'
+    ? 'Local account ready.'
     : account.status === 'fresh'
     ? 'No active local account.'
     : account.status === 'pending'

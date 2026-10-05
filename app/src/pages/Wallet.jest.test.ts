@@ -214,10 +214,9 @@ describe('Wallet detail page (#570)', () => {
     session.revision++
     session.status = 'ready'
     await flush()
-    expect(wrapper.vm.displayAddress).toBe('0xauthB')
+    expect(wrapper.vm.displayAddress).toBe('0xreceiveB')
     await copy.trigger('click')
-    expect(mockCopyToClipboard).toHaveBeenCalledWith('0xauthB')
-    expect(mockCopyToClipboard).not.toHaveBeenCalledWith('0xreceiveB')
+    expect(mockCopyToClipboard).toHaveBeenCalledWith('0xreceiveB')
     wrapper.unmount()
   })
 

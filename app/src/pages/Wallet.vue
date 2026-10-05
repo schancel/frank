@@ -189,7 +189,19 @@ export default defineComponent({
         try {
           if (chain === 'monad') {
             const wallet = await useActiveWallet()
-            if (current) displayAddress.value = wallet.identity.displayAddress
+            if (!current) return
+            let address: unknown
+            if (typeof wallet.getReceiveAddress === 'function') {
+              address = await wallet.getReceiveAddress()
+            } else if (wallet.identity?.displayAddress) {
+              address = wallet.identity.displayAddress
+            }
+            if (current && address) {
+              displayAddress.value =
+                typeof address === 'string'
+                  ? address
+                  : activeChain.addressToString(address as any)
+            }
           } else {
             const address = await accountSession.getChainAddress(
               chain as 'ecash' | 'solana',

@@ -94,6 +94,8 @@
         @sendFileClicked="toSendFileDialog"
         @giveLotusClicked="$emit('giveLotusClicked')"
         @blackjackClicked="blackjackDialog = true"
+        @sendStealthClicked="stealthDialog = true"
+        @offerSwapClicked="swapDialog = true"
         ref="chatInput"
         v-model:message="message"
         v-model:stamp-amount="stampAmount"
@@ -110,6 +112,26 @@
         />
       </q-card>
     </q-dialog>
+    <!-- Send Stealth dialog: multi-chain encrypted stealth payment -->
+    <q-dialog v-model="stealthDialog">
+      <send-stealth-dialog
+        v-if="stealthDialog"
+        :contact="contact"
+        :address="address"
+        :busy="sendingMessage"
+        @send="sendStealthPayment"
+      />
+    </q-dialog>
+    <!-- Offer Swap dialog: cross-chain atomic swap offer -->
+    <q-dialog v-model="swapDialog">
+      <offer-swap-dialog
+        v-if="swapDialog"
+        :contact="contact"
+        :address="address"
+        :busy="sendingMessage"
+        @offer="sendSwapOffer"
+      />
+    </q-dialog>
   </div>
 </template>
 
@@ -120,6 +142,8 @@ import ChatMessageComponent from '../components/chat/messages/ChatMessage.vue'
 import ChatBannerStack from '../components/chat/ChatBannerStack.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
 import BlackjackChallengeForm from '../components/chat/BlackjackChallengeForm.vue'
+import SendStealthDialog from '../components/dialogs/SendStealthDialog.vue'
+import OfferSwapDialog from '../components/dialogs/OfferSwapDialog.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
@@ -165,6 +189,8 @@ export default defineComponent({
     ChatMessageReply,
     ChatInput,
     BlackjackChallengeForm,
+    SendStealthDialog,
+    OfferSwapDialog,
     ChatBannerStack,
   },
   beforeRouteUpdate(
@@ -196,6 +222,8 @@ export default defineComponent({
       stampPreparationStatus: null as string | null,
       sendingMessage: false,
       blackjackDialog: false,
+      stealthDialog: false,
+      swapDialog: false,
       // Automatic dealer steps already attempted in this page session.
       blackjackAttempted: new Set<string>(),
       // An own undelivered hand message is being resumed; no automatic step meanwhile.
@@ -511,6 +539,73 @@ export default defineComponent({
         this.sendingMessage = false
       }
       // After message send, scroll to bottom if not already there
+      if (!this.bottom) {
+        this.$nextTick(this.buttonScrollBottom)
+      }
+    },
+    async sendStealthPayment({
+      chainId,
+      amount,
+      memo,
+    }: {
+      chainId: string
+      amount: number
+      memo?: string
+    }) {
+      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+      const items: MessageItem[] = [
+        {
+          type: 'stealth',
+          chainId,
+          amount,
+          memo,
+        },
+      ]
+      if (memo) {
+        items.push({
+          type: 'text',
+          text: memo,
+        })
+      }
+      this.sendingMessage = true
+      try {
+        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
+        await this.sendDirectMessage({
+          wallet: useMonadWallet(),
+          address: this.address,
+          items,
+          stampValue,
+          onPreparationProgress: this.showStampPreparation,
+        })
+      } catch (err) {
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
+      } finally {
+        this.stampPreparationStatus = null
+        this.sendingMessage = false
+      }
+      if (!this.bottom) {
+        this.$nextTick(this.buttonScrollBottom)
+      }
+    },
+    async sendSwapOffer(item: MessageItem) {
+      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+      const items: MessageItem[] = [item]
+      this.sendingMessage = true
+      try {
+        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
+        await this.sendDirectMessage({
+          wallet: useMonadWallet(),
+          address: this.address,
+          items,
+          stampValue,
+          onPreparationProgress: this.showStampPreparation,
+        })
+      } catch (err) {
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
+      } finally {
+        this.stampPreparationStatus = null
+        this.sendingMessage = false
+      }
       if (!this.bottom) {
         this.$nextTick(this.buttonScrollBottom)
       }

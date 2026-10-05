@@ -568,13 +568,18 @@ describe("serializeMessageItems / deserializeMessageItems", () => {
     expect(deserializeMessageItems(plaintext)).toEqual(items);
   });
 
-  it("rejects stealth items -- no Monad UTXO-payment equivalent exists", () => {
-    expect(() =>
-      serializeMessageItems([{ type: "stealth", amount: 1000 }])
-    ).toThrow(/stealth/);
+  it("round-trips multi-chain stealth payment items", () => {
+    const stealthItem: MessageItem = {
+      type: "stealth",
+      chainId: "monad-testnet",
+      amount: 1000,
+      rawTx: "0x02deadbeef",
+    };
+    const plaintext = serializeMessageItems([stealthItem]);
+    expect(deserializeMessageItems(plaintext)).toEqual([stealthItem]);
   });
 
-  it("rejects p2pkh items for the same reason", () => {
+  it("rejects p2pkh items as legacy Lotus script", () => {
     expect(() =>
       serializeMessageItems([{ type: "p2pkh", address: "0xabc", amount: 1000 }])
     ).toThrow(/p2pkh/);
@@ -781,9 +786,9 @@ describe("createMonadChain: directMessages.send", () => {
       chain.directMessages.send({
         wallet: makeWallet(alice),
         recipient: bob.address,
-        items: [{ type: "stealth", amount: 1 }],
+        items: [{ type: "p2pkh", address: "0xabc", amount: 1 }],
       })
-    ).rejects.toThrow(/stealth/);
+    ).rejects.toThrow(/p2pkh/);
     expect(mockedFetchMonadProfile).not.toHaveBeenCalled();
   });
 });

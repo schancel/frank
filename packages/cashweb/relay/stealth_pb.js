@@ -274,7 +274,7 @@ proto.stealth.StealthOutpoints.prototype.clearVoutsList = function() {
  * @private {!Array<number>}
  * @const
  */
-proto.stealth.StealthPaymentEntry.repeatedFields_ = [2];
+proto.stealth.StealthPaymentEntry.repeatedFields_ = [2, 4];
 
 
 
@@ -309,7 +309,9 @@ proto.stealth.StealthPaymentEntry.toObject = function(includeInstance, msg) {
   var f, obj = {
 ephemeralPubKey: msg.getEphemeralPubKey_asB64(),
 outpointsList: jspb.Message.toObjectList(msg.getOutpointsList(),
-    proto.stealth.StealthOutpoints.toObject, includeInstance)
+    proto.stealth.StealthOutpoints.toObject, includeInstance),
+chainId: jspb.Message.getFieldWithDefault(msg, 3, ""),
+transactionsList: msg.getTransactionsList_asB64()
   };
 
   if (includeInstance) {
@@ -355,6 +357,14 @@ proto.stealth.StealthPaymentEntry.deserializeBinaryFromReader = function(msg, re
       reader.readMessage(value,proto.stealth.StealthOutpoints.deserializeBinaryFromReader);
       msg.addOutpoints(value);
       break;
+    case 3:
+      var value = /** @type {string} */ (reader.readString());
+      msg.setChainId(value);
+      break;
+    case 4:
+      var value = /** @type {!Uint8Array} */ (reader.readBytes());
+      msg.addTransactions(value);
+      break;
     default:
       reader.skipField();
       break;
@@ -397,6 +407,20 @@ proto.stealth.StealthPaymentEntry.serializeBinaryToWriter = function(message, wr
       2,
       f,
       proto.stealth.StealthOutpoints.serializeBinaryToWriter
+    );
+  }
+  f = message.getChainId();
+  if (f.length > 0) {
+    writer.writeString(
+      3,
+      f
+    );
+  }
+  f = message.getTransactionsList_asU8();
+  if (f.length > 0) {
+    writer.writeRepeatedBytes(
+      4,
+      f
     );
   }
 };
@@ -479,6 +503,83 @@ proto.stealth.StealthPaymentEntry.prototype.addOutpoints = function(opt_value, o
  */
 proto.stealth.StealthPaymentEntry.prototype.clearOutpointsList = function() {
   return this.setOutpointsList([]);
+};
+
+
+/**
+ * optional string chain_id = 3;
+ * @return {string}
+ */
+proto.stealth.StealthPaymentEntry.prototype.getChainId = function() {
+  return /** @type {string} */ (jspb.Message.getFieldWithDefault(this, 3, ""));
+};
+
+
+/**
+ * @param {string} value
+ * @return {!proto.stealth.StealthPaymentEntry} returns this
+ */
+proto.stealth.StealthPaymentEntry.prototype.setChainId = function(value) {
+  return jspb.Message.setProto3StringField(this, 3, value);
+};
+
+
+/**
+ * repeated bytes transactions = 4;
+ * @return {!Array<string>}
+ */
+proto.stealth.StealthPaymentEntry.prototype.getTransactionsList = function() {
+  return /** @type {!Array<string>} */ (jspb.Message.getRepeatedField(this, 4));
+};
+
+
+/**
+ * repeated bytes transactions = 4;
+ * This is a type-conversion wrapper around `getTransactionsList()`
+ * @return {!Array<!Uint8Array>}
+ */
+proto.stealth.StealthPaymentEntry.prototype.getTransactionsList_asU8 = function() {
+  return /** @type {!Array<!Uint8Array>} */ (jspb.Message.bytesListAsU8(
+      this.getTransactionsList()));
+};
+
+
+/**
+ * repeated bytes transactions = 4;
+ * This is a type-conversion wrapper around `getTransactionsList()`
+ * @return {!Array<string>}
+ */
+proto.stealth.StealthPaymentEntry.prototype.getTransactionsList_asB64 = function() {
+  return /** @type {!Array<string>} */ (jspb.Message.bytesListAsB64(
+      this.getTransactionsList()));
+};
+
+
+/**
+ * @param {!(Array<!Uint8Array>|Array<string>)} value
+ * @return {!proto.stealth.StealthPaymentEntry} returns this
+ */
+proto.stealth.StealthPaymentEntry.prototype.setTransactionsList = function(value) {
+  return jspb.Message.setField(this, 4, value || []);
+};
+
+
+/**
+ * @param {!(string|Uint8Array)} value
+ * @param {number=} opt_index
+ * @return {!proto.stealth.StealthPaymentEntry} returns this
+ */
+proto.stealth.StealthPaymentEntry.prototype.addTransactions = function(value, opt_index) {
+  return jspb.Message.addToRepeatedField(this, 4, value, opt_index);
+};
+
+
+/**
+ * Clears the list making it empty but non-null.
+ * @return {!proto.stealth.StealthPaymentEntry} returns this
+ */
+proto.stealth.StealthPaymentEntry.prototype.clearTransactionsList = function() {
+  return this.setTransactionsList([]);
 };
 
 

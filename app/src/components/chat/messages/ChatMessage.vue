@@ -38,6 +38,7 @@
             <chat-message-stealth
               v-else-if="item.type == 'stealth'"
               :amount="item.amount"
+              :chain-id="item.chainId"
             />
             <chat-message-image
               v-else-if="item.type == 'image'"
@@ -68,6 +69,20 @@
               :item="item"
               :address="address"
               @sendFollowUp="handleSendFollowUp"
+            />
+            <chat-message-swap
+              v-else-if="item.type == 'swap-offer'"
+              :swap-id="item.swapId"
+              :offered-chain="item.offeredChain"
+              :offered-asset="item.offeredAsset"
+              :offered-amount="item.offeredAmount"
+              :requested-chain="item.requestedChain"
+              :requested-asset="item.requestedAsset"
+              :requested-amount="item.requestedAmount"
+              :status="item.status"
+              :outbound="message.outbound"
+              @accept="handleSwapAccept"
+              @cancel="handleSwapCancel"
             />
             <!-- Previously silently unrendered (no branch existed at all for this or any other
             unhandled type) -- a real preview string instead, via the same registry `chats.ts` now
@@ -118,6 +133,7 @@ import ChatMessageStealth from './ChatMessageStealth.vue'
 import ChatMessageBlackjack from './ChatMessageBlackjack.vue'
 import ChatMessageDigitalGoods from './ChatMessageDigitalGoods.vue'
 import ChatMessageRaffle from './ChatMessageRaffle.vue'
+import ChatMessageSwap from './ChatMessageSwap.vue'
 import ChatMessageSuffix from './ChatMessageSuffix.vue'
 import DeleteMessageDialog from '../../dialogs/DeleteMessageDialog.vue'
 import TransactionDialog from '../../dialogs/TransactionDialog.vue'
@@ -142,6 +158,7 @@ export default defineComponent({
     ChatMessageBlackjack,
     ChatMessageDigitalGoods,
     ChatMessageRaffle,
+    ChatMessageSwap,
     ChatMessageImage,
     ChatMessageStealth,
     ChatMessageSuffix,
@@ -232,6 +249,18 @@ export default defineComponent({
       this.replyClicked({
         address: this.address,
         payloadDigest: this.payloadDigest,
+      })
+    },
+    handleSwapAccept(swapId: string) {
+      this.$emit('sendFollowUp', {
+        type: 'swap-accept',
+        swapId,
+      })
+    },
+    handleSwapCancel(swapId: string) {
+      this.$emit('sendFollowUp', {
+        type: 'swap-cancel',
+        swapId,
       })
     },
     /** Manual Retry of a failed message. For a Monad message this never deletes it first: the

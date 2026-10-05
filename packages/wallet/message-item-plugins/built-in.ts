@@ -14,10 +14,19 @@ import {
   P2PKHSendItem,
   ReplyItem,
   StealthItem,
+  SwapOfferItem,
   TextItem,
 } from '@frank/cashweb/types/messages'
 
 import { registerMessageItemPlugin } from './index'
+
+registerMessageItemPlugin<SwapOfferItem, SwapOfferItem>({
+  type: 'swap-offer',
+  hydrate: raw => raw,
+  previewText: raw =>
+    `Atomic swap offer: ${raw.offeredAmount} ${raw.offeredAsset} (${raw.offeredChain}) for ${raw.requestedAmount} ${raw.requestedAsset} (${raw.requestedChain})`,
+  tallyValue: raw => raw.offeredAmount,
+})
 
 registerMessageItemPlugin<TextItem, TextItem>({
   type: 'text',
@@ -34,7 +43,12 @@ registerMessageItemPlugin<ImageItem, ImageItem>({
 registerMessageItemPlugin<StealthItem, StealthItem>({
   type: 'stealth',
   hydrate: raw => raw,
-  previewText: () => 'Sent Lotus',
+  previewText: raw => {
+    if (raw.chainId) {
+      return `Sent stealth payment (${raw.chainId})`
+    }
+    return 'Sent stealth payment'
+  },
   // Matches the pre-existing behavior exactly: reads the item's own self-reported `amount`, not a
   // chain-verified figure. See this hook's own doc comment on the registry for why that's a known,
   // separately-tracked gap (ticket #60), not something this port changes.

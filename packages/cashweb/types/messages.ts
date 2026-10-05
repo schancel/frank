@@ -20,9 +20,20 @@ export interface P2PKHSendItem {
 
 export interface StealthItem {
   type: 'stealth'
+  /** Target blockchain network identifier (e.g. 'monad-testnet', 'solana-testnet', 'ecash-testnet'). */
+  chainId?: string
+  /** Transferred value / amount */
   amount: number
+  /** Raw signed transaction for EVM / Monad (hex string). */
+  rawTx?: string
+  /** Serialized signed transaction for Solana (base64 or hex string). */
+  solanaTx?: string
+  /** Optional transaction memo. */
+  memo?: string
+  /** UTXO-specific outpoint fields (Lotus / eCash compatibility). */
   txId?: string
   outputIndex?: number
+  ephemeralPubKey?: string
 }
 
 export interface ImageItem {
@@ -171,6 +182,22 @@ export interface RaffleItem {
   message?: string
 }
 
+export interface SwapOfferItem {
+  type: 'swap-offer'
+  swapId: string
+  offeredChain: string
+  offeredAsset: string
+  offeredAmount: string
+  requestedChain: string
+  requestedAsset: string
+  requestedAmount: string
+  status: 'pending' | 'accepted' | 'settled' | 'cancelled' | 'expired'
+  initiatorAddress: string
+  recipientAddress: string
+  createdAt: number
+  expiresAt?: number
+}
+
 export type MessageItem =
   | StealthItem
   | P2PKHSendItem
@@ -181,6 +208,7 @@ export type MessageItem =
   | BlackjackHandItem
   | DigitalGoodsItem
   | RaffleItem
+  | SwapOfferItem
 
 /** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the
  * message so the failure and its manual Retry survive a reload. */

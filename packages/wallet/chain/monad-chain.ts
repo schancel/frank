@@ -635,13 +635,12 @@ async function syncMailboxRecoveries(
   }
 }
 
-/** JSON-serializes `items` for use as a direct message's plaintext -- only the item kinds that
- * have a real Monad-side meaning (see this file's header). Throws on `'stealth'`/`'p2pkh'` items,
- * which have no Monad equivalent to build (no UTXO coin selection exists on this chain -- see
- * `PLAN.md`'s M9 notes). */
+/** JSON-serializes `items` for use as a direct message's plaintext.
+ * Throws only on `'p2pkh'` items, which are legacy Lotus-only script items.
+ * Stealth items are supported across chains (Monad, Solana, eCash). */
 export function serializeMessageItems(items: MessageItem[]): string {
   for (const item of items) {
-    if (item.type === "stealth" || item.type === "p2pkh") {
+    if (item.type === "p2pkh") {
       throw new Error(
         `MonadChain direct messages don't support '${item.type}' items: on-chain-payment-` +
           "embedded-in-message has no Monad equivalent (see PLAN.md's M9 notes)"

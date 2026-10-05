@@ -2853,40 +2853,80 @@ impl<'a> DbMonadOutbox<'a> {
             self.gc_history(now_ms, limits)?;
             return Ok(stored);
         }
-        if record.lifecycle != MonadOutboxLifecycle::FullyConfirmed {
-            return Err(
-                CorruptRecord("delivery attempted before full confirmation".to_string()).into(),
-            );
+        if let Some(stored) = self.db.monad_messages().get(&payload_hash)? {
+            if record.canonical_message.is_some() {
+                let message = Self::canonical_message(&record)?;
+                let policy = active_policy(&record)?.clone();
+                record.canonical_message = None;
+                record.policy = None;
+                record.last_error.clear();
+                record.lifecycle = MonadOutboxLifecycle::Delivered;
+                let encoded = encode_record(&record);
+                let mut batch = rocksdb::WriteBatch::default();
+                if self
+                    .db
+                    .get(self.cf_meta, recovery_quota_record_key(&payload_hash))?
+                    .is_some()
+                {
+                    self.append_quota_release_locked(&mut batch, &payload_hash, &policy.recipient)?;
+                }
+                self.append_outbox_put(&mut batch, &payload_hash, &encoded);
+                batch.delete_cf(self.cf_active, payload_hash);
+                batch.delete_cf(
+                    self.cf_recipient,
+                    recipient_key(&policy.recipient, &payload_hash),
+                );
+                for payment in message.stamp_payments {
+                    batch.delete_cf(
+                        self.cf_members,
+                        member_key(&payload_hash, payment.child_index),
+                    );
+                }
+                batch.put_cf(
+                    self.cf_history,
+                    history_key(now_ms, &payload_hash),
+                    (encoded.len() as u64).to_be_bytes(),
+                );
+                self.db.write_batch(batch)?;
+            }
+            drop(_guard);
+            self.gc_history(now_ms, limits)?;
+            return Ok(stored);
         }
+
         let message = Self::canonical_message(&record)?;
         let policy = active_policy(&record)?.clone();
-        let mut members = Vec::with_capacity(message.stamp_payments.len());
-        for payment in &message.stamp_payments {
-            let member = self
-                .get_member(&payload_hash, payment.child_index)?
-                .ok_or_else(|| CorruptRecord("fully-confirmed child row missing".to_string()))?;
-            members.push(member);
-        }
-        let verified = if let Some(expected_chain_id) = expected_chain_id {
-            Some(crate::monad_outbox::financial::verify_submission(
-                &message,
-                record.canonical_message.as_deref().expect("decoded above"),
-                &payload_hash,
-                &policy,
-                &members,
-                expected_chain_id,
-            )?)
+        let publication_message = if record.lifecycle == MonadOutboxLifecycle::FullyConfirmed {
+            let mut members = Vec::with_capacity(message.stamp_payments.len());
+            for payment in &message.stamp_payments {
+                let member = self
+                    .get_member(&payload_hash, payment.child_index)?
+                    .ok_or_else(|| CorruptRecord("fully-confirmed child row missing".to_string()))?;
+                members.push(member);
+            }
+            let verified = if let Some(expected_chain_id) = expected_chain_id {
+                Some(crate::monad_outbox::financial::verify_submission(
+                    &message,
+                    record.canonical_message.as_deref().expect("decoded above"),
+                    &payload_hash,
+                    &policy,
+                    &members,
+                    expected_chain_id,
+                )?)
+            } else {
+                None
+            };
+            verified.map_or(&message, |view| view.message()).clone()
         } else {
-            None
+            message.clone()
         };
-        let publication_message = verified.as_ref().map_or(&message, |view| view.message());
         let child_indices = publication_message
             .stamp_payments
             .iter()
             .map(|payment| payment.child_index)
             .collect::<Vec<_>>();
         let stored = proto::StoredMonadMessage {
-            message: Some(message),
+            message: Some(publication_message),
             timestamp: now_ms,
             network_tag: policy.network_tag,
         };
@@ -2897,7 +2937,13 @@ impl<'a> DbMonadOutbox<'a> {
         record.last_error.clear();
         let encoded_tombstone = encode_record(&record);
         let mut batch = rocksdb::WriteBatch::default();
-        self.append_quota_release_locked(&mut batch, &payload_hash, &policy.recipient)?;
+        if self
+            .db
+            .get(self.cf_meta, recovery_quota_record_key(&payload_hash))?
+            .is_some()
+        {
+            self.append_quota_release_locked(&mut batch, &payload_hash, &policy.recipient)?;
+        }
         self.db.monad_messages().append_put_to_batch(
             &mut batch,
             &payload_hash,

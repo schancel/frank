@@ -66,6 +66,7 @@ function render() {
           template: '<button :disabled="disable">{{ label }}<slot /></button>',
         },
         QSpinner: true,
+        RenameWalletDialog: true,
       },
       directives: { ripple: {} },
     },

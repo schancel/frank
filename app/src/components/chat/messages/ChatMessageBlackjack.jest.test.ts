@@ -562,7 +562,9 @@ describe('older bubbles', () => {
     const dealIndex = messages.findIndex(m => m.items[0].action === 'deal')
     expect(dealIndex).toBeGreaterThan(-1)
     const wrapper = await mountLast(messages, dealIndex)
-    expect(wrapper.find('[data-testid="blackjack-line"]').text()).toBe('Cards dealt.')
+    expect(wrapper.find('[data-testid="blackjack-line"]').text()).toBe(
+      'Cards dealt.',
+    )
     expect(wrapper.text()).toContain('Player:')
     expect(wrapper.text()).toContain('Dealer shows:')
     expect(wrapper.findAll('button')).toHaveLength(0)
@@ -574,7 +576,9 @@ describe('older bubbles', () => {
     const cardIndex = messages.findIndex(m => m.items[0].action === 'card')
     expect(cardIndex).toBeGreaterThan(-1)
     const wrapper = await mountLast(messages, cardIndex)
-    expect(wrapper.find('[data-testid="blackjack-line"]').text()).toBe('Card dealt.')
+    expect(wrapper.find('[data-testid="blackjack-line"]').text()).toBe(
+      'Card dealt.',
+    )
     expect(wrapper.text()).toContain('Card: ')
     expect(wrapper.text()).toContain('Player: ')
     expect(wrapper.findAll('button')).toHaveLength(0)

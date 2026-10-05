@@ -267,10 +267,7 @@
       />
     </template>
     <template v-else-if="item.action === 'refund' && state">
-      <div
-        class="text-caption"
-        data-testid="blackjack-refunded"
-      >
+      <div class="text-caption" data-testid="blackjack-refunded">
         {{
           $t('blackjackP2p.refunded', {
             amount: display(state.refundedWei || 0n),

@@ -594,6 +594,7 @@ impl RegistryServer {
                     ])
                     .allow_headers([
                         header::CONTENT_TYPE,
+                        header::ACCEPT,
                         header::HeaderName::from_static("x-frank-mailbox-epoch"),
                         header::HeaderName::from_static("x-frank-mailbox-nonce"),
                         header::HeaderName::from_static("x-frank-mailbox-expires-at-ms"),

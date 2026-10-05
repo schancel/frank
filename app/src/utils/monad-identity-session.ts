@@ -251,6 +251,7 @@ export async function startMessaging(): Promise<void> {
     })
     await directory.publish()
   } catch (error) {
+    console.error('[startMessaging] directory.publish failed:', error)
     failure = reasonOf(error)
   }
   if (!failure && directory && wallet && sameAccount()) {
@@ -272,7 +273,8 @@ export async function startMessaging(): Promise<void> {
       state.status = 'ready'
       state.reason = null
       return
-    } catch {
+    } catch (err) {
+      console.error('[startMessaging] install failed:', err)
       failure = 'account-unavailable'
     }
   }

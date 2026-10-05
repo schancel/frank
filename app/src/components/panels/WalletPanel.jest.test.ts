@@ -39,6 +39,8 @@ function render() {
         QItemLabel: { template: '<span><slot /></span>' },
         QSeparator: { template: '<hr />' },
         QIcon: true,
+        QBtn: true,
+        Codex32BackupDialog: true,
       },
       directives: { ripple: {} },
     },

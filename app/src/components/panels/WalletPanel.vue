@@ -112,6 +112,10 @@
       :loading="backupLoading"
       :error="backupError"
       :shares="backupShares"
+      :threshold="threshold"
+      :count="count"
+      @cycle-scheme="cycleScheme"
+      @change-scheme="setScheme"
       @close="closeBackupDialog"
     />
   </div>
@@ -153,8 +157,12 @@ const {
   backupLoading,
   backupError,
   backupShares,
+  threshold,
+  count,
   openBackupDialog,
   closeBackupDialog,
+  cycleScheme,
+  setScheme,
 } = useCodex32Backup()
 </script>
 

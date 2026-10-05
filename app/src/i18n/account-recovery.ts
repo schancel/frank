@@ -95,6 +95,13 @@ export const en = {
   backup_account_codex32: 'Backup account (Codex32)',
   write_down_each_paper_share:
     'Write down each paper share. Any 2 of these 3 shares can restore your account.',
+  codex32_threshold_explainer:
+    'Write down each paper share. Any {threshold} of these {count} shares can restore your account.',
+  configure_scheme: 'Configure threshold and shares',
+  custom_threshold_shares: 'Custom threshold and shares',
+  threshold: 'Threshold',
+  total_shares: 'Total shares',
+  apply: 'Apply',
   generating_codex32_backup_shares: 'Generating Codex32 backup shares…',
   share: 'Share',
   copy_share: 'Copy',
@@ -200,6 +207,13 @@ export const fr = {
   backup_account_codex32: 'Sauvegarder le compte (Codex32)',
   write_down_each_paper_share:
     'Notez chaque part papier. N’importe quelles 2 de ces 3 parts permettent de restaurer votre compte.',
+  codex32_threshold_explainer:
+    'Notez chaque part papier. N’importe quelles {threshold} de ces {count} parts permettent de restaurer votre compte.',
+  configure_scheme: 'Configurer le seuil et les parts',
+  custom_threshold_shares: 'Seuil et parts personnalisés',
+  threshold: 'Seuil',
+  total_shares: 'Nombre de parts',
+  apply: 'Appliquer',
   generating_codex32_backup_shares: 'Génération des parts de sauvegarde Codex32…',
   share: 'Part',
   copy_share: 'Copier',

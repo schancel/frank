@@ -37,6 +37,13 @@ export interface AccountSessionState {
   error: string | null
 }
 
+export const CODEX32_SHARE_INDICES = [
+  'q', 'p', 'z', 'r', 'y', '9', 'x', '8', 'g', 'f',
+  '2', 't', 'v', 'd', 'w', '0', '3', 'j', 'n', '5',
+  '4', 'k', 'h', 'c', 'e', '6', 'm', 'u', 'a', '7',
+  'l',
+] as const
+
 /** The only runtime owner. Its reactive projection contains public data only. */
 export function createAccountSession(deps: {
   open: () => Promise<AccountCustody>
@@ -314,21 +321,23 @@ export function createAccountSession(deps: {
         root.fill(0)
       }
     },
-    async backupCodex32(threshold: 2 | 3 = 2, count: 3 | 5 = 3): Promise<string[]> {
+    async backupCodex32(threshold: number = 2, count: number = 3): Promise<string[]> {
       const root = await this.getActiveWalletRoot()
       let master: { ok: boolean; value?: Uint8Array } | undefined
       try {
         master = createMasterPayload(root)
         if (!master.ok || !master.value) throw new Error('Failed to create master payload')
+        const safeThreshold = Math.max(2, Math.min(9, Math.floor(threshold))) as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
+        const safeCount = Math.max(safeThreshold, Math.min(CODEX32_SHARE_INDICES.length, Math.floor(count)))
         const split = splitCodex32({
-          threshold,
+          threshold: safeThreshold,
           identifier: 'frnk',
-          indices: ['q', 'p', 'z', 'r', 'y'].slice(0, count),
+          indices: CODEX32_SHARE_INDICES.slice(0, safeCount),
           secret: master.value,
           randomBytes: length => crypto.getRandomValues(new Uint8Array(length)),
         })
         if (!split.ok) throw new Error(split.error.code)
-        return split.value
+        return [...split.value]
       } finally {
         root.fill(0)
         master?.value?.fill(0)

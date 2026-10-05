@@ -9,11 +9,88 @@
       data-test="backup-codex32-dialog"
     >
       <q-card-section>
-        <div class="text-h6">
-          {{ $t('accountRecovery.backup_account_codex32') }}
+        <div class="row items-center justify-between no-wrap">
+          <div class="text-h6">
+            {{ $t('accountRecovery.backup_account_codex32') }}
+          </div>
+          <div class="row items-center q-gutter-xs">
+            <q-btn
+              outline
+              no-caps
+              size="sm"
+              color="primary"
+              :label="`${threshold} of ${count}`"
+              :disable="loading"
+              data-test="codex32-scheme-btn"
+              @click="$emit('cycle-scheme')"
+            />
+            <q-btn
+              flat
+              round
+              dense
+              size="sm"
+              icon="tune"
+              color="primary"
+              :disable="loading"
+              data-test="codex32-custom-scheme-btn"
+              @click="toggleCustomConfig"
+            >
+              <q-tooltip>{{ $t('accountRecovery.configure_scheme') }}</q-tooltip>
+            </q-btn>
+          </div>
         </div>
-        <div class="text-caption text-grey-8">
-          {{ $t('accountRecovery.write_down_each_paper_share') }}
+        <div class="text-caption text-grey-8 q-mt-xs">
+          {{ $t('accountRecovery.codex32_threshold_explainer', { threshold, count }) }}
+        </div>
+      </q-card-section>
+
+      <q-card-section
+        v-if="showCustomConfig"
+        class="q-py-none"
+        data-test="custom-scheme-section"
+      >
+        <div class="bg-grey-2 q-pa-sm rounded-borders q-mb-sm">
+          <div class="text-caption text-weight-medium q-mb-xs">
+            {{ $t('accountRecovery.custom_threshold_shares') }}
+          </div>
+          <div class="row items-center q-gutter-sm">
+            <div class="col">
+              <q-input
+                v-model.number="customThreshold"
+                type="number"
+                dense
+                outlined
+                :min="2"
+                :max="9"
+                :label="$t('accountRecovery.threshold')"
+                data-test="input-threshold"
+              />
+            </div>
+            <div class="col">
+              <q-input
+                v-model.number="customCount"
+                type="number"
+                dense
+                outlined
+                :min="customThreshold || 2"
+                :max="31"
+                :label="$t('accountRecovery.total_shares')"
+                data-test="input-count"
+              />
+            </div>
+            <div class="col-auto">
+              <q-btn
+                unelevated
+                no-caps
+                size="sm"
+                color="primary"
+                :label="$t('accountRecovery.apply')"
+                data-test="apply-custom-scheme"
+                :disable="!isCustomValid || loading"
+                @click="applyCustom"
+              />
+            </div>
+          </div>
         </div>
       </q-card-section>
 
@@ -85,17 +162,73 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 
-defineProps<{
-  modelValue: boolean
-  loading: boolean
-  error: string
-  shares: readonly string[]
-}>()
+const props = withDefaults(
+  defineProps<{
+    modelValue: boolean
+    loading: boolean
+    error: string
+    shares: readonly string[]
+    threshold?: number
+    count?: number
+  }>(),
+  {
+    threshold: 2,
+    count: 3,
+  },
+)
 
-const emit = defineEmits(['update:modelValue', 'close'])
+const emit = defineEmits([
+  'update:modelValue',
+  'close',
+  'cycle-scheme',
+  'change-scheme',
+])
+
 const copyStatus = ref('')
+const showCustomConfig = ref(false)
+const customThreshold = ref(props.threshold)
+const customCount = ref(props.count)
+
+watch(
+  () => [props.threshold, props.count],
+  ([newT, newC]) => {
+    customThreshold.value = newT ?? 2
+    customCount.value = newC ?? 3
+  },
+)
+
+const isCustomValid = computed(() => {
+  const t = Number(customThreshold.value)
+  const c = Number(customCount.value)
+  return (
+    Number.isInteger(t) &&
+    Number.isInteger(c) &&
+    t >= 2 &&
+    t <= 9 &&
+    c >= t &&
+    c <= 31
+  )
+})
+
+function toggleCustomConfig() {
+  showCustomConfig.value = !showCustomConfig.value
+  if (showCustomConfig.value) {
+    customThreshold.value = props.threshold
+    customCount.value = props.count
+  }
+}
+
+function applyCustom() {
+  if (!isCustomValid.value) return
+  emit(
+    'change-scheme',
+    Number(customThreshold.value),
+    Number(customCount.value),
+  )
+  showCustomConfig.value = false
+}
 
 async function copyShare(share: string, index: number) {
   try {

@@ -48,6 +48,11 @@ function render() {
         QItemLabel: { template: '<span><slot /></span>' },
         QSeparator: { template: '<hr />' },
         QIcon: true,
+        QTooltip: true,
+        QInput: {
+          props: ['modelValue', 'label'],
+          template: '<input :value="modelValue" @input="$emit(\'update:modelValue\', Number($event.target.value))" />',
+        },
         QDialog: {
           props: ['modelValue'],
           template: '<div v-if="modelValue" data-test="dialog-stub"><slot /></div>',
@@ -57,7 +62,7 @@ function render() {
         QCardActions: { template: '<div><slot /></div>' },
         QBtn: {
           props: ['label', 'disable'],
-          template: '<button :disabled="disable" @click="$emit(\'click\')">{{ label }}<slot /></button>',
+          template: '<button :disabled="disable">{{ label }}<slot /></button>',
         },
         QSpinner: true,
       },
@@ -78,7 +83,7 @@ describe('WalletPanel Backup Account (Codex32) (Issue #848)', () => {
     expect(btn.text()).toContain('Backup account (Codex32)')
   })
 
-  test('clicking Backup button opens dialog and displays 2-of-3 paper shares', async () => {
+  test('clicking Backup button opens dialog and displays 2-of-3 paper shares by default', async () => {
     const view = render()
     expect(view.find('[data-test="backup-codex32-dialog"]').exists()).toBe(false)
 
@@ -87,6 +92,10 @@ describe('WalletPanel Backup Account (Codex32) (Issue #848)', () => {
 
     expect(accountSession.backupCodex32).toHaveBeenCalledWith(2, 3)
     expect(view.find('[data-test="backup-codex32-dialog"]').exists()).toBe(true)
+
+    const schemeBtn = view.find('[data-test="codex32-scheme-btn"]')
+    expect(schemeBtn.exists()).toBe(true)
+    expect(schemeBtn.text()).toContain('2 of 3')
 
     const shares = view.findAll('[data-test="codex32-share"]')
     expect(shares).toHaveLength(3)
@@ -98,5 +107,63 @@ describe('WalletPanel Backup Account (Codex32) (Issue #848)', () => {
     await view.find('[data-test="close-backup-dialog"]').trigger('click')
     await flushPromises()
     expect(view.find('[data-test="backup-codex32-dialog"]').exists()).toBe(false)
+  })
+
+  test('clicking scheme button cycles: 2 of 3 -> 3 of 5 -> 6 of 10 -> back to 2 of 3', async () => {
+    const view = render()
+    await view.find('[data-test="backup-codex32-button"]').trigger('click')
+    await flushPromises()
+
+    const schemeBtn = view.find('[data-test="codex32-scheme-btn"]')
+    expect(schemeBtn.text()).toContain('2 of 3')
+    expect(accountSession.backupCodex32).toHaveBeenLastCalledWith(2, 3)
+
+    // Click 1: 2 of 3 -> 3 of 5
+    await schemeBtn.trigger('click')
+    await flushPromises()
+    expect(accountSession.backupCodex32).toHaveBeenLastCalledWith(3, 5)
+    expect(schemeBtn.text()).toContain('3 of 5')
+
+    // Click 2: 3 of 5 -> 6 of 10
+    await schemeBtn.trigger('click')
+    await flushPromises()
+    expect(accountSession.backupCodex32).toHaveBeenLastCalledWith(6, 10)
+    expect(schemeBtn.text()).toContain('6 of 10')
+
+    // Click 3: 6 of 10 -> 2 of 3
+    await schemeBtn.trigger('click')
+    await flushPromises()
+    expect(accountSession.backupCodex32).toHaveBeenLastCalledWith(2, 3)
+    expect(schemeBtn.text()).toContain('2 of 3')
+  })
+
+  test('custom configuration allows setting custom threshold and count (e.g. 2 of 10)', async () => {
+    const view = render()
+    await view.find('[data-test="backup-codex32-button"]').trigger('click')
+    await flushPromises()
+
+    // Initially custom section is hidden
+    expect(view.find('[data-test="custom-scheme-section"]').exists()).toBe(false)
+
+    // Click custom config tune button to open section
+    await view.find('[data-test="codex32-custom-scheme-btn"]').trigger('click')
+    await flushPromises()
+    expect(view.find('[data-test="custom-scheme-section"]').exists()).toBe(true)
+
+    // Update threshold to 2, count to 10
+    const thresholdInput = view.find('[data-test="input-threshold"]')
+    const countInput = view.find('[data-test="input-count"]')
+
+    await thresholdInput.setValue(2)
+    await countInput.setValue(10)
+
+    // Apply custom scheme
+    await view.find('[data-test="apply-custom-scheme"]').trigger('click')
+    await flushPromises()
+
+    expect(accountSession.backupCodex32).toHaveBeenLastCalledWith(2, 10)
+    const schemeBtn = view.find('[data-test="codex32-scheme-btn"]')
+    expect(schemeBtn.text()).toContain('2 of 10')
+    expect(view.find('[data-test="custom-scheme-section"]').exists()).toBe(false)
   })
 })

@@ -214,7 +214,9 @@ function seedFor(want: (state: HandState, cards: number[]) => boolean): string {
       if (want(dealt as HandState, cards)) return seed
       continue
     }
-    const final = stateOf(hand(false, seed, 400n, ['stand'], 'reveal')) as HandState
+    const final = stateOf(
+      hand(false, seed, 400n, ['stand'], 'reveal'),
+    ) as HandState
     if (want(final, cards)) return seed
   }
   throw new Error('no seed')
@@ -285,16 +287,25 @@ describe('the player', () => {
   it('sees its first cards right after the deal, before the dealer can', async () => {
     const messages = hand(false, WIN, 400n, [])
     // No message carries a card and the hand's shared state has none yet.
-    expect(stateOf(messages)).toMatchObject({ phase: 'player_turn', playerCards: [] })
+    expect(stateOf(messages)).toMatchObject({
+      phase: 'player_turn',
+      playerCards: [],
+    })
     const mine = handView(stateOf(messages), WIN)
     const wrapper = await mountLast(messages)
     expect(wrapper.text()).toContain(mine.playerCards.map(cardLabel).join(' '))
     expect(wrapper.text()).toContain(cardLabel(mine.dealerUpCard as number))
     // The same messages on the dealer's device show no card until the player moves.
     saveSeed(ME, PEER, GAME, DEALER)
-    const dealer = await mountLast(messages.map(m => ({ ...m, outbound: !m.outbound })))
-    expect(dealer.text()).not.toContain(mine.playerCards.map(cardLabel).join(' '))
-    expect(dealer.find('[data-testid="blackjack-status"]').text()).toContain('player')
+    const dealer = await mountLast(
+      messages.map(m => ({ ...m, outbound: !m.outbound })),
+    )
+    expect(dealer.text()).not.toContain(
+      mine.playerCards.map(cardLabel).join(' '),
+    )
+    expect(dealer.find('[data-testid="blackjack-status"]').text()).toContain(
+      'player',
+    )
   })
 
   it('opens the link of the card it asks for with a hit, and the rest of its chain to stand', async () => {
@@ -533,7 +544,12 @@ describe('the dealer', () => {
     const wrapper = await mountLast([
       toMessage({
         outbound: false,
-        item: { action: 'challenge', seq: 0, role: 'player', maxBetWei: '1000' },
+        item: {
+          action: 'challenge',
+          seq: 0,
+          role: 'player',
+          maxBetWei: '1000',
+        },
       }),
     ])
     expect(wrapper.find('[data-testid="blackjack-line"]').text()).toContain(

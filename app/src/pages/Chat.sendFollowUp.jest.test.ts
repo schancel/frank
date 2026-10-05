@@ -526,9 +526,7 @@ describe('Chat.vue automatic dealer steps', () => {
 
   it('never pays without the dealer: a refund and a paying reveal wait for a button', async () => {
     // A bet above the max is owed back.
-    const refundOwed = dealerThis(
-      hand(challenge, [false, betItem, 501n]),
-    )
+    const refundOwed = dealerThis(hand(challenge, [false, betItem, 501n]))
     await methods.runBlackjackDealer.call(refundOwed)
     expect(refundOwed.sendFollowUpItems).not.toHaveBeenCalled()
 

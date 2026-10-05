@@ -3,7 +3,12 @@
     <q-banner rounded :class="[banner, 'text-center']">
       <q-icon name="visibility_off" size="sm" class="q-mr-xs" />
       <span>{{ formatSats(amount) }}</span>
-      <q-badge v-if="chainId" color="primary" class="q-ml-sm" data-testid="stealth-chain-badge">
+      <q-badge
+        v-if="chainId"
+        color="primary"
+        class="q-ml-sm"
+        data-testid="stealth-chain-badge"
+      >
         {{ chainId }}
       </q-badge>
     </q-banner>

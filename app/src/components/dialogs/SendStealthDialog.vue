@@ -1,8 +1,15 @@
 <template>
-  <q-card class="q-px-sm q-pb-md dialog-medium" data-testid="send-stealth-dialog">
+  <q-card
+    class="q-px-sm q-pb-md dialog-medium"
+    data-testid="send-stealth-dialog"
+  >
     <q-card-section>
       <div class="text-h6">
-        {{ $t('sendStealthDialog.sendStealthTo') + ' ' + (contact?.name || address) }}
+        {{
+          $t('sendStealthDialog.sendStealthTo') +
+          ' ' +
+          (contact?.name || address)
+        }}
       </div>
       <div class="text-caption text-grey-7">
         Encrypted direct transfer (invisible to relay)
@@ -106,7 +113,9 @@ export default defineComponent({
       }))
     },
     currentUnit(): string {
-      const found = this.chainOptions.find(o => o.value === this.selectedChainId)
+      const found = this.chainOptions.find(
+        o => o.value === this.selectedChainId,
+      )
       return found ? found.unit : activeChain.unit
     },
     canSend(): boolean {

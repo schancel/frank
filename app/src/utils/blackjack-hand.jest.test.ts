@@ -276,14 +276,21 @@ describe('automatic dealer steps', () => {
       const messages = [
         message(
           false,
-          { action: 'challenge', role: 'dealer', maxBetWei: '500', commitment: commitmentOf(SEED) },
+          {
+            action: 'challenge',
+            role: 'dealer',
+            maxBetWei: '500',
+            commitment: commitmentOf(SEED),
+          },
           10n,
           gameId,
         ),
       ]
       const state = () => chatHands(messages, ME, PEER)[0].state
       messages.push(message(true, { ...buildBet(state(), seed) }, 300n, gameId))
-      messages.push(message(false, { ...dealerStep(state(), SEED)?.item }, 10n, gameId))
+      messages.push(
+        message(false, { ...dealerStep(state(), SEED)?.item }, 10n, gameId),
+      )
       return { messages, cards: handView(state(), seed).playerCards }
     }
     let natural: ReturnType<typeof play> | undefined
@@ -398,7 +405,8 @@ describe('a paying message is sent once across tabs', () => {
         GAME,
       ),
     ]
-    const bet = message(true, { action: 'bet' }, 300n, GAME).items[0] as HandItem
+    const bet = message(true, { action: 'bet' }, 300n, GAME)
+      .items[0] as HandItem
     expect(await ask([], asPlayer, bet, 300n)).toBe(true)
     expect(
       await ask([message(true, bet, 300n, GAME)], asPlayer, bet, 300n),

@@ -89,11 +89,19 @@ describe('ChatMessageSwap', () => {
 
   it('hides action buttons when swap is settled or cancelled', () => {
     const wrapperSettled = mountComponent({ status: 'settled' })
-    expect(wrapperSettled.find('[data-testid="swap-accept-btn"]').exists()).toBe(false)
-    expect(wrapperSettled.find('[data-testid="swap-cancel-btn"]').exists()).toBe(false)
+    expect(
+      wrapperSettled.find('[data-testid="swap-accept-btn"]').exists(),
+    ).toBe(false)
+    expect(
+      wrapperSettled.find('[data-testid="swap-cancel-btn"]').exists(),
+    ).toBe(false)
 
     const wrapperCancelled = mountComponent({ status: 'cancelled' })
-    expect(wrapperCancelled.find('[data-testid="swap-accept-btn"]').exists()).toBe(false)
-    expect(wrapperCancelled.find('[data-testid="swap-cancel-btn"]').exists()).toBe(false)
+    expect(
+      wrapperCancelled.find('[data-testid="swap-accept-btn"]').exists(),
+    ).toBe(false)
+    expect(
+      wrapperCancelled.find('[data-testid="swap-cancel-btn"]').exists(),
+    ).toBe(false)
   })
 })

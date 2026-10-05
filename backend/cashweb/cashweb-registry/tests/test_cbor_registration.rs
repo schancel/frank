@@ -93,6 +93,7 @@ fn make_server(registry: Registry) -> RegistryServer {
         monad_mailbox: cashweb_registry::monad_mailbox::MonadMailboxRuntime::Disabled,
         evm_rpc: None,
         bitcoin_proxy: None,
+        solana_proxy: None,
     }
 }
 

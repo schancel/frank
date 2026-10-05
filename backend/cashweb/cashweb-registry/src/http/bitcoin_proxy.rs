@@ -1788,6 +1788,7 @@ mod tests {
             monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
             evm_rpc: None,
             bitcoin_proxy: Some(runtime),
+            solana_proxy: None,
         };
         let router = server.into_router();
         let rpc_body = br#"{"jsonrpc":"1.0","id":1,"method":"getblockhash","params":[1]}"#;

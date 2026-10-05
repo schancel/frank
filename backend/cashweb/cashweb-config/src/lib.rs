@@ -68,6 +68,13 @@ pub enum ProtocolIdentityProbe {
         /// Expected lowercase `0x`-prefixed block hash.
         expected: String,
     },
+    /// Require the Solana upstream to report this base58 genesis hash via `getGenesisHash`.
+    GenesisHash {
+        /// Proxy capability whose upstream is probed.
+        capability: ProtocolProxyCapability,
+        /// Expected base58 genesis hash.
+        expected: String,
+    },
     /// Require the operator configuration to provide a block checkpoint.
     OperatorBlockCheckpoint {
         /// Proxy capability whose upstream is probed.
@@ -80,6 +87,7 @@ impl ProtocolIdentityProbe {
         match self {
             Self::EvmChainId { capability, .. }
             | Self::BlockHash { capability, .. }
+            | Self::GenesisHash { capability, .. }
             | Self::OperatorBlockCheckpoint { capability } => *capability,
         }
     }
@@ -93,6 +101,8 @@ pub enum ProtocolChainFamily {
     Evm,
     /// Bitcoin-family node JSON-RPC and optional Chronik.
     Bitcoin,
+    /// Solana JSON-RPC.
+    Solana,
 }
 
 /// Capability names advertised by chain discovery.
@@ -128,7 +138,7 @@ pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
                 "unsafe protocol chain id"
             );
             assert!(
-                matches!(chain.network.as_str(), "mainnet" | "testnet" | "regtest"),
+                matches!(chain.network.as_str(), "mainnet" | "testnet" | "devnet" | "regtest"),
                 "unsupported protocol network"
             );
             if let Some(alias) = &chain.caip2 {
@@ -203,6 +213,20 @@ pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
                                     && expected.bytes().all(|byte| byte.is_ascii_hexdigit())))));
                     }
                 }
+                ProtocolChainFamily::Solana => {
+                    assert_eq!(
+                        chain.allowed_proxy_capabilities,
+                        vec![ProtocolProxyCapability::JsonRpc]
+                    );
+                    assert!(chain.identity_probes.iter().any(|probe| matches!(
+                        probe,
+                        ProtocolIdentityProbe::GenesisHash { capability: ProtocolProxyCapability::JsonRpc, expected }
+                            if expected.len() >= 40 && expected.len() <= 45
+                    )));
+                    if let Some(caip2) = &chain.caip2 {
+                        assert!(caip2.starts_with("solana:"));
+                    }
+                }
             }
         }
         registry
@@ -265,6 +289,9 @@ pub struct RegistryConf {
     /// Bitcoin-family JSON-RPC and Chronik proxy. Omitted means disabled.
     #[serde(default)]
     pub bitcoin_proxy: BitcoinProxyConf,
+    /// Solana-family JSON-RPC proxy. Omitted means disabled.
+    #[serde(default)]
+    pub solana_proxy: SolanaProxyConf,
     /// Operator-curated default contacts advertised to fresh clients (ticket #49). Empty by
     /// default -- unlike `PopConf` this is display-only config with no security implications, so
     /// (unlike `pop`) it's safe to default to "none" rather than requiring an explicit value.
@@ -440,8 +467,14 @@ impl RegistryConf {
             self.bitcoin_proxy.max_response_bytes,
             self.bitcoin_proxy.max_concurrency,
         );
+        let solana = family_bytes(
+            self.solana_proxy.enabled,
+            self.solana_proxy.max_response_bytes,
+            self.solana_proxy.max_concurrency,
+        );
         if evm
             .and_then(|evm| bitcoin.and_then(|bitcoin| evm.checked_add(bitcoin)))
+            .and_then(|sum| solana.and_then(|solana| sum.checked_add(solana)))
             .map_or(true, |bytes| bytes > MAX_AGGREGATE_RPC_RESPONSE_BYTES)
         {
             return Err(RegistryConfigError::InvalidLimit(
@@ -941,6 +974,184 @@ impl BitcoinProxyConf {
     }
 }
 
+/// Relay-owned Solana JSON-RPC proxy configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct SolanaProxyConf {
+    /// Whether any Solana-family proxy route is installed.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Chain rows served by the Solana proxy handler.
+    #[serde(default)]
+    pub chains: Vec<SolanaProxyChainConf>,
+    /// Maximum accepted request body, before JSON parsing.
+    #[serde(default = "default_rpc_request_bytes")]
+    pub max_request_bytes: usize,
+    /// Maximum number of calls in one JSON-RPC batch.
+    #[serde(default = "default_rpc_batch_len")]
+    pub max_batch_len: usize,
+    /// Maximum accepted upstream response body.
+    #[serde(default = "default_rpc_response_bytes")]
+    pub max_response_bytes: usize,
+    /// Maximum in-flight Solana upstream requests for this relay.
+    #[serde(default = "default_rpc_concurrency")]
+    pub max_concurrency: usize,
+    /// Complete upstream request timeout.
+    #[serde(default = "default_rpc_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Fixed-hour quota units for an authenticated customer.
+    #[serde(default = "default_evm_customer_units_per_hour")]
+    pub customer_units_per_hour: u32,
+    /// Fixed-hour quota units for an anonymous source IP.
+    #[serde(default = "default_evm_anonymous_units_per_hour")]
+    pub anonymous_units_per_hour: u32,
+    /// Lifetime of an authenticated customer capability URL.
+    #[serde(default = "default_rpc_capability_ttl_ms")]
+    pub capability_ttl_ms: u64,
+}
+
+impl Default for SolanaProxyConf {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            chains: vec![],
+            max_request_bytes: default_rpc_request_bytes(),
+            max_batch_len: default_rpc_batch_len(),
+            max_response_bytes: default_rpc_response_bytes(),
+            max_concurrency: default_rpc_concurrency(),
+            timeout_ms: default_rpc_timeout_ms(),
+            customer_units_per_hour: default_evm_customer_units_per_hour(),
+            anonymous_units_per_hour: default_evm_anonymous_units_per_hour(),
+            capability_ttl_ms: default_rpc_capability_ttl_ms(),
+        }
+    }
+}
+
+/// One Solana chain row. The upstream itself is named by environment variable so provider secrets
+/// are never serialized into the checked-in operator configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct SolanaProxyChainConf {
+    /// Stable public path id, e.g. `solana-devnet` or `solana-mainnet`.
+    pub id: String,
+    /// Server-only environment variable containing a Solana HTTP JSON-RPC URL.
+    pub upstream_env: String,
+    /// Expected base58 genesis hash reported by `getGenesisHash`.
+    pub expected_genesis_hash: String,
+}
+
+/// Invalid Solana proxy configuration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SolanaProxyConfigError {
+    /// Enabled mode has no chain rows.
+    MissingChains,
+    /// Chain id is unsafe or duplicated.
+    InvalidChainId(String),
+    /// The id is not registered as a Solana-family chain.
+    WrongChainFamily(String),
+    /// An environment variable name is malformed.
+    InvalidUpstreamEnv(String),
+    /// Expected genesis hash is malformed.
+    InvalidGenesisHash(String),
+    /// Genesis hash contradicts a protocol-pinned chain genesis hash.
+    GenesisHashMismatch(String),
+    /// Protection limit is invalid.
+    InvalidLimit(&'static str),
+}
+
+impl fmt::Display for SolanaProxyConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid registry.solana_proxy configuration: {self:?}")
+    }
+}
+
+impl Error for SolanaProxyConfigError {}
+
+impl SolanaProxyConf {
+    /// Validate the bounded chain-as-data configuration without resolving secrets.
+    pub fn validate(&self) -> std::result::Result<(), SolanaProxyConfigError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.chains.is_empty() {
+            return Err(SolanaProxyConfigError::MissingChains);
+        }
+        if self.max_request_bytes == 0 || self.max_request_bytes > 256 * 1024 {
+            return Err(SolanaProxyConfigError::InvalidLimit("max_request_bytes"));
+        }
+        if self.max_batch_len == 0 || self.max_batch_len > 100 {
+            return Err(SolanaProxyConfigError::InvalidLimit("max_batch_len"));
+        }
+        if self.max_response_bytes == 0 || self.max_response_bytes > 512 * 1024 * 1024 {
+            return Err(SolanaProxyConfigError::InvalidLimit("max_response_bytes"));
+        }
+        if self.max_concurrency == 0 || self.max_concurrency > 1024 {
+            return Err(SolanaProxyConfigError::InvalidLimit("max_concurrency"));
+        }
+        if self
+            .max_response_bytes
+            .checked_mul(self.max_concurrency)
+            .map_or(true, |bytes| bytes > MAX_AGGREGATE_RPC_RESPONSE_BYTES)
+        {
+            return Err(SolanaProxyConfigError::InvalidLimit("aggregate response bytes"));
+        }
+        if self.timeout_ms == 0 || self.timeout_ms > 120_000 {
+            return Err(SolanaProxyConfigError::InvalidLimit("timeout_ms"));
+        }
+        if self.customer_units_per_hour == 0 {
+            return Err(SolanaProxyConfigError::InvalidLimit("customer_units_per_hour"));
+        }
+        if self.capability_ttl_ms < 60_000 || self.capability_ttl_ms > 24 * 60 * 60 * 1000 {
+            return Err(SolanaProxyConfigError::InvalidLimit("capability_ttl_ms"));
+        }
+        let mut ids = HashSet::new();
+        for chain in &self.chains {
+            let valid_id = !chain.id.is_empty()
+                && chain.id.len() <= 64
+                && chain
+                    .id
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            if !valid_id || !ids.insert(chain.id.as_str()) {
+                return Err(SolanaProxyConfigError::InvalidChainId(chain.id.clone()));
+            }
+            let protocol = protocol_chain(&chain.id)
+                .filter(|row| row.family == ProtocolChainFamily::Solana)
+                .ok_or_else(|| SolanaProxyConfigError::WrongChainFamily(chain.id.clone()))?;
+            let valid_env = !chain.upstream_env.is_empty()
+                && chain.upstream_env.len() <= 128
+                && chain.upstream_env.bytes().enumerate().all(|(i, b)| {
+                    b.is_ascii_uppercase() || b == b'_' || (i > 0 && b.is_ascii_digit())
+                });
+            if !valid_env {
+                return Err(SolanaProxyConfigError::InvalidUpstreamEnv(
+                    chain.upstream_env.clone(),
+                ));
+            }
+            if chain.expected_genesis_hash.len() < 40 || chain.expected_genesis_hash.len() > 45 {
+                return Err(SolanaProxyConfigError::InvalidGenesisHash(
+                    chain.id.clone(),
+                ));
+            }
+            let pinned_genesis_hash = protocol
+                .identity_probes
+                .iter()
+                .find_map(|probe| match probe {
+                    ProtocolIdentityProbe::GenesisHash {
+                        capability: ProtocolProxyCapability::JsonRpc,
+                        expected,
+                    } => Some(expected.as_str()),
+                    _ => None,
+                })
+                .expect("validated Solana registry row must pin a genesis hash");
+            if chain.expected_genesis_hash != pinned_genesis_hash {
+                return Err(SolanaProxyConfigError::GenesisHashMismatch(
+                    chain.id.clone(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Typed durable Monad mailbox configuration.
 ///
 /// Disabling the mailbox is the supported rollback and preserves durable rows for the current
@@ -1162,6 +1373,7 @@ mod tests {
         CuratedContactConf, EvmRpcChainConf, EvmRpcConf, EvmRpcConfigError,
         InitialMetadataDownloadConf, MonadMailboxConf, MonadMailboxConfigError, MonadMailboxMode,
         PopConf, ProtocolChainFamily, ProtocolProxyCapability, RegistryConf, RegistryConfigError,
+        SolanaProxyChainConf, SolanaProxyConf, SolanaProxyConfigError,
     };
 
     #[test]
@@ -1278,12 +1490,21 @@ continuity_file = "/var/lib/frank/continuity"
     fn protocol_registry_is_unique_and_family_validation_fails_closed() {
         let registry = protocol_chain_registry();
         assert_eq!(registry.schema_version, 1);
-        assert_eq!(registry.chains.len(), 14);
+        assert_eq!(registry.chains.len(), 17);
         assert_eq!(
             registry
                 .chains
                 .iter()
                 .find(|chain| chain.id == "monad-testnet")
+                .unwrap()
+                .allowed_proxy_capabilities,
+            vec![ProtocolProxyCapability::JsonRpc]
+        );
+        assert_eq!(
+            registry
+                .chains
+                .iter()
+                .find(|chain| chain.id == "solana-devnet")
                 .unwrap()
                 .allowed_proxy_capabilities,
             vec![ProtocolProxyCapability::JsonRpc]
@@ -1365,6 +1586,71 @@ continuity_file = "/var/lib/frank/continuity"
             .all(|chain| chain
                 .allowed_proxy_capabilities
                 .contains(&ProtocolProxyCapability::JsonRpc)));
+
+        let mut solana = SolanaProxyConf {
+            enabled: true,
+            chains: vec![SolanaProxyChainConf {
+                id: "solana-devnet".to_string(),
+                upstream_env: "SOLANA_DEVNET_RPC".to_string(),
+                expected_genesis_hash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG".to_string(),
+            }],
+            ..SolanaProxyConf::default()
+        };
+        assert_eq!(solana.validate(), Ok(()));
+
+        solana.chains[0].expected_genesis_hash = "wrong_hash".to_string();
+        assert_eq!(
+            solana.validate(),
+            Err(SolanaProxyConfigError::InvalidGenesisHash(
+                "solana-devnet".to_string()
+            ))
+        );
+        solana.chains[0].expected_genesis_hash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZAA".to_string();
+        assert_eq!(
+            solana.validate(),
+            Err(SolanaProxyConfigError::GenesisHashMismatch(
+                "solana-devnet".to_string()
+            ))
+        );
+        solana.chains[0].expected_genesis_hash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG".to_string();
+
+        let wrong_solana = SolanaProxyConf {
+            enabled: true,
+            chains: vec![SolanaProxyChainConf {
+                id: "monad-testnet".to_string(),
+                upstream_env: "SOLANA_DEVNET_RPC".to_string(),
+                expected_genesis_hash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG".to_string(),
+            }],
+            ..SolanaProxyConf::default()
+        };
+        assert_eq!(
+            wrong_solana.validate(),
+            Err(SolanaProxyConfigError::WrongChainFamily(
+                "monad-testnet".to_string()
+            ))
+        );
+
+        solana.capability_ttl_ms = 59_999;
+        assert_eq!(
+            solana.validate(),
+            Err(SolanaProxyConfigError::InvalidLimit("capability_ttl_ms"))
+        );
+        solana.capability_ttl_ms = 60 * 60 * 1000;
+        solana.max_response_bytes = 512 * 1024 * 1024;
+        solana.max_concurrency = 5;
+        assert_eq!(
+            solana.validate(),
+            Err(SolanaProxyConfigError::InvalidLimit("aggregate response bytes"))
+        );
+        solana.max_concurrency = 4;
+        assert_eq!(solana.validate(), Ok(()));
+        assert!(registry
+            .chains
+            .iter()
+            .filter(|chain| chain.family == ProtocolChainFamily::Solana)
+            .all(|chain| chain
+                .allowed_proxy_capabilities
+                .contains(&ProtocolProxyCapability::JsonRpc)));
     }
 
     #[test]
@@ -1437,6 +1723,7 @@ continuity_file = "/var/lib/frank/continuity"
                     },
                     evm_rpc: EvmRpcConf::default(),
                     bitcoin_proxy: BitcoinProxyConf::default(),
+                    solana_proxy: SolanaProxyConf::default(),
                     curated_defaults: vec![],
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
@@ -1514,6 +1801,7 @@ continuity_file = "/var/lib/frank/continuity"
                     },
                     evm_rpc: EvmRpcConf::default(),
                     bitcoin_proxy: BitcoinProxyConf::default(),
+                    solana_proxy: SolanaProxyConf::default(),
                     curated_defaults: vec![],
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
@@ -1681,6 +1969,18 @@ continuity_file = "/var/lib/frank/continuity"
                 "{name}"
             );
             conf.registry.bitcoin_proxy.validate().unwrap();
+            assert!(conf.registry.solana_proxy.enabled, "{name}");
+            assert_eq!(conf.registry.solana_proxy.chains.len(), 1, "{name}");
+            assert_eq!(
+                conf.registry.solana_proxy.chains[0].id, "solana-devnet",
+                "{name}"
+            );
+            assert_eq!(
+                conf.registry.solana_proxy.chains[0].upstream_env,
+                "SOLANA_DEVNET_HTTP_RPC_URL",
+                "{name}"
+            );
+            conf.registry.solana_proxy.validate().unwrap();
             assert_eq!(
                 conf.registry.validate_rpc_resource_limits(),
                 Ok(()),
@@ -1694,6 +1994,9 @@ continuity_file = "/var/lib/frank/continuity"
             conf.registry.bitcoin_proxy.enabled = true;
             conf.registry.bitcoin_proxy.max_response_bytes = 32 * 1024 * 1024;
             conf.registry.bitcoin_proxy.max_concurrency = 64;
+            conf.registry.solana_proxy.enabled = true;
+            conf.registry.solana_proxy.max_response_bytes = 512 * 1024 * 1024;
+            conf.registry.solana_proxy.max_concurrency = 4;
             assert_eq!(
                 conf.registry.validate_rpc_resource_limits(),
                 Err(RegistryConfigError::InvalidLimit(
@@ -1701,8 +2004,10 @@ continuity_file = "/var/lib/frank/continuity"
                 )),
                 "{name}"
             );
-            conf.registry.evm_rpc.max_concurrency = 3;
+            conf.registry.evm_rpc.max_concurrency = 2;
             conf.registry.bitcoin_proxy.max_concurrency = 16;
+            conf.registry.solana_proxy.max_response_bytes = 4 * 1024 * 1024;
+            conf.registry.solana_proxy.max_concurrency = 32;
             assert_eq!(
                 conf.registry.validate_rpc_resource_limits(),
                 Ok(()),

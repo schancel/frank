@@ -186,6 +186,7 @@ async fn main() -> Result<()> {
         monad_mailbox: cashweb_registry::monad_mailbox::MonadMailboxRuntime::Disabled,
         evm_rpc: None,
         bitcoin_proxy: None,
+        solana_proxy: None,
     };
     let router = server.into_router();
 

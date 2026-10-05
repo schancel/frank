@@ -1103,7 +1103,10 @@ async function canonicalCurrent(
     current.generations[0] !== stamp.mailboxKeyGeneration ||
     current.generations[1] !== stamp.stampKeyGeneration ||
     checked >= expires ||
-    !statement.relays.some(relay => relay.endpoint === origin)
+    !statement.relays.some(
+      relay =>
+        relay.endpoint.replace(/\/+$/, '') === origin.replace(/\/+$/, ''),
+    )
   )
     canonicalProtocol(
       'Directory Current does not match installed canonical P authority',

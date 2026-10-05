@@ -1171,6 +1171,14 @@ describe('canonical private mailbox', () => {
     expect(challenge.limit).toBe(50)
     expect(challenge.max_bytes).toBe(8 * 1024 * 1024)
   })
+  test('authenticates successfully when relayBaseUrl has a trailing slash', async () => {
+    const trailingAuth = {
+      ...auth,
+      relayBaseUrl: auth.relayBaseUrl + '/',
+    }
+    const result = await fetchCanonicalInboxPage(trailingAuth)
+    expect(result.records).toHaveLength(1)
+  })
   test('locator/address and installed network mismatch fail before signing', async () => {
     await expect(
       fetchCanonicalInboxPage({ ...auth, subject: '02' + 'ff'.repeat(32) }),

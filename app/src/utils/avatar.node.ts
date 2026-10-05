@@ -1,5 +1,7 @@
 import { defaultAvatars } from './constants'
 
+export * from './avatar-resize'
+
 /** Return a stable bundled avatar when a profile has not published one yet. Node/Jest-safe. */
 export function profileAvatar(avatar?: string | null, identity = ''): string {
   if (avatar) return avatar

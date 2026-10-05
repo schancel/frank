@@ -99,6 +99,10 @@ import { defineComponent } from 'vue'
 
 import { normalizedProfileName, profileNameRule } from '../utils/profile-name'
 import { defaultAvatars } from '../utils/constants'
+import {
+  resizeAndCompressImage,
+  compressAvatarFile,
+} from '../utils/avatar'
 
 export default defineComponent({
   setup() {
@@ -142,37 +146,26 @@ export default defineComponent({
   },
   methods: {
     selectLocalAvatar(name: string) {
-      const toDataURL = (callback: (dataUrl: string) => void) => {
-        const img = new Image()
-        img.crossOrigin = 'Anonymous'
-        img.onload = function (e: Event) {
-          const target = e.target as HTMLImageElement
-          if (!target) {
-            console.error(
-              'err finding target in Profile.vue image onload handler',
-            )
-            return
-          }
-          const canvas = document.createElement('CANVAS') as HTMLCanvasElement
-          const ctx = canvas.getContext('2d')
-          if (!ctx) {
-            return
-          }
-          canvas.height = target.naturalHeight
-          canvas.width = target.naturalWidth
-          ctx.drawImage(target, 0, 0)
-          const dataURL = canvas.toDataURL()
-          callback(dataURL)
+      const img = new Image()
+      img.crossOrigin = 'Anonymous'
+      img.onload = (e: Event) => {
+        const target = e.target as HTMLImageElement
+        if (!target) {
+          console.error(
+            'err finding target in Profile.vue image onload handler',
+          )
+          return
         }
-        // Ticket #51's Vite migration missed this: webpack's dynamic `require()` for a resolved
-        // asset URL has no equivalent under Vite (no global `require` exists in dev at all) --
-        // `new URL(..., import.meta.url)` is Vite's native replacement, statically analyzable
-        // for a bounded-directory template literal like this one.
-        img.src = new URL(`../assets/avatars/${name}`, import.meta.url).href
+        const dataURL = resizeAndCompressImage(target)
+        if (dataURL) {
+          this.internalAvatar = dataURL
+        }
       }
-      toDataURL(dataUrl => {
-        this.internalAvatar = dataUrl
-      })
+      // Ticket #51's Vite migration missed this: webpack's dynamic `require()` for a resolved
+      // asset URL has no equivalent under Vite (no global `require` exists in dev at all) --
+      // `new URL(..., import.meta.url)` is Vite's native replacement, statically analyzable
+      // for a bounded-directory template literal like this one.
+      img.src = new URL(`../assets/avatars/${name}`, import.meta.url).href
     },
     cycleAvatarLeft() {
       this.defaultAvatarIndex =
@@ -202,17 +195,17 @@ export default defineComponent({
     internalAcceptancePrice(value) {
       this.$emit('update:acceptancePrice', value)
     },
-    avatarPath(val) {
+    async avatarPath(val: File | null) {
       if (val == null) {
         return
       }
-      const reader = new FileReader()
-      reader.readAsDataURL(val)
-      reader.onload = evt => {
-        if (!evt.target?.result) {
-          return
+      try {
+        const compressed = await compressAvatarFile(val)
+        if (compressed) {
+          this.internalAvatar = compressed
         }
-        this.internalAvatar = evt.target?.result
+      } catch (err) {
+        console.error('Failed to process avatar file upload', err)
       }
     },
   },

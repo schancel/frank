@@ -48,6 +48,7 @@
  * for 100 rows per page (the maximum) and a caller that gets a truncated result simply polls again.
  */
 import axios from 'axios'
+import WebSocket from 'isomorphic-ws'
 import { cryptoBackend } from '@frank/nakamoto'
 
 import {
@@ -93,7 +94,12 @@ export const MAILBOX_AUTH_DOMAIN = 'frank:mailbox-http-auth:v2'
 export const MAILBOX_MAX_PAGE_LIMIT = 100
 export const MAILBOX_NEXT_CURSOR_HEADER = 'x-frank-mailbox-next-cursor'
 
-export type MailboxResource = 'inbox' | 'recovery' | 'recovery_ack'
+export type MailboxResource =
+  | 'inbox'
+  | 'recovery'
+  | 'recovery_ack'
+  | 'mailbox'
+  | 'mailbox_stream'
 
 /** Wire form of the challenge JSON (`MailboxChallengeBody`). */
 export interface MailboxChallenge {
@@ -285,6 +291,8 @@ export function buildMailboxAuthPreimage(
       inbox: ['GET', 'inbox/', 1],
       recovery: ['GET', 'recovery/', 2],
       recovery_ack: ['POST', 'recovery-ack/', 3],
+      mailbox: ['GET', 'mailbox/', 4],
+      mailbox_stream: ['GET', 'mailbox-ws/', 5],
     } as const
   )[challenge.resource] ?? [undefined, undefined, undefined]
   if (method === undefined) {
@@ -1025,10 +1033,10 @@ function canonicalCheckAbort(signal?: AbortSignal): void {
 }
 function canonicalPageBinding(
   params: CanonicalMailboxPageParams,
-  resource: 'inbox' | 'recovery',
+  resource: 'inbox' | 'recovery' | 'mailbox',
 ): ChallengeRequest {
   const since = params.sinceMs ?? 0,
-    limit = params.limit ?? (resource === 'inbox' ? 50 : 20),
+    limit = params.limit ?? (resource === 'recovery' ? 20 : 50),
     maxBytes = params.maxBytes ?? CANONICAL_DM_MAX_BYTES
   if (
     !Number.isSafeInteger(since) ||
@@ -1366,9 +1374,11 @@ function canonicalRecordParts(
   outer: CanonicalMultipartPart,
   count: number,
 ): readonly CanonicalMultipartPart[] {
+  const hasDirection = outer.headers['x-frank-mailbox-direction'] !== undefined
+  const expectedHeaderCount = hasDirection ? 5 : 4
   if (
     outer.name !== 'record' ||
-    Object.keys(outer.headers).length !== 4 ||
+    Object.keys(outer.headers).length !== expectedHeaderCount ||
     !canonicalHex32(outer.headers['x-frank-submission-identity']) ||
     !/^(0|[1-9][0-9]*)$/.test(
       outer.headers['x-frank-mailbox-timestamp-ms'] ?? '',
@@ -1451,6 +1461,197 @@ export async function fetchCanonicalInboxPage(
     records: Object.freeze(records),
     nextCursor: response.headers[MAILBOX_NEXT_CURSOR_HEADER],
   })
+}
+
+export interface CanonicalMailboxRecord {
+  readonly direction: 'in' | 'out'
+  readonly delivery: Uint8Array
+  readonly context: Uint8Array
+  readonly submissionIdentity: string
+  readonly timestampMs: number
+}
+
+/** Complete mailbox page: contains both inbound and outbound messages. */
+export async function fetchCanonicalMailboxPage(
+  params: CanonicalMailboxPageParams,
+): Promise<CanonicalMailboxPage<CanonicalMailboxRecord>> {
+  const binding = canonicalPageBinding(params, 'mailbox')
+  const response = await canonicalSignedRequest(
+    params,
+    binding,
+    `mailbox/${params.recipient}`,
+  )
+  const seen = new Set<string>()
+  const records = canonicalPageRecords(response, binding.limit!).map(outer => {
+    const parts = canonicalRecordParts(outer, 2)
+    const pair = inspectCanonicalPair({
+      delivery: parts[0].bytes,
+      context: parts[1].bytes,
+    })
+    const directionHeader = outer.headers['x-frank-mailbox-direction']
+    const direction: 'in' | 'out' = directionHeader === 'out' ? 'out' : 'in'
+    const expectedNetwork =
+      canonicalNetworkDescriptor(params.expectedNetworkTag).network
+    if (pair.network !== expectedNetwork || seen.has(pair.payload_hash)) {
+      canonicalProtocol('Canonical mailbox network or duplicate mismatch')
+    }
+    seen.add(pair.payload_hash)
+    return Object.freeze({
+      direction,
+      delivery: Uint8Array.from(parts[0].bytes),
+      context: Uint8Array.from(parts[1].bytes),
+      submissionIdentity: outer.headers['x-frank-submission-identity'],
+      timestampMs: Number(outer.headers['x-frank-mailbox-timestamp-ms']),
+    })
+  })
+  canonicalCheckAbort(params.signal)
+  return Object.freeze({
+    records: Object.freeze(records),
+    nextCursor: response.headers[MAILBOX_NEXT_CURSOR_HEADER],
+  })
+}
+
+export interface CanonicalMailboxStreamParams extends CanonicalMailboxAuthParams {
+  readonly onRecord: (record: CanonicalMailboxRecord) => void
+  readonly onError?: (error: Error) => void
+  readonly onReady?: () => void
+}
+
+export interface CanonicalMailboxStreamHandle {
+  close: () => void
+}
+
+/** Connects to authenticated WebSocket mailbox stream (/message/monad/cbor/mailbox/:address/ws). */
+export async function connectCanonicalMailboxStream(
+  params: CanonicalMailboxStreamParams,
+): Promise<CanonicalMailboxStreamHandle> {
+  const origin = installedCanonicalOrigin(params.relayBaseUrl)
+  await canonicalCurrent(params, origin)
+  const challengeURL = `${origin}/message/monad/cbor/auth/${
+    params.recipient
+  }?${canonicalQuery({
+    resource: 'mailbox_stream',
+    since: 0,
+    limit: 1,
+    maxBytes: 0,
+  })}`
+
+  const response = await canonicalRoundTrip(
+    params,
+    challengeURL,
+    'POST',
+    {
+      'x-frank-mailbox-subject': params.subject,
+      'Accept': 'application/json',
+    },
+    CANONICAL_DM_MAX_STATUS_BYTES,
+  )
+  if (response.status !== 200) {
+    throw new MonadMailboxProtocolError(
+      `challenge request failed with status ${response.status}`,
+    )
+  }
+  const raw = canonicalObject(
+    parseCanonicalJSON(bodyBytes(response.data)),
+    [
+      'epoch',
+      'nonce',
+      'expires_at_ms',
+      'token',
+      'signing_domain',
+      'resource',
+      'since',
+      'cursor',
+      'limit',
+      'max_bytes',
+      'network_tag',
+      'recovery_payload_hash',
+      'recovery_obligation_id',
+    ],
+  )
+  const challenge = raw as unknown as MailboxChallenge
+  const preimage = buildMailboxAuthPreimage(challenge, params.recipient)
+  const signature = await params.signDigest(mailboxAuthDigest(preimage))
+
+  const wsOrigin = origin.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')
+  const query = new URLSearchParams({
+    epoch: challenge.epoch,
+    nonce: challenge.nonce,
+    token: challenge.token,
+    expires_at_ms: String(challenge.expires_at_ms),
+    signature: bytesToHex(signature),
+    subject: params.subject,
+  })
+  const wsUrl = `${wsOrigin}/message/monad/cbor/mailbox/${
+    params.recipient
+  }/ws?${query.toString()}`
+
+  const ws = new WebSocket(wsUrl)
+  let closed = false
+
+  const cleanup = () => {
+    if (!closed) {
+      closed = true
+      try {
+        ws.close()
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  if (params.signal) {
+    params.signal.addEventListener('abort', cleanup, { once: true })
+  }
+
+  ws.onopen = () => {
+    params.onReady?.()
+  }
+
+  ws.onerror = (event: unknown) => {
+    const error =
+      event instanceof Error
+        ? event
+        : new Error(
+            (event as { message?: string })?.message ??
+              'WebSocket stream error',
+          )
+    params.onError?.(error)
+  }
+
+  ws.onmessage = (event: { data: unknown }) => {
+    try {
+      const dataStr =
+        typeof event.data === 'string'
+          ? event.data
+          : new TextDecoder().decode(bodyBytes(event.data))
+      const parsed = JSON.parse(dataStr)
+      if (parsed.type === 'ping') {
+        try {
+          ws.send(JSON.stringify({ type: 'pong' }))
+        } catch {
+          // ignore
+        }
+        return
+      }
+      if (parsed.direction === 'in' || parsed.direction === 'out') {
+        const record: CanonicalMailboxRecord = {
+          direction: parsed.direction,
+          delivery: hexToBytes(parsed.delivery, undefined, 'delivery'),
+          context: hexToBytes(parsed.context, undefined, 'context'),
+          submissionIdentity: parsed.submission_identity,
+          timestampMs: Number(parsed.timestamp_ms),
+        }
+        params.onRecord(record)
+      }
+    } catch (err) {
+      params.onError?.(err instanceof Error ? err : new Error(String(err)))
+    }
+  }
+
+  return {
+    close: cleanup,
+  }
 }
 export async function fetchCanonicalRecoveryPage(
   params: CanonicalMailboxPageParams,

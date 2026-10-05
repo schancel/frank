@@ -28,6 +28,7 @@ export {
   openAsSender,
   selfOpenEphemeral,
   selfOpenKeyFromRoot,
+  SELF_OPEN_DOMAIN,
 } from './self-open.js'
 export type { OpenAsSenderArgs } from './self-open.js'
 export type { SuiteFailure, SuiteResult } from './result.js'

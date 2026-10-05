@@ -1,4 +1,4 @@
-import { encodeCanonical, type Encodable } from './cbor'
+import { decodeCanonical, encodeCanonical, type Encodable } from './cbor'
 import {
   ENCRYPTION_SUITE_DM_AUTH_XCHACHA,
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
@@ -92,4 +92,77 @@ export function encodeDirectMessageCryptoContext(
       [15, DM_CRYPTO_MIN_READER_VERSION],
     ]),
   )
+}
+
+/** Decodes a canonical CBOR suite-1 context. Strict. */
+export function decodeDirectMessageCryptoContext(
+  bytes: Uint8Array,
+): DirectMessageCryptoContext {
+  if (!(bytes instanceof Uint8Array)) {
+    throw new TypeError('context must be a Uint8Array')
+  }
+  const value = decodeCanonical(bytes)
+  if (!(value instanceof Map)) {
+    throw new TypeError('context must be a canonical CBOR map')
+  }
+  const domain = value.get(0n)
+  if (domain !== DM_CRYPTO_CONTEXT_DOMAIN) {
+    throw new RangeError('unexpected crypto context domain')
+  }
+  const network = value.get(1n)
+  if (typeof network !== 'string' || network.length === 0) {
+    throw new TypeError('network must be a non-empty string')
+  }
+  const parseAccount = (v: unknown, name: string, secpOnly = false): AccountRef => {
+    if (!(v instanceof Map)) throw new TypeError(`${name} must be an account map`)
+    const rawKeyType = v.get(0n)
+    const rawKeyBytes = v.get(1n)
+    if (typeof rawKeyType !== 'bigint' || !(rawKeyBytes instanceof Uint8Array)) {
+      throw new TypeError(`${name} account invalid`)
+    }
+    const keyType = Number(rawKeyType)
+    const keyBytes = Uint8Array.from(rawKeyBytes)
+    if (secpOnly && (keyType !== 1 || !isCompressedPoint(keyBytes))) {
+      throw new RangeError(`${name} must be a compressed secp256k1 account`)
+    }
+    return { keyType, keyBytes }
+  }
+  const sender = parseAccount(value.get(2n), 'sender')
+  const recipient = parseAccount(value.get(3n), 'recipient')
+  const senderDirectoryHash = exact(value.get(4n) as Uint8Array, 32, 'senderDirectoryHash')
+  const recipientDirectoryHash = exact(value.get(5n) as Uint8Array, 32, 'recipientDirectoryHash')
+  const senderMessageKey = parseAccount(value.get(6n), 'senderMessageKey', true)
+  const recipientMessageKey = parseAccount(value.get(7n), 'recipientMessageKey', true)
+  const stampKey = parseAccount(value.get(8n), 'stampKey', true)
+  const ephemeralPoint = point(value.get(9n) as Uint8Array, 'ephemeralPoint')
+  const sharedPoint = point(value.get(10n) as Uint8Array, 'sharedPoint')
+  const dleqProof = proof(value.get(11n) as Uint8Array)
+
+  const suite = value.get(12n)
+  const typePayload = value.get(13n)
+  const schemaVer = value.get(14n)
+  const minReaderVer = value.get(15n)
+
+  if (
+    suite !== BigInt(ENCRYPTION_SUITE_DM_AUTH_XCHACHA) ||
+    typePayload !== BigInt(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD) ||
+    schemaVer !== BigInt(DM_CRYPTO_SCHEMA_VERSION) ||
+    minReaderVer !== BigInt(DM_CRYPTO_MIN_READER_VERSION)
+  ) {
+    throw new RangeError('invalid context suite or version')
+  }
+
+  return {
+    network,
+    sender,
+    recipient,
+    senderDirectoryHash,
+    recipientDirectoryHash,
+    senderMessageKey,
+    recipientMessageKey,
+    stampKey,
+    ephemeralPoint,
+    sharedPoint,
+    dleqProof,
+  }
 }

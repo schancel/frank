@@ -58,6 +58,7 @@ export {
   DM_CRYPTO_CONTEXT_DOMAIN,
   DM_CRYPTO_MIN_READER_VERSION,
   DM_CRYPTO_SCHEMA_VERSION,
+  decodeDirectMessageCryptoContext,
   encodeDirectMessageCryptoContext,
 } from './dm-context'
 export type { DirectMessageCryptoContext } from './dm-context'

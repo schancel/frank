@@ -416,7 +416,7 @@ describe('Chat.vue automatic dealer steps', () => {
   })
 
   it('on opening the chat, sends a deal that was cut off again instead of leaving the hand stuck', async () => {
-    const bet = hand(challenge, [false, { action: 'bet' }, 300n])
+    const bet = hand(challenge, [false, betItem, 300n])
     const step = dealerStep(
       foldHand(
         bet.map(m => ({
@@ -468,7 +468,7 @@ describe('Chat.vue automatic dealer steps', () => {
     // stand): the deal is still the hand's next step, so only the resume guard and the
     // undelivered-message rule keep it from going out ahead of the resumed message.
     const messages = [
-      ...hand(challenge, [false, { action: 'bet' }, 300n]).map(m => ({
+      ...hand(challenge, [false, betItem, 300n]).map(m => ({
         ...m,
         status: 'confirmed',
       })),

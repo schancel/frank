@@ -30,6 +30,7 @@ import type { Current } from '../../directory-admission/src'
 import {
   directMessageText,
   openDirectMessage,
+  openOwnDirectMessage,
   prepareDirectMessage,
 } from '@frank/cashweb/relay/canonical-dm'
 import {
@@ -37,9 +38,12 @@ import {
   type CanonicalFetch,
 } from '@frank/cashweb/relay/canonical-dm-transport'
 import {
+  connectCanonicalMailboxStream,
   fetchCanonicalInboxPage,
+  fetchCanonicalMailboxPage,
   fetchCanonicalRecoveryPage,
   type CanonicalMailboxAuthParams,
+  type CanonicalMailboxRecord,
 } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { MessageItem } from '@frank/cashweb/types/messages'
 import type {
@@ -589,17 +593,37 @@ async function fetchSince(
   const own: ChainAddress = { raw: getAddress(owner.identityAddress) }
   let cursor: string | undefined
   for (let pageIndex = 0; pageIndex < MAX_INBOX_PAGES; pageIndex++) {
-    let page
+    let page: {
+      records: readonly (
+        | CanonicalMailboxRecord
+        | {
+            delivery: Uint8Array
+            context: Uint8Array
+            submissionIdentity: string
+            timestampMs: number
+            direction?: 'in' | 'out'
+          }
+      )[]
+      nextCursor?: string
+    }
     try {
-      page = await fetchCanonicalInboxPage({
+      page = await fetchCanonicalMailboxPage({
         ...auth,
         sinceMs: params.sinceMs,
         ...(cursor === undefined ? {} : { cursor }),
       })
     } catch (error) {
-      if (pageIndex === 0) throw error
-      params.onTruncated?.(error as Error)
-      break
+      try {
+        page = await fetchCanonicalInboxPage({
+          ...auth,
+          sinceMs: params.sinceMs,
+          ...(cursor === undefined ? {} : { cursor }),
+        })
+      } catch {
+        if (pageIndex === 0) throw error
+        params.onTruncated?.(error as Error)
+        break
+      }
     }
     for (const record of page.records) {
       const delivery = parseFrame(record.delivery)
@@ -607,23 +631,29 @@ async function fetchSince(
       const payload = delivery.typed.payloadFrame.typed
       if (payload?.type !== 5) continue
       const digest = toHex(delivery.typed.payloadDigest)
-      // Any sender with a published entry that verifies is shown; no peer list is consulted.
-      let sender
+      const isOutbound = record.direction === 'out'
+      const peerSubjectKeyBytes = isOutbound
+        ? payload.recipient.keyBytes
+        : payload.sender.keyBytes
+      const peerSubjectHex = toHex(peerSubjectKeyBytes)
+
+      // Any peer with a published entry that verifies is shown; no peer list is consulted.
+      let peer
       try {
-        sender = await directory.peerCurrent({
-          subject: toHex(payload.sender.keyBytes),
+        peer = await directory.peerCurrent({
+          subject: peerSubjectHex,
         })
       } catch (error) {
         const code = (error as { code?: string } | null)?.code
         if (code === 'invalid' || code === 'fork') {
-          // The sender's entry is not signed by that sender, or conflicts with the one pinned
+          // The peer's entry is not signed by that peer, or conflicts with the one pinned
           // for it: this message is never shown.
           params.onQuarantinedTimestamp?.(record.timestampMs, digest)
           continue
         }
-        // Anything else is about this one sender right now: its entry expired or was rolled
+        // Anything else is about this one peer right now: its entry expired or was rolled
         // back, its history could not be read, the lookup failed. The message is left for a
-        // later read and every other sender's mail is still delivered. It is retried for a
+        // later read and every other peer's mail is still delivered. It is retried for a
         // bounded time, after which it is given up on so it cannot pin the inbox scan forever.
         const waiting = unreadable.get(owner.links) ?? new Map<string, number>()
         unreadable.set(owner.links, waiting)
@@ -638,23 +668,33 @@ async function fetchSince(
         continue
       }
       unreadable.get(owner.links)?.delete(digest)
-      if (!sender) {
-        // No published entry for the sending key: nothing can authenticate this message.
+      if (!peer) {
+        // No published entry for the key: nothing can authenticate this message.
         params.onQuarantinedTimestamp?.(record.timestampMs, digest)
         continue
       }
       const roles = owner.roles.create(directory.network, self)
       let items: MessageItem[]
       try {
-        const opened = openDirectMessage({
-          mode: 'receive',
-          network: directory.network,
-          payload: delivery.typed.payloadFrame.frame,
-          context: record.context,
-          roles,
-          senderCurrent: sender.current,
-          recipientCurrent: self,
-        })
+        const opened = isOutbound
+          ? openOwnDirectMessage({
+              mode: 'send',
+              network: directory.network,
+              payload: delivery.typed.payloadFrame.frame,
+              context: record.context,
+              roles,
+              senderCurrent: self,
+              recipientCurrent: peer.current,
+            })
+          : openDirectMessage({
+              mode: 'receive',
+              network: directory.network,
+              payload: delivery.typed.payloadFrame.frame,
+              context: record.context,
+              roles,
+              senderCurrent: peer.current,
+              recipientCurrent: self,
+            })
         items = opened.items.map(item =>
           item.kind === 'parsed' && item.typed?.type === 17
             ? { type: 'text' as const, text: item.typed.text }
@@ -676,12 +716,19 @@ async function fetchSince(
         destinationAddress: getAddress(hexlify(member.address)),
         valueWei: BigInt(hexlify(member.value)),
       }))
+      const peerAddress: ChainAddress = {
+        raw: getAddress(computeAddress('0x' + peer.subject)),
+      }
       received.push({
-        senderAddress: {
-          raw: getAddress(computeAddress('0x' + sender.subject)),
-        },
-        senderPublicKey: fromHex(sender.subject),
-        recipientAddress: own,
+        outbound: isOutbound,
+        senderAddress: isOutbound ? own : peerAddress,
+        senderPublicKey: isOutbound
+          ? fromHex(owner.subject)
+          : fromHex(peer.subject),
+        recipientAddress: isOutbound ? peerAddress : own,
+        recipientPublicKey: isOutbound
+          ? fromHex(peer.subject)
+          : fromHex(owner.subject),
         items,
         payloadDigest: digest,
         stampValueWei: stampPayments.reduce((sum, p) => sum + p.valueWei, 0n),
@@ -744,5 +791,128 @@ export function canonicalDirectMessages(
       }),
     fetchSince: (params: Parameters<DirectMessageClient['fetchSince']>[0]) =>
       fetchSince(owner, params),
+    subscribeMailboxStream: (params: {
+      wallet: WalletHandle
+      onRecord: (record: DirectMessageReceived) => void
+      onError?: (error: Error) => void
+    }) => {
+      const directory = requireDirectory(owner)
+      const auth = mailboxAuth(owner, directory)
+      let active = true
+      let streamHandle: { close: () => void } | undefined
+
+      const connect = async () => {
+        try {
+          const self = await directory.selfCurrent()
+          if (!active) return
+          streamHandle = await connectCanonicalMailboxStream({
+            ...auth,
+            onRecord: async (record: CanonicalMailboxRecord) => {
+              if (!active) return
+              try {
+                const delivery = parseFrame(record.delivery)
+                if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+                  return
+                const payload = delivery.typed.payloadFrame.typed
+                if (payload?.type !== 5) return
+                const digest = toHex(delivery.typed.payloadDigest)
+                const isOutbound = record.direction === 'out'
+                const peerSubjectKeyBytes = isOutbound
+                  ? payload.recipient.keyBytes
+                  : payload.sender.keyBytes
+                const peerSubjectHex = toHex(peerSubjectKeyBytes)
+                const peer = await directory.peerCurrent({
+                  subject: peerSubjectHex,
+                })
+                if (!peer) return
+                const roles = owner.roles.create(directory.network, self)
+                let items: MessageItem[]
+                try {
+                  const opened = isOutbound
+                    ? openOwnDirectMessage({
+                        mode: 'send',
+                        network: directory.network,
+                        payload: delivery.typed.payloadFrame.frame,
+                        context: record.context,
+                        roles,
+                        senderCurrent: self,
+                        recipientCurrent: peer.current,
+                      })
+                    : openDirectMessage({
+                        mode: 'receive',
+                        network: directory.network,
+                        payload: delivery.typed.payloadFrame.frame,
+                        context: record.context,
+                        roles,
+                        senderCurrent: peer.current,
+                        recipientCurrent: self,
+                      })
+                  items = opened.items.map(item =>
+                    item.kind === 'parsed' && item.typed?.type === 17
+                      ? { type: 'text' as const, text: item.typed.text }
+                      : item.kind === 'parsed' && isBlackjackHandV3Frame(item)
+                      ? projectBlackjackHandV3Item(item).item
+                      : {
+                          type: 'text' as const,
+                          text: '[This message item is not supported yet]',
+                        },
+                  )
+                } finally {
+                  roles.dispose()
+                }
+                const stampPayments = delivery.typed.payments.map(member => ({
+                  txHash: hexlify(member.transactionId),
+                  destinationAddress: getAddress(hexlify(member.address)),
+                  valueWei: BigInt(hexlify(member.value)),
+                }))
+                const own: ChainAddress = {
+                  raw: getAddress(owner.identityAddress),
+                }
+                const peerAddress: ChainAddress = {
+                  raw: getAddress(computeAddress('0x' + peer.subject)),
+                }
+                params.onRecord({
+                  outbound: isOutbound,
+                  senderAddress: isOutbound ? own : peerAddress,
+                  senderPublicKey: isOutbound
+                    ? fromHex(owner.subject)
+                    : fromHex(peer.subject),
+                  recipientAddress: isOutbound ? peerAddress : own,
+                  recipientPublicKey: isOutbound
+                    ? fromHex(peer.subject)
+                    : fromHex(owner.subject),
+                  items,
+                  payloadDigest: digest,
+                  stampValueWei: stampPayments.reduce(
+                    (sum, p) => sum + p.valueWei,
+                    0n,
+                  ),
+                  stampPayments,
+                  receivedTime: record.timestampMs,
+                })
+              } catch (err) {
+                params.onError?.(
+                  err instanceof Error ? err : new Error(String(err)),
+                )
+              }
+            },
+            onError: err => {
+              params.onError?.(err)
+            },
+          })
+        } catch (err) {
+          if (active) {
+            params.onError?.(err instanceof Error ? err : new Error(String(err)))
+          }
+        }
+      }
+
+      void connect()
+
+      return () => {
+        active = false
+        streamHandle?.close()
+      }
+    },
   }
 }

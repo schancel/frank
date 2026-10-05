@@ -105,6 +105,7 @@ export const en = {
   generating_codex32_backup_shares: 'Generating Codex32 backup shares…',
   share: 'Share',
   copy_share: 'Copy',
+  advanced_details: 'Advanced details',
 }
 
 export const fr = {
@@ -214,7 +215,9 @@ export const fr = {
   threshold: 'Seuil',
   total_shares: 'Nombre de parts',
   apply: 'Appliquer',
-  generating_codex32_backup_shares: 'Génération des parts de sauvegarde Codex32…',
+  generating_codex32_backup_shares:
+    'Génération des parts de sauvegarde Codex32…',
   share: 'Part',
   copy_share: 'Copier',
+  advanced_details: 'Détails avancés',
 }

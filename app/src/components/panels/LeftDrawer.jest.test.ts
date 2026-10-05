@@ -18,8 +18,7 @@ const balance = {
 const mockWalletStore = {
   seedPhrase:
     'apple banana cherry dinosaur elephant fox grape hat ice joke kite lemon' as
-      | string
-      | null,
+      string | null,
   seedConfirmedAt: 123456789 as number | null,
 }
 const mockProfileStore = {
@@ -175,6 +174,13 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     const wrapper = mountDrawer()
     await wrapper.get('#rail-tab-chats').trigger('click')
     expect(mockRouterPush).toHaveBeenCalledWith('/chat')
+  })
+
+  it('navigates to /settings when clicking settings rail tab', async () => {
+    mockRouterPush.mockReset()
+    const wrapper = mountDrawer()
+    await wrapper.get('#rail-tab-settings').trigger('click')
+    expect(mockRouterPush).toHaveBeenCalledWith('/settings')
   })
 
   it('hides the legacy footer until setup is complete', () => {

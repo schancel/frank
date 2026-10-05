@@ -28,15 +28,24 @@
             </q-item-label>
             <q-item-label lines="1">
               <a
+                v-if="transactionExplorerUrl(payment.txHash)"
                 :href="transactionExplorerUrl(payment.txHash)"
                 target="_blank"
                 rel="noopener noreferrer"
                 >{{ payment.txHash }}</a
               >
+              <span
+                v-else
+                class="text-caption text-grey-7"
+                data-testid="local-chain-notice"
+              >
+                {{ payment.txHash }} ({{ $t('transactionDialog.localChainNotice') }})
+              </span>
             </q-item-label>
           </q-item-section>
           <q-item-section side>
             <q-btn
+              v-if="transactionExplorerUrl(payment.txHash)"
               flat
               round
               icon="open_in_new"
@@ -44,6 +53,16 @@
               :href="transactionExplorerUrl(payment.txHash)"
               target="_blank"
             />
+            <q-btn
+              v-else
+              flat
+              round
+              icon="content_copy"
+              :aria-label="$t('a11y.copyTxHash')"
+              @click="copyTxHash(payment.txHash)"
+            >
+              <q-tooltip>{{ $t('transactionDialog.copyTxHash') }}</q-tooltip>
+            </q-btn>
           </q-item-section>
         </q-item>
       </q-list>
@@ -62,11 +81,19 @@
             </span>
             <q-item-label>
               <a
+                v-if="transactionExplorerUrl(outpoint.txId)"
                 :href="transactionExplorerUrl(outpoint.txId)"
                 target="_blank"
                 rel="noopener noreferrer"
                 >{{ outpoint.txId }}</a
               >
+              <span
+                v-else
+                class="text-caption text-grey-7"
+                data-testid="local-chain-notice-outpoint"
+              >
+                {{ outpoint.txId }} ({{ $t('transactionDialog.localChainNotice') }})
+              </span>
             </q-item-label>
             <span class="text-bold">
               {{ $t('transactionDialog.txType') }}
@@ -93,9 +120,12 @@
 
 <script lang="ts">
 import { defineComponent, PropType } from 'vue'
+import { copyToClipboard } from 'quasar'
 import { toDisplayAddress } from 'src/utils/address'
 import { Utxo } from '@frank/cashweb/types/utxo'
 import { transactionExplorerUrl } from 'src/utils/explorer'
+import { infoNotify } from 'src/utils/notifications'
+import { translateMessage } from 'src/i18n'
 import { activeChain } from '@frank/wallet/chain'
 
 // `toDisplayAddress` (Lotus-only) is left as-is here rather than swapped for `activeChain`
@@ -134,7 +164,17 @@ export default defineComponent({
     }
   },
   setup() {
+    const copyTxHash = async (txHash: string) => {
+      try {
+        await copyToClipboard(txHash)
+        infoNotify(translateMessage('transactionDialog.txHashCopied'))
+      } catch (err) {
+        console.error('Failed to copy tx hash', err)
+      }
+    }
+
     return {
+      copyTxHash,
       transactionExplorerUrl,
       formatValue(valueWei: bigint) {
         return `${activeChain.toDisplayAmount(valueWei)} ${activeChain.unit}`

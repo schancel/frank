@@ -154,6 +154,7 @@ import { useContactStore } from 'src/stores/contacts'
 import { useProfileStore } from 'src/stores/my-profile'
 import { ChatMessage, useChatStore } from 'src/stores/chats'
 import type { OutgoingOutcome } from 'src/stores/chats'
+import { useBalance } from 'src/composables/useBalance'
 
 const scrollDuration = 0
 
@@ -204,8 +205,10 @@ export default defineComponent({
     const chats = useChatStore()
     const contacts = useContactStore()
     const myProfile = useProfileStore()
+    const { refresh: refreshBalance } = useBalance()
 
     return {
+      refreshBalance,
       getAcceptancePrice: contacts.getAcceptancePrice,
       getStampAmount: chats.getStampAmount,
       setStampAmount: chats.setStampAmount,
@@ -786,10 +789,24 @@ export default defineComponent({
       this.focusComposeOnOpen()
       void this.runBlackjackDealer()
     },
-    'messages.length'() {
+    'messages.length'(newLen: number, oldLen: number) {
       // Scroll to bottom if user was already there.
       this.scrollBottom()
       void this.runBlackjackDealer()
+      if (newLen && oldLen !== undefined && newLen > oldLen) {
+        const newMsgs = this.messages.slice(oldLen)
+        const hasIncomingConfirmedStamps = newMsgs.some(
+          msg =>
+            !msg.outbound &&
+            msg.status === 'confirmed' &&
+            ((msg.stampValueWei !== undefined && msg.stampValueWei > 0n) ||
+              (msg.stampPayments !== undefined &&
+                msg.stampPayments.length > 0)),
+        )
+        if (hasIncomingConfirmedStamps) {
+          void this.refreshBalance?.()
+        }
+      }
     },
     'sendingMessage'(sending: boolean) {
       if (!sending) void this.runBlackjackDealer()

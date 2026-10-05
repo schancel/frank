@@ -59,6 +59,7 @@ import {
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import { useProfileStore } from './my-profile'
 import { useContactStore } from './contacts'
+import { useBalance } from '../composables/useBalance'
 import { mapObjIndexed, pathOr } from 'ramda'
 import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
 import {
@@ -2148,6 +2149,25 @@ export const useChatStore = defineStore('chats', {
         }
         this.lastReceived = message.serverTime
         chat.totalValue += messageValue
+      }
+      const hasIncomingConfirmedStamps = deliverableWrappers.some(wrapper => {
+        if (outboundMatches.has(wrapper.index) || wrapper.outbound) {
+          return false
+        }
+        return (
+          (wrapper.message.stampValueWei !== undefined &&
+            wrapper.message.stampValueWei > 0n) ||
+          (wrapper.message.stampPayments !== undefined &&
+            wrapper.message.stampPayments.length > 0) ||
+          (wrapper.stampValue !== undefined && wrapper.stampValue > 0)
+        )
+      })
+      if (hasIncomingConfirmedStamps) {
+        try {
+          void useBalance().refresh()
+        } catch {
+          // ignore
+        }
       }
       return {
         suppressedReceipts: receipts.filter(receipt =>

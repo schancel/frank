@@ -18,7 +18,15 @@
  *   half deterministic, half random) so clients do not hammer an unhealthy RPC in lockstep. A
  *   success resets it. Failures are logged with `console.error`; there is no UI error state.
  */
-import { computed, onMounted, onUnmounted, readonly, ref, watch } from 'vue'
+import {
+  computed,
+  getCurrentInstance,
+  onMounted,
+  onUnmounted,
+  readonly,
+  ref,
+  watch,
+} from 'vue'
 import { activeChain } from '@frank/wallet/chain'
 import { accountStatus } from '../accounts/session'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
@@ -106,6 +114,7 @@ async function fetchBalance(force: boolean) {
   try {
     const wallet = await useActiveWallet()
     if (!isCurrent()) return
+    if (typeof activeChain?.nativeTransfers?.getBalance !== 'function') return
     const next = await activeChain.nativeTransfers.getBalance({ wallet })
     if (!isCurrent()) return
     balance.value = next
@@ -191,8 +200,10 @@ function release() {
 }
 
 export function useBalance() {
-  onMounted(acquire)
-  onUnmounted(release)
+  if (getCurrentInstance()) {
+    onMounted(acquire)
+    onUnmounted(release)
+  }
   return {
     balance: readonly(balance),
     formattedBalance,

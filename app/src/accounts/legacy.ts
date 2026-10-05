@@ -51,4 +51,3 @@ export async function identifyLegacyAccount(phrase: string): Promise<string> {
 }
 
 export { importBip39Wallet } from './session'
-

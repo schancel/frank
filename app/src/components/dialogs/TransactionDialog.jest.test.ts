@@ -38,9 +38,11 @@ describe('TransactionDialog', () => {
   ]
 
   it('renders external explorer link when explorer is available', () => {
-    jest.spyOn(explorer, 'transactionExplorerUrl').mockReturnValue(
-      'https://testnet.monadscan.com/tx/0x71f8b14d1234567890abcdef',
-    )
+    jest
+      .spyOn(explorer, 'transactionExplorerUrl')
+      .mockReturnValue(
+        'https://testnet.monadscan.com/tx/0x71f8b14d1234567890abcdef',
+      )
 
     const wrapper = mount(TransactionDialog, {
       props: {
@@ -68,9 +70,13 @@ describe('TransactionDialog', () => {
       },
     })
 
-    const link = wrapper.find('a[href="https://testnet.monadscan.com/tx/0x71f8b14d1234567890abcdef"]')
+    const link = wrapper.find(
+      'a[href="https://testnet.monadscan.com/tx/0x71f8b14d1234567890abcdef"]',
+    )
     expect(link.exists()).toBe(true)
-    expect(wrapper.find('[data-testid="local-chain-notice"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="local-chain-notice"]').exists()).toBe(
+      false,
+    )
   })
 
   it('handles local chain gracefully by displaying notice and offering copy button', async () => {
@@ -96,7 +102,9 @@ describe('TransactionDialog', () => {
           QTab: { template: '<div />' },
           QTabPanels: { template: '<div />' },
           QTabPanel: { template: '<div />' },
-          QBtn: { template: '<button @click="$emit(\'click\')"><slot /></button>' },
+          QBtn: {
+            template: '<button @click="$emit(\'click\')"><slot /></button>',
+          },
           QTooltip: { template: '<span />' },
         },
       },

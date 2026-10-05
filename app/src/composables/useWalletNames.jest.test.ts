@@ -20,7 +20,9 @@ describe('useWalletNames composable', () => {
     setCustomName('monad', '  Trading Bot  ')
     expect(getCustomName('monad')).toBe('Trading Bot')
 
-    const stored = JSON.parse(localStorage.getItem(WALLET_NAMES_STORAGE_KEY) || '{}')
+    const stored = JSON.parse(
+      localStorage.getItem(WALLET_NAMES_STORAGE_KEY) || '{}',
+    )
     expect(stored.monad).toBe('Trading Bot')
   })
 
@@ -32,7 +34,9 @@ describe('useWalletNames composable', () => {
     setCustomName('monad', '   ')
     expect(getCustomName('monad')).toBe('')
 
-    const stored = JSON.parse(localStorage.getItem(WALLET_NAMES_STORAGE_KEY) || '{}')
+    const stored = JSON.parse(
+      localStorage.getItem(WALLET_NAMES_STORAGE_KEY) || '{}',
+    )
     expect(stored.monad).toBeUndefined()
   })
 
@@ -45,7 +49,9 @@ describe('useWalletNames composable', () => {
     expect(getCustomName('monad')).toBe('')
     expect(getCustomName('ecash')).toBe('Pocket Cash')
 
-    const stored = JSON.parse(localStorage.getItem(WALLET_NAMES_STORAGE_KEY) || '{}')
+    const stored = JSON.parse(
+      localStorage.getItem(WALLET_NAMES_STORAGE_KEY) || '{}',
+    )
     expect(stored.monad).toBeUndefined()
     expect(stored.ecash).toBe('Pocket Cash')
   })
@@ -63,12 +69,16 @@ describe('useWalletNames composable', () => {
   })
 
   test('handles localStorage exceptions gracefully', () => {
-    const getItemSpy = jest.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
-      throw new Error('Access denied')
-    })
-    const setItemSpy = jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
-      throw new Error('Quota exceeded')
-    })
+    const getItemSpy = jest
+      .spyOn(Storage.prototype, 'getItem')
+      .mockImplementation(() => {
+        throw new Error('Access denied')
+      })
+    const setItemSpy = jest
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(() => {
+        throw new Error('Quota exceeded')
+      })
 
     const { setCustomName, getCustomName, initWalletNames } = useWalletNames()
     expect(() => initWalletNames()).not.toThrow()

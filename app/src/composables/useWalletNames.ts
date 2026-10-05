@@ -22,7 +22,10 @@ function loadStoredNames(): Record<string, string> {
 function saveStoredNames(names: Record<string, string>) {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(WALLET_NAMES_STORAGE_KEY, JSON.stringify(names))
+      window.localStorage.setItem(
+        WALLET_NAMES_STORAGE_KEY,
+        JSON.stringify(names),
+      )
     }
   } catch {
     // Storage access may be restricted or throw in certain environments

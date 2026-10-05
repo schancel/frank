@@ -18,7 +18,8 @@ const balance = {
 const mockWalletStore = {
   seedPhrase:
     'apple banana cherry dinosaur elephant fox grape hat ice joke kite lemon' as
-      string | null,
+      | string
+      | null,
   seedConfirmedAt: 123456789 as number | null,
 }
 const mockProfileStore = {

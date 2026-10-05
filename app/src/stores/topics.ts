@@ -157,7 +157,9 @@ export const useTopicStore = defineStore('topics', {
       topic: string
       wallet?: WalletHandle
     }) {
-      const owner = wallet ? wallet.identity.address.raw.toLowerCase() : 'public'
+      const owner = wallet
+        ? wallet.identity.address.raw.toLowerCase()
+        : 'public'
       if (topicWallets.get(toRaw(this.$state)) !== owner)
         this.invalidateRefresh()
       topicWallets.set(toRaw(this.$state), owner)

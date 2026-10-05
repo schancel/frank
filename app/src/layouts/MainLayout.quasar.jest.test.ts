@@ -14,7 +14,8 @@ import MainLayout from './MainLayout.vue'
 
 // Stores are plain reactive objects; storeToRefs just needs to turn them into refs.
 jest.mock('pinia', () => ({
-  defineStore: (_id: string, def: any) => () => (typeof def === 'function' ? def() : def),
+  defineStore: (_id: string, def: any) => () =>
+    typeof def === 'function' ? def() : def,
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
 }))
 jest.mock('../components/panels/ContactsPanel.vue', () => ({
@@ -187,7 +188,9 @@ function installLeftDrawerStyles() {
   }
   const style = document.createElement('style')
   style.dataset.test = 'left-drawer-styles'
-  style.textContent = `${walletRule}\n${settingsRule || ''}\n${contentRule.replace(
+  style.textContent = `${walletRule}\n${
+    settingsRule || ''
+  }\n${contentRule.replace(
     ':deep(.settings-pin-content)',
     '.settings-pin-content',
   )}`

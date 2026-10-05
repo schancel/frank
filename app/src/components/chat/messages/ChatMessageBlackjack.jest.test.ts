@@ -455,7 +455,9 @@ describe('the dealer', () => {
     const [sent] = followUp(wrapper)
     expect(sent.stampValueWei).toBeUndefined()
     expect(sent.items[0]).toMatchObject({ action: 'accept', maxBetWei: '300' })
-    expect(commitmentOf(loadSeed(ME, PEER, GAME)!)).toBe(sent.items[0].commitment)
+    expect(commitmentOf(loadSeed(ME, PEER, GAME)!)).toBe(
+      sent.items[0].commitment,
+    )
   })
 
   it('confirms a payout: the reveal’s stamp is exactly what is owed', async () => {

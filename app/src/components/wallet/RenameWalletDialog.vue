@@ -4,7 +4,10 @@
     data-test="rename-wallet-dialog"
     @update:model-value="$emit('update:modelValue', $event)"
   >
-    <q-card style="min-width: 320px; max-width: 450px" data-test="rename-wallet-card">
+    <q-card
+      style="min-width: 320px; max-width: 450px"
+      data-test="rename-wallet-card"
+    >
       <q-card-section>
         <div class="text-h6">{{ $t('walletPanel.renameWallet') }}</div>
       </q-card-section>
@@ -84,7 +87,7 @@ const inputName = ref('')
 
 watch(
   () => props.modelValue,
-  (open) => {
+  open => {
     if (open) {
       inputName.value = props.currentName || ''
     }

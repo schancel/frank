@@ -22,10 +22,20 @@ describe('Monad transaction explorer configuration', () => {
 
   it('detects local RPC chain and handles explorer links gracefully', () => {
     // When forced local or targeting local stack
-    expect(transactionExplorerUrl('0x71f8b14d', 'MONT', { isLocal: true })).toBeUndefined()
-    expect(transactionExplorerUrl('0x71f8b14d', 'MONT', { rpcChain: 'local-stack' })).toBeUndefined()
-    expect(transactionExplorerUrl('0x71f8b14d', 'MONT', { rpcChain: 'chain-shim' })).toBeUndefined()
-    expect(transactionExplorerUrl('0x71f8b14d', 'MONT', { relayBaseUrl: 'http://127.0.0.1:18545' })).toBeUndefined()
+    expect(
+      transactionExplorerUrl('0x71f8b14d', 'MONT', { isLocal: true }),
+    ).toBeUndefined()
+    expect(
+      transactionExplorerUrl('0x71f8b14d', 'MONT', { rpcChain: 'local-stack' }),
+    ).toBeUndefined()
+    expect(
+      transactionExplorerUrl('0x71f8b14d', 'MONT', { rpcChain: 'chain-shim' }),
+    ).toBeUndefined()
+    expect(
+      transactionExplorerUrl('0x71f8b14d', 'MONT', {
+        relayBaseUrl: 'http://127.0.0.1:18545',
+      }),
+    ).toBeUndefined()
 
     // hasTransactionExplorer returns false on local chain without custom explorer
     expect(hasTransactionExplorer('MONT', { isLocal: true })).toBe(false)

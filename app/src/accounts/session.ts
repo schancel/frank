@@ -38,9 +38,36 @@ export interface AccountSessionState {
 }
 
 export const CODEX32_SHARE_INDICES = [
-  'q', 'p', 'z', 'r', 'y', '9', 'x', '8', 'g', 'f',
-  '2', 't', 'v', 'd', 'w', '0', '3', 'j', 'n', '5',
-  '4', 'k', 'h', 'c', 'e', '6', 'm', 'u', 'a', '7',
+  'q',
+  'p',
+  'z',
+  'r',
+  'y',
+  '9',
+  'x',
+  '8',
+  'g',
+  'f',
+  '2',
+  't',
+  'v',
+  'd',
+  'w',
+  '0',
+  '3',
+  'j',
+  'n',
+  '5',
+  '4',
+  'k',
+  'h',
+  'c',
+  'e',
+  '6',
+  'm',
+  'u',
+  'a',
+  '7',
   'l',
 ] as const
 
@@ -272,7 +299,8 @@ export function createAccountSession(deps: {
       purpose: P,
     ): Promise<Uint8Array> {
       await session.initialize()
-      if (!custody || closed || state.status !== 'ready') throw new CustodyError('locked')
+      if (!custody || closed || state.status !== 'ready')
+        throw new CustodyError('locked')
       const capability = await custody.openActive()
       let roots: readonly DomainRoot[] = []
       try {
@@ -288,7 +316,9 @@ export function createAccountSession(deps: {
     async getActiveWalletRoot(): Promise<Uint8Array> {
       return this.getActiveDomainRoot('evm-wallet')
     },
-    async getChainAddress(chain: 'monad' | 'ecash' | 'solana'): Promise<string> {
+    async getChainAddress(
+      chain: 'monad' | 'ecash' | 'solana',
+    ): Promise<string> {
       if (chain === 'monad') {
         const wallet = await session.getWallet()
         return wallet.identity.displayAddress
@@ -301,9 +331,8 @@ export function createAccountSession(deps: {
           const { encodeCashAddress } = await import('ecashaddrjs')
           const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
           const { sha256 } = await import('@noble/hashes/sha256.js')
-          const hdNode = HDNodeWallet.fromSeed(root).derivePath(
-            "m/44'/1899'/0'/0/0",
-          )
+          const hdNode =
+            HDNodeWallet.fromSeed(root).derivePath("m/44'/1899'/0'/0/0")
           const pubKeyHex = hdNode.publicKey.startsWith('0x')
             ? hdNode.publicKey.slice(2)
             : hdNode.publicKey
@@ -322,14 +351,21 @@ export function createAccountSession(deps: {
         root.fill(0)
       }
     },
-    async backupCodex32(threshold: number = 2, count: number = 3): Promise<string[]> {
+    async backupCodex32(threshold = 2, count = 3): Promise<string[]> {
       const root = await this.getActiveWalletRoot()
       let master: { ok: boolean; value?: Uint8Array } | undefined
       try {
         master = createMasterPayload(root)
-        if (!master.ok || !master.value) throw new Error('Failed to create master payload')
-        const safeThreshold = Math.max(2, Math.min(9, Math.floor(threshold))) as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
-        const safeCount = Math.max(safeThreshold, Math.min(CODEX32_SHARE_INDICES.length, Math.floor(count)))
+        if (!master.ok || !master.value)
+          throw new Error('Failed to create master payload')
+        const safeThreshold = Math.max(
+          2,
+          Math.min(9, Math.floor(threshold)),
+        ) as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
+        const safeCount = Math.max(
+          safeThreshold,
+          Math.min(CODEX32_SHARE_INDICES.length, Math.floor(count)),
+        )
         const split = splitCodex32({
           threshold: safeThreshold,
           identifier: 'frnk',
@@ -448,11 +484,7 @@ export const accountSession = createAccountSession({
   },
   open: () => {
     // Preview capability evidence is browser-only; native webviews do not inherit it.
-    if (
-      Platform.is.electron ||
-      Platform.is.capacitor ||
-      Platform.is.cordova
-    )
+    if (Platform.is.electron || Platform.is.capacitor || Platform.is.cordova)
       return Promise.reject(new CustodyError('unavailable'))
     return openAccountCustody({ namespace: 'local-account-v1' })
   },
@@ -479,15 +511,13 @@ export async function importBip39Wallet(
     throw new Error('Invalid BIP-39 mnemonic')
   }
 
-  const {
-    CANONICAL_FRANK_PATH,
-    deriveCandidateAccounts,
-  } = await import('@frank/wallet/bip39-import')
+  const { CANONICAL_FRANK_PATH, deriveCandidateAccounts } = await import(
+    '@frank/wallet/bip39-import'
+  )
 
   const path = chosenPath ?? CANONICAL_FRANK_PATH
   const candidates = deriveCandidateAccounts(cleanPhrase)
-  const candidate =
-    candidates.find(c => c.path === path) ??
+  const candidate = candidates.find(c => c.path === path) ??
     candidates[0] ?? {
       path,
       label: 'Imported BIP39',
@@ -559,4 +589,3 @@ export async function importBip39Wallet(
     wallet,
   }
 }
-

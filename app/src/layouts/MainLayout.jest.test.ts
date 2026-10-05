@@ -9,7 +9,8 @@ import MainLayout from './MainLayout.vue'
 
 // Stores are plain reactive objects; storeToRefs just needs to turn them into refs.
 jest.mock('pinia', () => ({
-  defineStore: (_id: string, def: any) => () => (typeof def === 'function' ? def() : def),
+  defineStore: (_id: string, def: any) => () =>
+    typeof def === 'function' ? def() : def,
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
 }))
 jest.mock('../components/panels/ContactsPanel.vue', () => ({
@@ -372,14 +373,14 @@ describe('LeftDrawer icon rail accessible names', () => {
     )
     mockUnread.value = 3
     const many = await mountLayout(1024)
-    expect(
-      many.wrapper.get('#rail-tab-chats').attributes('aria-label'),
-    ).toBe('Direct Messages, 3 unread messages')
+    expect(many.wrapper.get('#rail-tab-chats').attributes('aria-label')).toBe(
+      'Direct Messages, 3 unread messages',
+    )
     mockUnread.value = 0
     const none = await mountLayout(1024)
-    expect(
-      none.wrapper.get('#rail-tab-chats').attributes('aria-label'),
-    ).toBe('Direct Messages')
+    expect(none.wrapper.get('#rail-tab-chats').attributes('aria-label')).toBe(
+      'Direct Messages',
+    )
   })
 })
 

@@ -4,7 +4,8 @@ import { enableAutoUnmount, shallowMount } from '@vue/test-utils'
 enableAutoUnmount(afterEach)
 import { nextTick, ref } from 'vue'
 const mockGetChainAddress = jest.fn(async (chain: string) => {
-  if (chain === 'ecash') return 'ecash:qz3fjd36tzd3qr6p7cqjytx4ftl9f4mghqdsk9xhj9'
+  if (chain === 'ecash')
+    return 'ecash:qz3fjd36tzd3qr6p7cqjytx4ftl9f4mghqdsk9xhj9'
   if (chain === 'solana') return 'AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9'
   return '0xabc'
 })
@@ -120,7 +121,9 @@ describe('Wallet detail page (#570)', () => {
     expect(wrapper.get('[data-testid="wallet-name"]').text()).toContain(
       'walletPanel.mainWallet',
     )
-    expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(
+      true,
+    )
     expect(wrapper.get('[data-testid="wallet-chain"]').text()).toBe(
       'walletPanel.monadTestnet',
     )
@@ -281,7 +284,9 @@ describe('Wallet detail page (#570)', () => {
     expect(wrapper.get('[data-testid="wallet-name"]').text()).toContain(
       'walletPanel.ecashTestnet',
     )
-    expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(
+      true,
+    )
     expect(wrapper.get('[data-testid="wallet-chain"]').text()).toBe(
       'walletPanel.ecashTestnet',
     )
@@ -310,7 +315,9 @@ describe('Wallet detail page (#570)', () => {
     expect(wrapper.get('[data-testid="wallet-name"]').text()).toContain(
       'walletPanel.solanaTestnet',
     )
-    expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(
+      true,
+    )
     expect(wrapper.get('[data-testid="wallet-chain"]').text()).toBe(
       'walletPanel.solanaTestnet',
     )
@@ -331,4 +338,3 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 })
-

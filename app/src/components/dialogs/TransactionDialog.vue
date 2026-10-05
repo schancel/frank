@@ -39,7 +39,9 @@
                 class="text-caption text-grey-7"
                 data-testid="local-chain-notice"
               >
-                {{ payment.txHash }} ({{ $t('transactionDialog.localChainNotice') }})
+                {{ payment.txHash }} ({{
+                  $t('transactionDialog.localChainNotice')
+                }})
               </span>
             </q-item-label>
           </q-item-section>
@@ -92,7 +94,9 @@
                 class="text-caption text-grey-7"
                 data-testid="local-chain-notice-outpoint"
               >
-                {{ outpoint.txId }} ({{ $t('transactionDialog.localChainNotice') }})
+                {{ outpoint.txId }} ({{
+                  $t('transactionDialog.localChainNotice')
+                }})
               </span>
             </q-item-label>
             <span class="text-bold">

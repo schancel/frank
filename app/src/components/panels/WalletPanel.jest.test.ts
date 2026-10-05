@@ -39,7 +39,8 @@ function render() {
         QItem: { template: '<button><slot /></button>' },
         QItemSection: {
           props: ['avatar', 'side'],
-          template: '<span :class="{ \'q-item-section--side\': side, \'q-item-section--avatar\': avatar }"><slot /></span>',
+          template:
+            "<span :class=\"{ 'q-item-section--side': side, 'q-item-section--avatar': avatar }\"><slot /></span>",
         },
         QItemLabel: { template: '<span><slot /></span>' },
         QSeparator: { template: '<hr />' },
@@ -98,11 +99,15 @@ test('displays formatted live balance and handles loading and stale states', asy
   mockError.value = true
   await flushPromises()
   expect(view.get('[data-test="wallet-balance"]').text()).toBe('0 MON')
-  expect(view.get('[data-test="balance-stale"]').text()).toContain('out of date')
+  expect(view.get('[data-test="balance-stale"]').text()).toContain(
+    'out of date',
+  )
 
   mockLoaded.value = false
   await flushPromises()
-  expect(view.get('[data-test="wallet-balance"]').text()).toContain('unavailable')
+  expect(view.get('[data-test="wallet-balance"]').text()).toContain(
+    'unavailable',
+  )
 
   mockError.value = false
   await flushPromises()
@@ -160,7 +165,9 @@ test('renders clean default names without repeating testnet in name and badge', 
   // Default names should not contain "Testnet"
   expect(view.find('[data-test="wallet-name-text"]').text()).toBe('Main wallet')
   expect(view.find('[data-test="ecash-wallet-name-text"]').text()).toBe('eCash')
-  expect(view.find('[data-test="solana-wallet-name-text"]').text()).toBe('Solana')
+  expect(view.find('[data-test="solana-wallet-name-text"]').text()).toBe(
+    'Solana',
+  )
 
   // Badges still indicate Testnet
   expect(view.find('[data-test="testnet-badge"]').exists()).toBe(true)
@@ -176,8 +183,12 @@ test('allows viewing and updating custom wallet names', async () => {
 
   const view = render()
   expect(view.find('[data-test="wallet-name-text"]').text()).toBe('Trading Bot')
-  expect(view.find('[data-test="ecash-wallet-name-text"]').text()).toBe('Personal Stash')
-  expect(view.find('[data-test="solana-wallet-name-text"]').text()).toBe('Solana Vault')
+  expect(view.find('[data-test="ecash-wallet-name-text"]').text()).toBe(
+    'Personal Stash',
+  )
+  expect(view.find('[data-test="solana-wallet-name-text"]').text()).toBe(
+    'Solana Vault',
+  )
 
   // Resetting returns to default concise names
   resetCustomName('monad')
@@ -185,7 +196,9 @@ test('allows viewing and updating custom wallet names', async () => {
   await flushPromises()
   expect(view.find('[data-test="wallet-name-text"]').text()).toBe('Main wallet')
   expect(view.find('[data-test="ecash-wallet-name-text"]').text()).toBe('eCash')
-  expect(view.find('[data-test="solana-wallet-name-text"]').text()).toBe('Solana Vault')
+  expect(view.find('[data-test="solana-wallet-name-text"]').text()).toBe(
+    'Solana Vault',
+  )
 })
 
 test('opens rename dialog on edit icon click and handles save and reset', async () => {
@@ -203,7 +216,9 @@ test('opens rename dialog on edit icon click and handles save and reset', async 
   // Emitting save from dialog updates wallet name
   await renameDialog.vm.$emit('save', 'Primary Monad')
   await flushPromises()
-  expect(view.find('[data-test="wallet-name-text"]').text()).toBe('Primary Monad')
+  expect(view.find('[data-test="wallet-name-text"]').text()).toBe(
+    'Primary Monad',
+  )
 
   // Double clicking eCash name opens dialog for eCash
   await view.find('[data-test="ecash-wallet-name-text"]').trigger('dblclick')
@@ -214,7 +229,9 @@ test('opens rename dialog on edit icon click and handles save and reset', async 
   // Emitting save for eCash
   await renameDialog.vm.$emit('save', 'Coffee Wallet')
   await flushPromises()
-  expect(view.find('[data-test="ecash-wallet-name-text"]').text()).toBe('Coffee Wallet')
+  expect(view.find('[data-test="ecash-wallet-name-text"]').text()).toBe(
+    'Coffee Wallet',
+  )
 
   // Emitting reset for eCash restores default
   await renameDialog.vm.$emit('reset')

@@ -99,10 +99,7 @@ import { defineComponent } from 'vue'
 
 import { normalizedProfileName, profileNameRule } from '../utils/profile-name'
 import { defaultAvatars } from '../utils/constants'
-import {
-  resizeAndCompressImage,
-  compressAvatarFile,
-} from '../utils/avatar'
+import { resizeAndCompressImage, compressAvatarFile } from '../utils/avatar'
 
 export default defineComponent({
   setup() {

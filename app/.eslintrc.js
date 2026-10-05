@@ -32,8 +32,9 @@ module.exports = {
   },
 
   env: {
-    jest: true,
-    browser: true,
+    'jest': true,
+    'browser': true,
+    'vue/setup-compiler-macros': true,
   },
 
   // Rules order is important, please avoid shuffling them

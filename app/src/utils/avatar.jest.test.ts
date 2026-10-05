@@ -34,22 +34,43 @@ describe('avatar resizing and compression utilities', () => {
 
   describe('calculateTargetDimensions', () => {
     it('preserves dimensions when both are within maxDimension', () => {
-      expect(calculateTargetDimensions(64, 64, 80)).toEqual({ width: 64, height: 64 })
-      expect(calculateTargetDimensions(80, 50, 80)).toEqual({ width: 80, height: 50 })
+      expect(calculateTargetDimensions(64, 64, 80)).toEqual({
+        width: 64,
+        height: 64,
+      })
+      expect(calculateTargetDimensions(80, 50, 80)).toEqual({
+        width: 80,
+        height: 50,
+      })
     })
 
     it('scales down wider images maintaining aspect ratio', () => {
-      expect(calculateTargetDimensions(400, 200, 80)).toEqual({ width: 80, height: 40 })
-      expect(calculateTargetDimensions(512, 512, 80)).toEqual({ width: 80, height: 80 })
+      expect(calculateTargetDimensions(400, 200, 80)).toEqual({
+        width: 80,
+        height: 40,
+      })
+      expect(calculateTargetDimensions(512, 512, 80)).toEqual({
+        width: 80,
+        height: 80,
+      })
     })
 
     it('scales down taller images maintaining aspect ratio', () => {
-      expect(calculateTargetDimensions(200, 400, 80)).toEqual({ width: 40, height: 80 })
-      expect(calculateTargetDimensions(300, 600, 96)).toEqual({ width: 48, height: 96 })
+      expect(calculateTargetDimensions(200, 400, 80)).toEqual({
+        width: 40,
+        height: 80,
+      })
+      expect(calculateTargetDimensions(300, 600, 96)).toEqual({
+        width: 48,
+        height: 96,
+      })
     })
 
     it('handles zero or negative dimensions safely', () => {
-      expect(calculateTargetDimensions(0, 0, 80)).toEqual({ width: 80, height: 80 })
+      expect(calculateTargetDimensions(0, 0, 80)).toEqual({
+        width: 80,
+        height: 80,
+      })
     })
   })
 
@@ -130,7 +151,10 @@ describe('avatar resizing and compression utilities', () => {
       Object.defineProperty(img, 'naturalWidth', { value: 1024 })
       Object.defineProperty(img, 'naturalHeight', { value: 1024 })
 
-      const result = resizeAndCompressImage(img, { maxDimension: 80, maxBytes: 4096 })
+      const result = resizeAndCompressImage(img, {
+        maxDimension: 80,
+        maxBytes: 4096,
+      })
       expect(result).toMatch(/^data:image\/webp;base64,/)
       expect(result.length).toBeLessThanOrEqual(4096)
     })

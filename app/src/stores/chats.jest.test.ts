@@ -1381,7 +1381,9 @@ describe('stores/chats.ts (ticket #42)', () => {
     it('refreshes the active balance when an incoming message with a confirmed stamp arrives', async () => {
       const chats = useChatStore()
       mockBalanceRefresh.mockClear()
-      await chats.receiveMessages([makeWrapper({ index: 'stamp-refresh-test' })])
+      await chats.receiveMessages([
+        makeWrapper({ index: 'stamp-refresh-test' }),
+      ])
       expect(mockBalanceRefresh).toHaveBeenCalled()
     })
 

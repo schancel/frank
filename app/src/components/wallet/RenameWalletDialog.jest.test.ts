@@ -20,7 +20,8 @@ function mountDialog(props = {}) {
       stubs: {
         QDialog: {
           props: ['modelValue'],
-          template: '<div v-if="modelValue" data-test="dialog-stub"><slot /></div>',
+          template:
+            '<div v-if="modelValue" data-test="dialog-stub"><slot /></div>',
         },
         QCard: { template: '<div><slot /></div>' },
         QCardSection: { template: '<div><slot /></div>' },
@@ -61,13 +62,19 @@ describe('RenameWalletDialog component', () => {
     const wrapper = mountDialog({ currentName: 'Trading Bot' })
     const input = wrapper.find('[data-test="native-input"]')
     expect((input.element as HTMLInputElement).value).toBe('Trading Bot')
-    expect(wrapper.find('[data-test="rename-wallet-reset-btn"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="rename-wallet-reset-btn"]').text()).toContain('Reset to default')
+    expect(wrapper.find('[data-test="rename-wallet-reset-btn"]').exists()).toBe(
+      true,
+    )
+    expect(
+      wrapper.find('[data-test="rename-wallet-reset-btn"]').text(),
+    ).toContain('Reset to default')
   })
 
   test('does not show reset button when currentName is empty', () => {
     const wrapper = mountDialog({ currentName: '' })
-    expect(wrapper.find('[data-test="rename-wallet-reset-btn"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="rename-wallet-reset-btn"]').exists()).toBe(
+      false,
+    )
   })
 
   test('emits save event with trimmed input and closes dialog', async () => {
@@ -91,7 +98,9 @@ describe('RenameWalletDialog component', () => {
 
   test('emits update:modelValue false on cancel', async () => {
     const wrapper = mountDialog()
-    await wrapper.find('[data-test="rename-wallet-cancel-btn"]').trigger('click')
+    await wrapper
+      .find('[data-test="rename-wallet-cancel-btn"]')
+      .trigger('click')
     expect(wrapper.emitted('update:modelValue')).toEqual([[false]])
   })
 })

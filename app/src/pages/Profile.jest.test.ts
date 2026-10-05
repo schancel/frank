@@ -10,7 +10,11 @@ import { registerMonadIdentityCbor } from '@frank/wallet/monad-identity'
 const mockSetRelayData = jest.fn()
 jest.mock('src/stores/my-profile', () => ({
   useProfileStore: jest.fn(() => ({
-    profile: { name: 'Alice', bio: 'Crypto enthusiast', avatar: 'data:image/png;base64,123' },
+    profile: {
+      name: 'Alice',
+      bio: 'Crypto enthusiast',
+      avatar: 'data:image/png;base64,123',
+    },
     inbox: { acceptancePrice: 100 },
     setRelayData: mockSetRelayData,
   })),
@@ -49,7 +53,7 @@ describe('Profile.vue', () => {
           $q: { loading: { show: jest.fn(), hide: jest.fn() } },
         },
         stubs: {
-          Profile: { template: '<div data-test="profile-component"></div>' },
+          'Profile': { template: '<div data-test="profile-component"></div>' },
           'q-page-container': { template: '<div><slot /></div>' },
           'q-page': { template: '<div><slot /></div>' },
           'q-card': { template: '<div><slot /></div>' },
@@ -71,7 +75,9 @@ describe('Profile.vue', () => {
 
   it('saves updated profile locally and publishes CBOR identity when wallet active', async () => {
     const mockWallet = {
-      identity: { address: { raw: '0x1234567890123456789012345678901234567890' } },
+      identity: {
+        address: { raw: '0x1234567890123456789012345678901234567890' },
+      },
       relayBaseUrl: 'https://127.0.0.1:18443',
     }
     ;(useActiveWallet as jest.Mock).mockResolvedValue(mockWallet)
@@ -84,7 +90,7 @@ describe('Profile.vue', () => {
           $q: { loading: { show: jest.fn(), hide: jest.fn() } },
         },
         stubs: {
-          Profile: { template: '<div data-test="profile-component"></div>' },
+          'Profile': { template: '<div data-test="profile-component"></div>' },
           'q-page-container': { template: '<div><slot /></div>' },
           'q-page': { template: '<div><slot /></div>' },
           'q-card': { template: '<div><slot /></div>' },
@@ -121,7 +127,7 @@ describe('Profile.vue', () => {
           $q: { loading: { show: jest.fn(), hide: jest.fn() } },
         },
         stubs: {
-          Profile: { template: '<div data-test="profile-component"></div>' },
+          'Profile': { template: '<div data-test="profile-component"></div>' },
           'q-page-container': { template: '<div><slot /></div>' },
           'q-page': { template: '<div><slot /></div>' },
           'q-card': { template: '<div><slot /></div>' },
@@ -146,7 +152,9 @@ describe('Profile.vue', () => {
 
   it('compresses oversized avatar when compression succeeds before submitting', async () => {
     const mockWallet = {
-      identity: { address: { raw: '0x1234567890123456789012345678901234567890' } },
+      identity: {
+        address: { raw: '0x1234567890123456789012345678901234567890' },
+      },
       relayBaseUrl: 'https://127.0.0.1:18443',
     }
     ;(useActiveWallet as jest.Mock).mockResolvedValue(mockWallet)
@@ -188,7 +196,9 @@ describe('Profile.vue', () => {
             $q: { loading: { show: jest.fn(), hide: jest.fn() } },
           },
           stubs: {
-            Profile: { template: '<div data-test="profile-component"></div>' },
+            'Profile': {
+              template: '<div data-test="profile-component"></div>',
+            },
             'q-page-container': { template: '<div><slot /></div>' },
             'q-page': { template: '<div><slot /></div>' },
             'q-card': { template: '<div><slot /></div>' },

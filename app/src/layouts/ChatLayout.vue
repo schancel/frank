@@ -287,7 +287,7 @@ export default defineComponent({
     },
     notifications: {
       get(): boolean {
-        return this.address ? (this.getNotify(this.address) ?? false) : false
+        return this.address ? this.getNotify(this.address) ?? false : false
       },
       set(value: boolean) {
         if (this.address) {

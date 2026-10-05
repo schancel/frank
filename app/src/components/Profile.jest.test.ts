@@ -55,7 +55,9 @@ describe('Profile.vue component avatar handling', () => {
           $t: (key: string) => key,
         },
         stubs: {
-          'q-splitter': { template: '<div><slot name="before" /><slot name="after" /></div>' },
+          'q-splitter': {
+            template: '<div><slot name="before" /><slot name="after" /></div>',
+          },
           'q-tabs': { template: '<div><slot /></div>' },
           'q-tab': { template: '<div />' },
           'q-tab-panels': { template: '<div><slot /></div>' },
@@ -70,7 +72,9 @@ describe('Profile.vue component avatar handling', () => {
       },
     })
 
-    expect(wrapper.vm.$data.internalAvatar).toContain('data:image/webp;base64,RESIZED_AVATAR')
+    expect(wrapper.vm.$data.internalAvatar).toContain(
+      'data:image/webp;base64,RESIZED_AVATAR',
+    )
     expect(wrapper.vm.$data.internalAvatar.length).toBeLessThanOrEqual(4096)
   })
 
@@ -84,7 +88,9 @@ describe('Profile.vue component avatar handling', () => {
           $t: (key: string) => key,
         },
         stubs: {
-          'q-splitter': { template: '<div><slot name="before" /><slot name="after" /></div>' },
+          'q-splitter': {
+            template: '<div><slot name="before" /><slot name="after" /></div>',
+          },
           'q-tabs': { template: '<div><slot /></div>' },
           'q-tab': { template: '<div />' },
           'q-tab-panels': { template: '<div><slot /></div>' },
@@ -101,7 +107,9 @@ describe('Profile.vue component avatar handling', () => {
 
     ;(wrapper.vm as any).cycleAvatarRight()
     await wrapper.vm.$nextTick()
-    expect(wrapper.vm.$data.internalAvatar).toContain('data:image/webp;base64,RESIZED_AVATAR')
+    expect(wrapper.vm.$data.internalAvatar).toContain(
+      'data:image/webp;base64,RESIZED_AVATAR',
+    )
     expect(wrapper.emitted('update:avatar')).toBeTruthy()
   })
 
@@ -115,7 +123,9 @@ describe('Profile.vue component avatar handling', () => {
           $t: (key: string) => key,
         },
         stubs: {
-          'q-splitter': { template: '<div><slot name="before" /><slot name="after" /></div>' },
+          'q-splitter': {
+            template: '<div><slot name="before" /><slot name="after" /></div>',
+          },
           'q-tabs': { template: '<div><slot /></div>' },
           'q-tab': { template: '<div />' },
           'q-tab-panels': { template: '<div><slot /></div>' },
@@ -136,7 +146,9 @@ describe('Profile.vue component avatar handling', () => {
     await (wrapper.vm as any).$options.watch.avatarPath.call(wrapper.vm, file)
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.vm.$data.internalAvatar).toContain('data:image/webp;base64,RESIZED_AVATAR')
+    expect(wrapper.vm.$data.internalAvatar).toContain(
+      'data:image/webp;base64,RESIZED_AVATAR',
+    )
     expect(wrapper.vm.$data.internalAvatar.length).toBeLessThanOrEqual(4096)
   })
 })

@@ -81,7 +81,10 @@
           </p>
           <p>{{ account.pending.account.displayName }}</p>
           <p class="recovery-text">{{ account.pending.account.descriptor }}</p>
-          <div v-if="account.pendingReady" class="row q-gutter-sm q-mt-md items-center">
+          <div
+            v-if="account.pendingReady"
+            class="row q-gutter-sm q-mt-md items-center"
+          >
             <q-btn
               color="primary"
               no-caps
@@ -337,7 +340,11 @@
             </div>
           </template>
           <q-form
-            v-else-if="mode === 'confirm' || mode === 'restore-shares' || mode === 'restore'"
+            v-else-if="
+              mode === 'confirm' ||
+              mode === 'restore-shares' ||
+              mode === 'restore'
+            "
             @submit="confirm"
           >
             <p v-if="mode === 'confirm'">
@@ -355,7 +362,11 @@
                 )
               }}
             </p>
-            <p v-if="descriptor" class="recovery-text" data-test="pinned-descriptor">
+            <p
+              v-if="descriptor"
+              class="recovery-text"
+              data-test="pinned-descriptor"
+            >
               {{ $t('accountRecovery.expected_account') }} {{ descriptor }}
             </p>
             <q-input
@@ -413,7 +424,6 @@
 </template>
 
 <script setup lang="ts">
-/* global defineProps, defineEmits */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {

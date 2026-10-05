@@ -23,11 +23,16 @@
             <q-icon name="account_balance_wallet" />
           </q-item-section>
           <q-item-section>
-            <q-item-label data-test="wallet-name" class="row items-center no-wrap">
+            <q-item-label
+              data-test="wallet-name"
+              class="row items-center no-wrap"
+            >
               <span
                 class="ellipsis cursor-pointer"
                 data-test="wallet-name-text"
-                @dblclick.stop="openRenameDialog('monad', $t('walletPanel.mainWallet'))"
+                @dblclick.stop="
+                  openRenameDialog('monad', $t('walletPanel.mainWallet'))
+                "
               >
                 {{ getCustomName('monad') || $t('walletPanel.mainWallet') }}
               </span>
@@ -50,11 +55,17 @@
                 :title="$t('walletPanel.renameWallet')"
                 :aria-label="$t('walletPanel.renameWallet')"
                 data-test="rename-monad-btn"
-                @click.stop="openRenameDialog('monad', $t('walletPanel.mainWallet'))"
+                @click.stop="
+                  openRenameDialog('monad', $t('walletPanel.mainWallet'))
+                "
               />
             </q-item-label>
             <q-item-label caption data-test="wallet-chain">
-              {{ isTestnet ? $t('walletPanel.monadTestnet') : $t('walletPanel.monad') }}
+              {{
+                isTestnet
+                  ? $t('walletPanel.monadTestnet')
+                  : $t('walletPanel.monad')
+              }}
             </q-item-label>
             <q-item-label caption role="status" data-test="wallet-balance">
               {{
@@ -93,11 +104,16 @@
             <q-icon name="toll" />
           </q-item-section>
           <q-item-section>
-            <q-item-label data-test="ecash-wallet-name" class="row items-center no-wrap">
+            <q-item-label
+              data-test="ecash-wallet-name"
+              class="row items-center no-wrap"
+            >
               <span
                 class="ellipsis cursor-pointer"
                 data-test="ecash-wallet-name-text"
-                @dblclick.stop="openRenameDialog('ecash', $t('walletPanel.ecash'))"
+                @dblclick.stop="
+                  openRenameDialog('ecash', $t('walletPanel.ecash'))
+                "
               >
                 {{ getCustomName('ecash') || $t('walletPanel.ecash') }}
               </span>
@@ -124,10 +140,18 @@
               />
             </q-item-label>
             <q-item-label caption data-test="ecash-wallet-chain">
-              {{ isTestnet ? $t('walletPanel.ecashTestnet') : $t('walletPanel.ecash') }}
+              {{
+                isTestnet
+                  ? $t('walletPanel.ecashTestnet')
+                  : $t('walletPanel.ecash')
+              }}
             </q-item-label>
             <q-item-label caption data-test="ecash-wallet-balance">
-              {{ isTestnet ? $t('walletPanel.zeroTxec') : $t('walletPanel.zeroXec') }}
+              {{
+                isTestnet
+                  ? $t('walletPanel.zeroTxec')
+                  : $t('walletPanel.zeroXec')
+              }}
             </q-item-label>
           </q-item-section>
         </q-item>
@@ -145,11 +169,16 @@
             <q-icon name="account_balance" />
           </q-item-section>
           <q-item-section>
-            <q-item-label data-test="solana-wallet-name" class="row items-center no-wrap">
+            <q-item-label
+              data-test="solana-wallet-name"
+              class="row items-center no-wrap"
+            >
               <span
                 class="ellipsis cursor-pointer"
                 data-test="solana-wallet-name-text"
-                @dblclick.stop="openRenameDialog('solana', $t('walletPanel.solana'))"
+                @dblclick.stop="
+                  openRenameDialog('solana', $t('walletPanel.solana'))
+                "
               >
                 {{ getCustomName('solana') || $t('walletPanel.solana') }}
               </span>
@@ -172,14 +201,24 @@
                 :title="$t('walletPanel.renameWallet')"
                 :aria-label="$t('walletPanel.renameWallet')"
                 data-test="rename-solana-btn"
-                @click.stop="openRenameDialog('solana', $t('walletPanel.solana'))"
+                @click.stop="
+                  openRenameDialog('solana', $t('walletPanel.solana'))
+                "
               />
             </q-item-label>
             <q-item-label caption data-test="solana-wallet-chain">
-              {{ isTestnet ? $t('walletPanel.solanaTestnet') : $t('walletPanel.solana') }}
+              {{
+                isTestnet
+                  ? $t('walletPanel.solanaTestnet')
+                  : $t('walletPanel.solana')
+              }}
             </q-item-label>
             <q-item-label caption data-test="solana-wallet-balance">
-              {{ isTestnet ? $t('walletPanel.zeroTsol') : $t('walletPanel.zeroSol') }}
+              {{
+                isTestnet
+                  ? $t('walletPanel.zeroTsol')
+                  : $t('walletPanel.zeroSol')
+              }}
             </q-item-label>
           </q-item-section>
         </q-item>
@@ -244,7 +283,10 @@ const showRenameDialog = ref(false)
 const renameChain = ref<'monad' | 'ecash' | 'solana'>('monad')
 const renameDefaultName = ref('')
 
-function openRenameDialog(chain: 'monad' | 'ecash' | 'solana', defaultName: string) {
+function openRenameDialog(
+  chain: 'monad' | 'ecash' | 'solana',
+  defaultName: string,
+) {
   renameChain.value = chain
   renameDefaultName.value = defaultName
   showRenameDialog.value = true

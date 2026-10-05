@@ -52,11 +52,13 @@ function render() {
         QBadge: true,
         QInput: {
           props: ['modelValue', 'label'],
-          template: '<input :value="modelValue" @input="$emit(\'update:modelValue\', Number($event.target.value))" />',
+          template:
+            '<input :value="modelValue" @input="$emit(\'update:modelValue\', Number($event.target.value))" />',
         },
         QDialog: {
           props: ['modelValue'],
-          template: '<div v-if="modelValue" data-test="dialog-stub"><slot /></div>',
+          template:
+            '<div v-if="modelValue" data-test="dialog-stub"><slot /></div>',
         },
         QCard: { template: '<div><slot /></div>' },
         QCardSection: { template: '<div><slot /></div>' },
@@ -87,7 +89,9 @@ describe('WalletPanel Backup Account (Codex32) (Issue #848)', () => {
 
   test('clicking Backup button opens dialog and displays 2-of-3 paper shares by default', async () => {
     const view = render()
-    expect(view.find('[data-test="backup-codex32-dialog"]').exists()).toBe(false)
+    expect(view.find('[data-test="backup-codex32-dialog"]').exists()).toBe(
+      false,
+    )
 
     await view.find('[data-test="backup-codex32-button"]').trigger('click')
     await flushPromises()
@@ -108,7 +112,9 @@ describe('WalletPanel Backup Account (Codex32) (Issue #848)', () => {
     // Close dialog
     await view.find('[data-test="close-backup-dialog"]').trigger('click')
     await flushPromises()
-    expect(view.find('[data-test="backup-codex32-dialog"]').exists()).toBe(false)
+    expect(view.find('[data-test="backup-codex32-dialog"]').exists()).toBe(
+      false,
+    )
   })
 
   test('clicking scheme button cycles: 2 of 3 -> 3 of 5 -> 6 of 10 -> back to 2 of 3', async () => {
@@ -145,7 +151,9 @@ describe('WalletPanel Backup Account (Codex32) (Issue #848)', () => {
     await flushPromises()
 
     // Initially custom section is hidden
-    expect(view.find('[data-test="custom-scheme-section"]').exists()).toBe(false)
+    expect(view.find('[data-test="custom-scheme-section"]').exists()).toBe(
+      false,
+    )
 
     // Click custom config tune button to open section
     await view.find('[data-test="codex32-custom-scheme-btn"]').trigger('click')
@@ -166,6 +174,8 @@ describe('WalletPanel Backup Account (Codex32) (Issue #848)', () => {
     expect(accountSession.backupCodex32).toHaveBeenLastCalledWith(2, 10)
     const schemeBtn = view.find('[data-test="codex32-scheme-btn"]')
     expect(schemeBtn.text()).toContain('2 of 10')
-    expect(view.find('[data-test="custom-scheme-section"]').exists()).toBe(false)
+    expect(view.find('[data-test="custom-scheme-section"]').exists()).toBe(
+      false,
+    )
   })
 })

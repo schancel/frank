@@ -164,7 +164,9 @@ export default defineComponent({
         if (wallet && wallet.identity) {
           const cfg = loadMonadChainConfigFromEnv()
           await registerMonadIdentityCbor({
-            relayBaseUrl: (wallet as { relayBaseUrl?: string }).relayBaseUrl ?? cfg.relayBaseUrl,
+            relayBaseUrl:
+              (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
+              cfg.relayBaseUrl,
             identity: wallet.identity as MonadIdentity,
             profile: this.relayData.profile,
           })

@@ -35,12 +35,19 @@
               data-test="codex32-custom-scheme-btn"
               @click="toggleCustomConfig"
             >
-              <q-tooltip>{{ $t('accountRecovery.configure_scheme') }}</q-tooltip>
+              <q-tooltip>{{
+                $t('accountRecovery.configure_scheme')
+              }}</q-tooltip>
             </q-btn>
           </div>
         </div>
         <div class="text-caption text-grey-8 q-mt-xs">
-          {{ $t('accountRecovery.codex32_threshold_explainer', { threshold, count }) }}
+          {{
+            $t('accountRecovery.codex32_threshold_explainer', {
+              threshold,
+              count,
+            })
+          }}
         </div>
       </q-card-section>
 
@@ -115,7 +122,9 @@
             class="q-pa-sm bg-grey-2 rounded-borders"
           >
             <div class="text-weight-bold text-caption q-mb-xs">
-              {{ `${$t('accountRecovery.share')} ${index + 1} / ${shares.length}` }}
+              {{
+                `${$t('accountRecovery.share')} ${index + 1} / ${shares.length}`
+              }}
             </div>
             <div
               class="text-caption text-mono"

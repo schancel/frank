@@ -7,10 +7,14 @@
             <span>
               {{
                 selectedChain === 'ecash'
-                  ? (isTestnet ? $t('walletPanel.ecashTestnet') : $t('walletPanel.ecash'))
+                  ? isTestnet
+                    ? $t('walletPanel.ecashTestnet')
+                    : $t('walletPanel.ecash')
                   : selectedChain === 'solana'
-                    ? (isTestnet ? $t('walletPanel.solanaTestnet') : $t('walletPanel.solana'))
-                    : $t('walletPanel.mainWallet')
+                  ? isTestnet
+                    ? $t('walletPanel.solanaTestnet')
+                    : $t('walletPanel.solana')
+                  : $t('walletPanel.mainWallet')
               }}
             </span>
             <q-badge
@@ -25,10 +29,16 @@
           <div class="text-caption" data-testid="wallet-chain">
             {{
               selectedChain === 'ecash'
-                ? (isTestnet ? $t('walletPanel.ecashTestnet') : $t('walletPanel.ecash'))
+                ? isTestnet
+                  ? $t('walletPanel.ecashTestnet')
+                  : $t('walletPanel.ecash')
                 : selectedChain === 'solana'
-                  ? (isTestnet ? $t('walletPanel.solanaTestnet') : $t('walletPanel.solana'))
-                  : (isTestnet ? $t('walletPanel.monadTestnet') : $t('walletPanel.monad'))
+                ? isTestnet
+                  ? $t('walletPanel.solanaTestnet')
+                  : $t('walletPanel.solana')
+                : isTestnet
+                ? $t('walletPanel.monadTestnet')
+                : $t('walletPanel.monad')
             }}
           </div>
         </q-card-section>
@@ -42,10 +52,14 @@
           >
             {{
               selectedChain === 'ecash'
-                ? (isTestnet ? $t('walletPanel.zeroTxec') : $t('walletPanel.zeroXec'))
+                ? isTestnet
+                  ? $t('walletPanel.zeroTxec')
+                  : $t('walletPanel.zeroXec')
                 : selectedChain === 'solana'
-                  ? (isTestnet ? $t('walletPanel.zeroTsol') : $t('walletPanel.zeroSol'))
-                  : balanceText
+                ? isTestnet
+                  ? $t('walletPanel.zeroTsol')
+                  : $t('walletPanel.zeroSol')
+                : balanceText
             }}
           </div>
           <div
@@ -86,10 +100,16 @@
             no-caps
             :label="
               selectedChain === 'ecash'
-                ? (isTestnet ? $t('walletPanel.receiveTxec') : $t('walletPanel.receiveXec'))
+                ? isTestnet
+                  ? $t('walletPanel.receiveTxec')
+                  : $t('walletPanel.receiveXec')
                 : selectedChain === 'solana'
-                  ? (isTestnet ? $t('walletPanel.receiveTsol') : $t('walletPanel.receiveSol'))
-                  : (isTestnet ? $t('walletPanel.receiveMont') : $t('walletPanel.receive'))
+                ? isTestnet
+                  ? $t('walletPanel.receiveTsol')
+                  : $t('walletPanel.receiveSol')
+                : isTestnet
+                ? $t('walletPanel.receiveMont')
+                : $t('walletPanel.receive')
             "
             color="primary"
             :disable="selectedChain !== 'monad'"
@@ -100,10 +120,16 @@
             no-caps
             :label="
               selectedChain === 'ecash'
-                ? (isTestnet ? $t('walletPanel.sendTxec') : $t('walletPanel.sendXec'))
+                ? isTestnet
+                  ? $t('walletPanel.sendTxec')
+                  : $t('walletPanel.sendXec')
                 : selectedChain === 'solana'
-                  ? (isTestnet ? $t('walletPanel.sendTsol') : $t('walletPanel.sendSol'))
-                  : (isTestnet ? $t('walletPanel.sendMont') : $t('walletPanel.send'))
+                ? isTestnet
+                  ? $t('walletPanel.sendTsol')
+                  : $t('walletPanel.sendSol')
+                : isTestnet
+                ? $t('walletPanel.sendMont')
+                : $t('walletPanel.send')
             "
             color="primary"
             :disable="selectedChain !== 'monad'"

@@ -1064,7 +1064,12 @@ export function setUpCanonicalQwenSender(params: {
       },
       // Funded by the wallet from its own account, under its own admission.
       prepareInventory: async input => {
-        await prepareCanonicalStampInventory(wallet.handle, input)
+        try {
+          await prepareCanonicalStampInventory(wallet.handle, input)
+        } catch (err) {
+          console.error('[bot] prepareInventory FAILED:', err)
+          throw err
+        }
       },
       overrides: params.overrides,
       fetch: params.fetch,

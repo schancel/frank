@@ -145,8 +145,12 @@
         v-show="tab == 'forum' || !$status.setup"
         v-bind="panelAttrs('forum')"
       >
-        <q-scroll-area class="q-px-none col">
-          <q-list v-bind="$attrs">
+        <q-scroll-area
+          class="q-px-none col full-width"
+          :content-style="{ width: '100%', minWidth: '100%' }"
+          :content-active-style="{ width: '100%', minWidth: '100%' }"
+        >
+          <q-list v-bind="$attrs" class="full-width">
             <q-separator />
             <q-item>
               <q-item-section>

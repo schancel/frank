@@ -4,10 +4,14 @@
     data-testid="contacts-panel"
     data-test="contacts-panel"
   >
-    <q-scroll-area class="q-px-none col contacts-scroll-area">
+    <q-scroll-area
+      class="q-px-none col full-width contacts-scroll-area"
+      :content-style="{ width: '100%', minWidth: '100%' }"
+      :content-active-style="{ width: '100%', minWidth: '100%' }"
+    >
       <q-list class="full-width">
         <q-separator />
-        <q-item>
+        <q-item class="full-width">
           <q-item-section>
             <q-item-label>{{ $t('contactBookDialog.contacts') }}</q-item-label>
           </q-item-section>
@@ -24,21 +28,23 @@
         <q-separator />
 
         <!-- Search input -->
-        <q-item class="q-px-sm q-py-xs">
-          <q-input
-            v-model="search"
-            dense
-            outlined
-            rounded
-            clearable
-            class="full-width"
-            data-test="contact-search-input"
-            :placeholder="$t('contactBookDialog.search')"
-          >
-            <template #prepend>
-              <q-icon name="search" size="xs" />
-            </template>
-          </q-input>
+        <q-item class="q-px-sm q-py-xs full-width">
+          <q-item-section>
+            <q-input
+              v-model="search"
+              dense
+              outlined
+              rounded
+              clearable
+              class="full-width"
+              data-test="contact-search-input"
+              :placeholder="$t('contactBookDialog.search')"
+            >
+              <template #prepend>
+                <q-icon name="search" size="xs" />
+              </template>
+            </q-input>
+          </q-item-section>
         </q-item>
 
         <!-- Contacts list -->
@@ -48,7 +54,7 @@
             :key="item.address"
             clickable
             v-ripple
-            class="q-py-sm"
+            class="q-py-sm full-width"
             data-test="contact-list-row"
             @click="startChat(item.address)"
           >
@@ -195,8 +201,8 @@ export default defineComponent({
 </script>
 
 <style scoped lang="scss">
-.contacts-scroll-area :deep(.q-scrollarea__content) {
-  width: 100%;
-  min-width: 100%;
+:deep(.q-scrollarea__content) {
+  width: 100% !important;
+  min-width: 100% !important;
 }
 </style>

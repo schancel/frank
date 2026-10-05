@@ -1,7 +1,11 @@
 <template>
   <div class="full-width column col" data-test="wallet-panel">
-    <q-scroll-area class="col">
-      <q-list>
+    <q-scroll-area
+      class="col full-width"
+      :content-style="{ width: '100%', minWidth: '100%' }"
+      :content-active-style="{ width: '100%', minWidth: '100%' }"
+    >
+      <q-list class="full-width">
         <q-separator />
         <q-item>
           <q-item-section>

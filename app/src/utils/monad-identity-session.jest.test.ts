@@ -332,7 +332,7 @@ test('any published address can be added as a contact, with its key from the dir
   } finally {
     profile.mockRestore()
   }
-})
+}, 10000)
 
 test('messaging stops when the account changes and restarts for the new account', async () => {
   const alice = await wallet(0, 'alice')

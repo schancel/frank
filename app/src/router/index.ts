@@ -53,6 +53,8 @@ export default () => {
       to.path === '/' ||
       to.path.startsWith('/forum') ||
       to.path.startsWith('/topic')
+    ) {
+      return
     }
     if (accountStatus.status !== 'ready') return '/setup'
   }

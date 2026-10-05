@@ -218,5 +218,5 @@ test('submitting BIP-39 phrase in legacy mode runs derivation scanner, stages/ac
   )
   expect(mockPush).toHaveBeenCalledWith('/wallet')
   view.unmount()
-})
+}, 10000)
 

@@ -16,16 +16,17 @@ if (typeof globalThis.TextDecoder === 'undefined') {
 }
 
 // jsdom cross-realm Buffer/Uint8Array compatibility for ethers and Node crypto
-const originalHasInstance = Function.prototype[Symbol.hasInstance]
 Object.defineProperty(Uint8Array, Symbol.hasInstance, {
   value: function (instance: any) {
+    if (instance == null) return false
     return (
-      originalHasInstance.call(this, instance) ||
-      (instance != null &&
-        (Buffer.isBuffer(instance) ||
-          instance.constructor?.name === 'Uint8Array' ||
-          instance.constructor?.name === 'Buffer' ||
-          Object.prototype.toString.call(instance) === '[object Uint8Array]'))
+      instance.constructor?.name === 'Uint8Array' ||
+      instance.constructor?.name === 'Buffer' ||
+      Object.prototype.toString.call(instance) === '[object Uint8Array]' ||
+      Object.prototype.toString.call(instance) === '[object Buffer]' ||
+      (typeof instance === 'object' &&
+        typeof instance.byteLength === 'number' &&
+        typeof instance.slice === 'function')
     )
   },
   configurable: true,

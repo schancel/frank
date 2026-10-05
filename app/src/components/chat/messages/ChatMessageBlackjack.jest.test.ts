@@ -328,7 +328,9 @@ describe('the player', () => {
     expect(wrapper.find('[data-testid="blackjack-payout"]').text()).toBe(
       'The dealer paid 800 MON.',
     )
-    expect(wrapper.findAll('button')).toHaveLength(0)
+    expect(button(wrapper, 'play-again').exists()).toBe(true)
+    await button(wrapper, 'play-again').trigger('click')
+    expect(wrapper.emitted('playAgain')).toHaveLength(1)
   })
 
   it('sees a short payment as such', async () => {
@@ -550,6 +552,30 @@ describe('older bubbles', () => {
     expect(wrapper.find('[data-testid="blackjack-wager"]').text()).toContain(
       '400 MON',
     )
+  })
+
+  it('an older deal bubble permanently shows the cards dealt and upcard', async () => {
+    saveSeed(ME, PEER, GAME, WIN)
+    const messages = hand(true, WIN, 400n, ['stand'], 'reveal')
+    const dealIndex = messages.findIndex(m => m.items[0].action === 'deal')
+    expect(dealIndex).toBeGreaterThan(-1)
+    const wrapper = await mountLast(messages, dealIndex)
+    expect(wrapper.find('[data-testid="blackjack-line"]').text()).toBe('Cards dealt.')
+    expect(wrapper.text()).toContain('Player:')
+    expect(wrapper.text()).toContain('Dealer shows:')
+    expect(wrapper.findAll('button')).toHaveLength(0)
+  })
+
+  it('an older hit/card bubble permanently shows the card dealt', async () => {
+    saveSeed(ME, PEER, GAME, WIN)
+    const messages = hand(true, WIN, 400n, ['hit', 'stand'], 'reveal')
+    const cardIndex = messages.findIndex(m => m.items[0].action === 'card')
+    expect(cardIndex).toBeGreaterThan(-1)
+    const wrapper = await mountLast(messages, cardIndex)
+    expect(wrapper.find('[data-testid="blackjack-line"]').text()).toBe('Card dealt.')
+    expect(wrapper.text()).toContain('Card: ')
+    expect(wrapper.text()).toContain('Player: ')
+    expect(wrapper.findAll('button')).toHaveLength(0)
   })
 })
 

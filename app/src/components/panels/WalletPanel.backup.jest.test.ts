@@ -126,46 +126,10 @@ describe('WalletPanel Backup Account (Codex32) (Issue #848)', () => {
     expect(accountSession.backupCodex32).toHaveBeenLastCalledWith(3, 5)
     expect(schemeBtn.text()).toContain('3 of 5')
 
-    // Click 2: 3 of 5 -> 6 of 10
-    await schemeBtn.trigger('click')
-    await flushPromises()
-    expect(accountSession.backupCodex32).toHaveBeenLastCalledWith(6, 10)
-    expect(schemeBtn.text()).toContain('6 of 10')
-
-    // Click 3: 6 of 10 -> 2 of 3
+    // Click 2: 3 of 5 -> 2 of 3
     await schemeBtn.trigger('click')
     await flushPromises()
     expect(accountSession.backupCodex32).toHaveBeenLastCalledWith(2, 3)
     expect(schemeBtn.text()).toContain('2 of 3')
-  })
-
-  test('custom configuration allows setting custom threshold and count (e.g. 2 of 10)', async () => {
-    const view = render()
-    await view.find('[data-test="backup-codex32-button"]').trigger('click')
-    await flushPromises()
-
-    // Initially custom section is hidden
-    expect(view.find('[data-test="custom-scheme-section"]').exists()).toBe(false)
-
-    // Click custom config tune button to open section
-    await view.find('[data-test="codex32-custom-scheme-btn"]').trigger('click')
-    await flushPromises()
-    expect(view.find('[data-test="custom-scheme-section"]').exists()).toBe(true)
-
-    // Update threshold to 2, count to 10
-    const thresholdInput = view.find('[data-test="input-threshold"]')
-    const countInput = view.find('[data-test="input-count"]')
-
-    await thresholdInput.setValue(2)
-    await countInput.setValue(10)
-
-    // Apply custom scheme
-    await view.find('[data-test="apply-custom-scheme"]').trigger('click')
-    await flushPromises()
-
-    expect(accountSession.backupCodex32).toHaveBeenLastCalledWith(2, 10)
-    const schemeBtn = view.find('[data-test="codex32-scheme-btn"]')
-    expect(schemeBtn.text()).toContain('2 of 10')
-    expect(view.find('[data-test="custom-scheme-section"]').exists()).toBe(false)
   })
 })

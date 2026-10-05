@@ -217,10 +217,32 @@ payment_recipient = "0x0000000000000000000000000000000000000000"
 min_value_wei = "0"
 ${defaults.map(([kind, bot]) => `\n[[registry.curated_defaults]]\naddress = "${bot.address}"\nname = "${BOT_NAMES[kind]}"\n`).join('')}`
 }
+const loadDotEnv = () => {
+  const envFile = join(REPO, '.env')
+  if (!existsSync(envFile)) return {}
+  const res = {}
+  for (const line of readFileSync(envFile, 'utf8').split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const idx = trimmed.indexOf('=')
+    if (idx !== -1) {
+      const key = trimmed.slice(0, idx).trim()
+      const val = trimmed.slice(idx + 1).trim()
+      res[key] = val
+    }
+  }
+  return res
+}
+const DOTENV = loadDotEnv()
+const getChainRpcUrl = () =>
+  process.env.MONAD_TESTNET_HTTP_RPC_URL ||
+  DOTENV.MONAD_TESTNET_HTTP_RPC_URL ||
+  `http://${HOST}:${PORTS.chainShim}`
+
 const relayEnv = () => ({
-  MONAD_TESTNET_HTTP_RPC_URL: `http://${HOST}:${PORTS.chainShim}`,
-  FRANK_NETWORK_TAG: NETWORK.networkTag,
-  MONAD_STAMP_BURN_ADDRESS: BURN_ADDRESS,
+  MONAD_TESTNET_HTTP_RPC_URL: getChainRpcUrl(),
+  FRANK_NETWORK_TAG: process.env.FRANK_NETWORK_TAG || DOTENV.FRANK_NETWORK_TAG || NETWORK.networkTag,
+  MONAD_STAMP_BURN_ADDRESS: process.env.MONAD_STAMP_BURN_ADDRESS || DOTENV.MONAD_STAMP_BURN_ADDRESS || BURN_ADDRESS,
 })
 async function startRelay(name) {
   const bin = cashwebdPath()
@@ -243,9 +265,14 @@ async function published(relay, address) {
 }
 
 // ---------------------------------------------------------------- chain
-const provider = () => new JsonRpcProvider(`http://${HOST}:${PORTS.chainShim}`, Number(NETWORK.chainId), { staticNetwork: true })
+const provider = () => new JsonRpcProvider(getChainRpcUrl(), Number(NETWORK.chainId), { staticNetwork: true })
 const devWallet = () => HDNodeWallet.fromPhrase(DEV_MNEMONIC).connect(provider())
 async function fund(address, amount = '5') {
+  const rpcUrl = getChainRpcUrl()
+  if (rpcUrl.includes('alchemy.com') || (!rpcUrl.includes(HOST) && !rpcUrl.includes('localhost'))) {
+    say(`skipping local funding for ${address}: using external RPC ${rpcUrl}`)
+    return
+  }
   const wallet = devWallet()
   const tx = await wallet.sendTransaction({ to: address, value: parseEther(amount) })
   await tx.wait()
@@ -278,7 +305,7 @@ function qwenCloud() {
 function botEnv(kind, mode) {
   const dir = join(P.bots, kind)
   mkdirSync(dir, { recursive: true })
-  const common = { NODE_EXTRA_CA_CERTS: P.ca, MONAD_RELAY_BASE_URL: ORIGINS['relay-a'], E2E_DEMO_RELAY_URL: ORIGINS['relay-a'], MONAD_RPC_CHAIN: NETWORK.network, MONAD_STAMP_BURN_ADDRESS: BURN_ADDRESS, FRANK_DM_DEFAULT_STAMP_VALUE_WEI: STAMP_WEI }
+  const common = { NODE_EXTRA_CA_CERTS: P.ca, MONAD_RELAY_BASE_URL: ORIGINS['relay-a'], E2E_DEMO_RELAY_URL: ORIGINS['relay-a'], MONAD_RPC_CHAIN: NETWORK.network, MONAD_TESTNET_HTTP_RPC_URL: getChainRpcUrl(), MONAD_STAMP_BURN_ADDRESS: BURN_ADDRESS, FRANK_DM_DEFAULT_STAMP_VALUE_WEI: STAMP_WEI }
   if (kind === 'qwen') {
     const model = mode === 'stub' ? { QWEN_BOT_MODE: 'stub' } : { QWEN_BOT_MODE: 'live', ...qwenCloud() }
     return { ...common, ...model, QWEN_BOT_CANONICAL_ROOTS_JSON: join(dir, 'roots.json'), QWEN_BOT_STATE_DIR: join(dir, 'state'), QWEN_BOT_WALLET_STATE_DIR: join(dir, 'wallet'), QWEN_BOT_HANDOFF_JSON: join(dir, 'handoff.json'), QWEN_BOT_STAMP_VALUE_WEI: STAMP_WEI, QWEN_BOT_POLL_INTERVAL_MS: '2000' }

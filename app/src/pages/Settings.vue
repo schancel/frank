@@ -203,7 +203,6 @@
         :threshold="threshold"
         :count="count"
         @cycle-scheme="cycleScheme"
-        @change-scheme="setScheme"
         @close="closeBackupDialog"
       />
     </q-page>

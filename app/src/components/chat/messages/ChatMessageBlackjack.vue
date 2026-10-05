@@ -4,6 +4,8 @@
     <div class="text-caption text-weight-bold" data-testid="blackjack-line">
       {{ itemLine }}
     </div>
+
+    <!-- On the latest message of the hand, render the current running hand state -->
     <template v-if="state && isLatest">
       <div v-if="state.playerCards.length" class="text-caption">
         {{
@@ -51,6 +53,14 @@
         <div class="text-caption text-positive">
           {{ $t('blackjackP2p.verified') }}
         </div>
+        <q-btn
+          dense
+          color="primary"
+          class="q-mt-sm"
+          data-testid="blackjack-play-again"
+          :label="$t('blackjackP2p.playAgain')"
+          @click="$emit('playAgain')"
+        />
       </template>
       <div
         v-if="state.phase === 'refunded'"
@@ -63,6 +73,15 @@
           })
         }}
       </div>
+      <q-btn
+        v-if="state.phase === 'refunded'"
+        dense
+        color="primary"
+        class="q-mt-sm"
+        data-testid="blackjack-play-again"
+        :label="$t('blackjackP2p.playAgain')"
+        @click="$emit('playAgain')"
+      />
       <div
         role="status"
         aria-live="polite"
@@ -177,6 +196,96 @@
         @click="onRefundBet"
       />
     </template>
+
+    <!-- For earlier messages in the hand, keep what was dealt permanently in the chat log -->
+    <template v-else-if="item.action === 'deal'">
+      <div v-if="dealPlayerCards.length" class="text-caption">
+        {{
+          $t('blackjackP2p.playerHand', {
+            cards: cardLabels(dealPlayerCards),
+            total: dealPlayerTotal,
+          })
+        }}
+      </div>
+      <div v-if="dealUpCard !== undefined" class="text-caption">
+        {{
+          $t('blackjackP2p.dealerShows', {
+            card: cardLabel(dealUpCard),
+          })
+        }}
+      </div>
+    </template>
+    <template v-else-if="item.action === 'card'">
+      <div v-if="itemCard !== undefined" class="text-caption">
+        {{ $t('blackjackP2p.cardDealtN', { card: cardLabel(itemCard) }) }}
+      </div>
+      <div v-if="cardPlayerCards.length" class="text-caption">
+        {{
+          $t('blackjackP2p.playerHand', {
+            cards: cardLabels(cardPlayerCards),
+            total: cardPlayerTotal,
+          })
+        }}
+      </div>
+    </template>
+    <template v-else-if="item.action === 'reveal' && state">
+      <div v-if="state.playerCards.length" class="text-caption">
+        {{
+          $t('blackjackP2p.playerHand', {
+            cards: cardLabels(state.playerCards),
+            total: playerTotal,
+          })
+        }}
+      </div>
+      <div v-if="state.dealerCards.length" class="text-caption">
+        {{
+          $t('blackjackP2p.dealerHand', {
+            cards: cardLabels(state.dealerCards),
+            total: dealerTotal,
+          })
+        }}
+      </div>
+      <div
+        class="text-caption text-weight-bold"
+        data-testid="blackjack-outcome"
+      >
+        {{ outcomeText }}
+      </div>
+      <div class="text-caption" data-testid="blackjack-payout">
+        {{ payoutText }}
+      </div>
+      <div class="text-caption text-positive">
+        {{ $t('blackjackP2p.verified') }}
+      </div>
+      <q-btn
+        dense
+        color="primary"
+        class="q-mt-sm"
+        data-testid="blackjack-play-again"
+        :label="$t('blackjackP2p.playAgain')"
+        @click="$emit('playAgain')"
+      />
+    </template>
+    <template v-else-if="item.action === 'refund' && state">
+      <div
+        class="text-caption"
+        data-testid="blackjack-refunded"
+      >
+        {{
+          $t('blackjackP2p.refunded', {
+            amount: display(state.refundedWei || 0n),
+          })
+        }}
+      </div>
+      <q-btn
+        dense
+        color="primary"
+        class="q-mt-sm"
+        data-testid="blackjack-play-again"
+        :label="$t('blackjackP2p.playAgain')"
+        @click="$emit('playAgain')"
+      />
+    </template>
   </div>
 </template>
 
@@ -246,7 +355,7 @@ export default defineComponent({
       default: '',
     },
   },
-  emits: ['sendFollowUp', 'retry'],
+  emits: ['sendFollowUp', 'retry', 'playAgain'],
   setup() {
     const { balance } = useBalance()
     return { balance }
@@ -308,6 +417,48 @@ export default defineComponent({
     },
     dealerTotal(): number {
       return handValue(this.state?.dealerCards ?? []).total
+    },
+    dealPlayerCards(): number[] {
+      const item = this.item
+      return item.action === 'deal' && 'playerCards' in item
+        ? [...(item.playerCards as number[])]
+        : []
+    },
+    dealPlayerTotal(): number {
+      return handValue(this.dealPlayerCards).total
+    },
+    dealUpCard(): number | undefined {
+      const item = this.item
+      return item.action === 'deal' && 'dealerUpCard' in item
+        ? (item.dealerUpCard as number)
+        : undefined
+    },
+    itemCard(): number | undefined {
+      const item = this.item
+      if (item.action === 'card') {
+        if ('card' in item && typeof (item as any).card === 'number') {
+          return (item as any).card as number
+        }
+        if (
+          'playerCards' in item &&
+          Array.isArray(item.playerCards) &&
+          item.playerCards.length > 0
+        ) {
+          return item.playerCards[item.playerCards.length - 1] as number
+        }
+      }
+      return undefined
+    },
+    cardPlayerCards(): number[] {
+      const item = this.item
+      return item.action === 'card' &&
+        'playerCards' in item &&
+        Array.isArray(item.playerCards)
+        ? [...(item.playerCards as number[])]
+        : []
+    },
+    cardPlayerTotal(): number {
+      return handValue(this.cardPlayerCards).total
     },
     canAccept(): boolean {
       return this.state?.phase === 'challenged' && this.role === 'dealer'

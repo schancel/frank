@@ -16,8 +16,8 @@ node demo/local-stack/stack.mjs fund 0x<address on the app's Receive page>   # 5
 node demo/local-stack/stack.mjs down         # stops everything and removes the Chrome profiles
 ```
 
-`up [live|stub]`: `live` (default) answers with the local Ollama model (`qwen2.5:7b` at
-`127.0.0.1:11434`, override with `QWEN_MODEL`); `stub` uses the Qwen bot's deterministic model.
+`up [live|stub]`: `live` (default) answers with the Alibaba Cloud Qwen API (configured via
+`~/.frank-demo-qwen.env`, override with `QWEN_ENV_FILE`); `stub` uses the Qwen bot's deterministic model.
 `status` lists what is running and the two bot addresses.
 
 ## By hand

@@ -4,7 +4,6 @@ import { accountSession } from '../accounts/session'
 const PRESETS: ReadonlyArray<readonly [number, number]> = [
   [2, 3],
   [3, 5],
-  [6, 10],
 ]
 
 export function useCodex32Backup() {

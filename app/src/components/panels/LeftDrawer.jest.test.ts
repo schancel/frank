@@ -77,13 +77,15 @@ const QTabStub = defineComponent({
   template: '<button v-bind="$attrs"><slot /></button>',
 })
 
-function mountDrawer(setup = true, relayConnected = true) {
+function mountDrawer(setup = true, relayConnected?: boolean) {
   return shallowMount(LeftDrawer, {
     global: {
       mocks: {
         $status: { setup },
         $t: (key: string) => key,
-        $relay: { connected: relayConnected },
+        ...(relayConnected !== undefined
+          ? { $relay: { connected: relayConnected } }
+          : {}),
       },
       stubs: {
         QDialog: true,
@@ -165,6 +167,13 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     const signedIn = mountDrawer(true, false)
     expect(signedIn.find('[data-testid="drawer-balance"]').exists()).toBe(true)
     expect(signedIn.find('[data-testid="relay-reconnect"]').exists()).toBe(true)
+  })
+
+  it('renders drawer balance without relay reconnect button in Monad mode', () => {
+    runtime.legacy = false
+    const wrapper = mountDrawer(true)
+    expect(wrapper.find('[data-testid="drawer-balance"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="relay-reconnect"]').exists()).toBe(false)
   })
 
   it('announces unavailable and retained last-known legacy balances', async () => {

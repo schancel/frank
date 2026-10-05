@@ -180,7 +180,7 @@
             >
           </q-item-section>
           <q-item-section
-            v-if="!relayConnected"
+            v-if="legacyRelayEnabled && !relayConnected"
             side
             clickable
             @click="relayConnectOpen = true"
@@ -436,7 +436,10 @@ export default defineComponent({
   },
   computed: {
     relayConnected(): boolean {
-      return this.$relay.connected
+      if (!this.legacyRelayEnabled) return true
+      return Boolean(
+        (this as { $relay?: { connected?: boolean } }).$relay?.connected,
+      )
     },
   },
 })

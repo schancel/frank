@@ -1357,12 +1357,16 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     },
 
     async fetchByTopic(params): Promise<ForumMessage[]> {
-      const wallet = asMonadWallet(params.wallet, config.networkId);
+      const wallet = params.wallet
+        ? asMonadWallet(params.wallet, config.networkId)
+        : undefined;
       return fetchMonadTopicPostsSince({
-        relayBaseUrl: wallet.relayBaseUrl,
+        relayBaseUrl: wallet?.relayBaseUrl ?? config.relayBaseUrl,
         topic: params.topic,
         sinceMs: params.sinceMs,
-        policy: creatorForumPolicy(privateTopicWallets.get(wallet) ?? wallet),
+        policy: wallet
+          ? creatorForumPolicy(privateTopicWallets.get(wallet) ?? wallet)
+          : forumPolicy,
       });
     },
 

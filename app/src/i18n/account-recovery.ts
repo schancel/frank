@@ -10,14 +10,14 @@ export const en = {
   open_navigation: 'Open navigation',
   frank_account: 'Frank account',
   saved_account_data_could_not_be_opened:
-    'Saved account data could not be opened. It has not been replaced. This preview requires supported Chrome and encrypted browser storage; native apps are not supported.',
-  retry_opening_account: 'Retry opening account',
+    'Saved account data could not be opened. It has not been replaced. This preview requires encrypted browser storage; native apps are not supported.',
+  retry_opening_account: 'Retry',
   a_saved_account_attempt_is_pending_it:
     'A saved account attempt is pending. It is not active until you choose Activate account.',
-  activate_account: 'Activate account',
+  activate_account: 'Activate',
   the_attempt_is_incomplete_or_awaiting_cleanup:
     'The attempt is incomplete or awaiting cleanup. Cancel it explicitly before starting another account.',
-  cancel_pending_attempt: 'Cancel pending attempt',
+  cancel_pending_attempt: 'Cancel',
   create_a_frank_account_backup_or_restore:
     'Create a Frank account backup or restore one using your saved public descriptor and Codex32 shares. No funds are required to activate locally.',
   an_existing_legacy_account_is_quarantined_its:
@@ -28,18 +28,18 @@ export const en = {
     'I understand this changes the active local identity and does not transfer funds or history.',
   new_account: 'New Account',
   restore_account: 'Restore account',
-  legacy_recovery_migration: 'Legacy recovery/migration',
-  return_to_wallet: 'Return to wallet',
+  legacy_recovery_migration: 'Legacy recovery',
+  return_to_wallet: 'Back',
   this_identifies_your_old_account_locally_you:
     'This identifies your old account locally. You must then create and fully back up a fresh Codex32 identity. This does not transfer legacy funds or history, or rotate remote keys. Existing legacy data remains quarantined.',
   legacy_bip39_recovery_phrase: 'Legacy BIP39 recovery phrase',
-  identify_legacy_account_locally: 'Identify legacy account locally',
+  identify_legacy_account_locally: 'Identify legacy account',
   old_account: 'Old account:',
   the_new_identity_is_different_no_funds:
     '. The new identity is different; no funds, history or remote keys are migrated.',
   choose_how_many_shares_you_must_retain:
     'Choose how many shares you must retain. Losing too many shares loses access permanently. Keep shares in separate safe places; anyone with the threshold can recover the account.',
-  generate_frank_account_backups: 'Generate Frank account backups',
+  generate_frank_account_backups: 'Generate backups',
   frank_account_backup: 'Frank account backup',
   save_each_share_before_moving_on_exactly:
     '. Save each share before moving on. Exactly',
@@ -53,7 +53,7 @@ export const en = {
   copy_public_descriptor: 'Copy public descriptor',
   i_saved_two_independent_copies_of_the:
     'I saved two independent copies of the public descriptor.',
-  confirm_my_saved_backups: 'Confirm my saved backups',
+  confirm_my_saved_backups: 'Confirm backups',
   enter_the_public_frankdesc_descriptor_from_an:
     'Enter the public frankdesc descriptor from an independent saved copy first. It is account matching metadata, not self-authenticating proof. Never use a descriptor inferred from the submitted shares.',
   independently_saved_frankdesc_descriptor:
@@ -105,14 +105,14 @@ export const fr = {
   open_navigation: 'Ouvrir la navigation',
   frank_account: 'Compte Frank',
   saved_account_data_could_not_be_opened:
-    'Impossible d’ouvrir les données enregistrées du compte. Elles n’ont pas été remplacées. Cet aperçu nécessite Chrome compatible et le stockage chiffré du navigateur ; les applications natives ne sont pas prises en charge.',
-  retry_opening_account: 'Réessayer l’ouverture du compte',
+    'Impossible d’ouvrir les données enregistrées du compte. Elles n’ont pas été remplacées. Cet aperçu nécessite le stockage chiffré du navigateur ; les applications natives ne sont pas prises en charge.',
+  retry_opening_account: 'Réessayer',
   a_saved_account_attempt_is_pending_it:
     'Une tentative de création enregistrée est en attente. Le compte ne sera actif qu’après avoir choisi Activer le compte.',
-  activate_account: 'Activer le compte',
+  activate_account: 'Activer',
   the_attempt_is_incomplete_or_awaiting_cleanup:
     'La tentative est incomplète ou en attente de nettoyage. Annulez-la explicitement avant de créer un autre compte.',
-  cancel_pending_attempt: 'Annuler la tentative en attente',
+  cancel_pending_attempt: 'Annuler',
   create_a_frank_account_backup_or_restore:
     'Créez une sauvegarde de compte Frank ou restaurez-en une avec votre descripteur public enregistré et vos parts Codex32. Aucun fonds n’est nécessaire pour l’activation locale.',
   an_existing_legacy_account_is_quarantined_its:
@@ -123,19 +123,19 @@ export const fr = {
     'Je comprends que cela change l’identité locale active et ne transfère ni fonds ni historique.',
   new_account: 'Nouveau compte',
   restore_account: 'Restaurer un compte',
-  legacy_recovery_migration: 'Récupération/migration d’un ancien compte',
-  return_to_wallet: 'Retour au portefeuille',
+  legacy_recovery_migration: 'Récupération',
+  return_to_wallet: 'Retour',
   this_identifies_your_old_account_locally_you:
     'Cette étape identifie votre ancien compte localement. Vous devez ensuite créer et sauvegarder intégralement une nouvelle identité Codex32. Aucun fonds ou historique n’est transféré et aucune clé distante n’est renouvelée. Les anciennes données restent en quarantaine.',
   legacy_bip39_recovery_phrase:
     'Phrase de récupération BIP39 de l’ancien compte',
-  identify_legacy_account_locally: 'Identifier l’ancien compte localement',
+  identify_legacy_account_locally: 'Identifier l’ancien compte',
   old_account: 'Ancien compte :',
   the_new_identity_is_different_no_funds:
     '. La nouvelle identité est différente ; aucun fonds, historique ou clé distante n’est migré.',
   choose_how_many_shares_you_must_retain:
     'Choisissez combien de parts conserver. La perte d’un trop grand nombre de parts entraîne la perte définitive de l’accès. Conservez-les dans des lieux sûrs distincts ; toute personne possédant le seuil requis peut récupérer le compte.',
-  generate_frank_account_backups: 'Générer les sauvegardes du compte Frank',
+  generate_frank_account_backups: 'Générer les sauvegardes',
   frank_account_backup: 'Sauvegarde du compte Frank',
   save_each_share_before_moving_on_exactly:
     '. Enregistrez chaque part avant de continuer. Exactement',

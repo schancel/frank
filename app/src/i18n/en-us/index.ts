@@ -39,6 +39,7 @@ export default {
     degradedTitle: 'Connection degraded',
     degradedBanner: 'Some forum topics could not be updated.',
     retry: 'Retry',
+    loginSignUp: 'Log in / Sign up',
   },
   chatLayout: {
     info: 'Info',
@@ -248,6 +249,10 @@ export default {
     balanceStale: '{balance} (last known)',
     failedLoadAddress: 'Failed to load the Monad wallet address',
     unableCopyAddress: 'Unable to copy the Monad address',
+    ecash: 'eCash',
+    solana: 'Solana',
+    zeroXec: '0 XEC',
+    zeroSol: '0 SOL',
   },
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...',

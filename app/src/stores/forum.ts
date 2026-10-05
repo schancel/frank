@@ -287,10 +287,10 @@ export const useForumStore = defineStore('forum', {
       topic,
     }: {
       topic: string
-      wallet: WalletHandle
+      wallet?: WalletHandle
     }) {
       const token = {
-        wallet: wallet.identity.address.raw.toLowerCase(),
+        wallet: wallet ? wallet.identity.address.raw.toLowerCase() : 'public',
         chain: activeChain,
         revision: accountStatus.revision,
         status: accountStatus.status,

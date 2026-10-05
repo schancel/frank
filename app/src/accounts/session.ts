@@ -358,8 +358,7 @@ export const accountSession = createAccountSession({
     if (
       Platform.is.electron ||
       Platform.is.capacitor ||
-      Platform.is.cordova ||
-      !/Chrome\//.test(navigator.userAgent)
+      Platform.is.cordova
     )
       return Promise.reject(new CustodyError('unavailable'))
     return openAccountCustody({ namespace: 'local-account-v1' })

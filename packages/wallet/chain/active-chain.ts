@@ -332,7 +332,7 @@ export interface TopicBroadcastClient {
     ) => void;
   }): Promise<void>;
   fetchByTopic(params: {
-    wallet: WalletHandle;
+    wallet?: WalletHandle;
     topic: string;
     sinceMs?: number;
   }): Promise<ForumMessage[]>;

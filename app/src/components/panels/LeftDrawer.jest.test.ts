@@ -196,6 +196,7 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     })
 
     it('defers topic discovery when account setup is not complete', () => {
+      mockRoute.path = '/setup'
       mockAccountStatus.status = 'fresh'
       mockProfileStore.profile.name = ''
 

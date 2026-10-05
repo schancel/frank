@@ -53,11 +53,11 @@
             <q-icon name="toll" />
           </q-item-section>
           <q-item-section>
-            <q-item-label>eCash</q-item-label>
-            <q-item-label caption>0 XEC</q-item-label>
+            <q-item-label>{{ $t('walletPanel.ecash') }}</q-item-label>
+            <q-item-label caption>{{ $t('walletPanel.zeroXec') }}</q-item-label>
           </q-item-section>
           <q-item-section side>
-            <q-item-label caption>eCash</q-item-label>
+            <q-item-label caption>{{ $t('walletPanel.ecash') }}</q-item-label>
           </q-item-section>
         </q-item>
 
@@ -67,11 +67,11 @@
             <q-icon name="account_balance" />
           </q-item-section>
           <q-item-section>
-            <q-item-label>Solana</q-item-label>
-            <q-item-label caption>0 SOL</q-item-label>
+            <q-item-label>{{ $t('walletPanel.solana') }}</q-item-label>
+            <q-item-label caption>{{ $t('walletPanel.zeroSol') }}</q-item-label>
           </q-item-section>
           <q-item-section side>
-            <q-item-label caption>Solana</q-item-label>
+            <q-item-label caption>{{ $t('walletPanel.solana') }}</q-item-label>
           </q-item-section>
         </q-item>
       </q-list>

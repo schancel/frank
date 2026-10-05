@@ -118,7 +118,12 @@ export default defineComponent({
     },
     async refreshContent() {
       try {
-        const wallet = await useActiveWallet()
+        let wallet
+        try {
+          wallet = await useActiveWallet()
+        } catch {
+          // Public reading requires no active wallet
+        }
         await this.refreshMessages({ wallet, topic: this.selectedTopic })
       } catch (error) {
         // Handled: forumStore records outageStatus; no unhandled browser exception

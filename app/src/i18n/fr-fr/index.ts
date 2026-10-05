@@ -16,6 +16,7 @@ export default {
     degradedTitle: 'Connexion dégradée',
     degradedBanner: 'Certains sujets du forum n’ont pas pu être mis à jour.',
     retry: 'Réessayer',
+    loginSignUp: 'Connexion / Inscription',
   },
   agree: "D'accord",
   chat: {
@@ -254,6 +255,10 @@ export default {
     balanceStale: '{balance} (dernière valeur connue)',
     failedLoadAddress: 'Échec du chargement de l’adresse du portefeuille Monad',
     unableCopyAddress: 'Impossible de copier l’adresse Monad',
+    ecash: 'eCash',
+    solana: 'Solana',
+    zeroXec: '0 XEC',
+    zeroSol: '0 SOL',
   },
   chatList: {
     noContactMessage: 'Ajoutez des contacts depuis le tiroir ci-dessus...',

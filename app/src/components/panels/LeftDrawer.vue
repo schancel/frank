@@ -98,13 +98,12 @@
         v-show="tab == 'settings'"
         v-bind="panelAttrs('settings')"
       />
-      <div v-if="!$status.setup">
-        <q-separator />
+      <div v-if="!$status.setup" class="drawer-header-item">
         <chat-list-link title="Login/Sign Up" route="/setup" icon="login" />
       </div>
 
       <chat-list
-        v-show="tab == 'contacts'"
+        v-show="tab == 'contacts' && $status.setup"
         v-bind="{ ...$attrs, ...panelAttrs('contacts') }"
         :compact="false"
       />
@@ -132,7 +131,7 @@
       every other tab -- it just sat directly under however many topics happened to be listed. -->
       <div
         class="full-width column col"
-        v-show="tab == 'forum'"
+        v-show="tab == 'forum' || !$status.setup"
         v-bind="panelAttrs('forum')"
       >
         <q-scroll-area class="q-px-none col">
@@ -265,7 +264,7 @@ export default defineComponent({
     const forum = useForumStore()
 
     function maybeRefreshTopics() {
-      if (!(accountStatus.status === 'ready')) {
+      if (route.path.startsWith('/setup') && accountStatus.status !== 'ready') {
         return
       }
       topicStore.refreshDiscoveredTopics()
@@ -281,7 +280,12 @@ export default defineComponent({
         await router.push('/forum')
       }
       try {
-        const wallet = await useActiveWallet()
+        let wallet
+        try {
+          wallet = await useActiveWallet()
+        } catch {
+          // Public reading requires no active wallet
+        }
         await forum.refreshMessages({ wallet, topic: name })
       } catch (error) {
         // Handled: forumStore records outageStatus; no unhandled browser exception
@@ -297,7 +301,6 @@ export default defineComponent({
     onMounted(() => {
       // Fire-and-forget, same convention as `ForumLayout.vue`'s own identical call --
       // `refreshDiscoveredTopics` already fails soft and never throws (`stores/topics.ts`).
-      // Defers discovery until account setup is complete to preserve privacy on initial launch (#545).
       maybeRefreshTopics()
     })
 
@@ -339,11 +342,19 @@ export default defineComponent({
         // 'settings'/'contacts' click, since this only runs when `path` itself changes. /wallet
         // gets the same treatment (#570): opening a wallet (deep link, back navigation) puts the
         // highlight back on its own rail tab.
-        if (path.startsWith('/forum') || path.startsWith('/new-post')) {
+        if (
+          path.startsWith('/forum') ||
+          path.startsWith('/new-post') ||
+          path.startsWith('/topic')
+        ) {
           tab.value = 'forum'
           maybeRefreshTopics()
         } else if (path.startsWith('/wallet')) {
           tab.value = 'wallet'
+        } else if (path.startsWith('/settings')) {
+          tab.value = 'settings'
+        } else if (path.startsWith('/chat')) {
+          tab.value = 'contacts'
         }
       },
       { immediate: true },
@@ -471,5 +482,12 @@ export default defineComponent({
 .list-column {
   min-width: 0; // allow the flex child to shrink below its content's natural width, so long chat
   // names/previews ellipsize instead of forcing the whole drawer wider than intended.
+}
+
+.drawer-header-item {
+  height: 50px;
+  min-height: 50px;
+  max-height: 50px;
+  box-sizing: border-box;
 }
 </style>

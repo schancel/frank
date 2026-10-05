@@ -33,7 +33,7 @@ export const en = {
   this_identifies_your_old_account_locally_you:
     'This identifies your old account locally. You must then create and fully back up a fresh Codex32 identity. This does not transfer legacy funds or history, or rotate remote keys. Existing legacy data remains quarantined.',
   legacy_bip39_recovery_phrase: 'Legacy BIP39 recovery phrase',
-  identify_legacy_account_locally: 'Identify legacy account',
+  identify_legacy_account_locally: 'Identify account',
   old_account: 'Old account:',
   the_new_identity_is_different_no_funds:
     '. The new identity is different; no funds, history or remote keys are migrated.',
@@ -68,7 +68,7 @@ export const en = {
   saved_codex32_shares_one_per_line: 'Saved Codex32 shares, one per line',
   display_name: 'Display name',
   verify_backups_and_stage_account: 'Verify backups and stage account',
-  cancel_and_start_again: 'Cancel and start again',
+  cancel_and_start_again: 'Cancel',
   browser_preview_encrypted_local_storage_does_not:
     'Browser preview: encrypted local storage does not protect against malicious code in this origin or theft of the whole browser profile. Keep independent backups. Clearing local data can remove access.',
   messaging_is_unavailable_for_typed_accounts_in:
@@ -129,7 +129,7 @@ export const fr = {
     'Cette étape identifie votre ancien compte localement. Vous devez ensuite créer et sauvegarder intégralement une nouvelle identité Codex32. Aucun fonds ou historique n’est transféré et aucune clé distante n’est renouvelée. Les anciennes données restent en quarantaine.',
   legacy_bip39_recovery_phrase:
     'Phrase de récupération BIP39 de l’ancien compte',
-  identify_legacy_account_locally: 'Identifier l’ancien compte',
+  identify_legacy_account_locally: 'Identifier le compte',
   old_account: 'Ancien compte :',
   the_new_identity_is_different_no_funds:
     '. La nouvelle identité est différente ; aucun fonds, historique ou clé distante n’est migré.',
@@ -166,7 +166,7 @@ export const fr = {
   display_name: 'Nom affiché',
   verify_backups_and_stage_account:
     'Vérifier les sauvegardes et préparer le compte',
-  cancel_and_start_again: 'Annuler et recommencer',
+  cancel_and_start_again: 'Annuler',
   browser_preview_encrypted_local_storage_does_not:
     'Aperçu dans le navigateur : le stockage local chiffré ne protège pas contre le code malveillant de cette origine ni le vol du profil complet du navigateur. Conservez des sauvegardes indépendantes. Effacer les données locales peut supprimer l’accès.',
   messaging_is_unavailable_for_typed_accounts_in:

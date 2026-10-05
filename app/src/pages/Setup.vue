@@ -4,6 +4,7 @@
       <q-btn
         flat
         dense
+        no-caps
         icon="menu"
         :aria-label="$t('accountRecovery.open_navigation')"
         @click="$emit('toggleMyDrawerOpen')"
@@ -22,7 +23,7 @@
         <h1 id="account-heading" ref="heading" tabindex="-1" class="text-h5">
           {{
             mode === 'legacy'
-              ? 'Legacy recovery/migration'
+              ? $t('accountRecovery.legacy_recovery_migration')
               : 'Your Frank account'
           }}
         </h1>
@@ -48,6 +49,7 @@
             {{ $t('accountRecovery.saved_account_data_could_not_be_opened') }}
           </p>
           <q-btn
+            no-caps
             :label="$t('accountRecovery.retry_opening_account')"
             :loading="busy"
             data-test="retry-account"
@@ -64,6 +66,7 @@
           </p>
           <q-btn
             v-if="account.pendingError"
+            no-caps
             :label="$t('accountRecovery.retry_opening_account')"
             data-test="retry-pending"
             :disable="busy"
@@ -77,6 +80,7 @@
           <q-btn
             v-if="account.pendingReady"
             color="primary"
+            no-caps
             :label="$t('accountRecovery.activate_account')"
             data-test="activate-account"
             :disable="busy"
@@ -92,6 +96,7 @@
           </p>
           <q-btn
             flat
+            no-caps
             :label="$t('accountRecovery.cancel_pending_attempt')"
             data-test="cancel-pending"
             :disable="busy"
@@ -99,6 +104,7 @@
           />
           <q-btn
             v-if="account.status === 'ready'"
+            no-caps
             :label="$t('accountRecovery.return_to_wallet')"
             @click="$router.push('/wallet')"
           />
@@ -138,6 +144,7 @@
             <div class="q-gutter-sm">
               <q-btn
                 color="primary"
+                no-caps
                 :label="$t('accountRecovery.new_account')"
                 data-test="new-account"
                 :disable="!mayBegin || busy"
@@ -145,6 +152,7 @@
               />
               <q-btn
                 outline
+                no-caps
                 :label="$t('accountRecovery.restore_account')"
                 data-test="restore-account"
                 :disable="!mayBegin || busy"
@@ -152,6 +160,7 @@
               />
               <q-btn
                 flat
+                no-caps
                 :label="$t('accountRecovery.legacy_recovery_migration')"
                 data-test="legacy-recovery"
                 :disable="!mayBegin || busy"
@@ -162,6 +171,7 @@
               v-if="account.status === 'ready'"
               class="q-mt-md"
               flat
+              no-caps
               :label="$t('accountRecovery.return_to_wallet')"
               @click="$router.push('/wallet')"
             />
@@ -177,6 +187,8 @@
             <q-input
               v-model="legacyPhrase"
               type="textarea"
+              autogrow
+              :rows="3"
               :label="$t('accountRecovery.legacy_bip39_recovery_phrase')"
               autocomplete="off"
               autocorrect="off"
@@ -185,7 +197,10 @@
               data-test="legacy-phrase"
             />
             <q-btn
+              class="q-mt-md"
               type="submit"
+              color="primary"
+              no-caps
               :label="$t('accountRecovery.identify_legacy_account_locally')"
               data-test="identify-legacy"
               :disable="busy || !legacyPhrase"
@@ -209,6 +224,7 @@
             <q-btn
               type="submit"
               color="primary"
+              no-caps
               :label="$t('accountRecovery.generate_frank_account_backups')"
               data-test="generate-backups"
               :disable="!policy || busy"
@@ -237,11 +253,13 @@
             />
             <q-btn
               flat
+              no-caps
               :label="$t('accountRecovery.copy_this_share')"
               @click="copy(shownShare)"
             />
             <q-btn
               color="primary"
+              no-caps
               :label="
                 shareIndex + 1 < shareCount
                   ? 'Saved this share — next'
@@ -265,6 +283,7 @@
             />
             <q-btn
               flat
+              no-caps
               :label="$t('accountRecovery.copy_public_descriptor')"
               @click="copy(descriptor)"
             />
@@ -277,6 +296,7 @@
             />
             <q-btn
               color="primary"
+              no-caps
               :label="$t('accountRecovery.confirm_my_saved_backups')"
               data-test="confirm-backups"
               :disable="!descriptorSaved"
@@ -304,6 +324,7 @@
             <q-btn
               type="submit"
               color="primary"
+              no-caps
               :label="$t('accountRecovery.pin_expected_account')"
               data-test="pin-descriptor"
               :disable="busy || !descriptorInput"
@@ -352,6 +373,7 @@
             <q-btn
               type="submit"
               color="primary"
+              no-caps
               :label="$t('accountRecovery.verify_backups_and_stage_account')"
               data-test="verify-backups"
               :disable="busy || !shareInput || !displayName.trim()"
@@ -361,6 +383,7 @@
           <q-btn
             v-if="mode !== 'choice'"
             flat
+            no-caps
             class="q-mt-md"
             :label="$t('accountRecovery.cancel_and_start_again')"
             data-test="cancel-ceremony"

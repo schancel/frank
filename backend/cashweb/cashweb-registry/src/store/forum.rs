@@ -377,8 +377,30 @@ impl Store {
         store.rebuild()?;
         Ok(store)
     }
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub(crate) fn db(&self) -> &rocksdb::DB {
+        &self.db
+    }
+    pub(crate) fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         self.db.get(key).map_err(|_| ForumError::Unavailable)
+    }
+    pub(crate) fn topic_index_prefix(topic: &str) -> Vec<u8> {
+        use bitcoinsuite_core::{Hashed, Sha256};
+        key(b't', Sha256::digest(topic.as_bytes().into()).as_slice())
+    }
+    pub(crate) fn topic_index_key(
+        topic: &str,
+        time: Option<Timestamp>,
+        post_hash: Option<&[u8; 32]>,
+    ) -> Vec<u8> {
+        let mut key = Self::topic_index_prefix(topic);
+        if let Some(time) = time {
+            key.extend_from_slice(&((time.seconds as u64) ^ (1 << 63)).to_be_bytes());
+            key.extend_from_slice(&time.nanoseconds.to_be_bytes());
+            if let Some(hash) = post_hash {
+                key.extend_from_slice(hash);
+            }
+        }
+        key
     }
     fn write(&self, batch: WriteBatch) -> Result<()> {
         #[cfg(test)]
@@ -604,14 +626,11 @@ impl Store {
                         (2, time_value(last)),
                     ]))?,
                 );
-                use bitcoinsuite_core::{Hashed, Sha256};
-                let mut index_key = key(
-                    b't',
-                    Sha256::digest(post.topic.as_bytes().into()).as_slice(),
+                let index_key = Self::topic_index_key(
+                    &post.topic,
+                    Some(visible),
+                    Some(op.event.target_hash()),
                 );
-                index_key.extend_from_slice(&((visible.seconds as u64) ^ (1 << 63)).to_be_bytes());
-                index_key.extend_from_slice(&visible.nanoseconds.to_be_bytes());
-                index_key.extend_from_slice(op.event.target_hash());
                 batch.put(index_key, op.event.target_hash());
             } else if post.visible != Some(visible) {
                 return Err(ForumError::Unavailable);
@@ -779,6 +798,21 @@ impl Store {
         }
         Ok(())
     }
+    pub(crate) fn decode_discovery_entry(&self, value: &[u8]) -> Result<(u64, Timestamp)> {
+        let map = decode(value)?;
+        closed(&map, &[0, 1, 2])?;
+        if uint(field(&map, 0)?)? != 1 {
+            return Err(ForumError::Unavailable);
+        }
+        Ok((uint(field(&map, 1)?)?, timestamp(field(&map, 2)?)?))
+    }
+    pub(crate) fn discovery_entry(&self, topic: &str) -> Result<Option<(u64, Timestamp)>> {
+        let key = key(b'd', topic.as_bytes());
+        let Some(v) = self.get(&key)? else {
+            return Ok(None);
+        };
+        Ok(Some(self.decode_discovery_entry(&v)?))
+    }
     pub(crate) fn visit_topics(
         &self,
         mut visit: impl FnMut(String, u64, Timestamp) -> Result<()>,
@@ -794,12 +828,8 @@ impl Store {
             let topic = std::str::from_utf8(&k[1..])
                 .map_err(|_| ForumError::Unavailable)?
                 .to_string();
-            let map = decode(&v)?;
-            closed(&map, &[0, 1, 2])?;
-            if uint(field(&map, 0)?)? != 1 {
-                return Err(ForumError::Unavailable);
-            }
-            visit(topic, uint(field(&map, 1)?)?, timestamp(field(&map, 2)?)?)?;
+            let (count, last) = self.decode_discovery_entry(&v)?;
+            visit(topic, count, last)?;
         }
         Ok(())
     }

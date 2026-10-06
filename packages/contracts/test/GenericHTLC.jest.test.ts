@@ -7,14 +7,17 @@ describe('GenericHTLC Contract', () => {
 
   it('compiles with all expected functions, events, and errors', () => {
     // Functions
-    expect(iface.getFunction('lock')).toBeDefined()
+    expect(iface.getFunction('lock(bytes32,address,address,bytes32,uint256)')).toBeDefined()
+    expect(iface.getFunction('lock(bytes32,address,bytes32,uint256)')).toBeDefined()
     expect(iface.getFunction('withdraw')).toBeDefined()
     expect(iface.getFunction('batchWithdraw')).toBeDefined()
+    expect(iface.getFunction('batchDistribute')).toBeDefined()
     expect(iface.getFunction('refund')).toBeDefined()
 
     // Events
     expect(iface.getEvent('Locked')).toBeDefined()
     expect(iface.getEvent('Withdrawn')).toBeDefined()
+    expect(iface.getEvent('BatchDistributed')).toBeDefined()
     expect(iface.getEvent('Refunded')).toBeDefined()
 
     // Errors
@@ -28,6 +31,8 @@ describe('GenericHTLC Contract', () => {
     expect(iface.getError('InvalidZeroAddress')).toBeDefined()
     expect(iface.getError('TransferFailed')).toBeDefined()
     expect(iface.getError('ZeroAmount')).toBeDefined()
+    expect(iface.getError('InvalidPayoutSum')).toBeDefined()
+    expect(iface.getError('EmptyBatch')).toBeDefined()
   })
 
   it('contains valid EVM deployment bytecode', () => {
@@ -49,35 +54,34 @@ describe('GenericHTLC Contract', () => {
     expect(sha256Hash).not.toBe(keccak256Hash)
   })
 
-  it('encodes lock, withdraw, batchWithdraw, and refund correctly', () => {
+  it('encodes lock with explicit refundAddress and batchDistribute correctly', () => {
     const lockId1 = ethers.id('lock.test.1')
     const lockId2 = ethers.id('lock.test.2')
-    const recipient = ethers.Wallet.createRandom().address
-    const hashLock = ethers.sha256(ethers.toUtf8Bytes('secret'))
+    const recipient1 = ethers.Wallet.createRandom().address
+    const recipient2 = ethers.Wallet.createRandom().address
+    const refundAddress = ethers.Wallet.createRandom().address
+    const hashLock = ethers.keccak256(ethers.toUtf8Bytes('table-secret'))
     const duration = 7200
 
-    const lockCalldata = iface.encodeFunctionData('lock', [
-      lockId1,
-      recipient,
-      hashLock,
-      duration,
-    ])
+    // Explicit refundAddress lock
+    const lockCalldata = iface.encodeFunctionData(
+      'lock(bytes32,address,address,bytes32,uint256)',
+      [lockId1, recipient1, refundAddress, hashLock, duration],
+    )
     expect(lockCalldata.startsWith('0x')).toBe(true)
 
-    const preimage = ethers.toUtf8Bytes('secret')
-    const withdrawCalldata = iface.encodeFunctionData('withdraw', [
-      lockId1,
-      preimage,
-    ])
-    expect(withdrawCalldata.startsWith('0x')).toBe(true)
+    // Multi-winner batchDistribute
+    const preimage = ethers.toUtf8Bytes('table-secret')
+    const payouts = [
+      { recipient: recipient1, amount: ethers.parseEther('1.4') },
+      { recipient: recipient2, amount: ethers.parseEther('0.6') },
+    ]
 
-    const batchCalldata = iface.encodeFunctionData('batchWithdraw', [
+    const distributeCalldata = iface.encodeFunctionData('batchDistribute', [
       [lockId1, lockId2],
+      payouts,
       preimage,
     ])
-    expect(batchCalldata.startsWith('0x')).toBe(true)
-
-    const refundCalldata = iface.encodeFunctionData('refund', [lockId1])
-    expect(refundCalldata.startsWith('0x')).toBe(true)
+    expect(distributeCalldata.startsWith('0x')).toBe(true)
   })
 })

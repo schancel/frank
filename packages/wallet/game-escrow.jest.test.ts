@@ -6,6 +6,9 @@ import {
   prepareTableStealthSettlement,
   encodeChannelSettlementCall,
   encodeTableSettlementCall,
+  buildStateChannelCloseDigest,
+  encodeStateChannelCloseCall,
+  encodeBatchDistributeCall,
   registerEscrowStealthPayout,
 } from './game-escrow'
 import { MonadIdentity } from './monad-identity'
@@ -150,6 +153,59 @@ describe('Game Escrow DKSAP Stealth Payouts (GAME-3)', () => {
     expect(spendable).toBeDefined()
     expect(spendable?.address.toLowerCase()).toBe(record.address.toLowerCase())
     expect(spendable?.privateKey).toBe(record.privateKey)
+  })
+
+  it('computes StateChannel cooperative close digest with DKSAP stealth address and encodes calldata', async () => {
+    const alice = Wallet.createRandom()
+    const bob = Wallet.createRandom()
+    const stealthWinner = Wallet.createRandom().address
+    const channelId = ethers.id('channel.symmetric.101')
+    const seq = 10n
+    const balances = [ethers.parseEther('1.25'), ethers.parseEther('0.75')] as [bigint, bigint]
+
+    const { messageHash, digestBytes } = buildStateChannelCloseDigest({
+      channelId,
+      seq,
+      balances,
+      payout0: stealthWinner,
+      payout1: bob.address,
+      contractAddress: dummyVault,
+      chainId,
+    })
+
+    const sig0 = await alice.signMessage(digestBytes)
+    const sig1 = await bob.signMessage(digestBytes)
+
+    expect(ethers.recoverAddress(messageHash, sig0).toLowerCase()).toBe(alice.address.toLowerCase())
+    expect(ethers.recoverAddress(messageHash, sig1).toLowerCase()).toBe(bob.address.toLowerCase())
+
+    const calldata = encodeStateChannelCloseCall({
+      channelId,
+      seq,
+      balances,
+      payout0: stealthWinner,
+      payout1: bob.address,
+      sig0,
+      sig1,
+    })
+    expect(calldata.startsWith('0x')).toBe(true)
+  })
+
+  it('encodes GenericHTLC batchDistribute calldata for multi-winner table settlements', () => {
+    const lock1 = ethers.id('lock.p1')
+    const lock2 = ethers.id('lock.p2')
+    const payouts = [
+      { recipient: ethers.Wallet.createRandom().address, amount: ethers.parseEther('7.0') },
+      { recipient: ethers.Wallet.createRandom().address, amount: ethers.parseEther('3.0') },
+    ]
+    const preimage = 'secret-preimage-data'
+
+    const calldata = encodeBatchDistributeCall({
+      lockIds: [lock1, lock2],
+      payouts,
+      preimage,
+    })
+    expect(calldata.startsWith('0x')).toBe(true)
   })
 
   it('rejects registration if expected stealth address does not match derived', async () => {

@@ -90,8 +90,22 @@ const TABLE_POT_VAULT_ABI = [
   'function settleTable(bytes32 tableId, tuple(address recipient, uint256 amount)[] calldata payouts, bytes calldata hostSig) external',
 ]
 
+const STATE_CHANNEL_ABI = [
+  'function closeCooperative(bytes32 channelId, uint256 seq, uint256[2] calldata balances, address payout0, address payout1, bytes calldata sig0, bytes calldata sig1) external',
+  'function checkpoint(bytes32 channelId, uint256 seq, uint256[2] calldata balances, bytes calldata sig0, bytes calldata sig1) external',
+]
+
+const GENERIC_HTLC_ABI = [
+  'function batchDistribute(bytes32[] calldata lockIds, tuple(address recipient, uint256 amount)[] calldata payouts, bytes calldata preimage) external',
+  'function batchWithdraw(bytes32[] calldata lockIds, bytes calldata preimage) external',
+  'function withdraw(bytes32 lockId, bytes calldata preimage) external',
+  'function refund(bytes32 lockId) external',
+]
+
 const channelVaultInterface = new Interface(CHANNEL_VAULT_ABI)
 const tablePotVaultInterface = new Interface(TABLE_POT_VAULT_ABI)
+const stateChannelInterface = new Interface(STATE_CHANNEL_ABI)
+const genericHtlcInterface = new Interface(GENERIC_HTLC_ABI)
 
 /**
  * Derives a one-time DKSAP stealth address for game escrow winnings.
@@ -259,6 +273,100 @@ export function encodeTableSettlementCall(params: {
     params.tableId,
     params.payouts,
     params.hostSig,
+  ])
+}
+
+/**
+ * Computes the EIP-191 Ethereum Signed Message hash for StateChannel.closeCooperative:
+ * keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", keccak256(abi.encode(channelId, seq, balances, payout0, payout1, true, contract, chainId))))
+ */
+export function buildStateChannelCloseDigest(params: {
+  channelId: string
+  seq: bigint | number
+  balances: [bigint, bigint]
+  payout0?: string
+  payout1?: string
+  contractAddress: string
+  chainId: bigint | number
+}): { innerHash: string; messageHash: string; digestBytes: Uint8Array } {
+  const abiCoder = AbiCoder.defaultAbiCoder()
+  const dest0 = params.payout0 || '0x0000000000000000000000000000000000000000'
+  const dest1 = params.payout1 || '0x0000000000000000000000000000000000000000'
+
+  const innerPayload = abiCoder.encode(
+    ['bytes32', 'uint256', 'uint256[2]', 'address', 'address', 'bool', 'address', 'uint256'],
+    [
+      params.channelId,
+      BigInt(params.seq),
+      params.balances,
+      dest0,
+      dest1,
+      true, // isFinal
+      params.contractAddress,
+      BigInt(params.chainId),
+    ],
+  )
+  const innerHash = keccak256(innerPayload)
+  const messageHash = keccak256(
+    concat([
+      toUtf8Bytes('\x19Ethereum Signed Message:\n32'),
+      getBytes(innerHash),
+    ]),
+  )
+
+  return {
+    innerHash,
+    messageHash,
+    digestBytes: getBytes(innerHash),
+  }
+}
+
+/**
+ * Encodes the calldata for StateChannel.closeCooperative(channelId, seq, balances, payout0, payout1, sig0, sig1).
+ */
+export function encodeStateChannelCloseCall(params: {
+  channelId: string
+  seq: bigint | number
+  balances: [bigint, bigint]
+  payout0?: string
+  payout1?: string
+  sig0: string
+  sig1: string
+}): string {
+  const dest0 = params.payout0 || '0x0000000000000000000000000000000000000000'
+  const dest1 = params.payout1 || '0x0000000000000000000000000000000000000000'
+
+  return stateChannelInterface.encodeFunctionData(
+    'closeCooperative(bytes32,uint256,uint256[2],address,address,bytes,bytes)',
+    [
+      params.channelId,
+      BigInt(params.seq),
+      params.balances,
+      dest0,
+      dest1,
+      params.sig0,
+      params.sig1,
+    ],
+  )
+}
+
+/**
+ * Encodes the calldata for GenericHTLC.batchDistribute(lockIds, payouts, preimage).
+ */
+export function encodeBatchDistributeCall(params: {
+  lockIds: string[]
+  payouts: TablePayoutRecipient[]
+  preimage: Uint8Array | string
+}): string {
+  const preimageBytes =
+    typeof params.preimage === 'string'
+      ? getBytes(params.preimage.startsWith('0x') ? params.preimage : hexlify(toUtf8Bytes(params.preimage)))
+      : params.preimage
+
+  return genericHtlcInterface.encodeFunctionData('batchDistribute', [
+    params.lockIds,
+    params.payouts,
+    preimageBytes,
   ])
 }
 

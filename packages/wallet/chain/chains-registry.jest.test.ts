@@ -220,14 +220,17 @@ describe("chains-registry", () => {
   });
 
   it("exposes canonical smart contract addresses for EVM chains and undefined for non-EVM", () => {
-    expect(CANONICAL_EVM_CONTRACTS.channelVault).toBe(
-      "0xB0ae4A94A7616029CD99Cf3Ab9Bf417be1DfD9E9"
-    );
-    expect(CANONICAL_EVM_CONTRACTS.tablePotVault).toBe(
-      "0x9B7d7E260da7f3a8e92562D21551FE0d350F9C8e"
+    expect(CANONICAL_EVM_CONTRACTS.stateChannel).toBe(
+      "0x18E98e3B789F0b84c7060Bb28bF4385809F3aF57"
     );
     expect(CANONICAL_EVM_CONTRACTS.htlc).toBe(
-      "0x91883414DaDF6f18f3d14E3de3a31BfC833e6bB6"
+      "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5"
+    );
+    expect(CANONICAL_EVM_CONTRACTS.channelVault).toBe(
+      "0x18E98e3B789F0b84c7060Bb28bF4385809F3aF57"
+    );
+    expect(CANONICAL_EVM_CONTRACTS.tablePotVault).toBe(
+      "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5"
     );
 
     expect(PROTOCOL_CHAINS["monad-testnet"].contracts).toBe(CANONICAL_EVM_CONTRACTS);

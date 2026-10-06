@@ -13,9 +13,8 @@ export interface DeploymentRecord {
   chainId: number
   deployer: string
   contracts: {
-    ChannelVault: { address: string; deployedVia: 'create2' | 'standard' }
-    TablePotVault: { address: string; deployedVia: 'create2' | 'standard' }
     GenericHTLC: { address: string; deployedVia: 'create2' | 'standard' }
+    StateChannel: { address: string; deployedVia: 'create2' | 'standard' }
   }
   timestamp: string
 }
@@ -64,7 +63,7 @@ export async function deployAll(options?: {
 
   const deployedAddresses: Record<string, { address: string; deployedVia: 'create2' | 'standard' }> = {}
 
-  for (const contractName of ['ChannelVault', 'TablePotVault', 'GenericHTLC'] as const) {
+  for (const contractName of ['GenericHTLC', 'StateChannel'] as const) {
     const artifact = artifacts[contractName]
     if (!artifact) throw new Error(`Artifact for ${contractName} not found`)
 
@@ -78,7 +77,7 @@ export async function deployAll(options?: {
           console.log(`Deploying ${contractName} via CREATE2 factory...`)
           const factory = new ethers.Contract(CREATE2_FACTORY, CREATE2_FACTORY_ABI, wallet)
           const tx = await factory.deploy(artifact.bytecode, salt)
-          const receipt = await tx.wait()
+          await tx.wait()
           // Compute deterministic address
           const contractSalt = ethers.keccak256(salt)
           const initCodeHash = ethers.keccak256(artifact.bytecode)

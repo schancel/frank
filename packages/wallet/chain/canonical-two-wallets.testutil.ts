@@ -136,15 +136,21 @@ export function offlineHttpModule() {
 
 /** The relay's mailbox read: whatever was delivered to the asking subject since `sinceMs`. */
 export function offlineMailboxModule() {
+  const getInbox = async (auth: { subject: string; sinceMs?: number }) => ({
+    records: (mailboxes.get(auth.subject) ?? []).filter(
+      record => record.timestampMs > (auth.sinceMs ?? 0),
+    ),
+  })
   return {
     ...jest.requireActual('@frank/cashweb/relay/monad-mailbox-client'),
-    fetchCanonicalInboxPage: jest.fn(
-      async (auth: { subject: string; sinceMs?: number }) => ({
-        records: (mailboxes.get(auth.subject) ?? []).filter(
-          record => record.timestampMs > (auth.sinceMs ?? 0),
-        ),
-      }),
-    ),
+    fetchCanonicalInboxPage: jest.fn(getInbox),
+    fetchMonadMailboxInboxPage: jest.fn(getInbox),
+    fetchMonadMailboxInbox: jest.fn(async (params: any) => {
+      const records = (mailboxes.get(params.subject) ?? []).filter(
+        record => record.timestampMs > (params.sinceMs ?? 0),
+      )
+      return { messages: records }
+    }),
     fetchCanonicalRecoveryPage: jest.fn(async () => ({ records: [] })),
   }
 }

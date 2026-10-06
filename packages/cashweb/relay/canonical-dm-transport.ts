@@ -88,11 +88,13 @@ export class CanonicalTransportError extends Error {
 function invalid(message: string): never {
   throw new CanonicalTransportError('invalid', message)
 }
-export function canonicalNetworkDescriptor(tag: 'MONT' | 'MON1') {
-  if (tag === 'MONT')
-    return { tag, network: 'monad-testnet', chainId: 10143n } as const
-  if (tag === 'MON1')
-    return { tag, network: 'monad-mainnet', chainId: 143n } as const
+export function canonicalNetworkDescriptor(
+  tag: 'MONT' | 'MON1' | 'monad-testnet' | 'monad-mainnet' | string,
+) {
+  if (tag === 'MONT' || tag === 'monad-testnet')
+    return { tag: 'MONT', network: 'monad-testnet', chainId: 10143n } as const
+  if (tag === 'MON1' || tag === 'monad-mainnet')
+    return { tag: 'MON1', network: 'monad-mainnet', chainId: 143n } as const
   return invalid('Unknown installed Monad network descriptor')
 }
 function concat(
@@ -923,7 +925,7 @@ export async function readCanonicalResponse(
 export async function submitCanonicalRequest(input: {
   installedRelayOrigin: string
   /** From the installed relay binding, never inferred from a response. */
-  expectedNetworkTag: 'MONT' | 'MON1'
+  expectedNetworkTag: 'MONT' | 'MON1' | 'monad-testnet' | 'monad-mainnet' | string
   request: CanonicalExactRequest
   fetch?: CanonicalFetch
   signal?: AbortSignal

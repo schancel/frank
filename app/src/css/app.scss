@@ -114,6 +114,34 @@ body {
   color: #000;
 }
 
+// Modern chat bubble geometry, elevation, and tail removal
+.q-message-text {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+
+  // Modern messengers use asymmetric corner radius instead of jagged triangular notches
+  &:last-child::before {
+    display: none !important;
+  }
+}
+
+.q-message-text--sent {
+  border-radius: 18px 18px 4px 18px !important;
+}
+
+.q-message-text--received {
+  border-radius: 18px 18px 18px 4px !important;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+body.body--dark {
+  .q-message-text {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  }
+  .q-message-text--received {
+    border: 1px solid rgba(255, 255, 255, 0.05);
+  }
+}
+
 // Respect prefers-reduced-motion preference (#546).
 // Disables spatial transitions on drawers, decorative ripple animations, and makes
 // interactive transitions instantaneous while preserving visible focus state and functionality.

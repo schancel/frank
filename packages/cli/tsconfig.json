@@ -1,0 +1,41 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "paths": {
+      "@frank/cashweb/*": ["../cashweb/*"],
+      "@frank/codec": ["../frank-codec/src/index.ts"],
+      "@frank/codec/*": ["../frank-codec/src/*"],
+      "@frank/directory-admission": ["../directory-admission/src/index.ts"],
+      "@frank/directory-admission/browser": [
+        "../directory-admission/src/browser.ts"
+      ],
+      "@frank/directory-admission/node": ["../directory-admission/src/node.ts"],
+      "@frank/crypto-box": ["../crypto-box/src/index.ts"],
+      "@frank/nakamoto": ["../nakamoto/src/index.ts"],
+      "@frank/nakamoto/*": ["../nakamoto/src/*"],
+      "@frank/domain-roots": ["../domain-roots/src/index.ts"],
+      "@frank/role-keys": ["../role-keys/src/index.ts"],
+      "@frank/wallet/*": ["../wallet/*"]
+    },
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "sourceMap": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "target": "es2022",
+    "lib": ["es2022", "DOM"],
+    "types": ["node", "jest"]
+  },
+  "include": [
+    "src/**/*",
+    "bin/**/*",
+    "../bitcore-lib-xpi/types.d.ts",
+    "../wallet/level.d.ts",
+    "../wallet/ecash-wallet-sdk.d.ts"
+  ],
+  "exclude": ["node_modules", "**/*.jest.spec.ts", "**/*.jest.test.ts"]
+}

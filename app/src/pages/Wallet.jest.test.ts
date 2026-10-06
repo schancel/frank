@@ -183,6 +183,11 @@ describe('Wallet detail page (#570)', () => {
 
     await wrapper.get('[data-testid="wallet-send-action"]').trigger('click')
     expect(openPage).toHaveBeenCalledWith(expect.anything(), '/send')
+
+    await wrapper
+      .get('[data-testid="wallet-contact-send-action"]')
+      .trigger('click')
+    expect(openPage).toHaveBeenCalledWith(expect.anything(), '/send-contact')
     wrapper.unmount()
   })
 

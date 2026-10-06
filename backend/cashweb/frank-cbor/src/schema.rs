@@ -5,11 +5,12 @@ use crate::error::{CodecError, ErrorCategory, ErrorStage};
 use crate::limits::{
     ENCRYPTION_SUITE_DM_AUTH_XCHACHA, ENCRYPTION_SUITE_PROOF, MAX_CIPHERTEXT_BYTES,
     MAX_DIRECTORY_ATTESTATION_FRAME_BYTES, MAX_DIRECT_MESSAGE_FRAME_BYTES,
-    MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES, MAX_FRAME_BYTES, MAX_JOURNAL_FACTS,
-    MAX_MESSAGE_ITEMS_PER_ARRAY, MAX_OPAQUE_SECTIONS, MAX_PAYMENT_MEMBERS, MAX_RELAY_BINDINGS,
-    MAX_SIGNATURES, MAX_TEXT_STRING_BYTES, MAX_TOPIC_BODY_BYTES, MAX_TOPIC_FRAME_BYTES,
-    MAX_TOPIC_VOTE_FRAME_BYTES, TYPE_CONTAINER_ITEM, TYPE_DIRECTORY_ATTESTATION,
-    TYPE_DIRECTORY_STATEMENT, TYPE_DIRECT_MESSAGE, TYPE_MAILBOX_CHECKPOINT, TYPE_MESSAGE_REVISION,
+    MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES, MAX_FORWARDING_DELIVERY_FRAME_BYTES, MAX_FRAME_BYTES,
+    MAX_JOURNAL_FACTS, MAX_MESSAGE_ITEMS_PER_ARRAY, MAX_OPAQUE_SECTIONS, MAX_PAYMENT_MEMBERS,
+    MAX_RELAY_BINDINGS, MAX_SIGNATURES, MAX_TEXT_STRING_BYTES, MAX_TOPIC_BODY_BYTES,
+    MAX_TOPIC_FRAME_BYTES, MAX_TOPIC_VOTE_FRAME_BYTES, TYPE_CONTAINER_ITEM,
+    TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT, TYPE_DIRECT_MESSAGE,
+    TYPE_FORWARDING_DELIVERY, TYPE_MAILBOX_CHECKPOINT, TYPE_MESSAGE_REVISION,
     TYPE_RECIPIENT_PAYLOAD, TYPE_TOPIC_POST, TYPE_TOPIC_POST_SUBMISSION,
     TYPE_TOPIC_VOTE_SUBMISSION,
 };
@@ -22,7 +23,7 @@ use crate::model::{
     AccountRef, BlackjackAction, BlackjackFields, BlackjackHandAction, BlackjackHandFields,
     BlackjackHandMessageItem, BlackjackHandV3Action, BlackjackHandV3Fields,
     BlackjackHandV3MessageItem, BlackjackHandV3Move, BlackjackMessageItem, BlackjackOutcome,
-    PreviewDirectoryRoles, Timestamp,
+    PaymentValue, PreviewDirectoryRoles, Timestamp,
 };
 use crate::model::{
     ForumAggregate, ForumContent, ForumCursor, ForumCursorPosition, ForumDiscoveryEntry,
@@ -331,6 +332,9 @@ pub(crate) fn check_root_frame_limit(
     if type_id == TYPE_DIRECT_MESSAGE {
         return frame_length <= MAX_DIRECT_MESSAGE_FRAME_BYTES;
     }
+    if type_id == TYPE_FORWARDING_DELIVERY {
+        return frame_length <= MAX_FORWARDING_DELIVERY_FRAME_BYTES;
+    }
     if type_id == TYPE_DIRECTORY_ATTESTATION {
         return frame_length <= MAX_DIRECTORY_ATTESTATION_FRAME_BYTES;
     }
@@ -378,7 +382,7 @@ pub(crate) fn check_type_limits(
         )
     };
     match type_id {
-        TYPE_DIRECT_MESSAGE => {
+        TYPE_DIRECT_MESSAGE | TYPE_FORWARDING_DELIVERY => {
             if too_many(map_field(payload, 4), MAX_PAYMENT_MEMBERS) {
                 return Err(over("payment members"));
             }
@@ -458,9 +462,10 @@ fn framed(v: Option<&CborValue>, path: &str) -> Result<Vec<u8>, CodecError> {
 pub(crate) struct PaymentDraft {
     pub child_index: u32,
     pub transaction_id: Vec<u8>,
-    pub value: Vec<u8>,
+    pub value: PaymentValue,
     pub address: Vec<u8>,
     pub commitment: Vec<u8>,
+    pub vout: Option<u32>,
 }
 
 pub(crate) struct SignatureDraft {
@@ -513,12 +518,24 @@ pub(crate) struct ProfileEntryDraft {
 }
 
 pub(crate) enum Draft {
+    ForwardingDelivery {
+        network: String,
+        destination: AccountRef,
+        payload_frame: Vec<u8>,
+        payload_digest: Vec<u8>,
+        payments: Vec<PaymentDraft>,
+        endpoint: Option<String>,
+        expires_at: Option<u64>,
+        unknown: Vec<(u64, CborValue)>,
+    },
     DirectMessage {
         network: String,
         destination: AccountRef,
         payload_frame: Vec<u8>,
         payload_digest: Vec<u8>,
         payments: Vec<PaymentDraft>,
+        recipient: Option<AccountRef>,
+        dleq_proof: Option<Vec<u8>>,
         unknown: Vec<(u64, CborValue)>,
     },
     DirectoryAttestation {
@@ -623,13 +640,45 @@ pub(crate) enum Draft {
 }
 
 fn payment_member(v: &CborValue, path: &str) -> Result<PaymentDraft, CodecError> {
-    let map = fields(Some(v), path, &[0, 1, 2, 3, 4], &[], false, false)?;
+    let map = fields(Some(v), path, &[0, 1, 2, 3, 4], &[5], false, false)?;
+    let val_item = map
+        .get(2)
+        .ok_or_else(|| bad(&format!("{path}.2"), "missing value"))?;
+    let value = match val_item {
+        CborValue::Bytes(b) => {
+            if b.len() != 32 {
+                return Err(bad(&format!("{path}.2"), "expected 32 bytes"));
+            }
+            PaymentValue::Quantity(b.clone())
+        }
+        CborValue::Int(n) => {
+            if *n < 0 || *n > u64::MAX as i128 {
+                return Err(bad(
+                    &format!("{path}.2"),
+                    "expected satoshis in 0..u64::MAX",
+                ));
+            }
+            PaymentValue::Satoshis(*n as u64)
+        }
+        _ => {
+            return Err(bad(
+                &format!("{path}.2"),
+                "expected a 32-byte string or an unsigned integer",
+            ))
+        }
+    };
+    let vout = if map.has(5) {
+        Some(u32_in(map.get(5), &format!("{path}.5"), 0, u32::MAX)?)
+    } else {
+        None
+    };
     Ok(PaymentDraft {
         child_index: u32_in(map.get(0), &format!("{path}.0"), 0, 2_147_483_647)?,
         transaction_id: bstr(map.get(1), &format!("{path}.1"), 1, 128)?,
-        value: bstr(map.get(2), &format!("{path}.2"), 32, 32)?,
+        value,
         address: bstr(map.get(3), &format!("{path}.3"), 1, 128)?,
         commitment: bstr(map.get(4), &format!("{path}.4"), 32, 32)?,
+        vout,
     })
 }
 
@@ -966,11 +1015,44 @@ pub(crate) fn parse_draft(
         return parse_forum_read(type_id, payload, allow, path);
     }
     match type_id {
+        TYPE_FORWARDING_DELIVERY => {
+            let map = fields(Some(payload), path, &[0, 1, 2, 3, 4], &[5, 6], true, allow)?;
+            let payments = as_list(map.get(4), &format!("{path}.4"), 1, MAX_PAYMENT_MEMBERS)?;
+            let mut parsed = Vec::with_capacity(payments.len());
+            for (i, item) in payments.iter().enumerate() {
+                parsed.push(payment_member(item, &format!("{path}.4[{i}]"))?);
+            }
+            let endpoint = if map.has(5) {
+                Some(tstr(map.get(5), &format!("{path}.5"), 1, 256)?)
+            } else {
+                None
+            };
+            let expires_at = if map.has(6) {
+                Some(u64_in(
+                    map.get(6),
+                    &format!("{path}.6"),
+                    0,
+                    u32::MAX as u64,
+                )?)
+            } else {
+                None
+            };
+            Ok(Draft::ForwardingDelivery {
+                network: network_tag(map.get(0), &format!("{path}.0"))?,
+                destination: account(map.get(1), &format!("{path}.1"))?,
+                payload_frame: framed(map.get(2), &format!("{path}.2"))?,
+                payload_digest: bstr(map.get(3), &format!("{path}.3"), 32, 32)?,
+                payments: parsed,
+                endpoint,
+                expires_at,
+                unknown: map.unknown,
+            })
+        }
         TYPE_DIRECT_MESSAGE => {
             let (required, optional): (&[u64], &[u64]) = if schema.effective >= 2 {
-                (&[0, 1, 2, 3], &[4])
+                (&[0, 1, 2, 3], &[4, 5, 6])
             } else {
-                (&[0, 1, 2, 3, 4], &[])
+                (&[0, 1, 2, 3, 4], &[5, 6])
             };
             let map = fields(Some(payload), path, required, optional, true, allow)?;
             let payments = match map.get(4) {
@@ -986,12 +1068,28 @@ pub(crate) fn parse_draft(
             for (i, item) in payments.iter().enumerate() {
                 parsed.push(payment_member(item, &format!("{path}.4[{i}]"))?);
             }
+            let recipient = if map.has(5) {
+                let rec = account(map.get(5), &format!("{path}.5"))?;
+                if rec.key_type != 1 {
+                    return Err(bad(&format!("{path}.5"), "recipient key type must be 1"));
+                }
+                Some(rec)
+            } else {
+                None
+            };
+            let dleq_proof = if map.has(6) {
+                Some(proof(map.get(6), &format!("{path}.6"))?)
+            } else {
+                None
+            };
             Ok(Draft::DirectMessage {
                 network: network_tag(map.get(0), &format!("{path}.0"))?,
                 destination: account(map.get(1), &format!("{path}.1"))?,
                 payload_frame: framed(map.get(2), &format!("{path}.2"))?,
                 payload_digest: bstr(map.get(3), &format!("{path}.3"), 32, 32)?,
                 payments: parsed,
+                recipient,
+                dleq_proof,
                 unknown: map.unknown,
             })
         }
@@ -1400,8 +1498,20 @@ fn check_signature_shape(
 pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
     let path = "root/payload";
     match draft {
-        Draft::DirectMessage { destination, .. } => {
-            check_key_type(destination, &format!("{path}.1"))
+        Draft::ForwardingDelivery { destination, .. } => {
+            check_key_type(destination, &format!("{path}.1"))?;
+            Ok(())
+        }
+        Draft::DirectMessage {
+            destination,
+            recipient,
+            ..
+        } => {
+            check_key_type(destination, &format!("{path}.1"))?;
+            if let Some(r) = recipient {
+                check_key_type(r, &format!("{path}.5"))?;
+            }
+            Ok(())
         }
         Draft::DirectoryAttestation { signatures, .. } => {
             for (i, sig) in signatures.iter().enumerate() {

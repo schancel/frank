@@ -112,6 +112,13 @@
               :address="address"
               @sendFollowUp="handleSendFollowUp"
             />
+            <chat-message-channel
+              v-else-if="item.type == 'channel-update'"
+              :item="item"
+              :address="address"
+              :payload-digest="payloadDigest"
+              @sendFollowUp="handleSendFollowUp"
+            />
             <!-- Previously silently unrendered (no branch existed at all for this or any other
             unhandled type) -- a real preview string instead, via the same registry `chats.ts` now
             uses for the sidebar/notifications, so this can never silently go blank again as new
@@ -167,6 +174,7 @@ import ChatMessageRps from './ChatMessageRps.vue'
 import ChatMessageDice from './ChatMessageDice.vue'
 import ChatMessageLiarsDice from './ChatMessageLiarsDice.vue'
 import ChatMessagePoker from './ChatMessagePoker.vue'
+import ChatMessageChannel from './ChatMessageChannel.vue'
 import ChatMessageSuffix from './ChatMessageSuffix.vue'
 import DeleteMessageDialog from '../../dialogs/DeleteMessageDialog.vue'
 import TransactionDialog from '../../dialogs/TransactionDialog.vue'
@@ -196,6 +204,7 @@ export default defineComponent({
     ChatMessageDice,
     ChatMessageLiarsDice,
     ChatMessagePoker,
+    ChatMessageChannel,
     ChatMessageImage,
     ChatMessageStealth,
     ChatMessageSuffix,

@@ -227,6 +227,8 @@ export interface PreparedDirectMessage {
   readonly context: Uint8Array
   readonly t3: Uint8Array
   readonly messageId: Uint8Array
+  readonly conversationId: Uint8Array
+  readonly conversationName?: string
   readonly contentDigest: Uint8Array
   readonly content: Uint8Array
   readonly revision: Uint8Array
@@ -255,6 +257,8 @@ export function prepareDirectMessage(input: {
   senderCurrent: Current
   recipientCurrent: Current
   messageId: Uint8Array
+  conversationId?: Uint8Array
+  conversationName?: string
   items: readonly Uint8Array[]
   roles: DirectMessageRoles
 }): PreparedDirectMessage {
@@ -265,6 +269,9 @@ export function prepareDirectMessage(input: {
     const recipient = current(input.network, input.recipientCurrent)
     localRoles(input.roles, sender, true)
     const messageId = copy(input.messageId)
+    const conversationId = input.conversationId
+      ? copy(input.conversationId)
+      : copy(messageId)
     const revision = frame(
       8,
       cborMap([
@@ -273,15 +280,17 @@ export function prepareDirectMessage(input: {
       ]),
     )
     const contentDigest = messageContentDigest(revision)
-    plaintext = frame(
-      6,
-      cborMap([
-        [0, input.network],
-        [1, messageId],
-        [2, revision],
-        [3, contentDigest],
-      ]),
-    )
+    const contentEntries: [number, Encodable][] = [
+      [0, input.network],
+      [1, messageId],
+      [2, revision],
+      [3, contentDigest],
+      [4, conversationId],
+    ]
+    if (input.conversationName !== undefined) {
+      contentEntries.push([5, input.conversationName])
+    }
+    plaintext = frame(6, cborMap(contentEntries))
     // Reject invalid authoring before invoking the capability or consuming entropy.
     parseFrame(plaintext)
     const proof = createCanonicalStampProof({
@@ -322,17 +331,29 @@ export function prepareDirectMessage(input: {
       payload,
       defaultContext(),
     ).completeAuthenticatedContent(plaintext)
-    return ownedBytes({
+    const bytes = ownedBytes({
       payload,
       context,
       t3: recipientPayloadDigest(input.network, payload),
       messageId,
+      conversationId,
       contentDigest,
       content: plaintext,
       revision,
       senderT1: sender.statementHash,
       recipientT1: recipient.statementHash,
     })
+    const result = Object.defineProperties(
+      {},
+      Object.getOwnPropertyDescriptors(bytes),
+    ) as PreparedDirectMessage
+    if (input.conversationName !== undefined) {
+      Object.defineProperty(result, 'conversationName', {
+        enumerable: true,
+        value: input.conversationName,
+      })
+    }
+    return Object.freeze(result)
   } catch (error) {
     input.roles.dispose()
     throw error
@@ -424,10 +445,7 @@ export function openDirectMessage(
           ? recipientHead
           : evidence(input.network, input.recipientEvidence)
       if (
-        !accountEqual(
-          sender.statement.subject,
-          senderHead.statement.subject,
-        ) ||
+        !accountEqual(sender.statement.subject, senderHead.statement.subject) ||
         !accountEqual(
           sender.statement.preview.messageDhKey,
           senderHead.statement.preview.messageDhKey,
@@ -506,6 +524,7 @@ export function openDirectMessage(
       context,
       t3: recipientPayloadDigest(input.network, payload),
       messageId: content.messageId,
+      conversationId: content.conversationId,
       contentDigest: content.contentDigest,
       senderT1: sender.statementHash,
       recipientT1: recipient.statementHash,
@@ -516,8 +535,14 @@ export function openDirectMessage(
       {},
       Object.getOwnPropertyDescriptors(bytes),
     ) as OpenedDirectMessage
+    if (content.conversationName !== undefined) {
+      Object.defineProperty(result, 'conversationName', {
+        enumerable: true,
+        value: content.conversationName,
+      })
+    }
     Object.defineProperties(result, {
-      mode: { enumerable: true, value: input.mode },
+      mode: { enumerable: true, value: mode },
       // Parse a copy of the already validated revision only to return fresh owned projections.
       // Acceptance above uses the one-shot aggregate continuation, never this independent parse.
       items: {
@@ -580,10 +605,7 @@ export function openOwnDirectMessage(
           : recipientHead
 
       if (
-        !accountEqual(
-          sender.statement.subject,
-          senderHead.statement.subject,
-        ) ||
+        !accountEqual(sender.statement.subject, senderHead.statement.subject) ||
         !accountEqual(
           sender.statement.preview.messageDhKey,
           senderHead.statement.preview.messageDhKey,
@@ -621,7 +643,9 @@ export function openOwnDirectMessage(
     if (!openOwn) throw new DirectMessageError('roles')
     const opened = openOwn.call(input.roles, {
       envelope: copy(encrypted.cryptoBoxEnvelope),
-      recipientPublicKey: copy(recipient.statement.preview.messageDhKey.keyBytes),
+      recipientPublicKey: copy(
+        recipient.statement.preview.messageDhKey.keyBytes,
+      ),
       context: copy(context),
     })
     if (!opened.ok) throw new DirectMessageError('crypto')
@@ -655,6 +679,7 @@ export function openOwnDirectMessage(
       context,
       t3: recipientPayloadDigest(input.network, payload),
       messageId: content.messageId,
+      conversationId: content.conversationId,
       contentDigest: content.contentDigest,
       senderT1: sender.statementHash,
       recipientT1: recipient.statementHash,
@@ -665,6 +690,12 @@ export function openOwnDirectMessage(
       {},
       Object.getOwnPropertyDescriptors(bytes),
     ) as OpenedDirectMessage
+    if (content.conversationName !== undefined) {
+      Object.defineProperty(result, 'conversationName', {
+        enumerable: true,
+        value: content.conversationName,
+      })
+    }
     Object.defineProperties(result, {
       mode: { enumerable: true, value: mode },
       items: {

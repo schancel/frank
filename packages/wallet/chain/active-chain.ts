@@ -63,6 +63,12 @@ import {
   FrankIdentityHandle,
   NativeWalletHandle,
   WalletHandle,
+  LegacySendStage,
+  LegacySendProgress,
+  LegacyFeeEstimate,
+  LegacySendResult,
+  ContactSendProgress,
+  ContactSendResult,
 } from "./chain-wallet";
 
 export type {
@@ -72,6 +78,12 @@ export type {
   FrankIdentityHandle,
   NativeWalletHandle,
   WalletHandle,
+  LegacySendStage,
+  LegacySendProgress,
+  LegacyFeeEstimate,
+  LegacySendResult,
+  ContactSendProgress,
+  ContactSendResult,
 } from "./chain-wallet";
 export { NativeTransactionSubmissionError } from "./chain-wallet";
 
@@ -291,6 +303,37 @@ export interface NativeTransferClient {
     wallet: NativeWalletHandle;
     transaction: ChainTransaction;
   }): Promise<"confirmed" | "failed" | "pending" | "unknown">;
+
+  /**
+   * Sends funds to an external legacy destination address, automatically aggregating
+   * fragmented sub-accounts or UTXOs using the chain's appropriate consolidation strategy.
+   */
+  sendLegacy?(params: {
+    wallet: NativeWalletHandle;
+    recipient: ChainAddress;
+    value: bigint;
+    onProgress?: (progress: LegacySendProgress) => void;
+    onSigned?: (signed: ChainTransaction) => Promise<void>;
+  }): Promise<LegacySendResult>;
+
+  /** Computes the estimated network fee required to deliver `value` to a legacy destination. */
+  estimateLegacyFee?(params: {
+    wallet: NativeWalletHandle;
+    recipient: ChainAddress;
+    value: bigint;
+  }): Promise<LegacyFeeEstimate>;
+
+  /**
+   * Sends funds to a Frank contact using the Dual-Key Stealth Address Protocol (DKSAP),
+   * preserving complete sender/recipient privacy on-chain.
+   */
+  sendToContact?(params: {
+    wallet: NativeWalletHandle;
+    recipient: ProfileInfo | ChainAddress;
+    value: bigint;
+    memo?: string;
+    onProgress?: (progress: ContactSendProgress) => void;
+  }): Promise<ContactSendResult>;
 }
 
 /** Native-transfer guarantees required by the currently selected full application chain. */
@@ -312,6 +355,28 @@ export interface ActiveNativeTransferClient extends NativeTransferClient {
     wallet: NativeWalletHandle;
     transaction: ChainTransaction;
   }): Promise<"confirmed" | "failed" | "pending" | "unknown">;
+
+  sendLegacy?(params: {
+    wallet: NativeWalletHandle;
+    recipient: ChainAddress;
+    value: bigint;
+    onProgress?: (progress: LegacySendProgress) => void;
+    onSigned?: (signed: ChainTransaction) => Promise<void>;
+  }): Promise<LegacySendResult>;
+
+  estimateLegacyFee?(params: {
+    wallet: NativeWalletHandle;
+    recipient: ChainAddress;
+    value: bigint;
+  }): Promise<LegacyFeeEstimate>;
+
+  sendToContact?(params: {
+    wallet: WalletHandle;
+    recipient: ProfileInfo | ChainAddress;
+    value: bigint;
+    memo?: string;
+    onProgress?: (progress: ContactSendProgress) => void;
+  }): Promise<ContactSendResult>;
 }
 
 /** A paid topic post may have reached the relay, but the chain adapter could not prove whether
@@ -367,6 +432,8 @@ export interface ChainCapabilities {
   readonly directMessages: boolean;
   readonly topics: boolean;
   readonly stealthPayments: boolean;
+  /** Explicit consolidation architecture supported by this chain adapter. */
+  readonly legacyConsolidation?: "evm-staging" | "utxo-atomic" | "solana-bundle";
 }
 
 /** Native-asset surface implemented by every chain returned from the factory. */

@@ -37,6 +37,8 @@ import {
   TYPE_BLACKJACK_MESSAGE_ITEM,
   TYPE_STEALTH_MESSAGE_ITEM,
   TYPE_CHANNEL_UPDATE,
+  TYPE_FORWARDING_DELIVERY_ENVELOPE,
+  MAX_FORWARDING_DELIVERY_FRAME_BYTES,
   MAX_BLACKJACK_FRAME_BYTES,
   MAX_CHANNEL_UPDATE_FRAME_BYTES,
   MAX_CHANNEL_ALLOCATIONS,
@@ -58,6 +60,7 @@ import { isCompressedPoint, isProofEncoding } from './point'
 import type {
   AccountRef,
   DirectMessageDelivery,
+  ForwardingDeliveryEnvelope,
   DraftPayload,
   JournalFact,
   KeyTransition,
@@ -310,6 +313,8 @@ export function checkRootFrameLimit(
     return frameLength <= MAX_BLACKJACK_FRAME_BYTES
   if (typeId === TYPE_CHANNEL_UPDATE)
     return frameLength <= MAX_CHANNEL_UPDATE_FRAME_BYTES
+  if (typeId === TYPE_FORWARDING_DELIVERY_ENVELOPE)
+    return frameLength <= MAX_FORWARDING_DELIVERY_FRAME_BYTES
   if (typeId === TYPE_DIRECTORY_STATEMENT && schemaVersion >= 4)
     return frameLength <= 262_144
   if (typeId === TYPE_DIRECT_MESSAGE_DELIVERY) return frameLength <= 1_048_576
@@ -635,6 +640,7 @@ export function checkTypeLimits(
   const f = (k: number) => payload.get(BigInt(k))
   switch (typeId) {
     case TYPE_DIRECT_MESSAGE_DELIVERY:
+    case TYPE_FORWARDING_DELIVERY_ENVELOPE:
       if (tooMany(f(4), MAX_PAYMENT_MEMBERS)) over('payment members')
       break
     case TYPE_DIRECTORY_ATTESTATION:
@@ -1460,6 +1466,27 @@ export function parseDraft(
         unknownFields: m.unknown,
       }
     }
+    case TYPE_FORWARDING_DELIVERY_ENVELOPE: {
+      const m = fields(payload, P, [0, 1, 2, 3, 4], [5, 6], true, allow)
+      const res: ForwardingDeliveryEnvelope<Uint8Array> = {
+        type: 25,
+        network: networkTag(m.get(0), `${P}.0`),
+        destination: account(m.get(1), `${P}.1`),
+        payloadFrame: framed(m.get(2), `${P}.2`),
+        payloadDigest: bstr(m.get(3), `${P}.3`, 32, 32),
+        payments: asList(m.get(4), `${P}.4`, 1, MAX_PAYMENT_MEMBERS).map(
+          (e, i) => paymentMember(e, `${P}.4[${i}]`),
+        ),
+        unknownFields: m.unknown,
+      }
+      if (m.has(5)) {
+        res.endpoint = tstr(m.get(5), `${P}.5`, 1, 256)
+      }
+      if (m.has(6)) {
+        res.expiresAt = u32ish(m.get(6), `${P}.6`, 0, 4294967295)
+      }
+      return res
+    }
     default:
       throw new Error(`parseDraft: type ${typeId} has no schema`)
   }
@@ -1579,6 +1606,9 @@ export function checkAllocated(d: DraftPayload): void {
         checkKeyType(s.signer, `${P}.5[${i}].1`)
         checkSignatureShape(s.algorithm, s.signer, s.signature, `${P}.5[${i}]`)
       })
+      break
+    case 25:
+      checkKeyType(d.destination, `${P}.1`)
       break
     default:
   }

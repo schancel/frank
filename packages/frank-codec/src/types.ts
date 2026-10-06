@@ -99,6 +99,23 @@ export interface OpaqueSection {
   value: Uint8Array
 }
 
+export interface ForwardingDeliveryEnvelope<F> {
+  type: 25
+  network: string
+  destination: AccountRef
+  /** The inner direct-message-delivery (type-1) frame. */
+  payloadFrame: F
+  /** Digest of the exact field-2 frame. */
+  payloadDigest: Uint8Array
+  /** Storage payment stamps compensating the destination relay. */
+  payments: PaymentMember[]
+  /** Optional destination relay endpoint URI. */
+  endpoint?: string
+  /** Optional delivery TTL / expiration timestamp (seconds). */
+  expiresAt?: number
+  unknownFields: UnknownFields
+}
+
 export interface DirectMessageDelivery<F> {
   type: 1
   network: string
@@ -602,6 +619,7 @@ export type TypedPayload<F, C, P = ForumContent, K = ForumCursor> =
   | BlackjackHandV3MessageItem
   | StealthMessageItem
   | ChannelUpdateItem
+  | ForwardingDeliveryEnvelope<F>
 
 /** Why a frame was kept only as opaque bytes. */
 export type RetentionReason =

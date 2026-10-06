@@ -17,6 +17,7 @@ export * from './forum'
 export * from './blackjack'
 export * from './stealth'
 export * from './channel'
+export * from './forwarding'
 export * from './directory-preview'
 export type {
   DirectMessageValidationSession,
@@ -41,6 +42,8 @@ export {
   messageContentDigest,
   paymentCommitment,
   recipientPayloadDigest,
+  forwardingPayloadDigest,
+  storagePaymentCommitment,
   toHex,
   topicVoteCommitment,
 } from './hash'

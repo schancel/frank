@@ -85,9 +85,13 @@ pub(crate) const TYPE_TEXT_ITEM: u32 = 17;
 /// Type18 frame limit at both root and nested positions.
 pub(crate) const MAX_BLACKJACK_FRAME_BYTES: usize = 4096;
 pub(crate) const TYPE_BLACKJACK_ITEM: u32 = 18;
+/// Type 25 forwarding envelope frame limit (2 MB).
+pub const MAX_FORWARDING_DELIVERY_FRAME_BYTES: usize = 2_097_152;
+/// Type 25: outer relay forwarding delivery envelope.
+pub const TYPE_FORWARDING_DELIVERY: u32 = 25;
 
 /// Types with a version-1 schema in this codec (E5). `0xffff0001` is not included.
-pub const KNOWN_TYPES: [u32; 18] = [
+pub const KNOWN_TYPES: [u32; 19] = [
     TYPE_DIRECT_MESSAGE,
     TYPE_DIRECTORY_ATTESTATION,
     TYPE_MAILBOX_CHECKPOINT,
@@ -106,6 +110,7 @@ pub const KNOWN_TYPES: [u32; 18] = [
     TYPE_CONTAINER_ITEM,
     TYPE_TEXT_ITEM,
     TYPE_BLACKJACK_ITEM,
+    TYPE_FORWARDING_DELIVERY,
 ];
 
 /// Frank-CBOR production DM suite (S2c): authenticated XChaCha20-Poly1305.

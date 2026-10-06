@@ -30,6 +30,7 @@ mod directory_preview;
 mod dm;
 mod error;
 mod forum;
+mod forwarding;
 mod frame;
 mod hash;
 mod keccak;
@@ -62,22 +63,28 @@ pub use forum::{
     forum_cursor_from_transport, forum_cursor_to_transport, match_forum_operation,
     ForumOperationExpectation,
 };
+pub use forwarding::{
+    encode_forwarding_delivery, is_forwarding_delivery_frame, ForwardingDeliveryEnvelope,
+};
 pub use frame::{encode_frame, wrap_frame, EnvelopeFields, FramePayload};
 pub use hash::{
     common_transcript, content_hash, content_hash_network, directory_signature_digest,
-    key_transition_signature_digest, message_content_digest, payment_commitment,
-    recipient_payload_digest, topic_vote_commitment,
+    forwarding_payload_digest, key_transition_signature_digest, message_content_digest,
+    payment_commitment, recipient_payload_digest, storage_payment_commitment,
+    topic_vote_commitment,
 };
 pub use keccak::keccak256;
 pub use limits::{
     FRAME_HEADER_BYTES, FRAME_MAGIC, FRAME_VERSION, KNOWN_TYPES, MAX_ARRAY_ELEMENTS,
-    MAX_BODY_BYTES, MAX_BYTE_STRING_BYTES, MAX_CONTAINERS, MAX_DEPTH, MAX_FRAME_BYTES, MAX_ITEMS,
-    MAX_MAP_ENTRIES, MAX_TEXT_STRING_BYTES,
+    MAX_BODY_BYTES, MAX_BYTE_STRING_BYTES, MAX_CONTAINERS, MAX_DEPTH,
+    MAX_FORWARDING_DELIVERY_FRAME_BYTES, MAX_FRAME_BYTES, MAX_ITEMS, MAX_MAP_ENTRIES,
+    MAX_TEXT_STRING_BYTES, TYPE_FORWARDING_DELIVERY,
 };
 pub use model::{
     AccountRef, ChildFrame, FrameOnly, JournalFact, KeyTransition, OpaqueSection, ParsedFrame,
-    PaymentMember, PreviewDirectoryRoles, ProfileEntry, ProfileHeader, Projection, RelayBinding,
-    RetainedFrame, RetentionReason, SignatureEntry, Timestamp, TypedPayload, ValidationResult,
+    PaymentMember, PaymentValue, PreviewDirectoryRoles, ProfileEntry, ProfileHeader, Projection,
+    RelayBinding, RetainedFrame, RetentionReason, SignatureEntry, Timestamp, TypedPayload,
+    ValidationResult,
 };
 pub use model::{BlackjackAction, BlackjackFields, BlackjackMessageItem, BlackjackOutcome};
 pub use model::{BlackjackHandAction, BlackjackHandFields, BlackjackHandMessageItem};

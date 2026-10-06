@@ -51,8 +51,8 @@ max_get_logs_range = 10
 # id = "hyperliquid-testnet"
 # expected_chain_id = 998
 # upstream_env = "HYPERLIQUID_TESTNET_HTTP_RPC_URL"
-# checkpoint_block_number = 30000000
-# checkpoint_block_hash = "0x8fc1ba577f1c06072cf4f4dde6e1490a11291232f15725865649817f3eafe2f6"
+# checkpoint_block_number = 50000000
+# checkpoint_block_hash = "0x61826beeba5fa2a5cc2dcd04febc904aca943cb95821eab8087308cfa25b2baf"
 # upstream_ws_env = "HYPERLIQUID_TESTNET_WS_RPC_URL"
 # max_get_logs_range = 10
 #

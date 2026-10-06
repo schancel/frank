@@ -42,6 +42,21 @@
 
           <q-item-section>{{ $t('SettingPanel.settings') }}</q-item-section>
         </q-item>
+
+        <q-item
+          clickable
+          v-ripple
+          data-test="backup-codex32-button"
+          @click="openBackupDialog"
+        >
+          <q-item-section avatar>
+            <q-icon name="security" />
+          </q-item-section>
+
+          <q-item-section>
+            {{ $t('accountRecovery.backup_account_codex32') }}
+          </q-item-section>
+        </q-item>
         <q-separator />
 
         <q-item
@@ -83,6 +98,18 @@
         </q-item>
       </q-list>
     </q-scroll-area>
+
+    <codex32-backup-dialog
+      v-model="showBackupDialog"
+      :loading="backupLoading"
+      :error="backupError"
+      :shares="backupShares"
+      :threshold="threshold"
+      :count="count"
+      @cycle-scheme="cycleScheme"
+      @change-scheme="setScheme"
+      @close="closeBackupDialog"
+    />
   </div>
 </template>
 
@@ -98,6 +125,8 @@ import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 
 import ContactCard from './ContactCard.vue'
+import Codex32BackupDialog from 'src/components/wallet/Codex32BackupDialog.vue'
+import { useCodex32Backup } from 'src/composables/useCodex32Backup'
 import { openPage } from '../../utils/routes'
 import { useProfileStore } from 'src/stores/my-profile'
 import { storeToRefs } from 'pinia'
@@ -108,6 +137,7 @@ import { isNarrowWidth } from '../../utils/layout'
 export default defineComponent({
   components: {
     ContactCard,
+    Codex32BackupDialog,
   },
   props: {
     drawerOpen: {
@@ -127,6 +157,19 @@ export default defineComponent({
     const router = useRouter()
     const $q = useQuasar()
     const instance = getCurrentInstance()
+
+    const {
+      showBackupDialog,
+      backupLoading,
+      backupError,
+      backupShares,
+      threshold,
+      count,
+      openBackupDialog,
+      closeBackupDialog,
+      cycleScheme,
+      setScheme,
+    } = useCodex32Backup()
 
     function getRouter() {
       return (
@@ -202,6 +245,16 @@ export default defineComponent({
       deleteForever,
       openChangelog,
       drawerOpenModel,
+      showBackupDialog,
+      backupLoading,
+      backupError,
+      backupShares,
+      threshold,
+      count,
+      openBackupDialog,
+      closeBackupDialog,
+      cycleScheme,
+      setScheme,
     }
   },
 })

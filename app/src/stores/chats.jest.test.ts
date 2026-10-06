@@ -33,6 +33,8 @@ import {
   rehydateChat,
   useChatStore,
   makeConversationId,
+  uuidv5,
+  NULL_CONVERSATION_NAMESPACE,
 } from './chats'
 import { useContactStore } from './contacts'
 import { store as messageStorePromise } from '../adapters/level-message-store'
@@ -1799,6 +1801,33 @@ describe('stores/chats.ts (ticket #42)', () => {
   })
 
   describe('ticket #69: conversation-oriented and group-ready storage', () => {
+    it('generates deterministic RFC 4122 UUIDv5 identifiers for conversations', () => {
+      const uuidv5Regex =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+      // Standard direct conversation without topic
+      const id1 = makeConversationId([SENDER_ADDRESS, RECIPIENT_ADDRESS])
+      const id2 = makeConversationId([RECIPIENT_ADDRESS, SENDER_ADDRESS])
+      expect(id1).toMatch(uuidv5Regex)
+      expect(id1).toBe(id2)
+
+      // Direct conversation with topic
+      const topicId = makeConversationId(
+        [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+        'project-x',
+      )
+      expect(topicId).toMatch(uuidv5Regex)
+      expect(topicId).not.toBe(id1)
+
+      // Third party with same topic produces a different UUIDv5
+      const thirdPartyId = makeConversationId(
+        [THIRD_ADDRESS, RECIPIENT_ADDRESS],
+        'project-x',
+      )
+      expect(thirdPartyId).toMatch(uuidv5Regex)
+      expect(thirdPartyId).not.toBe(topicId)
+    })
+
     it('proves two direct conversations with one peer stay separate without address-key collision', async () => {
       const chats = useChatStore()
       const convAlpha = chats.createConversation({

@@ -2,6 +2,7 @@ import assert from 'assert'
 import { defineStore } from 'pinia'
 
 import { defaultStampAmount, displayNetwork } from '../utils/constants'
+import { sha1 } from '@noble/hashes/sha1'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { desktopNotify } from '../utils/notifications'
 import { store } from '../adapters/level-message-store'
@@ -104,8 +105,9 @@ export type ChatMessage = {
  * ## Entity Model:
  *
  * 1. Conversation (`Conversation`):
- *    - `id`: Stable identifier (string). For direct chats: `direct:<sorted_participants>` or
- *      `<sorted_participants>#<topicId>`. For group chats: group UUID or topic identifier.
+ *    - `id`: Stable identifier (string UUID). Deterministically derived via RFC 4122 UUIDv5
+ *      from a null namespace UUID and sorted participants key (and optional topic identifier).
+ *      For group chats: group UUID or topic identifier.
  *    - `kind`: `'direct' | 'group'`
  *    - `name`?: Display subject/title of the conversation.
  *    - `topic`?: Optional topic thread identifier.
@@ -230,12 +232,40 @@ export function makeParticipantsKey(participants: string[]): string {
   return normalized.join(':')
 }
 
+export const NULL_CONVERSATION_NAMESPACE =
+  '00000000-0000-0000-0000-000000000000'
+
+export function uuidv5(namespaceUuid: string, name: string): string {
+  const cleanNs = namespaceUuid.replace(/-/g, '')
+  const nsBytes = new Uint8Array(16)
+  for (let i = 0; i < 16; i++) {
+    nsBytes[i] = parseInt(cleanNs.slice(i * 2, i * 2 + 2), 16)
+  }
+  const nameBytes = new TextEncoder().encode(name)
+  const input = new Uint8Array(nsBytes.length + nameBytes.length)
+  input.set(nsBytes, 0)
+  input.set(nameBytes, nsBytes.length)
+
+  const digest = sha1(input)
+  digest[6] = (digest[6] & 0x0f) | 0x50 // version 5
+  digest[8] = (digest[8] & 0x3f) | 0x80 // RFC 4122 variant
+
+  const hex = Array.from(digest.slice(0, 16))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(
+    12,
+    16,
+  )}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+}
+
 export function makeConversationId(
   participants: string[],
   topicId?: string,
 ): string {
   const pKey = makeParticipantsKey(participants)
-  return topicId ? `${pKey}#${topicId}` : `direct:${pKey}`
+  const name = topicId ? `${pKey}#${topicId}` : pKey
+  return uuidv5(NULL_CONVERSATION_NAMESPACE, name)
 }
 
 export function recordLogicalMessage(

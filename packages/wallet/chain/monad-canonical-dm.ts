@@ -19,9 +19,11 @@ import { join } from 'path'
 import {
   decodeDirectMessageCryptoContext,
   encodeBlackjackHandV3Item,
+  encodeChannelUpdateItem,
   encodeStealthMessageItem,
   fromHex,
   isBlackjackHandV3Frame,
+  isChannelUpdateItemFrame,
   isStealthMessageItemFrame,
   parseFrame,
   paymentTransferFromMember,
@@ -29,9 +31,11 @@ import {
   paymentTransferToMember,
   paymentTransferToStealthItem,
   projectBlackjackHandV3Item,
+  projectChannelUpdateItem,
   projectStealthMessageItem,
   recipientPayloadDigest,
   toHex,
+  type CanonicalChannelUpdateItem,
   type CanonicalStealthItem,
   type PaymentMember,
   type PaymentTransfer,
@@ -56,7 +60,11 @@ import {
   type CanonicalMailboxAuthParams,
   type CanonicalMailboxRecord,
 } from '@frank/cashweb/relay/monad-mailbox-client'
-import type { MessageItem, StealthItem } from '@frank/cashweb/types/messages'
+import type {
+  ChannelUpdateItem,
+  MessageItem,
+  StealthItem,
+} from '@frank/cashweb/types/messages'
 import type {
   ChainAddress,
   DirectMessageAttemptStatus,
@@ -305,6 +313,9 @@ function textItems(items: readonly MessageItem[]): Uint8Array[] {
   if (items.length === 0) throw new Error('A direct message needs content')
   return items.map(item => {
     if (item.type === 'blackjack-hand') return encodeBlackjackHandV3Item(item)
+    if (item.type === 'channel-update') {
+      return encodeChannelUpdateItem(item as ChannelUpdateItem)
+    }
     if (item.type === 'stealth') {
       const networkTag = item.networkTag ?? item.chainId
       if (!networkTag) {
@@ -929,6 +940,8 @@ async function fetchSince(
                   amount: Number(projected.amount),
                 }
               })()
+            : item.kind === 'parsed' && isChannelUpdateItemFrame(item)
+            ? projectChannelUpdateItem(item)
             : {
                 type: 'text' as const,
                 text: '[This message item is not supported yet]',
@@ -1115,6 +1128,8 @@ export function canonicalDirectMessages(
                             amount: Number(projected.amount),
                           }
                         })()
+                      : item.kind === 'parsed' && isChannelUpdateItemFrame(item)
+                      ? projectChannelUpdateItem(item)
                       : {
                           type: 'text' as const,
                           text: '[This message item is not supported yet]',

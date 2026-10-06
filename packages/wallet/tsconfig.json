@@ -16,7 +16,8 @@
     // hoisted @types stubs from unrelated devDependencies elsewhere in the workspace).
     "types": ["node", "jest"],
     "paths": {
-      "@frank/codec": ["../frank-codec/src/index.ts"]
+      "@frank/codec": ["../frank-codec/src/index.ts"],
+      "@frank/cashweb/*": ["../cashweb/*"]
     }
   },
   "include": [

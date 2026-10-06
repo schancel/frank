@@ -1,4 +1,8 @@
-import type { BlackjackHandV3Item, BlackjackItem } from '@frank/codec'
+import type {
+  BlackjackHandV3Item,
+  BlackjackItem,
+  CanonicalChannelUpdateItem,
+} from '@frank/codec'
 
 import { Utxo } from './utxo'
 
@@ -56,6 +60,9 @@ export type BlackjackHandItem = BlackjackHandV3Item
 
 /** Closed type18 shapes for explicit canonical consumers; no payment or actor authority. */
 export type CanonicalBlackjackMoveItem = BlackjackItem
+
+/** Universal state channel update item (Type 24, #949/#950/#965). */
+export type ChannelUpdateItem = CanonicalChannelUpdateItem
 
 /**
  * One move in a provably-fair blackjack hand against a bot dealer (see `@frank/wallet/message-item-plugins/blackjack`
@@ -358,6 +365,7 @@ export type MessageItem =
   | SatoshiDiceItem
   | LiarsDiceItem
   | PokerItem
+  | ChannelUpdateItem
 
 /** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the
  * message so the failure and its manual Retry survive a reload. */

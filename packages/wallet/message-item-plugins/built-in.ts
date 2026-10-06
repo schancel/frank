@@ -10,6 +10,7 @@
  * happen the next time either type was the last message in a chat.
  */
 import {
+  ChannelUpdateItem,
   ImageItem,
   P2PKHSendItem,
   LiarsDiceItem,
@@ -136,5 +137,13 @@ registerMessageItemPlugin<PokerItem, PokerItem>({
     return "Texas Hold'em Poker"
   },
 })
+
+registerMessageItemPlugin<ChannelUpdateItem, ChannelUpdateItem>({
+  type: 'channel-update',
+  hydrate: raw => raw,
+  previewText: raw =>
+    `State channel update: ${raw.appId} (seq ${raw.sequenceNumber})`,
+})
+
 
 

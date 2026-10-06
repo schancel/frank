@@ -80,6 +80,8 @@ export type {
   DirectMessageSendResult,
   FrankIdentityHandle,
   HDSeed,
+  MessageItem,
+  ChannelUpdateItem,
   NativeTransferClient,
   NativeAssetChain,
   NativeWalletHandle,

@@ -8,7 +8,17 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { JsonRpcProvider, computeAddress, getBytes } from 'ethers'
-import { parseFrame, recipientPayloadDigest, toHex } from '@frank/codec'
+import {
+  channelStateDigest,
+  decodeDiceGamePayload,
+  encodeDiceGamePayload,
+  fromHex,
+  parseFrame,
+  recipientPayloadDigest,
+  toHex,
+} from '@frank/codec'
+import { secp256k1 } from '@noble/curves/secp256k1'
+import type { ChannelUpdateItem } from '@frank/cashweb/types/messages'
 import {
   directMessageText,
   prepareDirectMessage,
@@ -502,6 +512,119 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     expect(bobStealthAcc.initialAmountWei).toBe(50_000n)
     expect(bobStealthAcc.ephemeralPubKey).toBe('02' + '22'.repeat(32))
     expect(bobStealthAcc.privateKey).toMatch(/^0x[0-9a-f]{64}$/)
+  })
+
+  it('sends and receives a channel-update item over canonical direct messages', async () => {
+    installCanonicalDirectory(
+      f.alice,
+      await f.directoryFor('alice', f.alice, f.bob),
+    )
+    installCanonicalDirectory(
+      f.bob,
+      await f.directoryFor('bob', f.bob, f.alice),
+    )
+    const channelId = '11'.repeat(32)
+    const alicePriv = fromHex('01'.repeat(32))
+    const alicePubHex = toHex(secp256k1.getPublicKey(alicePriv, true))
+    const bobPubHex = toHex(secp256k1.getPublicKey(fromHex('02'.repeat(32)), true))
+
+    const allocations = [
+      {
+        networkTag: 'mont',
+        token: '',
+        balances: [
+          {
+            participant: { keyType: 1, pubKey: alicePubHex },
+            balance: '1000000',
+          },
+          {
+            participant: { keyType: 1, pubKey: bobPubHex },
+            balance: '2000000',
+          },
+        ],
+      },
+    ]
+
+    const dicePayload = encodeDiceGamePayload({
+      round: 1n,
+      action: 'roll',
+      seedCommitment: fromHex('aa'.repeat(32)),
+      targetRoll: 50,
+      wager: 10000n,
+    })
+
+    const digest = channelStateDigest({
+      channelId,
+      appId: 'dice',
+      sequenceNumber: 1,
+      allocations,
+      appState: dicePayload,
+      settlementRef: 'ff'.repeat(32),
+    })
+
+    const aliceSig = new Uint8Array(
+      secp256k1.sign(digest, alicePriv).toDERRawBytes(),
+    )
+
+    const channelItem: ChannelUpdateItem = {
+      type: 'channel-update',
+      channelId,
+      appId: 'dice',
+      sequenceNumber: 1,
+      allocations,
+      appState: dicePayload,
+      signatures: [
+        {
+          algorithm: 1,
+          signer: { keyType: 1, pubKey: alicePubHex },
+          signature: toHex(aliceSig),
+        },
+      ],
+      settlementRef: 'ff'.repeat(32),
+    }
+
+    const sent = await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: [channelItem],
+    })
+    expect(f.requests).toHaveLength(1)
+    const request = restoreCanonicalRequest(f.requests[0])
+    expect(request.identity.payload_hash).toBe(sent.payloadDigest)
+
+    inboxPage.mockResolvedValue({
+      records: [
+        {
+          delivery: request.parts.delivery,
+          context: request.parts.context,
+          submissionIdentity: request.identity.submission_identity,
+          timestampMs: 1234,
+        },
+      ],
+    })
+    const received = await f.chain.directMessages.fetchSince({
+      wallet: f.bob,
+      sinceMs: 0,
+    })
+    expect(received).toHaveLength(1)
+    expect(received[0].items).toHaveLength(1)
+    const item = received[0].items[0]
+    expect(item.type).toBe('channel-update')
+    if (item.type === 'channel-update') {
+      expect(item.channelId).toBe(channelId)
+      expect(item.appId).toBe('dice')
+      expect(item.sequenceNumber).toBe(1)
+      expect(item.allocations).toEqual(allocations)
+      expect(toHex(item.appState as Uint8Array)).toBe(toHex(dicePayload))
+      expect(item.signatures).toEqual(channelItem.signatures)
+      expect(item.settlementRef).toBe('ff'.repeat(32))
+
+      const decodedDice = decodeDiceGamePayload(item.appState as Uint8Array)
+      expect(decodedDice.round).toBe(1n)
+      expect(decodedDice.action).toBe('roll')
+      expect(decodedDice.targetRoll).toBe(50)
+      expect(decodedDice.wager).toBe(10000n)
+    }
   })
 
   it('rethrows 429 challenge capacity error without falling back to inbox page', async () => {

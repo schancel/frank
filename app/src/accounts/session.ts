@@ -423,7 +423,9 @@ export function createAccountSession(deps: {
         if (cached) return cached
         const currentWallet = await session.getWallet()
         if (!currentWallet.identity?.compressedPubKey) {
-          throw new Error('No identity compressedPubKey available for secp256k1')
+          throw new Error(
+            'No identity compressedPubKey available for secp256k1',
+          )
         }
         const key = new Uint8Array(currentWallet.identity.compressedPubKey)
         curveKeyCache.set('secp256k1', key)

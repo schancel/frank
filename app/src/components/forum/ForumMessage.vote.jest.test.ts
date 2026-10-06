@@ -9,6 +9,14 @@ import { BurnRefreshError } from 'src/utils/burn-refresh-error'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
 
 const mockAddOffering = jest.fn()
+const mockSetStampPreparationStatus = jest.fn()
+const mockApplyOptimisticVote = jest.fn()
+const mockRollbackOptimisticVote = jest.fn()
+const mockIndexedMessages: Record<
+  string,
+  { payloadDigest: string; voteWeightWei: string }
+> = jest.requireActual('vue').reactive({})
+
 jest.mock('src/accounts/session', () => ({
   accountStatus: jest
     .requireActual('vue')
@@ -23,8 +31,34 @@ jest.mock('src/stores/forum', () => ({
       messages: [],
       topics: [],
       selectedTopic: '',
-      getMessage: () => undefined,
+      getMessage: (digest: string) => mockIndexedMessages[digest],
       addOffering: (...args: unknown[]) => mockAddOffering(...args),
+      applyOptimisticVote: (args: {
+        payloadDigest: string
+        deltaWei: bigint
+      }) => {
+        mockApplyOptimisticVote(args)
+        const msg = mockIndexedMessages[args.payloadDigest]
+        if (msg) {
+          msg.voteWeightWei = (
+            BigInt(msg.voteWeightWei || '0') + args.deltaWei
+          ).toString()
+        }
+      },
+      rollbackOptimisticVote: (args: {
+        payloadDigest: string
+        deltaWei: bigint
+      }) => {
+        mockRollbackOptimisticVote(args)
+        const msg = mockIndexedMessages[args.payloadDigest]
+        if (msg) {
+          msg.voteWeightWei = (
+            BigInt(msg.voteWeightWei || '0') - args.deltaWei
+          ).toString()
+        }
+      },
+      setStampPreparationStatus: (...args: unknown[]) =>
+        mockSetStampPreparationStatus(...args),
     }),
 }))
 jest.mock('src/stores/contacts', () => ({
@@ -60,12 +94,26 @@ const messages: Record<string, string> = {
   'chat.stampPreparationReady': 'READY_SENDING',
 }
 
-function mountCard() {
+function mountCard(
+  overrides: {
+    payloadDigest?: string
+    voteWeightWei?: string
+    notInStore?: boolean
+  } = {},
+) {
+  const digest = overrides.payloadDigest ?? 'ab'.repeat(32)
+  const initialWeight = overrides.voteWeightWei ?? '0'
+  if (!overrides.notInStore) {
+    mockIndexedMessages[digest] = {
+      payloadDigest: digest,
+      voteWeightWei: initialWeight,
+    }
+  }
   return shallowMount(ForumMessage, {
     props: {
       message: {
         poster: '0x1',
-        voteWeightWei: '0',
+        voteWeightWei: initialWeight,
         visibleTimestamp: { seconds: '1', nanoseconds: 0 },
         epoch: '00'.repeat(16),
         revision: '1',
@@ -75,7 +123,7 @@ function mountCard() {
         transactionIndex: '0',
         replies: [],
         entries: [{ kind: 'post', title: 't', message: 'm' }],
-        payloadDigest: 'ab'.repeat(32),
+        payloadDigest: digest,
         topic: 'help',
         timestamp: new Date(),
       } as never,
@@ -96,7 +144,12 @@ async function vote(wrapper: ReturnType<typeof mountCard>) {
 }
 
 jest.setTimeout(10_000)
-beforeEach(() => jest.clearAllMocks())
+beforeEach(() => {
+  jest.clearAllMocks()
+  for (const key of Object.keys(mockIndexedMessages)) {
+    delete mockIndexedMessages[key]
+  }
+})
 
 describe('ForumMessage vote handler', () => {
   it('automatically updates the counter immediately on click before relaying the transaction', async () => {
@@ -118,6 +171,7 @@ describe('ForumMessage vote handler', () => {
     expect(vm.displayedVoteWeight).toBe('1000000')
     expect(wrapper.text()).toContain('1000000 MON')
     expect(vm.voteStatus).toBe('VOTING…')
+    expect(mockSetStampPreparationStatus).toHaveBeenCalledWith('VOTING…')
     expect(wrapper.find('[data-test="vote-status"]').text()).toContain(
       'VOTING…',
     )
@@ -126,6 +180,29 @@ describe('ForumMessage vote handler', () => {
     await wrapper.vm.$nextTick()
     expect(vm.displayedVoteWeight).toBe('2000000')
     expect(wrapper.text()).toContain('2000000 MON')
+
+    wrapper.unmount()
+  })
+
+  it('automatically updates the counter immediately when the post is not in the store', async () => {
+    const wrapper = mountCard({ notInStore: true })
+    const vm = wrapper.vm as unknown as {
+      addVotes(n: number): void
+      displayedVoteWeight: string
+      voteStatus: string | null
+    }
+
+    expect(wrapper.text()).toContain('0 MON')
+    expect(vm.displayedVoteWeight).toBe('0')
+    expect(vm.voteStatus).toBeNull()
+
+    vm.addVotes(1)
+    await wrapper.vm.$nextTick()
+
+    expect(vm.displayedVoteWeight).toBe('1000000')
+    expect(wrapper.text()).toContain('1000000 MON')
+    expect(vm.voteStatus).toBe('VOTING…')
+    expect(mockSetStampPreparationStatus).toHaveBeenCalledWith('VOTING…')
 
     wrapper.unmount()
   })
@@ -151,6 +228,8 @@ describe('ForumMessage vote handler', () => {
     }
 
     vm.addVotes(1)
+    expect(mockSetStampPreparationStatus).toHaveBeenCalledWith('VOTING…')
+
     // Wait for the 1s debounce to expire and addOffering to be invoked
     await new Promise<void>(resolve => {
       const interval = setInterval(() => {
@@ -165,11 +244,15 @@ describe('ForumMessage vote handler', () => {
     expect(vm.isVoting).toBe(true)
     expect(mockAddOffering).toHaveBeenCalledTimes(1)
     expect(vm.voteStatus).toBe('CHECKING_ACCOUNTS')
+    expect(mockSetStampPreparationStatus).toHaveBeenCalledWith(
+      'CHECKING_ACCOUNTS',
+    )
 
     // Simulate progress updates
     capturedProgress?.({ stage: 'ready' })
     await wrapper.vm.$nextTick()
     expect(vm.voteStatus).toBe('READY_SENDING')
+    expect(mockSetStampPreparationStatus).toHaveBeenCalledWith('READY_SENDING')
 
     // Resolve in-flight operation
     resolveOffering()
@@ -178,6 +261,7 @@ describe('ForumMessage vote handler', () => {
 
     expect(vm.isVoting).toBe(false)
     expect(vm.voteStatus).toBeNull()
+    expect(mockSetStampPreparationStatus).toHaveBeenLastCalledWith(null)
 
     wrapper.unmount()
   })

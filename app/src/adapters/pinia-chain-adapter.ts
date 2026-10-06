@@ -375,8 +375,9 @@ export function startDirectMessagePolling({
     }
   }
 
-  const unsubscribeStream = activeChain.directMessages.subscribeMailboxStream?.(
-    {
+  let unsubscribeStream: (() => void) | undefined
+  try {
+    unsubscribeStream = activeChain.directMessages.subscribeMailboxStream?.({
       wallet,
       onRecord: async record => {
         if (stopped) return
@@ -388,8 +389,10 @@ export function startDirectMessagePolling({
       onError: err => {
         console.warn('direct-message stream error', err)
       },
-    },
-  )
+    })
+  } catch (err) {
+    console.warn('direct-message stream subscription failed', err)
+  }
 
   void poll()
 

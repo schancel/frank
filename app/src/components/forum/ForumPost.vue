@@ -215,7 +215,7 @@ export default defineComponent({
       this.voteAmount = 0n
       this.localVoteDelta = 0n
     }
-    if (this.isVoting) {
+    if (this.isVoting || this.voteAmount !== 0n) {
       this.setStampPreparationStatus?.(null)
     }
   },
@@ -261,6 +261,7 @@ export default defineComponent({
           deltaWei: delta,
         })
       }
+      this.setStampPreparationStatus?.(this.$t('stampPreparation.voting'))
 
       if (this.timeoutId) {
         clearTimeout(this.timeoutId)
@@ -283,6 +284,7 @@ export default defineComponent({
           }
           this.voteAmount = 0n
           this.localVoteDelta = 0n
+          this.setStampPreparationStatus?.(null)
           return
         }
         void (async () => {
@@ -314,6 +316,7 @@ export default defineComponent({
                 deltaWei: satoshis,
               })
               this.localVoteDelta = 0n
+              this.setStampPreparationStatus?.(null)
               return
             }
             await this.addOffering({
@@ -362,11 +365,11 @@ export default defineComponent({
   },
   computed: {
     displayedVoteWeight(): string {
-      if (
-        this.message?.payloadDigest &&
-        this.getMessage(this.message.payloadDigest)
-      ) {
-        return this.message.voteWeightWei
+      const storeMessage = this.message?.payloadDigest
+        ? this.getMessage(this.message.payloadDigest)
+        : undefined
+      if (storeMessage?.voteWeightWei !== undefined) {
+        return storeMessage.voteWeightWei
       }
       return (
         BigInt(this.message?.voteWeightWei || '0') + this.localVoteDelta

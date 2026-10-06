@@ -1,20 +1,31 @@
 <template>
-  <div class="satoshi-dice-game q-pa-sm" style="min-width: 280px; max-width: 400px">
+  <div
+    class="satoshi-dice-game q-pa-sm"
+    style="min-width: 280px; max-width: 400px"
+  >
     <!-- Header -->
     <div class="row items-center q-mb-xs">
       <q-icon name="casino" size="22px" class="q-mr-xs text-amber-9" />
       <span class="text-subtitle2 text-weight-bold">Satoshi Dice</span>
-      <q-badge color="orange" text-color="black" class="q-ml-xs" label="1.9% House Edge" />
+      <q-badge
+        color="orange"
+        text-color="black"
+        class="q-ml-xs"
+        label="1.9% House Edge"
+      />
     </div>
 
     <!-- Result View if already rolled -->
     <template v-if="item.action === 'result'">
       <div class="q-my-xs">
         <div class="text-caption">
-          🎯 Target: <strong>&lt; {{ item.target }}</strong> ({{ winProbabilityPercent }}% chance)
+          🎯 Target: <strong>&lt; {{ item.target }}</strong> ({{
+            winProbabilityPercent
+          }}% chance)
         </div>
         <div class="text-caption">
-          🎲 Lucky Number: <strong class="text-mono">{{ item.luckyNumber }}</strong> / 65,535
+          🎲 Lucky Number:
+          <strong class="text-mono">{{ item.luckyNumber }}</strong> / 65,535
         </div>
       </div>
 
@@ -25,7 +36,10 @@
         {{ item.isWin ? '🎉 YOU WIN!' : '💀 YOU LOSE!' }}
       </div>
 
-      <div v-if="item.payoutWei && item.payoutWei !== '0'" class="text-caption text-positive q-mb-xs">
+      <div
+        v-if="item.payoutWei && item.payoutWei !== '0'"
+        class="text-caption text-positive q-mb-xs"
+      >
         🏆 Payout: <strong>{{ displayMon(item.payoutWei) }}</strong>
         <div v-if="item.txHash" class="text-mono text-caption text-grey-7">
           tx: {{ item.txHash.slice(0, 10) }}...
@@ -44,7 +58,9 @@
     </template>
 
     <!-- Interactive Roll Controls (Custom Wager & Odds Selection) -->
-    <div class="text-caption text-weight-medium q-mb-xs">1. Select Target & Odds:</div>
+    <div class="text-caption text-weight-medium q-mb-xs">
+      1. Select Target & Odds:
+    </div>
     <div class="row q-gutter-xs q-mb-sm">
       <q-btn
         v-for="preset in presets"
@@ -90,8 +106,8 @@
 
     <!-- Dynamic Payout Calculator -->
     <div class="text-caption text-grey-9 q-mb-sm" style="font-size: 12px">
-      Multiplier: <strong>{{ currentMultiplier }}x</strong> |
-      Est. Payout: <strong class="text-positive">{{ estimatedPayout }} MON</strong>
+      Multiplier: <strong>{{ currentMultiplier }}x</strong> | Est. Payout:
+      <strong class="text-positive">{{ estimatedPayout }} MON</strong>
     </div>
 
     <q-btn
@@ -169,7 +185,9 @@ export default defineComponent({
     displayMon(weiString?: string): string {
       if (!weiString) return '0 MON'
       try {
-        return `${activeChain.toDisplayAmount(BigInt(weiString))} ${activeChain.unit}`
+        return `${activeChain.toDisplayAmount(BigInt(weiString))} ${
+          activeChain.unit
+        }`
       } catch {
         return '0 MON'
       }

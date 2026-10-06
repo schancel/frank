@@ -500,7 +500,7 @@ export default defineComponent({
       }
     },
     openReceive() {
-      openPage(this.$router, '/receive')
+      openPage(this.$router, '/wallet')
     },
     startResize(e: MouseEvent) {
       if (this.isNarrow) return

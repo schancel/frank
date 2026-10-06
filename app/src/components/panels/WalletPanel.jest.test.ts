@@ -122,16 +122,10 @@ test('clicking wallet rows navigates to the respective chain', async () => {
   expect(mockRouterPush).toHaveBeenCalledWith('/wallet')
 
   await view.find('[data-test="ecash-wallet-row"]').trigger('click')
-  expect(mockRouterPush).toHaveBeenCalledWith({
-    path: '/wallet',
-    query: { chain: 'ecash' },
-  })
+  expect(mockRouterPush).toHaveBeenCalledWith('/wallet/ecash')
 
   await view.find('[data-test="solana-wallet-row"]').trigger('click')
-  expect(mockRouterPush).toHaveBeenCalledWith({
-    path: '/wallet',
-    query: { chain: 'solana' },
-  })
+  expect(mockRouterPush).toHaveBeenCalledWith('/wallet/solana')
 })
 
 test('reorganizes wallet list item layout: no side section for chain name, chain is caption below name', () => {

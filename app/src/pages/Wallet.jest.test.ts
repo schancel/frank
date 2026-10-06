@@ -127,8 +127,8 @@ describe('Wallet detail page (#570)', () => {
     expect(wrapper.get('[data-testid="wallet-chain"]').text()).toBe(
       'walletPanel.monadTestnet',
     )
-    expect(wrapper.get('[data-testid="wallet-receive-action"]').text()).toBe(
-      'walletPanel.receiveMont',
+    expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
+      '0xabc',
     )
     expect(wrapper.get('[data-testid="wallet-send-action"]').text()).toBe(
       'walletPanel.sendMont',
@@ -164,7 +164,7 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 
-  it('copies the address and keeps Send/Receive reachable', async () => {
+  it('copies the address and keeps Send reachable', async () => {
     const wrapper = mountWallet()
     await flush()
 
@@ -176,9 +176,7 @@ describe('Wallet detail page (#570)', () => {
     expect(addressCopiedNotify).toHaveBeenCalledTimes(1)
 
     await wrapper.get('[data-testid="wallet-send-action"]').trigger('click')
-    await wrapper.get('[data-testid="wallet-receive-action"]').trigger('click')
-    expect(openPage).toHaveBeenNthCalledWith(1, expect.anything(), '/send')
-    expect(openPage).toHaveBeenNthCalledWith(2, expect.anything(), '/receive')
+    expect(openPage).toHaveBeenCalledWith(expect.anything(), '/send')
     wrapper.unmount()
   })
 
@@ -295,12 +293,12 @@ describe('Wallet detail page (#570)', () => {
     expect(
       (wrapper.vm as unknown as { displayAddress: string }).displayAddress,
     ).toBe('ecash:qz3fjd36tzd3qr6p7cqjytx4ftl9f4mghqdsk9xhj9')
+    expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
+      'ecash:qz3fjd36tzd3qr6p7cqjytx4ftl9f4mghqdsk9xhj9',
+    )
 
-    const receiveBtn = wrapper.get('[data-testid="wallet-receive-action"]')
     const sendBtn = wrapper.get('[data-testid="wallet-send-action"]')
-    expect(receiveBtn.text()).toBe('walletPanel.receiveTxec')
     expect(sendBtn.text()).toBe('walletPanel.sendTxec')
-    expect(receiveBtn.attributes('disabled')).toBeDefined()
     expect(sendBtn.attributes('disabled')).toBeDefined()
 
     wrapper.unmount()
@@ -326,14 +324,33 @@ describe('Wallet detail page (#570)', () => {
     expect(
       (wrapper.vm as unknown as { displayAddress: string }).displayAddress,
     ).toBe('AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9')
+    expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
+      'AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9',
+    )
 
-    const receiveBtn = wrapper.get('[data-testid="wallet-receive-action"]')
     const sendBtn = wrapper.get('[data-testid="wallet-send-action"]')
-    expect(receiveBtn.text()).toBe('walletPanel.receiveTsol')
     expect(sendBtn.text()).toBe('walletPanel.sendTsol')
-    expect(receiveBtn.attributes('disabled')).toBeDefined()
     expect(sendBtn.attributes('disabled')).toBeDefined()
 
+    wrapper.unmount()
+  })
+
+  it('supports path-based routing via route.params.wallet', async () => {
+    mockRoute.value = {
+      query: {},
+      path: '/wallet/solana',
+      // @ts-expect-error mock params
+      params: { wallet: 'solana' },
+    }
+    const wrapper = mountWallet()
+    await flush()
+
+    expect(wrapper.get('[data-testid="wallet-name"]').text()).toContain(
+      'walletPanel.solanaTestnet',
+    )
+    expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
+      'AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9',
+    )
     wrapper.unmount()
   })
 })

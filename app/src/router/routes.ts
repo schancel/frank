@@ -53,9 +53,12 @@ export function createRoutes(): RouteRecordRaw[] {
         },
         { path: 'settings', component: () => import('pages/Settings.vue') },
         { path: 'profile', component: () => import('pages/Profile.vue') },
-        { path: 'receive', component: () => import('pages/Receive.vue') },
+        { path: 'receive', redirect: '/wallet' },
         { path: 'send', component: () => import('pages/Send.vue') },
-        { path: 'wallet', component: () => import('pages/Wallet.vue') },
+        {
+          path: 'wallet/:wallet?',
+          component: () => import('pages/Wallet.vue'),
+        },
         {
           path: 'add-contact',
           component: () => import('pages/AddContact.vue'),

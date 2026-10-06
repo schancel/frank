@@ -30,6 +30,8 @@ export default {
   stampPreparation: {
     refreshStatus: 'Actualiser le statut',
     posting: 'Publication en cours…',
+    voting: 'Vote en cours…',
+    sendingVote: 'Envoi du vote…',
     postCreated: 'Message publié dans {topic} !',
     replyParentLoading: 'Chargement du message auquel vous répondez…',
     replyParentUnavailable:

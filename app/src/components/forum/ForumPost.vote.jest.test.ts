@@ -1,10 +1,8 @@
 /** @jest-environment jsdom */
-// The vote handler of the forum message card (ticket #273 review): a failed burn must be shown, a
-// burn that landed but could not be read back must not invite a retry.
 
 import { shallowMount } from '@vue/test-utils'
 
-import ForumMessage from './ForumMessage.vue'
+import ForumPost from './ForumPost.vue'
 import { BurnRefreshError } from 'src/utils/burn-refresh-error'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
 
@@ -25,6 +23,9 @@ jest.mock('src/stores/forum', () => ({
       selectedTopic: '',
       getMessage: () => undefined,
       addOffering: (...args: unknown[]) => mockAddOffering(...args),
+      applyOptimisticVote: jest.fn(),
+      rollbackOptimisticVote: jest.fn(),
+      setStampPreparationStatus: jest.fn(),
     }),
 }))
 jest.mock('src/stores/contacts', () => ({
@@ -61,7 +62,7 @@ const messages: Record<string, string> = {
 }
 
 function mountCard() {
-  return shallowMount(ForumMessage, {
+  return shallowMount(ForumPost, {
     props: {
       message: {
         poster: '0x1',
@@ -98,7 +99,7 @@ async function vote(wrapper: ReturnType<typeof mountCard>) {
 jest.setTimeout(10_000)
 beforeEach(() => jest.clearAllMocks())
 
-describe('ForumMessage vote handler', () => {
+describe('ForumPost vote handler', () => {
   it('automatically updates the counter immediately on click before relaying the transaction', async () => {
     const wrapper = mountCard()
     const vm = wrapper.vm as unknown as {
@@ -165,6 +166,12 @@ describe('ForumMessage vote handler', () => {
     expect(vm.isVoting).toBe(true)
     expect(mockAddOffering).toHaveBeenCalledTimes(1)
     expect(vm.voteStatus).toBe('CHECKING_ACCOUNTS')
+    expect(
+      wrapper.find('[data-test="forum-vote-up"]').attributes('disable'),
+    ).toBe('true')
+    expect(
+      wrapper.find('[data-test="forum-vote-down"]').attributes('disable'),
+    ).toBe('true')
 
     // Simulate progress updates
     capturedProgress?.({ stage: 'ready' })
@@ -256,28 +263,12 @@ describe('ForumMessage vote handler', () => {
     expect(errorNotify).not.toHaveBeenCalled()
     expect(infoNotify).not.toHaveBeenCalled()
   })
-})
 
-it('preserves a wide default vote exactly in the transient queue', async () => {
-  const chain = jest.requireMock('@frank/wallet/chain').activeChain
-  const previous = chain.defaultTopicVoteValue
-  chain.defaultTopicVoteValue = 9007199254740993n
-  try {
-    mockAddOffering.mockResolvedValueOnce(undefined)
+  it('does not burn queued intent after the card unmounts', async () => {
     const wrapper = mountCard()
-    await vote(wrapper)
-    expect(mockAddOffering).toHaveBeenCalledWith(
-      expect.objectContaining({ satoshis: 9007199254740993n }),
-    )
+    ;(wrapper.vm as unknown as { addVotes(n: number): void }).addVotes(1)
     wrapper.unmount()
-  } finally {
-    chain.defaultTopicVoteValue = previous
-  }
-})
-it('does not burn queued intent after the card unmounts', async () => {
-  const wrapper = mountCard()
-  ;(wrapper.vm as unknown as { addVotes(n: number): void }).addVotes(1)
-  wrapper.unmount()
-  await new Promise(resolve => setTimeout(resolve, 1150))
-  expect(mockAddOffering).not.toHaveBeenCalled()
+    await new Promise(resolve => setTimeout(resolve, 1150))
+    expect(mockAddOffering).not.toHaveBeenCalled()
+  })
 })

@@ -207,3 +207,66 @@ stealth-message-item = {
   * uint => frank-value,
 }
 
+; Active type 24 / schema 1 / min-reader 1: universal state channel update item.
+channel-update-item = {
+  0: digest-32,                      ; unique channel-id
+  1: tstr .size (1..64),             ; app-id ("blackjack", "poker", "liars-dice", "swap", "raffle")
+  2: uint .le 4294967295,            ; sequence-number (state turn / nonce)
+  3: [1*8 chain-allocation],         ; allocations across 1 or more networks
+  4: bstr .size (0..65536),          ; app-state (opaque or nested CBOR payload)
+  5: [1*4 signature-entry],          ; participant signatures over state digest
+  ? 6: bstr .size (1..128),          ; optional on-chain settlement contract or script reference
+  * uint => frank-value,
+}
+
+chain-allocation = {
+  0: network-tag,
+  1: bstr .size (0..128),            ; empty for native currency, or token identifier
+  2: [2*16 participant-balance],
+}
+
+participant-balance = {
+  0: account-ref,                    ; participant public key
+  1: evm-quantity-256 / uint,        ; allocated balance
+}
+
+; Modular application schemas nested within channel-update-item app-state (field 4)
+dice-game-payload = {
+  0: uint,                           ; round
+  1: "commit" / "reveal" / "roll",   ; action
+  2: digest-32,                      ; seed-commitment
+  ? 3: bstr .size (1..64),           ; reveal-seed
+  ? 4: uint .le 100,                 ; target-roll
+  5: evm-quantity-256 / uint,        ; wager
+  * uint => frank-value,
+}
+
+poker-game-payload = {
+  0: digest-32,                      ; hand-id
+  1: tstr .size (1..32),             ; phase
+  2: tstr .size (1..32),             ; action
+  ? 3: [1*10 digest-32],             ; card-commitments
+  ? 4: [1*10 bstr .size (1..64)],    ; keys
+  * uint => frank-value,
+}
+
+swap-offer-payload = {
+  0: digest-32,                      ; swap-id
+  1: bstr .size (0..128),            ; maker-asset
+  2: evm-quantity-256 / uint,        ; maker-amount
+  3: bstr .size (0..128),            ; taker-asset
+  4: evm-quantity-256 / uint,        ; taker-amount
+  5: uint .le 4294967295,            ; expiration
+  ? 6: digest-32,                    ; htlc-hash
+  * uint => frank-value,
+}
+
+raffle-payload = {
+  0: digest-32,                      ; raffle-id
+  1: evm-quantity-256 / uint,        ; ticket-price
+  2: uint,                           ; tickets-sold
+  ? 3: digest-32,                    ; winning-hash
+  * uint => frank-value,
+}
+
+

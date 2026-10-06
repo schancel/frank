@@ -472,6 +472,15 @@ export function checkSemantics(
           )
         })
       }
+      if (typed.spendKeys) {
+        requireOrdered(
+          typed.spendKeys,
+          compareAccounts,
+          'spend keys',
+          `${P}.14`,
+          true,
+        )
+      }
       return
     }
     default:

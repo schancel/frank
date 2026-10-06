@@ -106,6 +106,11 @@ export interface ProfileInfo {
   avatar?: string;
   /** Self-declared automated account (#311); see `MonadProfileFields.bot`. */
   bot?: boolean;
+  spendKeys?: Array<{ keyType: number; keyBytes: Uint8Array }>;
+  curveKeys?: {
+    secp256k1?: Uint8Array;
+    ed25519?: Uint8Array;
+  };
 }
 
 export interface DirectMessageSendResult {

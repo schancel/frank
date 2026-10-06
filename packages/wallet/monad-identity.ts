@@ -99,6 +99,8 @@ import { relayOriginHeader } from '@frank/cashweb/relay/origin-header'
 import {
   Encodable,
   cborMap,
+  compareAccounts,
+  compareBytes,
   defaultContext,
   directorySignatureDigest,
   encodeFrame,
@@ -358,6 +360,11 @@ export function buildSignedDirectoryStatement(
     timestampMs?: number
     ttlMs?: number
     stampKey?: Uint8Array
+    spendKeys?: Array<{ keyType: number; keyBytes: Uint8Array }>
+    curveKeys?: {
+      secp256k1?: Uint8Array
+      ed25519?: Uint8Array
+    }
   } = {},
 ): Uint8Array {
   const network = options.network ?? 'monad-testnet'
@@ -366,6 +373,39 @@ export function buildSignedDirectoryStatement(
   const ts = splitMs(ms)
   const exp = expiryTimestamp(ms, ttlMs)
   const stampKeyBytes = options.stampKey ?? identity.compressedPubKey
+
+  const rawSpendKeys: Array<{ keyType: number; keyBytes: Uint8Array }> = [
+    ...(options.spendKeys ?? []),
+  ]
+  if (options.curveKeys?.secp256k1) {
+    if (
+      !rawSpendKeys.some(
+        k =>
+          k.keyType === 1 &&
+          compareBytes(k.keyBytes, options.curveKeys!.secp256k1!) === 0,
+      )
+    ) {
+      rawSpendKeys.push({ keyType: 1, keyBytes: options.curveKeys.secp256k1 })
+    }
+  }
+  if (options.curveKeys?.ed25519) {
+    if (
+      !rawSpendKeys.some(
+        k =>
+          k.keyType === 2 &&
+          compareBytes(k.keyBytes, options.curveKeys!.ed25519!) === 0,
+      )
+    ) {
+      rawSpendKeys.push({ keyType: 2, keyBytes: options.curveKeys.ed25519 })
+    }
+  }
+  if (
+    (options.curveKeys || options.spendKeys) &&
+    !rawSpendKeys.some(k => k.keyType === 1)
+  ) {
+    rawSpendKeys.push({ keyType: 1, keyBytes: new Uint8Array(identity.compressedPubKey) })
+  }
+  rawSpendKeys.sort(compareAccounts)
 
   // Default relay binding: required by Type 4 schema (min 1 relay).
   // Kept internal to maintain clean separation between relay-local profiles
@@ -446,6 +486,30 @@ export function buildSignedDirectoryStatement(
     }
   }
 
+  for (const sk of rawSpendKeys) {
+    const curveName =
+      sk.keyType === 1 ? 'secp256k1' : sk.keyType === 2 ? 'ed25519' : 'unknown'
+    entries.push(
+      cborMap([
+        [0, 'spend_key'],
+        [
+          1,
+          [
+            cborMap([
+              [0, 'curve'],
+              [1, curveName],
+            ]),
+            cborMap([
+              [0, 'key_type'],
+              [1, String(sk.keyType)],
+            ]),
+          ],
+        ],
+        [2, Uint8Array.from(sk.keyBytes)],
+      ]),
+    )
+  }
+
   const type4MapEntries: Array<[number, Encodable]> = [
     [0, network],
     [
@@ -481,6 +545,17 @@ export function buildSignedDirectoryStatement(
   ]
   if (entries.length > 0) {
     type4MapEntries.push([9, entries])
+  }
+  if (rawSpendKeys.length > 0) {
+    type4MapEntries.push([
+      14,
+      rawSpendKeys.map(k =>
+        cborMap([
+          [0, k.keyType],
+          [1, Uint8Array.from(k.keyBytes)],
+        ]),
+      ),
+    ])
   }
 
   const type4Frame = encodeFrame(
@@ -524,6 +599,11 @@ export async function registerMonadIdentityCbor(params: {
   timestampMs?: number
   ttlMs?: number
   stampKey?: Uint8Array
+  spendKeys?: Array<{ keyType: number; keyBytes: Uint8Array }>
+  curveKeys?: {
+    secp256k1?: Uint8Array
+    ed25519?: Uint8Array
+  }
 }): Promise<void> {
   const body = buildSignedDirectoryStatement(params.identity, {
     network: params.network,
@@ -531,6 +611,8 @@ export async function registerMonadIdentityCbor(params: {
     timestampMs: params.timestampMs,
     ttlMs: params.ttlMs,
     stampKey: params.stampKey,
+    spendKeys: params.spendKeys,
+    curveKeys: params.curveKeys,
   })
   await axios({
     method: 'put',
@@ -570,15 +652,7 @@ export async function registerMonadIdentity(params: {
   })
 }
 
-/** Decodes either a CBOR directory statement or a legacy protobuf SignedPayload.
- * Validates stage 10.6 signature, subject signature, and verifies address derivation and network binding. */
-export function decodeProfileBytes(
-  raw: Uint8Array,
-  options?: {
-    expectedAddress?: string
-    expectedNetwork?: string
-  },
-): {
+export interface DecodedProfile {
   pubKey: Uint8Array
   timestampMs: number
   derivedAddress: string
@@ -588,7 +662,22 @@ export function decodeProfileBytes(
   bot?: boolean
   avatar?: string
   signedPayload: InstanceType<typeof SignedPayload>
-} {
+  spendKeys?: Array<{ keyType: number; keyBytes: Uint8Array }>
+  curveKeys?: {
+    secp256k1?: Uint8Array
+    ed25519?: Uint8Array
+  }
+}
+
+/** Decodes either a CBOR directory statement or a legacy protobuf SignedPayload.
+ * Validates stage 10.6 signature, subject signature, and verifies address derivation and network binding. */
+export function decodeProfileBytes(
+  raw: Uint8Array,
+  options?: {
+    expectedAddress?: string
+    expectedNetwork?: string
+  },
+): DecodedProfile {
   if (isCborFrame(raw)) {
     const validated = validateFrame(raw, defaultContext({ operation: 'full' }))
     if (validated.kind !== 'parsed' || validated.typed?.type !== 2) {
@@ -640,6 +729,20 @@ export function decodeProfileBytes(
     metadata.setTtl(1000 * 60 * 60 * 24 * 365)
     const protoEntries: InstanceType<typeof Entry>[] = []
 
+    const curveKeys: { secp256k1?: Uint8Array; ed25519?: Uint8Array } = {}
+    const spendKeys: Array<{ keyType: number; keyBytes: Uint8Array }> = []
+
+    if (stmt.spendKeys) {
+      for (const sk of stmt.spendKeys) {
+        spendKeys.push({ keyType: sk.keyType, keyBytes: sk.keyBytes })
+        if (sk.keyType === 1 && !curveKeys.secp256k1) {
+          curveKeys.secp256k1 = sk.keyBytes
+        } else if (sk.keyType === 2 && !curveKeys.ed25519) {
+          curveKeys.ed25519 = sk.keyBytes
+        }
+      }
+    }
+
     if (stmt.profileEntries) {
       for (const entry of stmt.profileEntries) {
         const protoEntry = new Entry()
@@ -666,10 +769,36 @@ export function decodeProfileBytes(
           avatar = `data:${contentType};base64,${Buffer.from(
             entry.body,
           ).toString('base64')}`
+        } else if (entry.kind === 'spend_key') {
+          const curveHeader = entry.headers.find(h => h.name === 'curve')?.value
+          const keyTypeHeader = entry.headers.find(h => h.name === 'key_type')?.value
+          if (curveHeader === 'secp256k1' || keyTypeHeader === '1') {
+            if (!curveKeys.secp256k1) {
+              curveKeys.secp256k1 = entry.body
+              if (!spendKeys.some(k => k.keyType === 1)) {
+                spendKeys.push({ keyType: 1, keyBytes: entry.body })
+              }
+            }
+          } else if (curveHeader === 'ed25519' || keyTypeHeader === '2') {
+            if (!curveKeys.ed25519) {
+              curveKeys.ed25519 = entry.body
+              if (!spendKeys.some(k => k.keyType === 2)) {
+                spendKeys.push({ keyType: 2, keyBytes: entry.body })
+              }
+            }
+          }
         }
       }
     }
     metadata.setEntriesList(protoEntries)
+
+    if (!curveKeys.secp256k1) {
+      curveKeys.secp256k1 = pubKey
+      if (!spendKeys.some(k => k.keyType === 1)) {
+        spendKeys.push({ keyType: 1, keyBytes: pubKey })
+      }
+    }
+    spendKeys.sort(compareAccounts)
 
     const signedPayload = new SignedPayload()
     signedPayload.setPublicKey(pubKey)
@@ -689,6 +818,8 @@ export function decodeProfileBytes(
       bot,
       avatar,
       signedPayload,
+      spendKeys,
+      curveKeys,
     }
   }
 
@@ -712,6 +843,9 @@ export function decodeProfileBytes(
   let bot: boolean | undefined
   let avatar: string | undefined
 
+  const curveKeys: { secp256k1?: Uint8Array; ed25519?: Uint8Array } = {}
+  const spendKeys: Array<{ keyType: number; keyBytes: Uint8Array }> = []
+
   for (const entry of metadata.getEntriesList()) {
     const kind = entry.getKind()
     if (kind === 'display_name') {
@@ -729,8 +863,41 @@ export function decodeProfileBytes(
       avatar = `data:${contentType};base64,${Buffer.from(
         entry.getBody_asU8(),
       ).toString('base64')}`
+    } else if (kind === 'spend_key') {
+      const curveHeader = entry
+        .getHeadersList()
+        .find(header => header.getName() === 'curve')
+        ?.getValue()
+      const keyTypeHeader = entry
+        .getHeadersList()
+        .find(header => header.getName() === 'key_type')
+        ?.getValue()
+      const body = entry.getBody_asU8()
+      if (curveHeader === 'secp256k1' || keyTypeHeader === '1') {
+        if (!curveKeys.secp256k1) {
+          curveKeys.secp256k1 = body
+          if (!spendKeys.some(k => k.keyType === 1)) {
+            spendKeys.push({ keyType: 1, keyBytes: body })
+          }
+        }
+      } else if (curveHeader === 'ed25519' || keyTypeHeader === '2') {
+        if (!curveKeys.ed25519) {
+          curveKeys.ed25519 = body
+          if (!spendKeys.some(k => k.keyType === 2)) {
+            spendKeys.push({ keyType: 2, keyBytes: body })
+          }
+        }
+      }
     }
   }
+
+  if (!curveKeys.secp256k1) {
+    curveKeys.secp256k1 = pubKey
+    if (!spendKeys.some(k => k.keyType === 1)) {
+      spendKeys.push({ keyType: 1, keyBytes: pubKey })
+    }
+  }
+  spendKeys.sort(compareAccounts)
 
   return {
     pubKey,
@@ -741,6 +908,8 @@ export function decodeProfileBytes(
     bot,
     avatar,
     signedPayload,
+    spendKeys,
+    curveKeys,
   }
 }
 
@@ -802,6 +971,8 @@ export async function fetchMonadProfile(params: {
     if (decoded.bio !== undefined) result.bio = decoded.bio
     if (decoded.bot !== undefined) result.bot = decoded.bot
     if (decoded.avatar !== undefined) result.avatar = decoded.avatar
+    if (decoded.spendKeys !== undefined) result.spendKeys = decoded.spendKeys
+    if (decoded.curveKeys !== undefined) result.curveKeys = decoded.curveKeys
     return result
   } catch (err) {
     if (axios.isAxiosError(err) && err.response?.status === 404) {

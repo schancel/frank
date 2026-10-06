@@ -913,10 +913,10 @@ export function parseDraft(
       // reader's highest supported schema when a newer frame is read through V6.3.
       const preview = schema.effective >= 4
       const optional = preview
-        ? []
+        ? [14]
         : schema.effective >= 3
-        ? [5, 6, 7, 9]
-        : [5, 6, 7]
+        ? [5, 6, 7, 9, 14]
+        : [5, 6, 7, 14]
       const m = fields(
         payload,
         P,
@@ -965,6 +965,11 @@ export function parseDraft(
       if (m.has(9) && schema.effective >= 3) {
         st.profileEntries = asList(m.get(9), `${P}.9`, 1, 64).map((e, i) =>
           profileEntry(e, `${P}.9[${i}]`, allow),
+        )
+      }
+      if (m.has(14)) {
+        st.spendKeys = asList(m.get(14), `${P}.14`, 1, 8).map((e, i) =>
+          account(e, `${P}.14[${i}]`),
         )
       }
       if (m.has(5)) {

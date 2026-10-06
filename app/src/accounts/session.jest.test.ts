@@ -52,6 +52,9 @@ function fixture() {
   } as unknown as jest.Mocked<AccountCustody>
   const wallet = {
     close: jest.fn(async () => undefined),
+    identity: {
+      compressedPubKey: new Uint8Array(33).fill(0x02),
+    },
   } as unknown as RuntimeWallet
   const createWallet = jest.fn(async () => wallet)
   let invalidate!: () => void
@@ -396,5 +399,35 @@ test('getActiveDomainRoot and getChainAddress derive valid addresses for ecash a
   const initialTakeRootsCalls = f.capability.takeRoots.mock.calls.length
   const cachedEcash = await f.session.getChainAddress('ecash')
   expect(cachedEcash).toBe(ecashAddr)
+  expect(f.capability.takeRoots).toHaveBeenCalledTimes(initialTakeRootsCalls)
+})
+
+test('getCurvePublicKey and getCachedCurvePublicKey derive and cache public keys for secp256k1 and ed25519', async () => {
+  const f = fixture()
+  f.capability.takeRoots = jest.fn(() =>
+    DOMAIN_PURPOSES.map((purpose, i) => ({
+      registry: DERIVATION_REGISTRY_ID,
+      purpose,
+      bytes: new Uint8Array(32).fill(i + 1),
+    })),
+  )
+  await f.session.initialize()
+
+  const secpKey = await f.session.getCurvePublicKey('secp256k1')
+  expect(secpKey).toBeInstanceOf(Uint8Array)
+  expect(secpKey.length).toBe(33)
+  expect(secpKey[0]).toBe(0x02)
+
+  const edKey = await f.session.getCurvePublicKey('ed25519')
+  expect(edKey).toBeInstanceOf(Uint8Array)
+  expect(edKey.length).toBe(32)
+
+  // Verify caching and synchronous retrieval
+  expect(f.session.getCachedCurvePublicKey('secp256k1')).toEqual(secpKey)
+  expect(f.session.getCachedCurvePublicKey('ed25519')).toEqual(edKey)
+
+  const initialTakeRootsCalls = f.capability.takeRoots.mock.calls.length
+  const cachedEd = await f.session.getCurvePublicKey('ed25519')
+  expect(cachedEd).toEqual(edKey)
   expect(f.capability.takeRoots).toHaveBeenCalledTimes(initialTakeRootsCalls)
 })

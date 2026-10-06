@@ -8,12 +8,13 @@
             icon="arrow_drop_up"
             padding="0"
             :aria-label="$t('a11y.voteUp')"
+            :disable="isVoting"
             @click="addVotes(1)"
             data-test="forum-vote-up"
           />
         </q-card-section>
         <q-card-section class="q-pa-none q-mt-xs text-center">{{
-          formatVoteWeight(message.voteWeightWei)
+          formatVoteWeight(displayedVoteWeight)
         }}</q-card-section>
         <q-card-section class="q-pa-none q-mt-xs text-center">
           <q-btn
@@ -21,6 +22,7 @@
             icon="arrow_drop_down"
             padding="0"
             :aria-label="$t('a11y.voteDown')"
+            :disable="isVoting"
             @click="addVotes(-1)"
             data-test="forum-vote-down"
           />
@@ -73,6 +75,15 @@
             {{ timestamp }}
             <q-tooltip>{{ fullTimestamp }}</q-tooltip>
           </div>
+          <div
+            v-if="voteStatus"
+            class="text-caption text-italic q-ml-sm row items-center"
+            role="status"
+            data-test="vote-status"
+          >
+            <q-spinner-dots size="1.2em" color="primary" class="q-mr-xs" />
+            <span>{{ voteStatus }}</span>
+          </div>
           <q-btn
             flat
             no-caps
@@ -124,9 +135,13 @@ import AMessageReplies from './ForumMessageReplies.vue'
 import { MessageWithReplies, useForumStore } from 'src/stores/forum'
 import { useContactStore } from 'src/stores/contacts'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
-import { notifyBurnFailure } from 'src/utils/burn-refresh-error'
+import {
+  notifyBurnFailure,
+  BurnRefreshError,
+} from 'src/utils/burn-refresh-error'
 import { activeChain } from '@frank/wallet/chain'
 import { formatRawAmount } from 'src/utils/chain-amount'
+import { stampPreparationStatus } from 'src/utils/stamp-preparation-status'
 
 export default defineComponent({
   setup() {
@@ -142,6 +157,9 @@ export default defineComponent({
       haveContact: contactStore.haveContact,
       selectedTopic,
       addOffering: forumStore.addOffering,
+      applyOptimisticVote: forumStore.applyOptimisticVote,
+      rollbackOptimisticVote: forumStore.rollbackOptimisticVote,
+      setStampPreparationStatus: forumStore.setStampPreparationStatus,
     }
   },
   props: {
@@ -180,6 +198,9 @@ export default defineComponent({
     return {
       timeoutId: undefined as ReturnType<typeof setTimeout> | undefined,
       voteAmount: 0n,
+      localVoteDelta: 0n,
+      isVoting: false,
+      votePreparationStatus: null as string | null,
       voteActive: true,
       voteTarget: null as string | null,
       voteOwnerRevision: null as number | null,
@@ -190,7 +211,17 @@ export default defineComponent({
   unmounted() {
     this.voteActive = false
     if (this.timeoutId) clearTimeout(this.timeoutId)
-    this.voteAmount = 0n
+    if (this.voteAmount !== 0n && this.voteTarget) {
+      this.rollbackOptimisticVote?.({
+        payloadDigest: this.voteTarget,
+        deltaWei: this.voteAmount,
+      })
+      this.voteAmount = 0n
+      this.localVoteDelta = 0n
+    }
+    if (this.isVoting) {
+      this.setStampPreparationStatus?.(null)
+    }
   },
   methods: {
     formatVoteWeight(value: string) {
@@ -211,13 +242,30 @@ export default defineComponent({
         this.voteTarget !== this.message.payloadDigest ||
         this.voteOwnerRevision !== accountStatus.revision ||
         this.voteOwnerStatus !== accountStatus.status
-      )
+      ) {
+        if (this.voteAmount !== 0n && this.voteTarget) {
+          this.rollbackOptimisticVote?.({
+            payloadDigest: this.voteTarget,
+            deltaWei: this.voteAmount,
+          })
+        }
         this.voteAmount = 0n
+        this.localVoteDelta = 0n
+      }
       this.voteTarget = this.message.payloadDigest
       this.voteOwnerRevision = accountStatus.revision
       this.voteOwnerStatus = accountStatus.status
 
-      this.voteAmount += BigInt(direction) * activeChain.defaultTopicVoteValue
+      const delta = BigInt(direction) * activeChain.defaultTopicVoteValue
+      this.voteAmount += delta
+      this.localVoteDelta += delta
+      if (this.message?.payloadDigest) {
+        this.applyOptimisticVote?.({
+          payloadDigest: this.message.payloadDigest,
+          deltaWei: delta,
+        })
+      }
+
       if (this.timeoutId) {
         clearTimeout(this.timeoutId)
       }
@@ -231,7 +279,14 @@ export default defineComponent({
           accountStatus.revision !== revision ||
           accountStatus.status !== status
         ) {
+          if (this.voteAmount !== 0n && digest) {
+            this.rollbackOptimisticVote?.({
+              payloadDigest: digest,
+              deltaWei: this.voteAmount,
+            })
+          }
           this.voteAmount = 0n
+          this.localVoteDelta = 0n
           return
         }
         void (async () => {
@@ -246,6 +301,10 @@ export default defineComponent({
           // silently kept and re-sent on top of the next click (ticket #273).
           const satoshis = this.voteAmount
           this.voteAmount = 0n
+          this.isVoting = true
+          const initialStatus = this.$t('chat.stampPreparationChecking')
+          this.votePreparationStatus = initialStatus
+          this.setStampPreparationStatus?.(initialStatus)
           try {
             const wallet = await useActiveWallet()
             if (
@@ -253,21 +312,79 @@ export default defineComponent({
               this.message.payloadDigest !== digest ||
               accountStatus.revision !== revision ||
               accountStatus.status !== status
-            )
+            ) {
+              this.rollbackOptimisticVote?.({
+                payloadDigest: digest,
+                deltaWei: satoshis,
+              })
+              this.localVoteDelta = 0n
               return
+            }
             await this.addOffering({
               wallet,
               payloadDigest: digest,
               satoshis,
+              onPreparationProgress: progress => {
+                if (
+                  !this.voteActive ||
+                  this.message.payloadDigest !== digest ||
+                  accountStatus.revision !== revision ||
+                  accountStatus.status !== status
+                ) {
+                  return
+                }
+                const progressStatus = stampPreparationStatus(
+                  progress,
+                  (key, params) => this.$t(key, params ?? {}),
+                  {
+                    format: raw => activeChain.toDisplayAmount(raw),
+                    unit: activeChain.unit,
+                  },
+                )
+                this.votePreparationStatus = progressStatus
+                this.setStampPreparationStatus?.(progressStatus)
+              },
             })
+            this.localVoteDelta = 0n
           } catch (err) {
+            if (!(err instanceof BurnRefreshError)) {
+              this.rollbackOptimisticVote?.({
+                payloadDigest: digest,
+                deltaWei: satoshis,
+              })
+              this.localVoteDelta = 0n
+            }
             notifyBurnFailure(err, key => this.$t(key))
+          } finally {
+            this.isVoting = false
+            this.votePreparationStatus = null
+            this.setStampPreparationStatus?.(null)
           }
         })()
       }, 1_000)
     },
   },
   computed: {
+    displayedVoteWeight(): string {
+      if (
+        this.message?.payloadDigest &&
+        this.getMessage(this.message.payloadDigest)
+      ) {
+        return this.message.voteWeightWei
+      }
+      return (
+        BigInt(this.message?.voteWeightWei || '0') + this.localVoteDelta
+      ).toString()
+    },
+    voteStatus(): string | null {
+      if (this.votePreparationStatus) {
+        return this.votePreparationStatus
+      }
+      if (this.isVoting || this.voteAmount !== 0n) {
+        return this.$t('stampPreparation.voting')
+      }
+      return null
+    },
     timestamp() {
       if (!this.message) {
         return ''

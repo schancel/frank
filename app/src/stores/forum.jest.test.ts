@@ -552,6 +552,65 @@ describe('useForumStore: addOffering', () => {
       voteWeightWei: BigInt(250),
     })
   })
+
+  it("hands the caller's progress callback to activeChain.topics.vote", async () => {
+    const store = useForumStore()
+    mockedVote.mockResolvedValueOnce(undefined)
+    mockedFetchOne.mockResolvedValueOnce(makeMessage())
+    const onPreparationProgress = jest.fn()
+
+    await store.addOffering({
+      wallet: testWallet,
+      payloadDigest: 'deadbeef',
+      satoshis: 250n,
+      onPreparationProgress,
+    })
+
+    expect(mockedVote.mock.calls[0][0].onPreparationProgress).toBe(
+      onPreparationProgress,
+    )
+  })
+})
+
+describe('useForumStore: optimistic voting and stamp preparation', () => {
+  it('updates voteWeightWei optimistically on indexed message and message list', () => {
+    const store = useForumStore()
+    const msg = makeMessage({
+      payloadDigest: 'test-digest',
+      voteWeightWei: '100',
+    })
+    store.setEntries([msg])
+
+    expect(store.getMessage('test-digest')?.voteWeightWei).toBe('100')
+    expect(store.messages[0].voteWeightWei).toBe('100')
+
+    store.applyOptimisticVote({
+      payloadDigest: 'test-digest',
+      deltaWei: 50n,
+    })
+
+    expect(store.getMessage('test-digest')?.voteWeightWei).toBe('150')
+    expect(store.messages[0].voteWeightWei).toBe('150')
+
+    store.rollbackOptimisticVote({
+      payloadDigest: 'test-digest',
+      deltaWei: 50n,
+    })
+
+    expect(store.getMessage('test-digest')?.voteWeightWei).toBe('100')
+    expect(store.messages[0].voteWeightWei).toBe('100')
+  })
+
+  it('tracks stamp preparation status in store', () => {
+    const store = useForumStore()
+    expect(store.stampPreparationStatus).toBeNull()
+
+    store.setStampPreparationStatus('Checking accounts…')
+    expect(store.stampPreparationStatus).toBe('Checking accounts…')
+
+    store.setStampPreparationStatus(null)
+    expect(store.stampPreparationStatus).toBeNull()
+  })
 })
 
 function deferred<T>() {

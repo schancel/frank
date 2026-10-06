@@ -17,6 +17,8 @@ export default {
   stampPreparation: {
     refreshStatus: 'Refresh status',
     posting: 'Posting…',
+    voting: 'Voting…',
+    sendingVote: 'Sending vote…',
     postCreated: 'Post created in {topic}.',
     replyParentLoading: 'Loading the post you are replying to…',
     replyParentUnavailable:

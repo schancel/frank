@@ -1,4 +1,12 @@
 <template>
+  <div
+    v-if="stampPreparationStatus"
+    class="full-width text-caption text-center bg-accent text-white q-py-xs q-mb-sm"
+    role="status"
+    data-testid="stamp-preparation-status"
+  >
+    {{ stampPreparationStatus }}
+  </div>
   <template v-if="sortedPosts && sortedPosts.length > 0">
     <div
       v-if="outageStatus === 'outage'"
@@ -150,6 +158,7 @@ export default defineComponent({
       hasFetchedOnce,
       outageStatus,
       isRefreshing,
+      stampPreparationStatus,
     } = storeToRefs(forumStore)
     const showMessage = (topic: string) => {
       return topic.startsWith(selectedTopic.value)
@@ -218,6 +227,7 @@ export default defineComponent({
       isRefreshing,
       retryRefresh,
       showMessage,
+      stampPreparationStatus,
     }
   },
 })

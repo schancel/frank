@@ -34,6 +34,7 @@ export interface State {
   hasFetchedOnce: boolean
   outageStatus: ForumOutageStatus
   isRefreshing: boolean
+  stampPreparationStatus: string | null
 }
 
 export type ForumPostReservationStatus = 'in-flight' | 'outcome-unknown'
@@ -124,6 +125,7 @@ export const useForumStore = defineStore('forum', {
     hasFetchedOnce: false,
     outageStatus: 'ok',
     isRefreshing: false,
+    stampPreparationStatus: null,
   }),
   getters: {
     getMessage(state) {
@@ -441,14 +443,48 @@ export const useForumStore = defineStore('forum', {
       // Need to refetch so we get the right proxy object
       return this.getMessage(payloadDigest)
     },
+    setStampPreparationStatus(status: string | null) {
+      this.stampPreparationStatus = status
+    },
+    applyOptimisticVote({
+      payloadDigest,
+      deltaWei,
+    }: {
+      payloadDigest: string
+      deltaWei: bigint
+    }) {
+      const msg = this.index[payloadDigest]
+      if (msg) {
+        const current = BigInt(msg.voteWeightWei || '0')
+        msg.voteWeightWei = (current + deltaWei).toString()
+      }
+      const inList = this.messages.find(m => m.payloadDigest === payloadDigest)
+      if (inList && inList !== msg) {
+        const current = BigInt(inList.voteWeightWei || '0')
+        inList.voteWeightWei = (current + deltaWei).toString()
+      }
+    },
+    rollbackOptimisticVote({
+      payloadDigest,
+      deltaWei,
+    }: {
+      payloadDigest: string
+      deltaWei: bigint
+    }) {
+      this.applyOptimisticVote({ payloadDigest, deltaWei: -deltaWei })
+    },
     async addOffering({
       wallet,
       payloadDigest,
       satoshis,
+      onPreparationProgress,
     }: {
       wallet: WalletHandle
       payloadDigest: string
       satoshis: bigint
+      onPreparationProgress?: (
+        progress: DirectMessagePreparationProgress,
+      ) => void
     }) {
       console.log('voting towards message', payloadDigest, satoshis)
       await activeChain.topics.vote({
@@ -456,6 +492,7 @@ export const useForumStore = defineStore('forum', {
         payloadDigest,
         direction: satoshis >= 0n ? 'up' : 'down',
         voteWeightWei: satoshis < 0n ? -satoshis : satoshis,
+        onPreparationProgress,
       })
       await refreshAfterBurn('vote', () => this.fetchMessage({ payloadDigest }))
     },
@@ -491,6 +528,7 @@ export const useForumStore = defineStore('forum', {
         hasFetchedOnce: false,
         outageStatus: 'ok',
         isRefreshing: false,
+        stampPreparationStatus: null,
       }
     },
   },

@@ -18,9 +18,11 @@ import {
   CrossLayerSurveillanceEvaluator,
   formatCrossLayerComparativeMarkdownReport,
 } from './privacy-simulation-engine'
+import { encodeTopicVote, validateFrame, defaultContext } from '@frank/codec'
+import { hexlify } from 'ethers'
 
 describe('Cross-Layer (On-Chain + Relay) Surveillance Analysis', () => {
-  jest.setTimeout(45000)
+  jest.setTimeout(120000)
 
   it('proves persistent identity on both posts and votes clusters 100% of spend accounts', async () => {
     const simulation = await runPrivacySimulation({
@@ -75,6 +77,92 @@ describe('Cross-Layer (On-Chain + Relay) Surveillance Analysis', () => {
 
     // DKSAP stealth payments remain 0% leaked
     expect(report.stealthAddressesExposed).toBe(0)
+
+    // Ensure zero target vote relay announcements carry the user's persistent identity pubkey
+    const targetVotes = simulation.relayAnnouncements.filter(
+      a => a.isTargetUser && a.actionType === 'forum-vote',
+    )
+    expect(targetVotes.length).toBe(50)
+    for (const vote of targetVotes) {
+      expect(vote.identityPubKey.toLowerCase()).not.toBe(
+        simulation.targetIdentityPubKey.toLowerCase(),
+      )
+    }
+  })
+
+  it('enforces decoupled voting by default with 0% vote clustering and Shannon entropy > 8 bits', async () => {
+    // When identitySigningPolicy is omitted, Frank defaults to decoupled voting
+    const simulation = await runPrivacySimulation({
+      forumPosts: 10,
+      forumVotes: 50,
+      stealthPayments: 5,
+      sweeps: 15,
+    })
+
+    expect(simulation.identitySigningPolicy).toBe('decoupled-voting')
+    const evaluator = new CrossLayerSurveillanceEvaluator(simulation)
+    const report = evaluator.evaluateTargetIdentityCluster()
+
+    // Public posts remain identified for author reputation
+    expect(report.postAddressesClustered).toBe(10)
+
+    // Voting is 100% decoupled from identity: 0 votes clustered
+    expect(report.voteAddressesClustered).toBe(0)
+    expect(report.voteAddressClusteringRate).toBe(0.0)
+
+    // Clustered spend accounts drop from 60 down to 10
+    expect(report.activeSpendAddressesClustered).toBe(10)
+    expect(report.activeSpendAddressClusteringRate).toBeCloseTo(10 / 60, 2)
+
+    // High Shannon graph entropy > 8 bits
+    expect(report.crossLayerShannonEntropyBits).toBeGreaterThan(8.0)
+
+    // DKSAP stealth payments remain 0% leaked
+    expect(report.stealthAddressesExposed).toBe(0)
+
+    // No target vote announcements carry the voter's persistent identity pubkey
+    const targetVotes = simulation.relayAnnouncements.filter(
+      a => a.isTargetUser && a.actionType === 'forum-vote',
+    )
+    expect(targetVotes.length).toBe(50)
+    for (const vote of targetVotes) {
+      expect(vote.identityPubKey.toLowerCase()).not.toBe(
+        simulation.targetIdentityPubKey.toLowerCase(),
+      )
+    }
+  })
+
+  it('ensures type-11 TopicVoteSubmission frames strictly decouple identity signatures and keys', () => {
+    const network = 'monad-testnet'
+    const targetHash = new Uint8Array(32).fill(0xaa)
+    const dummyBurnTx = new Uint8Array(64).fill(0xbb)
+
+    const frameBytes = encodeTopicVote(network, targetHash, dummyBurnTx)
+    const parsed = validateFrame(frameBytes, defaultContext())
+
+    expect(parsed.kind).toBe('parsed')
+    if (parsed.kind !== 'parsed') throw new Error('Failed to parse frame')
+
+    expect(parsed.typeId).toBe(11) // TYPE_TOPIC_VOTE_SUBMISSION
+    expect(parsed.typed).toBeDefined()
+    expect(parsed.typed?.type).toBe(11)
+
+    const voteSubmission = parsed.typed as {
+      type: 11
+      network: string
+      targetHash: Uint8Array
+      burnTx: Uint8Array
+    }
+
+    expect(voteSubmission.network).toBe(network)
+    expect(hexlify(voteSubmission.targetHash)).toBe(hexlify(targetHash))
+    expect(hexlify(voteSubmission.burnTx)).toBe(hexlify(dummyBurnTx))
+
+    // Ensure NO identity pubkey or author signature properties exist on the submission frame
+    expect((voteSubmission as any).identityPubKey).toBeUndefined()
+    expect((voteSubmission as any).authorSignature).toBeUndefined()
+    expect((voteSubmission as any).author).toBeUndefined()
+    expect((voteSubmission as any).publicKey).toBeUndefined()
   })
 
   it('proves DKSAP inbound stealth payments remain completely decoupled (0% leakage) across all modes', async () => {

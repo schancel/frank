@@ -26,6 +26,8 @@ export interface GatewayStampProvider {
     recipientAddress: string;
     items?: MessageItem[];
     text?: string;
+    conversationId?: string;
+    inReplyToFrankMessageId?: string;
     relayUrl?: string;
   }): Promise<StampSubmissionResult>;
 

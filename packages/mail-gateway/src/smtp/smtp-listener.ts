@@ -58,6 +58,17 @@ export function parseRawRfc822(
   const dkimPass = authResults.includes('dkim=pass') || (dkimSig && !authResults.includes('dkim=fail'));
   const spfPass = authResults.includes('spf=pass');
 
+  // Check In-Reply-To and References headers for threading
+  const rawInReplyTo = headers.get('in-reply-to');
+  const inReplyTo = rawInReplyTo
+    ? rawInReplyTo.match(/<[^>]+>/)?.[0] ?? rawInReplyTo.trim()
+    : undefined;
+
+  const rawReferences = headers.get('references');
+  const references = rawReferences
+    ? (rawReferences.match(/<[^>]+>/g) ?? rawReferences.split(/\s+/).filter(Boolean))
+    : undefined;
+
   return {
     messageId,
     fromAddress,
@@ -68,6 +79,8 @@ export function parseRawRfc822(
     textBody: bodySection,
     dkimValid: dkimPass,
     spfValid: spfPass,
+    inReplyTo,
+    references,
     rawRfc822,
   };
 }

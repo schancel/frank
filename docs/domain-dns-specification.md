@@ -99,19 +99,32 @@ _dmarc.example.com.       3600   IN  TXT  "v=DMARC1; p=reject; pct=100; rua=mail
 
 When a Frank client is given a destination address of the form \`username@domain.com\` or \`0xAddress@domain.com\`:
 
-1. **Parse Address:** Split into local part (\`recipient\`) and domain part (\`domain\`).
+1. **Parse Address:** Split into local part (`recipient`) and domain part (`domain`).
 2. **Resolve Relay via SRV:**
-   * Query \`_frank._tcp.<domain>\` via DNS SRV.
-   * If found: construct base URL \`https://<target>:<port>\`.
-   * If not found: fallback to \`https://relay.<domain>\` or reject as unresolvable.
+   * Query `_frank._tcp.<domain>` via DNS SRV.
+   * If found: construct base URL `https://<target>:<port>`.
+   * If not found: fallback to `https://relay.<domain>` or reject as unresolvable.
 3. **Resolve Recipient in Directory:**
-   * If local part is a raw hex account (\`0x...\`): query \`GET /directory/account/:address\`.
-   * If local part is a username handle: query \`GET /directory/user/:username\`.
-4. **Attestation Verification:**
-   * Verify the returned directory statement signature.
-   * If the username is \`tombstoned\`: abort delivery and report that the account is deactivated.
-   * Extract stamp key \(P'\) and encryption DH key \(M\).
+   * If local part is a raw hex account (`0x...`): query `GET /directory/account/:address`.
+   * If local part is a username handle: query `GET /directory/user/:username`.
+   * Response contains:
+     ```json
+     {
+       "username": "alice",
+       "account_address": "0x1111...",
+       "status": "active", // "active" | "tombstoned" | "moved"
+       "redirect_to": null, // "new_handle" if moved
+       "entry": {
+         "content_type": "application/cbor",
+         "raw_hex": "..."
+       }
+     }
+     ```
+4. **Attestation & State Verification:**
+   * If the username is `tombstoned`: abort delivery and report that the account is deactivated.
+   * If the username is `moved`: follow `redirect_to` or dispatch to the user's permanent `account_address`.
+   * If `active`: the cryptographic profile (`entry`) is inlined directly in the response—saving a round trip! Extract stamp key ($P'$) and encryption DH key ($M$) directly from the inlined statement.
 5. **Encrypt and Stamp:**
-   * Package message content and encrypt for \(M\).
-   * Attach required stamp payment to \(P'\).
+   * Package message content and encrypt for $M$.
+   * Attach required stamp payment to $P'$.
    * Submit direct message to the resolved relay endpoint.

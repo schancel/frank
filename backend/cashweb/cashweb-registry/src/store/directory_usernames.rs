@@ -33,13 +33,15 @@ pub enum UsernameError {
 
 use self::UsernameError::*;
 
-/// The active or tombstoned state of a username.
+/// The active, tombstoned, or moved state of a username.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UsernameStatus {
     /// Active handle bound to an account.
     Active,
     /// Handle was released/deleted and is cooling off to prevent recycling.
     Tombstoned,
+    /// Handle was renamed/migrated to another username and redirects there.
+    Moved,
 }
 
 /// Durable record for a username.
@@ -51,12 +53,15 @@ pub struct UsernameRecord {
     pub account_address: [u8; 20],
     /// Optional stamp public key.
     pub stamp_key: Option<Vec<u8>>,
-    /// Active or tombstoned state.
+    /// Active, tombstoned, or moved state.
     pub status: UsernameStatus,
     /// Timestamp of last modification in milliseconds.
     pub updated_at_ms: i64,
     /// Expiration timestamp in milliseconds for tombstone cooldown.
     pub tombstone_expires_at_ms: Option<i64>,
+    /// Optional redirect pointer to new username when status is Moved.
+    #[serde(default)]
+    pub redirect_to: Option<String>,
 }
 
 /// Result of attempting to claim a username.
@@ -170,17 +175,18 @@ impl<'a> DbDirectoryUsernames<'a> {
                         status: UsernameStatus::Active,
                         updated_at_ms: now_ms,
                         tombstone_expires_at_ms: None,
+                        redirect_to: None,
                     };
                     self.put_record(&updated)?;
                     return Ok(UsernameClaimResult::AlreadyOwned);
                 }
-                UsernameStatus::Tombstoned => {
+                UsernameStatus::Tombstoned | UsernameStatus::Moved => {
                     if let Some(expires_at) = existing.tombstone_expires_at_ms {
                         if now_ms < expires_at {
                             return Err(Tombstoned(normalized, expires_at).into());
                         }
                     }
-                    // Tombstone expired, allow fresh claim
+                    // Cooldown expired, allow fresh claim
                 }
             }
         }
@@ -192,6 +198,7 @@ impl<'a> DbDirectoryUsernames<'a> {
             status: UsernameStatus::Active,
             updated_at_ms: now_ms,
             tombstone_expires_at_ms: None,
+            redirect_to: None,
         };
         self.put_record(&record)?;
 
@@ -223,9 +230,63 @@ impl<'a> DbDirectoryUsernames<'a> {
             status: UsernameStatus::Tombstoned,
             updated_at_ms: now_ms,
             tombstone_expires_at_ms: Some(now_ms + cooldown_duration_ms),
+            redirect_to: None,
         };
         self.put_record(&tombstone_record)?;
         Ok(true)
+    }
+
+    /// Rename an active username to a new handle for the same account.
+    ///
+    /// Claims the `new_username` for `account_address`, and transitions `old_username`
+    /// into a `Moved` state with a redirect pointer to `new_username` and a tombstone cooldown.
+    pub fn rename(
+        &self,
+        old_username: &str,
+        new_username: &str,
+        account_address: &[u8; 20],
+        cooldown_duration_ms: i64,
+        now_ms: i64,
+    ) -> Result<()> {
+        let old_norm = Self::validate_and_normalize(old_username)?;
+        let new_norm = Self::validate_and_normalize(new_username)?;
+
+        if old_norm == new_norm {
+            return Ok(());
+        }
+
+        let existing_old = match self.get(&old_norm)? {
+            Some(r) => r,
+            None => {
+                return Err(UsernameError::InvalidFormat(format!(
+                    "Username '{}' does not exist",
+                    old_norm
+                ))
+                .into());
+            }
+        };
+
+        if existing_old.account_address != *account_address {
+            let current_hex = hex::encode(existing_old.account_address);
+            return Err(UsernameError::NameCollision(old_norm, current_hex).into());
+        }
+
+        // 1. Claim new username (fails on collision with other accounts or active tombstones)
+        self.claim(&new_norm, account_address, existing_old.stamp_key.clone(), now_ms)?;
+
+        // 2. Put old username into Moved state with redirect to new_norm
+        let moved_record = UsernameRecord {
+            username: old_norm,
+            account_address: *account_address,
+            stamp_key: existing_old.stamp_key,
+            status: UsernameStatus::Moved,
+            updated_at_ms: now_ms,
+            tombstone_expires_at_ms: Some(now_ms + cooldown_duration_ms),
+            redirect_to: Some(new_norm),
+        };
+        self.put_record(&moved_record)?;
+
+        Ok(())
     }
 
     fn put_record(&self, record: &UsernameRecord) -> Result<()> {
@@ -330,6 +391,48 @@ mod tests {
         let final_record = store.get("alice")?.expect("record should exist");
         assert_eq!(final_record.account_address, mallory_addr);
         assert_eq!(final_record.status, UsernameStatus::Active);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_rename_lifecycle() -> Result<()> {
+        let tempdir = TempDir::new("test-db-rename")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.directory_usernames();
+
+        let alice_addr = [1u8; 20];
+        let bob_addr = [2u8; 20];
+        let now = 2000000;
+        let cooldown = 50000;
+
+        // 1. Alice claims "alice_old"
+        store.claim("alice_old", &alice_addr, None, now)?;
+
+        // 2. Bob already has "bob_taken"
+        store.claim("bob_taken", &bob_addr, None, now)?;
+
+        // 3. Alice tries to rename "alice_old" to "bob_taken" -> Collision error
+        assert!(store
+            .rename("alice_old", "bob_taken", &alice_addr, cooldown, now + 10)
+            .is_err());
+
+        // 4. Alice renames "alice_old" to "alice_new"
+        store.rename("alice_old", "alice_new", &alice_addr, cooldown, now + 20)?;
+
+        // Verify "alice_new" is Active for Alice
+        let new_rec = store.get("alice_new")?.expect("should exist");
+        assert_eq!(new_rec.status, UsernameStatus::Active);
+        assert_eq!(new_rec.account_address, alice_addr);
+
+        // Verify "alice_old" is Moved pointing to "alice_new"
+        let old_rec = store.get("alice_old")?.expect("should exist");
+        assert_eq!(old_rec.status, UsernameStatus::Moved);
+        assert_eq!(old_rec.redirect_to, Some("alice_new".to_string()));
+        assert_eq!(old_rec.tombstone_expires_at_ms, Some(now + 20 + cooldown));
+
+        // 5. Bob tries to claim "alice_old" during cooldown -> Blocked
+        assert!(store.claim("alice_old", &bob_addr, None, now + 100).is_err());
 
         Ok(())
     }

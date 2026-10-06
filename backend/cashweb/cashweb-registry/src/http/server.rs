@@ -125,6 +125,15 @@ async fn handle_get_peers(Extension(server): Extension<RegistryServer>) -> Json<
     })
 }
 
+/// Inlined directory entry payload returned alongside the user handle.
+#[derive(Debug, Clone, Serialize)]
+pub struct DirectoryEntryPayload {
+    /// Content type of the serialized profile (application/cbor or application/x-protobuf).
+    pub content_type: &'static str,
+    /// Hex-encoded serialized profile statement.
+    pub raw_hex: String,
+}
+
 /// JSON response for directory user lookup.
 #[derive(Debug, Clone, Serialize)]
 pub struct DirectoryUserResponse {
@@ -132,12 +141,16 @@ pub struct DirectoryUserResponse {
     pub username: String,
     /// 0x-prefixed hexadecimal Monad account address.
     pub account_address: String,
-    /// Active or tombstoned state.
+    /// Active, tombstoned, or moved state.
     pub status: &'static str,
     /// Timestamp of last modification in milliseconds.
     pub updated_at_ms: i64,
     /// Expiration timestamp in milliseconds for tombstone cooldown.
     pub tombstone_expires_at_ms: Option<i64>,
+    /// Pointer to new username if status is moved.
+    pub redirect_to: Option<String>,
+    /// Inlined profile / directory entry statement (if active and published).
+    pub entry: Option<DirectoryEntryPayload>,
 }
 
 async fn handle_get_directory_user(
@@ -186,6 +199,30 @@ async fn handle_get_directory_user(
     let status_str = match record.status {
         crate::store::directory_usernames::UsernameStatus::Active => "active",
         crate::store::directory_usernames::UsernameStatus::Tombstoned => "tombstoned",
+        crate::store::directory_usernames::UsernameStatus::Moved => "moved",
+    };
+
+    let entry = if record.status == crate::store::directory_usernames::UsernameStatus::Active {
+        match server
+            .registry
+            .get_monad_profile_raw(MonadAddress(record.account_address))
+        {
+            Ok(Some(raw)) => {
+                let is_cbor = crate::store::monad_profiles::is_cbor_frame(&raw);
+                let content_type = if is_cbor {
+                    "application/cbor"
+                } else {
+                    "application/x-protobuf"
+                };
+                Some(DirectoryEntryPayload {
+                    content_type,
+                    raw_hex: hex::encode(&raw),
+                })
+            }
+            _ => None,
+        }
+    } else {
+        None
     };
 
     (
@@ -200,6 +237,8 @@ async fn handle_get_directory_user(
             status: status_str,
             updated_at_ms: record.updated_at_ms,
             tombstone_expires_at_ms: record.tombstone_expires_at_ms,
+            redirect_to: record.redirect_to,
+            entry,
         }),
     )
         .into_response()
@@ -1331,6 +1370,7 @@ mod spa_tests {
             .tombstone("alice", &alice_addr, 60000, 1700000100)
             .unwrap();
         let res_tomb = router
+            .clone()
             .oneshot(Request::get("/directory/user/alice").body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -1338,5 +1378,28 @@ mod spa_tests {
         let tomb_body = response_bytes(res_tomb).await;
         let tomb_val: serde_json::Value = serde_json::from_slice(&tomb_body).unwrap();
         assert_eq!(tomb_val["status"], "tombstoned");
+
+        // 5. Renamed / Moved user -> 200 OK with status: moved and redirect_to
+        let bob_addr = [99u8; 20];
+        server
+            .registry
+            .directory_usernames()
+            .claim("bob_v1", &bob_addr, None, 1700000200)
+            .unwrap();
+        server
+            .registry
+            .directory_usernames()
+            .rename("bob_v1", "bob_v2", &bob_addr, 60000, 1700000250)
+            .unwrap();
+
+        let res_moved = router
+            .oneshot(Request::get("/directory/user/bob_v1").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res_moved.status(), StatusCode::OK);
+        let moved_body = response_bytes(res_moved).await;
+        let moved_val: serde_json::Value = serde_json::from_slice(&moved_body).unwrap();
+        assert_eq!(moved_val["status"], "moved");
+        assert_eq!(moved_val["redirect_to"], "bob_v2");
     }
 }

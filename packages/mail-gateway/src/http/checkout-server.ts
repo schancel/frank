@@ -1,6 +1,8 @@
 import { createServer, IncomingMessage, ServerResponse, Server } from 'node:http';
+import * as crypto from 'node:crypto';
 import { CreditLedger } from '../ledger/credit-ledger';
 import { GatewayStampProvider } from '../stamps/stamp-provider.interface';
+import { parseRawRfc822 } from '../smtp/smtp-listener';
 
 export interface CheckoutServerOptions {
   readonly port: number;
@@ -272,11 +274,54 @@ export class CheckoutServer {
     // 3. Deduct credit for this release
     this.ledger.consumeCredit(held.senderEmail, held.recipientAddress);
 
-    // 4. Dispatch stamped direct message to Frank relay
+    // 4. Thread resolution for held message
+    const parsed = parseRawRfc822(held.rawRfc822, held.senderEmail, held.recipientAddress);
+    let conversationId: string | undefined;
+    let inReplyToFrankMessageId: string | undefined;
+
+    if (parsed.inReplyTo) {
+      const parent = this.ledger.getThreadMappingByRfc822Id(parsed.inReplyTo);
+      if (parent) {
+        conversationId = parent.conversationId;
+        inReplyToFrankMessageId = parent.frankMessageId;
+      }
+    }
+
+    if (!conversationId) {
+      const participantsKey = [
+        held.senderEmail.toLowerCase().trim(),
+        held.recipientAddress.toLowerCase().trim(),
+      ]
+        .sort()
+        .join('#');
+      const hash = crypto
+        .createHash('sha256')
+        .update(participantsKey)
+        .digest('hex')
+        .slice(0, 32);
+      conversationId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+    }
+
+    // 5. Dispatch stamped direct message to Frank relay
     const emailText = new TextDecoder().decode(held.rawRfc822);
-    await this.stampProvider.stampAndSendDirectMessage({
+    const sendResult = await this.stampProvider.stampAndSendDirectMessage({
       recipientAddress: held.recipientAddress,
       text: `[Email from ${held.senderEmail}]\nSubject: ${held.subject}\n\n${emailText}`,
+      conversationId,
+      inReplyToFrankMessageId,
+    });
+
+    // 6. Record thread mapping
+    const frankMsgId =
+      sendResult.txHash ||
+      `inbound_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    this.ledger.recordThreadMapping({
+      conversationId,
+      frankMessageId: frankMsgId,
+      rfc822MessageId: parsed.messageId,
+      inReplyToRfc822: parsed.inReplyTo,
+      subject: held.subject,
+      createdAtMs: Date.now(),
     });
   }
 }

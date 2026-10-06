@@ -8,7 +8,12 @@ import { GatewayConfig } from '../src/types';
 class MockE2eStampProvider implements GatewayStampProvider {
   readonly chainFamily = 'evm' as const;
   readonly assetUnit = 'MON';
-  readonly sentMessages: Array<{ recipientAddress: string; text?: string }> = [];
+  readonly sentMessages: Array<{
+    recipientAddress: string;
+    text?: string;
+    conversationId?: string;
+    inReplyToFrankMessageId?: string;
+  }> = [];
 
   async getBalance(): Promise<GatewayWalletBalance> {
     return { raw: 10000000000000000000n, display: '10 MON', isLowBalance: false };
@@ -21,6 +26,8 @@ class MockE2eStampProvider implements GatewayStampProvider {
   async stampAndSendDirectMessage(params: {
     recipientAddress: string;
     text?: string;
+    conversationId?: string;
+    inReplyToFrankMessageId?: string;
   }): Promise<StampSubmissionResult> {
     this.sentMessages.push(params);
     return {
@@ -233,10 +240,11 @@ describe('End-to-End Integration Test: Live Relay + SMTP Server + Checkout Webho
     const remainingAllowance = daemon.ledger.getThreadAllowance('stranger@example.com', '0x1111111111111111111111111111111111111111');
     expect(remainingAllowance).toBeGreaterThanOrEqual(1);
 
-    // Phase 5: Stranger sends follow-up inbound email over SMTP -> delivered immediately without holding!
+    // Phase 5: Stranger sends follow-up inbound email over SMTP with In-Reply-To -> delivered immediately into same thread!
     const followUpMsg =
       'From: stranger@example.com\r\n' +
       'To: alice@frank.org\r\n' +
+      `In-Reply-To: ${outboundEmail.rfc822MessageId}\r\n` +
       'Subject: Re: Introduction\r\n' +
       'Authentication-Results: dkim=pass\r\n' +
       '\r\n' +
@@ -255,6 +263,9 @@ describe('End-to-End Integration Test: Live Relay + SMTP Server + Checkout Webho
     expect(followUpResponses.some((r) => r.includes('250 2.0.0 Message accepted and delivered'))).toBe(true);
     expect(stampProvider.sentMessages.length).toBe(2);
     expect(stampProvider.sentMessages[1].text).toContain('Thanks for replying Alice!');
+    // Verify thread bridging preserves Frank conversationId and parent frankMessageId
+    expect(stampProvider.sentMessages[1].conversationId).toBe('conv_123');
+    expect(stampProvider.sentMessages[1].inReplyToFrankMessageId).toBe('msg_123');
   });
 
   it('rejects inbound email to tombstoned handle via live relay check with 550', async () => {

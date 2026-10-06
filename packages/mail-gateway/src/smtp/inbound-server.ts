@@ -1,13 +1,22 @@
+import * as crypto from 'node:crypto';
 import { CreditLedger } from '../ledger/credit-ledger';
 import { GatewayStampProvider } from '../stamps/stamp-provider.interface';
 import { InboundEmail } from '../types';
+
+export interface InboundRecipientResolution {
+  readonly accountAddress: string;
+  readonly isTombstoned?: boolean;
+  readonly isMoved?: boolean;
+  readonly redirectTo?: string;
+  readonly entry?: { content_type: string; raw_hex: string };
+}
 
 export interface InboundHandlerOptions {
   readonly gatewayDomain: string;
   readonly ledger: CreditLedger;
   readonly stampProvider: GatewayStampProvider;
   readonly relayUrl?: string;
-  readonly relayLookup?: (username: string) => Promise<{ accountAddress: string; isTombstoned?: boolean } | undefined>;
+  readonly relayLookup?: (username: string) => Promise<InboundRecipientResolution | undefined>;
 }
 
 /**
@@ -17,7 +26,7 @@ export interface InboundHandlerOptions {
 export function createRelayUsernameLookup(
   relayBaseUrl: string,
   fetchFn: typeof fetch = fetch
-): (username: string) => Promise<{ accountAddress: string; isTombstoned?: boolean } | undefined> {
+): (username: string) => Promise<InboundRecipientResolution | undefined> {
   const normalizedBase = relayBaseUrl.replace(/\/+$/, '');
   return async (username: string) => {
     try {
@@ -38,12 +47,17 @@ export function createRelayUsernameLookup(
       const data = (await response.json()) as {
         username: string;
         account_address: string;
-        status: 'active' | 'tombstoned';
+        status: 'active' | 'tombstoned' | 'moved';
+        redirect_to?: string;
+        entry?: { content_type: string; raw_hex: string };
       };
 
       return {
         accountAddress: data.account_address,
         isTombstoned: data.status === 'tombstoned',
+        isMoved: data.status === 'moved',
+        redirectTo: data.redirect_to,
+        entry: data.entry,
       };
     } catch (err: unknown) {
       if (err instanceof Error && err.message.startsWith('Relay lookup failed')) {
@@ -60,13 +74,15 @@ export interface InboundProcessingResult {
   readonly paymentLink?: string;
   readonly shouldSendAutoReply: boolean;
   readonly txHash?: string;
+  readonly conversationId?: string;
+  readonly inReplyToFrankMessageId?: string;
 }
 
 export class InboundEmailHandler {
   private readonly gatewayDomain: string;
   private readonly ledger: CreditLedger;
   private readonly stampProvider: GatewayStampProvider;
-  private readonly relayLookup?: (username: string) => Promise<{ accountAddress: string; isTombstoned?: boolean } | undefined>;
+  private readonly relayLookup?: (username: string) => Promise<InboundRecipientResolution | undefined>;
 
   constructor(options: InboundHandlerOptions) {
     this.gatewayDomain = options.gatewayDomain.toLowerCase();
@@ -96,7 +112,46 @@ export class InboundEmailHandler {
 
     const frankRecipientAddress = recipientResolution.accountAddress;
 
-    // 2. Check credit ledger (allowance or purchased credits)
+    // 2. Resolve or establish thread mapping (bridging Frank conversationId & threadId)
+    let conversationId: string | undefined;
+    let inReplyToFrankMessageId: string | undefined;
+
+    if (email.inReplyTo) {
+      const parent = this.ledger.getThreadMappingByRfc822Id(email.inReplyTo);
+      if (parent) {
+        conversationId = parent.conversationId;
+        inReplyToFrankMessageId = parent.frankMessageId;
+      }
+    }
+
+    if (!conversationId && email.references && email.references.length > 0) {
+      for (let i = email.references.length - 1; i >= 0; i--) {
+        const refParent = this.ledger.getThreadMappingByRfc822Id(email.references[i]);
+        if (refParent) {
+          conversationId = refParent.conversationId;
+          inReplyToFrankMessageId = refParent.frankMessageId;
+          break;
+        }
+      }
+    }
+
+    if (!conversationId) {
+      // Deterministically derive a standard 16-byte UUID conversation ID from participant pair
+      const participantsKey = [
+        email.fromAddress.toLowerCase().trim(),
+        frankRecipientAddress.toLowerCase().trim(),
+      ]
+        .sort()
+        .join('#');
+      const hash = crypto
+        .createHash('sha256')
+        .update(participantsKey)
+        .digest('hex')
+        .slice(0, 32);
+      conversationId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+    }
+
+    // 3. Check credit ledger (allowance or purchased credits)
     const hasCredit = this.ledger.consumeCredit(email.fromAddress, frankRecipientAddress);
 
     if (hasCredit) {
@@ -105,11 +160,28 @@ export class InboundEmailHandler {
       const sendResult = await this.stampProvider.stampAndSendDirectMessage({
         recipientAddress: frankRecipientAddress,
         text: `[Email from ${email.fromAddress}]\nSubject: ${email.subject}\n\n${textContent}`,
+        conversationId,
+        inReplyToFrankMessageId,
+      });
+
+      // Record thread mapping for the incoming delivered message
+      const frankMsgId =
+        sendResult.txHash ||
+        `inbound_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      this.ledger.recordThreadMapping({
+        conversationId,
+        frankMessageId: frankMsgId,
+        rfc822MessageId: email.messageId,
+        inReplyToRfc822: email.inReplyTo,
+        subject: email.subject,
+        createdAtMs: Date.now(),
       });
 
       return {
         status: 'delivered',
         txHash: sendResult.txHash,
+        conversationId,
+        inReplyToFrankMessageId,
         shouldSendAutoReply: false,
       };
     }
@@ -144,7 +216,7 @@ export class InboundEmailHandler {
 
   private async resolveRecipient(
     localPart: string
-  ): Promise<{ accountAddress: string; isTombstoned?: boolean } | undefined> {
+  ): Promise<InboundRecipientResolution | undefined> {
     const canonicalLocal = localPart.toLowerCase().trim();
 
     // Check if it's already a raw hexadecimal Ethereum/Monad account address (0x...)

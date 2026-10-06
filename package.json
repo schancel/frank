@@ -24,7 +24,8 @@
     "typecheck:tsc": "node --import tsx scripts/typecheck.ts --tsc",
     "build:contracts": "yarn --cwd packages/contracts build",
     "test:contracts": "yarn --cwd packages/contracts test",
-    "deploy:contracts": "yarn --cwd packages/contracts deploy"
+    "deploy:contracts": "yarn --cwd packages/contracts deploy",
+    "test:integration": "node --import tsx test/integration/system-harness.ts"
   },
   "devDependencies": {
     "@types/bluebird": "^3.5.42",

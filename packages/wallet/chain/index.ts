@@ -36,6 +36,10 @@ export const activeChain: ActiveChain = MonadChain;
 
 export {
   PROTOCOL_CHAINS,
+  registerProtocolChain,
+  clearDynamicChains,
+  getAllChainsByKind,
+  getChainsByFamily,
   getChainRegistryEntry,
   getChainRegistryByKind,
   getChainRegistryByNetworkTag,

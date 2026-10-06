@@ -327,7 +327,7 @@ export class SolanaWallet
   }) {
     this.connection = params.connection;
     this.signer = params.signer;
-    this.chainIdentifier = params.chainIdentifier ?? params.networkId;
+    this.chainIdentifier = params.chainIdentifier ?? params.genesisHash;
     this.networkId = params.networkId;
     this.expectedGenesisHash = params.genesisHash;
     this.stealthKeyring = params.stealthKeyring ?? new SolanaStealthKeyring();

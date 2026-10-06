@@ -10,6 +10,10 @@ import {
   getChainRegistryByCaip2,
   getChainsByCurve,
   resolveChainIdentifier,
+  getAllChainsByKind,
+  getChainsByFamily,
+  registerProtocolChain,
+  clearDynamicChains,
 } from "./chains-registry";
 
 describe("chains-registry", () => {
@@ -317,6 +321,95 @@ describe("chains-registry", () => {
     expect(PROTOCOL_CHAINS["monad-mainnet"].contracts).toBe(CANONICAL_EVM_CONTRACTS);
     expect(PROTOCOL_CHAINS["solana-mainnet"].contracts).toBe(CANONICAL_SOLANA_CONTRACTS);
     expect(PROTOCOL_CHAINS["ecash-mainnet"].contracts).toBeUndefined();
+  });
+
+  describe("multi-testnet and family queries", () => {
+    it("returns all testnets for a chain kind supporting multiple concurrent testnets", () => {
+      const ethTestnets = getAllChainsByKind("ethereum", { isTestnet: true });
+      expect(ethTestnets.map((c) => c.id)).toEqual(["ethereum-sepolia", "ethereum-holesky"]);
+
+      const ethMainnets = getAllChainsByKind("ethereum", { isTestnet: false });
+      expect(ethMainnets.map((c) => c.id)).toEqual(["ethereum-mainnet"]);
+
+      const allEth = getAllChainsByKind("ethereum");
+      expect(allEth.map((c) => c.id)).toEqual([
+        "ethereum-sepolia",
+        "ethereum-holesky",
+        "ethereum-mainnet",
+      ]);
+
+      const solTestnets = getAllChainsByKind("solana", { isTestnet: true });
+      expect(solTestnets.map((c) => c.id)).toEqual(["solana-devnet", "solana-testnet"]);
+    });
+
+    it("returns chains filtered by cryptographic/VM family", () => {
+      const evmTestnets = getChainsByFamily("evm", { isTestnet: true });
+      const evmTestnetIds = evmTestnets.map((c) => c.id);
+      expect(evmTestnetIds).toContain("monad-testnet");
+      expect(evmTestnetIds).toContain("ethereum-sepolia");
+      expect(evmTestnetIds).toContain("ethereum-holesky");
+      expect(evmTestnetIds).toContain("hyperliquid-testnet");
+      expect(evmTestnetIds).toContain("tempo-testnet");
+      expect(evmTestnets.every((c) => c.family === "evm" && c.isTestnet)).toBe(true);
+
+      const solanaChains = getChainsByFamily("solana");
+      expect(solanaChains.map((c) => c.id)).toEqual([
+        "solana-devnet",
+        "solana-testnet",
+        "solana-mainnet",
+      ]);
+    });
+  });
+
+  describe("dynamic chain registration (arbitrary & rotating testnets)", () => {
+    afterEach(() => {
+      clearDynamicChains();
+    });
+
+    it("registers an arbitrary rotating testnet without codebase modifications", () => {
+      const ephemeralTestnet = {
+        id: "ethereum-ephemeral-1",
+        kind: "ethereum" as const,
+        family: "evm" as const,
+        curve: "secp256k1" as const,
+        keyType: 1 as const,
+        network: "testnet" as const,
+        isTestnet: true,
+        name: "Ethereum Ephemeral Devnet 1",
+        unit: "EPH",
+        caip2: "eip155:999999",
+        nativeChainId: 999999,
+        networkTag: "EPHT",
+      };
+
+      expect(getChainRegistryEntry("ethereum-ephemeral-1")).toBeUndefined();
+      registerProtocolChain(ephemeralTestnet);
+
+      // Resolvable via direct ID lookup
+      const entry = getChainRegistryEntry("ethereum-ephemeral-1");
+      expect(entry).toBeDefined();
+      expect(entry?.unit).toBe("EPH");
+
+      // Resolvable via networkTag, CAIP-2, and resolveChainIdentifier
+      expect(getChainRegistryByNetworkTag("EPHT")?.id).toBe("ethereum-ephemeral-1");
+      expect(getChainRegistryByCaip2("eip155:999999")?.id).toBe("ethereum-ephemeral-1");
+      expect(resolveChainIdentifier("EPHT")?.id).toBe("ethereum-ephemeral-1");
+      expect(resolveChainIdentifier("eip155:999999")?.id).toBe("ethereum-ephemeral-1");
+
+      // Included in multi-testnet queries
+      const ethTestnets = getAllChainsByKind("ethereum", { isTestnet: true });
+      expect(ethTestnets.map((c) => c.id)).toContain("ethereum-ephemeral-1");
+      expect(ethTestnets.length).toBe(3); // sepolia, holesky, ephemeral-1
+
+      // Included in family queries
+      const evmTestnets = getChainsByFamily("evm", { isTestnet: true });
+      expect(evmTestnets.map((c) => c.id)).toContain("ethereum-ephemeral-1");
+
+      // clearDynamicChains resets state cleanly
+      clearDynamicChains();
+      expect(getChainRegistryEntry("ethereum-ephemeral-1")).toBeUndefined();
+      expect(getAllChainsByKind("ethereum", { isTestnet: true }).length).toBe(2);
+    });
   });
 
   describe("relay protocol synchronization (docs/protocol/chains/v1.json)", () => {

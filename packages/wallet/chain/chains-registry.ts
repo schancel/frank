@@ -281,8 +281,25 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> = Object.freeze
   }),
 });
 
+const DYNAMIC_CHAINS: Map<string, ChainRegistryEntry> = new Map();
+
+/**
+ * Registers an arbitrary, rotating, or ephemeral chain entry at runtime (such as new
+ * testnets, local devnets, or rotating L2 rollups) without requiring codebase modifications.
+ */
+export function registerProtocolChain(entry: ChainRegistryEntry): void {
+  DYNAMIC_CHAINS.set(entry.id, Object.freeze({ ...entry }));
+}
+
+/**
+ * Clears dynamically registered chain entries. Primarily useful for test isolation.
+ */
+export function clearDynamicChains(): void {
+  DYNAMIC_CHAINS.clear();
+}
+
 export function getChainRegistryEntry(id: string): ChainRegistryEntry | undefined {
-  return PROTOCOL_CHAINS[id];
+  return PROTOCOL_CHAINS[id] ?? DYNAMIC_CHAINS.get(id);
 }
 
 export function getChainRegistryByKind(
@@ -290,7 +307,8 @@ export function getChainRegistryByKind(
   isTestnet: boolean
 ): ChainRegistryEntry {
   const targetNetwork = isTestnet ? "testnet" : "mainnet";
-  const entry = Object.values(PROTOCOL_CHAINS).find(
+  const all = [...Object.values(PROTOCOL_CHAINS), ...DYNAMIC_CHAINS.values()];
+  const entry = all.find(
     (c) => c.kind === kind && c.network === targetNetwork
   );
   if (!entry) {
@@ -299,31 +317,69 @@ export function getChainRegistryByKind(
   return entry;
 }
 
+/**
+ * Retrieves all registered chain entries matching a chain kind with optional testnet filter.
+ * Enables ecosystems with multiple concurrent testnets (e.g., Ethereum Sepolia + Holesky,
+ * Solana Devnet + Testnet) to enumerate all available testnets.
+ */
+export function getAllChainsByKind(
+  kind: SupportedChainKind | string,
+  filter?: { isTestnet?: boolean }
+): ChainRegistryEntry[] {
+  const all = [...Object.values(PROTOCOL_CHAINS), ...DYNAMIC_CHAINS.values()];
+  return all.filter((c) => {
+    if (c.kind !== kind) return false;
+    if (filter?.isTestnet !== undefined && c.isTestnet !== filter.isTestnet) return false;
+    return true;
+  });
+}
+
+/**
+ * Retrieves all registered chain entries belonging to a given cryptographic / VM family
+ * ("evm" | "bitcoin" | "solana") with optional testnet filter.
+ */
+export function getChainsByFamily(
+  family: SupportedChainFamily,
+  filter?: { isTestnet?: boolean }
+): ChainRegistryEntry[] {
+  const all = [...Object.values(PROTOCOL_CHAINS), ...DYNAMIC_CHAINS.values()];
+  return all.filter((c) => {
+    if (c.family !== family) return false;
+    if (filter?.isTestnet !== undefined && c.isTestnet !== filter.isTestnet) return false;
+    return true;
+  });
+}
+
 export function getChainRegistryByNetworkTag(
   networkTag: string
 ): ChainRegistryEntry | undefined {
-  return Object.values(PROTOCOL_CHAINS).find(
-    (c) => c.networkTag === networkTag
+  return (
+    Object.values(PROTOCOL_CHAINS).find((c) => c.networkTag === networkTag) ??
+    Array.from(DYNAMIC_CHAINS.values()).find((c) => c.networkTag === networkTag)
   );
 }
 
 export function getChainRegistryByCaip2(
   caip2: string
 ): ChainRegistryEntry | undefined {
-  return Object.values(PROTOCOL_CHAINS).find((c) => c.caip2 === caip2);
+  return (
+    Object.values(PROTOCOL_CHAINS).find((c) => c.caip2 === caip2) ??
+    Array.from(DYNAMIC_CHAINS.values()).find((c) => c.caip2 === caip2)
+  );
 }
 
 export function getChainsByCurve(
   curve: SupportedCurve
 ): ChainRegistryEntry[] {
-  return Object.values(PROTOCOL_CHAINS).filter((c) => c.curve === curve);
+  const all = [...Object.values(PROTOCOL_CHAINS), ...DYNAMIC_CHAINS.values()];
+  return all.filter((c) => c.curve === curve);
 }
 
 export function resolveChainIdentifier(
   idOrTagOrCaip2: string
 ): ChainRegistryEntry | undefined {
   return (
-    PROTOCOL_CHAINS[idOrTagOrCaip2] ??
+    getChainRegistryEntry(idOrTagOrCaip2) ??
     getChainRegistryByNetworkTag(idOrTagOrCaip2) ??
     getChainRegistryByCaip2(idOrTagOrCaip2)
   );

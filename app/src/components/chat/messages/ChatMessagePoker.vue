@@ -1,8 +1,5 @@
 <template>
-  <div
-    class="poker-game q-pa-sm"
-    style="min-width: 290px; max-width: 440px"
-  >
+  <div class="poker-game q-pa-sm" style="min-width: 290px; max-width: 440px">
     <!-- Header -->
     <div class="row items-center justify-between q-mb-xs">
       <div class="row items-center">
@@ -19,8 +16,13 @@
     </div>
 
     <!-- Table Header Info -->
-    <div class="row items-center justify-between text-caption text-grey-7 q-mb-sm">
-      <span>Table: <span class="text-mono">{{ item.tableId?.slice(0, 8) }}</span></span>
+    <div
+      class="row items-center justify-between text-caption text-grey-7 q-mb-sm"
+    >
+      <span
+        >Table:
+        <span class="text-mono">{{ item.tableId?.slice(0, 8) }}</span></span
+      >
       <q-badge
         v-if="item.street"
         color="grey-4"
@@ -56,11 +58,7 @@
 
       <!-- Players at Table Status -->
       <div class="row q-col-gutter-xs">
-        <div
-          v-for="p in item.players"
-          :key="p.address"
-          class="col-6"
-        >
+        <div v-for="p in item.players" :key="p.address" class="col-6">
           <div
             class="player-seat q-pa-xs rounded-borders text-caption"
             :class="{
@@ -70,15 +68,21 @@
           >
             <div class="row items-center justify-between">
               <span class="ellipsis text-weight-medium" style="max-width: 80px">
-                {{ p.isDealerButton ? '🔘 ' : '' }}{{ p.address.slice(0, 6) }}...
+                {{ p.isDealerButton ? '🔘 ' : ''
+                }}{{ p.address.slice(0, 6) }}...
               </span>
               <span v-if="p.folded" class="text-grey-5">Folded</span>
-              <span v-else-if="p.isAllIn" class="text-warning text-weight-bold">ALL-IN</span>
+              <span v-else-if="p.isAllIn" class="text-warning text-weight-bold"
+                >ALL-IN</span
+              >
               <span v-else class="text-weight-bold text-white">
                 🪙 {{ p.chips }}
               </span>
             </div>
-            <div v-if="p.currentStreetBet > 0" class="text-caption text-amber-3 text-right">
+            <div
+              v-if="p.currentStreetBet > 0"
+              class="text-caption text-amber-3 text-right"
+            >
               Bet: {{ p.currentStreetBet }}
             </div>
           </div>
@@ -109,13 +113,16 @@
 
     <!-- Showdown / Winner Announcement -->
     <div
-      v-if="item.action === 'showdown' || item.action === 'settle' || item.winners"
+      v-if="
+        item.action === 'showdown' || item.action === 'settle' || item.winners
+      "
       class="q-pa-xs q-mb-sm bg-positive text-white rounded-borders text-center"
       data-testid="poker-winners-banner"
     >
       <div class="text-subtitle2 text-weight-bold">🏆 HAND SETTLED</div>
       <div v-for="w in item.winners" :key="w.address" class="text-caption">
-        <strong>{{ w.address.slice(0, 8) }}...</strong> won <strong>{{ w.amount }} chips</strong>!
+        <strong>{{ w.address.slice(0, 8) }}...</strong> won
+        <strong>{{ w.amount }} chips</strong>!
         <div v-if="w.handDescription" class="text-caption text-grey-2">
           {{ w.handDescription }}
         </div>
@@ -138,7 +145,13 @@
 
       <!-- Start Hand Button -->
       <q-btn
-        v-if="(item.action === 'create' || item.action === 'join' || item.street === 'waiting' || item.street === 'settled') && canStart"
+        v-if="
+          (item.action === 'create' ||
+            item.action === 'join' ||
+            item.street === 'waiting' ||
+            item.street === 'settled') &&
+          canStart
+        "
         dense
         no-caps
         color="primary"
@@ -182,16 +195,22 @@
         <!-- Bet / Raise Controls -->
         <div class="row items-center q-col-gutter-xs q-mb-xs">
           <div class="col-7">
-            <div class="row items-center justify-between bg-grey-2 q-px-xs rounded-borders">
+            <div
+              class="row items-center justify-between bg-grey-2 q-px-xs rounded-borders"
+            >
               <q-btn
                 dense
                 flat
                 icon="remove"
                 size="sm"
                 :disable="raiseAmount <= minRaiseTotal"
-                @click="raiseAmount = Math.max(minRaiseTotal, raiseAmount - bigBlind)"
+                @click="
+                  raiseAmount = Math.max(minRaiseTotal, raiseAmount - bigBlind)
+                "
               />
-              <span class="text-caption text-weight-bold">{{ raiseAmount }} Chips</span>
+              <span class="text-caption text-weight-bold"
+                >{{ raiseAmount }} Chips</span
+              >
               <q-btn
                 dense
                 flat
@@ -208,7 +227,9 @@
               color="amber-9"
               text-color="black"
               class="full-width text-weight-bold"
-              :label="currentBet === 0 ? `Bet ${raiseAmount}` : `Raise ${raiseAmount}`"
+              :label="
+                currentBet === 0 ? `Bet ${raiseAmount}` : `Raise ${raiseAmount}`
+              "
               data-testid="poker-raise-btn"
               @click="sendRaise"
             />
@@ -234,10 +255,7 @@
 <script lang="ts">
 import { defineComponent, type PropType, ref, computed } from 'vue'
 import type { PokerItem, PokerStreet } from '@frank/cashweb/types/messages'
-import {
-  formatCard,
-  isRedSuit,
-} from '@frank/wallet/message-item-plugins/poker'
+import { formatCard, isRedSuit } from '@frank/wallet/message-item-plugins/poker'
 
 export default defineComponent({
   name: 'ChatMessagePoker',

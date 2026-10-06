@@ -25,7 +25,10 @@
         map-options
         filled
         dense
-        :label="$t('sendStealthDialog.walletLabel') || $t('sendStealthDialog.chainLabel')"
+        :label="
+          $t('sendStealthDialog.walletLabel') ||
+          $t('sendStealthDialog.chainLabel')
+        "
         data-testid="stealth-wallet-select"
       />
     </q-card-section>
@@ -186,8 +189,7 @@ export default defineComponent({
         {
           value: 'monad',
           label:
-            monadCustom ||
-            (this.isTestnet ? 'Monad Testnet' : 'Monad Wallet'),
+            monadCustom || (this.isTestnet ? 'Monad Testnet' : 'Monad Wallet'),
           chain: 'monad',
           networkTag: this.isTestnet ? 'monad-testnet' : 'monad-mainnet',
           curve: 'secp256k1',
@@ -210,8 +212,7 @@ export default defineComponent({
         {
           value: 'ecash',
           label:
-            ecashCustom ||
-            (this.isTestnet ? 'eCash Testnet' : 'eCash Wallet'),
+            ecashCustom || (this.isTestnet ? 'eCash Testnet' : 'eCash Wallet'),
           chain: 'ecash',
           networkTag: this.isTestnet ? 'ecash-testnet' : 'ecash-mainnet',
           curve: 'secp256k1',
@@ -248,7 +249,9 @@ export default defineComponent({
           return this.formattedBalance
         }
         if (this.balance !== null && this.balance !== undefined) {
-          return `${activeChain.toDisplayAmount(this.balance)} ${this.currentUnit}`
+          return `${activeChain.toDisplayAmount(this.balance)} ${
+            this.currentUnit
+          }`
         }
         return `0.00 ${this.currentUnit}`
       }

@@ -141,7 +141,9 @@ describe('ChatMessageLiarsDice.vue', () => {
     await submitBidBtn.trigger('click')
 
     expect(wrapper.emitted('sendFollowUp')).toHaveLength(2)
-    expect((wrapper.emitted('sendFollowUp')![1][0] as any).text).toContain('/bid')
+    expect((wrapper.emitted('sendFollowUp')![1][0] as any).text).toContain(
+      '/bid',
+    )
   })
 
   it('renders showdown result with matching dice and eliminated players', async () => {

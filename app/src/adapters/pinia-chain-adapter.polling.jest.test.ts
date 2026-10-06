@@ -168,9 +168,9 @@ describe('direct-message polling vs the relay challenge cap', () => {
   })
 
   it('backs off for the relay-requested Retry-After on 429 capacity and keeps polling', async () => {
-    // Tiny cap so the loop hits it quickly: poll 1 = inbox + recovery (2), poll 2 = inbox (3),
-    // poll 3 = inbox -> 429.
-    const { relay, wallet } = setup({ maxUsedChallenges: 3 })
+    // Tiny cap so the loop hits it quickly: poll 1 = inbox (1), poll 2 = inbox (2),
+    // poll 3 = inbox -> 429 (unified mailbox recovery, ticket #922).
+    const { relay, wallet } = setup({ maxUsedChallenges: 2 })
     const polling = startDirectMessagePolling({ wallet })
     await jest.advanceTimersByTimeAsync(7000 * 2 + 1000)
     expect(count(relay, 'inbox', 429)).toBe(1)
@@ -183,7 +183,7 @@ describe('direct-message polling vs the relay challenge cap', () => {
     // After the pause the consumed challenges have expired and polling resumes successfully.
     await jest.advanceTimersByTimeAsync(10_000)
     expect(count(relay, 'inbox')).toBeGreaterThan(readsAtLimit)
-    expect(count(relay, 'inbox', 200)).toBeGreaterThanOrEqual(3)
+    expect(count(relay, 'inbox', 200)).toBeGreaterThanOrEqual(2)
     polling.stop()
   })
 
@@ -272,7 +272,7 @@ describe('direct-message polling vs the relay challenge cap', () => {
 
     it('reports rate-limited on a 429 capacity answer and clears on recovery', async () => {
       // Same tiny cap as the Retry-After test above: the third poll's inbox read is refused (429).
-      const { wallet } = setup({ maxUsedChallenges: 3 })
+      const { wallet } = setup({ maxUsedChallenges: 2 })
       const polling = startDirectMessagePolling({ wallet })
       const status = useMailboxStatusStore()
       await jest.advanceTimersByTimeAsync(7000 * 2 + 1000)

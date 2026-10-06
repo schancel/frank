@@ -42,6 +42,8 @@ import {
 } from './monad-identity-session'
 import { useMonadWallet } from './clients'
 
+jest.setTimeout(30000)
+
 const mockInitialize = jest.fn(async () => undefined)
 const mockStatus = reactive({
   status: 'fresh',

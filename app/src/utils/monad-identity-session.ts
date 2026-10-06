@@ -45,6 +45,7 @@ import {
 } from '../adapters/pinia-chain-adapter'
 import { useProfileStore } from '../stores/my-profile'
 import {
+  fetchMonadProfile,
   registerMonadIdentityCbor,
   type MonadIdentity,
 } from '@frank/wallet/monad-identity'
@@ -151,6 +152,22 @@ function productionDeps(): MessagingDeps {
           profile = useProfileStore().profile
         } catch {
           // Pinia store not available (e.g. non-Vue test environment)
+        }
+        try {
+          const existing = await fetchMonadProfile({
+            relayBaseUrl,
+            address: identity.address,
+          })
+          if (
+            existing &&
+            (existing.name ?? '') === (profile?.name ?? '') &&
+            (existing.bio ?? '') === (profile?.bio ?? '') &&
+            (existing.avatar ?? '') === (profile?.avatar ?? '')
+          ) {
+            return
+          }
+        } catch {
+          // If check fails, fall through to attempt registration
         }
         await registerMonadIdentityCbor({
           relayBaseUrl,

@@ -156,4 +156,22 @@ describe('ChatMessage Retry and Discard', () => {
       payloadDigest: 'pending:1:1:abc',
     })
   })
+
+  it('emits replyClicked when suffix emits replyClick', () => {
+    const { wrapper } = mountFailed()
+    const suffix = wrapper.findComponent({ ref: 'suffix' })
+    suffix.vm.$emit('replyClick')
+    expect(wrapper.emitted('replyClicked')).toEqual([
+      [{ address: '0xPEER', payloadDigest: 'pending:1:1:abc' }],
+    ])
+  })
+
+  it('emits forwardClicked when suffix emits forwardClick', () => {
+    const { wrapper } = mountFailed()
+    const suffix = wrapper.findComponent({ ref: 'suffix' })
+    suffix.vm.$emit('forwardClick')
+    expect(wrapper.emitted('forwardClicked')).toEqual([
+      [{ address: '0xPEER', payloadDigest: 'pending:1:1:abc' }],
+    ])
+  })
 })

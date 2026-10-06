@@ -9,7 +9,12 @@
       >
         <q-item-section>Reply</q-item-section>
       </q-item>
-      <q-item v-if="message.outpoints != null" clickable v-close-popup>
+      <q-item
+        v-if="message.outpoints != null"
+        clickable
+        v-close-popup
+        @click="$emit('forwardClick')"
+      >
         <q-item-section>Forward</q-item-section>
       </q-item>
       <q-separator />
@@ -74,7 +79,7 @@ export default defineComponent({
       getStampAmount: chatStore.getStampAmount,
     }
   },
-  emits: ['deleteClick', 'replyClick', 'txClick'],
+  emits: ['deleteClick', 'replyClick', 'txClick', 'forwardClick'],
   methods: {
     sendMessage(args: {
       address: string

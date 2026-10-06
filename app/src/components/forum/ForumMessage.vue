@@ -1,79 +1,89 @@
 <template>
-  <q-card class="q-pa-none" :class="{ 'q-ma-sm': !compact }" flat bordered>
-    <q-card-section class="row" horizontal>
-      <q-card-section class="col-shrink q-pa-sm bg-on-secondary">
-        <q-card-section class="q-pa-none text-center">
-          <q-btn
-            flat
-            icon="arrow_drop_up"
-            padding="0"
-            :aria-label="$t('a11y.voteUp')"
-            :disable="isVoting"
-            @click="addVotes(1)"
-            data-test="forum-vote-up"
-          />
-        </q-card-section>
-        <q-card-section class="q-pa-none q-mt-xs text-center">{{
-          formatVoteWeight(displayedVoteWeight)
-        }}</q-card-section>
-        <q-card-section class="q-pa-none q-mt-xs text-center">
-          <q-btn
-            flat
-            icon="arrow_drop_down"
-            padding="0"
-            :aria-label="$t('a11y.voteDown')"
-            :disable="isVoting"
-            @click="addVotes(-1)"
-            data-test="forum-vote-down"
-          />
-        </q-card-section>
-      </q-card-section>
-      <q-card-section class="q-ma-none q-pa-none col" vertical>
+  <q-card class="forum-post-card q-pa-none" :class="{ 'q-ma-sm': !compact }" flat bordered>
+    <q-card-section class="row no-wrap q-pa-none" horizontal>
+      <div class="vote-column column items-center justify-start q-py-sm q-px-xs">
+        <q-btn
+          flat
+          dense
+          round
+          size="sm"
+          icon="arrow_drop_up"
+          padding="0"
+          :aria-label="$t('a11y.voteUp')"
+          :disable="isVoting"
+          @click="addVotes(1)"
+          data-test="forum-vote-up"
+          class="vote-btn upvote-btn"
+        />
+        <div class="vote-weight-pill text-caption text-weight-bold text-center q-my-xs">
+          {{ formatVoteWeight(displayedVoteWeight) }}
+        </div>
+        <q-btn
+          flat
+          dense
+          round
+          size="sm"
+          icon="arrow_drop_down"
+          padding="0"
+          :aria-label="$t('a11y.voteDown')"
+          :disable="isVoting"
+          @click="addVotes(-1)"
+          data-test="forum-vote-down"
+          class="vote-btn downvote-btn"
+        />
+      </div>
+      <div class="col column q-pa-none post-main-content">
         <template
           v-for="(entry, index) in message.entries.filter(
             entry => entry.kind === 'post',
           )"
           :key="index"
         >
-          <q-card-section
-            horizontal
-            class="q-ma-none q-pa-sm col-grow text-bold"
-          >
-            <q-icon name="link" v-if="entry.url" class="text-h6 q-pa-xs" />
-            <a
-              :href="entry.url"
-              target="_blank"
-              v-if="entry.url"
-              class="text-h6 text-bold q-mr-md post-title"
-              >{{ entry.title || 'untitled' }}</a
-            >
-            <span v-if="!entry.url" class="text-h6 text-bold q-mr-md">
-              {{ entry.title || 'untitled' }}
-            </span>
-            <q-space />
-            <a
-              class="q-pr-sm post-title"
+          <div class="row items-center no-wrap justify-between q-px-md q-pt-sm q-pb-xs">
+            <div class="col-grow post-title-wrap">
+              <q-icon name="link" v-if="entry.url" class="text-subtitle1 q-mr-xs" />
+              <a
+                :href="entry.url"
+                target="_blank"
+                v-if="entry.url"
+                class="text-subtitle1 text-weight-bold post-title"
+                >{{ entry.title || 'untitled' }}</a
+              >
+              <span v-if="!entry.url" class="text-subtitle1 text-weight-bold">
+                {{ entry.title || 'untitled' }}
+              </span>
+            </div>
+            <q-chip
+              v-if="message.topic"
+              outline
+              dense
+              size="sm"
+              color="primary"
+              class="topic-chip cursor-pointer q-ml-sm"
+              clickable
               @click.prevent="$emit('set-topic', message.topic)"
-              >{{ message.topic }}</a
             >
-          </q-card-section>
-          <q-card-section
-            class="q-ma-none q-px-sm q-pt-none q-pb-sm col-grow"
+              #{{ message.topic }}
+            </q-chip>
+          </div>
+          <div
+            class="q-px-md q-pt-xs q-pb-sm col-grow post-body"
             v-if="renderBody"
           >
-            <span class="mdstyle" v-html="markedMessage(entry.message)" />
-          </q-card-section>
+            <div class="mdstyle text-body2" v-html="markedMessage(entry.message)" />
+          </div>
         </template>
-        <q-card-actions class="q-ma-none q-pa-none">
-          <q-btn no-caps flat stretch dense :to="`/chat/${message.poster}`">
-            <div v-if="haveContact(message.poster)">
-              {{ getContactProfile(message.poster).name }}
-            </div>
-            <div v-else>{{ formatAddress(message.poster) }}</div>
-          </q-btn>
-          <div class="text-bold q-ml-sm text-caption">
-            {{ timestamp }}
-            <q-tooltip>{{ fullTimestamp }}</q-tooltip>
+        <q-separator class="q-my-none" style="opacity: 0.15" />
+        <q-card-actions class="post-footer q-px-md q-py-xs row items-center no-wrap">
+          <div class="row items-center q-gutter-x-xs text-caption text-grey-7 author-pill">
+            <q-icon name="person" size="14px" color="primary" />
+            <span>by</span>
+            <q-btn no-caps flat dense size="sm" :to="`/chat/${message.poster}`" class="author-btn q-px-xs">
+              <div v-if="haveContact(message.poster)" class="text-weight-bold">
+                {{ getContactProfile(message.poster).name }}
+              </div>
+              <div v-else class="text-weight-bold font-mono">{{ formatAddress(message.poster) }}</div>
+            </q-btn>
           </div>
           <div
             v-if="voteStatus"
@@ -84,22 +94,34 @@
             <q-spinner-dots size="1.2em" color="primary" class="q-mr-xs" />
             <span>{{ voteStatus }}</span>
           </div>
-          <q-btn
-            flat
-            no-caps
-            icon="forum"
-            class="q-ml-md"
-            :label="`${message.replies.length} replies`"
-            :to="`/forum/${message.payloadDigest}`"
-          />
-          <q-btn
-            flat
-            no-caps
-            icon="reply"
-            label="Reply"
-            class="q-ml-sm"
-            :to="`/new-post/${message.payloadDigest}`"
-          />
+          <q-space />
+          <div class="row items-center q-gutter-x-xs">
+            <span class="text-caption text-grey-6 row items-center q-mr-sm">
+              <q-icon name="schedule" size="14px" class="q-mr-xs" />
+              <span>{{ timestamp }}</span>
+              <q-tooltip>{{ fullTimestamp }}</q-tooltip>
+            </span>
+            <q-btn
+              flat
+              dense
+              size="sm"
+              no-caps
+              icon="chat_bubble_outline"
+              class="comments-btn text-caption q-px-xs"
+              :label="`${message.replies.length} replies`"
+              :to="`/forum/${message.payloadDigest}`"
+            />
+            <q-btn
+              flat
+              dense
+              size="sm"
+              no-caps
+              icon="reply"
+              label="Reply"
+              class="reply-btn text-caption q-px-xs text-primary"
+              :to="`/new-post/${message.payloadDigest}`"
+            />
+          </div>
         </q-card-actions>
         <a-message-replies :messages="message.replies" v-if="showReplies" />
         <q-separator v-if="showParent && parentDigest && parentMessage" />
@@ -116,7 +138,7 @@
             :render-body="false"
           />
         </q-card-section>
-      </q-card-section>
+      </div>
     </q-card-section>
   </q-card>
 </template>
@@ -422,7 +444,88 @@ export default defineComponent({
 })
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
+.forum-post-card {
+  border-radius: 12px;
+  border: 1px solid var(--q-color-border, rgba(0, 0, 0, 0.08));
+  background: var(--q-card-bg, #ffffff);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  overflow: hidden;
+
+  &:hover {
+    border-color: rgba(0, 0, 0, 0.16);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  }
+}
+
+:global(body.body--dark) .forum-post-card {
+  background: #1c1613;
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+
+  &:hover {
+    border-color: rgba(255, 255, 255, 0.18);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  }
+}
+
+.vote-column {
+  min-width: 52px;
+  background: rgba(0, 0, 0, 0.02);
+  border-right: 1px solid rgba(0, 0, 0, 0.05);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 8px 4px;
+}
+
+:global(body.body--dark) .vote-column {
+  background: rgba(255, 255, 255, 0.03);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.vote-btn {
+  opacity: 0.7;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+  &:hover:not(:disabled) {
+    opacity: 1;
+  }
+}
+.upvote-btn:hover:not(:disabled) {
+  color: #ff5722 !important;
+  background: rgba(255, 87, 34, 0.1);
+}
+.downvote-btn:hover:not(:disabled) {
+  color: #7c4dff !important;
+  background: rgba(124, 77, 255, 0.1);
+}
+
+.vote-weight-pill {
+  font-size: 0.75rem;
+  letter-spacing: -0.02em;
+}
+
+.post-title {
+  color: var(--q-color-text);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.post-title:hover {
+  color: var(--q-primary);
+  text-decoration: underline;
+}
+
+.topic-chip {
+  font-weight: 600;
+  transition: opacity 0.15s ease;
+  &:hover {
+    opacity: 0.85;
+  }
+}
+
 :deep() .mdstyle img {
   max-width: 100%;
   max-height: 448px;
@@ -430,13 +533,14 @@ export default defineComponent({
 :deep() .mdstyle pre,
 code,
 table {
-  /*overflow-wrap: break-word;*/
   max-width: 100%;
   white-space: pre-wrap;
 }
 :deep() .mdstyle p {
   max-width: 100%;
   word-break: break-word;
+  line-height: 1.5;
+  margin-bottom: 0.5rem;
 }
 :deep() .mdstyle h1,
 h2,
@@ -445,14 +549,5 @@ h4 {
   font-size: 120%;
   font-weight: bold;
   line-height: inherit;
-}
-
-.post-title {
-  color: var(--q-color-text);
-  text-decoration: none;
-}
-
-.post-title:hover {
-  text-decoration: underline;
 }
 </style>

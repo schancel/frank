@@ -6,6 +6,7 @@ use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use rocksdb::ColumnFamilyDescriptor;
 use thiserror::Error;
 
+use crate::store::directory_usernames::DbDirectoryUsernames;
 use crate::store::metadata::DbMetadata;
 use crate::store::monad_messages::DbMonadMessages;
 use crate::store::monad_outbox::{DbMonadOutbox, MonadOutboxLimits};
@@ -159,6 +160,7 @@ impl Db {
         DbMonadTopicPosts::add_cfs(&mut cfs);
         DbMonadTopicVotes::add_cfs(&mut cfs);
         DbMonadProfiles::add_cfs(&mut cfs);
+        DbDirectoryUsernames::add_cfs(&mut cfs);
         let db = Self::open_with_cfs(path, cfs)?;
         db.monad_outbox()
             .migrate_legacy_delivered_ownership(limits)?;
@@ -236,6 +238,11 @@ impl Db {
     /// tally (ticket #30).
     pub fn monad_topic_votes(&self) -> DbMonadTopicVotes<'_> {
         DbMonadTopicVotes::new(self)
+    }
+
+    /// Returns `DbDirectoryUsernames`, allowing access to unique routable username store.
+    pub fn directory_usernames(&self) -> DbDirectoryUsernames<'_> {
+        DbDirectoryUsernames::new(self)
     }
 
     pub(crate) fn open_with_cfs(

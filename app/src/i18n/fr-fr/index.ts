@@ -114,6 +114,11 @@ export default {
     request: 'Demander au navigateur de conserver mes données',
     confirmSeed: 'Confirmer ma phrase de récupération',
     seedConfirmed: 'Votre phrase de récupération est confirmée.',
+    safariTip:
+      'Conseil pour Safari / WebKit : ajoutez Frank à votre écran d’accueil / Dock ou ajoutez ce site à vos favoris pour activer la persistance automatiquement.',
+    grantedToast: 'Stockage persistant accordé par le navigateur.',
+    declinedToast:
+      'Le navigateur a refusé le stockage persistant. Ajoutez Frank à vos favoris ou installez-le pour activer la persistance.',
   },
   blackjackP2p: {
     notDeliveredYet:

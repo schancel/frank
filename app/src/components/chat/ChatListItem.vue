@@ -155,11 +155,30 @@ export default defineComponent({
       }
       return []
     },
+    otherParticipants(): string[] {
+      return this.effectiveParticipants.filter(
+        p => !sameCanonicalAddress(p, this.ownAddress),
+      )
+    },
     displayParticipants(): string[] {
-      return this.effectiveParticipants.slice(0, 3)
+      if (
+        this.otherParticipants.length <= 1 &&
+        !this.conversation?.topic &&
+        !this.conversationName
+      ) {
+        return []
+      }
+      return this.otherParticipants.slice(0, 3)
     },
     remainingParticipantsCount(): number {
-      return Math.max(0, this.effectiveParticipants.length - 3)
+      if (
+        this.otherParticipants.length <= 1 &&
+        !this.conversation?.topic &&
+        !this.conversationName
+      ) {
+        return 0
+      }
+      return Math.max(0, this.otherParticipants.length - 3)
     },
     effectiveNumUnread(): number {
       return this.numUnread || this.conversation?.totalUnreadMessages || 0

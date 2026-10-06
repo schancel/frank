@@ -52,6 +52,8 @@ export function createRoutes(): RouteRecordRaw[] {
           ],
         },
         { path: 'settings', component: () => import('pages/Settings.vue') },
+        { path: 'backup', component: () => import('pages/BackupAccount.vue') },
+        { path: 'backup-account', redirect: '/backup' },
         { path: 'profile', component: () => import('pages/Profile.vue') },
         { path: 'receive', redirect: '/wallet' },
         { path: 'send', component: () => import('pages/Send.vue') },

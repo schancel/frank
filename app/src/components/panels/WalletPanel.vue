@@ -267,9 +267,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { activeChain } from '@frank/wallet/chain'
+import { accountSession, accountStatus } from '../../accounts/session'
 import { useBalance } from '../../composables/useBalance'
 import { useCodex32Backup } from '../../composables/useCodex32Backup'
 import { useWalletNames } from '../../composables/useWalletNames'
@@ -282,6 +283,15 @@ const router = useRouter()
 const route = useRoute()
 
 const { getCustomName, setCustomName, resetCustomName } = useWalletNames()
+
+const prewarmChains = () => {
+  if (accountStatus?.status === 'ready') {
+    accountSession?.getChainAddress?.('ecash')?.catch(() => undefined)
+    accountSession?.getChainAddress?.('solana')?.catch(() => undefined)
+  }
+}
+onMounted(prewarmChains)
+watch(() => accountStatus?.status, prewarmChains)
 
 const showRenameDialog = ref(false)
 const renameChain = ref<'monad' | 'ecash' | 'solana'>('monad')

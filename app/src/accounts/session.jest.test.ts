@@ -388,4 +388,13 @@ test('getActiveDomainRoot and getChainAddress derive valid addresses for ecash a
   const solanaAddr = await f.session.getChainAddress('solana')
   expect(typeof solanaAddr).toBe('string')
   expect(solanaAddr.length).toBeGreaterThan(30)
+
+  // Verify caching and synchronous retrieval
+  expect(f.session.getCachedChainAddress('ecash')).toBe(ecashAddr)
+  expect(f.session.getCachedChainAddress('solana')).toBe(solanaAddr)
+
+  const initialTakeRootsCalls = f.capability.takeRoots.mock.calls.length
+  const cachedEcash = await f.session.getChainAddress('ecash')
+  expect(cachedEcash).toBe(ecashAddr)
+  expect(f.capability.takeRoots).toHaveBeenCalledTimes(initialTakeRootsCalls)
 })

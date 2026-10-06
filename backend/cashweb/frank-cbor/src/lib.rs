@@ -97,8 +97,10 @@ pub use model::{
     ForumTopicPage, ForumView,
 };
 pub use registration::{
-    address_from_compressed_pubkey, address_from_uncompressed_pubkey, expiry_timestamp, join_ms,
+    address_from_compressed_pubkey, address_from_uncompressed_pubkey, encode_directory_statement,
+    encode_directory_statement_payload, expiry_timestamp, is_valid_canonical_username, join_ms,
     registration_from_ms, split_timestamp_ms, uncompressed_pubkey, uncompressed_pubkey_xy,
+    DirectoryStatementParams, CANONICAL_USERNAME_PATTERN,
 };
 pub use validate::{
     begin_direct_message_validation, default_context, relay_context, validate_frame,

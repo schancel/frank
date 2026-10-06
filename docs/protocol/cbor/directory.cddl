@@ -20,6 +20,7 @@ directory-statement = {
   ? 6: timestamp, ; expiry, if present
   ? 7: [1*8 account-ref], ; offline recovery authorities
   8: account-ref, ; stamp key P': key type 1, mandatory, no fallback (README S10a)
+  ? 14: canonical-username, ; optional canonical username handle (ticket #972)
   * uint => frank-value,
 }
 
@@ -80,6 +81,7 @@ directory-statement-v3 = {
   ? 7: [1*8 account-ref], ; offline recovery authorities
   8: account-ref, ; stamp key P': key type 1, mandatory, no fallback (S10a)
   ? 9: [1*64 profile-entry], ; the migrated profile entries (M4); absent when empty
+  ? 14: canonical-username, ; optional canonical username handle (ticket #972)
   * uint => frank-value,
 }
 
@@ -118,6 +120,7 @@ directory-statement-v4 = {
   11: uint .le 18446744073709551615, ; mailbox_key_generation
   12: uint .le 18446744073709551615, ; stamp_key_generation
   13: null / bstr .size 32, ; exact predecessor type-4 T1; null at rev0
+  ? 14: canonical-username, ; optional canonical username handle (ticket #972)
   * uint => frank-value,
 }
 
@@ -132,3 +135,8 @@ directory-preview-relay = {
 ; The existing type-2 schema1/min1 envelope is unchanged. For a v4 child it
 ; contains exactly one algorithm-1 strict-DER low-S signature by field 1.
 ; Complete bare v4 and enclosing type-2 frames each have a 262144-byte limit.
+
+; Canonical username handle (ticket #972). Semantic constraint:
+; handle must match ^[a-z0-9][a-z0-9_-]{2,31}$ (lowercase ASCII
+; alphanumeric with hyphen or underscore, starting with alphanumeric).
+canonical-username = tstr .size (3..32)

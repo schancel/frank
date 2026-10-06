@@ -980,6 +980,7 @@ fn open_children(
             stamp_key,
             profile_entries,
             preview,
+            canonical_username,
             unknown,
         } => {
             let key_transitions = match key_transitions {
@@ -1044,6 +1045,7 @@ fn open_children(
                         })
                         .collect()
                 }),
+                canonical_username,
                 unknown,
             })
         }

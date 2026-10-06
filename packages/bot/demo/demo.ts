@@ -511,6 +511,8 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
         CASHWEB_STAMP_MIN_BURN_VALUE_WEI: config.minStampWei,
         // The relay's topic routes (forum posts and votes) answer HTTP 500 without it (#364).
         MONAD_STAMP_BURN_ADDRESS: config.stampBurnAddress,
+        XEC_TESTNET_CHRONIK_URL: config.chronikUrl,
+        SOLANA_DEVNET_HTTP_RPC_URL: config.solanaRpcUrl,
         FRANK_RELAY_LISTEN: `127.0.0.1:${config.relayPort}`,
         FRANK_RELAY_DB_PATH: relayDb,
         FRANK_RELAY_EXTRA_TOML: curatedPath,

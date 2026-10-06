@@ -200,6 +200,20 @@ export const DEMO_VARS: readonly DemoVar[] = [
     secret: true,
   },
   {
+    name: 'XEC_TESTNET_CHRONIK_URL',
+    scope: 'relay',
+    default: 'https://chronik-testnet.fabien.cash',
+    description: 'Chronik indexer HTTP URL for XEC testnet relay proxying.',
+    secret: true,
+  },
+  {
+    name: 'SOLANA_DEVNET_HTTP_RPC_URL',
+    scope: 'relay',
+    default: 'https://api.devnet.solana.com',
+    description: 'Solana devnet JSON-RPC HTTP URL used by the relay proxy.',
+    secret: true,
+  },
+  {
     name: 'FRANK_NETWORK_TAG',
     scope: 'chain',
     default: 'MONT',
@@ -420,6 +434,8 @@ export interface DemoConfig {
   fakeRpcPort: number
   rpcUrl: string
   wsRpcUrl?: string
+  chronikUrl: string
+  solanaRpcUrl: string
   networkTag: string
   minStampWei: string
   /** Burn address given to the relay, the bots and the app command (#364). */
@@ -656,6 +672,15 @@ export function resolveDemoConfig(params: {
     }
   }
 
+  const chronikUrl = merged.XEC_TESTNET_CHRONIK_URL || 'https://chronik-testnet.fabien.cash'
+  if (chronikUrl && !/^https?:\/\//.test(chronikUrl)) {
+    problems.push(`XEC_TESTNET_CHRONIK_URL must be an http(s) URL, got "${chronikUrl}"`)
+  }
+  const solanaRpcUrl = merged.SOLANA_DEVNET_HTTP_RPC_URL || 'https://api.devnet.solana.com'
+  if (solanaRpcUrl && !/^https?:\/\//.test(solanaRpcUrl)) {
+    problems.push(`SOLANA_DEVNET_HTTP_RPC_URL must be an http(s) URL, got "${solanaRpcUrl}"`)
+  }
+
   const qwenKey = merged.QWEN_API_KEY
   const requestedMode = merged.QWEN_BOT_MODE
   if (requestedMode && requestedMode !== 'stub' && requestedMode !== 'live') {
@@ -824,7 +849,14 @@ export function resolveDemoConfig(params: {
         ]),
   ]
 
-  const secrets = [fakeChain ? undefined : rpcUrl, wsRpcUrl, qwenKey, ngrokAuthtoken].filter((v): v is string => !!v)
+  const secrets = [
+    fakeChain ? undefined : rpcUrl,
+    wsRpcUrl,
+    fakeChain ? undefined : merged.XEC_TESTNET_CHRONIK_URL,
+    fakeChain ? undefined : merged.SOLANA_DEVNET_HTTP_RPC_URL,
+    qwenKey,
+    ngrokAuthtoken,
+  ].filter((v): v is string => !!v)
   return {
     fakeChain,
     ngrok,
@@ -841,6 +873,8 @@ export function resolveDemoConfig(params: {
     fakeRpcPort,
     rpcUrl,
     wsRpcUrl,
+    chronikUrl,
+    solanaRpcUrl,
     networkTag,
     minStampWei,
     stampBurnAddress,

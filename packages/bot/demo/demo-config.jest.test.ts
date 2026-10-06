@@ -464,3 +464,32 @@ describe('ngrok configuration', () => {
   })
 })
 
+describe('bitcoin and solana relay proxies', () => {
+  it('defaults to public testnet and devnet endpoints', () => {
+    const config = REAL()
+    expect(config.chronikUrl).toBe('https://chronik-testnet.fabien.cash')
+    expect(config.solanaRpcUrl).toBe('https://api.devnet.solana.com')
+  })
+
+  it('accepts custom endpoints and redacts them if configured', () => {
+    const config = REAL({
+      XEC_TESTNET_CHRONIK_URL: 'https://custom-chronik.example.invalid',
+      SOLANA_DEVNET_HTTP_RPC_URL: 'https://custom-solana.example.invalid/v2/key',
+    })
+    expect(config.chronikUrl).toBe('https://custom-chronik.example.invalid')
+    expect(config.solanaRpcUrl).toBe('https://custom-solana.example.invalid/v2/key')
+    expect(config.secrets).toContain('https://custom-chronik.example.invalid')
+    expect(config.secrets).toContain('https://custom-solana.example.invalid/v2/key')
+  })
+
+  it('rejects malformed chronik and solana URLs', () => {
+    expect(problemsOf(() => REAL({ XEC_TESTNET_CHRONIK_URL: 'ftp://not-http' }))).toEqual([
+      'XEC_TESTNET_CHRONIK_URL must be an http(s) URL, got "ftp://not-http"',
+    ])
+    expect(problemsOf(() => REAL({ SOLANA_DEVNET_HTTP_RPC_URL: 'not-a-url' }))).toEqual([
+      'SOLANA_DEVNET_HTTP_RPC_URL must be an http(s) URL, got "not-a-url"',
+    ])
+  })
+})
+
+

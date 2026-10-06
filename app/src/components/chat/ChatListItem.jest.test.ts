@@ -150,7 +150,7 @@ describe('ChatListItem conversation-oriented display (#943)', () => {
     expect(wrapper.text()).toContain('Token Engineering Working Group')
   })
 
-  it('displays participant badges up to 3 and calculates remaining overflow', () => {
+  it('displays participant badges up to 3 and calculates remaining overflow, excluding own address', () => {
     const participants = [
       OWN_ADDRESS,
       '0x2222222222222222222222222222222222222222',
@@ -177,8 +177,35 @@ describe('ChatListItem conversation-oriented display (#943)', () => {
     })
     const vm = wrapper.vm as any
     expect(vm.displayParticipants).toHaveLength(3)
-    expect(vm.remainingParticipantsCount).toBe(2)
+    expect(vm.displayParticipants).not.toContain(OWN_ADDRESS)
+    expect(vm.remainingParticipantsCount).toBe(1)
     expect(vm.formatParticipant(OWN_ADDRESS)).toBe('You')
+  })
+
+  it('omits participant badges for 1-on-1 direct messages without separate topic', () => {
+    const wrapper = shallowMount(ChatListItem, {
+      props: {
+        conversation: {
+          id: 'conv-1on1',
+          participants: [
+            OWN_ADDRESS,
+            '0x2222222222222222222222222222222222222222',
+          ],
+        },
+        compact: false,
+      },
+      global: {
+        mocks: {
+          $t: translator('en-us'),
+          $status: { setup: true },
+          $route: { params: {} },
+        },
+      },
+    })
+    const vm = wrapper.vm as any
+    expect(vm.displayParticipants).toHaveLength(0)
+    expect(vm.remainingParticipantsCount).toBe(0)
+    expect(wrapper.find('.participant-badges').exists()).toBe(false)
   })
 
   it('formats conversation timestamp properly', () => {

@@ -2,9 +2,16 @@ import { defineStore } from 'pinia'
 
 export interface State {
   profile: {
+    username?: string
     name?: string
     bio?: string
     avatar?: string
+    location?: string
+    links?: Array<{
+      type: string
+      url: string
+      label?: string
+    }>
   }
   inbox: {
     acceptancePrice?: number

@@ -1,94 +1,180 @@
 import { DatabaseSync } from 'node:sqlite';
-import { HeldMessageRecord, ThreadMappingRecord, OutboundSpoolJob } from '../types';
+import * as crypto from 'node:crypto';
+import { CompiledQuery, Kysely } from 'kysely';
+import { HeldMessageRecord, OutboundSpoolJob, ThreadMappingRecord } from '../types';
+import { BlobStore, BLOB_OFFLOAD_THRESHOLD_BYTES } from '../storage/blob-store';
+import { LocalFsBlobStore } from '../storage/local-fs-blob-store';
+import {
+  createLedgerDb,
+  ensureLedgerSchemaSync,
+  ExtendedGatewayDb,
+  LedgerDbConfig,
+} from './database';
+import { GatewayDatabase } from './schema';
+
+export { BLOB_OFFLOAD_THRESHOLD_BYTES };
+
+export type CreditLedgerInit = string | LedgerDbConfig | Kysely<GatewayDatabase>;
 
 export class CreditLedger {
-  private readonly db: DatabaseSync;
+  public readonly db: Kysely<GatewayDatabase>;
+  public readonly kysely: Kysely<GatewayDatabase>;
+  readonly blobStore: BlobStore;
+  private readonly rawDb?: DatabaseSync;
 
-  constructor(dbPath: string = ':memory:') {
-    this.db = new DatabaseSync(dbPath);
-    this.initSchema();
+  constructor(
+    init: CreditLedgerInit = ':memory:',
+    blobStoreOrOptions?: BlobStore | { blobStore?: BlobStore }
+  ) {
+    let dbPath = ':memory:';
+    if (typeof init === 'string') {
+      dbPath = init;
+      const isPostgres =
+        init.startsWith('postgres://') || init.startsWith('postgresql://');
+      const db = createLedgerDb(
+        isPostgres ? { databaseUrl: init } : { sqlitePath: init }
+      );
+      this.db = db;
+      this.kysely = db;
+      this.rawDb = db.rawDb;
+    } else if ('selectFrom' in init) {
+      this.db = init;
+      this.kysely = init;
+      this.rawDb = (init as ExtendedGatewayDb).rawDb;
+    } else {
+      if (init.sqlitePath) dbPath = init.sqlitePath;
+      const db = createLedgerDb(init);
+      this.db = db;
+      this.kysely = db;
+      this.rawDb = db.rawDb;
+    }
+
+    const store =
+      blobStoreOrOptions && 'put' in blobStoreOrOptions
+        ? blobStoreOrOptions
+        : blobStoreOrOptions?.blobStore;
+    this.blobStore = store ?? new LocalFsBlobStore({ inMemory: dbPath === ':memory:' });
+
+    if (this.rawDb) {
+      ensureLedgerSchemaSync(this.rawDb);
+    }
   }
 
-  private initSchema(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS credit_ledger (
-        email TEXT PRIMARY KEY,
-        balance INTEGER NOT NULL DEFAULT 0,
-        updated_at INTEGER NOT NULL
-      );
+  private executeGet<T = unknown>(compiled: CompiledQuery): T | undefined {
+    if (this.rawDb) {
+      const stmt = this.rawDb.prepare(compiled.sql);
+      return (stmt.get as (...args: any[]) => any)(...(compiled.parameters as any[])) as
+        | T
+        | undefined;
+    }
+    throw new Error('Synchronous query execution is only supported on SQLite DatabaseSync');
+  }
 
-      CREATE TABLE IF NOT EXISTS thread_allowances (
-        sender_email TEXT NOT NULL,
-        recipient_frank_addr TEXT NOT NULL,
-        remaining_replies INTEGER NOT NULL DEFAULT 0,
-        updated_at INTEGER NOT NULL,
-        PRIMARY KEY (sender_email, recipient_frank_addr)
-      );
+  private executeAll<T = unknown>(compiled: CompiledQuery): T[] {
+    if (this.rawDb) {
+      const stmt = this.rawDb.prepare(compiled.sql);
+      return (stmt.all as (...args: any[]) => any)(...(compiled.parameters as any[])) as T[];
+    }
+    throw new Error('Synchronous query execution is only supported on SQLite DatabaseSync');
+  }
 
-      CREATE TABLE IF NOT EXISTS held_messages (
-        id TEXT PRIMARY KEY,
-        sender_email TEXT NOT NULL,
-        recipient_address TEXT NOT NULL,
-        dkim_domain TEXT NOT NULL,
-        subject TEXT NOT NULL,
-        raw_rfc822 BLOB NOT NULL,
-        created_at INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL,
-        status TEXT CHECK(status IN ('held', 'released', 'expired')) NOT NULL DEFAULT 'held'
-      );
+  private executeRun(
+    compiled: CompiledQuery
+  ): { changes: number | bigint; lastInsertRowid: number | bigint } {
+    if (this.rawDb) {
+      const stmt = this.rawDb.prepare(compiled.sql);
+      return (stmt.run as (...args: any[]) => any)(...(compiled.parameters as any[]));
+    }
+    throw new Error('Synchronous query execution is only supported on SQLite DatabaseSync');
+  }
 
-      CREATE TABLE IF NOT EXISTS payment_transactions (
-        provider_tx_id TEXT PRIMARY KEY,
-        provider TEXT NOT NULL,
-        sender_email TEXT NOT NULL,
-        credits_added INTEGER NOT NULL,
-        created_at INTEGER NOT NULL
-      );
+  private mapHeldMessageRow(row: any): HeldMessageRecord {
+    let rawRfc822: Uint8Array;
+    if (row.raw_rfc822 instanceof Uint8Array) {
+      rawRfc822 = row.raw_rfc822;
+    } else if (typeof row.raw_rfc822 === 'string') {
+      rawRfc822 = Buffer.from(row.raw_rfc822, 'utf-8');
+    } else {
+      rawRfc822 = new Uint8Array(row.raw_rfc822);
+    }
+    return {
+      id: row.id,
+      senderEmail: row.sender_email,
+      recipientAddress: row.recipient_address,
+      dkimDomain: row.dkim_domain,
+      subject: row.subject,
+      rawRfc822,
+      createdAtMs: Number(row.created_at),
+      expiresAtMs: Number(row.expires_at),
+      status: row.status,
+    };
+  }
 
-      CREATE TABLE IF NOT EXISTS thread_mappings (
-        conversation_id TEXT NOT NULL,
-        frank_message_id TEXT NOT NULL,
-        rfc822_message_id TEXT NOT NULL,
-        in_reply_to_rfc822 TEXT,
-        subject TEXT,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (conversation_id, frank_message_id)
-      );
+  private mapThreadMappingRow(row: any): ThreadMappingRecord {
+    return {
+      conversationId: row.conversation_id,
+      frankMessageId: row.frank_message_id,
+      rfc822MessageId: row.rfc822_message_id,
+      inReplyToRfc822: row.in_reply_to_rfc822 ?? undefined,
+      subject: row.subject ?? undefined,
+      createdAtMs: Number(row.created_at),
+    };
+  }
 
-      CREATE TABLE IF NOT EXISTS outbound_spool (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        recipient_email TEXT NOT NULL,
-        from_address TEXT NOT NULL,
-        raw_rfc822 TEXT NOT NULL,
-        attempts INTEGER NOT NULL DEFAULT 0,
-        next_attempt_at INTEGER NOT NULL,
-        max_attempts INTEGER NOT NULL DEFAULT 10,
-        last_error TEXT,
-        status TEXT NOT NULL DEFAULT 'pending'
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_held_sender ON held_messages(sender_email, status);
-      CREATE INDEX IF NOT EXISTS idx_thread_rfc822 ON thread_mappings(rfc822_message_id);
-      CREATE INDEX IF NOT EXISTS idx_outbound_spool_pending ON outbound_spool(status, next_attempt_at);
-    `);
+  private mapOutboundJobRow(row: any): OutboundSpoolJob {
+    return {
+      id: Number(row.id),
+      recipientEmail: row.recipient_email,
+      fromAddress: row.from_address,
+      rawRfc822: row.raw_rfc822,
+      attempts: Number(row.attempts),
+      nextAttemptAt: Number(row.next_attempt_at),
+      maxAttempts: Number(row.max_attempts),
+      lastError: row.last_error ?? undefined,
+      status: row.status,
+    };
   }
 
   getBalance(email: string): number {
     const canonical = email.toLowerCase().trim();
-    const query = this.db.prepare('SELECT balance FROM credit_ledger WHERE email = ?');
-    const row = query.get(canonical) as { balance: number } | undefined;
-    return row ? row.balance : 0;
+    const compiled = this.db
+      .selectFrom('credit_ledger')
+      .select('balance')
+      .where('email', '=', canonical)
+      .compile();
+    const row = this.executeGet<{ balance: number }>(compiled);
+    return row ? Number(row.balance) : 0;
+  }
+
+  async getBalanceAsync(email: string): Promise<number> {
+    const canonical = email.toLowerCase().trim();
+    const row = await this.db
+      .selectFrom('credit_ledger')
+      .select('balance')
+      .where('email', '=', canonical)
+      .executeTakeFirst();
+    return row ? Number(row.balance) : 0;
   }
 
   getThreadAllowance(senderEmail: string, recipientAddress: string): number {
-    const query = this.db.prepare(
-      'SELECT remaining_replies FROM thread_allowances WHERE sender_email = ? AND recipient_frank_addr = ?'
-    );
-    const row = query.get(
-      senderEmail.toLowerCase().trim(),
-      recipientAddress.toLowerCase().trim()
-    ) as { remaining_replies: number } | undefined;
-    return row ? row.remaining_replies : 0;
+    const compiled = this.db
+      .selectFrom('thread_allowances')
+      .select('remaining_replies')
+      .where('sender_email', '=', senderEmail.toLowerCase().trim())
+      .where('recipient_frank_addr', '=', recipientAddress.toLowerCase().trim())
+      .compile();
+    const row = this.executeGet<{ remaining_replies: number }>(compiled);
+    return row ? Number(row.remaining_replies) : 0;
+  }
+
+  async getThreadAllowanceAsync(senderEmail: string, recipientAddress: string): Promise<number> {
+    const row = await this.db
+      .selectFrom('thread_allowances')
+      .select('remaining_replies')
+      .where('sender_email', '=', senderEmail.toLowerCase().trim())
+      .where('recipient_frank_addr', '=', recipientAddress.toLowerCase().trim())
+      .executeTakeFirst();
+    return row ? Number(row.remaining_replies) : 0;
   }
 
   addCredits(
@@ -101,264 +187,666 @@ export class CreditLedger {
     const now = Date.now();
 
     if (providerTxId) {
-      // Check deduplication
-      const existing = this.db
-        .prepare('SELECT provider_tx_id FROM payment_transactions WHERE provider_tx_id = ?')
-        .get(providerTxId);
+      const existingCompiled = this.db
+        .selectFrom('transactions')
+        .select('id')
+        .where('id', '=', providerTxId)
+        .compile();
+      const existing = this.executeGet(existingCompiled);
       if (existing) {
         return; // Idempotent duplicate
       }
-      this.db
-        .prepare(
-          'INSERT INTO payment_transactions (provider_tx_id, provider, sender_email, credits_added, created_at) VALUES (?, ?, ?, ?, ?)'
-        )
-        .run(providerTxId, provider, canonical, amount, now);
+
+      const txCompiled = this.db
+        .insertInto('transactions')
+        .values({
+          id: providerTxId,
+          provider,
+          amount_cents: 0,
+          credits_added: amount,
+          created_at: now,
+        })
+        .compile();
+      this.executeRun(txCompiled);
+
+      if (this.rawDb) {
+        const ptCompiled = this.db
+          .insertInto('payment_transactions' as any)
+          .values({
+            provider_tx_id: providerTxId,
+            provider,
+            sender_email: canonical,
+            credits_added: amount,
+            created_at: now,
+          } as any)
+          .compile();
+        this.executeRun(ptCompiled);
+      }
     }
 
-    this.db
-      .prepare(
-        `INSERT INTO credit_ledger (email, balance, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(email) DO UPDATE SET balance = balance + excluded.balance, updated_at = excluded.updated_at`
+    const ledgerCompiled = this.db
+      .insertInto('credit_ledger')
+      .values({
+        email: canonical,
+        balance: amount,
+        updated_at: now,
+      })
+      .onConflict((oc) =>
+        oc.column('email').doUpdateSet((eb) => ({
+          balance: eb('credit_ledger.balance', '+', eb.ref('excluded.balance')),
+          updated_at: eb.ref('excluded.updated_at'),
+        }))
       )
-      .run(canonical, amount, now);
+      .compile();
+    this.executeRun(ledgerCompiled);
+  }
+
+  async addCreditsAsync(
+    email: string,
+    amount: number,
+    providerTxId?: string,
+    provider: string = 'manual'
+  ): Promise<void> {
+    const canonical = email.toLowerCase().trim();
+    const now = Date.now();
+
+    if (providerTxId) {
+      const existing = await this.db
+        .selectFrom('transactions')
+        .select('id')
+        .where('id', '=', providerTxId)
+        .executeTakeFirst();
+      if (existing) {
+        return;
+      }
+
+      await this.db
+        .insertInto('transactions')
+        .values({
+          id: providerTxId,
+          provider,
+          amount_cents: 0,
+          credits_added: amount,
+          created_at: now,
+        })
+        .execute();
+    }
+
+    await this.db
+      .insertInto('credit_ledger')
+      .values({
+        email: canonical,
+        balance: amount,
+        updated_at: now,
+      })
+      .onConflict((oc) =>
+        oc.column('email').doUpdateSet((eb) => ({
+          balance: eb('credit_ledger.balance', '+', eb.ref('excluded.balance')),
+          updated_at: eb.ref('excluded.updated_at'),
+        }))
+      )
+      .execute();
+  }
+
+  deductCredit(email: string, amount: number = 1): boolean {
+    const canonical = email.toLowerCase().trim();
+    const balance = this.getBalance(canonical);
+    if (balance >= amount) {
+      const now = Date.now();
+      const compiled = this.db
+        .updateTable('credit_ledger')
+        .set({
+          balance: balance - amount,
+          updated_at: now,
+        })
+        .where('email', '=', canonical)
+        .compile();
+      this.executeRun(compiled);
+      return true;
+    }
+    return false;
+  }
+
+  async deductCreditAsync(email: string, amount: number = 1): Promise<boolean> {
+    const canonical = email.toLowerCase().trim();
+    const balance = await this.getBalanceAsync(canonical);
+    if (balance >= amount) {
+      const now = Date.now();
+      await this.db
+        .updateTable('credit_ledger')
+        .set({
+          balance: balance - amount,
+          updated_at: now,
+        })
+        .where('email', '=', canonical)
+        .execute();
+      return true;
+    }
+    return false;
+  }
+
+  hasReplyAllowance(senderEmail: string, recipientAddress: string): boolean {
+    return this.getThreadAllowance(senderEmail, recipientAddress) > 0;
+  }
+
+  async hasReplyAllowanceAsync(
+    senderEmail: string,
+    recipientAddress: string
+  ): Promise<boolean> {
+    const allowance = await this.getThreadAllowanceAsync(senderEmail, recipientAddress);
+    return allowance > 0;
+  }
+
+  consumeReplyAllowance(senderEmail: string, recipientAddress: string): boolean {
+    const allowance = this.getThreadAllowance(senderEmail, recipientAddress);
+    if (allowance > 0) {
+      const now = Date.now();
+      const canonicalSender = senderEmail.toLowerCase().trim();
+      const canonicalRecipient = recipientAddress.toLowerCase().trim();
+      const compiled = this.db
+        .updateTable('thread_allowances')
+        .set({
+          remaining_replies: allowance - 1,
+          updated_at: now,
+        })
+        .where('sender_email', '=', canonicalSender)
+        .where('recipient_frank_addr', '=', canonicalRecipient)
+        .compile();
+      this.executeRun(compiled);
+      return true;
+    }
+    return false;
+  }
+
+  async consumeReplyAllowanceAsync(
+    senderEmail: string,
+    recipientAddress: string
+  ): Promise<boolean> {
+    const allowance = await this.getThreadAllowanceAsync(senderEmail, recipientAddress);
+    if (allowance > 0) {
+      const now = Date.now();
+      const canonicalSender = senderEmail.toLowerCase().trim();
+      const canonicalRecipient = recipientAddress.toLowerCase().trim();
+      await this.db
+        .updateTable('thread_allowances')
+        .set({
+          remaining_replies: allowance - 1,
+          updated_at: now,
+        })
+        .where('sender_email', '=', canonicalSender)
+        .where('recipient_frank_addr', '=', canonicalRecipient)
+        .execute();
+      return true;
+    }
+    return false;
   }
 
   grantReplyAllowance(senderEmail: string, recipientAddress: string, count: number = 3): void {
     const now = Date.now();
-    this.db
-      .prepare(
-        `INSERT INTO thread_allowances (sender_email, recipient_frank_addr, remaining_replies, updated_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(sender_email, recipient_frank_addr) DO UPDATE SET
-           remaining_replies = remaining_replies + excluded.remaining_replies,
-           updated_at = excluded.updated_at`
-      )
-      .run(senderEmail.toLowerCase().trim(), recipientAddress.toLowerCase().trim(), count, now);
-  }
-
-  /**
-   * Attempts to consume 1 delivery credit.
-   * Priority:
-   * 1. Consumes a thread-scoped reply allowance if one exists.
-   * 2. Else consumes a purchased global credit.
-   * Returns true if credit was available and consumed; false otherwise.
-   */
-  consumeCredit(senderEmail: string, recipientAddress: string): boolean {
     const canonicalSender = senderEmail.toLowerCase().trim();
     const canonicalRecipient = recipientAddress.toLowerCase().trim();
-    const now = Date.now();
-
-    // 1. Check thread allowance
-    const allowance = this.getThreadAllowance(canonicalSender, canonicalRecipient);
-    if (allowance > 0) {
-      this.db
-        .prepare(
-          'UPDATE thread_allowances SET remaining_replies = remaining_replies - 1, updated_at = ? WHERE sender_email = ? AND recipient_frank_addr = ?'
-        )
-        .run(now, canonicalSender, canonicalRecipient);
-      return true;
-    }
-
-    // 2. Check purchased credits
-    const balance = this.getBalance(canonicalSender);
-    if (balance > 0) {
-      this.db
-        .prepare('UPDATE credit_ledger SET balance = balance - 1, updated_at = ? WHERE email = ?')
-        .run(now, canonicalSender);
-      return true;
-    }
-
-    return false;
+    const compiled = this.db
+      .insertInto('thread_allowances')
+      .values({
+        sender_email: canonicalSender,
+        recipient_frank_addr: canonicalRecipient,
+        remaining_replies: count,
+        updated_at: now,
+      })
+      .onConflict((oc) =>
+        oc.columns(['sender_email', 'recipient_frank_addr']).doUpdateSet((eb) => ({
+          remaining_replies: eb(
+            'thread_allowances.remaining_replies',
+            '+',
+            eb.ref('excluded.remaining_replies')
+          ),
+          updated_at: eb.ref('excluded.updated_at'),
+        }))
+      )
+      .compile();
+    this.executeRun(compiled);
   }
 
-  holdMessage(record: Omit<HeldMessageRecord, 'status'>): void {
-    this.db
-      .prepare(
-        `INSERT INTO held_messages (id, sender_email, recipient_address, dkim_domain, subject, raw_rfc822, created_at, expires_at, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'held')`
+  async grantReplyAllowanceAsync(
+    senderEmail: string,
+    recipientAddress: string,
+    count: number = 3
+  ): Promise<void> {
+    const now = Date.now();
+    const canonicalSender = senderEmail.toLowerCase().trim();
+    const canonicalRecipient = recipientAddress.toLowerCase().trim();
+    await this.db
+      .insertInto('thread_allowances')
+      .values({
+        sender_email: canonicalSender,
+        recipient_frank_addr: canonicalRecipient,
+        remaining_replies: count,
+        updated_at: now,
+      })
+      .onConflict((oc) =>
+        oc.columns(['sender_email', 'recipient_frank_addr']).doUpdateSet((eb) => ({
+          remaining_replies: eb(
+            'thread_allowances.remaining_replies',
+            '+',
+            eb.ref('excluded.remaining_replies')
+          ),
+          updated_at: eb.ref('excluded.updated_at'),
+        }))
       )
-      .run(
-        record.id,
-        record.senderEmail.toLowerCase().trim(),
-        record.recipientAddress.toLowerCase().trim(),
-        record.dkimDomain.toLowerCase().trim(),
-        record.subject,
-        record.rawRfc822,
-        record.createdAtMs,
-        record.expiresAtMs
-      );
+      .execute();
+  }
+
+  consumeCredit(senderEmail: string, recipientAddress: string): boolean {
+    if (this.consumeReplyAllowance(senderEmail, recipientAddress)) {
+      return true;
+    }
+    return this.deductCredit(senderEmail, 1);
+  }
+
+  async consumeCreditAsync(senderEmail: string, recipientAddress: string): Promise<boolean> {
+    if (await this.consumeReplyAllowanceAsync(senderEmail, recipientAddress)) {
+      return true;
+    }
+    return this.deductCreditAsync(senderEmail, 1);
+  }
+
+  recordTransaction(params: {
+    id: string;
+    provider: string;
+    amountCents?: number;
+    amount_cents?: number;
+    creditsAdded?: number;
+    credits_added?: number;
+    createdAt?: number;
+    created_at?: number;
+  }): void {
+    const amount = params.amountCents ?? params.amount_cents ?? 0;
+    const credits = params.creditsAdded ?? params.credits_added ?? 0;
+    const created = params.createdAt ?? params.created_at ?? Date.now();
+    const compiled = this.db
+      .insertInto('transactions')
+      .values({
+        id: params.id,
+        provider: params.provider,
+        amount_cents: amount,
+        credits_added: credits,
+        created_at: created,
+      })
+      .compile();
+    this.executeRun(compiled);
+  }
+
+  async recordTransactionAsync(params: {
+    id: string;
+    provider: string;
+    amountCents?: number;
+    amount_cents?: number;
+    creditsAdded?: number;
+    credits_added?: number;
+    createdAt?: number;
+    created_at?: number;
+  }): Promise<void> {
+    const amount = params.amountCents ?? params.amount_cents ?? 0;
+    const credits = params.creditsAdded ?? params.credits_added ?? 0;
+    const created = params.createdAt ?? params.created_at ?? Date.now();
+    await this.db
+      .insertInto('transactions')
+      .values({
+        id: params.id,
+        provider: params.provider,
+        amount_cents: amount,
+        credits_added: credits,
+        created_at: created,
+      })
+      .execute();
+  }
+
+  async holdMessage(record: Omit<HeldMessageRecord, 'status'>): Promise<void> {
+    let rawToStore: Uint8Array = record.rawRfc822;
+
+    if (
+      this.blobStore &&
+      record.rawRfc822.byteLength > BLOB_OFFLOAD_THRESHOLD_BYTES
+    ) {
+      const key = `held/${record.id}.eml`;
+      await this.blobStore.put(key, record.rawRfc822);
+      rawToStore = Buffer.from(`blob://${key}`, 'utf-8');
+    }
+
+    const compiled = this.db
+      .insertInto('held_messages')
+      .values({
+        id: record.id,
+        sender_email: record.senderEmail.toLowerCase().trim(),
+        recipient_address: record.recipientAddress.toLowerCase().trim(),
+        dkim_domain: record.dkimDomain.toLowerCase().trim(),
+        subject: record.subject,
+        raw_rfc822: rawToStore,
+        created_at: record.createdAtMs,
+        expires_at: record.expiresAtMs,
+        status: 'held',
+      })
+      .compile();
+    this.executeRun(compiled);
+  }
+
+  async holdMessageAsync(record: Omit<HeldMessageRecord, 'status'>): Promise<void> {
+    return this.holdMessage(record);
   }
 
   getHeldMessage(id: string): HeldMessageRecord | undefined {
-    const row = this.db
-      .prepare(
-        'SELECT id, sender_email, recipient_address, dkim_domain, subject, raw_rfc822, created_at, expires_at, status FROM held_messages WHERE id = ?'
-      )
-      .get(id) as any;
+    const compiled = this.db
+      .selectFrom('held_messages')
+      .selectAll()
+      .where('id', '=', id)
+      .compile();
+    const row = this.executeGet<any>(compiled);
     if (!row) return undefined;
-    return {
-      id: row.id,
-      senderEmail: row.sender_email,
-      recipientAddress: row.recipient_address,
-      dkimDomain: row.dkim_domain,
-      subject: row.subject,
-      rawRfc822: row.raw_rfc822,
-      createdAtMs: row.created_at,
-      expiresAtMs: row.expires_at,
-      status: row.status,
-    };
+    return this.mapHeldMessageRow(row);
+  }
+
+  async getHeldMessageAsync(id: string): Promise<HeldMessageRecord | undefined> {
+    const row = await this.db
+      .selectFrom('held_messages')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirst();
+    if (!row) return undefined;
+    return this.mapHeldMessageRow(row);
   }
 
   findLatestHeldMessage(
     senderEmail: string,
     recipientAddress?: string
   ): HeldMessageRecord | undefined {
-    const canonicalSender = senderEmail.toLowerCase().trim();
-    let sql =
-      "SELECT id, sender_email, recipient_address, dkim_domain, subject, raw_rfc822, created_at, expires_at, status FROM held_messages WHERE sender_email = ? AND status = 'held'";
-    const params: any[] = [canonicalSender];
+    let query = this.db
+      .selectFrom('held_messages')
+      .selectAll()
+      .where('sender_email', '=', senderEmail.toLowerCase().trim())
+      .where('status', '=', 'held');
+
     if (recipientAddress) {
-      sql += ' AND recipient_address = ?';
-      params.push(recipientAddress.toLowerCase().trim());
+      query = query.where('recipient_address', '=', recipientAddress.toLowerCase().trim());
     }
-    sql += ' ORDER BY created_at DESC LIMIT 1';
-    const row = this.db.prepare(sql).get(...params) as any;
+
+    const compiled = query.orderBy('created_at', 'desc').limit(1).compile();
+    const row = this.executeGet<any>(compiled);
     if (!row) return undefined;
-    return {
-      id: row.id,
-      senderEmail: row.sender_email,
-      recipientAddress: row.recipient_address,
-      dkimDomain: row.dkim_domain,
-      subject: row.subject,
-      rawRfc822: row.raw_rfc822,
-      createdAtMs: row.created_at,
-      expiresAtMs: row.expires_at,
-      status: row.status,
-    };
+    return this.mapHeldMessageRow(row);
+  }
+
+  async findLatestHeldMessageAsync(
+    senderEmail: string,
+    recipientAddress?: string
+  ): Promise<HeldMessageRecord | undefined> {
+    let query = this.db
+      .selectFrom('held_messages')
+      .selectAll()
+      .where('sender_email', '=', senderEmail.toLowerCase().trim())
+      .where('status', '=', 'held');
+
+    if (recipientAddress) {
+      query = query.where('recipient_address', '=', recipientAddress.toLowerCase().trim());
+    }
+
+    const row = await query.orderBy('created_at', 'desc').limit(1).executeTakeFirst();
+    if (!row) return undefined;
+    return this.mapHeldMessageRow(row);
   }
 
   releaseHeldMessage(id: string): HeldMessageRecord | undefined {
     const msg = this.getHeldMessage(id);
     if (!msg || msg.status !== 'held') return undefined;
 
-    this.db.prepare("UPDATE held_messages SET status = 'released' WHERE id = ?").run(id);
+    const compiled = this.db
+      .updateTable('held_messages')
+      .set({ status: 'released' })
+      .where('id', '=', id)
+      .compile();
+    this.executeRun(compiled);
+    return { ...msg, status: 'released' };
+  }
+
+  async releaseHeldMessageAsync(id: string): Promise<HeldMessageRecord | undefined> {
+    const msg = await this.getHeldMessageAsync(id);
+    if (!msg || msg.status !== 'held') return undefined;
+
+    await this.db
+      .updateTable('held_messages')
+      .set({ status: 'released' })
+      .where('id', '=', id)
+      .execute();
     return { ...msg, status: 'released' };
   }
 
   purgeExpiredHeldMessages(): number {
     const now = Date.now();
-    const result = this.db
-      .prepare("UPDATE held_messages SET status = 'expired' WHERE expires_at < ? AND status = 'held'")
-      .run(now);
+    const compiled = this.db
+      .updateTable('held_messages')
+      .set({ status: 'expired' })
+      .where('expires_at', '<', now)
+      .where('status', '=', 'held')
+      .compile();
+    const result = this.executeRun(compiled);
     return Number(result.changes);
   }
 
+  async purgeExpiredHeldMessagesAsync(): Promise<number> {
+    const now = Date.now();
+    const result = await this.db
+      .updateTable('held_messages')
+      .set({ status: 'expired' })
+      .where('expires_at', '<', now)
+      .where('status', '=', 'held')
+      .executeTakeFirst();
+    return Number(result.numUpdatedRows ?? 0);
+  }
+
   recordThreadMapping(mapping: ThreadMappingRecord): void {
-    this.db
-      .prepare(
-        `INSERT OR REPLACE INTO thread_mappings (conversation_id, frank_message_id, rfc822_message_id, in_reply_to_rfc822, subject, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
+    const compiled = this.db
+      .insertInto('thread_mappings')
+      .values({
+        conversation_id: mapping.conversationId,
+        frank_message_id: mapping.frankMessageId,
+        rfc822_message_id: mapping.rfc822MessageId,
+        in_reply_to_rfc822: mapping.inReplyToRfc822 ?? null,
+        subject: mapping.subject ?? null,
+        created_at: mapping.createdAtMs,
+      })
+      .onConflict((oc) =>
+        oc.columns(['conversation_id', 'frank_message_id']).doUpdateSet((eb) => ({
+          rfc822_message_id: eb.ref('excluded.rfc822_message_id'),
+          in_reply_to_rfc822: eb.ref('excluded.in_reply_to_rfc822'),
+          subject: eb.ref('excluded.subject'),
+          created_at: eb.ref('excluded.created_at'),
+        }))
       )
-      .run(
-        mapping.conversationId,
-        mapping.frankMessageId,
-        mapping.rfc822MessageId,
-        mapping.inReplyToRfc822 ?? null,
-        mapping.subject ?? null,
-        mapping.createdAtMs
-      );
+      .compile();
+    this.executeRun(compiled);
+  }
+
+  async recordThreadMappingAsync(mapping: ThreadMappingRecord): Promise<void> {
+    await this.db
+      .insertInto('thread_mappings')
+      .values({
+        conversation_id: mapping.conversationId,
+        frank_message_id: mapping.frankMessageId,
+        rfc822_message_id: mapping.rfc822MessageId,
+        in_reply_to_rfc822: mapping.inReplyToRfc822 ?? null,
+        subject: mapping.subject ?? null,
+        created_at: mapping.createdAtMs,
+      })
+      .onConflict((oc) =>
+        oc.columns(['conversation_id', 'frank_message_id']).doUpdateSet((eb) => ({
+          rfc822_message_id: eb.ref('excluded.rfc822_message_id'),
+          in_reply_to_rfc822: eb.ref('excluded.in_reply_to_rfc822'),
+          subject: eb.ref('excluded.subject'),
+          created_at: eb.ref('excluded.created_at'),
+        }))
+      )
+      .execute();
   }
 
   getThreadMappingByFrankMessageId(
     conversationId: string,
     frankMessageId: string
   ): ThreadMappingRecord | undefined {
-    const row = this.db
-      .prepare(
-        'SELECT conversation_id, frank_message_id, rfc822_message_id, in_reply_to_rfc822, subject, created_at FROM thread_mappings WHERE conversation_id = ? AND frank_message_id = ?'
-      )
-      .get(conversationId, frankMessageId) as any;
+    const compiled = this.db
+      .selectFrom('thread_mappings')
+      .selectAll()
+      .where('conversation_id', '=', conversationId)
+      .where('frank_message_id', '=', frankMessageId)
+      .compile();
+    const row = this.executeGet<any>(compiled);
     if (!row) return undefined;
-    return {
-      conversationId: row.conversation_id,
-      frankMessageId: row.frank_message_id,
-      rfc822MessageId: row.rfc822_message_id,
-      inReplyToRfc822: row.in_reply_to_rfc822 ?? undefined,
-      subject: row.subject ?? undefined,
-      createdAtMs: row.created_at,
-    };
+    return this.mapThreadMappingRow(row);
+  }
+
+  async getThreadMappingByFrankMessageIdAsync(
+    conversationId: string,
+    frankMessageId: string
+  ): Promise<ThreadMappingRecord | undefined> {
+    const row = await this.db
+      .selectFrom('thread_mappings')
+      .selectAll()
+      .where('conversation_id', '=', conversationId)
+      .where('frank_message_id', '=', frankMessageId)
+      .executeTakeFirst();
+    if (!row) return undefined;
+    return this.mapThreadMappingRow(row);
   }
 
   getThreadMappingByRfc822Id(rfc822MessageId: string): ThreadMappingRecord | undefined {
-    const row = this.db
-      .prepare(
-        'SELECT conversation_id, frank_message_id, rfc822_message_id, in_reply_to_rfc822, subject, created_at FROM thread_mappings WHERE rfc822_message_id = ?'
-      )
-      .get(rfc822MessageId) as any;
+    const compiled = this.db
+      .selectFrom('thread_mappings')
+      .selectAll()
+      .where('rfc822_message_id', '=', rfc822MessageId)
+      .compile();
+    const row = this.executeGet<any>(compiled);
     if (!row) return undefined;
-    return {
-      conversationId: row.conversation_id,
-      frankMessageId: row.frank_message_id,
-      rfc822MessageId: row.rfc822_message_id,
-      inReplyToRfc822: row.in_reply_to_rfc822 ?? undefined,
-      subject: row.subject ?? undefined,
-      createdAtMs: row.created_at,
-    };
+    return this.mapThreadMappingRow(row);
   }
 
-  enqueueOutboundSpool(params: {
+  async getThreadMappingByRfc822IdAsync(
+    rfc822MessageId: string
+  ): Promise<ThreadMappingRecord | undefined> {
+    const row = await this.db
+      .selectFrom('thread_mappings')
+      .selectAll()
+      .where('rfc822_message_id', '=', rfc822MessageId)
+      .executeTakeFirst();
+    if (!row) return undefined;
+    return this.mapThreadMappingRow(row);
+  }
+
+  async enqueueOutboundSpool(params: {
     recipientEmail: string;
     fromAddress: string;
     rawRfc822: string;
     nextAttemptAt?: number;
     maxAttempts?: number;
-  }): number {
+  }): Promise<number> {
     const nextAttempt = params.nextAttemptAt ?? Date.now();
     const maxAttempts = params.maxAttempts ?? 10;
-    const result = this.db
-      .prepare(
-        `INSERT INTO outbound_spool (recipient_email, from_address, raw_rfc822, attempts, next_attempt_at, max_attempts, last_error, status)
-         VALUES (?, ?, ?, 0, ?, ?, NULL, 'pending')`
-      )
-      .run(
-        params.recipientEmail.toLowerCase().trim(),
-        params.fromAddress.toLowerCase().trim(),
-        params.rawRfc822,
-        nextAttempt,
-        maxAttempts
-      );
+    let rawToStore = params.rawRfc822;
+
+    if (
+      this.blobStore &&
+      Buffer.byteLength(params.rawRfc822, 'utf-8') > BLOB_OFFLOAD_THRESHOLD_BYTES
+    ) {
+      const key = `spool/${Date.now()}_${crypto.randomUUID()}.eml`;
+      await this.blobStore.put(key, params.rawRfc822);
+      rawToStore = `blob://${key}`;
+    }
+
+    const compiled = this.db
+      .insertInto('outbound_spool')
+      .values({
+        recipient_email: params.recipientEmail.toLowerCase().trim(),
+        from_address: params.fromAddress.toLowerCase().trim(),
+        raw_rfc822: rawToStore,
+        attempts: 0,
+        next_attempt_at: nextAttempt,
+        max_attempts: maxAttempts,
+        last_error: null,
+        status: 'pending',
+      })
+      .compile();
+    const result = this.executeRun(compiled);
     return Number(result.lastInsertRowid);
   }
 
-  getPendingOutboundJobs(nowMs: number, limit: number = 50): OutboundSpoolJob[] {
-    const rows = this.db
-      .prepare(
-        `SELECT id, recipient_email, from_address, raw_rfc822, attempts, next_attempt_at, max_attempts, last_error, status
-         FROM outbound_spool
-         WHERE status = 'pending' AND next_attempt_at <= ?
-         ORDER BY next_attempt_at ASC
-         LIMIT ?`
-      )
-      .all(nowMs, limit) as any[];
+  async enqueueOutboundSpoolAsync(params: {
+    recipientEmail: string;
+    fromAddress: string;
+    rawRfc822: string;
+    nextAttemptAt?: number;
+    maxAttempts?: number;
+  }): Promise<number> {
+    return this.enqueueOutboundSpool(params);
+  }
 
-    return rows.map((r) => ({
-      id: Number(r.id),
-      recipientEmail: r.recipient_email,
-      fromAddress: r.from_address,
-      rawRfc822: r.raw_rfc822,
-      attempts: Number(r.attempts),
-      nextAttemptAt: Number(r.next_attempt_at),
-      maxAttempts: Number(r.max_attempts),
-      lastError: r.last_error ?? undefined,
-      status: r.status,
-    }));
+  async resolvePayload(rawOrPointer: string | Uint8Array): Promise<string> {
+    const text =
+      typeof rawOrPointer === 'string'
+        ? rawOrPointer
+        : new TextDecoder('utf-8').decode(rawOrPointer);
+
+    if (text.startsWith('blob://')) {
+      const key = text.slice('blob://'.length);
+      const data = await this.blobStore.get(key);
+      if (!data) {
+        throw new Error(`Blob not found for pointer: ${text}`);
+      }
+      return new TextDecoder('utf-8').decode(data);
+    }
+
+    return text;
+  }
+
+  getPendingOutboundJobs(nowMs: number, limit: number = 50): OutboundSpoolJob[] {
+    const compiled = this.db
+      .selectFrom('outbound_spool')
+      .selectAll()
+      .where('status', '=', 'pending')
+      .where('next_attempt_at', '<=', nowMs)
+      .orderBy('next_attempt_at', 'asc')
+      .limit(limit)
+      .compile();
+    const rows = this.executeAll<any>(compiled);
+    return rows.map((r) => this.mapOutboundJobRow(r));
+  }
+
+  async getPendingOutboundJobsAsync(
+    nowMs: number,
+    limit: number = 50
+  ): Promise<OutboundSpoolJob[]> {
+    const rows = await this.db
+      .selectFrom('outbound_spool')
+      .selectAll()
+      .where('status', '=', 'pending')
+      .where('next_attempt_at', '<=', nowMs)
+      .orderBy('next_attempt_at', 'asc')
+      .limit(limit)
+      .execute();
+    return rows.map((r) => this.mapOutboundJobRow(r));
   }
 
   markOutboundJobSuccess(id: number): void {
-    this.db
-      .prepare("UPDATE outbound_spool SET status = 'success' WHERE id = ?")
-      .run(id);
+    const compiled = this.db
+      .updateTable('outbound_spool')
+      .set({ status: 'success' })
+      .where('id', '=', id)
+      .compile();
+    this.executeRun(compiled);
+  }
+
+  async markOutboundJobSuccessAsync(id: number): Promise<void> {
+    await this.db
+      .updateTable('outbound_spool')
+      .set({ status: 'success' })
+      .where('id', '=', id)
+      .execute();
   }
 
   markOutboundJobFailed(
@@ -367,9 +855,14 @@ export class CreditLedger {
     nowMs: number,
     backoffMs: number
   ): boolean {
-    const row = this.db
-      .prepare('SELECT id, attempts, max_attempts FROM outbound_spool WHERE id = ?')
-      .get(id) as { id: number; attempts: number; max_attempts: number } | undefined;
+    const compiled = this.db
+      .selectFrom('outbound_spool')
+      .select(['id', 'attempts', 'max_attempts'])
+      .where('id', '=', id)
+      .compile();
+    const row = this.executeGet<{ id: number; attempts: number; max_attempts: number }>(
+      compiled
+    );
 
     if (!row) {
       return false;
@@ -377,81 +870,173 @@ export class CreditLedger {
 
     const newAttempts = row.attempts + 1;
     if (newAttempts >= row.max_attempts) {
-      this.db
-        .prepare(
-          "UPDATE outbound_spool SET attempts = ?, last_error = ?, status = 'failed' WHERE id = ?"
-        )
-        .run(newAttempts, error, id);
+      const updateCompiled = this.db
+        .updateTable('outbound_spool')
+        .set({
+          attempts: newAttempts,
+          last_error: error,
+          status: 'failed',
+        })
+        .where('id', '=', id)
+        .compile();
+      this.executeRun(updateCompiled);
       return false;
     } else {
       const nextAttemptAt = nowMs + backoffMs;
-      this.db
-        .prepare(
-          'UPDATE outbound_spool SET attempts = ?, next_attempt_at = ?, last_error = ? WHERE id = ?'
-        )
-        .run(newAttempts, nextAttemptAt, error, id);
+      const updateCompiled = this.db
+        .updateTable('outbound_spool')
+        .set({
+          attempts: newAttempts,
+          next_attempt_at: nextAttemptAt,
+          last_error: error,
+        })
+        .where('id', '=', id)
+        .compile();
+      this.executeRun(updateCompiled);
+      return true;
+    }
+  }
+
+  async markOutboundJobFailedAsync(
+    id: number,
+    error: string,
+    nowMs: number,
+    backoffMs: number
+  ): Promise<boolean> {
+    const row = await this.db
+      .selectFrom('outbound_spool')
+      .select(['id', 'attempts', 'max_attempts'])
+      .where('id', '=', id)
+      .executeTakeFirst();
+
+    if (!row) {
+      return false;
+    }
+
+    const newAttempts = Number(row.attempts) + 1;
+    if (newAttempts >= Number(row.max_attempts)) {
+      await this.db
+        .updateTable('outbound_spool')
+        .set({
+          attempts: newAttempts,
+          last_error: error,
+          status: 'failed',
+        })
+        .where('id', '=', id)
+        .execute();
+      return false;
+    } else {
+      const nextAttemptAt = nowMs + backoffMs;
+      await this.db
+        .updateTable('outbound_spool')
+        .set({
+          attempts: newAttempts,
+          next_attempt_at: nextAttemptAt,
+          last_error: error,
+        })
+        .where('id', '=', id)
+        .execute();
       return true;
     }
   }
 
   getOutboundJob(id: number): OutboundSpoolJob | undefined {
-    const row = this.db
-      .prepare(
-        'SELECT id, recipient_email, from_address, raw_rfc822, attempts, next_attempt_at, max_attempts, last_error, status FROM outbound_spool WHERE id = ?'
-      )
-      .get(id) as any;
+    const compiled = this.db
+      .selectFrom('outbound_spool')
+      .selectAll()
+      .where('id', '=', id)
+      .compile();
+    const row = this.executeGet<any>(compiled);
     if (!row) return undefined;
-    return {
-      id: Number(row.id),
-      recipientEmail: row.recipient_email,
-      fromAddress: row.from_address,
-      rawRfc822: row.raw_rfc822,
-      attempts: Number(row.attempts),
-      nextAttemptAt: Number(row.next_attempt_at),
-      maxAttempts: Number(row.max_attempts),
-      lastError: row.last_error ?? undefined,
-      status: row.status,
-    };
+    return this.mapOutboundJobRow(row);
+  }
+
+  async getOutboundJobAsync(id: number): Promise<OutboundSpoolJob | undefined> {
+    const row = await this.db
+      .selectFrom('outbound_spool')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirst();
+    if (!row) return undefined;
+    return this.mapOutboundJobRow(row);
   }
 
   findSpoolJobByRecipient(recipientEmail: string): OutboundSpoolJob | undefined {
-    const row = this.db
-      .prepare(
-        'SELECT id, recipient_email, from_address, raw_rfc822, attempts, next_attempt_at, max_attempts, last_error, status FROM outbound_spool WHERE recipient_email = ? ORDER BY id DESC LIMIT 1'
-      )
-      .get(recipientEmail.toLowerCase().trim()) as any;
+    const compiled = this.db
+      .selectFrom('outbound_spool')
+      .selectAll()
+      .where('recipient_email', '=', recipientEmail.toLowerCase().trim())
+      .orderBy('id', 'desc')
+      .limit(1)
+      .compile();
+    const row = this.executeGet<any>(compiled);
     if (!row) return undefined;
-    return {
-      id: Number(row.id),
-      recipientEmail: row.recipient_email,
-      fromAddress: row.from_address,
-      rawRfc822: row.raw_rfc822,
-      attempts: Number(row.attempts),
-      nextAttemptAt: Number(row.next_attempt_at),
-      maxAttempts: Number(row.max_attempts),
-      lastError: row.last_error ?? undefined,
-      status: row.status,
-    };
+    return this.mapOutboundJobRow(row);
+  }
+
+  async findSpoolJobByRecipientAsync(
+    recipientEmail: string
+  ): Promise<OutboundSpoolJob | undefined> {
+    const row = await this.db
+      .selectFrom('outbound_spool')
+      .selectAll()
+      .where('recipient_email', '=', recipientEmail.toLowerCase().trim())
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    if (!row) return undefined;
+    return this.mapOutboundJobRow(row);
   }
 
   findFrankSenderForRecipient(recipientEmail: string): string | undefined {
     const canonical = recipientEmail.toLowerCase().trim();
-    // 1. Check thread_allowances (stores external sender_email -> recipient_frank_addr)
-    const allowanceRow = this.db
-      .prepare(
-        'SELECT recipient_frank_addr FROM thread_allowances WHERE sender_email = ? ORDER BY updated_at DESC LIMIT 1'
-      )
-      .get(canonical) as { recipient_frank_addr: string } | undefined;
+    const allowanceCompiled = this.db
+      .selectFrom('thread_allowances')
+      .select('recipient_frank_addr')
+      .where('sender_email', '=', canonical)
+      .orderBy('updated_at', 'desc')
+      .limit(1)
+      .compile();
+    const allowanceRow = this.executeGet<{ recipient_frank_addr: string }>(allowanceCompiled);
     if (allowanceRow) {
       return allowanceRow.recipient_frank_addr;
     }
 
-    // 2. Check outbound_spool
-    const spoolRow = this.db
-      .prepare(
-        'SELECT from_address FROM outbound_spool WHERE recipient_email = ? ORDER BY id DESC LIMIT 1'
-      )
-      .get(canonical) as { from_address: string } | undefined;
+    const spoolCompiled = this.db
+      .selectFrom('outbound_spool')
+      .select('from_address')
+      .where('recipient_email', '=', canonical)
+      .orderBy('id', 'desc')
+      .limit(1)
+      .compile();
+    const spoolRow = this.executeGet<{ from_address: string }>(spoolCompiled);
+    if (spoolRow) {
+      return spoolRow.from_address.split('@')[0];
+    }
+
+    return undefined;
+  }
+
+  async findFrankSenderForRecipientAsync(recipientEmail: string): Promise<string | undefined> {
+    const canonical = recipientEmail.toLowerCase().trim();
+    const allowanceRow = await this.db
+      .selectFrom('thread_allowances')
+      .select('recipient_frank_addr')
+      .where('sender_email', '=', canonical)
+      .orderBy('updated_at', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    if (allowanceRow) {
+      return allowanceRow.recipient_frank_addr;
+    }
+
+    const spoolRow = await this.db
+      .selectFrom('outbound_spool')
+      .select('from_address')
+      .where('recipient_email', '=', canonical)
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
     if (spoolRow) {
       return spoolRow.from_address.split('@')[0];
     }
@@ -460,23 +1045,56 @@ export class CreditLedger {
   }
 
   findFrankSenderByRfc822Id(rfc822MessageId: string): string | undefined {
-    // 1. Check thread mappings
     const thread = this.getThreadMappingByRfc822Id(rfc822MessageId);
     if (thread) {
-      const allowanceRow = this.db
-        .prepare('SELECT recipient_frank_addr FROM thread_allowances ORDER BY updated_at DESC LIMIT 1')
-        .get() as { recipient_frank_addr: string } | undefined;
+      const allowanceCompiled = this.db
+        .selectFrom('thread_allowances')
+        .select('recipient_frank_addr')
+        .orderBy('updated_at', 'desc')
+        .limit(1)
+        .compile();
+      const allowanceRow = this.executeGet<{ recipient_frank_addr: string }>(allowanceCompiled);
       if (allowanceRow) {
         return allowanceRow.recipient_frank_addr;
       }
     }
 
-    // 2. Check outbound_spool for raw_rfc822 containing message-id
-    const spoolRow = this.db
-      .prepare(
-        "SELECT from_address FROM outbound_spool WHERE raw_rfc822 LIKE '%' || ? || '%' ORDER BY id DESC LIMIT 1"
-      )
-      .get(rfc822MessageId) as { from_address: string } | undefined;
+    const spoolCompiled = this.db
+      .selectFrom('outbound_spool')
+      .select('from_address')
+      .where('raw_rfc822', 'like', `%${rfc822MessageId}%`)
+      .orderBy('id', 'desc')
+      .limit(1)
+      .compile();
+    const spoolRow = this.executeGet<{ from_address: string }>(spoolCompiled);
+    if (spoolRow) {
+      return spoolRow.from_address.split('@')[0];
+    }
+
+    return undefined;
+  }
+
+  async findFrankSenderByRfc822IdAsync(rfc822MessageId: string): Promise<string | undefined> {
+    const thread = await this.getThreadMappingByRfc822IdAsync(rfc822MessageId);
+    if (thread) {
+      const allowanceRow = await this.db
+        .selectFrom('thread_allowances')
+        .select('recipient_frank_addr')
+        .orderBy('updated_at', 'desc')
+        .limit(1)
+        .executeTakeFirst();
+      if (allowanceRow) {
+        return allowanceRow.recipient_frank_addr;
+      }
+    }
+
+    const spoolRow = await this.db
+      .selectFrom('outbound_spool')
+      .select('from_address')
+      .where('raw_rfc822', 'like', `%${rfc822MessageId}%`)
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
     if (spoolRow) {
       return spoolRow.from_address.split('@')[0];
     }

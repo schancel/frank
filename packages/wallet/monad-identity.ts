@@ -230,13 +230,55 @@ export function mailboxAuthFor(
   }
 }
 
+export interface MonadProfileLink {
+  type: string
+  url: string
+  label?: string
+}
+
+export function validateProfileUsername(raw?: string): {
+  valid: boolean
+  normalized?: string
+  error?: string
+} {
+  if (raw === undefined || raw === null || raw.trim() === '') {
+    return { valid: true, normalized: undefined }
+  }
+  const trimmed = raw.trim()
+  const stripped = trimmed.startsWith('@') ? trimmed.slice(1) : trimmed
+  const normalized = stripped.toLowerCase()
+  if (normalized.length < 3 || normalized.length > 32) {
+    return {
+      valid: false,
+      error: 'Username must be between 3 and 32 characters',
+    }
+  }
+  if (!/^[a-z0-9]/.test(normalized)) {
+    return {
+      valid: false,
+      error: 'Username must start with an alphanumeric character',
+    }
+  }
+  if (!/^[a-z0-9_-]+$/.test(normalized)) {
+    return {
+      valid: false,
+      error:
+        'Username may only contain lowercase letters, numbers, hyphens, and underscores',
+    }
+  }
+  return { valid: true, normalized }
+}
+
 /** Builds and signs the `cashweb_payload::proto::SignedPayload` wrapper around a fresh, empty
  * `AddressMetadata` -- the same "no vCard content, just proving registration itself" shape
  * `lotus-identity.ts`'s `buildSignedAddressMetadata` uses (see that function's doc comment for why
  * an empty `burn_txs`/`transactions` list is sufficient with POP disabled). */
 export interface MonadProfileFields {
   name?: string
+  username?: string
   bio?: string
+  location?: string
+  links?: MonadProfileLink[]
   avatar?: string
   /** Marks the profile as an automated account (#311). Signed as an ordinary profile `Entry`
    * with kind {@link MONAD_PROFILE_BOT_KIND} -- `Entry.kind` is an open string and the registry
@@ -286,7 +328,31 @@ function profileEntries(profile: MonadProfileFields = {}) {
       ? undefined
       : requireValidProfileDisplayName(profile.name)
   addTextEntry('display_name', displayName)
+  const username = validateProfileUsername(profile.username).normalized
+  addTextEntry('username', username)
   addTextEntry('bio', profile.bio)
+  if (profile.location && profile.location.trim().length > 0) {
+    addTextEntry('location', profile.location.trim())
+  }
+  if (profile.links) {
+    for (const link of profile.links) {
+      if (!link.url || link.url.trim().length === 0) continue
+      const entry = new Entry()
+      entry.setKind('link')
+      entry.setBody(new TextEncoder().encode(link.url.trim()))
+      const typeHeader = new Header()
+      typeHeader.setName('type')
+      typeHeader.setValue(link.type || 'website')
+      entry.addHeaders(typeHeader)
+      if (link.label && link.label.trim().length > 0) {
+        const labelHeader = new Header()
+        labelHeader.setName('label')
+        labelHeader.setValue(link.label.trim())
+        entry.addHeaders(labelHeader)
+      }
+      entries.push(entry)
+    }
+  }
   if (profile.bot) addTextEntry(MONAD_PROFILE_BOT_KIND, '1')
 
   if (profile.avatar) {
@@ -447,6 +513,18 @@ export function buildSignedDirectoryStatement(
       ]),
     )
   }
+  const username = validateProfileUsername(
+    options.profile?.username,
+  ).normalized
+  if (username !== undefined) {
+    entries.push(
+      cborMap([
+        [0, 'username'],
+        [1, []],
+        [2, new TextEncoder().encode(username)],
+      ]),
+    )
+  }
   if (options.profile?.bio !== undefined && options.profile.bio.length > 0) {
     entries.push(
       cborMap([
@@ -455,6 +533,49 @@ export function buildSignedDirectoryStatement(
         [2, new TextEncoder().encode(options.profile.bio)],
       ]),
     )
+  }
+  if (
+    options.profile?.location !== undefined &&
+    options.profile.location.trim().length > 0
+  ) {
+    entries.push(
+      cborMap([
+        [0, 'location'],
+        [1, []],
+        [2, new TextEncoder().encode(options.profile.location.trim())],
+      ]),
+    )
+  }
+  if (options.profile?.links) {
+    for (const link of options.profile.links) {
+      if (!link.url || link.url.trim().length === 0) continue
+      const headersList: Encodable[] = [
+        cborMap([
+          [0, 'type'],
+          [1, link.type || 'website'],
+        ]),
+      ]
+      if (link.label && link.label.trim().length > 0) {
+        headersList.push(
+          cborMap([
+            [0, 'label'],
+            [1, link.label.trim()],
+          ]),
+        )
+      }
+      headersList.sort((a, b) => {
+        const keyA = ((a as any).entries?.[0]?.[1] ?? '') as string
+        const keyB = ((b as any).entries?.[0]?.[1] ?? '') as string
+        return keyA < keyB ? -1 : keyA > keyB ? 1 : 0
+      })
+      entries.push(
+        cborMap([
+          [0, 'link'],
+          [1, headersList],
+          [2, new TextEncoder().encode(link.url.trim())],
+        ]),
+      )
+    }
   }
   if (options.profile?.bot) {
     entries.push(
@@ -658,7 +779,10 @@ export interface DecodedProfile {
   derivedAddress: string
   network?: string
   name?: string
+  username?: string
   bio?: string
+  location?: string
+  links?: MonadProfileLink[]
   bot?: boolean
   avatar?: string
   signedPayload: InstanceType<typeof SignedPayload>
@@ -717,7 +841,10 @@ export function decodeProfileBytes(
     }
 
     let name: string | undefined
+    let username: string | undefined
     let bio: string | undefined
+    let location: string | undefined
+    const links: MonadProfileLink[] = []
     let bot: boolean | undefined
     let avatar: string | undefined
 
@@ -758,8 +885,18 @@ export function decodeProfileBytes(
 
         if (entry.kind === 'display_name') {
           name = new TextDecoder().decode(entry.body)
+        } else if (entry.kind === 'username') {
+          username = new TextDecoder().decode(entry.body)
         } else if (entry.kind === 'bio') {
           bio = new TextDecoder().decode(entry.body)
+        } else if (entry.kind === 'location') {
+          location = new TextDecoder().decode(entry.body)
+        } else if (entry.kind === 'link') {
+          const url = new TextDecoder().decode(entry.body)
+          const type =
+            entry.headers.find(h => h.name === 'type')?.value ?? 'website'
+          const label = entry.headers.find(h => h.name === 'label')?.value
+          links.push({ type, url, ...(label ? { label } : {}) })
         } else if (entry.kind === MONAD_PROFILE_BOT_KIND) {
           bot = new TextDecoder().decode(entry.body) === '1'
         } else if (entry.kind === 'avatar') {
@@ -790,6 +927,12 @@ export function decodeProfileBytes(
         }
       }
     }
+    if (!username && stmt.unknownFields) {
+      const f14 = stmt.unknownFields.get(14n)
+      if (typeof f14 === 'string') {
+        username = f14
+      }
+    }
     metadata.setEntriesList(protoEntries)
 
     if (!curveKeys.secp256k1) {
@@ -814,7 +957,10 @@ export function decodeProfileBytes(
       derivedAddress,
       network: stmt.network,
       name,
+      username,
       bio,
+      location,
+      links: links.length > 0 ? links : undefined,
       bot,
       avatar,
       signedPayload,
@@ -839,7 +985,10 @@ export function decodeProfileBytes(
   }
 
   let name: string | undefined
+  let username: string | undefined
   let bio: string | undefined
+  let location: string | undefined
+  const links: MonadProfileLink[] = []
   let bot: boolean | undefined
   let avatar: string | undefined
 
@@ -850,8 +999,19 @@ export function decodeProfileBytes(
     const kind = entry.getKind()
     if (kind === 'display_name') {
       name = new TextDecoder().decode(entry.getBody_asU8())
+    } else if (kind === 'username') {
+      username = new TextDecoder().decode(entry.getBody_asU8())
     } else if (kind === 'bio') {
       bio = new TextDecoder().decode(entry.getBody_asU8())
+    } else if (kind === 'location') {
+      location = new TextDecoder().decode(entry.getBody_asU8())
+    } else if (kind === 'link') {
+      const url = new TextDecoder().decode(entry.getBody_asU8())
+      const headers = entry.getHeadersList()
+      const type =
+        headers.find(h => h.getName() === 'type')?.getValue() ?? 'website'
+      const label = headers.find(h => h.getName() === 'label')?.getValue()
+      links.push({ type, url, ...(label ? { label } : {}) })
     } else if (kind === MONAD_PROFILE_BOT_KIND) {
       bot = new TextDecoder().decode(entry.getBody_asU8()) === '1'
     } else if (kind === 'avatar') {
@@ -904,7 +1064,10 @@ export function decodeProfileBytes(
     timestampMs: metadata.getTimestamp(),
     derivedAddress,
     name,
+    username,
     bio,
+    location,
+    links: links.length > 0 ? links : undefined,
     bot,
     avatar,
     signedPayload,
@@ -968,7 +1131,10 @@ export async function fetchMonadProfile(params: {
       pubKey: decoded.pubKey,
     }
     if (decoded.name !== undefined) result.name = decoded.name
+    if (decoded.username !== undefined) result.username = decoded.username
     if (decoded.bio !== undefined) result.bio = decoded.bio
+    if (decoded.location !== undefined) result.location = decoded.location
+    if (decoded.links !== undefined) result.links = decoded.links
     if (decoded.bot !== undefined) result.bot = decoded.bot
     if (decoded.avatar !== undefined) result.avatar = decoded.avatar
     if (decoded.spendKeys !== undefined) result.spendKeys = decoded.spendKeys

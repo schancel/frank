@@ -113,6 +113,11 @@ export default {
     request: 'Ask the browser to keep my data',
     confirmSeed: 'Confirm my recovery phrase',
     seedConfirmed: 'Your recovery phrase is confirmed.',
+    safariTip:
+      'Tip for Safari / WebKit: Add Frank to your Home Screen / Dock or bookmark this site to enable persistence automatically.',
+    grantedToast: 'Persistent storage granted by browser.',
+    declinedToast:
+      'The browser declined persistent storage. Bookmark or install Frank to enable persistence.',
   },
   blackjackP2p: {
     notDeliveredYet:
@@ -697,6 +702,26 @@ export default {
     bio: 'Bio',
     bioHint: 'Short biolography displayed to others',
     uploadAvatar: 'Upload Avatar',
+    username: 'Username',
+    usernameHint:
+      'Unique handle (3–32 characters, lowercase letters, numbers, hyphens, underscores)',
+    invalidUsername:
+      'Username must be 3–32 characters and contain only lowercase letters, numbers, hyphens, and underscores.',
+    location: 'Location',
+    locationHint: 'Where you are based (optional)',
+    links: 'Links & Socials',
+    addLink: 'Add Link',
+    removeLink: 'Remove link',
+    linkType: 'Platform / Type',
+    linkUrl: 'URL or handle',
+    linkLabel: 'Label (optional)',
+    linkTypeWebsite: 'Website / Blog',
+    linkTypeX: 'X (Twitter)',
+    linkTypeGithub: 'GitHub',
+    linkTypeNostr: 'Nostr',
+    linkTypeTelegram: 'Telegram',
+    linkTypeDiscord: 'Discord',
+    linkTypeOther: 'Other',
   },
   clearHistoryDialog: {
     cancel: 'Cancel',
@@ -764,8 +789,34 @@ export default {
     txHashCopied: 'Transaction hash copied to clipboard',
   },
   about: {
+    appName: 'Frank',
     title: 'About',
     menu: 'About and licences',
+    tagline: 'Private, economically spam-resistant messaging for Monad.',
+    frankTitle: 'About Frank',
+    frankIntro:
+      'Frank is a decentralized, sovereign cryptomessenger designed for the Monad blockchain, continuing and evolving the Stamp protocol. It combines permissionless cryptographic identities with real economic spam resistance.',
+    frankAccounts:
+      'Accounts are permissionless secp256k1 keypairs generated entirely on your device. Frank requires no phone numbers, email addresses, or central account providers.',
+    stampTitle: 'The Stamp Protocol: Speaking Is Not Free',
+    stampIntro:
+      'Rather than relying on centralized gatekeepers or surveillance to filter spam, the Stamp protocol introduces direct economic incentives into communication.',
+    stampDMsTitle: 'Direct Messages & Paid Delivery',
+    stampDMsDesc:
+      'Every direct message carries an on-chain stamp transaction that pays the recipient directly via derived one-time stealth destinations. Senders pay for your attention, completely eliminating cold spam.',
+    stampTopicsTitle: 'Topic Broadcasts & Burn Weights',
+    stampTopicsDesc:
+      'Public topic posts and community votes burn MON to an unspendable address, giving provable economic weight to public discourse without central moderation.',
+    stampPrivacyTitle: 'End-to-End Encryption',
+    stampPrivacyDesc:
+      'All message payloads are end-to-end encrypted. Federated CashWeb relays validate stamp transactions and store envelopes without ever seeing the plaintext content.',
+    badgeMonad: 'Monad',
+    badgeStamp: 'Stamp Protocol',
+    badgeEncrypted: 'End-to-End Encrypted',
+    badgePermissionless: 'Permissionless Identity',
+    linksTitle: 'Links & Source Code',
+    githubRepo: 'Frank GitHub Repository',
+    stampUpstream: 'Stamp Protocol Upstream',
     thirdPartyTitle: 'Third-party software',
     dklsName: 'DKLs23 two-party signing library (Silence Laboratories)',
     dklsModified:
@@ -782,3 +833,4 @@ export default {
   },
   close: 'Close',
 }
+

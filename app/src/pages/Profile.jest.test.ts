@@ -24,9 +24,13 @@ jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: jest.fn(),
 }))
 
-jest.mock('@frank/wallet/monad-identity', () => ({
-  registerMonadIdentityCbor: jest.fn(),
-}))
+jest.mock('@frank/wallet/monad-identity', () => {
+  const actual = jest.requireActual('@frank/wallet/monad-identity')
+  return {
+    ...actual,
+    registerMonadIdentityCbor: jest.fn(),
+  }
+})
 
 import { errorNotify } from 'src/utils/notifications'
 
@@ -272,5 +276,107 @@ describe('Profile.vue', () => {
         relayBaseUrl: 'https://127.0.0.1:18443',
       }),
     )
+  })
+
+  it('publishes username, location, and links when updated', async () => {
+    const mockWallet = {
+      identity: {
+        address: { raw: '0x1234567890123456789012345678901234567890' },
+      },
+      relayBaseUrl: 'https://127.0.0.1:18443',
+    }
+    ;(useActiveWallet as jest.Mock).mockResolvedValue(mockWallet)
+
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: {
+          'Profile': { template: '<div data-test="profile-component"></div>' },
+          'q-page-container': { template: '<div><slot /></div>' },
+          'q-page': { template: '<div><slot /></div>' },
+          'q-card': { template: '<div><slot /></div>' },
+          'q-card-section': { template: '<div><slot /></div>' },
+          'q-card-actions': { template: '<div><slot /></div>' },
+          'q-btn': { template: '<button><slot /></button>' },
+        },
+      },
+    })
+
+    ;(wrapper.vm as any).username = 'alice_crypt'
+    ;(wrapper.vm as any).location = 'Cyberspace'
+    ;(wrapper.vm as any).links = [
+      { type: 'github', url: 'https://github.com/alice', label: 'GitHub' },
+    ]
+
+    await (wrapper.vm as any).updateRelayData()
+
+    expect(mockSetRelayData).toHaveBeenCalledWith({
+      profile: expect.objectContaining({
+        username: 'alice_crypt',
+        location: 'Cyberspace',
+        links: [
+          { type: 'github', url: 'https://github.com/alice', label: 'GitHub' },
+        ],
+      }),
+      inbox: expect.objectContaining({ acceptancePrice: 100 }),
+    })
+    expect(registerMonadIdentityCbor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profile: expect.objectContaining({
+          username: 'alice_crypt',
+          location: 'Cyberspace',
+          links: [
+            {
+              type: 'github',
+              url: 'https://github.com/alice',
+              label: 'GitHub',
+            },
+          ],
+        }),
+      }),
+    )
+  })
+
+  it('rejects invalid username and prevents publishing', async () => {
+    const mockWallet = {
+      identity: {
+        address: { raw: '0x1234567890123456789012345678901234567890' },
+      },
+      relayBaseUrl: 'https://127.0.0.1:18443',
+    }
+    ;(useActiveWallet as jest.Mock).mockResolvedValue(mockWallet)
+
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: {
+          'Profile': { template: '<div data-test="profile-component"></div>' },
+          'q-page-container': { template: '<div><slot /></div>' },
+          'q-page': { template: '<div><slot /></div>' },
+          'q-card': { template: '<div><slot /></div>' },
+          'q-card-section': { template: '<div><slot /></div>' },
+          'q-card-actions': { template: '<div><slot /></div>' },
+          'q-btn': { template: '<button><slot /></button>' },
+        },
+      },
+    })
+
+    ;(wrapper.vm as any).username = 'inv@lid user!'
+    await (wrapper.vm as any).updateRelayData()
+
+    expect(errorNotify).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ safeMessage: 'profile.invalidUsername' }),
+    )
+    expect(mockSetRelayData).not.toHaveBeenCalled()
+    expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
   })
 })

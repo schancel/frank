@@ -161,8 +161,12 @@ function productionDeps(): MessagingDeps {
           if (
             existing &&
             (existing.name ?? '') === (profile?.name ?? '') &&
+            (existing.username ?? '') === (profile?.username ?? '') &&
+            (existing.location ?? '') === (profile?.location ?? '') &&
             (existing.bio ?? '') === (profile?.bio ?? '') &&
-            (existing.avatar ?? '') === (profile?.avatar ?? '')
+            (existing.avatar ?? '') === (profile?.avatar ?? '') &&
+            JSON.stringify(existing.links ?? []) ===
+              JSON.stringify(profile?.links ?? [])
           ) {
             return
           }

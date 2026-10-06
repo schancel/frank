@@ -2,6 +2,7 @@ import { CreditLedger } from '../ledger/credit-ledger';
 import { OutboundEmailDelivery, OutboundDirectMessage } from './outbound-delivery';
 import { DkimSigner } from './dkim-signer';
 import { MxDirectTransport, MxDeliveryResult } from './mx-transport';
+import { BlobStore } from '../storage/blob-store';
 
 export interface OutboundMtaWorkerOptions {
   readonly gatewayDomain: string;
@@ -11,6 +12,7 @@ export interface OutboundMtaWorkerOptions {
   readonly mxTransport: MxDirectTransport;
   readonly baseBackoffMs?: number;
   readonly maxBackoffMs?: number;
+  readonly blobStore?: BlobStore;
 }
 
 export interface OutboundDispatchResult {
@@ -73,6 +75,8 @@ export class OutboundMtaWorker {
   private readonly maxBackoffMs: number;
   private spoolTimer?: NodeJS.Timeout;
 
+  readonly blobStore?: BlobStore;
+
   constructor(options: OutboundMtaWorkerOptions) {
     this.gatewayDomain = options.gatewayDomain.toLowerCase().trim();
     this.ledger = options.ledger;
@@ -81,6 +85,7 @@ export class OutboundMtaWorker {
     this.mxTransport = options.mxTransport;
     this.baseBackoffMs = options.baseBackoffMs ?? 60_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 72 * 3600 * 1000;
+    this.blobStore = options.blobStore;
   }
 
   /**
@@ -117,7 +122,7 @@ export class OutboundMtaWorker {
       const backoffMs = calculateBackoffMs(0, this.baseBackoffMs, this.maxBackoffMs);
       const nextAttemptAt = now + backoffMs;
 
-      const spoolJobId = this.ledger.enqueueOutboundSpool({
+      const spoolJobId = await this.ledger.enqueueOutboundSpool({
         recipientEmail: dm.recipientEmail,
         fromAddress,
         rawRfc822: signedEmail,
@@ -159,10 +164,11 @@ export class OutboundMtaWorker {
     let failed = 0;
 
     for (const job of pendingJobs) {
+      const rawPayload = await this.ledger.resolvePayload(job.rawRfc822);
       const mxResult = await this.mxTransport.deliver({
         fromAddress: job.fromAddress,
         toAddress: job.recipientEmail,
-        rawRfc822: Buffer.from(job.rawRfc822, 'utf-8'),
+        rawRfc822: Buffer.from(rawPayload, 'utf-8'),
       });
 
       if (mxResult.success) {

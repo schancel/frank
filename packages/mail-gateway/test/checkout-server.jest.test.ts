@@ -62,7 +62,7 @@ describe('CheckoutServer', () => {
   });
 
   it('renders payment explanation page on GET /pay/:token', async () => {
-    ledger.holdMessage({
+    await ledger.holdMessage({
       id: 'token_abc123',
       senderEmail: 'alice@external.com',
       recipientAddress: '0xfrankrecipient',
@@ -84,7 +84,7 @@ describe('CheckoutServer', () => {
   });
 
   it('atomically fulfills Stripe payment webhook, releases message, and stamps DM', async () => {
-    ledger.holdMessage({
+    await ledger.holdMessage({
       id: 'held_999',
       senderEmail: 'recruiter@hiring.com',
       recipientAddress: '0xengineer',

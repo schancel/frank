@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import { CreditLedger } from '../ledger/credit-ledger';
 import { GatewayStampProvider } from '../stamps/stamp-provider.interface';
 import { InboundEmail } from '../types';
+import { BlobStore } from '../storage/blob-store';
 
 export interface InboundRecipientResolution {
   readonly accountAddress: string;
@@ -17,6 +18,7 @@ export interface InboundHandlerOptions {
   readonly stampProvider: GatewayStampProvider;
   readonly relayUrl?: string;
   readonly relayLookup?: (username: string) => Promise<InboundRecipientResolution | undefined>;
+  readonly blobStore?: BlobStore;
 }
 
 /**
@@ -153,11 +155,13 @@ export class InboundEmailHandler {
   private readonly ledger: CreditLedger;
   private readonly stampProvider: GatewayStampProvider;
   private readonly relayLookup?: (username: string) => Promise<InboundRecipientResolution | undefined>;
+  readonly blobStore?: BlobStore;
 
   constructor(options: InboundHandlerOptions) {
     this.gatewayDomain = options.gatewayDomain.toLowerCase();
     this.ledger = options.ledger;
     this.stampProvider = options.stampProvider;
+    this.blobStore = options.blobStore;
     this.relayLookup =
       options.relayLookup ??
       (options.relayUrl ? createRelayUsernameLookup(options.relayUrl) : undefined);
@@ -273,7 +277,7 @@ export class InboundEmailHandler {
     const heldMessageId = `held_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const expiresAtMs = Date.now() + 72 * 3600 * 1000; // 72 hours TTL
 
-    this.ledger.holdMessage({
+    await this.ledger.holdMessage({
       id: heldMessageId,
       senderEmail: email.fromAddress,
       recipientAddress: frankRecipientAddress,

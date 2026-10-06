@@ -1,11 +1,25 @@
 import { DatabaseSync } from 'node:sqlite';
+import * as crypto from 'node:crypto';
 import { HeldMessageRecord, ThreadMappingRecord, OutboundSpoolJob } from '../types';
+import { BlobStore, BLOB_OFFLOAD_THRESHOLD_BYTES } from '../storage/blob-store';
+import { LocalFsBlobStore } from '../storage/local-fs-blob-store';
+
+export { BLOB_OFFLOAD_THRESHOLD_BYTES };
 
 export class CreditLedger {
   private readonly db: DatabaseSync;
+  readonly blobStore: BlobStore;
 
-  constructor(dbPath: string = ':memory:') {
+  constructor(
+    dbPath: string = ':memory:',
+    blobStoreOrOptions?: BlobStore | { blobStore?: BlobStore }
+  ) {
     this.db = new DatabaseSync(dbPath);
+    const store =
+      blobStoreOrOptions && 'put' in blobStoreOrOptions
+        ? blobStoreOrOptions
+        : blobStoreOrOptions?.blobStore;
+    this.blobStore = store ?? new LocalFsBlobStore({ inMemory: dbPath === ':memory:' });
     this.initSchema();
   }
 
@@ -172,7 +186,15 @@ export class CreditLedger {
     return false;
   }
 
-  holdMessage(record: Omit<HeldMessageRecord, 'status'>): void {
+  async holdMessage(record: Omit<HeldMessageRecord, 'status'>): Promise<void> {
+    let rawToStore: Uint8Array = record.rawRfc822;
+
+    if (record.rawRfc822.byteLength > BLOB_OFFLOAD_THRESHOLD_BYTES) {
+      const key = `held/${record.id}.eml`;
+      await this.blobStore.put(key, record.rawRfc822);
+      rawToStore = Buffer.from(`blob://${key}`, 'utf-8');
+    }
+
     this.db
       .prepare(
         `INSERT INTO held_messages (id, sender_email, recipient_address, dkim_domain, subject, raw_rfc822, created_at, expires_at, status)
@@ -184,7 +206,7 @@ export class CreditLedger {
         record.recipientAddress.toLowerCase().trim(),
         record.dkimDomain.toLowerCase().trim(),
         record.subject,
-        record.rawRfc822,
+        rawToStore,
         record.createdAtMs,
         record.expiresAtMs
       );
@@ -307,15 +329,23 @@ export class CreditLedger {
     };
   }
 
-  enqueueOutboundSpool(params: {
+  async enqueueOutboundSpool(params: {
     recipientEmail: string;
     fromAddress: string;
     rawRfc822: string;
     nextAttemptAt?: number;
     maxAttempts?: number;
-  }): number {
+  }): Promise<number> {
     const nextAttempt = params.nextAttemptAt ?? Date.now();
     const maxAttempts = params.maxAttempts ?? 10;
+    let rawToStore = params.rawRfc822;
+
+    if (Buffer.byteLength(params.rawRfc822, 'utf-8') > BLOB_OFFLOAD_THRESHOLD_BYTES) {
+      const key = `spool/${Date.now()}_${crypto.randomUUID()}.eml`;
+      await this.blobStore.put(key, params.rawRfc822);
+      rawToStore = `blob://${key}`;
+    }
+
     const result = this.db
       .prepare(
         `INSERT INTO outbound_spool (recipient_email, from_address, raw_rfc822, attempts, next_attempt_at, max_attempts, last_error, status)
@@ -324,11 +354,29 @@ export class CreditLedger {
       .run(
         params.recipientEmail.toLowerCase().trim(),
         params.fromAddress.toLowerCase().trim(),
-        params.rawRfc822,
+        rawToStore,
         nextAttempt,
         maxAttempts
       );
     return Number(result.lastInsertRowid);
+  }
+
+  async resolvePayload(rawOrPointer: string | Uint8Array): Promise<string> {
+    const text =
+      typeof rawOrPointer === 'string'
+        ? rawOrPointer
+        : new TextDecoder('utf-8').decode(rawOrPointer);
+
+    if (text.startsWith('blob://')) {
+      const key = text.slice('blob://'.length);
+      const data = await this.blobStore.get(key);
+      if (!data) {
+        throw new Error(`Blob not found for pointer: ${text}`);
+      }
+      return new TextDecoder('utf-8').decode(data);
+    }
+
+    return text;
   }
 
   getPendingOutboundJobs(nowMs: number, limit: number = 50): OutboundSpoolJob[] {

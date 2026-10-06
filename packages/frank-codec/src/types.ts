@@ -28,6 +28,23 @@ export interface PaymentMember {
   vout?: number
 }
 
+export interface StealthMetadata {
+  ephemeralPubKey: AccountRef
+  viewTag?: number | Uint8Array
+}
+
+export interface PaymentTransfer {
+  networkTag: string
+  txId: Uint8Array
+  vout?: number
+  destination: Uint8Array
+  /** 32-byte big-endian EVM quantity (C8) or satoshi uint64 bigint. */
+  value: Uint8Array | bigint
+  token?: Uint8Array
+  stealthMetadata?: StealthMetadata
+  commitment?: Uint8Array
+}
+
 export interface SignatureEntry {
   algorithm: number
   signer: AccountRef

@@ -17,8 +17,10 @@ import { chmodSync, closeSync, constants, existsSync, fstatSync, mkdirSync, open
 import { createServer } from 'net'
 import { dirname, join, resolve } from 'path'
 
+import { createHash } from 'crypto'
 import { formatEther, Wallet } from 'ethers'
 
+import { deriveDomainRoot } from '@frank/domain-roots'
 import { fetchMonadProfilesSince, MonadIdentity } from '@frank/wallet/monad-identity'
 
 import { loadOrCreateIdentity, loadQwenCanonicalRoots } from '../qwen-bot-common'
@@ -464,10 +466,45 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
           JSON.stringify({ privateKeyHex: identity.toPrivateKeyHex() }, null, 2),
           { mode: 0o600 },
         )
+        addresses[bot.name] = identity.displayAddress
+        const spec = BOT_PROFILES.find(s => s.key === bot.name)
+        if (spec) identityEnv[spec.identityEnv] = bot.identityJson
+        continue
       }
       if (!bot.identityJson) continue
       mkdirSync(dirname(bot.identityJson), { recursive: true, mode: 0o700 })
-      addresses[bot.name] = loadOrCreateIdentity(bot.identityJson, bot.name).displayAddress
+
+      // Durable canonical roots for framework bots: ensure account-root.hex exists and derive identical address
+      const botFrameworkStateDir = join(config.stateDir, 'bots', bot.name, 'state', 'bots', bot.name)
+      const rootFile = join(botFrameworkStateDir, 'account-root.hex')
+      let durableAddress: string
+      if (existsSync(rootFile)) {
+        const rootHex = readFileSync(rootFile, 'utf8').trim()
+        const accountRoot = Uint8Array.from(Buffer.from(rootHex, 'hex'))
+        const authRoot = deriveDomainRoot(accountRoot, 'identity-authentication')
+        const identity = MonadIdentity.fromDomainRoot(authRoot)
+        durableAddress = identity.displayAddress
+        writeFileSync(
+          bot.identityJson,
+          JSON.stringify({ privateKeyHex: identity.toPrivateKeyHex() }, null, 2),
+          { mode: 0o600 },
+        )
+      } else {
+        const legacyId = loadOrCreateIdentity(bot.identityJson, bot.name)
+        const rootHex = createHash('sha256').update(legacyId.toPrivateKeyHex()).digest('hex')
+        mkdirSync(botFrameworkStateDir, { recursive: true, mode: 0o700 })
+        writeFileSync(rootFile, rootHex, { mode: 0o600 })
+        const accountRoot = Uint8Array.from(Buffer.from(rootHex, 'hex'))
+        const authRoot = deriveDomainRoot(accountRoot, 'identity-authentication')
+        const identity = MonadIdentity.fromDomainRoot(authRoot)
+        durableAddress = identity.displayAddress
+        writeFileSync(
+          bot.identityJson,
+          JSON.stringify({ privateKeyHex: identity.toPrivateKeyHex() }, null, 2),
+          { mode: 0o600 },
+        )
+      }
+      addresses[bot.name] = durableAddress
       const spec = BOT_PROFILES.find(s => s.key === bot.name)
       if (spec) identityEnv[spec.identityEnv] = bot.identityJson
     }
@@ -502,7 +539,6 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     }
     abortIfStopping()
 
-    const curatedToml = renderCuratedDefaultsToml(curated.entries)
     const effectivePublicRelayUrl = publicRelayUrl ?? config.publicRelayUrl
     const directoryToml = [
       '',
@@ -516,9 +552,7 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
       '',
     ].join('\n')
     const curatedPath = join(config.stateDir, 'relay-curated.toml')
-    writeFileSync(curatedPath, curatedToml + directoryToml, { mode: 0o600 })
-    print('[demo] curated default contacts for the relay config (already applied to this demo relay):')
-    print(curatedToml.trimEnd())
+    writeFileSync(curatedPath, directoryToml, { mode: 0o600 })
     abortIfStopping()
 
     const prebuiltBin = join(REPO_ROOT, 'backend', 'cashweb', 'target', 'debug', 'cashwebd-exe')

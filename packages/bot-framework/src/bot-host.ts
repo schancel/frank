@@ -11,12 +11,23 @@ import {
   createMonadChain,
   installCanonicalDirectory,
   loadMonadChainConfigFromEnv,
+  serializeMessageItems,
   type MonadChainWalletHandle,
 } from "@frank/wallet/chain/monad-chain";
 import {
   fetchMonadProfilesSince,
   decodeProfileBytes,
+  fetchMonadIdentityPubKey,
 } from "@frank/wallet/monad-identity";
+import { buildEnvelope } from "@frank/cashweb/relay/monad-message-envelope";
+import type { MessageItem } from "@frank/cashweb/types/messages";
+import {
+  MonadStampClient,
+  quoteMonadStampPaymentGasReserve,
+} from "@frank/wallet/monad-stamp-client";
+import { MonadAccountTxSigner } from "@frank/wallet/monad-account-tx";
+import { MonadHttpClient } from "@frank/wallet/monad-http";
+import type { DirectMessageSendResult } from "@frank/wallet/chain/active-chain";
 
 import {
   toChainAddress,
@@ -64,9 +75,16 @@ export class FrankBotHost {
   private registrationTimer?: NodeJS.Timeout;
   private lastRegistrationPollMs = 0;
   private readonly scheduler = new BotScheduler();
+  private readonly walletSendQueues = new WeakMap<MonadChainWalletHandle, Promise<any>>();
+  private stopPromise?: Promise<void>;
+  private resolveStop?: () => void;
 
   getScheduler(): BotScheduler {
     return this.scheduler;
+  }
+
+  get fundingWalletAddress(): string | undefined {
+    return this.fundingWallet?.address;
   }
 
   constructor(options: BotHostOptions) {
@@ -87,10 +105,23 @@ export class FrankBotHost {
         process.env.BOT_STATE_DIR ??
         join(homedir(), ".frank-bots"),
       rpcUrl,
-      fundingPrivateKeyHex:
-        options.fundingPrivateKeyHex ??
-        process.env.E2E_DEMO_MAIN_WALLET_PRIVATE_KEY ??
-        "",
+      fundingPrivateKeyHex: (() => {
+        if (options.fundingPrivateKeyHex) return options.fundingPrivateKeyHex;
+        if (process.env.E2E_DEMO_MAIN_WALLET_PRIVATE_KEY)
+          return process.env.E2E_DEMO_MAIN_WALLET_PRIVATE_KEY;
+        const jsonPath =
+          process.env.FRANK_DEMO_FAUCET_WALLET_JSON ??
+          process.env.E2E_DEMO_MAIN_WALLET_JSON;
+        if (jsonPath && existsSync(jsonPath)) {
+          try {
+            const parsed = JSON.parse(readFileSync(jsonPath, "utf8"));
+            return parsed.privateKey ?? parsed.privateKeyHex ?? "";
+          } catch {
+            return "";
+          }
+        }
+        return "";
+      })(),
       stampValueWei:
         options.stampValueWei ??
         envConfig.defaultStampValueWei ??
@@ -98,6 +129,7 @@ export class FrankBotHost {
       pollIntervalMs: options.pollIntervalMs ?? 3000,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? 30 * 60 * 1000,
       watchRegistrations: options.watchRegistrations ?? true,
+      unrefTimers: options.unrefTimers ?? false,
     };
 
     const cursorFile = join(this.options.stateDir, "registration-cursor.json");
@@ -208,7 +240,7 @@ export class FrankBotHost {
     // Install canonical directory so chain.directMessages routes through canonical directory
     const uninstallDirectory = installCanonicalDirectory(
       wallet,
-      directory as unknown as Parameters<typeof installCanonicalDirectory>[1]
+      directory.rawDirectory
     );
 
     // 5. Register Frank metadata profile on relay
@@ -220,21 +252,43 @@ export class FrankBotHost {
       profile,
     });
 
-    // 6. Wire up loop guard and peer queue
+    // 6. Fund bot identity if shared funding wallet is present
+    if (
+      this.fundingWallet &&
+      this.nonceSequencer &&
+      definition.id !== "faucet"
+    ) {
+      try {
+        const botBalance = await this.provider.getBalance(botAddress);
+        if (botBalance < 2_000_000_000_000_000_000n) {
+          await this.nonceSequencer.withNonce(async (nonce) => {
+            const tx = await this.fundingWallet!.sendTransaction({
+              to: botAddress,
+              value: 5_000_000_000_000_000_000n,
+              nonce,
+            });
+            await tx.wait();
+          });
+        }
+      } catch (err) {
+        console.warn(
+          `[bot-host] Failed initial funding for bot ${definition.id}:`,
+          err
+        );
+      }
+    }
+
+    // 7. Wire up loop guard and peer queue
     const loopGuard = new LoopGuard({
       selfAddress: botAddress,
     });
     const peerQueue = new PeerLaneQueue();
 
-    // 7. Assemble BotContext
+    // 8. Assemble BotContext
     const subscriptions = new LevelSubscriptionManager(
       state.sublevel("subscriptions"),
       async (recipientAddress: string, items: MessageItem[]) => {
-        return this.chain.directMessages.send({
-          wallet,
-          recipient: toChainAddress(recipientAddress),
-          items,
-        });
+        return this.sendMessageWithFallback(wallet, recipientAddress, items);
       }
     );
 
@@ -251,19 +305,11 @@ export class FrankBotHost {
       lookupPeer: (addr: string) => directory.lookupPeer(addr),
 
       sendMessage: async (recipientAddress: string, items) => {
-        return this.chain.directMessages.send({
-          wallet,
-          recipient: toChainAddress(recipientAddress),
-          items,
-        });
+        return this.sendMessageWithFallback(wallet, recipientAddress, items);
       },
 
       sendDirectMessage: async (recipientAddress: string, items) => {
-        return this.chain.directMessages.send({
-          wallet,
-          recipient: toChainAddress(recipientAddress),
-          items,
-        });
+        return this.sendMessageWithFallback(wallet, recipientAddress, items);
       },
 
       onNewUserRegistered: (cb) => {
@@ -271,37 +317,97 @@ export class FrankBotHost {
       },
 
       sendTransfer: async ({ to, valueWei }) => {
-        if (!this.fundingWallet || !this.nonceSequencer) {
-          throw new Error(
-            "No funding wallet configured on BotHost for native transfers"
-          );
-        }
-        return this.nonceSequencer.withNonce(async (nonce) => {
-          const tx = await this.fundingWallet!.sendTransaction({
-            to,
-            value: valueWei,
-            nonce,
+        if (
+          definition.id === "faucet" &&
+          this.fundingWallet &&
+          this.nonceSequencer
+        ) {
+          return this.nonceSequencer.withNonce(async (nonce) => {
+            const tx = await this.fundingWallet!.sendTransaction({
+              to,
+              value: valueWei,
+              nonce,
+            });
+            return { txHash: tx.hash };
           });
-          return { txHash: tx.hash };
+        }
+
+        const botWallet = new Wallet(
+          wallet.identity.toPrivateKeyHex(),
+          this.provider
+        );
+        const botBalance = await this.provider.getBalance(botAddress);
+        const feeData = await this.provider.getFeeData();
+        const gasPrice = feeData.gasPrice ?? 1_000_000_000n;
+        const gasLimit = 21_000n;
+        const needed = valueWei + gasLimit * gasPrice;
+
+        if (botBalance < needed && this.fundingWallet && this.nonceSequencer) {
+          const topUp = (needed - botBalance) + 5_000_000_000_000_000_000n;
+          await this.nonceSequencer.withNonce(async (nonce) => {
+            const tx = await this.fundingWallet!.sendTransaction({
+              to: botAddress,
+              value: topUp,
+              nonce,
+            });
+            await tx.wait();
+          });
+        }
+
+        const tx = await botWallet.sendTransaction({
+          to,
+          value: valueWei,
         });
+        return { txHash: tx.hash };
       },
 
       buildAndSignTransfer: async ({ to, valueWei }) => {
-        if (!this.fundingWallet || !this.nonceSequencer) {
-          throw new Error(
-            "No funding wallet configured on BotHost for native transfers"
-          );
-        }
-        return this.nonceSequencer.withNonce(async (nonce) => {
-          const populated = await this.fundingWallet!.populateTransaction({
-            to,
-            value: valueWei,
-            nonce,
+        if (
+          definition.id === "faucet" &&
+          this.fundingWallet &&
+          this.nonceSequencer
+        ) {
+          return this.nonceSequencer.withNonce(async (nonce) => {
+            const populated = await this.fundingWallet!.populateTransaction({
+              to,
+              value: valueWei,
+              nonce,
+            });
+            const rawTx = await this.fundingWallet!.signTransaction(populated);
+            const txHash = (await this.provider.broadcastTransaction(rawTx)).hash;
+            return { rawTx, txHash };
           });
-          const rawTx = await this.fundingWallet!.signTransaction(populated);
-          const txHash = (await this.provider.broadcastTransaction(rawTx)).hash;
-          return { rawTx, txHash };
+        }
+
+        const botWallet = new Wallet(
+          wallet.identity.toPrivateKeyHex(),
+          this.provider
+        );
+        const botBalance = await this.provider.getBalance(botAddress);
+        const feeData = await this.provider.getFeeData();
+        const gasPrice = feeData.gasPrice ?? 1_000_000_000n;
+        const gasLimit = 21_000n;
+        const needed = valueWei + gasLimit * gasPrice;
+
+        if (botBalance < needed && this.fundingWallet && this.nonceSequencer) {
+          const topUp = (needed - botBalance) + 5_000_000_000_000_000_000n;
+          await this.nonceSequencer.withNonce(async (nonce) => {
+            const tx = await this.fundingWallet!.sendTransaction({
+              to: botAddress,
+              value: topUp,
+              nonce,
+            });
+            await tx.wait();
+          });
+        }
+
+        const populated = await botWallet.populateTransaction({
+          to,
+          value: valueWei,
         });
+        const rawTx = await botWallet.signTransaction(populated);
+        const txHash = (await this.provider.broadcastTransaction(rawTx)).hash;
+        return { rawTx, txHash };
       },
 
       waitForReceipt: async (
@@ -311,7 +417,13 @@ export class FrankBotHost {
         return this.provider.waitForTransaction(txHash, 1, timeoutMs);
       },
 
-      getBalance: async (): Promise<bigint> => {
+      getBalance: async (address?: string): Promise<bigint> => {
+        if (address) {
+          return this.provider.getBalance(address);
+        }
+        if (definition.id === "faucet" && this.fundingWallet) {
+          return this.provider.getBalance(this.fundingWallet.address);
+        }
         return this.provider.getBalance(botAddress);
       },
     };
@@ -364,7 +476,6 @@ export class FrankBotHost {
     this.pollTimer = setInterval(() => {
       void this.pollAllBots();
     }, this.options.pollIntervalMs);
-    this.pollTimer.unref();
 
     // Start registration watcher if enabled
     if (this.options.watchRegistrations) {
@@ -372,7 +483,11 @@ export class FrankBotHost {
       this.registrationTimer = setInterval(() => {
         void this.pollRegistrations();
       }, 5000);
-      this.registrationTimer.unref();
+    }
+
+    if (this.options.unrefTimers) {
+      this.pollTimer.unref();
+      if (this.registrationTimer) this.registrationTimer.unref();
     }
 
     // Start background event scheduler
@@ -383,6 +498,16 @@ export class FrankBotHost {
     );
   }
 
+  async waitUntilStopped(): Promise<void> {
+    if (!this.running) return;
+    if (!this.stopPromise) {
+      this.stopPromise = new Promise((resolve) => {
+        this.resolveStop = resolve;
+      });
+    }
+    return this.stopPromise;
+  }
+
   private async pollAllBots(): Promise<void> {
     for (const [id, instance] of this.instances.entries()) {
       try {
@@ -390,6 +515,12 @@ export class FrankBotHost {
           wallet: instance.wallet,
           sinceMs: instance.lastPollTimestamp,
         });
+
+        if (messages.length > 0) {
+          console.log(
+            `[bot-host] [${id}] Polled ${messages.length} message(s)`
+          );
+        }
 
         for (const msg of messages) {
           instance.lastPollTimestamp = Math.max(
@@ -405,7 +536,19 @@ export class FrankBotHost {
           // 2. Loop guard check (echoes, denylists, bot peers)
           const sender = msg.senderAddress.raw;
           const dropReason = instance.loopGuard.shouldDrop(sender);
-          if (dropReason) continue;
+          if (dropReason) {
+            console.log(
+              `[bot-host] [${id}] Dropped message from ${sender}: ${dropReason}`
+            );
+            continue;
+          }
+
+          console.log(
+            `[bot-host] [${id}] Enqueuing message from ${sender} (digest: ${msg.payloadDigest.slice(
+              0,
+              10
+            )}..., items: ${msg.items.map((i) => i.type).join(",")})`
+          );
 
           // 3. Dispatch in per-peer serialized queue
           void instance.peerQueue.enqueue(sender, async () => {
@@ -448,7 +591,7 @@ export class FrankBotHost {
           });
         }
       } catch (err: unknown) {
-        // Polling errors are transient; log and resume next tick
+        console.warn(`[bot-host] Failed polling messages for bot "${id}":`, err);
       }
     }
   }
@@ -550,9 +693,115 @@ export class FrankBotHost {
     }
   }
 
+  private async sendMessageWithFallback(
+    wallet: MonadChainWalletHandle,
+    recipientAddress: string,
+    items: MessageItem[]
+  ): Promise<DirectMessageSendResult> {
+    try {
+      return await this.chain.directMessages.send({
+        wallet,
+        recipient: toChainAddress(recipientAddress),
+        items,
+      });
+    } catch {
+      return this.sendStandardDirectMessage(wallet, recipientAddress, items);
+    }
+  }
+
+  private async sendStandardDirectMessage(
+    wallet: MonadChainWalletHandle,
+    recipientAddress: string,
+    items: MessageItem[]
+  ): Promise<DirectMessageSendResult> {
+    const prev = this.walletSendQueues.get(wallet) ?? Promise.resolve();
+    const run = prev.then(async () => {
+      const toPubKey = await fetchMonadIdentityPubKey({
+        relayBaseUrl: this.options.relayBaseUrl,
+        address: recipientAddress,
+      });
+      if (!toPubKey) {
+        throw new Error(
+          `No registered profile or pubkey for ${recipientAddress}`
+        );
+      }
+
+      const fundingPrivateKeyHex =
+        this.options.fundingPrivateKeyHex ||
+        wallet.identity.toPrivateKeyHex();
+
+      const mainAccountSigner = new MonadAccountTxSigner({
+        privateKey: fundingPrivateKeyHex,
+        provider: this.provider,
+        httpClient: new MonadHttpClient({ rpcUrl: this.options.rpcUrl }),
+      });
+
+      const gasReserveWei = await quoteMonadStampPaymentGasReserve({
+        signer: mainAccountSigner,
+        recipientPublicKey: toPubKey,
+      });
+
+      await wallet.pool.prepareStampInventory({
+        mainAccountSigner,
+        provider: this.provider,
+        stampValueWei: this.options.stampValueWei,
+        gasReserveWei,
+      });
+
+      const envelope = buildEnvelope({
+        fromAddress: wallet.identity.address.raw,
+        fromPrivateKey: wallet.identity.toNakamotoPrivateKey(),
+        toAddress: recipientAddress,
+        toPubKey,
+        plaintext: serializeMessageItems(items),
+        networkTag: this.options.networkTag,
+      });
+
+      const stampClient = new MonadStampClient({
+        pool: wallet.pool,
+        leaseManager: wallet.leaseManager,
+        provider: this.provider,
+        httpClient:
+          wallet.httpClient ??
+          new MonadHttpClient({ rpcUrl: this.options.rpcUrl }),
+        changePool: wallet.changePool,
+        relayBaseUrl: this.options.relayBaseUrl,
+      });
+
+      const res = await stampClient.submitStampedMessage({
+        encryptedPayload: envelope,
+        recipientPublicKey: toPubKey,
+        stampValueWei: this.options.stampValueWei,
+        waitForLease: {
+          timeoutMs: 30_000,
+          pollIntervalMs: 250,
+        },
+      });
+
+      return {
+        payloadDigest: res.payloadHashHex,
+        stampValueWei: this.options.stampValueWei,
+        stampPayments: res.txHashes.map((h) => ({
+          txHash: h,
+          destinationAddress: recipientAddress,
+          valueWei: this.options.stampValueWei,
+        })),
+        preparationTxHashes: [],
+      };
+    });
+    this.walletSendQueues.set(wallet, run.catch(() => {}));
+    return run;
+  }
+
   async stop(): Promise<void> {
     if (!this.running) return;
     this.running = false;
+
+    if (this.resolveStop) {
+      this.resolveStop();
+      this.resolveStop = undefined;
+      this.stopPromise = undefined;
+    }
 
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.registrationTimer) clearInterval(this.registrationTimer);

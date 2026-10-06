@@ -523,12 +523,9 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
 async function checkRaffleFill(
   handle: DemoHandle,
-  ctx: Pick<
-    Awaited<ReturnType<typeof setUpFundedStampClient>>,
-    'stampClient' | 'pool' | 'provider' | 'mainAccountSigner'
-  >,
 ): Promise<SmokeCheck> {
   const name = 'raffle-round'
+  let entrantClient: Awaited<ReturnType<typeof setUpFundedStampClient>> | undefined
   try {
     const raffle = handle.config.bots.find(b => b.name === 'raffle')
     const maxEntries = Number(raffle?.env.RAFFLE_BOT_MAX_ENTRIES ?? 5)
@@ -542,6 +539,15 @@ async function checkRaffleFill(
     })
     if (!raffleKey)
       return { name, ok: false, detail: 'the raffle has no registered profile' }
+
+    entrantClient = await setUpFundedStampClient({
+      rpcUrl: handle.config.rpcUrl,
+      relayBaseUrl: handle.relayUrl,
+      mainWalletJsonPath: handle.config.mainWalletJson,
+      stampValueWei: price,
+      label: 'raffle-entrants',
+    })
+
     const entrants: MonadIdentity[] = []
     const startedAt = Date.now()
     for (let i = 0; i < maxEntries; i++) {
@@ -554,7 +560,7 @@ async function checkRaffleFill(
       })
       entrants.push(who)
       await sendDirectMessageItems({
-        ...ctx,
+        ...entrantClient,
         fromIdentity: who,
         toAddress: raffleAddress,
         toPubKey: raffleKey,
@@ -608,6 +614,8 @@ async function checkRaffleFill(
       ok: false,
       detail: err instanceof Error ? err.message : String(err),
     }
+  } finally {
+    if (entrantClient) await entrantClient.closePool()
   }
 }
 
@@ -863,12 +871,7 @@ export async function runSmokeChecks(
 
     // Fill a raffle round: N fresh entrants each pay the entry price, then everyone must receive
     // the draw and the winner must actually be paid the pot (the #363 acceptance check).
-    const raffleCheck = await checkRaffleFill(handle, {
-      stampClient,
-      pool,
-      mainAccountSigner,
-      provider,
-    })
+    const raffleCheck = await checkRaffleFill(handle)
 
     // The faucet has no chat: it must have sent the new profile a transfer on the fake chain.
     let funded = false

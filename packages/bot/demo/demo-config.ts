@@ -807,7 +807,9 @@ export function resolveDemoConfig(params: {
       env: {
         ...common,
         ...stampWallet,
-        QWEN_BOT_CANONICAL_ROOTS_JSON: join(stateDir, 'bots', 'qwen', 'roots.json'),
+        ...(merged.QWEN_BOT_CANONICAL_ROOTS_JSON
+          ? { QWEN_BOT_CANONICAL_ROOTS_JSON: resolve(cwd, merged.QWEN_BOT_CANONICAL_ROOTS_JSON) }
+          : {}),
         QWEN_BOT_MODE: qwenMode,
         ...(qwenMode === 'live'
           ? {
@@ -835,7 +837,7 @@ export function resolveDemoConfig(params: {
           {
             name: 'faucet' as BotName,
             script: 'faucet-bot.livecheck.ts',
-            readyLine: /Faucet wallet:/,
+            readyLine: /Faucet wallet:|Polling .*(inbox|\/message\/monad\/inbox)/,
             env: {
               ...common,
               E2E_DEMO_MAIN_WALLET_JSON: faucetWallet,

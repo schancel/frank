@@ -4,6 +4,7 @@ import type {
   BotProfile,
   BotContext,
   BotMessageContext,
+  BotStateStore,
   NewUserEvent,
 } from "@frank/bot-framework";
 import {
@@ -19,6 +20,8 @@ import {
 import {
   deriveDeck,
   handValue,
+  cardLabel,
+  sha256Hex,
   type Card,
 } from "@frank/wallet/message-item-plugins/blackjack/deck";
 import { generateAvatarPng } from "../../bot-directory";
@@ -36,6 +39,27 @@ export interface ActiveGameRecord {
   dealerCards: Card[];
   status: "active" | "resolved";
   outcome?: BlackjackOutcome;
+}
+
+async function getStoredGame(
+  state: BotStateStore,
+  key: string
+): Promise<ActiveGameRecord | undefined> {
+  const val = await state.get(key);
+  if (!val) return undefined;
+  try {
+    return JSON.parse(val);
+  } catch {
+    return undefined;
+  }
+}
+
+async function putStoredGame(
+  state: BotStateStore,
+  key: string,
+  game: unknown
+): Promise<void> {
+  await state.put(key, JSON.stringify(game));
 }
 
 export class BlackjackDealerBot implements FrankBotDefinition {
@@ -81,10 +105,15 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     }
   }
 
-  async onMessage(ctx: BotMessageContext): Promise<void> {
+  async onMessage(msgCtx: BotMessageContext, ctx?: BotContext): Promise<void> {
+    const effectiveCtx = ctx ?? (msgCtx as any);
+
     // Check if any item represents a blackjack action
-    const moveItem = ctx.items.find(
-      (item: any) => item.type === "blackjack_move" || item.action !== undefined
+    const moveItem = msgCtx.items.find(
+      (item: any) =>
+        item.type === "blackjack-move" ||
+        item.type === "blackjack_move" ||
+        item.action !== undefined
     ) as any;
 
     if (!moveItem) {
@@ -94,7 +123,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
         maxWagerWei: this.maxWagerWei,
         rulesSummary: BLACKJACK_RULES_SUMMARY,
       });
-      await ctx.reply([
+      await msgCtx.reply([
         {
           type: "text",
           text: `Welcome to Frank Blackjack! Minimum bet is ${
@@ -107,16 +136,28 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     }
 
     const action = moveItem.action;
-    const gameId = String(moveItem.gameId ?? ctx.conversationId);
+    const gameId = String(moveItem.gameId ?? msgCtx.conversationId);
+    console.log(
+      `[blackjack] onMessage received: action=${action}, gameId=${gameId}, from=${msgCtx.peerAddress}`
+    );
 
     if (action === "bet") {
-      await this.handleBet(ctx, moveItem, gameId);
+      await this.handleBet(msgCtx, effectiveCtx, moveItem, gameId);
     } else if (action === "hit") {
-      await this.handleHit(ctx, gameId);
+      await this.handleHit(msgCtx, effectiveCtx, gameId);
     } else if (action === "stand") {
-      await this.handleStand(ctx, gameId);
+      await this.handleStand(msgCtx, effectiveCtx, gameId);
+    } else if (action === "deal") {
+      await msgCtx.reply([
+        {
+          type: "text",
+          text: `Blackjack: deal is a dealer-only action [game=${JSON.stringify(
+            gameId
+          )}]`,
+        } as any,
+      ]);
     } else {
-      await ctx.reply([
+      await msgCtx.reply([
         {
           type: "text",
           text: `Unknown blackjack action: ${action}. Available actions: bet, hit, stand.`,
@@ -126,15 +167,19 @@ export class BlackjackDealerBot implements FrankBotDefinition {
   }
 
   private async handleBet(
-    ctx: BotMessageContext,
+    msgCtx: BotMessageContext,
+    ctx: BotContext,
     moveItem: any,
     gameId: string
   ): Promise<void> {
     const wagerTxHash = moveItem.wagerTxHash;
     const declaredWagerWei = BigInt(moveItem.wagerWei ?? this.minWagerWei);
+    console.log(
+      `[blackjack] handleBet: gameId=${gameId}, wagerTxHash=${wagerTxHash}, declaredWagerWei=${declaredWagerWei}`
+    );
 
     if (declaredWagerWei < this.minWagerWei) {
-      await ctx.reply([
+      await msgCtx.reply([
         {
           type: "text",
           text: `Bet rejected: minimum wager is ${
@@ -147,9 +192,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
 
     // Generate provably-fair server seed & commitment
     const serverSeed = randomBytes(32).toString("hex");
-    const serverCommit = createHash("sha256")
-      .update(Buffer.from(serverSeed, "hex"))
-      .digest("hex");
+    const serverCommit = sha256Hex(serverSeed);
 
     // Derive deterministic deck
     const deckEntropy = wagerTxHash ?? serverCommit;
@@ -159,11 +202,37 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     const initialPlayerScore = handValue(initial.playerCards).total;
     const initialDealerScore = handValue(initial.dealerCards).total;
 
+    // 1. Always send deal message first so player/client receives their hand
+    console.log(
+      `[blackjack] Sending deal message for game ${gameId}: player=${initialPlayerScore}, dealerUpCard=${cardLabel(
+        initial.dealerCards[0]
+      )}`
+    );
+    await msgCtx.reply([
+      {
+        type: "blackjack-move",
+        action: "deal",
+        gameId,
+        playerCards: initial.playerCards,
+        dealerUpCard: initial.dealerCards[0],
+        serverSeedHash: serverCommit,
+        serverCommit,
+        text: `Hand dealt! Your cards: [${initial.playerCards
+          .map((c) => cardLabel(c))
+          .join(", ")}] (Score: ${initialPlayerScore}). Dealer shows: ${cardLabel(
+          initial.dealerCards[0]
+        )}.`,
+      } as any,
+    ]);
+
     const isPlayerBlackjack = initialPlayerScore === 21;
     const isDealerBlackjack = initialDealerScore === 21;
 
+    // 2. Check natural blackjack
     if (isPlayerBlackjack || isDealerBlackjack) {
-      // Natural resolution
+      console.log(
+        `[blackjack] Natural blackjack for game ${gameId}: player=${isPlayerBlackjack}, dealer=${isDealerBlackjack}`
+      );
       let outcome: BlackjackOutcome = "dealer_win";
       if (isPlayerBlackjack && isDealerBlackjack) {
         outcome = "push";
@@ -172,9 +241,9 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       }
 
       // Record resolved game
-      await (ctx as any).state?.putJson?.(`game:${gameId}`, {
+      await putStoredGame(ctx.state, `game:${gameId}`, {
         gameId,
-        playerAddress: ctx.peerAddress,
+        playerAddress: msgCtx.peerAddress,
         wagerTxHash: deckEntropy,
         wagerWei: declaredWagerWei.toString(),
         serverSeed,
@@ -186,34 +255,34 @@ export class BlackjackDealerBot implements FrankBotDefinition {
         outcome,
       });
 
-      // If player won or pushed, execute payout via BotContext/BotHost
+      // If player won or pushed, execute payout via BotContext
       let payoutReceiptTx: string | undefined;
       if (outcome === "player_blackjack") {
         const payoutWei = (declaredWagerWei * 5n) / 2n; // 2.5x (3:2 payout)
         try {
-          const receipt = await (ctx as any).payout?.(
-            ctx.peerAddress,
-            payoutWei
-          );
-          payoutReceiptTx = receipt?.hash;
+          const res = await ctx.sendTransfer({
+            to: msgCtx.peerAddress,
+            valueWei: payoutWei,
+          });
+          payoutReceiptTx = res.txHash;
         } catch (err) {
           console.error("[blackjack] payout error on natural blackjack:", err);
         }
       } else if (outcome === "push") {
         try {
-          const receipt = await (ctx as any).payout?.(
-            ctx.peerAddress,
-            declaredWagerWei
-          );
-          payoutReceiptTx = receipt?.hash;
+          const res = await ctx.sendTransfer({
+            to: msgCtx.peerAddress,
+            valueWei: declaredWagerWei,
+          });
+          payoutReceiptTx = res.txHash;
         } catch (err) {
           console.error("[blackjack] payout refund error on push:", err);
         }
       }
 
-      await ctx.reply([
+      await msgCtx.reply([
         {
-          type: "blackjack_move",
+          type: "blackjack-move",
           action: "reveal",
           gameId,
           playerCards: initial.playerCards,
@@ -230,7 +299,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     // Active hand in progress
     const record: ActiveGameRecord = {
       gameId,
-      playerAddress: ctx.peerAddress,
+      playerAddress: msgCtx.peerAddress,
       wagerTxHash: deckEntropy,
       wagerWei: declaredWagerWei.toString(),
       serverSeed,
@@ -241,39 +310,21 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       status: "active",
     };
 
-    await (ctx as any).state?.putJson?.(`game:${gameId}`, record);
-    await (ctx as any).state?.put?.(`active:${ctx.peerAddress}`, gameId);
-
-    // Dealer only reveals upcard (first card) to the player during active game
-    await ctx.reply([
-      {
-        type: "blackjack_move",
-        action: "deal",
-        gameId,
-        playerCards: initial.playerCards,
-        dealerUpCard: initial.dealerCards[0],
-        serverCommit,
-        text: `Hand dealt! Your cards: [${initial.playerCards
-          .map((c) => c.value)
-          .join(", ")}] (Score: ${initialPlayerScore}). Dealer shows: ${
-          initial.dealerCards[0].value
-        }.`,
-      } as any,
-    ]);
+    await putStoredGame(ctx.state, `game:${gameId}`, record);
+    await ctx.state.put(`active:${msgCtx.peerAddress}`, gameId);
   }
 
   private async handleHit(
-    ctx: BotMessageContext,
+    msgCtx: BotMessageContext,
+    ctx: BotContext,
     gameId: string
   ): Promise<void> {
     const activeGameId =
-      (await (ctx as any).state?.get?.(`active:${ctx.peerAddress}`)) ?? gameId;
-    const game = (await (ctx as any).state?.getJson?.(
-      `game:${activeGameId}`
-    )) as ActiveGameRecord | undefined;
+      (await ctx.state.get(`active:${msgCtx.peerAddress}`)) ?? gameId;
+    const game = await getStoredGame(ctx.state, `game:${activeGameId}`);
 
     if (!game || game.status !== "active") {
-      await ctx.reply([
+      await msgCtx.reply([
         {
           type: "text",
           text: "No active blackjack game found to hit. Send a bet to start a new hand!",
@@ -292,51 +343,55 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     if (playerVal.isBust) {
       game.status = "resolved";
       game.outcome = "dealer_win";
-      await (ctx as any).state?.putJson?.(`game:${game.gameId}`, game);
-      await (ctx as any).state?.del?.(`active:${ctx.peerAddress}`);
+      await putStoredGame(ctx.state, `game:${game.gameId}`, game);
+      await ctx.state.del(`active:${msgCtx.peerAddress}`);
 
-      await ctx.reply([
+      await msgCtx.reply([
         {
-          type: "blackjack_move",
+          type: "blackjack-move",
           action: "reveal",
           gameId: game.gameId,
           playerCards: game.playerCards,
           dealerCards: game.dealerCards,
           serverSeed: game.serverSeed,
+          serverSeedHash: game.serverCommit,
           outcome: "dealer_win",
-          text: `Bust! You drew ${nextCard.value} (Score: ${playerVal.total}). Dealer wins!`,
+          text: `Bust! You drew ${cardLabel(nextCard)} (Score: ${
+            playerVal.total
+          }). Dealer wins!`,
         } as any,
       ]);
       return;
     }
 
     // Save state and reply with new card
-    await (ctx as any).state?.putJson?.(`game:${game.gameId}`, game);
-    await ctx.reply([
+    await putStoredGame(ctx.state, `game:${game.gameId}`, game);
+    await msgCtx.reply([
       {
-        type: "blackjack_move",
+        type: "blackjack-move",
         action: "hit_result",
         gameId: game.gameId,
         playerCards: game.playerCards,
         drawnCard: nextCard,
         playerScore: playerVal.total,
-        text: `Hit: You drew ${nextCard.value}. Current score: ${playerVal.total}. Hit or stand?`,
+        text: `Hit: You drew ${cardLabel(nextCard)}. Current score: ${
+          playerVal.total
+        }. Hit or stand?`,
       } as any,
     ]);
   }
 
   private async handleStand(
-    ctx: BotMessageContext,
+    msgCtx: BotMessageContext,
+    ctx: BotContext,
     gameId: string
   ): Promise<void> {
     const activeGameId =
-      (await (ctx as any).state?.get?.(`active:${ctx.peerAddress}`)) ?? gameId;
-    const game = (await (ctx as any).state?.getJson?.(
-      `game:${activeGameId}`
-    )) as ActiveGameRecord | undefined;
+      (await ctx.state.get(`active:${msgCtx.peerAddress}`)) ?? gameId;
+    const game = await getStoredGame(ctx.state, `game:${activeGameId}`);
 
     if (!game || game.status !== "active") {
-      await ctx.reply([
+      await msgCtx.reply([
         {
           type: "text",
           text: "No active blackjack game found to stand. Send a bet to start a new hand!",
@@ -346,18 +401,19 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     }
 
     const deck = deriveDeck(game.serverSeed, game.wagerTxHash, 0);
-    // Play out dealer from remaining deck
-    const dealerRun = playOutDealer(deck, game.dealerCards, game.dealtCount);
+    // Play out dealer against playerCards
+    const dealerRun = playOutDealer(deck, game.playerCards, game.dealtCount);
     game.dealerCards = dealerRun.dealerCards;
+    game.dealtCount = dealerRun.dealtCount;
+    const outcome = dealerRun.outcome;
 
     const playerVal = handValue(game.playerCards);
     const dealerVal = handValue(game.dealerCards);
-    const outcome = resolveOutcome(playerVal, dealerVal);
 
     game.status = "resolved";
     game.outcome = outcome;
-    await (ctx as any).state?.putJson?.(`game:${game.gameId}`, game);
-    await (ctx as any).state?.del?.(`active:${ctx.peerAddress}`);
+    await putStoredGame(ctx.state, `game:${game.gameId}`, game);
+    await ctx.state.del(`active:${msgCtx.peerAddress}`);
 
     const wagerWei = BigInt(game.wagerWei);
     let payoutReceiptTx: string | undefined;
@@ -366,28 +422,35 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       const multiplier = outcome === "player_blackjack" ? 2.5 : 2.0;
       const payoutWei = (wagerWei * BigInt(Math.round(multiplier * 10))) / 10n;
       try {
-        const receipt = await (ctx as any).payout?.(ctx.peerAddress, payoutWei);
-        payoutReceiptTx = receipt?.hash;
+        const res = await ctx.sendTransfer({
+          to: msgCtx.peerAddress,
+          valueWei: payoutWei,
+        });
+        payoutReceiptTx = res.txHash;
       } catch (err) {
         console.error("[blackjack] stand payout failed:", err);
       }
     } else if (outcome === "push") {
       try {
-        const receipt = await (ctx as any).payout?.(ctx.peerAddress, wagerWei);
-        payoutReceiptTx = receipt?.hash;
+        const res = await ctx.sendTransfer({
+          to: msgCtx.peerAddress,
+          valueWei: wagerWei,
+        });
+        payoutReceiptTx = res.txHash;
       } catch (err) {
         console.error("[blackjack] push refund failed:", err);
       }
     }
 
-    await ctx.reply([
+    await msgCtx.reply([
       {
-        type: "blackjack_move",
+        type: "blackjack-move",
         action: "reveal",
         gameId: game.gameId,
         playerCards: game.playerCards,
         dealerCards: game.dealerCards,
         serverSeed: game.serverSeed,
+        serverSeedHash: game.serverCommit,
         outcome,
         payoutTxHash: payoutReceiptTx,
         text: `Hand complete: ${outcome}! Player: ${playerVal.total}, Dealer: ${dealerVal.total}.`,

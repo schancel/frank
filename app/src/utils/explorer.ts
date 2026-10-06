@@ -203,7 +203,9 @@ export function multiChainExplorerUrl(
 
   // Solana
   if (tag === 'sold' || tag === 'solana-devnet' || tag === 'solana-testnet') {
-    return `https://explorer.solana.com/tx/${encodeURIComponent(txId)}?cluster=devnet`
+    return `https://explorer.solana.com/tx/${encodeURIComponent(
+      txId,
+    )}?cluster=devnet`
   }
   if (tag === 'sol1' || tag === 'solana-mainnet' || tag === 'solana') {
     return `https://explorer.solana.com/tx/${encodeURIComponent(txId)}`
@@ -211,10 +213,14 @@ export function multiChainExplorerUrl(
 
   // eCash
   if (tag === 'xect' || tag === 'ecash-testnet') {
-    return `https://testnet.blockchair.com/ecash/transaction/${encodeURIComponent(txId)}`
+    return `https://testnet.blockchair.com/ecash/transaction/${encodeURIComponent(
+      txId,
+    )}`
   }
   if (tag === 'xec1' || tag === 'ecash-mainnet' || tag === 'ecash') {
-    return `https://blockchair.com/ecash/transaction/${encodeURIComponent(txId)}`
+    return `https://blockchair.com/ecash/transaction/${encodeURIComponent(
+      txId,
+    )}`
   }
 
   const directBase = transactionExplorerBases[rawTag]
@@ -224,4 +230,3 @@ export function multiChainExplorerUrl(
 
   return undefined
 }
-

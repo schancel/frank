@@ -212,7 +212,9 @@ describe('ChatMessagePoker.vue', () => {
     await raiseBtn.trigger('click')
 
     expect(wrapper.emitted('sendFollowUp')).toHaveLength(3)
-    expect((wrapper.emitted('sendFollowUp')![2][0] as any).text).toContain('/raise')
+    expect((wrapper.emitted('sendFollowUp')![2][0] as any).text).toContain(
+      '/raise',
+    )
   })
 
   it('renders settled showdown with winner details', () => {

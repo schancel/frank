@@ -52,6 +52,8 @@ export interface SubmitTransactionBundleOptions {
   expectedBundleId?: string;
 }
 
+import type { AccountHygieneEngine } from './account-hygiene';
+
 /**
  * The common processing surface a chain wallet exposes to higher-level payment/message code.
  * Chain-specific build parameters and metadata remain generic rather than being flattened into a
@@ -74,6 +76,12 @@ export interface TransactionBundleCapability<
     bundle: WalletTransactionBundle<TAddress, TRawTransaction, TMetadata>,
     options?: SubmitTransactionBundleOptions
   ): Promise<WalletBundleSubmission<TAddress>>;
+  /**
+   * Internal autonomous account hygiene and dirty-account sweeper (Ticket #925).
+   * Encapsulated beneath the wallet: callers interact with standard spend/bundle
+   * methods while the hygiene engine maintains UTXO/account hygiene silently.
+   */
+  readonly hygiene?: AccountHygieneEngine<TAddress>;
 }
 
 /** An explicit capability layered on a wallet only when a reviewed stealth scheme is present. */

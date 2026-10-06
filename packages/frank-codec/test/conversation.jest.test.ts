@@ -16,7 +16,11 @@ import {
 describe('ticket #818: conversation identifiers and names in encrypted message content', () => {
   it('parses conversation_id and optional conversation_name on type 6', () => {
     const convId = bytesOf(16, 42)
-    const frame = type6Frame(rev8Frame([textItem('hello')]), convId, 'Project Discussion')
+    const frame = type6Frame(
+      rev8Frame([textItem('hello')]),
+      convId,
+      'Project Discussion',
+    )
     const parsed = parseFrame(frame, defaultContext())
     expect(parsed.kind).toBe('parsed')
     if (parsed.kind !== 'parsed') throw new Error('expected parsed')
@@ -44,7 +48,10 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
       [2, rev8Frame([textItem('test')])],
       [3, bytesOf(32, 2)],
     ])
-    const frame = encodeFrame({ typeId: 6, schemaVersion: 1, minReaderVersion: 1 }, rawMap)
+    const frame = encodeFrame(
+      { typeId: 6, schemaVersion: 1, minReaderVersion: 1 },
+      rawMap,
+    )
     expect(() => parseFrame(frame, defaultContext())).toThrow(FrankCodecError)
     try {
       parseFrame(frame, defaultContext())
@@ -63,7 +70,10 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
         [3, bytesOf(32, 2)],
         [4, bytesOf(len, 4)],
       ])
-      const frame = encodeFrame({ typeId: 6, schemaVersion: 1, minReaderVersion: 1 }, rawMap)
+      const frame = encodeFrame(
+        { typeId: 6, schemaVersion: 1, minReaderVersion: 1 },
+        rawMap,
+      )
       expect(() => parseFrame(frame, defaultContext())).toThrow(FrankCodecError)
       try {
         parseFrame(frame, defaultContext())
@@ -75,8 +85,18 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
   })
 
   it('rejects whitespace-only or control-character conversation_name', () => {
-    for (const invalidName of ['   ', '\t\n', 'Hello\x00World', 'Test\x1FName', 'Line\u2028Break']) {
-      const frame = type6Frame(rev8Frame([textItem('test')]), DEFAULT_CONVERSATION_ID, invalidName)
+    for (const invalidName of [
+      '   ',
+      '\t\n',
+      'Hello\x00World',
+      'Test\x1FName',
+      'Line\u2028Break',
+    ]) {
+      const frame = type6Frame(
+        rev8Frame([textItem('test')]),
+        DEFAULT_CONVERSATION_ID,
+        invalidName,
+      )
       expect(() => parseFrame(frame, defaultContext())).toThrow(FrankCodecError)
       try {
         parseFrame(frame, defaultContext())
@@ -111,7 +131,10 @@ describe('ticket #818: conversation scoping, renaming, and tombstone semantics',
     return [peerA, peerB].sort().join(':')
   }
 
-  function makeConversationKey(participantsKey: string, convId: string): string {
+  function makeConversationKey(
+    participantsKey: string,
+    convId: string,
+  ): string {
     return `${participantsKey}#${convId}`
   }
 
@@ -119,7 +142,10 @@ describe('ticket #818: conversation scoping, renaming, and tombstone semantics',
     conversations = new Map<string, ConversationState>()
     tombstones = new Map<string, number>() // convKey -> deletedAt
 
-    applyMessage(msg: MessageRecord): { status: 'accepted' | 'ignored-tombstone'; convKey: string } {
+    applyMessage(msg: MessageRecord): {
+      status: 'accepted' | 'ignored-tombstone'
+      convKey: string
+    } {
       const participantsKey = makeParticipantsKey(msg.sender, msg.recipient)
       const convKey = makeConversationKey(participantsKey, msg.conversationId)
 
@@ -152,7 +178,12 @@ describe('ticket #818: conversation scoping, renaming, and tombstone semantics',
       return { status: 'accepted', convKey }
     }
 
-    deleteConversation(peerA: string, peerB: string, convId: string, deletedAt: number): void {
+    deleteConversation(
+      peerA: string,
+      peerB: string,
+      convId: string,
+      deletedAt: number,
+    ): void {
       const participantsKey = makeParticipantsKey(peerA, peerB)
       const convKey = makeConversationKey(participantsKey, convId)
       this.conversations.delete(convKey)
@@ -194,8 +225,14 @@ describe('ticket #818: conversation scoping, renaming, and tombstone semantics',
       text: 'Second message in Alpha',
     })
 
-    const alphaKey = makeConversationKey(makeParticipantsKey(me, peer), 'conv-alpha')
-    const betaKey = makeConversationKey(makeParticipantsKey(me, peer), 'conv-beta')
+    const alphaKey = makeConversationKey(
+      makeParticipantsKey(me, peer),
+      'conv-alpha',
+    )
+    const betaKey = makeConversationKey(
+      makeParticipantsKey(me, peer),
+      'conv-beta',
+    )
 
     const alpha = store.conversations.get(alphaKey)
     const beta = store.conversations.get(betaKey)
@@ -236,8 +273,14 @@ describe('ticket #818: conversation scoping, renaming, and tombstone semantics',
       text: 'Injection attempt',
     })
 
-    const aliceBobKey = makeConversationKey(makeParticipantsKey(me, peer), 'shared-conv-123')
-    const aliceEveKey = makeConversationKey(makeParticipantsKey(me, eve), 'shared-conv-123')
+    const aliceBobKey = makeConversationKey(
+      makeParticipantsKey(me, peer),
+      'shared-conv-123',
+    )
+    const aliceEveKey = makeConversationKey(
+      makeParticipantsKey(me, eve),
+      'shared-conv-123',
+    )
 
     expect(aliceBobKey).not.toBe(aliceEveKey)
 
@@ -265,7 +308,10 @@ describe('ticket #818: conversation scoping, renaming, and tombstone semantics',
       text: 'Opening message',
     })
 
-    const key = makeConversationKey(makeParticipantsKey(me, peer), 'conv-rename')
+    const key = makeConversationKey(
+      makeParticipantsKey(me, peer),
+      'conv-rename',
+    )
     expect(store.conversations.get(key)?.name).toBe('Initial Topic')
 
     // Message without name keeps existing name

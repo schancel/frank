@@ -46,8 +46,9 @@ registerMessageItemPlugin<StealthItem, StealthItem>({
   type: 'stealth',
   hydrate: raw => raw,
   previewText: raw => {
-    if (raw.chainId) {
-      return `Sent stealth payment (${raw.chainId})`
+    const network = raw.networkTag ?? raw.chainId
+    if (network) {
+      return `Sent stealth payment (${network})`
     }
     return 'Sent stealth payment'
   },

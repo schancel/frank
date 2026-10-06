@@ -1,10 +1,11 @@
 import { Keypair, PublicKey } from "@solana/web3.js";
 import * as bip39 from "bip39";
 
-import { HDSeed, NativeAssetChain } from "./active-chain";
+import { HDSeed, NativeAssetChain, ChainAddress } from "./active-chain";
 import { formatBaseUnit, parseBaseUnit } from "./base-unit";
 import { NativeTransactionAttemptStore } from "./chain-wallet";
 import { SolanaWallet, SolanaWalletConnection } from "../solana-wallet";
+import { buildSolanaStealthPayment } from "../solana-stealth";
 
 export interface SolanaChainConfig {
   /** Optional chain identifier override; defaults to networkId. */
@@ -42,6 +43,7 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
       directMessages: false,
       topics: false,
       stealthPayments: true,
+      legacyConsolidation: "solana-bundle",
     },
     toDisplayAmount: (raw) => formatBaseUnit(raw, 9),
     fromDisplayAmount: (display) => parseBaseUnit(display, 9),
@@ -116,6 +118,52 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
           response.value.confirmationStatus === "finalized"
           ? "confirmed"
           : "pending";
+      },
+      async sendLegacy({ wallet, recipient, value, onProgress, onSigned }) {
+        if (wallet.family !== "solana") {
+          throw new Error(`Expected a Solana wallet, got ${wallet.family}`);
+        }
+        onProgress?.({ status: { stage: "broadcasting" } });
+        const result = await wallet.sendNative({ recipient, value, onSigned });
+        onProgress?.({ status: { stage: "confirmed", txHash: result.txHash } });
+        return {
+          txHash: result.txHash,
+          totalValueSent: value,
+          totalFeePaid: 5000n,
+        };
+      },
+      async estimateLegacyFee() {
+        return {
+          totalFee: 5000n,
+          inputCount: 1,
+          deliveryFee: 5000n,
+        };
+      },
+      async sendToContact({ wallet, recipient, value, memo, onProgress }) {
+        if (wallet.family !== "solana") {
+          throw new Error(`Expected a Solana wallet, got ${wallet.family}`);
+        }
+        onProgress?.({ stage: "resolving-keys" });
+        let spendPubkey: Uint8Array;
+        if ("pubKey" in recipient && recipient.pubKey) {
+          spendPubkey = recipient.pubKey;
+        } else {
+          spendPubkey = new PublicKey((recipient as ChainAddress).raw).toBytes();
+        }
+        onProgress?.({ stage: "deriving-stealth" });
+        onProgress?.({ stage: "signing" });
+        const stealthPayment = await buildSolanaStealthPayment({
+          wallet: wallet as SolanaWallet,
+          recipientSpendPubKey: spendPubkey,
+          amountLamports: value,
+          memo,
+        });
+        onProgress?.({ stage: "confirmed", txHash: stealthPayment.txHash });
+        return {
+          txHash: stealthPayment.txHash,
+          stealthAddress: stealthPayment.stealthDestination.stealthAddress,
+          value,
+        };
       },
     },
   };

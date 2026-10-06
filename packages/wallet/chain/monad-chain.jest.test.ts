@@ -205,6 +205,7 @@ describe("createMonadChain: basic chain properties", () => {
       directMessages: true,
       topics: true,
       stealthPayments: true,
+      legacyConsolidation: "evm-staging",
     });
   });
 

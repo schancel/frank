@@ -31,6 +31,16 @@ export type {
   EvmBurnParams,
 } from "./evm-transaction-builder";
 export type { SolanaChainConfig } from "./solana-chain";
+export {
+  EvmLegacyConsolidator,
+  InMemoryLegacySendJournalStore,
+} from "./evm-legacy-consolidator";
+export type {
+  EvmLegacyConsolidatorConfig,
+  FundingAccount,
+  LegacySendIntent,
+  LegacySendJournalStore,
+} from "./evm-legacy-consolidator";
 
 export const activeChain: ActiveChain = MonadChain;
 
@@ -88,6 +98,12 @@ export type {
   ProfileInfo,
   TopicBroadcastClient,
   WalletHandle,
+  LegacySendStage,
+  LegacySendProgress,
+  LegacyFeeEstimate,
+  LegacySendResult,
+  ContactSendProgress,
+  ContactSendResult,
 } from "./active-chain";
 
 export type { NativeTransactionAttemptStore } from "./chain-wallet";

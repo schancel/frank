@@ -225,4 +225,52 @@ describe('Profile.vue', () => {
       window.Image = originalImage
     }
   })
+
+  it('allows re-publishing even when profile data is identical to local store', async () => {
+    const mockWallet = {
+      identity: {
+        address: { raw: '0x1234567890123456789012345678901234567890' },
+      },
+      relayBaseUrl: 'https://127.0.0.1:18443',
+    }
+    ;(useActiveWallet as jest.Mock).mockResolvedValue(mockWallet)
+
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: {
+          'Profile': { template: '<div data-test="profile-component"></div>' },
+          'q-page-container': { template: '<div><slot /></div>' },
+          'q-page': { template: '<div><slot /></div>' },
+          'q-card': { template: '<div><slot /></div>' },
+          'q-card-section': { template: '<div><slot /></div>' },
+          'q-card-actions': { template: '<div><slot /></div>' },
+          'q-btn': { template: '<button><slot /></button>' },
+        },
+      },
+    })
+
+    // Do NOT modify any fields (identical is true)
+    expect((wrapper.vm as any).identical).toBe(true)
+    const updateBtn = wrapper.find('[data-test="profile-update"]')
+    expect(updateBtn.attributes('disabled')).toBeUndefined()
+
+    await (wrapper.vm as any).updateRelayData()
+
+    expect(mockSetRelayData).toHaveBeenCalledWith({
+      profile: expect.objectContaining({ name: 'Alice' }),
+      inbox: expect.objectContaining({ acceptancePrice: 100 }),
+    })
+    expect(registerMonadIdentityCbor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        identity: mockWallet.identity,
+        profile: expect.objectContaining({ name: 'Alice' }),
+        relayBaseUrl: 'https://127.0.0.1:18443',
+      }),
+    )
+  })
 })

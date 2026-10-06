@@ -15,6 +15,7 @@
     "target:faucet": "tsx targets/faucet.ts",
     "target:lobby": "tsx targets/lobby.ts",
     "target:rps": "tsx targets/rps.ts",
+    "target:dice": "tsx targets/dice.ts",
     "target:all": "tsx targets/all-bots.ts",
     "raffle": "tsx raffle-bot.livecheck.ts",
     "raffle:refund": "tsx raffle-refund.livecheck.ts",

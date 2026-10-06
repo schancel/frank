@@ -8,6 +8,7 @@ import {
   FaucetBot,
   ChatRoomBot,
   RpsBot,
+  SatoshiDiceBot,
 } from "../src/bots";
 
 async function main() {
@@ -30,10 +31,11 @@ async function main() {
   await host.register(new FaucetBot());
   await host.register(new ChatRoomBot());
   await host.register(new RpsBot());
+  await host.register(new SatoshiDiceBot());
 
   await host.start();
   console.log(
-    "[all-bots-target] FrankBotHost running all bots (blackjack, raffle, vendor, qwen, faucet, lobby, rps) with shared EVMNonceSequencer and canonical directories"
+    "[all-bots-target] FrankBotHost running all bots (blackjack, raffle, vendor, qwen, faucet, lobby, rps, dice) with shared EVMNonceSequencer and canonical directories"
   );
 
   const shutdown = async () => {

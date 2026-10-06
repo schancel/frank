@@ -85,8 +85,8 @@ pub(crate) const TYPE_TEXT_ITEM: u32 = 17;
 /// Type18 frame limit at both root and nested positions.
 pub(crate) const MAX_BLACKJACK_FRAME_BYTES: usize = 4096;
 pub(crate) const TYPE_BLACKJACK_ITEM: u32 = 18;
-/// Type 25 forwarding envelope frame limit (2 MB).
-pub const MAX_FORWARDING_DELIVERY_FRAME_BYTES: usize = 2_097_152;
+/// Type 25 forwarding envelope frame limit (32 MiB).
+pub const MAX_FORWARDING_DELIVERY_FRAME_BYTES: usize = 33_554_432;
 /// Type 25: outer relay forwarding delivery envelope.
 pub const TYPE_FORWARDING_DELIVERY: u32 = 25;
 

@@ -6,7 +6,8 @@ use frank_cbor::{
     cbor_map, default_context, encode_forwarding_delivery, forwarding_payload_digest,
     is_forwarding_delivery_frame, payment_commitment, recipient_payload_digest,
     storage_payment_commitment, validate_frame, AccountRef, CborValue, ForwardingDeliveryEnvelope,
-    PaymentMember, PaymentValue, TypedPayload, ValidationResult, TYPE_FORWARDING_DELIVERY,
+    PaymentMember, PaymentValue, TypedPayload, ValidationResult,
+    MAX_FORWARDING_DELIVERY_FRAME_BYTES, TYPE_FORWARDING_DELIVERY,
 };
 
 const TYPE_DIRECT_MESSAGE: u32 = 1;
@@ -358,4 +359,10 @@ fn test_forwarding_envelope_rejects_duplicate_txid_without_vout() {
     let frame = encode_forwarding_delivery(&envelope).expect("encode");
     let err = validate_frame(&frame, &default_context()).expect_err("should reject");
     assert!(err.to_string().contains("duplicate transaction id"));
+}
+
+#[test]
+fn test_forwarding_envelope_frame_limit_constant() {
+    assert_eq!(MAX_FORWARDING_DELIVERY_FRAME_BYTES, 33_554_432);
+    assert_eq!(MAX_FORWARDING_DELIVERY_FRAME_BYTES, 32 * 1024 * 1024);
 }

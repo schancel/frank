@@ -389,8 +389,11 @@ pub(crate) enum CanonicalError {
     Capacity,
     #[error("mailbox authentication failed")]
     Unauthorized,
+    #[allow(dead_code)]
     #[error("recovery obligation is active")]
     ActiveObligation,
+    #[error("recovery endpoint has been retired")]
+    Retired,
 }
 pub(crate) type Result<T> = std::result::Result<T, CanonicalError>;
 impl IntoResponse for CanonicalError {
@@ -413,6 +416,7 @@ impl IntoResponse for CanonicalError {
             Self::Capacity => (StatusCode::TOO_MANY_REQUESTS, "mailbox_challenge_capacity"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "mailbox_auth_failed"),
             Self::ActiveObligation => (StatusCode::CONFLICT, "recovery_obligation_is_active"),
+            Self::Retired => (StatusCode::GONE, "recovery_endpoint_retired"),
         };
         (status, Json(serde_json::json!({"version":1,"error":error}))).into_response()
     }
@@ -943,8 +947,7 @@ pub(crate) async fn handle_challenge(
         .ok_or(CanonicalError::Capacity)?;
     let resource = match query.resource.as_deref() {
         Some("inbox") => MailboxResource::Inbox,
-        Some("recovery") => MailboxResource::Recovery,
-        Some("recovery_ack") => MailboxResource::RecoveryAck,
+        Some("recovery") | Some("recovery_ack") => return Err(CanonicalError::Retired),
         Some("mailbox") => MailboxResource::Mailbox,
         Some("mailbox_ws") | Some("mailbox_stream") | Some("mailbox-ws") => {
             MailboxResource::MailboxStream
@@ -1252,19 +1255,9 @@ pub(crate) async fn handle_inbox(
     .await
 }
 pub(crate) async fn handle_recovery(
-    axum::extract::Path(recipient): axum::extract::Path<String>,
-    axum::extract::Query(query): axum::extract::Query<PrivateQuery>,
-    Extension(server): Extension<super::server::RegistryServer>,
-    headers: HeaderMap,
+    axum::extract::Path(_recipient): axum::extract::Path<String>,
 ) -> Result<Response> {
-    page(
-        &server,
-        &headers,
-        Address::from_hex(&recipient).map_err(|_| CanonicalError::Unauthorized)?,
-        &query,
-        crate::monad_mailbox::MailboxResource::Recovery,
-    )
-    .await
+    Err(CanonicalError::Retired)
 }
 pub(crate) async fn handle_mailbox(
     axum::extract::Path(address): axum::extract::Path<String>,
@@ -1446,57 +1439,13 @@ pub(crate) async fn handle_mailbox_ws(
     }))
 }
 pub(crate) async fn handle_ack(
-    axum::extract::Path((recipient, hash, obligation)): axum::extract::Path<(
+    axum::extract::Path((_recipient, _hash, _obligation)): axum::extract::Path<(
         String,
         String,
         String,
     )>,
-    axum::extract::RawQuery(query): axum::extract::RawQuery,
-    Extension(server): Extension<super::server::RegistryServer>,
-    headers: HeaderMap,
-    RawBody(mut body): RawBody,
 ) -> Result<Response> {
-    use hyper::body::HttpBody;
-    if query.is_some() {
-        return Err(CanonicalError::Invalid);
-    }
-    let runtime = server
-        .monad_mailbox
-        .as_enabled()
-        .ok_or(CanonicalError::Unauthorized)?;
-    let _cpu = runtime
-        .try_acquire_private_read()
-        .ok_or(CanonicalError::Capacity)?;
-    // Empty body is checked under the same finite response budget as authenticated work.
-    tokio::time::timeout(crate::directory_runtime::RESPONSE_BUDGET, async {
-        while let Some(chunk) = body.data().await {
-            if !chunk.map_err(|_| CanonicalError::Invalid)?.is_empty() {
-                return Err(CanonicalError::Invalid);
-            }
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|_| CanonicalError::Unavailable)??;
-    let recipient = Address::from_hex(&recipient).map_err(|_| CanonicalError::Unauthorized)?;
-    let hash = hash_hex(&hash)?;
-    let obligation = hash_hex(&obligation)?;
-    let binding = crate::monad_mailbox::MailboxRequestBinding {
-        resource: crate::monad_mailbox::MailboxResource::RecoveryAck,
-        recipient,
-        since: 0,
-        cursor: None,
-        limit: 1,
-        max_bytes: 0,
-        recovery_payload_hash: Some(hash),
-        recovery_obligation_id: Some(obligation),
-    };
-    authenticate(&server, &headers, &binding).await?;
-    server
-        .registry
-        .canonical_dm()
-        .acknowledge(recipient, hash, obligation, now_ms())?;
-    Ok(Json(serde_json::json!({"version":1,"acknowledged":true,"payload_hash":hex::encode(hash),"obligation_id":hex::encode(obligation)})).into_response())
+    Err(CanonicalError::Retired)
 }
 
 #[cfg(test)]

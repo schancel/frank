@@ -8,3 +8,4 @@ export * from "./rps-bot";
 export * from "./satoshi-dice-bot";
 export * from "./liars-dice-bot";
 export * from "./poker-bot";
+export type { TableEscrowRecord } from "./poker-bot";

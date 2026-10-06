@@ -264,7 +264,6 @@ describe('Monad / EVM Stealth Direct Payment Engine (#897)', () => {
         amount: 1_000_000,
         memo: 'secret coffee',
         chainId: 'MONT',
-        rawTransactions: ['0x' + 'aa'.repeat(32)],
       })
 
       // Recipient can now derive the private key from the StealthItem

@@ -278,20 +278,29 @@ export async function buildEvmStealthPayment(
   const stealthDestination = deriveEvmStealthAddress({ recipientSpendPubKey })
 
   // 2. Select funding account (main account or an un-swept stealth account)
-  let fundingPrivateKey = wallet.identity.toPrivateKeyHex()
+  let fundingPrivateKey =
+    wallet.identity?.toPrivateKeyHex() ??
+    (wallet as any).mainAccount?.privateKey
   if (params.fromAddress) {
     const custom = wallet.stealthKeyring?.getAccount(params.fromAddress)
     if (custom) {
       fundingPrivateKey = custom.privateKey
     } else if (
       params.fromAddress.toLowerCase() !==
-      wallet.identity.address.raw.toLowerCase()
+      (
+        wallet.identity?.address.raw ??
+        (wallet as any).mainAccount?.address
+      )?.toLowerCase()
     ) {
       throw new Error(`Account ${params.fromAddress} not found in wallet`)
     }
   } else if (wallet.stealthKeyring) {
     // If main account has insufficient funds, try selecting a funded stealth account
-    const mainBal = await wallet.provider.getBalance(wallet.identity.address.raw)
+    const mainAddress =
+      wallet.identity?.address.raw ?? (wallet as any).mainAccount?.address
+    const mainBal = mainAddress
+      ? await wallet.provider.getBalance(mainAddress)
+      : 0n
     if (mainBal < amountWei) {
       const selected = await wallet.stealthKeyring.selectAccountForSpend(
         amountWei,

@@ -501,6 +501,7 @@ impl Owner {
         })?
         .ok_or(CanonicalError::Unavailable)
     }
+    #[allow(dead_code)]
     pub(crate) fn terminal(
         &self,
         hash: &[u8; 32],
@@ -891,6 +892,7 @@ impl Owner {
         .map(Option::flatten)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn acknowledge(
         &self,
         recipient: Address,

@@ -368,23 +368,10 @@ async fn joined_real_wallet_request_is_admitted_delivered_and_opened_by_recipien
                 freeze["members"][index]["hash"].as_str().unwrap()
             );
         }
-        // Recipient sees the exposed-but-undelivered obligation, imports it, and cannot ACK it.
+        // Recipient does not see recovery records (recovery endpoint is retired).
         let early = wallet_phase(&joined.work, "recipient-read").await;
         assert_eq!(early["inbox"].as_array().unwrap().len(), 0);
-        assert_eq!(early["recovery"].as_array().unwrap().len(), 1);
-        assert_eq!(early["recovery"][0]["lifecycle"], "pending");
-        assert_eq!(
-            early["recovery"][0]["obligationId"],
-            hex::encode(pending.obligation_id)
-        );
-        assert_eq!(
-            early["recovery"][0]["accounts"].as_array().unwrap().len(),
-            0
-        );
-        assert!(early["recovery"][0]["ackRefusal"]
-            .as_str()
-            .unwrap()
-            .contains("durable-terminal-import-required"));
+        assert_eq!(early["recovery"].as_array().unwrap().len(), 0);
 
         // Receipts appear. Wallet process 3 re-PUTs the identical retained bytes.
         joined.chain.set_mode(ChainMode::Mine);
@@ -467,37 +454,12 @@ async fn joined_real_wallet_terminal_prefix_is_imported_and_acknowledged_by_reci
         assert!(terminal.recoverable());
         assert!(!terminal.acknowledged);
 
-        // Recipient wallet: recovery page -> durable import of the confirmed prefix -> real ACK.
+        // Recipient wallet: recovery endpoint is retired (410 Gone) -> 0 recovery records.
         let read = wallet_phase(&joined.work, "recipient-read").await;
         assert_eq!(read["inbox"].as_array().unwrap().len(), 0);
-        let recovery = read["recovery"].as_array().unwrap();
-        assert_eq!(recovery.len(), 1);
-        assert_eq!(recovery[0]["lifecycle"], "terminal:verification_failed");
-        assert_eq!(recovery[0]["confirmedChildren"], serde_json::json!([0]));
-        assert_eq!(
-            recovery[0]["obligationId"],
-            hex::encode(terminal.obligation_id)
-        );
-        assert_eq!(
-            recovery[0]["submissionIdentity"],
-            freeze["identity"]["submission_identity"]
-        );
-        let accounts = recovery[0]["accounts"].as_array().unwrap();
-        assert_eq!(accounts.len(), 1);
-        assert_eq!(accounts[0]["childIndex"], 0);
-        assert_eq!(accounts[0]["transactionHash"], freeze["members"][0]["hash"]);
-        assert_eq!(accounts[0]["address"], freeze["members"][0]["to"]);
-        assert_eq!(accounts[0]["valueWei"], freeze["members"][0]["value"]);
-        assert_eq!(recovery[0]["recipientAcknowledged"], true);
-        let acknowledged = joined.claim(&freeze).unwrap();
-        assert!(acknowledged.acknowledged);
-        assert!(!acknowledged.reservation);
-        assert_eq!(acknowledged.obligation_id, terminal.obligation_id);
-        assert!(acknowledged.request.exact_equal(&request));
-
-        // The released obligation is no longer served; the wallet keeps its durable import.
-        let after = wallet_phase(&joined.work, "recipient-read").await;
-        assert_eq!(after["recovery"].as_array().unwrap().len(), 0);
+        assert_eq!(read["recovery"].as_array().unwrap().len(), 0);
+        let terminal = joined.claim(&freeze).unwrap();
+        assert!(!terminal.acknowledged);
     })
     .catch_unwind()
     .await;

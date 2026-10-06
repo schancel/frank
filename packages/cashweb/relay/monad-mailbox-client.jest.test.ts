@@ -29,6 +29,7 @@ import {
   MonadMailboxProtocolError,
   MonadMailboxRecordTooLargeError,
   MonadMailboxRecoveryActiveError,
+  MonadMailboxRecoveryRetiredError,
   MonadMailboxRequestError,
   MonadMailboxRetryableError,
   MonadMailboxStaleCursorError,
@@ -879,6 +880,28 @@ describe('recovery listing and ack', () => {
     ).resolves.toBeUndefined()
     expect(f.relay.hasRecovery(Buffer.alloc(32, 5))).toBe(true)
   })
+
+  it('returns empty records and ignores ack when relay indicates recovery is retired (HTTP 410)', async () => {
+    const f = makeFixture()
+    f.relay.inject('recovery', {
+      status: 410,
+      data: { version: 1, error: 'recovery_endpoint_retired' },
+    })
+    const all = await fetchMonadMailboxRecoveries(f.auth)
+    expect(all.records).toEqual([])
+
+    f.relay.inject('recovery', {
+      status: 410,
+      data: { version: 1, error: 'recovery_endpoint_retired' },
+    })
+    await expect(
+      ackMonadMailboxRecovery({
+        ...f.auth,
+        payloadHashHex: '05'.repeat(32),
+        obligationIdHex: 'ee'.repeat(32),
+      }),
+    ).resolves.toBeUndefined()
+  })
 })
 
 // Canonical namespace: real public directory admission, bounded byte streams and exact wire parts.
@@ -1422,5 +1445,37 @@ describe('canonical private mailbox', () => {
       fetchCanonicalInboxPage({ ...auth, signal: active.signal }),
     ).rejects.toThrow(/aborted/)
     expect(requests).toHaveLength(1)
+  })
+  test('canonical recovery page returns empty records and ack resolves when relay indicates retired (HTTP 410)', async () => {
+    const originalFetch = auth.fetch!
+    auth.fetch = async (url, input) => {
+      if (url.includes('/recovery/')) {
+        return {
+          url,
+          status: 410,
+          headers: {
+            get: (name: string) =>
+              name.toLowerCase() === 'content-type' ? 'application/json' : null,
+          },
+          body: {
+            getReader: () => ({
+              read: async () => ({ done: true }),
+              cancel: async () => undefined,
+              releaseLock: () => undefined,
+            }),
+          },
+        }
+      }
+      return originalFetch(url, input)
+    }
+    const result = await fetchCanonicalRecoveryPage(auth)
+    expect(result.records).toEqual([])
+    await expect(
+      ackCanonicalRecovery({
+        ...auth,
+        payloadHashHex: 'aa'.repeat(32),
+        obligationIdHex: 'bb'.repeat(32),
+      }),
+    ).resolves.toBeUndefined()
   })
 })

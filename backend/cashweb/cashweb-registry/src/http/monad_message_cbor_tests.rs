@@ -969,9 +969,20 @@ async fn actual_http_canonical_public_admission_p_authenticated_inbox_and_nonce_
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     let hash = hash_hex(accepted["identity"]["payload_hash"].as_str().unwrap()).unwrap();
     let delivered = fixture.registry.canonical_dm().get(&hash).unwrap().unwrap();
-    let ack_binding = MailboxRequestBinding {resource:MailboxResource::RecoveryAck,recipient:binding.recipient,since:0,cursor:None,limit:1,max_bytes:0,recovery_payload_hash:Some(hash),recovery_obligation_id:Some(delivered.obligation_id)};
-    let headers = private_headers(&client,&url,fixture.root.path(),point,&ack_binding).await;
-    assert_eq!(client.post(format!("{url}/message/monad/cbor/recovery/{}/{}/{}/ack",recipient,hex::encode(hash),hex::encode(delivered.obligation_id))).headers(headers).send().await.unwrap().status(),StatusCode::CONFLICT);
+    assert_eq!(
+        client
+            .post(format!(
+                "{url}/message/monad/cbor/recovery/{}/{}/{}/ack",
+                recipient,
+                hex::encode(hash),
+                hex::encode(delivered.obligation_id)
+            ))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::GONE
+    );
     assert!(!fixture.registry.canonical_dm().get(&hash).unwrap().unwrap().acknowledged);
     drop(client);
     }).catch_unwind().await;
@@ -1075,7 +1086,6 @@ async fn private_headers(
 #[tokio::test]
 async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reopen() {
     use crate::monad_http::Hash32;
-    use crate::monad_mailbox::{MailboxRequestBinding, MailboxResource};
     use crate::store::monad_dm_cbor::Phase;
     use crate::store::monad_outbox::MonadOutboxMemberState;
     use axum::Json;
@@ -1115,7 +1125,7 @@ async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reop
     let hash: [u8; 32] =
         hash_hex("9f688f51d6a798d62f4b14a8b1958b14d22916ca0cb8108b91b017f238f7f2d2").unwrap();
     let recipient = Address::from_hex("0x8dc3750a7789544eb239029b1eb0eaaddebdfe9d").unwrap();
-    let point = fixture.accounts[1].subject.clone();
+    let _point = fixture.accounts[1].subject.clone();
     let outcome = std::panic::AssertUnwindSafe(async {
         let client = reqwest::Client::new();
         let put = || {
@@ -1132,32 +1142,15 @@ async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reop
             MonadOutboxMemberState::Confirmed { .. }
         ));
         assert!(pending.members[1].exposed);
-        let binding = MailboxRequestBinding {
-            resource: MailboxResource::RecoveryAck,
-            recipient,
-            since: 0,
-            cursor: None,
-            limit: 1,
-            max_bytes: 0,
-            recovery_payload_hash: Some(hash),
-            recovery_obligation_id: Some(pending.obligation_id),
-        };
         let ack_url = format!(
             "{url}/message/monad/cbor/recovery/{}/{}/{}/ack",
             recipient.to_hex(),
             hex::encode(hash),
             hex::encode(pending.obligation_id)
         );
-        let headers = private_headers(&client, &url, fixture.root.path(), &point, &binding).await;
         assert_eq!(
-            client
-                .post(&ack_url)
-                .headers(headers)
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::CONFLICT
+            client.post(&ack_url).send().await.unwrap().status(),
+            StatusCode::GONE
         );
         reject.store(true, std::sync::atomic::Ordering::SeqCst);
         let response = put().send().await.unwrap();
@@ -1187,84 +1180,20 @@ async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reop
                 .unwrap()
                 .reservation
         );
-        let recovery_binding = MailboxRequestBinding {
-            resource: MailboxResource::Recovery,
-            since: 0,
-            cursor: None,
-            limit: 20,
-            max_bytes: MAX_REQUEST_BYTES,
-            recovery_payload_hash: None,
-            recovery_obligation_id: None,
-            recipient,
-        };
-        let headers = private_headers(
-            &client,
-            &url,
-            fixture.root.path(),
-            &point,
-            &recovery_binding,
-        )
-        .await;
         let page = client
             .get(format!(
                 "{url}/message/monad/cbor/recovery/{}?since=0&limit=20&max_bytes=8388608",
                 recipient.to_hex()
             ))
-            .headers(headers)
             .send()
             .await
             .unwrap();
-        assert_eq!(page.status(), StatusCode::OK);
-        let page = page.bytes().await.unwrap();
-        assert!(find(&page, b"\"confirmed_children\":[0]").is_some());
-        assert!(find(&page, b"\"lifecycle\":\"terminal:").is_some());
-        for raw in request.raw_transactions() {
-            assert!(find(&page, raw).is_some());
-        }
-        // Send an actual HTTP ACK but consume no response bytes. The durable owner
-        // is observed solely to place the disconnect after its sync commit.
-        let headers = private_headers(&client, &url, fixture.root.path(), &point, &binding).await;
-        let mut stream = tokio::net::TcpStream::connect(url.strip_prefix("http://").unwrap())
-            .await
-            .unwrap();
-        let path = ack_url.strip_prefix(&url).unwrap();
-        let mut wire = format!(
-            "POST {path} HTTP/1.1\r\nHost: {}\r\nContent-Length: 0\r\nConnection: close\r\n",
-            url.strip_prefix("http://").unwrap()
+        assert_eq!(page.status(), StatusCode::GONE);
+        assert_eq!(
+            client.post(&ack_url).send().await.unwrap().status(),
+            StatusCode::GONE
         );
-        for (name, value) in &headers {
-            wire.push_str(&format!(
-                "{}: {}\r\n",
-                name.as_str(),
-                value.to_str().unwrap()
-            ));
-        }
-        wire.push_str("\r\n");
-        use tokio::io::AsyncWriteExt;
-        stream.write_all(wire.as_bytes()).await.unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
-                if fixture
-                    .registry
-                    .canonical_dm()
-                    .get(&hash)
-                    .unwrap()
-                    .unwrap()
-                    .acknowledged
-                {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("actual HTTP ACK must sync before disconnect");
-        drop(stream);
-        let acknowledged = fixture.registry.canonical_dm().get(&hash).unwrap().unwrap();
-        assert!(!acknowledged.reservation);
-        assert_eq!(acknowledged.obligation_id, pending.obligation_id);
-        assert_eq!(acknowledged.request.body(), request.body());
-        acknowledged.obligation_id
+        pending.obligation_id
     })
     .catch_unwind()
     .await;
@@ -1290,61 +1219,15 @@ async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reop
     .await;
     let outcome = std::panic::AssertUnwindSafe(async {
         let client = reqwest::Client::new();
-        let binding = MailboxRequestBinding {
-            resource: MailboxResource::RecoveryAck,
-            recipient,
-            since: 0,
-            cursor: None,
-            limit: 1,
-            max_bytes: 0,
-            recovery_payload_hash: Some(hash),
-            recovery_obligation_id: Some(obligation),
-        };
         let ack_url = format!(
             "{url}/message/monad/cbor/recovery/{}/{}/{}/ack",
             recipient.to_hex(),
             hex::encode(hash),
             hex::encode(obligation)
         );
-        let headers = private_headers(&client, &url, reopened.root.path(), &point, &binding).await;
-        let response = client.post(&ack_url).headers(headers).send().await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let response: serde_json::Value =
-            serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
-        assert_eq!(response["acknowledged"], true);
-        let headers = private_headers(&client, &url, reopened.root.path(), &point, &binding).await;
         assert_eq!(
-            client
-                .post(format!(
-                    "{url}/message/monad/cbor/recovery/{}/{}/{}/ack",
-                    Address([0; 20]).to_hex(),
-                    hex::encode(hash),
-                    hex::encode(obligation)
-                ))
-                .headers(headers)
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::UNAUTHORIZED
-        );
-        let mut wrong = binding.clone();
-        wrong.recovery_obligation_id = Some([0; 32]);
-        let headers = private_headers(&client, &url, reopened.root.path(), &point, &wrong).await;
-        assert_eq!(
-            client
-                .post(format!(
-                    "{url}/message/monad/cbor/recovery/{}/{}/{}/ack",
-                    recipient.to_hex(),
-                    hex::encode(hash),
-                    hex::encode([0; 32])
-                ))
-                .headers(headers)
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::UNAUTHORIZED
+            client.post(&ack_url).send().await.unwrap().status(),
+            StatusCode::GONE
         );
         let retained = reopened
             .registry
@@ -1352,19 +1235,12 @@ async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reop
             .get(&hash)
             .unwrap()
             .unwrap();
-        assert!(retained.acknowledged && !retained.reservation);
         assert_eq!(retained.obligation_id, obligation);
         assert_eq!(retained.request.body(), request.body());
         assert!(matches!(
             retained.members[0].state,
             MonadOutboxMemberState::Confirmed { .. }
         ));
-        assert!(reopened
-            .registry
-            .canonical_dm()
-            .recovery(recipient, None, 1)
-            .unwrap()
-            .is_empty());
     })
     .catch_unwind()
     .await;
@@ -1381,7 +1257,6 @@ async fn actual_http_confirmed_prefix_terminal_ack_lost_response_and_native_reop
 #[tokio::test]
 async fn actual_http_exposure_only_terminal_exact_age_release_and_native_reopen() {
     use crate::monad_http::Hash32;
-    use crate::monad_mailbox::{MailboxRequestBinding, MailboxResource};
     use crate::store::monad_dm_cbor::Phase;
     use crate::store::monad_outbox::{MonadOutboxLimits, MonadOutboxMemberState};
     use axum::Json;
@@ -1418,7 +1293,7 @@ async fn actual_http_exposure_only_terminal_exact_age_release_and_native_reopen(
     let hash =
         hash_hex("9f688f51d6a798d62f4b14a8b1958b14d22916ca0cb8108b91b017f238f7f2d2").unwrap();
     let recipient = Address::from_hex("0x8dc3750a7789544eb239029b1eb0eaaddebdfe9d").unwrap();
-    let point = fixture.accounts[1].subject.clone();
+    let _point = fixture.accounts[1].subject.clone();
     let outcome = std::panic::AssertUnwindSafe(async {
         let client = reqwest::Client::new();
         let put = || {
@@ -1546,17 +1421,6 @@ async fn actual_http_exposure_only_terminal_exact_age_release_and_native_reopen(
             (0, 0, 0, 0)
         );
         let client = reqwest::Client::new();
-        let binding = MailboxRequestBinding {
-            resource: MailboxResource::RecoveryAck,
-            recipient,
-            since: 0,
-            cursor: None,
-            limit: 1,
-            max_bytes: 0,
-            recovery_payload_hash: Some(hash),
-            recovery_obligation_id: Some(obligation),
-        };
-        let headers = private_headers(&client, &url, reopened.root.path(), &point, &binding).await;
         assert_eq!(
             client
                 .post(format!(
@@ -1565,12 +1429,11 @@ async fn actual_http_exposure_only_terminal_exact_age_release_and_native_reopen(
                     hex::encode(hash),
                     hex::encode(obligation)
                 ))
-                .headers(headers)
                 .send()
                 .await
                 .unwrap()
                 .status(),
-            StatusCode::UNAUTHORIZED
+            StatusCode::GONE
         );
     })
     .catch_unwind()
@@ -1614,7 +1477,6 @@ fn capacity_prefix_request() -> ExactRequest {
 #[tokio::test]
 async fn actual_http_recipient_128_owner_boundary_publication_and_terminal_ack_transitions() {
     use crate::monad_http::Hash32;
-    use crate::monad_mailbox::{MailboxRequestBinding, MailboxResource};
     use crate::store::monad_dm_cbor::Phase;
     use axum::Json;
     use futures::FutureExt;
@@ -1736,24 +1598,6 @@ async fn actual_http_recipient_128_owner_boundary_publication_and_terminal_ack_t
             assert_eq!(transitioned.reserved_charge, pending.reserved_charge);
             assert_eq!(transitioned.request.body(), requests[127].body());
             if terminal_case {
-                let binding = MailboxRequestBinding {
-                    resource: MailboxResource::RecoveryAck,
-                    recipient,
-                    since: 0,
-                    cursor: None,
-                    limit: 1,
-                    max_bytes: 0,
-                    recovery_payload_hash: Some(hash),
-                    recovery_obligation_id: Some(transitioned.obligation_id),
-                };
-                let headers = private_headers(
-                    &client,
-                    &url,
-                    fixture.root.path(),
-                    &fixture.accounts[1].subject,
-                    &binding,
-                )
-                .await;
                 assert_eq!(
                     client
                         .post(format!(
@@ -1762,16 +1606,12 @@ async fn actual_http_recipient_128_owner_boundary_publication_and_terminal_ack_t
                             hex::encode(hash),
                             hex::encode(transitioned.obligation_id)
                         ))
-                        .headers(headers)
                         .send()
                         .await
                         .unwrap()
                         .status(),
-                    StatusCode::OK
+                    StatusCode::GONE
                 );
-                let acknowledged = fixture.registry.canonical_dm().get(&hash).unwrap().unwrap();
-                assert!(acknowledged.acknowledged && !acknowledged.reservation);
-                assert_eq!(acknowledged.reserved_charge, pending.reserved_charge);
                 assert_eq!(
                     fixture
                         .registry
@@ -1795,6 +1635,8 @@ async fn actual_http_recipient_128_owner_boundary_publication_and_terminal_ack_t
             }
             // Every allowed transition consumed its admission-time footprint; release
             // of financial reservation never forgets permanent exact retry ownership.
+            // With recovery ACK retired, terminal unacknowledged claims retain their
+            // reservation until age expiry.
             assert_eq!(
                 fixture
                     .registry
@@ -1802,7 +1644,7 @@ async fn actual_http_recipient_128_owner_boundary_publication_and_terminal_ack_t
                     .financial_usage(recipient)
                     .unwrap()
                     .global_records,
-                0
+                if terminal_case { 1 } else { 0 }
             );
             assert_eq!(
                 put(&requests[128]).send().await.unwrap().status(),

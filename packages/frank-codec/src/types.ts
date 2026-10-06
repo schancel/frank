@@ -91,6 +91,10 @@ export interface DirectMessageDelivery<F> {
   /** T3 digest of the exact field-2 frame, as encoded (not verified at stages 1-9). */
   payloadDigest: Uint8Array
   payments: PaymentMember[]
+  /** Optional long-term recipient identity P (key type 1). */
+  recipient?: AccountRef
+  /** Optional Chaum-Pedersen DLEQ proof (64 bytes). */
+  dleqProof?: Uint8Array
   unknownFields: UnknownFields
 }
 

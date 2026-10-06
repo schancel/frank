@@ -299,6 +299,18 @@ export function checkSemantics(
       if (typed.destination.keyType !== 1) {
         throw semantic('destination account must be key type 1 (S9)', `${P}.1`)
       }
+      if (
+        (typed.recipient !== undefined && typed.dleqProof === undefined) ||
+        (typed.recipient === undefined && typed.dleqProof !== undefined)
+      ) {
+        throw semantic(
+          'recipient and DLEQ proof must both be present if either is present',
+          P,
+        )
+      }
+      if (typed.recipient !== undefined && typed.recipient.keyType !== 1) {
+        throw semantic('recipient account must be key type 1', `${P}.5`)
+      }
       requireUnique(
         pays.map(p => p.address),
         'payment address',

@@ -1,0 +1,26 @@
+{
+  "name": "@frank/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Frank EVM smart contracts for escrow, state channels, table pots, and atomic swaps",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "compile": "node --import tsx scripts/compile.ts",
+    "build": "yarn compile && tsc",
+    "test": "NODE_OPTIONS=\"--experimental-vm-modules\" jest --runInBand --forceExit",
+    "deploy": "node --import tsx scripts/deploy.ts"
+  },
+  "dependencies": {
+    "ethers": "^6.17.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^20.0.0",
+    "jest": "^29.7.0",
+    "solc": "^0.8.24",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.0.0"
+  }
+}

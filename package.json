@@ -18,6 +18,10 @@
   },
   "scripts": {
     "demo": "TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/demo.ts",
-    "demo:smoke": "TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/smoke.ts"
+    "demo:smoke": "TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/smoke.ts",
+    "compile:contracts": "yarn --cwd packages/contracts compile",
+    "build:contracts": "yarn --cwd packages/contracts build",
+    "test:contracts": "yarn --cwd packages/contracts test",
+    "deploy:contracts": "yarn --cwd packages/contracts deploy"
   }
 }

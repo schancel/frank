@@ -46,3 +46,39 @@ describe('parseAddressWithOptionalRelay', () => {
     })
   })
 })
+
+describe('ActiveChain contract resolution', () => {
+  it('resolves canonical contract addresses on MonadChain', async () => {
+    const { MonadChain } = await import('./monad-chain')
+    expect(MonadChain.getChannelVaultAddress()).toBe('0x720472c8ce72c2A2D711333e064ABD3E6BbEAdd3')
+    expect(MonadChain.getTablePotVaultAddress()).toBe('0xe8D2A1E88c91DCd5433208d4152Cc4F399a7e91d')
+    expect(MonadChain.getHtlcAddress()).toBe('0x5067457698Fd6Fa1C6964e416b3f42713513B3dD')
+  })
+
+  it('supports explicit contract overrides in createMonadChain', async () => {
+    const { createMonadChain, loadMonadChainConfigFromEnv } = await import('./monad-chain')
+    const custom = createMonadChain({
+      ...loadMonadChainConfigFromEnv(),
+      contracts: {
+        channelVault: '0x1111111111111111111111111111111111111111',
+        tablePotVault: '0x2222222222222222222222222222222222222222',
+        htlc: '0x3333333333333333333333333333333333333333',
+      },
+    })
+    expect(custom.getChannelVaultAddress()).toBe('0x1111111111111111111111111111111111111111')
+    expect(custom.getTablePotVaultAddress()).toBe('0x2222222222222222222222222222222222222222')
+    expect(custom.getHtlcAddress()).toBe('0x3333333333333333333333333333333333333333')
+  })
+
+  it('throws clear error when contract is not configured on unsupported chain', async () => {
+    const { createMonadChain, loadMonadChainConfigFromEnv } = await import('./monad-chain')
+    const unsupported = createMonadChain({
+      ...loadMonadChainConfigFromEnv(),
+      networkId: 'unsupported-network',
+      contracts: {},
+    })
+    expect(() => unsupported.getChannelVaultAddress()).toThrow('ChannelVault contract is not available on chain unsupported-network')
+    expect(() => unsupported.getTablePotVaultAddress()).toThrow('TablePotVault contract is not available on chain unsupported-network')
+    expect(() => unsupported.getHtlcAddress()).toThrow('GenericHTLC contract is not available on chain unsupported-network')
+  })
+})

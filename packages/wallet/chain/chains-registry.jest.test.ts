@@ -17,6 +17,11 @@ describe("chains-registry", () => {
       caip2: "eip155:10143",
       nativeChainId: 10143,
       networkTag: "MONT",
+      contracts: {
+        channelVault: "0x720472c8ce72c2A2D711333e064ABD3E6BbEAdd3",
+        tablePotVault: "0xe8D2A1E88c91DCd5433208d4152Cc4F399a7e91d",
+        htlc: "0x5067457698Fd6Fa1C6964e416b3f42713513B3dD",
+      },
     });
 
     expect(PROTOCOL_CHAINS["monad-mainnet"]).toEqual({
@@ -30,6 +35,11 @@ describe("chains-registry", () => {
       caip2: "eip155:143",
       nativeChainId: 143,
       networkTag: "MON1",
+      contracts: {
+        channelVault: "0x720472c8ce72c2A2D711333e064ABD3E6BbEAdd3",
+        tablePotVault: "0xe8D2A1E88c91DCd5433208d4152Cc4F399a7e91d",
+        htlc: "0x5067457698Fd6Fa1C6964e416b3f42713513B3dD",
+      },
     });
 
     expect(PROTOCOL_CHAINS["ecash-testnet"]).toEqual({

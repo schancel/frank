@@ -1,0 +1,5 @@
+artifacts/build-info/
+deployments/local.json
+cache/
+dist/
+node_modules/

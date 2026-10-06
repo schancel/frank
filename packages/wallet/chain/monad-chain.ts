@@ -183,6 +183,7 @@ import {
   InMemoryStampAttemptJournal,
   LevelStampAttemptJournal,
 } from "../storage/stamp-attempt-journal";
+import { ChainContracts, PROTOCOL_CHAINS } from "./chains-registry";
 
 export interface MonadChainConfig {
   /** Stable chain/deployment identifier used for wallet affinity checks. */
@@ -211,6 +212,8 @@ export interface MonadChainConfig {
   nativeAttemptStore?: NativeTransactionAttemptStore;
   /** Explicit disposable fake-service opt-in; never selected by a relay failure. */
   fakeDemo?: FakeDemoRpcConfig;
+  /** Optional contract address registry overrides. */
+  contracts?: ChainContracts;
 }
 
 // Ticket #54 (found live doing real end-to-end GUI testing against a real relay + real Alchemy
@@ -1756,6 +1759,42 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     directMessages,
     topics,
+
+    getChannelVaultAddress(): string {
+      const addr =
+        config.contracts?.channelVault ??
+        PROTOCOL_CHAINS[config.networkId]?.contracts?.channelVault;
+      if (!addr) {
+        throw new Error(
+          `ChannelVault contract is not available on chain ${config.networkId}`
+        );
+      }
+      return addr;
+    },
+
+    getTablePotVaultAddress(): string {
+      const addr =
+        config.contracts?.tablePotVault ??
+        PROTOCOL_CHAINS[config.networkId]?.contracts?.tablePotVault;
+      if (!addr) {
+        throw new Error(
+          `TablePotVault contract is not available on chain ${config.networkId}`
+        );
+      }
+      return addr;
+    },
+
+    getHtlcAddress(): string {
+      const addr =
+        config.contracts?.htlc ??
+        PROTOCOL_CHAINS[config.networkId]?.contracts?.htlc;
+      if (!addr) {
+        throw new Error(
+          `GenericHTLC contract is not available on chain ${config.networkId}`
+        );
+      }
+      return addr;
+    },
   };
 }
 

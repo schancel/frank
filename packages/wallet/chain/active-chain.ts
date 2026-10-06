@@ -408,6 +408,12 @@ export interface ActiveChain extends NativeAssetChain {
   ): Promise<ProfileInfo | undefined>;
   directMessages: DirectMessageClient;
   topics: TopicBroadcastClient;
+  /** Returns the deployed ChannelVault contract address, or throws if not configured. */
+  getChannelVaultAddress(): string;
+  /** Returns the deployed TablePotVault contract address, or throws if not configured. */
+  getTablePotVaultAddress(): string;
+  /** Returns the deployed GenericHTLC contract address, or throws if not configured. */
+  getHtlcAddress(): string;
 }
 
 /** Parsed result of {@link parseAddressWithOptionalRelay}. */

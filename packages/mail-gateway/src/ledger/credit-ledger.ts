@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { HeldMessageRecord, ThreadMappingRecord } from '../types';
+import { HeldMessageRecord, ThreadMappingRecord, OutboundSpoolJob } from '../types';
 
 export class CreditLedger {
   private readonly db: DatabaseSync;
@@ -55,8 +55,21 @@ export class CreditLedger {
         PRIMARY KEY (conversation_id, frank_message_id)
       );
 
+      CREATE TABLE IF NOT EXISTS outbound_spool (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        recipient_email TEXT NOT NULL,
+        from_address TEXT NOT NULL,
+        raw_rfc822 TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        max_attempts INTEGER NOT NULL DEFAULT 10,
+        last_error TEXT,
+        status TEXT NOT NULL DEFAULT 'pending'
+      );
+
       CREATE INDEX IF NOT EXISTS idx_held_sender ON held_messages(sender_email, status);
       CREATE INDEX IF NOT EXISTS idx_thread_rfc822 ON thread_mappings(rfc822_message_id);
+      CREATE INDEX IF NOT EXISTS idx_outbound_spool_pending ON outbound_spool(status, next_attempt_at);
     `);
   }
 
@@ -292,5 +305,182 @@ export class CreditLedger {
       subject: row.subject ?? undefined,
       createdAtMs: row.created_at,
     };
+  }
+
+  enqueueOutboundSpool(params: {
+    recipientEmail: string;
+    fromAddress: string;
+    rawRfc822: string;
+    nextAttemptAt?: number;
+    maxAttempts?: number;
+  }): number {
+    const nextAttempt = params.nextAttemptAt ?? Date.now();
+    const maxAttempts = params.maxAttempts ?? 10;
+    const result = this.db
+      .prepare(
+        `INSERT INTO outbound_spool (recipient_email, from_address, raw_rfc822, attempts, next_attempt_at, max_attempts, last_error, status)
+         VALUES (?, ?, ?, 0, ?, ?, NULL, 'pending')`
+      )
+      .run(
+        params.recipientEmail.toLowerCase().trim(),
+        params.fromAddress.toLowerCase().trim(),
+        params.rawRfc822,
+        nextAttempt,
+        maxAttempts
+      );
+    return Number(result.lastInsertRowid);
+  }
+
+  getPendingOutboundJobs(nowMs: number, limit: number = 50): OutboundSpoolJob[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, recipient_email, from_address, raw_rfc822, attempts, next_attempt_at, max_attempts, last_error, status
+         FROM outbound_spool
+         WHERE status = 'pending' AND next_attempt_at <= ?
+         ORDER BY next_attempt_at ASC
+         LIMIT ?`
+      )
+      .all(nowMs, limit) as any[];
+
+    return rows.map((r) => ({
+      id: Number(r.id),
+      recipientEmail: r.recipient_email,
+      fromAddress: r.from_address,
+      rawRfc822: r.raw_rfc822,
+      attempts: Number(r.attempts),
+      nextAttemptAt: Number(r.next_attempt_at),
+      maxAttempts: Number(r.max_attempts),
+      lastError: r.last_error ?? undefined,
+      status: r.status,
+    }));
+  }
+
+  markOutboundJobSuccess(id: number): void {
+    this.db
+      .prepare("UPDATE outbound_spool SET status = 'success' WHERE id = ?")
+      .run(id);
+  }
+
+  markOutboundJobFailed(
+    id: number,
+    error: string,
+    nowMs: number,
+    backoffMs: number
+  ): boolean {
+    const row = this.db
+      .prepare('SELECT id, attempts, max_attempts FROM outbound_spool WHERE id = ?')
+      .get(id) as { id: number; attempts: number; max_attempts: number } | undefined;
+
+    if (!row) {
+      return false;
+    }
+
+    const newAttempts = row.attempts + 1;
+    if (newAttempts >= row.max_attempts) {
+      this.db
+        .prepare(
+          "UPDATE outbound_spool SET attempts = ?, last_error = ?, status = 'failed' WHERE id = ?"
+        )
+        .run(newAttempts, error, id);
+      return false;
+    } else {
+      const nextAttemptAt = nowMs + backoffMs;
+      this.db
+        .prepare(
+          'UPDATE outbound_spool SET attempts = ?, next_attempt_at = ?, last_error = ? WHERE id = ?'
+        )
+        .run(newAttempts, nextAttemptAt, error, id);
+      return true;
+    }
+  }
+
+  getOutboundJob(id: number): OutboundSpoolJob | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT id, recipient_email, from_address, raw_rfc822, attempts, next_attempt_at, max_attempts, last_error, status FROM outbound_spool WHERE id = ?'
+      )
+      .get(id) as any;
+    if (!row) return undefined;
+    return {
+      id: Number(row.id),
+      recipientEmail: row.recipient_email,
+      fromAddress: row.from_address,
+      rawRfc822: row.raw_rfc822,
+      attempts: Number(row.attempts),
+      nextAttemptAt: Number(row.next_attempt_at),
+      maxAttempts: Number(row.max_attempts),
+      lastError: row.last_error ?? undefined,
+      status: row.status,
+    };
+  }
+
+  findSpoolJobByRecipient(recipientEmail: string): OutboundSpoolJob | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT id, recipient_email, from_address, raw_rfc822, attempts, next_attempt_at, max_attempts, last_error, status FROM outbound_spool WHERE recipient_email = ? ORDER BY id DESC LIMIT 1'
+      )
+      .get(recipientEmail.toLowerCase().trim()) as any;
+    if (!row) return undefined;
+    return {
+      id: Number(row.id),
+      recipientEmail: row.recipient_email,
+      fromAddress: row.from_address,
+      rawRfc822: row.raw_rfc822,
+      attempts: Number(row.attempts),
+      nextAttemptAt: Number(row.next_attempt_at),
+      maxAttempts: Number(row.max_attempts),
+      lastError: row.last_error ?? undefined,
+      status: row.status,
+    };
+  }
+
+  findFrankSenderForRecipient(recipientEmail: string): string | undefined {
+    const canonical = recipientEmail.toLowerCase().trim();
+    // 1. Check thread_allowances (stores external sender_email -> recipient_frank_addr)
+    const allowanceRow = this.db
+      .prepare(
+        'SELECT recipient_frank_addr FROM thread_allowances WHERE sender_email = ? ORDER BY updated_at DESC LIMIT 1'
+      )
+      .get(canonical) as { recipient_frank_addr: string } | undefined;
+    if (allowanceRow) {
+      return allowanceRow.recipient_frank_addr;
+    }
+
+    // 2. Check outbound_spool
+    const spoolRow = this.db
+      .prepare(
+        'SELECT from_address FROM outbound_spool WHERE recipient_email = ? ORDER BY id DESC LIMIT 1'
+      )
+      .get(canonical) as { from_address: string } | undefined;
+    if (spoolRow) {
+      return spoolRow.from_address.split('@')[0];
+    }
+
+    return undefined;
+  }
+
+  findFrankSenderByRfc822Id(rfc822MessageId: string): string | undefined {
+    // 1. Check thread mappings
+    const thread = this.getThreadMappingByRfc822Id(rfc822MessageId);
+    if (thread) {
+      const allowanceRow = this.db
+        .prepare('SELECT recipient_frank_addr FROM thread_allowances ORDER BY updated_at DESC LIMIT 1')
+        .get() as { recipient_frank_addr: string } | undefined;
+      if (allowanceRow) {
+        return allowanceRow.recipient_frank_addr;
+      }
+    }
+
+    // 2. Check outbound_spool for raw_rfc822 containing message-id
+    const spoolRow = this.db
+      .prepare(
+        "SELECT from_address FROM outbound_spool WHERE raw_rfc822 LIKE '%' || ? || '%' ORDER BY id DESC LIMIT 1"
+      )
+      .get(rfc822MessageId) as { from_address: string } | undefined;
+    if (spoolRow) {
+      return spoolRow.from_address.split('@')[0];
+    }
+
+    return undefined;
   }
 }

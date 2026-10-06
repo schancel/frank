@@ -176,6 +176,9 @@ export class SmtpListener {
               case 'held':
                 socket.write(`250 2.0.0 Message queued for funding (${result.heldMessageId})\r\n`);
                 break;
+              case 'bounce':
+                socket.write('250 2.0.0 Bounce notification processed\r\n');
+                break;
               case 'rejected_tombstone':
                 socket.write('550 5.2.1 Recipient account deactivated and tombstoned\r\n');
                 break;

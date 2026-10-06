@@ -69,13 +69,83 @@ export function createRelayUsernameLookup(
 }
 
 export interface InboundProcessingResult {
-  readonly status: 'delivered' | 'held' | 'rejected_tombstone' | 'rejected_unknown' | 'rejected_unauthenticated';
+  readonly status:
+    | 'delivered'
+    | 'held'
+    | 'rejected_tombstone'
+    | 'rejected_unknown'
+    | 'rejected_unauthenticated'
+    | 'bounce';
   readonly heldMessageId?: string;
   readonly paymentLink?: string;
   readonly shouldSendAutoReply: boolean;
   readonly txHash?: string;
   readonly conversationId?: string;
   readonly inReplyToFrankMessageId?: string;
+  readonly bounceRecipient?: string;
+  readonly bounceNotificationSent?: boolean;
+}
+
+export function parseBounceDetails(
+  email: InboundEmail,
+  gatewayDomain: string
+): {
+  failedRecipient?: string;
+  originalMessageId?: string;
+  reason?: string;
+} {
+  const fullText = [
+    email.subject,
+    email.textBody,
+    new TextDecoder().decode(email.rawRfc822),
+  ].join('\n');
+
+  let failedRecipient: string | undefined;
+
+  const recipientPatterns = [
+    /final-recipient:\s*(?:rfc822;)?\s*<?([^\s>;]+@[^\s>;]+)>?/i,
+    /original-recipient:\s*(?:rfc822;)?\s*<?([^\s>;]+@[^\s>;]+)>?/i,
+    /x-failed-recipients:\s*<?([^\s>;,]+@[^\s>;,]+)>?/i,
+    /failed-recipient:\s*<?([^\s>;,]+@[^\s>;,]+)>?/i,
+    /failed to deliver to\s*<?([^\s>;]+@[^\s>;]+)>?/i,
+    /recipient address(?: rejected)?:\s*<?([^\s>;]+@[^\s>;]+)>?/i,
+    /delivery to\s*<?([^\s>;]+@[^\s>;]+)>?\s*failed/i,
+    /unable to deliver to\s*<?([^\s>;]+@[^\s>;]+)>?/i,
+  ];
+
+  for (const pattern of recipientPatterns) {
+    const match = fullText.match(pattern);
+    if (match && match[1]) {
+      const candidate = match[1].trim().toLowerCase();
+      if (!candidate.endsWith(`@${gatewayDomain.toLowerCase()}`)) {
+        failedRecipient = candidate;
+        break;
+      }
+    }
+  }
+
+  if (!failedRecipient) {
+    const toMatch = fullText.match(/\nTo:\s*<?([^\s>;]+@[^\s>;]+)>?/i);
+    if (toMatch && toMatch[1]) {
+      const candidate = toMatch[1].trim().toLowerCase();
+      if (!candidate.endsWith(`@${gatewayDomain.toLowerCase()}`)) {
+        failedRecipient = candidate;
+      }
+    }
+  }
+
+  let originalMessageId: string | undefined = email.inReplyTo;
+  if (!originalMessageId) {
+    const msgIdMatch = fullText.match(/(?:original-message-id|message-id):\s*(<[^>]+>)/i);
+    if (msgIdMatch) {
+      originalMessageId = msgIdMatch[1].trim();
+    }
+  }
+
+  const reasonMatch = fullText.match(/(?:status|diagnostic-code):\s*(.+)/i);
+  const reason = reasonMatch ? reasonMatch[1].trim() : undefined;
+
+  return { failedRecipient, originalMessageId, reason };
 }
 
 export class InboundEmailHandler {
@@ -94,6 +164,19 @@ export class InboundEmailHandler {
   }
 
   async processInboundEmail(email: InboundEmail): Promise<InboundProcessingResult> {
+    const localPartLower = email.localPart.toLowerCase().trim();
+
+    // Check for Bounce / NDR envelope recipient (bounce+<id>@<domain> or mailer-daemon@<domain>)
+    const isBounce =
+      localPartLower === 'mailer-daemon' ||
+      localPartLower === 'postmaster' ||
+      localPartLower === 'bounce' ||
+      localPartLower.startsWith('bounce+');
+
+    if (isBounce) {
+      return await this.processBounceNotification(email, localPartLower);
+    }
+
     // 1. Resolve recipient address
     const recipientResolution = await this.resolveRecipient(email.localPart);
     if (!recipientResolution) {
@@ -231,5 +314,82 @@ export class InboundEmailHandler {
 
     // Default fallback mock for test harness
     return { accountAddress: `0x${canonicalLocal.padEnd(40, '0')}` };
+  }
+
+  private async processBounceNotification(
+    email: InboundEmail,
+    localPartLower: string
+  ): Promise<InboundProcessingResult> {
+    let failedRecipient: string | undefined;
+    let frankSender: string | undefined;
+    let conversationId: string | undefined;
+    let inReplyToFrankMessageId: string | undefined;
+
+    // Check if envelope is bounce+<id>
+    if (localPartLower.startsWith('bounce+')) {
+      const idStr = localPartLower.slice('bounce+'.length);
+      const jobId = parseInt(idStr, 10);
+      if (!isNaN(jobId)) {
+        const job = this.ledger.getOutboundJob(jobId);
+        if (job) {
+          failedRecipient = job.recipientEmail;
+          frankSender = job.fromAddress.split('@')[0];
+        }
+      }
+    }
+
+    // Parse notification headers and body
+    const bounceDetails = parseBounceDetails(email, this.gatewayDomain);
+    if (!failedRecipient && bounceDetails.failedRecipient) {
+      failedRecipient = bounceDetails.failedRecipient;
+    }
+
+    const originalMsgId = bounceDetails.originalMessageId || email.inReplyTo;
+    if (originalMsgId) {
+      const mapping = this.ledger.getThreadMappingByRfc822Id(originalMsgId);
+      if (mapping) {
+        conversationId = mapping.conversationId;
+        inReplyToFrankMessageId = mapping.frankMessageId;
+      }
+      if (!frankSender) {
+        frankSender = this.ledger.findFrankSenderByRfc822Id(originalMsgId);
+      }
+    }
+
+    if (!frankSender && failedRecipient) {
+      frankSender = this.ledger.findFrankSenderForRecipient(failedRecipient);
+    }
+
+    // If we have a frank sender, deliver bounce notification DM
+    if (frankSender) {
+      const reasonText = bounceDetails.reason ? `\nReason: ${bounceDetails.reason}` : '';
+      const notificationText =
+        `[Delivery Status Notification - Bounce]\n` +
+        `Your message to ${failedRecipient || 'recipient'} could not be delivered.${reasonText}`;
+
+      const sendResult = await this.stampProvider.stampAndSendDirectMessage({
+        recipientAddress: frankSender,
+        text: notificationText,
+        conversationId,
+        inReplyToFrankMessageId,
+      });
+
+      return {
+        status: 'bounce',
+        txHash: sendResult.txHash,
+        conversationId,
+        inReplyToFrankMessageId,
+        shouldSendAutoReply: false,
+        bounceRecipient: failedRecipient,
+        bounceNotificationSent: true,
+      };
+    }
+
+    return {
+      status: 'bounce',
+      shouldSendAutoReply: false,
+      bounceRecipient: failedRecipient,
+      bounceNotificationSent: false,
+    };
   }
 }

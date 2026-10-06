@@ -42,6 +42,17 @@ jest.mock('src/utils/navigate-back', () => ({
   navigateBack: jest.fn(),
 }))
 
+const defaultStubs = {
+  'Profile': { template: '<div data-test="profile-component"></div>' },
+  'q-page-container': { template: '<div><slot /></div>' },
+  'q-page': { template: '<div><slot /></div>' },
+  'q-card': { template: '<div><slot /></div>' },
+  'q-card-section': { template: '<div><slot /></div>' },
+  'q-card-actions': { template: '<div><slot /></div>' },
+  'q-btn': { template: '<button><slot /></button>' },
+  'q-separator': { template: '<hr />' },
+}
+
 describe('Profile.vue', () => {
   beforeEach(() => {
     jest.clearAllMocks()
@@ -56,15 +67,7 @@ describe('Profile.vue', () => {
           $router: { push: jest.fn() },
           $q: { loading: { show: jest.fn(), hide: jest.fn() } },
         },
-        stubs: {
-          'Profile': { template: '<div data-test="profile-component"></div>' },
-          'q-page-container': { template: '<div><slot /></div>' },
-          'q-page': { template: '<div><slot /></div>' },
-          'q-card': { template: '<div><slot /></div>' },
-          'q-card-section': { template: '<div><slot /></div>' },
-          'q-card-actions': { template: '<div><slot /></div>' },
-          'q-btn': { template: '<button><slot /></button>' },
-        },
+        stubs: defaultStubs,
       },
     })
 
@@ -93,15 +96,7 @@ describe('Profile.vue', () => {
           $router: { push: jest.fn() },
           $q: { loading: { show: jest.fn(), hide: jest.fn() } },
         },
-        stubs: {
-          'Profile': { template: '<div data-test="profile-component"></div>' },
-          'q-page-container': { template: '<div><slot /></div>' },
-          'q-page': { template: '<div><slot /></div>' },
-          'q-card': { template: '<div><slot /></div>' },
-          'q-card-section': { template: '<div><slot /></div>' },
-          'q-card-actions': { template: '<div><slot /></div>' },
-          'q-btn': { template: '<button><slot /></button>' },
-        },
+        stubs: defaultStubs,
       },
     })
 
@@ -130,15 +125,7 @@ describe('Profile.vue', () => {
           $router: { push: jest.fn() },
           $q: { loading: { show: jest.fn(), hide: jest.fn() } },
         },
-        stubs: {
-          'Profile': { template: '<div data-test="profile-component"></div>' },
-          'q-page-container': { template: '<div><slot /></div>' },
-          'q-page': { template: '<div><slot /></div>' },
-          'q-card': { template: '<div><slot /></div>' },
-          'q-card-section': { template: '<div><slot /></div>' },
-          'q-card-actions': { template: '<div><slot /></div>' },
-          'q-btn': { template: '<button><slot /></button>' },
-        },
+        stubs: defaultStubs,
       },
     })
 
@@ -199,17 +186,7 @@ describe('Profile.vue', () => {
             $router: { push: jest.fn() },
             $q: { loading: { show: jest.fn(), hide: jest.fn() } },
           },
-          stubs: {
-            'Profile': {
-              template: '<div data-test="profile-component"></div>',
-            },
-            'q-page-container': { template: '<div><slot /></div>' },
-            'q-page': { template: '<div><slot /></div>' },
-            'q-card': { template: '<div><slot /></div>' },
-            'q-card-section': { template: '<div><slot /></div>' },
-            'q-card-actions': { template: '<div><slot /></div>' },
-            'q-btn': { template: '<button><slot /></button>' },
-          },
+          stubs: defaultStubs,
         },
       })
 
@@ -246,15 +223,7 @@ describe('Profile.vue', () => {
           $router: { push: jest.fn() },
           $q: { loading: { show: jest.fn(), hide: jest.fn() } },
         },
-        stubs: {
-          'Profile': { template: '<div data-test="profile-component"></div>' },
-          'q-page-container': { template: '<div><slot /></div>' },
-          'q-page': { template: '<div><slot /></div>' },
-          'q-card': { template: '<div><slot /></div>' },
-          'q-card-section': { template: '<div><slot /></div>' },
-          'q-card-actions': { template: '<div><slot /></div>' },
-          'q-btn': { template: '<button><slot /></button>' },
-        },
+        stubs: defaultStubs,
       },
     })
 
@@ -294,15 +263,7 @@ describe('Profile.vue', () => {
           $router: { push: jest.fn() },
           $q: { loading: { show: jest.fn(), hide: jest.fn() } },
         },
-        stubs: {
-          'Profile': { template: '<div data-test="profile-component"></div>' },
-          'q-page-container': { template: '<div><slot /></div>' },
-          'q-page': { template: '<div><slot /></div>' },
-          'q-card': { template: '<div><slot /></div>' },
-          'q-card-section': { template: '<div><slot /></div>' },
-          'q-card-actions': { template: '<div><slot /></div>' },
-          'q-btn': { template: '<button><slot /></button>' },
-        },
+        stubs: defaultStubs,
       },
     })
 
@@ -357,15 +318,7 @@ describe('Profile.vue', () => {
           $router: { push: jest.fn() },
           $q: { loading: { show: jest.fn(), hide: jest.fn() } },
         },
-        stubs: {
-          'Profile': { template: '<div data-test="profile-component"></div>' },
-          'q-page-container': { template: '<div><slot /></div>' },
-          'q-page': { template: '<div><slot /></div>' },
-          'q-card': { template: '<div><slot /></div>' },
-          'q-card-section': { template: '<div><slot /></div>' },
-          'q-card-actions': { template: '<div><slot /></div>' },
-          'q-btn': { template: '<button><slot /></button>' },
-        },
+        stubs: defaultStubs,
       },
     })
 

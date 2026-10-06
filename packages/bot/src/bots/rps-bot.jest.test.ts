@@ -113,8 +113,12 @@ describe("RpsBot", () => {
       mockContext
     );
 
-    expect(startReplies[0][0].text).toContain("Rock-Paper-Scissors Match Started!");
-    expect(startReplies[0][0].text).toContain("Cryptographic Commitment");
+    const startText = startReplies[0].find((i: any) => i.type === "text")?.text;
+    const startItem = startReplies[0].find((i: any) => i.type === "rps");
+    expect(startItem).toBeDefined();
+    expect(startItem?.action).toBe("start");
+    expect(startText).toContain("Rock-Paper-Scissors Match Started!");
+    expect(startText).toContain("Cryptographic Commitment");
 
     // Verify commitment was saved in state
     const rawMatch = mockState.get(`rps:match:${player}`);
@@ -145,11 +149,15 @@ describe("RpsBot", () => {
       mockContext
     );
 
-    expect(playReplies[0][0].text).toContain("You chose: 🪨 Rock");
-    expect(playReplies[0][0].text).toContain(`I chose:`);
-    expect(playReplies[0][0].text).toContain("Fairness Verification");
-    expect(playReplies[0][0].text).toContain(match.commitHash);
-    expect(playReplies[0][0].text).toContain(match.salt);
+    const playText = playReplies[0].find((i: any) => i.type === "text")?.text;
+    const playItem = playReplies[0].find((i: any) => i.type === "rps");
+    expect(playItem).toBeDefined();
+    expect(playItem?.action).toBe("resolve");
+    expect(playText).toContain("You chose: 🪨 Rock");
+    expect(playText).toContain(`I chose:`);
+    expect(playText).toContain("Fairness Verification");
+    expect(playText).toContain(match.commitHash);
+    expect(playText).toContain(match.salt);
 
     // Match record removed from state to prevent replay
     expect(mockState.has(`rps:match:${player}`)).toBe(false);
@@ -191,8 +199,9 @@ describe("RpsBot", () => {
       mockContext
     );
 
-    expect(playReplies[0][0].text).toContain("YOU WIN!");
-    expect(playReplies[0][0].text).toContain("Payout Sent!");
+    const winText = playReplies[0].find((i: any) => i.type === "text")?.text;
+    expect(winText).toContain("YOU WIN!");
+    expect(winText).toContain("Payout Sent!");
     expect(transferredFunds.length).toBe(1);
     expect(transferredFunds[0].to).toBe(player);
     // Double payout (0.1 MON)

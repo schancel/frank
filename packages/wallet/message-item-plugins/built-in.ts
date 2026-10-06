@@ -13,6 +13,8 @@ import {
   ImageItem,
   P2PKHSendItem,
   ReplyItem,
+  RpsItem,
+  SatoshiDiceItem,
   StealthItem,
   SwapOfferItem,
   TextItem,
@@ -75,3 +77,28 @@ registerMessageItemPlugin<P2PKHSendItem, P2PKHSendItem>({
   // reachable at all.
   previewText: () => 'Sent a payment',
 })
+
+registerMessageItemPlugin<RpsItem, RpsItem>({
+  type: 'rps',
+  hydrate: raw => raw,
+  previewText: raw => {
+    if (raw.action === 'challenge') return 'Rock-Paper-Scissors Challenge'
+    if (raw.action === 'start') return 'Rock-Paper-Scissors Match'
+    if (raw.action === 'resolve') {
+      return `RPS Result: ${raw.outcome === 'win' ? 'You won!' : raw.outcome === 'lose' ? 'You lost' : 'Tie'}`
+    }
+    return 'Rock-Paper-Scissors'
+  },
+})
+
+registerMessageItemPlugin<SatoshiDiceItem, SatoshiDiceItem>({
+  type: 'dice',
+  hydrate: raw => raw,
+  previewText: raw => {
+    if (raw.action === 'result') {
+      return `Satoshi Dice: Rolled ${raw.luckyNumber} (${raw.isWin ? 'Win!' : 'Loss'})`
+    }
+    return 'Satoshi Dice Roll'
+  },
+})
+

@@ -175,6 +175,12 @@ export class RpsBot implements FrankBotDefinition {
 
       await msgCtx.reply([
         {
+          type: "rps" as any,
+          action: "start",
+          commitHash: hash,
+          wagerWei,
+        },
+        {
           type: "text",
           text: `🎮 **Rock-Paper-Scissors Match Started!**${wagerNote}
 
@@ -224,6 +230,8 @@ Reply **/rock**, **/paper**, or **/scissors**!`,
       }
 
       let payoutNote = "";
+      let payoutTxHash: string | undefined;
+
       if (match.wagerWei && outcome === "win") {
         const winAmountWei = BigInt(match.wagerWei) * 2n;
         try {
@@ -231,6 +239,7 @@ Reply **/rock**, **/paper**, or **/scissors**!`,
             to: sender,
             valueWei: winAmountWei,
           });
+          payoutTxHash = tx.txHash;
           payoutNote = `\n\n🏆 **Payout Sent!** Transferred ${formatMon(winAmountWei)} MON (tx: \`${tx.txHash}\`)`;
         } catch (err) {
           console.error("[rps] Error sending payout transfer:", err);
@@ -243,6 +252,7 @@ Reply **/rock**, **/paper**, or **/scissors**!`,
             to: sender,
             valueWei: refundWei,
           });
+          payoutTxHash = tx.txHash;
           payoutNote = `\n\n↩️ **Wager Refunded:** Returned ${formatMon(refundWei)} MON (tx: \`${tx.txHash}\`)`;
         } catch {
           // ignore
@@ -250,6 +260,17 @@ Reply **/rock**, **/paper**, or **/scissors**!`,
       }
 
       await msgCtx.reply([
+        {
+          type: "rps" as any,
+          action: "resolve",
+          commitHash: match.commitHash,
+          botMove: match.botMove,
+          playerMove,
+          secretSalt: match.salt,
+          wagerWei: match.wagerWei,
+          outcome,
+          txHash: payoutTxHash,
+        },
         {
           type: "text",
           text: `🧑 You chose: ${moveEmoji(playerMove)}

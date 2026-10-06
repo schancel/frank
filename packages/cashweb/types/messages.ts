@@ -199,6 +199,35 @@ export interface SwapOfferItem {
   expiresAt?: number
 }
 
+export interface RpsItem {
+  type: 'rps'
+  action: 'challenge' | 'start' | 'move' | 'resolve'
+  matchId?: string
+  commitHash?: string
+  playerMove?: 'rock' | 'paper' | 'scissors'
+  botMove?: 'rock' | 'paper' | 'scissors'
+  secretSalt?: string
+  wagerWei?: string
+  outcome?: 'win' | 'lose' | 'tie'
+  txHash?: string
+  opponentAddress?: string
+}
+
+export interface SatoshiDiceItem {
+  type: 'dice'
+  action: 'table' | 'roll' | 'result'
+  rollId?: string
+  target?: number
+  multiplier?: number
+  wagerWei?: string
+  luckyNumber?: number
+  isWin?: boolean
+  serverSecret?: string
+  userNonce?: string
+  payoutWei?: string
+  txHash?: string
+}
+
 export type MessageItem =
   | StealthItem
   | P2PKHSendItem
@@ -210,6 +239,8 @@ export type MessageItem =
   | DigitalGoodsItem
   | RaffleItem
   | SwapOfferItem
+  | RpsItem
+  | SatoshiDiceItem
 
 /** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the
  * message so the failure and its manual Retry survive a reload. */

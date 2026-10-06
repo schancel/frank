@@ -24,7 +24,10 @@
     "typecheck:tsc": "node --import tsx scripts/typecheck.ts --tsc",
     "build:contracts": "yarn --cwd packages/contracts build",
     "test:contracts": "yarn --cwd packages/contracts test",
-    "deploy:contracts": "yarn --cwd packages/contracts deploy"
+    "deploy:contracts": "yarn --cwd packages/contracts deploy",
+    "docs:dev": "yarn workspace @frank/docs dev",
+    "docs:build": "yarn workspace @frank/docs build",
+    "docs:preview": "yarn workspace @frank/docs preview"
   },
   "devDependencies": {
     "@types/bluebird": "^3.5.42",

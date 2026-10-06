@@ -182,6 +182,20 @@ function endpoint(v: FrankValue | undefined, path: string): string {
   return s
 }
 
+const FORBIDDEN_TEXT_CONTROL_CHARACTER =
+  /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u
+
+function conversationName(v: FrankValue | undefined, path: string): string {
+  const s = tstr(v, path, 1, 512)
+  if (s.trim().length === 0) {
+    throw bad(path, 'conversation name cannot be whitespace-only')
+  }
+  if (FORBIDDEN_TEXT_CONTROL_CHARACTER.test(s)) {
+    throw bad(path, 'conversation name contains forbidden control character')
+  }
+  return s
+}
+
 const KEY_LENGTHS: ReadonlyMap<number, number> = new Map([
   [1, 33],
   [2, 32],
@@ -441,7 +455,8 @@ function blackjackHandPayload(payload: FrankValue): BlackjackHandMessageItem {
       base: { type: 18 as const, schema: 2 as const, gameId },
     }
   }
-  const hash = (m: MapView, key: number) => bstr(m.get(key), `${P}.${key}`, 32, 32)
+  const hash = (m: MapView, key: number) =>
+    bstr(m.get(key), `${P}.${key}`, 32, 32)
   switch (action) {
     case 0: {
       const dealer = u32ish(payload.get(2n), `${P}.2`, 0, 1) === 0
@@ -454,7 +469,12 @@ function blackjackHandPayload(payload: FrankValue): BlackjackHandMessageItem {
             maxBetWei: hash(m, 3),
             commitment: hash(m, 4),
           }
-        : { ...base, action: 'challenge', role: 'player', maxBetWei: hash(m, 3) }
+        : {
+            ...base,
+            action: 'challenge',
+            role: 'player',
+            maxBetWei: hash(m, 3),
+          }
     }
     case 1: {
       const { m, base } = read([3, 4])
@@ -514,7 +534,9 @@ function blackjackHandPayload(payload: FrankValue): BlackjackHandMessageItem {
 
 /** Closed schema-3 shapes: a hand whose cards come from both sides' entropy. No shape states a
  * card, an outcome or an amount of money. */
-function blackjackHandV3Payload(payload: FrankValue): BlackjackHandV3MessageItem {
+function blackjackHandV3Payload(
+  payload: FrankValue,
+): BlackjackHandV3MessageItem {
   const P = 'root/payload'
   if (!isMap(payload)) throw bad(P, 'blackjack payload must be a map')
   // Codes 32..41: disjoint from schema 1's 0..6 and schema 2's 16..25.
@@ -531,7 +553,8 @@ function blackjackHandV3Payload(payload: FrankValue): BlackjackHandV3MessageItem
         : u32ish(m.get(11), `${P}.11`, 1, 255)
     return { m, base: { type: 18 as const, schema: 3 as const, gameId, seq } }
   }
-  const hash = (m: MapView, key: number) => bstr(m.get(key), `${P}.${key}`, 32, 32)
+  const hash = (m: MapView, key: number) =>
+    bstr(m.get(key), `${P}.${key}`, 32, 32)
   switch (action) {
     case 0: {
       const dealer = u32ish(payload.get(2n), `${P}.2`, 0, 1) === 0
@@ -544,7 +567,12 @@ function blackjackHandV3Payload(payload: FrankValue): BlackjackHandV3MessageItem
             maxBetWei: hash(m, 3),
             commitment: hash(m, 4),
           }
-        : { ...base, action: 'challenge', role: 'player', maxBetWei: hash(m, 3) }
+        : {
+            ...base,
+            action: 'challenge',
+            role: 'player',
+            maxBetWei: hash(m, 3),
+          }
     }
     case 1: {
       const { m, base } = read([3, 4, 12])
@@ -558,7 +586,12 @@ function blackjackHandV3Payload(payload: FrankValue): BlackjackHandV3MessageItem
     }
     case 2: {
       const { m, base } = read([4, 12])
-      return { ...base, action: 'bet', commitment: hash(m, 4), prev: hash(m, 12) }
+      return {
+        ...base,
+        action: 'bet',
+        commitment: hash(m, 4),
+        prev: hash(m, 12),
+      }
     }
     case 9: {
       const { m, base } = read([10, 12])
@@ -566,7 +599,14 @@ function blackjackHandV3Payload(payload: FrankValue): BlackjackHandV3MessageItem
     }
     default: {
       const { m, base } = read([12, 13])
-      const names = ['deal', 'hit', 'stand', 'double', 'card', 'reveal'] as const
+      const names = [
+        'deal',
+        'hit',
+        'stand',
+        'double',
+        'card',
+        'reveal',
+      ] as const
       return {
         ...base,
         action: names[action - 3],
@@ -1156,13 +1196,18 @@ export function parseDraft(
       }
     }
     case TYPE_ENCRYPTED_MESSAGE_CONTENT: {
-      const m = fields(payload, P, [0, 1, 2, 3], [], true, allow)
+      const m = fields(payload, P, [0, 1, 2, 3, 4], [5], true, allow)
+      const convName = m.has(5)
+        ? conversationName(m.get(5), `${P}.5`)
+        : undefined
       return {
         type: 6,
         network: networkTag(m.get(0), `${P}.0`),
         messageId: bstr(m.get(1), `${P}.1`, 16, 16),
         revisionFrame: framed(m.get(2), `${P}.2`),
         contentDigest: bstr(m.get(3), `${P}.3`, 32, 32),
+        conversationId: bstr(m.get(4), `${P}.4`, 16, 16),
+        conversationName: convName,
         unknownFields: m.unknown,
       }
     }
@@ -1411,9 +1456,7 @@ export function parseDraft(
         signatures: asList(m.get(5), `${P}.5`, 1, 4).map((s, i) =>
           signatureEntry(s, `${P}.5[${i}]`),
         ),
-        settlementRef: m.has(6)
-          ? bstr(m.get(6), `${P}.6`, 1, 128)
-          : undefined,
+        settlementRef: m.has(6) ? bstr(m.get(6), `${P}.6`, 1, 128) : undefined,
         unknownFields: m.unknown,
       }
     }

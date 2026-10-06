@@ -1037,6 +1037,8 @@ fn open_children(
             message_id,
             revision_frame,
             content_digest,
+            conversation_id,
+            conversation_name,
             unknown,
         } => Ok(TypedPayload::EncryptedContent {
             network,
@@ -1049,6 +1051,8 @@ fn open_children(
                 &format!("{path}.2"),
             )?,
             content_digest,
+            conversation_id,
+            conversation_name,
             unknown,
         }),
         Draft::TransitionStatement {

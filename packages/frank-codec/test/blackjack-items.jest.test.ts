@@ -335,6 +335,7 @@ describe('closed shapes and independently reachable boundaries', () => {
         [1, bytesOf(16, 1)],
         [2, welcome],
         [3, bytesOf(32, 2)],
+        [4, bytesOf(16, 4)],
       ]),
     )
     expect(outcome(() => parseFrame(badRequired))).toBe('semantic@8.4')
@@ -375,6 +376,7 @@ describe('closed shapes and independently reachable boundaries', () => {
           [1, bytesOf(16, 1)],
           [2, rev8Frame([item])],
           [3, bytesOf(32, 2)],
+          [4, bytesOf(16, 3)],
         ]),
       )
     let item = stand()
@@ -441,6 +443,7 @@ it.each(['containers', 'items'] as const)(
         [1, bytesOf(16, 1)],
         [2, rev8Frame([stand()])],
         [3, bytesOf(32, 2)],
+        [4, bytesOf(16, 3)],
         [99, grouped(kind === 'containers' ? 9000 : 75000)],
       ]),
       2,

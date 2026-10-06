@@ -202,6 +202,8 @@ export interface EncryptedMessageContent<F> {
   type: 6
   network: string
   messageId: Uint8Array
+  conversationId: Uint8Array
+  conversationName?: string
   /** The type-8 message-content-revision frame. */
   revisionFrame: F
   contentDigest: Uint8Array
@@ -471,7 +473,6 @@ export interface RafflePayload {
   unknownFields?: UnknownFields
 }
 
-
 /** The nine closed blackjack shapes. H and Q distinguish wire bytes from presentation text. */
 export type BlackjackFields<H, Q> = { gameId: string } & (
   | { action: 'bet'; wagerTxHash: H }
@@ -506,10 +507,10 @@ export type BlackjackFields<H, Q> = { gameId: string } & (
 )
 
 /** Closed type-18 projection; exact frame bytes remain on the enclosing ParsedFrame. */
-export type BlackjackMessageItem = { type: 18; schema?: never } & BlackjackFields<
-  Uint8Array,
-  Uint8Array
->
+export type BlackjackMessageItem = {
+  type: 18
+  schema?: never
+} & BlackjackFields<Uint8Array, Uint8Array>
 
 /** The ten closed schema-2 shapes of a peer-to-peer hand (docs/protocol/blackjack-p2p.md).
  * No shape carries an amount of money: a wager, payout or refund is the message's own stamp. */

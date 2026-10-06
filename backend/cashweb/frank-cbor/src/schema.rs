@@ -134,6 +134,23 @@ fn network_tag(v: Option<&CborValue>, path: &str) -> Result<String, CodecError> 
     Ok(s)
 }
 
+fn conversation_name(v: Option<&CborValue>, path: &str) -> Result<String, CodecError> {
+    let s = tstr(v, path, 1, 512)?;
+    if s.trim().is_empty() {
+        return Err(bad(path, "conversation name cannot be whitespace-only"));
+    }
+    if s.chars().any(|c| {
+        let u = c as u32;
+        (u <= 0x1f) || (0x7f..=0x9f).contains(&u) || u == 0x2028 || u == 0x2029
+    }) {
+        return Err(bad(
+            path,
+            "conversation name contains forbidden control character",
+        ));
+    }
+    Ok(s)
+}
+
 fn is_scheme_char(c: u8) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, b'+' | b'.' | b'-')
 }
@@ -552,6 +569,8 @@ pub(crate) enum Draft {
         message_id: Vec<u8>,
         revision_frame: Vec<u8>,
         content_digest: Vec<u8>,
+        conversation_id: Vec<u8>,
+        conversation_name: Option<String>,
         unknown: Vec<(u64, CborValue)>,
     },
     TransitionStatement {
@@ -1203,12 +1222,19 @@ pub(crate) fn parse_draft(
             }
         }
         crate::limits::TYPE_ENCRYPTED_CONTENT => {
-            let map = fields(Some(payload), path, &[0, 1, 2, 3], &[], true, allow)?;
+            let map = fields(Some(payload), path, &[0, 1, 2, 3, 4], &[5], true, allow)?;
+            let conversation_name = if map.has(5) {
+                Some(conversation_name(map.get(5), &format!("{path}.5"))?)
+            } else {
+                None
+            };
             Ok(Draft::Encrypted {
                 network: network_tag(map.get(0), &format!("{path}.0"))?,
                 message_id: bstr(map.get(1), &format!("{path}.1"), 16, 16)?,
                 revision_frame: framed(map.get(2), &format!("{path}.2"))?,
                 content_digest: bstr(map.get(3), &format!("{path}.3"), 32, 32)?,
+                conversation_id: bstr(map.get(4), &format!("{path}.4"), 16, 16)?,
+                conversation_name,
                 unknown: map.unknown,
             })
         }

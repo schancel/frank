@@ -1782,6 +1782,7 @@ rej(
       [1, bytesOf(16, 7)],
       [2, textItem()],
       [3, bytesOf(32, 1)],
+      [4, bytesOf(16, 8)],
     ]),
   ),
   'semantic',
@@ -2843,16 +2844,24 @@ rej(
   ['T3'],
   TS,
 )
-const t6 = (id: Uint8Array, digest: Uint8Array) =>
-  fr(
-    6,
-    M([
-      [0, NET],
-      [1, id],
-      [2, rev8Frame()],
-      [3, digest],
-    ]),
-  )
+const t6 = (
+  id: Uint8Array,
+  digest: Uint8Array,
+  convId: Uint8Array = bytesOf(16, 8),
+  convName?: string,
+) => {
+  const entries: [number, any][] = [
+    [0, NET],
+    [1, id],
+    [2, rev8Frame()],
+    [3, digest],
+    [4, convId],
+  ]
+  if (convName !== undefined) {
+    entries.push([5, convName])
+  }
+  return fr(6, M(entries))
+}
 acc(
   'r2-uuid-16-bytes',
   'message_id of 16 bytes.',
@@ -2872,6 +2881,54 @@ rej(
   'r2-uuid-17-bytes',
   'message_id of 17 bytes.',
   t6(bytesOf(17, 7), bytesOf(32, 1)),
+  'schema',
+  '8.2',
+  ['T1a'],
+  TS,
+)
+acc(
+  'r2-conv-id-16-bytes',
+  'conversation_id of 16 bytes.',
+  t6(bytesOf(16, 7), bytesOf(32, 1), bytesOf(16, 8)),
+  ['T1a'],
+)
+rej(
+  'r2-conv-id-15-bytes',
+  'conversation_id of 15 bytes.',
+  t6(bytesOf(16, 7), bytesOf(32, 1), bytesOf(15, 8)),
+  'schema',
+  '8.2',
+  ['T1a'],
+  TS,
+)
+rej(
+  'r2-conv-id-17-bytes',
+  'conversation_id of 17 bytes.',
+  t6(bytesOf(16, 7), bytesOf(32, 1), bytesOf(17, 8)),
+  'schema',
+  '8.2',
+  ['T1a'],
+  TS,
+)
+acc(
+  'r2-conv-name-valid',
+  'conversation_name valid string.',
+  t6(bytesOf(16, 7), bytesOf(32, 1), bytesOf(16, 8), 'Project Discussion'),
+  ['T1a'],
+)
+rej(
+  'r2-conv-name-whitespace-only',
+  'conversation_name whitespace-only string.',
+  t6(bytesOf(16, 7), bytesOf(32, 1), bytesOf(16, 8), '   '),
+  'schema',
+  '8.2',
+  ['T1a'],
+  TS,
+)
+rej(
+  'r2-conv-name-forbidden-char',
+  'conversation_name with forbidden control character.',
+  t6(bytesOf(16, 7), bytesOf(32, 1), bytesOf(16, 8), 'hello\x07world'),
   'schema',
   '8.2',
   ['T1a'],
@@ -3073,6 +3130,7 @@ pair(
         [1, bytesOf(16, 7)],
         [2, child2(8, revision8([textItem()]), n)],
         [3, bytesOf(32, 1)],
+        [4, bytesOf(16, 8)],
       ]),
     ),
   {},

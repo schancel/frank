@@ -178,16 +178,24 @@ export function nestedItems(): Uint8Array[] {
 export const rev8Frame = (items = nestedItems()): Uint8Array =>
   fr(8, revision8(items))
 
-export function type6Frame(rev8 = rev8Frame()): Uint8Array {
-  return fr(
-    6,
-    M([
-      [0, NET],
-      [1, bytesOf(16, 7)],
-      [2, rev8],
-      [3, messageContentDigest(rev8)],
-    ]),
-  )
+export const DEFAULT_CONVERSATION_ID = bytesOf(16, 8)
+
+export function type6Frame(
+  rev8 = rev8Frame(),
+  conversationId = DEFAULT_CONVERSATION_ID,
+  conversationName?: string,
+): Uint8Array {
+  const entries: [number, any][] = [
+    [0, NET],
+    [1, bytesOf(16, 7)],
+    [2, rev8],
+    [3, messageContentDigest(rev8)],
+    [4, conversationId],
+  ]
+  if (conversationName !== undefined) {
+    entries.push([5, conversationName])
+  }
+  return fr(6, M(entries))
 }
 
 /**

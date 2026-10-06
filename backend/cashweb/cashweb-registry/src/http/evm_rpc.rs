@@ -2689,6 +2689,7 @@ mod tests {
                 evm_rpc: Some(runtime),
                 bitcoin_proxy: None,
                 solana_proxy: None,
+                spa_dir: None,
             },
         )
     }
@@ -3806,6 +3807,7 @@ mod tests {
                 evm_rpc: Some(Arc::new(runtime)),
                 bitcoin_proxy: None,
                 solana_proxy: None,
+                spa_dir: None,
             }
         }
 

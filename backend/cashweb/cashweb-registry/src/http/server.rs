@@ -47,7 +47,7 @@ use cashweb_http_utils::protobuf::Protobuf;
 use cashweb_payload::proto::SignedPayloadSet;
 use prost::Message;
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, collections::HashMap, str::FromStr, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, path::PathBuf, str::FromStr, sync::Arc};
 use thiserror::Error;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::Level;
@@ -174,6 +174,8 @@ pub struct RegistryServer {
     pub bitcoin_proxy: Option<Arc<BitcoinProxyRuntime>>,
     /// Optional Solana JSON-RPC runtime.
     pub solana_proxy: Option<Arc<SolanaProxyRuntime>>,
+    /// Optional directory to serve Single Page Application (SPA) static files from.
+    pub spa_dir: Option<PathBuf>,
 }
 
 /// Relevant parts of an HTTP request to put new address metadata.
@@ -580,6 +582,19 @@ impl RegistryServer {
         }
         if let Some(runtime) = directory {
             router = router.merge(crate::http::directory::router(runtime));
+        }
+        if let Some(spa_dir) = &self.spa_dir {
+            use tower_http::services::{ServeDir, ServeFile};
+            let index_file = spa_dir.join("index.html");
+            let serve_dir = ServeDir::new(spa_dir).fallback(ServeFile::new(index_file));
+            router = router.fallback(axum::routing::get_service(serve_dir).handle_error(
+                |err: std::io::Error| async move {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Unhandled static file error: {}", err),
+                    )
+                },
+            ));
         }
         router
             .layer(Extension(self))
@@ -1055,4 +1070,132 @@ async fn handle_put_message(
     });
 
     Ok(Protobuf(proto::PutSignedPayloadResponse { txid: tx_ids }))
+}
+
+#[cfg(test)]
+mod spa_tests {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use bitcoinsuite_core::Net;
+    use std::fs;
+    use std::sync::Arc;
+    use tempdir::TempDir;
+    use tower::ServiceExt;
+
+    use super::RegistryServer;
+    use crate::{
+        disabled_chain_adapter::DisabledChainAdapter, p2p::peers::Peers, registry::Registry,
+        store::db::Db,
+    };
+
+    fn test_server(spa_dir: Option<std::path::PathBuf>) -> (TempDir, RegistryServer) {
+        let tempdir = TempDir::new("cashweb-registry--spa-test").unwrap();
+        let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
+        let registry = Registry::new(db, Arc::new(DisabledChainAdapter), Net::Regtest);
+        let server = RegistryServer {
+            registry: Arc::new(registry),
+            peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
+            pop_gate: Arc::new(None),
+            curated_defaults: Arc::new(vec![]),
+            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_rpc: None,
+            bitcoin_proxy: None,
+            solana_proxy: None,
+            spa_dir,
+        };
+        (tempdir, server)
+    }
+
+    async fn response_bytes(response: axum::response::Response) -> Vec<u8> {
+        hyper::body::to_bytes(response.into_body())
+            .await
+            .unwrap()
+            .to_vec()
+    }
+
+    #[tokio::test]
+    async fn spa_disabled_returns_404_for_unknown_routes() {
+        let (_db_dir, server) = test_server(None);
+        let router = server.into_router();
+
+        let response = router
+            .clone()
+            .oneshot(Request::get("/chains").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = router
+            .oneshot(
+                Request::get("/some/client/route")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn spa_enabled_serves_static_assets_and_falls_back_to_index() {
+        let spa_dir = TempDir::new("signet-spa").unwrap();
+        let index_html = "<!DOCTYPE html><html><body><h1>Signet SPA</h1></body></html>";
+        fs::write(spa_dir.path().join("index.html"), index_html).unwrap();
+
+        let assets_dir = spa_dir.path().join("assets");
+        fs::create_dir_all(&assets_dir).unwrap();
+        fs::write(assets_dir.join("app.js"), "console.log('signet');").unwrap();
+
+        let (_db_dir, server) = test_server(Some(spa_dir.path().to_path_buf()));
+        let router = server.into_router();
+
+        // 1. API routes take precedence and are not shadowed
+        let response = router
+            .clone()
+            .oneshot(Request::get("/chains").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // 2. Root serves index.html
+        let response = router
+            .clone()
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_bytes(response).await;
+        assert_eq!(std::str::from_utf8(&body).unwrap(), index_html);
+
+        // 3. Static assets are served directly
+        let response = router
+            .clone()
+            .oneshot(Request::get("/assets/app.js").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_bytes(response).await;
+        assert_eq!(
+            std::str::from_utf8(&body).unwrap(),
+            "console.log('signet');"
+        );
+
+        // 4. Client-side routes (HTML5 history) fall back to index.html
+        for client_route in ["/chat", "/chat/0x1234", "/settings/keys", "/profile/edit"] {
+            let response = router
+                .clone()
+                .oneshot(Request::get(client_route).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "Route {client_route} should return 200"
+            );
+            let body = response_bytes(response).await;
+            assert_eq!(std::str::from_utf8(&body).unwrap(), index_html);
+        }
+    }
 }

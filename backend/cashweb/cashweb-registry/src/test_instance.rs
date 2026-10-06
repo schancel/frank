@@ -92,6 +92,7 @@ impl RegistryTestInstance {
             evm_rpc: None,
             bitcoin_proxy: None,
             solana_proxy: None,
+            spa_dir: None,
         };
 
         let router = server.into_router();

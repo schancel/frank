@@ -799,13 +799,8 @@ async fn admit_monad_message<T: JsonRpcTransport + Clone>(
                 .ok_or(ProcessMonadMessageError::RecipientProfileNotFound(
                     recipient,
                 ))?;
-            MonadOutboxPolicy::new(
-                recipient,
-                pubkey,
-                min_value_wei,
-                network_tag.to_vec(),
-            )
-            .map_err(|err| ProcessMonadMessageError::InvalidEnvelope(err.to_string()))?
+            MonadOutboxPolicy::new(recipient, pubkey, min_value_wei, network_tag.to_vec())
+                .map_err(|err| ProcessMonadMessageError::InvalidEnvelope(err.to_string()))?
         }
         MonadMessageOwnership::Conflict
         | MonadMessageOwnership::DeliveredExact(_)
@@ -3326,6 +3321,7 @@ mod tests {
             evm_rpc: None,
             bitcoin_proxy: None,
             solana_proxy: None,
+            spa_dir: None,
         }
     }
 

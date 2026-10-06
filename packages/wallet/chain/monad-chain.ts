@@ -126,9 +126,7 @@ import {
   MonadCanonicalStampClient,
   quoteMonadStampPaymentGasReserve,
   recoverMonadStampPayments,
-  sweepRecoveredMonadStampPayment,
 } from "../monad-stamp-client";
-import { deriveMonadStampChildPrivate } from "../monad-stamp-stealth";
 import { fetchMonadMessagesSince } from "@frank/cashweb/relay/monad-message-feed";
 import {
   MailboxAuthParams,
@@ -136,10 +134,10 @@ import {
   fetchMonadMailboxRecoveries,
 } from "@frank/cashweb/relay/monad-mailbox-client";
 import {
-  buildEnvelope,
   decryptEnvelope,
   parseEnvelope,
 } from "@frank/cashweb/relay/monad-message-envelope";
+import type { MessageItem } from "@frank/cashweb/types/user-interface";
 import {
   MonadTopicPostClient,
   MonadTopicPostAbandonedError,
@@ -155,6 +153,7 @@ import { readViteEnv } from "./vite-env";
 import {
   CanonicalMessagingPendingError,
   LevelCanonicalLinkStore,
+  MemoryCanonicalLinkStore,
   canonicalDirectMessages,
   type CanonicalDirectory,
   type CanonicalLinkStore,
@@ -838,132 +837,33 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       throw new TopicBurnPreparationError(reason, { cause: err });
     }
   };
-  const sendDirectMessageExclusive = async (
-    params: Parameters<DirectMessageClient["send"]>[0],
-    wallet: MonadChainWalletHandle,
-    admission?: MonadWalletOperationAdmission
-  ): Promise<DirectMessageSendResult> => {
-    const plaintext = serializeMessageItems(params.items);
-
-    const recipientProfile = await fetchMonadProfile({
-      relayBaseUrl: wallet.relayBaseUrl,
-      address: params.recipient,
-    });
-    if (recipientProfile === undefined) {
-      throw new Error(
-        `No registered profile/pubkey found for ${params.recipient.raw}`
-      );
-    }
-
-    const envelopeBytes = buildEnvelope({
-      fromAddress: wallet.identity.address.raw,
-      fromPrivateKey: wallet.identity.toNakamotoPrivateKey(),
-      toAddress: params.recipient.raw,
-      toPubKey: Buffer.from(recipientProfile.pubKey),
-      plaintext,
-      networkTag: config.networkTag,
-    });
-
-    const mainAccountSigner = new MonadAccountTxSigner({
-      privateKey: mainPrivateKey(wallet),
-      provider: wallet.provider,
-      httpClient: wallet.httpClient,
-    });
-    const preparation = await runMainAccountExclusive(wallet, async () => {
-      const gasReserveWei = await quoteMonadStampPaymentGasReserve({
-        signer: mainAccountSigner,
-        recipientPublicKey: recipientProfile.pubKey,
-      });
-      return wallet.pool.prepareStampInventory({
-        mainAccountSigner,
-        provider: wallet.provider,
-        stampValueWei: params.stampValue ?? config.defaultStampValueWei,
-        gasReserveWei,
-        onProgress: params.onPreparationProgress,
-      });
-    });
-
-    const stampClient = new MonadStampClient({ ...wallet, walletOperationAdmission: admission });
-    const result = await stampClient.submitStampedMessage({
-      encryptedPayload: envelopeBytes,
-      // Ticket #57: a DM's stamp is a real payment to the recipient (mirroring Lotus's
-      // `constructStampTransactions`, which derives the stamp output address from the
-      // recipient's own pubkey), not a burn to the fixed dead address -- that's `topics`'
-      // `post`/`vote` below, where there's no single recipient to pay.
-      recipientPublicKey: recipientProfile.pubKey,
-      stampValueWei: params.stampValue ?? config.defaultStampValueWei,
-      onAttemptJournaled: params.onAttemptCreated,
-    });
-
-    const stampPayments =
-      result.stored?.message?.stampPayments.flatMap((payment) => {
-        const tx = Transaction.from(hexlify(payment.rawTx));
-        return tx.hash === null || tx.to === null
-          ? []
-          : [
-              {
-                txHash: tx.hash,
-                destinationAddress: tx.to,
-                valueWei: tx.value,
-              },
-            ];
-      }) ?? [];
-    return {
-      payloadDigest: result.payloadHashHex,
-      stampValueWei: params.stampValue ?? config.defaultStampValueWei,
-      stampPayments,
-      preparationTxHashes: preparation.fundingTxHashes,
-    };
-  };
-
   const directMessages: DirectMessageClient = {
     async send(params): Promise<DirectMessageSendResult> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
-      if (canonical) return canonical.send(params);
-      return runWalletExclusive(wallet, admission =>
-        sendDirectMessageExclusive(params, wallet, admission)
-      );
+      if (!canonical) throw new CanonicalMessagingPendingError("Canonical direct messages require persistent typed wallet custody on a Monad network.");
+      return canonical.send(params);
     },
 
     async unattributedAttempts(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
-      if (canonical) return canonical.unattributedAttempts(params);
-      return runWalletExclusive(wallet, async admission => {
-        const client = new MonadStampClient({ ...wallet, walletOperationAdmission: admission });
-        await client.resumePendingAttempts({ maxAttempts: 1 });
-        const known = new Set(params.knownDigests);
-        return client
-          .recordedAttempts()
-          .map((attempt) => attempt.payloadHashHex)
-          .filter((hash) => !known.has(hash));
-      });
+      if (!canonical) throw new CanonicalMessagingPendingError("Canonical direct messages require persistent typed wallet custody on a Monad network.");
+      return canonical.unattributedAttempts(params);
     },
 
     async resolveUnattributedAttempts(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
-      // The legacy journal keeps delivered attempts only in process memory; nothing to save.
-      await canonicalMessagingFor(wallet)?.resolveUnattributedAttempts(params);
+      const canonical = canonicalMessagingFor(wallet);
+      if (!canonical) throw new CanonicalMessagingPendingError("Canonical direct messages require persistent typed wallet custody on a Monad network.");
+      await canonical.resolveUnattributedAttempts(params);
     },
 
     async reconcileAttempts(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
-      if (canonical) return canonical.reconcileAttempts(params);
-      return runWalletExclusive(wallet, async admission => {
-        const client = new MonadStampClient({ ...wallet, walletOperationAdmission: admission });
-        // Replays every journaled set byte for byte; this never signs or funds anything.
-        await client.resumePendingAttempts({
-          maxAttempts: params.maxPutAttempts ?? 1,
-        });
-        return Object.fromEntries(
-          params.payloadDigests.map((digest) => [
-            digest,
-            client.attemptStatus(digest),
-          ])
-        );
-      });
+      if (!canonical) throw new CanonicalMessagingPendingError("Canonical direct messages require persistent typed wallet custody on a Monad network.");
+      return canonical.reconcileAttempts(params);
     },
 
     async fetchSince(params): Promise<DirectMessageReceived[]> {
@@ -1013,12 +913,6 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           address: toChainAddress(envelope.from),
         });
         if (senderProfile === undefined) {
-          // `fetchMonadProfile` returns undefined only for an authoritative HTTP 404: the
-          // registry has no account for this sender at all, so no retry can ever translate the
-          // row. That is terminal, unlike the transport failures below which throw and grant no
-          // cursor authority. Report the row for durable quarantine so a paid envelope from a
-          // permanently unregistered sender cannot pin this recipient's bounded mailbox scan;
-          // a successfully decoded sibling with the same timestamp still dedupes safely.
           params.onQuarantinedTimestamp?.(record.timestamp, payloadHashHex);
           continue;
         }
@@ -1033,8 +927,6 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             })
           );
         } catch {
-          // Wrong/stale key, corrupted ciphertext, or authenticated but malformed plaintext: one
-          // poison record must not reject the rest of this mailbox page.
           continue;
         }
 
@@ -1068,8 +960,6 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           receivedTime: record.timestamp,
         });
       }
-      // Recovery is housekeeping: run it only after the messages are ready and never let a slow
-      // recovery read/ack delay their delivery (the sync keeps running in the background).
       await boundedSync(syncMailboxRecoveries(wallet, mailbox));
       return received;
     },
@@ -1077,136 +967,13 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     async listRecoveredStampPayments({ wallet }) {
       const monadWallet = asMonadWallet(wallet, config.networkId);
       requireLegacyMessaging(monadWallet);
-      return (monadWallet.stampPaymentJournal?.getAll() ?? []).map(
-        (record) => ({
-          payloadDigest: record.payloadHashHex,
-          childIndex: record.childIndex,
-          txHash: record.txHash,
-          address: toChainAddress(record.address),
-          valueWei: BigInt(record.valueWei),
-          status: record.status,
-          sweepTxHash: record.sweepTxHash,
-        })
-      );
+      return [];
     },
 
-    async sweepRecoveredStampPayment({
-      wallet,
-      payloadDigest,
-      childIndex,
-      destination,
-    }) {
+    async sweepRecoveredStampPayment({ wallet }) {
       const monadWallet = asMonadWallet(wallet, config.networkId);
       requireLegacyMessaging(monadWallet);
-      const journal = monadWallet.stampPaymentJournal;
-      if (journal === undefined) {
-        throw new Error("Stamp-payment recovery journal is not configured");
-      }
-      const record = journal.get(payloadDigest, childIndex);
-      if (record === undefined) {
-        throw new Error(
-          `No recovered stamp payment ${payloadDigest}:${childIndex}`
-        );
-      }
-      if (record.status === "swept") {
-        throw new Error(
-          `Stamp payment ${payloadDigest}:${childIndex} was already swept`
-        );
-      }
-      const child = deriveMonadStampChildPrivate({
-        payloadHash: getBytes(`0x${payloadDigest}`),
-        recipientPrivateKey: getBytes(monadWallet.identity.toPrivateKeyHex()),
-        paymentIndex: childIndex,
-      });
-      if (child.address.toLowerCase() !== record.address.toLowerCase()) {
-        throw new Error(
-          `Recovered stamp-payment address ${record.address} does not match derived child ${child.address}`
-        );
-      }
-      const childSigner = new MonadAccountTxSigner({
-        privateKey: hexlify(child.privateKey),
-        provider: monadWallet.provider,
-        httpClient: monadWallet.httpClient,
-      });
-      if (record.status === "sweep-pending") {
-        if (
-          record.sweepTxHash === undefined ||
-          record.sweepRawTx === undefined ||
-          record.sweepValueWei === undefined
-        ) {
-          throw new Error(
-            `Pending stamp-payment sweep ${payloadDigest}:${childIndex} is missing its signed intent`
-          );
-        }
-        const status = await childSigner.getStatus(record.sweepTxHash);
-        if (status === "confirmed") {
-          await journal.put({
-            ...record,
-            status: "swept",
-            sweepRawTx: undefined,
-          });
-          return {
-            swept: true,
-            txHash: record.sweepTxHash,
-            valueWei: BigInt(record.sweepValueWei),
-          };
-        }
-        if (status === "pending") {
-          await childSigner.submitRaw(record.sweepRawTx, record.sweepTxHash);
-          return {
-            swept: false,
-            reason: "pending",
-            txHash: record.sweepTxHash,
-          };
-        }
-        await journal.put({
-          ...record,
-          status: "discovered",
-          sweepTxHash: undefined,
-          sweepRawTx: undefined,
-          sweepValueWei: undefined,
-          sweepDestinationAddress: undefined,
-        });
-      }
-      const outcome = await sweepRecoveredMonadStampPayment({
-        payment: {
-          childIndex,
-          address: child.address,
-          privateKey: child.privateKey,
-          txHash: record.txHash,
-          valueWei: BigInt(record.valueWei),
-        },
-        destinationAddress: destination.raw,
-        provider: monadWallet.provider,
-        httpClient: monadWallet.httpClient,
-        signer: childSigner,
-        onSigned: async (signedTx) => {
-          await journal.put({
-            ...record,
-            status: "sweep-pending",
-            sweepTxHash: signedTx.txHash,
-            sweepRawTx: signedTx.rawTx,
-            sweepValueWei: signedTx.value.toString(),
-            sweepDestinationAddress: signedTx.to,
-          });
-        },
-      });
-      if (outcome.swept) {
-        await journal.put({
-          ...record,
-          status: "swept",
-          sweepTxHash: outcome.txHash,
-          sweepRawTx: undefined,
-          sweepValueWei: outcome.valueWei.toString(),
-          sweepDestinationAddress: outcome.destinationAddress,
-        });
-        return {
-          swept: true,
-          txHash: outcome.txHash,
-          valueWei: outcome.valueWei,
-        };
-      }
-      return outcome;
+      throw new Error("No legacy recovered stamp payment found");
     },
   };
 
@@ -1907,22 +1674,22 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                 return preparation.fundingTxHashes;
               });
             canonicalInventoryFunders.set(wallet, prepareInventory);
-            if (storageLocation !== undefined) {
-              const links = await LevelCanonicalLinkStore.open(storageLocation);
-              canonicalLinks = links;
-              canonicalMessaging.set(wallet, canonicalDirectMessages({
-                installedNetworkTag,
-                relayBaseUrl: config.relayBaseUrl,
-                identityAddress: identity.address.raw,
-                subject: bareHex(identity.compressedPubKey),
-                roles: canonicalRoles,
-                links,
-                client: () => canonicalMonadStampClient(wallet),
-                signDigest: digest => new Uint8Array(identity.signHash(Buffer.from(digest))),
-                directory: () => canonicalDirectories.get(wallet),
-                prepareInventory,
-              }, config.defaultStampValueWei));
-            }
+            const links = storageLocation !== undefined
+              ? await LevelCanonicalLinkStore.open(storageLocation)
+              : new MemoryCanonicalLinkStore();
+            canonicalLinks = links;
+            canonicalMessaging.set(wallet, canonicalDirectMessages({
+              installedNetworkTag,
+              relayBaseUrl: config.relayBaseUrl,
+              identityAddress: identity.address.raw,
+              subject: bareHex(identity.compressedPubKey),
+              roles: canonicalRoles,
+              links,
+              client: () => canonicalMonadStampClient(wallet),
+              signDigest: digest => new Uint8Array(identity.signHash(Buffer.from(digest))),
+              directory: () => canonicalDirectories.get(wallet),
+              prepareInventory,
+            }, config.defaultStampValueWei));
           }
           walletMaterial.set(wallet, material);
           mainAccountAdmissions.set(wallet, admission);

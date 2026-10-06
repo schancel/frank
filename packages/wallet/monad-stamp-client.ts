@@ -118,9 +118,11 @@ import {
 import axios from 'axios'
 
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
-import __pb_monad_message_pb from '@frank/cashweb/relay/monad_message_pb'
-const { MonadStampedMessage, StoredMonadMessage } = __pb_monad_message_pb
-const { MonadStampPayment } = __pb_monad_message_pb
+import {
+  MonadStampedMessage,
+  StoredMonadMessage,
+  MonadStampPayment,
+} from '@frank/cashweb/relay/monad-mailbox-compat'
 import { MonadSubAccountPool } from './monad-account-pool'
 import {
   AccountLeaseHandle,

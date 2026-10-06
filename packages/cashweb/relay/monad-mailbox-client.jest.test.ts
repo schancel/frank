@@ -48,8 +48,10 @@ import {
   MockMailboxRelay,
   MockStoredMessage,
 } from './monad-mailbox-mock-relay.testutil'
-import __pb_monad_message_pb from './monad_message_pb'
-const { MonadStampedMessage, MonadStampPayment } = __pb_monad_message_pb
+import {
+  MonadStampedMessage,
+  MonadStampPayment,
+} from './monad-mailbox-compat'
 
 const BASE = 'https://relay.example.com'
 const RUST = {

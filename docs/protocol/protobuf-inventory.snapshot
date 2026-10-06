@@ -2558,111 +2558,6 @@ descriptor: |
     syntax: "proto3"
   }
 ---
-source: packages/cashweb/relay/proto/monad_message.proto
-owner: CashWeb relay client
-family: Monad stamped direct message
-disposition: retained constrained legacy reader
-explicit_source_group: monad-message-mirror
-descriptor: |
-  file {
-    name: "packages/cashweb/relay/proto/monad_message.proto"
-    package: "cashweb.registry"
-    message_type {
-      name: "MonadStampPayment"
-      field {
-        name: "child_index"
-        number: 1
-        label: LABEL_OPTIONAL
-        type: TYPE_UINT32
-        json_name: "childIndex"
-      }
-      field {
-        name: "raw_tx"
-        number: 2
-        label: LABEL_OPTIONAL
-        type: TYPE_BYTES
-        json_name: "rawTx"
-      }
-    }
-    message_type {
-      name: "MonadStampedMessage"
-      field {
-        name: "encrypted_payload"
-        number: 2
-        label: LABEL_OPTIONAL
-        type: TYPE_BYTES
-        json_name: "encryptedPayload"
-      }
-      field {
-        name: "payload_hash"
-        number: 3
-        label: LABEL_OPTIONAL
-        type: TYPE_BYTES
-        json_name: "payloadHash"
-      }
-      field {
-        name: "stamp_payments"
-        number: 4
-        label: LABEL_REPEATED
-        type: TYPE_MESSAGE
-        type_name: ".cashweb.registry.MonadStampPayment"
-        json_name: "stampPayments"
-      }
-      reserved_range {
-        start: 1
-        end: 2
-      }
-      reserved_name: "raw_burn_tx"
-    }
-    message_type {
-      name: "StoredMonadMessage"
-      field {
-        name: "message"
-        number: 1
-        label: LABEL_OPTIONAL
-        type: TYPE_MESSAGE
-        type_name: ".cashweb.registry.MonadStampedMessage"
-        json_name: "message"
-      }
-      field {
-        name: "timestamp"
-        number: 4
-        label: LABEL_OPTIONAL
-        type: TYPE_INT64
-        json_name: "timestamp"
-      }
-      field {
-        name: "network_tag"
-        number: 5
-        label: LABEL_OPTIONAL
-        type: TYPE_BYTES
-        json_name: "networkTag"
-      }
-      reserved_range {
-        start: 2
-        end: 3
-      }
-      reserved_range {
-        start: 3
-        end: 4
-      }
-      reserved_name: "sender_address"
-      reserved_name: "tx_hash"
-    }
-    message_type {
-      name: "StoredMonadMessages"
-      field {
-        name: "messages"
-        number: 1
-        label: LABEL_REPEATED
-        type: TYPE_MESSAGE
-        type_name: ".cashweb.registry.StoredMonadMessage"
-        json_name: "messages"
-      }
-    }
-    syntax: "proto3"
-  }
----
 source: packages/cashweb/relay/proto/p2pkh.proto
 owner: CashWeb relay client
 family: legacy P2PKH transport
@@ -3120,20 +3015,6 @@ descriptor: |
         type_name: ".stealth.StealthOutpoints"
         json_name: "outpoints"
       }
-      field {
-        name: "chain_id"
-        number: 3
-        label: LABEL_OPTIONAL
-        type: TYPE_STRING
-        json_name: "chainId"
-      }
-      field {
-        name: "transactions"
-        number: 4
-        label: LABEL_REPEATED
-        type: TYPE_BYTES
-        json_name: "transactions"
-      }
     }
     syntax: "proto3"
   }
@@ -3292,18 +3173,6 @@ generator_script: packages/cashweb/relay/generate_protobufs.sh
 historical_generator_versions: unknown
 sha256: 7fa66c949c986dda0612d9f2a66fb8ef45cb4075541e6e207d8820f2861cc99f
 ---
-generated_binding: packages/cashweb/relay/monad_message_pb.d.ts
-source_proto: packages/cashweb/relay/proto/monad_message.proto
-generator_script: packages/cashweb/relay/generate_protobufs.sh
-historical_generator_versions: unknown
-sha256: e0873d07104f0de9dd13f8c71b745750a68cd53266d1c2dfeda3606571e96110
----
-generated_binding: packages/cashweb/relay/monad_message_pb.js
-source_proto: packages/cashweb/relay/proto/monad_message.proto
-generator_script: packages/cashweb/relay/generate_protobufs.sh
-historical_generator_versions: unknown
-sha256: 11996e78620d483a24d40c91e8ecf02290e9d8c9bbbf9aae8ea76ca5db1d5893
----
 generated_binding: packages/cashweb/relay/p2pkh_pb.d.ts
 source_proto: packages/cashweb/relay/proto/p2pkh.proto
 generator_script: packages/cashweb/relay/generate_protobufs.sh
@@ -3332,13 +3201,13 @@ generated_binding: packages/cashweb/relay/stealth_pb.d.ts
 source_proto: packages/cashweb/relay/proto/stealth.proto
 generator_script: packages/cashweb/relay/generate_protobufs.sh
 historical_generator_versions: unknown
-sha256: c16d4c71db7bbf7b4f76f18cf54316f523fd7d53560cffec90256518bda418ff
+sha256: 2cb01634fea861edae9fbc847e51e9f654e9018e6a55d2c9dce61c17367c0686
 ---
 generated_binding: packages/cashweb/relay/stealth_pb.js
 source_proto: packages/cashweb/relay/proto/stealth.proto
 generator_script: packages/cashweb/relay/generate_protobufs.sh
 historical_generator_versions: unknown
-sha256: b5cc6e956ff0b39e8c99e822d205dcd8cee599e35ab233c47503c760d72b6458
+sha256: e4958ae8349e74e0d34f817801e9141c03ea9b9b2cc351bb004a55e3252dd23b
 ---
 generated_binding: packages/cashweb/signed_payload/payload_pb.d.ts
 source_proto: packages/cashweb/signed_payload/proto/payload.proto

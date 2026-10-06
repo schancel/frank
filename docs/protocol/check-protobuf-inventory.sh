@@ -50,8 +50,6 @@ classify() {
       owner="CashWeb registry client" family="Lotus registry and Monad profile transport" disposition="retained reader plus transport-only responses" group="lotus-registry-client" ;;
     packages/cashweb/relay/proto/filters.proto)
       owner="CashWeb relay client" family="legacy inbox filters" disposition="retained constrained legacy reader" group="relay-filters" ;;
-    packages/cashweb/relay/proto/monad_message.proto)
-      owner="CashWeb relay client" family="Monad stamped direct message" disposition="retained constrained legacy reader" group="monad-message-mirror" ;;
     packages/cashweb/relay/proto/p2pkh.proto)
       owner="CashWeb relay client" family="legacy P2PKH transport" disposition="transport-only" group="relay-p2pkh" ;;
     packages/cashweb/relay/proto/relay.proto)
@@ -72,7 +70,6 @@ binding_source() {
     packages/cashweb/registry/broadcast_pb.*) binding_proto="packages/cashweb/registry/proto/broadcast.proto" binding_generator="packages/cashweb/registry/generate_protobufs.sh" ;;
     packages/cashweb/registry/metadata_pb.*) binding_proto="packages/cashweb/registry/proto/metadata.proto" binding_generator="packages/cashweb/registry/generate_protobufs.sh" ;;
     packages/cashweb/relay/filters_pb.*) binding_proto="packages/cashweb/relay/proto/filters.proto" binding_generator="packages/cashweb/relay/generate_protobufs.sh" ;;
-    packages/cashweb/relay/monad_message_pb.*) binding_proto="packages/cashweb/relay/proto/monad_message.proto" binding_generator="packages/cashweb/relay/generate_protobufs.sh" ;;
     packages/cashweb/relay/p2pkh_pb.*) binding_proto="packages/cashweb/relay/proto/p2pkh.proto" binding_generator="packages/cashweb/relay/generate_protobufs.sh" ;;
     packages/cashweb/relay/relay_pb.*) binding_proto="packages/cashweb/relay/proto/relay.proto" binding_generator="packages/cashweb/relay/generate_protobufs.sh" ;;
     packages/cashweb/relay/stealth_pb.*) binding_proto="packages/cashweb/relay/proto/stealth.proto" binding_generator="packages/cashweb/relay/generate_protobufs.sh" ;;

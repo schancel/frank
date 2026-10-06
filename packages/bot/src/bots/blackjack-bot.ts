@@ -24,6 +24,8 @@ import {
   sha256Hex,
   type Card,
 } from "@frank/wallet/message-item-plugins/blackjack/deck";
+import { CANONICAL_EVM_CONTRACTS } from "@frank/wallet/chain/chains-registry";
+import { encodeStateChannelCloseCall } from "@frank/wallet/game-escrow";
 import { generateAvatarPng } from "../../bot-directory";
 import { welcomeItems } from "../../blackjack-greeter";
 
@@ -39,6 +41,17 @@ export interface ActiveGameRecord {
   dealerCards: Card[];
   status: "active" | "resolved";
   outcome?: BlackjackOutcome;
+  channelId?: string;
+  sig0?: string;
+  sig1?: string;
+  seq?: number;
+}
+
+function normalizeEvmAddress(addr: string): string {
+  if (/^0x[0-9a-fA-F]{40}$/.test(addr)) return addr;
+  const clean = addr.startsWith("0x") ? addr.slice(2) : addr;
+  const hex = Buffer.from(clean, "utf8").toString("hex");
+  return "0x" + hex.padStart(40, "0").slice(-40);
 }
 
 async function getStoredGame(
@@ -71,6 +84,62 @@ export class BlackjackDealerBot implements FrankBotDefinition {
 
   private readonly minWagerWei: bigint;
   private readonly maxWagerWei: bigint;
+
+  private async settleChannelOrDirect(
+    gameId: string,
+    playerAddress: string,
+    wagerWei: bigint,
+    outcome: BlackjackOutcome,
+    record?: any,
+    ctx?: BotContext
+  ): Promise<string | undefined> {
+    const channelId = record?.channelId ?? record?.escrowChannelId;
+    if (!channelId || !ctx?.sendTransaction) return undefined;
+
+    const dealerAddress = ctx.address
+      ? normalizeEvmAddress(ctx.address)
+      : normalizeEvmAddress("0x0000000000000000000000000000000000000001");
+    const normPlayer = normalizeEvmAddress(playerAddress);
+    const totalPot = wagerWei * 2n;
+
+    let balances: [bigint, bigint];
+    let payout0: string = dealerAddress;
+    let payout1: string = normPlayer;
+
+    if (outcome === "dealer_win") {
+      balances = [totalPot, 0n];
+    } else if (outcome === "player_win" || outcome === "player_blackjack") {
+      const payoutWei =
+        outcome === "player_blackjack" ? (wagerWei * 5n) / 2n : totalPot;
+      balances = [0n, payoutWei];
+    } else {
+      balances = [wagerWei, wagerWei];
+    }
+
+    try {
+      const callData = encodeStateChannelCloseCall({
+        channelId,
+        seq: record?.seq ?? 1,
+        balances,
+        payout0,
+        payout1,
+        sig0: record?.sig0 ?? "0x",
+        sig1: record?.sig1 ?? "0x",
+      });
+      const stateChannelAddress = CANONICAL_EVM_CONTRACTS.stateChannel!;
+      const res = await ctx.sendTransaction({
+        to: stateChannelAddress,
+        data: callData,
+      });
+      return res.txHash;
+    } catch (err) {
+      console.error(
+        `[blackjack] StateChannel settlement error for game ${gameId}:`,
+        err
+      );
+      return undefined;
+    }
+  }
 
   constructor(options?: { minWagerWei?: bigint; maxWagerWei?: bigint }) {
     this.minWagerWei = options?.minWagerWei ?? BLACKJACK_DEFAULT_MIN_WAGER_WEI;
@@ -253,30 +322,44 @@ export class BlackjackDealerBot implements FrankBotDefinition {
         dealerCards: initial.dealerCards,
         status: "resolved",
         outcome,
+        channelId: moveItem.channelId ?? moveItem.escrowChannelId,
+        sig0: moveItem.sig0,
+        sig1: moveItem.sig1,
+        seq: moveItem.seq,
       });
 
       // If player won or pushed, execute payout via BotContext
-      let payoutReceiptTx: string | undefined;
-      if (outcome === "player_blackjack") {
-        const payoutWei = (declaredWagerWei * 5n) / 2n; // 2.5x (3:2 payout)
-        try {
-          const res = await ctx.sendTransfer({
-            to: msgCtx.peerAddress,
-            valueWei: payoutWei,
-          });
-          payoutReceiptTx = res.txHash;
-        } catch (err) {
-          console.error("[blackjack] payout error on natural blackjack:", err);
-        }
-      } else if (outcome === "push") {
-        try {
-          const res = await ctx.sendTransfer({
-            to: msgCtx.peerAddress,
-            valueWei: declaredWagerWei,
-          });
-          payoutReceiptTx = res.txHash;
-        } catch (err) {
-          console.error("[blackjack] payout refund error on push:", err);
+      let payoutReceiptTx = await this.settleChannelOrDirect(
+        gameId,
+        msgCtx.peerAddress,
+        declaredWagerWei,
+        outcome,
+        moveItem,
+        ctx
+      );
+
+      if (!payoutReceiptTx) {
+        if (outcome === "player_blackjack") {
+          const payoutWei = (declaredWagerWei * 5n) / 2n; // 2.5x (3:2 payout)
+          try {
+            const res = await ctx.sendTransfer({
+              to: msgCtx.peerAddress,
+              valueWei: payoutWei,
+            });
+            payoutReceiptTx = res.txHash;
+          } catch (err) {
+            console.error("[blackjack] payout error on natural blackjack:", err);
+          }
+        } else if (outcome === "push") {
+          try {
+            const res = await ctx.sendTransfer({
+              to: msgCtx.peerAddress,
+              valueWei: declaredWagerWei,
+            });
+            payoutReceiptTx = res.txHash;
+          } catch (err) {
+            console.error("[blackjack] payout refund error on push:", err);
+          }
         }
       }
 
@@ -308,6 +391,10 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       playerCards: initial.playerCards,
       dealerCards: initial.dealerCards,
       status: "active",
+      channelId: moveItem.channelId ?? moveItem.escrowChannelId,
+      sig0: moveItem.sig0,
+      sig1: moveItem.sig1,
+      seq: moveItem.seq,
     };
 
     await putStoredGame(ctx.state, `game:${gameId}`, record);
@@ -346,6 +433,15 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       await putStoredGame(ctx.state, `game:${game.gameId}`, game);
       await ctx.state.del(`active:${msgCtx.peerAddress}`);
 
+      const payoutReceiptTx = await this.settleChannelOrDirect(
+        game.gameId,
+        msgCtx.peerAddress,
+        BigInt(game.wagerWei),
+        "dealer_win",
+        game,
+        ctx
+      );
+
       await msgCtx.reply([
         {
           type: "blackjack-move",
@@ -356,6 +452,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
           serverSeed: game.serverSeed,
           serverSeedHash: game.serverCommit,
           outcome: "dealer_win",
+          payoutTxHash: payoutReceiptTx,
           text: `Bust! You drew ${cardLabel(nextCard)} (Score: ${
             playerVal.total
           }). Dealer wins!`,
@@ -416,29 +513,38 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     await ctx.state.del(`active:${msgCtx.peerAddress}`);
 
     const wagerWei = BigInt(game.wagerWei);
-    let payoutReceiptTx: string | undefined;
+    let payoutReceiptTx = await this.settleChannelOrDirect(
+      game.gameId,
+      msgCtx.peerAddress,
+      wagerWei,
+      outcome,
+      game,
+      ctx
+    );
 
-    if (outcome === "player_win" || outcome === "player_blackjack") {
-      const multiplier = outcome === "player_blackjack" ? 2.5 : 2.0;
-      const payoutWei = (wagerWei * BigInt(Math.round(multiplier * 10))) / 10n;
-      try {
-        const res = await ctx.sendTransfer({
-          to: msgCtx.peerAddress,
-          valueWei: payoutWei,
-        });
-        payoutReceiptTx = res.txHash;
-      } catch (err) {
-        console.error("[blackjack] stand payout failed:", err);
-      }
-    } else if (outcome === "push") {
-      try {
-        const res = await ctx.sendTransfer({
-          to: msgCtx.peerAddress,
-          valueWei: wagerWei,
-        });
-        payoutReceiptTx = res.txHash;
-      } catch (err) {
-        console.error("[blackjack] push refund failed:", err);
+    if (!payoutReceiptTx) {
+      if (outcome === "player_win" || outcome === "player_blackjack") {
+        const multiplier = outcome === "player_blackjack" ? 2.5 : 2.0;
+        const payoutWei = (wagerWei * BigInt(Math.round(multiplier * 10))) / 10n;
+        try {
+          const res = await ctx.sendTransfer({
+            to: msgCtx.peerAddress,
+            valueWei: payoutWei,
+          });
+          payoutReceiptTx = res.txHash;
+        } catch (err) {
+          console.error("[blackjack] stand payout failed:", err);
+        }
+      } else if (outcome === "push") {
+        try {
+          const res = await ctx.sendTransfer({
+            to: msgCtx.peerAddress,
+            valueWei: wagerWei,
+          });
+          payoutReceiptTx = res.txHash;
+        } catch (err) {
+          console.error("[blackjack] push refund failed:", err);
+        }
       }
     }
 

@@ -316,7 +316,7 @@ export class FrankBotHost {
         this.registrationListeners.add(cb);
       },
 
-      sendTransfer: async ({ to, valueWei }) => {
+      sendTransaction: async ({ to, data, valueWei = 0n }) => {
         if (
           definition.id === "faucet" &&
           this.fundingWallet &&
@@ -325,6 +325,7 @@ export class FrankBotHost {
           return this.nonceSequencer.withNonce(async (nonce) => {
             const tx = await this.fundingWallet!.sendTransaction({
               to,
+              data: data ?? "0x",
               value: valueWei,
               nonce,
             });
@@ -339,7 +340,7 @@ export class FrankBotHost {
         const botBalance = await this.provider.getBalance(botAddress);
         const feeData = await this.provider.getFeeData();
         const gasPrice = feeData.gasPrice ?? 1_000_000_000n;
-        const gasLimit = 21_000n;
+        const gasLimit = data && data !== "0x" ? 250_000n : 21_000n;
         const needed = valueWei + gasLimit * gasPrice;
 
         if (botBalance < needed && this.fundingWallet && this.nonceSequencer) {
@@ -356,9 +357,14 @@ export class FrankBotHost {
 
         const tx = await botWallet.sendTransaction({
           to,
+          data: data ?? "0x",
           value: valueWei,
         });
         return { txHash: tx.hash };
+      },
+
+      sendTransfer: async ({ to, valueWei }) => {
+        return context.sendTransaction({ to, data: "0x", valueWei });
       },
 
       buildAndSignTransfer: async ({ to, valueWei }) => {

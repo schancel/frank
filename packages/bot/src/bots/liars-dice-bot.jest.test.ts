@@ -105,4 +105,63 @@ describe("Liar's Dice Bot Table Coordinator", () => {
     expect(item.action).toBe('showdown')
     expect(item.challengeResult).toBeDefined()
   })
+
+  it('broadcasts GenericHTLC.batchDistribute on game resolution when sendTransaction is available', async () => {
+    const mockSendTx = jest.fn(async () => ({ txHash: '0xdicetx777' }))
+    mockBotCtx.sendTransaction = mockSendTx
+
+    // 1. Create table
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: '/create' }],
+      reply: jest.fn(),
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    // 2. Bob joins
+    await bot.onMessage({
+      senderAddress: '0xBob',
+      items: [{ type: 'text', text: '/join' }],
+      reply: jest.fn(),
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    // Set both players' dice counts to 1 so any challenge eliminates the loser immediately
+    const tableId = (bot as any).latestTableId
+    const game = (bot as any).tables.get(tableId)
+    game.players[0].diceCount = 1
+    game.players[1].diceCount = 1
+
+    // 3. Start game
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: '/start' }],
+      reply: jest.fn(),
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    // 4. Alice bids 1 two (Alice acts first)
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: '/bid 1 2' }],
+      reply: jest.fn(),
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    // 5. Bob calls Liar!
+    const replyLiar = jest.fn()
+    await bot.onMessage({
+      senderAddress: '0xBob',
+      items: [{ type: 'text', text: '/liar' }],
+      reply: replyLiar,
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    expect(game.status).toBe('resolved')
+    expect(mockSendTx).toHaveBeenCalledTimes(1)
+    expect(mockSendTx.mock.calls[0][0].to).toBe('0x391a080Bd6FF21CB4598adF063Dc94018CD186E5')
+
+    const msg = replyLiar.mock.calls[0][0][0].text
+    expect(msg).toContain('GAME OVER')
+    expect(msg).toContain('On-Chain Settlement')
+    expect(msg).toContain('0xdicetx777')
+
+    const item = replyLiar.mock.calls[0][0][1]
+    expect(item.txHash).toBe('0xdicetx777')
+  })
 })

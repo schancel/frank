@@ -8,6 +8,9 @@ import type {
 } from "@frank/bot-framework";
 import type { MessageItem, LiarsDiceItem } from "@frank/cashweb/types/messages";
 import { formatMon, parseMon } from "@frank/wallet/monad-amount";
+import { keccak256, toUtf8Bytes } from "ethers";
+import { CANONICAL_EVM_CONTRACTS } from "@frank/wallet/chain/chains-registry";
+import { encodeBatchDistributeCall } from "@frank/wallet/game-escrow";
 import {
   createLiarsDiceGame,
   joinGame,
@@ -22,6 +25,20 @@ import {
 } from "@frank/wallet/message-item-plugins/liars-dice";
 import { generateAvatarPng } from "../../bot-directory";
 
+export interface TableEscrowRecord {
+  preimage: string;
+  hashLock: string;
+  playerLocks: Map<string, string>;
+  settlementTxHash?: string;
+}
+
+function normalizeEvmAddress(addr: string): string {
+  if (/^0x[0-9a-fA-F]{40}$/.test(addr)) return addr;
+  const clean = addr.startsWith("0x") ? addr.slice(2) : addr;
+  const hex = Buffer.from(clean, "utf8").toString("hex");
+  return "0x" + hex.padStart(40, "0").slice(-40);
+}
+
 export class LiarsDiceBot implements FrankBotDefinition {
   readonly id = "liars-dice";
   readonly label = "Liar's Dice (Perudo)";
@@ -29,9 +46,47 @@ export class LiarsDiceBot implements FrankBotDefinition {
     process.env.LIARS_DICE_BOT_IDENTITY_JSON ?? "/tmp/liars-dice-bot-identity.json";
 
   private readonly tables = new Map<string, LiarsDiceGameState>();
+  private readonly tableEscrows = new Map<string, TableEscrowRecord>();
   private readonly conversationTables = new Map<string, string>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private latestTableId?: string;
+
+  private async settleGameEscrow(
+    game: LiarsDiceGameState,
+    ctx?: BotContext
+  ): Promise<string | undefined> {
+    const escrow = this.tableEscrows.get(game.tableId);
+    if (!escrow || !game.winnerAddress || !ctx?.sendTransaction) return undefined;
+
+    const lockIds = Array.from(escrow.playerLocks.values());
+    if (lockIds.length === 0) return undefined;
+
+    try {
+      const callData = encodeBatchDistributeCall({
+        lockIds,
+        payouts: [
+          {
+            recipient: normalizeEvmAddress(game.winnerAddress),
+            amount: game.potWei,
+          },
+        ],
+        preimage: escrow.preimage,
+      });
+      const htlcAddress = CANONICAL_EVM_CONTRACTS.htlc!;
+      const res = await ctx.sendTransaction({
+        to: htlcAddress,
+        data: callData,
+      });
+      escrow.settlementTxHash = res.txHash;
+      return res.txHash;
+    } catch (err) {
+      console.error(
+        `[liars-dice] Escrow settlement broadcast error for ${game.tableId}:`,
+        err
+      );
+      return undefined;
+    }
+  }
 
   getProfile(): BotProfile {
     return {
@@ -139,6 +194,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
         : undefined,
       winnerAddress: game.winnerAddress,
       potWei: game.potWei.toString(),
+      txHash: this.tableEscrows.get(game.tableId)?.settlementTxHash,
     };
   }
 
@@ -217,6 +273,13 @@ export class LiarsDiceBot implements FrankBotDefinition {
 
         // Host automatically joins
         joinGame(game, sender);
+
+        const preimage = "0x" + randomBytes(32).toString("hex");
+        const hashLock = keccak256(preimage);
+        const playerLocks = new Map<string, string>();
+        playerLocks.set(sender.toLowerCase(), keccak256(toUtf8Bytes(`liars-dice:${tableId}:${sender.toLowerCase()}`)));
+        this.tableEscrows.set(tableId, { preimage, hashLock, playerLocks });
+
         this.tables.set(tableId, game);
         this.conversationTables.set(conversationId, tableId);
         this.latestTableId = tableId;
@@ -248,6 +311,10 @@ export class LiarsDiceBot implements FrankBotDefinition {
         }
 
         this.conversationTables.set(conversationId, tableId);
+        const escrow = this.tableEscrows.get(tableId);
+        if (escrow) {
+          escrow.playerLocks.set(sender.toLowerCase(), keccak256(toUtf8Bytes(`liars-dice:${tableId}:${sender.toLowerCase()}`)));
+        }
 
         const item = this.buildLiarsDiceItem(game, "join", sender);
         await msgCtx.reply([
@@ -340,7 +407,6 @@ export class LiarsDiceBot implements FrankBotDefinition {
 
       this.clearTableTimer(tableId);
       const r = res.resolution!;
-      const item = this.buildLiarsDiceItem(game, "showdown", sender);
 
       let msg = `🚨 **SHOWDOWN!** ${sender.slice(0, 8)} called Liar on ${r.bid.quantity}x [${r.bid.face}]!\n` +
         `Actual count: **${r.totalMatchingDice}** (${r.wildAcesCount} wild Aces).\n` +
@@ -353,8 +419,13 @@ export class LiarsDiceBot implements FrankBotDefinition {
 
       if (game.status === "resolved") {
         msg += `\n\n🏆 **GAME OVER!** Winner: ${game.winnerAddress?.slice(0, 8)}! Pot: ${formatMon(game.potWei)} MON.`;
+        const txHash = await this.settleGameEscrow(game, ctx);
+        if (txHash) {
+          msg += `\n⛓️ **On-Chain Settlement:** \`${txHash}\` (GenericHTLC.batchDistribute)`;
+        }
       }
 
+      const item = this.buildLiarsDiceItem(game, "showdown", sender);
       await msgCtx.reply([{ type: "text", text: msg }, item]);
       return;
     }
@@ -392,6 +463,10 @@ export class LiarsDiceBot implements FrankBotDefinition {
     if (item.action === "join") {
       const res = joinGame(game, sender);
       if (res.success) {
+        const escrow = this.tableEscrows.get(item.tableId);
+        if (escrow) {
+          escrow.playerLocks.set(sender.toLowerCase(), keccak256(toUtf8Bytes(`liars-dice:${item.tableId}:${sender.toLowerCase()}`)));
+        }
         const out = this.buildLiarsDiceItem(game, "join", sender);
         await msgCtx.reply([out]);
       }
@@ -412,6 +487,9 @@ export class LiarsDiceBot implements FrankBotDefinition {
       const res = applyChallenge(game, sender);
       if (res.success) {
         this.clearTableTimer(game.tableId);
+        if (game.status === "resolved") {
+          await this.settleGameEscrow(game, ctx);
+        }
         const out = this.buildLiarsDiceItem(game, "showdown", sender);
         await msgCtx.reply([out]);
       }

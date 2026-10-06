@@ -25,12 +25,14 @@
 
 <script lang="ts">
 import { useChatStore } from 'src/stores/chats'
+import { sweepMessageFundsOnDelete } from 'src/utils/sweep-on-delete'
 import { defineComponent } from 'vue'
 
 export default defineComponent({
   setup() {
     const chatStore = useChatStore()
     return {
+      chatStore,
       deleteMessage: chatStore.deleteMessage,
     }
   },
@@ -50,22 +52,45 @@ export default defineComponent({
   },
   methods: {
     async deleteMessageBoth() {
-      // TODO: Move this into wallet API
-      // TODO: More private
-      // Delete message from relay server
+      // 1. Sweep funds of message into ephemeral change accounts before deleting
+      const message = this.chatStore.messages[this.payloadDigest]
+      if (message) {
+        try {
+          await sweepMessageFundsOnDelete({
+            message,
+            relayClient: this.$relayClient,
+          })
+        } catch (sweepErr) {
+          console.error(
+            'Failed to sweep message funds prior to delete:',
+            sweepErr,
+          )
+        }
+      }
+
+      // 2. Delete message from relay server if relay client is available
       try {
-        await this.$relayClient.deleteMessage(this.payloadDigest)
-        // Delete message from relay server
+        if (
+          this.$relayClient &&
+          typeof this.$relayClient.deleteMessage === 'function'
+        ) {
+          await this.$relayClient.deleteMessage(this.payloadDigest)
+        }
+      } catch (err: any) {
+        console.error('Failed to delete message on relay:', err)
+        if (err.response) {
+          console.error(err.response)
+        }
+      }
+
+      // 3. Delete message locally
+      try {
         await this.deleteMessage({
           address: this.address,
           payloadDigest: this.payloadDigest,
         })
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        console.error(err)
-        if (err.response) {
-          console.error(err.response)
-        }
+        console.error('Failed to delete message locally:', err)
       }
     },
   },

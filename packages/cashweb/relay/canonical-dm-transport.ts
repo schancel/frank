@@ -799,7 +799,13 @@ export const defaultCanonicalFetch: CanonicalFetch = (url, input) => {
         'Bounded streaming transport unavailable',
       ),
     )
-  return fetch(url, input)
+  return fetch(url, {
+    ...input,
+    headers: {
+      'ngrok-skip-browser-warning': '1',
+      ...input.headers,
+    },
+  })
 }
 export function installedCanonicalOrigin(origin: string): string {
   const parsed = new URL(origin)

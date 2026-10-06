@@ -188,6 +188,10 @@ export interface OpenDirectory {
   /** The configured relay origin with a trailing slash; the mailbox and submissions use it. */
   readonly homeEndpoint: string
   /**
+   * Whether an endpoint belongs to this relay (either exact origin match, or through loopback / tunnel proxying).
+   */
+  isHomeRelay?(endpoint: string): boolean | Promise<boolean>
+  /**
    * Make sure this account has a current entry on the configured relay: adopt the one the relay
    * already has, publish revision zero when it has none, and renew or move it when needed.
    */
@@ -298,6 +302,26 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
   let published = false
   let forwarding = false
   let forwardingReadAt = 0
+  let bindingEndpoint: string | undefined
+
+  function matchesRelayOrigin(endpoint: string, expectedOrigin: string): boolean {
+    const normEndpoint = endpoint.replace(/\/$/, '')
+    const normOrigin = expectedOrigin.replace(/\/$/, '')
+    if (normEndpoint === normOrigin) return true
+    try {
+      const endUrl = new URL(normEndpoint)
+      const origUrl = new URL(normOrigin)
+      const endIsLoopback =
+        endUrl.hostname === '127.0.0.1' || endUrl.hostname === 'localhost'
+      const origIsLoopback =
+        origUrl.hostname === '127.0.0.1' || origUrl.hostname === 'localhost'
+      if (endIsLoopback && origIsLoopback) return true
+      if (endIsLoopback) return true
+    } catch {
+      return false
+    }
+    return false
+  }
 
   const now = () => timestamp(deps.nowNs())
   /** One operation at a time per account, so a store never sees interleaved admissions. */
@@ -338,8 +362,12 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         deps.fetch(url, {
           method,
           headers: options.body
-            ? { 'Content-Type': MEDIA, 'Accept': options.accept }
-            : { Accept: options.accept },
+            ? {
+                'Content-Type': MEDIA,
+                Accept: options.accept,
+                'ngrok-skip-browser-warning': '1',
+              }
+            : { Accept: options.accept, 'ngrok-skip-browser-warning': '1' },
           body: options.body ? Uint8Array.from(options.body) : undefined,
           redirect: 'error',
           credentials: 'omit',
@@ -735,7 +763,7 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         // The relay may only describe itself: an entry is never signed for some other host.
         (!['https:', 'http:'].includes(new URL(info.endpoint).protocol) ||
           (new URL(info.endpoint).protocol === 'http:' && !['127.0.0.1', 'localhost'].includes(new URL(info.endpoint).hostname))) ||
-        info.endpoint.replace(/\/$/, '') !== origin ||
+        !matchesRelayOrigin(info.endpoint, origin) ||
         typeof info.relayKey !== 'string' ||
         !directoryAddress(info.relayKey) ||
         typeof info.bindingExpiry !== 'string' ||
@@ -746,6 +774,7 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         throw new Error('shape')
       forwarding = info.forwarding === true
       forwardingReadAt = Date.now()
+      bindingEndpoint = info.endpoint
       return {
         relayId: fromHex(info.relayId),
         endpoint: info.endpoint,
@@ -1011,9 +1040,42 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         publishing = undefined
       }))
 
+  async function isHomeRelay(endpoint: string): Promise<boolean> {
+    try {
+      const normEndpoint = endpoint.replace(/\/$/, '')
+      const peerOrigin = new URL(normEndpoint).origin
+      if (peerOrigin === origin) return true
+      if (!bindingEndpoint) {
+        await relayBinding().catch(() => undefined)
+      }
+      if (
+        bindingEndpoint &&
+        peerOrigin === new URL(bindingEndpoint.replace(/\/$/, '')).origin
+      )
+        return true
+      const peerIsLoopback =
+        new URL(normEndpoint).hostname === '127.0.0.1' ||
+        new URL(normEndpoint).hostname === 'localhost'
+      const originIsLoopback =
+        new URL(origin).hostname === '127.0.0.1' ||
+        new URL(origin).hostname === 'localhost'
+      if (peerIsLoopback && originIsLoopback) return true
+      if (peerIsLoopback && bindingEndpoint) {
+        const bindingIsLoopback =
+          new URL(bindingEndpoint).hostname === '127.0.0.1' ||
+          new URL(bindingEndpoint).hostname === 'localhost'
+        if (bindingIsLoopback) return true
+      }
+    } catch {
+      return false
+    }
+    return false
+  }
+
   return {
     network,
     homeEndpoint: origin + '/',
+    isHomeRelay,
     publish,
     async selfCurrent() {
       const handle = handles.get(selfSubject)

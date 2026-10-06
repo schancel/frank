@@ -98,7 +98,14 @@ function productionDeps(): MessagingDeps {
     chainId: BigInt(config.chainId),
     directory: {
       nowNs: () => BigInt(Date.now()) * 1_000_000n,
-      fetch: ((url, init) => fetch(url, init as RequestInit)) as DirectoryFetch,
+      fetch: ((url, init) =>
+        fetch(url, {
+          ...init,
+          headers: {
+            'ngrok-skip-browser-warning': '1',
+            ...((init as RequestInit | undefined)?.headers ?? {}),
+          },
+        } as RequestInit)) as DirectoryFetch,
       openStore: options => openBrowserDirectoryStore(options),
       discardUnenrolled: discardUnenrolledDirectoryStore,
       checkpoints: {

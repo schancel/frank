@@ -262,19 +262,31 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
         readEnv("MONAD_RELAY_BASE_URL") ??
         readEnv("E2E_DEMO_RELAY_URL");
       if (typeof window !== "undefined" && window.location && window.location.origin) {
-        const isRemote =
-          window.location.hostname !== "127.0.0.1" &&
-          window.location.hostname !== "localhost";
-        if (isRemote) {
-          if (!configured) return window.location.origin;
-          try {
-            const parsed = new URL(configured);
-            if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
-              return window.location.origin;
+        const isLoopback =
+          window.location.hostname === "127.0.0.1" ||
+          window.location.hostname === "localhost";
+        if (isLoopback) {
+          if (configured) {
+            try {
+              const parsed = new URL(configured);
+              if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
+                return configured;
+              }
+            } catch {
+              // ignore
             }
-          } catch {
-            // keep configured
           }
+          const port = readEnv("FRANK_DEMO_RELAY_PORT") ?? "8098";
+          return `http://127.0.0.1:${port}`;
+        }
+        if (!configured) return window.location.origin;
+        try {
+          const parsed = new URL(configured);
+          if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
+            return window.location.origin;
+          }
+        } catch {
+          // keep configured
         }
       }
       return configured ?? "http://127.0.0.1:8098";

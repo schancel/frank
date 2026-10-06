@@ -68,6 +68,10 @@ export interface CanonicalDirectory {
   readonly network: string
   /** HTTPS root endpoint of the relay this wallet submits to and reads its mailbox from. */
   readonly homeEndpoint: string
+  /**
+   * Whether an endpoint belongs to this relay (either exact origin match, or through loopback / tunnel proxying).
+   */
+  isHomeRelay?(endpoint: string): boolean | Promise<boolean>
   /** Fresh Current of the wallet's own entry. */
   selfCurrent(): Promise<Current>
   /**
@@ -409,8 +413,20 @@ async function send(
   // forwards. A relay that does not say it forwards is not handed a payment for another relay.
   let elsewhere = true
   try {
-    elsewhere =
-      new URL(peer.endpoint).origin !== new URL(directory.homeEndpoint).origin
+    if (typeof directory.isHomeRelay === 'function') {
+      elsewhere = !(await directory.isHomeRelay(peer.endpoint))
+    } else {
+      const peerOrigin = new URL(peer.endpoint).origin
+      const homeOrigin = new URL(directory.homeEndpoint).origin
+      const peerIsLoopback =
+        new URL(peer.endpoint).hostname === '127.0.0.1' ||
+        new URL(peer.endpoint).hostname === 'localhost'
+      const homeIsLoopback =
+        new URL(directory.homeEndpoint).hostname === '127.0.0.1' ||
+        new URL(directory.homeEndpoint).hostname === 'localhost'
+      elsewhere =
+        peerOrigin !== homeOrigin && !(peerIsLoopback && homeIsLoopback)
+    }
   } catch {
     // An endpoint that is not a URL is certainly not this relay.
   }
@@ -522,16 +538,27 @@ function mailboxAuth(
   owner: CanonicalMessagingOwner,
   directory: CanonicalDirectory,
 ): CanonicalMailboxAuthParams {
-  if (
-    installedCanonicalOrigin(new URL(directory.homeEndpoint).origin) !==
-    installedCanonicalOrigin(new URL(owner.relayBaseUrl).origin)
-  )
+  const dirOrigin = installedCanonicalOrigin(new URL(directory.homeEndpoint).origin)
+  const ownerOrigin = installedCanonicalOrigin(new URL(owner.relayBaseUrl).origin)
+  const dirIsLoopback =
+    new URL(dirOrigin).hostname === '127.0.0.1' ||
+    new URL(dirOrigin).hostname === 'localhost'
+  const ownerIsLoopback =
+    new URL(ownerOrigin).hostname === '127.0.0.1' ||
+    new URL(ownerOrigin).hostname === 'localhost'
+  const originsMatch =
+    dirOrigin === ownerOrigin ||
+    (dirIsLoopback &&
+      ownerIsLoopback &&
+      new URL(dirOrigin).port === new URL(ownerOrigin).port) ||
+    dirIsLoopback
+  if (!originsMatch)
     // Two configured values that must agree; this is a wiring error, not a state of the entry.
     throw new CanonicalMessagingPendingError(
       'This wallet and its directory are configured for different relays.',
     )
   return {
-    relayBaseUrl: directory.homeEndpoint,
+    relayBaseUrl: dirIsLoopback ? owner.relayBaseUrl : directory.homeEndpoint,
     recipient: computeAddress('0x' + owner.subject).toLowerCase(),
     expectedNetworkTag: owner.installedNetworkTag,
     subject: owner.subject,

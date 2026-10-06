@@ -32,6 +32,7 @@ export interface SignetConfig {
   chainId: number
   stampBurnAddress: string
   activeIdentity?: string
+  gatewayUrl?: string
 }
 
 export interface EncryptedIdentityStore {
@@ -109,6 +110,10 @@ export function getDefaultConfig(): SignetConfig {
       process.env.MONAD_STAMP_BURN_ADDRESS ??
       '0x000000000000000000000000000000000000dEaD',
     activeIdentity: undefined,
+    gatewayUrl:
+      process.env.FRANK_MAIL_GATEWAY_URL ??
+      process.env.FRANK_GATEWAY_URL ??
+      undefined,
   }
 }
 
@@ -129,6 +134,7 @@ export function loadConfig(dataDir: string): SignetConfig {
       chainId: typeof raw.chainId === 'number' ? raw.chainId : defaults.chainId,
       stampBurnAddress: raw.stampBurnAddress ?? defaults.stampBurnAddress,
       activeIdentity: raw.activeIdentity ?? defaults.activeIdentity,
+      gatewayUrl: raw.gatewayUrl ?? defaults.gatewayUrl,
     }
   } catch {
     return defaults

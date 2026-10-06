@@ -48,12 +48,17 @@ export class EmailGatewayDaemon {
     this.config = config;
     this.blobStore = options?.blobStore ?? createBlobStore(config);
     this.ledger = new CreditLedger(options?.dbPath ?? './gateway.sqlite3', this.blobStore);
+    this.outboundDelivery = new OutboundEmailDelivery({
+      gatewayDomain: config.gatewayDomain,
+      ledger: this.ledger,
+    });
     this.checkoutServer = new CheckoutServer({
       port: config.httpPort,
       ledger: this.ledger,
       stampProvider,
       stripeWebhookSecret: config.stripeWebhookSecret,
       paypalWebhookId: config.paypalWebhookId,
+      outboundDelivery: this.outboundDelivery,
     });
     this.inboundHandler = new InboundEmailHandler({
       gatewayDomain: config.gatewayDomain,
@@ -65,10 +70,6 @@ export class EmailGatewayDaemon {
     this.smtpListener = new SmtpListener({
       gatewayDomain: config.gatewayDomain,
       handler: this.inboundHandler,
-    });
-    this.outboundDelivery = new OutboundEmailDelivery({
-      gatewayDomain: config.gatewayDomain,
-      ledger: this.ledger,
     });
     this.mxTransport = new MxDirectTransport({
       heloDomain: config.gatewayDomain,

@@ -20,6 +20,7 @@ import {
   outputResult,
   parseMonOrWei,
 } from '../util'
+import { mailSendCommand } from './mail'
 
 export interface SendCommandOptions {
   stamp?: string
@@ -27,6 +28,12 @@ export interface SendCommandOptions {
   dataDir?: string
   password?: string
   json?: boolean
+  subject?: string
+  conversationId?: string
+  inReplyTo?: string
+  messageId?: string
+  frankMessageId?: string
+  gateway?: string
 }
 
 export async function sendCommand(
@@ -53,11 +60,15 @@ export async function sendCommand(
       options.password,
     )
 
-    // Resolve recipient: either 0x address or compressed pubkey hex
+    // Resolve recipient: either email, 0x address, or compressed pubkey hex
     let toAddress: string
     let toPubKey: Buffer
 
     const trimmedRecipient = recipientInput.trim()
+    if (trimmedRecipient.includes('@')) {
+      return await mailSendCommand(trimmedRecipient, message, options)
+    }
+
     if (/^0x[0-9a-fA-F]{40}$/.test(trimmedRecipient)) {
       toAddress = getAddress(trimmedRecipient)
       const profile = await fetchMonadProfile({

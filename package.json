@@ -25,7 +25,7 @@
     "build:contracts": "yarn --cwd packages/contracts build",
     "test:contracts": "yarn --cwd packages/contracts test",
     "deploy:contracts": "yarn --cwd packages/contracts deploy",
-    "test:integration": "node --import tsx test/integration/system-harness.ts",
+    "test:integration": "TSX_TSCONFIG_PATH=packages/cli/tsconfig.json node --import tsx test/integration/system-harness.ts",
     "docs:dev": "yarn workspace @frank/docs dev",
     "docs:build": "yarn workspace @frank/docs build",
     "docs:preview": "yarn workspace @frank/docs preview"

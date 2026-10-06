@@ -3,6 +3,7 @@ import { Command } from 'commander'
 import { balanceCommand, sweepCommand } from './commands/balance'
 import { createIdentityCommand, showIdentityCommand } from './commands/identity'
 import { inboxCommand, listenCommand } from './commands/inbox'
+import { mailSendCommand } from './commands/mail'
 import { sendCommand } from './commands/send'
 import { topicPostCommand, topicReadCommand } from './commands/topic'
 
@@ -77,9 +78,34 @@ export function createProgram(): Command {
       'Stamp payment amount in wei or MON (default: 0.01 MON)',
     )
     .option('-r, --relay <url>', 'Override relay base URL')
+    .option('--subject <subject>', 'Email subject line (when sending to email recipient)')
+    .option('-c, --conversation <id>', 'Frank conversation ID (when sending to email recipient)')
+    .option('--in-reply-to <id>', 'In-Reply-To Frank message ID (when sending to email recipient)')
+    .option('-m, --message-id <id>', 'Frank message ID (when sending to email recipient)')
+    .option('-g, --gateway <url>', 'Override mail gateway HTTP URL (when sending to email recipient)')
     .option('--password <password>', 'Password if keystore is encrypted')
     .action(async (recipient, message, opts, cmd) => {
       await sendCommand(recipient, message, mergeOptions(opts, cmd))
+    })
+
+  // --- Mail commands ---
+  const mailCmd = program
+    .command('mail')
+    .description(
+      'Email Gateway interaction: send and reply to external emails via Frank gateway',
+    )
+
+  mailCmd
+    .command('send <recipientEmail> <message>')
+    .description('Send an outbound email to an external recipient via the mail gateway')
+    .option('-s, --subject <subject>', 'Email subject line')
+    .option('-c, --conversation <id>', 'Frank conversation ID for thread preservation')
+    .option('--in-reply-to <id>', 'In-Reply-To Frank message ID')
+    .option('-m, --message-id <id>', 'Frank message ID for outbound message tracking')
+    .option('-g, --gateway <url>', 'Override mail gateway HTTP URL')
+    .option('--password <password>', 'Password if keystore is encrypted')
+    .action(async (recipientEmail, message, opts, cmd) => {
+      await mailSendCommand(recipientEmail, message, mergeOptions(opts, cmd))
     })
 
   // --- Inbox & Listen commands ---

@@ -1952,6 +1952,10 @@ export class MonadCanonicalStampClient {
           [4, paymentCommitment(digest, i)],
         ])
       })
+      const inspected = inspectCanonicalPreparedEnvelope(
+        intent.prepared.payload,
+        intent.prepared.context,
+      )
       const delivery = encodeFrame(
         { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
         cborMap([
@@ -1960,18 +1964,20 @@ export class MonadCanonicalStampClient {
             1,
             cborMap([
               [0, 1],
-              [
-                1,
-                inspectCanonicalPreparedEnvelope(
-                  intent.prepared.payload,
-                  intent.prepared.context,
-                ).stampKey.keyBytes,
-              ],
+              [1, inspected.stampKey.keyBytes],
             ]),
           ],
           [2, intent.prepared.payload],
           [3, digest],
           [4, payments],
+          [
+            5,
+            cborMap([
+              [0, inspected.payload.recipient.keyType],
+              [1, inspected.payload.recipient.keyBytes],
+            ]),
+          ],
+          [6, inspected.payload.dleqProof],
         ]),
       )
       const request = freezeCanonicalRequest(

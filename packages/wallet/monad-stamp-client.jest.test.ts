@@ -1600,14 +1600,17 @@ import {
   directMessageText,
 } from '@frank/cashweb/relay/canonical-dm'
 import {
+  addressFromCompressedPubkey,
+  cborMap,
   decodeCanonical,
+  defaultContext,
+  directorySignatureDigest,
   encodeCanonical,
   encodeFrame,
-  directorySignatureDigest,
   paymentCommitment,
   recipientPayloadDigest,
-  cborMap,
   toHex,
+  validateFrame,
 } from '@frank/codec'
 import type { PublicRevisionZeroInput } from './monad-wallet-handle'
 
@@ -2159,6 +2162,52 @@ describe('canonical durable consumer barriers', () => {
       expect(f.client.terminalOutcomes()).toHaveLength(1)
       await f.client.acknowledgeWorkflow(link.attemptRef, link.consumerId)
       expect(f.client.wasAcknowledged(link.attemptRef)).toBe(true)
+    })
+  }, 20000)
+  it('generates Type 1 delivery frames carrying co-located recipient P (field 5) and DLEQ proof (field 6) (#964)', async () => {
+    await withCanonicalConsumer(async f => {
+      let link!: CanonicalWorkflowLink
+      await f.prepare(1, async durable => {
+        link = durable
+      })
+      const attempt = await f.client.finishIntent(
+        f.client.reconcileWorkflowLinks([link])[0].eligibility!,
+      )
+      const delivery = attempt.request.parts.delivery
+      const parsed = validateFrame(delivery, defaultContext())
+      expect(parsed.kind).toBe('parsed')
+      if (parsed.kind !== 'parsed' || parsed.typed?.type !== 1) {
+        throw new Error('Expected parsed type 1 delivery frame')
+      }
+      // Inspect the prepared envelope to get the expected recipient and DLEQ proof
+      const envelope = inspectCanonicalPreparedEnvelope(
+        link.prepared.payload,
+        link.prepared.context,
+      )
+
+      // Field 5: recipient identity P (keyType 1, 33 bytes)
+      expect(parsed.typed.recipient).toBeDefined()
+      expect(parsed.typed.recipient).toEqual(envelope.payload.recipient)
+      expect(parsed.typed.recipient?.keyType).toBe(1)
+      expect(parsed.typed.recipient?.keyBytes.length).toBe(33)
+
+      // Field 6: Chaum-Pedersen DLEQ proof (64 bytes)
+      expect(parsed.typed.dleqProof).toBeDefined()
+      expect(parsed.typed.dleqProof).toEqual(envelope.payload.dleqProof)
+      expect(parsed.typed.dleqProof?.length).toBe(64)
+
+      // Raw CBOR frame payload has keys 5 and 6
+      const payloadMap = parsed.payload as Map<bigint, unknown>
+      expect(payloadMap.has(5n)).toBe(true)
+      expect(payloadMap.has(6n)).toBe(true)
+
+      // Request identity recipient derives from co-located recipient P directly
+      expect(attempt.request.identity.recipient).toBe(
+        '0x' +
+          toHex(
+            addressFromCompressedPubkey(envelope.payload.recipient.keyBytes),
+          ),
+      )
     })
   }, 20000)
   it('sends nothing to the relay when the journal refuses replay admission', async () => {

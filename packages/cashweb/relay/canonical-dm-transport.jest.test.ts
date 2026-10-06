@@ -1,12 +1,16 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
+  addressFromCompressedPubkey,
   cborMap,
+  decodeCanonical,
+  defaultContext,
   encodeCanonical,
   encodeFrame,
   fromHex,
+  toHex,
   validateFrame,
-  defaultContext,
+  type AccountRef,
 } from '@frank/codec'
 import {
   CANONICAL_DM_MAX_BYTES,
@@ -15,6 +19,7 @@ import {
   decodeCanonicalTransactions,
   equalCanonicalRequests,
   freezeCanonicalRequest,
+  inspectCanonicalPair,
   parseCanonicalJSON,
   parseCanonicalMultipart,
   readCanonicalResponse,
@@ -456,5 +461,126 @@ describe('bounded streamed responses', () => {
       }),
     ).rejects.toMatchObject({ disposition: 'uncertain' })
     expect(fetch).not.toHaveBeenCalled()
+  })
+})
+
+describe('Type 1 co-located recipient P and DLEQ proof (#964)', () => {
+  function fixtureWithColocated(options: {
+    corruptDeliveryRecipient?: boolean
+    corruptDeliveryDleq?: boolean
+    corruptContextRecipient?: boolean
+    corruptContextDleq?: boolean
+  } = {}): {
+    parts: CanonicalExactParts
+    recipient: AccountRef
+    dleqProof: Uint8Array
+  } {
+    const base = canonicalTransportFixture()
+    const parsed = validateFrame(base.delivery, defaultContext())
+    if (parsed.kind !== 'parsed' || !(parsed.payload instanceof Map))
+      throw new Error('Fixture frame')
+    const payloadTyped = parsed.typed.payloadFrame.typed
+    const recipient = payloadTyped.recipient
+    const dleqProof = payloadTyped.dleqProof
+
+    const recipientBytes = Uint8Array.from(recipient.keyBytes)
+    if (options.corruptDeliveryRecipient) {
+      recipientBytes[1] ^= 1
+    }
+    const dleqBytes = Uint8Array.from(dleqProof)
+    if (options.corruptDeliveryDleq) {
+      // Modify last byte while keeping scalar valid in 1..n-1
+      dleqBytes[63] = dleqBytes[63] === 1 ? 2 : 1
+    }
+
+    const payloadMap = new Map(parsed.payload)
+    payloadMap.set(
+      5n,
+      cborMap([
+        [0, recipient.keyType],
+        [1, recipientBytes],
+      ]),
+    )
+    payloadMap.set(6n, dleqBytes)
+
+    const delivery = encodeFrame(
+      { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+      payloadMap,
+    )
+
+    let context = base.context
+    if (options.corruptContextRecipient) {
+      const decoded = decodeCanonical(context) as Map<bigint, unknown>
+      const recMap = decoded.get(3n) as Map<bigint, unknown>
+      const badRecKey = Uint8Array.from(recMap.get(1n) as Uint8Array)
+      badRecKey[1] ^= 1
+      const newRecMap = new Map(recMap)
+      newRecMap.set(1n, badRecKey)
+      const newDecoded = new Map(decoded)
+      newDecoded.set(3n, newRecMap)
+      context = encodeCanonical(newDecoded)
+    }
+    if (options.corruptContextDleq) {
+      const decoded = decodeCanonical(context) as Map<bigint, unknown>
+      const badDleq = Uint8Array.from(decoded.get(11n) as Uint8Array)
+      badDleq[63] = badDleq[63] === 1 ? 2 : 1
+      const newDecoded = new Map(decoded)
+      newDecoded.set(11n, badDleq)
+      context = encodeCanonical(newDecoded)
+    }
+
+    return {
+      parts: {
+        ...base,
+        delivery,
+        context,
+      },
+      recipient,
+      dleqProof,
+    }
+  }
+
+  test('handles legacy Type 1 frames without fields 5 and 6', () => {
+    const parts = canonicalTransportFixture()
+    const pair = inspectCanonicalPair(parts)
+    expect(pair.network).toBe('monad-testnet')
+    expect(pair.recipient).toMatch(/^0x[a-f0-9]{40}$/)
+  })
+
+  test('handles Type 1 frames with co-located fields 5 and 6', () => {
+    const { parts, recipient } = fixtureWithColocated()
+    const pair = inspectCanonicalPair(parts)
+    expect(pair.network).toBe('monad-testnet')
+    expect(pair.recipient).toBe(
+      '0x' + toHex(addressFromCompressedPubkey(recipient.keyBytes)),
+    )
+  })
+
+  test('derives recipient address directly from delivery.recipient', () => {
+    const { parts, recipient } = fixtureWithColocated()
+    const pair = inspectCanonicalPair(parts)
+    const expectedAddress =
+      '0x' + toHex(addressFromCompressedPubkey(recipient.keyBytes))
+    expect(pair.recipient).toBe(expectedAddress)
+  })
+
+  test('rejects when delivery recipient mismatches payload recipient', () => {
+    const { parts } = fixtureWithColocated({ corruptDeliveryRecipient: true })
+    expect(() => inspectCanonicalPair(parts)).toThrow(/Delivery\/payload mismatch/)
+  })
+
+  test('rejects when delivery DLEQ proof mismatches payload DLEQ proof', () => {
+    const { parts } = fixtureWithColocated({ corruptDeliveryDleq: true })
+    expect(() => inspectCanonicalPair(parts)).toThrow(/Delivery\/payload mismatch/)
+  })
+
+  test('rejects when delivery recipient mismatches context recipient', () => {
+    const { parts } = fixtureWithColocated({ corruptContextRecipient: true })
+    expect(() => inspectCanonicalPair(parts)).toThrow(/Delivery\/context mismatch/)
+  })
+
+  test('rejects when delivery DLEQ proof mismatches context DLEQ proof', () => {
+    const { parts } = fixtureWithColocated({ corruptContextDleq: true })
+    expect(() => inspectCanonicalPair(parts)).toThrow(/Delivery\/context mismatch/)
   })
 })

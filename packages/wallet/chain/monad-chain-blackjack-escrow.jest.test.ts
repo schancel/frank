@@ -19,6 +19,10 @@ import {
   type Seat,
 } from './canonical-two-wallets.testutil'
 import {
+  deriveEscrowStealthPayout,
+  registerEscrowStealthPayout,
+} from '../game-escrow'
+import {
   BlackjackEscrowParty,
   computeEscrowFunding,
   computeSettlementPayout,
@@ -314,5 +318,141 @@ describe('Blackjack with 2-party threshold ECDSA escrow settlement', () => {
     expect(txHash).toMatch(/^0x[a-fA-F0-9]{64}$/)
     expect(mockBalances.get(escrowAddress.toLowerCase())).toBe(0n)
     expect(mockBalances.get(dealerReceiveAddress.toLowerCase())).toBe(dealerBalBefore + funding.totalEscrowWei)
+  })
+
+  it('settles a player win directly to a one-time DKSAP stealth address, indexed in player stealthKeyring', async () => {
+    // Player win: player 19 vs dealer 17
+    mockScriptedDeck = deckStarting(9, 35, 22, 6)
+
+    const gameId = (++games).toString(16).padStart(32, '0')
+    const playerSeat = alice
+    const dealerSeat = bob
+
+    const playerEscrow = new BlackjackEscrowParty({
+      role: 'initiator',
+      gameId,
+      partyName: 'alice-player',
+      peerName: 'bob-dealer',
+    })
+    const dealerEscrow = new BlackjackEscrowParty({
+      role: 'responder',
+      gameId,
+      partyName: 'bob-dealer',
+      peerName: 'alice-player',
+    })
+
+    let keygenMsg = playerEscrow.startKeygen()
+    dealerEscrow.startKeygen()
+    let toDealer = true
+    while (keygenMsg !== null) {
+      keygenMsg = toDealer
+        ? dealerEscrow.stepKeygen(keygenMsg)
+        : playerEscrow.stepKeygen(keygenMsg)
+      toDealer = !toDealer
+    }
+
+    const escrowAddress = playerEscrow.getEscrowAddress()
+    const funding = computeEscrowFunding(WAGER)
+    mockBalances.set(escrowAddress.toLowerCase(), funding.totalEscrowWei)
+
+    // Play blackjack game
+    const dealerSeed = freshSeed()
+    dealerSeat.seeds.set(gameId, dealerSeed)
+    const challenge = buildChallenge({
+      gameId,
+      role: 'dealer',
+      maxBetWei: WAGER * 2n,
+      spendableWei: await dealerSeat.balance(),
+      reserveWei: RESERVE,
+      seed: dealerSeed,
+    })
+    if ('error' in challenge) throw new Error(challenge.error)
+    await dealerSeat.send(challenge.item)
+    await playerSeat.poll()
+
+    const playerSeed = freshSeed()
+    playerSeat.seeds.set(gameId, playerSeed)
+    await playerSeat.send(buildBet(playerSeat.hand(gameId), playerSeed)!, STAMP)
+    await dealerSeat.poll()
+
+    const dealStep = dealerStep(dealerSeat.hand(gameId), dealerSeed)!
+    await dealerSeat.send(dealStep.item, STAMP)
+    await playerSeat.poll()
+
+    const standStep = playerStep(playerSeat.hand(gameId), 'stand', playerSeed)!
+    await playerSeat.send(standStep, STAMP)
+    await dealerSeat.poll()
+
+    const revealStep = dealerStep(dealerSeat.hand(gameId), dealerSeed)!
+    await dealerSeat.send(revealStep.item, STAMP)
+    await playerSeat.poll()
+
+    const finalState = playerSeat.hand(gameId)!
+    expect(finalState.outcome).toBe('player_win')
+
+    const payout = computeSettlementPayout({
+      outcome: finalState.outcome!,
+      wagerWei: WAGER,
+      dealerCoverWei: funding.dealerCoverWei,
+    })
+
+    // Winner derives fresh DKSAP stealth address for payout
+    const stealthPayout = deriveEscrowStealthPayout({
+      recipientSpendPubKey: playerSeat.wallet.identity.compressedPubKey,
+    })
+
+    // Both parties construct settlement transaction targeting the one-time stealth address
+    playerEscrow.createSettlementTx({
+      to: stealthPayout.stealthAddress,
+      valueWei: payout.playerPayoutWei,
+      nonce: 0,
+    })
+    dealerEscrow.createSettlementTx({
+      to: stealthPayout.stealthAddress,
+      valueWei: payout.playerPayoutWei,
+      nonce: 0,
+    })
+
+    let signMsg = playerEscrow.startSettlementSigning()
+    dealerEscrow.startSettlementSigning()
+    toDealer = true
+    while (signMsg !== null) {
+      signMsg = toDealer
+        ? dealerEscrow.stepSettlementSigning(signMsg)
+        : playerEscrow.stepSettlementSigning(signMsg)
+      toDealer = !toDealer
+    }
+
+    const rawSignedTx = playerEscrow.getSignedRawTx()
+    const txHash = await playerSeat.wallet.httpClient.submitRawTransaction(rawSignedTx)
+
+    expect(txHash).toMatch(/^0x[a-fA-F0-9]{64}$/)
+    expect(mockBalances.get(stealthPayout.stealthAddress.toLowerCase())).toBe(payout.playerPayoutWei)
+
+    // Player registers/indexes the stealth payout into stealthKeyring
+    const stealthRecord = await registerEscrowStealthPayout({
+      wallet: playerSeat.wallet,
+      ephemeralPubKey: stealthPayout.ephemeralPubKey,
+      stealthAddress: stealthPayout.stealthAddress,
+      payoutWei: payout.playerPayoutWei,
+      txHash,
+      networkTag: 'MONT',
+    })
+
+    expect(stealthRecord.address.toLowerCase()).toBe(stealthPayout.stealthAddress.toLowerCase())
+    expect(playerSeat.wallet.stealthKeyring.hasAccount(stealthPayout.stealthAddress)).toBe(true)
+
+    // Player's total balance includes this stealth account
+    const totalBal = await playerSeat.wallet.getBalance()
+    expect(totalBal).toBeGreaterThanOrEqual(payout.playerPayoutWei)
+
+    // Player can spend from this stealth account directly without sweeping
+    const spendable = await playerSeat.wallet.stealthKeyring.selectAccountForSpend(
+      WAGER,
+      playerSeat.wallet.provider,
+      'MONT',
+    )
+    expect(spendable).toBeDefined()
+    expect(spendable?.address.toLowerCase()).toBe(stealthPayout.stealthAddress.toLowerCase())
   })
 })

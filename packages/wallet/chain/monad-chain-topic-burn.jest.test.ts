@@ -42,6 +42,7 @@ import { SubAccountLeaseManager } from '../monad-account-lease'
 import { MonadTxSubmitter } from '../monad-account-tx'
 import { TopicPostOutcomeUnknownError } from './active-chain'
 import {
+  CanonicalMessagingPendingError,
   MonadChainConfig,
   MonadChainWalletHandle,
   TopicBurnPreparationError,
@@ -826,7 +827,7 @@ describe('main-account native attempt admission (#724)', () => {
       .catch(error => error)
     expect(sign).toHaveBeenCalledTimes(1)
     expect(f.rawAttempts).toHaveLength(1)
-    expect(result).toBeInstanceOf(NativeTransactionSubmissionError)
+    expect(result).toBeInstanceOf(CanonicalMessagingPendingError)
     expect(f.pool.records().every(record => record.status === 'unfunded')).toBe(
       true,
     )

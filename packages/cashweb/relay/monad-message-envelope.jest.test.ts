@@ -20,7 +20,6 @@ import {
   sameMonadEnvelopeAddress,
   tryDecryptEnvelope,
 } from "./monad-message-envelope";
-import { MonadStampedMessage, MonadStampPayment } from "./monad_message_pb";
 
 function envelopeKey(hex: string) {
   const key = privateKeyFromHex(hex, true);
@@ -523,23 +522,6 @@ describe("legacy v1 read compatibility", () => {
       ciphertext: ciphertext.toString("hex"),
     };
     const envelopeBytes = Buffer.from(JSON.stringify(fixture));
-
-    // Real offline-signed EIP-1559 transfer fixture (chain 10143), representative of the payment
-    // bytes carried alongside the envelope in MonadStampedMessage.
-    const rawSignedPayment = Buffer.from(
-      "02f87482279f2a843b9aca00847735940082520894000000000000000000000000000000000000dead" +
-        "880de0b6b3a764000080c001a0f6e40fcbe38269601e35c9304273101e0e69128ccb13c66734990a" +
-        "825d2b0b23a04eb4a16dc6287ab5e47d9e24d4cdcf4da765d9cd15a9c1e5aeb97d557db0a612",
-      "hex"
-    );
-    const payment = new MonadStampPayment();
-    payment.setChildIndex(0);
-    payment.setRawTx(rawSignedPayment);
-    const request = new MonadStampedMessage();
-    request.setEncryptedPayload(envelopeBytes);
-    request.setPayloadHash(Buffer.from(sha256(Uint8Array.from(envelopeBytes))));
-    request.addStampPayments(payment);
-    expect(request.serializeBinary().length).toBeLessThan(2 * 1024 * 1024);
 
     const parsed = parseEnvelope(envelopeBytes);
     expect(parsed?.v).toBe(1);

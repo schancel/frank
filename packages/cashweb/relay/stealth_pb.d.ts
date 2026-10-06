@@ -42,16 +42,6 @@ export class StealthPaymentEntry extends jspb.Message {
   setOutpointsList(value: Array<StealthOutpoints>): void;
   addOutpoints(value?: StealthOutpoints, index?: number): StealthOutpoints;
 
-  getChainId(): string;
-  setChainId(value: string): void;
-
-  clearTransactionsList(): void;
-  getTransactionsList(): Array<Uint8Array | string>;
-  getTransactionsList_asU8(): Array<Uint8Array>;
-  getTransactionsList_asB64(): Array<string>;
-  setTransactionsList(value: Array<Uint8Array | string>): void;
-  addTransactions(value: Uint8Array | string, index?: number): Uint8Array | string;
-
   serializeBinary(): Uint8Array;
   toObject(includeInstance?: boolean): StealthPaymentEntry.AsObject;
   static toObject(includeInstance: boolean, msg: StealthPaymentEntry): StealthPaymentEntry.AsObject;
@@ -66,8 +56,6 @@ export namespace StealthPaymentEntry {
   export type AsObject = {
     ephemeralPubKey: Uint8Array | string,
     outpointsList: Array<StealthOutpoints.AsObject>,
-    chainId: string,
-    transactionsList: Array<Uint8Array | string>,
   }
 }
 

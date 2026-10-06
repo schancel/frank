@@ -14,11 +14,13 @@ import { createHash, createHmac, randomBytes } from 'crypto'
 
 import { verifyEcdsa } from '@frank/nakamoto'
 
-import __pb_monad_message_pb from './monad_message_pb'
+import {
+  StoredMonadMessage,
+  StoredMonadMessages,
+  MonadStampedMessage,
+  MonadStampPayment,
+} from './monad-mailbox-compat'
 import type { MailboxHttp, MailboxHttpRequest } from './monad-mailbox-client'
-const { StoredMonadMessage, StoredMonadMessages, MonadStampedMessage } =
-  __pb_monad_message_pb
-const { MonadStampPayment } = __pb_monad_message_pb
 
 export const MOCK_MAX_PAGE = 100
 export const MOCK_MAX_BYTES = 2 * 1024 * 1024 * 2 + 16 * 1024

@@ -80,8 +80,18 @@ import {
   type CanonicalSubmissionEcho,
 } from './canonical-dm-transport'
 
-import __pb_monad_message_pb from './monad_message_pb'
-const { StoredMonadMessages, MonadStampedMessage } = __pb_monad_message_pb
+import {
+  StoredMonadMessages,
+  MonadStampedMessage,
+  MonadStampPayment,
+  StoredMonadMessage,
+} from './monad-mailbox-compat'
+export {
+  StoredMonadMessages,
+  MonadStampedMessage,
+  MonadStampPayment,
+  StoredMonadMessage,
+}
 // Type-only back-edge (erased at compile time), same as `./monad-message-feed.ts` had.
 import type {
   MonadStampedMessageProto,

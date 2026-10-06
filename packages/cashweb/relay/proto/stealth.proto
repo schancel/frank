@@ -9,6 +9,4 @@ message StealthOutpoints {
 message StealthPaymentEntry {
     bytes ephemeral_pub_key = 1;
     repeated StealthOutpoints outpoints = 2;
-    string chain_id = 3;
-    repeated bytes transactions = 4;
 }

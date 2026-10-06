@@ -20,12 +20,10 @@
     "ecash-lib": "4.14.1",
     "ecash-wallet": "6.2.1",
     "ethers": "^6.17.0",
-    "google-protobuf": "4.0.3",
     "level": "^7.0.0",
     "ws": "^8.3.0"
   },
   "devDependencies": {
-    "@types/google-protobuf": "^3.15.5",
     "@types/jest": "^29",
     "@types/node": "^16.11.11",
     "@types/ws": "^8.5.3",

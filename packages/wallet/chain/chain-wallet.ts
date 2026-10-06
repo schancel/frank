@@ -204,6 +204,72 @@ export interface NativeWalletHandle {
     /** Invoked after signing and before broadcast so callers can durably record the exact id. */
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction>;
+
+  /**
+   * Sends funds to an external legacy destination address, automatically aggregating
+   * fragmented sub-accounts or UTXOs using the chain's appropriate consolidation strategy.
+   */
+  sendLegacy?(params: {
+    recipient: ChainAddress;
+    value: bigint;
+    onProgress?: (progress: LegacySendProgress) => void;
+    onSigned?: (signed: ChainTransaction) => Promise<void>;
+  }): Promise<LegacySendResult>;
+
+  /** Computes the estimated network fee required to deliver `value` to a legacy destination. */
+  estimateLegacyFee?(params: {
+    recipient: ChainAddress;
+    value: bigint;
+  }): Promise<LegacyFeeEstimate>;
+
+  /** Recovers or resumes any in-flight staging intent interrupted by an app/browser crash. */
+  getUnresolvedLegacySend?(): unknown;
+  resumeLegacySend?(): Promise<LegacySendResult>;
+}
+
+export type LegacySendStage =
+  | { stage: "planning" }
+  | { stage: "selecting-inputs"; count: number }
+  | { stage: "consolidating"; completed: number; total: number; stagingTxHashes: string[] }
+  | { stage: "draining"; stagingAddress: string; drainTxHash?: string }
+  | { stage: "broadcasting"; txHash?: string }
+  | { stage: "confirmed"; txHash: string };
+
+export interface LegacySendProgress {
+  status: LegacySendStage;
+  message?: string;
+}
+
+export interface LegacyFeeEstimate {
+  /** Total estimated network fees in base units (wei / satoshis / lamports). */
+  totalFee: bigint;
+  /** Number of fragmented accounts or UTXOs consumed. */
+  inputCount: number;
+  /** Intermediate consolidation fee (EVM staging only; 0n for UTXO/Solana). */
+  consolidationFee?: bigint;
+  /** Final delivery fee to destination. */
+  deliveryFee: bigint;
+}
+
+export interface LegacySendResult {
+  /** Final transaction hash that paid the recipient. */
+  txHash: string;
+  /** Staging transaction hashes if intermediate fan-in occurred (EVM). */
+  intermediateTxHashes?: string[];
+  totalValueSent: bigint;
+  totalFeePaid: bigint;
+}
+
+export interface ContactSendProgress {
+  stage: "resolving-keys" | "deriving-stealth" | "signing" | "broadcasting" | "confirmed";
+  message?: string;
+  txHash?: string;
+}
+
+export interface ContactSendResult {
+  txHash: string;
+  stealthAddress: string;
+  value: bigint;
 }
 
 /** Minimum identity surface accepted by profile, message, and topic capabilities. */

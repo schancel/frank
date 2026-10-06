@@ -1,6 +1,7 @@
 import type { MonadWalletOperationAdmission } from '../storage/monad-wallet-bundle';
 import type { PublicRevisionZeroInput, PublicRevisionZeroExport, PublicNextRevisionInput, PublicNextRevisionExport } from '../monad-wallet-handle';
-import { MonadStealthKeyring } from '../monad-stealth';
+import { MonadStealthKeyring, buildEvmStealthPayment } from '../monad-stealth';
+import { EvmLegacyConsolidator, FundingAccount } from './evm-legacy-consolidator';
 /**
  * `MonadChain`: the real `ActiveChain` implementation (ticket #41 -- see `PLAN.md`'s M9 section)
  * over the already-merged Monad wallet clients (`../wallet/monad-stamp-client.ts`,
@@ -955,6 +956,61 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     },
   };
 
+  async function collectWalletFundingAccounts(
+    wallet: MonadChainWalletHandle
+  ): Promise<FundingAccount[]> {
+    const monadWallet = asMonadWallet(wallet, config.networkId);
+    const accounts: FundingAccount[] = [];
+    const material = walletMaterial.get(monadWallet);
+
+    const mainKey = material?.mainAccount.privateKey ?? mainPrivateKey(monadWallet);
+    const mainAddress = material?.mainAccount.address ?? monadWallet.identity.address.raw;
+    try {
+      const mainBal = await monadWallet.provider.getBalance(mainAddress);
+      if (mainBal > 0n) {
+        accounts.push({
+          address: mainAddress,
+          balanceWei: mainBal,
+          privateKey: mainKey,
+        });
+      }
+    } catch {}
+
+    try {
+      const stealthAccounts = monadWallet.stealthKeyring?.getAccounts() ?? [];
+      for (const st of stealthAccounts) {
+        const bal = await monadWallet.provider.getBalance(st.address);
+        if (bal > 0n) {
+          accounts.push({
+            address: st.address,
+            balanceWei: bal,
+            privateKey: st.privateKey,
+          });
+        }
+      }
+    } catch {}
+
+    if (material) {
+      try {
+        for (const record of monadWallet.pool.records()) {
+          if (record.status === "available" || record.status === "unfunded") {
+            const bal = await monadWallet.provider.getBalance(record.address);
+            if (bal > 0n) {
+              const derived = material.keyring.deriveSubAccount(record.index);
+              accounts.push({
+                address: record.address,
+                balanceWei: bal,
+                privateKey: derived.privateKey,
+              });
+            }
+          }
+        }
+      } catch {}
+    }
+
+    return accounts;
+  }
+
   const nativeTransfers: ActiveChain["nativeTransfers"] = {
     async getBalance({ wallet }): Promise<bigint> {
       asMonadWallet(wallet, config.networkId);
@@ -981,6 +1037,70 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         transaction.txHash
       );
       return known ? "pending" : "unknown";
+    },
+
+    async sendLegacy({ wallet, recipient, value, onProgress, onSigned }) {
+      const monadWallet = asMonadWallet(wallet, config.networkId);
+      const consolidator = new EvmLegacyConsolidator({
+        provider: monadWallet.provider,
+        getFundingAccounts: () => collectWalletFundingAccounts(monadWallet),
+        chainId: config.chainId,
+        transactionBuilder,
+      });
+      return consolidator.sendLegacy({ recipient, value, onProgress, onSigned });
+    },
+
+    async estimateLegacyFee({ wallet, recipient, value }) {
+      const monadWallet = asMonadWallet(wallet, config.networkId);
+      const consolidator = new EvmLegacyConsolidator({
+        provider: monadWallet.provider,
+        getFundingAccounts: () => collectWalletFundingAccounts(monadWallet),
+        chainId: config.chainId,
+        transactionBuilder,
+      });
+      return consolidator.estimateLegacyFee(recipient, value);
+    },
+
+    async sendToContact({ wallet, recipient, value, memo, onProgress }) {
+      const monadWallet = asMonadWallet(wallet, config.networkId);
+      onProgress?.({ stage: "resolving-keys" });
+
+      let spendKey: Uint8Array | undefined;
+      let viewKey: Uint8Array | undefined;
+
+      if ("pubKey" in recipient && recipient.pubKey) {
+        spendKey = recipient.pubKey;
+        viewKey = recipient.pubKey;
+      } else {
+        const profile = await fetchMonadProfile({
+          relayBaseUrl: config.relayBaseUrl,
+          address: recipient as ChainAddress,
+        });
+        if (profile?.pubKey) {
+          spendKey = profile.pubKey;
+          viewKey = profile.pubKey;
+        }
+      }
+
+      if (!spendKey) {
+        throw new Error("Unable to resolve stealth spend key for recipient");
+      }
+
+      onProgress?.({ stage: "deriving-stealth" });
+      onProgress?.({ stage: "signing" });
+      const stealthPayment = await buildEvmStealthPayment({
+        wallet: monadWallet,
+        recipientSpendPubKey: spendKey,
+        amountWei: value,
+        memo,
+      });
+
+      onProgress?.({ stage: "confirmed", txHash: stealthPayment.txHash });
+      return {
+        txHash: stealthPayment.txHash,
+        stealthAddress: stealthPayment.stealthDestination.stealthAddress,
+        value,
+      };
     },
   };
 
@@ -1177,6 +1297,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       directMessages: true,
       topics: true,
       stealthPayments: true,
+      legacyConsolidation: "evm-staging",
     },
     defaultStampValue: config.defaultStampValueWei,
     defaultTopicVoteValue: config.defaultTopicVoteValueWei,
@@ -1625,6 +1746,28 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   return submitNative(signed, onSigned);
                 })
               );
+            },
+            sendLegacy: (params) =>
+              nativeTransfers.sendLegacy!({ wallet, ...params }),
+            estimateLegacyFee: (params) =>
+              nativeTransfers.estimateLegacyFee!({ wallet, ...params }),
+            getUnresolvedLegacySend: () => {
+              const consolidator = new EvmLegacyConsolidator({
+                provider,
+                getFundingAccounts: () => collectWalletFundingAccounts(wallet),
+                chainId: config.chainId,
+                transactionBuilder,
+              });
+              return consolidator.getUnresolvedLegacySend();
+            },
+            resumeLegacySend: () => {
+              const consolidator = new EvmLegacyConsolidator({
+                provider,
+                getFundingAccounts: () => collectWalletFundingAccounts(wallet),
+                chainId: config.chainId,
+                transactionBuilder,
+              });
+              return consolidator.resumeLegacySend();
             },
             pool,
             leaseManager,

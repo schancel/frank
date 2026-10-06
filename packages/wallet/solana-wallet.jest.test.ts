@@ -8,6 +8,7 @@ import {
 import { getBase58Decoder } from "@solana/codecs-strings";
 
 import {
+  SOLANA_MIN_STEALTH_LAMPORTS,
   SolanaStealthAddressStrategy,
   SolanaStealthWallet,
   SolanaWallet,
@@ -157,7 +158,7 @@ describe("SolanaWallet", () => {
     const bundle = await wallet.buildStealthTransactionBundle({
       intentId: intentId(2),
       recipient: (await makeKeypair(8)).publicKey,
-      lamports: [20n, 30n],
+      lamports: [SOLANA_MIN_STEALTH_LAMPORTS, SOLANA_MIN_STEALTH_LAMPORTS + 1000n],
       context,
     });
     context[0] = 99;
@@ -204,7 +205,7 @@ describe("SolanaWallet", () => {
       wallet.buildStealthTransactionBundle({
         intentId: intentId(3),
         recipient: (await makeKeypair(2)).publicKey,
-        lamports: [1n, 2n],
+        lamports: [SOLANA_MIN_STEALTH_LAMPORTS, SOLANA_MIN_STEALTH_LAMPORTS + 1n],
         context: new Uint8Array(),
       })
     ).rejects.toThrow("duplicate destinations");
@@ -617,6 +618,27 @@ describe("SolanaWallet", () => {
         context: new Uint8Array(),
       })
     ).rejects.toThrow("u64 lamport limit");
+    expect(createDestination).not.toHaveBeenCalled();
+  });
+
+  it("rejects stealth transfers below rent exemption dust limit before deriving destinations", async () => {
+    const createDestination = jest.fn();
+    const wallet = new SolanaStealthWallet({
+      networkId: "solana-test",
+      genesisHash: "solana-genesis",
+      connection: new FakeConnection(),
+      signer: await makeKeypair(1),
+      stealthStrategy: { createDestination },
+    });
+
+    await expect(
+      wallet.buildStealthTransactionBundle({
+        intentId: intentId(23),
+        recipient: (await makeKeypair(2)).publicKey,
+        lamports: [SOLANA_MIN_STEALTH_LAMPORTS - 1n],
+        context: new Uint8Array(),
+      })
+    ).rejects.toThrow("rent exemption dust limit");
     expect(createDestination).not.toHaveBeenCalled();
   });
 

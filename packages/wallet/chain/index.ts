@@ -84,3 +84,23 @@ export type {
   BuildEvmStealthPaymentParams,
   EvmStealthPaymentResult,
 } from "../monad-stealth";
+
+export {
+  SOLANA_MIN_STEALTH_LAMPORTS,
+  SolanaEd25519StealthStrategy,
+  SolanaStealthKeyring,
+  MemorySolanaStealthKeyringStore,
+  deriveSolanaStealthAddress,
+  deriveSolanaStealthKeypair,
+  buildSolanaStealthPayment,
+} from "../solana-stealth";
+export type {
+  SolanaStealthDestination,
+  SolanaStealthDerivedAccount,
+  SolanaStealthAccountRecord,
+  SolanaStealthKeyringStore,
+  SolanaStealthMetadata,
+  BuildSolanaStealthPaymentParams,
+  SolanaStealthPaymentResult,
+} from "../solana-stealth";
+

@@ -37,7 +37,7 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
       profiles: false,
       directMessages: false,
       topics: false,
-      stealthPayments: false,
+      stealthPayments: true,
     },
     toDisplayAmount: (raw) => formatBaseUnit(raw, 9),
     fromDisplayAmount: (display) => parseBaseUnit(display, 9),

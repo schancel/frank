@@ -296,15 +296,21 @@ fn canonical_signed_set(
         )
         .map_err(|_| Error::Invalid)?;
         let commitment = payment_commitment(&policy.payload_hash, member.child_index);
+        let member_value_wei = match &member.value {
+            frank_cbor::PaymentValue::Quantity(b) => {
+                if b.len() != 32 || b[..16].iter().any(|byte| *byte != 0) {
+                    return Err(Error::Invalid);
+                }
+                u128::from_be_bytes(b[16..].try_into().map_err(|_| Error::Invalid)?)
+            }
+            frank_cbor::PaymentValue::Satoshis(s) => *s as u128,
+        };
         if member.child_index as usize != position
             || signed.chain_id != Some(policy.chain_id)
             || member.transaction_id.as_slice() != signed.tx_hash.0
             || !hashes.insert(signed.tx_hash)
             || !funding.insert(signed.sender)
-            || member.value.len() != 32
-            || member.value[..16].iter().any(|b| *b != 0)
-            || u128::from_be_bytes(member.value[16..].try_into().map_err(|_| Error::Invalid)?)
-                != signed.value_wei
+            || member_value_wei != signed.value_wei
             || signed.value_wei == 0
             || signed.destination != Some(Address(address))
             || member.address.as_slice() != address

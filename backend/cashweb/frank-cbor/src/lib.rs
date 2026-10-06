@@ -76,8 +76,9 @@ pub use limits::{
 };
 pub use model::{
     AccountRef, ChildFrame, FrameOnly, JournalFact, KeyTransition, OpaqueSection, ParsedFrame,
-    PaymentMember, PreviewDirectoryRoles, ProfileEntry, ProfileHeader, Projection, RelayBinding,
-    RetainedFrame, RetentionReason, SignatureEntry, Timestamp, TypedPayload, ValidationResult,
+    PaymentMember, PaymentValue, PreviewDirectoryRoles, ProfileEntry, ProfileHeader, Projection,
+    RelayBinding, RetainedFrame, RetentionReason, SignatureEntry, Timestamp, TypedPayload,
+    ValidationResult,
 };
 pub use model::{BlackjackAction, BlackjackFields, BlackjackMessageItem, BlackjackOutcome};
 pub use model::{BlackjackHandAction, BlackjackHandFields, BlackjackHandMessageItem};

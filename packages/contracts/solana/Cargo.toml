@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "programs/generic-htlc",
+    "programs/state-channel",
+]
+resolver = "2"

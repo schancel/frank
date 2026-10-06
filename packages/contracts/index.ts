@@ -11,3 +11,4 @@ export const CONTRACT_NAMES = {
 
 export { compileContracts } from './scripts/compile'
 export { deployAll, CREATE2_FACTORY, type DeploymentRecord } from './scripts/deploy'
+export * from './solana-escrow'

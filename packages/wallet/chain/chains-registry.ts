@@ -17,6 +17,13 @@ export const CANONICAL_EVM_CONTRACTS: Readonly<ChainContracts> = Object.freeze({
   tablePotVault: "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5",
 });
 
+export const CANONICAL_SOLANA_CONTRACTS: Readonly<ChainContracts> = Object.freeze({
+  stateChannel: "CHAN111111111111111111111111111111111111111",
+  htlc: "HTLC111111111111111111111111111111111111111",
+  channelVault: "CHAN111111111111111111111111111111111111111",
+  tablePotVault: "HTLC111111111111111111111111111111111111111",
+});
+
 export interface ChainRegistryEntry {
   readonly id: string;
   readonly kind: SupportedChainKind;
@@ -131,6 +138,7 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> = Object.freeze
     unit: "dSOL",
     caip2: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
     networkTag: "SOLD",
+    contracts: CANONICAL_SOLANA_CONTRACTS,
   }),
   "solana-testnet": Object.freeze({
     id: "solana-testnet",
@@ -144,6 +152,7 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> = Object.freeze
     unit: "tSOL",
     caip2: "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z",
     networkTag: "SOLT",
+    contracts: CANONICAL_SOLANA_CONTRACTS,
   }),
   "solana-mainnet": Object.freeze({
     id: "solana-mainnet",
@@ -157,6 +166,7 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> = Object.freeze
     unit: "SOL",
     caip2: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
     networkTag: "SOL1",
+    contracts: CANONICAL_SOLANA_CONTRACTS,
   }),
   "ethereum-sepolia": Object.freeze({
     id: "ethereum-sepolia",

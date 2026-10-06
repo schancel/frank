@@ -675,6 +675,7 @@ export default {
     contactRefreshInterval: 'Contact Refresh Interval (minutes)',
     contactRefreshIntervalHint: 'Interval between contact updates (minutes)',
     darkMode: 'Dark Mode',
+    themeTitle: 'Signet Theme Stone',
     saveSettings: 'Save',
     cancelSettings: 'Cancel',
     languageSelectorCaption: 'Language',

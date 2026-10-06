@@ -1,6 +1,7 @@
 // app global css in Sass form
 @use 'light-mode.scss';
 @use 'dark-mode.scss';
+@use 'themes.scss';
 
 :root {
   --q-on-primary-color-text: white;
@@ -109,9 +110,6 @@ body {
   line-height: inherit;
 }
 
-// White bubble text is 3.88:1 on #9d5cff and 2.88:1 on #b37dff. Sent meta uses
-// black so it clears 4.5:1 on both (5.41 and 7.29). Received meta keeps the
-// bubble text color, which already clears 4.5:1.
 .chat-message-inline-meta--sent {
   color: #000;
 }

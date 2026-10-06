@@ -1,0 +1,266 @@
+// Signet Stone Themes CSS overrides
+// Provides pure CSS fallbacks for each Signet Stone theme in both light and dark modes.
+
+// 1. Carnelian (Warm Roman seal wax & terracotta amber)
+body[data-signet-theme='carnelian'] {
+  &.body--dark {
+    --q-color-background: #130f0e;
+    --q-color-text: #f4ede8;
+    --q-color-bg-active: #2a201c;
+    --q-message-color-sent: #e25732;
+    --q-message-color: #221a17;
+    --q-message-meta-sent: rgba(255, 255, 255, 0.85);
+    --q-chat-background: radial-gradient(
+        ellipse 900px 700px at 12% -10%,
+        rgba(226, 87, 50, 0.16),
+        transparent 60%
+      ),
+      radial-gradient(
+        ellipse 900px 700px at 100% 115%,
+        rgba(217, 119, 6, 0.1),
+        transparent 60%
+      ),
+      #130f0e;
+  }
+  &.body--light {
+    --q-color-background: #faf6f3;
+    --q-color-text: #1f1612;
+    --q-color-bg-active: #f0e6e0;
+    --q-color-active: #e8dbd3;
+    --q-message-color-sent: #c8431e;
+    --q-message-color: #ffffff;
+    --q-message-meta-sent: rgba(255, 255, 255, 0.85);
+    --q-chat-background: radial-gradient(
+        ellipse 900px 700px at 12% -10%,
+        rgba(200, 67, 30, 0.09),
+        transparent 60%
+      ),
+      radial-gradient(
+        ellipse 900px 700px at 100% 115%,
+        rgba(217, 119, 6, 0.06),
+        transparent 60%
+      ),
+      #faf6f3;
+  }
+}
+
+// 2. Lapis Lazuli (Deep celestial ultramarine & golden pyrite)
+body[data-signet-theme='lapis'] {
+  &.body--dark {
+    --q-color-background: #0b1120;
+    --q-color-text: #e2e8f0;
+    --q-color-bg-active: #1e293b;
+    --q-message-color-sent: #3b82f6;
+    --q-message-color: #151f32;
+    --q-message-meta-sent: rgba(255, 255, 255, 0.85);
+    --q-chat-background: radial-gradient(
+        ellipse 900px 700px at 12% -10%,
+        rgba(37, 99, 235, 0.18),
+        transparent 60%
+      ),
+      radial-gradient(
+        ellipse 900px 700px at 100% 115%,
+        rgba(234, 179, 8, 0.1),
+        transparent 60%
+      ),
+      #0b1120;
+  }
+  &.body--light {
+    --q-color-background: #f4f7fb;
+    --q-color-text: #0f172a;
+    --q-color-bg-active: #e2e8f0;
+    --q-color-active: #cbd5e1;
+    --q-message-color-sent: #2563eb;
+    --q-message-color: #ffffff;
+    --q-message-meta-sent: rgba(255, 255, 255, 0.85);
+    --q-chat-background: radial-gradient(
+        ellipse 900px 700px at 12% -10%,
+        rgba(37, 99, 235, 0.08),
+        transparent 60%
+      ),
+      radial-gradient(
+        ellipse 900px 700px at 100% 115%,
+        rgba(234, 179, 8, 0.06),
+        transparent 60%
+      ),
+      #f4f7fb;
+  }
+}
+
+// 3. Bloodstone (Jasper dark green & iron-oxide crimson)
+body[data-signet-theme='bloodstone'] {
+  &.body--dark {
+    --q-color-background: #09140c;
+    --q-color-text: #e2ece4;
+    --q-color-bg-active: #182c1e;
+    --q-message-color-sent: #16a34a;
+    --q-message-color: #132217;
+    --q-message-meta-sent: rgba(255, 255, 255, 0.85);
+    --q-chat-background: radial-gradient(
+        ellipse 900px 700px at 12% -10%,
+        rgba(22, 163, 74, 0.16),
+        transparent 60%
+      ),
+      radial-gradient(
+        ellipse 900px 700px at 100% 115%,
+        rgba(185, 28, 28, 0.09),
+        transparent 60%
+      ),
+      #09140c;
+  }
+  &.body--light {
+    --q-color-background: #f3f8f4;
+    --q-color-text: #102014;
+    --q-color-bg-active: #e2eee5;
+    --q-color-active: #cbe0d0;
+    --q-message-color-sent: #15803d;
+    --q-message-color: #ffffff;
+    --q-message-meta-sent: rgba(255, 255, 255, 0.85);
+    --q-chat-background: radial-gradient(
+        ellipse 900px 700px at 12% -10%,
+        rgba(21, 128, 61, 0.08),
+        transparent 60%
+      ),
+      radial-gradient(
+        ellipse 900px 700px at 100% 115%,
+        rgba(185, 28, 28, 0.05),
+        transparent 60%
+      ),
+      #f3f8f4;
+  }
+}
+
+// 4. Onyx (High-contrast pitch black & polished silver)
+body[data-signet-theme='onyx'] {
+  &.body--dark {
+    --q-color-background: #0a0a0c;
+    --q-color-text: #f1f5f9;
+    --q-color-bg-active: #1e2024;
+    --q-message-color-sent: #64748b;
+    --q-message-color: #16171b;
+    --q-message-meta-sent: rgba(255, 255, 255, 0.85);
+    --q-chat-background: radial-gradient(
+        ellipse 900px 700px at 12% -10%,
+        rgba(148, 163, 184, 0.12),
+        transparent 60%
+      ),
+      radial-gradient(
+        ellipse 900px 700px at 100% 115%,
+        rgba(255, 255, 255, 0.05),
+        transparent 60%
+      ),
+      #0a0a0c;
+  }
+  &.body--light {
+    --q-color-background: #f8fafc;
+    --q-color-text: #0f172a;
+    --q-color-bg-active: #e2e8f0;
+    --q-color-active: #cbd5e1;
+    --q-message-color-sent: #334155;
+    --q-message-color: #ffffff;
+    --q-message-meta-sent: rgba(255, 255, 255, 0.85);
+    --q-chat-background: radial-gradient(
+        ellipse 900px 700px at 12% -10%,
+        rgba(51, 65, 85, 0.08),
+        transparent 60%
+      ),
+      radial-gradient(
+        ellipse 900px 700px at 100% 115%,
+        rgba(0, 0, 0, 0.04),
+        transparent 60%
+      ),
+      #f8fafc;
+  }
+}
+
+// 5. Sardonyx (Banded cameo layers: mahogany & desert cream)
+body[data-signet-theme='sardonyx'] {
+  &.body--dark {
+    --q-color-background: #130f0a;
+    --q-color-text: #fef3c7;
+    --q-color-bg-active: #2a2015;
+    --q-message-color-sent: #d97706;
+    --q-message-color: #201811;
+    --q-message-meta-sent: rgba(255, 255, 255, 0.85);
+    --q-chat-background: radial-gradient(
+        ellipse 900px 700px at 12% -10%,
+        rgba(217, 119, 6, 0.16),
+        transparent 60%
+      ),
+      radial-gradient(
+        ellipse 900px 700px at 100% 115%,
+        rgba(180, 83, 9, 0.1),
+        transparent 60%
+      ),
+      #130f0a;
+  }
+  &.body--light {
+    --q-color-background: #faf6ee;
+    --q-color-text: #241808;
+    --q-color-bg-active: #f3e9d8;
+    --q-color-active: #ecdcc5;
+    --q-message-color-sent: #b45309;
+    --q-message-color: #ffffff;
+    --q-message-meta-sent: rgba(255, 255, 255, 0.85);
+    --q-chat-background: radial-gradient(
+        ellipse 900px 700px at 12% -10%,
+        rgba(180, 83, 9, 0.09),
+        transparent 60%
+      ),
+      radial-gradient(
+        ellipse 900px 700px at 100% 115%,
+        rgba(217, 119, 6, 0.06),
+        transparent 60%
+      ),
+      #faf6ee;
+  }
+}
+
+// 6. Classic (Original Orchid Violet & Mint)
+body[data-signet-theme='classic'] {
+  &.body--dark {
+    --q-color-background: #121218;
+    --q-color-text: #ececf2;
+    --q-color-bg-active: #26262f;
+    --q-message-color-sent: #b37dff;
+    --q-message-color: #242430;
+    --q-message-meta-sent: #000000;
+    --q-chat-background: radial-gradient(
+        ellipse 900px 700px at 12% -10%,
+        rgba(157, 92, 255, 0.22),
+        transparent 60%
+      ),
+      radial-gradient(
+        ellipse 900px 700px at 100% 115%,
+        rgba(0, 217, 163, 0.13),
+        transparent 60%
+      ),
+      #121218;
+  }
+  &.body--light {
+    --q-color-background: #f7f7fb;
+    --q-color-text: #1a1a22;
+    --q-color-bg-active: #ebebf5;
+    --q-color-active: #e2e2f0;
+    --q-message-color-sent: #9d5cff;
+    --q-message-color: #ffffff;
+    --q-message-meta-sent: #000000;
+    --q-chat-background: radial-gradient(
+        ellipse 900px 700px at 12% -10%,
+        rgba(157, 92, 255, 0.11),
+        transparent 60%
+      ),
+      radial-gradient(
+        ellipse 900px 700px at 100% 115%,
+        rgba(0, 217, 163, 0.09),
+        transparent 60%
+      ),
+      #f7f7fb;
+  }
+}
+
+// Scoped sent message meta color override for themes with darker sent bubbles
+body[data-signet-theme]:not([data-signet-theme='classic'])
+  .chat-message-inline-meta--sent {
+  color: var(--q-message-meta-sent, rgba(255, 255, 255, 0.85));
+}

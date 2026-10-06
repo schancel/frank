@@ -44,7 +44,9 @@ jest.mock('pinia', () => ({
 }))
 jest.mock('src/stores/appearance', () => ({
   useAppearanceStore: () =>
-    jest.requireActual('vue').reactive({ darkMode: false, locale: 'en-us' }),
+    jest
+      .requireActual('vue')
+      .reactive({ darkMode: false, locale: 'en-us', theme: 'carnelian' }),
 }))
 jest.mock('src/stores/contacts', () => ({
   useContactStore: () =>

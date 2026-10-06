@@ -94,7 +94,7 @@
                 $t('sendAddressDialog.estimatedFee')
               }}</span>
               <span class="text-grey-7" data-test="review-fee">
-                {{ $t('sendAddressDialog.feeUnavailable') }}
+                {{ estimatedFeeText || $t('sendAddressDialog.feeUnavailable') }}
               </span>
             </div>
 
@@ -169,6 +169,7 @@ export default defineComponent({
     const amount = ref('')
     const isReviewing = ref(false)
     const sending = ref(false)
+    const estimatedFeeText = ref('')
 
     const parsedTransfer = computed(() =>
       parseNativeTransferInput(activeChain, address.value, amount.value),
@@ -202,12 +203,13 @@ export default defineComponent({
       amount,
       isReviewing,
       sending,
+      estimatedFeeText,
       isValid: computed(() => parsedTransfer.value !== undefined),
       formattedRecipient,
       networkName,
       unit,
       maxTotal,
-      reviewTransfer: () => {
+      reviewTransfer: async () => {
         const transfer = parsedTransfer.value
         if (!transfer) {
           errorNotify(new Error('invalid transfer'), {
@@ -216,6 +218,22 @@ export default defineComponent({
           return
         }
         isReviewing.value = true
+        if (activeChain.nativeTransfers.estimateLegacyFee) {
+          try {
+            const wallet = await useActiveWallet()
+            const estimate =
+              await activeChain.nativeTransfers.estimateLegacyFee({
+                wallet,
+                recipient: transfer.recipient,
+                value: transfer.value,
+              })
+            estimatedFeeText.value = `${activeChain.toDisplayAmount(
+              estimate.totalFee,
+            )} ${unit.value}`
+          } catch {
+            estimatedFeeText.value = ''
+          }
+        }
       },
       cancelReview: () => {
         isReviewing.value = false
@@ -236,11 +254,14 @@ export default defineComponent({
         let signedTxHash: string | undefined
         try {
           const wallet = await useActiveWallet()
-          const result = await activeChain.nativeTransfers.send({
+          const sendFn = activeChain.nativeTransfers.sendLegacy
+            ? (params: any) => activeChain.nativeTransfers.sendLegacy!(params)
+            : (params: any) => activeChain.nativeTransfers.send(params)
+          const result = await sendFn({
             wallet,
             recipient: transfer.recipient,
             value: transfer.value,
-            onSigned: async signed => {
+            onSigned: async (signed: any) => {
               signedTxHash = signed.txHash
             },
           })

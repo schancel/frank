@@ -29,6 +29,7 @@ import type {
   Checkpoint,
   Current,
   DirectoryStore,
+  HistoricalEvidence,
   OpenMode,
 } from '@frank/directory-admission'
 import type { DirectoryFetch, DirectoryResponse } from './directory-client'
@@ -293,9 +294,10 @@ async function readBody(
 export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
   const { network } = deps
   const selfSubject = deps.self.subject
-  const selfAddress = directoryAddress(selfSubject)
-  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(network) || !selfAddress)
+  const rawAddress = directoryAddress(selfSubject)
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(network) || !rawAddress)
     throw new Error('Exact directory identity required')
+  const selfAddress: string = rawAddress
   const origin = new URL(deps.relayBaseUrl).origin
   const base = `${origin}/directory/v1/${network}`
   const handles = new Map<string, Handle>()

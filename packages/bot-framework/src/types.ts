@@ -33,6 +33,7 @@ export interface NewUserEvent {
   address: string;
   registeredAtMs: number;
   displayName?: string;
+  profile?: Partial<BotProfile>;
 }
 
 export interface BotStateStore {
@@ -123,6 +124,7 @@ export interface BotContext {
 
 export interface FrankBotDefinition {
   readonly id: string;
+  readonly defaultIdentityPath?: string;
   readonly schedules?: BotScheduleDefinition[];
   getProfile(): BotProfile;
   onStart?(ctx: BotContext): Promise<void>;

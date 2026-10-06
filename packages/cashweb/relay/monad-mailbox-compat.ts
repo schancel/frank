@@ -55,7 +55,7 @@ function skipField(bytes: Uint8Array, wt: number, off: { pos: number }) {
 
 export class MonadStampPayment {
   childIndex = 0
-  rawTx = new Uint8Array()
+  rawTx: Uint8Array = new Uint8Array()
 
   setChildIndex(v: number) {
     this.childIndex = v
@@ -103,8 +103,8 @@ export class MonadStampPayment {
 }
 
 export class MonadStampedMessage {
-  encryptedPayload = new Uint8Array()
-  payloadHash = new Uint8Array()
+  encryptedPayload: Uint8Array = new Uint8Array()
+  payloadHash: Uint8Array = new Uint8Array()
   stampPayments: MonadStampPayment[] = []
 
   setEncryptedPayload(v: Uint8Array) {
@@ -184,7 +184,7 @@ export class MonadStampedMessage {
 export class StoredMonadMessage {
   message?: MonadStampedMessage
   timestamp = 0
-  networkTag = new Uint8Array()
+  networkTag: Uint8Array = new Uint8Array()
 
   setMessage(v: MonadStampedMessage) {
     this.message = v

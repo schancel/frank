@@ -3,8 +3,7 @@
     "allowJs": true,
     "esModuleInterop": true,
     "module": "esnext",
-    "moduleResolution": "node",
-    "baseUrl": ".",
+    "moduleResolution": "bundler",
     "paths": {
       "@frank/cashweb/*": ["../cashweb/*"],
       "@frank/codec": ["../frank-codec/src/index.ts"],
@@ -24,10 +23,20 @@
     "sourceMap": true,
     "strict": true,
     "skipLibCheck": true,
-    "target": "es2020",
-    "lib": ["es2020", "dom"],
-    "types": ["node"]
+    "target": "es2022",
+    "lib": ["es2022", "DOM"],
+    "types": ["node", "jest"]
   },
-  "include": ["src/**/*", "test/**/*"],
-  "exclude": ["node_modules"]
+  "include": [
+    "src/**/*",
+    "../bitcore-lib-xpi/types.d.ts",
+    "../wallet/level.d.ts",
+    "../wallet/ecash-wallet-sdk.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "**/*.jest.spec.ts",
+    "**/*.jest.test.ts",
+    "**/*.livecheck.ts"
+  ]
 }

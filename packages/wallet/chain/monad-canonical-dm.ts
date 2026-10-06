@@ -68,6 +68,7 @@ import {
 import type { MonadCanonicalRoleOwner } from '../monad-wallet-material'
 import { deriveEvmStealthPrivateKey } from '../monad-stealth'
 import type { MonadChainWalletHandle } from './monad-chain'
+import type { NativeWalletHandle, WalletHandle } from './active-chain'
 
 /** Public directory access owned by the caller. Every call must return a fresh admitted Current. */
 export interface CanonicalDirectory {
@@ -895,7 +896,10 @@ async function fetchSince(
                   projected,
                   record.timestampMs,
                 )
-                return projected
+                return {
+                  ...projected,
+                  amount: Number(projected.amount),
+                }
               })()
             : {
                 type: 'text' as const,
@@ -1071,7 +1075,10 @@ export function canonicalDirectMessages(
                             projected,
                             record.timestampMs,
                           )
-                          return projected
+                          return {
+                            ...projected,
+                            amount: Number(projected.amount),
+                          }
                         })()
                       : {
                           type: 'text' as const,

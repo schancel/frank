@@ -370,7 +370,7 @@ export class SolanaStealthKeyring {
     context?: Uint8Array;
     timestampMs?: number;
   }): Promise<SolanaStealthDerivedAccount[]> {
-    if (params.item.keyType !== 2) {
+    if (params.item.keyType !== 2 || !params.item.ephemeralPubKey) {
       return [];
     }
     const ephPubBytes = parseEphemeralPubKey(params.item.ephemeralPubKey);
@@ -391,7 +391,7 @@ export class SolanaStealthKeyring {
           keypair: derived.stealthKeypair,
           seed: derived.stealthSeed,
           ephemeralPubKey: params.item.ephemeralPubKey,
-          networkTag: params.item.networkTag,
+          networkTag: params.item.networkTag ?? "SOL",
           discoveredAtMs: params.timestampMs ?? Date.now(),
           initialAmountLamports: params.item.amount
             ? BigInt(params.item.amount)
@@ -493,7 +493,6 @@ export async function buildSolanaStealthPayment(
     ...(params.memo ? { memo: params.memo } : {}),
     // Compatibility fields
     chainId: params.networkTag ?? wallet.networkId,
-    rawTransactions: [txHash],
   };
 
   const metadataBundle: SolanaTransactionBundle<

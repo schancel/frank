@@ -2,8 +2,17 @@ import axios from 'axios'
 import assert from 'assert'
 
 import __pb_metadata_pb from './metadata_pb'
+import type {
+  Entry as EntryMsg,
+  AddressMetadata as AddressMetadataMsg,
+} from './metadata_pb'
 const { Entry, AddressMetadata } = __pb_metadata_pb
 import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
+import type {
+  SignedPayload as SignedPayloadMsg,
+  SignedPayloadSet as SignedPayloadSetMsg,
+  BurnOutputs as BurnOutputsMsg,
+} from '../signed_payload/payload_pb'
 const { SignedPayload, SignedPayloadSet, BurnOutputs } =
   __pb_signed_payload_payload_pb
 import pop from '../pop'
@@ -23,6 +32,11 @@ import {
   lotusFromPublicKey,
 } from '../legacy-wallet/lotus-address'
 import __pb_broadcast_pb from './broadcast_pb'
+import type {
+  BroadcastEntry as BroadcastEntryMsg,
+  BroadcastMessage as BroadcastMessageMsg,
+  ForumPost as ForumPostMsg,
+} from './broadcast_pb'
 const { BroadcastEntry, BroadcastMessage, ForumPost } = __pb_broadcast_pb
 import { ForumMessage, ForumMessageEntry } from '../types/forum'
 
@@ -109,7 +123,7 @@ function registryIdentityPoint(privKey: RegistryPrivateKey): Buffer {
   )
 }
 
-function calculateBurnAmount(burnOutputs: BurnOutputs[]) {
+function calculateBurnAmount(burnOutputs: BurnOutputsMsg[]) {
   return burnOutputs.reduce((total, burn) => {
     const index = burn.getIndex()
     const tx = burn.getTx()
@@ -203,7 +217,7 @@ export class RegistryHandler {
   async paymentRequest(
     serverUrl: string,
     address: string,
-    truncatedSignedPayload: SignedPayload,
+    truncatedSignedPayload: SignedPayloadMsg,
   ) {
     const legacyAddress = this.toAPIAddressString(address)
     const rawSignedPayload = truncatedSignedPayload.serializeBinary()
@@ -231,7 +245,7 @@ export class RegistryHandler {
     const payload = AddressMetadata.deserializeBinary(rawAddressMetadata)
 
     // Find vCard
-    function isRelay(entry: Entry) {
+    function isRelay(entry: EntryMsg) {
       return entry.getKind() === 'relay-server'
     }
     const entryList = payload.getEntriesList()
@@ -248,7 +262,7 @@ export class RegistryHandler {
   async putMetadata(
     address: string,
     server: string,
-    metadata: SignedPayload,
+    metadata: SignedPayloadMsg,
     token: string,
   ) {
     const rawMetadata = metadata.serializeBinary()
@@ -341,7 +355,7 @@ export class RegistryHandler {
       broadcastMessage.setParentDigest(Buffer.from(parentDigest, 'hex'))
 
     // Construct payload
-    const protoEntries: BroadcastEntry[] = []
+    const protoEntries: BroadcastEntryMsg[] = []
     for (const entry of entries) {
       const textEntry = new BroadcastEntry()
       textEntry.setKind(entry.kind)
@@ -451,7 +465,7 @@ export class RegistryHandler {
     )
   }
 
-  parseWrapper(wrapper: SignedPayload) {
+  parseWrapper(wrapper: SignedPayloadMsg) {
     const payload = wrapper.getPayload()
     assert(typeof payload !== 'string', 'payload type should not be a string')
     const message = BroadcastMessage.deserializeBinary(payload)

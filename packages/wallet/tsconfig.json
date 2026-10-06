@@ -3,15 +3,15 @@
     "allowJs": true,
     "esModuleInterop": true,
     "module": "esnext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "noEmit": true,
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
     "sourceMap": true,
     "strict": true,
     "skipLibCheck": true,
-    "target": "es2020",
-    "lib": ["es2020"],
+    "target": "es2022",
+    "lib": ["es2022", "DOM"],
     // See @frank/cashweb's tsconfig.json for why this is needed (avoids auto-including broken
     // hoisted @types stubs from unrelated devDependencies elsewhere in the workspace).
     "types": ["node", "jest"]

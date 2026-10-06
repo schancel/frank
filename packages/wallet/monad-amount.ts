@@ -3,8 +3,12 @@
  * is for logs and protocol fields only. Same conversion the app's `activeChain.toDisplayAmount`
  * uses (`formatEther`), so a bot and the app never disagree on how an amount looks.
  */
-import { formatEther } from 'ethers'
+import { formatEther, parseEther } from 'ethers'
 
 export function formatMon(wei: bigint): string {
   return `${formatEther(wei)} MON`
+}
+
+export function parseMon(mon: string): bigint {
+  return parseEther(mon)
 }

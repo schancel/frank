@@ -29,7 +29,7 @@ registerMessageItemPlugin<SwapOfferItem, SwapOfferItem>({
   hydrate: raw => raw,
   previewText: raw =>
     `Atomic swap offer: ${raw.offeredAmount} ${raw.offeredAsset} (${raw.offeredChain}) for ${raw.requestedAmount} ${raw.requestedAsset} (${raw.requestedChain})`,
-  tallyValue: raw => raw.offeredAmount,
+  tallyValue: raw => Number(raw.offeredAmount),
 })
 
 registerMessageItemPlugin<TextItem, TextItem>({

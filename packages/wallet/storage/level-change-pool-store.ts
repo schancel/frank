@@ -79,7 +79,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
   async Open(): Promise<void> {
     this.assertMutationAllowed()
     this.openedDb = level(this.dbLocation)
-    await openDurableLevel(this.openedDb, this.rootLocation, 'change-pool')
+    await openDurableLevel(this.openedDb!, this.rootLocation, 'change-pool')
     await this.loadData()
   }
 

@@ -117,7 +117,7 @@ export async function deployAll(options?: {
 
 async function deployStandard(
   wallet: ethers.Wallet,
-  artifact: { abi: any[]; bytecode: string; contractName: string },
+  artifact: { abi: any[]; bytecode: string; contractName?: string },
 ): Promise<string> {
   const factory = new ethers.ContractFactory(artifact.abi, artifact.bytecode, wallet)
   const contract = await factory.deploy()

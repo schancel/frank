@@ -1,22 +1,32 @@
 declare module 'level' {
   export class LevelDBIterator {
-    next(): Promise<string>
-    end(): Promise<void>
+    next(callback?: (error: any, key: any, value: any) => void): Promise<string> | void
+    end(callback?: (error?: any) => void): Promise<void> | void
+    [Symbol.asyncIterator](): AsyncIterableIterator<[string, string]>
+  }
+
+  export class LevelDBBatch {
+    put(key: string, value: string): this
+    del(key: string): this
+    clear(): this
+    write(options?: any, callback?: any): Promise<void>
   }
 
   export class LevelDB {
-    open(): Promise<void>
-    put(key: string, value: string): Promise<void>
-    get(key: string): Promise<string>
-    del(key: string): Promise<void>
-    close(): Promise<void>
-    clear(): Promise<void>
-    iterator(options: Record<string, unknown>): Promise<LevelDBIterator>
+    open(callback?: any): Promise<void>
+    put(key: string, value: string, options?: any, callback?: any): Promise<void>
+    get(key: string, options?: any, callback?: any): Promise<string>
+    del(key: string, options?: any, callback?: any): Promise<void>
+    close(callback?: any): Promise<void>
+    clear(options?: any, callback?: any): Promise<void>
+    iterator(options?: any): LevelDBIterator
+    batch(): LevelDBBatch
+    batch(ops: any[], options?: any, callback?: any): Promise<any>
   }
 
   function level(
     location: string,
-    options?: { createIfMissing?: boolean }
+    options?: { createIfMissing?: boolean; [key: string]: unknown }
   ): LevelDB
   export default level
 }

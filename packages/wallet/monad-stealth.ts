@@ -278,20 +278,20 @@ export async function buildEvmStealthPayment(
   const stealthDestination = deriveEvmStealthAddress({ recipientSpendPubKey })
 
   // 2. Select funding account (main account or an un-swept stealth account)
-  let fundingPrivateKey = wallet.mainAccount.privateKey
+  let fundingPrivateKey = wallet.identity.toPrivateKeyHex()
   if (params.fromAddress) {
     const custom = wallet.stealthKeyring?.getAccount(params.fromAddress)
     if (custom) {
       fundingPrivateKey = custom.privateKey
     } else if (
       params.fromAddress.toLowerCase() !==
-      wallet.mainAccount.address.toLowerCase()
+      wallet.identity.address.raw.toLowerCase()
     ) {
       throw new Error(`Account ${params.fromAddress} not found in wallet`)
     }
   } else if (wallet.stealthKeyring) {
     // If main account has insufficient funds, try selecting a funded stealth account
-    const mainBal = await wallet.provider.getBalance(wallet.mainAccount.address)
+    const mainBal = await wallet.provider.getBalance(wallet.identity.address.raw)
     if (mainBal < amountWei) {
       const selected = await wallet.stealthKeyring.selectAccountForSpend(
         amountWei,
@@ -318,7 +318,7 @@ export async function buildEvmStealthPayment(
 
   // 4. Submit transaction to RPC
   const txHash = await wallet.httpClient.submitRawTransaction(
-    signed.rawTransaction,
+    signed.rawTx,
   )
 
   // 5. Construct StealthItem
@@ -332,13 +332,12 @@ export async function buildEvmStealthPayment(
     ...(params.memo ? { memo: params.memo } : {}),
     // Compatibility fields
     chainId: params.networkTag ?? 'MONT',
-    rawTransactions: [txHash],
   }
 
   return {
     stealthDestination,
     txHash,
-    rawTransaction: signed.rawTransaction,
+    rawTransaction: signed.rawTx,
     stealthItem,
   }
 }

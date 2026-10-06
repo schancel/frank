@@ -127,7 +127,7 @@ export class PokerBot implements FrankBotDefinition {
       buyInWei: POKER_DEFAULT_BUY_IN_WEI.toString(),
       smallBlind: table.smallBlind,
       bigBlind: table.bigBlind,
-      street: table.street,
+      street: table.street === "waiting" ? undefined : table.street,
       pot: totalPot,
       currentBet: table.currentBet,
       minRaise: table.minRaise,
@@ -147,7 +147,7 @@ export class PokerBot implements FrankBotDefinition {
   }
 
   async onMessage(msgCtx: BotMessageContext, ctx: BotContext): Promise<void> {
-    const sender = msgCtx.senderAddress;
+    const sender = msgCtx.peerAddress;
     const conversationId = sender;
 
     const incomingItem = msgCtx.items.find((item: any) => item.type === "poker") as

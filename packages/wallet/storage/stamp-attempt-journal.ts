@@ -25,6 +25,7 @@ export interface OutgoingStampAttempt {
   payloadHashHex: string
   messageBytes: number[]
   leaseIndices: number[]
+  recipientPublicKeyHex?: string
 }
 
 export interface StampAttemptJournal {

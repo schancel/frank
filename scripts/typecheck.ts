@@ -44,6 +44,25 @@ if (!forceTsc && existsSync(tsgoBin)) {
 }
 
 console.log(`[typecheck] Using compiler: ${compilerName}`)
+
+// Ensure prerequisite packages that export declarations are built before checking consumers
+const nakamotoDts = join(rootDir, 'packages/nakamoto/dist/index.d.ts')
+if (!existsSync(nakamotoDts)) {
+  console.log('[typecheck] Emitting declarations for @frank/nakamoto...')
+  spawnSync(tscBin, ['-p', join(rootDir, 'packages/nakamoto/tsconfig.json'), '--pretty', 'false'], {
+    cwd: rootDir,
+    encoding: 'utf8',
+  })
+}
+const cryptoBoxDts = join(rootDir, 'packages/crypto-box/dist/index.d.ts')
+if (!existsSync(cryptoBoxDts)) {
+  console.log('[typecheck] Emitting declarations for @frank/crypto-box...')
+  spawnSync(tscBin, ['-p', join(rootDir, 'packages/crypto-box/tsconfig.json'), '--pretty', 'false'], {
+    cwd: rootDir,
+    encoding: 'utf8',
+  })
+}
+
 console.log(`[typecheck] Checking ${targetConfigs.length} TypeScript projects...\n`)
 
 const results: Array<{ config: string; passed: boolean; durationMs: number; output: string }> = []

@@ -20,6 +20,7 @@ import {
   WalletTransaction,
   WalletTransactionBundle,
 } from "./transaction-bundle-wallet";
+import type { AccountHygieneEngine } from "./account-hygiene";
 import {
   ChainAddress,
   ChainTransaction,
@@ -291,6 +292,7 @@ export class SolanaWallet
   readonly chainKind = "solana" as const;
   readonly networkId: string;
   readonly stealthKeyring: SolanaStealthKeyring;
+  readonly hygiene?: AccountHygieneEngine<string>;
   private lastSubmittedNative: ChainTransaction | undefined;
   private unresolvedNative:
     | {
@@ -319,12 +321,14 @@ export class SolanaWallet
       transaction: ChainTransaction
     ) => Promise<"confirmed" | "failed" | "pending" | "unknown">;
     stealthKeyring?: SolanaStealthKeyring;
+    hygiene?: AccountHygieneEngine<string>;
   }) {
     this.connection = params.connection;
     this.signer = params.signer;
     this.networkId = params.networkId;
     this.expectedGenesisHash = params.genesisHash;
     this.stealthKeyring = params.stealthKeyring ?? new SolanaStealthKeyring();
+    this.hygiene = params.hygiene;
     this.nativeAttemptStore =
       params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore;
     this.getTransactionStatus =

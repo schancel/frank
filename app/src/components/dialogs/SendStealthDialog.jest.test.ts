@@ -80,7 +80,9 @@ describe('SendStealthDialog', () => {
 
   it('displays spendable balance for current wallet', () => {
     const wrapper = mountDialog()
-    expect(wrapper.find('[data-testid="wallet-balance-value"]').text()).toBe('2.50 MON')
+    expect(wrapper.find('[data-testid="wallet-balance-value"]').text()).toBe(
+      '2.50 MON',
+    )
   })
 
   it('disables send button when amount is empty or non-positive', () => {
@@ -108,7 +110,9 @@ describe('SendStealthDialog', () => {
 
     expect((wrapper.vm as any).isBelowDustLimit).toBe(true)
     expect((wrapper.vm as any).canSend).toBe(false)
-    expect(wrapper.text()).toContain('Amount must be at least 0.00089 tSOL (dust limit)')
+    expect(wrapper.text()).toContain(
+      'Amount must be at least 0.00089 tSOL (dust limit)',
+    )
   })
 
   it('allows valid amount above dust limit and enables send button', async () => {

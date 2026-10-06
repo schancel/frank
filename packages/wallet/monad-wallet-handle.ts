@@ -25,6 +25,8 @@ import type {
 import type { MonadCanonicalRoleOwner } from './monad-wallet-material'
 import type { MonadStealthKeyring } from './monad-stealth'
 
+import type { AccountHygieneEngine } from './account-hygiene'
+
 export interface MonadWalletHandle {
   /** Explicit typed-root capability; absent until canonical composition is activated. */
   canonicalRoles?: MonadCanonicalRoleOwner
@@ -32,6 +34,8 @@ export interface MonadWalletHandle {
   stealthKeyring?: MonadStealthKeyring
   /** Private active delegation from the existing owner; structural values are rejected. */
   walletOperationAdmission?: MonadWalletOperationAdmission
+  /** Autonomous account hygiene and lazy dirty sweeper (Ticket #925). Encapsulated beneath the wallet API. */
+  hygieneEngine?: AccountHygieneEngine<string>
   pool: MonadSubAccountPool
   leaseManager: SubAccountLeaseManager
   provider: Provider

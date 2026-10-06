@@ -18,6 +18,10 @@ jobs:
           cache: "yarn"
       - name: Install dependencies
         run: yarn install --frozen-lockfile || yarn install
+      - name: Build prerequisite package declarations
+        run: |
+          yarn --cwd packages/nakamoto tsc -p tsconfig.json --pretty false
+          yarn --cwd packages/crypto-box tsc -p tsconfig.json --pretty false
       - name: Fast typecheck with native Go compiler (tsgo)
         run: yarn typecheck
       - name: Verify with standard TypeScript compiler (tsc)

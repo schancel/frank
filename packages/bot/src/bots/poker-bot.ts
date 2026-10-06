@@ -27,7 +27,6 @@ export const POKER_TURN_TIMEOUT_SECONDS = 45;
 import type { TableEscrowRecord } from "./liars-dice-bot";
 export type { TableEscrowRecord };
 
-
 function normalizeEvmAddress(addr: string): string {
   if (/^0x[0-9a-fA-F]{40}$/.test(addr)) return addr;
   const clean = addr.startsWith("0x") ? addr.slice(2) : addr;

@@ -25,7 +25,7 @@ import {
 } from "@frank/wallet/message-item-plugins/liars-dice";
 import { generateAvatarPng } from "../../bot-directory";
 
-export interface TableEscrowRecord {
+export interface LiarsDiceTableEscrowRecord {
   preimage: string;
   hashLock: string;
   playerLocks: Map<string, string>;
@@ -46,7 +46,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
     process.env.LIARS_DICE_BOT_IDENTITY_JSON ?? "/tmp/liars-dice-bot-identity.json";
 
   private readonly tables = new Map<string, LiarsDiceGameState>();
-  private readonly tableEscrows = new Map<string, TableEscrowRecord>();
+  private readonly tableEscrows = new Map<string, LiarsDiceTableEscrowRecord>();
   private readonly conversationTables = new Map<string, string>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private latestTableId?: string;
@@ -58,7 +58,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
     const escrow = this.tableEscrows.get(game.tableId);
     if (!escrow || !game.winnerAddress || !ctx?.sendTransaction) return undefined;
 
-    const lockIds = Array.from(escrow.playerLocks.values());
+    const lockIds: string[] = Array.from(escrow.playerLocks.values());
     if (lockIds.length === 0) return undefined;
 
     try {

@@ -7,7 +7,9 @@
     <div class="row items-center justify-between q-mb-xs">
       <div class="row items-center">
         <q-icon name="casino" size="22px" class="q-mr-xs text-amber-9" />
-        <span class="text-subtitle2 text-weight-bold">Liar's Dice (Perudo)</span>
+        <span class="text-subtitle2 text-weight-bold"
+          >Liar's Dice (Perudo)</span
+        >
       </div>
       <q-badge
         v-if="item.potWei"
@@ -19,20 +21,23 @@
     </div>
 
     <!-- Table info -->
-    <div class="row items-center justify-between text-caption text-grey-7 q-mb-sm">
-      <span>Table: <span class="text-mono">{{ item.tableId?.slice(0, 8) }}</span></span>
+    <div
+      class="row items-center justify-between text-caption text-grey-7 q-mb-sm"
+    >
+      <span
+        >Table:
+        <span class="text-mono">{{ item.tableId?.slice(0, 8) }}</span></span
+      >
       <span v-if="item.roundNumber">Round {{ item.roundNumber }}</span>
     </div>
 
     <!-- Public Table View: Players & Dice Counts -->
     <div class="q-mb-sm bg-grey-2 q-pa-xs rounded-borders">
-      <div class="text-caption text-weight-medium q-mb-xs">Players at Table:</div>
+      <div class="text-caption text-weight-medium q-mb-xs">
+        Players at Table:
+      </div>
       <div class="row q-col-gutter-xs">
-        <div
-          v-for="(player, idx) in item.players"
-          :key="player"
-          class="col-6"
-        >
+        <div v-for="(player, idx) in item.players" :key="player" class="col-6">
           <div
             class="q-pa-xs rounded-borders text-caption"
             :class="{
@@ -41,8 +46,14 @@
             }"
           >
             <div class="row items-center justify-between">
-              <span class="ellipsis" style="max-width: 80px">{{ player.slice(0, 6) }}...</span>
-              <span v-if="isEliminated(idx)" class="text-negative text-weight-bold">☠️ Out</span>
+              <span class="ellipsis" style="max-width: 80px"
+                >{{ player.slice(0, 6) }}...</span
+              >
+              <span
+                v-if="isEliminated(idx)"
+                class="text-negative text-weight-bold"
+                >☠️ Out</span
+              >
               <span v-else class="text-weight-bold text-amber-9">
                 🎲 {{ getDiceCount(idx) }}
               </span>
@@ -62,7 +73,9 @@
       <div class="text-subtitle1 text-weight-bolder text-dark">
         {{ item.currentBid.quantity }}x
         <span class="dice-badge">{{ diceUnicode(item.currentBid.face) }}</span>
-        ({{ item.currentBid.face }}s{{ item.currentBid.face === 1 ? ' - Aces Wild!' : '' }})
+        ({{ item.currentBid.face }}s{{
+          item.currentBid.face === 1 ? ' - Aces Wild!' : ''
+        }})
       </div>
       <div class="text-caption text-grey-7">
         by {{ item.currentBid.bidder.slice(0, 8) }}...
@@ -96,11 +109,18 @@
       class="q-pa-xs q-mb-sm bg-red-1 rounded-borders"
       data-testid="showdown-results"
     >
-      <div class="text-subtitle2 text-weight-bold text-negative text-center q-mb-xs">
+      <div
+        class="text-subtitle2 text-weight-bold text-negative text-center q-mb-xs"
+      >
         🚨 SHOWDOWN RESULT!
       </div>
       <div class="text-caption q-mb-xs text-center">
-        Challenge on <strong>{{ item.challengeResult.bidQuantity }}x [{{ item.challengeResult.bidFace }}]s</strong>
+        Challenge on
+        <strong
+          >{{ item.challengeResult.bidQuantity }}x [{{
+            item.challengeResult.bidFace
+          }}]s</strong
+        >
       </div>
       <div class="text-caption text-center q-mb-xs">
         Total Matching: <strong>{{ item.challengeResult.actualCount }}</strong>
@@ -110,9 +130,15 @@
       </div>
       <div
         class="text-caption text-weight-bold text-center q-mb-xs"
-        :class="item.challengeResult.challengerWon ? 'text-positive' : 'text-negative'"
+        :class="
+          item.challengeResult.challengerWon ? 'text-positive' : 'text-negative'
+        "
       >
-        {{ item.challengeResult.challengerWon ? '🎉 Challenger was Right!' : '❌ Bidder was Truthful!' }}
+        {{
+          item.challengeResult.challengerWon
+            ? '🎉 Challenger was Right!'
+            : '❌ Bidder was Truthful!'
+        }}
       </div>
       <div class="text-caption text-center text-negative">
         💀 {{ item.challengeResult.loserAddress.slice(0, 8) }}... loses 1 die!
@@ -136,7 +162,9 @@
               :key="i"
               class="q-mx-xs text-body2"
               :class="{
-                'text-amber-9 text-weight-bold': d === item.challengeResult.bidFace || (item.challengeResult.bidFace !== 1 && d === 1),
+                'text-amber-9 text-weight-bold':
+                  d === item.challengeResult.bidFace ||
+                  (item.challengeResult.bidFace !== 1 && d === 1),
               }"
             >
               {{ diceUnicode(d) }}
@@ -194,7 +222,9 @@
         <div class="row items-center q-col-gutter-xs q-mb-xs">
           <!-- Quantity Stepper -->
           <div class="col-5">
-            <div class="row items-center justify-center bg-grey-2 rounded-borders">
+            <div
+              class="row items-center justify-center bg-grey-2 rounded-borders"
+            >
               <q-btn
                 dense
                 flat
@@ -204,13 +234,7 @@
                 @click="bidQuantity = Math.max(1, bidQuantity - 1)"
               />
               <span class="q-px-sm text-weight-bold">{{ bidQuantity }}x</span>
-              <q-btn
-                dense
-                flat
-                icon="add"
-                size="sm"
-                @click="bidQuantity++"
-              />
+              <q-btn dense flat icon="add" size="sm" @click="bidQuantity++" />
             </div>
           </div>
 
@@ -285,9 +309,7 @@ export default defineComponent({
     const bidQuantity = ref(
       props.item.currentBid ? props.item.currentBid.quantity + 1 : 2,
     )
-    const bidFace = ref(
-      props.item.currentBid ? props.item.currentBid.face : 2,
-    )
+    const bidFace = ref(props.item.currentBid ? props.item.currentBid.face : 2)
 
     const diceUnicode = (face: number): string => {
       return DICE_UNICODE[face] ?? `${face}`
@@ -303,9 +325,7 @@ export default defineComponent({
     }
 
     const isTurn = (playerAddr: string): boolean => {
-      return (
-        props.item.activePlayer?.toLowerCase() === playerAddr.toLowerCase()
-      )
+      return props.item.activePlayer?.toLowerCase() === playerAddr.toLowerCase()
     }
 
     const isEliminated = (idx: number): boolean => {

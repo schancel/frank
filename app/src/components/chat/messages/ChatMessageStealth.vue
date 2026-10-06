@@ -4,8 +4,16 @@
       <!-- Header row: Icon, Title, and Status Badge -->
       <div class="row items-center justify-between q-mb-xs">
         <div class="row items-center">
-          <q-icon name="visibility_off" size="sm" color="primary" class="q-mr-xs" />
-          <span class="text-weight-bold text-subtitle2" data-testid="stealth-title">
+          <q-icon
+            name="visibility_off"
+            size="sm"
+            color="primary"
+            class="q-mr-xs"
+          />
+          <span
+            class="text-weight-bold text-subtitle2"
+            data-testid="stealth-title"
+          >
             {{ title }}
           </span>
         </div>
@@ -49,9 +57,17 @@
 
       <!-- Direct credit indicator (no sweep friction needed) -->
       <div class="row items-center text-caption text-grey-6 q-mt-xs">
-        <q-icon name="check_circle" size="xs" color="positive" class="q-mr-xs" />
+        <q-icon
+          name="check_circle"
+          size="xs"
+          color="positive"
+          class="q-mr-xs"
+        />
         <span data-testid="stealth-direct-credit-hint">
-          {{ $t('chatMessageStealth.directCreditHint') || 'Indexed into spendable balance' }}
+          {{
+            $t('chatMessageStealth.directCreditHint') ||
+            'Indexed into spendable balance'
+          }}
         </span>
       </div>
 
@@ -199,9 +215,7 @@ export default defineComponent({
         }
         return this.status
       }
-      return (
-        (this.$t('chatMessageStealth.confirmed') as string) || 'Confirmed'
-      )
+      return (this.$t('chatMessageStealth.confirmed') as string) || 'Confirmed'
     },
     statusColor(): string {
       const s = (this.status || 'confirmed').toLowerCase()

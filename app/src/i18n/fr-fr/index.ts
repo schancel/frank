@@ -17,6 +17,7 @@ export default {
     degradedBanner: 'Certains sujets du forum n’ont pas pu être mis à jour.',
     retry: 'Réessayer',
     loginSignUp: 'Connexion / Inscription',
+    thread: 'Fil de discussion',
   },
   agree: "D'accord",
   chat: {
@@ -246,6 +247,8 @@ export default {
     chooseFile: 'Choisir un fichier',
     openInExplorer: "Ouvrir la transaction dans l'explorateur de blocs",
     copyTxHash: 'Copier le hash de transaction',
+    back: 'Retour',
+    backToForum: 'Retour au forum',
   },
   leftDrawer: {
     noForums: 'Aucun forum découvert pour le moment.',

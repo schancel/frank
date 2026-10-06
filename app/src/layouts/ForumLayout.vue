@@ -11,6 +11,16 @@
     <q-header>
       <q-toolbar class="q-pl-sm">
         <q-btn
+          v-if="isThreadRoute"
+          class="q-px-sm"
+          flat
+          dense
+          @click="navigateBack"
+          icon="arrow_back"
+          :aria-label="$t('a11y.backToForum')"
+          data-test="forum-back"
+        />
+        <q-btn
           class="q-px-sm"
           flat
           dense
@@ -18,8 +28,38 @@
           icon="menu"
           :aria-label="$t('a11y.openNavigation')"
           :aria-expanded="myDrawerOpen"
+          data-test="forum-menu"
         />
-        <q-toolbar-title class="h6">Forum</q-toolbar-title>
+        <q-toolbar-title class="h6">
+          <div
+            v-if="isThreadRoute"
+            class="row items-center no-wrap cursor-pointer"
+            @click="navigateBack"
+            data-test="forum-breadcrumb"
+          >
+            <span>{{ $t('leftDrawer.forum') }}</span>
+            <q-icon
+              name="chevron_right"
+              size="18px"
+              class="q-mx-xs text-grey-5"
+            />
+            <q-chip
+              v-if="selectedTopic"
+              dense
+              outline
+              size="sm"
+              color="white"
+              text-color="white"
+              class="q-ma-none text-weight-medium"
+            >
+              #{{ selectedTopic }}
+            </q-chip>
+            <span v-else class="text-body2 text-grey-4">{{
+              $t('forum.thread')
+            }}</span>
+          </div>
+          <span v-else>{{ $t('leftDrawer.forum') }}</span>
+        </q-toolbar-title>
         <q-space />
         <q-btn
           icon="refresh"
@@ -129,12 +169,25 @@ export default defineComponent({
         // Handled: forumStore records outageStatus; no unhandled browser exception
       }
     },
-    setTopic(text: string) {
+    async setTopic(text: string) {
       this.selectedTopic = text
+      if (this.$route.path !== '/forum') {
+        await this.$router.push('/forum')
+      }
       void this.refreshContent()
+    },
+    navigateBack() {
+      void this.$router.push('/forum')
     },
   },
   computed: {
+    isThreadRoute(): boolean {
+      return (
+        Boolean(this.$route.params?.payloadDigest) ||
+        (this.$route.path.startsWith('/forum/') &&
+          this.$route.path !== '/forum')
+      )
+    },
     selectedTopic: {
       set(newVal?: string) {
         this.setSelectedTopic(newVal ?? '')

@@ -25,7 +25,12 @@
   <q-page-container>
     <q-page class="q-ma-none q-pa-none column full-height">
       <q-card flat class="col column full-width full-height bg-transparent">
-        <q-splitter :model-value="120" unit="px" disable class="col full-height">
+        <q-splitter
+          :model-value="120"
+          unit="px"
+          disable
+          class="col full-height"
+        >
           <template #before>
             <q-tabs v-model="tab" vertical class="text-primary">
               <q-tab

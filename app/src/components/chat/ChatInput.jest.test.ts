@@ -2,6 +2,8 @@
 // ChatInput: a blackjack challenge is an entry in the existing message-type menu, in every chat,
 // with no dealer or bot gate (there is no separate toolbar button), and the compose box does not
 // steal focus back (#405), so controls inside a bubble stay usable.
+import fs from 'fs'
+import path from 'path'
 import { mount } from '@vue/test-utils'
 import { defineComponent, h, ref } from 'vue'
 
@@ -280,8 +282,6 @@ describe('modernized chat input interface (#1003)', () => {
 
 describe('ChatInput toolbar alignment and layout (#1009)', () => {
   it('defines vertical centering and balanced padding without sagging or edge clipping', () => {
-    const fs = require('fs')
-    const path = require('path')
     const sfc = fs.readFileSync(path.join(__dirname, 'ChatInput.vue'), 'utf8')
     expect(sfc).toMatch(/\.chat-input-toolbar\s*\{[^}]*align-items:\s*center/)
     expect(sfc).toMatch(/\.chat-input-toolbar\s*\{[^}]*padding:\s*8px 14px/)

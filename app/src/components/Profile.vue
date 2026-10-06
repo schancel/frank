@@ -1,6 +1,11 @@
 <template>
   <div class="full-height column">
-    <q-splitter v-model="splitterSize" unit="px" disable class="col full-height">
+    <q-splitter
+      v-model="splitterSize"
+      unit="px"
+      disable
+      class="col full-height"
+    >
       <template #before>
         <q-tabs v-model="tab" vertical class="text-primary full-height">
           <q-tab

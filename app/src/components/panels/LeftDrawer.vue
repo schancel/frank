@@ -178,7 +178,9 @@
               <q-item-section avatar class="topic-avatar-section">
                 <span class="topic-hash">#</span>
               </q-item-section>
-              <q-item-section class="topic-name-section">{{ name }}</q-item-section>
+              <q-item-section class="topic-name-section">{{
+                name
+              }}</q-item-section>
             </q-item>
             <q-item v-if="discoveredTopicNames.length === 0">
               <q-item-section class="text-grey">{{

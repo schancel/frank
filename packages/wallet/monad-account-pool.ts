@@ -121,6 +121,10 @@ export interface FundingReceiptOptions {
 }
 
 /**
+ * @deprecated Use `MonadAddressInventory` (`./monad-address-inventory.ts`, Ticket #924), which
+ * unifies spend and change addresses under a single dynamic inventory without rigid promotion
+ * state machines or separate pool boundaries.
+ *
  * Tracks an ever-growing pool of HD-derived sub-accounts, persisted via a `SubAccountPoolStore` so
  * the pool (its records and each account's status) survives app restarts. Private keys are never
  * held or persisted by the pool itself — `getSigner()` re-derives one on demand from the keyring.

@@ -688,6 +688,83 @@ test('public admitted history accepts immediately previous stamp then rejects tw
       recipientEvidence: old,
     }
     expect(openDirectMessage(input).items).toHaveLength(1)
+
+    // Recipient opens message when sender has rotated statement (using senderEvidence: old)
+    const senderRotated = {
+      network,
+      payload: prepared.payload,
+      context: prepared.context,
+      roles: roles(original, network),
+      mode: 'receive' as const,
+      senderCurrent: rotated,
+      senderEvidence: old,
+      recipientCurrent: original,
+    }
+    expect(openDirectMessage(senderRotated).items).toHaveLength(1)
+
+    // Sender self-opens after rotation
+    const selfOpenKey = selfOpenKeyFromRoot(new Uint8Array(32).fill(0x55))
+    const sendRole = roles(original, network)
+    sendRole.sealMessage = inp => {
+      const salt = randomBytes(32)
+      const ephemeralSecret = selfOpenEphemeral({
+        selfOpenKey,
+        salt,
+        recipientPublicKey: inp.recipientPublicKey,
+        senderPublicKey: original.messageKey.keyBytes,
+      })!
+      return seal({
+        ...inp,
+        suiteId: 1,
+        senderPrivateKey: fromHex(v.message_secret_test_only),
+        senderPublicKey: original.messageKey.keyBytes,
+        salt,
+        ephemeralSecret,
+      })
+    }
+
+    const openRole = roles(rotated, network)
+    openRole.openOwnMessage = inp =>
+      openAsSender({
+        ...inp,
+        selfOpenKey,
+        senderPrivateKey: fromHex(v.message_secret_test_only),
+        senderPublicKey: original.messageKey.keyBytes,
+      })
+
+    const ownPrepared = prepareDirectMessage({
+      network,
+      senderCurrent: original,
+      recipientCurrent: original,
+      messageId: new Uint8Array(16),
+      items: [directMessageText('own-history')],
+      roles: sendRole,
+    })
+
+    // Sender self-opens when sender has rotated (using senderEvidence: old)
+    const ownOpenedSenderRotated = openOwnDirectMessage({
+      network,
+      payload: ownPrepared.payload,
+      context: ownPrepared.context,
+      roles: openRole,
+      senderCurrent: rotated,
+      senderEvidence: old,
+      recipientCurrent: original,
+    })
+    expect(ownOpenedSenderRotated.items).toHaveLength(1)
+
+    // Sender self-opens when recipient has rotated (using recipientEvidence: old)
+    const ownOpenedRecipientRotated = openOwnDirectMessage({
+      network,
+      payload: ownPrepared.payload,
+      context: ownPrepared.context,
+      roles: openRole,
+      senderCurrent: original,
+      recipientCurrent: rotated,
+      recipientEvidence: old,
+    })
+    expect(ownOpenedRecipientRotated.items).toHaveLength(1)
+
     const twice = await db.advance([candidate('rotate-stamp-again')], ctx)
     expect(() =>
       openDirectMessage({

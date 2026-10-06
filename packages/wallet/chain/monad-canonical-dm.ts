@@ -17,6 +17,7 @@ import { Transaction, computeAddress, getAddress, hexlify } from 'ethers'
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
 import {
+  decodeDirectMessageCryptoContext,
   encodeBlackjackHandV3Item,
   fromHex,
   isBlackjackHandV3Frame,
@@ -26,7 +27,7 @@ import {
   toHex,
 } from '@frank/codec'
 import { randomBytes } from '@frank/crypto-box'
-import type { Current } from '../../directory-admission/src'
+import type { Current, HistoricalEvidence } from '../../directory-admission/src'
 import {
   directMessageText,
   openDirectMessage,
@@ -85,6 +86,12 @@ export interface CanonicalDirectory {
   ): Promise<
     { subject: string; endpoint: string; current: Current } | undefined
   >
+  /**
+   * Looks up historical directory evidence for a subject by statement hash.
+   */
+  peerHistorical?(
+    peer: { subject: string; statementHash: string },
+  ): Promise<HistoricalEvidence | undefined>
   /**
    * Whether this wallet's relay says it delivers to accounts that live on other relays. Absent
    * counts as no: a message for another relay is then refused before anything is funded.
@@ -615,6 +622,57 @@ async function syncRecoveries(
   }
 }
 
+async function resolveHistoricalEvidence(
+  directory: CanonicalDirectory,
+  context: Uint8Array,
+  isOutbound: boolean,
+  self: Current,
+  selfSubject: string,
+  peer: { subject: string; current: Current },
+): Promise<{
+  senderEvidence?: HistoricalEvidence
+  recipientEvidence?: HistoricalEvidence
+}> {
+  if (!directory.peerHistorical) return {}
+  try {
+    const ctx = decodeDirectMessageCryptoContext(context)
+    const ctxSenderHash = toHex(ctx.senderDirectoryHash).toLowerCase()
+    const ctxRecipientHash = toHex(ctx.recipientDirectoryHash).toLowerCase()
+    let senderEvidence: HistoricalEvidence | undefined
+    let recipientEvidence: HistoricalEvidence | undefined
+    if (isOutbound) {
+      if (ctxSenderHash !== toHex(self.evidence.hash).toLowerCase()) {
+        senderEvidence = await directory.peerHistorical({
+          subject: selfSubject,
+          statementHash: ctxSenderHash,
+        })
+      }
+      if (ctxRecipientHash !== toHex(peer.current.evidence.hash).toLowerCase()) {
+        recipientEvidence = await directory.peerHistorical({
+          subject: peer.subject,
+          statementHash: ctxRecipientHash,
+        })
+      }
+    } else {
+      if (ctxSenderHash !== toHex(peer.current.evidence.hash).toLowerCase()) {
+        senderEvidence = await directory.peerHistorical({
+          subject: peer.subject,
+          statementHash: ctxSenderHash,
+        })
+      }
+      if (ctxRecipientHash !== toHex(self.evidence.hash).toLowerCase()) {
+        recipientEvidence = await directory.peerHistorical({
+          subject: selfSubject,
+          statementHash: ctxRecipientHash,
+        })
+      }
+    }
+    return { senderEvidence, recipientEvidence }
+  } catch {
+    return {}
+  }
+}
+
 async function fetchSince(
   owner: CanonicalMessagingOwner,
   params: Parameters<DirectMessageClient['fetchSince']>[0],
@@ -715,6 +773,15 @@ async function fetchSince(
         params.onQuarantinedTimestamp?.(record.timestampMs, digest)
         continue
       }
+      const { senderEvidence, recipientEvidence } =
+        await resolveHistoricalEvidence(
+          directory,
+          record.context,
+          isOutbound,
+          self,
+          owner.subject,
+          peer,
+        )
       const roles = owner.roles.create(directory.network, self)
       let items: MessageItem[]
       try {
@@ -726,7 +793,9 @@ async function fetchSince(
               context: record.context,
               roles,
               senderCurrent: self,
+              senderEvidence,
               recipientCurrent: peer.current,
+              recipientEvidence,
             })
           : openDirectMessage({
               mode: 'receive',
@@ -735,7 +804,9 @@ async function fetchSince(
               context: record.context,
               roles,
               senderCurrent: peer.current,
+              senderEvidence,
               recipientCurrent: self,
+              recipientEvidence,
             })
         items = opened.items.map(item =>
           item.kind === 'parsed' && item.typed?.type === 17
@@ -867,6 +938,15 @@ export function canonicalDirectMessages(
                   subject: peerSubjectHex,
                 })
                 if (!peer) return
+                const { senderEvidence, recipientEvidence } =
+                  await resolveHistoricalEvidence(
+                    directory,
+                    record.context,
+                    isOutbound,
+                    self,
+                    owner.subject,
+                    peer,
+                  )
                 const roles = owner.roles.create(directory.network, self)
                 let items: MessageItem[]
                 try {
@@ -878,7 +958,9 @@ export function canonicalDirectMessages(
                         context: record.context,
                         roles,
                         senderCurrent: self,
+                        senderEvidence,
                         recipientCurrent: peer.current,
+                        recipientEvidence,
                       })
                     : openDirectMessage({
                         mode: 'receive',
@@ -887,7 +969,9 @@ export function canonicalDirectMessages(
                         context: record.context,
                         roles,
                         senderCurrent: peer.current,
+                        senderEvidence,
                         recipientCurrent: self,
+                        recipientEvidence,
                       })
                   items = opened.items.map(item =>
                     item.kind === 'parsed' && item.typed?.type === 17

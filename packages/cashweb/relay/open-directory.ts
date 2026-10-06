@@ -203,6 +203,12 @@ export interface OpenDirectory {
     peer: { address: string } | { subject: string },
   ): Promise<DirectoryEntry | undefined>
   /**
+   * Looks up historical directory evidence for a subject by statement hash.
+   */
+  peerHistorical?(
+    peer: { subject: string; statementHash: string },
+  ): Promise<HistoricalEvidence | undefined>
+  /**
    * Whether the configured relay says it delivers to accounts that live on other relays
    * (`forwarding: true` in `/relay/v1/info`). Absent or unreadable counts as no.
    */
@@ -1086,6 +1092,47 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
       }
     },
     peerCurrent: peer,
+    async peerHistorical({
+      subject,
+      statementHash,
+    }: {
+      subject: string
+      statementHash: string
+    }): Promise<HistoricalEvidence | undefined> {
+      const normHash = statementHash.toLowerCase()
+      const hashBytes = fromHex(normHash)
+      const handle = handles.get(subject)
+      if (handle) {
+        try {
+          const evidence = await serial(subject, () =>
+            handle.store.historicalEvidence(hashBytes),
+          )
+          if (evidence) return evidence
+        } catch {
+          // ignore
+        }
+      }
+      try {
+        const bytes = await getEntry(
+          `/${subject}/statements/${normHash}`,
+          'historical',
+        )
+        if (bytes) {
+          const verified = verifyPreviewDirectoryEvidence(bytes, network)
+          if (toHex(verified.statementHash).toLowerCase() === normHash) {
+            return {
+              kind: 'historical-evidence',
+              hash: verified.statementHash,
+              statement: verified.statementFrame.frame,
+              attestation: bytes,
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+      return undefined
+    },
     async forwarding() {
       if (Date.now() - forwardingReadAt > FORWARDING_REFRESH_MS)
         try {

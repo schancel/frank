@@ -128,6 +128,7 @@ jest.mock('../monad-http', () => {
   }
 })
 const mockFunded: { from: string; to: string; value: bigint }[] = []
+let mockStreamRecordHandler: ((record: any) => Promise<void>) | undefined
 jest.mock('@frank/cashweb/relay/monad-mailbox-client', () => {
   const actual = jest.requireActual('@frank/cashweb/relay/monad-mailbox-client')
   return {
@@ -135,9 +136,14 @@ jest.mock('@frank/cashweb/relay/monad-mailbox-client', () => {
     fetchCanonicalMailboxPage: jest.fn(actual.fetchCanonicalMailboxPage),
     fetchCanonicalInboxPage: jest.fn(),
     fetchCanonicalRecoveryPage: jest.fn(async () => ({ records: [] })),
+    connectCanonicalMailboxStream: jest.fn(async (params: any) => {
+      mockStreamRecordHandler = params.onRecord
+      return { close: jest.fn() }
+    }),
   }
 })
 import {
+  connectCanonicalMailboxStream,
   fetchCanonicalInboxPage,
   fetchCanonicalMailboxPage,
   MonadMailboxChallengeCapacityError,
@@ -882,11 +888,13 @@ describe('two typed wallets on the open directory', () => {
   jest.setTimeout(60_000)
   const SECOND = 1_000_000_000n
   const CLOCK = 1_800_000_000n * SECOND
+  let clock = CLOCK
   let f: Awaited<ReturnType<typeof fixture>>
   let relay: ReturnType<typeof createFakeRelay>
   const directories: ReturnType<typeof openDirectory>[] = []
   beforeEach(async () => {
     jest.clearAllMocks()
+    clock = CLOCK
     mockBalances.clear()
     mockFunded.length = 0
     f = await fixture()
@@ -910,7 +918,7 @@ describe('two typed wallets on the open directory', () => {
     const directory = openDirectory({
       network: 'monad-testnet',
       relayBaseUrl: on.endpoint,
-      nowNs: () => CLOCK,
+      nowNs: () => clock,
       fetch: on.fetch,
       ...nodeDirectoryStorage(join(f.root, `open-${name}`)),
       self: {
@@ -936,6 +944,17 @@ describe('two typed wallets on the open directory', () => {
   const inboxRecord = (index: number, timestampMs: number) => {
     const request = restoreCanonicalRequest(f.requests[index])
     return {
+      delivery: request.parts.delivery,
+      context: request.parts.context,
+      submissionIdentity: request.identity.submission_identity,
+      timestampMs,
+    }
+  }
+  /** What the relay would echo to the sender's mailbox for the n-th accepted submission. */
+  const outboundRecord = (index: number, timestampMs: number) => {
+    const request = restoreCanonicalRequest(f.requests[index])
+    return {
+      direction: 'out' as const,
       delivery: request.parts.delivery,
       context: request.parts.context,
       submissionIdentity: request.identity.submission_identity,
@@ -986,6 +1005,121 @@ describe('two typed wallets on the open directory', () => {
     expect(atAlice[0].senderAddress.raw.toLowerCase()).toBe(
       f.bob.identity.address.raw.toLowerCase(),
     )
+  })
+
+  it('bounces sent messages back to sender mailbox and decrypts own message via salt', async () => {
+    await online('alice', f.alice)
+    await online('bob', f.bob)
+    await fund(f.alice)
+
+    // Alice sends to Bob
+    await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('hello bob from alice'),
+    })
+
+    // Outbound message is echoed back to Alice's mailbox with direction: 'out'
+    mailboxPage.mockResolvedValueOnce({ records: [outboundRecord(0, 10)] })
+    const atAlice = await f.chain.directMessages.fetchSince({
+      wallet: f.alice,
+      sinceMs: 0,
+    })
+    expect(atAlice).toHaveLength(1)
+    expect(atAlice[0].outbound).toBe(true)
+    expect(atAlice[0].items).toEqual(text('hello bob from alice'))
+    expect(atAlice[0].senderAddress.raw.toLowerCase()).toBe(
+      f.alice.identity.address.raw.toLowerCase(),
+    )
+    expect(atAlice[0].recipientAddress.raw.toLowerCase()).toBe(
+      f.bob.identity.address.raw.toLowerCase(),
+    )
+    expect(toHex(atAlice[0].senderPublicKey)).toBe(
+      toHex(f.alice.identity.compressedPubKey),
+    )
+    expect(toHex(atAlice[0].recipientPublicKey)).toBe(
+      toHex(f.bob.identity.compressedPubKey),
+    )
+
+    // Stream receives outbound record via WebSocket mailbox stream
+    let streamedRecord: any
+    const unsub = f.chain.directMessages.subscribeMailboxStream!({
+      wallet: f.alice,
+      onRecord: record => {
+        streamedRecord = record
+      },
+    })
+    // Give async connect time to resolve
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(mockStreamRecordHandler).toBeDefined()
+    await mockStreamRecordHandler!(outboundRecord(0, 11))
+    expect(streamedRecord).toBeDefined()
+    expect(streamedRecord.outbound).toBe(true)
+    expect(streamedRecord.items).toEqual(text('hello bob from alice'))
+    expect(streamedRecord.senderAddress.raw.toLowerCase()).toBe(
+      f.alice.identity.address.raw.toLowerCase(),
+    )
+    expect(streamedRecord.recipientAddress.raw.toLowerCase()).toBe(
+      f.bob.identity.address.raw.toLowerCase(),
+    )
+    unsub()
+  })
+
+  it('decrypts own outbound message and recipient inbox message across directory statement rotation', async () => {
+    const aliceDir = await online('alice', f.alice)
+    const bobDir = await online('bob', f.bob)
+    await fund(f.alice)
+
+    // Alice sends to Bob when both are on revision 0
+    await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('pre-rotation message'),
+    })
+
+    // Advance clock into renewal window (345 days)
+    clock += 345n * 24n * 3600n * SECOND
+
+    // Bob rotates directory statement to revision 1
+    const bobRenewed = await bobDir.publish()
+    expect(bobRenewed.current.revision).toBe(1n)
+
+    // Alice fetches her mailbox: Bob's statement has rotated, so Alice resolves Bob's
+    // revision 0 statement via peerHistorical and decrypts her own outbound message
+    mailboxPage.mockResolvedValueOnce({ records: [outboundRecord(0, 20)] })
+    const atAliceOwn = await f.chain.directMessages.fetchSince({
+      wallet: f.alice,
+      sinceMs: 0,
+    })
+    expect(atAliceOwn).toHaveLength(1)
+    expect(atAliceOwn[0].outbound).toBe(true)
+    expect(atAliceOwn[0].items).toEqual(text('pre-rotation message'))
+
+    // Bob fetches his inbox: Bob's own statement has rotated, so Bob resolves his
+    // revision 0 statement via peerHistorical and decrypts Alice's incoming message
+    mailboxPage.mockResolvedValueOnce({ records: [inboxRecord(0, 20)] })
+    const atBob = await f.chain.directMessages.fetchSince({
+      wallet: f.bob,
+      sinceMs: 0,
+    })
+    expect(atBob).toHaveLength(1)
+    expect(atBob[0].outbound).toBe(false)
+    expect(atBob[0].items).toEqual(text('pre-rotation message'))
+
+    // Alice also rotates her directory statement to revision 1
+    const aliceRenewed = await aliceDir.publish()
+    expect(aliceRenewed.current.revision).toBe(1n)
+
+    // Now BOTH Alice and Bob have rotated. Alice fetches her mailbox again:
+    // Alice resolves BOTH Alice and Bob revision 0 statements and decrypts
+    mailboxPage.mockResolvedValueOnce({ records: [outboundRecord(0, 25)] })
+    const atAliceBothRotated = await f.chain.directMessages.fetchSince({
+      wallet: f.alice,
+      sinceMs: 0,
+    })
+    expect(atAliceBothRotated).toHaveLength(1)
+    expect(atAliceBothRotated[0].outbound).toBe(true)
+    expect(atAliceBothRotated[0].items).toEqual(text('pre-rotation message'))
   })
 
   it('gives a typed "not published" error for an unknown address and pays nothing', async () => {

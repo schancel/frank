@@ -974,6 +974,15 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       requireLegacyMessaging(monadWallet);
       throw new Error("No legacy recovered stamp payment found");
     },
+
+    subscribeMailboxStream(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      const canonical = canonicalMessagingFor(wallet);
+      if (canonical?.subscribeMailboxStream) {
+        return canonical.subscribeMailboxStream(params);
+      }
+      return () => {};
+    },
   };
 
   const nativeTransfers: ActiveChain["nativeTransfers"] = {

@@ -13,6 +13,8 @@
     "target:vendor": "tsx targets/vendor.ts",
     "target:qwen": "tsx targets/qwen.ts",
     "target:faucet": "tsx targets/faucet.ts",
+    "target:lobby": "tsx targets/lobby.ts",
+    "target:rps": "tsx targets/rps.ts",
     "target:all": "tsx targets/all-bots.ts",
     "raffle": "tsx raffle-bot.livecheck.ts",
     "raffle:refund": "tsx raffle-refund.livecheck.ts",

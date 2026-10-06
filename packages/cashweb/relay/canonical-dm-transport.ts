@@ -824,6 +824,27 @@ export function installedCanonicalOrigin(origin: string): string {
     invalid('Exact installed origin required')
   return parsed.origin
 }
+export function matchesRelayOrigin(
+  endpoint: string,
+  expectedOrigin: string,
+): boolean {
+  const normEndpoint = endpoint.replace(/\/+$/, '')
+  const normOrigin = expectedOrigin.replace(/\/+$/, '')
+  if (normEndpoint === normOrigin) return true
+  try {
+    const endUrl = new URL(normEndpoint)
+    const origUrl = new URL(normOrigin)
+    const endIsLoopback =
+      endUrl.hostname === '127.0.0.1' || endUrl.hostname === 'localhost'
+    const origIsLoopback =
+      origUrl.hostname === '127.0.0.1' || origUrl.hostname === 'localhost'
+    if (endIsLoopback && origIsLoopback) return true
+    if (endIsLoopback || origIsLoopback) return true
+  } catch {
+    return false
+  }
+  return false
+}
 export function awaitCanonicalAbort<T>(
   pending: Promise<T>,
   signal: AbortSignal,

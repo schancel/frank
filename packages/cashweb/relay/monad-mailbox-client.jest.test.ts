@@ -1181,6 +1181,14 @@ describe('canonical private mailbox', () => {
     const result = await fetchCanonicalInboxPage(trailingAuth)
     expect(result.records).toHaveLength(1)
   })
+  test('authenticates successfully when directory statement has loopback relay endpoint and relayBaseUrl is tunnel/remote origin', async () => {
+    const tunnelAuth = {
+      ...auth,
+      relayBaseUrl: 'https://demo-app.ngrok-free.dev',
+    }
+    const result = await fetchCanonicalInboxPage(tunnelAuth)
+    expect(result.records).toHaveLength(1)
+  })
   test('locator/address and installed network mismatch fail before signing', async () => {
     await expect(
       fetchCanonicalInboxPage({ ...auth, subject: '02' + 'ff'.repeat(32) }),

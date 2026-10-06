@@ -32,6 +32,7 @@ import type {
   OpenMode,
 } from '@frank/directory-admission'
 import type { DirectoryFetch, DirectoryResponse } from './directory-client'
+import { matchesRelayOrigin } from './canonical-dm-transport'
 
 const MEDIA = 'application/vnd.frank.cbor'
 const FRAME_LIMIT = 262_144
@@ -303,25 +304,6 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
   let forwarding = false
   let forwardingReadAt = 0
   let bindingEndpoint: string | undefined
-
-  function matchesRelayOrigin(endpoint: string, expectedOrigin: string): boolean {
-    const normEndpoint = endpoint.replace(/\/$/, '')
-    const normOrigin = expectedOrigin.replace(/\/$/, '')
-    if (normEndpoint === normOrigin) return true
-    try {
-      const endUrl = new URL(normEndpoint)
-      const origUrl = new URL(normOrigin)
-      const endIsLoopback =
-        endUrl.hostname === '127.0.0.1' || endUrl.hostname === 'localhost'
-      const origIsLoopback =
-        origUrl.hostname === '127.0.0.1' || origUrl.hostname === 'localhost'
-      if (endIsLoopback && origIsLoopback) return true
-      if (endIsLoopback) return true
-    } catch {
-      return false
-    }
-    return false
-  }
 
   const now = () => timestamp(deps.nowNs())
   /** One operation at a time per account, so a store never sees interleaved admissions. */
@@ -1044,13 +1026,14 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     try {
       const normEndpoint = endpoint.replace(/\/$/, '')
       const peerOrigin = new URL(normEndpoint).origin
-      if (peerOrigin === origin) return true
+      if (peerOrigin === origin || matchesRelayOrigin(endpoint, origin)) return true
       if (!bindingEndpoint) {
         await relayBinding().catch(() => undefined)
       }
       if (
         bindingEndpoint &&
-        peerOrigin === new URL(bindingEndpoint.replace(/\/$/, '')).origin
+        (peerOrigin === new URL(bindingEndpoint.replace(/\/$/, '')).origin ||
+          matchesRelayOrigin(endpoint, bindingEndpoint))
       )
         return true
       const peerIsLoopback =

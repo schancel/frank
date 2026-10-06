@@ -1,5 +1,5 @@
 export type SupportedChainFamily = "evm" | "bitcoin" | "solana";
-export type SupportedNetwork = "mainnet" | "testnet" | "devnet" | "regtest";
+export type SupportedNetwork = "mainnet" | "testnet" | "regtest";
 export type SupportedChainKind =
   | "monad"
   | "ecash"
@@ -138,7 +138,7 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> = Object.freeze
     family: "solana",
     curve: "ed25519",
     keyType: 2,
-    network: "devnet",
+    network: "testnet",
     isTestnet: true,
     name: "Solana Devnet",
     unit: "dSOL",

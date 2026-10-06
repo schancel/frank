@@ -80,7 +80,7 @@ describe("chains-registry", () => {
       family: "solana",
       curve: "ed25519",
       keyType: 2,
-      network: "devnet",
+      network: "testnet",
       isTestnet: true,
       name: "Solana Devnet",
       unit: "dSOL",
@@ -241,8 +241,7 @@ describe("chains-registry", () => {
     expect(getChainRegistryByKind("monad", false).unit).toBe("MON");
     expect(getChainRegistryByKind("ecash", true).unit).toBe("tXEC");
     expect(getChainRegistryByKind("ecash", false).unit).toBe("XEC");
-    expect(getChainRegistryByKind("solana", true).unit).toBe("tSOL");
-    expect(getChainRegistryEntry("solana-devnet")?.unit).toBe("dSOL");
+    expect(getChainRegistryByKind("solana", true).unit).toBe("dSOL");
     expect(getChainRegistryByKind("solana", false).unit).toBe("SOL");
     expect(getChainRegistryByKind("ethereum", true).unit).toBe("SEP");
     expect(getChainRegistryByKind("ethereum", false).unit).toBe("ETH");

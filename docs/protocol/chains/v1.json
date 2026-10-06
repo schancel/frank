@@ -197,7 +197,7 @@
     {
       "id": "solana-devnet",
       "family": "solana",
-      "network": "devnet",
+      "network": "testnet",
       "caip2": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
       "native_chain_id": null,
       "allowed_proxy_capabilities": ["json-rpc"],

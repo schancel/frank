@@ -44,7 +44,9 @@ jest.mock('pinia', () => ({
 }))
 jest.mock('src/stores/appearance', () => ({
   useAppearanceStore: () =>
-    jest.requireActual('vue').reactive({ darkMode: false, locale: 'en-us' }),
+    jest
+      .requireActual('vue')
+      .reactive({ darkMode: false, locale: 'en-us', theme: 'carnelian' }),
 }))
 jest.mock('src/stores/contacts', () => ({
   useContactStore: () =>
@@ -83,7 +85,7 @@ async function waitForPath(router: Router, path: string) {
   return router.currentRoute.value.path
 }
 
-function mountSettings(router: Router) {
+function mountSettings(router: Router, qMocks: Record<string, any> = {}) {
   return shallowMount(SettingsPage, {
     global: {
       stubs: {
@@ -93,7 +95,7 @@ function mountSettings(router: Router) {
       },
       mocks: {
         $t: (key: string) => key,
-        $q: { dark: { set: jest.fn() } },
+        $q: { dark: { set: jest.fn() }, notify: jest.fn(), ...qMocks },
         $i18n: { locale: 'en-us' },
         $router: router,
       },
@@ -103,32 +105,44 @@ function mountSettings(router: Router) {
 
 type SettingsVm = { save: () => void; cancel: () => void }
 
-describe('Settings Save/Cancel navigation (ticket #275)', () => {
-  it.each(['save', 'cancel'] as const)(
-    '%s stays inside the app when Settings was opened directly',
-    async action => {
-      const router = await openDirectly('#/settings')
-      const wrapper = mountSettings(router)
+describe('Settings Save/Cancel navigation (ticket #275 / #1001)', () => {
+  it('cancel stays inside the app when Settings was opened directly', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router)
 
-      ;(wrapper.vm as unknown as SettingsVm)[action]()
+    ;(wrapper.vm as unknown as SettingsVm).cancel()
 
-      expect(await waitForPath(router, '/')).toBe('/')
-      expect(window.location.hash).toBe('#/')
-    },
-  )
+    expect(await waitForPath(router, '/')).toBe('/')
+    expect(window.location.hash).toBe('#/')
+  })
 
-  it.each(['save', 'cancel'] as const)(
-    '%s returns to the previous in-app route when there is one',
-    async action => {
-      const router = await openDirectly('#/forum')
-      await router.push('/settings')
-      const wrapper = mountSettings(router)
+  it('cancel returns to the previous in-app route when there is one', async () => {
+    const router = await openDirectly('#/forum')
+    await router.push('/settings')
+    const wrapper = mountSettings(router)
 
-      ;(wrapper.vm as unknown as SettingsVm)[action]()
+    ;(wrapper.vm as unknown as SettingsVm).cancel()
 
-      expect(await waitForPath(router, '/forum')).toBe('/forum')
-    },
-  )
+    expect(await waitForPath(router, '/forum')).toBe('/forum')
+  })
+
+  it('save commits settings and stays on settings page with notification feedback (#1001)', async () => {
+    const notifyMock = jest.fn()
+    const router = await openDirectly('#/forum')
+    await router.push('/settings')
+    const wrapper = mountSettings(router, { notify: notifyMock })
+
+    ;(wrapper.vm as unknown as SettingsVm).save()
+
+    // Must stay on /settings without abruptly kicking the user back to /forum
+    expect(router.currentRoute.value.path).toBe('/settings')
+    expect(notifyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'positive',
+        message: 'settings.savedNotification',
+      }),
+    )
+  })
 })
 
 describe('Settings header (ticket #369)', () => {

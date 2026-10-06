@@ -1,0 +1,35 @@
+:root {
+  --vp-c-brand-1: #0284c7;
+  --vp-c-brand-2: #0ea5e9;
+  --vp-c-brand-3: #38bdf8;
+  --vp-font-family-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, monospace;
+}
+
+.dark {
+  --vp-c-brand-1: #38bdf8;
+  --vp-c-brand-2: #0ea5e9;
+  --vp-c-brand-3: #0284c7;
+}
+
+/* Ensure Mermaid diagrams have proper spacing and high contrast */
+.mermaid {
+  display: flex;
+  justify-content: center;
+  margin: 2rem 0;
+  padding: 1.5rem;
+  background-color: var(--vp-c-bg-soft);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+/* KaTeX formula rendering polish */
+.katex-display {
+  padding: 1rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* CDDL Code Block Accents */
+.language-cddl {
+  border-left: 3px solid #f59e0b;
+}

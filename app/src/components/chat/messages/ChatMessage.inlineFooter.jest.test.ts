@@ -385,3 +385,16 @@ describe('inline bubble footer (#391)', () => {
     },
   )
 })
+
+describe('modernized chat message bubble geometry (#1003)', () => {
+  it('defines asymmetric corner radii and removes jagged speech bubble notch', () => {
+    const css = readFileSync(join(process.cwd(), 'src/css/app.scss'), 'utf8')
+    expect(css).toMatch(
+      /\.q-message-text--sent\s*\{[^}]*border-radius:\s*18px 18px 4px 18px/,
+    )
+    expect(css).toMatch(
+      /\.q-message-text--received\s*\{[^}]*border-radius:\s*18px 18px 18px 4px/,
+    )
+    expect(css).toMatch(/&:last-child::before\s*\{[^}]*display:\s*none/)
+  })
+})

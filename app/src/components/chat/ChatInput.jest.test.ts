@@ -249,3 +249,31 @@ describe('stable chat-level focus target (#429)', () => {
     wrapper.unmount()
   })
 })
+
+describe('modernized chat input interface (#1003)', () => {
+  it('renders the encapsulated input capsule and styled primary send button', () => {
+    const wrapper = mount(ChatInput, {
+      global: globalOptions,
+    })
+    expect(wrapper.find('.chat-input-container').exists()).toBe(true)
+    expect(wrapper.find('.chat-input-field').exists()).toBe(true)
+
+    // Stamp multiplier pill shows initial multiplier
+    const stampBtn = wrapper.find('.chat-stamp-btn')
+    expect(stampBtn.exists()).toBe(true)
+    expect(wrapper.find('.chat-stamp-pill-text').text()).toBe('1×')
+
+    // Send button has primary color and modern send class
+    const sendBtn = wrapper.find('.chat-send-btn')
+    expect(sendBtn.exists()).toBe(true)
+    expect(sendBtn.attributes('color')).toBe('primary')
+  })
+
+  it('updates stamp multiplier pill text when stampAmount changes', async () => {
+    const wrapper = mount(ChatInput, {
+      props: { stampAmount: '20000000000000000' }, // 2x defaultStampValue (10^16)
+      global: globalOptions,
+    })
+    expect(wrapper.find('.chat-stamp-pill-text').text()).toBe('2×')
+  })
+})

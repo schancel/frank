@@ -68,13 +68,39 @@
                 </div>
               </q-tab-panel>
               <q-tab-panel name="appearance">
-                <div class="row">
+                <div class="row items-center q-mb-md">
                   <q-toggle
                     :label="$t('settings.darkMode')"
                     v-model="darkMode"
                   />
                 </div>
-                <div style="height: 2rem"></div>
+                <div class="q-mb-lg">
+                  <div class="text-subtitle2 q-mb-sm">
+                    {{ $t('settings.themeTitle') }}
+                  </div>
+                  <div class="row q-gutter-sm">
+                    <q-chip
+                      v-for="stone in themeOptions"
+                      :key="stone.id"
+                      clickable
+                      :selected="theme === stone.id"
+                      @click="theme = stone.id"
+                      outline
+                      :color="theme === stone.id ? 'primary' : ''"
+                      class="cursor-pointer"
+                    >
+                      <q-avatar
+                        :style="{ backgroundColor: stone.stoneColor }"
+                        size="18px"
+                        class="q-mr-xs"
+                      />
+                      <span>{{ stone.label }}</span>
+                    </q-chip>
+                  </div>
+                  <div class="text-caption text-grey q-mt-xs">
+                    {{ selectedThemeDescription }}
+                  </div>
+                </div>
                 <div class="row">
                   <q-select
                     v-model="locale"
@@ -118,6 +144,12 @@
 import { navigateBack } from 'src/utils/navigate-back'
 import { localeOptions } from 'src/i18n'
 import { applyLocale } from 'src/utils/apply-locale'
+import {
+  DEFAULT_SIGNET_THEME,
+  SIGNET_THEMES,
+  SignetStone,
+  applyTheme,
+} from 'src/utils/theme'
 
 import { defineComponent, ref } from 'vue'
 import { QInput } from 'quasar'
@@ -135,17 +167,28 @@ export default defineComponent({
     const appearanceStore = useAppearanceStore()
     const contactStore = useContactStore()
     const { updateInterval: storeUpdateInterval } = storeToRefs(contactStore)
-    const { darkMode: storeDarkMode, locale: storeLocale } =
-      storeToRefs(appearanceStore)
+    const {
+      darkMode: storeDarkMode,
+      locale: storeLocale,
+      theme: storeTheme,
+    } = storeToRefs(appearanceStore)
+
+    const theme = ref<SignetStone>(
+      (storeTheme && storeTheme.value) || DEFAULT_SIGNET_THEME,
+    )
+    const themeOptions = Object.values(SIGNET_THEMES)
 
     return {
       darkMode: ref(storeDarkMode.value),
+      theme,
+      themeOptions,
       updateInterval: ref(storeUpdateInterval.value / msToMinutes),
       // A local draft, not bound to vue-i18n's own global locale -- ticket #156: selecting an
       // option must never affect the app until Save, the same as darkMode/updateInterval above.
       locale: ref(storeLocale.value),
       contactRefreshInterval: ref<QInput | null>(null),
       storeDarkMode,
+      storeTheme,
       storeUpdateInterval,
       storeLocale,
       localeOptions,
@@ -156,10 +199,20 @@ export default defineComponent({
       tab: 'networking',
     }
   },
+  computed: {
+    selectedThemeDescription(): string {
+      const selected = SIGNET_THEMES[this.theme]
+      return selected ? selected.tagline : ''
+    },
+  },
   methods: {
     save() {
       this.storeDarkMode = this.darkMode
       this.$q.dark.set(this.darkMode)
+      if (this.storeTheme !== undefined) {
+        this.storeTheme = this.theme
+      }
+      applyTheme(this.theme, this.darkMode)
       this.storeUpdateInterval = this.updateInterval * msToMinutes
       this.storeLocale = this.locale
       void applyLocale({
@@ -169,11 +222,20 @@ export default defineComponent({
         },
         locale: this.locale,
       })
-      navigateBack(this.$router)
+      if (typeof this.$q.notify === 'function') {
+        this.$q.notify({
+          type: 'positive',
+          message: this.$t('settings.savedNotification'),
+          timeout: 2000,
+        })
+      }
     },
     cancel() {
       // Discard the draft -- it was never applied anywhere, so there's nothing else to undo.
       this.locale = this.storeLocale
+      if (this.storeTheme !== undefined) {
+        this.theme = this.storeTheme
+      }
       navigateBack(this.$router)
     },
   },

@@ -697,7 +697,9 @@ export default {
     contactRefreshIntervalHint:
       'Intervalle entre mise à jour des contacts (minutes)', //? Interval between contact updates (minutes)
     darkMode: 'Mode Nuit/Sombre',
+    themeTitle: 'Pierre de Signet',
     saveSettings: 'Enregistrer',
+    savedNotification: 'Paramètres enregistrés',
     cancelSettings: 'Annuler',
     languageSelectorCaption: 'Langue',
   },

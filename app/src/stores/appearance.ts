@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { LevelDB } from 'level'
 
 import { defaultLocale } from 'src/i18n'
+import { DEFAULT_SIGNET_THEME, SignetStone } from 'src/utils/theme'
 
 export interface State {
   darkMode: boolean
@@ -9,6 +10,8 @@ export interface State {
   /** The committed (Saved) UI locale -- ticket #156. Never written directly from a Settings
    * draft in progress; only `save()` in `Settings.vue` commits a new value here. */
   locale: string
+  /** The committed UI color theme (Signet stone). Defaults to 'carnelian'. */
+  theme: SignetStone
 }
 
 /** Extracted from the `storage` option below (same behavior) so it's directly unit-testable --
@@ -36,10 +39,14 @@ export const useAppearanceStore = defineStore('appearance', {
     darkMode: false,
     lastDismissed: 0,
     locale: defaultLocale,
+    theme: DEFAULT_SIGNET_THEME,
   }),
   actions: {
     setDarkMode(darkMode: boolean) {
       this.darkMode = darkMode
+    },
+    setTheme(theme: SignetStone) {
+      this.theme = theme
     },
   },
   storage: {

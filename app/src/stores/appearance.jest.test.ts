@@ -8,6 +8,7 @@ import {
   useAppearanceStore,
 } from './appearance'
 import { defaultLocale } from 'src/i18n'
+import { DEFAULT_SIGNET_THEME } from 'src/utils/theme'
 
 function fakeStorage(initial: Record<string, string> = {}): LevelDB {
   const data = { ...initial }
@@ -28,9 +29,10 @@ beforeEach(() => {
 })
 
 describe('useAppearanceStore', () => {
-  it('defaults to the app default locale', () => {
+  it('defaults to the app default locale and carnelian theme', () => {
     const store = useAppearanceStore()
     expect(store.locale).toBe(defaultLocale)
+    expect(store.theme).toBe(DEFAULT_SIGNET_THEME)
   })
 })
 
@@ -39,9 +41,14 @@ describe('useAppearanceStore', () => {
  * exercises the exact `save`/`restore` pair `boot/pinia.ts`'s generic plugin calls, directly.
  */
 describe('saveAppearance / restoreAppearance', () => {
-  it('round-trips locale (and every other field) through storage', async () => {
+  it('round-trips locale and theme (and every other field) through storage', async () => {
     const storage = fakeStorage()
-    const state: State = { darkMode: true, lastDismissed: 42, locale: 'fr-fr' }
+    const state: State = {
+      darkMode: true,
+      lastDismissed: 42,
+      locale: 'fr-fr',
+      theme: 'lapis',
+    }
 
     await saveAppearance(storage, state)
     const restored = await restoreAppearance(storage)
@@ -57,8 +64,8 @@ describe('saveAppearance / restoreAppearance', () => {
     expect(restored).toEqual({})
   })
 
-  it('a restore missing `locale` (a pre-#156 persisted blob) never overrides the store default', async () => {
-    // Simulates a real user's pre-existing `appearance` blob, saved before `locale` existed.
+  it('a restore missing `locale` or `theme` (a pre-existing persisted blob) never overrides the store default', async () => {
+    // Simulates a real user's pre-existing `appearance` blob, saved before `locale`/`theme` existed.
     const storage = fakeStorage({
       appearance: JSON.stringify({ darkMode: true, lastDismissed: 1 }),
     })
@@ -68,6 +75,7 @@ describe('saveAppearance / restoreAppearance', () => {
     store.$patch(restored)
 
     expect(store.locale).toBe(defaultLocale)
+    expect(store.theme).toBe('carnelian')
     expect(store.darkMode).toBe(true)
   })
 })

@@ -143,6 +143,23 @@ async function main() {
     `Amount ${config.amountWei} wei per new address; max ${config.maxPerRun}/run, ${config.maxPerDay}/24h; reserve ${config.minReserveWei} wei`,
   )
 
+  if (
+    process.env.USE_BOT_FRAMEWORK === '1' ||
+    (process.env.USE_BOT_FRAMEWORK !== '0' && process.env.NODE_ENV !== 'test')
+  ) {
+    const { FrankBotHost } = await import('@frank/bot-framework')
+    const { FaucetBot } = await import('./src/bots/faucet-bot')
+    const host = new FrankBotHost({
+      stateDir: stateDirPath,
+      relayBaseUrl,
+      rpcUrl,
+      pollIntervalMs: settings.pollIntervalMs,
+    })
+    await host.register(new FaucetBot(config))
+    await host.start()
+    return
+  }
+
   const store = new FaucetStateStore(stateDirPath)
   await store.Open()
   const faucet = new Faucet({

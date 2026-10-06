@@ -1289,7 +1289,10 @@ async function main() {
   console.log(`Max wager:  ${maxWagerWei} wei`)
   console.log(`Max hands:  ${maxHands}`)
 
-  if (process.env.USE_BOT_FRAMEWORK !== '0') {
+  if (
+    process.env.USE_BOT_FRAMEWORK === '1' ||
+    (process.env.USE_BOT_FRAMEWORK !== '0' && process.env.NODE_ENV !== 'test')
+  ) {
     const { FrankBotHost } = await import('@frank/bot-framework')
     const { BlackjackDealerBot } = await import('./src/bots/blackjack-bot')
     const host = new FrankBotHost({

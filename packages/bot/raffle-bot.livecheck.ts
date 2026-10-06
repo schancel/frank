@@ -346,6 +346,23 @@ async function main() {
   console.log(`Entry price:  ${entryPriceWei} wei`)
   console.log(`Round size:   ${maxEntries} entrants`)
 
+  if (
+    process.env.USE_BOT_FRAMEWORK === '1' ||
+    (process.env.USE_BOT_FRAMEWORK !== '0' && process.env.NODE_ENV !== 'test')
+  ) {
+    const { FrankBotHost } = await import('@frank/bot-framework')
+    const { RaffleBot } = await import('./src/bots/raffle-bot')
+    const host = new FrankBotHost({
+      stateDir: stateDirPath,
+      relayBaseUrl,
+      rpcUrl,
+      pollIntervalMs,
+    })
+    await host.register(new RaffleBot({ maxEntries, entryPriceWei }))
+    await host.start()
+    return
+  }
+
   const identity = loadOrCreateIdentity(identityJsonPath, 'raffle-bot')
   await registerAndLog({
     relayBaseUrl,

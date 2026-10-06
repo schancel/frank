@@ -15,6 +15,17 @@ function encodeVarint(val: number | bigint): number[] {
   return buf
 }
 
+function concatUint8Arrays(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, c) => sum + c.length, 0)
+  const res = new Uint8Array(total)
+  let off = 0
+  for (const c of chunks) {
+    res.set(c, off)
+    off += c.length
+  }
+  return res
+}
+
 function decodeVarint(bytes: Uint8Array, off: { pos: number }): bigint {
   let res = 0n
   let shift = 0n
@@ -119,26 +130,24 @@ export class MonadStampedMessage {
   }
 
   serializeBinary(): Uint8Array {
-    const parts: number[] = []
+    const chunks: Uint8Array[] = []
     if (this.encryptedPayload.length > 0) {
-      parts.push(
-        0x12,
-        ...encodeVarint(this.encryptedPayload.length),
-        ...this.encryptedPayload,
+      chunks.push(
+        new Uint8Array([0x12, ...encodeVarint(this.encryptedPayload.length)]),
+        this.encryptedPayload,
       )
     }
     if (this.payloadHash.length > 0) {
-      parts.push(
-        0x1a,
-        ...encodeVarint(this.payloadHash.length),
-        ...this.payloadHash,
+      chunks.push(
+        new Uint8Array([0x1a, ...encodeVarint(this.payloadHash.length)]),
+        this.payloadHash,
       )
     }
     for (const p of this.stampPayments) {
       const pb = p.serializeBinary()
-      parts.push(0x22, ...encodeVarint(pb.length), ...pb)
+      chunks.push(new Uint8Array([0x22, ...encodeVarint(pb.length)]), pb)
     }
-    return new Uint8Array(parts)
+    return concatUint8Arrays(chunks)
   }
 
   static deserializeBinary(bytes: Uint8Array): MonadStampedMessage {
@@ -197,22 +206,21 @@ export class StoredMonadMessage {
   }
 
   serializeBinary(): Uint8Array {
-    const parts: number[] = []
+    const chunks: Uint8Array[] = []
     if (this.message !== undefined) {
       const mb = this.message.serializeBinary()
-      parts.push(0x0a, ...encodeVarint(mb.length), ...mb)
+      chunks.push(new Uint8Array([0x0a, ...encodeVarint(mb.length)]), mb)
     }
     if (this.timestamp !== 0) {
-      parts.push(0x20, ...encodeVarint(this.timestamp))
+      chunks.push(new Uint8Array([0x20, ...encodeVarint(this.timestamp)]))
     }
     if (this.networkTag.length > 0) {
-      parts.push(
-        0x2a,
-        ...encodeVarint(this.networkTag.length),
-        ...this.networkTag,
+      chunks.push(
+        new Uint8Array([0x2a, ...encodeVarint(this.networkTag.length)]),
+        this.networkTag,
       )
     }
-    return new Uint8Array(parts)
+    return concatUint8Arrays(chunks)
   }
 
   static deserializeBinary(bytes: Uint8Array): StoredMonadMessage {
@@ -253,12 +261,12 @@ export class StoredMonadMessages {
   }
 
   serializeBinary(): Uint8Array {
-    const parts: number[] = []
+    const chunks: Uint8Array[] = []
     for (const m of this.messages) {
       const mb = m.serializeBinary()
-      parts.push(0x0a, ...encodeVarint(mb.length), ...mb)
+      chunks.push(new Uint8Array([0x0a, ...encodeVarint(mb.length)]), mb)
     }
-    return new Uint8Array(parts)
+    return concatUint8Arrays(chunks)
   }
 
   static deserializeBinary(bytes: Uint8Array): StoredMonadMessages {

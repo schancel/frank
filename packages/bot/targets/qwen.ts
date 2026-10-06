@@ -1,17 +1,11 @@
 import { join } from "path";
 import { FrankBotHost } from "@frank/bot-framework";
-import {
-  BlackjackDealerBot,
-  RaffleBot,
-  VendorBot,
-  QwenBot,
-  FaucetBot,
-} from "../src/bots";
+import { QwenBot } from "../src/bots/qwen-bot";
 
 async function main() {
   const stateDir =
+    process.env.QWEN_BOT_STATE_DIR ??
     process.env.BOT_STATE_DIR ??
-    process.env.FRANK_DEMO_STATE_DIR ??
     join(process.env.HOME ?? "/tmp", ".frank-bots");
 
   const host = new FrankBotHost({
@@ -20,20 +14,14 @@ async function main() {
     rpcUrl: process.env.MONAD_TESTNET_HTTP_RPC_URL ?? process.env.MONAD_RPC_URL,
   });
 
-  // Register all Frank bots with the unified host
-  await host.register(new BlackjackDealerBot());
-  await host.register(new RaffleBot());
-  await host.register(new VendorBot());
   await host.register(new QwenBot());
-  await host.register(new FaucetBot());
-
   await host.start();
   console.log(
-    "[all-bots-target] FrankBotHost running all bots (blackjack, raffle, vendor, qwen, faucet) with shared EVMNonceSequencer and canonical directories"
+    "[qwen-target] Qwen Bot running with Canonical Directory publication"
   );
 
   const shutdown = async () => {
-    console.log("[all-bots-target] Shutting down gracefully...");
+    console.log("[qwen-target] Shutting down gracefully...");
     await host.stop();
     process.exit(0);
   };
@@ -43,6 +31,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[all-bots-target] Fatal error:", err);
+  console.error("[qwen-target] Fatal error:", err);
   process.exit(1);
 });

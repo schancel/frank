@@ -105,6 +105,7 @@ export interface FrankBotDefinition {
     message: BotMessageContext,
     ctx: BotContext
   ): Promise<MessageItem[] | void>;
+  onNewUser?(user: NewUserEvent, ctx: BotContext): Promise<void>;
 }
 
 export interface BotHostOptions {

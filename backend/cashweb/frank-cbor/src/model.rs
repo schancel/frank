@@ -545,6 +545,10 @@ pub enum TypedPayload {
         revision_frame: ParsedFrame,
         /// Field 3.
         content_digest: Vec<u8>,
+        /// Field 4.
+        conversation_id: Vec<u8>,
+        /// Field 5, optional.
+        conversation_name: Option<String>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },

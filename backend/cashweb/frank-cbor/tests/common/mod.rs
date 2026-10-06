@@ -137,6 +137,7 @@ fn type6_frame(revision: &[u8]) -> Vec<u8> {
             (1, CborValue::Bytes(bytes_of(16, 7))),
             (2, CborValue::Bytes(revision.to_vec())),
             (3, CborValue::Bytes(digest.to_vec())),
+            (4, CborValue::Bytes(bytes_of(16, 8))),
         ]),
     )
 }

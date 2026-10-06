@@ -72,6 +72,7 @@ fn content_items(extra: Option<CborValue>, items: Vec<Vec<u8>>) -> Vec<u8> {
         (1, CborValue::Bytes(bytes_of(16, 7))),
         (2, CborValue::Bytes(revision)),
         (3, CborValue::Bytes(bytes_of(32, 8))),
+        (4, CborValue::Bytes(bytes_of(16, 8))),
     ];
     let schema = if extra.is_some() { 2 } else { 1 };
     if let Some(extra) = extra {
@@ -284,7 +285,7 @@ fn plaintext_bound_is_not_route_bound() {
 #[test]
 fn aggregate_counters_across_encryption_exact_ceiling_and_one_over() {
     // Identical counts to TS: root 10 containers/80 items; content 7 containers/45 items.
-    for (containers, root_count, at) in [(true, 8000, 8360), (false, 60000, 70910)] {
+    for (containers, root_count, at) in [(true, 8000, 8360), (false, 60000, 70908)] {
         let r = root(Some(grouped(root_count, containers)));
         assert_eq!(outcome(parse_frame(&r, &default_context())), "parsed");
         for n in [at, at + 1] {

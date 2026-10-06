@@ -299,17 +299,32 @@ export function startDirectMessagePolling({
       // stop() cannot cancel an in-flight request: a poll that fails after stop() must not put a
       // problem back on screen after stop() cleared it.
       if (stopped) return
-      if (err instanceof MonadMailboxChallengeCapacityError) {
+      const isChallengeCapacity =
+        err instanceof MonadMailboxChallengeCapacityError ||
+        (err as { code?: string })?.code === 'mailbox_challenge_capacity' ||
+        (err as { status?: number })?.status === 429
+      const isUnavailable =
+        err instanceof MonadMailboxUnavailableError ||
+        (err as { code?: string })?.code === 'mailbox_unavailable' ||
+        (err as { status?: number })?.status === 404
+      const isAuth =
+        err instanceof MonadMailboxAuthError ||
+        (err as { code?: string })?.code === 'mailbox_auth_failed' ||
+        (err as { status?: number })?.status === 401
+
+      if (isChallengeCapacity) {
         // The relay caps authenticated reads per recipient per minute; hammering only extends
         // the outage. Wait as long as the relay asked, but keep the loop alive.
         steady = false
         otherFailures = 0
-        nextDelayMs = Math.max(intervalMs, err.retryAfterMs)
+        const retryAfterMs =
+          (err as { retryAfterMs?: number })?.retryAfterMs ?? 60_000
+        nextDelayMs = Math.max(intervalMs, retryAfterMs)
         mailboxStatus.setProblem('rate-limited', nextDelayMs)
         console.warn(
           `direct-message polling rate limited; retrying in ${nextDelayMs} ms`,
         )
-      } else if (err instanceof MonadMailboxUnavailableError) {
+      } else if (isUnavailable) {
         steady = false
         unavailableFailures += 1
         otherFailures = 0
@@ -339,9 +354,7 @@ export function startDirectMessagePolling({
         // It clears on the next successful poll.
         if (otherFailures > 1 || mailboxStatus.hasProblem) {
           mailboxStatus.setProblem(
-            err instanceof MonadMailboxAuthError
-              ? 'unauthorized'
-              : 'unreachable',
+            isAuth ? 'unauthorized' : 'unreachable',
             nextDelayMs,
           )
         }

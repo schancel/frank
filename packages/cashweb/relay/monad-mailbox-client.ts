@@ -36,15 +36,15 @@
  * - 400 `invalid_mailbox_cursor`: cursor older than `since` -> {@link MonadMailboxStaleCursorError}.
  * - 400 `invalid_mailbox_limit`, 413 `mailbox_record_exceeds_page_budget`: caller/protocol errors.
  * - 409 `recovery_obligation_is_active`: ack refused while the obligation is still active.
- * - 429 `mailbox_challenge_capacity` (recipient already holds the relay's maximum of 30 unexpired consumed challenges;
+ * - 429 `mailbox_challenge_capacity` (recipient already holds the relay's maximum of 120 unexpired consumed challenges;
  *   `Retry-After: 60`): {@link MonadMailboxChallengeCapacityError}, not retried in-call because
  *   capacity only returns when challenges expire. Replay/expiry remain 401.
  * - Other 429 (Retry-After) and 503 (`mailbox_auth_retryable` at read capacity), plus network failures:
  *   retried with bounded exponential backoff (honouring Retry-After), then
  *   {@link MonadMailboxRetryableError}.
  *
- * The relay keeps at most 30 unexpired consumed challenges per recipient (60 s TTL), so more than
- * 30 authenticated requests inside 60 s are refused; {@link fetchMonadMailboxInbox} therefore asks
+ * The relay keeps at most 120 unexpired consumed challenges per recipient (60 s TTL), so more than
+ * 120 authenticated requests inside 60 s are refused; {@link fetchMonadMailboxInbox} therefore asks
  * for 100 rows per page (the maximum) and a caller that gets a truncated result simply polls again.
  */
 import axios from 'axios'
@@ -216,7 +216,7 @@ export class MonadMailboxRecoveryActiveError extends MonadMailboxError {}
 /** Still failing after the retry budget; safe to try again later. */
 export class MonadMailboxRetryableError extends MonadMailboxError {}
 /** 429 `mailbox_challenge_capacity`: the recipient already has the relay's maximum number of
- * unexpired consumed challenges (8). Capacity only returns when they expire, so this is NOT
+ * unexpired consumed challenges (120). Capacity only returns when they expire, so this is NOT
  * retried inside a call; `retryAfterMs` is the relay's `Retry-After` (60 s). */
 export class MonadMailboxChallengeCapacityError extends MonadMailboxRetryableError {
   readonly retryAfterMs: number

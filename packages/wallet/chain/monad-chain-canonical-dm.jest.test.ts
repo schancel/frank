@@ -128,14 +128,25 @@ jest.mock('../monad-http', () => {
   }
 })
 const mockFunded: { from: string; to: string; value: bigint }[] = []
-jest.mock('@frank/cashweb/relay/monad-mailbox-client', () => ({
-  ...jest.requireActual('@frank/cashweb/relay/monad-mailbox-client'),
-  fetchCanonicalInboxPage: jest.fn(),
-  fetchCanonicalRecoveryPage: jest.fn(async () => ({ records: [] })),
-}))
-import { fetchCanonicalInboxPage } from '@frank/cashweb/relay/monad-mailbox-client'
+jest.mock('@frank/cashweb/relay/monad-mailbox-client', () => {
+  const actual = jest.requireActual('@frank/cashweb/relay/monad-mailbox-client')
+  return {
+    ...actual,
+    fetchCanonicalMailboxPage: jest.fn(actual.fetchCanonicalMailboxPage),
+    fetchCanonicalInboxPage: jest.fn(),
+    fetchCanonicalRecoveryPage: jest.fn(async () => ({ records: [] })),
+  }
+})
+import {
+  fetchCanonicalInboxPage,
+  fetchCanonicalMailboxPage,
+  MonadMailboxChallengeCapacityError,
+} from '@frank/cashweb/relay/monad-mailbox-client'
 const inboxPage = fetchCanonicalInboxPage as jest.MockedFunction<
   typeof fetchCanonicalInboxPage
+>
+const mailboxPage = fetchCanonicalMailboxPage as jest.MockedFunction<
+  typeof fetchCanonicalMailboxPage
 >
 
 const RELAY = 'https://relay-a.example'
@@ -424,6 +435,32 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     const auth = inboxPage.mock.calls[0][0]
     expect(auth.relayBaseUrl).toBe(RELAY + '/')
     expect(auth.subject).toBe(toHex(f.bob.identity.compressedPubKey))
+  })
+
+  it('rethrows 429 challenge capacity error without falling back to inbox page', async () => {
+    installCanonicalDirectory(
+      f.alice,
+      await f.directoryFor('alice', f.alice, f.bob),
+    )
+    mailboxPage.mockRejectedValueOnce(
+      new MonadMailboxChallengeCapacityError('rate limited', 60_000),
+    )
+    inboxPage.mockClear()
+    await expect(
+      f.chain.directMessages.fetchSince({ wallet: f.alice, sinceMs: 0 }),
+    ).rejects.toBeInstanceOf(MonadMailboxChallengeCapacityError)
+    expect(inboxPage).not.toHaveBeenCalled()
+
+    mailboxPage.mockRejectedValueOnce({
+      status: 429,
+      code: 'mailbox_challenge_capacity',
+      message: 'rate limited',
+    })
+    inboxPage.mockClear()
+    await expect(
+      f.chain.directMessages.fetchSince({ wallet: f.alice, sinceMs: 0 }),
+    ).rejects.toMatchObject({ status: 429, code: 'mailbox_challenge_capacity' })
+    expect(inboxPage).not.toHaveBeenCalled()
   })
 
   it('does not display a tampered ciphertext or a sender with no published entry', async () => {

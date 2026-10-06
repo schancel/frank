@@ -42,6 +42,7 @@ import {
   fetchCanonicalInboxPage,
   fetchCanonicalMailboxPage,
   fetchCanonicalRecoveryPage,
+  MonadMailboxChallengeCapacityError,
   type CanonicalMailboxAuthParams,
   type CanonicalMailboxRecord,
 } from '@frank/cashweb/relay/monad-mailbox-client'
@@ -645,6 +646,15 @@ async function fetchSince(
         ...(cursor === undefined ? {} : { cursor }),
       })
     } catch (error) {
+      if (
+        error instanceof MonadMailboxChallengeCapacityError ||
+        (error as { status?: number })?.status === 429 ||
+        (error as { code?: string })?.code === 'mailbox_challenge_capacity'
+      ) {
+        if (pageIndex === 0) throw error
+        params.onTruncated?.(error as Error)
+        break
+      }
       try {
         page = await fetchCanonicalInboxPage({
           ...auth,

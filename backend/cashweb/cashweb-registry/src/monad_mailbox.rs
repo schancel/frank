@@ -19,7 +19,7 @@ pub(crate) const CHALLENGE_TTL_MS: i64 = 60_000;
 /// signature-verified recipient can consume one, so raising this does not widen the
 /// unauthenticated surface. It must exceed the app's steady polling rate (about 8.6 authenticated
 /// reads/min at a 7s interval); the per-call expiry cleanup bound (256) still exceeds it.
-pub(crate) const MAX_USED_CHALLENGES_PER_RECIPIENT: usize = 30;
+pub(crate) const MAX_USED_CHALLENGES_PER_RECIPIENT: usize = 120;
 const CHALLENGE_MAC_DOMAIN: &[u8] = b"frank:mailbox-challenge-mac:v1\0";
 const CURSOR_MAC_DOMAIN: &[u8] = b"frank:mailbox-cursor-mac:v1\0";
 const CURSOR_VERSION: u8 = 1;

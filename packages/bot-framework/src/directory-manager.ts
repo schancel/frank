@@ -67,6 +67,34 @@ export class DirectoryManager {
     return new DirectoryManager(directory, params.relayBaseUrl);
   }
 
+  get rawDirectory(): OpenDirectory {
+    return this.directory;
+  }
+
+  get network(): string {
+    return this.directory.network;
+  }
+
+  get homeEndpoint(): string {
+    return this.directory.homeEndpoint;
+  }
+
+  isHomeRelay(endpoint: string): boolean | Promise<boolean> {
+    return this.directory.isHomeRelay ? this.directory.isHomeRelay(endpoint) : true;
+  }
+
+  async selfCurrent() {
+    return this.directory.selfCurrent();
+  }
+
+  async peerCurrent(peer: { address: string } | { subject: string }) {
+    return this.directory.peerCurrent(peer);
+  }
+
+  async forwarding(): Promise<boolean> {
+    return this.directory.forwarding ? this.directory.forwarding() : true;
+  }
+
   async publish(): Promise<void> {
     await this.directory.publish();
   }

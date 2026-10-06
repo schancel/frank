@@ -793,15 +793,15 @@ async fn admit_monad_message<T: JsonRpcTransport + Clone>(
         }
         MonadMessageOwnership::Missing => {
             let recipient = validate_envelope(&request.encrypted_payload, network_tag)?.recipient;
-            let profile = registry
-                .get_monad_profile(recipient)
+            let pubkey = registry
+                .get_monad_profile_pubkey(recipient)
                 .map_err(ProcessMonadMessageError::Infrastructure)?
                 .ok_or(ProcessMonadMessageError::RecipientProfileNotFound(
                     recipient,
                 ))?;
             MonadOutboxPolicy::new(
                 recipient,
-                profile.pubkey,
+                pubkey,
                 min_value_wei,
                 network_tag.to_vec(),
             )

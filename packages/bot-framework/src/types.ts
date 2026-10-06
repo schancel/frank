@@ -118,7 +118,7 @@ export interface BotContext {
     txHash: string,
     timeoutMs?: number
   ): Promise<TransactionReceipt | null>;
-  getBalance(): Promise<bigint>;
+  getBalance(address?: string): Promise<bigint>;
 }
 
 export interface FrankBotDefinition {
@@ -144,4 +144,5 @@ export interface BotHostOptions {
   pollIntervalMs?: number;
   heartbeatIntervalMs?: number;
   watchRegistrations?: boolean;
+  unrefTimers?: boolean;
 }

@@ -293,6 +293,8 @@ export default {
     receiveSol: 'Recevoir des SOL',
     sendTsol: 'Envoyer des tSOL',
     receiveTsol: 'Recevoir des tSOL',
+    sendToContact: 'Envoyer au contact',
+    legacySend: 'Envoi hérité',
   },
   chatList: {
     noContactMessage: 'Ajoutez des contacts depuis le tiroir ci-dessus...',
@@ -650,6 +652,29 @@ export default {
     invalidTransfer:
       'Saisissez une adresse Monad et un montant de MON valides.',
     failedSendTransaction: 'Échec de l’envoi de la transaction Monad',
+  },
+  sendContactDialog: {
+    title: 'Envoyer au contact',
+    selectContact: 'Sélectionner un contact',
+    searchContacts: 'Rechercher des contacts...',
+    selectedContact: 'Contact sélectionné',
+    changeContact: 'Modifier',
+    noContactsFound: 'Aucun contact trouvé',
+    enterAmount: 'Entrez le montant ({unit})',
+    amount: 'Montant',
+    memo: 'Mémo (facultatif)',
+    reviewTransfer: 'Vérifier le transfert',
+    recipient: 'Destinataire',
+    stealthNotice:
+      'Envoyé via une adresse furtive à double clé (DKSAP) pour une confidentialité totale sur la chaîne.',
+    confirmAndSend: 'Confirmer et envoyer',
+    sending: 'Envoi en cours...',
+    cancel: 'Annuler',
+    back: 'Retour',
+    edit: 'Modifier',
+    invalidAmount: 'Veuillez saisir un montant valide',
+    missingSpendKey:
+      'Le contact ne possède pas de clé publique furtive enregistrée',
   },
   contactBookDialog: {
     close: 'Fermer',

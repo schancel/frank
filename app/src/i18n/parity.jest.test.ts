@@ -39,6 +39,7 @@ describe.each([
   'chatImage',
   'forum',
   'sendAddressDialog',
+  'sendContactDialog',
 ])('%s i18n parity', namespace => {
   const en = flatten((enUS as Record<string, unknown>)[namespace]).sort()
   const fr = flatten((frFR as Record<string, unknown>)[namespace]).sort()

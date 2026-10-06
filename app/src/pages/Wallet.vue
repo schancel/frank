@@ -120,6 +120,15 @@
         <q-card-actions align="right">
           <q-btn
             no-caps
+            outline
+            color="primary"
+            :label="$t('walletPanel.sendToContact')"
+            :disable="selectedWallet !== 'monad'"
+            data-testid="wallet-contact-send-action"
+            @click="openSendContact"
+          />
+          <q-btn
+            no-caps
             :label="
               selectedWallet === 'ecash'
                 ? isTestnet
@@ -136,6 +145,7 @@
             color="primary"
             :disable="selectedWallet !== 'monad'"
             data-testid="wallet-send-action"
+            data-test="wallet-legacy-send-action"
             @click="openSend"
           />
         </q-card-actions>
@@ -283,6 +293,9 @@ export default defineComponent({
       },
       openSend() {
         openPage(router, '/send')
+      },
+      openSendContact() {
+        openPage(router, '/send-contact')
       },
       openReceive() {
         openPage(router, '/wallet')

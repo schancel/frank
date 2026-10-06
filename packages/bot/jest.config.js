@@ -5,6 +5,8 @@ module.exports = {
   testMatch: ['<rootDir>/**/*.jest.(spec|test).+(ts|js)'],
   moduleFileExtensions: ['js', 'json', 'ts'],
   moduleNameMapper: {
+    '^@frank/bot-framework/(.*)$': '<rootDir>/../bot-framework/src/$1',
+    '^@frank/bot-framework$': '<rootDir>/../bot-framework/src/index.ts',
     '^@frank/directory-admission$':
       '<rootDir>/../directory-admission/src/index.ts',
     '^@frank/directory-admission/browser$':

@@ -6,8 +6,6 @@
     "moduleResolution": "node",
     "baseUrl": ".",
     "paths": {
-      "@frank/bot-framework": ["../bot-framework/src/index.ts"],
-      "@frank/bot-framework/*": ["../bot-framework/src/*"],
       "@frank/cashweb/*": ["../cashweb/*"],
       "@frank/codec": ["../frank-codec/src/index.ts"],
       "@frank/directory-admission": ["../directory-admission/src/index.ts"],
@@ -30,6 +28,6 @@
     "lib": ["es2020", "dom"],
     "types": ["node"]
   },
-  "include": ["**/*", "../bitcore-lib-xpi/types.d.ts"],
-  "exclude": ["node_modules", "**/*.jest.spec.ts", "**/*.jest.test.ts"]
+  "include": ["src/**/*", "test/**/*"],
+  "exclude": ["node_modules"]
 }

@@ -1289,6 +1289,20 @@ async function main() {
   console.log(`Max wager:  ${maxWagerWei} wei`)
   console.log(`Max hands:  ${maxHands}`)
 
+  if (process.env.USE_BOT_FRAMEWORK !== '0') {
+    const { FrankBotHost } = await import('@frank/bot-framework')
+    const { BlackjackDealerBot } = await import('./src/bots/blackjack-bot')
+    const host = new FrankBotHost({
+      stateDir: stateDirPath,
+      relayBaseUrl,
+      rpcUrl,
+      pollIntervalMs,
+    })
+    await host.register(new BlackjackDealerBot({ minWagerWei, maxWagerWei }))
+    await host.start()
+    return
+  }
+
   const identity = loadOrCreateIdentity(identityJsonPath, 'blackjack-bot')
   await registerAndLog({
     relayBaseUrl,

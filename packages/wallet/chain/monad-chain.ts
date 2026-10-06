@@ -137,7 +137,6 @@ import {
   decryptEnvelope,
   parseEnvelope,
 } from "@frank/cashweb/relay/monad-message-envelope";
-import type { MessageItem } from "@frank/cashweb/types/user-interface";
 import {
   MonadTopicPostClient,
   MonadTopicPostAbandonedError,

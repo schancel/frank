@@ -1,0 +1,31 @@
+{
+  "name": "@frank/bot-framework",
+  "version": "0.0.1",
+  "description": "Unified framework for headless Frank bots with Canonical Open Directory, Canonical CBOR messaging, shared EVM nonce sequencing, and durable state management.",
+  "license": "MIT",
+  "private": true,
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "jest",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@frank/cashweb": "*",
+    "@frank/codec": "*",
+    "@frank/directory-admission": "*",
+    "@frank/domain-roots": "*",
+    "@frank/nakamoto": "*",
+    "@frank/wallet": "*",
+    "axios": "^0.24.0",
+    "ethers": "^6.17.0",
+    "level": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29",
+    "@types/node": "^16.11.11",
+    "jest": "^29",
+    "ts-jest": "^29",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.3"
+  }
+}

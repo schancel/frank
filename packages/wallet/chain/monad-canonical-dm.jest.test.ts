@@ -30,8 +30,8 @@ import {
   validateChannelTransition,
   verifyChannelSignatures,
   verifyPreviewDirectoryEvidence,
-  type CanonicalChannelUpdateItem,
 } from '@frank/codec'
+import type { CanonicalChannelUpdateItem } from '@frank/codec'
 import {
   open,
   openAsSender,

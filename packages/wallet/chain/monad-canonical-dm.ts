@@ -730,6 +730,19 @@ function indexStealthItemIfRecipient(
         // ignore corrupt stealth key derivation
       }
     }
+  } else if (!isOutbound && projected.keyType === 2) {
+    const solWallet = (wallet as { solanaWallet?: { stealthKeyring?: { registerFromStealthItem: Function }; spendSeed?: Uint8Array } })?.solanaWallet ?? (wallet as any)
+    if (solWallet?.stealthKeyring && solWallet?.spendSeed) {
+      try {
+        void solWallet.stealthKeyring.registerFromStealthItem({
+          item: projected,
+          recipientSpendSeed: solWallet.spendSeed,
+          timestampMs,
+        })
+      } catch {
+        // ignore corrupt stealth key derivation
+      }
+    }
   }
 }
 

@@ -31,6 +31,14 @@ import {
   runNativeTransactionExclusive,
   sameChainTransaction,
 } from "./chain/chain-wallet";
+import { SolanaStealthKeyring } from "./solana-stealth";
+
+/**
+ * Minimum transfer amount for a Solana stealth address.
+ * 890,880 lamports (0.00089088 SOL) is the standard rent-exemption minimum
+ * required for an empty (0 byte) account in Solana runtime.
+ */
+export const SOLANA_MIN_STEALTH_LAMPORTS = 890_880n;
 
 // Capacitor still targets pre-iOS-17 WebViews, which lack native WebCrypto Ed25519. Probe once so
 // modern runtimes stay entirely native and older secure WebViews receive the upstream polyfill.
@@ -96,6 +104,8 @@ export interface BuildSolanaTransactionBundleParams {
    */
   intentId: Uint8Array;
   transfers: ReadonlyArray<SolanaTransfer>;
+  signer?: Keypair;
+  fromAddress?: string;
 }
 
 export interface SolanaStealthDestination<TMetadata> {
@@ -280,6 +290,7 @@ export class SolanaWallet
 {
   readonly chainKind = "solana" as const;
   readonly networkId: string;
+  readonly stealthKeyring: SolanaStealthKeyring;
   private lastSubmittedNative: ChainTransaction | undefined;
   private unresolvedNative:
     | {
@@ -307,11 +318,13 @@ export class SolanaWallet
     getTransactionStatus?: (
       transaction: ChainTransaction
     ) => Promise<"confirmed" | "failed" | "pending" | "unknown">;
+    stealthKeyring?: SolanaStealthKeyring;
   }) {
     this.connection = params.connection;
     this.signer = params.signer;
     this.networkId = params.networkId;
     this.expectedGenesisHash = params.genesisHash;
+    this.stealthKeyring = params.stealthKeyring ?? new SolanaStealthKeyring();
     this.nativeAttemptStore =
       params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore;
     this.getTransactionStatus =
@@ -350,6 +363,7 @@ export class SolanaWallet
     /** Independently configured expected genesis hash. */
     genesisHash: string;
     nativeAttemptStore?: NativeTransactionAttemptStore;
+    stealthKeyring?: SolanaStealthKeyring;
   }): Promise<SolanaWallet> {
     await ensureEd25519Support();
     return new SolanaWallet({
@@ -365,6 +379,7 @@ export class SolanaWallet
     genesisHash: string;
     seed: Uint8Array;
     nativeAttemptStore?: NativeTransactionAttemptStore;
+    stealthKeyring?: SolanaStealthKeyring;
   }): Promise<SolanaWallet> {
     const stableSeed = params.seed.slice();
     await ensureEd25519Support();
@@ -374,7 +389,16 @@ export class SolanaWallet
       networkId: params.networkId,
       genesisHash: params.genesisHash,
       nativeAttemptStore: params.nativeAttemptStore,
+      stealthKeyring: params.stealthKeyring,
     });
+  }
+
+  get spendSeed(): Uint8Array {
+    return this.signer.secretKey.slice(0, 32);
+  }
+
+  get signerKeypair(): Keypair {
+    return this.signer;
   }
 
   get address(): string {
@@ -414,6 +438,18 @@ export class SolanaWallet
   }
 
   async getBalance(): Promise<bigint> {
+    await this.verifyNetwork();
+    const primary = BigInt(
+      await this.connection.getBalance(this.signer.publicKey)
+    );
+    const stealth = await this.stealthKeyring.getTotalBalance(
+      this.connection,
+      this.networkId
+    );
+    return primary + stealth;
+  }
+
+  async getPrimaryBalance(): Promise<bigint> {
     await this.verifyNetwork();
     return BigInt(await this.connection.getBalance(this.signer.publicKey));
   }
@@ -493,6 +529,7 @@ export class SolanaWallet
     recipient: ChainAddress;
     value: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
+    fromAddress?: string;
   }): Promise<ChainTransaction> {
     await this.verifyNetwork();
     return runNativeTransactionExclusive(
@@ -529,20 +566,54 @@ export class SolanaWallet
         if (this.unresolvedNative !== undefined) {
           throw this.unresolvedNative.error;
         }
+        let activeSigner = this.signer;
+        if (params.fromAddress) {
+          if (params.fromAddress === this.address) {
+            activeSigner = this.signer;
+          } else {
+            const acc = this.stealthKeyring.getAccount(params.fromAddress);
+            if (!acc) {
+              throw new Error(
+                `Account ${params.fromAddress} not found in wallet`
+              );
+            }
+            activeSigner = acc.keypair;
+          }
+        } else {
+          try {
+            const primaryBal = BigInt(
+              await this.connection.getBalance(this.signer.publicKey)
+            );
+            if (primaryBal < params.value) {
+              const selected = await this.stealthKeyring.selectAccountForSpend(
+                params.value,
+                this.connection,
+                this.networkId
+              );
+              if (selected) {
+                activeSigner = selected.keypair;
+              }
+            }
+          } catch {
+            // fallback to primary signer
+          }
+        }
         const bundle = await this.buildTransactionBundle({
           intentId: randomIntentId(),
           transfers: [
             { destination: params.recipient.raw, lamports: params.value },
           ],
+          signer: activeSigner,
         });
-        return this.submitNativeBundle(bundle, params.onSigned);
+        return this.submitNativeBundle(bundle, params.onSigned, activeSigner);
       }
     );
   }
 
   private async submitNativeBundle(
     bundle: SolanaTransactionBundle,
-    onSigned?: (signed: ChainTransaction) => Promise<void>
+    onSigned?: (signed: ChainTransaction) => Promise<void>,
+    signerOverride?: Keypair
   ): Promise<ChainTransaction> {
     const validated = await this.validateBundle(bundle);
     const txHash = validated.canonicalTransactions[0]?.txId;
@@ -554,8 +625,16 @@ export class SolanaWallet
       transaction: { txHash },
       reason: new Error("Native transaction submission is in progress"),
     });
+    const attemptKey =
+      signerOverride && !signerOverride.publicKey.equals(this.signer.publicKey)
+        ? nativeTransactionAttemptKey({
+            chainKind: "solana",
+            networkId: this.expectedGenesisHash,
+            address: signerOverride.publicKey.toBase58(),
+          })
+        : this.nativeAttemptKey;
     this.nativeAttemptStore.put(
-      this.nativeAttemptKey,
+      attemptKey,
       pendingError.transaction
     );
     this.unresolvedNative = { bundle, error: pendingError };
@@ -587,7 +666,24 @@ export class SolanaWallet
     }));
     const stableIntentId = params.intentId.slice();
     await this.verifyNetwork();
-    return this.buildSignedBundle(stableTransfers, stableIntentId);
+    let signer = params.signer;
+    if (!signer && params.fromAddress) {
+      if (params.fromAddress === this.address) {
+        signer = this.signer;
+      } else {
+        const account = this.stealthKeyring.getAccount(params.fromAddress);
+        if (!account) {
+          throw new Error(`Account ${params.fromAddress} not found in wallet`);
+        }
+        signer = account.keypair;
+      }
+    }
+    return this.buildSignedBundle(
+      stableTransfers,
+      stableIntentId,
+      undefined,
+      signer
+    );
   }
 
   async submitTransactionBundle<TMetadata = never>(
@@ -673,7 +769,10 @@ export class SolanaWallet
     bundleIntentId: string;
     canonicalBundleId: string;
   }> {
-    if (bundle.source !== this.address) {
+    if (
+      bundle.source !== this.address &&
+      !this.stealthKeyring?.hasAccount(bundle.source)
+    ) {
       throw new Error("transaction bundle source does not match wallet");
     }
     if (bundle.transactions.length === 0) {
@@ -759,10 +858,12 @@ export class SolanaWallet
   protected async buildSignedBundle<TMetadata = never>(
     transfers: ReadonlyArray<SolanaTransfer>,
     intentId: Uint8Array,
-    metadata?: ReadonlyArray<TMetadata>
+    metadata?: ReadonlyArray<TMetadata>,
+    signerOverride?: Keypair
   ): Promise<SolanaTransactionBundle<TMetadata>> {
     assertTransfers(transfers);
     assertIntentId(intentId);
+    const activeSigner = signerOverride ?? this.signer;
     const stableIntentId = intentId.slice();
     if (metadata !== undefined && metadata.length !== transfers.length) {
       throw new Error("transaction metadata length does not match transfers");
@@ -784,13 +885,13 @@ export class SolanaWallet
     for (const [index, transfer] of stableTransfers.entries()) {
       const destination = transfer.destination;
       const message = new TransactionMessage({
-        payerKey: this.signer.publicKey,
+        payerKey: activeSigner.publicKey,
         recentBlockhash: lifetime.blockhash as ConstructorParameters<
           typeof TransactionMessage
         >[0]["recentBlockhash"],
         instructions: [
           SystemProgram.transfer({
-            fromPubkey: this.signer.publicKey,
+            fromPubkey: activeSigner.publicKey,
             toPubkey: destination,
             lamports: transfer.lamports,
           }),
@@ -805,7 +906,7 @@ export class SolanaWallet
       }
       transactionMessages.add(messageKey);
       const transaction = new VersionedTransaction(message);
-      await transaction.sign([this.signer], { lastValidBlockHeight });
+      await transaction.sign([activeSigner], { lastValidBlockHeight });
       const rawTransaction = transaction.serialize();
       transactions.push({
         index,
@@ -821,7 +922,7 @@ export class SolanaWallet
     return {
       bundleId: `${bytesKey(stableIntentId)}:${bytesKey(planCommitment)}`,
       intentId: stableIntentId.slice(),
-      source: this.address,
+      source: activeSigner.publicKey.toBase58(),
       transactions,
     };
   }
@@ -850,7 +951,15 @@ export class SolanaWallet
     if (transaction.signatures.length !== 1) {
       throw new Error("bundle transaction must have exactly one signature");
     }
-    const signatureIsValid = await this.signer.publicKey.verifySignature(
+    const message = TransactionMessage.decompile(transaction.message);
+    const stealthAccount = this.stealthKeyring?.getAccount(
+      message.payerKey.toBase58()
+    );
+    const expectedSignerPubkey = stealthAccount
+      ? stealthAccount.keypair.publicKey
+      : this.signer.publicKey;
+
+    const signatureIsValid = await expectedSignerPubkey.verifySignature(
       transaction.signatures[0],
       transaction.message.serialize()
     );
@@ -859,8 +968,7 @@ export class SolanaWallet
     }
     const messageKey = bytesKey(transaction.message.serialize());
     const txId = base58Decoder.decode(transaction.signatures[0]);
-    const message = TransactionMessage.decompile(transaction.message);
-    if (!message.payerKey.equals(this.signer.publicKey)) {
+    if (!message.payerKey.equals(expectedSignerPubkey)) {
       throw new Error("bundle transaction payer does not match wallet");
     }
     if (message.instructions.length !== 2) {
@@ -869,7 +977,7 @@ export class SolanaWallet
       );
     }
     const transfer = SystemInstruction.decodeTransfer(message.instructions[0]);
-    if (!transfer.fromPubkey.equals(this.signer.publicKey)) {
+    if (!transfer.fromPubkey.equals(expectedSignerPubkey)) {
       throw new Error("bundle transfer source does not match wallet");
     }
     const destination = transfer.toPubkey.toBase58();
@@ -941,6 +1049,7 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
     >
 {
   private readonly stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>;
+  private readonly minTransferLamports: bigint;
 
   constructor(params: {
     connection: SolanaWalletConnection;
@@ -948,9 +1057,13 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
     networkId: string;
     genesisHash: string;
     stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>;
+    minTransferLamports?: bigint;
+    stealthKeyring?: SolanaStealthKeyring;
   }) {
     super(params);
     this.stealthStrategy = params.stealthStrategy;
+    this.minTransferLamports =
+      params.minTransferLamports ?? SOLANA_MIN_STEALTH_LAMPORTS;
   }
 
   /** Use generateStealth; the inherited base factory cannot supply a stealth strategy. */
@@ -977,6 +1090,8 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
     networkId: string;
     genesisHash: string;
     stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>;
+    minTransferLamports?: bigint;
+    stealthKeyring?: SolanaStealthKeyring;
   }): Promise<SolanaStealthWallet<TStealthMetadata>> {
     await ensureEd25519Support();
     return new SolanaStealthWallet({
@@ -991,6 +1106,8 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
     genesisHash: string;
     seed: Uint8Array;
     stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>;
+    minTransferLamports?: bigint;
+    stealthKeyring?: SolanaStealthKeyring;
   }): Promise<SolanaStealthWallet<TStealthMetadata>> {
     const stableSeed = params.seed.slice();
     await ensureEd25519Support();
@@ -1000,6 +1117,8 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
       networkId: params.networkId,
       genesisHash: params.genesisHash,
       stealthStrategy: params.stealthStrategy,
+      minTransferLamports: params.minTransferLamports,
+      stealthKeyring: params.stealthKeyring,
     });
   }
 
@@ -1030,6 +1149,15 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
         );
       }
     });
+    if (this.minTransferLamports > 0n) {
+      stableLamports.forEach((lamports, index) => {
+        if (lamports < this.minTransferLamports) {
+          throw new RangeError(
+            `transfer ${index} must be at least ${this.minTransferLamports} lamports (rent exemption dust limit)`
+          );
+        }
+      });
+    }
     assertIntentId(stableIntentId);
     const destinations = await Promise.all(
       stableLamports.map(async (lamports, paymentIndex) => ({

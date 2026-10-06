@@ -11,6 +11,8 @@
     "@frank/cashweb": "*",
     "@frank/codec": "*",
     "@frank/nakamoto": "*",
+    "@noble/curves": "1.9.1",
+    "@noble/hashes": "1.8.0",
     "@solana/codecs-strings": "8.4.0",
     "@solana/web3.js": "3.0.0",
     "@solana/webcrypto-ed25519-polyfill": "8.4.0",

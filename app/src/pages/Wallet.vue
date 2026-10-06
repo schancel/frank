@@ -6,15 +6,16 @@
           <div class="text-h6 row items-center" data-testid="wallet-name">
             <span>
               {{
-                selectedChain === 'ecash'
+                getCustomName(selectedWallet) ||
+                (selectedWallet === 'ecash'
                   ? isTestnet
                     ? $t('walletPanel.ecashTestnet')
                     : $t('walletPanel.ecash')
-                  : selectedChain === 'solana'
+                  : selectedWallet === 'solana'
                   ? isTestnet
                     ? $t('walletPanel.solanaTestnet')
                     : $t('walletPanel.solana')
-                  : $t('walletPanel.mainWallet')
+                  : $t('walletPanel.mainWallet'))
               }}
             </span>
             <q-badge
@@ -28,11 +29,11 @@
           </div>
           <div class="text-caption" data-testid="wallet-chain">
             {{
-              selectedChain === 'ecash'
+              selectedWallet === 'ecash'
                 ? isTestnet
                   ? $t('walletPanel.ecashTestnet')
                   : $t('walletPanel.ecash')
-                : selectedChain === 'solana'
+                : selectedWallet === 'solana'
                 ? isTestnet
                   ? $t('walletPanel.solanaTestnet')
                   : $t('walletPanel.solana')
@@ -51,11 +52,11 @@
             data-testid="wallet-balance"
           >
             {{
-              selectedChain === 'ecash'
+              selectedWallet === 'ecash'
                 ? isTestnet
                   ? $t('walletPanel.zeroTxec')
                   : $t('walletPanel.zeroXec')
-                : selectedChain === 'solana'
+                : selectedWallet === 'solana'
                 ? isTestnet
                   ? $t('walletPanel.zeroTsol')
                   : $t('walletPanel.zeroSol')
@@ -63,7 +64,7 @@
             }}
           </div>
           <div
-            v-if="selectedChain === 'monad' && hasError"
+            v-if="selectedWallet === 'monad' && hasError"
             class="text-negative text-caption text-center"
             data-testid="wallet-balance-error"
           >
@@ -72,7 +73,16 @@
         </q-card-section>
         <q-separator />
         <q-card-section>
-          <div class="row">
+          <div class="row" v-if="displayAddress">
+            <qrcode-vue
+              style="margin-left: auto; margin-right: auto"
+              :value="displayAddress"
+              :size="300"
+              level="H"
+              data-testid="wallet-qr"
+            />
+          </div>
+          <div class="row q-mt-md">
             <q-input
               class="fit"
               filled
@@ -99,31 +109,11 @@
           <q-btn
             no-caps
             :label="
-              selectedChain === 'ecash'
-                ? isTestnet
-                  ? $t('walletPanel.receiveTxec')
-                  : $t('walletPanel.receiveXec')
-                : selectedChain === 'solana'
-                ? isTestnet
-                  ? $t('walletPanel.receiveTsol')
-                  : $t('walletPanel.receiveSol')
-                : isTestnet
-                ? $t('walletPanel.receiveMont')
-                : $t('walletPanel.receive')
-            "
-            color="primary"
-            :disable="selectedChain !== 'monad'"
-            data-testid="wallet-receive-action"
-            @click="openReceive"
-          />
-          <q-btn
-            no-caps
-            :label="
-              selectedChain === 'ecash'
+              selectedWallet === 'ecash'
                 ? isTestnet
                   ? $t('walletPanel.sendTxec')
                   : $t('walletPanel.sendXec')
-                : selectedChain === 'solana'
+                : selectedWallet === 'solana'
                 ? isTestnet
                   ? $t('walletPanel.sendTsol')
                   : $t('walletPanel.sendSol')
@@ -132,7 +122,7 @@
                 : $t('walletPanel.send')
             "
             color="primary"
-            :disable="selectedChain !== 'monad'"
+            :disable="selectedWallet !== 'monad'"
             data-testid="wallet-send-action"
             @click="openSend"
           />
@@ -146,9 +136,11 @@
 import { computed, defineComponent, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import QrcodeVue from 'qrcode.vue'
 import { copyToClipboard } from 'quasar'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
+import { useWalletNames } from 'src/composables/useWalletNames'
 import { openPage } from 'src/utils/routes'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 import { accountSession, accountStatus } from '../accounts/session'
@@ -158,13 +150,27 @@ import { activeChain } from '@frank/wallet/chain'
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
 // initiation is deliberately absent until the stealth design (#71) lands -- no dead controls.
 export default defineComponent({
+  components: {
+    QrcodeVue,
+  },
   setup() {
     const route = useRoute()
     const router = useRouter()
     const isTestnet = computed(() => activeChain.isTestnet ?? false)
-    const selectedChain = computed<'monad' | 'ecash' | 'solana'>(() => {
-      const chain = (route?.query?.chain as string)?.toLowerCase()
-      if (chain === 'ecash' || chain === 'solana') return chain
+    const { getCustomName } = useWalletNames()
+
+    const selectedWallet = computed<'monad' | 'ecash' | 'solana'>(() => {
+      const walletParam = (route?.params?.wallet as string)?.toLowerCase()
+      if (walletParam === 'ecash' || walletParam === 'solana')
+        return walletParam
+      if (walletParam === 'monad') return 'monad'
+      const chainParam = (route?.params?.chain as string)?.toLowerCase()
+      if (chainParam === 'ecash' || chainParam === 'solana') return chainParam
+      if (chainParam === 'monad') return 'monad'
+      const query = (
+        (route?.query?.chain || route?.query?.wallet) as string
+      )?.toLowerCase()
+      if (query === 'ecash' || query === 'solana') return query
       return 'monad'
     })
 
@@ -178,8 +184,12 @@ export default defineComponent({
     const displayAddress = ref('')
 
     watch(
-      () => [accountStatus.status, accountStatus.revision, selectedChain.value],
-      async ([status, _revision, chain], _previous, onCleanup) => {
+      () => [
+        accountStatus.status,
+        accountStatus.revision,
+        selectedWallet.value,
+      ],
+      async ([status, , chain], _previous, onCleanup) => {
         displayAddress.value = ''
         if (status !== 'ready') return
         let current = true
@@ -200,7 +210,11 @@ export default defineComponent({
               displayAddress.value =
                 typeof address === 'string'
                   ? address
-                  : activeChain.addressToString(address as any)
+                  : activeChain.addressToString(
+                      address as Parameters<
+                        typeof activeChain.addressToString
+                      >[0],
+                    )
             }
           } else {
             const address = await accountSession.getChainAddress(
@@ -217,11 +231,13 @@ export default defineComponent({
     )
 
     return {
-      selectedChain,
+      selectedWallet,
+      selectedChain: selectedWallet,
       isTestnet,
       displayAddress,
       balanceText,
       hasError,
+      getCustomName,
       async copyAddress() {
         if (!displayAddress.value) return
         try {
@@ -235,7 +251,7 @@ export default defineComponent({
         openPage(router, '/send')
       },
       openReceive() {
-        openPage(router, '/receive')
+        openPage(router, '/wallet')
       },
     }
   },

@@ -303,19 +303,28 @@ function saveWalletName(name: string) {
 const selectedChain = computed(() => {
   const currentPath = route?.path ?? ''
   if (currentPath && currentPath.startsWith('/wallet')) {
-    const chain = route?.query?.chain
-    if (chain === 'ecash' || chain === 'solana') return chain
+    const walletParam = (route?.params?.wallet as string)?.toLowerCase()
+    if (walletParam === 'ecash' || walletParam === 'solana') return walletParam
+    if (walletParam === 'monad') return 'monad'
+    const parts = currentPath.split('/').filter(Boolean)
+    const pathWallet = parts[1]?.toLowerCase()
+    if (pathWallet === 'ecash' || pathWallet === 'solana') return pathWallet
+    if (pathWallet === 'monad') return 'monad'
+    const query = (
+      (route?.query?.chain || route?.query?.wallet) as string
+    )?.toLowerCase()
+    if (query === 'ecash' || query === 'solana') return query
     return 'monad'
   }
   return null
 })
 
-function selectWallet(chain: 'monad' | 'ecash' | 'solana') {
+function selectWallet(wallet: 'monad' | 'ecash' | 'solana') {
   if (router) {
-    if (chain === 'monad') {
+    if (wallet === 'monad') {
       router.push('/wallet')
     } else {
-      router.push({ path: '/wallet', query: { chain } })
+      router.push(`/wallet/${wallet}`)
     }
   }
 }

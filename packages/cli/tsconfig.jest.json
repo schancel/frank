@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "isolatedModules": true,
+    "types": ["node", "jest"]
+  },
+  "include": [
+    "src/**/*",
+    "test/**/*",
+    "../bitcore-lib-xpi/types.d.ts",
+    "../wallet/level.d.ts",
+    "../wallet/ecash-wallet-sdk.d.ts"
+  ],
+  "exclude": ["node_modules"]
+}

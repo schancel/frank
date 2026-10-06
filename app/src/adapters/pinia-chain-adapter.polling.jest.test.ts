@@ -378,6 +378,16 @@ describe('direct-message polling vs the relay challenge cap', () => {
       polling.stop()
     })
 
+    it('triggers onAuthRecovery when direct-message polling encounters 401', async () => {
+      const { relay, wallet } = setup({ maxUsedChallenges: 30 })
+      relay.inject('inbox', { status: 401 }, { status: 401 })
+      const onAuthRecovery = jest.fn(async () => undefined)
+      const polling = startDirectMessagePolling({ wallet, onAuthRecovery })
+      await jest.advanceTimersByTimeAsync(1000)
+      expect(onAuthRecovery).toHaveBeenCalled()
+      polling.stop()
+    })
+
     it('a 404 resets the consecutive-failure count and a later plain failure replaces the 404 state', async () => {
       const { relay, wallet } = setup({ maxUsedChallenges: 30 })
       relay.inject(

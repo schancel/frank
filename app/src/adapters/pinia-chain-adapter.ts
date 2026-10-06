@@ -47,6 +47,12 @@ import {
 import { profilePubKeyFromBytes } from '../utils/profile-pubkey'
 import { useChatStore, walletOwnsMessage } from '../stores/chats'
 import { useMailboxStatusStore } from '../stores/mailbox-status'
+import { useProfileStore } from '../stores/my-profile'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
+import {
+  registerMonadIdentityCbor,
+  type MonadIdentity,
+} from '@frank/wallet/monad-identity'
 
 /** Default direct-message poll interval, in milliseconds -- within issue #42's suggested 5-10s
  * range. Configurable via `MONAD_DM_POLL_INTERVAL_MS` (see `src/boot/monad-direct-messages.ts`). */
@@ -136,12 +142,41 @@ export interface DirectMessagePolling {
  * advances only after the corresponding relay receipts have been saved (or durably quarantined),
  * never from local/outbound message clocks.
  */
+/**
+ * Auto-registers the wallet's identity profile against the relay after an authentication failure
+ * (e.g. relay restart or wiped profile table).
+ */
+export async function autoRecoverProfile(wallet: WalletHandle): Promise<void> {
+  const identity = (wallet as unknown as { identity?: MonadIdentity }).identity
+  if (!identity) return
+  try {
+    const relayBaseUrl =
+      (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
+      loadMonadChainConfigFromEnv().relayBaseUrl
+    let profile = undefined
+    try {
+      profile = useProfileStore().profile
+    } catch {
+      // Pinia store not initialized
+    }
+    await registerMonadIdentityCbor({
+      relayBaseUrl,
+      identity,
+      profile,
+    })
+  } catch (err) {
+    console.warn('auto-register profile after 401 failed', err)
+  }
+}
+
 export function startDirectMessagePolling({
   wallet,
   intervalMs = DEFAULT_DIRECT_MESSAGE_POLL_INTERVAL_MS,
+  onAuthRecovery,
 }: {
   wallet: WalletHandle
   intervalMs?: number
+  onAuthRecovery?: () => Promise<void>
 }): DirectMessagePolling {
   const chats = useChatStore()
   const mailboxStatus = useMailboxStatusStore()
@@ -357,6 +392,13 @@ export function startDirectMessagePolling({
             isAuth ? 'unauthorized' : 'unreachable',
             nextDelayMs,
           )
+        }
+        if (isAuth) {
+          if (onAuthRecovery) {
+            void onAuthRecovery().catch(() => undefined)
+          } else {
+            void autoRecoverProfile(wallet).catch(() => undefined)
+          }
         }
         const key =
           err instanceof Error ? `${err.name}: ${err.message}` : String(err)

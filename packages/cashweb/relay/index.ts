@@ -18,6 +18,7 @@ import { stampOutpointPublicKey } from './stamp-outpoint-pub'
 import { stampParentSecret } from './stamp-parent'
 import { readStampTransaction } from './stamp-tx'
 import { relayChangeAddressPublicKey } from './change-address-pubkey'
+export { relayChangeAddressPublicKey }
 import { arrayBufferToBase64 } from './images'
 
 import { PayloadConstructor } from './crypto'

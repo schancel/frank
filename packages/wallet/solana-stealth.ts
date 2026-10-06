@@ -96,8 +96,11 @@ export class MemorySolanaStealthKeyringStore
 function parseRecipientPubKey(
   recipientSpendPubKey: Uint8Array | PublicKey | string
 ): Uint8Array {
-  if (recipientSpendPubKey instanceof PublicKey) {
-    return recipientSpendPubKey.toBytes();
+  if (
+    recipientSpendPubKey instanceof PublicKey ||
+    (recipientSpendPubKey && typeof (recipientSpendPubKey as any).toBytes === "function")
+  ) {
+    return (recipientSpendPubKey as PublicKey).toBytes();
   }
   if (typeof recipientSpendPubKey === "string") {
     return new PublicKey(recipientSpendPubKey).toBytes();

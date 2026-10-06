@@ -24,13 +24,9 @@ import { generateAvatarPng } from "../../bot-directory";
 
 export const POKER_DEFAULT_BUY_IN_WEI = 100_000_000_000_000_000n; // 0.1 MON
 export const POKER_TURN_TIMEOUT_SECONDS = 45;
+import type { TableEscrowRecord } from "./liars-dice-bot";
+export type { TableEscrowRecord };
 
-export interface TableEscrowRecord {
-  preimage: string;
-  hashLock: string;
-  playerLocks: Map<string, string>;
-  settlementTxHash?: string;
-}
 
 function normalizeEvmAddress(addr: string): string {
   if (/^0x[0-9a-fA-F]{40}$/.test(addr)) return addr;
@@ -59,7 +55,7 @@ export class PokerBot implements FrankBotDefinition {
     if (!escrow || !table.winners || table.winners.length === 0) return undefined;
     if (!ctx?.sendTransaction) return undefined;
 
-    const lockIds = Array.from(escrow.playerLocks.values());
+    const lockIds: string[] = Array.from(escrow.playerLocks.values());
     if (lockIds.length === 0) return undefined;
 
     const payouts = table.winners.map((w) => ({

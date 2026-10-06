@@ -10,6 +10,7 @@
   "dependencies": {
     "@frank/cashweb": "*",
     "@frank/codec": "*",
+    "@frank/contracts": "*",
     "@frank/nakamoto": "*",
     "@noble/curves": "1.9.1",
     "@noble/hashes": "1.8.0",

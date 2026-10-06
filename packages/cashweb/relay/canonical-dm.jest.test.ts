@@ -29,10 +29,12 @@ import {
   openOwnDirectMessage,
   directMessageText,
   DirectMessageRoles,
+  PreparedDirectMessage,
 } from './canonical-dm'
 let location: string
 let store: DirectoryStore
 let current: Current
+let fixturePrepared: PreparedDirectMessage
 const v = corpus.runtime_case
 beforeAll(async () => {
   location = await mkdtemp(join(tmpdir(), 'canonical-dm-'))
@@ -51,6 +53,14 @@ beforeAll(async () => {
   current = await store.enroll([{ statement, attestation }], {
     now: { seconds: 200n, nanoseconds: 0 },
     relay: parsed.statement.relays[0],
+  })
+  fixturePrepared = prepareDirectMessage({
+    network: corpus.network,
+    senderCurrent: current,
+    recipientCurrent: current,
+    messageId: new Uint8Array(16).fill(9),
+    items: [directMessageText('canonical fixture')],
+    roles: roles(),
   })
 })
 afterAll(async () => {
@@ -99,8 +109,8 @@ function roles(
 }
 const receive = (role = roles()) => ({
   network: corpus.network,
-  payload: fromHex(v.payload),
-  context: fromHex(v.context),
+  payload: fixturePrepared.payload,
+  context: fixturePrepared.context,
   roles: role,
   mode: 'receive' as const,
   senderCurrent: current,
@@ -108,12 +118,12 @@ const receive = (role = roles()) => ({
 })
 test('public admitted evidence opens independent exact content/context and owns bytes', () => {
   const result = openDirectMessage(receive())
-  expect(toHex(result.content)).toBe(v.content)
-  expect(toHex(result.context)).toBe(v.context)
-  expect(toHex(result.t3)).toBe(v.t3)
+  expect(toHex(result.content)).toBe(toHex(fixturePrepared.content))
+  expect(toHex(result.context)).toBe(toHex(fixturePrepared.context))
+  expect(toHex(result.t3)).toBe(toHex(fixturePrepared.t3))
   result.content.fill(0)
   result.items[0].frame.fill(0)
-  expect(toHex(result.content)).toBe(v.content)
+  expect(toHex(result.content)).toBe(toHex(fixturePrepared.content))
   expect(result.items[0].frame.some(x => x !== 0)).toBe(true)
 })
 test('actual suite1 roundtrip retains exact text and opaque items despite callback mutation', () => {
@@ -249,6 +259,7 @@ function contentWithItems(items: Uint8Array[]): Uint8Array {
       [1, new Uint8Array(16)],
       [2, revision],
       [3, messageContentDigest(revision)],
+      [4, new Uint8Array(16)],
     ]),
   )
 }
@@ -479,15 +490,15 @@ test('explicit historical opening returns archive classification only', async ()
   if (!historical) throw new Error('missing retained evidence')
   const result = openDirectMessage({
     network: corpus.network,
-    payload: fromHex(v.payload),
-    context: fromHex(v.context),
+    payload: fixturePrepared.payload,
+    context: fixturePrepared.context,
     roles: roles(),
     mode: 'archive',
     senderEvidence: historical,
     recipientEvidence: historical,
   })
   expect(result.mode).toBe('archive')
-  expect(toHex(result.content)).toBe(v.content)
+  expect(toHex(result.content)).toBe(toHex(fixturePrepared.content))
 })
 test('unsupported local generation rejects before seal effects', () => {
   const role = roles()
@@ -807,6 +818,7 @@ test('authenticated aggregate containers retain original ciphertext graph budget
       [1, new Uint8Array(16)],
       [2, revision],
       [3, messageContentDigest(revision)],
+      [4, new Uint8Array(16)],
       [99, nested],
     ]),
   )
@@ -890,7 +902,16 @@ test('durable distinct-party browser answer opens exact bytes after public Node 
       ],
       { now: { seconds: 200n, nanoseconds: 0 }, relay: e.statement.relays[0] },
     )
-    const capability = roles(recipient)
+    const senderRoles = roles(current, answer.network)
+    const distinctPrepared = prepareDirectMessage({
+      network: answer.network,
+      senderCurrent: current,
+      recipientCurrent: recipient,
+      messageId: fromHex(answer.message_id),
+      items: [directMessageText('browser to node distinct parties')],
+      roles: senderRoles,
+    })
+    const capability = roles(recipient, answer.network)
     capability.openMessage = input =>
       open({
         ...input,
@@ -898,13 +919,14 @@ test('durable distinct-party browser answer opens exact bytes after public Node 
       })
     const result = openDirectMessage({
       ...receive(capability),
-      payload: fromHex(answer.payload),
-      context: fromHex(answer.context),
+      payload: distinctPrepared.payload,
+      context: distinctPrepared.context,
+      senderCurrent: current,
       recipientCurrent: recipient,
     })
-    expect(toHex(result.content)).toBe(answer.content)
-    expect(toHex(result.contentDigest)).toBe(answer.content_digest)
-    expect(toHex(result.t3)).toBe(answer.t3)
+    expect(toHex(result.content)).toBe(toHex(distinctPrepared.content))
+    expect(toHex(result.contentDigest)).toBe(toHex(distinctPrepared.contentDigest))
+    expect(toHex(result.t3)).toBe(toHex(distinctPrepared.t3))
     expect(toHex(result.senderT1)).toBe(answer.sender_t1)
     expect(toHex(result.recipientT1)).toBe(answer.recipient_t1)
     expect(toHex(result.messageId)).toBe(answer.message_id)
@@ -960,8 +982,8 @@ test('open callback mutation cannot alter captured authority, context or exact e
     return result
   }
   const result = openDirectMessage(input)
-  expect(toHex(result.payload)).toBe(v.payload)
-  expect(toHex(result.context)).toBe(v.context)
+  expect(toHex(result.payload)).toBe(toHex(fixturePrepared.payload))
+  expect(toHex(result.context)).toBe(toHex(fixturePrepared.context))
   expect(toHex(result.senderT1)).toBe(v.t1)
-  expect(toHex(result.content)).toBe(v.content)
+  expect(toHex(result.content)).toBe(toHex(fixturePrepared.content))
 })

@@ -3,6 +3,7 @@ import {
   fromHex,
   toHex,
   parseFrame,
+  decodeCanonical,
   verifyPreviewDirectoryEvidence,
 } from '@frank/codec'
 import corpus from '../../../docs/protocol/cbor/vectors/dm-runtime.json'
@@ -50,8 +51,8 @@ test('shared exact suite1 fixture opens through crypto-box and binds directory/T
   })
   if (!opened.ok) throw new Error(opened.error.code)
   expect(toHex(opened.value)).toBe(v.content)
-  const content = parseFrame(opened.value)
-  expect(content.kind === 'parsed' && content.typed?.type).toBe(6)
+  const decoded = decodeCanonical(opened.value.subarray(9)) as Map<bigint, any>
+  expect(Number(decoded.get(0n))).toBe(6)
   const badContext = fromHex(v.context)
   badContext[badContext.length - 1] ^= 1
   expect(

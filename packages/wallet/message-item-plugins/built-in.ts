@@ -12,6 +12,7 @@
 import {
   ImageItem,
   P2PKHSendItem,
+  LiarsDiceItem,
   ReplyItem,
   RpsItem,
   SatoshiDiceItem,
@@ -100,6 +101,22 @@ registerMessageItemPlugin<SatoshiDiceItem, SatoshiDiceItem>({
       return `Satoshi Dice: Rolled ${raw.luckyNumber} (${raw.isWin ? 'Win!' : 'Loss'})`
     }
     return 'Satoshi Dice Roll'
+  },
+})
+
+registerMessageItemPlugin<LiarsDiceItem, LiarsDiceItem>({
+  type: 'liars-dice',
+  hydrate: raw => raw,
+  previewText: raw => {
+    if (raw.action === 'create') return `Liar's Dice: Table created (${raw.tableId})`
+    if (raw.action === 'join') return `Liar's Dice: Player joined`
+    if (raw.action === 'bid' && raw.currentBid) {
+      return `Liar's Dice Bid: ${raw.currentBid.quantity}x [${raw.currentBid.face}]`
+    }
+    if (raw.action === 'challenge') return `Liar's Dice: Called Liar!`
+    if (raw.action === 'showdown') return `Liar's Dice: Showdown!`
+    if (raw.action === 'settle') return `Liar's Dice: Table Settled!`
+    return "Liar's Dice (Perudo)"
   },
 })
 

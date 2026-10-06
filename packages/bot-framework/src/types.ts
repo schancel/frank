@@ -72,6 +72,10 @@ export interface BotContext {
     recipientAddress: string,
     items: MessageItem[]
   ): Promise<DirectMessageSendResult>;
+  sendDirectMessage(
+    recipientAddress: string,
+    items: MessageItem[]
+  ): Promise<DirectMessageSendResult>;
   onNewUserRegistered(
     callback: (user: NewUserEvent) => void | Promise<void>
   ): void;

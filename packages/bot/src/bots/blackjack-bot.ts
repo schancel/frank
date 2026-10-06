@@ -22,6 +22,7 @@ import {
   type Card,
 } from "@frank/wallet/message-item-plugins/blackjack/deck";
 import { generateAvatarPng } from "../../bot-directory";
+import { welcomeItems } from "../../blackjack-greeter";
 
 export interface ActiveGameRecord {
   gameId: string;
@@ -63,18 +64,18 @@ export class BlackjackDealerBot implements FrankBotDefinition {
 
   async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
     console.log(
-      `[blackjack] Proactively welcoming new user ${user.displayAddress}`
+      `[blackjack] Proactively challenging new user ${user.address} to blackjack`
     );
-    const welcomeItem = buildBlackjackWelcomeItem({
+    const challengeItems = welcomeItems({
       minWagerWei: this.minWagerWei,
       maxWagerWei: this.maxWagerWei,
-      rulesSummary: BLACKJACK_RULES_SUMMARY,
+      stampValueWei: 10_000_000_000_000_000n,
     });
     try {
-      await ctx.sendDirectMessage(user.address, [welcomeItem]);
+      await ctx.sendMessage(user.address, challengeItems);
     } catch (err) {
       console.warn(
-        `[blackjack] Failed to send welcome DM to ${user.displayAddress}:`,
+        `[blackjack] Failed to send challenge DM to ${user.address}:`,
         err
       );
     }

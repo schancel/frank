@@ -12,6 +12,10 @@ import {
   loadMonadChainConfigFromEnv,
   type MonadChainWalletHandle,
 } from "@frank/wallet/chain/monad-chain";
+import {
+  fetchMonadProfilesSince,
+  decodeProfileBytes,
+} from "@frank/wallet/monad-identity";
 
 import {
   toChainAddress,
@@ -84,6 +88,18 @@ export class FrankBotHost {
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? 30 * 60 * 1000,
       watchRegistrations: options.watchRegistrations ?? true,
     };
+
+    const cursorFile = join(this.options.stateDir, "registration-cursor.json");
+    if (existsSync(cursorFile)) {
+      try {
+        const saved = JSON.parse(readFileSync(cursorFile, "utf8"));
+        if (typeof saved.sinceMs === "number") {
+          this.lastRegistrationPollMs = saved.sinceMs;
+        }
+      } catch {
+        // ignore invalid file
+      }
+    }
 
     this.provider = new JsonRpcProvider(this.options.rpcUrl);
     this.chain = createMonadChain({
@@ -188,6 +204,14 @@ export class FrankBotHost {
       lookupPeer: (addr: string) => directory.lookupPeer(addr),
 
       sendMessage: async (recipientAddress: string, items) => {
+        return this.chain.directMessages.send({
+          wallet,
+          recipient: toChainAddress(recipientAddress),
+          items,
+        });
+      },
+
+      sendDirectMessage: async (recipientAddress: string, items) => {
         return this.chain.directMessages.send({
           wallet,
           recipient: toChainAddress(recipientAddress),
@@ -362,30 +386,95 @@ export class FrankBotHost {
     }
   }
 
-  private async pollRegistrations(): Promise<void> {
-    if (this.registrationListeners.size === 0) return;
+  private saveRegistrationCursor(): void {
     try {
-      const res = await axios.get<{ address: string; timestamp?: number }[]>(
-        `${this.options.relayBaseUrl}/metadata/monad`,
-        { params: { since: this.lastRegistrationPollMs } }
+      mkdirSync(this.options.stateDir, { recursive: true });
+      const cursorFile = join(
+        this.options.stateDir,
+        "registration-cursor.json"
       );
-      if (Array.isArray(res.data)) {
-        for (const reg of res.data) {
-          const registeredAt = reg.timestamp ?? Date.now();
-          this.lastRegistrationPollMs = Math.max(
-            this.lastRegistrationPollMs,
-            registeredAt + 1
+      writeFileSync(
+        cursorFile,
+        JSON.stringify({
+          sinceMs: this.lastRegistrationPollMs,
+          updatedAt: Date.now(),
+        })
+      );
+    } catch {
+      // non-fatal
+    }
+  }
+
+  private async pollRegistrations(): Promise<void> {
+    const hasInterestedBots = Array.from(this.instances.values()).some(
+      (inst) => typeof inst.definition.onNewUser === "function"
+    );
+    if (!hasInterestedBots && this.registrationListeners.size === 0) return;
+
+    try {
+      const profiles = await fetchMonadProfilesSince({
+        relayBaseUrl: this.options.relayBaseUrl,
+        sinceMs: this.lastRegistrationPollMs,
+      });
+
+      for (const entry of profiles) {
+        let decoded: ReturnType<typeof decodeProfileBytes> | undefined;
+        try {
+          decoded = decodeProfileBytes(entry.rawBytes, {
+            expectedAddress: entry.address,
+          });
+        } catch {
+          continue;
+        }
+
+        const registeredAt = decoded.timestampMs || Date.now();
+        this.lastRegistrationPollMs = Math.max(
+          this.lastRegistrationPollMs,
+          registeredAt + 1
+        );
+        this.saveRegistrationCursor();
+
+        const event: NewUserEvent = {
+          address: entry.address,
+          registeredAtMs: registeredAt,
+          profile: {
+            name: decoded.name,
+            bio: decoded.bio,
+            avatar: decoded.avatar,
+            bot: decoded.bot,
+          },
+        };
+
+        // 1. Dispatch to registered bots implementing onNewUser
+        for (const [id, instance] of this.instances.entries()) {
+          if (typeof instance.definition.onNewUser !== "function") continue;
+
+          const dropReason = instance.loopGuard.shouldDrop(
+            entry.address,
+            decoded.bot
           );
-          const event: NewUserEvent = {
-            address: reg.address,
-            registeredAtMs: registeredAt,
-          };
-          for (const listener of this.registrationListeners) {
-            try {
-              await listener(event);
-            } catch (err) {
-              console.error("[bot-host] error in registration listener:", err);
-            }
+          if (dropReason) continue;
+
+          const greetedKey = `greeted:${entry.address.toLowerCase()}`;
+          const alreadyGreeted = await instance.state.get(greetedKey);
+          if (alreadyGreeted) continue;
+
+          // Durably record claim before sending to guarantee at-most-once greeting
+          await instance.state.put(greetedKey, String(Date.now()));
+
+          try {
+            await instance.definition.onNewUser(event, instance.context);
+          } catch (err) {
+            console.error(`[bot-host] error in bot "${id}".onNewUser:`, err);
+          }
+        }
+
+        // 2. Dispatch to custom listeners
+        for (const listener of this.registrationListeners) {
+          try {
+            await listener(event);
+          } catch (err) {
+            console.error("[bot-host] error in registration listener:", err);
           }
         }
       }

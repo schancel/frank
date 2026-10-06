@@ -73,4 +73,26 @@ describe("BlackjackDealerBot", () => {
     expect(replyItems[0].action).toMatch(/deal|reveal/);
     expect(memoryState.has("game:game-456")).toBe(true);
   });
+
+  it("challenges a newly registered user with blackjack welcome items", async () => {
+    const mockSendMessage = jest.fn();
+    const botCtx = {
+      sendMessage: mockSendMessage,
+    } as any;
+
+    const userEvent = {
+      address: "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      registeredAtMs: Date.now(),
+    };
+
+    await bot.onNewUser(userEvent, botCtx);
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      expect.arrayContaining([
+        expect.objectContaining({ type: "blackjack-move", action: "welcome" }),
+        expect.objectContaining({ type: "text" }),
+      ])
+    );
+  });
 });

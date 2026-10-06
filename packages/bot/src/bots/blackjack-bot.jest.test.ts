@@ -55,7 +55,7 @@ describe("BlackjackDealerBot", () => {
       payloadDigest: "digest-456",
       items: [
         {
-          type: "blackjack_move",
+          type: "blackjack-move",
           action: "bet",
           gameId: "game-456",
           wagerWei: "10000000000000000", // 0.01 MON

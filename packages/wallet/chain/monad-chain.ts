@@ -868,7 +868,21 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     async fetchSince(params): Promise<DirectMessageReceived[]> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
-      if (canonical) return canonical.fetchSince(params);
+      const received: DirectMessageReceived[] = [];
+      const seenDigests = new Set<string>();
+
+      if (canonical) {
+        try {
+          const canonicalMsgs = await canonical.fetchSince(params);
+          for (const msg of canonicalMsgs) {
+            seenDigests.add(msg.payloadDigest.toLowerCase());
+            received.push(msg);
+          }
+        } catch {
+          // Non-fatal if canonical inbox read fails
+        }
+      }
+
       const mailbox = mailboxAuthFor(wallet.identity, wallet.relayBaseUrl);
       const stored = await fetchMonadMessagesSince({
         ...mailbox,
@@ -876,15 +890,17 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         onTruncated: params.onTruncated,
       });
       const myAddress = wallet.identity.address.raw.toLowerCase();
-      const received: DirectMessageReceived[] = [];
 
       for (const record of stored) {
         if (record.message === undefined) continue;
+        const payloadHashHex = bareHex(record.message.payloadHash);
+        if (seenDigests.has(payloadHashHex.toLowerCase())) continue;
+        seenDigests.add(payloadHashHex.toLowerCase());
+
         const envelope = parseEnvelope(record.message.encryptedPayload);
         if (envelope === undefined) continue;
         if (envelope.to.toLowerCase() !== myAddress) continue;
 
-        const payloadHashHex = bareHex(record.message.payloadHash);
         if (wallet.stampPaymentJournal !== undefined) {
           const recovered = recoverMonadStampPayments({
             message: record.message,

@@ -3,6 +3,7 @@ import * as crypto from 'node:crypto';
 import { CreditLedger } from '../ledger/credit-ledger';
 import { GatewayStampProvider } from '../stamps/stamp-provider.interface';
 import { parseRawRfc822 } from '../smtp/smtp-listener';
+import { OutboundEmailDelivery } from '../mta/outbound-delivery';
 
 export interface CheckoutServerOptions {
   readonly port: number;
@@ -10,18 +11,21 @@ export interface CheckoutServerOptions {
   readonly stampProvider: GatewayStampProvider;
   readonly stripeWebhookSecret?: string;
   readonly paypalWebhookId?: string;
+  readonly outboundDelivery?: OutboundEmailDelivery;
 }
 
 export class CheckoutServer {
   private readonly port: number;
   private readonly ledger: CreditLedger;
   private readonly stampProvider: GatewayStampProvider;
+  private readonly outboundDelivery?: OutboundEmailDelivery;
   private server?: Server;
 
   constructor(options: CheckoutServerOptions) {
     this.port = options.port;
     this.ledger = options.ledger;
     this.stampProvider = options.stampProvider;
+    this.outboundDelivery = options.outboundDelivery;
   }
 
   start(host: string = '127.0.0.1'): Promise<void> {
@@ -83,8 +87,55 @@ export class CheckoutServer {
       return;
     }
 
+    if (req.method === 'POST' && (url.pathname === '/api/mail/send' || url.pathname === '/api/v1/outbound')) {
+      return this.handleOutboundMailSend(req, res);
+    }
+
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not Found');
+  }
+
+  private handleOutboundMailSend(req: IncomingMessage, res: ServerResponse): void {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', async () => {
+      try {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+        if (!body.recipientEmail || !body.bodyText) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'recipientEmail and bodyText are required' }));
+          return;
+        }
+        if (!this.outboundDelivery) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Outbound delivery service not configured on gateway' }));
+          return;
+        }
+        const deliveryResult = await this.outboundDelivery.processOutboundDirectMessage({
+          senderFrankAddress: body.senderFrankAddress || '0xunknown',
+          recipientEmail: body.recipientEmail,
+          subject: body.subject,
+          bodyText: body.bodyText,
+          conversationId: body.conversationId || `conv_${Date.now()}`,
+          frankMessageId: body.frankMessageId || `msg_${Date.now()}`,
+          inReplyToFrankMessageId: body.inReplyToFrankMessageId,
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            rfc822MessageId: deliveryResult.rfc822MessageId,
+            inReplyToRfc822: deliveryResult.inReplyToRfc822,
+            grantedReplyAllowance: deliveryResult.grantedReplyAllowance,
+            renderedEmail: deliveryResult.renderedEmail,
+          })
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: msg }));
+      }
+    });
   }
 
   private renderPaymentPage(tokenOrId: string, res: ServerResponse): void {

@@ -24,5 +24,11 @@ if (
   )
   process.exit(result.status ?? 0)
 } else {
-  require('../src/index.ts')
+  const { main } = require('../src/index.ts')
+  if (main) {
+    main().catch(err => {
+      console.error('Fatal CLI Error:', err)
+      process.exit(1)
+    })
+  }
 }

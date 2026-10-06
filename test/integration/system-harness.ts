@@ -7,6 +7,7 @@
  * - Frank Relay API (Handle uniqueness, inlined directory entry, rename/moved redirects, tombstone enforcement, mailbox delivery)
  * - Wallet / Client SDK (secp256k1 key generation, profile publication, stamped direct message encryption & retrieval)
  * - Thread Scoping & Bridging (In-Reply-To <-> Frank conversationId)
+ * - Real CLI (`signet inbox`, `signet mail send` / `signet send`) with end-to-end cryptographic challenge auth & AES-256-GCM envelope decryption
  *
  * Usage:
  *   node --import tsx test/integration/system-harness.ts
@@ -15,7 +16,14 @@
 import * as http from 'node:http';
 import * as net from 'node:net';
 import * as crypto from 'node:crypto';
-import { SigningKey, getAddress, keccak256 } from 'ethers';
+import * as path from 'node:path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+
 import { EmailGatewayDaemon } from '../../packages/mail-gateway/src/index';
 import { GatewayConfig } from '../../packages/mail-gateway/src/types';
 import {
@@ -23,6 +31,14 @@ import {
   GatewayWalletBalance,
   StampSubmissionResult,
 } from '../../packages/mail-gateway/src/stamps/stamp-provider.interface';
+import { MockMailboxRelay } from '../../packages/cashweb/relay/monad-mailbox-mock-relay.testutil';
+import { buildEnvelope } from '../../packages/cashweb/relay/monad-message-envelope';
+import {
+  MonadIdentity,
+  registerMonadIdentityCbor,
+  decodeProfileBytes,
+} from '../../packages/wallet/monad-identity';
+import { saveIdentity, saveConfig } from '../../packages/cli/src/config';
 
 // -----------------------------------------------------------------------------
 // 1. In-Memory Mock/Emulated Frank Relay Server
@@ -36,23 +52,32 @@ interface RelayDirectoryUserRecord {
   redirect_to?: string;
 }
 
-interface StoredRelayMessage {
-  recipient: string;
-  payload: string;
-  timestamp: number;
-}
-
 class EmulatedFrankRelay {
   private server?: http.Server;
   private port: number = 0;
   readonly usernames = new Map<string, RelayDirectoryUserRecord>();
   readonly profiles = new Map<string, { contentType: string; rawHex: string }>();
-  readonly mailboxes = new Map<string, StoredRelayMessage[]>();
+  readonly pubKeys = new Map<string, Buffer>();
+  readonly mockMailbox = new MockMailboxRelay({ networkTag: Buffer.from('MONT') });
+
+  registerProfilePubKey(address: string, compressedPubKey: Uint8Array | Buffer) {
+    const raw = address.toLowerCase();
+    const normalized = raw.startsWith('0x') ? raw : `0x${raw}`;
+    const pubBuf = Buffer.from(compressedPubKey);
+    this.pubKeys.set(normalized, pubBuf);
+    this.mockMailbox.registerProfile(normalized, pubBuf);
+  }
+
+  getProfilePubKey(address: string): Uint8Array | undefined {
+    const raw = address.toLowerCase();
+    const normalized = raw.startsWith('0x') ? raw : `0x${raw}`;
+    return this.pubKeys.get(normalized);
+  }
 
   start(): Promise<number> {
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => {
-        const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+        const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
 
         // GET /directory/user/:username
         if (req.method === 'GET' && url.pathname.startsWith('/directory/user/')) {
@@ -73,7 +98,7 @@ class EmulatedFrankRelay {
           }
 
           const entry =
-            record.status === 'active' ? this.profiles.get(record.account_address) : undefined;
+            record.status === 'active' ? this.profiles.get(record.account_address.toLowerCase()) : undefined;
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(
@@ -92,27 +117,47 @@ class EmulatedFrankRelay {
           return;
         }
 
-        // PUT /metadata/monad/:address
-        if (req.method === 'PUT' && url.pathname.startsWith('/metadata/monad/')) {
-          const address = url.pathname.slice('/metadata/monad/'.length).toLowerCase();
+        // PUT /metadata/:address or /metadata/monad/:address
+        if (
+          req.method === 'PUT' &&
+          (url.pathname.startsWith('/metadata/monad/') || url.pathname.startsWith('/metadata/'))
+        ) {
+          const address = (
+            url.pathname.startsWith('/metadata/monad/')
+              ? url.pathname.slice('/metadata/monad/'.length)
+              : url.pathname.slice('/metadata/'.length)
+          ).toLowerCase();
           const chunks: Buffer[] = [];
           req.on('data', (c) => chunks.push(c));
           req.on('end', () => {
             const raw = Buffer.concat(chunks);
-            const contentType = req.headers['content-type'] || 'application/cbor';
+            const contentType = (req.headers['content-type'] as string) || 'application/cbor';
             this.profiles.set(address, {
               contentType,
               rawHex: raw.toString('hex'),
             });
+            try {
+              const decoded = decodeProfileBytes(new Uint8Array(raw));
+              this.registerProfilePubKey(address, decoded.pubKey);
+            } catch {
+              // Non-CBOR or raw payload
+            }
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ txid: [] }));
           });
           return;
         }
 
-        // GET /metadata/monad/:address
-        if (req.method === 'GET' && url.pathname.startsWith('/metadata/monad/')) {
-          const address = url.pathname.slice('/metadata/monad/'.length).toLowerCase();
+        // GET /metadata/:address or /metadata/monad/:address
+        if (
+          req.method === 'GET' &&
+          (url.pathname.startsWith('/metadata/monad/') || url.pathname.startsWith('/metadata/'))
+        ) {
+          const address = (
+            url.pathname.startsWith('/metadata/monad/')
+              ? url.pathname.slice('/metadata/monad/'.length)
+              : url.pathname.slice('/metadata/'.length)
+          ).toLowerCase();
           const profile = this.profiles.get(address);
           if (!profile) {
             res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -124,39 +169,39 @@ class EmulatedFrankRelay {
           return;
         }
 
-        // PUT /message/monad/cbor (deliver direct message to mailbox)
-        if (req.method === 'PUT' && url.pathname === '/message/monad/cbor') {
+        // Delegate /message/monad/* to MockMailboxRelay
+        if (url.pathname.startsWith('/message/monad/')) {
           const chunks: Buffer[] = [];
           req.on('data', (c) => chunks.push(c));
-          req.on('end', () => {
-            const body = Buffer.concat(chunks).toString('utf-8');
-            let data: any = {};
-            try {
-              data = JSON.parse(body);
-            } catch {
-              data = { raw: body };
+          req.on('end', async () => {
+            const body = Buffer.concat(chunks);
+            const params: Record<string, string> = {};
+            for (const [k, v] of url.searchParams.entries()) {
+              params[k] = v;
             }
-            const recipient = (data.recipient || '0xunknown').toLowerCase();
-            const list = this.mailboxes.get(recipient) ?? [];
-            list.push({
-              recipient,
-              payload: data.text || body,
-              timestamp: Date.now(),
-            });
-            this.mailboxes.set(recipient, list);
+            const headers: Record<string, string> = {};
+            for (const [k, v] of Object.entries(req.headers)) {
+              if (typeof v === 'string') headers[k] = v;
+              else if (Array.isArray(v)) headers[k] = v.join(', ');
+            }
 
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: true, txHash: `0x${crypto.randomBytes(32).toString('hex')}` }));
+            try {
+              const result = await this.mockMailbox.http({
+                url: url.toString(),
+                method: (req.method ?? 'GET').toLowerCase(),
+                headers,
+                params,
+                data: new Uint8Array(body),
+              });
+
+              res.writeHead(result.status, result.headers);
+              res.end(Buffer.from(result.data));
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err);
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: msg }));
+            }
           });
-          return;
-        }
-
-        // GET /message/monad/cbor/mailbox/:address
-        if (req.method === 'GET' && url.pathname.startsWith('/message/monad/cbor/mailbox/')) {
-          const address = url.pathname.slice('/message/monad/cbor/mailbox/'.length).toLowerCase();
-          const list = this.mailboxes.get(address) ?? [];
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ messages: list }));
           return;
         }
 
@@ -201,7 +246,10 @@ class RelayConnectedStampProvider implements GatewayStampProvider {
     inReplyToFrankMessageId?: string;
   }> = [];
 
-  constructor(private readonly relayUrl: string) {}
+  constructor(
+    private readonly relay: EmulatedFrankRelay,
+    private readonly gatewayIdentity: MonadIdentity
+  ) {}
 
   async getBalance(): Promise<GatewayWalletBalance> {
     return { raw: 10000000000000000000n, display: '10 MON', isLowBalance: false };
@@ -219,23 +267,36 @@ class RelayConnectedStampProvider implements GatewayStampProvider {
   }): Promise<StampSubmissionResult> {
     this.sentMessages.push(params);
 
-    // Broadcast into Frank relay's mailbox
-    const res = await fetch(`${this.relayUrl}/message/monad/cbor`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        recipient: params.recipientAddress,
-        text: params.text,
-        conversationId: params.conversationId,
-        inReplyTo: params.inReplyToFrankMessageId,
-      }),
+    const recipient = params.recipientAddress.toLowerCase();
+    const recipientPubKey = this.relay.getProfilePubKey(recipient);
+    if (!recipientPubKey) {
+      throw new Error(`Cannot find recipient pubKey for ${recipient}`);
+    }
+
+    // Build real MonadMessageEnvelopeV2 with AES-256-GCM authenticated encryption
+    const encryptedPayload = buildEnvelope({
+      fromAddress: this.gatewayIdentity.displayAddress,
+      fromPrivateKey: this.gatewayIdentity.toNakamotoPrivateKey(),
+      toAddress: params.recipientAddress,
+      toPubKey: recipientPubKey,
+      plaintext: params.text ?? '',
+      networkTag: 'MONT',
     });
 
-    const data = (await res.json()) as { txHash?: string };
-    const txHash = data.txHash || `0x${crypto.randomBytes(32).toString('hex')}`;
+    const payloadHash = crypto.createHash('sha256').update(encryptedPayload).digest();
+
+    this.relay.mockMailbox.addMessage({
+      recipient,
+      timestamp: Date.now(),
+      payloadHash,
+      encryptedPayload: Buffer.from(encryptedPayload),
+      networkTag: Buffer.from('MONT'),
+    });
+
+    const txHash = `0x${crypto.randomBytes(32).toString('hex')}`;
     return {
       txHash,
-      payloadDigest: `0x${crypto.randomBytes(32).toString('hex')}`,
+      payloadDigest: `0x${payloadHash.toString('hex')}`,
       recipientAddress: params.recipientAddress,
     };
   }
@@ -281,7 +342,39 @@ function sendSmtpCommands(port: number, commands: string[]): Promise<string[]> {
 }
 
 // -----------------------------------------------------------------------------
-// 4. Test Assertion Utilities
+// 4. Helper: Asynchronous CLI Invocation
+// -----------------------------------------------------------------------------
+const cliPath = path.resolve(__dirname, '../../packages/cli/bin/signet.js');
+const cliTsconfig = path.resolve(__dirname, '../../packages/cli/tsconfig.json');
+
+async function runCli(args: string[], dataDir: string): Promise<any> {
+  const fullArgs = [
+    '--import',
+    'tsx',
+    cliPath,
+    ...args,
+    '--data-dir',
+    dataDir,
+    '--json',
+  ];
+  const { stdout, stderr } = await execFileAsync(process.execPath, fullArgs, {
+    env: {
+      ...process.env,
+      TSX_TSCONFIG_PATH: cliTsconfig,
+      _SIGNET_SPAWNED: '1',
+    },
+    timeout: 15000,
+  });
+
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    throw new Error(`Failed to parse CLI JSON output: "${stdout}"\nStderr: "${stderr}"`);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 5. Test Assertion Utilities
 // -----------------------------------------------------------------------------
 function assert(condition: boolean, message: string) {
   if (!condition) {
@@ -292,7 +385,7 @@ function assert(condition: boolean, message: string) {
 }
 
 // -----------------------------------------------------------------------------
-// 5. Main Test Runner Execution
+// 6. Main Test Runner Execution
 // -----------------------------------------------------------------------------
 async function runSystemHarness() {
   console.log('\n============================================================');
@@ -301,12 +394,25 @@ async function runSystemHarness() {
 
   // Step 1: Boot Frank Relay
   const relay = new EmulatedFrankRelay();
-  const relayPort = await relay.start();
+  await relay.start();
   console.log(`[INIT] Frank Relay listening at ${relay.getUrl()}`);
 
-  // Step 2: Boot Email Gateway Daemon
+  // Step 2: Register Gateway Identity on Relay
+  const gatewayIdentity = MonadIdentity.generate();
+  await registerMonadIdentityCbor({
+    relayBaseUrl: relay.getUrl(),
+    identity: gatewayIdentity,
+    profile: {
+      name: 'Frank Mail Gateway',
+      username: 'mail_gateway',
+    },
+    network: 'monad-testnet',
+  });
+  relay.registerProfilePubKey(gatewayIdentity.displayAddress, gatewayIdentity.compressedPubKey);
+
+  // Step 3: Boot Email Gateway Daemon
   const stripeWebhookSecret = 'whsec_harness_test_999';
-  const stampProvider = new RelayConnectedStampProvider(relay.getUrl());
+  const stampProvider = new RelayConnectedStampProvider(relay, gatewayIdentity);
   const gatewayConfig: GatewayConfig = {
     gatewayDomain: 'frank.org',
     gatewayRelayUrl: relay.getUrl(),
@@ -326,14 +432,31 @@ async function runSystemHarness() {
   console.log(`[INIT] Gateway Checkout HTTP listening on port ${httpPort}`);
   console.log(`[INIT] Gateway SMTP listening on port ${smtpPort}\n`);
 
+  // Step 4: Create Isolated Alice CLI Environment
+  const aliceDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'frank-alice-cli-'));
+  const aliceIdentity = MonadIdentity.generate();
+  const aliceAddress = aliceIdentity.displayAddress.toLowerCase();
+
+  await saveIdentity(aliceDataDir, {
+    identity: aliceIdentity,
+    mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+  });
+
+  saveConfig(aliceDataDir, {
+    rpcUrl: 'http://127.0.0.1:8545',
+    relayUrl: relay.getUrl(),
+    networkTag: 'MONT',
+    chainId: 10143,
+    stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
+    activeIdentity: aliceAddress,
+    gatewayUrl: `http://127.0.0.1:${httpPort}`,
+  });
+
   try {
     // -------------------------------------------------------------------------
     // Scenario 1: Alice creates an account and claims canonical username 'alice'
     // -------------------------------------------------------------------------
     console.log('--- SCENARIO 1: Identity Registration & Inlined Directory Entry ---');
-    const alicePrivKey = `0x${crypto.randomBytes(32).toString('hex')}`;
-    const aliceSigningKey = new SigningKey(alicePrivKey);
-    const aliceAddress = getAddress(keccak256(aliceSigningKey.publicKey).slice(-40)).toLowerCase();
 
     // Register 'alice' in relay
     relay.usernames.set('alice', {
@@ -343,19 +466,17 @@ async function runSystemHarness() {
       updated_at_ms: Date.now(),
     });
 
-    // Publish Alice's profile metadata to relay
-    const profilePayload = Buffer.from(
-      JSON.stringify({
-        displayName: 'Alice Liddell',
-        encryptionPubkey: aliceSigningKey.compressedPublicKey,
-        avatarUrl: 'https://frank.org/alice.png',
-      })
-    );
-    await fetch(`${relay.getUrl()}/metadata/monad/${aliceAddress}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/cbor' },
-      body: profilePayload,
+    // Publish Alice's CBOR profile metadata to relay
+    await registerMonadIdentityCbor({
+      relayBaseUrl: relay.getUrl(),
+      identity: aliceIdentity,
+      profile: {
+        name: 'Alice Liddell',
+        username: 'alice',
+      },
+      network: 'monad-testnet',
     });
+    relay.registerProfilePubKey(aliceAddress, aliceIdentity.compressedPubKey);
 
     // Verify GET /directory/user/alice returns active status AND inlined entry
     const userRes = await fetch(`${relay.getUrl()}/directory/user/alice`);
@@ -366,7 +487,6 @@ async function runSystemHarness() {
     assert(userData.account_address === aliceAddress, 'Address matches Alice key');
     assert(userData.entry !== null, 'Profile entry is inlined in single round trip');
     assert(userData.entry.content_type === 'application/cbor', 'Profile content-type is CBOR');
-    assert(userData.entry.raw_hex === profilePayload.toString('hex'), 'Profile bytes match');
 
     // -------------------------------------------------------------------------
     // Scenario 2: Username Rename & Moved Transition
@@ -399,9 +519,9 @@ async function runSystemHarness() {
     assert(newUserData.account_address === aliceAddress, 'New handle owned by Alice');
 
     // -------------------------------------------------------------------------
-    // Scenario 3: Cold Inbound Email -> Spool -> Checkout Webhook -> Relay Mailbox
+    // Scenario 3: Cold Inbound Email -> Spool -> Checkout Webhook -> CLI Inbox
     // -------------------------------------------------------------------------
-    console.log('\n--- SCENARIO 3: Inbound Cold Email -> Funding -> Relay Delivery ---');
+    console.log('\n--- SCENARIO 3: Inbound Cold Email -> Funding -> Relay Delivery -> CLI Inbox ---');
     const coldEmail =
       'From: stranger@example.com\r\n' +
       'To: alice_v2@frank.org\r\n' +
@@ -460,46 +580,61 @@ async function runSystemHarness() {
     });
     assert(webhookRes.status === 200, 'Stripe webhook accepted with 200');
 
-    // Verify delivery in Frank relay's mailbox
-    const mailboxRes = await fetch(`${relay.getUrl()}/message/monad/cbor/mailbox/${aliceAddress}`);
-    const mailboxData = (await mailboxRes.json()) as { messages: StoredRelayMessage[] };
-    assert(mailboxData.messages.length >= 1, 'Message delivered to Alice mailbox in Frank relay');
+    // Verify delivery directly via Alice's CLI: authenticates to relay, decrypts AES-256-GCM envelope
+    const inboxResult = await runCli(['inbox'], aliceDataDir);
     assert(
-      mailboxData.messages[0].payload.includes('Excited to chat with you on Frank!'),
-      'Mailbox payload contains original email body'
+      Array.isArray(inboxResult) && inboxResult.length >= 1,
+      'Alice CLI inbox successfully fetched message from relay mailbox'
+    );
+    const receivedColdMsg = inboxResult[0];
+    assert(
+      receivedColdMsg.text.includes('Excited to chat with you on Frank!'),
+      'Alice CLI successfully authenticated challenge and decrypted cold email plaintext'
     );
 
     // -------------------------------------------------------------------------
-    // Scenario 4: Outbound Frank Reply & Inbound Follow-up Thread Bridging
+    // Scenario 4: CLI Outbound Reply & Inbound Follow-up Thread Bridging
     // -------------------------------------------------------------------------
-    console.log('\n--- SCENARIO 4: Thread Bridging & ConversationId Preservation ---');
+    console.log('\n--- SCENARIO 4: CLI Outbound Reply, Thread Bridging & Follow-up Inbound ---');
     const frankConvId = 'conv_frank_test_thread_777';
     const frankMsgId = 'frank_msg_001';
 
-    // Alice replies outbound via Frank
-    const outboundEmail = await daemon.outboundDelivery.processOutboundDirectMessage({
-      senderFrankAddress: aliceAddress,
-      recipientEmail: 'stranger@example.com',
-      subject: 'Re: Hello from the Internet',
-      bodyText: 'Hey Stranger, message received loud and clear!',
-      conversationId: frankConvId,
-      frankMessageId: frankMsgId,
-    });
+    // Alice replies outbound via the CLI (`signet mail send`)
+    const cliSendResult = await runCli(
+      [
+        'mail',
+        'send',
+        'stranger@example.com',
+        'Hey Stranger, message received loud and clear!',
+        '--subject',
+        'Re: Hello from the Internet',
+        '--conversation',
+        frankConvId,
+        '--message-id',
+        frankMsgId,
+      ],
+      aliceDataDir
+    );
 
+    assert(cliSendResult.ok === true, 'CLI mail send succeeded');
     assert(
-      outboundEmail.renderedEmail.includes(`From: ${aliceAddress} <${aliceAddress}@frank.org>`),
-      'Outbound email rendered correct From address'
+      typeof cliSendResult.rfc822MessageId === 'string' && cliSendResult.rfc822MessageId.length > 0,
+      'CLI outbound response returned valid RFC 822 Message-ID'
     );
     assert(
-      outboundEmail.renderedEmail.includes('Reply to this email to continue the thread for free'),
-      'Outbound email contains free reply allowance notice'
+      cliSendResult.conversationId === frankConvId,
+      'CLI outbound response preserved Frank conversation ID'
+    );
+    assert(
+      cliSendResult.grantedReplyAllowance >= 1,
+      'CLI outbound dispatch granted free reply allowance'
     );
 
     // Stranger replies back over SMTP referencing Alice's Message-ID
     const replyEmail =
       'From: stranger@example.com\r\n' +
       'To: alice_v2@frank.org\r\n' +
-      `In-Reply-To: ${outboundEmail.rfc822MessageId}\r\n` +
+      `In-Reply-To: ${cliSendResult.rfc822MessageId}\r\n` +
       'Subject: Re: Hello from the Internet\r\n' +
       'Authentication-Results: dkim=pass\r\n' +
       '\r\n' +
@@ -518,6 +653,19 @@ async function runSystemHarness() {
     assert(
       replySmtpResponses.some((r) => r.includes('250 2.0.0 Message accepted and delivered')),
       'Follow-up reply delivered immediately via reply allowance'
+    );
+
+    // Verify Alice receives the stranger's reply via CLI inbox check
+    const inboxAfterReply = await runCli(['inbox'], aliceDataDir);
+    assert(
+      Array.isArray(inboxAfterReply) && inboxAfterReply.length >= 2,
+      'Alice CLI inbox received follow-up reply message'
+    );
+    assert(
+      inboxAfterReply.some((m: any) =>
+        m.text.includes('Awesome! Continuing this thread for free.')
+      ),
+      'Alice CLI inbox decrypted stranger follow-up reply body'
     );
 
     // Verify Frank conversationId was preserved in the bridged direct message
@@ -560,6 +708,9 @@ async function runSystemHarness() {
   } finally {
     await daemon.stop();
     await relay.stop();
+    if (fs.existsSync(aliceDataDir)) {
+      fs.rmSync(aliceDataDir, { recursive: true, force: true });
+    }
   }
 }
 

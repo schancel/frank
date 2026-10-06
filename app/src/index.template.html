@@ -37,6 +37,41 @@
       href="icons/favicon-16x16.png?v=frank"
     />
     <link rel="icon" type="image/ico" href="favicon.ico?v=frank" />
+    <script>
+      ;(function () {
+        try {
+          document.cookie =
+            'ngrok-skip-browser-warning=1; path=/; max-age=31536000; SameSite=Lax'
+          var origFetch = window.fetch
+          if (origFetch) {
+            window.fetch = function (input, init) {
+              try {
+                var opts = Object.assign({}, init)
+                var h = new Headers(
+                  opts.headers ||
+                    (input instanceof Request ? input.headers : undefined) ||
+                    {},
+                )
+                if (!h.has('ngrok-skip-browser-warning')) {
+                  h.set('ngrok-skip-browser-warning', '1')
+                }
+                opts.headers = h
+                return origFetch.call(this, input, opts)
+              } catch (e) {
+                return origFetch.call(this, input, init)
+              }
+            }
+          }
+          var origSend = XMLHttpRequest.prototype.send
+          XMLHttpRequest.prototype.send = function () {
+            try {
+              this.setRequestHeader('ngrok-skip-browser-warning', '1')
+            } catch (e) {}
+            return origSend.apply(this, arguments)
+          }
+        } catch (e) {}
+      })()
+    </script>
   </head>
   <body>
     <!-- DO NOT touch the following DIV -->

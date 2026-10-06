@@ -496,6 +496,12 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         memo: 'stealth transfer',
       },
     ])
+    expect(f.bob.stealthKeyring.getAccounts()).toHaveLength(1)
+    const bobStealthAcc = f.bob.stealthKeyring.getAccounts()[0]
+    expect(bobStealthAcc.networkTag).toBe('MONT')
+    expect(bobStealthAcc.initialAmountWei).toBe(50_000n)
+    expect(bobStealthAcc.ephemeralPubKey).toBe('02' + '22'.repeat(32))
+    expect(bobStealthAcc.privateKey).toMatch(/^0x[0-9a-f]{64}$/)
   })
 
   it('rethrows 429 challenge capacity error without falling back to inbox page', async () => {

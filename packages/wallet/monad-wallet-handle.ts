@@ -23,10 +23,13 @@ import type {
   MonadWalletOperationAdmission,
 } from './storage/monad-wallet-bundle'
 import type { MonadCanonicalRoleOwner } from './monad-wallet-material'
+import type { MonadStealthKeyring } from './monad-stealth'
 
 export interface MonadWalletHandle {
   /** Explicit typed-root capability; absent until canonical composition is activated. */
   canonicalRoles?: MonadCanonicalRoleOwner
+  /** Keyring tracking discovered stealth accounts and spend keys. */
+  stealthKeyring?: MonadStealthKeyring
   /** Private active delegation from the existing owner; structural values are rejected. */
   walletOperationAdmission?: MonadWalletOperationAdmission
   pool: MonadSubAccountPool

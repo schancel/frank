@@ -67,3 +67,20 @@ export type {
 } from "./active-chain";
 
 export type { NativeTransactionAttemptStore } from "./chain-wallet";
+export type { MonadChainWalletHandle } from "./monad-chain";
+
+export {
+  MonadStealthKeyring,
+  MemoryMonadStealthKeyringStore,
+  deriveEvmStealthAddress,
+  deriveEvmStealthPrivateKey,
+  buildEvmStealthPayment,
+} from "../monad-stealth";
+export type {
+  EvmStealthDestination,
+  EvmStealthDerivedAccount,
+  StealthAccountRecord,
+  MonadStealthKeyringStore,
+  BuildEvmStealthPaymentParams,
+  EvmStealthPaymentResult,
+} from "../monad-stealth";

@@ -25,7 +25,7 @@ function passthrough(tag: string) {
           {
             onClick: () => emit('click'),
           },
-          [props.label as string | undefined, slots.default?.()]
+          [props.label as string | undefined, slots.default?.()],
         )
     },
   })
@@ -33,8 +33,8 @@ function passthrough(tag: string) {
 
 const quasarStubs: Record<string, any> = Object.fromEntries(
   Object.keys(quasar)
-    .filter((n) => /^Q[A-Z]/.test(n))
-    .map((n) => [
+    .filter(n => /^Q[A-Z]/.test(n))
+    .map(n => [
       n,
       defineComponent({
         setup:
@@ -42,7 +42,7 @@ const quasarStubs: Record<string, any> = Object.fromEntries(
           () =>
             h('div', slots.default?.()),
       }),
-    ])
+    ]),
 )
 
 quasarStubs.QBtn = defineComponent({
@@ -54,7 +54,7 @@ quasarStubs.QBtn = defineComponent({
       h(
         'button',
         { ...attrs, disabled: !!props.disable },
-        props.label ? [props.label as string] : slots.default?.()
+        props.label ? [props.label as string] : slots.default?.(),
       ),
 })
 

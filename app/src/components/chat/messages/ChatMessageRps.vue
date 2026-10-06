@@ -3,23 +3,33 @@
     <!-- Header -->
     <div class="row items-center q-mb-xs">
       <q-icon name="sports_esports" size="20px" class="q-mr-xs text-primary" />
-      <span class="text-caption text-weight-bold">Rock-Paper-Scissors Arena</span>
+      <span class="text-caption text-weight-bold"
+        >Rock-Paper-Scissors Arena</span
+      >
     </div>
 
     <!-- Match Start / Bot Commitment -->
     <template v-if="item.action === 'start'">
       <div class="text-caption q-mb-xs">
         🔐 <strong>Secret Move Committed:</strong>
-        <div class="text-mono text-grey-7 ellipsis text-caption" style="font-size: 11px">
+        <div
+          class="text-mono text-grey-7 ellipsis text-caption"
+          style="font-size: 11px"
+        >
           {{ item.commitHash ? `0x${item.commitHash}` : 'Committed' }}
         </div>
       </div>
 
-      <div v-if="item.wagerWei && item.wagerWei !== '0'" class="text-caption text-primary q-mb-xs">
+      <div
+        v-if="item.wagerWei && item.wagerWei !== '0'"
+        class="text-caption text-primary q-mb-xs"
+      >
         💰 Wager: <strong>{{ displayWager(item.wagerWei) }}</strong>
       </div>
 
-      <div class="text-caption text-weight-medium q-mt-sm q-mb-xs">Choose your move:</div>
+      <div class="text-caption text-weight-medium q-mt-sm q-mb-xs">
+        Choose your move:
+      </div>
       <div class="row q-gutter-xs">
         <q-btn
           dense
@@ -77,16 +87,25 @@
       </div>
 
       <div v-if="item.txHash" class="text-caption text-positive q-mb-xs">
-        🏆 Payout sent! (tx: <span class="text-mono text-caption">{{ item.txHash.slice(0, 10) }}...</span>)
+        🏆 Payout sent! (tx:
+        <span class="text-mono text-caption"
+          >{{ item.txHash.slice(0, 10) }}...</span
+        >)
       </div>
 
-      <div v-if="item.secretSalt" class="text-caption text-grey-7" style="font-size: 11px">
+      <div
+        v-if="item.secretSalt"
+        class="text-caption text-grey-7"
+        style="font-size: 11px"
+      >
         ✓ Cryptographically verified with SHA-256
       </div>
 
       <!-- Play Again with Selectable Wager -->
       <q-separator class="q-my-sm" />
-      <div class="text-caption text-weight-medium q-mb-xs">Select next wager:</div>
+      <div class="text-caption text-weight-medium q-mb-xs">
+        Select next wager:
+      </div>
       <div class="row items-center q-gutter-xs q-mb-xs">
         <q-btn
           v-for="chip in wagerChips"
@@ -187,7 +206,9 @@ export default defineComponent({
     displayWager(weiString?: string): string {
       if (!weiString) return '0 MON'
       try {
-        return `${activeChain.toDisplayAmount(BigInt(weiString))} ${activeChain.unit}`
+        return `${activeChain.toDisplayAmount(BigInt(weiString))} ${
+          activeChain.unit
+        }`
       } catch {
         return '0 MON'
       }
@@ -215,7 +236,9 @@ export default defineComponent({
       if (this.submitting) return
       this.submitting = true
       try {
-        const cmd = this.wagerInput.trim() ? `/rps ${this.wagerInput.trim()}` : '/rps'
+        const cmd = this.wagerInput.trim()
+          ? `/rps ${this.wagerInput.trim()}`
+          : '/rps'
         this.$emit('sendFollowUp', {
           items: [{ type: 'text', text: cmd }],
         })

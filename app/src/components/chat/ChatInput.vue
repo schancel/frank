@@ -1,6 +1,6 @@
 <template>
   <div class="row full-width">
-    <q-toolbar class="q-px-sm q-py-xs chat-input-toolbar full-width">
+    <q-toolbar class="chat-input-toolbar full-width">
       <q-btn
         dense
         flat
@@ -70,10 +70,10 @@
         </q-menu>
       </q-btn>
 
-      <div class="col chat-input-container row no-wrap items-center q-mx-xs">
+      <div class="col chat-input-container row no-wrap items-center">
         <q-input
           ref="inputBox"
-          class="col chat-input-field q-px-sm"
+          class="col chat-input-field"
           dense
           borderless
           autogrow
@@ -275,13 +275,17 @@ export default defineComponent({
 <style lang="scss">
 .chat-input-toolbar {
   display: flex;
-  align-items: flex-end;
-  min-height: 52px;
-  padding: 6px 8px;
+  align-items: center;
+  min-height: 54px;
+  padding: 8px 14px;
 }
 
 .chat-attach-btn {
-  margin-bottom: 2px;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
   color: var(--q-color-text-muted, #757575);
   transition: color 0.15s ease, background-color 0.15s ease;
 
@@ -291,9 +295,12 @@ export default defineComponent({
 }
 
 .chat-input-container {
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 40px;
+  margin: 0 8px;
   border-radius: 20px;
-  padding: 2px 4px 2px 8px;
+  padding: 0 4px 0 14px;
   background-color: var(--q-chat-input-bg, rgba(0, 0, 0, 0.04));
   border: 1px solid var(--q-chat-input-border, rgba(0, 0, 0, 0.12));
   transition: border-color 0.2s ease, box-shadow 0.2s ease,
@@ -316,6 +323,7 @@ export default defineComponent({
 }
 
 .chat-stamp-btn {
+  flex-shrink: 0;
   height: 28px;
   padding: 0 8px;
   border-radius: 14px;
@@ -337,13 +345,13 @@ export default defineComponent({
 }
 
 .chat-send-btn {
-  width: 40px;
-  height: 40px;
-  min-width: 40px;
-  min-height: 40px;
-  margin-bottom: 1px;
-  margin-left: 6px;
-  border-radius: 14px;
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
+  min-height: 38px;
+  padding: 0 !important;
+  border-radius: 12px;
   background-color: var(--q-primary) !important;
   color: #ffffff !important;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);

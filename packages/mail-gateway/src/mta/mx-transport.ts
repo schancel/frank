@@ -56,7 +56,10 @@ export class MxDirectTransport {
     }
 
     const mxHosts = await this.resolveMxHosts(toDomain);
-    let lastError = 'No MX hosts could be reached';
+    let lastResult: MxDeliveryResult = {
+      success: false,
+      error: `All MX hosts for ${toDomain} failed delivery: No MX hosts could be reached`,
+    };
 
     for (const host of mxHosts) {
       try {
@@ -69,16 +72,17 @@ export class MxDirectTransport {
         if (result.success) {
           return result;
         }
-        lastError = result.error || result.responseMessage || 'SMTP transaction rejected';
+        lastResult = result;
       } catch (err: unknown) {
-        lastError = err instanceof Error ? err.message : String(err);
+        lastResult = {
+          success: false,
+          mxHost: host,
+          error: err instanceof Error ? err.message : String(err),
+        };
       }
     }
 
-    return {
-      success: false,
-      error: `All MX hosts for ${toDomain} failed delivery: ${lastError}`,
-    };
+    return lastResult;
   }
 
   private deliverToMxHost(params: {

@@ -8,6 +8,8 @@ export * from './smtp/inbound-server';
 export * from './smtp/smtp-listener';
 export * from './mta/outbound-delivery';
 export * from './mta/mx-transport';
+export * from './mta/dkim-signer';
+export * from './mta/outbound-worker';
 
 import { CreditLedger } from './ledger/credit-ledger';
 import { CheckoutServer } from './http/checkout-server';
@@ -15,6 +17,8 @@ import { InboundEmailHandler } from './smtp/inbound-server';
 import { SmtpListener } from './smtp/smtp-listener';
 import { OutboundEmailDelivery } from './mta/outbound-delivery';
 import { MxDirectTransport } from './mta/mx-transport';
+import { DkimSigner } from './mta/dkim-signer';
+import { OutboundMtaWorker } from './mta/outbound-worker';
 import { GatewayStampProvider } from './stamps/stamp-provider.interface';
 import { GatewayConfig } from './types';
 
@@ -26,6 +30,8 @@ export class EmailGatewayDaemon {
   readonly smtpListener: SmtpListener;
   readonly outboundDelivery: OutboundEmailDelivery;
   readonly mxTransport: MxDirectTransport;
+  readonly dkimSigner: DkimSigner;
+  readonly outboundWorker: OutboundMtaWorker;
 
   constructor(
     config: GatewayConfig,
@@ -58,6 +64,18 @@ export class EmailGatewayDaemon {
     this.mxTransport = new MxDirectTransport({
       heloDomain: config.gatewayDomain,
     });
+    this.dkimSigner = new DkimSigner({
+      domain: config.gatewayDomain,
+      selector: config.dkimSelector,
+      privateKey: config.dkimPrivateKey,
+    });
+    this.outboundWorker = new OutboundMtaWorker({
+      gatewayDomain: config.gatewayDomain,
+      ledger: this.ledger,
+      delivery: this.outboundDelivery,
+      dkimSigner: this.dkimSigner,
+      mxTransport: this.mxTransport,
+    });
   }
 
   async start(): Promise<void> {
@@ -66,9 +84,11 @@ export class EmailGatewayDaemon {
     console.log(`[mail-gateway] Checkout HTTP server listening on port ${this.config.httpPort}`);
     await this.smtpListener.start(this.config.smtpPort);
     console.log(`[mail-gateway] Inbound SMTP server listening on port ${this.config.smtpPort}`);
+    this.outboundWorker.startSpoolProcessor();
   }
 
   async stop(): Promise<void> {
+    this.outboundWorker.stopSpoolProcessor();
     await this.smtpListener.stop();
     await this.checkoutServer.stop();
     console.log('[mail-gateway] Gateway shutdown complete.');

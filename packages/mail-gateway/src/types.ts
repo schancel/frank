@@ -49,3 +49,15 @@ export interface ThreadMappingRecord {
   readonly subject?: string;
   readonly createdAtMs: number;
 }
+
+export interface OutboundSpoolJob {
+  readonly id: number;
+  readonly recipientEmail: string;
+  readonly fromAddress: string;
+  readonly rawRfc822: string;
+  readonly attempts: number;
+  readonly nextAttemptAt: number;
+  readonly maxAttempts: number;
+  readonly lastError?: string;
+  readonly status: 'pending' | 'success' | 'failed';
+}

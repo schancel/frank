@@ -291,6 +291,11 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       jest.useFakeTimers({
         doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
       })
+      if (activeChain.directMessages.subscribeMailboxStream) {
+        jest
+          .spyOn(activeChain.directMessages, 'subscribeMailboxStream')
+          .mockReturnValue(jest.fn())
+      }
     })
     afterEach(() => {
       pollers.splice(0).forEach(polling => polling.stop())

@@ -277,3 +277,16 @@ describe('modernized chat input interface (#1003)', () => {
     expect(wrapper.find('.chat-stamp-pill-text').text()).toBe('2×')
   })
 })
+
+describe('ChatInput toolbar alignment and layout (#1009)', () => {
+  it('defines vertical centering and balanced padding without sagging or edge clipping', () => {
+    const fs = require('fs')
+    const path = require('path')
+    const sfc = fs.readFileSync(path.join(__dirname, 'ChatInput.vue'), 'utf8')
+    expect(sfc).toMatch(/\.chat-input-toolbar\s*\{[^}]*align-items:\s*center/)
+    expect(sfc).toMatch(/\.chat-input-toolbar\s*\{[^}]*padding:\s*8px 14px/)
+    expect(sfc).toMatch(/\.chat-send-btn\s*\{[^}]*padding:\s*0 !important/)
+    expect(sfc).toMatch(/\.chat-send-btn\s*\{[^}]*flex-shrink:\s*0/)
+    expect(sfc).toMatch(/\.chat-input-container\s*\{[^}]*min-width:\s*0/)
+  })
+})

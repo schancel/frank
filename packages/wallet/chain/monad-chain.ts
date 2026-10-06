@@ -111,7 +111,10 @@ import {
   DEFAULT_MONAD_CHAIN_ID,
   monadProtocolIdentity,
 } from "../monad-provider";
-import { MonadAccountTxSigner } from "../monad-account-tx";
+import {
+  MonadAccountTxSigner,
+  type MonadTxOverrides,
+} from "../monad-account-tx";
 import { MonadWalletHandle } from "../monad-wallet-handle";
 import {
   openExistingPoolMonadTopicOwner,
@@ -166,6 +169,7 @@ export {
   type CanonicalDirectory,
 } from "./monad-canonical-dm";
 import {
+  ChainFamily,
   defaultNativeTransactionAttemptStore,
   nativeTransactionAttemptKey,
   NativeTransactionAttemptStore,
@@ -183,6 +187,21 @@ import {
   InMemoryStampAttemptJournal,
   LevelStampAttemptJournal,
 } from "../storage/stamp-attempt-journal";
+import {
+  EvmTransactionBuilder,
+  defaultNativeEvmTransactionBuilder,
+} from "./evm-transaction-builder";
+
+export interface EvmChainConfig extends MonadChainConfig {
+  /** Unique chain identifier, e.g. "monad-testnet", "monad-mainnet", "hyperliquid-mainnet", "tempo-mainnet". */
+  readonly chainIdentifier?: string;
+  /** Human-readable chain display name, e.g. "Base", "HyperEVM". */
+  readonly name?: string;
+  /** Primary display unit symbol, e.g. "ETH", "HYPE". */
+  readonly unit?: string;
+  /** Custom transaction builder strategy for native gas vs token-as-gas (TIP-20/ERC-20). */
+  readonly transactionBuilder?: EvmTransactionBuilder;
+}
 
 export interface MonadChainConfig {
   /** Stable chain/deployment identifier used for wallet affinity checks. */
@@ -327,12 +346,15 @@ export interface MonadChainWalletHandle
   extends MonadWalletHandle,
     WalletHandle,
     NativeWalletHandle {
-  readonly chainKind: "monad";
+  readonly family: "evm";
+  readonly chainIdentifier: string;
   readonly networkId: string;
   readonly identity: MonadIdentity;
   readonly stealthKeyring: MonadStealthKeyring;
   close(): Promise<void>;
 }
+
+export type EvmChainWalletHandle = MonadChainWalletHandle;
 
 const closedWallets = new WeakSet<MonadChainWalletHandle>();
 const typedWallets = new WeakSet<MonadChainWalletHandle>();
@@ -519,7 +541,7 @@ function asMonadWallet(
   const candidate = wallet as Partial<MonadChainWalletHandle>;
   requireOpenWallet(wallet as MonadChainWalletHandle);
   if (
-    (candidate.chainKind !== undefined && candidate.chainKind !== "monad") ||
+    (candidate.family !== undefined && candidate.family !== "evm") ||
     candidate.pool === undefined ||
     candidate.leaseManager === undefined ||
     candidate.provider === undefined ||
@@ -656,7 +678,20 @@ function asNothingSent(err: unknown): never {
 /** Pure factory: builds an `ActiveChain` from an explicit `MonadChainConfig`. See this file's
  * header, "Configuration", for why config is a param here (unlike the `MonadChain` singleton
  * below, which reads it from env). */
-export function createMonadChain(config: MonadChainConfig): ActiveChain {
+export function createEvmChain(config: EvmChainConfig): ActiveChain {
+  const isTestnet =
+    config.rpcChain === "monad-testnet" ||
+    (config.rpcChain?.includes("testnet") ?? false) ||
+    (config.rpcChain?.includes("devnet") ?? false) ||
+    config.chainId === 10143 ||
+    config.chainId === 10143n ||
+    config.networkTag === "MONT";
+  const chainIdentifier =
+    config.chainIdentifier ??
+    config.rpcChain ??
+    (isTestnet ? "monad-testnet" : "monad-mainnet");
+  const transactionBuilder =
+    config.transactionBuilder ?? defaultNativeEvmTransactionBuilder;
   const walletsByIdentity = new Map<
     string,
     { fingerprint: string; pending: Promise<MonadChainWalletHandle> }
@@ -701,8 +736,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       // Legacy callers may supply the wallet-client bundle directly rather than createWallet.
       admission = {
         key: nativeTransactionAttemptKey({
-          chainKind: "monad",
-          networkId: config.chainId.toString(),
+          family: "evm",
+          chainIdentifier,
           address: wallet.identity.address.raw.toLowerCase(),
         }),
         store:
@@ -1125,17 +1160,13 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       });
     },
   };
-  const isTestnet =
-    config.rpcChain === "monad-testnet" ||
-    config.chainId === 10143 ||
-    config.chainId === 10143n ||
-    config.networkTag === "MONT";
-  const name = isTestnet ? "Monad Testnet" : "Monad";
-  const unit = isTestnet ? "MONT" : "MON";
+  const name = config.name ?? (isTestnet ? "Monad Testnet" : "Monad");
+  const unit = config.unit ?? (isTestnet ? "MONT" : "MON");
   const network = isTestnet ? "testnet" : "mainnet";
 
   return {
-    kind: "monad",
+    family: "evm",
+    chainIdentifier,
     name,
     unit,
     networkId: config.networkId,
@@ -1312,8 +1343,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           const nativeAttemptStore =
             config.nativeAttemptStore ?? defaultNativeTransactionAttemptStore;
           const nativeAttemptKey = nativeTransactionAttemptKey({
-            chainKind: "monad",
-            networkId: config.chainId.toString(),
+            family: "evm",
+            chainIdentifier,
             address: mainAccount.address.toLowerCase(),
           });
           const admission: MainAccountAdmission = {
@@ -1426,7 +1457,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           };
           const stealthKeyring = new MonadStealthKeyring();
           const wallet: MonadChainWalletHandle = {
-            chainKind: "monad",
+            family: "evm",
+            chainIdentifier,
             networkId: config.networkId,
             identity,
             stealthKeyring,
@@ -1436,7 +1468,10 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             },
             async getBalance() {
               requireOpenWallet(wallet);
-              const mainBalance = await provider.getBalance(mainAccount.address);
+              const mainBalance = await transactionBuilder.getBalance({
+                address: mainAccount.address,
+                provider,
+              });
               const stealthBalance = await stealthKeyring.getTotalBalance(
                 provider,
                 config.networkTag,
@@ -1553,10 +1588,40 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                     provider,
                     httpClient,
                   });
-                  const signed = await signer.buildAndSignTransfer(
-                    recipient.raw,
-                    value
-                  );
+                  const txRequest = await transactionBuilder.buildTransfer({
+                    from: signer.address,
+                    recipient: recipient.raw,
+                    amount: value,
+                  });
+                  const overrides: MonadTxOverrides = {
+                    ...(txRequest.gasLimit != null && {
+                      gasLimit: BigInt(txRequest.gasLimit.toString()),
+                    }),
+                    ...(txRequest.maxFeePerGas != null && {
+                      maxFeePerGas: BigInt(txRequest.maxFeePerGas.toString()),
+                    }),
+                    ...(txRequest.maxPriorityFeePerGas != null && {
+                      maxPriorityFeePerGas: BigInt(
+                        txRequest.maxPriorityFeePerGas.toString()
+                      ),
+                    }),
+                    ...(txRequest.gasPrice != null && {
+                      gasPrice: BigInt(txRequest.gasPrice.toString()),
+                    }),
+                    ...(txRequest.nonce != null && {
+                      nonce: Number(txRequest.nonce),
+                    }),
+                  };
+                  const data = txRequest.data ? String(txRequest.data) : "0x";
+                  const to = txRequest.to ? String(txRequest.to) : recipient.raw;
+                  const txValue =
+                    txRequest.value != null
+                      ? BigInt(txRequest.value.toString())
+                      : value;
+                  const signed =
+                    data !== "0x" && data !== ""
+                      ? await signer.buildAndSignCall(to, txValue, data, overrides)
+                      : await signer.buildAndSignTransfer(to, txValue, overrides);
                   return submitNative(signed, onSigned);
                 })
               );
@@ -1742,6 +1807,10 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       return this.getHtlcAddress();
     },
   };
+}
+
+export function createMonadChain(config: MonadChainConfig): ActiveChain {
+  return createEvmChain(config);
 }
 
 /** The default, env-configured `MonadChain` singleton -- `./index.ts`'s `activeChain` is exactly

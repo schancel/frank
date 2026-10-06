@@ -1,23 +1,26 @@
 import { ActiveChain, NativeAssetChain } from "./active-chain";
 import type { EcashChain, EcashChainConfig } from "./ecash-chain";
-import { createMonadChain, MonadChainConfig } from "./monad-chain";
+import { createEvmChain, EvmChainConfig } from "./monad-chain";
 import type { SolanaChainConfig } from "./solana-chain";
 
 export type ChainFactoryConfig =
-  | { kind: "monad"; config: MonadChainConfig }
-  | { kind: "solana"; config: SolanaChainConfig }
-  | { kind: "ecash"; config: EcashChainConfig };
+  | { family: "evm"; chainIdentifier?: string; config: EvmChainConfig }
+  | { family: "solana"; chainIdentifier?: string; config: SolanaChainConfig }
+  | { family: "bitcoin"; chainIdentifier?: string; config: EcashChainConfig };
 
 export function createChain(params: {
-  kind: "monad";
-  config: MonadChainConfig;
+  family: "evm";
+  chainIdentifier?: string;
+  config: EvmChainConfig;
 }): Promise<ActiveChain>;
 export function createChain(params: {
-  kind: "solana";
+  family: "solana";
+  chainIdentifier?: string;
   config: SolanaChainConfig;
 }): Promise<NativeAssetChain>;
 export function createChain(params: {
-  kind: "ecash";
+  family: "bitcoin";
+  chainIdentifier?: string;
   config: EcashChainConfig;
 }): Promise<EcashChain>;
 export function createChain(
@@ -26,16 +29,31 @@ export function createChain(
 export async function createChain(
   params: ChainFactoryConfig
 ): Promise<NativeAssetChain | EcashChain> {
-  switch (params.kind) {
-    case "monad":
-      return createMonadChain(params.config);
+  switch (params.family) {
+    case "evm":
+      return createEvmChain({
+        ...params.config,
+        ...(params.chainIdentifier !== undefined
+          ? { chainIdentifier: params.chainIdentifier }
+          : {}),
+      });
     case "solana": {
       const { createSolanaChain } = await import("./solana-chain");
-      return createSolanaChain(params.config);
+      return createSolanaChain({
+        ...params.config,
+        ...(params.chainIdentifier !== undefined
+          ? { chainIdentifier: params.chainIdentifier }
+          : {}),
+      });
     }
-    case "ecash": {
+    case "bitcoin": {
       const { createEcashChain } = await import("./ecash-chain");
-      return createEcashChain(params.config);
+      return createEcashChain({
+        ...params.config,
+        ...(params.chainIdentifier !== undefined
+          ? { chainIdentifier: params.chainIdentifier }
+          : {}),
+      });
     }
   }
 }

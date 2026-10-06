@@ -1,6 +1,7 @@
 import {
   PROTOCOL_CHAINS,
   CANONICAL_EVM_CONTRACTS,
+  CANONICAL_SOLANA_CONTRACTS,
   getChainRegistryEntry,
   getChainRegistryByKind,
   getChainRegistryByNetworkTag,
@@ -83,6 +84,7 @@ describe("chains-registry", () => {
       unit: "dSOL",
       caip2: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
       networkTag: "SOLD",
+      contracts: CANONICAL_SOLANA_CONTRACTS,
     });
 
     expect(PROTOCOL_CHAINS["solana-testnet"]).toEqual({
@@ -97,6 +99,7 @@ describe("chains-registry", () => {
       unit: "tSOL",
       caip2: "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z",
       networkTag: "SOLT",
+      contracts: CANONICAL_SOLANA_CONTRACTS,
     });
 
     expect(PROTOCOL_CHAINS["solana-mainnet"]).toEqual({
@@ -111,6 +114,7 @@ describe("chains-registry", () => {
       unit: "SOL",
       caip2: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
       networkTag: "SOL1",
+      contracts: CANONICAL_SOLANA_CONTRACTS,
     });
 
     expect(PROTOCOL_CHAINS["ethereum-sepolia"]).toEqual({
@@ -235,7 +239,7 @@ describe("chains-registry", () => {
 
     expect(PROTOCOL_CHAINS["monad-testnet"].contracts).toBe(CANONICAL_EVM_CONTRACTS);
     expect(PROTOCOL_CHAINS["monad-mainnet"].contracts).toBe(CANONICAL_EVM_CONTRACTS);
-    expect(PROTOCOL_CHAINS["solana-mainnet"].contracts).toBeUndefined();
+    expect(PROTOCOL_CHAINS["solana-mainnet"].contracts).toBe(CANONICAL_SOLANA_CONTRACTS);
     expect(PROTOCOL_CHAINS["ecash-mainnet"].contracts).toBeUndefined();
   });
 });

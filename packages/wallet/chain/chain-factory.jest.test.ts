@@ -38,7 +38,7 @@ describe("createChain", () => {
     const block = jest.fn();
     const walletFactory = jest.fn();
     const chain = await createChain({
-      kind: "ecash",
+      family: "bitcoin",
       config: {
         networkId: "ecash-mainnet",
         chronik: { block } as unknown as import("chronik-client").ChronikClient,
@@ -60,7 +60,7 @@ describe("createChain", () => {
   it("creates the still-default Monad application chain", async () => {
     await expect(
       createChain({
-        kind: "monad",
+        family: "evm",
         config: {
           networkId: "monad-test",
           chainId: 10143,
@@ -75,10 +75,40 @@ describe("createChain", () => {
         },
       })
     ).resolves.toMatchObject({
-      kind: "monad",
+      family: "evm",
+      chainIdentifier: "monad-testnet",
       name: "Monad Testnet",
       unit: "MONT",
       isTestnet: true,
+    });
+  });
+
+  it("creates an EVM application chain with custom name, unit, and identifier", async () => {
+    await expect(
+      createChain({
+        family: "evm",
+        chainIdentifier: "base-mainnet",
+        config: {
+          name: "Base",
+          unit: "ETH",
+          networkId: "base-mainnet",
+          chainId: 8453,
+          rpcChain: "base-mainnet",
+          relayBaseUrl: "http://127.0.0.1:8098",
+          networkTag: "BASE",
+          stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
+          defaultStampValueWei: 1n,
+          defaultTopicVoteValueWei: 1n,
+          subAccountPoolSize: 1,
+          walletStorageLocation: false,
+        },
+      })
+    ).resolves.toMatchObject({
+      family: "evm",
+      chainIdentifier: "base-mainnet",
+      name: "Base",
+      unit: "ETH",
+      isTestnet: false,
     });
   });
 
@@ -111,7 +141,7 @@ describe("createChain", () => {
       },
     };
     const chain = await createChain({
-      kind: "solana",
+      family: "solana",
       config: {
         networkId: "solana-test",
         genesisHash: "solana-test-genesis",
@@ -160,7 +190,7 @@ describe("createChain", () => {
     ).resolves.toBe("pending");
 
     const wrongGenesis = await createChain({
-      kind: "solana",
+      family: "solana",
       config: {
         networkId: "mislabeled-solana",
         genesisHash: "different-genesis",
@@ -173,7 +203,7 @@ describe("createChain", () => {
     ).rejects.toThrow("Solana RPC genesis mismatch");
 
     const otherNetwork = await createChain({
-      kind: "solana",
+      family: "solana",
       config: {
         networkId: "solana-mainnet",
         genesisHash: "solana-test-genesis",
@@ -220,7 +250,7 @@ describe("createChain", () => {
       }),
     };
     const chain = await createChain({
-      kind: "ecash",
+      family: "bitcoin",
       config: {
         networkId: "ecash-mainnet",
         nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
@@ -281,7 +311,7 @@ describe("createChain", () => {
     ).rejects.toThrow("Invalid eCash recipient for the configured network");
 
     const wrongCheckpoint = await createChain({
-      kind: "ecash",
+      family: "bitcoin",
       config: {
         networkId: "ecash-mainnet",
         chronik: {
@@ -300,7 +330,7 @@ describe("createChain", () => {
 
   it("rejects a wallet created for another chain", async () => {
     const chain = await createChain({
-      kind: "ecash",
+      family: "bitcoin",
       config: {
         networkId: "ecash-mainnet",
         chronik: {
@@ -320,7 +350,8 @@ describe("createChain", () => {
       },
     });
     const foreignWallet = {
-      chainKind: "solana" as const,
+      family: "solana" as const,
+      chainIdentifier: "solana-test",
       networkId: "solana-test",
       identity: {
         address: { raw: "foreign" },
@@ -336,13 +367,13 @@ describe("createChain", () => {
 
     await expect(
       chain.nativeTransfers.getBalance({ wallet: foreignWallet })
-    ).rejects.toThrow("Expected an eCash wallet, got solana");
+    ).rejects.toThrow("Expected a Bitcoin/eCash wallet, got solana");
     expect(foreignWallet.getBalance).not.toHaveBeenCalled();
   });
 
   it("accepts a runtime ChainFactoryConfig union", async () => {
     const config: import("./chain-factory").ChainFactoryConfig = {
-      kind: "solana",
+      family: "solana",
       config: {
         networkId: "solana-test",
         genesisHash: "solana-test-genesis",
@@ -362,7 +393,7 @@ describe("createChain", () => {
       },
     };
     await expect(createChain(config)).resolves.toMatchObject({
-      kind: "solana",
+      family: "solana",
     });
   });
 });

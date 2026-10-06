@@ -11,7 +11,22 @@ import { ActiveChain } from "./active-chain";
 export { createChain } from "./chain-factory";
 export type { ChainFactoryConfig } from "./chain-factory";
 export type { EcashChainConfig } from "./ecash-chain";
-export type { MonadChainConfig } from "./monad-chain";
+export { createEvmChain, createMonadChain } from "./monad-chain";
+export type {
+  EvmChainConfig,
+  EvmChainWalletHandle,
+  MonadChainConfig,
+  MonadChainWalletHandle,
+} from "./monad-chain";
+export {
+  NativeEvmTransactionBuilder,
+  defaultNativeEvmTransactionBuilder,
+} from "./evm-transaction-builder";
+export type {
+  EvmTransactionBuilder,
+  EvmTransferParams,
+  EvmBurnParams,
+} from "./evm-transaction-builder";
 export type { SolanaChainConfig } from "./solana-chain";
 
 export const activeChain: ActiveChain = MonadChain;
@@ -49,7 +64,7 @@ export type {
   ActiveNativeTransferClient,
   ChainAddress,
   ChainCapabilities,
-  ChainKind,
+  ChainFamily,
   ChainTransaction,
   DirectMessageAttemptStatus,
   DirectMessageClient,
@@ -67,7 +82,6 @@ export type {
 } from "./active-chain";
 
 export type { NativeTransactionAttemptStore } from "./chain-wallet";
-export type { MonadChainWalletHandle } from "./monad-chain";
 
 export {
   MonadStealthKeyring,

@@ -7,6 +7,8 @@ import { NativeTransactionAttemptStore } from "./chain-wallet";
 import { SolanaWallet, SolanaWalletConnection } from "../solana-wallet";
 
 export interface SolanaChainConfig {
+  /** Optional chain identifier override; defaults to networkId. */
+  readonly chainIdentifier?: string;
   /** Stable cluster/genesis identifier used to namespace durable transaction attempts. */
   networkId: string;
   /** Expected genesis hash, checked against the RPC before wallet construction. */
@@ -22,12 +24,14 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
     config.networkId === "solana-testnet" ||
     config.networkId.includes("testnet") ||
     config.networkId.includes("devnet");
+  const chainIdentifier = config.chainIdentifier ?? config.networkId;
   const name = isTestnet ? "Solana Testnet" : "Solana";
   const unit = isTestnet ? "tSOL" : "SOL";
   const network = isTestnet ? "testnet" : "mainnet";
 
   return {
-    kind: "solana",
+    family: "solana",
+    chainIdentifier,
     name,
     unit,
     networkId: config.networkId,
@@ -64,6 +68,7 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
       return new SolanaWallet({
         connection: config.connection,
         signer: await config.deriveSigner(seed),
+        chainIdentifier,
         networkId: config.networkId,
         genesisHash: config.genesisHash,
         nativeAttemptStore: config.nativeAttemptStore,
@@ -71,8 +76,8 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
     },
     nativeTransfers: {
       async getBalance({ wallet }) {
-        if (wallet.chainKind !== "solana") {
-          throw new Error(`Expected a Solana wallet, got ${wallet.chainKind}`);
+        if (wallet.family !== "solana") {
+          throw new Error(`Expected a Solana wallet, got ${wallet.family}`);
         }
         if (wallet.networkId !== config.networkId) {
           throw new Error(
@@ -82,8 +87,8 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
         return wallet.getBalance();
       },
       async send({ wallet, recipient, value, onSigned }) {
-        if (wallet.chainKind !== "solana") {
-          throw new Error(`Expected a Solana wallet, got ${wallet.chainKind}`);
+        if (wallet.family !== "solana") {
+          throw new Error(`Expected a Solana wallet, got ${wallet.family}`);
         }
         if (wallet.networkId !== config.networkId) {
           throw new Error(
@@ -93,8 +98,8 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
         return wallet.sendNative({ recipient, value, onSigned });
       },
       async getTransactionStatus({ wallet, transaction }) {
-        if (wallet.chainKind !== "solana") {
-          throw new Error(`Expected a Solana wallet, got ${wallet.chainKind}`);
+        if (wallet.family !== "solana") {
+          throw new Error(`Expected a Solana wallet, got ${wallet.family}`);
         }
         if (wallet.networkId !== config.networkId) {
           throw new Error(

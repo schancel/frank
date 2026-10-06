@@ -146,7 +146,8 @@ export interface EcashWalletOptions {
  * into the UI-facing wallet contract.
  */
 export class EcashWallet implements NativeWalletHandle {
-  readonly chainKind = "ecash" as const;
+  readonly family = "bitcoin" as const;
+  readonly chainIdentifier: string;
   readonly networkId: string;
   private operationQueue: Promise<void> = Promise.resolve();
   private lastSubmittedNative: ChainTransaction | undefined;
@@ -170,9 +171,10 @@ export class EcashWallet implements NativeWalletHandle {
     ) => Promise<"confirmed" | "failed" | "pending" | "unknown">
   ) {
     this.networkId = networkId;
+    this.chainIdentifier = attemptNetworkId;
     this.nativeAttemptKey = nativeTransactionAttemptKey({
-      chainKind: "ecash",
-      networkId: attemptNetworkId,
+      family: "bitcoin",
+      chainIdentifier: this.chainIdentifier,
       address: this.primaryAddress,
     });
     const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey);

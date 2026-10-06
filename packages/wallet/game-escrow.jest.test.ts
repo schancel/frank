@@ -110,7 +110,8 @@ describe('Game Escrow DKSAP Stealth Payouts (GAME-3)', () => {
     } as unknown as any
 
     const mockWallet = {
-      chainKind: 'monad',
+      family: 'evm',
+      chainIdentifier: 'monad-testnet',
       networkId: 'monad-testnet',
       identity: winnerIdentity,
       stealthKeyring: keyring,

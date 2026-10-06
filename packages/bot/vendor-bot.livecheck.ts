@@ -125,6 +125,23 @@ async function main() {
   console.log(`Catalog dir: ${catalogDir}`)
   console.log(`Catalog: ${CATALOG.map(i => `${i.itemId} (${i.priceWei} wei)`).join(', ')}`)
 
+  if (
+    process.env.USE_BOT_FRAMEWORK === '1' ||
+    (process.env.USE_BOT_FRAMEWORK !== '0' && process.env.NODE_ENV !== 'test')
+  ) {
+    const { FrankBotHost } = await import('@frank/bot-framework')
+    const { VendorBot } = await import('./src/bots/vendor-bot')
+    const host = new FrankBotHost({
+      stateDir: stateDirPath,
+      relayBaseUrl,
+      rpcUrl,
+      pollIntervalMs,
+    })
+    await host.register(new VendorBot({ catalogItems: CATALOG }))
+    await host.start()
+    return
+  }
+
   const identity = loadOrCreateIdentity(identityJsonPath, 'vendor-bot')
   await registerAndLog({
     relayBaseUrl,

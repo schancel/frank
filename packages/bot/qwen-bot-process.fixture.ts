@@ -1,5 +1,6 @@
 /** Child-process fixture: real Qwen CLI/workflow/Level state; external identity, crypto,
  * relay and payment boundaries are local fixtures. Never reads credentials or sends funds. */
+process.env.USE_BOT_FRAMEWORK = '0'
 import type { QwenReplyGenerator, QwenBotConfig } from './qwen-reply'
 import type { StampMonadMessageResult } from '@frank/wallet/monad-stamp-client'
 import { createHash } from 'crypto'

@@ -158,6 +158,23 @@ async function main() {
     )
   }
 
+  if (
+    process.env.USE_BOT_FRAMEWORK === '1' ||
+    (process.env.USE_BOT_FRAMEWORK !== '0' && process.env.NODE_ENV !== 'test')
+  ) {
+    const { FrankBotHost } = await import('@frank/bot-framework')
+    const { QwenBot } = await import('./src/bots/qwen-bot')
+    const stateDirPath = botStateDir('qwen', 'QWEN_BOT_STATE_DIR')
+    const host = new FrankBotHost({
+      stateDir: stateDirPath,
+      relayBaseUrl,
+      rpcUrl,
+    })
+    await host.register(new QwenBot({ config: botConfig }))
+    await host.start()
+    return
+  }
+
   const identityJsonPath = resolve(
     process.cwd(),
     process.env.QWEN_BOT_IDENTITY_JSON ?? '/tmp/qwen-bot-identity.json',

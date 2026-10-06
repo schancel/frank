@@ -3,15 +3,15 @@
     "allowJs": true,
     "esModuleInterop": true,
     "module": "esnext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "noEmit": true,
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
     "sourceMap": true,
     "strict": true,
     "skipLibCheck": true,
-    "target": "es2020",
-    "lib": ["es2020"],
+    "target": "es2022",
+    "lib": ["es2022", "DOM"],
     // Without this, TS auto-includes every `@types/*` package found anywhere in the (hoisted,
     // monorepo-wide) node_modules tree as an ambient global -- including broken stub packages
     // pulled in transitively by unrelated devDependencies elsewhere in the workspace (e.g.
@@ -24,7 +24,8 @@
     // `bitcore-lib-xpi` ships no types of its own -- this repo's hand-written ambient
     // declaration (`declare module 'bitcore-lib-xpi' {...}`) lives alongside the package itself
     // (`packages/bitcore-lib-xpi/types.d.ts`) so every consumer picks it up the same way.
-    "../bitcore-lib-xpi/types.d.ts"
+    "../bitcore-lib-xpi/types.d.ts",
+    "../wallet/level.d.ts"
   ],
   "exclude": [
     "node_modules",

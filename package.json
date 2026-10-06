@@ -19,8 +19,15 @@
   "scripts": {
     "demo": "TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/demo.ts",
     "demo:smoke": "TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/smoke.ts",
+    "typecheck": "node --import tsx scripts/typecheck.ts",
+    "typecheck:fast": "node --import tsx scripts/typecheck.ts --fast",
+    "typecheck:tsc": "node --import tsx scripts/typecheck.ts --tsc",
     "build:contracts": "yarn --cwd packages/contracts build",
     "test:contracts": "yarn --cwd packages/contracts test",
     "deploy:contracts": "yarn --cwd packages/contracts deploy"
+  },
+  "devDependencies": {
+    "@types/bluebird": "^3.5.42",
+    "@typescript/native-preview": "^7.0.0-dev.20260707.2"
   }
 }

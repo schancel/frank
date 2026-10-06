@@ -34,7 +34,7 @@ export class LevelBotStateStore implements BotStateStore {
 
   async get(key: string): Promise<string | undefined> {
     try {
-      const val = await this.db.get(this.fullKey(key));
+      const val: unknown = await this.db.get(this.fullKey(key));
       return typeof val === "string"
         ? val
         : Buffer.isBuffer(val)

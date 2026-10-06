@@ -561,9 +561,9 @@ export async function openExistingPoolMonadTopicOwner(params: {
         /* browser runtimes have no filesystem */
       }
       database = level(join(params.location, 'wallet-manifest'))
-      await openDurableLevel(database, params.location, 'wallet-manifest')
+      await openDurableLevel(database!, params.location, 'wallet-manifest')
       topicJournal = new LevelTopicOperationJournal(
-        database,
+        database!,
         assertJournalMutation,
       )
       await (topicJournal as LevelTopicOperationJournal).Open()
@@ -740,7 +740,7 @@ export async function openMonadWalletBundle(
   let manifestDb: LevelDB | undefined
   try {
     manifestDb = level(manifestDbLocation)
-    await openDurableLevel(manifestDb, params.location, 'wallet-manifest')
+    await openDurableLevel(manifestDb!, params.location, 'wallet-manifest')
   } catch (error) {
     try {
       await manifestDb?.close()

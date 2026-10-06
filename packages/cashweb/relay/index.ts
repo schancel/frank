@@ -1,10 +1,18 @@
 import axios from 'axios'
 import __pb_relay_pb from './relay_pb'
+import type {
+  Payload as PayloadMsg,
+  Message as MessageMsg,
+  MessagePage as MessagePageMsg,
+  MessageSet as MessageSetMsg,
+  Profile as ProfileMsg,
+  PayloadEntry,
+} from './relay_pb'
 const { Payload, Message, MessagePage, MessageSet, Profile } = __pb_relay_pb
-import type { PayloadEntry } from './relay_pb'
 import p2pkh from './p2pkh_pb'
 
 import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
+import type { SignedPayload as SignedPayloadMsg } from '../signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
 import pop from '../pop'
 // TODO: Relay code should not depend on Stamp base code. Fix this import
@@ -341,7 +349,7 @@ export class RelayClient extends ReadOnlyRelayClient {
     await this.messageStore.deleteMessage(digest)
   }
 
-  async putProfile(address: string, metadata: SignedPayload) {
+  async putProfile(address: string, metadata: SignedPayloadMsg) {
     const addressLegacy = this.toAPIAddress(address)
 
     const rawProfile = metadata.serializeBinary()
@@ -363,7 +371,7 @@ export class RelayClient extends ReadOnlyRelayClient {
     startTime: number,
     endTime?: number,
     retries = 3,
-  ): Promise<MessagePage | void> {
+  ): Promise<MessagePageMsg | void> {
     const addressLegacy = this.toAPIAddress(address)
 
     const url = `${this.url}/messages/${addressLegacy}`
@@ -435,7 +443,7 @@ export class RelayClient extends ReadOnlyRelayClient {
     return await pop.sendPayment(paymentUrl, payment)
   }
 
-  async pushMessages(address: string, messageSet: MessageSet) {
+  async pushMessages(address: string, messageSet: MessageSetMsg) {
     const addressLegacy = this.toAPIAddress(address)
 
     const rawMetadata = messageSet.serializeBinary()
@@ -770,7 +778,7 @@ export class RelayClient extends ReadOnlyRelayClient {
     })
   }
 
-  receiveSelfSend({ payload }: { payload: Payload }) {
+  receiveSelfSend({ payload }: { payload: PayloadMsg }) {
     assert(this.wallet, 'wallet unset while handing receiveSelfSend')
     // Decode entries
     const entriesList = payload.getEntriesList()
@@ -799,7 +807,7 @@ export class RelayClient extends ReadOnlyRelayClient {
   }
 
   async receiveMessage(
-    rawMessage: Message,
+    rawMessage: MessageMsg,
     receivedTime = Date.now(),
   ): Promise<ReceivedMessageWrapper | null> {
     // Parse message

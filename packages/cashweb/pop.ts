@@ -78,7 +78,7 @@ export default {
     // Get Outputs
     const requestOutputs = paymentDetails.getOutputsList()
     const outputs = requestOutputs.map(reqOutput =>
-      paymentOutput(reqOutput.getScript(), reqOutput.getAmount()),
+      paymentOutput(reqOutput.getScript_asU8(), reqOutput.getAmount() ?? 0),
     )
 
     // Construct tx

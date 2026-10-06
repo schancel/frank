@@ -1795,7 +1795,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     getChannelVaultAddress(): string {
       const entry = config.networkTag
         ? resolveChainIdentifier(config.networkTag)
-        : PROTOCOL_CHAINS[config.isTestnet ? "monad-testnet" : "monad-mainnet"];
+        : PROTOCOL_CHAINS[isTestnet ? "monad-testnet" : "monad-mainnet"];
       const addr = entry?.contracts?.channelVault;
       if (!addr) {
         throw new Error(
@@ -1808,7 +1808,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     getTablePotVaultAddress(): string {
       const entry = config.networkTag
         ? resolveChainIdentifier(config.networkTag)
-        : PROTOCOL_CHAINS[config.isTestnet ? "monad-testnet" : "monad-mainnet"];
+        : PROTOCOL_CHAINS[isTestnet ? "monad-testnet" : "monad-mainnet"];
       const addr = entry?.contracts?.tablePotVault;
       if (!addr) {
         throw new Error(
@@ -1821,7 +1821,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     getHtlcAddress(): string {
       const entry = config.networkTag
         ? resolveChainIdentifier(config.networkTag)
-        : PROTOCOL_CHAINS[config.isTestnet ? "monad-testnet" : "monad-mainnet"];
+        : PROTOCOL_CHAINS[isTestnet ? "monad-testnet" : "monad-mainnet"];
       const addr = entry?.contracts?.htlc;
       if (!addr) {
         throw new Error(

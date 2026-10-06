@@ -409,7 +409,7 @@ export function openDirectMessage(
     let recipient: PreviewDirectoryEvidence
     let senderHead: PreviewDirectoryEvidence | undefined
     let recipientHead: PreviewDirectoryEvidence | undefined
-    if (mode === 'archive') {
+    if (input.mode === 'archive') {
       sender = evidence(input.network, input.senderEvidence)
       recipient = evidence(input.network, input.recipientEvidence)
     } else {

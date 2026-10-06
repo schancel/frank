@@ -121,7 +121,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       const welcomeItem = buildBlackjackWelcomeItem({
         minWagerWei: this.minWagerWei,
         maxWagerWei: this.maxWagerWei,
-        rulesSummary: BLACKJACK_RULES_SUMMARY,
+        rules: BLACKJACK_RULES_SUMMARY,
       });
       await msgCtx.reply([
         {
@@ -340,7 +340,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
 
     const playerVal = handValue(game.playerCards);
 
-    if (playerVal.isBust) {
+    if (playerVal.bust) {
       game.status = "resolved";
       game.outcome = "dealer_win";
       await putStoredGame(ctx.state, `game:${game.gameId}`, game);

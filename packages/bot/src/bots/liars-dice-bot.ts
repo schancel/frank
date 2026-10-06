@@ -143,7 +143,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
   }
 
   async onMessage(msgCtx: BotMessageContext, ctx: BotContext): Promise<void> {
-    const sender = msgCtx.senderAddress;
+    const sender = msgCtx.peerAddress;
     const conversationId = sender; // Or topic if in group
 
     // Check for structured LiarsDiceItem in incoming message

@@ -73,7 +73,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   async Open(): Promise<void> {
     this.assertMutationAllowed()
     this.openedDb = level(this.dbLocation)
-    await openDurableLevel(this.openedDb, this.rootLocation, 'sub-account-pool')
+    await openDurableLevel(this.openedDb!, this.rootLocation, 'sub-account-pool')
     await this.loadData()
   }
 

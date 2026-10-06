@@ -277,6 +277,8 @@ export function deliveryPayload(
     destination: Fields
     payloadFrame: Uint8Array
     payments: Fields[] | number
+    recipient: Fields
+    dleqProof: Uint8Array
   }> = {},
 ): Fields {
   const pf = o.payloadFrame ?? type5Frame()
@@ -285,13 +287,16 @@ export function deliveryPayload(
     typeof o.payments === 'number'
       ? Array.from({ length: o.payments }, (_, i) => payment(t3, { index: i }))
       : o.payments ?? [payment(t3, { index: 0 }), payment(t3, { index: 1 })]
-  return M([
+  const m = M([
     [0, o.net ?? NET],
     [1, o.destination ?? stampAccount()],
     [2, pf],
     [3, t3],
     [4, payments],
   ])
+  if (o.recipient !== undefined) m.set(5, o.recipient)
+  if (o.dleqProof !== undefined) m.set(6, o.dleqProof)
+  return m
 }
 
 export const deliveryFrame = (

@@ -51,6 +51,7 @@ import { ErrorCategory, ErrorStage, FrankCodecError } from './errors'
 import { isCompressedPoint, isProofEncoding } from './point'
 import type {
   AccountRef,
+  DirectMessageDelivery,
   DraftPayload,
   JournalFact,
   KeyTransition,
@@ -872,8 +873,8 @@ export function parseDraft(
   const P = 'root/payload'
   switch (typeId) {
     case TYPE_DIRECT_MESSAGE_DELIVERY: {
-      const m = fields(payload, P, [0, 1, 2, 3, 4], [], true, allow)
-      return {
+      const m = fields(payload, P, [0, 1, 2, 3, 4], [5, 6], true, allow)
+      const res: DirectMessageDelivery<Uint8Array> = {
         type: 1,
         network: networkTag(m.get(0), `${P}.0`),
         destination: account(m.get(1), `${P}.1`),
@@ -884,6 +885,17 @@ export function parseDraft(
         ),
         unknownFields: m.unknown,
       }
+      if (m.has(5)) {
+        const recipient = account(m.get(5), `${P}.5`)
+        if (recipient.keyType !== 1) {
+          throw bad(`${P}.5`, 'recipient key type must be 1')
+        }
+        res.recipient = recipient
+      }
+      if (m.has(6)) {
+        res.dleqProof = proof(m.get(6), `${P}.6`)
+      }
+      return res
     }
     case TYPE_DIRECTORY_ATTESTATION: {
       const m = fields(payload, P, [0, 1], [], true, allow)
@@ -1342,6 +1354,7 @@ export function checkAllocated(d: DraftPayload): void {
   switch (d.type) {
     case 1:
       checkKeyType(d.destination, `${P}.1`)
+      if (d.recipient) checkKeyType(d.recipient, `${P}.5`)
       break
     case 2:
       d.signatures.forEach((s, i) => {

@@ -204,7 +204,7 @@ describe('type-specific limits (R2-R4)', () => {
   /** A newer type-1 root projected through schema 1 with one padding field. */
   const paddedDelivery = (pad: number): Uint8Array => {
     const payload = deliveryPayload({ payments: 2 })
-    payload.set(5, new Uint8Array(pad))
+    payload.set(7, new Uint8Array(pad))
     return fr(1, payload, 2, 1)
   }
 

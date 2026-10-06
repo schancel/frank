@@ -26,6 +26,8 @@ min_value_wei="${CASHWEB_STAMP_MIN_BURN_VALUE_WEI:-1000000000000}"
 expected_chain_id="${MONAD_TESTNET_CHAIN_ID:-10143}"
 network_tag="${FRANK_NETWORK_TAG:-MONT}"
 cargo_command="${CARGO:-cargo}"
+chronik_url="${XEC_TESTNET_CHRONIK_URL:-https://chronik-testnet.fabien.cash}"
+solana_rpc_url="${SOLANA_DEVNET_HTTP_RPC_URL:-https://api.devnet.solana.com}"
 if [[ -z "$rpc_url" ]]; then
     echo "run-local-monad: MONAD_TESTNET_HTTP_RPC_URL is required (set it in .env or the environment)" >&2
     exit 64
@@ -199,14 +201,18 @@ runtime_config="$(LAUNCHER_MIN_VALUE_WEI="$min_value_wei" \
     { print }
 ' "$base_config")"
 
-# The daemon (not the config file) reads these two variables; export them explicitly so a value
-# taken from a shell default (the tag) reaches it as well as one sourced from `.env`.
+# The daemon (not the config file) reads these variables; export them explicitly so a value
+# taken from a shell default (the tag, chronik, solana) reaches it as well as one sourced from `.env`.
 export MONAD_TESTNET_HTTP_RPC_URL="$rpc_url"
 export FRANK_NETWORK_TAG="$network_tag"
+export XEC_TESTNET_CHRONIK_URL="$chronik_url"
+export SOLANA_DEVNET_HTTP_RPC_URL="$solana_rpc_url"
 
 # Effective, non-secret values for this run. The RPC URL is reported by scheme and host only: its
 # path commonly embeds the provider API key.
 rpc_origin="$(printf '%s' "$rpc_url" | sed -E 's#^([a-z]+://[^/?\#]*).*#\1#')"
+chronik_origin="$(printf '%s' "$chronik_url" | sed -E 's#^([a-z]+://[^/?\#]*).*#\1#')"
+solana_origin="$(printf '%s' "$solana_rpc_url" | sed -E 's#^([a-z]+://[^/?\#]*).*#\1#')"
 {
     echo "run-local-monad: effective configuration"
     echo "  config file:            $base_config (mailbox enabled)"
@@ -215,6 +221,8 @@ rpc_origin="$(printf '%s' "$rpc_url" | sed -E 's#^([a-z]+://[^/?\#]*).*#\1#')"
     echo "  min_value_wei:          $min_value_wei"
     echo "  expected_chain_id:      $expected_chain_id"
     echo "  rpc_chain:              $rpc_chain"
+    echo "  XEC_TESTNET_CHRONIK_URL: set (origin $chronik_origin, path hidden)"
+    echo "  SOLANA_DEVNET_HTTP_RPC_URL: set (origin $solana_origin, path hidden)"
     echo "  MONAD_STAMP_BURN_ADDRESS: ${burn_address:-NOT SET}"
     if [[ -z "$burn_address" ]]; then
         echo "run-local-monad: WARNING: MONAD_STAMP_BURN_ADDRESS is not set: every forum topic post and vote will fail with HTTP 500 (direct messages still work). Set it (see .env.example)." >&2

@@ -25,5 +25,6 @@ module.exports = {
       },
     ],
   },
+  transformIgnorePatterns: ['/node_modules/(?!kysely)/'],
   testPathIgnorePatterns: ['/node_modules/'],
 };

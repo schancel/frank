@@ -17,6 +17,141 @@
 
     <q-page-container>
       <q-page class="q-pa-md about-page">
+        <!-- Hero section -->
+        <div
+          class="column items-center q-mb-lg text-center about-hero"
+          data-test="about-hero"
+        >
+          <q-avatar size="80px" class="q-mb-sm shadow-2">
+            <img src="~assets/stamp-icon.png" :alt="$t('about.appName')" />
+          </q-avatar>
+          <div class="text-h4 text-weight-bold">
+            {{ $t('about.appName') }}
+          </div>
+          <div class="text-subtitle1 text-grey-8 q-mt-xs">
+            {{ $t('about.tagline') }}
+          </div>
+          <div class="row q-gutter-xs q-mt-sm justify-center">
+            <q-chip dense outline color="primary" icon="bolt">
+              {{ $t('about.badgeMonad') }}
+            </q-chip>
+            <q-chip dense outline color="secondary" icon="mail">
+              {{ $t('about.badgeStamp') }}
+            </q-chip>
+            <q-chip dense outline color="accent" icon="lock">
+              {{ $t('about.badgeEncrypted') }}
+            </q-chip>
+            <q-chip dense outline color="dark" icon="key">
+              {{ $t('about.badgePermissionless') }}
+            </q-chip>
+          </div>
+        </div>
+
+        <!-- Frank Overview Card -->
+        <q-card flat bordered class="q-mb-md" data-test="about-frank">
+          <q-card-section>
+            <div class="text-h6 q-mb-sm">{{ $t('about.frankTitle') }}</div>
+            <p class="text-body2 text-grey-9 q-mb-sm">
+              {{ $t('about.frankIntro') }}
+            </p>
+            <p class="text-body2 text-grey-9 q-mb-none">
+              {{ $t('about.frankAccounts') }}
+            </p>
+          </q-card-section>
+        </q-card>
+
+        <!-- Stamp Protocol Card -->
+        <q-card flat bordered class="q-mb-md" data-test="about-stamp">
+          <q-card-section>
+            <div class="text-h6 q-mb-sm">{{ $t('about.stampTitle') }}</div>
+            <p class="text-body2 text-grey-9 q-mb-md">
+              {{ $t('about.stampIntro') }}
+            </p>
+
+            <div class="column q-gutter-y-sm">
+              <div class="row no-wrap items-start">
+                <q-icon
+                  name="payments"
+                  color="primary"
+                  size="24px"
+                  class="q-mr-sm q-mt-xs"
+                />
+                <div>
+                  <div class="text-weight-bold text-body2">
+                    {{ $t('about.stampDMsTitle') }}
+                  </div>
+                  <div class="text-caption text-grey-8">
+                    {{ $t('about.stampDMsDesc') }}
+                  </div>
+                </div>
+              </div>
+
+              <div class="row no-wrap items-start">
+                <q-icon
+                  name="local_fire_department"
+                  color="negative"
+                  size="24px"
+                  class="q-mr-sm q-mt-xs"
+                />
+                <div>
+                  <div class="text-weight-bold text-body2">
+                    {{ $t('about.stampTopicsTitle') }}
+                  </div>
+                  <div class="text-caption text-grey-8">
+                    {{ $t('about.stampTopicsDesc') }}
+                  </div>
+                </div>
+              </div>
+
+              <div class="row no-wrap items-start">
+                <q-icon
+                  name="security"
+                  color="secondary"
+                  size="24px"
+                  class="q-mr-sm q-mt-xs"
+                />
+                <div>
+                  <div class="text-weight-bold text-body2">
+                    {{ $t('about.stampPrivacyTitle') }}
+                  </div>
+                  <div class="text-caption text-grey-8">
+                    {{ $t('about.stampPrivacyDesc') }}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </q-card-section>
+        </q-card>
+
+        <!-- Links Card -->
+        <q-card flat bordered class="q-mb-lg" data-test="about-links">
+          <q-card-section>
+            <div class="text-h6 q-mb-sm">{{ $t('about.linksTitle') }}</div>
+            <div class="row q-gutter-sm">
+              <q-btn
+                outline
+                no-caps
+                color="primary"
+                icon="code"
+                :label="$t('about.githubRepo')"
+                href="https://github.com/schancel/frank"
+                target="_blank"
+                rel="noopener noreferrer"
+              />
+              <q-btn
+                outline
+                no-caps
+                color="secondary"
+                icon="open_in_new"
+                :label="$t('about.stampUpstream')"
+                href="https://github.com/stampchat/stamp"
+                target="_blank"
+                rel="noopener noreferrer"
+              />
+            </div>
+          </q-card-section>
+        </q-card>
+
         <section data-test="third-party-notices">
           <h2 class="text-h6 q-mt-none">{{ $t('about.thirdPartyTitle') }}</h2>
 

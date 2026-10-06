@@ -797,8 +797,34 @@ export default {
     txHashCopied: 'Hash de transaction copié dans le presse-papiers',
   },
   about: {
+    appName: 'Frank',
     title: 'À propos',
     menu: 'À propos et licences',
+    tagline: 'Messagerie privée et résistante au spam économique pour Monad.',
+    frankTitle: 'À propos de Frank',
+    frankIntro:
+      'Frank est une messagerie cryptographique décentralisée et souveraine conçue pour la blockchain Monad, prolongeant et faisant évoluer le protocole Stamp. Elle combine des identités cryptographiques sans permission avec une résistance économique réelle au spam.',
+    frankAccounts:
+      'Les comptes sont des paires de clés secp256k1 générées localement sur votre appareil. Frank ne requiert aucun numéro de téléphone, adresse courriel ou fournisseur centralisé.',
+    stampTitle: 'Le protocole Stamp : la parole n’est pas gratuite',
+    stampIntro:
+      'Plutôt que de s’en remettre à des gardiens centralisés ou à la surveillance pour filtrer le spam, le protocole Stamp introduit des incitations économiques directes dans la communication.',
+    stampDMsTitle: 'Messages directs et remise rémunérée',
+    stampDMsDesc:
+      'Chaque message direct transporte une transaction de timbre sur la chaîne qui rémunère directement le destinataire via des adresses éphémères dérivées. Les expéditeurs paient pour votre attention, éliminant ainsi le spam indésirable.',
+    stampTopicsTitle: 'Diffusion de sujets et pondération par combustion',
+    stampTopicsDesc:
+      'Les publications publiques et les votes brûlent du MON vers une adresse irrécupérable, conférant un poids économique prouvable aux débats publics sans modération centrale.',
+    stampPrivacyTitle: 'Chiffrement de bout en bout',
+    stampPrivacyDesc:
+      'Tous les contenus des messages sont chiffrés de bout en bout. Les relais fédérés CashWeb valident les transactions de timbre et acheminent les enveloppes sans jamais avoir accès au texte en clair.',
+    badgeMonad: 'Monad',
+    badgeStamp: 'Protocole Stamp',
+    badgeEncrypted: 'Chiffré de bout en bout',
+    badgePermissionless: 'Identité sans permission',
+    linksTitle: 'Liens et code source',
+    githubRepo: 'Dépôt GitHub de Frank',
+    stampUpstream: 'Protocole Stamp d’origine',
     thirdPartyTitle: 'Logiciels tiers',
     dklsName:
       'Bibliothèque de signature à deux parties DKLs23 (Silence Laboratories)',
@@ -816,3 +842,4 @@ export default {
   },
   close: 'Fermer',
 }
+

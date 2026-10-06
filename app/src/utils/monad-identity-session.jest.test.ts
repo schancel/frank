@@ -42,6 +42,8 @@ import {
 } from './monad-identity-session'
 import { useMonadWallet } from './clients'
 
+jest.setTimeout(30000)
+
 const mockInitialize = jest.fn(async () => undefined)
 const mockStatus = reactive({
   status: 'fresh',
@@ -198,10 +200,16 @@ test('without a ready account nothing is published and there is no messaging wal
 test('a ready account publishes its own entry and starts messaging with no user action', async () => {
   const alice = await wallet(0, 'alice')
   const d = device(alice)
+  const registerProfile = jest.fn(async () => undefined)
+  d.deps.registerProfile = registerProfile
   await configureMessagingForTest(d.deps)
   mockStatus.status = 'ready'
   expect(await initializeMonadIdentity()).toBe('started')
   await until(() => messagingState.status === 'ready', 'messaging')
+  expect(registerProfile).toHaveBeenCalledWith({
+    relayBaseUrl: RELAY,
+    wallet: alice,
+  })
   // Exactly one self-signed revision zero, on the configured relay.
   expect(signedZero).toHaveBeenCalledTimes(1)
   expect(signedNext).not.toHaveBeenCalled()

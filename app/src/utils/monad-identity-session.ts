@@ -43,6 +43,12 @@ import {
   startDirectMessagePolling,
   startOutgoingReconciliation,
 } from '../adapters/pinia-chain-adapter'
+import { useProfileStore } from '../stores/my-profile'
+import {
+  fetchMonadProfile,
+  registerMonadIdentityCbor,
+  type MonadIdentity,
+} from '@frank/wallet/monad-identity'
 
 type Stoppable = { stop: () => void }
 interface Live {
@@ -77,6 +83,11 @@ export interface MessagingDeps {
   startReconcile: (options: { wallet: WalletHandle }) => Stoppable
   /** Delay before the n-th retry (1-based) of a failed publish. */
   retryDelayMs(attempt: number): number
+  /** Registers the identity profile with the relay so authenticated inbox reads succeed. */
+  registerProfile?: (options: {
+    relayBaseUrl: string
+    wallet: NativeWalletHandle
+  }) => Promise<void>
 }
 
 const CHECKPOINT_PREFIX = 'frank-directory-checkpoint:'
@@ -131,6 +142,42 @@ function productionDeps(): MessagingDeps {
     startReconcile: startOutgoingReconciliation,
     // 5 s, 10 s, 20 s ... capped at 5 minutes.
     retryDelayMs: attempt => Math.min(5_000 * 2 ** (attempt - 1), 300_000),
+    registerProfile: async ({ relayBaseUrl, wallet }) => {
+      const identity = (wallet as unknown as { identity?: MonadIdentity })
+        .identity
+      if (!identity) return
+      try {
+        let profile = undefined
+        try {
+          profile = useProfileStore().profile
+        } catch {
+          // Pinia store not available (e.g. non-Vue test environment)
+        }
+        try {
+          const existing = await fetchMonadProfile({
+            relayBaseUrl,
+            address: identity.address,
+          })
+          if (
+            existing &&
+            (existing.name ?? '') === (profile?.name ?? '') &&
+            (existing.bio ?? '') === (profile?.bio ?? '') &&
+            (existing.avatar ?? '') === (profile?.avatar ?? '')
+          ) {
+            return
+          }
+        } catch {
+          // If check fails, fall through to attempt registration
+        }
+        await registerMonadIdentityCbor({
+          relayBaseUrl,
+          identity,
+          profile,
+        })
+      } catch (err) {
+        console.warn('[startMessaging] registerMonadIdentityCbor failed:', err)
+      }
+    },
   }
 }
 
@@ -230,6 +277,9 @@ export async function startMessaging(): Promise<void> {
   try {
     if (d.session.state.status !== 'ready') throw new Error('no account')
     wallet = await d.session.getWallet()
+    if (d.registerProfile) {
+      await d.registerProfile({ relayBaseUrl: d.relayBaseUrl, wallet })
+    }
     const owner = wallet
     const descriptor = {
       networkTag: d.networkTag,

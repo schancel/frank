@@ -430,6 +430,15 @@ export default {
     accept: 'Accepter l’échange',
     cancel: 'Annuler l’offre',
   },
+  chatMessageStealth: {
+    title: 'Paiement furtif',
+    sentTitle: 'Paiement furtif envoyé',
+    receivedTitle: 'Paiement furtif reçu',
+    confirmed: 'Confirmé',
+    viewInExplorer: 'Voir la transaction dans l’explorateur',
+    viewTransaction: 'Voir la transaction',
+    directCreditHint: 'Directement crédité au solde disponible',
+  },
   sendFileDialog: {
     sendFile: 'Envoyer un fichier',
     captionHint: 'Attacher un memo au fichier.',

@@ -11,6 +11,10 @@
           <chat-message-stealth
             v-if="items.stealth !== undefined"
             :amount="items.stealth.amount"
+            :chain-id="items.stealth.chainId"
+            :network-tag="items.stealth.networkTag"
+            :transactions="items.stealth.transactions"
+            :memo="items.stealth.memo"
           />
           <!-- Text Message -->
           <chat-message-text

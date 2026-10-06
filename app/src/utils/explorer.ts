@@ -134,3 +134,94 @@ export function transactionExplorerUrl(
   }
   return `${baseUrl}${encodeURIComponent(txId)}`
 }
+
+export function hasMultiChainExplorer(
+  networkTagOrChain?: string,
+  options?: ExplorerOptions,
+): boolean {
+  if (options?.localExplorerUrl ?? readEnv('MONAD_EXPLORER_URL')) {
+    return true
+  }
+  if (isLocalRpcChain(options)) {
+    return false
+  }
+  const tag = (networkTagOrChain || DEFAULT_NETWORK_TAG).toLowerCase()
+  if (
+    tag === 'mont' ||
+    tag === 'monad-testnet' ||
+    tag === 'mon1' ||
+    tag === 'monad-mainnet' ||
+    tag === 'monad' ||
+    tag === 'sold' ||
+    tag === 'solana-devnet' ||
+    tag === 'solana-testnet' ||
+    tag === 'sol1' ||
+    tag === 'solana-mainnet' ||
+    tag === 'solana' ||
+    tag === 'xect' ||
+    tag === 'ecash-testnet' ||
+    tag === 'xec1' ||
+    tag === 'ecash-mainnet' ||
+    tag === 'ecash'
+  ) {
+    return true
+  }
+  return Boolean(
+    transactionExplorerBases[networkTagOrChain || DEFAULT_NETWORK_TAG],
+  )
+}
+
+export function multiChainExplorerUrl(
+  txId: string,
+  networkTagOrChain?: string,
+  options?: ExplorerOptions,
+): string | undefined {
+  if (!txId) return undefined
+  const localExplorerUrl =
+    options?.localExplorerUrl ?? readEnv('MONAD_EXPLORER_URL')
+  if (localExplorerUrl) {
+    const base = localExplorerUrl.endsWith('/')
+      ? localExplorerUrl
+      : `${localExplorerUrl}/`
+    return `${base}${encodeURIComponent(txId)}`
+  }
+
+  if (isLocalRpcChain(options)) {
+    return undefined
+  }
+
+  const rawTag = networkTagOrChain || DEFAULT_NETWORK_TAG
+  const tag = rawTag.toLowerCase()
+
+  // Monad
+  if (tag === 'mont' || tag === 'monad-testnet') {
+    return `https://testnet.monadscan.com/tx/${encodeURIComponent(txId)}`
+  }
+  if (tag === 'mon1' || tag === 'monad-mainnet' || tag === 'monad') {
+    return `https://monadscan.com/tx/${encodeURIComponent(txId)}`
+  }
+
+  // Solana
+  if (tag === 'sold' || tag === 'solana-devnet' || tag === 'solana-testnet') {
+    return `https://explorer.solana.com/tx/${encodeURIComponent(txId)}?cluster=devnet`
+  }
+  if (tag === 'sol1' || tag === 'solana-mainnet' || tag === 'solana') {
+    return `https://explorer.solana.com/tx/${encodeURIComponent(txId)}`
+  }
+
+  // eCash
+  if (tag === 'xect' || tag === 'ecash-testnet') {
+    return `https://testnet.blockchair.com/ecash/transaction/${encodeURIComponent(txId)}`
+  }
+  if (tag === 'xec1' || tag === 'ecash-mainnet' || tag === 'ecash') {
+    return `https://blockchair.com/ecash/transaction/${encodeURIComponent(txId)}`
+  }
+
+  const directBase = transactionExplorerBases[rawTag]
+  if (directBase) {
+    return `${directBase}${encodeURIComponent(txId)}`
+  }
+
+  return undefined
+}
+

@@ -39,6 +39,10 @@
               v-else-if="item.type == 'stealth'"
               :amount="item.amount"
               :chain-id="item.chainId"
+              :network-tag="item.networkTag"
+              :transactions="item.transactions"
+              :memo="item.memo"
+              :outbound="message.outbound"
             />
             <chat-message-image
               v-else-if="item.type == 'image'"

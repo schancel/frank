@@ -4,6 +4,8 @@ import {
   DEFAULT_NETWORK_TAG,
   hasTransactionExplorer,
   transactionExplorerUrl,
+  multiChainExplorerUrl,
+  hasMultiChainExplorer,
 } from './explorer'
 
 describe('Monad transaction explorer configuration', () => {
@@ -54,6 +56,57 @@ describe('Monad transaction explorer configuration', () => {
         localExplorerUrl: 'http://127.0.0.1:3000/tx',
       }),
     ).toBe(true)
+  })
+})
+
+describe('Multi-chain transaction explorer configuration', () => {
+  it('generates correct explorer URLs for Monad, Solana, and eCash', () => {
+    // Monad
+    expect(multiChainExplorerUrl('0x123', 'MONT')).toBe(
+      'https://testnet.monadscan.com/tx/0x123',
+    )
+    expect(multiChainExplorerUrl('0x123', 'monad-testnet')).toBe(
+      'https://testnet.monadscan.com/tx/0x123',
+    )
+    expect(multiChainExplorerUrl('0x123', 'MON1')).toBe(
+      'https://monadscan.com/tx/0x123',
+    )
+    expect(multiChainExplorerUrl('0x123', 'monad-mainnet')).toBe(
+      'https://monadscan.com/tx/0x123',
+    )
+
+    // Solana
+    expect(multiChainExplorerUrl('sig5abc', 'SOLD')).toBe(
+      'https://explorer.solana.com/tx/sig5abc?cluster=devnet',
+    )
+    expect(multiChainExplorerUrl('sig5abc', 'solana-devnet')).toBe(
+      'https://explorer.solana.com/tx/sig5abc?cluster=devnet',
+    )
+    expect(multiChainExplorerUrl('sig5abc', 'SOL1')).toBe(
+      'https://explorer.solana.com/tx/sig5abc',
+    )
+    expect(multiChainExplorerUrl('sig5abc', 'solana-mainnet')).toBe(
+      'https://explorer.solana.com/tx/sig5abc',
+    )
+
+    // eCash
+    expect(multiChainExplorerUrl('ecash123', 'XECT')).toBe(
+      'https://testnet.blockchair.com/ecash/transaction/ecash123',
+    )
+    expect(multiChainExplorerUrl('ecash123', 'ecash-testnet')).toBe(
+      'https://testnet.blockchair.com/ecash/transaction/ecash123',
+    )
+    expect(multiChainExplorerUrl('ecash123', 'XEC1')).toBe(
+      'https://blockchair.com/ecash/transaction/ecash123',
+    )
+    expect(multiChainExplorerUrl('ecash123', 'ecash-mainnet')).toBe(
+      'https://blockchair.com/ecash/transaction/ecash123',
+    )
+  })
+
+  it('safely returns undefined for unknown network without throwing', () => {
+    expect(multiChainExplorerUrl('0x123', 'UNKNOWN')).toBeUndefined()
+    expect(hasMultiChainExplorer('UNKNOWN')).toBe(false)
   })
 })
 

@@ -148,6 +148,10 @@ export type ChangeSweepOutcome =
     }
 
 /**
+ * @deprecated Use `MonadAddressInventory` (`./monad-address-inventory.ts`, Ticket #924), which
+ * unifies change and spend branches under a single dynamic inventory without rigid promotion
+ * state machines or separate pool boundaries.
+ *
  * Tracks the change-account pool's persisted "next unused index" pointer and the audit trail of
  * change outputs actually swept into existence, mirroring `MonadSubAccountPool`'s
  * keyring-plus-store shape (see this file's header for what's deliberately *not* mirrored -- no

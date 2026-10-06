@@ -31,6 +31,7 @@ export interface LiarsDiceTableEscrowRecord {
   playerLocks: Map<string, string>;
   settlementTxHash?: string;
 }
+export type TableEscrowRecord = LiarsDiceTableEscrowRecord;
 
 function normalizeEvmAddress(addr: string): string {
   if (/^0x[0-9a-fA-F]{40}$/.test(addr)) return addr;

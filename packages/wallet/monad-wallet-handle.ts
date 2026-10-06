@@ -26,6 +26,7 @@ import type { MonadCanonicalRoleOwner } from './monad-wallet-material'
 import type { MonadStealthKeyring } from './monad-stealth'
 
 import type { AccountHygieneEngine } from './account-hygiene'
+import type { MonadAddressInventory } from './monad-address-inventory'
 
 export interface MonadWalletHandle {
   /** Explicit typed-root capability; absent until canonical composition is activated. */
@@ -36,6 +37,8 @@ export interface MonadWalletHandle {
   walletOperationAdmission?: MonadWalletOperationAdmission
   /** Autonomous account hygiene and lazy dirty sweeper (Ticket #925). Encapsulated beneath the wallet API. */
   hygieneEngine?: AccountHygieneEngine<string>
+  /** Unified HD address inventory tracking spend and change branches (Ticket #924). */
+  inventory?: MonadAddressInventory
   pool: MonadSubAccountPool
   leaseManager: SubAccountLeaseManager
   provider: Provider

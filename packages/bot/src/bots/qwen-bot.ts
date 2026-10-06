@@ -50,13 +50,65 @@ export class QwenBot implements FrankBotDefinition {
     }
   }
 
+  readonly schedules = [
+    {
+      id: "daily-newsletter",
+      cron: process.env.QWEN_NEWSLETTER_CRON ?? "0 9 * * *",
+      intervalMs: process.env.QWEN_NEWSLETTER_INTERVAL_MS
+        ? parseInt(process.env.QWEN_NEWSLETTER_INTERVAL_MS, 10)
+        : undefined,
+      runOnStartup: process.env.QWEN_NEWSLETTER_STARTUP === "1",
+      handler: async (ctx: BotContext) => {
+        await this.sendDailyNewsletter(ctx);
+      },
+    },
+  ];
+
   getProfile(): BotProfile {
     return {
       name: "Qwen",
-      bio: "Automated Qwen-powered assistant. Ask it anything.",
+      bio: "Automated Qwen-powered assistant. Ask it anything or send /subscribe for daily updates.",
       avatarPng: generateAvatarPng("qwen", [110, 90, 220]),
       bot: true,
     };
+  }
+
+  async sendDailyNewsletter(
+    ctx: BotContext
+  ): Promise<{ sent: number; failed: number }> {
+    const subscribers = await ctx.subscriptions.listSubscribers("newsletter");
+    if (subscribers.length === 0) {
+      console.log("[qwen] No subscribers for daily newsletter, skipping broadcast");
+      return { sent: 0, failed: 0 };
+    }
+
+    console.log(
+      `[qwen] Broadcasting daily newsletter to ${subscribers.length} subscriber(s)`
+    );
+
+    let content: string;
+    try {
+      const res = await this.replyGenerator.reply([
+        {
+          role: "user",
+          content:
+            "Generate a brief, engaging 2-3 sentence daily tech and crypto digest for Monad users.",
+        },
+      ]);
+      content = res.content;
+    } catch {
+      content =
+        "Monad Daily Digest: Gas is nominal, network finality is sub-second, and the ecosystem is humming. Have a productive day!";
+    }
+
+    const items: MessageItem[] = [
+      {
+        type: "text",
+        text: `📰 **Qwen Daily Digest**\n\n${content}\n\n_Send /unsubscribe to stop receiving daily updates._`,
+      },
+    ];
+
+    return ctx.subscriptions.broadcast(items, "newsletter");
   }
 
   async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
@@ -65,7 +117,7 @@ export class QwenBot implements FrankBotDefinition {
       await ctx.sendMessage(user.address, [
         {
           type: "text",
-          text: "Hello! I am Qwen, an AI assistant on the Frank network. Send me any message to chat!",
+          text: "Hello! I am Qwen, an AI assistant on the Frank network. Send me any message to chat, or send /subscribe to receive my daily news updates!",
         },
       ]);
     } catch (err) {
@@ -77,6 +129,17 @@ export class QwenBot implements FrankBotDefinition {
     msgCtx: BotMessageContext,
     ctx: BotContext
   ): Promise<void> {
+    // 1. Intercept subscription commands
+    const subReply = await ctx.subscriptions.handleSubscriptionCommand(
+      msgCtx.items,
+      msgCtx.peerAddress,
+      "newsletter"
+    );
+    if (subReply) {
+      await msgCtx.reply(subReply);
+      return;
+    }
+
     const textItems = msgCtx.items.filter((item: any) => item.type === "text") as Array<{
       type: "text";
       text: string;

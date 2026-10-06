@@ -66,6 +66,8 @@ import {
   type MonadCanonicalStampClient,
 } from '../monad-stamp-client'
 import type { MonadCanonicalRoleOwner } from '../monad-wallet-material'
+import { deriveEvmStealthPrivateKey } from '../monad-stealth'
+import type { MonadChainWalletHandle } from './monad-chain'
 
 /** Public directory access owned by the caller. Every call must return a fresh admitted Current. */
 export interface CanonicalDirectory {
@@ -701,6 +703,36 @@ async function resolveHistoricalEvidence(
   }
 }
 
+function indexStealthItemIfRecipient(
+  wallet: WalletHandle,
+  isOutbound: boolean,
+  projected: ReturnType<typeof projectStealthMessageItem>,
+  timestampMs: number,
+) {
+  if (!isOutbound && projected.keyType === 1) {
+    const liveWallet = wallet as MonadChainWalletHandle
+    if (liveWallet?.stealthKeyring && liveWallet?.identity) {
+      try {
+        const derived = deriveEvmStealthPrivateKey({
+          recipientSpendSecret: liveWallet.identity.toPrivateKeyHex(),
+          ephemeralPubKey: fromHex(projected.ephemeralPubKey),
+        })
+        void liveWallet.stealthKeyring.addAccount({
+          address: derived.stealthAddress,
+          privateKey: derived.stealthPrivateKey,
+          ephemeralPubKey: projected.ephemeralPubKey,
+          networkTag: projected.networkTag,
+          discoveredAtMs: timestampMs,
+          initialAmountWei: BigInt(projected.amount),
+          txHash: projected.transactions[0],
+        })
+      } catch {
+        // ignore corrupt stealth key derivation
+      }
+    }
+  }
+}
+
 async function fetchSince(
   owner: CanonicalMessagingOwner,
   params: Parameters<DirectMessageClient['fetchSince']>[0],
@@ -842,7 +874,16 @@ async function fetchSince(
             : item.kind === 'parsed' && isBlackjackHandV3Frame(item)
             ? projectBlackjackHandV3Item(item).item
             : item.kind === 'parsed' && isStealthMessageItemFrame(item)
-            ? projectStealthMessageItem(item)
+            ? (() => {
+                const projected = projectStealthMessageItem(item)
+                indexStealthItemIfRecipient(
+                  params.wallet,
+                  isOutbound,
+                  projected,
+                  record.timestampMs,
+                )
+                return projected
+              })()
             : {
                 type: 'text' as const,
                 text: '[This message item is not supported yet]',
@@ -1009,7 +1050,16 @@ export function canonicalDirectMessages(
                       : item.kind === 'parsed' && isBlackjackHandV3Frame(item)
                       ? projectBlackjackHandV3Item(item).item
                       : item.kind === 'parsed' && isStealthMessageItemFrame(item)
-                      ? projectStealthMessageItem(item)
+                      ? (() => {
+                          const projected = projectStealthMessageItem(item)
+                          indexStealthItemIfRecipient(
+                            params.wallet,
+                            isOutbound,
+                            projected,
+                            record.timestampMs,
+                          )
+                          return projected
+                        })()
                       : {
                           type: 'text' as const,
                           text: '[This message item is not supported yet]',

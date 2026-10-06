@@ -1,5 +1,6 @@
 import type { MonadWalletOperationAdmission } from '../storage/monad-wallet-bundle';
 import type { PublicRevisionZeroInput, PublicRevisionZeroExport, PublicNextRevisionInput, PublicNextRevisionExport } from '../monad-wallet-handle';
+import { MonadStealthKeyring } from '../monad-stealth';
 /**
  * `MonadChain`: the real `ActiveChain` implementation (ticket #41 -- see `PLAN.md`'s M9 section)
  * over the already-merged Monad wallet clients (`../wallet/monad-stamp-client.ts`,
@@ -330,6 +331,7 @@ export interface MonadChainWalletHandle
   readonly chainKind: "monad";
   readonly networkId: string;
   readonly identity: MonadIdentity;
+  readonly stealthKeyring: MonadStealthKeyring;
   close(): Promise<void>;
 }
 
@@ -1489,17 +1491,24 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               throw error;
             }
           };
+          const stealthKeyring = new MonadStealthKeyring();
           const wallet: MonadChainWalletHandle = {
             chainKind: "monad",
             networkId: config.networkId,
             identity,
+            stealthKeyring,
             async getReceiveAddress() {
               requireOpenWallet(wallet);
               return { raw: mainAccount.address };
             },
             async getBalance() {
               requireOpenWallet(wallet);
-              return provider.getBalance(mainAccount.address);
+              const mainBalance = await provider.getBalance(mainAccount.address);
+              const stealthBalance = await stealthKeyring.getTotalBalance(
+                provider,
+                config.networkTag,
+              );
+              return mainBalance + stealthBalance;
             },
             getUnresolvedNativeTransaction() {
               requireOpenWallet(wallet);
@@ -1590,8 +1599,24 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                       "Resolve pending Monad account funding before sending a native transfer"
                     );
                   }
+                  let spendingPrivateKey = mainAccount.privateKey;
+                  try {
+                    const mainBalance = await provider.getBalance(mainAccount.address);
+                    if (mainBalance < value) {
+                      const selected = await stealthKeyring.selectAccountForSpend(
+                        value,
+                        provider,
+                        config.networkTag,
+                      );
+                      if (selected) {
+                        spendingPrivateKey = selected.privateKey;
+                      }
+                    }
+                  } catch {
+                    // Fall back to main account if provider balance check cannot complete
+                  }
                   const signer = new MonadAccountTxSigner({
-                    privateKey: mainAccount.privateKey,
+                    privateKey: spendingPrivateKey,
                     provider,
                     httpClient,
                   });
@@ -1608,6 +1633,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             provider,
             httpClient,
             changePool,
+            stealthKeyring,
             stampPaymentJournal,
             stampAttemptJournal,
             relayBaseUrl: config.relayBaseUrl,

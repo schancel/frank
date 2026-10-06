@@ -42,6 +42,7 @@ export default {
     degradedBanner: 'Some forum topics could not be updated.',
     retry: 'Retry',
     loginSignUp: 'Log in / Sign up',
+    thread: 'Thread',
   },
   chatLayout: {
     info: 'Info',
@@ -240,6 +241,8 @@ export default {
     chooseFile: 'Choose a file',
     openInExplorer: 'Open transaction in block explorer',
     copyTxHash: 'Copy transaction hash',
+    back: 'Back',
+    backToForum: 'Back to forum',
   },
   leftDrawer: {
     noForums: 'No forums discovered yet.',

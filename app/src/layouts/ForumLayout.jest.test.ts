@@ -68,11 +68,18 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     process.removeListener('unhandledRejection', onUnhandled)
   })
 
-  function mountLayout() {
+  function mountLayout(options?: {
+    route?: { path: string; params?: Record<string, string> }
+    router?: { push: jest.Mock }
+  }) {
+    const mockRoute = options?.route ?? { path: '/forum', params: {} }
+    const mockRouter = options?.router ?? { push: jest.fn() }
     return mount(ForumLayout, {
       global: {
         mocks: {
           $t: (key: string) => t(enUS, key),
+          $route: mockRoute,
+          $router: mockRouter,
         },
         stubs: {
           ForumDrawer: { template: '<div class="forum-drawer-stub" />' },
@@ -85,6 +92,8 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
           QPageContainer: { template: '<div><slot /></div>' },
           QPage: { template: '<div><slot /></div>' },
           QScrollArea: { template: '<div><slot /></div>' },
+          QIcon: { template: '<i />' },
+          QChip: { template: '<span><slot /></span>' },
           QBtn: {
             name: 'QBtn',
             props: ['icon', 'ariaLabel', 'loading'],
@@ -178,5 +187,47 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     expect(unhandledRejections).toHaveLength(0)
 
     consoleError.mockRestore()
+  })
+
+  it('renders back button and breadcrumb on thread route and navigates back to /forum', async () => {
+    const mockRouterPush = jest.fn()
+    const wrapper = mountLayout({
+      route: {
+        path: '/forum/0x1234567890abcdef',
+        params: { payloadDigest: '0x1234567890abcdef' },
+      },
+      router: { push: mockRouterPush },
+    })
+
+    const backBtn = wrapper.find('[data-test="forum-back"]')
+    expect(backBtn.exists()).toBe(true)
+
+    const breadcrumb = wrapper.find('[data-test="forum-breadcrumb"]')
+    expect(breadcrumb.exists()).toBe(true)
+
+    await backBtn.trigger('click')
+    expect(mockRouterPush).toHaveBeenCalledWith('/forum')
+
+    mockRouterPush.mockClear()
+    await breadcrumb.trigger('click')
+    expect(mockRouterPush).toHaveBeenCalledWith('/forum')
+  })
+
+  it('navigates to /forum when setTopic is invoked from thread route', async () => {
+    const mockRouterPush = jest.fn()
+    const wrapper = mountLayout({
+      route: {
+        path: '/forum/0x1234567890abcdef',
+        params: { payloadDigest: '0x1234567890abcdef' },
+      },
+      router: { push: mockRouterPush },
+    })
+
+    const vm = wrapper.vm as any
+    await vm.setTopic('memes')
+
+    expect(mockRouterPush).toHaveBeenCalledWith('/forum')
+    const store = useForumStore()
+    expect(store.selectedTopic).toBe('memes')
   })
 })

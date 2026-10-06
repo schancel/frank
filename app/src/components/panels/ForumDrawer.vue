@@ -12,6 +12,7 @@
             style="width: 250px"
             @keyup.enter.prevent="refreshContent"
             clearable
+            @clear="onTopicClear"
           />
         </q-item>
 
@@ -158,6 +159,9 @@ export default defineComponent({
   },
   methods: {
     async refreshContent() {
+      if (this.$route.path !== '/forum') {
+        await this.$router.push('/forum')
+      }
       try {
         const wallet = await useActiveWallet()
         await this.refreshMessages({ wallet, topic: this.selectedTopic })
@@ -165,8 +169,18 @@ export default defineComponent({
         // Handled: forumStore records outageStatus; no unhandled browser exception
       }
     },
-    setTopic(text: string) {
+    async setTopic(text: string) {
       this.selectedTopic = text
+      if (this.$route.path !== '/forum') {
+        await this.$router.push('/forum')
+      }
+      void this.refreshContent()
+    },
+    async onTopicClear() {
+      this.selectedTopic = ''
+      if (this.$route.path !== '/forum') {
+        await this.$router.push('/forum')
+      }
       void this.refreshContent()
     },
   },

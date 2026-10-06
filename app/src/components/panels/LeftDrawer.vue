@@ -342,7 +342,7 @@ export default defineComponent({
     const selectedForumTopic = computed(() => forum.selectedTopic)
     async function browseForumTopic(name: string) {
       forum.setSelectedTopic(name)
-      if (!route.path.startsWith('/forum')) {
+      if (route.path !== '/forum') {
         await router.push('/forum')
       }
       try {

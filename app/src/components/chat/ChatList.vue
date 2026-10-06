@@ -85,8 +85,7 @@ export default defineComponent({
         openPage(router, target)
       },
       selectConversation(item: Conversation | string) {
-        const target =
-          typeof item === 'string' ? item : item.id || item.address
+        const target = typeof item === 'string' ? item : item.id || item.address
         if (typeof chatStore.setActiveConversation === 'function') {
           chatStore.setActiveConversation(target)
         } else if (typeof chatStore.setActiveChat === 'function') {

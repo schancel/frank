@@ -2154,8 +2154,9 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(chats.activeChatAddr).toBe(RECIPIENT_ADDRESS)
       expect(chats.activeConversation?.kind).toBe('direct')
       expect(chats.activeConversation?.address).toBe(RECIPIENT_ADDRESS)
-      expect(chats.activeConversation?.participants).toContain(RECIPIENT_ADDRESS)
+      expect(chats.activeConversation?.participants).toContain(
+        RECIPIENT_ADDRESS,
+      )
     })
   })
 })
-

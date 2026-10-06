@@ -129,9 +129,7 @@ export default defineComponent({
     },
     effectiveId(): string {
       return (
-        this.conversation?.id ||
-        this.conversationId ||
-        this.effectiveAddress
+        this.conversation?.id || this.conversationId || this.effectiveAddress
       )
     },
     effectiveName(): string {
@@ -164,11 +162,7 @@ export default defineComponent({
       return Math.max(0, this.effectiveParticipants.length - 3)
     },
     effectiveNumUnread(): number {
-      return (
-        this.numUnread ||
-        this.conversation?.totalUnreadMessages ||
-        0
-      )
+      return this.numUnread || this.conversation?.totalUnreadMessages || 0
     },
     effectiveValueUnread(): string {
       return this.valueUnread || ''
@@ -305,4 +299,3 @@ export default defineComponent({
   },
 })
 </script>
-

@@ -861,11 +861,9 @@ export default defineComponent({
         void this.runBlackjackDealer()
         return
       }
-      const step = automaticDealerSteps(
-        this.messages,
-        own,
-        peer,
-      ).find(candidate => !this.blackjackAttempted.has(candidate.key))
+      const step = automaticDealerSteps(this.messages, own, peer).find(
+        candidate => !this.blackjackAttempted.has(candidate.key),
+      )
       if (!step || this.sendingMessage || this.resumingHand) return
       this.blackjackAttempted.add(step.key)
       await this.sendFollowUpItems({ items: [step.item] })

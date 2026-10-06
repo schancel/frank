@@ -189,12 +189,16 @@ describe("SatoshiDiceBot", () => {
       mockContext
     );
 
-    expect(replies[0][0].text).toContain("Satoshi Dice Roll Result");
-    expect(replies[0][0].text).toContain("Free Play Roll");
-    expect(replies[0][0].text).toContain("Target:** < 32768");
-    expect(replies[0][0].text).toContain("Fairness Verification Proof");
-    expect(replies[0][0].text).toContain("Server Secret:");
-    expect(replies[0][0].text).toContain("User Nonce:");
+    const rollText = replies[0].find((i: any) => i.type === "text")?.text;
+    const rollItem = replies[0].find((i: any) => i.type === "dice");
+    expect(rollItem).toBeDefined();
+    expect(rollItem?.action).toBe("result");
+    expect(rollText).toContain("Satoshi Dice Roll Result");
+    expect(rollText).toContain("Free Play Roll");
+    expect(rollText).toContain("Target:** < 32768");
+    expect(rollText).toContain("Fairness Verification Proof");
+    expect(rollText).toContain("Server Secret:");
+    expect(rollText).toContain("User Nonce:");
   });
 
   test("executes wagered /roll with target and records stats and payout transfer on win", async () => {
@@ -217,9 +221,13 @@ describe("SatoshiDiceBot", () => {
       mockContext
     );
 
-    expect(replies[0][0].text).toContain("Satoshi Dice Roll Result");
-    expect(replies[0][0].text).toContain("Wager:** 0.05 MON");
-    expect(replies[0][0].text).toContain("Target:** < 64000");
+    const rollText = replies[0].find((i: any) => i.type === "text")?.text;
+    const rollItem = replies[0].find((i: any) => i.type === "dice");
+    expect(rollItem).toBeDefined();
+    expect(rollItem?.action).toBe("result");
+    expect(rollText).toContain("Satoshi Dice Roll Result");
+    expect(rollText).toContain("Wager:** 0.05 MON");
+    expect(rollText).toContain("Target:** < 64000");
 
     // Check stats updated
     const statsRaw = mockState.get("stats:global");

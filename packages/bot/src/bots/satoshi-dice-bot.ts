@@ -285,6 +285,7 @@ _Example: \`/roll 0.01 6553\` wagers 0.01 MON for a 10x jackpot!_`,
 
       let payoutWei = 0n;
       let payoutNote = "";
+      let payoutTxHash: string | undefined;
 
       if (wagerWei > 0n) {
         if (isWin) {
@@ -295,6 +296,7 @@ _Example: \`/roll 0.01 6553\` wagers 0.01 MON for a 10x jackpot!_`,
               to: sender,
               valueWei: payoutWei,
             });
+            payoutTxHash = tx.txHash;
             payoutNote = `\n\n🏆 **Payout Sent!** Transferred **${formatMon(payoutWei)}** (tx: \`${tx.txHash}\`)`;
           } catch (err) {
             console.error("[dice] Payout transfer error:", err);
@@ -315,6 +317,19 @@ _Example: \`/roll 0.01 6553\` wagers 0.01 MON for a 10x jackpot!_`,
           : `🎮 **Free Play Roll** | **Multiplier:** ${multiplier}x`;
 
       await msgCtx.reply([
+        {
+          type: "dice" as any,
+          action: "result",
+          target,
+          multiplier,
+          wagerWei: wagerWei > 0n ? wagerWei.toString() : undefined,
+          luckyNumber,
+          isWin,
+          serverSecret,
+          userNonce,
+          payoutWei: payoutWei > 0n ? payoutWei.toString() : undefined,
+          txHash: payoutTxHash,
+        },
         {
           type: "text",
           text: `🎲 **Satoshi Dice Roll Result**

@@ -20,11 +20,16 @@ export {
   PROTOCOL_CHAINS,
   getChainRegistryEntry,
   getChainRegistryByKind,
+  getChainRegistryByNetworkTag,
+  getChainRegistryByCaip2,
+  getChainsByCurve,
+  resolveChainIdentifier,
 } from "./chains-registry";
 export type {
   ChainRegistryEntry,
   SupportedChainFamily,
   SupportedChainKind,
+  SupportedCurve,
   SupportedNetwork,
 } from "./chains-registry";
 

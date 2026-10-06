@@ -1001,8 +1001,8 @@ export async function ackMonadMailboxRecovery(
 // Canonical mailbox keeps the original P signing transcript, with an isolated HTTP namespace.
 export interface CanonicalMailboxAuthParams
   extends Omit<MailboxAuthParams, 'http'> {
-  /** Installed four-byte authentication tag; distinct from the canonical network identifier. */
-  expectedNetworkTag: 'MONT' | 'MON1'
+  /** Installed four-byte authentication tag or network identifier; e.g. 'MONT' | 'MON1' | 'monad-testnet' | 'monad-mainnet'. */
+  expectedNetworkTag: 'MONT' | 'MON1' | 'monad-testnet' | 'monad-mainnet' | string
   /** Compressed P locator, never admission authority. */
   subject: string
   /** Must call the caller-owned public DirectoryStore.current with its trusted clock/relay context. */
@@ -1260,6 +1260,7 @@ async function canonicalSignedRequestWithin(
   path: string,
 ): Promise<MailboxHttpResponse> {
   const origin = installedCanonicalOrigin(auth.relayBaseUrl)
+  const descriptor = canonicalNetworkDescriptor(auth.expectedNetworkTag)
   // Local eligibility precedes the first challenge. Each retry obtains actual fresh Current again.
   await canonicalCurrent(auth, origin)
   let phase: 'challenge' | 'request' = 'challenge'
@@ -1318,7 +1319,7 @@ async function canonicalSignedRequestWithin(
         challenge.expires_at_ms <= Date.now() ||
         challenge.expires_at_ms > Date.now() + 60000 ||
         challenge.network_tag !==
-          bytesToHex(new TextEncoder().encode(auth.expectedNetworkTag)) ||
+          bytesToHex(new TextEncoder().encode(descriptor.tag)) ||
         challenge.recovery_payload_hash !==
           (request.recoveryPayloadHashHex ?? null) ||
         challenge.recovery_obligation_id !==

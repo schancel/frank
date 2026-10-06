@@ -10,6 +10,7 @@ import {
   validateForwardingEnvelope,
   TYPE_FORWARDING_DELIVERY_ENVELOPE,
   TYPE_DIRECT_MESSAGE_DELIVERY,
+  MAX_FORWARDING_DELIVERY_FRAME_BYTES,
   type CanonicalForwardingEnvelope,
   type PaymentMember,
   type AccountRef,
@@ -244,5 +245,10 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
     expect(() => validateFrame(frameBytes, ctx)).toThrow(
       /duplicate transaction id/,
     )
+  })
+
+  it('enforces 32 MiB maximum frame limit (33_554_432 bytes)', () => {
+    expect(MAX_FORWARDING_DELIVERY_FRAME_BYTES).toBe(33_554_432)
+    expect(MAX_FORWARDING_DELIVERY_FRAME_BYTES).toBe(32 * 1024 * 1024)
   })
 })

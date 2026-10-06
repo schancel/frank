@@ -200,10 +200,10 @@ export default defineComponent({
     const prewarmChains = (active: 'monad' | 'ecash' | 'solana') => {
       if (accountStatus.status === 'ready') {
         if (active !== 'ecash') {
-          accountSession.getChainAddress('ecash').catch(() => undefined)
+          accountSession?.getChainAddress?.('ecash')?.catch(() => undefined)
         }
         if (active !== 'solana') {
-          accountSession.getChainAddress('solana').catch(() => undefined)
+          accountSession?.getChainAddress?.('solana')?.catch(() => undefined)
         }
       }
     }

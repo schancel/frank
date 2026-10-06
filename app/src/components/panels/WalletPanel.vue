@@ -286,8 +286,8 @@ const { getCustomName, setCustomName, resetCustomName } = useWalletNames()
 
 const prewarmChains = () => {
   if (accountStatus?.status === 'ready') {
-    accountSession.getChainAddress('ecash').catch(() => undefined)
-    accountSession.getChainAddress('solana').catch(() => undefined)
+    accountSession?.getChainAddress?.('ecash')?.catch(() => undefined)
+    accountSession?.getChainAddress?.('solana')?.catch(() => undefined)
   }
 }
 onMounted(prewarmChains)

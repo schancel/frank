@@ -150,15 +150,14 @@ describe('SettingsPanel wallet-action split (#399)', () => {
     wrapper.unmount()
   })
 
-  it('renders prominent Codex32 backup button and triggers dialog', async () => {
+  it('renders prominent Codex32 backup button and navigates to /backup', async () => {
     const { wrapper } = mountPanel()
     const backupBtn = wrapper.find('[data-test="backup-codex32-button"]')
     expect(backupBtn.exists()).toBe(true)
     expect(backupBtn.text()).toContain('accountRecovery.backup_account_codex32')
 
-    expect((wrapper.vm as any).showBackupDialog).toBe(false)
     await backupBtn.trigger('click')
-    expect((wrapper.vm as any).showBackupDialog).toBe(true)
+    expect(mockRouterPush).toHaveBeenCalledWith('/backup')
     wrapper.unmount()
   })
 })

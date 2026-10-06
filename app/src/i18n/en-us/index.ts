@@ -422,6 +422,15 @@ export default {
     accept: 'Accept Swap',
     cancel: 'Cancel Offer',
   },
+  chatMessageStealth: {
+    title: 'Stealth Payment',
+    sentTitle: 'Sent Stealth Payment',
+    receivedTitle: 'Received Stealth Payment',
+    confirmed: 'Confirmed',
+    viewInExplorer: 'View transaction in block explorer',
+    viewTransaction: 'View transaction',
+    directCreditHint: 'Indexed into spendable balance',
+  },
   sendFileDialog: {
     sendFile: 'Send File',
     captionHint: 'Attach a memo to the payment.',

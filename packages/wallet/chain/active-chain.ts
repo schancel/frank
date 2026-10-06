@@ -383,6 +383,12 @@ export interface NativeAssetChain {
   parseAddress(input: string): ChainAddress | undefined;
   createWallet(seed: HDSeed): Promise<NativeWalletHandle>;
   nativeTransfers: NativeTransferClient;
+  /** Returns the address of the ChannelVault escrow contract on the active network, or throws if unsupported. */
+  getChannelVaultAddress?(): string;
+  /** Returns the address of the TablePotVault escrow contract on the active network, or throws if unsupported. */
+  getTablePotVaultAddress?(): string;
+  /** Returns the address of the GenericHTLC contract on the active network, or throws if unsupported. */
+  getHtlcAddress?(): string;
 }
 
 /** Full Frank application capability set. The selected implementation remains Monad. */
@@ -413,6 +419,12 @@ export interface ActiveChain extends NativeAssetChain {
   ): Promise<ProfileInfo | undefined>;
   directMessages: DirectMessageClient;
   topics: TopicBroadcastClient;
+  /** Returns the address of the ChannelVault escrow contract on the active network, or throws if unsupported. */
+  getChannelVaultAddress(): string;
+  /** Returns the address of the TablePotVault escrow contract on the active network, or throws if unsupported. */
+  getTablePotVaultAddress(): string;
+  /** Returns the address of the GenericHTLC contract on the active network, or throws if unsupported. */
+  getHtlcAddress(): string;
 }
 
 /** Parsed result of {@link parseAddressWithOptionalRelay}. */

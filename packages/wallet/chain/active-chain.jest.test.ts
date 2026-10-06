@@ -46,3 +46,39 @@ describe('parseAddressWithOptionalRelay', () => {
     })
   })
 })
+
+describe('ActiveChain contract address helpers', () => {
+  it('returns canonical contract addresses on MonadChain', async () => {
+    const { MonadChain } = await import('./monad-chain')
+    expect(MonadChain.getChannelVaultAddress()).toBe(
+      '0xB0ae4A94A7616029CD99Cf3Ab9Bf417be1DfD9E9',
+    )
+    expect(MonadChain.getTablePotVaultAddress()).toBe(
+      '0x9B7d7E260da7f3a8e92562D21551FE0d350F9C8e',
+    )
+    expect(MonadChain.getHtlcAddress()).toBe(
+      '0x91883414DaDF6f18f3d14E3de3a31BfC833e6bB6',
+    )
+  })
+
+  it('throws a clear error if network does not support the requested contract', async () => {
+    const { createMonadChain } = await import('./monad-chain')
+    const unsupportedChain = createMonadChain({
+      relayBaseUrl: 'http://127.0.0.1:8098',
+      rpcUrl: 'http://127.0.0.1:8545',
+      chainId: 99999,
+      networkTag: 'UNSUPPORTED_TAG',
+      isTestnet: false,
+    } as any)
+
+    expect(() => unsupportedChain.getChannelVaultAddress()).toThrow(
+      'ChannelVault contract is not configured for network UNSUPPORTED_TAG',
+    )
+    expect(() => unsupportedChain.getTablePotVaultAddress()).toThrow(
+      'TablePotVault contract is not configured for network UNSUPPORTED_TAG',
+    )
+    expect(() => unsupportedChain.getHtlcAddress()).toThrow(
+      'GenericHTLC contract is not configured for network UNSUPPORTED_TAG',
+    )
+  })
+})

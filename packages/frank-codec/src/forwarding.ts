@@ -16,7 +16,11 @@ import type {
   PaymentMember,
   UnknownFields,
 } from './types'
-import { defaultContext, validateFrame, type ValidationContext } from './validate'
+import {
+  defaultContext,
+  validateFrame,
+  type ValidationContext,
+} from './validate'
 
 const bad = (msg: string, location = 'forwarding-envelope') =>
   new FrankCodecError('schema', '8.2', msg, location)
@@ -70,17 +74,27 @@ function encodePaymentMember(p: PaymentMember): Map<number | bigint, any> {
 export function encodeForwardingEnvelope(
   envelope: CanonicalForwardingEnvelope,
 ): Uint8Array {
-  if (!envelope.network || envelope.network.length === 0 || envelope.network.length > 64) {
+  if (
+    !envelope.network ||
+    envelope.network.length === 0 ||
+    envelope.network.length > 64
+  ) {
     throw bad('network must be 1..64 characters')
   }
   if (!envelope.payloadFrame || envelope.payloadFrame.length < 9) {
     throw bad('payloadFrame must be a valid frame of at least 9 bytes')
   }
-  if (!envelope.payments || envelope.payments.length === 0 || envelope.payments.length > MAX_PAYMENT_MEMBERS) {
+  if (
+    !envelope.payments ||
+    envelope.payments.length === 0 ||
+    envelope.payments.length > MAX_PAYMENT_MEMBERS
+  ) {
     throw bad(`payments must contain 1..${MAX_PAYMENT_MEMBERS} members`)
   }
 
-  const digest = envelope.payloadDigest ?? forwardingPayloadDigest(envelope.network, envelope.payloadFrame)
+  const digest =
+    envelope.payloadDigest ??
+    forwardingPayloadDigest(envelope.network, envelope.payloadFrame)
   if (digest.length !== 32) {
     throw bad('payloadDigest must be 32 bytes')
   }
@@ -101,7 +115,11 @@ export function encodeForwardingEnvelope(
   }
 
   if (envelope.expiresAt !== undefined) {
-    if (!Number.isSafeInteger(envelope.expiresAt) || envelope.expiresAt < 0 || envelope.expiresAt > 4294967295) {
+    if (
+      !Number.isSafeInteger(envelope.expiresAt) ||
+      envelope.expiresAt < 0 ||
+      envelope.expiresAt > 4294967295
+    ) {
       throw bad('expiresAt must be in 0..4294967295')
     }
     entries.push([6, envelope.expiresAt])
@@ -123,7 +141,9 @@ export function encodeForwardingEnvelope(
   )
 
   if (frameBytes.length > MAX_FORWARDING_DELIVERY_FRAME_BYTES) {
-    throw bad(`frame exceeds maximum length of ${MAX_FORWARDING_DELIVERY_FRAME_BYTES} bytes`)
+    throw bad(
+      `frame exceeds maximum length of ${MAX_FORWARDING_DELIVERY_FRAME_BYTES} bytes`,
+    )
   }
 
   return frameBytes
@@ -135,7 +155,10 @@ export function encodeForwardingEnvelope(
 export function isForwardingEnvelopeFrame(
   frame: ParsedFrame,
 ): frame is ParsedFrame & { typed: ForwardingDeliveryEnvelope<ParsedFrame> } {
-  return frame.typeId === TYPE_FORWARDING_DELIVERY_ENVELOPE && frame.typed?.type === 25
+  return (
+    frame.typeId === TYPE_FORWARDING_DELIVERY_ENVELOPE &&
+    frame.typed?.type === 25
+  )
 }
 
 /**

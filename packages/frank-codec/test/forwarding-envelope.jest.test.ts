@@ -14,12 +14,7 @@ import {
   type PaymentMember,
   type AccountRef,
 } from '../src'
-import {
-  M,
-  bytesOf,
-  deliveryFrame,
-  NET,
-} from '../fixtures/builders'
+import { M, bytesOf, deliveryFrame, NET } from '../fixtures/builders'
 
 const ctx = defaultContext()
 
@@ -141,7 +136,9 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
 
     const frameBytes = encodeForwardingEnvelope(envelope)
     expect(() => validateFrame(frameBytes, ctx)).toThrow(FrankCodecError)
-    expect(() => validateFrame(frameBytes, ctx)).toThrow(/forwarding network differs from the type-1 network/)
+    expect(() => validateFrame(frameBytes, ctx)).toThrow(
+      /forwarding network differs from the type-1 network/,
+    )
   })
 
   it('rejects destination account with keyType other than 1', () => {
@@ -185,7 +182,9 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
 
     const frameBytes = encodeForwardingEnvelope(envelope)
     expect(() => validateFrame(frameBytes, ctx)).toThrow(FrankCodecError)
-    expect(() => validateFrame(frameBytes, ctx)).toThrow(/duplicate child index/)
+    expect(() => validateFrame(frameBytes, ctx)).toThrow(
+      /duplicate child index/,
+    )
   })
 
   it('rejects non-contiguous childIndex in payment members', () => {
@@ -242,6 +241,8 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
 
     const frameBytes = encodeForwardingEnvelope(envelope)
     expect(() => validateFrame(frameBytes, ctx)).toThrow(FrankCodecError)
-    expect(() => validateFrame(frameBytes, ctx)).toThrow(/duplicate transaction id/)
+    expect(() => validateFrame(frameBytes, ctx)).toThrow(
+      /duplicate transaction id/,
+    )
   })
 })

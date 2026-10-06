@@ -625,8 +625,8 @@ describe("EcashWallet", () => {
     ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
     nativeAttemptStore.put(
       nativeTransactionAttemptKey({
-        chainKind: "ecash",
-        networkId: ECASH_MAINNET_CHECKPOINT_HASH,
+        family: "bitcoin",
+        chainIdentifier: ECASH_MAINNET_CHECKPOINT_HASH,
         address: ADDRESS,
       }),
       { txHash: "newer-attempt" }
@@ -659,8 +659,8 @@ describe("EcashWallet", () => {
     ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
     nativeAttemptStore.delete(
       nativeTransactionAttemptKey({
-        chainKind: "ecash",
-        networkId: ECASH_MAINNET_CHECKPOINT_HASH,
+        family: "bitcoin",
+        chainIdentifier: ECASH_MAINNET_CHECKPOINT_HASH,
         address: ADDRESS,
       })
     );

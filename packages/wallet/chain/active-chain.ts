@@ -55,7 +55,7 @@ import type { MonadRootBundle } from "../monad-wallet-material";
 export type { MonadRootBundle } from "../monad-wallet-material";
 import {
   ChainAddress,
-  ChainKind,
+  ChainFamily,
   ChainTransaction,
   FrankIdentityHandle,
   NativeWalletHandle,
@@ -64,7 +64,7 @@ import {
 
 export type {
   ChainAddress,
-  ChainKind,
+  ChainFamily,
   ChainTransaction,
   FrankIdentityHandle,
   NativeWalletHandle,
@@ -366,7 +366,8 @@ export interface ChainCapabilities {
 
 /** Native-asset surface implemented by every chain returned from the factory. */
 export interface NativeAssetChain {
-  readonly kind: ChainKind;
+  readonly family: ChainFamily;
+  readonly chainIdentifier: string;
   readonly name: string;
   /** Display denomination, e.g. `'MON'`. */
   readonly unit: string;

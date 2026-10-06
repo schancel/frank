@@ -210,7 +210,8 @@ function makeFakeChain(
       operation(undefined as never),
   } as unknown as MonadWalletPersistenceBundle
   const wallet: MonadChainWalletHandle = nativeWallet ?? {
-    chainKind: 'monad',
+    family: 'evm',
+    chainIdentifier: 'monad-testnet',
     networkId: CONFIG.networkId,
     getReceiveAddress: async () => identity.address,
     getBalance: () => provider.getBalance(mainAddress),
@@ -664,8 +665,8 @@ describe('main-account native attempt admission (#724)', () => {
     opened.push(wallet)
     const fake = makeFakeChain(10n ** 18n, wallet)
     const key = nativeTransactionAttemptKey({
-      chainKind: 'monad',
-      networkId: String(CHAIN_ID),
+      family: 'evm',
+      chainIdentifier: config.rpcChain ?? 'monad-testnet',
       address: fake.mainAddress.toLowerCase(),
     })
     const broadcast = wallet.httpClient.submitRawTransaction.bind(

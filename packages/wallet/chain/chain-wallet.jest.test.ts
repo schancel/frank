@@ -115,11 +115,11 @@ describe("DefaultNativeTransactionAttemptStore", () => {
 
 describe("nativeTransactionAttemptKey", () => {
   it("separates networks for the same chain address", () => {
-    const common = { chainKind: "solana" as const, address: "same-address" };
+    const common = { family: "solana" as const, address: "same-address" };
     expect(
-      nativeTransactionAttemptKey({ ...common, networkId: "devnet" })
+      nativeTransactionAttemptKey({ ...common, chainIdentifier: "devnet" })
     ).not.toBe(
-      nativeTransactionAttemptKey({ ...common, networkId: "mainnet" })
+      nativeTransactionAttemptKey({ ...common, chainIdentifier: "mainnet" })
     );
   });
 });

@@ -156,7 +156,8 @@ const EVE_PRIVATE_KEY_HEX = "0x" + "33".repeat(31) + "3c";
 
 function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
   return {
-    chainKind: "monad",
+    family: "evm",
+    chainIdentifier: "monad-testnet",
     networkId: TEST_CONFIG.networkId,
     identity,
     getReceiveAddress: jest.fn(async () => identity.address),
@@ -191,7 +192,8 @@ describe("createMonadChain: basic chain properties", () => {
   const chain = createMonadChain(TEST_CONFIG);
 
   it("exposes the Monad name/unit", () => {
-    expect(chain.kind).toBe("monad");
+    expect(chain.family).toBe("evm");
+    expect(chain.chainIdentifier).toBe("monad-testnet");
     expect(chain.name).toBe("Monad Testnet");
     expect(chain.unit).toBe("MONT");
     expect(chain.isTestnet).toBe(true);

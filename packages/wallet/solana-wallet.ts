@@ -289,7 +289,8 @@ export class SolanaWallet
       never
     >
 {
-  readonly chainKind = "solana" as const;
+  readonly family = "solana" as const;
+  readonly chainIdentifier: string;
   readonly networkId: string;
   readonly stealthKeyring: SolanaStealthKeyring;
   readonly hygiene?: AccountHygieneEngine<string>;
@@ -313,6 +314,7 @@ export class SolanaWallet
   constructor(params: {
     connection: SolanaWalletConnection;
     signer: Keypair;
+    chainIdentifier?: string;
     networkId: string;
     /** Expected RPC genesis hash. Every operation waits for this identity check. */
     genesisHash: string;
@@ -325,6 +327,7 @@ export class SolanaWallet
   }) {
     this.connection = params.connection;
     this.signer = params.signer;
+    this.chainIdentifier = params.chainIdentifier ?? params.networkId;
     this.networkId = params.networkId;
     this.expectedGenesisHash = params.genesisHash;
     this.stealthKeyring = params.stealthKeyring ?? new SolanaStealthKeyring();
@@ -346,8 +349,8 @@ export class SolanaWallet
           : "pending";
       });
     this.nativeAttemptKey = nativeTransactionAttemptKey({
-      chainKind: "solana",
-      networkId: params.genesisHash,
+      family: "solana",
+      chainIdentifier: this.chainIdentifier,
       address: this.address,
     });
     const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey);
@@ -363,6 +366,7 @@ export class SolanaWallet
 
   static async generate(params: {
     connection: SolanaWalletConnection;
+    chainIdentifier?: string;
     networkId: string;
     /** Independently configured expected genesis hash. */
     genesisHash: string;
@@ -378,6 +382,7 @@ export class SolanaWallet
 
   static async fromSeed(params: {
     connection: SolanaWalletConnection;
+    chainIdentifier?: string;
     networkId: string;
     /** Independently configured expected genesis hash. */
     genesisHash: string;
@@ -390,6 +395,7 @@ export class SolanaWallet
     return new SolanaWallet({
       connection: params.connection,
       signer: await Keypair.fromSeed(stableSeed),
+      chainIdentifier: params.chainIdentifier,
       networkId: params.networkId,
       genesisHash: params.genesisHash,
       nativeAttemptStore: params.nativeAttemptStore,
@@ -632,8 +638,8 @@ export class SolanaWallet
     const attemptKey =
       signerOverride && !signerOverride.publicKey.equals(this.signer.publicKey)
         ? nativeTransactionAttemptKey({
-            chainKind: "solana",
-            networkId: this.expectedGenesisHash,
+            family: "solana",
+            chainIdentifier: this.chainIdentifier,
             address: signerOverride.publicKey.toBase58(),
           })
         : this.nativeAttemptKey;

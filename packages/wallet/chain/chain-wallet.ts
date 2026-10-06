@@ -179,8 +179,10 @@ export interface FrankIdentityHandle {
  * capabilities below this boundary; a simple native transfer is one logical operation here.
  */
 export interface NativeWalletHandle {
-  /** Runtime discriminator preventing a chain adapter from operating another chain's wallet. */
-  readonly chainKind: ChainKind;
+  /** Runtime discriminator identifying the chain family ("evm" | "bitcoin" | "solana"). */
+  readonly family: ChainFamily;
+  /** Stable configured chain identifier (e.g. "monad-testnet", "hyperliquid-mainnet", "solana-mainnet", "xec-mainnet"). */
+  readonly chainIdentifier: string;
   /** Stable configured network discriminator (for example, mainnet versus testnet). */
   readonly networkId: string;
   readonly identity: FrankIdentityHandle;
@@ -208,18 +210,18 @@ export interface NativeWalletHandle {
 export interface WalletHandle {
   readonly identity: FrankIdentityHandle;
 }
-export type ChainKind = "monad" | "solana" | "ecash";
+export type ChainFamily = "evm" | "bitcoin" | "solana";
 
 /** Stable namespace for safety records shared by multiple configured settlement networks. */
 export function nativeTransactionAttemptKey(params: {
-  chainKind: ChainKind;
-  networkId: string;
+  family: ChainFamily;
+  chainIdentifier: string;
   address: string;
 }): string {
-  if (params.networkId.trim().length === 0) {
-    throw new Error("Native transaction network id must not be empty");
+  if (params.chainIdentifier.trim().length === 0) {
+    throw new Error("Native transaction chain identifier must not be empty");
   }
-  return `${params.chainKind}:${encodeURIComponent(params.networkId)}:${
+  return `${params.family}:${encodeURIComponent(params.chainIdentifier)}:${
     params.address
   }`;
 }

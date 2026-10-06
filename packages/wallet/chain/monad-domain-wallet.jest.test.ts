@@ -153,7 +153,7 @@ test.each([0, 1])(
       .mockImplementation(() => {
         throw new Error('BIP39 forbidden')
       })
-    const chain = await createChain({ kind: 'monad', config })
+    const chain = await createChain({ family: 'evm', config })
     const wallet = (await chain.createWallet(
       roots(index),
     )) as MonadChainWalletHandle
@@ -378,8 +378,8 @@ test('native signing and recovered pending attempts belong to EVM main across au
   expect(
     store.get(
       nativeTransactionAttemptKey({
-        chainKind: 'monad',
-        networkId: '10143',
+        family: 'evm',
+        chainIdentifier: 'monad-testnet',
         address: expected[0].main.toLowerCase(),
       }),
     ),

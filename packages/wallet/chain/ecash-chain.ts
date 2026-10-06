@@ -14,6 +14,8 @@ import {
 import type { ChronikClient } from "chronik-client";
 
 export interface EcashChainConfig {
+  /** Optional chain identifier override; defaults to networkId. */
+  readonly chainIdentifier?: string;
   /** eCash network identity. Additional networks require a reviewed genesis/prefix profile. */
   networkId: "ecash-mainnet" | "ecash-testnet" | "xec-mainnet" | "xec-testnet";
   /** Initialized SDK-compatible Chronik client; callers own endpoint selection and lifecycle. */
@@ -65,8 +67,7 @@ function parseEcashAddress(
 }
 
 export interface EcashChain
-  extends Omit<NativeAssetChain, "kind" | "createWallet"> {
-  readonly kind: "ecash";
+  extends Omit<NativeAssetChain, "createWallet"> {
   createWallet(
     domainRoot: DomainRoot<"ecash-bch-wallet">
   ): Promise<EcashWallet>;
@@ -75,12 +76,14 @@ export interface EcashChain
 export function createEcashChain(config: EcashChainConfig): EcashChain {
   const isTestnet =
     config.networkId === "ecash-testnet" || config.networkId === "xec-testnet";
+  const chainIdentifier = config.chainIdentifier ?? config.networkId;
   const name = isTestnet ? "eCash Testnet" : "eCash";
   const unit = isTestnet ? "tXEC" : "XEC";
   const network = isTestnet ? "testnet" : "mainnet";
 
   return {
-    kind: "ecash",
+    family: "bitcoin",
+    chainIdentifier,
     name,
     unit,
     networkId: config.networkId,
@@ -113,8 +116,8 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
     },
     nativeTransfers: {
       async getBalance({ wallet }) {
-        if (wallet.chainKind !== "ecash") {
-          throw new Error(`Expected an eCash wallet, got ${wallet.chainKind}`);
+        if (wallet.family !== "bitcoin") {
+          throw new Error(`Expected a Bitcoin/eCash wallet, got ${wallet.family}`);
         }
         if (wallet.networkId !== config.networkId) {
           throw new Error(
@@ -124,8 +127,8 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
         return wallet.getBalance();
       },
       async send({ wallet, recipient, value, onSigned }) {
-        if (wallet.chainKind !== "ecash") {
-          throw new Error(`Expected an eCash wallet, got ${wallet.chainKind}`);
+        if (wallet.family !== "bitcoin") {
+          throw new Error(`Expected a Bitcoin/eCash wallet, got ${wallet.family}`);
         }
         if (wallet.networkId !== config.networkId) {
           throw new Error(
@@ -143,8 +146,8 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
         });
       },
       async getTransactionStatus({ wallet, transaction }) {
-        if (wallet.chainKind !== "ecash") {
-          throw new Error(`Expected an eCash wallet, got ${wallet.chainKind}`);
+        if (wallet.family !== "bitcoin") {
+          throw new Error(`Expected a Bitcoin/eCash wallet, got ${wallet.family}`);
         }
         if (wallet.networkId !== config.networkId) {
           throw new Error(

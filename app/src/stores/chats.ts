@@ -66,6 +66,7 @@ import {
   getOwnCanonicalAddress,
   sameCanonicalAddress,
 } from '../utils/own-address'
+import { sweepMessageFundsOnDelete } from '../utils/sweep-on-delete'
 
 export type ChatMessage = {
   outbound: boolean
@@ -731,6 +732,16 @@ export const useChatStore = defineStore('chats', {
           payloadDigest: attemptDigest,
           receivedTime: installedReceivedTime,
         })
+      }
+      if (message && !message.outbound) {
+        try {
+          await sweepMessageFundsOnDelete({ message })
+        } catch (sweepErr) {
+          console.warn(
+            'Failed to sweep message funds during deleteMessage:',
+            sweepErr,
+          )
+        }
       }
       if (recipientAddress) {
         await messageStore.suppressAndDelete(

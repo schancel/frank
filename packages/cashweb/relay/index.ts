@@ -307,29 +307,36 @@ export class RelayClient extends ReadOnlyRelayClient {
     if (compressed !== true && compressed !== false) {
       throw new Error('change-address-pubkey:compressed')
     }
-    await this.wallet.forwardUTXOsToPubkey({
-      utxos: message.message.outpoints,
-      pubkey: relayChangeAddressPublicKey(
-        Uint8Array.from(changeKey.privKey.toBuffer()),
-        compressed,
-      ),
-    })
+    const outpoints = message.message?.outpoints ?? []
+    if (outpoints.length > 0) {
+      await this.wallet.forwardUTXOsToPubkey({
+        utxos: outpoints,
+        pubkey: relayChangeAddressPublicKey(
+          Uint8Array.from(changeKey.privKey.toBuffer()),
+          compressed,
+        ),
+      })
+    }
     assert(this.wallet.myAddress, 'Missing address? Wallet not loaded.')
     const url = `${this.url}/messages/${this.toAPIAddress(
       this.wallet.myAddress,
     )}`
-    await axios({
-      method: 'delete',
-      url,
-      headers: this.token
-        ? {
-            Authorization: this.token,
-          }
-        : undefined,
-      params: {
-        digest,
-      },
-    })
+    try {
+      await axios({
+        method: 'delete',
+        url,
+        headers: this.token
+          ? {
+              Authorization: this.token,
+            }
+          : undefined,
+        params: {
+          digest,
+        },
+      })
+    } catch (relayError) {
+      console.warn('Failed to delete message on relay:', relayError)
+    }
     await this.messageStore.deleteMessage(digest)
   }
 

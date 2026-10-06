@@ -9,6 +9,7 @@ import {
   ChatRoomBot,
   RpsBot,
   SatoshiDiceBot,
+  LiarsDiceBot,
 } from "../src/bots";
 
 async function main() {
@@ -32,6 +33,7 @@ async function main() {
   await host.register(new ChatRoomBot());
   await host.register(new RpsBot());
   await host.register(new SatoshiDiceBot());
+  await host.register(new LiarsDiceBot());
 
   await host.start();
   console.log(

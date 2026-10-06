@@ -100,6 +100,12 @@
               :address="address"
               @sendFollowUp="handleSendFollowUp"
             />
+            <chat-message-liars-dice
+              v-else-if="item.type == 'liars-dice'"
+              :item="item"
+              :address="address"
+              @sendFollowUp="handleSendFollowUp"
+            />
             <!-- Previously silently unrendered (no branch existed at all for this or any other
             unhandled type) -- a real preview string instead, via the same registry `chats.ts` now
             uses for the sidebar/notifications, so this can never silently go blank again as new
@@ -153,6 +159,7 @@ import ChatMessageRaffle from './ChatMessageRaffle.vue'
 import ChatMessageSwap from './ChatMessageSwap.vue'
 import ChatMessageRps from './ChatMessageRps.vue'
 import ChatMessageDice from './ChatMessageDice.vue'
+import ChatMessageLiarsDice from './ChatMessageLiarsDice.vue'
 import ChatMessageSuffix from './ChatMessageSuffix.vue'
 import DeleteMessageDialog from '../../dialogs/DeleteMessageDialog.vue'
 import TransactionDialog from '../../dialogs/TransactionDialog.vue'
@@ -180,6 +187,7 @@ export default defineComponent({
     ChatMessageSwap,
     ChatMessageRps,
     ChatMessageDice,
+    ChatMessageLiarsDice,
     ChatMessageImage,
     ChatMessageStealth,
     ChatMessageSuffix,

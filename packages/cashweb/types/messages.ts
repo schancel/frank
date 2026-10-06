@@ -236,6 +236,65 @@ export interface SatoshiDiceItem {
   txHash?: string
 }
 
+export interface LiarsDiceItem {
+  type: 'liars-dice'
+  tableId: string
+  action: 'create' | 'join' | 'round_start' | 'bid' | 'challenge' | 'showdown' | 'settle'
+  /** Buy-in required in wei per player. */
+  buyInWei?: string
+  /** Maximum number of players allowed at table (default: 4). */
+  maxPlayers?: number
+  /** Initial dice count per player (default: 5). */
+  dicePerPlayer?: number
+  /** Addresses of joined players. */
+  players?: string[]
+  /** Remaining dice counts for each player, parallel to players array. */
+  diceCounts?: number[]
+  /** Active round number (1-indexed). */
+  roundNumber?: number
+  /** Address of player whose turn it is to bid or challenge. */
+  activePlayer?: string
+  /** Time remaining in seconds for active player's turn. */
+  turnTimeoutSeconds?: number
+  /** Current highest bid. */
+  currentBid?: {
+    bidder: string
+    quantity: number
+    face: number // 1 to 6
+  }
+  /** The challenger's address (when action === 'challenge'). */
+  challenger?: string
+  /** Server's hash commitment for this round's server entropy. */
+  serverCommit?: string
+  /** Revealed server entropy secret (at showdown). */
+  serverSeed?: string
+  /** Player entropy hash commitments for this round. */
+  playerCommits?: Record<string, string>
+  /** Revealed player secrets at showdown (player address -> seed). */
+  playerSeeds?: Record<string, string>
+  /** Secret dice for the local player (during bidding, decrypted/known only to local player). */
+  myDice?: number[]
+  /** Revealed dice cups for all players at showdown (player address -> array of dice faces 1..6). */
+  revealedCups?: Record<string, number[]>
+  /** Result of challenge at showdown. */
+  challengeResult?: {
+    bidQuantity: number
+    bidFace: number
+    actualCount: number
+    wildAcesCount: number
+    challengerWon: boolean
+    loserAddress: string
+    eliminated: boolean
+  }
+  /** Final winner of the table game. */
+  winnerAddress?: string
+  /** Total pot in wei awarded to winner. */
+  potWei?: string
+  /** Optional transaction hash or stealth payout details for settlement. */
+  txHash?: string
+  stealthAddress?: string
+}
+
 export type MessageItem =
   | StealthItem
   | P2PKHSendItem
@@ -249,6 +308,7 @@ export type MessageItem =
   | SwapOfferItem
   | RpsItem
   | SatoshiDiceItem
+  | LiarsDiceItem
 
 /** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the
  * message so the failure and its manual Retry survive a reload. */

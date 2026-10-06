@@ -8,6 +8,8 @@
     "bot": "tsx qwen-bot.livecheck.ts",
     "blackjack": "tsx blackjack-bot.livecheck.ts",
     "blackjack:p2p": "tsx blackjack-p2p-bot.livecheck.ts",
+    "target:blackjack": "tsx targets/blackjack.ts",
+    "target:all": "tsx targets/all-bots.ts",
     "raffle": "tsx raffle-bot.livecheck.ts",
     "raffle:refund": "tsx raffle-refund.livecheck.ts",
     "vendor": "tsx vendor-bot.livecheck.ts",
@@ -21,6 +23,7 @@
     "test": "jest"
   },
   "dependencies": {
+    "@frank/bot-framework": "*",
     "@frank/directory-admission": "*",
     "@frank/cashweb": "*",
     "@frank/wallet": "*",

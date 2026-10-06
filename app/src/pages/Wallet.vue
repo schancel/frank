@@ -73,13 +73,24 @@
         </q-card-section>
         <q-separator />
         <q-card-section>
-          <div class="row" v-if="displayAddress">
+          <div
+            class="row justify-center items-center"
+            style="min-height: 300px"
+            data-testid="wallet-qr-container"
+          >
             <qrcode-vue
+              v-if="displayAddress"
               style="margin-left: auto; margin-right: auto"
               :value="displayAddress"
               :size="300"
               level="H"
               data-testid="wallet-qr"
+            />
+            <q-skeleton
+              v-else
+              size="300px"
+              square
+              data-testid="wallet-qr-skeleton"
             />
           </div>
           <div class="row q-mt-md">
@@ -87,6 +98,7 @@
               class="fit"
               filled
               auto-grow
+              :loading="!displayAddress"
               v-model="displayAddress"
               readonly
             >
@@ -181,7 +193,20 @@ export default defineComponent({
     const balanceText = computed(() =>
       loaded.value ? formattedBalance.value : '\u2014',
     )
-    const displayAddress = ref('')
+    const displayAddress = ref(
+      accountSession.getCachedChainAddress?.(selectedWallet.value) ?? '',
+    )
+
+    const prewarmChains = (active: 'monad' | 'ecash' | 'solana') => {
+      if (accountStatus.status === 'ready') {
+        if (active !== 'ecash') {
+          accountSession.getChainAddress('ecash').catch(() => undefined)
+        }
+        if (active !== 'solana') {
+          accountSession.getChainAddress('solana').catch(() => undefined)
+        }
+      }
+    }
 
     watch(
       () => [
@@ -190,8 +215,17 @@ export default defineComponent({
         selectedWallet.value,
       ],
       async ([status, , chain], _previous, onCleanup) => {
-        displayAddress.value = ''
-        if (status !== 'ready') return
+        if (status !== 'ready') {
+          displayAddress.value = ''
+          return
+        }
+        prewarmChains(chain)
+        const cached = accountSession.getCachedChainAddress?.(chain)
+        if (cached) {
+          displayAddress.value = cached
+        } else {
+          displayAddress.value = ''
+        }
         let current = true
         onCleanup(() => {
           current = false

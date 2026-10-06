@@ -10,12 +10,15 @@ const mockGetChainAddress = jest.fn(async (chain: string) => {
   return '0xabc'
 })
 
+const mockGetCachedChainAddress = jest.fn(() => undefined)
+
 jest.mock('../accounts/session', () => ({
   accountStatus: jest
     .requireActual('vue')
     .reactive({ status: 'ready', revision: 1 }),
   accountSession: {
     getChainAddress: (chain: string) => mockGetChainAddress(chain),
+    getCachedChainAddress: (chain: string) => mockGetCachedChainAddress(chain),
   },
 }))
 import { accountStatus } from '../accounts/session'
@@ -91,6 +94,7 @@ function mountWallet() {
             'q-card-actions',
             'q-separator',
             'q-badge',
+            'q-skeleton',
           ].map(n => [n, { template: '<div><slot /></div>' }]),
         ),
       },
@@ -111,6 +115,8 @@ describe('Wallet detail page (#570)', () => {
     mockCopyToClipboard.mockResolvedValue(undefined)
     mockUseActiveWallet.mockReset()
     mockUseActiveWallet.mockResolvedValue(mockWallet)
+    mockGetCachedChainAddress.mockReset()
+    mockGetCachedChainAddress.mockReturnValue(undefined)
     jest.mocked(addressCopiedNotify).mockClear()
     jest.mocked(errorNotify).mockClear()
   })
@@ -350,6 +356,66 @@ describe('Wallet detail page (#570)', () => {
     )
     expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
       'AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9',
+    )
+    wrapper.unmount()
+  })
+
+  it('renders skeleton placeholder and does not render QR code while address is loading', async () => {
+    let resolveAddress: (addr: string) => void = () => undefined
+    const pendingAddress = new Promise<string>(resolve => {
+      resolveAddress = resolve
+    })
+    mockGetChainAddress.mockImplementation(async (chain: string) => {
+      if (chain === 'ecash') return pendingAddress
+      return '0xabc'
+    })
+
+    mockRoute.value = {
+      query: {},
+      path: '/wallet/ecash',
+      // @ts-expect-error mock params
+      params: { wallet: 'ecash' },
+    }
+    const wrapper = mountWallet()
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="wallet-qr-skeleton"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.find('[data-testid="wallet-qr"]').exists()).toBe(false)
+
+    resolveAddress('ecash:loadedAddress')
+    await flush()
+
+    expect(wrapper.find('[data-testid="wallet-qr-skeleton"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-testid="wallet-qr"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
+      'ecash:loadedAddress',
+    )
+    wrapper.unmount()
+  })
+
+  it('renders QR code synchronously when address is cached', () => {
+    mockGetCachedChainAddress.mockReturnValue(
+      'ecash:cached_immediate_address_123',
+    )
+    mockRoute.value = {
+      query: {},
+      path: '/wallet/ecash',
+      // @ts-expect-error mock params
+      params: { wallet: 'ecash' },
+    }
+    const wrapper = mountWallet()
+
+    // Immediately rendered without waiting for async flush
+    expect(wrapper.find('[data-testid="wallet-qr-skeleton"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-testid="wallet-qr"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
+      'ecash:cached_immediate_address_123',
     )
     wrapper.unmount()
   })

@@ -90,6 +90,8 @@ export function createAccountSession(deps: {
   let custody: AccountCustody | undefined
   let wallet: RuntimeWallet | undefined
   let activeBip39Params: { mnemonic: string; path: string } | undefined
+  const chainAddressCache = new Map<'monad' | 'ecash' | 'solana', string>()
+  const chainAddressInFlight = new Map<'ecash' | 'solana', Promise<string>>()
   let generation = 0
   let tail = Promise.resolve()
   let initialized: Promise<void> | undefined
@@ -123,6 +125,8 @@ export function createAccountSession(deps: {
     return next
   }
   const release = async () => {
+    chainAddressCache.clear()
+    chainAddressInFlight.clear()
     const previous = wallet
     wallet = undefined
     if (previous) await previous.close()
@@ -225,6 +229,9 @@ export function createAccountSession(deps: {
       candidate = undefined
       walletAccount = capability.account.receipt.context.accountId
       walletRevision = latest.revision
+      if (wallet?.identity?.displayAddress) {
+        chainAddressCache.set('monad', wallet.identity.displayAddress)
+      }
       publish(latest)
       state.status = 'ready'
       state.error = null
@@ -316,40 +323,81 @@ export function createAccountSession(deps: {
     async getActiveWalletRoot(): Promise<Uint8Array> {
       return this.getActiveDomainRoot('evm-wallet')
     },
+    getCachedChainAddress(
+      chain: 'monad' | 'ecash' | 'solana',
+    ): string | undefined {
+      if (chain === 'monad') {
+        return (
+          chainAddressCache.get('monad') ?? wallet?.identity?.displayAddress
+        )
+      }
+      return chainAddressCache.get(chain)
+    },
     async getChainAddress(
       chain: 'monad' | 'ecash' | 'solana',
     ): Promise<string> {
       if (chain === 'monad') {
         const wallet = await session.getWallet()
-        return wallet.identity.displayAddress
-      }
-      const purpose = chain === 'ecash' ? 'ecash-bch-wallet' : 'solana-wallet'
-      const root = await this.getActiveDomainRoot(purpose)
-      try {
-        if (chain === 'ecash') {
-          const { HDNodeWallet } = await import('ethers')
-          const { encodeCashAddress } = await import('ecashaddrjs')
-          const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
-          const { sha256 } = await import('@noble/hashes/sha256.js')
-          const hdNode =
-            HDNodeWallet.fromSeed(root).derivePath("m/44'/1899'/0'/0/0")
-          const pubKeyHex = hdNode.publicKey.startsWith('0x')
-            ? hdNode.publicKey.slice(2)
-            : hdNode.publicKey
-          const pubKeyBytes = Uint8Array.from(
-            pubKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) ?? [],
-          )
-          const hash160 = ripemd160(sha256(pubKeyBytes))
-          const prefix = activeChain.isTestnet ? 'ectest' : 'ecash'
-          return encodeCashAddress(prefix, 'p2pkh', hash160)
-        } else {
-          const { Keypair } = await import('@solana/web3.js')
-          const kp = await Keypair.fromSeed(root)
-          return kp.publicKey.toBase58()
+        let address: unknown
+        if (typeof (wallet as any).getReceiveAddress === 'function') {
+          address = await (wallet as any).getReceiveAddress()
+        } else if (wallet.identity?.displayAddress) {
+          address = wallet.identity.displayAddress
         }
-      } finally {
-        root.fill(0)
+        const formatted =
+          typeof address === 'string'
+            ? address
+            : activeChain.addressToString(
+                address as Parameters<typeof activeChain.addressToString>[0],
+              )
+        chainAddressCache.set('monad', formatted)
+        return formatted
       }
+      const cached = chainAddressCache.get(chain)
+      if (cached) return cached
+      const inFlight = chainAddressInFlight.get(chain)
+      if (inFlight) return inFlight
+      const promise = (async () => {
+        const purpose = chain === 'ecash' ? 'ecash-bch-wallet' : 'solana-wallet'
+        const root = await this.getActiveDomainRoot(purpose)
+        try {
+          if (chain === 'ecash') {
+            const { HDNodeWallet } = await import('ethers')
+            const { encodeCashAddress } = await import('ecashaddrjs')
+            const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
+            const { sha256 } = await import('@noble/hashes/sha256.js')
+            const hdNode =
+              HDNodeWallet.fromSeed(root).derivePath("m/44'/1899'/0'/0/0")
+            const pubKeyHex = hdNode.publicKey.startsWith('0x')
+              ? hdNode.publicKey.slice(2)
+              : hdNode.publicKey
+            const pubKeyBytes = Uint8Array.from(
+              pubKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) ?? [],
+            )
+            const hash160 = ripemd160(sha256(pubKeyBytes))
+            const prefix = activeChain.isTestnet ? 'ectest' : 'ecash'
+            const addr = encodeCashAddress(prefix, 'p2pkh', hash160)
+            chainAddressCache.set('ecash', addr)
+            return addr
+          } else {
+            const { Keypair } = await import('@solana/web3.js')
+            const kp = await Keypair.fromSeed(root)
+            const addr = kp.publicKey.toBase58()
+            chainAddressCache.set('solana', addr)
+            return addr
+          }
+        } finally {
+          root.fill(0)
+          chainAddressInFlight.delete(chain)
+        }
+      })()
+      chainAddressInFlight.set(chain, promise)
+      promise.catch(() => {
+        if (chainAddressInFlight.get(chain) === promise) {
+          chainAddressInFlight.delete(chain)
+        }
+      })
+      return promise
     },
     async backupCodex32(threshold = 2, count = 3): Promise<string[]> {
       const root = await this.getActiveWalletRoot()

@@ -445,10 +445,7 @@ export function openDirectMessage(
           ? recipientHead
           : evidence(input.network, input.recipientEvidence)
       if (
-        !accountEqual(
-          sender.statement.subject,
-          senderHead.statement.subject,
-        ) ||
+        !accountEqual(sender.statement.subject, senderHead.statement.subject) ||
         !accountEqual(
           sender.statement.preview.messageDhKey,
           senderHead.statement.preview.messageDhKey,
@@ -538,9 +535,14 @@ export function openDirectMessage(
       {},
       Object.getOwnPropertyDescriptors(bytes),
     ) as OpenedDirectMessage
+    if (content.conversationName !== undefined) {
+      Object.defineProperty(result, 'conversationName', {
+        enumerable: true,
+        value: content.conversationName,
+      })
+    }
     Object.defineProperties(result, {
-      mode: { enumerable: true, value: input.mode },
-      conversationName: { enumerable: true, value: content.conversationName },
+      mode: { enumerable: true, value: mode },
       // Parse a copy of the already validated revision only to return fresh owned projections.
       // Acceptance above uses the one-shot aggregate continuation, never this independent parse.
       items: {
@@ -603,10 +605,7 @@ export function openOwnDirectMessage(
           : recipientHead
 
       if (
-        !accountEqual(
-          sender.statement.subject,
-          senderHead.statement.subject,
-        ) ||
+        !accountEqual(sender.statement.subject, senderHead.statement.subject) ||
         !accountEqual(
           sender.statement.preview.messageDhKey,
           senderHead.statement.preview.messageDhKey,
@@ -644,7 +643,9 @@ export function openOwnDirectMessage(
     if (!openOwn) throw new DirectMessageError('roles')
     const opened = openOwn.call(input.roles, {
       envelope: copy(encrypted.cryptoBoxEnvelope),
-      recipientPublicKey: copy(recipient.statement.preview.messageDhKey.keyBytes),
+      recipientPublicKey: copy(
+        recipient.statement.preview.messageDhKey.keyBytes,
+      ),
       context: copy(context),
     })
     if (!opened.ok) throw new DirectMessageError('crypto')
@@ -689,9 +690,14 @@ export function openOwnDirectMessage(
       {},
       Object.getOwnPropertyDescriptors(bytes),
     ) as OpenedDirectMessage
+    if (content.conversationName !== undefined) {
+      Object.defineProperty(result, 'conversationName', {
+        enumerable: true,
+        value: content.conversationName,
+      })
+    }
     Object.defineProperties(result, {
       mode: { enumerable: true, value: mode },
-      conversationName: { enumerable: true, value: content.conversationName },
       items: {
         enumerable: true,
         get: () => {

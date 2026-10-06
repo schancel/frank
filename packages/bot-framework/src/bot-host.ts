@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import { randomBytes } from "crypto";
+import { homedir } from "os";
+import { randomBytes, createHash } from "crypto";
 import { JsonRpcProvider, Wallet, type TransactionReceipt } from "ethers";
 import axios from "axios";
 
@@ -74,7 +75,10 @@ export class FrankBotHost {
     this.options = {
       relayBaseUrl,
       networkTag,
-      stateDir: options.stateDir,
+      stateDir:
+        options.stateDir ??
+        process.env.BOT_STATE_DIR ??
+        join(homedir(), ".frank-bots"),
       rpcUrl,
       fundingPrivateKeyHex:
         options.fundingPrivateKeyHex ??
@@ -138,6 +142,30 @@ export class FrankBotHost {
     let rootHex: string;
     if (existsSync(rootFile)) {
       rootHex = readFileSync(rootFile, "utf8").trim();
+    } else if (
+      definition.defaultIdentityPath &&
+      existsSync(definition.defaultIdentityPath)
+    ) {
+      try {
+        const idData = JSON.parse(
+          readFileSync(definition.defaultIdentityPath, "utf8")
+        );
+        if (typeof idData.privateKeyHex === "string") {
+          rootHex = createHash("sha256")
+            .update(idData.privateKeyHex)
+            .digest("hex");
+          writeFileSync(rootFile, rootHex, { mode: 0o600 });
+          console.log(
+            `[bot-host] Migrated existing identity from ${definition.defaultIdentityPath} into durable account root`
+          );
+        } else {
+          rootHex = randomBytes(32).toString("hex");
+          writeFileSync(rootFile, rootHex, { mode: 0o600 });
+        }
+      } catch {
+        rootHex = randomBytes(32).toString("hex");
+        writeFileSync(rootFile, rootHex, { mode: 0o600 });
+      }
     } else {
       rootHex = randomBytes(32).toString("hex");
       writeFileSync(rootFile, rootHex, { mode: 0o600 });

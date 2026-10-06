@@ -108,9 +108,9 @@ export interface FrankBotDefinition {
 }
 
 export interface BotHostOptions {
-  relayBaseUrl: string;
+  relayBaseUrl?: string;
   networkTag?: "MONT" | "MON1";
-  stateDir: string;
+  stateDir?: string;
   rpcUrl?: string;
   fundingPrivateKeyHex?: string;
   stampValueWei?: bigint;

@@ -1,13 +1,14 @@
 <template>
-  <div
-    v-if="stampPreparationStatus"
-    class="full-width text-caption text-center bg-accent text-white q-py-xs q-mb-sm"
-    role="status"
-    data-testid="stamp-preparation-status"
-  >
-    {{ stampPreparationStatus }}
-  </div>
-  <template v-if="sortedPosts && sortedPosts.length > 0">
+  <div class="forum-feed-container">
+    <div
+      v-if="stampPreparationStatus"
+      class="full-width text-caption text-center bg-accent text-white q-py-xs q-mb-sm rounded-borders"
+      role="status"
+      data-testid="stamp-preparation-status"
+    >
+      {{ stampPreparationStatus }}
+    </div>
+    <template v-if="sortedPosts && sortedPosts.length > 0">
     <div
       v-if="outageStatus === 'outage'"
       class="q-pa-sm"
@@ -121,6 +122,7 @@
       {{ $t('forum.noPosts') }}
     </div>
   </template>
+  </div>
 </template>
 
 <script lang="ts">
@@ -232,3 +234,11 @@ export default defineComponent({
   },
 })
 </script>
+
+<style lang="scss" scoped>
+.forum-feed-container {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 8px 12px 32px;
+}
+</style>

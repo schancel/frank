@@ -171,10 +171,14 @@
               :key="name"
               clickable
               :active="name === selectedForumTopic"
-              active-class="active-chat-list-item"
+              active-class="active-topic-item active-chat-list-item"
+              class="topic-list-item"
               @click="browseForumTopic(name)"
             >
-              <q-item-section>{{ name }}</q-item-section>
+              <q-item-section avatar class="topic-avatar-section">
+                <span class="topic-hash">#</span>
+              </q-item-section>
+              <q-item-section class="topic-name-section">{{ name }}</q-item-section>
             </q-item>
             <q-item v-if="discoveredTopicNames.length === 0">
               <q-item-section class="text-grey">{{
@@ -557,7 +561,36 @@ export default defineComponent({
 // established, much more visible background+color pattern used everywhere else in the app.
 .active-chat-list-item {
   background: var(--q-color-bg-active);
-  color: #f0409b;
+  color: var(--q-primary);
+}
+
+.topic-list-item {
+  border-radius: 8px;
+  margin: 2px 8px;
+  min-height: 38px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.topic-avatar-section {
+  min-width: 24px;
+  padding-right: 4px;
+}
+
+.topic-hash {
+  font-weight: 700;
+  font-size: 15px;
+  opacity: 0.5;
+}
+
+.active-topic-item {
+  background: var(--q-color-bg-active);
+  color: var(--q-primary);
+  font-weight: 600;
+
+  .topic-hash {
+    opacity: 1;
+    color: var(--q-primary);
+  }
 }
 
 // Fixed-width icon-only nav column (ticket #123) -- 72px matches the reference apps (Telegram/

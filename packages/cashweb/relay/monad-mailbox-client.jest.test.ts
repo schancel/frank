@@ -539,10 +539,10 @@ describe('fetchMonadMailboxInbox / fetchMonadMessagesSince', () => {
 })
 
 describe('mock relay contract pin', () => {
-  it('models the relay cap of 30 consumed challenges per recipient per 60 s', async () => {
-    expect(DEFAULT_MOCK_MAX_USED_CHALLENGES).toBe(30)
+  it('models the relay cap of 120 consumed challenges per recipient per 60 s', async () => {
+    expect(DEFAULT_MOCK_MAX_USED_CHALLENGES).toBe(120)
     const f = makeFixture()
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 120; i++) {
       await fetchMonadMailboxInboxPage({ ...f.auth, sinceMs: 0 })
     }
     await expect(

@@ -919,7 +919,7 @@ async fn authenticate(
         parsed.challenge.nonce,
         parsed.challenge.expires_at_ms,
         now_ms(),
-        30,
+        crate::monad_mailbox::MAX_USED_CHALLENGES_PER_RECIPIENT,
     )? {
         ChallengeConsumption::Consumed => Ok(()),
         ChallengeConsumption::Rejected => Err(CanonicalError::Unauthorized),

@@ -25,10 +25,9 @@ import type { MailboxHttp, MailboxHttpRequest } from './monad-mailbox-client'
 export const MOCK_MAX_PAGE = 100
 export const MOCK_MAX_BYTES = 2 * 1024 * 1024 * 2 + 16 * 1024
 const CHALLENGE_TTL_MS = 60_000
-/** Relay cap on unexpired consumed challenges per recipient. #197 as merged has 8; the relay
- * follow-up this client assumes raises it to 30 (per 60 s). Override per test with
- * `maxUsedChallenges`. */
-export const DEFAULT_MOCK_MAX_USED_CHALLENGES = 30
+/** Relay cap on unexpired consumed challenges per recipient (120 per 60 s).
+ * Override per test with `maxUsedChallenges`. */
+export const DEFAULT_MOCK_MAX_USED_CHALLENGES = 120
 const CURSOR_MAC_DOMAIN = Buffer.from('frank:mailbox-cursor-mac:v1\0')
 const CHALLENGE_MAC_DOMAIN = Buffer.from('frank:mailbox-challenge-mac:v1\0')
 const AUTH_DOMAIN = 'frank:mailbox-http-auth:v2'

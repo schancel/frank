@@ -27,7 +27,7 @@ import {
   fetchMonadMailboxRecoveries,
 } from '@frank/cashweb/relay/monad-mailbox-client'
 import { mailboxAuthFor } from '@frank/wallet/monad-identity'
-import type { WalletHandle } from '@frank/wallet/chain'
+import { activeChain, type WalletHandle } from '@frank/wallet/chain'
 
 jest.mock('axios', () => ({ __esModule: true, default: jest.fn() }))
 jest.mock('../utils/notifications', () => ({ desktopNotify: jest.fn() }))
@@ -281,6 +281,40 @@ describe('direct-message polling vs the relay challenge cap', () => {
       await jest.advanceTimersByTimeAsync(70_000)
       expect(status.state).toBe('ok')
       polling.stop()
+    })
+
+    it('reports rate-limited on duck-typed 429 without ChallengeCapacityError instance', async () => {
+      const { wallet } = setup({ maxUsedChallenges: 120 })
+      const fetchSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockRejectedValueOnce({
+          status: 429,
+          code: 'mailbox_challenge_capacity',
+          retryAfterMs: 45_000,
+        })
+      const status = useMailboxStatusStore()
+      const polling = startDirectMessagePolling({ wallet })
+      await jest.advanceTimersByTimeAsync(1000)
+      expect(status.state).toBe('rate-limited')
+      expect(status.retryInMs).toBe(45_000)
+      polling.stop()
+      fetchSpy.mockRestore()
+    })
+
+    it('reports rate-limited on generic 429 status and defaults retryInMs to 60s', async () => {
+      const { wallet } = setup({ maxUsedChallenges: 120 })
+      const fetchSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockRejectedValueOnce({
+          status: 429,
+        })
+      const status = useMailboxStatusStore()
+      const polling = startDirectMessagePolling({ wallet })
+      await jest.advanceTimersByTimeAsync(1000)
+      expect(status.state).toBe('rate-limited')
+      expect(status.retryInMs).toBe(60_000)
+      polling.stop()
+      fetchSpy.mockRestore()
     })
 
     it('shows unreachable only from the second consecutive failure, then clears', async () => {

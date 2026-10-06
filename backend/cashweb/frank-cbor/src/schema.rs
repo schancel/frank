@@ -22,7 +22,7 @@ use crate::model::{
     AccountRef, BlackjackAction, BlackjackFields, BlackjackHandAction, BlackjackHandFields,
     BlackjackHandMessageItem, BlackjackHandV3Action, BlackjackHandV3Fields,
     BlackjackHandV3MessageItem, BlackjackHandV3Move, BlackjackMessageItem, BlackjackOutcome,
-    PreviewDirectoryRoles, Timestamp,
+    PaymentValue, PreviewDirectoryRoles, Timestamp,
 };
 use crate::model::{
     ForumAggregate, ForumContent, ForumCursor, ForumCursorPosition, ForumDiscoveryEntry,
@@ -458,9 +458,10 @@ fn framed(v: Option<&CborValue>, path: &str) -> Result<Vec<u8>, CodecError> {
 pub(crate) struct PaymentDraft {
     pub child_index: u32,
     pub transaction_id: Vec<u8>,
-    pub value: Vec<u8>,
+    pub value: PaymentValue,
     pub address: Vec<u8>,
     pub commitment: Vec<u8>,
+    pub vout: Option<u32>,
 }
 
 pub(crate) struct SignatureDraft {
@@ -519,6 +520,8 @@ pub(crate) enum Draft {
         payload_frame: Vec<u8>,
         payload_digest: Vec<u8>,
         payments: Vec<PaymentDraft>,
+        recipient: Option<AccountRef>,
+        dleq_proof: Option<Vec<u8>>,
         unknown: Vec<(u64, CborValue)>,
     },
     DirectoryAttestation {
@@ -623,13 +626,35 @@ pub(crate) enum Draft {
 }
 
 fn payment_member(v: &CborValue, path: &str) -> Result<PaymentDraft, CodecError> {
-    let map = fields(Some(v), path, &[0, 1, 2, 3, 4], &[], false, false)?;
+    let map = fields(Some(v), path, &[0, 1, 2, 3, 4], &[5], false, false)?;
+    let val_item = map.get(2).ok_or_else(|| bad(&format!("{path}.2"), "missing value"))?;
+    let value = match val_item {
+        CborValue::Bytes(b) => {
+            if b.len() != 32 {
+                return Err(bad(&format!("{path}.2"), "expected 32 bytes"));
+            }
+            PaymentValue::Quantity(b.clone())
+        }
+        CborValue::Int(n) => {
+            if *n < 0 || *n > u64::MAX as i128 {
+                return Err(bad(&format!("{path}.2"), "expected satoshis in 0..u64::MAX"));
+            }
+            PaymentValue::Satoshis(*n as u64)
+        }
+        _ => return Err(bad(&format!("{path}.2"), "expected a 32-byte string or an unsigned integer")),
+    };
+    let vout = if map.has(5) {
+        Some(u32_in(map.get(5), &format!("{path}.5"), 0, u32::MAX)?)
+    } else {
+        None
+    };
     Ok(PaymentDraft {
         child_index: u32_in(map.get(0), &format!("{path}.0"), 0, 2_147_483_647)?,
         transaction_id: bstr(map.get(1), &format!("{path}.1"), 1, 128)?,
-        value: bstr(map.get(2), &format!("{path}.2"), 32, 32)?,
+        value,
         address: bstr(map.get(3), &format!("{path}.3"), 1, 128)?,
         commitment: bstr(map.get(4), &format!("{path}.4"), 32, 32)?,
+        vout,
     })
 }
 
@@ -968,9 +993,9 @@ pub(crate) fn parse_draft(
     match type_id {
         TYPE_DIRECT_MESSAGE => {
             let (required, optional): (&[u64], &[u64]) = if schema.effective >= 2 {
-                (&[0, 1, 2, 3], &[4])
+                (&[0, 1, 2, 3], &[4, 5, 6])
             } else {
-                (&[0, 1, 2, 3, 4], &[])
+                (&[0, 1, 2, 3, 4], &[5, 6])
             };
             let map = fields(Some(payload), path, required, optional, true, allow)?;
             let payments = match map.get(4) {
@@ -986,12 +1011,28 @@ pub(crate) fn parse_draft(
             for (i, item) in payments.iter().enumerate() {
                 parsed.push(payment_member(item, &format!("{path}.4[{i}]"))?);
             }
+            let recipient = if map.has(5) {
+                let rec = account(map.get(5), &format!("{path}.5"))?;
+                if rec.key_type != 1 {
+                    return Err(bad(&format!("{path}.5"), "recipient key type must be 1"));
+                }
+                Some(rec)
+            } else {
+                None
+            };
+            let dleq_proof = if map.has(6) {
+                Some(proof(map.get(6), &format!("{path}.6"))?)
+            } else {
+                None
+            };
             Ok(Draft::DirectMessage {
                 network: network_tag(map.get(0), &format!("{path}.0"))?,
                 destination: account(map.get(1), &format!("{path}.1"))?,
                 payload_frame: framed(map.get(2), &format!("{path}.2"))?,
                 payload_digest: bstr(map.get(3), &format!("{path}.3"), 32, 32)?,
                 payments: parsed,
+                recipient,
+                dleq_proof,
                 unknown: map.unknown,
             })
         }
@@ -1400,8 +1441,12 @@ fn check_signature_shape(
 pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
     let path = "root/payload";
     match draft {
-        Draft::DirectMessage { destination, .. } => {
-            check_key_type(destination, &format!("{path}.1"))
+        Draft::DirectMessage { destination, recipient, .. } => {
+            check_key_type(destination, &format!("{path}.1"))?;
+            if let Some(r) = recipient {
+                check_key_type(r, &format!("{path}.5"))?;
+            }
+            Ok(())
         }
         Draft::DirectoryAttestation { signatures, .. } => {
             for (i, sig) in signatures.iter().enumerate() {

@@ -844,6 +844,8 @@ fn open_children(
             payload_frame,
             payload_digest,
             payments,
+            recipient,
+            dleq_proof,
             unknown,
         } => Ok(TypedPayload::DirectMessage {
             network,
@@ -864,8 +866,11 @@ fn open_children(
                     value: payment.value,
                     address: payment.address,
                     commitment: payment.commitment,
+                    vout: payment.vout,
                 })
                 .collect(),
+            recipient,
+            dleq_proof,
             unknown,
         }),
         Draft::DirectoryAttestation {

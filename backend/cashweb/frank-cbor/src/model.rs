@@ -329,19 +329,30 @@ pub struct Timestamp {
     pub nanoseconds: u32,
 }
 
-/// One payment member. `value` is a 32-byte big-endian quantity.
+/// One payment value: either a 32-byte big-endian quantity or satoshis uint64.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaymentValue {
+    /// 32-byte big-endian fixed-width EVM quantity.
+    Quantity(Vec<u8>),
+    /// Non-negative satoshis integer.
+    Satoshis(u64),
+}
+
+/// One payment member. `value` is a 32-byte big-endian quantity or satoshis uint64.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaymentMember {
     /// Non-hardened BIP32 index.
     pub child_index: u32,
     /// Chain transaction identifier.
     pub transaction_id: Vec<u8>,
-    /// 32-byte big-endian value.
-    pub value: Vec<u8>,
+    /// 32-byte big-endian value or satoshis uint64.
+    pub value: PaymentValue,
     /// Destination address bytes.
     pub address: Vec<u8>,
     /// 32-byte T4 commitment.
     pub commitment: Vec<u8>,
+    /// Optional UTXO output index (vout).
+    pub vout: Option<u32>,
 }
 
 /// One signature entry.
@@ -450,6 +461,10 @@ pub enum TypedPayload {
         payload_digest: Vec<u8>,
         /// Field 4.
         payments: Vec<PaymentMember>,
+        /// Field 5: Optional co-located long-term recipient identity P (key type 1).
+        recipient: Option<AccountRef>,
+        /// Field 6: Optional Chaum-Pedersen DLEQ proof (64 bytes).
+        dleq_proof: Option<Vec<u8>>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },

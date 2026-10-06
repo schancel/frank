@@ -35,6 +35,11 @@ function mountAbout(messages: Messages) {
         QBtn: { template: '<button><slot /></button>' },
         QPageContainer: { template: '<main><slot /></main>' },
         QPage: { template: '<section><slot /></section>' },
+        QAvatar: { template: '<div><slot /></div>' },
+        QChip: { template: '<span><slot /></span>' },
+        QCard: { template: '<article><slot /></article>' },
+        QCardSection: { template: '<div><slot /></div>' },
+        QIcon: { template: '<i><slot /></i>' },
       },
     },
   })
@@ -105,3 +110,62 @@ describe('About: Silence Laboratories notices', () => {
     expect(shown).toContain('DISCLAIMER')
   })
 })
+
+describe('About: Frank & Stamp protocol overview', () => {
+  it('renders hero branding with Frank tagline and badges', () => {
+    const en = mountAbout(enUS)
+    expect(text(en, 'about-hero')).toContain('Frank')
+    expect(text(en, 'about-hero')).toContain(
+      'Private, economically spam-resistant messaging for Monad.',
+    )
+    expect(text(en, 'about-hero')).toContain('Monad')
+    expect(text(en, 'about-hero')).toContain('Stamp Protocol')
+    expect(text(en, 'about-hero')).toContain('End-to-End Encrypted')
+    expect(text(en, 'about-hero')).toContain('Permissionless Identity')
+  })
+
+  it('renders Frank identity and mission overview', () => {
+    const en = mountAbout(enUS)
+    const frank = text(en, 'about-frank')
+    expect(frank).toContain('About Frank')
+    expect(frank).toContain('decentralized, sovereign cryptomessenger')
+    expect(frank).toContain('secp256k1')
+    expect(frank).toContain('no phone numbers')
+  })
+
+  it('explains the Stamp protocol mechanism and economics', () => {
+    const en = mountAbout(enUS)
+    const stamp = text(en, 'about-stamp')
+    expect(stamp).toContain('The Stamp Protocol: Speaking Is Not Free')
+    expect(stamp).toContain('Direct Messages & Paid Delivery')
+    expect(stamp).toContain('pays the recipient directly')
+    expect(stamp).toContain('Topic Broadcasts & Burn Weights')
+    expect(stamp).toContain('burn MON')
+    expect(stamp).toContain('End-to-End Encryption')
+  })
+
+  it('renders links to GitHub and Stamp upstream', () => {
+    const en = mountAbout(enUS)
+    const links = en.find('[data-test="about-links"]')
+    expect(links.text()).toContain('Links & Source Code')
+    const buttons = links.findAll('button')
+    expect(buttons.length).toBe(2)
+    expect(buttons[0].attributes('href')).toBe('https://github.com/schancel/frank')
+    expect(buttons[1].attributes('href')).toBe(
+      'https://github.com/stampchat/stamp',
+    )
+  })
+
+  it('renders localized Frank & Stamp content in French', () => {
+    const fr = mountAbout(frFR)
+    expect(text(fr, 'about-hero')).toContain(
+      'Messagerie privée et résistante au spam économique pour Monad.',
+    )
+    expect(text(fr, 'about-frank')).toContain('À propos de Frank')
+    expect(text(fr, 'about-stamp')).toContain(
+      'Le protocole Stamp : la parole n’est pas gratuite',
+    )
+    expect(text(fr, 'about-links')).toContain('Liens et code source')
+  })
+})
+

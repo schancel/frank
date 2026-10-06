@@ -769,8 +769,34 @@ export default {
     txHashCopied: 'Transaction hash copied to clipboard',
   },
   about: {
+    appName: 'Frank',
     title: 'About',
     menu: 'About and licences',
+    tagline: 'Private, economically spam-resistant messaging for Monad.',
+    frankTitle: 'About Frank',
+    frankIntro:
+      'Frank is a decentralized, sovereign cryptomessenger designed for the Monad blockchain, continuing and evolving the Stamp protocol. It combines permissionless cryptographic identities with real economic spam resistance.',
+    frankAccounts:
+      'Accounts are permissionless secp256k1 keypairs generated entirely on your device. Frank requires no phone numbers, email addresses, or central account providers.',
+    stampTitle: 'The Stamp Protocol: Speaking Is Not Free',
+    stampIntro:
+      'Rather than relying on centralized gatekeepers or surveillance to filter spam, the Stamp protocol introduces direct economic incentives into communication.',
+    stampDMsTitle: 'Direct Messages & Paid Delivery',
+    stampDMsDesc:
+      'Every direct message carries an on-chain stamp transaction that pays the recipient directly via derived one-time stealth destinations. Senders pay for your attention, completely eliminating cold spam.',
+    stampTopicsTitle: 'Topic Broadcasts & Burn Weights',
+    stampTopicsDesc:
+      'Public topic posts and community votes burn MON to an unspendable address, giving provable economic weight to public discourse without central moderation.',
+    stampPrivacyTitle: 'End-to-End Encryption',
+    stampPrivacyDesc:
+      'All message payloads are end-to-end encrypted. Federated CashWeb relays validate stamp transactions and store envelopes without ever seeing the plaintext content.',
+    badgeMonad: 'Monad',
+    badgeStamp: 'Stamp Protocol',
+    badgeEncrypted: 'End-to-End Encrypted',
+    badgePermissionless: 'Permissionless Identity',
+    linksTitle: 'Links & Source Code',
+    githubRepo: 'Frank GitHub Repository',
+    stampUpstream: 'Stamp Protocol Upstream',
     thirdPartyTitle: 'Third-party software',
     dklsName: 'DKLs23 two-party signing library (Silence Laboratories)',
     dklsModified:
@@ -787,3 +813,4 @@ export default {
   },
   close: 'Close',
 }
+

@@ -295,6 +295,54 @@ export interface LiarsDiceItem {
   stealthAddress?: string
 }
 
+export type PokerStreet = 'preflop' | 'flop' | 'turn' | 'river' | 'showdown' | 'settled'
+export type PokerActionType = 'check' | 'call' | 'bet' | 'raise' | 'fold' | 'all_in'
+
+export interface PokerPlayerView {
+  address: string
+  chips: number
+  currentStreetBet: number
+  totalHandBet: number
+  folded: boolean
+  isAllIn: boolean
+  isDealerButton: boolean
+  isSmallBlind: boolean
+  isBigBlind: boolean
+  holeCards?: number[]
+}
+
+export interface PokerItem {
+  type: 'poker'
+  tableId: string
+  action: 'create' | 'join' | 'deal' | 'action' | 'showdown' | 'settle'
+  buyInWei?: string
+  smallBlind: number
+  bigBlind: number
+  street?: PokerStreet
+  pot: number
+  sidePots?: Array<{ amount: number; eligiblePlayers: string[] }>
+  currentBet?: number
+  minRaise?: number
+  activePlayer?: string
+  boardCards?: number[]
+  players?: PokerPlayerView[]
+  myHoleCards?: number[]
+  lastAction?: {
+    player: string
+    action: PokerActionType
+    amount?: number
+  }
+  winners?: Array<{
+    address: string
+    amount: number
+    handDescription?: string
+    best5Cards?: number[]
+  }>
+  winnerAddress?: string
+  txHash?: string
+  stealthAddress?: string
+}
+
 export type MessageItem =
   | StealthItem
   | P2PKHSendItem
@@ -309,6 +357,7 @@ export type MessageItem =
   | RpsItem
   | SatoshiDiceItem
   | LiarsDiceItem
+  | PokerItem
 
 /** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the
  * message so the failure and its manual Retry survive a reload. */

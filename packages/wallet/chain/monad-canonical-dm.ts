@@ -551,14 +551,19 @@ function mailboxAuth(
     (dirIsLoopback &&
       ownerIsLoopback &&
       new URL(dirOrigin).port === new URL(ownerOrigin).port) ||
-    dirIsLoopback
+    dirIsLoopback ||
+    ownerIsLoopback
   if (!originsMatch)
     // Two configured values that must agree; this is a wiring error, not a state of the entry.
     throw new CanonicalMessagingPendingError(
       'This wallet and its directory are configured for different relays.',
     )
   return {
-    relayBaseUrl: dirIsLoopback ? owner.relayBaseUrl : directory.homeEndpoint,
+    relayBaseUrl: !dirIsLoopback
+      ? directory.homeEndpoint
+      : !ownerIsLoopback
+        ? owner.relayBaseUrl
+        : directory.homeEndpoint,
     recipient: computeAddress('0x' + owner.subject).toLowerCase(),
     expectedNetworkTag: owner.installedNetworkTag,
     subject: owner.subject,

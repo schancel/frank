@@ -71,6 +71,7 @@ import {
   describeCanonicalParts,
   inspectCanonicalPair,
   installedCanonicalOrigin,
+  matchesRelayOrigin,
   parseCanonicalJSON,
   parseCanonicalMultipart,
   readCanonicalResponse,
@@ -1123,7 +1124,7 @@ async function canonicalCurrent(
     checked >= expires ||
     !statement.relays.some(
       relay =>
-        relay.endpoint.replace(/\/+$/, '') === origin.replace(/\/+$/, ''),
+        matchesRelayOrigin(relay.endpoint, origin),
     )
   )
     canonicalProtocol(

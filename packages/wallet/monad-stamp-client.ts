@@ -1407,6 +1407,7 @@ import {
 import {
   freezeCanonicalRequest,
   equalCanonicalRequests,
+  matchesRelayOrigin,
   submitCanonicalRequest,
   type CanonicalFetch,
   type CanonicalAcceptedBody,
@@ -2239,8 +2240,7 @@ export class MonadCanonicalStampClient {
         auth.expectedNetworkTag !== this.wallet.installedNetworkTag ||
         auth.subject !== bound.auth.slice(2) ||
         auth.recipient !== imported.request.identity.recipient ||
-        new URL(auth.relayBaseUrl).origin !==
-          new URL(this.wallet.relayBaseUrl).origin
+        !matchesRelayOrigin(auth.relayBaseUrl, this.wallet.relayBaseUrl)
       )
         throw new Error('canonical-wallet:durable-terminal-import-required')
       this.verifyImportedRecoveryCustody(obligationId)

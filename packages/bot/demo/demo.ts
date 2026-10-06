@@ -475,14 +475,42 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     if (curated.errors.length > 0 && Object.keys(identityEnv).length > 0) {
       throw new DemoConfigError(curated.errors)
     }
+    let publicRelayUrl = config.publicRelayUrl
+    let publicAppUrl = config.publicAppUrl
+
+    if (config.ngrok) {
+      print('[demo] starting ngrok tunnels...')
+      const ngrokResult = await startNgrok({
+        stateDir: config.stateDir,
+        logDir,
+        relayPort: config.relayPort,
+        appPort: config.appPort,
+        ngrokBin: config.ngrokBin,
+        ngrokConfig: config.ngrokConfig,
+        ngrokRelayDomain: config.ngrokRelayDomain,
+        ngrokAppDomain: config.ngrokAppDomain,
+        ngrokAuthtoken: config.ngrokAuthtoken,
+        startApp: options.startApp,
+        supervisor,
+      })
+      writePidFile()
+      publicRelayUrl ??= ngrokResult.publicRelayUrl
+      publicAppUrl ??= ngrokResult.publicAppUrl
+      print(
+        `[demo] ngrok tunnels active: app -> ${publicAppUrl ?? `http://localhost:${config.appPort}`}, relay -> ${publicRelayUrl ?? config.relayUrl}`,
+      )
+    }
+    abortIfStopping()
+
     const curatedToml = renderCuratedDefaultsToml(curated.entries)
+    const effectivePublicRelayUrl = publicRelayUrl ?? config.publicRelayUrl
     const directoryToml = [
       '',
       '[registry.directory]',
       'network = "monad-testnet"',
       'relay_id = "0102030405060708090a0b0c0d0e0f10"',
       'relay_identity = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"',
-      `endpoint = "${config.relayUrl}"`,
+      `endpoint = "${effectivePublicRelayUrl ?? config.relayUrl}"`,
       'binding_expiry_ns = "1893456000000000000"',
       'enrollments_per_source_per_hour = 100000',
       '',
@@ -597,32 +625,6 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     }
     abortIfStopping()
 
-    let publicRelayUrl = config.publicRelayUrl
-    let publicAppUrl = config.publicAppUrl
-
-    if (config.ngrok) {
-      print('[demo] starting ngrok tunnels...')
-      const ngrokResult = await startNgrok({
-        stateDir: config.stateDir,
-        logDir,
-        relayPort: config.relayPort,
-        appPort: config.appPort,
-        ngrokBin: config.ngrokBin,
-        ngrokConfig: config.ngrokConfig,
-        ngrokRelayDomain: config.ngrokRelayDomain,
-        ngrokAppDomain: config.ngrokAppDomain,
-        ngrokAuthtoken: config.ngrokAuthtoken,
-        startApp: options.startApp,
-        supervisor,
-      })
-      writePidFile()
-      publicRelayUrl ??= ngrokResult.publicRelayUrl
-      publicAppUrl ??= ngrokResult.publicAppUrl
-      print(
-        `[demo] ngrok tunnels active: app -> ${publicAppUrl ?? `http://localhost:${config.appPort}`}, relay -> ${publicRelayUrl ?? config.relayUrl}`,
-      )
-    }
-    abortIfStopping()
 
     let appStarted = false
     if (options.startApp) {

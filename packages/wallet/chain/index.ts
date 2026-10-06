@@ -21,6 +21,9 @@ export type {
 export {
   NativeEvmTransactionBuilder,
   defaultNativeEvmTransactionBuilder,
+  Tip20TransactionBuilder,
+  defaultTempoTransactionBuilder,
+  TEMPO_PATH_USD_ADDRESS,
 } from "./evm-transaction-builder";
 export type {
   EvmTransactionBuilder,

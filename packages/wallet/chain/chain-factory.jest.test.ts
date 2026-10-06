@@ -112,6 +112,64 @@ describe("createChain", () => {
     });
   });
 
+  it("creates a Hyperliquid chain via createChain", async () => {
+    await expect(
+      createChain({
+        family: "evm",
+        chainIdentifier: "hyperliquid-mainnet",
+        config: {
+          name: "Hyperliquid",
+          unit: "HYPE",
+          networkId: "hyperliquid-mainnet",
+          chainId: 999,
+          rpcChain: "hyperliquid-mainnet",
+          relayBaseUrl: "http://127.0.0.1:8098",
+          networkTag: "HYPE",
+          stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
+          defaultStampValueWei: 1n,
+          defaultTopicVoteValueWei: 1n,
+          subAccountPoolSize: 1,
+          walletStorageLocation: false,
+        },
+      })
+    ).resolves.toMatchObject({
+      family: "evm",
+      chainIdentifier: "hyperliquid-mainnet",
+      name: "Hyperliquid",
+      unit: "HYPE",
+      isTestnet: false,
+    });
+  });
+
+  it("creates a Tempo chain with default TIP-20 transaction builder", async () => {
+    await expect(
+      createChain({
+        family: "evm",
+        chainIdentifier: "tempo-mainnet",
+        config: {
+          name: "Tempo",
+          unit: "USD",
+          networkId: "tempo-mainnet",
+          chainId: 4217,
+          rpcChain: "tempo-mainnet",
+          relayBaseUrl: "http://127.0.0.1:8098",
+          networkTag: "TMPO",
+          stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
+          defaultStampValueWei: 1n,
+          defaultTopicVoteValueWei: 1n,
+          subAccountPoolSize: 1,
+          walletStorageLocation: false,
+        },
+      })
+    ).resolves.toMatchObject({
+      family: "evm",
+      chainIdentifier: "tempo-mainnet",
+      name: "Tempo",
+      unit: "USD",
+      isTestnet: false,
+    });
+  });
+
   it("creates a Solana chain with the shared codecs and wallet API", async () => {
     const signer = await Keypair.fromSeed(new Uint8Array(32).fill(1));
     const recipient = (await Keypair.fromSeed(new Uint8Array(32).fill(2)))

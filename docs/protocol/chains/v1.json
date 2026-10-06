@@ -215,6 +215,74 @@
       "identity_probes": [
         { "kind": "genesis-hash", "capability": "json-rpc", "expected": "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY" }
       ]
+    },
+    {
+      "id": "hyperliquid-mainnet",
+      "family": "evm",
+      "network": "mainnet",
+      "caip2": "eip155:999",
+      "native_chain_id": "999",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "999" },
+        {
+          "kind": "block-hash",
+          "capability": "json-rpc",
+          "height": 1,
+          "expected": "0xde151843548b88d06f201d86e860e45fbf07d49612f1934fba5746abd942fb01"
+        }
+      ]
+    },
+    {
+      "id": "hyperliquid-testnet",
+      "family": "evm",
+      "network": "testnet",
+      "caip2": "eip155:998",
+      "native_chain_id": "998",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "998" },
+        {
+          "kind": "block-hash",
+          "capability": "json-rpc",
+          "height": 30000000,
+          "expected": "0x8fc1ba577f1c06072cf4f4dde6e1490a11291232f15725865649817f3eafe2f6"
+        }
+      ]
+    },
+    {
+      "id": "tempo-mainnet",
+      "family": "evm",
+      "network": "mainnet",
+      "caip2": "eip155:4217",
+      "native_chain_id": "4217",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "4217" },
+        {
+          "kind": "block-hash",
+          "capability": "json-rpc",
+          "height": 0,
+          "expected": "0x49d7ec7085e77bf5a403d0fcb4cfc42a4084a89dfff60477579c5e09c9e03c54"
+        }
+      ]
+    },
+    {
+      "id": "tempo-testnet",
+      "family": "evm",
+      "network": "testnet",
+      "caip2": "eip155:42431",
+      "native_chain_id": "42431",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "42431" },
+        {
+          "kind": "block-hash",
+          "capability": "json-rpc",
+          "height": 0,
+          "expected": "0xba49153e6f3996a340f3fe3d69e7c0826b717ae672cb115cf0527cada0b78e9e"
+        }
+      ]
     }
   ]
 }

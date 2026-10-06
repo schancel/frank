@@ -2,6 +2,9 @@ export * from './types';
 export * from './stamps/stamp-provider.interface';
 export * from './stamps/monad-stamp-provider';
 export * from './stamps/ecash-stamp-provider';
+export * from './storage/blob-store';
+export * from './storage/local-fs-blob-store';
+export * from './storage/s3-blob-store';
 export * from './ledger/credit-ledger';
 export * from './http/checkout-server';
 export * from './smtp/inbound-server';
@@ -11,6 +14,7 @@ export * from './mta/mx-transport';
 export * from './mta/dkim-signer';
 export * from './mta/outbound-worker';
 
+import { BlobStore, createBlobStore } from './storage/blob-store';
 import { CreditLedger } from './ledger/credit-ledger';
 import { CheckoutServer } from './http/checkout-server';
 import { InboundEmailHandler } from './smtp/inbound-server';
@@ -24,6 +28,7 @@ import { GatewayConfig } from './types';
 
 export class EmailGatewayDaemon {
   readonly config: GatewayConfig;
+  readonly blobStore: BlobStore;
   readonly ledger: CreditLedger;
   readonly checkoutServer: CheckoutServer;
   readonly inboundHandler: InboundEmailHandler;
@@ -36,10 +41,11 @@ export class EmailGatewayDaemon {
   constructor(
     config: GatewayConfig,
     stampProvider: GatewayStampProvider,
-    options?: { dbPath?: string }
+    options?: { dbPath?: string; blobStore?: BlobStore }
   ) {
     this.config = config;
-    this.ledger = new CreditLedger(options?.dbPath ?? './gateway.sqlite3');
+    this.blobStore = options?.blobStore ?? createBlobStore(config);
+    this.ledger = new CreditLedger(options?.dbPath ?? './gateway.sqlite3', this.blobStore);
     this.checkoutServer = new CheckoutServer({
       port: config.httpPort,
       ledger: this.ledger,
@@ -52,6 +58,7 @@ export class EmailGatewayDaemon {
       relayUrl: config.gatewayRelayUrl,
       ledger: this.ledger,
       stampProvider,
+      blobStore: this.blobStore,
     });
     this.smtpListener = new SmtpListener({
       gatewayDomain: config.gatewayDomain,
@@ -75,6 +82,7 @@ export class EmailGatewayDaemon {
       delivery: this.outboundDelivery,
       dkimSigner: this.dkimSigner,
       mxTransport: this.mxTransport,
+      blobStore: this.blobStore,
     });
   }
 

@@ -1,3 +1,14 @@
+export interface BlobStorageConfig {
+  readonly provider?: 'local' | 's3' | 'memory';
+  readonly storageDir?: string;
+  readonly s3Endpoint?: string;
+  readonly s3Bucket?: string;
+  readonly s3AccessKeyId?: string;
+  readonly s3SecretAccessKey?: string;
+  readonly s3Region?: string;
+  readonly s3ForcePathStyle?: boolean;
+}
+
 export interface GatewayConfig {
   readonly gatewayDomain: string;
   readonly gatewayRelayUrl: string;
@@ -11,6 +22,16 @@ export interface GatewayConfig {
   readonly stripeWebhookSecret?: string;
   readonly paypalClientId?: string;
   readonly paypalWebhookId?: string;
+
+  // Blob storage configuration
+  readonly blobStorage?: BlobStorageConfig;
+  readonly storageDir?: string;
+  readonly s3Endpoint?: string;
+  readonly s3Bucket?: string;
+  readonly s3AccessKeyId?: string;
+  readonly s3SecretAccessKey?: string;
+  readonly s3Region?: string;
+  readonly s3ForcePathStyle?: boolean;
 }
 
 export interface InboundEmail {

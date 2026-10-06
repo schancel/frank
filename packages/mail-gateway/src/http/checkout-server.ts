@@ -275,7 +275,12 @@ export class CheckoutServer {
     this.ledger.consumeCredit(held.senderEmail, held.recipientAddress);
 
     // 4. Thread resolution for held message
-    const parsed = parseRawRfc822(held.rawRfc822, held.senderEmail, held.recipientAddress);
+    const resolvedPayload = await this.ledger.resolvePayload(held.rawRfc822);
+    const parsed = parseRawRfc822(
+      Buffer.from(resolvedPayload, 'utf-8'),
+      held.senderEmail,
+      held.recipientAddress
+    );
     let conversationId: string | undefined;
     let inReplyToFrankMessageId: string | undefined;
 
@@ -303,7 +308,7 @@ export class CheckoutServer {
     }
 
     // 5. Dispatch stamped direct message to Frank relay
-    const emailText = new TextDecoder().decode(held.rawRfc822);
+    const emailText = resolvedPayload;
     const sendResult = await this.stampProvider.stampAndSendDirectMessage({
       recipientAddress: held.recipientAddress,
       text: `[Email from ${held.senderEmail}]\nSubject: ${held.subject}\n\n${emailText}`,

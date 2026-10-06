@@ -101,14 +101,14 @@ export default defineComponent({
       if (!sender) {
         return 'Message not found'
       }
-      if (sender === this.$wallet.displayAddress) {
+      if (this.message.outbound) {
         return 'You'
       }
       const contact = this.getContact(sender)
       if (!contact) {
         return 'Not Found'
       }
-      return contact.profile.name
+      return contact.profile?.name || 'Not Found'
     },
     // colorize the reply div to match source sender
     replyOverlay() {

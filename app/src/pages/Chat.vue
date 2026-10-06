@@ -30,6 +30,7 @@
                   :focus-after-retry="focusComposerAfterRetry"
                   :focus-failed-after-retry="focusFailedAfterRetry"
                   @replyClicked="({ payloadDigest }) => setReply(payloadDigest)"
+                  @forwardClicked="handleForwardClicked"
                   @replyDivClick="scrollToMessage"
                   @sendFollowUp="sendFollowUpItems"
                   @playAgain="blackjackDialog = true"
@@ -132,6 +133,14 @@
         @offer="sendSwapOffer"
       />
     </q-dialog>
+    <!-- Forward message dialog -->
+    <q-dialog v-model="forwardDialogOpen">
+      <forward-message-dialog
+        v-if="messageToForward"
+        :message="messageToForward"
+        @forward="handleForwardToContact"
+      />
+    </q-dialog>
   </div>
 </template>
 
@@ -144,7 +153,9 @@ import ChatInput from '../components/chat/ChatInput.vue'
 import BlackjackChallengeForm from '../components/chat/BlackjackChallengeForm.vue'
 import SendStealthDialog from '../components/dialogs/SendStealthDialog.vue'
 import OfferSwapDialog from '../components/dialogs/OfferSwapDialog.vue'
+import ForwardMessageDialog from '../components/dialogs/ForwardMessageDialog.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
+import { openChat } from '../utils/routes'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import { defaultAcceptancePrice, defaultStampAmount } from '../utils/constants'
@@ -191,6 +202,7 @@ export default defineComponent({
     BlackjackChallengeForm,
     SendStealthDialog,
     OfferSwapDialog,
+    ForwardMessageDialog,
     ChatBannerStack,
   },
   beforeRouteUpdate(
@@ -224,6 +236,8 @@ export default defineComponent({
       blackjackDialog: false,
       stealthDialog: false,
       swapDialog: false,
+      forwardDialogOpen: false,
+      messageToForward: null as ChatMessage | null,
       // Automatic dealer steps already attempted in this page session.
       blackjackAttempted: new Set<string>(),
       // An own undelivered hand message is being resumed; no automatic step meanwhile.
@@ -514,9 +528,17 @@ export default defineComponent({
       // never be editing the contents of a message whose accounts and stamp payments are already
       // being prepared.
       const submittedMessage = message
+      const replyDigestToSend = this.replyDigest
       this.sendingMessage = true
       this.message = ''
       this.replyDigest = null
+
+      const items: MessageItem[] = []
+      if (replyDigestToSend) {
+        items.push({ type: 'reply', payloadDigest: replyDigestToSend })
+      }
+      items.push({ type: 'text', text: submittedMessage })
+
       // Was calling the old Lotus `$relayClient.sendMessage` directly, completely bypassing
       // `stores/chats.ts`'s `sendMessage` (ticket #42's real, tested `activeChain.directMessages.send`
       // wiring) -- that store action always existed and worked, but nothing in the actual UI ever
@@ -529,7 +551,7 @@ export default defineComponent({
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: this.address,
-          items: [{ type: 'text', text: submittedMessage }],
+          items,
           stampValue,
           onPreparationProgress: this.showStampPreparation,
         })
@@ -826,8 +848,66 @@ export default defineComponent({
       }
     },
     setReply(payloadDigest: string | null) {
-      console.log('setting reply')
       this.replyDigest = payloadDigest
+      if (payloadDigest) {
+        this.$nextTick(() => {
+          ;(
+            this.$refs.chatInput as { focus?: () => void } | undefined
+          )?.focus?.()
+        })
+      }
+    },
+    handleForwardClicked({
+      payloadDigest,
+    }: {
+      address: string
+      payloadDigest: string
+    }) {
+      const msg =
+        this.messages.find(m => m.payloadDigest === payloadDigest) ||
+        this.chatStore.messages[payloadDigest]
+      if (msg) {
+        this.messageToForward = msg
+        this.forwardDialogOpen = true
+      }
+    },
+    async handleForwardToContact(targetAddress: string) {
+      this.forwardDialogOpen = false
+      if (!this.messageToForward) {
+        return
+      }
+      const itemsToSend = this.messageToForward.items
+        .filter(item => item.type !== 'reply')
+        .map(item => ({ ...item }))
+      if (itemsToSend.length === 0) {
+        return
+      }
+      this.sendingMessage = true
+      try {
+        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
+        const stampValue = activeChain.fromDisplayAmount(
+          this.getStampAmount(targetAddress),
+        )
+        await this.sendDirectMessage({
+          wallet: useMonadWallet(),
+          address: targetAddress,
+          items: itemsToSend,
+          stampValue,
+          onPreparationProgress: this.showStampPreparation,
+        })
+        if (targetAddress !== this.address) {
+          await openChat(this.$router, targetAddress)
+        }
+      } catch (err) {
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
+      } finally {
+        this.stampPreparationStatus = null
+        this.sendingMessage = false
+        this.messageToForward = null
+      }
+      if (!this.bottom) {
+        this.$nextTick(this.buttonScrollBottom)
+      }
     },
   },
   computed: {

@@ -108,6 +108,7 @@
             @infoClick="transactionDialog = true"
             @deleteClick="deleteDialog = true"
             @replyClick="replyClicked({ address, payloadDigest })"
+            @forwardClick="forwardClicked({ address, payloadDigest })"
             @resendClick="resend()"
             @discardClick="confirmDiscard()"
           />
@@ -165,7 +166,13 @@ export default defineComponent({
     TransactionDialog,
     DeleteMessageDialog,
   },
-  emits: ['replyClicked', 'replyDivClick', 'sendFollowUp', 'playAgain'],
+  emits: [
+    'replyClicked',
+    'forwardClicked',
+    'replyDivClick',
+    'sendFollowUp',
+    'playAgain',
+  ],
   data() {
     return {
       transactionDialog: false,
@@ -346,6 +353,9 @@ export default defineComponent({
     },
     replyClicked(args: { address: string; payloadDigest: string }) {
       this.$emit('replyClicked', args)
+    },
+    forwardClicked(args: { address: string; payloadDigest: string }) {
+      this.$emit('forwardClicked', args)
     },
   },
   computed: {

@@ -83,7 +83,8 @@ export function contentHashNetwork(p: ParsedFrame): string {
     case 7:
     case 9:
     case 10:
-    case 11: {
+    case 11:
+    case 25: {
       const t = p.typed
       if (t && 'network' in t) return t.network
       throw new Error(
@@ -143,6 +144,16 @@ export function recipientPayloadDigest(
   )
 }
 
+/** T3f: forwarding payload digest of a complete inner frame with destination network. */
+export function forwardingPayloadDigest(
+  network: string,
+  innerFrame: Uint8Array,
+): Uint8Array {
+  return sha256(
+    commonTranscript('frank/forwarding-payload/v1', network, innerFrame),
+  )
+}
+
 /** T4: `SHA256("frank:dm-stamp-payment:v1" || T3_digest || u32be(child_index))`. */
 export function paymentCommitment(
   t3Digest: Uint8Array,
@@ -152,6 +163,20 @@ export function paymentCommitment(
     concat([
       utf8Encode('frank:dm-stamp-payment:v1'),
       t3Digest,
+      u32be(childIndex),
+    ]),
+  )
+}
+
+/** T4s: relay storage payment commitment `SHA256("frank:relay-storage-payment:v1" || digest || u32be(child_index))`. */
+export function storagePaymentCommitment(
+  digest: Uint8Array,
+  childIndex: number,
+): Uint8Array {
+  return sha256(
+    concat([
+      utf8Encode('frank:relay-storage-payment:v1'),
+      digest,
       u32be(childIndex),
     ]),
   )

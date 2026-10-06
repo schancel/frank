@@ -336,6 +336,73 @@ pub(crate) fn check_semantics(
         TypedPayload::BlackjackItem(item) => check_blackjack(item, path),
         TypedPayload::BlackjackHandItem(item) => check_blackjack_hand(item, path),
         TypedPayload::BlackjackHandV3Item(item) => check_blackjack_hand_v3(item, path),
+        TypedPayload::ForwardingDelivery {
+            network,
+            destination,
+            payload_frame,
+            payments,
+            ..
+        } => {
+            require_ordered(
+                payments,
+                |a, b| {
+                    a.child_index
+                        .cmp(&b.child_index)
+                        .then_with(|| a.transaction_id.cmp(&b.transaction_id))
+                },
+                "payment members",
+                &format!("{path}.4"),
+                false,
+            )?;
+            let mut seen_idx = HashSet::new();
+            for payment in payments {
+                if !seen_idx.insert(payment.child_index) {
+                    return Err(semantic("duplicate child index", &format!("{path}.4")));
+                }
+            }
+            let tx_keys: Vec<Vec<u8>> = payments
+                .iter()
+                .map(|p| {
+                    if let Some(vout) = p.vout {
+                        let mut key = Vec::with_capacity(p.transaction_id.len() + 4);
+                        key.extend_from_slice(&p.transaction_id);
+                        key.extend_from_slice(&vout.to_be_bytes());
+                        key
+                    } else {
+                        p.transaction_id.clone()
+                    }
+                })
+                .collect();
+            let tx_key_refs: Vec<&[u8]> = tx_keys.iter().map(|k| k.as_slice()).collect();
+            require_unique(&tx_key_refs, "transaction id", &format!("{path}.4"))?;
+            let child_network = match opened(payload_frame) {
+                TypedPayload::DirectMessage { network, .. } => network,
+                _ => panic!("internal: expected an opened type-1 frame"),
+            };
+            if network != child_network {
+                return Err(semantic(
+                    "forwarding network differs from the type-1 network",
+                    &format!("{path}.0"),
+                ));
+            }
+            if destination.key_type != 1 {
+                return Err(semantic(
+                    "destination account must be key type 1",
+                    &format!("{path}.1"),
+                ));
+            }
+            let addresses: Vec<&[u8]> = payments.iter().map(|p| p.address.as_slice()).collect();
+            require_unique(&addresses, "payment address", &format!("{path}.4"))?;
+            for (i, payment) in payments.iter().enumerate() {
+                if payment.child_index != i as u32 {
+                    return Err(semantic(
+                        "child indices must be exactly contiguous 0..n-1 (T3a.5)",
+                        &format!("{path}.4[{i}]"),
+                    ));
+                }
+            }
+            Ok(())
+        }
         TypedPayload::DirectMessage {
             network,
             destination,

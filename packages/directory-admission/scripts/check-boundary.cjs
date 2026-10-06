@@ -29,6 +29,7 @@ const demoEntries = new Map([
   ['packages/bot/qwen-response-workflow.ts', null],
   ['packages/bot/qwen-inbound-workflow.jest.test.ts', '/node'],
   ['packages/bot/qwen-response-workflow.jest.test.ts', '/node'],
+  ['packages/wallet/chain/monad-canonical-dm.jest.test.ts', '/node'],
 ])
 // A jest test may replace its own allowlisted entry with a mock; nothing else may call it in.
 function isJestMock(node, file) {

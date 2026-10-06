@@ -22,6 +22,7 @@ import {
   TYPE_BLACKJACK_MESSAGE_ITEM,
   TYPE_STEALTH_MESSAGE_ITEM,
   TYPE_CHANNEL_UPDATE,
+  TYPE_FORWARDING_DELIVERY_ENVELOPE,
   TYPE_TOPIC_POST,
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
@@ -111,6 +112,7 @@ export const KNOWN_TYPES: readonly number[] = [
   TYPE_BLACKJACK_MESSAGE_ITEM,
   TYPE_STEALTH_MESSAGE_ITEM,
   TYPE_CHANNEL_UPDATE,
+  TYPE_FORWARDING_DELIVERY_ENVELOPE,
 ]
 
 export function defaultContext(
@@ -413,7 +415,8 @@ function processFrame(
         env.typeId <= TYPE_FORUM_OPERATION_STATUS) ||
       (env.typeId === TYPE_DIRECTORY_STATEMENT && effectiveSchema >= 4) ||
       env.typeId === TYPE_BLACKJACK_MESSAGE_ITEM ||
-      env.typeId === TYPE_CHANNEL_UPDATE) &&
+      env.typeId === TYPE_CHANNEL_UPDATE ||
+      env.typeId === TYPE_FORWARDING_DELIVERY_ENVELOPE) &&
     !checkRootFrameLimit(env.typeId, f.length, effectiveSchema)
   ) {
     throw fail(
@@ -638,6 +641,17 @@ function openChildren(
           envDepth + 1,
           sh,
           `${P}.1`,
+        ),
+      }
+    case 25:
+      return {
+        ...d,
+        payloadFrame: required(
+          d.payloadFrame,
+          TYPE_DIRECT_MESSAGE_DELIVERY,
+          envDepth + 1,
+          sh,
+          `${P}.2`,
         ),
       }
     case 1:

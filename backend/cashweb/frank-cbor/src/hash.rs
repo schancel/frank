@@ -62,7 +62,8 @@ fn network_field(typed: &TypedPayload) -> Option<&str> {
         | TypedPayload::TopicPostSubmission { network, .. }
         | TypedPayload::TopicVoteSubmission { network, .. }
         | TypedPayload::EncryptedContent { network, .. }
-        | TypedPayload::KeyTransitionStatement { network, .. } => Some(network),
+        | TypedPayload::KeyTransitionStatement { network, .. }
+        | TypedPayload::ForwardingDelivery { network, .. } => Some(network),
         _ => None,
     }
 }
@@ -92,7 +93,7 @@ pub fn content_hash_network(frame: &ParsedFrame) -> Result<String, UsageError> {
                 )),
             }
         }
-        1 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11 => {
+        1 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11 | 25 => {
             let typed = frame.typed.as_deref().ok_or_else(|| {
                 usage(format!(
                     "T1 for a type-{} frame needs the stage 8 typed projection",
@@ -156,11 +157,29 @@ pub fn recipient_payload_digest(network: &str, type5_frame: &[u8]) -> Result<[u8
     Ok(sha256(&transcript))
 }
 
+/// T3f forwarding payload digest of a complete inner delivery frame.
+pub fn forwarding_payload_digest(
+    network: &str,
+    inner_frame: &[u8],
+) -> Result<[u8; 32], UsageError> {
+    let transcript = common_transcript("frank/forwarding-payload/v1", network, inner_frame, &[])?;
+    Ok(sha256(&transcript))
+}
+
 /// T4: `SHA256("frank:dm-stamp-payment:v1" || t3_digest || u32be(child_index))`.
 pub fn payment_commitment(t3_digest: &[u8], child_index: u32) -> [u8; 32] {
     let mut buf = Vec::with_capacity(24 + t3_digest.len() + 4);
     buf.extend_from_slice(b"frank:dm-stamp-payment:v1");
     buf.extend_from_slice(t3_digest);
+    buf.extend_from_slice(&child_index.to_be_bytes());
+    sha256(&buf)
+}
+
+/// T4s: `SHA256("frank:relay-storage-payment:v1" || digest || u32be(child_index))`.
+pub fn storage_payment_commitment(digest: &[u8], child_index: u32) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(29 + digest.len() + 4);
+    buf.extend_from_slice(b"frank:relay-storage-payment:v1");
+    buf.extend_from_slice(digest);
     buf.extend_from_slice(&child_index.to_be_bytes());
     sha256(&buf)
 }

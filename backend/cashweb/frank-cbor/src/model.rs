@@ -449,6 +449,25 @@ pub struct OpaqueSection {
 /// Typed payload. Framed children are opened frames, not raw bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedPayload {
+    /// Type 25.
+    ForwardingDelivery {
+        /// Field 0.
+        network: String,
+        /// Field 1.
+        destination: AccountRef,
+        /// Field 2, opened as type 1.
+        payload_frame: ParsedFrame,
+        /// Field 3.
+        payload_digest: Vec<u8>,
+        /// Field 4.
+        payments: Vec<PaymentMember>,
+        /// Field 5, optional endpoint.
+        endpoint: Option<String>,
+        /// Field 6, optional delivery TTL / expiration timestamp.
+        expires_at: Option<u64>,
+        /// V6.3 unknown fields.
+        unknown: Vec<(u64, CborValue)>,
+    },
     /// Type 1.
     DirectMessage {
         /// Field 0.

@@ -45,6 +45,14 @@ export class CheckoutServer {
     });
   }
 
+  getPort(): number {
+    const address = this.server?.address();
+    if (address && typeof address === 'object') {
+      return address.port;
+    }
+    return this.port;
+  }
+
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 
@@ -190,7 +198,8 @@ export class CheckoutServer {
       ) {
         const session = event.data.object;
         const heldMessageId = session.client_reference_id || session.metadata?.heldMessageId;
-        const email = session.customer_details?.email || session.metadata?.email;
+        const email =
+          session.customer_details?.email || session.customer_email || session.metadata?.email;
         const credits = Number(session.metadata?.credits ?? 1);
 
         if (heldMessageId && email) {

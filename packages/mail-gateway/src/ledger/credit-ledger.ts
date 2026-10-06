@@ -197,6 +197,34 @@ export class CreditLedger {
     };
   }
 
+  findLatestHeldMessage(
+    senderEmail: string,
+    recipientAddress?: string
+  ): HeldMessageRecord | undefined {
+    const canonicalSender = senderEmail.toLowerCase().trim();
+    let sql =
+      "SELECT id, sender_email, recipient_address, dkim_domain, subject, raw_rfc822, created_at, expires_at, status FROM held_messages WHERE sender_email = ? AND status = 'held'";
+    const params: any[] = [canonicalSender];
+    if (recipientAddress) {
+      sql += ' AND recipient_address = ?';
+      params.push(recipientAddress.toLowerCase().trim());
+    }
+    sql += ' ORDER BY created_at DESC LIMIT 1';
+    const row = this.db.prepare(sql).get(...params) as any;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      senderEmail: row.sender_email,
+      recipientAddress: row.recipient_address,
+      dkimDomain: row.dkim_domain,
+      subject: row.subject,
+      rawRfc822: row.raw_rfc822,
+      createdAtMs: row.created_at,
+      expiresAtMs: row.expires_at,
+      status: row.status,
+    };
+  }
+
   releaseHeldMessage(id: string): HeldMessageRecord | undefined {
     const msg = this.getHeldMessage(id);
     if (!msg || msg.status !== 'held') return undefined;

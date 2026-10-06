@@ -6,7 +6,52 @@ export interface InboundHandlerOptions {
   readonly gatewayDomain: string;
   readonly ledger: CreditLedger;
   readonly stampProvider: GatewayStampProvider;
+  readonly relayUrl?: string;
   readonly relayLookup?: (username: string) => Promise<{ accountAddress: string; isTombstoned?: boolean } | undefined>;
+}
+
+/**
+ * Factory for resolving usernames against a Frank relay over HTTP.
+ * Queries `GET ${relayUrl}/directory/user/${username}` matching the relay wire format.
+ */
+export function createRelayUsernameLookup(
+  relayBaseUrl: string,
+  fetchFn: typeof fetch = fetch
+): (username: string) => Promise<{ accountAddress: string; isTombstoned?: boolean } | undefined> {
+  const normalizedBase = relayBaseUrl.replace(/\/+$/, '');
+  return async (username: string) => {
+    try {
+      const url = `${normalizedBase}/directory/user/${encodeURIComponent(username)}`;
+      const response = await fetchFn(url, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      });
+
+      if (response.status === 404 || response.status === 400) {
+        return undefined;
+      }
+
+      if (!response.ok) {
+        throw new Error(`Relay lookup failed with HTTP ${response.status}`);
+      }
+
+      const data = (await response.json()) as {
+        username: string;
+        account_address: string;
+        status: 'active' | 'tombstoned';
+      };
+
+      return {
+        accountAddress: data.account_address,
+        isTombstoned: data.status === 'tombstoned',
+      };
+    } catch (err: unknown) {
+      if (err instanceof Error && err.message.startsWith('Relay lookup failed')) {
+        throw err;
+      }
+      return undefined;
+    }
+  };
 }
 
 export interface InboundProcessingResult {
@@ -27,7 +72,9 @@ export class InboundEmailHandler {
     this.gatewayDomain = options.gatewayDomain.toLowerCase();
     this.ledger = options.ledger;
     this.stampProvider = options.stampProvider;
-    this.relayLookup = options.relayLookup;
+    this.relayLookup =
+      options.relayLookup ??
+      (options.relayUrl ? createRelayUsernameLookup(options.relayUrl) : undefined);
   }
 
   async processInboundEmail(email: InboundEmail): Promise<InboundProcessingResult> {

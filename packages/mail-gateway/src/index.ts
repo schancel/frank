@@ -27,9 +27,13 @@ export class EmailGatewayDaemon {
   readonly outboundDelivery: OutboundEmailDelivery;
   readonly mxTransport: MxDirectTransport;
 
-  constructor(config: GatewayConfig, stampProvider: GatewayStampProvider) {
+  constructor(
+    config: GatewayConfig,
+    stampProvider: GatewayStampProvider,
+    options?: { dbPath?: string }
+  ) {
     this.config = config;
-    this.ledger = new CreditLedger('./gateway.sqlite3');
+    this.ledger = new CreditLedger(options?.dbPath ?? './gateway.sqlite3');
     this.checkoutServer = new CheckoutServer({
       port: config.httpPort,
       ledger: this.ledger,
@@ -39,6 +43,7 @@ export class EmailGatewayDaemon {
     });
     this.inboundHandler = new InboundEmailHandler({
       gatewayDomain: config.gatewayDomain,
+      relayUrl: config.gatewayRelayUrl,
       ledger: this.ledger,
       stampProvider,
     });

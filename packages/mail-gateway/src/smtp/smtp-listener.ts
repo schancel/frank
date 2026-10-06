@@ -111,6 +111,14 @@ export class SmtpListener {
     });
   }
 
+  getPort(): number {
+    const address = this.server?.address();
+    if (address && typeof address === 'object') {
+      return address.port;
+    }
+    return 0;
+  }
+
   private handleConnection(socket: net.Socket): void {
     let state: 'GREET' | 'COMMAND' | 'DATA' = 'COMMAND';
     let mailFrom = '';

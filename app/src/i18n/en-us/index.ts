@@ -113,6 +113,11 @@ export default {
     request: 'Ask the browser to keep my data',
     confirmSeed: 'Confirm my recovery phrase',
     seedConfirmed: 'Your recovery phrase is confirmed.',
+    safariTip:
+      'Tip for Safari / WebKit: Add Frank to your Home Screen / Dock or bookmark this site to enable persistence automatically.',
+    grantedToast: 'Persistent storage granted by browser.',
+    declinedToast:
+      'The browser declined persistent storage. Bookmark or install Frank to enable persistence.',
   },
   blackjackP2p: {
     notDeliveredYet:

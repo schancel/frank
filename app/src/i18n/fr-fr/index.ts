@@ -718,6 +718,7 @@ export default {
   profileDialog: {
     cancel: 'Annuler',
     update: 'Mettre à jour',
+    republish: 'Republier',
     avatarTooLarge:
       "L'image de votre avatar est trop volumineuse, choisissez en une plus petite.",
     unableContactRelay: 'Impossible de contacter le serveur-relai.',

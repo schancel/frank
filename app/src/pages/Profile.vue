@@ -23,8 +23,11 @@
             @click="cancel"
           />
           <q-btn
-            :disable="identical"
-            :label="$t('profileDialog.update')"
+            :label="
+              identical
+                ? $t('profileDialog.republish')
+                : $t('profileDialog.update')
+            "
             color="primary"
             no-caps
             data-test="profile-update"

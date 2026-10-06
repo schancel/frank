@@ -1,10 +1,12 @@
 <template>
-  <div class="row">
-    <q-toolbar class="q-px-sm">
+  <div class="row full-width">
+    <q-toolbar class="q-px-sm q-py-xs chat-input-toolbar full-width">
       <q-btn
         dense
         flat
+        round
         icon="unfold_more"
+        class="chat-attach-btn"
         :aria-label="$t('a11y.attachmentOptions')"
         aria-haspopup="menu"
         :disable="disable"
@@ -64,91 +66,79 @@
                 {{ $t('chatInput.offerSwap') }}
               </q-item-section>
             </q-item>
-
-            <!-- <q-item clickable>
-              <q-item-section avatar>
-                <q-icon name="insert_emoticon" />
-              </q-item-section>
-              <q-item-section>
-                Insert Emoji
-              </q-item-section>
-              <q-menu self="center middle">
-                <picker
-                  v-close-popup
-                  :data="emojiIndex"
-                  set="twitter"
-                  @select="addEmoji"
-                  :title="$t('chatInput.emojiPickerTitle')"
-                  :show-skin-tones="false"
-                />
-              </q-menu>
-            </q-item>-->
           </q-list>
         </q-menu>
       </q-btn>
 
-      <!-- <q-separator vertical /> -->
-      <q-input
-        ref="inputBox"
-        class="full-width q-pl-md"
-        dense
-        borderless
-        autogrow
-        @paste="dp($event)"
-        @drop.prevent="dp($event)"
-        @keydown.enter.exact.prevent
-        @keydown.enter.exact="sendMessage"
-        @mousedown.self.stop
-        v-model="innerMessage"
-        :placeholder="$t('chatInput.placeHolder')"
-      />
-      <q-space />
-      <q-btn
-        dense
-        flat
-        round
-        icon="local_post_office"
-        :aria-label="$t('a11y.stampPayment')"
-        aria-haspopup="menu"
-        :disable="disable"
-      >
-        <q-tooltip>{{ stampLabel }}</q-tooltip>
-        <q-menu anchor="top middle" self="bottom middle">
-          <div class="q-pa-md" style="min-width: 280px">
-            <q-input
-              v-model="innerStampAmount"
-              dense
-              autofocus
-              type="number"
-              :min="minimumStampAmount"
-              :suffix="chainUnit"
-              :label="$t('chatInput.stampPayment')"
-            />
-            <q-slider
-              v-model="stampMultiplier"
-              class="q-mt-md"
-              :min="1"
-              :max="100"
-              :step="1"
-              label
-              label-always
-              :label-value="
-                $t('chatInput.stampMultiplierValue', {
-                  multiplier: stampMultiplier,
-                })
-              "
-            />
-            <div class="text-caption text-grey-7">
-              {{ $t('chatInput.stampQuickSelection') }}
+      <div class="col chat-input-container row no-wrap items-center q-mx-xs">
+        <q-input
+          ref="inputBox"
+          class="col chat-input-field q-px-sm"
+          dense
+          borderless
+          autogrow
+          @paste="dp($event)"
+          @drop.prevent="dp($event)"
+          @keydown.enter.exact.prevent
+          @keydown.enter.exact="sendMessage"
+          @mousedown.self.stop
+          v-model="innerMessage"
+          :placeholder="$t('chatInput.placeHolder')"
+        />
+
+        <q-btn
+          dense
+          flat
+          rounded
+          no-caps
+          icon="local_post_office"
+          class="chat-stamp-btn q-mr-xs"
+          :aria-label="$t('a11y.stampPayment')"
+          aria-haspopup="menu"
+          :disable="disable"
+        >
+          <span class="chat-stamp-pill-text q-ml-xs"
+            >{{ stampMultiplier }}×</span
+          >
+          <q-tooltip>{{ stampLabel }}</q-tooltip>
+          <q-menu anchor="top middle" self="bottom middle">
+            <div class="q-pa-md" style="min-width: 280px">
+              <q-input
+                v-model="innerStampAmount"
+                dense
+                autofocus
+                type="number"
+                :min="minimumStampAmount"
+                :suffix="chainUnit"
+                :label="$t('chatInput.stampPayment')"
+              />
+              <q-slider
+                v-model="stampMultiplier"
+                class="q-mt-md"
+                :min="1"
+                :max="100"
+                :step="1"
+                label
+                label-always
+                :label-value="
+                  $t('chatInput.stampMultiplierValue', {
+                    multiplier: stampMultiplier,
+                  })
+                "
+              />
+              <div class="text-caption text-grey-7">
+                {{ $t('chatInput.stampQuickSelection') }}
+              </div>
             </div>
-          </div>
-        </q-menu>
-      </q-btn>
+          </q-menu>
+        </q-btn>
+      </div>
+
       <q-btn
-        dense
-        flat
+        unelevated
+        color="primary"
         icon="send"
-        class="q-btn"
+        class="chat-send-btn q-btn"
         :aria-label="$t('a11y.sendMessage')"
         :disable="disable"
         @mousedown.prevent="sendMessage"
@@ -281,3 +271,128 @@ export default defineComponent({
   },
 })
 </script>
+
+<style lang="scss">
+.chat-input-toolbar {
+  display: flex;
+  align-items: flex-end;
+  min-height: 52px;
+  padding: 6px 8px;
+}
+
+.chat-attach-btn {
+  margin-bottom: 2px;
+  color: var(--q-color-text-muted, #757575);
+  transition: color 0.15s ease, background-color 0.15s ease;
+
+  &:hover:not(:disabled) {
+    color: var(--q-primary);
+  }
+}
+
+.chat-input-container {
+  min-height: 40px;
+  border-radius: 20px;
+  padding: 2px 4px 2px 8px;
+  background-color: var(--q-chat-input-bg, rgba(0, 0, 0, 0.04));
+  border: 1px solid var(--q-chat-input-border, rgba(0, 0, 0, 0.12));
+  transition: border-color 0.2s ease, box-shadow 0.2s ease,
+    background-color 0.2s ease;
+
+  &:focus-within {
+    border-color: var(--q-primary);
+    box-shadow: 0 0 0 1px var(--q-primary);
+  }
+}
+
+.chat-input-field {
+  font-size: 14px;
+  line-height: 1.4;
+
+  .q-field__native {
+    padding: 6px 0;
+    max-height: 140px;
+  }
+}
+
+.chat-stamp-btn {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 14px;
+  font-size: 12px;
+  color: var(--q-primary);
+  background-color: var(--q-chat-stamp-bg, rgba(0, 0, 0, 0.05));
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+
+  &:hover:not(:disabled) {
+    background-color: var(--q-chat-stamp-bg-hover, rgba(0, 0, 0, 0.09));
+  }
+}
+
+.chat-stamp-pill-text {
+  font-weight: 600;
+  font-size: 11px;
+  font-family: inherit;
+  opacity: 0.9;
+}
+
+.chat-send-btn {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  min-height: 40px;
+  margin-bottom: 1px;
+  margin-left: 6px;
+  border-radius: 14px;
+  background-color: var(--q-primary) !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+
+  .q-icon {
+    font-size: 18px;
+  }
+
+  &:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.22);
+  }
+
+  &:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+  }
+
+  &:disabled {
+    opacity: 0.45 !important;
+    box-shadow: none !important;
+  }
+}
+
+body.body--dark {
+  .chat-attach-btn {
+    color: rgba(255, 255, 255, 0.6);
+  }
+
+  .chat-input-container {
+    background-color: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+
+  .chat-stamp-btn {
+    background-color: rgba(255, 255, 255, 0.08);
+
+    &:hover:not(:disabled) {
+      background-color: rgba(255, 255, 255, 0.14);
+    }
+  }
+
+  .chat-send-btn {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+
+    &:hover:not(:disabled) {
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+    }
+  }
+}
+</style>

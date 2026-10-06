@@ -222,7 +222,13 @@ export default defineComponent({
         },
         locale: this.locale,
       })
-      navigateBack(this.$router)
+      if (typeof this.$q.notify === 'function') {
+        this.$q.notify({
+          type: 'positive',
+          message: this.$t('settings.savedNotification'),
+          timeout: 2000,
+        })
+      }
     },
     cancel() {
       // Discard the draft -- it was never applied anywhere, so there's nothing else to undo.

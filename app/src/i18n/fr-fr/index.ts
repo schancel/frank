@@ -699,6 +699,7 @@ export default {
     darkMode: 'Mode Nuit/Sombre',
     themeTitle: 'Pierre de Signet',
     saveSettings: 'Enregistrer',
+    savedNotification: 'Paramètres enregistrés',
     cancelSettings: 'Annuler',
     languageSelectorCaption: 'Langue',
   },

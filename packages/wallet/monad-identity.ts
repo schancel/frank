@@ -360,7 +360,6 @@ export function buildSignedDirectoryStatement(
     timestampMs?: number
     ttlMs?: number
     stampKey?: Uint8Array
-    canonicalUsername?: string
     spendKeys?: Array<{ keyType: number; keyBytes: Uint8Array }>
     curveKeys?: {
       secp256k1?: Uint8Array
@@ -404,10 +403,7 @@ export function buildSignedDirectoryStatement(
     (options.curveKeys || options.spendKeys) &&
     !rawSpendKeys.some(k => k.keyType === 1)
   ) {
-    rawSpendKeys.push({
-      keyType: 1,
-      keyBytes: new Uint8Array(identity.compressedPubKey),
-    })
+    rawSpendKeys.push({ keyType: 1, keyBytes: new Uint8Array(identity.compressedPubKey) })
   }
   rawSpendKeys.sort(compareAccounts)
 
@@ -550,9 +546,7 @@ export function buildSignedDirectoryStatement(
   if (entries.length > 0) {
     type4MapEntries.push([9, entries])
   }
-  if (options.canonicalUsername !== undefined) {
-    type4MapEntries.push([14, options.canonicalUsername])
-  } else if (rawSpendKeys.length > 0) {
+  if (rawSpendKeys.length > 0) {
     type4MapEntries.push([
       14,
       rawSpendKeys.map(k =>
@@ -777,9 +771,7 @@ export function decodeProfileBytes(
           ).toString('base64')}`
         } else if (entry.kind === 'spend_key') {
           const curveHeader = entry.headers.find(h => h.name === 'curve')?.value
-          const keyTypeHeader = entry.headers.find(
-            h => h.name === 'key_type',
-          )?.value
+          const keyTypeHeader = entry.headers.find(h => h.name === 'key_type')?.value
           if (curveHeader === 'secp256k1' || keyTypeHeader === '1') {
             if (!curveKeys.secp256k1) {
               curveKeys.secp256k1 = entry.body

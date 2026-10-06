@@ -248,7 +248,9 @@ impl Registry {
     }
 
     /// Access the unique username and tombstone store.
-    pub fn directory_usernames(&self) -> crate::store::directory_usernames::DbDirectoryUsernames<'_> {
+    pub fn directory_usernames(
+        &self,
+    ) -> crate::store::directory_usernames::DbDirectoryUsernames<'_> {
         self.db.directory_usernames()
     }
 

@@ -272,7 +272,12 @@ impl<'a> DbDirectoryUsernames<'a> {
         }
 
         // 1. Claim new username (fails on collision with other accounts or active tombstones)
-        self.claim(&new_norm, account_address, existing_old.stamp_key.clone(), now_ms)?;
+        self.claim(
+            &new_norm,
+            account_address,
+            existing_old.stamp_key.clone(),
+            now_ms,
+        )?;
 
         // 2. Put old username into Moved state with redirect to new_norm
         let moved_record = UsernameRecord {
@@ -290,8 +295,7 @@ impl<'a> DbDirectoryUsernames<'a> {
     }
 
     fn put_record(&self, record: &UsernameRecord) -> Result<()> {
-        let serialized =
-            serde_json::to_vec(record).wrap_err(crate::store::db::DbError::RocksDb)?;
+        let serialized = serde_json::to_vec(record).wrap_err(crate::store::db::DbError::RocksDb)?;
         let mut batch = WriteBatch::default();
         batch.put_cf(self.cf, record.username.as_bytes(), serialized);
         let mut write_options = WriteOptions::default();
@@ -378,14 +382,18 @@ mod tests {
 
         let tomb_record = store.get("alice")?.expect("record should exist");
         assert_eq!(tomb_record.status, UsernameStatus::Tombstoned);
-        assert_eq!(tomb_record.tombstone_expires_at_ms, Some(now + 30 + cooldown));
+        assert_eq!(
+            tomb_record.tombstone_expires_at_ms,
+            Some(now + 30 + cooldown)
+        );
 
         // 5. Mallory tries to claim during tombstone cooldown -> Blocked by Tombstoned!
         let blocked = store.claim("alice", &mallory_addr, None, now + 100);
         assert!(blocked.is_err());
 
         // 6. After cooldown expires, Mallory can successfully claim
-        let claim_after_expiry = store.claim("alice", &mallory_addr, None, now + 30 + cooldown + 1)?;
+        let claim_after_expiry =
+            store.claim("alice", &mallory_addr, None, now + 30 + cooldown + 1)?;
         assert_eq!(claim_after_expiry, UsernameClaimResult::Claimed);
 
         let final_record = store.get("alice")?.expect("record should exist");
@@ -432,7 +440,9 @@ mod tests {
         assert_eq!(old_rec.tombstone_expires_at_ms, Some(now + 20 + cooldown));
 
         // 5. Bob tries to claim "alice_old" during cooldown -> Blocked
-        assert!(store.claim("alice_old", &bob_addr, None, now + 100).is_err());
+        assert!(store
+            .claim("alice_old", &bob_addr, None, now + 100)
+            .is_err());
 
         Ok(())
     }

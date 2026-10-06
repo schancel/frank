@@ -33,6 +33,8 @@ import { DirectoryManager } from "./directory-manager";
 import { RelayProfileManager } from "./relay-profile-manager";
 import { LoopGuard } from "./loop-guard";
 import { PeerLaneQueue } from "./peer-queue";
+import { LevelSubscriptionManager } from "./subscription-manager";
+import { BotScheduler } from "./scheduler";
 
 interface ActiveBotInstance {
   definition: FrankBotDefinition;
@@ -61,6 +63,11 @@ export class FrankBotHost {
   private pollTimer?: NodeJS.Timeout;
   private registrationTimer?: NodeJS.Timeout;
   private lastRegistrationPollMs = 0;
+  private readonly scheduler = new BotScheduler();
+
+  getScheduler(): BotScheduler {
+    return this.scheduler;
+  }
 
   constructor(options: BotHostOptions) {
     const envConfig = loadMonadChainConfigFromEnv();
@@ -220,6 +227,17 @@ export class FrankBotHost {
     const peerQueue = new PeerLaneQueue();
 
     // 7. Assemble BotContext
+    const subscriptions = new LevelSubscriptionManager(
+      state.sublevel("subscriptions"),
+      async (recipientAddress: string, items: MessageItem[]) => {
+        return this.chain.directMessages.send({
+          wallet,
+          recipient: toChainAddress(recipientAddress),
+          items,
+        });
+      }
+    );
+
     const context: BotContext = {
       botId: definition.id,
       address: botAddress,
@@ -228,6 +246,7 @@ export class FrankBotHost {
       networkTag: this.options.networkTag,
       provider: this.provider,
       state,
+      subscriptions,
 
       lookupPeer: (addr: string) => directory.lookupPeer(addr),
 
@@ -310,6 +329,13 @@ export class FrankBotHost {
     };
 
     this.instances.set(definition.id, instance);
+
+    if (definition.schedules) {
+      for (const schedule of definition.schedules) {
+        this.scheduler.register(definition.id, schedule, context);
+      }
+    }
+
     if (definition.onStart) {
       await definition.onStart(context);
     }
@@ -348,6 +374,9 @@ export class FrankBotHost {
       }, 5000);
       this.registrationTimer.unref();
     }
+
+    // Start background event scheduler
+    this.scheduler.start();
 
     console.log(
       `[bot-host] FrankBotHost started (${this.instances.size} bots running)`
@@ -394,10 +423,20 @@ export class FrankBotHost {
             };
 
             try {
-              const reply = await instance.definition.onMessage(
+              let reply = await instance.definition.onMessage(
                 msgCtx,
                 instance.context
               );
+              if (!reply || reply.length === 0) {
+                const subReply =
+                  await instance.context.subscriptions.handleSubscriptionCommand(
+                    msg.items,
+                    sender
+                  );
+                if (subReply) {
+                  reply = subReply;
+                }
+              }
               if (Array.isArray(reply) && reply.length > 0) {
                 await instance.context.sendMessage(sender, reply);
                 instance.loopGuard.recordReply(sender);
@@ -517,6 +556,7 @@ export class FrankBotHost {
 
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.registrationTimer) clearInterval(this.registrationTimer);
+    this.scheduler.stop();
 
     for (const [id, instance] of this.instances.entries()) {
       try {

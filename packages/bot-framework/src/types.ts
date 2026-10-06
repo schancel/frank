@@ -57,6 +57,30 @@ export interface BotMessageContext {
   reply(items: MessageItem[]): Promise<void>;
 }
 
+export interface BotScheduleDefinition {
+  readonly id: string;
+  readonly intervalMs?: number;
+  readonly cron?: string;
+  readonly runOnStartup?: boolean;
+  handler(ctx: BotContext): Promise<void>;
+}
+
+export interface BotSubscriptionManager {
+  subscribe(address: string, topic?: string): Promise<boolean>;
+  unsubscribe(address: string, topic?: string): Promise<boolean>;
+  isSubscribed(address: string, topic?: string): Promise<boolean>;
+  listSubscribers(topic?: string): Promise<string[]>;
+  broadcast(
+    items: MessageItem[],
+    topic?: string
+  ): Promise<{ sent: number; failed: number }>;
+  handleSubscriptionCommand(
+    items: MessageItem[],
+    senderAddress: string,
+    topic?: string
+  ): Promise<MessageItem[] | null>;
+}
+
 export interface BotContext {
   readonly botId: string;
   readonly address: string;
@@ -65,6 +89,7 @@ export interface BotContext {
   readonly networkTag: "MONT" | "MON1";
   readonly provider: JsonRpcProvider;
   readonly state: BotStateStore;
+  readonly subscriptions: BotSubscriptionManager;
 
   // --- Directory & Peer APIs ---
   lookupPeer(address: string): Promise<DirectoryPeerInfo | undefined>;
@@ -98,6 +123,7 @@ export interface BotContext {
 
 export interface FrankBotDefinition {
   readonly id: string;
+  readonly schedules?: BotScheduleDefinition[];
   getProfile(): BotProfile;
   onStart?(ctx: BotContext): Promise<void>;
   onStop?(ctx: BotContext): Promise<void>;

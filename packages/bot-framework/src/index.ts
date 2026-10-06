@@ -5,4 +5,6 @@ export * from "./directory-manager";
 export * from "./relay-profile-manager";
 export * from "./loop-guard";
 export * from "./peer-queue";
+export * from "./subscription-manager";
+export * from "./scheduler";
 export * from "./bot-host";

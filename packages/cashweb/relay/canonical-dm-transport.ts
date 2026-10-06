@@ -389,13 +389,25 @@ export function inspectCanonicalPair(
     !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(delivery.network)
   )
     invalid('Canonical suite1 payload required')
+  if (delivery.recipient !== undefined || delivery.dleqProof !== undefined) {
+    if (
+      !delivery.recipient ||
+      !delivery.dleqProof ||
+      delivery.recipient.keyType !== payload.recipient.keyType ||
+      !same(delivery.recipient.keyBytes, payload.recipient.keyBytes) ||
+      !same(delivery.dleqProof, payload.dleqProof)
+    )
+      invalid('Delivery/payload mismatch')
+  }
+  const recipient = delivery.recipient ?? payload.recipient
+  const dleqProof = delivery.dleqProof ?? payload.dleqProof
   const decoded = decodeCanonical(parts.context)
   if (!(decoded instanceof Map) || decoded.size !== 16)
     invalid('Exact allocated context required')
   const context: DirectMessageCryptoContext = {
     network: delivery.network,
     sender: payload.sender,
-    recipient: payload.recipient,
+    recipient,
     senderDirectoryHash: field(decoded, 4, 32),
     recipientDirectoryHash: field(decoded, 5, 32),
     senderMessageKey: account(decoded, 6),
@@ -403,11 +415,12 @@ export function inspectCanonicalPair(
     stampKey: delivery.destination,
     ephemeralPoint: payload.ephemeralPoint,
     sharedPoint: payload.sharedPoint,
-    dleqProof: payload.dleqProof,
+    dleqProof,
   }
   if (!same(encodeDirectMessageCryptoContext(context), parts.context))
     invalid('Delivery/context mismatch')
   if (
+    recipient.keyType !== 1 ||
     payload.recipient.keyType !== 1 ||
     !same(
       recipientPayloadDigest(delivery.network, delivery.payloadFrame.frame),
@@ -425,7 +438,7 @@ export function inspectCanonicalPair(
     payload_hash: toHex(delivery.payloadDigest),
     network: delivery.network,
     recipient:
-      '0x' + toHex(addressFromCompressedPubkey(payload.recipient.keyBytes)),
+      '0x' + toHex(addressFromCompressedPubkey(recipient.keyBytes)),
     sender_t1: toHex(context.senderDirectoryHash),
     recipient_t1: toHex(context.recipientDirectoryHash),
     delivery_sha256: toHex(sha256(parts.delivery)),

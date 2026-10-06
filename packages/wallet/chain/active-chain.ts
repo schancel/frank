@@ -50,7 +50,8 @@ import {
   ForumMessageEntry,
   DiscoveredTopic,
 } from "../forum-model";
-import { MessageItem } from "@frank/cashweb/types/messages";
+import { MessageItem, type ChannelUpdateItem } from "@frank/cashweb/types/messages";
+export type { MessageItem, ChannelUpdateItem } from "@frank/cashweb/types/messages";
 import type { PaymentTransfer } from "@frank/codec";
 export type { PaymentTransfer } from "@frank/codec";
 import type { MonadRootBundle } from "../monad-wallet-material";

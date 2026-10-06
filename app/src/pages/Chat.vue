@@ -574,10 +574,14 @@ export default defineComponent({
       chainId,
       amount,
       memo,
+      networkTag,
+      keyType,
     }: {
       chainId: string
       amount: number
       memo?: string
+      networkTag?: string
+      keyType?: 1 | 2
     }) {
       const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
       const items: MessageItem[] = [
@@ -586,6 +590,8 @@ export default defineComponent({
           chainId,
           amount,
           memo,
+          networkTag: networkTag || chainId,
+          keyType,
         },
       ]
       if (memo) {

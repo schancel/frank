@@ -85,7 +85,7 @@ function clearTimer() {
 
 function schedule() {
   clearTimer()
-  if (consumers === 0 || document.hidden || backgrounded) return
+  if (consumers === 0 || typeof document === 'undefined' || !document || document.hidden || backgrounded) return
   timer = setTimeout(() => {
     timer = undefined
     if (pending)

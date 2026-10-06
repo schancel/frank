@@ -38,6 +38,7 @@ const BASELINE: Record<string, number> = {
   'layouts/ForumLayout.vue': 1,
   'pages/AddContact.vue': 2,
   'pages/Chat.vue': 1,
+  'components/chat/messages/ChatMessageChannel.vue': 28,
   'components/chat/messages/ChatMessageDice.vue': 16,
   'components/chat/messages/ChatMessageLiarsDice.vue': 21,
   'components/chat/messages/ChatMessagePoker.vue': 16,

@@ -119,12 +119,25 @@ import {
 import {
   MonadIdentity,
   fetchMonadProfile,
+  mailboxAuthFor,
 } from "../monad-identity";
 import {
   MonadStampClient,
   MonadCanonicalStampClient,
   quoteMonadStampPaymentGasReserve,
+  recoverMonadStampPayments,
 } from "../monad-stamp-client";
+import { fetchMonadMessagesSince } from "@frank/cashweb/relay/monad-message-feed";
+import {
+  MailboxAuthParams,
+  ackMonadMailboxRecovery,
+  fetchMonadMailboxRecoveries,
+} from "@frank/cashweb/relay/monad-mailbox-client";
+import {
+  decryptEnvelope,
+  parseEnvelope,
+} from "@frank/cashweb/relay/monad-message-envelope";
+import type { MessageItem } from "@frank/cashweb/types/user-interface";
 import {
   MonadTopicPostClient,
   MonadTopicPostAbandonedError,
@@ -564,6 +577,81 @@ async function boundedSync(sync: Promise<void>): Promise<void> {
   }
 }
 
+/** Recovery obligations change rarely, but each read spends one of the relay's per-recipient
+ * authenticated-request slots (a challenge is consumed per signed read). Polling inbox + recovery
+ * every few seconds exhausts that budget, so recovery is synced at most this often per wallet. */
+export const MAILBOX_RECOVERY_SYNC_INTERVAL_MS = 60_000;
+const lastRecoverySync = new WeakMap<object, number>();
+
+async function syncMailboxRecoveries(
+  wallet: MonadChainWalletHandle,
+  mailbox: MailboxAuthParams
+): Promise<void> {
+  const journal = wallet.stampPaymentJournal;
+  if (journal === undefined) return;
+  const now = Date.now();
+  const last = lastRecoverySync.get(wallet);
+  if (last !== undefined && now - last < MAILBOX_RECOVERY_SYNC_INTERVAL_MS)
+    return;
+  // Stamp the attempt (not just success): a failing relay must not be re-asked every poll.
+  lastRecoverySync.set(wallet, now);
+  let records;
+  try {
+    records = (await fetchMonadMailboxRecoveries(mailbox)).records;
+  } catch {
+    return;
+  }
+  const recipientPrivateKey = getBytes(wallet.identity.toPrivateKeyHex());
+  for (const record of records) {
+    try {
+      const terminal = record.lifecycle.startsWith("terminal:");
+      const confirmed = new Set(record.confirmedChildren);
+      const wanted = record.canonicalMessage.stampPayments.filter(
+        (payment) => terminal || confirmed.has(payment.childIndex)
+      );
+      for (const payment of wanted) {
+        // One child at a time: an unrecoverable unconfirmed child must not block the confirmed
+        // ones, while an unrecoverable confirmed child is caught by the check below.
+        let recovered;
+        try {
+          recovered = recoverMonadStampPayments({
+            message: {
+              ...record.canonicalMessage,
+              stampPayments: [payment],
+            },
+            recipientPrivateKey,
+          });
+        } catch {
+          continue;
+        }
+        for (const child of recovered) {
+          if (journal.get(record.payloadHashHex, child.childIndex)) continue;
+          await journal.put({
+            payloadHashHex: record.payloadHashHex,
+            childIndex: child.childIndex,
+            txHash: child.txHash,
+            address: child.address,
+            valueWei: child.valueWei.toString(),
+            status: "discovered",
+          });
+        }
+      }
+      const confirmedJournalled = record.confirmedChildren.every(
+        (index) => journal.get(record.payloadHashHex, index) !== undefined
+      );
+      if (terminal && journal.durable && confirmedJournalled) {
+        await ackMonadMailboxRecovery({
+          ...mailbox,
+          payloadHashHex: record.payloadHashHex,
+          obligationIdHex: record.obligationIdHex,
+        });
+      }
+    } catch {
+      // Leave the obligation unacknowledged; the next poll retries it.
+    }
+  }
+}
+
 /** JSON-serializes `items` for use as a direct message's plaintext.
  * Throws only on `'p2pkh'` items, which are legacy Lotus-only script items.
  * Stealth items are supported across chains (Monad, Solana, eCash). */
@@ -769,8 +857,99 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     async fetchSince(params): Promise<DirectMessageReceived[]> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
-      if (!canonical) throw new CanonicalMessagingPendingError("Canonical direct messages require persistent typed wallet custody on a Monad network.");
-      return canonical.fetchSince(params);
+      if (canonical) return canonical.fetchSince(params);
+      const mailbox = mailboxAuthFor(wallet.identity, wallet.relayBaseUrl);
+      const stored = await fetchMonadMessagesSince({
+        ...mailbox,
+        sinceMs: params.sinceMs,
+        onTruncated: params.onTruncated,
+      });
+      const myAddress = wallet.identity.address.raw.toLowerCase();
+      const received: DirectMessageReceived[] = [];
+
+      for (const record of stored) {
+        if (record.message === undefined) continue;
+        const envelope = parseEnvelope(record.message.encryptedPayload);
+        if (envelope === undefined) continue;
+        if (envelope.to.toLowerCase() !== myAddress) continue;
+
+        const payloadHashHex = bareHex(record.message.payloadHash);
+        if (wallet.stampPaymentJournal !== undefined) {
+          const recovered = recoverMonadStampPayments({
+            message: record.message,
+            recipientPrivateKey: getBytes(wallet.identity.toPrivateKeyHex()),
+          });
+          for (const payment of recovered) {
+            const existing = wallet.stampPaymentJournal.get(
+              payloadHashHex,
+              payment.childIndex
+            );
+            if (existing !== undefined) continue;
+            await wallet.stampPaymentJournal.put({
+              payloadHashHex,
+              childIndex: payment.childIndex,
+              txHash: payment.txHash,
+              address: payment.address,
+              valueWei: payment.valueWei.toString(),
+              status: "discovered",
+            });
+          }
+        }
+
+        const senderProfile = await fetchMonadProfile({
+          relayBaseUrl: wallet.relayBaseUrl,
+          address: toChainAddress(envelope.from),
+        });
+        if (senderProfile === undefined) {
+          params.onQuarantinedTimestamp?.(record.timestamp, payloadHashHex);
+          continue;
+        }
+
+        let items: MessageItem[];
+        try {
+          items = deserializeMessageItems(
+            decryptEnvelope({
+              envelope,
+              myPrivateKey: wallet.identity.toNakamotoPrivateKey(),
+              senderPubKey: Buffer.from(senderProfile.pubKey),
+            })
+          );
+        } catch {
+          continue;
+        }
+
+        const stampValueWei = record.message.stampPayments.reduce(
+          (sum, payment) =>
+            sum + Transaction.from(hexlify(payment.rawTx)).value,
+          BigInt(0)
+        );
+        const stampPayments = record.message.stampPayments.flatMap(
+          (payment) => {
+            const tx = Transaction.from(hexlify(payment.rawTx));
+            return tx.hash === null || tx.to === null
+              ? []
+              : [
+                  {
+                    txHash: tx.hash,
+                    destinationAddress: tx.to,
+                    valueWei: tx.value,
+                  },
+                ];
+          }
+        );
+
+        received.push({
+          senderAddress: toChainAddress(envelope.from),
+          recipientAddress: toChainAddress(envelope.to),
+          items,
+          payloadDigest: payloadHashHex,
+          stampValueWei,
+          stampPayments,
+          receivedTime: record.timestamp,
+        });
+      }
+      await boundedSync(syncMailboxRecoveries(wallet, mailbox));
+      return received;
     },
 
     async listRecoveredStampPayments({ wallet }) {

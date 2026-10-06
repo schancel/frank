@@ -117,7 +117,10 @@ function freshScalar(): SuiteResult<Loaded> {
   return fail({ code: 'random' })
 }
 
-export function dh(key: PrivateKey, point: Uint8Array): SuiteResult<Uint8Array> {
+export function dh(
+  key: PrivateKey,
+  point: Uint8Array,
+): SuiteResult<Uint8Array> {
   const shared = ecdh(key, point)
   if (!shared.ok) return fail(mapCurve(shared.error))
   if (shared.value.point.length !== ENC_LENGTH) {

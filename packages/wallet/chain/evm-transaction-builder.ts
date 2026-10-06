@@ -1,4 +1,4 @@
-import type { Provider, TransactionRequest } from "ethers";
+import { Interface, type Provider, type TransactionRequest } from "ethers";
 import type { MonadTxOverrides } from "../monad-account-tx";
 
 export interface EvmTransferParams {
@@ -89,3 +89,105 @@ export class NativeEvmTransactionBuilder implements EvmTransactionBuilder {
 
 export const defaultNativeEvmTransactionBuilder =
   new NativeEvmTransactionBuilder();
+
+const TIP20_INTERFACE = new Interface([
+  "function balanceOf(address account) view returns (uint256)",
+  "function transfer(address to, uint256 amount) returns (bool)",
+]);
+
+export const TEMPO_PATH_USD_ADDRESS =
+  "0x20c0000000000000000000000000000000000000";
+
+/**
+ * Transaction builder for TIP-20 / ERC-20 token-as-gas chains such as Tempo.
+ * Balances query `balanceOf(address)` and transfers encode `transfer(recipient, amount)`
+ * with native `value: 0n`.
+ */
+export class Tip20TransactionBuilder implements EvmTransactionBuilder {
+  readonly tokenAddress: string;
+
+  constructor(tokenAddress: string = TEMPO_PATH_USD_ADDRESS) {
+    this.tokenAddress = tokenAddress;
+  }
+
+  async getBalance(params: {
+    address: string;
+    provider: Provider;
+  }): Promise<bigint> {
+    const data = TIP20_INTERFACE.encodeFunctionData("balanceOf", [
+      params.address,
+    ]);
+    const rawResult = await params.provider.call({
+      to: this.tokenAddress,
+      data,
+    });
+    if (!rawResult || rawResult === "0x") {
+      return 0n;
+    }
+    const [balance] = TIP20_INTERFACE.decodeFunctionResult(
+      "balanceOf",
+      rawResult
+    );
+    return balance as bigint;
+  }
+
+  async buildTransfer(params: EvmTransferParams): Promise<TransactionRequest> {
+    const data = TIP20_INTERFACE.encodeFunctionData("transfer", [
+      params.recipient,
+      params.amount,
+    ]);
+    return {
+      from: params.from,
+      to: this.tokenAddress,
+      value: 0n,
+      data,
+      gasLimit: params.overrides?.gasLimit ?? 65_000n,
+      ...(params.overrides?.maxFeePerGas !== undefined && {
+        maxFeePerGas: params.overrides.maxFeePerGas,
+      }),
+      ...(params.overrides?.maxPriorityFeePerGas !== undefined && {
+        maxPriorityFeePerGas: params.overrides.maxPriorityFeePerGas,
+      }),
+      ...(params.overrides?.gasPrice !== undefined && {
+        gasPrice: params.overrides.gasPrice,
+      }),
+      ...(params.overrides?.nonce !== undefined && {
+        nonce: params.overrides.nonce,
+      }),
+    };
+  }
+
+  async buildBurn(params: EvmBurnParams): Promise<TransactionRequest> {
+    const baseData = TIP20_INTERFACE.encodeFunctionData("transfer", [
+      params.burnAddress,
+      params.amount,
+    ]);
+    const data =
+      params.commitmentData && params.commitmentData !== "0x"
+        ? baseData + params.commitmentData.replace(/^0x/, "")
+        : baseData;
+
+    return {
+      from: params.from,
+      to: this.tokenAddress,
+      value: 0n,
+      data,
+      gasLimit: params.overrides?.gasLimit ?? 65_000n,
+      ...(params.overrides?.maxFeePerGas !== undefined && {
+        maxFeePerGas: params.overrides.maxFeePerGas,
+      }),
+      ...(params.overrides?.maxPriorityFeePerGas !== undefined && {
+        maxPriorityFeePerGas: params.overrides.maxPriorityFeePerGas,
+      }),
+      ...(params.overrides?.gasPrice !== undefined && {
+        gasPrice: params.overrides.gasPrice,
+      }),
+      ...(params.overrides?.nonce !== undefined && {
+        nonce: params.overrides.nonce,
+      }),
+    };
+  }
+}
+
+export const defaultTempoTransactionBuilder = new Tip20TransactionBuilder();
+

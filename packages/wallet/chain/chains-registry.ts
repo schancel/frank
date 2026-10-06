@@ -1,6 +1,12 @@
 export type SupportedChainFamily = "evm" | "bitcoin" | "solana";
 export type SupportedNetwork = "mainnet" | "testnet" | "regtest";
-export type SupportedChainKind = "monad" | "ecash" | "solana" | "ethereum";
+export type SupportedChainKind =
+  | "monad"
+  | "ecash"
+  | "solana"
+  | "ethereum"
+  | "hyperliquid"
+  | "tempo";
 export type SupportedCurve = "secp256k1" | "ed25519";
 
 export interface ChainContracts {
@@ -211,6 +217,66 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> = Object.freeze
     caip2: "eip155:1",
     nativeChainId: 1,
     networkTag: "ETH1",
+    contracts: CANONICAL_EVM_CONTRACTS,
+  }),
+  "hyperliquid-mainnet": Object.freeze({
+    id: "hyperliquid-mainnet",
+    kind: "hyperliquid",
+    family: "evm",
+    curve: "secp256k1",
+    keyType: 1,
+    network: "mainnet",
+    isTestnet: false,
+    name: "Hyperliquid",
+    unit: "HYPE",
+    caip2: "eip155:999",
+    nativeChainId: 999,
+    networkTag: "HYPE",
+    contracts: CANONICAL_EVM_CONTRACTS,
+  }),
+  "hyperliquid-testnet": Object.freeze({
+    id: "hyperliquid-testnet",
+    kind: "hyperliquid",
+    family: "evm",
+    curve: "secp256k1",
+    keyType: 1,
+    network: "testnet",
+    isTestnet: true,
+    name: "Hyperliquid Testnet",
+    unit: "tHYPE",
+    caip2: "eip155:998",
+    nativeChainId: 998,
+    networkTag: "HYPT",
+    contracts: CANONICAL_EVM_CONTRACTS,
+  }),
+  "tempo-mainnet": Object.freeze({
+    id: "tempo-mainnet",
+    kind: "tempo",
+    family: "evm",
+    curve: "secp256k1",
+    keyType: 1,
+    network: "mainnet",
+    isTestnet: false,
+    name: "Tempo",
+    unit: "USD",
+    caip2: "eip155:4217",
+    nativeChainId: 4217,
+    networkTag: "TMPO",
+    contracts: CANONICAL_EVM_CONTRACTS,
+  }),
+  "tempo-testnet": Object.freeze({
+    id: "tempo-testnet",
+    kind: "tempo",
+    family: "evm",
+    curve: "secp256k1",
+    keyType: 1,
+    network: "testnet",
+    isTestnet: true,
+    name: "Tempo Moderato",
+    unit: "tUSD",
+    caip2: "eip155:42431",
+    nativeChainId: 42431,
+    networkTag: "TMPT",
     contracts: CANONICAL_EVM_CONTRACTS,
   }),
 });

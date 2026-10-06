@@ -1,5 +1,6 @@
 import { ActiveChain, NativeAssetChain } from "./active-chain";
 import type { EcashChain, EcashChainConfig } from "./ecash-chain";
+import { defaultTempoTransactionBuilder } from "./evm-transaction-builder";
 import { createEvmChain, EvmChainConfig } from "./monad-chain";
 import type { SolanaChainConfig } from "./solana-chain";
 
@@ -30,13 +31,19 @@ export async function createChain(
   params: ChainFactoryConfig
 ): Promise<NativeAssetChain | EcashChain> {
   switch (params.family) {
-    case "evm":
+    case "evm": {
+      const isTempo =
+        params.chainIdentifier?.startsWith("tempo-") ||
+        params.config.rpcChain?.startsWith("tempo-");
+      const defaultBuilder = isTempo ? defaultTempoTransactionBuilder : undefined;
       return createEvmChain({
+        ...(defaultBuilder ? { transactionBuilder: defaultBuilder } : {}),
         ...params.config,
         ...(params.chainIdentifier !== undefined
           ? { chainIdentifier: params.chainIdentifier }
           : {}),
       });
+    }
     case "solana": {
       const { createSolanaChain } = await import("./solana-chain");
       return createSolanaChain({

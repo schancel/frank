@@ -1492,7 +1492,7 @@ continuity_file = "/var/lib/frank/continuity"
     fn protocol_registry_is_unique_and_family_validation_fails_closed() {
         let registry = protocol_chain_registry();
         assert_eq!(registry.schema_version, 1);
-        assert_eq!(registry.chains.len(), 17);
+        assert_eq!(registry.chains.len(), 21);
         assert_eq!(
             registry
                 .chains
@@ -1507,6 +1507,24 @@ continuity_file = "/var/lib/frank/continuity"
                 .chains
                 .iter()
                 .find(|chain| chain.id == "solana-devnet")
+                .unwrap()
+                .allowed_proxy_capabilities,
+            vec![ProtocolProxyCapability::JsonRpc]
+        );
+        assert_eq!(
+            registry
+                .chains
+                .iter()
+                .find(|chain| chain.id == "hyperliquid-mainnet")
+                .unwrap()
+                .allowed_proxy_capabilities,
+            vec![ProtocolProxyCapability::JsonRpc]
+        );
+        assert_eq!(
+            registry
+                .chains
+                .iter()
+                .find(|chain| chain.id == "tempo-testnet")
                 .unwrap()
                 .allowed_proxy_capabilities,
             vec![ProtocolProxyCapability::JsonRpc]

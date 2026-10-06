@@ -164,6 +164,70 @@ describe("chains-registry", () => {
       networkTag: "ETH1",
       contracts: CANONICAL_EVM_CONTRACTS,
     });
+
+    expect(PROTOCOL_CHAINS["hyperliquid-mainnet"]).toEqual({
+      id: "hyperliquid-mainnet",
+      kind: "hyperliquid",
+      family: "evm",
+      curve: "secp256k1",
+      keyType: 1,
+      network: "mainnet",
+      isTestnet: false,
+      name: "Hyperliquid",
+      unit: "HYPE",
+      caip2: "eip155:999",
+      nativeChainId: 999,
+      networkTag: "HYPE",
+      contracts: CANONICAL_EVM_CONTRACTS,
+    });
+
+    expect(PROTOCOL_CHAINS["hyperliquid-testnet"]).toEqual({
+      id: "hyperliquid-testnet",
+      kind: "hyperliquid",
+      family: "evm",
+      curve: "secp256k1",
+      keyType: 1,
+      network: "testnet",
+      isTestnet: true,
+      name: "Hyperliquid Testnet",
+      unit: "tHYPE",
+      caip2: "eip155:998",
+      nativeChainId: 998,
+      networkTag: "HYPT",
+      contracts: CANONICAL_EVM_CONTRACTS,
+    });
+
+    expect(PROTOCOL_CHAINS["tempo-mainnet"]).toEqual({
+      id: "tempo-mainnet",
+      kind: "tempo",
+      family: "evm",
+      curve: "secp256k1",
+      keyType: 1,
+      network: "mainnet",
+      isTestnet: false,
+      name: "Tempo",
+      unit: "USD",
+      caip2: "eip155:4217",
+      nativeChainId: 4217,
+      networkTag: "TMPO",
+      contracts: CANONICAL_EVM_CONTRACTS,
+    });
+
+    expect(PROTOCOL_CHAINS["tempo-testnet"]).toEqual({
+      id: "tempo-testnet",
+      kind: "tempo",
+      family: "evm",
+      curve: "secp256k1",
+      keyType: 1,
+      network: "testnet",
+      isTestnet: true,
+      name: "Tempo Moderato",
+      unit: "tUSD",
+      caip2: "eip155:42431",
+      nativeChainId: 42431,
+      networkTag: "TMPT",
+      contracts: CANONICAL_EVM_CONTRACTS,
+    });
   });
 
   it("resolves entries by id and by kind + isTestnet", () => {
@@ -179,6 +243,10 @@ describe("chains-registry", () => {
     expect(getChainRegistryByKind("solana", false).unit).toBe("SOL");
     expect(getChainRegistryByKind("ethereum", true).unit).toBe("SEP");
     expect(getChainRegistryByKind("ethereum", false).unit).toBe("ETH");
+    expect(getChainRegistryByKind("hyperliquid", true).unit).toBe("tHYPE");
+    expect(getChainRegistryByKind("hyperliquid", false).unit).toBe("HYPE");
+    expect(getChainRegistryByKind("tempo", true).unit).toBe("tUSD");
+    expect(getChainRegistryByKind("tempo", false).unit).toBe("USD");
   });
 
   it("resolves entries by networkTag", () => {
@@ -187,12 +255,18 @@ describe("chains-registry", () => {
     expect(getChainRegistryByNetworkTag("SOLD")?.id).toBe("solana-devnet");
     expect(getChainRegistryByNetworkTag("SOL1")?.id).toBe("solana-mainnet");
     expect(getChainRegistryByNetworkTag("SEPO")?.id).toBe("ethereum-sepolia");
+    expect(getChainRegistryByNetworkTag("HYPE")?.id).toBe("hyperliquid-mainnet");
+    expect(getChainRegistryByNetworkTag("HYPT")?.id).toBe("hyperliquid-testnet");
+    expect(getChainRegistryByNetworkTag("TMPO")?.id).toBe("tempo-mainnet");
+    expect(getChainRegistryByNetworkTag("TMPT")?.id).toBe("tempo-testnet");
     expect(getChainRegistryByNetworkTag("UNKNOWN")).toBeUndefined();
   });
 
   it("resolves entries by CAIP-2", () => {
     expect(getChainRegistryByCaip2("eip155:10143")?.id).toBe("monad-testnet");
     expect(getChainRegistryByCaip2("eip155:1")?.id).toBe("ethereum-mainnet");
+    expect(getChainRegistryByCaip2("eip155:999")?.id).toBe("hyperliquid-mainnet");
+    expect(getChainRegistryByCaip2("eip155:4217")?.id).toBe("tempo-mainnet");
     expect(getChainRegistryByCaip2("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")?.id).toBe(
       "solana-mainnet"
     );

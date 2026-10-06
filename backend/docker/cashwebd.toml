@@ -48,6 +48,45 @@ checkpoint_block_hash = "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471
 upstream_ws_env = "MONAD_TESTNET_WS_RPC_URL"
 max_get_logs_range = 10
 
+# Reference configurations for Hyperliquid and Tempo RPC forwarding:
+# To enable forwarding for either network, set the corresponding upstream URL in .env and uncomment:
+#
+# [[registry.evm_rpc.chains]]
+# id = "hyperliquid-mainnet"
+# expected_chain_id = 999
+# upstream_env = "HYPERLIQUID_MAINNET_HTTP_RPC_URL"
+# checkpoint_block_number = 1
+# checkpoint_block_hash = "0xde151843548b88d06f201d86e860e45fbf07d49612f1934fba5746abd942fb01"
+# upstream_ws_env = "HYPERLIQUID_MAINNET_WS_RPC_URL"
+# max_get_logs_range = 10
+#
+# [[registry.evm_rpc.chains]]
+# id = "hyperliquid-testnet"
+# expected_chain_id = 998
+# upstream_env = "HYPERLIQUID_TESTNET_HTTP_RPC_URL"
+# checkpoint_block_number = 30000000
+# checkpoint_block_hash = "0x8fc1ba577f1c06072cf4f4dde6e1490a11291232f15725865649817f3eafe2f6"
+# upstream_ws_env = "HYPERLIQUID_TESTNET_WS_RPC_URL"
+# max_get_logs_range = 10
+#
+# [[registry.evm_rpc.chains]]
+# id = "tempo-mainnet"
+# expected_chain_id = 4217
+# upstream_env = "TEMPO_MAINNET_HTTP_RPC_URL"
+# checkpoint_block_number = 0
+# checkpoint_block_hash = "0x49d7ec7085e77bf5a403d0fcb4cfc42a4084a89dfff60477579c5e09c9e03c54"
+# upstream_ws_env = "TEMPO_MAINNET_WS_RPC_URL"
+# max_get_logs_range = 10
+#
+# [[registry.evm_rpc.chains]]
+# id = "tempo-testnet"
+# expected_chain_id = 42431
+# upstream_env = "TEMPO_TESTNET_HTTP_RPC_URL"
+# checkpoint_block_number = 0
+# checkpoint_block_hash = "0xba49153e6f3996a340f3fe3d69e7c0826b717ae672cb115cf0527cada0b78e9e"
+# upstream_ws_env = "TEMPO_TESTNET_WS_RPC_URL"
+# max_get_logs_range = 10
+
 [registry.pop]
 enabled = false
 monad_rpc_url = "http://unused.invalid"

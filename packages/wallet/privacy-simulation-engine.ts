@@ -206,8 +206,8 @@ export class SimulatedLedger implements MonadTxSubmitter {
 }
 
 export type IdentitySigningPolicy =
-  | 'persistent-identity-all' // Current: Both posts and votes attach persistent off-chain identity
-  | 'decoupled-voting' // Recommended: Posts attach identity, votes are anonymous proof-of-burn
+  | 'persistent-identity-all' // Insecure baseline: Both posts and votes attach persistent off-chain identity
+  | 'decoupled-voting' // Production: Posts attach identity, votes are anonymous proof-of-burn
   | 'ephemeral-personas' // Advanced: Each post uses an ephemeral/per-topic pseudonym
 
 export interface RelayTopicAnnouncement {
@@ -305,7 +305,7 @@ export async function runPrivacySimulation(
   const secondsPerDay = 86400
 
   const identityPolicy: IdentitySigningPolicy =
-    config.identitySigningPolicy ?? 'persistent-identity-all'
+    config.identitySigningPolicy ?? 'decoupled-voting'
   const targetIdentityNode = HDNodeWallet.createRandom()
   const targetIdentityKey = new Wallet(targetIdentityNode.privateKey)
   const targetIdentityPubKey = targetIdentityKey.address.toLowerCase()
@@ -1208,8 +1208,7 @@ export class CrossLayerSurveillanceEvaluator {
       unclusteredSpends > 0 ? -Math.log2(1 / effectivePool) : 0
 
     return {
-      policy:
-        this.simulation.identitySigningPolicy ?? 'persistent-identity-all',
+      policy: this.simulation.identitySigningPolicy ?? 'decoupled-voting',
       totalTargetSpendAddresses: totalTargetSpends,
       totalActiveSpendAddresses: totalActiveSpends,
       directlyClusteredSpendAddresses: clusteredTargetSpends,

@@ -1792,27 +1792,14 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     directMessages,
     topics,
 
-    getChannelVaultAddress(): string {
+    getStateChannelAddress(): string {
       const entry = config.networkTag
         ? resolveChainIdentifier(config.networkTag)
         : PROTOCOL_CHAINS[isTestnet ? "monad-testnet" : "monad-mainnet"];
-      const addr = entry?.contracts?.channelVault;
+      const addr = entry?.contracts?.stateChannel || entry?.contracts?.channelVault;
       if (!addr) {
         throw new Error(
-          `ChannelVault contract is not configured for network ${config.networkTag || "unknown"}`
-        );
-      }
-      return addr;
-    },
-
-    getTablePotVaultAddress(): string {
-      const entry = config.networkTag
-        ? resolveChainIdentifier(config.networkTag)
-        : PROTOCOL_CHAINS[isTestnet ? "monad-testnet" : "monad-mainnet"];
-      const addr = entry?.contracts?.tablePotVault;
-      if (!addr) {
-        throw new Error(
-          `TablePotVault contract is not configured for network ${config.networkTag || "unknown"}`
+          `StateChannel contract is not configured for network ${config.networkTag || "unknown"}`
         );
       }
       return addr;
@@ -1829,6 +1816,14 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         );
       }
       return addr;
+    },
+
+    getChannelVaultAddress(): string {
+      return this.getStateChannelAddress();
+    },
+
+    getTablePotVaultAddress(): string {
+      return this.getHtlcAddress();
     },
   };
 }

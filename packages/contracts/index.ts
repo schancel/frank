@@ -1,14 +1,11 @@
-import ChannelVaultArtifact from './artifacts/ChannelVault.json'
-import TablePotVaultArtifact from './artifacts/TablePotVault.json'
+import StateChannelArtifact from './artifacts/StateChannel.json'
 import GenericHTLCArtifact from './artifacts/GenericHTLC.json'
 
-export const ChannelVault = ChannelVaultArtifact
-export const TablePotVault = TablePotVaultArtifact
+export const StateChannel = StateChannelArtifact
 export const GenericHTLC = GenericHTLCArtifact
 
 export const CONTRACT_NAMES = {
-  ChannelVault: 'ChannelVault',
-  TablePotVault: 'TablePotVault',
+  StateChannel: 'StateChannel',
   GenericHTLC: 'GenericHTLC',
 } as const
 

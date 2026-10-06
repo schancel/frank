@@ -1,32 +1,22 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { ethers } from 'ethers'
-import { CREATE2_FACTORY, ChannelVault, TablePotVault, GenericHTLC } from '../index'
+import { CREATE2_FACTORY, StateChannel, GenericHTLC } from '../index'
 
 describe('Contract Deployment Pipeline', () => {
   it('computes deterministic CREATE2 addresses matching standard factory rules', () => {
     const salt = ethers.id('frank.contracts.v1')
     const contractSalt = ethers.keccak256(salt)
 
-    const channelVaultInitCodeHash = ethers.keccak256(ChannelVault.bytecode)
-    const expectedChannelVaultAddress = ethers.getCreate2Address(
+    const stateChannelInitCodeHash = ethers.keccak256(StateChannel.bytecode)
+    const expectedStateChannelAddress = ethers.getCreate2Address(
       CREATE2_FACTORY,
       contractSalt,
-      channelVaultInitCodeHash,
+      stateChannelInitCodeHash,
     )
 
-    expect(ethers.isAddress(expectedChannelVaultAddress)).toBe(true)
-    expect(expectedChannelVaultAddress).toMatch(/^0x[a-fA-F0-9]{40}$/)
-
-    const tablePotInitCodeHash = ethers.keccak256(TablePotVault.bytecode)
-    const expectedTablePotAddress = ethers.getCreate2Address(
-      CREATE2_FACTORY,
-      contractSalt,
-      tablePotInitCodeHash,
-    )
-
-    expect(ethers.isAddress(expectedTablePotAddress)).toBe(true)
-    expect(expectedTablePotAddress).not.toBe(expectedChannelVaultAddress)
+    expect(ethers.isAddress(expectedStateChannelAddress)).toBe(true)
+    expect(expectedStateChannelAddress).toMatch(/^0x[a-fA-F0-9]{40}$/)
 
     const htlcInitCodeHash = ethers.keccak256(GenericHTLC.bytecode)
     const expectedHtlcAddress = ethers.getCreate2Address(
@@ -36,7 +26,7 @@ describe('Contract Deployment Pipeline', () => {
     )
 
     expect(ethers.isAddress(expectedHtlcAddress)).toBe(true)
-    expect(expectedHtlcAddress).not.toBe(expectedTablePotAddress)
+    expect(expectedHtlcAddress).not.toBe(expectedStateChannelAddress)
   })
 
   it('generates deployment records structure correctly', () => {
@@ -50,16 +40,12 @@ describe('Contract Deployment Pipeline', () => {
       chainId: 10143,
       deployer: '0x1234567890123456789012345678901234567890',
       contracts: {
-        ChannelVault: {
+        GenericHTLC: {
           address: '0x0000000000000000000000000000000000000001',
           deployedVia: 'create2' as const,
         },
-        TablePotVault: {
+        StateChannel: {
           address: '0x0000000000000000000000000000000000000002',
-          deployedVia: 'create2' as const,
-        },
-        GenericHTLC: {
-          address: '0x0000000000000000000000000000000000000003',
           deployedVia: 'create2' as const,
         },
       },
@@ -71,8 +57,8 @@ describe('Contract Deployment Pipeline', () => {
 
     expect(fs.existsSync(testFile)).toBe(true)
     const read = JSON.parse(fs.readFileSync(testFile, 'utf8'))
-    expect(read.contracts.ChannelVault.address).toBe(
-      '0x0000000000000000000000000000000000000001',
+    expect(read.contracts.StateChannel.address).toBe(
+      '0x0000000000000000000000000000000000000002',
     )
     fs.unlinkSync(testFile)
   })

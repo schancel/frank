@@ -645,13 +645,23 @@ const framed = (v: FrankValue | undefined, path: string): Uint8Array =>
   bstr(v, path, 9, MAX_FRAME_BYTES)
 
 function paymentMember(v: FrankValue | undefined, path: string): PaymentMember {
-  const m = fields(v, path, [0, 1, 2, 3, 4], [], false, false)
+  const m = fields(v, path, [0, 1, 2, 3, 4], [5], false, false)
+  const rawVal = m.get(2)
+  let value: Uint8Array | bigint
+  if (rawVal instanceof Uint8Array) {
+    value = bstr(rawVal, `${path}.2`, 32, 32)
+  } else if (typeof rawVal === 'bigint') {
+    value = uintRange(rawVal, `${path}.2`, 0n, 0xffffffffffffffffn)
+  } else {
+    throw bad(`${path}.2`, 'expected a 32-byte string or an unsigned integer')
+  }
   return {
     childIndex: u32ish(m.get(0), `${path}.0`, 0, 2147483647),
     transactionId: bstr(m.get(1), `${path}.1`, 1, 128),
-    value: bstr(m.get(2), `${path}.2`, 32, 32),
+    value,
     address: bstr(m.get(3), `${path}.3`, 1, 128),
     commitment: bstr(m.get(4), `${path}.4`, 32, 32),
+    vout: m.has(5) ? u32ish(m.get(5), `${path}.5`, 0, 4294967295) : undefined,
   }
 }
 

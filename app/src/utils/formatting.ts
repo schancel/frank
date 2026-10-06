@@ -149,9 +149,7 @@ export function pubKeyToColor(pubKey: Uint8Array): string {
 }
 
 /** Formats a conversation timestamp for chat list display. */
-export function formatConversationTimestamp(
-  timestamp?: number | null,
-): string {
+export function formatConversationTimestamp(timestamp?: number | null): string {
   if (!timestamp) return ''
   const d = new Date(timestamp)
   if (isNaN(d.getTime())) return ''
@@ -169,4 +167,3 @@ export function formatConversationTimestamp(
   const day = d.getDate().toString().padStart(2, '0')
   return `${d.getFullYear()}-${month}-${day}`
 }
-

@@ -273,7 +273,18 @@ export function checkSemantics(
         seenIdx.add(p.childIndex)
       }
       requireUnique(
-        pays.map(p => p.transactionId),
+        pays.map(p => {
+          if (p.vout === undefined) return p.transactionId
+          const out = new Uint8Array(p.transactionId.length + 4)
+          out.set(p.transactionId, 0)
+          const dv = new DataView(
+            out.buffer,
+            out.byteOffset + p.transactionId.length,
+            4,
+          )
+          dv.setUint32(0, p.vout, false)
+          return out
+        }),
         'transaction id',
         `${P}.4`,
       )

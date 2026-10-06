@@ -20,10 +20,12 @@ export interface Timestamp {
 export interface PaymentMember {
   childIndex: number
   transactionId: Uint8Array
-  /** 32-byte big-endian EVM quantity (C8). */
-  value: Uint8Array
+  /** 32-byte big-endian EVM quantity (C8) or satoshi uint64 bigint. */
+  value: Uint8Array | bigint
   address: Uint8Array
   commitment: Uint8Array
+  /** Optional UTXO output index (vout). */
+  vout?: number
 }
 
 export interface SignatureEntry {

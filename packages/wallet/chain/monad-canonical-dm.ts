@@ -872,7 +872,10 @@ async function fetchSince(
       const stampPayments = delivery.typed.payments.map(member => ({
         txHash: hexlify(member.transactionId),
         destinationAddress: getAddress(hexlify(member.address)),
-        valueWei: BigInt(hexlify(member.value)),
+        valueWei:
+          typeof member.value === 'bigint'
+            ? member.value
+            : BigInt(hexlify(member.value)),
       }))
       const peerAddress: ChainAddress = {
         raw: getAddress(computeAddress('0x' + peer.subject)),
@@ -1047,7 +1050,10 @@ export function canonicalDirectMessages(
                 const stampPayments = delivery.typed.payments.map(member => ({
                   txHash: hexlify(member.transactionId),
                   destinationAddress: getAddress(hexlify(member.address)),
-                  valueWei: BigInt(hexlify(member.value)),
+                  valueWei:
+                    typeof member.value === 'bigint'
+                      ? member.value
+                      : BigInt(hexlify(member.value)),
                 }))
                 const own: ChainAddress = {
                   raw: getAddress(owner.identityAddress),

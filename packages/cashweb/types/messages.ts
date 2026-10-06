@@ -20,20 +20,28 @@ export interface P2PKHSendItem {
 
 export interface StealthItem {
   type: 'stealth'
-  /** Target blockchain network identifier (e.g. 'monad-testnet', 'solana-testnet', 'ecash-testnet'). */
-  chainId?: string
+  /** Network tag or identifier (e.g. 'MONT', 'MON1', 'SOLD', 'SOL1', 'XECT', 'XEC1', 'monad-testnet', or CAIP-2). */
+  networkTag?: string
+  /** Key type identifying the curve family: 1 = secp256k1, 2 = ed25519. */
+  keyType?: 1 | 2
+  /** Hex-encoded ephemeral public key used to derive the one-time stealth destination address and secret key. */
+  ephemeralPubKey?: string
+  /** Hex-encoded raw transactions or transaction hashes. */
+  transactions?: string[]
   /** Transferred value / amount */
   amount: number
-  /** Raw signed transaction for EVM / Monad (hex string). */
-  rawTx?: string
-  /** Serialized signed transaction for Solana (base64 or hex string). */
-  solanaTx?: string
   /** Optional transaction memo. */
   memo?: string
+
+  /** @deprecated Use networkTag instead. */
+  chainId?: string
+  /** @deprecated Use transactions array instead. */
+  rawTx?: string
+  /** @deprecated Use transactions array instead. */
+  solanaTx?: string
   /** UTXO-specific outpoint fields (Lotus / eCash compatibility). */
   txId?: string
   outputIndex?: number
-  ephemeralPubKey?: string
 }
 
 export interface ImageItem {

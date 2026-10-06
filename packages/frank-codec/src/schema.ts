@@ -35,6 +35,7 @@ import {
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
   TYPE_TEXT_MESSAGE_ITEM,
   TYPE_BLACKJACK_MESSAGE_ITEM,
+  TYPE_STEALTH_MESSAGE_ITEM,
   MAX_BLACKJACK_FRAME_BYTES,
   TYPE_TOPIC_POST,
   TYPE_TOPIC_POST_SUBMISSION,
@@ -1251,6 +1252,20 @@ export function parseDraft(
         ? blackjackHandPayload(payload)
         : blackjackPayload(payload)
     }
+    case TYPE_STEALTH_MESSAGE_ITEM: {
+      const m = fields(payload, P, [0, 1, 2, 3], [4], true, allow)
+      return {
+        type: 19,
+        networkTag: tstr(m.get(0), `${P}.0`, 1, 64),
+        ephemeralPubKey: account(m.get(1), `${P}.1`),
+        transactions: asList(m.get(2), `${P}.2`, 1, 16).map((e, i) =>
+          bstr(e, `${P}.2[${i}]`, 1, 16384),
+        ),
+        amount: uintRange(m.get(3), `${P}.3`, 0n, U64_MAX),
+        memo: m.has(4) ? tstr(m.get(4), `${P}.4`, 0, 1024) : undefined,
+        unknownFields: m.unknown,
+      }
+    }
     default:
       throw new Error(`parseDraft: type ${typeId} has no schema`)
   }
@@ -1355,6 +1370,9 @@ export function checkAllocated(d: DraftPayload): void {
       checkKeyType(d.subject, `${P}.1`)
       checkKeyType(d.priorAuthority, `${P}.2`)
       checkKeyType(d.newKey, `${P}.4`)
+      break
+    case 19:
+      checkKeyType(d.ephemeralPubKey, `${P}.1`)
       break
     default:
   }

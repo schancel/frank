@@ -18,10 +18,13 @@ import level, { type LevelDB } from 'level'
 import { join } from 'path'
 import {
   encodeBlackjackHandV3Item,
+  encodeStealthMessageItem,
   fromHex,
   isBlackjackHandV3Frame,
+  isStealthMessageItemFrame,
   parseFrame,
   projectBlackjackHandV3Item,
+  projectStealthMessageItem,
   recipientPayloadDigest,
   toHex,
 } from '@frank/codec'
@@ -288,6 +291,31 @@ function textItems(items: readonly MessageItem[]): Uint8Array[] {
   if (items.length === 0) throw new Error('A direct message needs content')
   return items.map(item => {
     if (item.type === 'blackjack-hand') return encodeBlackjackHandV3Item(item)
+    if (item.type === 'stealth') {
+      const networkTag = item.networkTag ?? item.chainId
+      if (!networkTag) {
+        throw new Error('Stealth item must have networkTag or chainId')
+      }
+      const ephemeralPubKey = item.ephemeralPubKey
+      if (!ephemeralPubKey) {
+        throw new Error('Stealth item must have ephemeralPubKey')
+      }
+      const rawTxs =
+        item.transactions ??
+        (item.rawTx ? [item.rawTx] : item.solanaTx ? [item.solanaTx] : [])
+      if (rawTxs.length === 0) {
+        throw new Error('Stealth item must have at least one transaction')
+      }
+      return encodeStealthMessageItem({
+        type: 'stealth',
+        networkTag,
+        keyType: item.keyType ?? 1,
+        ephemeralPubKey,
+        transactions: rawTxs,
+        amount: item.amount,
+        memo: item.memo,
+      })
+    }
     if (item.type !== 'text')
       throw new Error(
         `Canonical direct messages cannot carry '${item.type}' items yet; nothing was paid or sent.`,
@@ -742,6 +770,8 @@ async function fetchSince(
             ? { type: 'text' as const, text: item.typed.text }
             : item.kind === 'parsed' && isBlackjackHandV3Frame(item)
             ? projectBlackjackHandV3Item(item).item
+            : item.kind === 'parsed' && isStealthMessageItemFrame(item)
+            ? projectStealthMessageItem(item)
             : {
                 type: 'text' as const,
                 text: '[This message item is not supported yet]',
@@ -894,6 +924,8 @@ export function canonicalDirectMessages(
                       ? { type: 'text' as const, text: item.typed.text }
                       : item.kind === 'parsed' && isBlackjackHandV3Frame(item)
                       ? projectBlackjackHandV3Item(item).item
+                      : item.kind === 'parsed' && isStealthMessageItemFrame(item)
+                      ? projectStealthMessageItem(item)
                       : {
                           type: 'text' as const,
                           text: '[This message item is not supported yet]',

@@ -437,6 +437,61 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     expect(auth.subject).toBe(toHex(f.bob.identity.compressedPubKey))
   })
 
+  it('sends and receives a stealth item over canonical direct messages', async () => {
+    installCanonicalDirectory(
+      f.alice,
+      await f.directoryFor('alice', f.alice, f.bob),
+    )
+    installCanonicalDirectory(
+      f.bob,
+      await f.directoryFor('bob', f.bob, f.alice),
+    )
+    const stealthItem = {
+      type: 'stealth' as const,
+      networkTag: 'MONT',
+      keyType: 1 as const,
+      ephemeralPubKey: '02' + '22'.repeat(32),
+      transactions: ['1234abcd', '5678ef'],
+      amount: 50_000,
+      memo: 'stealth transfer',
+    }
+    const sent = await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: [stealthItem],
+    })
+    expect(f.requests).toHaveLength(1)
+    const request = restoreCanonicalRequest(f.requests[0])
+    expect(request.identity.payload_hash).toBe(sent.payloadDigest)
+
+    inboxPage.mockResolvedValue({
+      records: [
+        {
+          delivery: request.parts.delivery,
+          context: request.parts.context,
+          submissionIdentity: request.identity.submission_identity,
+          timestampMs: 1234,
+        },
+      ],
+    })
+    const received = await f.chain.directMessages.fetchSince({
+      wallet: f.bob,
+      sinceMs: 0,
+    })
+    expect(received).toHaveLength(1)
+    expect(received[0].items).toEqual([
+      {
+        type: 'stealth',
+        networkTag: 'MONT',
+        keyType: 1,
+        ephemeralPubKey: '02' + '22'.repeat(32),
+        transactions: ['1234abcd', '5678ef'],
+        amount: 50_000,
+        memo: 'stealth transfer',
+      },
+    ])
+  })
+
   it('rethrows 429 challenge capacity error without falling back to inbox page', async () => {
     installCanonicalDirectory(
       f.alice,

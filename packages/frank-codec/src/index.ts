@@ -15,6 +15,7 @@ export { encodeFrame, wrapFrame } from './frame'
 export * from './types'
 export * from './forum'
 export * from './blackjack'
+export * from './stealth'
 export * from './directory-preview'
 export type {
   DirectMessageValidationSession,

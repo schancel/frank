@@ -373,6 +373,16 @@ export interface TextMessageItem {
   unknownFields: UnknownFields
 }
 
+export interface StealthMessageItem {
+  type: 19
+  networkTag: string
+  ephemeralPubKey: AccountRef
+  transactions: Uint8Array[]
+  amount: bigint
+  memo?: string
+  unknownFields: UnknownFields
+}
+
 /** The nine closed blackjack shapes. H and Q distinguish wire bytes from presentation text. */
 export type BlackjackFields<H, Q> = { gameId: string } & (
   | { action: 'bet'; wagerTxHash: H }
@@ -500,6 +510,7 @@ export type TypedPayload<F, C, P = ForumContent, K = ForumCursor> =
   | BlackjackMessageItem
   | BlackjackHandMessageItem
   | BlackjackHandV3MessageItem
+  | StealthMessageItem
 
 /** Why a frame was kept only as opaque bytes. */
 export type RetentionReason =

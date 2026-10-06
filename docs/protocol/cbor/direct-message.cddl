@@ -193,3 +193,14 @@ bh3-bet = {0: hand-id, 1: 34, 4: hash32, 11: hand-seq, 12: hash32}
 ; 35 deal, 36 hit, 37 stand, 38 double, 39 card, 40 reveal; key 13 is the entropy link.
 bh3-move = {0: hand-id, 1: 35..40, 11: hand-seq, 12: hash32, 13: hash32}
 bh3-refund = {0: hand-id, 1: 41, 10: hash32, 11: hand-seq, 12: hash32}
+
+; Active type 19 / schema 1 / min-reader 1: stealth payment item.
+stealth-message-item = {
+  0: network-tag,
+  1: account-ref, ; ephemeral pubkey (key type 1 or 2)
+  2: [1*16 bstr .size (1..16384)], ; raw transaction payloads or hashes
+  3: uint, ; transferred value
+  ? 4: tstr .size (0..1024), ; optional memo
+  * uint => frank-value,
+}
+

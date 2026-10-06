@@ -576,7 +576,10 @@ describe("createMonadChain: directMessages", () => {
     );
 
     await expect(
-      chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+      chain.directMessages.resolveUnattributedAttempts({
+        wallet,
+        payloadDigests: ["abc"],
+      })
     ).rejects.toThrow(
       "Canonical direct messages require persistent typed wallet custody on a Monad network."
     );

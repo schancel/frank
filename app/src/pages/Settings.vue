@@ -23,9 +23,9 @@
     </q-toolbar>
   </q-header>
   <q-page-container>
-    <q-page class="q-ma-none q-pa-sm">
-      <q-card>
-        <q-splitter :model-value="110" unit="px" disable>
+    <q-page class="q-ma-none q-pa-none column full-height">
+      <q-card flat class="col column full-width full-height bg-transparent">
+        <q-splitter :model-value="120" unit="px" disable class="col full-height">
           <template #before>
             <q-tabs v-model="tab" vertical class="text-primary">
               <q-tab
@@ -121,18 +121,22 @@
             </q-tab-panels>
           </template>
         </q-splitter>
-        <q-card-actions align="right">
+        <q-separator />
+        <q-card-actions align="right" class="q-pa-md bg-transparent">
           <q-btn
             @click="cancel"
             :label="$t('settings.cancelSettings')"
             color="negative"
-            class="q-ma-sm"
+            flat
+            no-caps
+            class="q-mr-sm"
           />
           <q-btn
             @click="save"
             :label="$t('settings.saveSettings')"
             color="primary"
-            class="q-ma-sm"
+            unelevated
+            no-caps
           />
         </q-card-actions>
       </q-card>

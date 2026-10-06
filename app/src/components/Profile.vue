@@ -1,8 +1,8 @@
 <template>
-  <div>
-    <q-splitter v-model="splitterSize" unit="px" disable>
+  <div class="full-height column">
+    <q-splitter v-model="splitterSize" unit="px" disable class="col full-height">
       <template #before>
-        <q-tabs v-model="tab" vertical class="text-primary">
+        <q-tabs v-model="tab" vertical class="text-primary full-height">
           <q-tab
             name="profile"
             icon="person"
@@ -16,8 +16,9 @@
           animated
           transition-prev="jump-up"
           transition-next="jump-up"
+          class="full-height bg-transparent"
         >
-          <q-tab-panel name="profile">
+          <q-tab-panel name="profile" class="q-pa-md">
             <div class="row">
               <div class="col">
                 <div class="row q-pa-md">

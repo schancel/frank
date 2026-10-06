@@ -1,8 +1,8 @@
 <template>
   <q-page-container>
-    <q-page class="q-ma-none q-pa-sm">
-      <q-card>
-        <q-card-section>
+    <q-page class="q-ma-none q-pa-none column full-height">
+      <q-card flat class="col column full-width full-height bg-transparent">
+        <q-card-section class="q-px-md q-pt-md q-pb-none">
           <div class="text-h6">
             {{ $t('profileDialog.profile') }}
           </div>
@@ -15,14 +15,17 @@
           v-model:avatar="avatar"
           v-model:links="links"
           v-model:acceptancePrice="acceptancePrice"
+          class="col full-height"
         />
-        <q-card-actions align="right">
+        <q-separator />
+        <q-card-actions align="right" class="q-pa-md bg-transparent">
           <q-btn
             :label="$t('profileDialog.cancel')"
             color="negative"
             flat
             no-caps
             data-test="profile-cancel"
+            class="q-mr-sm"
             @click="cancel"
           />
           <q-btn
@@ -32,6 +35,7 @@
                 : $t('profileDialog.update')
             "
             color="primary"
+            unelevated
             no-caps
             data-test="profile-update"
             @click="updateRelayData"

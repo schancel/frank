@@ -5,6 +5,8 @@ export * from './stamps/ecash-stamp-provider';
 export * from './storage/blob-store';
 export * from './storage/local-fs-blob-store';
 export * from './storage/s3-blob-store';
+export * from './ledger/schema';
+export * from './ledger/database';
 export * from './ledger/credit-ledger';
 export * from './http/checkout-server';
 export * from './smtp/inbound-server';

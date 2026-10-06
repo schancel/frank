@@ -627,7 +627,9 @@ pub(crate) enum Draft {
 
 fn payment_member(v: &CborValue, path: &str) -> Result<PaymentDraft, CodecError> {
     let map = fields(Some(v), path, &[0, 1, 2, 3, 4], &[5], false, false)?;
-    let val_item = map.get(2).ok_or_else(|| bad(&format!("{path}.2"), "missing value"))?;
+    let val_item = map
+        .get(2)
+        .ok_or_else(|| bad(&format!("{path}.2"), "missing value"))?;
     let value = match val_item {
         CborValue::Bytes(b) => {
             if b.len() != 32 {
@@ -637,11 +639,19 @@ fn payment_member(v: &CborValue, path: &str) -> Result<PaymentDraft, CodecError>
         }
         CborValue::Int(n) => {
             if *n < 0 || *n > u64::MAX as i128 {
-                return Err(bad(&format!("{path}.2"), "expected satoshis in 0..u64::MAX"));
+                return Err(bad(
+                    &format!("{path}.2"),
+                    "expected satoshis in 0..u64::MAX",
+                ));
             }
             PaymentValue::Satoshis(*n as u64)
         }
-        _ => return Err(bad(&format!("{path}.2"), "expected a 32-byte string or an unsigned integer")),
+        _ => {
+            return Err(bad(
+                &format!("{path}.2"),
+                "expected a 32-byte string or an unsigned integer",
+            ))
+        }
     };
     let vout = if map.has(5) {
         Some(u32_in(map.get(5), &format!("{path}.5"), 0, u32::MAX)?)
@@ -1441,7 +1451,11 @@ fn check_signature_shape(
 pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
     let path = "root/payload";
     match draft {
-        Draft::DirectMessage { destination, recipient, .. } => {
+        Draft::DirectMessage {
+            destination,
+            recipient,
+            ..
+        } => {
             check_key_type(destination, &format!("{path}.1"))?;
             if let Some(r) = recipient {
                 check_key_type(r, &format!("{path}.5"))?;

@@ -4,13 +4,13 @@
 mod common;
 
 use frank_cbor::{
-    cbor_map, payment_commitment, recipient_payload_digest, validate_frame, CborValue,
-    Error, PaymentValue, TypedPayload, ValidationResult,
+    cbor_map, payment_commitment, recipient_payload_digest, validate_frame, CborValue, Error,
+    PaymentValue, TypedPayload, ValidationResult,
 };
 
 use common::{
-    acct1, acct2, bytes_of, fr, int, stamp_account, type5_frame, typed_context, NET,
-    T3C_PROOF, T3C_STAMP_KEY,
+    acct1, acct2, bytes_of, fr, int, stamp_account, type5_frame, typed_context, NET, T3C_PROOF,
+    T3C_STAMP_KEY,
 };
 
 fn utxo_payment(
@@ -117,7 +117,8 @@ fn test_allows_same_txid_with_different_vout() {
     let p1 = utxo_payment(&t3, 1, shared_txid, int(20_000), Some(1));
 
     let frame = build_delivery_with_payments(vec![p0, p1], None, None);
-    let result = validate_frame(&frame, &typed_context()).expect("valid delivery with distinct vouts");
+    let result =
+        validate_frame(&frame, &typed_context()).expect("valid delivery with distinct vouts");
     if let ValidationResult::Parsed(parsed) = result {
         if let Some(TypedPayload::DirectMessage { payments, .. }) = parsed.typed.as_deref() {
             assert_eq!(payments.len(), 2);
@@ -142,7 +143,10 @@ fn test_rejects_duplicate_txid_and_vout() {
         Err(Error::Codec(e)) => {
             assert_eq!(format!("{:?}", e.category), "Semantic");
         }
-        other => panic!("expected semantic error for duplicate (txid, vout), got {:?}", other),
+        other => panic!(
+            "expected semantic error for duplicate (txid, vout), got {:?}",
+            other
+        ),
     }
 }
 
@@ -164,7 +168,12 @@ fn test_co_located_recipient_and_dleq() {
     );
     let result = validate_frame(&frame_both, &typed_context()).expect("valid co-located fields");
     if let ValidationResult::Parsed(parsed) = result {
-        if let Some(TypedPayload::DirectMessage { recipient, dleq_proof, .. }) = parsed.typed.as_deref() {
+        if let Some(TypedPayload::DirectMessage {
+            recipient,
+            dleq_proof,
+            ..
+        }) = parsed.typed.as_deref()
+        {
             assert!(recipient.is_some());
             assert_eq!(recipient.as_ref().unwrap().key_type, 1);
             assert!(dleq_proof.is_some());
@@ -175,28 +184,18 @@ fn test_co_located_recipient_and_dleq() {
     }
 
     // Only recipient present: fails semantic
-    let frame_only_rec = build_delivery_with_payments(
-        vec![p0.clone(), p1.clone()],
-        Some(rec.clone()),
-        None,
-    );
+    let frame_only_rec =
+        build_delivery_with_payments(vec![p0.clone(), p1.clone()], Some(rec.clone()), None);
     assert!(validate_frame(&frame_only_rec, &typed_context()).is_err());
 
     // Only proof present: fails semantic
-    let frame_only_proof = build_delivery_with_payments(
-        vec![p0.clone(), p1.clone()],
-        None,
-        Some(proof),
-    );
+    let frame_only_proof =
+        build_delivery_with_payments(vec![p0.clone(), p1.clone()], None, Some(proof));
     assert!(validate_frame(&frame_only_proof, &typed_context()).is_err());
 
     // Recipient with key_type != 1: fails schema/semantic
     let bad_rec = acct2(3); // key_type 2
     let proof2 = CborValue::Bytes(hex::decode(T3C_PROOF).unwrap());
-    let frame_bad_rec = build_delivery_with_payments(
-        vec![p0, p1],
-        Some(bad_rec),
-        Some(proof2),
-    );
+    let frame_bad_rec = build_delivery_with_payments(vec![p0, p1], Some(bad_rec), Some(proof2));
     assert!(validate_frame(&frame_bad_rec, &typed_context()).is_err());
 }

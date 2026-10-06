@@ -925,7 +925,9 @@ test('durable distinct-party browser answer opens exact bytes after public Node 
       recipientCurrent: recipient,
     })
     expect(toHex(result.content)).toBe(toHex(distinctPrepared.content))
-    expect(toHex(result.contentDigest)).toBe(toHex(distinctPrepared.contentDigest))
+    expect(toHex(result.contentDigest)).toBe(
+      toHex(distinctPrepared.contentDigest),
+    )
     expect(toHex(result.t3)).toBe(toHex(distinctPrepared.t3))
     expect(toHex(result.senderT1)).toBe(answer.sender_t1)
     expect(toHex(result.recipientT1)).toBe(answer.recipient_t1)
@@ -986,4 +988,107 @@ test('open callback mutation cannot alter captured authority, context or exact e
   expect(toHex(result.context)).toBe(toHex(fixturePrepared.context))
   expect(toHex(result.senderT1)).toBe(v.t1)
   expect(toHex(result.content)).toBe(toHex(fixturePrepared.content))
+})
+function selfOpenRoles() {
+  const selfOpenKey = selfOpenKeyFromRoot(new Uint8Array(32).fill(0x33))
+  const role = roles()
+  role.sealMessage = input => {
+    const salt = randomBytes(32)
+    const ephemeralSecret = selfOpenEphemeral({
+      selfOpenKey,
+      salt,
+      recipientPublicKey: input.recipientPublicKey,
+      senderPublicKey: current.messageKey.keyBytes,
+    })!
+    return seal({
+      ...input,
+      suiteId: 1,
+      senderPrivateKey: fromHex(v.message_secret_test_only),
+      senderPublicKey: current.messageKey.keyBytes,
+      salt,
+      ephemeralSecret,
+    })
+  }
+  role.openOwnMessage = input =>
+    openAsSender({
+      ...input,
+      selfOpenKey,
+      senderPrivateKey: fromHex(v.message_secret_test_only),
+      senderPublicKey: current.messageKey.keyBytes,
+    })
+  return role
+}
+test('ticket #970: conversationId defaults to messageId and conversationName is undefined when omitted', () => {
+  const messageId = new Uint8Array(16).fill(0x11)
+  const role = selfOpenRoles()
+  const prepared = prepareDirectMessage({
+    network: corpus.network,
+    senderCurrent: current,
+    recipientCurrent: current,
+    messageId,
+    items: [directMessageText('default conversation')],
+    roles: role,
+  })
+  expect(toHex(prepared.conversationId)).toBe(toHex(messageId))
+  expect(prepared.conversationName).toBeUndefined()
+
+  const opened = openDirectMessage({
+    ...receive(role),
+    payload: prepared.payload,
+    context: prepared.context,
+  })
+  expect(toHex(opened.conversationId)).toBe(toHex(messageId))
+  expect(opened.conversationName).toBeUndefined()
+  expect(opened.mode).toBe('receive')
+
+  const selfOpened = openOwnDirectMessage({
+    network: corpus.network,
+    payload: prepared.payload,
+    context: prepared.context,
+    roles: role,
+    senderCurrent: current,
+    recipientCurrent: current,
+  })
+  expect(toHex(selfOpened.conversationId)).toBe(toHex(messageId))
+  expect(selfOpened.conversationName).toBeUndefined()
+  expect(selfOpened.mode).toBe('send')
+})
+test('ticket #970: explicit conversationId and conversationName are preserved across prepare and open', () => {
+  const messageId = new Uint8Array(16).fill(0x22)
+  const conversationId = new Uint8Array(16).fill(0x33)
+  const conversationName = 'Secret Project Chat'
+  const role = selfOpenRoles()
+  const prepared = prepareDirectMessage({
+    network: corpus.network,
+    senderCurrent: current,
+    recipientCurrent: current,
+    messageId,
+    conversationId,
+    conversationName,
+    items: [directMessageText('named conversation')],
+    roles: role,
+  })
+  expect(toHex(prepared.conversationId)).toBe(toHex(conversationId))
+  expect(prepared.conversationName).toBe(conversationName)
+
+  const opened = openDirectMessage({
+    ...receive(role),
+    payload: prepared.payload,
+    context: prepared.context,
+  })
+  expect(toHex(opened.conversationId)).toBe(toHex(conversationId))
+  expect(opened.conversationName).toBe(conversationName)
+  expect(opened.mode).toBe('receive')
+
+  const selfOpened = openOwnDirectMessage({
+    network: corpus.network,
+    payload: prepared.payload,
+    context: prepared.context,
+    roles: role,
+    senderCurrent: current,
+    recipientCurrent: current,
+  })
+  expect(toHex(selfOpened.conversationId)).toBe(toHex(conversationId))
+  expect(selfOpened.conversationName).toBe(conversationName)
+  expect(selfOpened.mode).toBe('send')
 })

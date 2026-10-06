@@ -16,6 +16,7 @@ export * from './types'
 export * from './forum'
 export * from './blackjack'
 export * from './stealth'
+export * from './channel'
 export * from './directory-preview'
 export type {
   DirectMessageValidationSession,

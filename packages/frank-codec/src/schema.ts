@@ -36,7 +36,13 @@ import {
   TYPE_TEXT_MESSAGE_ITEM,
   TYPE_BLACKJACK_MESSAGE_ITEM,
   TYPE_STEALTH_MESSAGE_ITEM,
+  TYPE_CHANNEL_UPDATE,
   MAX_BLACKJACK_FRAME_BYTES,
+  MAX_CHANNEL_UPDATE_FRAME_BYTES,
+  MAX_CHANNEL_ALLOCATIONS,
+  MAX_CHANNEL_PARTICIPANTS,
+  MAX_CHANNEL_SIGNATURES,
+  MAX_CHANNEL_APP_STATE_BYTES,
   TYPE_TOPIC_POST,
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
@@ -69,6 +75,9 @@ import type {
   BlackjackMessageItem,
   BlackjackHandMessageItem,
   BlackjackHandV3MessageItem,
+  ChainAllocation,
+  ChannelUpdateItem,
+  ParticipantBalance,
 } from './types'
 
 function fail(
@@ -282,6 +291,8 @@ export function checkRootFrameLimit(
 ): boolean {
   if (typeId === TYPE_BLACKJACK_MESSAGE_ITEM)
     return frameLength <= MAX_BLACKJACK_FRAME_BYTES
+  if (typeId === TYPE_CHANNEL_UPDATE)
+    return frameLength <= MAX_CHANNEL_UPDATE_FRAME_BYTES
   if (typeId === TYPE_DIRECTORY_STATEMENT && schemaVersion >= 4)
     return frameLength <= 262_144
   if (typeId === TYPE_DIRECT_MESSAGE_DELIVERY) return frameLength <= 1_048_576
@@ -633,6 +644,17 @@ export function checkTypeLimits(
     case TYPE_CONTAINER_MESSAGE_ITEM:
       if (tooMany(f(0), MAX_MESSAGE_ITEMS_PER_ARRAY)) over('message items')
       break
+    case TYPE_CHANNEL_UPDATE: {
+      const appState = f(4)
+      if (
+        appState instanceof Uint8Array &&
+        appState.length > MAX_CHANNEL_APP_STATE_BYTES
+      )
+        over('app state')
+      if (tooMany(f(3), MAX_CHANNEL_ALLOCATIONS)) over('chain allocations')
+      if (tooMany(f(5), MAX_CHANNEL_SIGNATURES)) over('channel signatures')
+      break
+    }
     default:
   }
 }
@@ -674,6 +696,40 @@ function signatureEntry(
     algorithm: u32ish(m.get(0), `${path}.0`, 0, 65535),
     signer: account(m.get(1), `${path}.1`),
     signature: bstr(m.get(2), `${path}.2`, 1, 512),
+  }
+}
+
+function participantBalance(
+  v: FrankValue | undefined,
+  path: string,
+): ParticipantBalance {
+  const m = fields(v, path, [0, 1], [], false, false)
+  const rawVal = m.get(1)
+  let balance: Uint8Array | bigint
+  if (rawVal instanceof Uint8Array) {
+    balance = bstr(rawVal, `${path}.1`, 32, 32)
+  } else if (typeof rawVal === 'bigint') {
+    balance = uintRange(rawVal, `${path}.1`, 0n, U64_MAX)
+  } else {
+    throw bad(`${path}.1`, 'expected a 32-byte string or an unsigned integer')
+  }
+  return {
+    participant: account(m.get(0), `${path}.0`),
+    balance,
+  }
+}
+
+function chainAllocation(
+  v: FrankValue | undefined,
+  path: string,
+): ChainAllocation {
+  const m = fields(v, path, [0, 1, 2], [], false, false)
+  return {
+    networkTag: networkTag(m.get(0), `${path}.0`),
+    token: bstr(m.get(1), `${path}.1`, 0, 128),
+    balances: asList(m.get(2), `${path}.2`, 2, 16).map((b, i) =>
+      participantBalance(b, `${path}.2[${i}]`),
+    ),
   }
 }
 
@@ -1276,6 +1332,26 @@ export function parseDraft(
         unknownFields: m.unknown,
       }
     }
+    case TYPE_CHANNEL_UPDATE: {
+      const m = fields(payload, P, [0, 1, 2, 3, 4, 5], [6], true, allow)
+      return {
+        type: 24,
+        channelId: bstr(m.get(0), `${P}.0`, 32, 32),
+        appId: tstr(m.get(1), `${P}.1`, 1, 64),
+        sequenceNumber: u32ish(m.get(2), `${P}.2`, 0, 4294967295),
+        allocations: asList(m.get(3), `${P}.3`, 1, 8).map((a, i) =>
+          chainAllocation(a, `${P}.3[${i}]`),
+        ),
+        appState: bstr(m.get(4), `${P}.4`, 0, 65536),
+        signatures: asList(m.get(5), `${P}.5`, 1, 4).map((s, i) =>
+          signatureEntry(s, `${P}.5[${i}]`),
+        ),
+        settlementRef: m.has(6)
+          ? bstr(m.get(6), `${P}.6`, 1, 128)
+          : undefined,
+        unknownFields: m.unknown,
+      }
+    }
     default:
       throw new Error(`parseDraft: type ${typeId} has no schema`)
   }
@@ -1383,6 +1459,17 @@ export function checkAllocated(d: DraftPayload): void {
       break
     case 19:
       checkKeyType(d.ephemeralPubKey, `${P}.1`)
+      break
+    case 24:
+      d.allocations.forEach((a, i) => {
+        a.balances.forEach((b, j) => {
+          checkKeyType(b.participant, `${P}.3[${i}].2[${j}].0`)
+        })
+      })
+      d.signatures.forEach((s, i) => {
+        checkKeyType(s.signer, `${P}.5[${i}].1`)
+        checkSignatureShape(s.algorithm, s.signer, s.signature, `${P}.5[${i}]`)
+      })
       break
     default:
   }

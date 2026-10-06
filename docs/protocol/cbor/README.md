@@ -204,6 +204,8 @@ E5. Type identifiers are never reused. Version 1 reserves:
 |         16 | Container message item                      | [direct-message.cddl](direct-message.cddl) |
 |         17 | UTF-8 text message item                     | [direct-message.cddl](direct-message.cddl) |
 |         18 | Closed typed blackjack message item         | [direct-message.cddl](direct-message.cddl) |
+|         19 | Stealth payment item                        | [direct-message.cddl](direct-message.cddl) |
+|         24 | Universal state channel update item         | [direct-message.cddl](direct-message.cddl) |
 | 0xffff0001 | Proof-only unknown future message item      | Opaque fixture payload                     |
 
 The CDDL rule for each type's payload is: 1 `direct-message-delivery`; 2

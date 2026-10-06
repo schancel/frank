@@ -385,6 +385,72 @@ export interface StealthMessageItem {
   unknownFields: UnknownFields
 }
 
+export interface ParticipantBalance {
+  participant: AccountRef
+  /** 32-byte big-endian EVM quantity (C8) or satoshi / native uint64 bigint. */
+  balance: Uint8Array | bigint
+}
+
+export interface ChainAllocation {
+  networkTag: string
+  /** Empty for native currency, or token identifier bytes. */
+  token: Uint8Array
+  balances: ParticipantBalance[]
+}
+
+export interface ChannelUpdateItem {
+  type: 24
+  channelId: Uint8Array
+  appId: string
+  sequenceNumber: number
+  allocations: ChainAllocation[]
+  appState: Uint8Array
+  signatures: SignatureEntry[]
+  settlementRef?: Uint8Array
+  unknownFields: UnknownFields
+}
+
+export type DiceAction = 'commit' | 'reveal' | 'roll'
+
+export interface DiceGamePayload {
+  round: number | bigint
+  action: DiceAction
+  seedCommitment: Uint8Array
+  revealSeed?: Uint8Array
+  targetRoll?: number
+  wager: Uint8Array | bigint
+  unknownFields?: UnknownFields
+}
+
+export interface PokerGamePayload {
+  handId: Uint8Array
+  phase: string
+  action: string
+  cardCommitments?: Uint8Array[]
+  keys?: Uint8Array[]
+  unknownFields?: UnknownFields
+}
+
+export interface SwapOfferPayload {
+  swapId: Uint8Array
+  makerAsset: Uint8Array
+  makerAmount: Uint8Array | bigint
+  takerAsset: Uint8Array
+  takerAmount: Uint8Array | bigint
+  expiration: number | bigint
+  htlcHash?: Uint8Array
+  unknownFields?: UnknownFields
+}
+
+export interface RafflePayload {
+  raffleId: Uint8Array
+  ticketPrice: Uint8Array | bigint
+  ticketsSold: number | bigint
+  winningHash?: Uint8Array
+  unknownFields?: UnknownFields
+}
+
+
 /** The nine closed blackjack shapes. H and Q distinguish wire bytes from presentation text. */
 export type BlackjackFields<H, Q> = { gameId: string } & (
   | { action: 'bet'; wagerTxHash: H }
@@ -513,6 +579,7 @@ export type TypedPayload<F, C, P = ForumContent, K = ForumCursor> =
   | BlackjackHandMessageItem
   | BlackjackHandV3MessageItem
   | StealthMessageItem
+  | ChannelUpdateItem
 
 /** Why a frame was kept only as opaque bytes. */
 export type RetentionReason =

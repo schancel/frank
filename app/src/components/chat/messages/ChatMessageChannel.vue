@@ -46,10 +46,7 @@
       <div class="text-caption q-mt-xs">
         Round: <strong>#{{ decodedApp.data.round }}</strong>
       </div>
-      <div
-        v-if="decodedApp.data.targetRoll !== undefined"
-        class="text-caption"
-      >
+      <div v-if="decodedApp.data.targetRoll !== undefined" class="text-caption">
         Target: <strong>&lt; {{ decodedApp.data.targetRoll }}</strong>
       </div>
       <div v-if="decodedApp.data.wager !== undefined" class="text-caption">
@@ -187,12 +184,7 @@
       style="font-size: 11px"
     >
       <div class="row items-center">
-        <q-icon
-          name="verified"
-          size="14px"
-          color="positive"
-          class="q-mr-xs"
-        />
+        <q-icon name="verified" size="14px" color="positive" class="q-mr-xs" />
         <span
           >{{ item.signatures.length }} signature{{
             item.signatures.length === 1 ? '' : 's'
@@ -270,7 +262,7 @@ export default defineComponent({
         case 'liars-dice':
           return "Liar's Dice"
         case 'poker':
-          return 'Texas Hold\'em'
+          return "Texas Hold'em"
         case 'swap':
           return 'Atomic Swap'
         case 'raffle':
@@ -383,9 +375,7 @@ export default defineComponent({
       return typeof val === 'string' ? val : toHex(val)
     }
 
-    function formatAmount(
-      val?: Uint8Array | bigint | number | string,
-    ): string {
+    function formatAmount(val?: Uint8Array | bigint | number | string): string {
       if (val === undefined || val === null) return '0'
       if (val instanceof Uint8Array) {
         return toHex(val)

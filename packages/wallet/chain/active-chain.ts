@@ -51,6 +51,8 @@ import {
   DiscoveredTopic,
 } from "../forum-model";
 import { MessageItem } from "@frank/cashweb/types/messages";
+import type { PaymentTransfer } from "@frank/codec";
+export type { PaymentTransfer } from "@frank/codec";
 import type { MonadRootBundle } from "../monad-wallet-material";
 export type { MonadRootBundle } from "../monad-wallet-material";
 import {
@@ -117,6 +119,7 @@ export interface DirectMessageSendResult {
   payloadDigest: string;
   stampValueWei: bigint;
   stampPayments: StampPaymentInfo[];
+  paymentTransfers?: PaymentTransfer[];
   /** Main-account transactions used to prepare sender inventory for this Send, if any. */
   preparationTxHashes: string[];
 }
@@ -151,6 +154,7 @@ export interface DirectMessageReceived {
    * transactions, not merely echoing a configured constant -- see `./monad-chain.ts`). */
   stampValueWei: bigint;
   stampPayments: StampPaymentInfo[];
+  paymentTransfers?: PaymentTransfer[];
   /** Milliseconds since the Unix epoch, as recorded by the relay. */
   receivedTime: number;
 }

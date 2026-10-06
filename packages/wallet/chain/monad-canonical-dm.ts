@@ -24,10 +24,17 @@ import {
   isBlackjackHandV3Frame,
   isStealthMessageItemFrame,
   parseFrame,
+  paymentTransferFromMember,
+  paymentTransferFromStealthItem,
+  paymentTransferToMember,
+  paymentTransferToStealthItem,
   projectBlackjackHandV3Item,
   projectStealthMessageItem,
   recipientPayloadDigest,
   toHex,
+  type CanonicalStealthItem,
+  type PaymentMember,
+  type PaymentTransfer,
 } from '@frank/codec'
 import { randomBytes } from '@frank/crypto-box'
 import type { Current, HistoricalEvidence } from '../../directory-admission/src'
@@ -49,7 +56,7 @@ import {
   type CanonicalMailboxAuthParams,
   type CanonicalMailboxRecord,
 } from '@frank/cashweb/relay/monad-mailbox-client'
-import type { MessageItem } from '@frank/cashweb/types/messages'
+import type { MessageItem, StealthItem } from '@frank/cashweb/types/messages'
 import type {
   ChainAddress,
   DirectMessageAttemptStatus,
@@ -340,6 +347,65 @@ function payments(transactions: readonly Uint8Array[]): StampPaymentInfo[] {
   })
 }
 
+export function constructStampPaymentTransfers(params: {
+  networkTag: string
+  transactions: readonly Uint8Array[]
+  vout?: number
+}): PaymentTransfer[] {
+  return params.transactions.flatMap(raw => {
+    const tx = Transaction.from(hexlify(raw))
+    if (tx.hash === null || tx.to === null) return []
+    const hashHex = tx.hash.startsWith('0x')
+      ? tx.hash.slice(2).toLowerCase()
+      : tx.hash.toLowerCase()
+    const toHexStr = tx.to.startsWith('0x')
+      ? tx.to.slice(2).toLowerCase()
+      : tx.to.toLowerCase()
+    return [
+      {
+        networkTag: params.networkTag,
+        txId: fromHex(hashHex),
+        ...(params.vout !== undefined ? { vout: params.vout } : {}),
+        destination: fromHex(toHexStr),
+        value: tx.value,
+      },
+    ]
+  })
+}
+
+export function constructPaymentTransferFromMember(
+  member: PaymentMember,
+  networkTag: string,
+): PaymentTransfer {
+  return paymentTransferFromMember(member, networkTag)
+}
+
+export function constructPaymentTransferFromStealth(
+  item: CanonicalStealthItem | StealthItem,
+  destination?: string | Uint8Array,
+): PaymentTransfer {
+  return paymentTransferFromStealthItem(item as any, destination)
+}
+
+export function consumePaymentTransferToStamp(
+  transfer: PaymentTransfer,
+): StampPaymentInfo {
+  return {
+    txHash: '0x' + toHex(transfer.txId),
+    destinationAddress: getAddress('0x' + toHex(transfer.destination)),
+    valueWei:
+      typeof transfer.value === 'bigint'
+        ? transfer.value
+        : BigInt('0x' + toHex(transfer.value)),
+  }
+}
+
+export function consumePaymentTransferToStealth(
+  transfer: PaymentTransfer,
+): CanonicalStealthItem {
+  return paymentTransferToStealthItem(transfer)
+}
+
 /**
  * Correlate every durable wallet record with a saved link, finish frozen intents, re-send the same
  * bytes of live attempts and retire terminal ones. Never builds or signs a new payment.
@@ -566,6 +632,10 @@ async function send(
     payloadDigest: digest,
     stampValueWei,
     stampPayments: payments(transactions),
+    paymentTransfers: constructStampPaymentTransfers({
+      networkTag: directory.network,
+      transactions,
+    }),
     preparationTxHashes,
   }
 }
@@ -759,9 +829,10 @@ async function fetchSince(
     for (const record of page.records) {
       const delivery = parseFrame(record.delivery)
       if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1) continue
-      const payload = delivery.typed.payloadFrame.typed
+      const deliveryTyped = delivery.typed
+      const payload = deliveryTyped.payloadFrame.typed
       if (payload?.type !== 5) continue
-      const digest = toHex(delivery.typed.payloadDigest)
+      const digest = toHex(deliveryTyped.payloadDigest)
       const isOutbound = record.direction === 'out'
       const peerSubjectKeyBytes = isOutbound
         ? payload.recipient.keyBytes
@@ -869,7 +940,7 @@ async function fetchSince(
       } finally {
         roles.dispose()
       }
-      const stampPayments = delivery.typed.payments.map(member => ({
+      const stampPayments = deliveryTyped.payments.map(member => ({
         txHash: hexlify(member.transactionId),
         destinationAddress: getAddress(hexlify(member.address)),
         valueWei:
@@ -877,6 +948,9 @@ async function fetchSince(
             ? member.value
             : BigInt(hexlify(member.value)),
       }))
+      const paymentTransfers = deliveryTyped.payments.map(member =>
+        constructPaymentTransferFromMember(member, deliveryTyped.network),
+      )
       const peerAddress: ChainAddress = {
         raw: getAddress(computeAddress('0x' + peer.subject)),
       }
@@ -894,6 +968,7 @@ async function fetchSince(
         payloadDigest: digest,
         stampValueWei: stampPayments.reduce((sum, p) => sum + p.valueWei, 0n),
         stampPayments,
+        paymentTransfers,
         receivedTime: record.timestampMs,
       })
     }
@@ -973,9 +1048,10 @@ export function canonicalDirectMessages(
                 const delivery = parseFrame(record.delivery)
                 if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
                   return
-                const payload = delivery.typed.payloadFrame.typed
+                const deliveryTyped = delivery.typed
+                const payload = deliveryTyped.payloadFrame.typed
                 if (payload?.type !== 5) return
-                const digest = toHex(delivery.typed.payloadDigest)
+                const digest = toHex(deliveryTyped.payloadDigest)
                 const isOutbound = record.direction === 'out'
                 const peerSubjectKeyBytes = isOutbound
                   ? payload.recipient.keyBytes
@@ -1047,7 +1123,7 @@ export function canonicalDirectMessages(
                 } finally {
                   roles.dispose()
                 }
-                const stampPayments = delivery.typed.payments.map(member => ({
+                const stampPayments = deliveryTyped.payments.map(member => ({
                   txHash: hexlify(member.transactionId),
                   destinationAddress: getAddress(hexlify(member.address)),
                   valueWei:
@@ -1055,6 +1131,9 @@ export function canonicalDirectMessages(
                       ? member.value
                       : BigInt(hexlify(member.value)),
                 }))
+                const paymentTransfers = deliveryTyped.payments.map(member =>
+                  constructPaymentTransferFromMember(member, deliveryTyped.network),
+                )
                 const own: ChainAddress = {
                   raw: getAddress(owner.identityAddress),
                 }
@@ -1078,6 +1157,7 @@ export function canonicalDirectMessages(
                     0n,
                   ),
                   stampPayments,
+                  paymentTransfers,
                   receivedTime: record.timestampMs,
                 })
               } catch (err) {

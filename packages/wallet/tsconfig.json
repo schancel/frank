@@ -14,7 +14,10 @@
     "lib": ["es2022", "DOM"],
     // See @frank/cashweb's tsconfig.json for why this is needed (avoids auto-including broken
     // hoisted @types stubs from unrelated devDependencies elsewhere in the workspace).
-    "types": ["node", "jest"]
+    "types": ["node", "jest"],
+    "paths": {
+      "@frank/codec": ["../frank-codec/src/index.ts"]
+    }
   },
   "include": [
     "**/*",

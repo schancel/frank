@@ -297,6 +297,10 @@ pub struct RegistryConf {
     /// (unlike `pop`) it's safe to default to "none" rather than requiring an explicit value.
     #[serde(default)]
     pub curated_defaults: Vec<CuratedContactConf>,
+    /// Optional directory containing Single Page Application (SPA) assets to serve.
+    /// If configured, the relay serves static files and routes unhandled paths to index.html.
+    #[serde(default)]
+    pub spa_dir: Option<PathBuf>,
 }
 
 /// The open directory: accounts publish their own signed entries, the relay only names itself.
@@ -1749,6 +1753,7 @@ continuity_file = "/var/lib/frank/continuity"
                     bitcoin_proxy: BitcoinProxyConf::default(),
                     solana_proxy: SolanaProxyConf::default(),
                     curated_defaults: vec![],
+                    spa_dir: None,
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
@@ -1827,6 +1832,7 @@ continuity_file = "/var/lib/frank/continuity"
                     bitcoin_proxy: BitcoinProxyConf::default(),
                     solana_proxy: SolanaProxyConf::default(),
                     curated_defaults: vec![],
+                    spa_dir: None,
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),

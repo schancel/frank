@@ -367,6 +367,16 @@ async fn main() -> Result<()> {
     .await
     .wrap_err("Starting Solana-family JSON-RPC proxy")?;
 
+    let spa_dir = conf.registry.spa_dir.clone().or_else(|| {
+        std::env::var("FRANK_RELAY_SPA_DIR")
+            .or_else(|_| std::env::var("SIGNET_RELAY_SPA_DIR"))
+            .ok()
+            .map(std::path::PathBuf::from)
+    });
+    if let Some(path) = &spa_dir {
+        tracing::info!(path = %path.display(), "Serving static SPA files from configured directory");
+    }
+
     let server = RegistryServer {
         registry: Arc::clone(&registry),
         peers: Arc::clone(&peers),
@@ -376,6 +386,7 @@ async fn main() -> Result<()> {
         evm_rpc,
         bitcoin_proxy,
         solana_proxy,
+        spa_dir,
     };
 
     let directory = if let Some(config) = conf.registry.directory.clone() {

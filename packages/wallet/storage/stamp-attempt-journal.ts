@@ -252,7 +252,10 @@ function publicRecovery(
       tx.chainId !== chain ||
       tx.to?.toLowerCase() !== address ||
       tx.value <= 0n ||
-      tx.value !== BigInt('0x' + toHex(payment.value)) ||
+      tx.value !==
+        (typeof payment.value === 'bigint'
+          ? payment.value
+          : BigInt('0x' + toHex(payment.value))) ||
       tx.hash?.toLowerCase() !== '0x' + toHex(payment.transactionId) ||
       toHex(payment.address) !== toHex(destination.address) ||
       toHex(payment.commitment) !==

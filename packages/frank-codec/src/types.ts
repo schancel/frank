@@ -202,6 +202,8 @@ export interface EncryptedMessageContent<F> {
   type: 6
   network: string
   messageId: Uint8Array
+  conversationId: Uint8Array
+  conversationName?: string
   /** The type-8 message-content-revision frame. */
   revisionFrame: F
   contentDigest: Uint8Array

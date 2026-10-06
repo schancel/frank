@@ -373,6 +373,7 @@ fn content(items: Vec<Vec<u8>>, extra: Option<CborValue>) -> Vec<u8> {
         (1, CborValue::Bytes(vec![1; 16])),
         (2, CborValue::Bytes(revision)),
         (3, CborValue::Bytes(vec![2; 32])),
+        (4, CborValue::Bytes(vec![3; 16])),
     ];
     let schema = if extra.is_some() { 2 } else { 1 };
     if let Some(extra) = extra {
@@ -594,6 +595,7 @@ fn retained_order_high_reader_and_required_family_remain_distinct() {
             (1, CborValue::Bytes(vec![1; 16])),
             (2, CborValue::Bytes(welcome)),
             (3, CborValue::Bytes(vec![2; 32])),
+            (4, CborValue::Bytes(vec![4; 16])),
         ]),
     );
     assert_eq!(

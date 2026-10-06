@@ -182,6 +182,20 @@ function endpoint(v: FrankValue | undefined, path: string): string {
   return s
 }
 
+const FORBIDDEN_TEXT_CONTROL_CHARACTER =
+  /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u
+
+function conversationName(v: FrankValue | undefined, path: string): string {
+  const s = tstr(v, path, 1, 512)
+  if (s.trim().length === 0) {
+    throw bad(path, 'conversation name cannot be whitespace-only')
+  }
+  if (FORBIDDEN_TEXT_CONTROL_CHARACTER.test(s)) {
+    throw bad(path, 'conversation name contains forbidden control character')
+  }
+  return s
+}
+
 const KEY_LENGTHS: ReadonlyMap<number, number> = new Map([
   [1, 33],
   [2, 32],
@@ -1156,13 +1170,18 @@ export function parseDraft(
       }
     }
     case TYPE_ENCRYPTED_MESSAGE_CONTENT: {
-      const m = fields(payload, P, [0, 1, 2, 3], [], true, allow)
+      const m = fields(payload, P, [0, 1, 2, 3, 4], [5], true, allow)
+      const convName = m.has(5)
+        ? conversationName(m.get(5), `${P}.5`)
+        : undefined
       return {
         type: 6,
         network: networkTag(m.get(0), `${P}.0`),
         messageId: bstr(m.get(1), `${P}.1`, 16, 16),
         revisionFrame: framed(m.get(2), `${P}.2`),
         contentDigest: bstr(m.get(3), `${P}.3`, 32, 32),
+        conversationId: bstr(m.get(4), `${P}.4`, 16, 16),
+        conversationName: convName,
         unknownFields: m.unknown,
       }
     }

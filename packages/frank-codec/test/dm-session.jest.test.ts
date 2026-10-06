@@ -56,6 +56,7 @@ function content(extra?: Encodable, items = [unknownItem()]): Uint8Array {
     [1, bytesOf(16, 7)],
     [2, rev8Frame(items)],
     [3, bytesOf(32, 8)],
+    [4, bytesOf(16, 8)],
   ])
   if (extra !== undefined) payload.set(99, extra)
   return fr(6, payload, extra === undefined ? 1 : 2, 1)
@@ -250,7 +251,7 @@ describe('opaque DM structural continuation', () => {
 
   it.each([
     ['containers', true, 8000, 8360],
-    ['items', false, 60000, 70910],
+    ['items', false, 60000, 70908],
   ] as const)(
     'retains aggregate %s across encryption: exact ceiling and one over',
     (_label, containers, rootCount, at) => {

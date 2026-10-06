@@ -350,8 +350,9 @@ interface OpenInput {
 export type OpenDirectMessageInput = OpenInput &
   (
     | {
-        mode: 'receive'
+        mode?: 'receive'
         senderCurrent: Current
+        senderEvidence?: HistoricalEvidence
         recipientCurrent: Current
         recipientEvidence?: HistoricalEvidence
       }
@@ -403,25 +404,36 @@ export function openDirectMessage(
     const encrypted = session.payload.typed
     if (encrypted?.type !== 5 || encrypted.schemaVersion !== 2)
       throw new DirectMessageError('context')
-    const sender =
-      input.mode === 'receive'
-        ? current(input.network, input.senderCurrent)
-        : evidence(input.network, input.senderEvidence)
-    const recipientHead =
-      input.mode === 'receive'
-        ? current(input.network, input.recipientCurrent)
-        : undefined
-    const recipient =
-      input.mode === 'receive' && input.recipientEvidence === undefined
-        ? recipientHead!
-        : evidence(input.network, input.recipientEvidence!)
-    if (
-      encrypted.network !== input.network ||
-      !accountEqual(encrypted.sender, sender.statement.subject) ||
-      !accountEqual(encrypted.recipient, recipient.statement.subject)
-    )
-      throw new DirectMessageError('context')
-    if (recipientHead) {
+    const mode = input.mode ?? 'receive'
+    let sender: PreviewDirectoryEvidence
+    let recipient: PreviewDirectoryEvidence
+    let senderHead: PreviewDirectoryEvidence | undefined
+    let recipientHead: PreviewDirectoryEvidence | undefined
+    if (mode === 'archive') {
+      sender = evidence(input.network, input.senderEvidence)
+      recipient = evidence(input.network, input.recipientEvidence)
+    } else {
+      senderHead = current(input.network, input.senderCurrent)
+      sender =
+        input.senderEvidence === undefined
+          ? senderHead
+          : evidence(input.network, input.senderEvidence)
+      recipientHead = current(input.network, input.recipientCurrent)
+      recipient =
+        input.recipientEvidence === undefined
+          ? recipientHead
+          : evidence(input.network, input.recipientEvidence)
+      if (
+        !accountEqual(
+          sender.statement.subject,
+          senderHead.statement.subject,
+        ) ||
+        !accountEqual(
+          sender.statement.preview.messageDhKey,
+          senderHead.statement.preview.messageDhKey,
+        )
+      )
+        throw new DirectMessageError('current')
       if (
         !accountEqual(
           recipient.statement.subject,
@@ -433,14 +445,15 @@ export function openDirectMessage(
         )
       )
         throw new DirectMessageError('current')
-      unexpired(
-        recipient,
-        input.mode === 'receive'
-          ? input.recipientCurrent.status.checkedTime
-          : recipientHead.statement.timestamp,
-      )
+      unexpired(recipient, input.recipientCurrent.status.checkedTime)
     }
-    localRoles(input.roles, recipient, false)
+    if (
+      encrypted.network !== input.network ||
+      !accountEqual(encrypted.sender, sender.statement.subject) ||
+      !accountEqual(encrypted.recipient, recipient.statement.subject)
+    )
+      throw new DirectMessageError('context')
+    localRoles(input.roles, recipientHead ?? recipient, false)
     const context = cryptoContext(input.network, sender, recipient, encrypted)
     if (!equal(context, suppliedContext))
       throw new DirectMessageError('context')
@@ -548,20 +561,23 @@ export function openOwnDirectMessage(
 
     let sender: PreviewDirectoryEvidence
     let recipient: PreviewDirectoryEvidence
+    let senderHead: PreviewDirectoryEvidence | undefined
+    let recipientHead: PreviewDirectoryEvidence | undefined
     const mode = input.mode ?? 'send'
     if (input.mode === 'archive') {
       sender = evidence(input.network, input.senderEvidence)
       recipient = evidence(input.network, input.recipientEvidence)
     } else {
-      const senderHead = current(input.network, input.senderCurrent)
+      senderHead = current(input.network, input.senderCurrent)
       sender =
         input.senderEvidence === undefined
           ? senderHead
           : evidence(input.network, input.senderEvidence)
+      recipientHead = current(input.network, input.recipientCurrent)
       recipient =
         input.recipientEvidence !== undefined
           ? evidence(input.network, input.recipientEvidence)
-          : current(input.network, input.recipientCurrent)
+          : recipientHead
 
       if (
         !accountEqual(
@@ -571,6 +587,17 @@ export function openOwnDirectMessage(
         !accountEqual(
           sender.statement.preview.messageDhKey,
           senderHead.statement.preview.messageDhKey,
+        )
+      )
+        throw new DirectMessageError('current')
+      if (
+        !accountEqual(
+          recipient.statement.subject,
+          recipientHead.statement.subject,
+        ) ||
+        !accountEqual(
+          recipient.statement.preview.messageDhKey,
+          recipientHead.statement.preview.messageDhKey,
         )
       )
         throw new DirectMessageError('current')
@@ -584,7 +611,7 @@ export function openOwnDirectMessage(
     )
       throw new DirectMessageError('context')
 
-    localRoles(input.roles, sender, false)
+    localRoles(input.roles, senderHead ?? sender, false)
     const context = cryptoContext(input.network, sender, recipient, encrypted)
     if (!equal(context, suppliedContext))
       throw new DirectMessageError('context')

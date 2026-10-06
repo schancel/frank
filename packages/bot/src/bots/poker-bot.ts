@@ -24,8 +24,12 @@ import { generateAvatarPng } from "../../bot-directory";
 
 export const POKER_DEFAULT_BUY_IN_WEI = 100_000_000_000_000_000n; // 0.1 MON
 export const POKER_TURN_TIMEOUT_SECONDS = 45;
-import type { TableEscrowRecord } from "./liars-dice-bot";
-export type { TableEscrowRecord };
+export interface TableEscrowRecord {
+  preimage: string;
+  hashLock: string;
+  playerLocks: Map<string, string>;
+  settlementTxHash?: string;
+}
 
 function normalizeEvmAddress(addr: string): string {
   if (/^0x[0-9a-fA-F]{40}$/.test(addr)) return addr;

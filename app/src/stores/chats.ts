@@ -2,6 +2,7 @@ import assert from 'assert'
 import { defineStore } from 'pinia'
 
 import { defaultStampAmount, displayNetwork } from '../utils/constants'
+import { sha1 } from '@noble/hashes/sha1'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { desktopNotify } from '../utils/notifications'
 import { store } from '../adapters/level-message-store'
@@ -88,6 +89,235 @@ export type ChatMessage = {
   payloadDigest: string
   /** Outgoing messages that are not yet confirmed (#269/#270); see `Message.delivery`. */
   delivery?: OutgoingDelivery
+  /** Ticket #69: Conversation and logical message identifiers */
+  conversationId?: string
+  logicalMessageId?: string
+  revisionDigest?: string
+  deliveryDigest?: string
+}
+
+/**
+ * # Pinia Chat Store Schema (Ticket #69)
+ *
+ * Decouples chat storage from 1:1 contact address indexing to support group-ready,
+ * conversation-oriented state.
+ *
+ * ## Entity Model:
+ *
+ * 1. Conversation (`Conversation`):
+ *    - `id`: Stable identifier (string UUID). Deterministically derived via RFC 4122 UUIDv5
+ *      from a null namespace UUID and sorted participants key (and optional topic identifier).
+ *      For group chats: group UUID or topic identifier.
+ *    - `kind`: `'direct' | 'group'`
+ *    - `name`?: Display subject/title of the conversation.
+ *    - `topic`?: Optional topic thread identifier.
+ *    - `participants`: Sorted canonical addresses of all members.
+ *    - `members`: Record<string, ConversationMember> (membership registry).
+ *    - `epoch`?: ConversationEpoch (cryptographic epoch reference placeholder; no crypto claimed).
+ *    - `messages`: ChatMessage[] (ordered message list for this conversation).
+ *    - `totalUnreadMessages`: number
+ *    - `totalUnreadValue`: number
+ *    - `totalValue`: number
+ *    - `lastReceived`: number
+ *    - `lastRead`: number
+ *    - `stampAmount`: number
+ *    - `address`: string (for direct chats: the coparty address; for group: the conversation id).
+ *    - `createdAt`?: number
+ *    - `updatedAt`?: number
+ *    - `deletedAt`?: number (tombstone timestamp for delete/reopen semantics).
+ *
+ * 2. Conversation Member (`ConversationMember`):
+ *    - `address`: Canonical member address.
+ *    - `role`: `'owner' | 'admin' | 'member'`
+ *    - `joinedAt`?: Timestamp when member joined.
+ *    - `alias`?: Local display nickname for the member.
+ *
+ * 3. Logical Message (`LogicalMessageRecord`):
+ *    - `messageId`: Stable logical message identifier (UUID / type 6 message_id).
+ *    - `conversationId`: Parent conversation identifier.
+ *    - `senderAddress`: Author's canonical address.
+ *    - `createdAt`: Creation timestamp.
+ *    - `activeRevisionDigest`: Latest/active revision content digest.
+ *    - `revisions`: RevisionRecord[]
+ *
+ * 4. Message Revision (`RevisionRecord`):
+ *    - `revisionDigest`: Content digest (T1a / type 8 revision digest).
+ *    - `items`: MessageItem[]
+ *    - `timestamp`: Timestamp of revision.
+ *    - `deliveries`: DeliveryRecord[]
+ *
+ * 5. Delivery Record (`DeliveryRecord`):
+ *    - `deliveryDigest`: Recipient-specific payload digest (T3 / type 5 payload digest).
+ *    - `recipientAddress`?: Recipient address.
+ *    - `status`: Delivery status ('pending' | 'payment-pending' | 'confirmed' | 'error').
+ *    - `attemptDigest`?: Outbound payment attempt digest.
+ *    - `timestamp`: Timestamp of delivery receipt/send.
+ */
+
+export type ConversationKind = 'direct' | 'group'
+export type ConversationRole = 'owner' | 'admin' | 'member'
+
+export interface ConversationMember {
+  address: string
+  role?: ConversationRole
+  joinedAt?: number
+  alias?: string
+}
+
+export interface ConversationEpoch {
+  epochId?: string
+  generation?: number
+  updatedAt?: number
+}
+
+export interface DeliveryRecord {
+  deliveryDigest: string
+  recipientAddress?: string
+  status: string
+  attemptDigest?: string
+  timestamp: number
+}
+
+export interface RevisionRecord {
+  revisionDigest: string
+  items: MessageItem[]
+  timestamp: number
+  deliveries: DeliveryRecord[]
+}
+
+export interface LogicalMessageRecord {
+  messageId: string
+  conversationId: string
+  senderAddress: string
+  createdAt: number
+  activeRevisionDigest: string
+  revisions: RevisionRecord[]
+}
+
+export interface Conversation {
+  id: string
+  kind: ConversationKind
+  name?: string
+  topic?: string
+  participants: string[]
+  members?: Record<string, ConversationMember>
+  epoch?: ConversationEpoch
+  messages: ChatMessage[]
+  totalUnreadMessages: number
+  totalUnreadValue: number
+  totalValue: number
+  lastReceived: number
+  lastRead: number
+  stampAmount: number
+  address: string
+  createdAt?: number
+  updatedAt?: number
+  deletedAt?: number
+}
+
+export type ChatState = Conversation
+
+export function makeParticipantsKey(participants: string[]): string {
+  const normalized = Array.from(
+    new Set(
+      participants.filter(Boolean).map(p => {
+        try {
+          return toChainDisplayAddress(p)
+        } catch {
+          return p
+        }
+      }),
+    ),
+  ).sort()
+  return normalized.join(':')
+}
+
+export const NULL_CONVERSATION_NAMESPACE =
+  '00000000-0000-0000-0000-000000000000'
+
+export function uuidv5(namespaceUuid: string, name: string): string {
+  const cleanNs = namespaceUuid.replace(/-/g, '')
+  const nsBytes = new Uint8Array(16)
+  for (let i = 0; i < 16; i++) {
+    nsBytes[i] = parseInt(cleanNs.slice(i * 2, i * 2 + 2), 16)
+  }
+  const nameBytes = new TextEncoder().encode(name)
+  const input = new Uint8Array(nsBytes.length + nameBytes.length)
+  input.set(nsBytes, 0)
+  input.set(nameBytes, nsBytes.length)
+
+  const digest = sha1(input)
+  digest[6] = (digest[6] & 0x0f) | 0x50 // version 5
+  digest[8] = (digest[8] & 0x3f) | 0x80 // RFC 4122 variant
+
+  const hex = Array.from(digest.slice(0, 16))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(
+    12,
+    16,
+  )}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+}
+
+export function makeConversationId(
+  participants: string[],
+  topicId?: string,
+): string {
+  const pKey = makeParticipantsKey(participants)
+  const name = topicId ? `${pKey}#${topicId}` : pKey
+  return uuidv5(NULL_CONVERSATION_NAMESPACE, name)
+}
+
+export function recordLogicalMessage(
+  logicalMessages: Record<string, LogicalMessageRecord | undefined>,
+  message: ChatMessage,
+  conversationId: string,
+): void {
+  const logicalId = message.logicalMessageId || message.payloadDigest
+  const revisionDigest = message.revisionDigest || message.payloadDigest
+  const deliveryDigest = message.deliveryDigest || message.payloadDigest
+
+  let record = logicalMessages[logicalId]
+  if (!record) {
+    record = {
+      messageId: logicalId,
+      conversationId,
+      senderAddress: message.senderAddress,
+      createdAt: message.serverTime || Date.now(),
+      activeRevisionDigest: revisionDigest,
+      revisions: [],
+    }
+    logicalMessages[logicalId] = record
+  }
+
+  let rev = record.revisions.find(r => r.revisionDigest === revisionDigest)
+  if (!rev) {
+    rev = {
+      revisionDigest,
+      items: message.items,
+      timestamp: message.serverTime || Date.now(),
+      deliveries: [],
+    }
+    record.revisions.push(rev)
+  }
+
+  const existingDelivery = rev.deliveries.find(
+    d => d.deliveryDigest === deliveryDigest,
+  )
+  if (!existingDelivery) {
+    rev.deliveries.push({
+      deliveryDigest,
+      recipientAddress: message.destinationAddress,
+      status: message.status,
+      attemptDigest: message.delivery?.attemptDigest,
+      timestamp: message.receivedTime || Date.now(),
+    })
+  } else {
+    existingDelivery.status = message.status
+    if (message.delivery?.attemptDigest) {
+      existingDelivery.attemptDigest = message.delivery.attemptDigest
+    }
+  }
 }
 
 /**
@@ -152,18 +382,8 @@ function accountedMessageValue(message: {
   return messageStampPrice(message) + tallyMessageItemsValue(message.items)
 }
 
-type ChatState = {
-  address: string
-  messages: ChatMessage[]
-  totalUnreadMessages: number
-  totalUnreadValue: number
-  totalValue: number
-  lastReceived: number
-  lastRead: number
-  stampAmount: number
-}
-
-const defaultContactObject: Omit<ChatState, 'messages' | 'address'> = {
+const defaultContactObject = {
+  kind: 'direct' as const,
   stampAmount: defaultStampAmount,
   totalUnreadMessages: 0,
   totalUnreadValue: 0,
@@ -174,8 +394,11 @@ const defaultContactObject: Omit<ChatState, 'messages' | 'address'> = {
 
 export interface State {
   activeChatAddr: string | null
+  activeConversationId: string | null
+  conversations: Record<string, Conversation>
   chats: Record<string, ChatState | undefined>
   messages: Record<string, Message | undefined>
+  logicalMessages: Record<string, LogicalMessageRecord | undefined>
   lastReceived: number | null
 }
 
@@ -195,9 +418,12 @@ export interface State {
 function freshChatsState(): State {
   return {
     chats: {},
+    conversations: {},
     messages: {},
+    logicalMessages: {},
     lastReceived: null,
     activeChatAddr: null,
+    activeConversationId: null,
   }
 }
 
@@ -414,8 +640,11 @@ export function walletOwnsMessage(
 
 export type RestorableState = {
   activeChatAddr: string | null
-  chats: Record<string, ChatState | undefined>
-  messages: Record<string, Message | undefined>
+  activeConversationId?: string | null
+  conversations?: Record<string, Conversation | undefined>
+  chats?: Record<string, ChatState | undefined>
+  messages?: Record<string, Message | undefined>
+  logicalMessages?: Record<string, LogicalMessageRecord | undefined>
   lastReceived: number | null
 }
 
@@ -424,27 +653,98 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     return freshChatsState()
   }
 
+  const conversations: Record<string, Conversation> = {}
   const chats: Record<string, ChatState> = {}
   const messages: Record<string, Message> = {}
+  const logicalMessages: Record<string, LogicalMessageRecord> = {}
 
-  if (chatState.chats) {
-    for (const [contactAddress, contact] of Object.entries(chatState.chats)) {
-      assert(
-        contact,
-        'This is impossible, but typescript has a type hole that has to be asserted around',
-      )
-      chats[contactAddress] = {
-        address: contactAddress,
+  let ownAddress: string | null = null
+  try {
+    ownAddress = await getOwnCanonicalAddress()
+  } catch {
+    //
+  }
+
+  // 1. Restore any explicit conversations
+  if (chatState.conversations) {
+    for (const [id, rawConv] of Object.entries(chatState.conversations)) {
+      if (!rawConv) continue
+      const conv: Conversation = {
+        id,
+        kind: rawConv.kind || 'direct',
+        name: rawConv.name,
+        topic: rawConv.topic,
+        participants: rawConv.participants || [],
+        members: rawConv.members || {},
+        epoch: rawConv.epoch,
+        address: rawConv.address || id,
         messages: [],
         totalUnreadMessages: 0,
         totalUnreadValue: 0,
         totalValue: 0,
-        lastReceived: contact.lastReceived,
-        lastRead: contact.lastRead,
-        stampAmount: contact.stampAmount,
+        lastReceived: rawConv.lastReceived ?? 0,
+        lastRead: rawConv.lastRead ?? 0,
+        stampAmount: rawConv.stampAmount ?? defaultStampAmount,
+        createdAt: rawConv.createdAt,
+        updatedAt: rawConv.updatedAt,
+        deletedAt: rawConv.deletedAt,
+      }
+      conversations[id] = conv
+      if (conv.kind === 'direct' && conv.address) {
+        try {
+          const displayAddress = toChainDisplayAddress(conv.address)
+          chats[displayAddress] = conv
+        } catch {
+          chats[conv.address] = conv
+        }
       }
     }
   }
+
+  // 2. Migrate legacy chats into conversations if not already restored
+  if (chatState.chats) {
+    for (const [contactAddress, contact] of Object.entries(chatState.chats)) {
+      if (!contact) continue
+      let displayAddress = contactAddress
+      try {
+        displayAddress = toChainDisplayAddress(contactAddress)
+      } catch {
+        //
+      }
+      const participants = ownAddress
+        ? Array.from(new Set([ownAddress, displayAddress])).sort()
+        : [displayAddress]
+      const convId = (contact as any).id || makeConversationId(participants)
+
+      let conv = conversations[convId]
+      if (!conv) {
+        const members: Record<string, ConversationMember> = {}
+        for (const p of participants) {
+          members[p] = { address: p, role: 'member' }
+        }
+        conv = {
+          id: convId,
+          kind: (contact as any).kind || 'direct',
+          name: (contact as any).name,
+          topic: (contact as any).topic,
+          address: displayAddress,
+          participants,
+          members,
+          messages: [],
+          totalUnreadMessages: 0,
+          totalUnreadValue: 0,
+          totalValue: 0,
+          lastReceived: contact.lastReceived ?? 0,
+          lastRead: contact.lastRead ?? 0,
+          stampAmount: contact.stampAmount ?? defaultStampAmount,
+        }
+        conversations[convId] = conv
+      }
+      chats[displayAddress] = conv
+      chats[contactAddress] = conv
+    }
+  }
+
   const localStore = await store
 
   const messageIterator = await localStore.getIterator()
@@ -497,42 +797,72 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     assert(newMsg.outpoints !== undefined, 'outpoints is not defined')
     assert(newMsg.senderAddress !== undefined, 'senderAddress is not defined')
 
-    const message = { payloadDigest: index, ...newMsg }
-    if (!chats[copartyAddress]) {
-      chats[copartyAddress] = {
-        ...defaultContactObject,
-        messages: [],
-        address: copartyAddress,
+    const message: ChatMessage = { payloadDigest: index, ...newMsg }
+    const displayAddress = toChainDisplayAddress(copartyAddress)
+    const rawConvId =
+      (newMsg as any).conversationId || (messageWrapper as any).conversationId
+    const participants = ownAddress
+      ? Array.from(new Set([ownAddress, displayAddress])).sort()
+      : [displayAddress]
+    const convId = rawConvId
+      ? makeConversationId(participants, rawConvId)
+      : makeConversationId(participants)
+
+    let conv = conversations[convId]
+    if (!conv) {
+      conv = chats[displayAddress]
+      if (!conv) {
+        const members: Record<string, ConversationMember> = {}
+        for (const p of participants)
+          members[p] = { address: p, role: 'member' }
+        conv = {
+          ...defaultContactObject,
+          id: convId,
+          kind: 'direct',
+          address: displayAddress,
+          participants,
+          members,
+          messages: [],
+        }
+        conversations[convId] = conv
       }
+      chats[displayAddress] = conv
+      chats[copartyAddress] = conv
     }
-    const chat = chats[copartyAddress]
+
+    message.conversationId = conv.id
     messages[index] = message
-    assert(chat, 'Missing chat for message')
-    chat.messages.push(message)
-    chat.lastReceived = message.serverTime
+    conv.messages.push(message)
+    recordLogicalMessage(logicalMessages, message, conv.id)
+
+    conv.lastReceived = Math.max(conv.lastReceived, message.serverTime)
     const messageValue = accountedMessageValue(message)
     if (
       !newMsg.outbound &&
-      chat.address !== chatState.activeChatAddr &&
-      chat.lastRead < message.serverTime
+      conv.address !== chatState.activeChatAddr &&
+      conv.id !== chatState.activeConversationId &&
+      conv.lastRead < message.serverTime
     ) {
-      chat.totalUnreadValue += messageValue
-      chat.totalUnreadMessages += 1
+      conv.totalUnreadValue += messageValue
+      conv.totalUnreadMessages += 1
     }
     lastReceived = Math.max(lastReceived, message.serverTime)
-    chat.totalValue += messageValue
+    conv.totalValue += messageValue
   }
 
-  // Resort chats
-  for (const chat of Object.values(chats)) {
-    chat.messages.sort(
+  // Resort conversations
+  for (const conv of Object.values(conversations)) {
+    conv.messages.sort(
       (messageA, messageB) => messageA.serverTime - messageB.serverTime,
     )
   }
   return {
+    conversations,
     chats,
     messages,
+    logicalMessages,
     activeChatAddr: chatState.activeChatAddr,
+    activeConversationId: chatState.activeConversationId ?? null,
     lastReceived,
   }
 }
@@ -546,75 +876,144 @@ export const useChatStore = defineStore('chats', {
       }
       return state.messages[payloadDigest]
     },
-    getNumUnread: state => (address: string) => {
-      const displayAddress = toChainDisplayAddress(address)
-
-      return state.chats[displayAddress]
-        ? state.chats[displayAddress]?.totalUnreadMessages
-        : 0
+    getConversation: state => (id: string) => {
+      return state.conversations[id]
+    },
+    getConversationsForAddress: state => (address: string) => {
+      try {
+        const canonical = toChainDisplayAddress(address)
+        return Object.values(state.conversations).filter(c =>
+          c.participants.some(p => sameCanonicalAddress(p, canonical)),
+        )
+      } catch {
+        return []
+      }
+    },
+    activeConversation(state): Conversation | null {
+      if (state.activeConversationId) {
+        return state.conversations[state.activeConversationId] ?? null
+      }
+      if (state.activeChatAddr) {
+        const chat = state.chats[state.activeChatAddr]
+        return chat ?? null
+      }
+      return null
+    },
+    getNumUnread: state => (addressOrId: string) => {
+      if (state.conversations && addressOrId in state.conversations) {
+        return state.conversations[addressOrId]?.totalUnreadMessages ?? 0
+      }
+      try {
+        const displayAddress = toChainDisplayAddress(addressOrId)
+        return state.chats[displayAddress]
+          ? state.chats[displayAddress]?.totalUnreadMessages ?? 0
+          : 0
+      } catch {
+        return 0
+      }
     },
     totalUnread(state) {
-      return Object.values(state.chats)
+      const allConversations = new Map<string, Conversation>()
+      if (state.conversations) {
+        for (const [id, c] of Object.entries(state.conversations)) {
+          if (c && !c.deletedAt) allConversations.set(id, c)
+        }
+      }
+      if (state.chats) {
+        for (const [addr, c] of Object.entries(state.chats)) {
+          if (c && !c.deletedAt) {
+            const key = c.id || addr
+            if (!allConversations.has(key)) {
+              allConversations.set(key, c)
+            }
+          }
+        }
+      }
+      return Array.from(allConversations.values())
         .map(chat => chat?.totalUnreadMessages ?? 0)
         .reduce((acc, val) => acc + val, 0)
     },
     getSortedChatOrder(state) {
-      const sortedOrder = Object.values(state.chats).sort(
-        (contactA, contactB) => {
-          assert(contactA && contactB, 'Make typescript happy')
-          if (contactB.totalUnreadValue - contactA.totalUnreadValue !== 0) {
-            return contactB.totalUnreadValue - contactA.totalUnreadValue
+      const allConversations = new Map<string, Conversation>()
+      if (state.conversations) {
+        for (const [id, c] of Object.entries(state.conversations)) {
+          if (c && !c.deletedAt) allConversations.set(id, c)
+        }
+      }
+      if (state.chats) {
+        for (const [addr, c] of Object.entries(state.chats)) {
+          if (c && !c.deletedAt) {
+            const key = c.id || addr
+            if (!allConversations.has(key)) {
+              allConversations.set(key, c)
+            }
           }
+        }
+      }
+      const all = Array.from(allConversations.values())
+      const sortedOrder = all.sort((contactA, contactB) => {
+        assert(contactA && contactB, 'Make typescript happy')
+        if (contactB.totalUnreadValue - contactA.totalUnreadValue !== 0) {
+          return contactB.totalUnreadValue - contactA.totalUnreadValue
+        }
 
-          if (contactB.totalValue - contactA.totalValue !== 0) {
-            return contactB.totalValue - contactA.totalValue
-          }
+        if (contactB.totalValue - contactA.totalValue !== 0) {
+          return contactB.totalValue - contactA.totalValue
+        }
 
-          if (contactB.lastRead !== contactA.lastRead) {
-            return (contactB.lastRead ?? 0) - (contactA.lastRead ?? 0)
-          }
+        if (contactB.lastRead !== contactA.lastRead) {
+          return (contactB.lastRead ?? 0) - (contactA.lastRead ?? 0)
+        }
 
-          if (
-            contactB.totalUnreadMessages - contactA.totalUnreadMessages !==
-            0
-          ) {
-            return contactB.totalUnreadMessages - contactA.totalUnreadMessages
-          }
+        if (contactB.totalUnreadMessages - contactA.totalUnreadMessages !== 0) {
+          return contactB.totalUnreadMessages - contactA.totalUnreadMessages
+        }
 
-          // No other tiebreakers
-          return 0
-        },
-      )
+        // No other tiebreakers
+        return 0
+      })
       return sortedOrder
     },
-    lastRead: state => (address: string) => {
-      const displayAddress = toChainDisplayAddress(address)
-
-      return state.chats[displayAddress]?.lastRead ?? 0
+    lastRead: state => (addressOrId: string) => {
+      if (state.conversations && addressOrId in state.conversations) {
+        return state.conversations[addressOrId]?.lastRead ?? 0
+      }
+      try {
+        const displayAddress = toChainDisplayAddress(addressOrId)
+        return state.chats[displayAddress]?.lastRead ?? 0
+      } catch {
+        return 0
+      }
     },
-    getStampAmount: state => (address: string) => {
-      const displayAddress = toChainDisplayAddress(address)
-      const chat = state.chats[displayAddress]
-      if (!chat) {
+    getStampAmount: state => (addressOrId: string) => {
+      if (state.conversations && addressOrId in state.conversations) {
+        return (
+          state.conversations[addressOrId]?.stampAmount ?? defaultStampAmount
+        )
+      }
+      try {
+        const displayAddress = toChainDisplayAddress(addressOrId)
+        const chat = state.chats[displayAddress]
+        if (!chat) {
+          return defaultStampAmount
+        }
+        return chat.stampAmount ?? defaultStampAmount
+      } catch {
         return defaultStampAmount
       }
-
-      return chat.stampAmount ?? defaultStampAmount
     },
-    getLatestMessage: state => (address: string) => {
-      // Real bug found live: this used to return a placeholder `{ outbound: false, text: '' }`
-      // object (named `nopInfo`, i.e. "nothing to show") for both "no chat exists yet" and "chat
-      // exists but has zero messages" -- but `ChatListItem.vue`'s only caller checks `info ===
-      // null` to decide whether to render anything, and a non-null object with an empty `text`
-      // doesn't match that check. Net effect: `latestMessageBody` still built `'Them: ' +
-      // slicedText` (with `outbound: false` always meaning "Them", regardless of there being no
-      // real message at all), producing a literal "Them: " with nothing after it in the chat
-      // list -- exactly what a freshly-added contact with no messages yet showed. Returning
-      // `null` here instead, matching the sibling `!lastItem` case a few lines below (which
-      // already correctly returns `null` for its own "nothing to render" case) and the caller's
-      // existing, correct `null` handling.
-      const displayAddress = toChainDisplayAddress(address)
-      const chat = state.chats[displayAddress]
+    getLatestMessage: state => (addressOrId: string) => {
+      let chat: Conversation | undefined
+      if (state.conversations && addressOrId in state.conversations) {
+        chat = state.conversations[addressOrId]
+      } else {
+        try {
+          const displayAddress = toChainDisplayAddress(addressOrId)
+          chat = state.chats[displayAddress]
+        } catch {
+          chat = undefined
+        }
+      }
       if (!chat) {
         return null
       }
@@ -629,14 +1028,10 @@ export const useChatStore = defineStore('chats', {
       const lastItem = items[items.length - 1]
 
       if (!lastItem) {
-        console.error(displayAddress)
+        console.error(chat.address || addressOrId)
         return null
       }
 
-      // Previously a hand-written if-chain here (text/image/stealth only) that fell through to a
-      // dangling `nopInfo` reference for `reply`/`p2pkh` -- a live ReferenceError, since an earlier
-      // fix removed `nopInfo`'s declaration without noticing this third use site. Routed through the
-      // registry instead: every registered type gets real preview text, not a crash.
       return {
         outbound: lastMessage.outbound,
         text: getMessageItemPreview(lastItem),
@@ -757,22 +1152,56 @@ export const useChatStore = defineStore('chats', {
       for (const digest of digests) {
         delete this.messages[digest as string]
       }
-      const displayAddress = toChainDisplayAddress(address)
-      const chat = this.chats[displayAddress]
-      if (!chat) {
-        return
+      let conv: Conversation | undefined
+      if (this.conversations && address in this.conversations) {
+        conv = this.conversations[address]
+      } else {
+        try {
+          const displayAddress = toChainDisplayAddress(address)
+          conv = this.chats[displayAddress]
+        } catch {
+          conv = this.chats[address]
+        }
       }
-      chat.messages = chat.messages.filter(
-        message => !digests.has(message.payloadDigest),
-      )
-      recomputeChatAccounting(chat, this.activeChatAddr)
+      if (conv) {
+        conv.messages = conv.messages.filter(
+          message => !digests.has(message.payloadDigest),
+        )
+        recomputeChatAccounting(conv, this.activeChatAddr)
+      }
+      if (message) {
+        const logicalId = message.logicalMessageId || payloadDigest
+        const logRecord = this.logicalMessages[logicalId]
+        if (logRecord) {
+          for (const rev of logRecord.revisions) {
+            rev.deliveries = rev.deliveries.filter(
+              d => !digests.has(d.deliveryDigest),
+            )
+          }
+          logRecord.revisions = logRecord.revisions.filter(
+            rev => rev.deliveries.length > 0,
+          )
+          if (logRecord.revisions.length === 0) {
+            delete this.logicalMessages[logicalId]
+          }
+        }
+      }
     },
-    readAll(address: string) {
-      const displayAddress = toChainDisplayAddress(address)
-      const chat = this.chats[displayAddress]
+    readAll(addressOrId: string) {
+      let chat: Conversation | undefined
+      if (this.conversations && addressOrId in this.conversations) {
+        chat = this.conversations[addressOrId]
+      } else {
+        try {
+          const displayAddress = toChainDisplayAddress(addressOrId)
+          chat = this.chats[displayAddress]
+        } catch {
+          chat = undefined
+        }
+      }
       if (!chat) {
         // Opening a chat with nobody yet (no message either way) is normal, not an error.
-        console.debug('readAll: no chat yet for', displayAddress)
+        console.debug('readAll: no chat yet for', addressOrId)
         return
       }
       const values = chat.messages
@@ -803,11 +1232,29 @@ export const useChatStore = defineStore('chats', {
           ]
         }),
       )
+      this.conversations = Object.fromEntries(
+        Object.entries(this.conversations).map(([id, convData]) => {
+          return [
+            id,
+            {
+              ...convData,
+              messages: [],
+              totalUnreadMessages: 0,
+              totalUnreadValue: 0,
+              totalValue: 0,
+            },
+          ]
+        }),
+      )
       this.messages = {}
+      this.logicalMessages = {}
       this.lastReceived = null
+      this.activeConversationId = null
+      this.activeChatAddr = null
     },
     sendMessageLocal({
       address,
+      conversationId,
       senderAddress,
       index: payloadDigest,
       items,
@@ -818,8 +1265,11 @@ export const useChatStore = defineStore('chats', {
       previousHash = null,
       timestamp = Date.now(),
       delivery,
+      logicalMessageId,
+      revisionDigest,
     }: {
       address: string
+      conversationId?: string
       senderAddress: string
       index: string
       items: MessageItem[]
@@ -836,8 +1286,23 @@ export const useChatStore = defineStore('chats', {
       previousHash: string | null
       timestamp?: number
       delivery?: OutgoingDelivery
+      logicalMessageId?: string
+      revisionDigest?: string
     }) {
-      const displayAddress = toChainDisplayAddress(address)
+      let displayAddress: string = address
+      try {
+        displayAddress = toChainDisplayAddress(address)
+      } catch {
+        //
+      }
+
+      let conv: Conversation | undefined
+      if (conversationId && this.conversations[conversationId]) {
+        conv = this.conversations[conversationId]
+      } else if (this.chats[displayAddress]) {
+        conv = this.chats[displayAddress]
+      }
+
       const newMsg = {
         outbound: true,
         status,
@@ -850,6 +1315,10 @@ export const useChatStore = defineStore('chats', {
         senderAddress,
         messageHash: payloadDigest,
         delivery,
+        conversationId: conv?.id || conversationId,
+        logicalMessageId: logicalMessageId || payloadDigest,
+        revisionDigest: revisionDigest || payloadDigest,
+        deliveryDigest: payloadDigest,
       }
       assert(newMsg.outbound !== undefined, 'outbound is not defined')
       assert(newMsg.status !== undefined, 'status is not defined')
@@ -859,53 +1328,57 @@ export const useChatStore = defineStore('chats', {
       assert(newMsg.outpoints !== undefined, 'outpoints is not defined')
       assert(newMsg.senderAddress !== undefined, 'senderAddress is not defined')
 
-      const message = { payloadDigest: payloadDigest, ...newMsg }
+      const message: ChatMessage = { payloadDigest: payloadDigest, ...newMsg }
       if (payloadDigest in this.messages) {
         const existingMessage = this.messages[payloadDigest]
         assert(existingMessage, 'For great typescript')
         // we have the message already, just need to update some fields and return
         this.messages[payloadDigest] = Object.assign(existingMessage, message)
-        const existingChat = this.chats[displayAddress]
-        if (existingChat) {
-          recomputeChatAccounting(existingChat, this.activeChatAddr)
+        if (conv) {
+          recomputeChatAccounting(conv, this.activeChatAddr)
+          recordLogicalMessage(this.logicalMessages, message, conv.id)
         }
         return
       }
 
       // Chat may be null if it is a self send
-      const chat = this.chats[displayAddress]
-      if (!chat) {
-        // This was a self send, we don't want to update any particular chats.
-        return
+      if (!conv) {
+        if (
+          !conversationId &&
+          sameCanonicalAddress(senderAddress, displayAddress)
+        ) {
+          // This was a self send, we don't want to update any particular chats.
+          return
+        }
+        conv = this.createConversation({
+          kind: 'direct',
+          participants: [senderAddress, displayAddress],
+          conversationId,
+          address: displayAddress,
+        })
       }
+
+      message.conversationId = conv.id
 
       if (previousHash && previousHash in this.messages) {
         // Replace an optimistic/retried message with the newly keyed message. Monad cannot know
         // the final payload digest until its stamp payments have been submitted, so pending UI
         // entries use a local id and reconcile through this path once the real digest exists.
-        const msgIndex = chat.messages.findIndex(
+        const msgIndex = conv.messages.findIndex(
           msg => msg.payloadDigest === previousHash,
         )
         if (msgIndex >= 0) {
-          chat.messages.splice(msgIndex, 1)
+          conv.messages.splice(msgIndex, 1)
         }
         delete this.messages[previousHash]
       }
 
       this.messages[payloadDigest] = message
-      if (displayAddress in this.chats) {
-        chat.messages.push(message)
-        chat.lastRead = Date.now()
-        recomputeChatAccounting(chat, this.activeChatAddr)
-        return
-      }
-      const createdChat = {
-        ...defaultContactObject,
-        messages: [message],
-        address: displayAddress,
-      }
-      this.chats[displayAddress] = createdChat
-      recomputeChatAccounting(createdChat, this.activeChatAddr)
+      conv.messages.push(message)
+      conv.lastRead = Date.now()
+      conv.lastReceived = Math.max(conv.lastReceived, timestamp)
+      recomputeChatAccounting(conv, this.activeChatAddr)
+      recordLogicalMessage(this.logicalMessages, message, conv.id)
     },
     /**
      * Sends a direct message like iMessage does (#269/#270): the message appears in the
@@ -934,12 +1407,14 @@ export const useChatStore = defineStore('chats', {
     async sendMessage({
       wallet,
       address,
+      conversationId,
       items,
       stampValue,
       onPreparationProgress,
     }: {
       wallet: WalletHandle
       address: string
+      conversationId?: string
       items: MessageItem[]
       stampValue?: bigint
       onPreparationProgress?: (
@@ -950,21 +1425,25 @@ export const useChatStore = defineStore('chats', {
       assert(recipient, `Invalid recipient address: ${address}`)
       const displayAddress = toChainDisplayAddress(address)
 
-      // Ensure the chat exists before sending -- sendMessageLocal (see above) silently no-ops a
-      // 'self send' if `this.chats[displayAddress]` isn't already present, mirroring the same
-      // chat-creation shape `setActiveChat` uses.
-      if (!(displayAddress in this.chats)) {
-        this.chats[displayAddress] = {
-          ...defaultContactObject,
-          messages: [],
+      let conv: Conversation | undefined
+      if (conversationId && this.conversations[conversationId]) {
+        conv = this.conversations[conversationId]
+      } else if (this.chats[displayAddress]) {
+        conv = this.chats[displayAddress]
+      } else {
+        conv = this.createConversation({
+          kind: 'direct',
+          participants: [wallet.identity.displayAddress, displayAddress],
+          conversationId,
           address: displayAddress,
-        }
+        })
       }
 
       const timestamp = Date.now()
       const pendingMessageId = nextPendingMessageId(timestamp)
       this.sendMessageLocal({
         address: displayAddress,
+        conversationId: conv.id,
         senderAddress: wallet.identity.displayAddress,
         index: pendingMessageId,
         items,
@@ -1631,8 +2110,11 @@ export const useChatStore = defineStore('chats', {
     }): Promise<{ pending: number }> {
       const waiting: Array<{ address: string; id: string; digest?: string }> =
         []
+      const seenChats = new Set<ChatState>()
       for (const [address, chat] of Object.entries(this.chats)) {
-        for (const message of chat?.messages ?? []) {
+        if (!chat || seenChats.has(chat)) continue
+        seenChats.add(chat)
+        for (const message of chat.messages ?? []) {
           if (
             message.outbound &&
             message.status === 'payment-pending' &&
@@ -1683,9 +2165,12 @@ export const useChatStore = defineStore('chats', {
         })
       }
       let pending = 0
+      const countedChats = new Set<ChatState>()
       for (const chat of Object.values(this.chats)) {
+        if (!chat || countedChats.has(chat)) continue
+        countedChats.add(chat)
         pending +=
-          chat?.messages.filter(
+          chat.messages.filter(
             message =>
               message.outbound &&
               message.status === 'payment-pending' &&
@@ -1695,13 +2180,28 @@ export const useChatStore = defineStore('chats', {
       return { pending }
     },
     async clearChat(address: string): Promise<void> {
-      const displayAddress = toChainDisplayAddress(address)
+      let displayAddress: string = address
+      try {
+        displayAddress = toChainDisplayAddress(address)
+      } catch {
+        //
+      }
       return serializeDeliveryMutation(() =>
         this.clearChatExclusive(displayAddress),
       )
     },
     async clearChatExclusive(address: string): Promise<void> {
-      const chat = this.chats[address]
+      let chat: Conversation | undefined
+      if (this.conversations && address in this.conversations) {
+        chat = this.conversations[address]
+      } else {
+        try {
+          const displayAddress = toChainDisplayAddress(address)
+          chat = this.chats[displayAddress]
+        } catch {
+          chat = this.chats[address]
+        }
+      }
       if (!chat) return
       const messageStore = await store
       // This is Clear's atomic cutoff. Composer sends invoked while its durable deletes are in
@@ -1768,13 +2268,126 @@ export const useChatStore = defineStore('chats', {
       )
       recomputeChatAccounting(chat, this.activeChatAddr)
     },
-    async deleteChat(address: string) {
-      const displayAddress = toChainDisplayAddress(address)
+    createConversation({
+      kind = 'direct',
+      name,
+      topic,
+      participants,
+      conversationId,
+      initialRole = 'member',
+      stampAmount = defaultStampAmount,
+      address,
+    }: {
+      kind?: ConversationKind
+      name?: string
+      topic?: string
+      participants: string[]
+      conversationId?: string
+      initialRole?: ConversationRole
+      stampAmount?: number
+      address?: string
+    }): Conversation {
+      const normalizedParticipants = Array.from(
+        new Set(
+          participants.filter(Boolean).map(p => {
+            try {
+              return toChainDisplayAddress(p)
+            } catch {
+              return p
+            }
+          }),
+        ),
+      ).sort()
+
+      const id =
+        conversationId || makeConversationId(normalizedParticipants, topic)
+      let conv = this.conversations[id]
+      if (conv) {
+        if (name !== undefined) conv.name = name
+        if (topic !== undefined) conv.topic = topic
+        conv.deletedAt = undefined
+        conv.updatedAt = Date.now()
+        if (kind === 'direct' && conv.address) {
+          this.chats[conv.address] = conv
+        }
+        return conv
+      }
+
+      const members: Record<string, ConversationMember> = {}
+      for (const p of normalizedParticipants) {
+        members[p] = { address: p, role: initialRole, joinedAt: Date.now() }
+      }
+
+      const displayAddress =
+        address || (kind === 'direct' ? normalizedParticipants[0] || id : id)
+
+      conv = {
+        ...defaultContactObject,
+        id,
+        kind,
+        name,
+        topic,
+        participants: normalizedParticipants,
+        members,
+        address: displayAddress,
+        messages: [],
+        stampAmount,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }
+
+      this.conversations[id] = conv
+      if (kind === 'direct' && displayAddress) {
+        try {
+          const canonical = toChainDisplayAddress(displayAddress)
+          this.chats[canonical] = conv
+        } catch {
+          this.chats[displayAddress] = conv
+        }
+      }
+      return conv
+    },
+    async deleteChat(address: string, deletedAt = Date.now()) {
+      let displayAddress = address
+      try {
+        displayAddress = toChainDisplayAddress(address)
+      } catch {
+        //
+      }
+      const chat = this.chats[displayAddress] || this.conversations[address]
       await this.clearChat(displayAddress)
       if (this.activeChatAddr === displayAddress) {
         this.activeChatAddr = null
       }
+      if (chat) {
+        if (this.activeConversationId === chat.id) {
+          this.activeConversationId = null
+        }
+        chat.deletedAt = deletedAt
+      }
       delete this.chats[displayAddress]
+    },
+    async deleteConversation(conversationId: string, deletedAt = Date.now()) {
+      const conv = this.conversations[conversationId]
+      if (!conv) return
+      conv.deletedAt = deletedAt
+      if (conv.address && this.chats[conv.address]) {
+        await this.clearChat(conv.address)
+        delete this.chats[conv.address]
+      } else {
+        await this.clearChat(conversationId)
+      }
+      if (this.activeConversationId === conversationId) {
+        this.activeConversationId = null
+      }
+      if (this.activeChatAddr === conv.address) {
+        this.activeChatAddr = null
+      }
+    },
+    async clearConversation(conversationId: string): Promise<void> {
+      return serializeDeliveryMutation(() =>
+        this.clearChatExclusive(conversationId),
+      )
     },
     setStampAmount({
       address,
@@ -1783,7 +2396,7 @@ export const useChatStore = defineStore('chats', {
       address: string
       stampAmount: number
     }) {
-      const chat = this.chats[address]
+      const chat = this.chats[address] || this.conversations[address]
       if (!chat) {
         console.error('attempting to set stamp amount for non-existant contact')
         return
@@ -1794,6 +2407,7 @@ export const useChatStore = defineStore('chats', {
       // make sure address is defined, e.g. Forum is undefined
       if (!address) {
         this.activeChatAddr = null
+        this.activeConversationId = null
         return
       }
 
@@ -1805,14 +2419,39 @@ export const useChatStore = defineStore('chats', {
       }
 
       const displayAddress = toChainDisplayAddress(address)
-      if (!(displayAddress in this.chats)) {
-        this.chats[displayAddress] = {
-          ...defaultContactObject,
-          messages: [],
+      let conv = this.chats[displayAddress]
+      if (!conv) {
+        conv = this.createConversation({
+          kind: 'direct',
+          participants: [displayAddress],
           address: displayAddress,
-        }
+        })
       }
       this.activeChatAddr = displayAddress
+      this.activeConversationId = conv.id
+    },
+    setActiveConversation(conversationId: string | null) {
+      if (!conversationId) {
+        this.activeConversationId = null
+        this.activeChatAddr = null
+        return
+      }
+      const conv = this.conversations[conversationId]
+      if (!conv) {
+        this.activeConversationId = conversationId
+        this.activeChatAddr = null
+        return
+      }
+      this.activeConversationId = conversationId
+      if (conv.kind === 'direct' && conv.address) {
+        this.activeChatAddr = conv.address
+        const contacts = useContactStore()
+        contacts.refresh(conv.address)
+        this.readAll(conv.address)
+      } else {
+        this.activeChatAddr = null
+        this.readAll(conversationId)
+      }
     },
     async receiveMessages(
       messageWrappers: ReceivedMessageWrapper[],
@@ -2072,6 +2711,9 @@ export const useChatStore = defineStore('chats', {
           )
         }
         recomputeChatAccounting(chat, this.activeChatAddr)
+        for (const replacement of mutation.replacements.values()) {
+          recordLogicalMessage(this.logicalMessages, replacement, chat.id)
+        }
       }
       for (const wrapper of deliverableWrappers) {
         const {
@@ -2101,7 +2743,67 @@ export const useChatStore = defineStore('chats', {
         }
         const displayAddress = toChainDisplayAddress(copartyAddress)
 
-        const message = { payloadDigest: index, ...newMsg }
+        const rawConvId =
+          (newMsg as any).conversationId ||
+          (wrapper as any).conversationId ||
+          (newMsg as any).topicId
+        const convName =
+          (newMsg as any).conversationName ||
+          (newMsg as any).subject ||
+          (newMsg as any).name
+        const participants = ownAddress
+          ? Array.from(new Set([ownAddress, displayAddress])).sort()
+          : [displayAddress]
+        const convId = rawConvId
+          ? makeConversationId(participants, rawConvId)
+          : makeConversationId(participants)
+
+        let conv = this.conversations[convId]
+        if (!conv) {
+          const existingChat = this.chats[displayAddress]
+          if (existingChat && existingChat.id === convId) {
+            conv = existingChat
+            this.conversations[convId] = conv
+          } else {
+            conv = this.createConversation({
+              kind: 'direct',
+              participants,
+              conversationId: convId,
+              name: convName,
+              address: displayAddress,
+            })
+          }
+        }
+
+        // Tombstone check: ignore replayed/older messages for a deleted conversation
+        if (conv.deletedAt !== undefined) {
+          if (newMsg.serverTime <= conv.deletedAt) {
+            continue
+          }
+          // Newer message: reopen the conversation!
+          conv.deletedAt = undefined
+          this.chats[displayAddress] = conv
+        }
+
+        // Renaming: update conversation name if provided
+        if (
+          convName !== undefined &&
+          typeof convName === 'string' &&
+          convName.trim().length > 0
+        ) {
+          conv.name = convName
+          conv.updatedAt = Date.now()
+        }
+
+        const message: ChatMessage = {
+          payloadDigest: index,
+          conversationId: conv.id,
+          logicalMessageId: (newMsg as any).logicalMessageId || index,
+          revisionDigest: (newMsg as any).revisionDigest || index,
+          deliveryDigest: index,
+          ...newMsg,
+        }
+
         if (index in this.messages) {
           const existingMessage = this.messages[index]
           assert(existingMessage, 'For great typescript')
@@ -2114,52 +2816,42 @@ export const useChatStore = defineStore('chats', {
             senderAddress,
           })
           if (wasOutbound) {
-            const chat = this.chats[displayAddress]
-            if (chat) {
-              chat.lastReceived = Math.max(
-                chat.lastReceived,
-                message.serverTime,
-              )
-            }
+            conv.lastReceived = Math.max(conv.lastReceived, message.serverTime)
             this.lastReceived = Math.max(
               this.lastReceived ?? 0,
               message.serverTime,
             )
           }
+          recordLogicalMessage(this.logicalMessages, message, conv.id)
           // We should already have created the chat if we have the message. Continue so one
           // replayed item cannot hide later, genuinely new messages from this same poll batch.
           continue
         }
-        // We don't need reactivity here
-        this.messages[index] = message
-        if (!(displayAddress in this.chats)) {
-          // We do need reactivity to create a new chat
-          this.chats[displayAddress] = {
-            ...defaultContactObject,
-            messages: [],
-            address: displayAddress,
-          }
-        }
-        const chat = this.chats[displayAddress]
-        assert(chat, 'not possible')
 
-        // TODO: Better indexing
-        chat.messages.push(message)
-        chat.lastReceived = message.serverTime
+        this.messages[index] = message
+        this.chats[displayAddress] = conv
+        conv.messages.push(message)
+        conv.lastReceived = message.serverTime
+        recordLogicalMessage(this.logicalMessages, message, conv.id)
+
         const messageValue = accountedMessageValue(message)
         if (
           displayAddress !== this.activeChatAddr &&
-          chat.lastRead < message.serverTime
+          conv.id !== this.activeConversationId &&
+          conv.lastRead < message.serverTime
         ) {
-          chat.totalUnreadValue += messageValue
-          chat.totalUnreadMessages += 1
-        } else if (displayAddress === this.activeChatAddr) {
+          conv.totalUnreadValue += messageValue
+          conv.totalUnreadMessages += 1
+        } else if (
+          displayAddress === this.activeChatAddr ||
+          conv.id === this.activeConversationId
+        ) {
           // The receipt was visible while this chat was active. Persist that read decision so
           // navigating elsewhere and reloading cannot reconstruct it as unread.
-          chat.lastRead = Math.max(chat.lastRead, message.serverTime)
+          conv.lastRead = Math.max(conv.lastRead, message.serverTime)
         }
         this.lastReceived = message.serverTime
-        chat.totalValue += messageValue
+        conv.totalValue += messageValue
       }
       const hasIncomingConfirmedStamps = deliverableWrappers.some(wrapper => {
         if (outboundMatches.has(wrapper.index) || wrapper.outbound) {
@@ -2256,8 +2948,22 @@ export const useChatStore = defineStore('chats', {
   },
   storage: {
     save(storage, _mutation, state): Promise<void> {
+      const serializedConversations = state.conversations
+        ? mapObjIndexed((convData: Record<string, unknown>) => {
+            return {
+              ...convData,
+              messages: [],
+            }
+          }, state.conversations)
+        : {}
       const chats = {
         activeChatAddr: pathOr(undefined, ['activeChatAddr'], state),
+        activeConversationId: pathOr(
+          undefined,
+          ['activeConversationId'],
+          state,
+        ),
+        conversations: serializedConversations,
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         chats: mapObjIndexed((addressData: Record<string, unknown>) => {
           return {

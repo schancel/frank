@@ -406,12 +406,16 @@ export default {
     sendStealthTo: 'Envoyer furtivement à',
     subtitle: 'Transfert direct chiffré (invisible pour le relais)',
     chainLabel: 'Chaîne',
+    walletLabel: 'Portefeuille',
+    balanceLabel: 'Solde disponible :',
     amountHint: 'Montant à envoyer dans la charge utile du message',
     amountPlaceholder: '0.0',
     memoHint: 'Mémo du message chiffré (optionnel)',
     memoPlaceholder: 'Entrez un mémo...',
     sendBtnLabel: 'Envoyer furtivement',
     cancelBtnLabel: 'Annuler',
+    dustLimitError:
+      'Le montant doit être d’au moins {min} {unit} (seuil de poussière)',
   },
   offerSwapDialog: {
     title: 'Proposer un échange atomique à',

@@ -111,6 +111,11 @@ export interface BotContext {
     to: string;
     valueWei: bigint;
   }): Promise<{ txHash: string }>;
+  sendTransaction(params: {
+    to: string;
+    data?: string;
+    valueWei?: bigint;
+  }): Promise<{ txHash: string }>;
   buildAndSignTransfer(params: {
     to: string;
     valueWei: bigint;

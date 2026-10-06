@@ -8,6 +8,9 @@ import type {
 } from "@frank/bot-framework";
 import type { PokerItem, PokerPlayerView, PokerActionType } from "@frank/cashweb/types/messages";
 import { formatMon, parseMon } from "@frank/wallet/monad-amount";
+import { keccak256, toUtf8Bytes } from "ethers";
+import { CANONICAL_EVM_CONTRACTS } from "@frank/wallet/chain/chains-registry";
+import { encodeBatchDistributeCall } from "@frank/wallet/game-escrow";
 import {
   createPokerTable,
   joinPokerTable,
@@ -22,6 +25,20 @@ import { generateAvatarPng } from "../../bot-directory";
 export const POKER_DEFAULT_BUY_IN_WEI = 100_000_000_000_000_000n; // 0.1 MON
 export const POKER_TURN_TIMEOUT_SECONDS = 45;
 
+export interface TableEscrowRecord {
+  preimage: string;
+  hashLock: string;
+  playerLocks: Map<string, string>;
+  settlementTxHash?: string;
+}
+
+function normalizeEvmAddress(addr: string): string {
+  if (/^0x[0-9a-fA-F]{40}$/.test(addr)) return addr;
+  const clean = addr.startsWith("0x") ? addr.slice(2) : addr;
+  const hex = Buffer.from(clean, "utf8").toString("hex");
+  return "0x" + hex.padStart(40, "0").slice(-40);
+}
+
 export class PokerBot implements FrankBotDefinition {
   readonly id = "poker";
   readonly label = "Texas Hold'em Poker";
@@ -29,9 +46,50 @@ export class PokerBot implements FrankBotDefinition {
     process.env.POKER_BOT_IDENTITY_JSON ?? "/tmp/poker-bot-identity.json";
 
   private readonly tables = new Map<string, PokerGameState>();
+  private readonly tableEscrows = new Map<string, TableEscrowRecord>();
   private readonly conversationTables = new Map<string, string>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private latestTableId?: string;
+
+  private async settleTableEscrow(
+    table: PokerGameState,
+    ctx?: BotContext
+  ): Promise<string | undefined> {
+    const escrow = this.tableEscrows.get(table.tableId);
+    if (!escrow || !table.winners || table.winners.length === 0) return undefined;
+    if (!ctx?.sendTransaction) return undefined;
+
+    const lockIds = Array.from(escrow.playerLocks.values());
+    if (lockIds.length === 0) return undefined;
+
+    const payouts = table.winners.map((w) => ({
+      recipient: normalizeEvmAddress(w.address),
+      amount:
+        (BigInt(w.amount) * POKER_DEFAULT_BUY_IN_WEI) /
+        BigInt(table.buyInChips),
+    }));
+
+    try {
+      const callData = encodeBatchDistributeCall({
+        lockIds,
+        payouts,
+        preimage: escrow.preimage,
+      });
+      const htlcAddress = CANONICAL_EVM_CONTRACTS.htlc!;
+      const res = await ctx.sendTransaction({
+        to: htlcAddress,
+        data: callData,
+      });
+      escrow.settlementTxHash = res.txHash;
+      return res.txHash;
+    } catch (err) {
+      console.error(
+        `[poker] Escrow settlement broadcast error for ${table.tableId}:`,
+        err
+      );
+      return undefined;
+    }
+  }
 
   getProfile(): BotProfile {
     return {
@@ -143,6 +201,7 @@ export class PokerBot implements FrankBotDefinition {
         best5Cards: w.evaluation?.best5,
       })),
       winnerAddress: table.winners?.[0]?.address,
+      txHash: this.tableEscrows.get(table.tableId)?.settlementTxHash,
     };
   }
 
@@ -205,6 +264,12 @@ export class PokerBot implements FrankBotDefinition {
         const table = createPokerTable({ tableId, buyInChips: 1000, smallBlind: 10, bigBlind: 20 });
         joinPokerTable(table, sender);
 
+        const preimage = "0x" + randomBytes(32).toString("hex");
+        const hashLock = keccak256(preimage);
+        const playerLocks = new Map<string, string>();
+        playerLocks.set(sender.toLowerCase(), keccak256(toUtf8Bytes(`poker:${tableId}:${sender.toLowerCase()}`)));
+        this.tableEscrows.set(tableId, { preimage, hashLock, playerLocks });
+
         this.tables.set(tableId, table);
         this.conversationTables.set(conversationId, tableId);
         this.latestTableId = tableId;
@@ -236,6 +301,11 @@ export class PokerBot implements FrankBotDefinition {
         }
 
         this.conversationTables.set(conversationId, tableId);
+        const escrow = this.tableEscrows.get(tableId);
+        if (escrow) {
+          escrow.playerLocks.set(sender.toLowerCase(), keccak256(toUtf8Bytes(`poker:${tableId}:${sender.toLowerCase()}`)));
+        }
+
         const item = this.buildPokerItem(table, sender);
         await msgCtx.reply([
           {
@@ -303,17 +373,22 @@ export class PokerBot implements FrankBotDefinition {
         return;
       }
 
-      const item = this.buildPokerItem(table, sender);
-
       if (table.street === "settled") {
         this.clearTableTimer(tableId);
+        const txHash = await this.settleTableEscrow(table, ctx);
         let msg = `🏆 **HAND SETTLED!**\n`;
         for (const w of table.winners ?? []) {
           msg += `• **${w.address.slice(0, 8)}** won **${w.amount} chips**! (${w.evaluation ? w.evaluation.description : 'Uncontested'})\n`;
         }
+        if (txHash) {
+          msg += `⛓️ **On-Chain Settlement:** \`${txHash}\` (GenericHTLC.batchDistribute)\n`;
+        }
+        const item = this.buildPokerItem(table, sender);
         await msgCtx.reply([{ type: "text", text: msg }, item]);
         return;
       }
+
+      const item = this.buildPokerItem(table, sender);
 
       this.resetTurnTimer(tableId, ctx, sender);
       const active = table.players[table.activePlayerIndex];
@@ -360,6 +435,10 @@ export class PokerBot implements FrankBotDefinition {
     if (item.action === "join") {
       const res = joinPokerTable(table, sender);
       if (res.success) {
+        const escrow = this.tableEscrows.get(item.tableId);
+        if (escrow) {
+          escrow.playerLocks.set(sender.toLowerCase(), keccak256(toUtf8Bytes(`poker:${item.tableId}:${sender.toLowerCase()}`)));
+        }
         const out = this.buildPokerItem(table, sender);
         await msgCtx.reply([out]);
       }
@@ -376,6 +455,7 @@ export class PokerBot implements FrankBotDefinition {
       if (res.success) {
         if (table.street === "settled") {
           this.clearTableTimer(table.tableId);
+          await this.settleTableEscrow(table, ctx);
         } else {
           this.resetTurnTimer(table.tableId, ctx, sender);
         }

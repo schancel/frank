@@ -77,4 +77,53 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
     expect(replyFold.mock.calls[0][0][0].text).toContain('HAND SETTLED')
     expect(replyFold.mock.calls[0][0][0].text).toContain(otherAddress.slice(0, 8))
   })
+
+  it('broadcasts GenericHTLC.batchDistribute on settlement when sendTransaction is available', async () => {
+    const mockSendTx = jest.fn(async () => ({ txHash: '0xsettletx999' }))
+    mockBotCtx.sendTransaction = mockSendTx
+
+    // 1. Create table
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: '/poker create' }],
+      reply: jest.fn(),
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    // 2. Bob joins
+    await bot.onMessage({
+      senderAddress: '0xBob',
+      items: [{ type: 'text', text: '/poker join' }],
+      reply: jest.fn(),
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    // 3. Start hand
+    const replyStart = jest.fn()
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: '/poker start' }],
+      reply: replyStart,
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    const firstActAddress = replyStart.mock.calls[0][0][1].activePlayer
+
+    // 4. First player folds
+    const replyFold = jest.fn()
+    await bot.onMessage({
+      senderAddress: firstActAddress,
+      items: [{ type: 'text', text: '/fold' }],
+      reply: replyFold,
+    } as unknown as BotMessageContext, mockBotCtx)
+
+    expect(mockSendTx).toHaveBeenCalledTimes(1)
+    const callArgs = mockSendTx.mock.calls[0][0]
+    expect(callArgs.to).toBe('0x391a080Bd6FF21CB4598adF063Dc94018CD186E5') // Canonical HTLC
+    expect(callArgs.data).toMatch(/^0x/)
+
+    const textReply = replyFold.mock.calls[0][0][0].text
+    expect(textReply).toContain('On-Chain Settlement')
+    expect(textReply).toContain('0xsettletx999')
+
+    const itemReply = replyFold.mock.calls[0][0][1]
+    expect(itemReply.txHash).toBe('0xsettletx999')
+  })
 })

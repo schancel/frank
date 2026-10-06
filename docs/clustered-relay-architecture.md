@@ -2,7 +2,7 @@
 
 **Status**: Architecture Standard & Scoping Specification  
 **Parent Epic**: #821  
-**Related Issues**: #10, #88, #110, #453, #454, #455, #457, #981, #982, #983  
+**Related Issues**: #10, #88, #110, #453, #454, #455, #457, #981, #982, #983, #986, #998, #971, #974  
 **Primary Invariant**: **Zero-overhead, zero-external-dependency standalone operation MUST remain the default.** Laypeople, single-node self-hosters, CI runners, and unit/integration tests must never be forced to run external cluster services.
 
 ---
@@ -217,6 +217,23 @@ pub struct NodeClusterAttestation {
   - Worker nodes share the common S3/MinIO bucket for raw MIME email bodies.
   - Ephemeral task assignment uses Core NATS queue subscriptions (`mail.inbound.queue`) to balance inbound SMTP parsing across workers with automatic failover if a worker disconnects.
   - Avoids double-spending of DKSAP payments through idempotent message transaction deduplication.
+
+### 6.4 Issue #998: Cluster Identity via Relay Descriptors & Anti-Self-Peering Isolation
+
+- **Objective**: Differentiate intra-cluster mesh communication (Kvrocks and Core NATS) from inter-cluster federation (Relay Descriptors and Type 25 forwarding bundles) to eliminate intra-cluster self-peering and coordinate cross-cluster message and forum bundle dispatch.
+- **Standalone Mode Behavior**:
+  - Operates a local `RelayDescriptor` representing the single node.
+  - Rejects self-peering via loopback detection and standard duplicate endpoint filters in `p2p/peers.rs`.
+  - Dispatches outbound forwarding bundles (Type 25 frames) and forum posts directly to target relay endpoints via HTTP PUT.
+- **Clustered Mode Behavior**:
+  - **Unified Relay Descriptor**: Nodes sharing a `cluster_name` advertise a shared cluster `RelayDescriptor` containing public ingress endpoints. User directory records bind to the cluster's `relay_descriptor_hash`.
+  - **Anti-Self-Peering Filter**:
+    - Discovered peer candidates matching `cluster_name` or known intra-cluster node IDs are strictly suppressed from the P2P HTTP crawler and gossip table.
+    - Intra-cluster state replication occurs exclusively over the internal NATS bus/Kvrocks mesh; nodes never establish P2P HTTP peering with other nodes in the same cluster.
+  - **Clustered Outbound Bundle Dispatch (Core NATS Queue Group)**:
+    - Outbound cross-relay forwarding bundles (Type 25 frames with storage stamps) and forum/topic events are dispatched via a Core NATS queue subscription: `cluster.forwarding.dispatch`.
+    - Exactly one worker in the source cluster claims each delivery job, preventing $N$-fold redundant forwarding storms to external relays.
+    - Automatic exponential backoff and retry handling on HTTP 503 or transient network failure.
 
 ---
 

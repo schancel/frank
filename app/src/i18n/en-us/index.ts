@@ -677,6 +677,7 @@ export default {
     darkMode: 'Dark Mode',
     themeTitle: 'Signet Theme Stone',
     saveSettings: 'Save',
+    savedNotification: 'Settings saved',
     cancelSettings: 'Cancel',
     languageSelectorCaption: 'Language',
   },

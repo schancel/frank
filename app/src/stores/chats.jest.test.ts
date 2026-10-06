@@ -32,6 +32,7 @@ import {
   indexOutboundDeliveryOwners,
   rehydateChat,
   useChatStore,
+  makeConversationId,
 } from './chats'
 import { useContactStore } from './contacts'
 import { store as messageStorePromise } from '../adapters/level-message-store'
@@ -1794,6 +1795,307 @@ describe('stores/chats.ts (ticket #42)', () => {
       chats.readAll(RECIPIENT_ADDRESS)
 
       expect(errorSpy).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('ticket #69: conversation-oriented and group-ready storage', () => {
+    it('proves two direct conversations with one peer stay separate without address-key collision', async () => {
+      const chats = useChatStore()
+      const convAlpha = chats.createConversation({
+        kind: 'direct',
+        participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+        topic: 'topic-alpha',
+        name: 'Project Alpha',
+      })
+      const convBeta = chats.createConversation({
+        kind: 'direct',
+        participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+        topic: 'topic-beta',
+        name: 'Project Beta',
+      })
+
+      expect(convAlpha.id).not.toBe(convBeta.id)
+      expect(convAlpha.name).toBe('Project Alpha')
+      expect(convBeta.name).toBe('Project Beta')
+
+      // Send a message in Alpha
+      chats.sendMessageLocal({
+        address: RECIPIENT_ADDRESS,
+        conversationId: convAlpha.id,
+        senderAddress: SENDER_ADDRESS,
+        index: 'msg-alpha-1',
+        items: [{ type: 'text', text: 'Hello in Alpha' }],
+        outpoints: [],
+        stampValueWei: 10n,
+        status: 'confirmed',
+        previousHash: null,
+        timestamp: 100,
+      })
+
+      // Send a message in Beta
+      chats.sendMessageLocal({
+        address: RECIPIENT_ADDRESS,
+        conversationId: convBeta.id,
+        senderAddress: SENDER_ADDRESS,
+        index: 'msg-beta-1',
+        items: [{ type: 'text', text: 'Hello in Beta' }],
+        outpoints: [],
+        stampValueWei: 10n,
+        status: 'confirmed',
+        previousHash: null,
+        timestamp: 110,
+      })
+
+      expect(chats.conversations[convAlpha.id]?.messages).toHaveLength(1)
+      expect(chats.conversations[convAlpha.id]?.messages[0].payloadDigest).toBe(
+        'msg-alpha-1',
+      )
+      expect(chats.conversations[convBeta.id]?.messages).toHaveLength(1)
+      expect(chats.conversations[convBeta.id]?.messages[0].payloadDigest).toBe(
+        'msg-beta-1',
+      )
+
+      // Query conversations for the recipient address returns both
+      const recipientConvs = chats.getConversationsForAddress(RECIPIENT_ADDRESS)
+      expect(recipientConvs.map(c => c.id)).toContain(convAlpha.id)
+      expect(recipientConvs.map(c => c.id)).toContain(convBeta.id)
+    })
+
+    it('proves a synthetic multi-member group conversation coexists with direct chats without address collisions', async () => {
+      const chats = useChatStore()
+      // Direct chat with Bob (RECIPIENT_ADDRESS)
+      const directBob = chats.createConversation({
+        kind: 'direct',
+        participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+        address: RECIPIENT_ADDRESS,
+      })
+      // Direct chat with Carol (THIRD_ADDRESS)
+      const directCarol = chats.createConversation({
+        kind: 'direct',
+        participants: [SENDER_ADDRESS, THIRD_ADDRESS],
+        address: THIRD_ADDRESS,
+      })
+      // Group chat with Alice, Bob, Carol
+      const groupConv = chats.createConversation({
+        kind: 'group',
+        participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS, THIRD_ADDRESS],
+        name: 'Team Frank',
+        initialRole: 'member',
+        conversationId: 'group-team-frank',
+      })
+
+      expect(groupConv.kind).toBe('group')
+      expect(groupConv.participants).toHaveLength(3)
+      expect(groupConv.members?.[SENDER_ADDRESS]?.role).toBe('member')
+
+      // Post to group
+      chats.sendMessageLocal({
+        address: groupConv.address,
+        conversationId: groupConv.id,
+        senderAddress: SENDER_ADDRESS,
+        index: 'group-msg-1',
+        items: [{ type: 'text', text: 'Welcome team!' }],
+        outpoints: [],
+        stampValueWei: 10n,
+        status: 'confirmed',
+        previousHash: null,
+        timestamp: 100,
+      })
+
+      // Group message is recorded in the group conversation only
+      expect(chats.conversations[groupConv.id]?.messages).toHaveLength(1)
+      expect(chats.conversations[groupConv.id]?.messages[0].payloadDigest).toBe(
+        'group-msg-1',
+      )
+      // Direct chats with Bob and Carol remain empty
+      expect(chats.conversations[directBob.id]?.messages).toHaveLength(0)
+      expect(chats.conversations[directCarol.id]?.messages).toHaveLength(0)
+      expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(0)
+      expect(chats.chats[THIRD_ADDRESS]?.messages).toHaveLength(0)
+    })
+
+    it('migrates legacy direct-message fixtures into conversations and logical messages', async () => {
+      const legacyState = {
+        activeChatAddr: RECIPIENT_ADDRESS,
+        chats: {
+          [RECIPIENT_ADDRESS]: {
+            address: RECIPIENT_ADDRESS,
+            messages: [],
+            totalUnreadMessages: 2,
+            totalUnreadValue: 200,
+            totalValue: 200,
+            lastReceived: 50,
+            lastRead: 0,
+            stampAmount: 500,
+          } as any,
+        },
+        messages: {},
+        lastReceived: 50,
+      }
+
+      mockMessageStore.getIterator.mockResolvedValueOnce(
+        (async function* (): AsyncGenerator<MessageWrapper> {
+          yield {
+            index: 'legacy-msg-1',
+            outbound: false,
+            senderAddress: RECIPIENT_ADDRESS,
+            copartyAddress: RECIPIENT_ADDRESS,
+            message: {
+              outbound: false,
+              status: 'confirmed',
+              items: [{ type: 'text', text: 'legacy message' }],
+              serverTime: 50,
+              receivedTime: 50,
+              outpoints: [],
+              stampValueWei: 100n,
+              senderAddress: RECIPIENT_ADDRESS,
+            },
+          }
+        })(),
+      )
+
+      const rehydrated = await rehydateChat(legacyState)
+      expect(rehydrated.conversations).toBeDefined()
+      const convs = Object.values(rehydrated.conversations)
+      expect(convs.length).toBeGreaterThanOrEqual(1)
+      const conv = convs[0]
+      expect(conv.kind).toBe('direct')
+      expect(conv.participants).toContain(RECIPIENT_ADDRESS)
+      expect(conv.messages).toHaveLength(1)
+      expect(conv.messages[0].payloadDigest).toBe('legacy-msg-1')
+      expect(conv.messages[0].conversationId).toBe(conv.id)
+
+      // Verified logical message indexing
+      expect(rehydrated.logicalMessages).toBeDefined()
+      expect(rehydrated.logicalMessages['legacy-msg-1']).toBeDefined()
+      expect(rehydrated.logicalMessages['legacy-msg-1']?.conversationId).toBe(
+        conv.id,
+      )
+      expect(
+        rehydrated.logicalMessages['legacy-msg-1']?.revisions[0].deliveries[0]
+          .deliveryDigest,
+      ).toBe('legacy-msg-1')
+
+      // Chats map alias points to the same conversation
+      expect(rehydrated.chats[RECIPIENT_ADDRESS]).toBe(conv)
+    })
+
+    it('enforces tombstone deletion semantics: ignores replayed messages and reopens on newer message', async () => {
+      const chats = useChatStore()
+      const conv = chats.createConversation({
+        kind: 'direct',
+        participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+        topic: 'thread-delete',
+        name: 'Temporary Thread',
+      })
+
+      // Send initial message at time 100
+      chats.sendMessageLocal({
+        address: RECIPIENT_ADDRESS,
+        conversationId: conv.id,
+        senderAddress: SENDER_ADDRESS,
+        index: 'm1',
+        items: [{ type: 'text', text: 'first message' }],
+        outpoints: [],
+        status: 'confirmed',
+        previousHash: null,
+        timestamp: 100,
+      })
+      expect(chats.conversations[conv.id]?.messages).toHaveLength(1)
+
+      // Delete conversation at time 200
+      await chats.deleteConversation(conv.id, 200)
+      expect(chats.conversations[conv.id]?.deletedAt).toBe(200)
+      expect(chats.conversations[conv.id]?.messages).toHaveLength(0)
+
+      // Replayed message with timestamp 100 (<= deletedAt) is ignored
+      await chats.receiveMessages([
+        {
+          outbound: false,
+          senderAddress: RECIPIENT_ADDRESS,
+          copartyAddress: RECIPIENT_ADDRESS,
+          copartyPubKey: {} as any,
+          index: 'm1-replayed',
+          stampValue: 10,
+          message: {
+            conversationId: 'thread-delete',
+            outbound: false,
+            status: 'confirmed',
+            items: [{ type: 'text', text: 'replayed message' }],
+            serverTime: 100,
+            receivedTime: 100,
+            outpoints: [],
+            senderAddress: RECIPIENT_ADDRESS,
+          } as any,
+        },
+      ])
+      expect(chats.conversations[conv.id]?.deletedAt).toBeDefined()
+      expect(chats.conversations[conv.id]?.messages).toHaveLength(0)
+
+      // Newer message with timestamp 300 (> deletedAt) reopens the conversation
+      await chats.receiveMessages([
+        {
+          outbound: false,
+          senderAddress: RECIPIENT_ADDRESS,
+          copartyAddress: RECIPIENT_ADDRESS,
+          copartyPubKey: {} as any,
+          index: 'm2-fresh',
+          stampValue: 10,
+          message: {
+            conversationId: 'thread-delete',
+            conversationName: 'Reopened Thread',
+            outbound: false,
+            status: 'confirmed',
+            items: [{ type: 'text', text: 'fresh message after delete' }],
+            serverTime: 300,
+            receivedTime: 300,
+            outpoints: [],
+            senderAddress: RECIPIENT_ADDRESS,
+          } as any,
+        },
+      ])
+      expect(chats.conversations[conv.id]?.deletedAt).toBeUndefined()
+      expect(chats.conversations[conv.id]?.messages).toHaveLength(1)
+      expect(chats.conversations[conv.id]?.messages[0].payloadDigest).toBe(
+        'm2-fresh',
+      )
+      expect(chats.conversations[conv.id]?.name).toBe('Reopened Thread')
+    })
+
+    it('updates conversation name when newer message carries a new conversation name (rename semantics)', async () => {
+      const chats = useChatStore()
+      const conv = chats.createConversation({
+        kind: 'direct',
+        participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+        topic: 'topic-rename',
+        name: 'Initial Name',
+      })
+      expect(chats.conversations[conv.id]?.name).toBe('Initial Name')
+
+      // Receive message with a new conversation name
+      await chats.receiveMessages([
+        {
+          outbound: false,
+          senderAddress: RECIPIENT_ADDRESS,
+          copartyAddress: RECIPIENT_ADDRESS,
+          copartyPubKey: {} as any,
+          index: 'rename-msg',
+          stampValue: 10,
+          message: {
+            conversationId: 'topic-rename',
+            conversationName: 'Renamed Topic',
+            outbound: false,
+            status: 'confirmed',
+            items: [{ type: 'text', text: 'Renaming this' }],
+            serverTime: 150,
+            receivedTime: 150,
+            outpoints: [],
+            senderAddress: RECIPIENT_ADDRESS,
+          } as any,
+        },
+      ])
+
+      expect(chats.conversations[conv.id]?.name).toBe('Renamed Topic')
     })
   })
 })

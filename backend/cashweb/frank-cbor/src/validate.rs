@@ -13,8 +13,8 @@ use crate::error::{CodecError, ContextError, Error, ErrorCategory, ErrorStage};
 use crate::hash::{directory_signature_digest, key_transition_signature_digest};
 use crate::limits::{
     is_known_type, FRAME_HEADER_BYTES, FRAME_MAGIC, FRAME_VERSION, KNOWN_TYPES, MAX_FRAME_BYTES,
-    MAX_MESSAGE_ITEMS_TOTAL, TYPE_DIRECTORY_STATEMENT, TYPE_KEY_TRANSITION_STATEMENT,
-    TYPE_MESSAGE_REVISION, TYPE_RECIPIENT_PAYLOAD, TYPE_TOPIC_POST,
+    MAX_MESSAGE_ITEMS_TOTAL, TYPE_DIRECTORY_STATEMENT, TYPE_DIRECT_MESSAGE,
+    TYPE_KEY_TRANSITION_STATEMENT, TYPE_MESSAGE_REVISION, TYPE_RECIPIENT_PAYLOAD, TYPE_TOPIC_POST,
 };
 use crate::model::{
     ChildFrame, FrameOnly, JournalFact, KeyTransition, OpaqueSection, ParsedFrame, PaymentMember,
@@ -583,11 +583,13 @@ fn run_stage_10(parsed: &ParsedFrame) -> Result<(), Error> {
             verify_attestation(statement, signatures)?;
             Ok(())
         }
-        TypedPayload::DirectMessage { .. } => Err(Error::Context(ContextError(
-            "stages 10.1-10.5 (the type-1 stamp checks) are outside this slice; `full` runs \
+        TypedPayload::DirectMessage { .. } | TypedPayload::ForwardingDelivery { .. } => {
+            Err(Error::Context(ContextError(
+                "stages 10.1-10.5 (the type-1 stamp checks) are outside this slice; `full` runs \
              only the type-2 signature verification of stage 10.6"
-                .to_string(),
-        ))),
+                    .to_string(),
+            )))
+        }
         _ => Ok(()),
     }
 }
@@ -838,6 +840,41 @@ fn open_children(
 ) -> Result<TypedPayload, CodecError> {
     let path = format!("{location}/payload");
     match draft {
+        Draft::ForwardingDelivery {
+            network,
+            destination,
+            payload_frame,
+            payload_digest,
+            payments,
+            endpoint,
+            expires_at,
+            unknown,
+        } => Ok(TypedPayload::ForwardingDelivery {
+            network,
+            destination,
+            payload_frame: open_required(
+                payload_frame,
+                TYPE_DIRECT_MESSAGE,
+                env_depth + 1,
+                shared,
+                &format!("{path}.2"),
+            )?,
+            payload_digest,
+            payments: payments
+                .into_iter()
+                .map(|payment| PaymentMember {
+                    child_index: payment.child_index,
+                    transaction_id: payment.transaction_id,
+                    value: payment.value,
+                    address: payment.address,
+                    commitment: payment.commitment,
+                    vout: payment.vout,
+                })
+                .collect(),
+            endpoint,
+            expires_at,
+            unknown,
+        }),
         Draft::DirectMessage {
             network,
             destination,

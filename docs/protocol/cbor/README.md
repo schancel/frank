@@ -206,6 +206,7 @@ E5. Type identifiers are never reused. Version 1 reserves:
 |         18 | Closed typed blackjack message item         | [direct-message.cddl](direct-message.cddl) |
 |         19 | Stealth payment item                        | [direct-message.cddl](direct-message.cddl) |
 |         24 | Universal state channel update item         | [direct-message.cddl](direct-message.cddl) |
+|         25 | Relay forwarding delivery envelope          | [direct-message.cddl](direct-message.cddl) |
 | 0xffff0001 | Proof-only unknown future message item      | Opaque fixture payload                     |
 
 The CDDL rule for each type's payload is: 1 `direct-message-delivery`; 2
@@ -220,7 +221,8 @@ profile of section 11, is `directory-statement-v3`); 5
 17 `text-message-item`; 18 `blackjack-message-item` (schema1/min-reader1) and `blackjack-hand-item` (schema2/min-reader2, the peer-to-peer
 hand of [../blackjack-p2p.md](../blackjack-p2p.md); vectors in `vectors/blackjack-hand.json`) and `blackjack-hand-v3-item` (schema3/min-reader2, the same
 hand with entropy links and a message chain in place of cards and outcome; action codes 32..41, the default supported schema of type 18;
-vectors in `vectors/blackjack-hand-v3.json`). Type 9 schema 2/min-reader 2 opens field 3 as
+vectors in `vectors/blackjack-hand-v3.json`); 24 `channel-update-item`; 25 `forwarding-delivery-envelope`.
+Type 9 schema 2/min-reader 2 opens field 3 as
 `forum-content`; schema 1 remains the explicitly historical opaque-body schema.
 
 Unassigned identifiers remain reserved and MUST NOT be emitted. The proof-only

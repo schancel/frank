@@ -289,4 +289,17 @@ raffle-payload = {
   * uint => frank-value,
 }
 
+; Active type 25 / schema 1 / min-reader 1: relay forwarding delivery envelope.
+forwarding-delivery-envelope = {
+  0: network-tag,                       ; destination relay network, e.g. "monad-testnet"
+  1: account-ref,                       ; destination relay routing identity (key type 1)
+  2: framed-object,                     ; inner direct-message-delivery (Type 1) frame
+  3: digest-32,                         ; forwarding payload digest of field 2
+  4: [1*64 payment-member],             ; storage payment stamps compensating destination relay
+  ? 5: tstr .size (1..256),             ; optional destination relay endpoint URI
+  ? 6: uint .le 4294967295,             ; optional delivery TTL / expiration timestamp (seconds)
+  * uint => frank-value,                ; additive extensible fields
+}
+
+
 

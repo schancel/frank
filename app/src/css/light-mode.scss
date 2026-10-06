@@ -1,29 +1,25 @@
 body.body--light {
-  --q-color-background: #f7f7fb;
-  --q-color-text: #1a1a22;
-  // TODO: Figure out how to use global quasar scss variables
-  --q-color-bg-active: #ebebf5;
-  --q-color-active: #e2e2f0;
-  // ChatMessage.vue + ChatMessageReply.vue
-  --q-message-color-sent: #9d5cff;
+  --q-color-background: #faf6f3;
+  --q-color-text: #1f1612;
+  --q-color-bg-active: #f0e6e0;
+  --q-color-active: #e8dbd3;
+  --q-message-color-sent: #d24e27;
   --q-message-color: #ffffff;
   --q-message-text-sent: #ffffff;
-  --q-message-text-received: #1a1a22;
+  --q-message-text-received: #1f1612;
   --q-reply-bg: rgba(255, 255, 255, 0.44);
-  --q-reply-border-left: 4px solid black;
-  // See dark-mode.scss's identical property for why this is a soft gradient wash, not a tiled
-  // pattern asset.
+  --q-reply-border-left: 4px solid var(--q-primary, #c8431e);
   --q-chat-background: radial-gradient(
       ellipse 900px 700px at 12% -10%,
-      rgba(157, 92, 255, 0.11),
+      rgba(200, 67, 30, 0.09),
       transparent 60%
     ),
     radial-gradient(
       ellipse 900px 700px at 100% 115%,
-      rgba(0, 217, 163, 0.09),
+      rgba(217, 119, 6, 0.06),
       transparent 60%
     ),
-    #f7f7fb;
+    #faf6f3;
 
   background: var(--q-color-background);
   color: var(--q-color-text);

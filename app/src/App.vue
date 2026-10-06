@@ -26,6 +26,7 @@ import { useProfileStore } from 'src/stores/my-profile'
 import { useContactStore } from 'src/stores/contacts'
 import { useChatStore } from 'src/stores/chats'
 import { usePersistentStorageStore } from 'src/stores/persistent-storage'
+import { applyTheme } from 'src/utils/theme'
 import { openChat } from 'src/utils/routes'
 
 import ContactBookDialog from 'src/components/dialogs/ContactBookDialog.vue'
@@ -41,7 +42,7 @@ export default defineComponent({
     const relayClient = useRelayClientStore()
     const contacts = useContactStore()
     const appearanceStore = useAppearanceStore()
-    const { darkMode, locale } = storeToRefs(appearanceStore)
+    const { darkMode, locale, theme } = storeToRefs(appearanceStore)
     const myProfile = useProfileStore()
 
     const {
@@ -65,6 +66,13 @@ export default defineComponent({
       openChat(router, newAddress)
     }
     const contactBookOpen = ref(false)
+    watch(
+      [darkMode, theme],
+      ([isDark, currentTheme]) => {
+        applyTheme(currentTheme, isDark)
+      },
+      { immediate: true },
+    )
 
     return {
       addDefaultContact: contacts.addDefaultContact,
@@ -77,6 +85,7 @@ export default defineComponent({
       relayToken: () => relayClient.token,
       contactClicked,
       darkMode,
+      theme,
       locale,
       lastReceived,
       totalUnread,
@@ -142,6 +151,7 @@ export default defineComponent({
   },
   created() {
     this.$q.dark.set(this.darkMode)
+    applyTheme(this.theme, this.darkMode)
     // Restores the persisted locale (ticket #156) -- `appearanceStore.restored` is already
     // awaited by boot/setup-apis.ts before the app ever mounts, so `this.locale` here is already
     // the real saved value, not the store's just-initialized default.

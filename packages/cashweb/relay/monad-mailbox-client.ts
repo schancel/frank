@@ -213,6 +213,8 @@ export class MonadMailboxStaleCursorError extends MonadMailboxError {}
 export class MonadMailboxRequestError extends MonadMailboxError {}
 export class MonadMailboxRecordTooLargeError extends MonadMailboxError {}
 export class MonadMailboxRecoveryActiveError extends MonadMailboxError {}
+/** The relay recovery endpoint has been retired (HTTP 410). */
+export class MonadMailboxRecoveryRetiredError extends MonadMailboxError {}
 /** Still failing after the retry budget; safe to try again later. */
 export class MonadMailboxRetryableError extends MonadMailboxError {}
 /** 429 `mailbox_challenge_capacity`: the recipient already has the relay's maximum number of
@@ -469,6 +471,8 @@ function httpError(
       return new MonadMailboxRecordTooLargeError(detail, 413, code)
     case 409:
       return new MonadMailboxRecoveryActiveError(detail, 409, code)
+    case 410:
+      return new MonadMailboxRecoveryRetiredError(detail, 410, code)
     default:
       return new MonadMailboxError(detail, response.status, code)
   }
@@ -878,7 +882,10 @@ function decodeRecoveries(data: unknown): {
   }
 }
 
-/** One authenticated recovery page: `GET /message/monad/recovery/:recipient`. */
+/**
+ * One authenticated recovery page: `GET /message/monad/recovery/:recipient`.
+ * @deprecated Recovery endpoint is retired; stamp recovery is unified through the mailbox.
+ */
 export async function fetchMonadMailboxRecoveryPage(
   params: MailboxAuthParams & {
     cursor?: string
@@ -888,27 +895,35 @@ export async function fetchMonadMailboxRecoveryPage(
 ): Promise<{ records: MailboxRecoveryRecord[]; nextCursor?: string }> {
   const http = params.http ?? defaultHttp
   const base = params.relayBaseUrl.replace(/\/+$/, '')
-  const response = await signedRequest(
-    params,
-    {
-      resource: 'recovery',
-      cursor: params.cursor,
-      limit: params.limit,
-      maxBytes: params.maxBytes,
-    },
-    (challenge, headers) =>
-      http({
-        method: 'get',
-        url: `${base}/message/monad/recovery/${params.recipient}`,
-        params: {
-          cursor: challenge.cursor ?? undefined,
-          limit: challenge.limit,
-          max_bytes: challenge.max_bytes,
-        },
-        headers,
-      }),
-    'GET /message/monad/recovery',
-  )
+  let response: MailboxHttpResponse
+  try {
+    response = await signedRequest(
+      params,
+      {
+        resource: 'recovery',
+        cursor: params.cursor,
+        limit: params.limit,
+        maxBytes: params.maxBytes,
+      },
+      (challenge, headers) =>
+        http({
+          method: 'get',
+          url: `${base}/message/monad/recovery/${params.recipient}`,
+          params: {
+            cursor: challenge.cursor ?? undefined,
+            limit: challenge.limit,
+            max_bytes: challenge.max_bytes,
+          },
+          headers,
+        }),
+      'GET /message/monad/recovery',
+    )
+  } catch (err) {
+    if (err instanceof MonadMailboxRecoveryRetiredError) {
+      return { records: [] }
+    }
+    throw err
+  }
   const page = decodeRecoveries(response.data)
   return {
     records: page.records,
@@ -916,8 +931,11 @@ export async function fetchMonadMailboxRecoveryPage(
   }
 }
 
-/** Every recovery obligation, following cursors. Same first-page-throws / later-page-truncates
- * contract as {@link fetchMonadMailboxInbox}. */
+/**
+ * Every recovery obligation, following cursors. Same first-page-throws / later-page-truncates
+ * contract as {@link fetchMonadMailboxInbox}.
+ * @deprecated Recovery endpoint is retired; stamp recovery is unified through the mailbox.
+ */
 export async function fetchMonadMailboxRecoveries(
   params: MailboxAuthParams & { pageLimit?: number; maxPages?: number },
 ): Promise<{
@@ -936,6 +954,9 @@ export async function fetchMonadMailboxRecoveries(
         limit: params.pageLimit,
       })
     } catch (err) {
+      if (err instanceof MonadMailboxRecoveryRetiredError) {
+        return { records: [] }
+      }
       if (page > 0 && err instanceof MonadMailboxError) {
         return { records, truncatedBy: err }
       }
@@ -958,11 +979,14 @@ export async function fetchMonadMailboxRecoveries(
   }
 }
 
-/** Retire one terminal recovery obligation after the caller has durably imported it:
+/**
+ * Retire one terminal recovery obligation after the caller has durably imported it:
  * `POST /message/monad/recovery/:recipient/:payload_hash/:obligation_id/ack` (204; idempotent,
  * an already-absent, stale-id or other-recipient obligation ALSO answers 204 -- no existence
  * oracle -- so a 204 is NOT proof that the obligation existed or was retired). An obligation that is still active answers 409
- * -> {@link MonadMailboxRecoveryActiveError}. */
+ * -> {@link MonadMailboxRecoveryActiveError}.
+ * @deprecated Recovery endpoint is retired; stamp recovery is unified through the mailbox.
+ */
 export async function ackMonadMailboxRecovery(
   params: MailboxAuthParams & {
     payloadHashHex: string
@@ -981,21 +1005,26 @@ export async function ackMonadMailboxRecovery(
       )
     }
   }
-  await signedRequest(
-    params,
-    {
-      resource: 'recovery_ack',
-      recoveryPayloadHashHex: params.payloadHashHex,
-      recoveryObligationIdHex: params.obligationIdHex,
-    },
-    (_challenge, headers) =>
-      http({
-        method: 'post',
-        url: `${base}/message/monad/recovery/${params.recipient}/${params.payloadHashHex}/${params.obligationIdHex}/ack`,
-        headers,
-      }),
-    'POST /message/monad/recovery/ack',
-  )
+  try {
+    await signedRequest(
+      params,
+      {
+        resource: 'recovery_ack',
+        recoveryPayloadHashHex: params.payloadHashHex,
+        recoveryObligationIdHex: params.obligationIdHex,
+      },
+      (_challenge, headers) =>
+        http({
+          method: 'post',
+          url: `${base}/message/monad/recovery/${params.recipient}/${params.payloadHashHex}/${params.obligationIdHex}/ack`,
+          headers,
+        }),
+      'POST /message/monad/recovery/ack',
+    )
+  } catch (err) {
+    if (err instanceof MonadMailboxRecoveryRetiredError) return
+    throw err
+  }
 }
 
 // Canonical mailbox keeps the original P signing transcript, with an isolated HTTP namespace.
@@ -1665,15 +1694,30 @@ export async function connectCanonicalMailboxStream(
     close: cleanup,
   }
 }
+/**
+ * Complete recovery page.
+ * @deprecated Recovery endpoint is retired; stamp recovery is unified through the mailbox.
+ */
 export async function fetchCanonicalRecoveryPage(
   params: CanonicalMailboxPageParams,
 ): Promise<CanonicalMailboxPage<CanonicalRecoveryRecord>> {
   const binding = canonicalPageBinding(params, 'recovery')
-  const response = await canonicalSignedRequest(
-    params,
-    binding,
-    `recovery/${params.recipient}`,
-  )
+  let response: MailboxHttpResponse
+  try {
+    response = await canonicalSignedRequest(
+      params,
+      binding,
+      `recovery/${params.recipient}`,
+    )
+  } catch (err) {
+    if (err instanceof MonadMailboxRecoveryRetiredError) {
+      return Object.freeze({ records: Object.freeze([]) })
+    }
+    throw err
+  }
+  if (response.status === 410) {
+    return Object.freeze({ records: Object.freeze([]) })
+  }
   const seen = new Set<string>()
   const records = canonicalPageRecords(response, binding.limit!).map(outer => {
     const parts = canonicalRecordParts(outer, 4)
@@ -1751,7 +1795,10 @@ export async function fetchCanonicalRecoveryPage(
     nextCursor: response.headers[MAILBOX_NEXT_CURSOR_HEADER],
   })
 }
-/** Caller must durably import recovery before ack. This never acknowledges a wallet workflow. */
+/**
+ * Caller must durably import recovery before ack. This never acknowledges a wallet workflow.
+ * @deprecated Recovery endpoint is retired; stamp recovery is unified through the mailbox.
+ */
 export async function ackCanonicalRecovery(
   params: CanonicalMailboxAuthParams & {
     payloadHashHex: string
@@ -1763,18 +1810,25 @@ export async function ackCanonicalRecovery(
     !canonicalHex32(params.obligationIdHex)
   )
     canonicalProtocol('Exact recovery T3/obligation required')
-  const response = await canonicalSignedRequest(
-    params,
-    {
-      resource: 'recovery_ack',
-      since: 0,
-      limit: 1,
-      maxBytes: 0,
-      recoveryPayloadHashHex: params.payloadHashHex,
-      recoveryObligationIdHex: params.obligationIdHex,
-    },
-    `recovery/${params.recipient}/${params.payloadHashHex}/${params.obligationIdHex}/ack`,
-  )
+  let response: MailboxHttpResponse
+  try {
+    response = await canonicalSignedRequest(
+      params,
+      {
+        resource: 'recovery_ack',
+        since: 0,
+        limit: 1,
+        maxBytes: 0,
+        recoveryPayloadHashHex: params.payloadHashHex,
+        recoveryObligationIdHex: params.obligationIdHex,
+      },
+      `recovery/${params.recipient}/${params.payloadHashHex}/${params.obligationIdHex}/ack`,
+    )
+  } catch (err) {
+    if (err instanceof MonadMailboxRecoveryRetiredError) return
+    throw err
+  }
+  if (response.status === 410) return
   if (
     response.status !== 200 ||
     (response.headers['content-type'] ?? '')

@@ -349,7 +349,6 @@ describe("Solana Stealth Engine (STEALTH-5)", () => {
       amount: Number(SOLANA_MIN_STEALTH_LAMPORTS),
       memo: "stealth payment",
       chainId: "solana-devnet",
-      rawTransactions: [result.txHash],
     });
   });
 });

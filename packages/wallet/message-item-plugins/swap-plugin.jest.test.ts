@@ -28,7 +28,7 @@ describe('swap-offer message item plugin and serialization', () => {
     expect(plugin!.previewText(sampleOffer)).toBe(
       'Atomic swap offer: 25.0 MON (monad-testnet) for 3.5 SOL (solana-testnet)',
     )
-    expect(plugin!.tallyValue?.(sampleOffer)).toBe('25.0')
+    expect(plugin!.tallyValue?.(sampleOffer)).toBe(25)
   })
 
   it('serializes and deserializes swap-offer items without loss', () => {

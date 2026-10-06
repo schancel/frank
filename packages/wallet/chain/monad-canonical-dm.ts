@@ -45,7 +45,6 @@ import {
   connectCanonicalMailboxStream,
   fetchCanonicalInboxPage,
   fetchCanonicalMailboxPage,
-  fetchCanonicalRecoveryPage,
   MonadMailboxChallengeCapacityError,
   type CanonicalMailboxAuthParams,
   type CanonicalMailboxRecord,
@@ -270,10 +269,8 @@ export interface CanonicalMessagingOwner {
   directory(): CanonicalDirectory | undefined
 }
 
-const RECOVERY_SYNC_INTERVAL_MS = 60_000
 const MAX_INBOX_PAGES = 8
 const queues = new WeakMap<object, Promise<unknown>>()
-const lastRecoverySync = new WeakMap<object, number>()
 /** Messages whose sender could not be checked yet: digest -> when that was first seen. */
 const unreadable = new WeakMap<object, Map<string, number>>()
 const UNREADABLE_RETRY_MS = 24 * 60 * 60_000
@@ -612,46 +609,6 @@ function mailboxAuth(
   }
 }
 
-async function syncRecoveries(
-  owner: CanonicalMessagingOwner,
-  directory: CanonicalDirectory,
-  auth: CanonicalMailboxAuthParams,
-  self: Current,
-): Promise<void> {
-  const now = Date.now(),
-    last = lastRecoverySync.get(owner.links)
-  if (last !== undefined && now - last < RECOVERY_SYNC_INTERVAL_MS) return
-  lastRecoverySync.set(owner.links, now)
-  const client = owner.client()
-  let page
-  try {
-    page = await fetchCanonicalRecoveryPage(auth)
-  } catch {
-    return
-  }
-  for (const record of page.records) {
-    try {
-      const delivery = parseFrame(record.delivery)
-      if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1) continue
-      const payload = delivery.typed.payloadFrame.typed
-      if (payload?.type !== 5) continue
-      const sender = await directory.peerCurrent({
-        subject: toHex(payload.sender.keyBytes),
-      })
-      if (!sender) continue
-      const row = await client.importRecovery({
-        record,
-        senderCurrent: sender.current,
-        recipientCurrent: self,
-      })
-      client.verifyImportedRecoveryCustody(row.obligationId)
-      if (record.lifecycle.startsWith('terminal:'))
-        await client.ackImportedRecovery(row.obligationId, auth)
-    } catch {
-      // Left unacknowledged at the relay; the next sync retries it.
-    }
-  }
-}
 
 async function resolveHistoricalEvidence(
   directory: CanonicalDirectory,
@@ -940,7 +897,6 @@ async function fetchSince(
     cursor = page.nextCursor
     if (cursor === undefined) break
   }
-  await syncRecoveries(owner, directory, auth, self)
   return received
 }
 

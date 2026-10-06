@@ -147,3 +147,26 @@ export function pubKeyToColor(pubKey: Uint8Array): string {
   const saturation = hashbuf[1] / 255
   return `hsl(${hue}, ${saturation * 100}%, 60%)`
 }
+
+/** Formats a conversation timestamp for chat list display. */
+export function formatConversationTimestamp(
+  timestamp?: number | null,
+): string {
+  if (!timestamp) return ''
+  const d = new Date(timestamp)
+  if (isNaN(d.getTime())) return ''
+  const now = new Date()
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  if (sameDay) {
+    const hours = d.getHours().toString().padStart(2, '0')
+    const minutes = d.getMinutes().toString().padStart(2, '0')
+    return `${hours}:${minutes}`
+  }
+  const month = (d.getMonth() + 1).toString().padStart(2, '0')
+  const day = d.getDate().toString().padStart(2, '0')
+  return `${d.getFullYear()}-${month}-${day}`
+}
+

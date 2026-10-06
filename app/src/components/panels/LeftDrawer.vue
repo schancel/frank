@@ -301,11 +301,17 @@ export default defineComponent({
       return router.push('/settings')
     }
     function openActiveOrRecentChat() {
-      const address =
-        chats.activeChatAddr ?? chats.getSortedChatOrder[0]?.address
+      const target =
+        chats.activeConversationId ??
+        chats.activeChatAddr ??
+        chats.getSortedChatOrder[0]?.id ??
+        chats.getSortedChatOrder[0]?.address
       markRailNavigation()
-      if (address) {
-        router.push(`/chat/${address}`)
+      if (target) {
+        if (typeof chats.setActiveConversation === 'function') {
+          chats.setActiveConversation(target)
+        }
+        router.push(`/chat/${target}`)
       } else {
         router.push('/chat')
       }
@@ -438,6 +444,7 @@ export default defineComponent({
       loaded,
       isNarrow,
       legacyRelayEnabled: legacyLotusModeEnabled(),
+      chats,
     }
   },
   emits: ['closeDrawer', 'updateWidth', 'resizing'],
@@ -476,6 +483,9 @@ export default defineComponent({
       this.myDrawerOpen = !this.myDrawerOpen
     },
     contactClicked(address: string) {
+      if (typeof this.chats?.setActiveConversation === 'function') {
+        this.chats.setActiveConversation(address)
+      }
       openChat(this.$router, address)
     },
     chatsLabel(): string {

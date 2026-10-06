@@ -24,13 +24,22 @@
 
         <template v-if="$status.setup">
           <chat-list-item
-            v-for="contact in getSortedChatOrder"
-            :key="contact.address"
-            :chat-address="contact.address"
-            :value-unread="formatAmount(contact.totalUnreadValue)"
-            :num-unread="contact.totalUnreadMessages"
+            v-for="conversation in getSortedChatOrder"
+            :key="conversation.id || conversation.address"
+            :conversation="conversation"
+            :conversation-id="conversation.id"
+            :conversation-name="conversation.name || conversation.topic"
+            :participants="conversation.participants"
+            :timestamp="
+              conversation.lastReceived ||
+              conversation.updatedAt ||
+              conversation.createdAt
+            "
+            :chat-address="conversation.address || conversation.id"
+            :value-unread="formatAmount(conversation.totalUnreadValue)"
+            :num-unread="conversation.totalUnreadMessages"
             :compact="compact"
-            @click="setActiveChat(contact.address)"
+            @click="selectConversation(conversation)"
           />
         </template>
 
@@ -49,7 +58,7 @@ import { defineComponent } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import ChatListItem from './ChatListItem.vue'
-import { useChatStore } from '../../stores/chats'
+import { Conversation, useChatStore } from '../../stores/chats'
 
 import { openChat, openPage } from '../../utils/routes'
 import { useRouter } from 'vue-router'
@@ -75,8 +84,15 @@ export default defineComponent({
           : '/add-contact'
         openPage(router, target)
       },
-      setActiveChat(address: string) {
-        openChat(router, address)
+      selectConversation(item: Conversation | string) {
+        const target =
+          typeof item === 'string' ? item : item.id || item.address
+        if (typeof chatStore.setActiveConversation === 'function') {
+          chatStore.setActiveConversation(target)
+        } else if (typeof chatStore.setActiveChat === 'function') {
+          chatStore.setActiveChat(target)
+        }
+        openChat(router, target)
         // Direct user feedback (2026-09-29, ticket #123): on a narrow/mobile viewport the
         // drawer this list lives in is an overlay covering the whole chat -- selecting a chat
         // used to leave that overlay open on top of the chat it just navigated to, so the chat
@@ -86,6 +102,9 @@ export default defineComponent({
         if (isNarrowWidth($q.screen.width)) {
           emit('closeDrawer')
         }
+      },
+      setActiveChat(item: Conversation | string) {
+        return this.selectConversation(item)
       },
       formatAmount(amount?: number) {
         if (!amount) {

@@ -890,12 +890,20 @@ export const useChatStore = defineStore('chats', {
       }
     },
     activeConversation(state): Conversation | null {
-      if (state.activeConversationId) {
-        return state.conversations[state.activeConversationId] ?? null
+      if (
+        state.activeConversationId &&
+        state.conversations?.[state.activeConversationId]
+      ) {
+        return state.conversations[state.activeConversationId]
       }
-      if (state.activeChatAddr) {
-        const chat = state.chats[state.activeChatAddr]
-        return chat ?? null
+      if (state.activeChatAddr && state.chats?.[state.activeChatAddr]) {
+        return state.chats[state.activeChatAddr] ?? null
+      }
+      if (
+        state.activeConversationId &&
+        state.chats?.[state.activeConversationId]
+      ) {
+        return state.chats[state.activeConversationId] ?? null
       }
       return null
     },
@@ -2436,13 +2444,30 @@ export const useChatStore = defineStore('chats', {
         this.activeChatAddr = null
         return
       }
-      const conv = this.conversations[conversationId]
+      let conv = this.conversations[conversationId]
+      if (!conv) {
+        try {
+          const displayAddress = toChainDisplayAddress(conversationId)
+          conv =
+            this.chats[displayAddress] ||
+            this.getConversationsForAddress(displayAddress)[0]
+          if (!conv) {
+            conv = this.createConversation({
+              kind: 'direct',
+              participants: [displayAddress],
+              address: displayAddress,
+            })
+          }
+        } catch {
+          // not a valid chain address and not in conversations
+        }
+      }
       if (!conv) {
         this.activeConversationId = conversationId
         this.activeChatAddr = null
         return
       }
-      this.activeConversationId = conversationId
+      this.activeConversationId = conv.id
       if (conv.kind === 'direct' && conv.address) {
         this.activeChatAddr = conv.address
         const contacts = useContactStore()
@@ -2450,7 +2475,7 @@ export const useChatStore = defineStore('chats', {
         this.readAll(conv.address)
       } else {
         this.activeChatAddr = null
-        this.readAll(conversationId)
+        this.readAll(conv.id)
       }
     },
     async receiveMessages(

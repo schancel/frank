@@ -13,14 +13,28 @@ import { accountSession, accountStatus } from '../accounts/session'
 async function ensureChatState(address?: string) {
   const chatStore = useChatStore()
   if (!address) {
-    chatStore.setActiveChat(null)
+    if (typeof chatStore.setActiveConversation === 'function') {
+      chatStore.setActiveConversation(null)
+    } else {
+      chatStore.setActiveChat(null)
+    }
     return
   }
 
   try {
+    if (chatStore.conversations && address in chatStore.conversations) {
+      if (typeof chatStore.setActiveConversation === 'function') {
+        chatStore.setActiveConversation(address)
+        return
+      }
+    }
     const contactsStore = useContactStore()
     contactsStore.fetchAndAddContact({ address, contact: {} })
-    chatStore.setActiveChat(address)
+    if (typeof chatStore.setActiveConversation === 'function') {
+      chatStore.setActiveConversation(address)
+    } else {
+      chatStore.setActiveChat(address)
+    }
   } catch (ex) {
     console.error('addContactFromNavigation error:', ex)
   }

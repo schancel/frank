@@ -21,8 +21,8 @@
                 <chat-message-component
                   :index="index"
                   :message="msg"
-                  :address="address"
-                  :name="getContact(msg.outbound).name ?? 'unknown'"
+                  :address="recipientAddress"
+                  :name="getContact(msg.outbound)?.name ?? 'unknown'"
                   :chat-width="chatWidth"
                   :payload-digest="msg.payloadDigest"
                   :style="messageScrollMarginStyle"
@@ -118,7 +118,7 @@
       <send-stealth-dialog
         v-if="stealthDialog"
         :contact="contact"
-        :address="address"
+        :address="recipientAddress"
         :busy="sendingMessage"
         @send="sendStealthPayment"
       />
@@ -128,7 +128,7 @@
       <offer-swap-dialog
         v-if="swapDialog"
         :contact="contact"
-        :address="address"
+        :address="recipientAddress"
         :busy="sendingMessage"
         @offer="sendSwapOffer"
       />
@@ -188,7 +188,7 @@ import { debounce, QScrollArea } from 'quasar'
 import { RouteLocationNormalized } from 'vue-router'
 import { useContactStore } from 'src/stores/contacts'
 import { useProfileStore } from 'src/stores/my-profile'
-import { ChatMessage, useChatStore } from 'src/stores/chats'
+import { ChatMessage, type Conversation, useChatStore } from 'src/stores/chats'
 import type { OutgoingOutcome } from 'src/stores/chats'
 import { useBalance } from 'src/composables/useBalance'
 
@@ -212,6 +212,12 @@ export default defineComponent({
   ) {
     this.address = to.params.address as string
     this.messagesToShow = 30
+    if (
+      this.address &&
+      typeof this.chatStore?.setActiveConversation === 'function'
+    ) {
+      this.chatStore.setActiveConversation(this.address)
+    }
     next()
   },
   beforeUnmount() {
@@ -266,6 +272,12 @@ export default defineComponent({
   },
   emits: ['giveLotusClicked', 'sendFileClicked'],
   mounted() {
+    if (
+      this.address &&
+      typeof this.chatStore?.setActiveConversation === 'function'
+    ) {
+      this.chatStore.setActiveConversation(this.address)
+    }
     this.scrollBottom()
     // set the chat width
     this.resizeHandler()
@@ -510,8 +522,9 @@ export default defineComponent({
       if (this.sendingMessage) {
         return
       }
+      const recipient = this.recipientAddress || this.address
       const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
-      const rawPrice = this.getAcceptancePrice(this.address)
+      const rawPrice = this.getAcceptancePrice(recipient)
       const acceptancePrice =
         typeof rawPrice === 'number' && Number.isFinite(rawPrice)
           ? BigInt(Math.trunc(rawPrice))
@@ -550,7 +563,8 @@ export default defineComponent({
         this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
-          address: this.address,
+          address: recipient,
+          conversationId: this.conversation?.id,
           items,
           stampValue,
           onPreparationProgress: this.showStampPreparation,
@@ -601,11 +615,13 @@ export default defineComponent({
         })
       }
       this.sendingMessage = true
+      const recipient = this.recipientAddress || this.address
       try {
         this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
-          address: this.address,
+          address: recipient,
+          conversationId: this.conversation?.id,
           items,
           stampValue,
           onPreparationProgress: this.showStampPreparation,
@@ -624,11 +640,13 @@ export default defineComponent({
       const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
       const items: MessageItem[] = [item]
       this.sendingMessage = true
+      const recipient = this.recipientAddress || this.address
       try {
         this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
-          address: this.address,
+          address: recipient,
+          conversationId: this.conversation?.id,
           items,
           stampValue,
           onPreparationProgress: this.showStampPreparation,
@@ -706,6 +724,7 @@ export default defineComponent({
       // A blackjack message is sent only while it is still the hand's next message, judged on
       // the messages saved on this device too, so a payout, refund, bet or deal that another
       // tab already sent (or is still sending) is not sent a second time from this one.
+      const peer = this.recipientAddress || this.address
       const handItem = soleHandItem(items)
       if (handItem) {
         this.sendingMessage = true
@@ -718,9 +737,9 @@ export default defineComponent({
               item: handItem,
               stampWei: stampValue,
               own,
-              peer: this.address,
+              peer,
               memory: this.messages,
-              stored: () => storedOutgoingMessages(this.address),
+              stored: () => storedOutgoingMessages(peer),
             }))
         } finally {
           this.sendingMessage = false
@@ -736,7 +755,8 @@ export default defineComponent({
         this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
         outcome = await this.sendDirectMessage({
           wallet: useMonadWallet(),
-          address: this.address,
+          address: peer,
+          conversationId: this.conversation?.id,
           items,
           stampValue,
           onPreparationProgress: this.showStampPreparation,
@@ -798,7 +818,8 @@ export default defineComponent({
       }
       if (seed && own) {
         // The seed is kept under this account's own name before its commitment leaves.
-        saveSeed(own, this.address, gameId, seed)
+        const peer = this.recipientAddress || this.address
+        saveSeed(own, peer, gameId, seed)
       }
       this.blackjackDialog = false
       await this.sendFollowUpItems({ items: [built.item] })
@@ -820,13 +841,14 @@ export default defineComponent({
       } catch {
         return
       }
+      const peer = this.recipientAddress || this.address
       this.resumingHand = true
       let resumed: number
       try {
         resumed = await resumeHandMessages({
           store: this.chatStore as unknown as HandResumeStore,
           wallet,
-          address: this.address,
+          address: peer,
           own,
           messages: this.messages,
           attempted: this.blackjackAttempted,
@@ -839,9 +861,11 @@ export default defineComponent({
         void this.runBlackjackDealer()
         return
       }
-      const step = automaticDealerSteps(this.messages, own, this.address).find(
-        candidate => !this.blackjackAttempted.has(candidate.key),
-      )
+      const step = automaticDealerSteps(
+        this.messages,
+        own,
+        peer,
+      ).find(candidate => !this.blackjackAttempted.has(candidate.key))
       if (!step || this.sendingMessage || this.resumingHand) return
       this.blackjackAttempted.add(step.key)
       await this.sendFollowUpItems({ items: [step.item] })
@@ -850,7 +874,8 @@ export default defineComponent({
       if (outbound) {
         return this.getProfile.profile
       } else {
-        return this.getContactVuex(this.address)?.profile
+        const peer = this.recipientAddress || this.address
+        return this.getContactVuex(peer)?.profile
       }
     },
     setReply(payloadDigest: string | null) {
@@ -901,7 +926,8 @@ export default defineComponent({
           stampValue,
           onPreparationProgress: this.showStampPreparation,
         })
-        if (targetAddress !== this.address) {
+        const peer = this.recipientAddress || this.address
+        if (targetAddress !== peer) {
           await openChat(this.$router, targetAddress)
         }
       } catch (err) {
@@ -927,11 +953,57 @@ export default defineComponent({
         ? { scrollMarginTop: `${this.bannerClearance}px` }
         : undefined
     },
+    conversation(): Conversation | null {
+      const store = this.chatStore as
+        | {
+            conversations?: Record<string, Conversation | undefined>
+            activeConversationId?: string | null
+            activeConversation?: Conversation | null
+          }
+        | undefined
+      if (store?.conversations && this.address in store.conversations) {
+        return store.conversations[this.address] ?? null
+      }
+      if (
+        store?.activeConversationId &&
+        store.conversations?.[store.activeConversationId]
+      ) {
+        return store.conversations[store.activeConversationId] ?? null
+      }
+      if (this.chats && this.address in this.chats) {
+        return (this.chats[this.address] as Conversation) ?? null
+      }
+      if (store?.activeConversation) {
+        return store.activeConversation
+      }
+      return null
+    },
+    recipientAddress(): string {
+      if (this.conversation?.address) {
+        return this.conversation.address
+      }
+      if (
+        this.conversation?.participants &&
+        this.conversation.participants.length > 0
+      ) {
+        return this.conversation.participants[0]
+      }
+      return this.address
+    },
+    contact() {
+      return this.getContactVuex(this.recipientAddress)
+    },
     peerName(): string {
-      return this.getContactVuex(this.address)?.profile?.name ?? ''
+      if (this.conversation?.name) {
+        return this.conversation.name
+      }
+      return this.getContactVuex(this.recipientAddress)?.profile?.name ?? ''
     },
     messages(): ChatMessage[] {
-      const activeChat = this.chats[this.address]
+      if (this.conversation?.messages) {
+        return this.conversation.messages
+      }
+      const activeChat = this.chats ? this.chats[this.address] : undefined
       return activeChat ? activeChat.messages : []
     },
     chunkedMessages() {
@@ -960,12 +1032,22 @@ export default defineComponent({
             ? activeChain.defaultStampValue
             : rawAmount
         this.setStampAmount({
-          address: this.address,
+          address: this.recipientAddress,
           stampAmount: Number(rawAmount),
         })
+        if (
+          this.conversation?.id &&
+          this.conversation.id !== this.recipientAddress
+        ) {
+          this.setStampAmount({
+            address: this.conversation.id,
+            stampAmount: Number(rawAmount),
+          })
+        }
       },
       get() {
-        const stored = this.getStampAmount(this.address)
+        const target = this.conversation?.id || this.recipientAddress
+        const stored = this.getStampAmount(target)
         const storedRaw = BigInt(stored)
         // Values persisted by the old Lotus-denominated control (and the earlier Monad preview)
         // are not meaningful wei defaults. Upgrade them in-place at display/send time.
@@ -979,7 +1061,13 @@ export default defineComponent({
     },
   },
   watch: {
-    'address'() {
+    'address'(newAddr: string) {
+      if (
+        newAddr &&
+        typeof this.chatStore?.setActiveConversation === 'function'
+      ) {
+        this.chatStore.setActiveConversation(newAddr)
+      }
       this.focusComposeOnOpen()
       void this.runBlackjackDealer()
     },

@@ -2126,5 +2126,36 @@ describe('stores/chats.ts (ticket #42)', () => {
 
       expect(chats.conversations[conv.id]?.name).toBe('Renamed Topic')
     })
+
+    it('activates conversation by ID and updates activeConversationId and activeConversation (ticket #943)', () => {
+      const chats = useChatStore()
+      const conv = chats.createConversation({
+        kind: 'direct',
+        participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+        name: 'Ticket 943 Thread',
+      })
+
+      chats.setActiveConversation(conv.id)
+      expect(chats.activeConversationId).toBe(conv.id)
+      expect(chats.activeConversation?.id).toBe(conv.id)
+      expect(chats.activeConversation?.name).toBe('Ticket 943 Thread')
+      expect(chats.activeChatAddr).toBe(conv.address)
+
+      chats.setActiveConversation(null)
+      expect(chats.activeConversationId).toBeNull()
+      expect(chats.activeChatAddr).toBeNull()
+      expect(chats.activeConversation).toBeNull()
+    })
+
+    it('activates conversation by contact address for backward compatibility (ticket #943)', () => {
+      const chats = useChatStore()
+      chats.setActiveConversation(RECIPIENT_ADDRESS)
+      expect(chats.activeConversationId).toBeDefined()
+      expect(chats.activeChatAddr).toBe(RECIPIENT_ADDRESS)
+      expect(chats.activeConversation?.kind).toBe('direct')
+      expect(chats.activeConversation?.address).toBe(RECIPIENT_ADDRESS)
+      expect(chats.activeConversation?.participants).toContain(RECIPIENT_ADDRESS)
+    })
   })
 })
+

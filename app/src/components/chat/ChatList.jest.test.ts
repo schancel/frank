@@ -16,11 +16,14 @@ jest.mock('vue-router', () => ({
 jest.mock('pinia', () => ({
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
 }))
+const mockChatStore = jest.requireActual('vue').reactive({
+  getSortedChatOrder: [{ address: 'addr1', totalUnreadMessages: 0 }],
+  setActiveConversation: jest.fn(),
+  setActiveChat: jest.fn(),
+})
+
 jest.mock('../../stores/chats', () => ({
-  useChatStore: () =>
-    jest.requireActual('vue').reactive({
-      getSortedChatOrder: [{ address: 'addr1', totalUnreadMessages: 0 }],
-    }),
+  useChatStore: () => mockChatStore,
 }))
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: { toDisplayAmount: (n: bigint) => n.toString(), unit: 'MON' },
@@ -64,7 +67,13 @@ async function selectChatAt(width: number) {
 }
 
 describe('ChatList closeDrawer', () => {
-  beforeEach(() => mockPush.mockClear())
+  beforeEach(() => {
+    mockPush.mockClear()
+    mockChatStore.setActiveConversation.mockClear()
+    mockChatStore.getSortedChatOrder = [
+      { address: 'addr1', totalUnreadMessages: 0 },
+    ]
+  })
 
   it.each([390, 800])('emits closeDrawer at %ipx (mobile)', async width => {
     const wrapper = await selectChatAt(width)
@@ -76,5 +85,45 @@ describe('ChatList closeDrawer', () => {
     const wrapper = await selectChatAt(width)
     expect(mockPush).toHaveBeenCalledWith('/chat/addr1')
     expect(wrapper.emitted('closeDrawer')).toBeUndefined()
+  })
+})
+
+describe('ChatList conversation selection (#943)', () => {
+  beforeEach(() => {
+    mockPush.mockClear()
+    mockChatStore.setActiveConversation.mockClear()
+  })
+
+  it('activates conversation by id and navigates to /chat/:id', async () => {
+    mockChatStore.getSortedChatOrder = [
+      {
+        id: 'conv-uuid-943',
+        topic: 'Engineering',
+        participants: ['0x1111111111111111111111111111111111111111'],
+        totalUnreadMessages: 0,
+      },
+    ]
+    mockWidth = 1024
+    const wrapper = mount(ChatList, {
+      props: { compact: false },
+      global: {
+        components: {
+          QScrollArea: passthrough,
+          QList: passthrough,
+          QItem: passthrough,
+          QItemSection: passthrough,
+          QItemLabel: passthrough,
+          QSeparator: passthrough,
+          QSpace: passthrough,
+          QBtn: passthrough,
+        },
+        mocks: { $status: { setup: true }, $t: (k: string) => k },
+      },
+    })
+    await wrapper.find('[data-testid="chat-item"]').trigger('click')
+    expect(mockChatStore.setActiveConversation).toHaveBeenCalledWith(
+      'conv-uuid-943',
+    )
+    expect(mockPush).toHaveBeenCalledWith('/chat/conv-uuid-943')
   })
 })

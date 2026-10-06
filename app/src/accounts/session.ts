@@ -2,6 +2,7 @@ import { reactive, readonly } from 'vue'
 import {
   activeChain,
   type NativeWalletHandle,
+  type SupportedCurve,
   type WalletHandle,
 } from '@frank/wallet/chain'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
@@ -92,6 +93,8 @@ export function createAccountSession(deps: {
   let activeBip39Params: { mnemonic: string; path: string } | undefined
   const chainAddressCache = new Map<'monad' | 'ecash' | 'solana', string>()
   const chainAddressInFlight = new Map<'ecash' | 'solana', Promise<string>>()
+  const curveKeyCache = new Map<SupportedCurve, Uint8Array>()
+  const curveKeyInFlight = new Map<SupportedCurve, Promise<Uint8Array>>()
   let generation = 0
   let tail = Promise.resolve()
   let initialized: Promise<void> | undefined
@@ -127,6 +130,8 @@ export function createAccountSession(deps: {
   const release = async () => {
     chainAddressCache.clear()
     chainAddressInFlight.clear()
+    curveKeyCache.clear()
+    curveKeyInFlight.clear()
     const previous = wallet
     wallet = undefined
     if (previous) await previous.close()
@@ -395,6 +400,59 @@ export function createAccountSession(deps: {
       promise.catch(() => {
         if (chainAddressInFlight.get(chain) === promise) {
           chainAddressInFlight.delete(chain)
+        }
+      })
+      return promise
+    },
+    getCachedCurvePublicKey(curve: SupportedCurve): Uint8Array | undefined {
+      if (curve === 'secp256k1') {
+        const cached = curveKeyCache.get('secp256k1')
+        if (cached) return cached
+        if (wallet?.identity?.compressedPubKey) {
+          const key = new Uint8Array(wallet.identity.compressedPubKey)
+          curveKeyCache.set('secp256k1', key)
+          return key
+        }
+        return undefined
+      }
+      return curveKeyCache.get(curve)
+    },
+    async getCurvePublicKey(curve: SupportedCurve): Promise<Uint8Array> {
+      if (curve === 'secp256k1') {
+        const cached = session.getCachedCurvePublicKey('secp256k1')
+        if (cached) return cached
+        const currentWallet = await session.getWallet()
+        if (!currentWallet.identity?.compressedPubKey) {
+          throw new Error('No identity compressedPubKey available for secp256k1')
+        }
+        const key = new Uint8Array(currentWallet.identity.compressedPubKey)
+        curveKeyCache.set('secp256k1', key)
+        return key
+      }
+      const cached = curveKeyCache.get(curve)
+      if (cached) return cached
+      const inFlight = curveKeyInFlight.get(curve)
+      if (inFlight) return inFlight
+      const promise = (async () => {
+        if (curve === 'ed25519') {
+          const root = await this.getActiveDomainRoot('solana-wallet')
+          try {
+            const { Keypair } = await import('@solana/web3.js')
+            const kp = await Keypair.fromSeed(root)
+            const pubKeyBytes = new Uint8Array(kp.publicKey.toBytes())
+            curveKeyCache.set('ed25519', pubKeyBytes)
+            return pubKeyBytes
+          } finally {
+            root.fill(0)
+            curveKeyInFlight.delete(curve)
+          }
+        }
+        throw new Error(`Unsupported curve: ${curve}`)
+      })()
+      curveKeyInFlight.set(curve, promise)
+      promise.catch(() => {
+        if (curveKeyInFlight.get(curve) === promise) {
+          curveKeyInFlight.delete(curve)
         }
       })
       return promise

@@ -849,6 +849,154 @@ describe('stage 10.6 verifies the key-transition authorizations (T2a)', () => {
   })
 })
 
+describe('directory statement spendKeys (field 14)', () => {
+  it('parses and validates spendKeys for both secp256k1 (keyType 1) and ed25519 (keyType 2)', () => {
+    const secpKey = new Uint8Array(33)
+    secpKey[0] = 0x02
+    secpKey.fill(0x11, 1)
+
+    const edKey = new Uint8Array(32).fill(0x22)
+
+    const statement = encodeFrame(
+      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      M([
+        [0, 'monad-testnet'],
+        [1, M([[0, 1], [1, secpKey]])],
+        [2, 1000n],
+        [3, M([[0, 100n], [1, 0]])],
+        [
+          4,
+          [
+            M([
+              [0, new Uint8Array(16)],
+              [1, 'https://relay1.frank.example'],
+              [2, M([[0, 1], [1, secpKey]])],
+              [3, M([[0, 2000n], [1, 0]])],
+            ]),
+          ],
+        ],
+        [8, M([[0, 1], [1, secpKey]])],
+        [
+          14,
+          [
+            M([[0, 1], [1, secpKey]]),
+            M([[0, 2], [1, edKey]]),
+          ],
+        ],
+      ]),
+    )
+
+    const ctx = defaultContext({ operation: 'typed' })
+    const validated = validateFrame(statement, ctx)
+    expect(validated.kind).toBe('parsed')
+    if (validated.kind === 'parsed' && validated.typed?.type === 4) {
+      expect(validated.typed.spendKeys).toBeDefined()
+      expect(validated.typed.spendKeys?.length).toBe(2)
+      expect(validated.typed.spendKeys?.[0]).toEqual({
+        keyType: 1,
+        keyBytes: secpKey,
+      })
+      expect(validated.typed.spendKeys?.[1]).toEqual({
+        keyType: 2,
+        keyBytes: edKey,
+      })
+    }
+  })
+
+  it('rejects unsorted spendKeys at stage 9 semantic', () => {
+    const secpKey = new Uint8Array(33)
+    secpKey[0] = 0x02
+    secpKey.fill(0x11, 1)
+
+    const edKey = new Uint8Array(32).fill(0x22)
+
+    // edKey (keyType 2) placed before secpKey (keyType 1)
+    const statement = encodeFrame(
+      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      M([
+        [0, 'monad-testnet'],
+        [1, M([[0, 1], [1, secpKey]])],
+        [2, 1000n],
+        [3, M([[0, 100n], [1, 0]])],
+        [
+          4,
+          [
+            M([
+              [0, new Uint8Array(16)],
+              [1, 'https://relay1.frank.example'],
+              [2, M([[0, 1], [1, secpKey]])],
+              [3, M([[0, 2000n], [1, 0]])],
+            ]),
+          ],
+        ],
+        [8, M([[0, 1], [1, secpKey]])],
+        [
+          14,
+          [
+            M([[0, 2], [1, edKey]]),
+            M([[0, 1], [1, secpKey]]),
+          ],
+        ],
+      ]),
+    )
+
+    const ctx = defaultContext({ operation: 'typed' })
+    expect(() => validateFrame(statement, ctx)).toThrow(FrankCodecError)
+    try {
+      validateFrame(statement, ctx)
+    } catch (e: any) {
+      expect(e.category).toBe('semantic')
+      expect(e.stage).toBe('9')
+      expect(e.location).toBe('root/payload.14')
+    }
+  })
+
+  it('rejects spendKey with wrong key length at stage 8.2 schema', () => {
+    const secpKey = new Uint8Array(33)
+    secpKey[0] = 0x02
+    secpKey.fill(0x11, 1)
+
+    const badEdKey = new Uint8Array(33).fill(0x22) // keyType 2 expects 32 bytes
+
+    const statement = encodeFrame(
+      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      M([
+        [0, 'monad-testnet'],
+        [1, M([[0, 1], [1, secpKey]])],
+        [2, 1000n],
+        [3, M([[0, 100n], [1, 0]])],
+        [
+          4,
+          [
+            M([
+              [0, new Uint8Array(16)],
+              [1, 'https://relay1.frank.example'],
+              [2, M([[0, 1], [1, secpKey]])],
+              [3, M([[0, 2000n], [1, 0]])],
+            ]),
+          ],
+        ],
+        [8, M([[0, 1], [1, secpKey]])],
+        [
+          14,
+          [
+            M([[0, 2], [1, badEdKey]]),
+          ],
+        ],
+      ]),
+    )
+
+    const ctx = defaultContext({ operation: 'typed' })
+    expect(() => validateFrame(statement, ctx)).toThrow(FrankCodecError)
+    try {
+      validateFrame(statement, ctx)
+    } catch (e: any) {
+      expect(e.category).toBe('schema')
+      expect(e.stage).toBe('8.2')
+    }
+  })
+})
+
 /** Minimal envelope reader for the raw fixture frames used by these tests. */
 function decodeEnvelope(frame: Uint8Array): {
   typeId: number

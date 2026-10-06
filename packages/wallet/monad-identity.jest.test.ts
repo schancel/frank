@@ -944,4 +944,65 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
       }),
     ).rejects.toThrow(/address mismatch/)
   })
+
+  it('advertises and decodes curve spend keys (field 14 and field 9 spend_key profile entries)', async () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const edKey = new Uint8Array(32).fill(0x77)
+
+    const cborFrame = buildSignedDirectoryStatement(identity, {
+      network: 'monad-testnet',
+      curveKeys: {
+        secp256k1: identity.compressedPubKey,
+        ed25519: edKey,
+      },
+    })
+
+    const decoded = decodeProfileBytes(cborFrame)
+    expect(decoded.curveKeys).toBeDefined()
+    expect(decoded.curveKeys?.secp256k1).toEqual(new Uint8Array(identity.compressedPubKey))
+    expect(decoded.curveKeys?.ed25519).toEqual(edKey)
+    expect(decoded.spendKeys).toHaveLength(2)
+    expect(decoded.spendKeys?.[0]).toEqual({
+      keyType: 1,
+      keyBytes: new Uint8Array(identity.compressedPubKey),
+    })
+    expect(decoded.spendKeys?.[1]).toEqual({
+      keyType: 2,
+      keyBytes: edKey,
+    })
+
+    // Test fetchMonadProfile propagates curveKeys and spendKeys
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(cborFrame),
+      statusText: 'OK',
+      headers: { 'content-type': 'application/cbor' },
+      config: {},
+    })
+
+    const profile = await fetchMonadProfile({
+      relayBaseUrl: RELAY_BASE_URL,
+      address: identity.address,
+    })
+    expect(profile?.curveKeys?.secp256k1).toEqual(new Uint8Array(identity.compressedPubKey))
+    expect(profile?.curveKeys?.ed25519).toEqual(edKey)
+    expect(profile?.spendKeys).toHaveLength(2)
+  })
+
+  it('falls back to secp256k1 subject pubkey when spend keys are omitted', () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const cborFrame = buildSignedDirectoryStatement(identity, {
+      network: 'monad-testnet',
+    })
+
+    const decoded = decodeProfileBytes(cborFrame)
+    expect(decoded.curveKeys?.secp256k1).toEqual(new Uint8Array(identity.compressedPubKey))
+    expect(decoded.curveKeys?.ed25519).toBeUndefined()
+    expect(decoded.spendKeys).toEqual([
+      {
+        keyType: 1,
+        keyBytes: new Uint8Array(identity.compressedPubKey),
+      },
+    ])
+  })
 })

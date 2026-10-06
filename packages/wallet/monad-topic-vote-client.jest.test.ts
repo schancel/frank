@@ -83,7 +83,7 @@ async function fixture() {
   const wallet: MonadWalletHandle = {
     pool: bundle.pool,
     leaseManager: bundle.leaseManager,
-    walletState: bundle,
+    walletState: { ...bundle, inventory: undefined } as any,
     topicOperationJournal: bundle.topicOperationJournal,
     provider: provider as any,
     httpClient: {} as any,

@@ -1,3 +1,5 @@
+import { readFileSync } from "fs";
+import { join } from "path";
 import {
   PROTOCOL_CHAINS,
   CANONICAL_EVM_CONTRACTS,
@@ -78,7 +80,7 @@ describe("chains-registry", () => {
       family: "solana",
       curve: "ed25519",
       keyType: 2,
-      network: "testnet",
+      network: "devnet",
       isTestnet: true,
       name: "Solana Devnet",
       unit: "dSOL",
@@ -239,7 +241,8 @@ describe("chains-registry", () => {
     expect(getChainRegistryByKind("monad", false).unit).toBe("MON");
     expect(getChainRegistryByKind("ecash", true).unit).toBe("tXEC");
     expect(getChainRegistryByKind("ecash", false).unit).toBe("XEC");
-    expect(getChainRegistryByKind("solana", true).unit).toBe("dSOL");
+    expect(getChainRegistryByKind("solana", true).unit).toBe("tSOL");
+    expect(getChainRegistryEntry("solana-devnet")?.unit).toBe("dSOL");
     expect(getChainRegistryByKind("solana", false).unit).toBe("SOL");
     expect(getChainRegistryByKind("ethereum", true).unit).toBe("SEP");
     expect(getChainRegistryByKind("ethereum", false).unit).toBe("ETH");
@@ -315,6 +318,67 @@ describe("chains-registry", () => {
     expect(PROTOCOL_CHAINS["monad-mainnet"].contracts).toBe(CANONICAL_EVM_CONTRACTS);
     expect(PROTOCOL_CHAINS["solana-mainnet"].contracts).toBe(CANONICAL_SOLANA_CONTRACTS);
     expect(PROTOCOL_CHAINS["ecash-mainnet"].contracts).toBeUndefined();
+  });
+
+  describe("relay protocol synchronization (docs/protocol/chains/v1.json)", () => {
+    const protocolRegistry = JSON.parse(
+      readFileSync(
+        join(__dirname, "../../../docs/protocol/chains/v1.json"),
+        "utf8"
+      )
+    ) as {
+      schema_version: number;
+      chains: Array<{
+        id: string;
+        family: string;
+        network: string;
+        caip2: string;
+        native_chain_id?: string;
+        allowed_proxy_capabilities: string[];
+      }>;
+    };
+
+    it("verifies protocol registry schema version and chain count", () => {
+      expect(protocolRegistry.schema_version).toBe(1);
+      expect(protocolRegistry.chains.length).toBe(21);
+    });
+
+    it("ensures wallet and relay protocol registries agree on shared chain identifiers and properties", () => {
+      const protocolChainsMap = new Map(
+        protocolRegistry.chains.map((c) => [c.id, c])
+      );
+
+      for (const [id, entry] of Object.entries(PROTOCOL_CHAINS)) {
+        if (!protocolChainsMap.has(id)) {
+          continue;
+        }
+
+        const protocolChain = protocolChainsMap.get(id)!;
+        expect(entry.id).toBe(protocolChain.id);
+        expect(entry.family).toBe(protocolChain.family);
+        if (protocolChain.caip2 != null) {
+          expect(entry.caip2).toBe(protocolChain.caip2);
+        } else {
+          expect(entry.caip2).toBeUndefined();
+        }
+        expect(entry.network).toBe(protocolChain.network);
+        if (protocolChain.native_chain_id != null) {
+          expect(String(entry.nativeChainId)).toBe(protocolChain.native_chain_id);
+        } else {
+          expect(entry.nativeChainId).toBeUndefined();
+        }
+      }
+    });
+
+    it("ensures every canonical protocol EVM and Solana chain is registered in wallet PROTOCOL_CHAINS", () => {
+      const activeFamilies = new Set(["evm", "solana"]);
+      for (const chain of protocolRegistry.chains) {
+        if (activeFamilies.has(chain.family)) {
+          expect(PROTOCOL_CHAINS[chain.id]).toBeDefined();
+          expect(PROTOCOL_CHAINS[chain.id].family).toBe(chain.family);
+        }
+      }
+    });
   });
 });
 

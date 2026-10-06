@@ -136,6 +136,8 @@ describe('Profile.vue component avatar handling', () => {
           'q-file': { template: '<input type="file" />' },
           'q-btn': { template: '<button><slot /></button>' },
           'q-img': { template: '<img />' },
+          'q-select': { template: '<div><slot /></div>' },
+          'q-icon': { template: '<i />' },
         },
       },
     })
@@ -150,5 +152,102 @@ describe('Profile.vue component avatar handling', () => {
       'data:image/webp;base64,RESIZED_AVATAR',
     )
     expect(wrapper.vm.$data.internalAvatar.length).toBeLessThanOrEqual(4096)
+  })
+
+  it('validates username handle and emits normalized handle', async () => {
+    const wrapper = mount(ProfileComponent, {
+      props: {
+        username: 'alice',
+      },
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+        },
+        stubs: {
+          'q-splitter': {
+            template: '<div><slot name="before" /><slot name="after" /></div>',
+          },
+          'q-tabs': { template: '<div><slot /></div>' },
+          'q-tab': { template: '<div />' },
+          'q-tab-panels': { template: '<div><slot /></div>' },
+          'q-tab-panel': { template: '<div><slot /></div>' },
+          'q-input': { template: '<input />' },
+          'q-toolbar': { template: '<div><slot /></div>' },
+          'q-toolbar-title': { template: '<div><slot /></div>' },
+          'q-file': { template: '<input type="file" />' },
+          'q-btn': { template: '<button><slot /></button>' },
+          'q-img': { template: '<img />' },
+          'q-select': { template: '<div><slot /></div>' },
+          'q-icon': { template: '<i />' },
+        },
+      },
+    })
+
+    // Username rule check
+    expect((wrapper.vm as any).usernameRule('valid_user1')).toBe(true)
+    expect((wrapper.vm as any).usernameRule('@valid_user1')).toBe(true)
+    expect((wrapper.vm as any).usernameRule('ab')).toBe('profile.invalidUsername')
+    expect((wrapper.vm as any).usernameRule('invalid user')).toBe('profile.invalidUsername')
+
+    // Normalization and emit
+    ;(wrapper.vm as any).internalUsername = '@Alice_99'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted('update:username')?.[0]).toEqual(['alice_99'])
+  })
+
+  it('manages interactive links list (add, remove, emit)', async () => {
+    const wrapper = mount(ProfileComponent, {
+      props: {
+        links: [
+          { type: 'website', url: 'https://example.com', label: 'My Site' },
+        ],
+      },
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+        },
+        stubs: {
+          'q-splitter': {
+            template: '<div><slot name="before" /><slot name="after" /></div>',
+          },
+          'q-tabs': { template: '<div><slot /></div>' },
+          'q-tab': { template: '<div />' },
+          'q-tab-panels': { template: '<div><slot /></div>' },
+          'q-tab-panel': { template: '<div><slot /></div>' },
+          'q-input': { template: '<input />' },
+          'q-toolbar': { template: '<div><slot /></div>' },
+          'q-toolbar-title': { template: '<div><slot /></div>' },
+          'q-file': { template: '<input type="file" />' },
+          'q-btn': { template: '<button><slot /></button>' },
+          'q-img': { template: '<img />' },
+          'q-select': { template: '<div><slot /></div>' },
+          'q-icon': { template: '<i />' },
+        },
+      },
+    })
+
+    expect((wrapper.vm as any).internalLinks.length).toBe(1)
+
+    // Add new link
+    ;(wrapper.vm as any).addLink()
+    await wrapper.vm.$nextTick()
+    expect((wrapper.vm as any).internalLinks.length).toBe(2)
+    expect((wrapper.vm as any).internalLinks[1]).toEqual({
+      type: 'website',
+      url: '',
+      label: '',
+    })
+
+    // Modify link
+    ;(wrapper.vm as any).internalLinks[1].type = 'github'
+    ;(wrapper.vm as any).internalLinks[1].url = 'https://github.com/alice'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted('update:links')).toBeTruthy()
+
+    // Remove first link
+    ;(wrapper.vm as any).removeLink(0)
+    await wrapper.vm.$nextTick()
+    expect((wrapper.vm as any).internalLinks.length).toBe(1)
+    expect((wrapper.vm as any).internalLinks[0].type).toBe('github')
   })
 })

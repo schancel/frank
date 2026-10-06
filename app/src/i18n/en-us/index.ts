@@ -42,6 +42,7 @@ export default {
     degradedBanner: 'Some forum topics could not be updated.',
     retry: 'Retry',
     loginSignUp: 'Log in / Sign up',
+    thread: 'Thread',
   },
   chatLayout: {
     info: 'Info',
@@ -240,6 +241,8 @@ export default {
     chooseFile: 'Choose a file',
     openInExplorer: 'Open transaction in block explorer',
     copyTxHash: 'Copy transaction hash',
+    back: 'Back',
+    backToForum: 'Back to forum',
   },
   leftDrawer: {
     noForums: 'No forums discovered yet.',
@@ -702,6 +705,26 @@ export default {
     bio: 'Bio',
     bioHint: 'Short biolography displayed to others',
     uploadAvatar: 'Upload Avatar',
+    username: 'Username',
+    usernameHint:
+      'Unique handle (3–32 characters, lowercase letters, numbers, hyphens, underscores)',
+    invalidUsername:
+      'Username must be 3–32 characters and contain only lowercase letters, numbers, hyphens, and underscores.',
+    location: 'Location',
+    locationHint: 'Where you are based (optional)',
+    links: 'Links & Socials',
+    addLink: 'Add Link',
+    removeLink: 'Remove link',
+    linkType: 'Platform / Type',
+    linkUrl: 'URL or handle',
+    linkLabel: 'Label (optional)',
+    linkTypeWebsite: 'Website / Blog',
+    linkTypeX: 'X (Twitter)',
+    linkTypeGithub: 'GitHub',
+    linkTypeNostr: 'Nostr',
+    linkTypeTelegram: 'Telegram',
+    linkTypeDiscord: 'Discord',
+    linkTypeOther: 'Other',
   },
   clearHistoryDialog: {
     cancel: 'Cancel',

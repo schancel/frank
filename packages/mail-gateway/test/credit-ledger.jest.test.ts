@@ -53,9 +53,9 @@ describe('CreditLedger', () => {
     expect(ledger.getBalance('alice@example.com')).toBe(3);
   });
 
-  it('holds, retrieves, and releases held messages', () => {
+  it('holds, retrieves, and releases held messages', async () => {
     const rawRfc822 = new Uint8Array([1, 2, 3, 4]);
-    ledger.holdMessage({
+    await ledger.holdMessage({
       id: 'msg_1',
       senderEmail: 'recruiter@tech.com',
       recipientAddress: '0xfrankuser',

@@ -117,7 +117,10 @@ export interface ProfileInfo {
   pubKey: Uint8Array;
   /** Optional user-facing profile fields carried by the signed registration. */
   name?: string;
+  username?: string;
   bio?: string;
+  location?: string;
+  links?: Array<{ type: string; url: string; label?: string }>;
   avatar?: string;
   /** Self-declared automated account (#311); see `MonadProfileFields.bot`. */
   bot?: boolean;

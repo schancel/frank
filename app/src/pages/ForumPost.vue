@@ -13,6 +13,7 @@
       :message="message"
       v-if="message && message.payloadDigest"
       :show-replies="true"
+      @set-topic="$emit('set-topic', $event)"
     />
   </div>
 </template>
@@ -39,6 +40,7 @@ export default defineComponent({
   components: {
     AMessage,
   },
+  emits: ['set-topic'],
   props: {},
   data() {
     const payloadDigest = this.$route.params.payloadDigest as string

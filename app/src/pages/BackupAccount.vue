@@ -26,8 +26,8 @@
       </q-toolbar>
     </q-header>
     <q-page-container>
-      <q-page class="q-ma-none q-pa-sm" data-test="backup-account-page">
-        <q-card style="max-width: 680px; margin: 0 auto">
+      <q-page class="q-ma-none q-pa-md" data-test="backup-account-page">
+        <q-card flat class="bg-transparent" style="max-width: 680px; margin: 0 auto">
           <q-card-section>
             <div class="row items-center justify-between no-wrap">
               <div class="text-h6">

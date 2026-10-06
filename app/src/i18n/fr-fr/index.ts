@@ -17,6 +17,7 @@ export default {
     degradedBanner: 'Certains sujets du forum n’ont pas pu être mis à jour.',
     retry: 'Réessayer',
     loginSignUp: 'Connexion / Inscription',
+    thread: 'Fil de discussion',
   },
   agree: "D'accord",
   chat: {
@@ -246,6 +247,8 @@ export default {
     chooseFile: 'Choisir un fichier',
     openInExplorer: "Ouvrir la transaction dans l'explorateur de blocs",
     copyTxHash: 'Copier le hash de transaction',
+    back: 'Retour',
+    backToForum: 'Retour au forum',
   },
   leftDrawer: {
     noForums: 'Aucun forum découvert pour le moment.',
@@ -725,6 +728,26 @@ export default {
     bio: 'Biographie',
     bioHint: 'Courte biographie telle que vue par vos correspondants',
     uploadAvatar: 'Télécharger un avatar',
+    username: 'Identifiant',
+    usernameHint:
+      'Identifiant unique (3 à 32 caractères, lettres minuscules, chiffres, tirets, tirets bas)',
+    invalidUsername:
+      "L'identifiant doit comporter entre 3 et 32 caractères et ne contenir que des lettres minuscules, chiffres, tirets et tirets bas.",
+    location: 'Localisation',
+    locationHint: 'Où vous vous situez (facultatif)',
+    links: 'Liens et réseaux',
+    addLink: 'Ajouter un lien',
+    removeLink: 'Supprimer le lien',
+    linkType: 'Plateforme / Type',
+    linkUrl: 'URL ou identifiant',
+    linkLabel: 'Libellé (facultatif)',
+    linkTypeWebsite: 'Site web / Blog',
+    linkTypeX: 'X (Twitter)',
+    linkTypeGithub: 'GitHub',
+    linkTypeNostr: 'Nostr',
+    linkTypeTelegram: 'Telegram',
+    linkTypeDiscord: 'Discord',
+    linkTypeOther: 'Autre',
   },
   clearHistoryDialog: {
     cancel: 'Annuler',

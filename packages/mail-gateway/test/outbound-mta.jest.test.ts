@@ -181,9 +181,9 @@ describe('2. Outbound Spool & Retry Engine (CreditLedger)', () => {
     ledger = new CreditLedger(':memory:');
   });
 
-  it('enqueues outbound jobs and retrieves pending jobs', () => {
+  it('enqueues outbound jobs and retrieves pending jobs', async () => {
     const now = 1_000_000;
-    const jobId = ledger.enqueueOutboundSpool({
+    const jobId = await ledger.enqueueOutboundSpool({
       recipientEmail: 'recipient@example.com',
       fromAddress: 'alice@frank.org',
       rawRfc822: 'raw-email-content',
@@ -220,8 +220,8 @@ describe('2. Outbound Spool & Retry Engine (CreditLedger)', () => {
     expect(calculateBackoffMs(15, base, max)).toBe(max);
   });
 
-  it('marks job success and updates status', () => {
-    const id = ledger.enqueueOutboundSpool({
+  it('marks job success and updates status', async () => {
+    const id = await ledger.enqueueOutboundSpool({
       recipientEmail: 'user@example.com',
       fromAddress: 'alice@frank.org',
       rawRfc822: 'content',
@@ -235,9 +235,9 @@ describe('2. Outbound Spool & Retry Engine (CreditLedger)', () => {
     expect(ledger.getPendingOutboundJobs(Date.now() + 100000).length).toBe(0);
   });
 
-  it('marks job failed with backoff and transitions to dead-letter failed on max attempts', () => {
+  it('marks job failed with backoff and transitions to dead-letter failed on max attempts', async () => {
     const now = 1_000_000;
-    const id = ledger.enqueueOutboundSpool({
+    const id = await ledger.enqueueOutboundSpool({
       recipientEmail: 'user@example.com',
       fromAddress: 'alice@frank.org',
       rawRfc822: 'content',
@@ -502,7 +502,7 @@ describe('4. Inbound Bounce / NDR Processing & Sender Notification', () => {
 
   it('handles envelope recipient bounce+<spoolId>@frank.org and notifies Frank sender', async () => {
     // 1. Spool an outbound job
-    const spoolJobId = ledger.enqueueOutboundSpool({
+    const spoolJobId = await ledger.enqueueOutboundSpool({
       recipientEmail: 'target@external.com',
       fromAddress: '0xsender_alice@frank.org',
       rawRfc822: 'From: 0xsender_alice <0xsender_alice@frank.org>\r\nSubject: Hi\r\n\r\nTest',

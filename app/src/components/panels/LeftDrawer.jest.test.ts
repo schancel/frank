@@ -54,8 +54,14 @@ jest.mock('src/stores/topics', () => ({
     refreshDiscoveredTopics: mockRefreshDiscoveredTopics,
   }),
 }))
+const mockSetSelectedTopic = jest.fn()
+const mockRefreshMessages = jest.fn()
 jest.mock('src/stores/forum', () => ({
-  useForumStore: () => ({ selectedTopic: '' }),
+  useForumStore: () => ({
+    selectedTopic: '',
+    setSelectedTopic: mockSetSelectedTopic,
+    refreshMessages: mockRefreshMessages,
+  }),
 }))
 jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: jest.fn(() => Promise.resolve({})),
@@ -267,6 +273,16 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
 
       await newPostBtn.trigger('click')
       expect(mockRouterPush).toHaveBeenCalledWith('/new-post')
+    })
+
+    it('navigates to /forum when clicking a topic while on a thread route', async () => {
+      mockRouterPush.mockReset()
+      mockRoute.path = '/forum/0xabcdef1234567890'
+      const wrapper = mountDrawer()
+      const vm = wrapper.vm as any
+
+      await vm.browseForumTopic('memes')
+      expect(mockRouterPush).toHaveBeenCalledWith('/forum')
     })
   })
 })

@@ -1,7 +1,7 @@
 <template>
   <q-page-container>
-    <q-page class="q-ma-none q-pa-sm">
-      <q-card>
+    <q-page class="q-ma-none q-pa-md column full-height">
+      <q-card flat class="col column full-width bg-transparent" style="max-width: 600px; margin: 0 auto">
         <q-card-section>
           <div class="text-h6 row items-center" data-testid="wallet-name">
             <span>
@@ -117,7 +117,7 @@
             </q-input>
           </div>
         </q-card-section>
-        <q-card-actions align="right">
+        <q-card-actions align="right" class="q-pa-md bg-transparent">
           <q-btn
             no-caps
             outline

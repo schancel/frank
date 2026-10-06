@@ -90,6 +90,7 @@ import {
 import { MessageItem } from "@frank/cashweb/types/messages";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
+import { resolveChainIdentifier, PROTOCOL_CHAINS } from "./chains-registry";
 
 import { createMonadWalletMaterial, canonicalWalletPublicBinding } from "../monad-wallet-material";
 import type {
@@ -1633,7 +1634,6 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             provider,
             httpClient,
             changePool,
-            stealthKeyring,
             stampPaymentJournal,
             stampAttemptJournal,
             relayBaseUrl: config.relayBaseUrl,
@@ -1775,6 +1775,45 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     directMessages,
     topics,
+
+    getChannelVaultAddress(): string {
+      const entry = config.networkTag
+        ? resolveChainIdentifier(config.networkTag)
+        : PROTOCOL_CHAINS[config.isTestnet ? "monad-testnet" : "monad-mainnet"];
+      const addr = entry?.contracts?.channelVault;
+      if (!addr) {
+        throw new Error(
+          `ChannelVault contract is not configured for network ${config.networkTag || "unknown"}`
+        );
+      }
+      return addr;
+    },
+
+    getTablePotVaultAddress(): string {
+      const entry = config.networkTag
+        ? resolveChainIdentifier(config.networkTag)
+        : PROTOCOL_CHAINS[config.isTestnet ? "monad-testnet" : "monad-mainnet"];
+      const addr = entry?.contracts?.tablePotVault;
+      if (!addr) {
+        throw new Error(
+          `TablePotVault contract is not configured for network ${config.networkTag || "unknown"}`
+        );
+      }
+      return addr;
+    },
+
+    getHtlcAddress(): string {
+      const entry = config.networkTag
+        ? resolveChainIdentifier(config.networkTag)
+        : PROTOCOL_CHAINS[config.isTestnet ? "monad-testnet" : "monad-mainnet"];
+      const addr = entry?.contracts?.htlc;
+      if (!addr) {
+        throw new Error(
+          `GenericHTLC contract is not configured for network ${config.networkTag || "unknown"}`
+        );
+      }
+      return addr;
+    },
   };
 }
 

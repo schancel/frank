@@ -3,6 +3,18 @@ export type SupportedNetwork = "mainnet" | "testnet" | "regtest";
 export type SupportedChainKind = "monad" | "ecash" | "solana" | "ethereum";
 export type SupportedCurve = "secp256k1" | "ed25519";
 
+export interface ChainContracts {
+  readonly channelVault?: string;
+  readonly tablePotVault?: string;
+  readonly htlc?: string;
+}
+
+export const CANONICAL_EVM_CONTRACTS: Readonly<ChainContracts> = Object.freeze({
+  channelVault: "0xB0ae4A94A7616029CD99Cf3Ab9Bf417be1DfD9E9",
+  tablePotVault: "0x9B7d7E260da7f3a8e92562D21551FE0d350F9C8e",
+  htlc: "0x91883414DaDF6f18f3d14E3de3a31BfC833e6bB6",
+});
+
 export interface ChainRegistryEntry {
   readonly id: string;
   readonly kind: SupportedChainKind;
@@ -19,6 +31,7 @@ export interface ChainRegistryEntry {
   readonly addressPrefix?: string;
   readonly rpcUrl?: string;
   readonly explorerUrl?: string;
+  readonly contracts?: ChainContracts;
 }
 
 export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> = Object.freeze({
@@ -35,6 +48,7 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> = Object.freeze
     caip2: "eip155:10143",
     nativeChainId: 10143,
     networkTag: "MONT",
+    contracts: CANONICAL_EVM_CONTRACTS,
   }),
   "monad-mainnet": Object.freeze({
     id: "monad-mainnet",
@@ -49,6 +63,7 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> = Object.freeze
     caip2: "eip155:143",
     nativeChainId: 143,
     networkTag: "MON1",
+    contracts: CANONICAL_EVM_CONTRACTS,
   }),
   "ecash-testnet": Object.freeze({
     id: "ecash-testnet",
@@ -154,6 +169,7 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> = Object.freeze
     caip2: "eip155:11155111",
     nativeChainId: 11155111,
     networkTag: "SEPO",
+    contracts: CANONICAL_EVM_CONTRACTS,
   }),
   "ethereum-holesky": Object.freeze({
     id: "ethereum-holesky",
@@ -168,6 +184,7 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> = Object.freeze
     caip2: "eip155:17000",
     nativeChainId: 17000,
     networkTag: "HOLE",
+    contracts: CANONICAL_EVM_CONTRACTS,
   }),
   "ethereum-mainnet": Object.freeze({
     id: "ethereum-mainnet",
@@ -182,6 +199,7 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> = Object.freeze
     caip2: "eip155:1",
     nativeChainId: 1,
     networkTag: "ETH1",
+    contracts: CANONICAL_EVM_CONTRACTS,
   }),
 });
 

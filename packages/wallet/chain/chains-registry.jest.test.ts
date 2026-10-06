@@ -1,5 +1,6 @@
 import {
   PROTOCOL_CHAINS,
+  CANONICAL_EVM_CONTRACTS,
   getChainRegistryEntry,
   getChainRegistryByKind,
   getChainRegistryByNetworkTag,
@@ -23,6 +24,7 @@ describe("chains-registry", () => {
       caip2: "eip155:10143",
       nativeChainId: 10143,
       networkTag: "MONT",
+      contracts: CANONICAL_EVM_CONTRACTS,
     });
 
     expect(PROTOCOL_CHAINS["monad-mainnet"]).toEqual({
@@ -38,6 +40,7 @@ describe("chains-registry", () => {
       caip2: "eip155:143",
       nativeChainId: 143,
       networkTag: "MON1",
+      contracts: CANONICAL_EVM_CONTRACTS,
     });
 
     expect(PROTOCOL_CHAINS["ecash-testnet"]).toEqual({
@@ -123,6 +126,7 @@ describe("chains-registry", () => {
       caip2: "eip155:11155111",
       nativeChainId: 11155111,
       networkTag: "SEPO",
+      contracts: CANONICAL_EVM_CONTRACTS,
     });
 
     expect(PROTOCOL_CHAINS["ethereum-holesky"]).toEqual({
@@ -138,6 +142,7 @@ describe("chains-registry", () => {
       caip2: "eip155:17000",
       nativeChainId: 17000,
       networkTag: "HOLE",
+      contracts: CANONICAL_EVM_CONTRACTS,
     });
 
     expect(PROTOCOL_CHAINS["ethereum-mainnet"]).toEqual({
@@ -153,6 +158,7 @@ describe("chains-registry", () => {
       caip2: "eip155:1",
       nativeChainId: 1,
       networkTag: "ETH1",
+      contracts: CANONICAL_EVM_CONTRACTS,
     });
   });
 
@@ -212,4 +218,22 @@ describe("chains-registry", () => {
     expect(resolveChainIdentifier("eip155:11155111")?.id).toBe("ethereum-sepolia");
     expect(resolveChainIdentifier("nonexistent")).toBeUndefined();
   });
+
+  it("exposes canonical smart contract addresses for EVM chains and undefined for non-EVM", () => {
+    expect(CANONICAL_EVM_CONTRACTS.channelVault).toBe(
+      "0xB0ae4A94A7616029CD99Cf3Ab9Bf417be1DfD9E9"
+    );
+    expect(CANONICAL_EVM_CONTRACTS.tablePotVault).toBe(
+      "0x9B7d7E260da7f3a8e92562D21551FE0d350F9C8e"
+    );
+    expect(CANONICAL_EVM_CONTRACTS.htlc).toBe(
+      "0x91883414DaDF6f18f3d14E3de3a31BfC833e6bB6"
+    );
+
+    expect(PROTOCOL_CHAINS["monad-testnet"].contracts).toBe(CANONICAL_EVM_CONTRACTS);
+    expect(PROTOCOL_CHAINS["monad-mainnet"].contracts).toBe(CANONICAL_EVM_CONTRACTS);
+    expect(PROTOCOL_CHAINS["solana-mainnet"].contracts).toBeUndefined();
+    expect(PROTOCOL_CHAINS["ecash-mainnet"].contracts).toBeUndefined();
+  });
 });
+

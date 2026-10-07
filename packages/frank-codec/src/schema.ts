@@ -1146,9 +1146,16 @@ export function parseDraft(
         )
       }
       if (m.has(14)) {
-        st.spendKeys = asList(m.get(14), `${P}.14`, 1, 8).map((e, i) =>
-          account(e, `${P}.14[${i}]`),
-        )
+        const val14 = m.get(14)
+        if (typeof val14 === 'string') {
+          st.canonicalUsername = tstr(val14, `${P}.14`, 3, 32)
+        } else if (Array.isArray(val14)) {
+          st.spendKeys = asList(val14, `${P}.14`, 1, 8).map((e, i) =>
+            account(e, `${P}.14[${i}]`),
+          )
+        } else {
+          st.canonicalUsername = tstr(val14, `${P}.14`, 3, 32)
+        }
       }
       if (m.has(5)) {
         st.keyTransitions = asList(m.get(5), `${P}.5`, 1, 16).map((e, i) =>

@@ -169,6 +169,8 @@ export interface DirectoryStatement<F> {
   profileEntries?: ProfileEntry[]
   /** Provisional schema-4 roles; absent in schemas 1–3. */
   preview?: PreviewDirectoryRoles
+  /** Field 14: optional canonical username handle (ticket #972). */
+  canonicalUsername?: string
   /** Advertised curve spend keys (field 14). */
   spendKeys?: AccountRef[]
   unknownFields: UnknownFields

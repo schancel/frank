@@ -6,12 +6,12 @@ mod common;
 
 use frank_cbor::{
     address_from_compressed_pubkey, address_from_uncompressed_pubkey, cbor_map, content_hash,
-    decode_canonical, directory_signature_digest, encode_frame, expiry_timestamp, has_low_s,
-    join_ms, keccak256, key_transition_signature_digest, parse_strict_der, registration_from_ms,
-    split_timestamp_ms, uncompressed_pubkey_xy, validate_frame, verify_algorithm_1, CborValue,
-    EnvelopeFields, Error, ErrorCategory, ErrorStage, FramePayload, Operation, ParsedFrame,
-    PriorStatement, Projection, SupportedSchema, TypedPayload, ValidationContext, ValidationResult,
-    KNOWN_TYPES, MAX_FRAME_BYTES,
+    decode_canonical, default_context, directory_signature_digest, encode_frame, expiry_timestamp,
+    has_low_s, join_ms, keccak256, key_transition_signature_digest, parse_strict_der,
+    registration_from_ms, split_timestamp_ms, uncompressed_pubkey_xy, validate_frame,
+    verify_algorithm_1, CborValue, EnvelopeFields, Error, ErrorCategory, ErrorStage, FramePayload,
+    Operation, ParsedFrame, PriorStatement, Projection, SupportedSchema, TypedPayload,
+    ValidationContext, ValidationResult, KNOWN_TYPES, MAX_FRAME_BYTES,
 };
 
 use common::NET;
@@ -858,5 +858,333 @@ fn a_full_type2_transition_authorization_verifies() {
             assert_eq!(codec.stage, ErrorStage::S106);
         }
         other => panic!("expected a codec error, got {other:?}"),
+    }
+}
+
+#[test]
+fn directory_statement_canonical_username_valid_and_round_trip() {
+    let valid_handles = [
+        "abc",
+        "a_1",
+        "z-9",
+        "007",
+        "alice",
+        "bob-smith",
+        "charlie_123",
+        "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc", // 32 chars
+        "00000000000000000000000000000000", // 32 chars
+    ];
+
+    let ctx = default_context();
+
+    for handle in valid_handles {
+        let statement = common::fr(
+            4,
+            &frank_cbor::cbor_map(vec![
+                (0, frank_cbor::CborValue::Text("frank-test".to_string())),
+                (1, common::acct1(1)),
+                (2, frank_cbor::CborValue::Int(1000)),
+                (3, common::ts(100, 0)),
+                (
+                    4,
+                    frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
+                        (0, frank_cbor::CborValue::Bytes(vec![1; 16])),
+                        (
+                            1,
+                            frank_cbor::CborValue::Text("https://relay.example".to_string()),
+                        ),
+                        (2, common::acct1(1)),
+                        (3, common::ts(2000, 0)),
+                    ])]),
+                ),
+                (8, common::acct1(1)),
+                (14, frank_cbor::CborValue::Text(handle.to_string())),
+            ]),
+        );
+
+        let res = validate_frame(&statement, &ctx).expect("valid statement with username");
+        let ValidationResult::Parsed(parsed) = res else {
+            panic!("expected parsed frame");
+        };
+        let Some(TypedPayload::DirectoryStatement {
+            canonical_username, ..
+        }) = parsed.typed.as_deref()
+        else {
+            panic!("expected directory statement typed payload");
+        };
+        assert_eq!(canonical_username.as_deref(), Some(handle));
+    }
+}
+
+#[test]
+fn directory_statement_canonical_username_semantic_rejections() {
+    let invalid_handles = [
+        "-abc",        // starts with hyphen
+        "_abc",        // starts with underscore
+        "Alice",       // uppercase
+        "ALICE",       // uppercase
+        "aliCe",       // uppercase
+        "alice@frank", // disallowed char
+        "alice.smith", // dot not allowed
+        "alice smith", // space not allowed
+        "alice!123",   // punctuation
+    ];
+
+    let ctx = default_context();
+
+    for handle in invalid_handles {
+        let statement = common::fr(
+            4,
+            &frank_cbor::cbor_map(vec![
+                (0, frank_cbor::CborValue::Text("frank-test".to_string())),
+                (1, common::acct1(1)),
+                (2, frank_cbor::CborValue::Int(1000)),
+                (3, common::ts(100, 0)),
+                (
+                    4,
+                    frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
+                        (0, frank_cbor::CborValue::Bytes(vec![1; 16])),
+                        (
+                            1,
+                            frank_cbor::CborValue::Text("https://relay.example".to_string()),
+                        ),
+                        (2, common::acct1(1)),
+                        (3, common::ts(2000, 0)),
+                    ])]),
+                ),
+                (8, common::acct1(1)),
+                (14, frank_cbor::CborValue::Text(handle.to_string())),
+            ]),
+        );
+
+        let err = validate_frame(&statement, &ctx).expect_err("should reject invalid handle");
+        match err {
+            Error::Codec(codec) => {
+                assert_eq!(codec.category, ErrorCategory::Semantic);
+                assert_eq!(codec.stage, ErrorStage::S9);
+                assert_eq!(codec.location, "root/payload.14");
+            }
+            other => panic!("expected codec error, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn directory_statement_canonical_username_schema_rejections() {
+    let ctx = default_context();
+
+    // Bounds failures
+    let invalid_length_handles = [
+        "",                                  // 0 chars
+        "a",                                 // 1 char
+        "ab",                                // 2 chars
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // 33 chars
+    ];
+
+    for handle in invalid_length_handles {
+        let statement = common::fr(
+            4,
+            &frank_cbor::cbor_map(vec![
+                (0, frank_cbor::CborValue::Text("frank-test".to_string())),
+                (1, common::acct1(1)),
+                (2, frank_cbor::CborValue::Int(1000)),
+                (3, common::ts(100, 0)),
+                (
+                    4,
+                    frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
+                        (0, frank_cbor::CborValue::Bytes(vec![1; 16])),
+                        (
+                            1,
+                            frank_cbor::CborValue::Text("https://relay.example".to_string()),
+                        ),
+                        (2, common::acct1(1)),
+                        (3, common::ts(2000, 0)),
+                    ])]),
+                ),
+                (8, common::acct1(1)),
+                (14, frank_cbor::CborValue::Text(handle.to_string())),
+            ]),
+        );
+
+        let err =
+            validate_frame(&statement, &ctx).expect_err("should reject invalid length handle");
+        match err {
+            Error::Codec(codec) => {
+                assert_eq!(codec.category, ErrorCategory::Schema);
+                assert_eq!(codec.stage, ErrorStage::S82);
+            }
+            other => panic!("expected schema codec error, got {other:?}"),
+        }
+    }
+
+    // Invalid type (integer or bytes instead of text string)
+    for invalid_val in [
+        frank_cbor::CborValue::Int(12345),
+        frank_cbor::CborValue::Bytes(vec![1, 2, 3]),
+    ] {
+        let statement = common::fr(
+            4,
+            &frank_cbor::cbor_map(vec![
+                (0, frank_cbor::CborValue::Text("frank-test".to_string())),
+                (1, common::acct1(1)),
+                (2, frank_cbor::CborValue::Int(1000)),
+                (3, common::ts(100, 0)),
+                (
+                    4,
+                    frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
+                        (0, frank_cbor::CborValue::Bytes(vec![1; 16])),
+                        (
+                            1,
+                            frank_cbor::CborValue::Text("https://relay.example".to_string()),
+                        ),
+                        (2, common::acct1(1)),
+                        (3, common::ts(2000, 0)),
+                    ])]),
+                ),
+                (8, common::acct1(1)),
+                (14, invalid_val),
+            ]),
+        );
+
+        let err =
+            validate_frame(&statement, &ctx).expect_err("should reject invalid type for handle");
+        match err {
+            Error::Codec(codec) => {
+                assert_eq!(codec.category, ErrorCategory::Schema);
+                assert_eq!(codec.stage, ErrorStage::S82);
+            }
+            other => panic!("expected schema codec error, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn directory_statement_canonical_username_signed_attestation() {
+    use secp256k1_abc::{Message, PublicKey, Secp256k1, SecretKey};
+
+    let secp = Secp256k1::signing_only();
+    let secret = SecretKey::from_slice(&[42u8; 32]).expect("secret");
+    let pub_key_bytes = PublicKey::from_secret_key(&secp, &secret).serialize();
+
+    let account = |key: &[u8]| common::stamp_account(&hex::encode(key));
+    let statement = common::fr(
+        4,
+        &frank_cbor::cbor_map(vec![
+            (0, frank_cbor::CborValue::Text(NET.to_string())),
+            (1, account(&pub_key_bytes)),
+            (2, frank_cbor::CborValue::Int(500)),
+            (3, common::ts(100, 0)),
+            (
+                4,
+                frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
+                    (0, frank_cbor::CborValue::Bytes(vec![2; 16])),
+                    (
+                        1,
+                        frank_cbor::CborValue::Text("https://relay.example/r".to_string()),
+                    ),
+                    (2, account(&pub_key_bytes)),
+                    (3, common::ts(2000, 0)),
+                ])]),
+            ),
+            (8, account(&pub_key_bytes)),
+            (
+                14,
+                frank_cbor::CborValue::Text("valid_handle_99".to_string()),
+            ),
+        ]),
+    );
+
+    let digest = directory_signature_digest(NET, &statement).expect("digest");
+    let signature = secp
+        .sign(&Message::from_slice(&digest).expect("32 bytes"), &secret)
+        .serialize_der()
+        .to_vec();
+
+    let attestation = common::fr(
+        2,
+        &frank_cbor::cbor_map(vec![
+            (0, frank_cbor::CborValue::Bytes(statement)),
+            (
+                1,
+                frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
+                    (0, frank_cbor::CborValue::Int(1)),
+                    (1, account(&pub_key_bytes)),
+                    (2, frank_cbor::CborValue::Bytes(signature.clone())),
+                ])]),
+            ),
+        ]),
+    );
+
+    let mut ctx = default_context();
+    ctx.operation = Operation::Full;
+
+    let res =
+        validate_frame(&attestation, &ctx).expect("signed attestation with username verifies");
+    let ValidationResult::Parsed(parsed) = res else {
+        panic!("expected parsed");
+    };
+    let Some(TypedPayload::DirectoryAttestation { statement: st, .. }) = parsed.typed.as_deref()
+    else {
+        panic!("expected attestation");
+    };
+    let Some(TypedPayload::DirectoryStatement {
+        canonical_username, ..
+    }) = st.typed.as_deref()
+    else {
+        panic!("expected directory statement");
+    };
+    assert_eq!(canonical_username.as_deref(), Some("valid_handle_99"));
+
+    // Tampering with the statement's username fails signature verification
+    let tampered_statement = common::fr(
+        4,
+        &frank_cbor::cbor_map(vec![
+            (0, frank_cbor::CborValue::Text(NET.to_string())),
+            (1, account(&pub_key_bytes)),
+            (2, frank_cbor::CborValue::Int(500)),
+            (3, common::ts(100, 0)),
+            (
+                4,
+                frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
+                    (0, frank_cbor::CborValue::Bytes(vec![2; 16])),
+                    (
+                        1,
+                        frank_cbor::CborValue::Text("https://relay.example/r".to_string()),
+                    ),
+                    (2, account(&pub_key_bytes)),
+                    (3, common::ts(2000, 0)),
+                ])]),
+            ),
+            (8, account(&pub_key_bytes)),
+            (
+                14,
+                frank_cbor::CborValue::Text("tampered_handle".to_string()),
+            ),
+        ]),
+    );
+
+    let tampered_attestation = common::fr(
+        2,
+        &frank_cbor::cbor_map(vec![
+            (0, frank_cbor::CborValue::Bytes(tampered_statement)),
+            (
+                1,
+                frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
+                    (0, frank_cbor::CborValue::Int(1)),
+                    (1, account(&pub_key_bytes)),
+                    (2, frank_cbor::CborValue::Bytes(signature)),
+                ])]),
+            ),
+        ]),
+    );
+
+    let err = validate_frame(&tampered_attestation, &ctx)
+        .expect_err("tampered statement fails signature check");
+    match err {
+        Error::Codec(codec) => {
+            assert_eq!(codec.category, ErrorCategory::Cryptographic);
+            assert_eq!(codec.stage, ErrorStage::S106);
+        }
+        other => panic!("expected cryptographic error, got {other:?}"),
     }
 }

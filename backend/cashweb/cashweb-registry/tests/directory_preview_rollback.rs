@@ -10,6 +10,7 @@ use std::{path::Path, process::Command};
 // This must not be derived from the candidate opener, even when no old binary is supplied.
 const REVIEWED_BASE_CFS: &[&str] = &[
     "default",
+    "directory_usernames",
     "message_payloads",
     "metadata",
     "monad_message_attempts",

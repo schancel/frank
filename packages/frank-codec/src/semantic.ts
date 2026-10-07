@@ -4,6 +4,7 @@ import { utf8Encode } from './utf8'
 import { isCompressedPoint } from './point'
 import { contentHash } from './hash'
 import { MAX_DIRECTORY_VALIDITY_NS } from './constants'
+import { CANONICAL_USERNAME_REGEX } from './registration'
 import type {
   AccountRef,
   DirectoryStatement,
@@ -552,6 +553,14 @@ export function checkSemantics(
             true,
           )
         })
+      }
+      if (typed.canonicalUsername !== undefined) {
+        if (!CANONICAL_USERNAME_REGEX.test(typed.canonicalUsername)) {
+          throw semantic(
+            'canonical username must match ^[a-z0-9][a-z0-9_-]{2,31}$',
+            `${P}.14`,
+          )
+        }
       }
       if (typed.spendKeys) {
         requireOrdered(

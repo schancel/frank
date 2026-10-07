@@ -818,6 +818,7 @@ export default {
     emailGatewayAddress: 'Email Gateway Address',
     resetDefault: 'Reset to default',
     save: 'Save',
+    gateways: 'Gateways',
   },
   profile: {
     name: "Character's Public Name",

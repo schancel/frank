@@ -94,7 +94,9 @@ export function parseGameAnnouncement(
           gameType: parsed.gameType ? String(parsed.gameType) : undefined,
           tableId: String(parsed.tableId),
           hostAddress: String(parsed.hostAddress || message?.poster || ''),
-          buyInAmount: parsed.buyInAmount ? String(parsed.buyInAmount) : undefined,
+          buyInAmount: parsed.buyInAmount
+            ? String(parsed.buyInAmount)
+            : undefined,
           currentPlayers:
             typeof parsed.currentPlayers === 'number'
               ? parsed.currentPlayers
@@ -125,7 +127,9 @@ export function parseGameAnnouncement(
     )
 
   // Also check if entry.url is a chat join link
-  const urlJoinMatch = entry.url?.match(/^\/chat\/([^?]+)(?:\?.*join=([^&]+))?/i)
+  const urlJoinMatch = entry.url?.match(
+    /^\/chat\/([^?]+)(?:\?.*join=([^&]+))?/i,
+  )
   if (!isGameAnnouncement && !urlJoinMatch) {
     return null
   }

@@ -17,592 +17,146 @@
     >
     <q-page-container
       ><q-page class="q-pa-md">
-      <section
-        class="account-setup q-mx-auto"
-        aria-labelledby="account-heading"
-      >
-        <h1 id="account-heading" ref="heading" tabindex="-1" class="text-h5">
-          {{
-            tabCoordinator.otherTabActive || account.status === 'standby'
-              ? $t('accountRecovery.frank_is_open_in_another_tab')
-              : mode === 'legacy'
-              ? $t('accountRecovery.import_bip39_seed')
-              : $t('accountRecovery.frank_account')
-          }}
-        </h1>
-        <p role="status" aria-live="polite" data-test="account-status">
-          {{ statusText }}
-        </p>
-        <p
-          v-if="
-            error &&
-            !tabCoordinator.otherTabActive &&
-            account.status !== 'standby'
-          "
-          role="alert"
-          class="text-negative"
-          data-test="account-error"
+        <section
+          class="account-setup q-mx-auto"
+          aria-labelledby="account-heading"
         >
-          {{ error }}
-        </p>
-        <template
-          v-if="tabCoordinator.otherTabActive || account.status === 'standby'"
-        >
-          <div class="q-my-md" data-test="multi-tab-locked-container">
-            <q-card flat bordered class="q-pa-md">
-              <q-card-section class="row items-center q-pb-none">
-                <q-avatar icon="tab" color="primary" text-color="white" />
-                <div class="text-h6 q-ml-md">
-                  {{ $t('accountRecovery.frank_is_open_in_another_tab') }}
-                </div>
-              </q-card-section>
-              <q-card-section>
-                <p class="text-body1 text-grey-8">
-                  {{ $t('accountRecovery.multi_tab_notice') }}
-                </p>
-              </q-card-section>
-              <q-card-actions class="q-pt-none">
-                <q-btn
-                  color="primary"
-                  no-caps
-                  :loading="tabCoordinator.isTakingOver"
-                  :label="$t('accountRecovery.use_frank_here')"
-                  data-test="use-frank-here-btn"
-                  @click="takeoverHere"
-                />
-                <q-btn
-                  outline
-                  color="primary"
-                  no-caps
-                  :label="$t('accountRecovery.switch_to_open_tab')"
-                  data-test="switch-tab-btn"
-                  @click="switchToOpenTab"
-                />
-              </q-card-actions>
-            </q-card>
-          </div>
-        </template>
-        <template
-          v-else-if="
-            (account.status === 'locked' ||
-              account.status === 'unavailable' ||
-              legacy.unavailable) &&
-            mode === 'choice'
-          "
-        >
-          <p>
-            {{ $t('accountRecovery.saved_account_data_could_not_be_opened') }}
-          </p>
-          <div class="row q-gutter-sm items-center q-my-md">
-            <q-btn
-              color="primary"
-              no-caps
-              :label="$t('accountRecovery.retry_opening_account')"
-              :loading="busy"
-              data-test="retry-account"
-              @click="retry"
-            />
-            <q-btn
-              outline
-              color="primary"
-              no-caps
-              :label="$t('accountRecovery.restore_account')"
-              data-test="restore-locked-account"
-              :disable="busy"
-              @click="startRestoreLocked"
-            />
-            <q-btn
-              outline
-              color="primary"
-              no-caps
-              :label="$t('accountRecovery.import_bip39_seed')"
-              data-test="legacy-locked-recovery"
-              :disable="busy"
-              @click="startLegacyLocked"
-            />
-            <q-btn
-              flat
-              color="negative"
-              no-caps
-              :label="$t('accountRecovery.reset_account_storage')"
-              data-test="reset-account-storage"
-              :loading="busy"
-              :disable="busy"
-              @click="resetStorage"
-            />
-          </div>
-        </template>
-        <template v-else-if="account.pending">
-          <p
-            v-if="account.pendingError"
-            role="status"
-            data-test="pending-error"
-          >
-            {{ $t('accountRecovery.pending_retry') }}
-          </p>
-          <q-btn
-            v-if="account.pendingError"
-            outline
-            color="primary"
-            no-caps
-            :label="$t('accountRecovery.retry_opening_account')"
-            data-test="retry-pending"
-            :disable="busy"
-            @click="retry"
-          />
-          <p>
-            {{ $t('accountRecovery.a_saved_account_attempt_is_pending_it') }}
-          </p>
-          <p>{{ account.pending.account.displayName }}</p>
-          <p class="recovery-text">{{ account.pending.account.descriptor }}</p>
-          <p
-            v-if="discoveredRelay"
-            role="status"
-            aria-live="polite"
-            class="text-positive q-mt-sm"
-            data-test="relay-discovered-status"
-          >
+          <h1 id="account-heading" ref="heading" tabindex="-1" class="text-h5">
             {{
-              $t('accountRecovery.relay_discovered', { url: discoveredRelay })
+              tabCoordinator.otherTabActive || account.status === 'standby'
+                ? $t('accountRecovery.frank_is_open_in_another_tab')
+                : mode === 'legacy'
+                ? $t('accountRecovery.import_bip39_seed')
+                : $t('accountRecovery.frank_account')
             }}
+          </h1>
+          <p role="status" aria-live="polite" data-test="account-status">
+            {{ statusText }}
           </p>
-          <q-expansion-item
-            class="q-mt-md"
-            icon="tune"
-            :label="$t('accountRecovery.advanced_options')"
-            :caption="$t('accountRecovery.relay_server')"
-            header-class="text-weight-medium text-grey-8"
-            data-test="advanced-relay-expansion"
+          <p
+            v-if="
+              error &&
+              !tabCoordinator.otherTabActive &&
+              account.status !== 'standby'
+            "
+            role="alert"
+            class="text-negative"
+            data-test="account-error"
           >
-            <q-card class="bg-transparent q-pa-none">
-              <q-card-section class="q-px-none q-pt-sm">
-                <q-input
-                  v-model="customRelayUrl"
-                  outlined
-                  dense
-                  :label="$t('accountRecovery.relay_server_url')"
-                  :hint="$t('accountRecovery.relay_server_url_hint')"
-                  :placeholder="defaultRelayUrl"
-                  data-test="custom-relay-input"
-                  :rules="[validateRelayUrl]"
-                >
-                  <template
-                    v-if="customRelayUrl && customRelayUrl !== defaultRelayUrl"
-                    #append
-                  >
-                    <q-btn
-                      flat
-                      dense
-                      round
-                      icon="restart_alt"
-                      :title="$t('accountRecovery.reset_to_default_relay')"
-                      data-test="reset-default-relay"
-                      @click="customRelayUrl = defaultRelayUrl"
-                    />
-                  </template>
-                </q-input>
-              </q-card-section>
-            </q-card>
-          </q-expansion-item>
-          <div
-            v-if="account.pendingReady"
-            class="row q-gutter-sm q-mt-md items-center"
+            {{ error }}
+          </p>
+          <template
+            v-if="tabCoordinator.otherTabActive || account.status === 'standby'"
           >
-            <q-btn
-              color="primary"
-              no-caps
-              :label="$t('accountRecovery.activate_account')"
-              data-test="activate-account"
-              :disable="busy"
-              :loading="busy"
-              @click="activate"
-            />
-            <q-btn
-              outline
-              color="primary"
-              no-caps
-              :label="$t('accountRecovery.cancel_pending_attempt')"
-              data-test="cancel-pending"
-              :disable="busy"
-              @click="cancelPending"
-            />
-          </div>
-          <div v-else class="q-mt-md">
-            <p>
-              {{
-                $t(
-                  'accountRecovery.the_attempt_is_incomplete_or_awaiting_cleanup',
-                )
-              }}
-            </p>
-            <q-btn
-              outline
-              color="primary"
-              no-caps
-              :label="$t('accountRecovery.cancel_pending_attempt')"
-              data-test="cancel-pending"
-              :disable="busy"
-              @click="cancelPending"
-            />
-          </div>
-          <q-btn
-            v-if="account.status === 'ready'"
-            class="q-mt-md"
-            outline
-            color="primary"
-            no-caps
-            :label="$t('accountRecovery.return_to_wallet')"
-            @click="$router.push('/wallet')"
-          />
-        </template>
-        <template v-else-if="account.status !== 'loading'">
-          <template v-if="mode === 'choice'">
-            <p>
-              {{
-                $t('accountRecovery.create_a_frank_account_backup_or_restore')
-              }}
-            </p>
-            <div v-if="account.account || legacy.present" class="q-mb-md">
-              <p v-if="legacy.present">
-                {{
-                  $t(
-                    'accountRecovery.an_existing_legacy_account_is_quarantined_its',
-                  )
-                }}
-              </p>
-              <p v-if="account.account">
-                {{
-                  $t(
-                    'accountRecovery.changing_accounts_replaces_the_active_local_account',
-                  )
-                }}
-              </p>
-              <q-checkbox
-                v-model="replaceAccepted"
-                :label="
-                  $t(
-                    'accountRecovery.i_understand_this_changes_the_active_local',
-                  )
-                "
-                data-test="replace-ack"
-              />
+            <div class="q-my-md" data-test="multi-tab-locked-container">
+              <q-card flat bordered class="q-pa-md">
+                <q-card-section class="row items-center q-pb-none">
+                  <q-avatar icon="tab" color="primary" text-color="white" />
+                  <div class="text-h6 q-ml-md">
+                    {{ $t('accountRecovery.frank_is_open_in_another_tab') }}
+                  </div>
+                </q-card-section>
+                <q-card-section>
+                  <p class="text-body1 text-grey-8">
+                    {{ $t('accountRecovery.multi_tab_notice') }}
+                  </p>
+                </q-card-section>
+                <q-card-actions class="q-pt-none">
+                  <q-btn
+                    color="primary"
+                    no-caps
+                    :loading="tabCoordinator.isTakingOver"
+                    :label="$t('accountRecovery.use_frank_here')"
+                    data-test="use-frank-here-btn"
+                    @click="takeoverHere"
+                  />
+                  <q-btn
+                    outline
+                    color="primary"
+                    no-caps
+                    :label="$t('accountRecovery.switch_to_open_tab')"
+                    data-test="switch-tab-btn"
+                    @click="switchToOpenTab"
+                  />
+                </q-card-actions>
+              </q-card>
             </div>
-            <div class="row q-gutter-sm items-center">
+          </template>
+          <template
+            v-else-if="
+              (account.status === 'locked' ||
+                account.status === 'unavailable' ||
+                legacy.unavailable) &&
+              mode === 'choice'
+            "
+          >
+            <p>
+              {{ $t('accountRecovery.saved_account_data_could_not_be_opened') }}
+            </p>
+            <div class="row q-gutter-sm items-center q-my-md">
               <q-btn
                 color="primary"
                 no-caps
-                :label="$t('accountRecovery.new_account')"
-                data-test="new-account"
-                :disable="!mayBegin || busy"
-                @click="changeMode('policy')"
+                :label="$t('accountRecovery.retry_opening_account')"
+                :loading="busy"
+                data-test="retry-account"
+                @click="retry"
               />
               <q-btn
                 outline
                 color="primary"
                 no-caps
                 :label="$t('accountRecovery.restore_account')"
-                data-test="restore-account"
-                :disable="!mayBegin || busy"
-                @click="startRestore"
+                data-test="restore-locked-account"
+                :disable="busy"
+                @click="startRestoreLocked"
               />
               <q-btn
                 outline
                 color="primary"
                 no-caps
                 :label="$t('accountRecovery.import_bip39_seed')"
-                data-test="legacy-recovery"
-                :disable="!mayBegin || busy"
-                @click="changeMode('legacy')"
+                data-test="legacy-locked-recovery"
+                :disable="busy"
+                @click="startLegacyLocked"
+              />
+              <q-btn
+                flat
+                color="negative"
+                no-caps
+                :label="$t('accountRecovery.reset_account_storage')"
+                data-test="reset-account-storage"
+                :loading="busy"
+                :disable="busy"
+                @click="resetStorage"
               />
             </div>
+          </template>
+          <template v-else-if="account.pending">
+            <p
+              v-if="account.pendingError"
+              role="status"
+              data-test="pending-error"
+            >
+              {{ $t('accountRecovery.pending_retry') }}
+            </p>
             <q-btn
-              v-if="account.status === 'ready'"
-              class="q-mt-md"
+              v-if="account.pendingError"
               outline
               color="primary"
               no-caps
-              :label="$t('accountRecovery.return_to_wallet')"
-              @click="$router.push('/wallet')"
+              :label="$t('accountRecovery.retry_opening_account')"
+              data-test="retry-pending"
+              :disable="busy"
+              @click="retry"
             />
-          </template>
-          <q-form v-else-if="mode === 'legacy'" @submit="submitLegacyPhrase">
             <p>
-              {{
-                $t(
-                  'accountRecovery.this_identifies_your_old_account_locally_you',
-                )
-              }}
+              {{ $t('accountRecovery.a_saved_account_attempt_is_pending_it') }}
             </p>
-            <q-input
-              v-model="legacyPhrase"
-              type="textarea"
-              outlined
-              autogrow
-              :rows="3"
-              :label="$t('accountRecovery.legacy_bip39_recovery_phrase')"
-              autocomplete="off"
-              autocorrect="off"
-              :spellcheck="false"
-              :maxlength="512"
-              data-test="legacy-phrase"
-            />
-            <p
-              v-if="detectedAccount"
-              role="status"
-              aria-live="polite"
-              class="q-mt-sm text-positive"
-              data-test="detected-account"
-            >
-              {{ detectedAccount }}
+            <p>{{ account.pending.account.displayName }}</p>
+            <p class="recovery-text">
+              {{ account.pending.account.descriptor }}
             </p>
-            <p
-              v-if="discoveredRelay"
-              role="status"
-              aria-live="polite"
-              class="q-mt-sm text-positive"
-              data-test="relay-discovered-status"
-            >
-              {{
-                $t('accountRecovery.relay_discovered', { url: discoveredRelay })
-              }}
-            </p>
-            <q-expansion-item
-              class="q-mt-md"
-              icon="tune"
-              :label="$t('accountRecovery.advanced_options')"
-              :caption="$t('accountRecovery.relay_server')"
-              header-class="text-weight-medium text-grey-8"
-              data-test="advanced-relay-expansion"
-            >
-              <q-card class="bg-transparent q-pa-none">
-                <q-card-section class="q-px-none q-pt-sm">
-                  <q-input
-                    v-model="customRelayUrl"
-                    outlined
-                    dense
-                    :label="$t('accountRecovery.relay_server_url')"
-                    :hint="$t('accountRecovery.relay_server_url_hint')"
-                    :placeholder="defaultRelayUrl"
-                    data-test="custom-relay-input"
-                    :rules="[validateRelayUrl]"
-                  >
-                    <template
-                      v-if="
-                        customRelayUrl && customRelayUrl !== defaultRelayUrl
-                      "
-                      #append
-                    >
-                      <q-btn
-                        flat
-                        dense
-                        round
-                        icon="restart_alt"
-                        :title="$t('accountRecovery.reset_to_default_relay')"
-                        data-test="reset-default-relay"
-                        @click="customRelayUrl = defaultRelayUrl"
-                      />
-                    </template>
-                  </q-input>
-                </q-card-section>
-              </q-card>
-            </q-expansion-item>
-            <div class="row q-gutter-sm q-mt-md items-center">
-              <q-btn
-                type="submit"
-                color="primary"
-                no-caps
-                :label="$t('accountRecovery.import_bip39_seed')"
-                data-test="identify-legacy"
-                :disable="busy || !legacyPhrase"
-                :loading="busy"
-              />
-              <q-btn
-                outline
-                color="primary"
-                no-caps
-                :label="$t('accountRecovery.cancel_and_start_again')"
-                data-test="cancel-ceremony"
-                :disable="busy"
-                @click="cancel"
-              />
-            </div>
-          </q-form>
-          <q-form v-else-if="mode === 'policy'" @submit="beginNew">
-            <p v-if="legacyAddress">
-              {{ $t('accountRecovery.old_account') }} {{ legacyAddress }}
-              {{ $t('accountRecovery.the_new_identity_is_different_no_funds') }}
-            </p>
-            <p>
-              {{ $t('accountRecovery.choose_how_many_shares_you_must_retain') }}
-            </p>
-            <q-option-group
-              v-model="policy"
-              type="radio"
-              :options="policies"
-              data-test="backup-policy"
-            />
-            <q-expansion-item
-              class="q-mt-md"
-              icon="tune"
-              :label="$t('accountRecovery.advanced_options')"
-              :caption="$t('accountRecovery.relay_server')"
-              header-class="text-weight-medium text-grey-8"
-              data-test="advanced-relay-expansion"
-            >
-              <q-card class="bg-transparent q-pa-none">
-                <q-card-section class="q-px-none q-pt-sm">
-                  <q-input
-                    v-model="customRelayUrl"
-                    outlined
-                    dense
-                    :label="$t('accountRecovery.relay_server_url')"
-                    :hint="$t('accountRecovery.relay_server_url_hint')"
-                    :placeholder="defaultRelayUrl"
-                    data-test="custom-relay-input"
-                    :rules="[validateRelayUrl]"
-                  >
-                    <template
-                      v-if="
-                        customRelayUrl && customRelayUrl !== defaultRelayUrl
-                      "
-                      #append
-                    >
-                      <q-btn
-                        flat
-                        dense
-                        round
-                        icon="restart_alt"
-                        :title="$t('accountRecovery.reset_to_default_relay')"
-                        data-test="reset-default-relay"
-                        @click="customRelayUrl = defaultRelayUrl"
-                      />
-                    </template>
-                  </q-input>
-                </q-card-section>
-              </q-card>
-            </q-expansion-item>
-            <div class="row q-gutter-sm q-mt-md items-center">
-              <q-btn
-                type="submit"
-                color="primary"
-                no-caps
-                :label="$t('accountRecovery.generate_frank_account_backups')"
-                data-test="generate-backups"
-                :disable="!policy || busy"
-                :loading="busy"
-              />
-              <q-btn
-                outline
-                color="primary"
-                no-caps
-                :label="$t('accountRecovery.cancel_and_start_again')"
-                data-test="cancel-ceremony"
-                :disable="busy"
-                @click="cancel"
-              />
-            </div>
-          </q-form>
-          <template v-else-if="mode === 'backup'">
-            <p>
-              {{ $t('accountRecovery.frank_account_backup') }}
-              {{ shareIndex + 1 }} of {{ shareCount }}
-              {{
-                $t('accountRecovery.save_each_share_before_moving_on_exactly')
-              }}
-              {{ threshold }}
-              {{
-                $t('accountRecovery.consistent_shares_are_required_to_confirm')
-              }}
-            </p>
-            <q-input
-              :model-value="shownShare"
-              type="textarea"
-              outlined
-              readonly
-              :label="$t('accountRecovery.frank_account_backup_share')"
-              autocomplete="off"
-              data-test="backup-share"
-            />
-            <div class="row q-gutter-sm q-mt-md items-center">
-              <q-btn
-                outline
-                color="primary"
-                no-caps
-                :label="$t('accountRecovery.copy_this_share')"
-                @click="copy(shownShare)"
-              />
-              <q-btn
-                color="primary"
-                no-caps
-                :label="
-                  shareIndex + 1 < shareCount
-                    ? 'Saved this share — next'
-                    : 'Saved all shares'
-                "
-                data-test="next-share"
-                @click="nextShare"
-              />
-              <q-btn
-                outline
-                color="primary"
-                no-caps
-                :label="$t('accountRecovery.cancel_and_start_again')"
-                data-test="cancel-ceremony"
-                :disable="busy"
-                @click="cancel"
-              />
-            </div>
-          </template>
-          <q-form
-            v-else-if="
-              mode === 'confirm' ||
-              mode === 'restore-shares' ||
-              mode === 'restore'
-            "
-            @submit="confirm"
-          >
-            <p v-if="mode === 'confirm'">
-              {{ $t('accountRecovery.re_enter_exactly') }} {{ threshold }}
-              {{
-                $t(
-                  'accountRecovery.saved_frank_account_backup_shares_we_reconstruct',
-                )
-              }}
-            </p>
-            <p v-else>
-              {{
-                $t(
-                  'accountRecovery.enter_exactly_the_threshold_number_printed_in',
-                )
-              }}
-            </p>
-            <p
-              v-if="descriptor"
-              class="recovery-text"
-              data-test="pinned-descriptor"
-            >
-              {{ $t('accountRecovery.expected_account') }} {{ descriptor }}
-            </p>
-            <q-input
-              v-model="shareInput"
-              type="textarea"
-              outlined
-              :label="$t('accountRecovery.saved_codex32_shares_one_per_line')"
-              :maxlength="6000"
-              autocomplete="off"
-              autocorrect="off"
-              :spellcheck="false"
-              data-test="confirm-shares"
-            />
-            <q-input
-              v-model="displayName"
-              outlined
-              class="q-mt-sm"
-              :label="$t('accountRecovery.display_name')"
-              :maxlength="80"
-              autocomplete="off"
-              data-test="display-name"
-            />
             <p
               v-if="discoveredRelay"
               role="status"
@@ -654,37 +208,499 @@
                 </q-card-section>
               </q-card>
             </q-expansion-item>
-            <div class="row q-gutter-sm q-mt-md items-center">
+            <div
+              v-if="account.pendingReady"
+              class="row q-gutter-sm q-mt-md items-center"
+            >
               <q-btn
-                type="submit"
                 color="primary"
                 no-caps
-                :label="$t('accountRecovery.verify_backups_and_stage_account')"
-                data-test="verify-backups"
-                :disable="busy || !shareInput || !displayName.trim()"
+                :label="$t('accountRecovery.activate_account')"
+                data-test="activate-account"
+                :disable="busy"
                 :loading="busy"
+                @click="activate"
               />
               <q-btn
                 outline
                 color="primary"
                 no-caps
-                :label="$t('accountRecovery.cancel_and_start_again')"
-                data-test="cancel-ceremony"
+                :label="$t('accountRecovery.cancel_pending_attempt')"
+                data-test="cancel-pending"
                 :disable="busy"
-                @click="cancel"
+                @click="cancelPending"
               />
             </div>
-          </q-form>
-        </template>
-        <p class="q-mt-lg text-caption">
-          {{
-            $t(
-              'accountRecovery.browser_preview_encrypted_local_storage_does_not',
-            )
-          }}
-        </p>
-      </section>
-    </q-page></q-page-container
+            <div v-else class="q-mt-md">
+              <p>
+                {{
+                  $t(
+                    'accountRecovery.the_attempt_is_incomplete_or_awaiting_cleanup',
+                  )
+                }}
+              </p>
+              <q-btn
+                outline
+                color="primary"
+                no-caps
+                :label="$t('accountRecovery.cancel_pending_attempt')"
+                data-test="cancel-pending"
+                :disable="busy"
+                @click="cancelPending"
+              />
+            </div>
+            <q-btn
+              v-if="account.status === 'ready'"
+              class="q-mt-md"
+              outline
+              color="primary"
+              no-caps
+              :label="$t('accountRecovery.return_to_wallet')"
+              @click="$router.push('/wallet')"
+            />
+          </template>
+          <template v-else-if="account.status !== 'loading'">
+            <template v-if="mode === 'choice'">
+              <p>
+                {{
+                  $t('accountRecovery.create_a_frank_account_backup_or_restore')
+                }}
+              </p>
+              <div v-if="account.account || legacy.present" class="q-mb-md">
+                <p v-if="legacy.present">
+                  {{
+                    $t(
+                      'accountRecovery.an_existing_legacy_account_is_quarantined_its',
+                    )
+                  }}
+                </p>
+                <p v-if="account.account">
+                  {{
+                    $t(
+                      'accountRecovery.changing_accounts_replaces_the_active_local_account',
+                    )
+                  }}
+                </p>
+                <q-checkbox
+                  v-model="replaceAccepted"
+                  :label="
+                    $t(
+                      'accountRecovery.i_understand_this_changes_the_active_local',
+                    )
+                  "
+                  data-test="replace-ack"
+                />
+              </div>
+              <div class="row q-gutter-sm items-center">
+                <q-btn
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.new_account')"
+                  data-test="new-account"
+                  :disable="!mayBegin || busy"
+                  @click="changeMode('policy')"
+                />
+                <q-btn
+                  outline
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.restore_account')"
+                  data-test="restore-account"
+                  :disable="!mayBegin || busy"
+                  @click="startRestore"
+                />
+                <q-btn
+                  outline
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.import_bip39_seed')"
+                  data-test="legacy-recovery"
+                  :disable="!mayBegin || busy"
+                  @click="changeMode('legacy')"
+                />
+              </div>
+              <q-btn
+                v-if="account.status === 'ready'"
+                class="q-mt-md"
+                outline
+                color="primary"
+                no-caps
+                :label="$t('accountRecovery.return_to_wallet')"
+                @click="$router.push('/wallet')"
+              />
+            </template>
+            <q-form v-else-if="mode === 'legacy'" @submit="submitLegacyPhrase">
+              <p>
+                {{
+                  $t(
+                    'accountRecovery.this_identifies_your_old_account_locally_you',
+                  )
+                }}
+              </p>
+              <q-input
+                v-model="legacyPhrase"
+                type="textarea"
+                outlined
+                autogrow
+                :rows="3"
+                :label="$t('accountRecovery.legacy_bip39_recovery_phrase')"
+                autocomplete="off"
+                autocorrect="off"
+                :spellcheck="false"
+                :maxlength="512"
+                data-test="legacy-phrase"
+              />
+              <p
+                v-if="detectedAccount"
+                role="status"
+                aria-live="polite"
+                class="q-mt-sm text-positive"
+                data-test="detected-account"
+              >
+                {{ detectedAccount }}
+              </p>
+              <p
+                v-if="discoveredRelay"
+                role="status"
+                aria-live="polite"
+                class="q-mt-sm text-positive"
+                data-test="relay-discovered-status"
+              >
+                {{
+                  $t('accountRecovery.relay_discovered', {
+                    url: discoveredRelay,
+                  })
+                }}
+              </p>
+              <q-expansion-item
+                class="q-mt-md"
+                icon="tune"
+                :label="$t('accountRecovery.advanced_options')"
+                :caption="$t('accountRecovery.relay_server')"
+                header-class="text-weight-medium text-grey-8"
+                data-test="advanced-relay-expansion"
+              >
+                <q-card class="bg-transparent q-pa-none">
+                  <q-card-section class="q-px-none q-pt-sm">
+                    <q-input
+                      v-model="customRelayUrl"
+                      outlined
+                      dense
+                      :label="$t('accountRecovery.relay_server_url')"
+                      :hint="$t('accountRecovery.relay_server_url_hint')"
+                      :placeholder="defaultRelayUrl"
+                      data-test="custom-relay-input"
+                      :rules="[validateRelayUrl]"
+                    >
+                      <template
+                        v-if="
+                          customRelayUrl && customRelayUrl !== defaultRelayUrl
+                        "
+                        #append
+                      >
+                        <q-btn
+                          flat
+                          dense
+                          round
+                          icon="restart_alt"
+                          :title="$t('accountRecovery.reset_to_default_relay')"
+                          data-test="reset-default-relay"
+                          @click="customRelayUrl = defaultRelayUrl"
+                        />
+                      </template>
+                    </q-input>
+                  </q-card-section>
+                </q-card>
+              </q-expansion-item>
+              <div class="row q-gutter-sm q-mt-md items-center">
+                <q-btn
+                  type="submit"
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.import_bip39_seed')"
+                  data-test="identify-legacy"
+                  :disable="busy || !legacyPhrase"
+                  :loading="busy"
+                />
+                <q-btn
+                  outline
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.cancel_and_start_again')"
+                  data-test="cancel-ceremony"
+                  :disable="busy"
+                  @click="cancel"
+                />
+              </div>
+            </q-form>
+            <q-form v-else-if="mode === 'policy'" @submit="beginNew">
+              <p v-if="legacyAddress">
+                {{ $t('accountRecovery.old_account') }} {{ legacyAddress }}
+                {{
+                  $t('accountRecovery.the_new_identity_is_different_no_funds')
+                }}
+              </p>
+              <p>
+                {{
+                  $t('accountRecovery.choose_how_many_shares_you_must_retain')
+                }}
+              </p>
+              <q-option-group
+                v-model="policy"
+                type="radio"
+                :options="policies"
+                data-test="backup-policy"
+              />
+              <q-expansion-item
+                class="q-mt-md"
+                icon="tune"
+                :label="$t('accountRecovery.advanced_options')"
+                :caption="$t('accountRecovery.relay_server')"
+                header-class="text-weight-medium text-grey-8"
+                data-test="advanced-relay-expansion"
+              >
+                <q-card class="bg-transparent q-pa-none">
+                  <q-card-section class="q-px-none q-pt-sm">
+                    <q-input
+                      v-model="customRelayUrl"
+                      outlined
+                      dense
+                      :label="$t('accountRecovery.relay_server_url')"
+                      :hint="$t('accountRecovery.relay_server_url_hint')"
+                      :placeholder="defaultRelayUrl"
+                      data-test="custom-relay-input"
+                      :rules="[validateRelayUrl]"
+                    >
+                      <template
+                        v-if="
+                          customRelayUrl && customRelayUrl !== defaultRelayUrl
+                        "
+                        #append
+                      >
+                        <q-btn
+                          flat
+                          dense
+                          round
+                          icon="restart_alt"
+                          :title="$t('accountRecovery.reset_to_default_relay')"
+                          data-test="reset-default-relay"
+                          @click="customRelayUrl = defaultRelayUrl"
+                        />
+                      </template>
+                    </q-input>
+                  </q-card-section>
+                </q-card>
+              </q-expansion-item>
+              <div class="row q-gutter-sm q-mt-md items-center">
+                <q-btn
+                  type="submit"
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.generate_frank_account_backups')"
+                  data-test="generate-backups"
+                  :disable="!policy || busy"
+                  :loading="busy"
+                />
+                <q-btn
+                  outline
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.cancel_and_start_again')"
+                  data-test="cancel-ceremony"
+                  :disable="busy"
+                  @click="cancel"
+                />
+              </div>
+            </q-form>
+            <template v-else-if="mode === 'backup'">
+              <p>
+                {{ $t('accountRecovery.frank_account_backup') }}
+                {{ shareIndex + 1 }} of {{ shareCount }}
+                {{
+                  $t('accountRecovery.save_each_share_before_moving_on_exactly')
+                }}
+                {{ threshold }}
+                {{
+                  $t(
+                    'accountRecovery.consistent_shares_are_required_to_confirm',
+                  )
+                }}
+              </p>
+              <q-input
+                :model-value="shownShare"
+                type="textarea"
+                outlined
+                readonly
+                :label="$t('accountRecovery.frank_account_backup_share')"
+                autocomplete="off"
+                data-test="backup-share"
+              />
+              <div class="row q-gutter-sm q-mt-md items-center">
+                <q-btn
+                  outline
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.copy_this_share')"
+                  @click="copy(shownShare)"
+                />
+                <q-btn
+                  color="primary"
+                  no-caps
+                  :label="
+                    shareIndex + 1 < shareCount
+                      ? 'Saved this share — next'
+                      : 'Saved all shares'
+                  "
+                  data-test="next-share"
+                  @click="nextShare"
+                />
+                <q-btn
+                  outline
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.cancel_and_start_again')"
+                  data-test="cancel-ceremony"
+                  :disable="busy"
+                  @click="cancel"
+                />
+              </div>
+            </template>
+            <q-form
+              v-else-if="
+                mode === 'confirm' ||
+                mode === 'restore-shares' ||
+                mode === 'restore'
+              "
+              @submit="confirm"
+            >
+              <p v-if="mode === 'confirm'">
+                {{ $t('accountRecovery.re_enter_exactly') }} {{ threshold }}
+                {{
+                  $t(
+                    'accountRecovery.saved_frank_account_backup_shares_we_reconstruct',
+                  )
+                }}
+              </p>
+              <p v-else>
+                {{
+                  $t(
+                    'accountRecovery.enter_exactly_the_threshold_number_printed_in',
+                  )
+                }}
+              </p>
+              <p
+                v-if="descriptor"
+                class="recovery-text"
+                data-test="pinned-descriptor"
+              >
+                {{ $t('accountRecovery.expected_account') }} {{ descriptor }}
+              </p>
+              <q-input
+                v-model="shareInput"
+                type="textarea"
+                outlined
+                :label="$t('accountRecovery.saved_codex32_shares_one_per_line')"
+                :maxlength="6000"
+                autocomplete="off"
+                autocorrect="off"
+                :spellcheck="false"
+                data-test="confirm-shares"
+              />
+              <q-input
+                v-model="displayName"
+                outlined
+                class="q-mt-sm"
+                :label="$t('accountRecovery.display_name')"
+                :maxlength="80"
+                autocomplete="off"
+                data-test="display-name"
+              />
+              <p
+                v-if="discoveredRelay"
+                role="status"
+                aria-live="polite"
+                class="text-positive q-mt-sm"
+                data-test="relay-discovered-status"
+              >
+                {{
+                  $t('accountRecovery.relay_discovered', {
+                    url: discoveredRelay,
+                  })
+                }}
+              </p>
+              <q-expansion-item
+                class="q-mt-md"
+                icon="tune"
+                :label="$t('accountRecovery.advanced_options')"
+                :caption="$t('accountRecovery.relay_server')"
+                header-class="text-weight-medium text-grey-8"
+                data-test="advanced-relay-expansion"
+              >
+                <q-card class="bg-transparent q-pa-none">
+                  <q-card-section class="q-px-none q-pt-sm">
+                    <q-input
+                      v-model="customRelayUrl"
+                      outlined
+                      dense
+                      :label="$t('accountRecovery.relay_server_url')"
+                      :hint="$t('accountRecovery.relay_server_url_hint')"
+                      :placeholder="defaultRelayUrl"
+                      data-test="custom-relay-input"
+                      :rules="[validateRelayUrl]"
+                    >
+                      <template
+                        v-if="
+                          customRelayUrl && customRelayUrl !== defaultRelayUrl
+                        "
+                        #append
+                      >
+                        <q-btn
+                          flat
+                          dense
+                          round
+                          icon="restart_alt"
+                          :title="$t('accountRecovery.reset_to_default_relay')"
+                          data-test="reset-default-relay"
+                          @click="customRelayUrl = defaultRelayUrl"
+                        />
+                      </template>
+                    </q-input>
+                  </q-card-section>
+                </q-card>
+              </q-expansion-item>
+              <div class="row q-gutter-sm q-mt-md items-center">
+                <q-btn
+                  type="submit"
+                  color="primary"
+                  no-caps
+                  :label="
+                    $t('accountRecovery.verify_backups_and_stage_account')
+                  "
+                  data-test="verify-backups"
+                  :disable="busy || !shareInput || !displayName.trim()"
+                  :loading="busy"
+                />
+                <q-btn
+                  outline
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.cancel_and_start_again')"
+                  data-test="cancel-ceremony"
+                  :disable="busy"
+                  @click="cancel"
+                />
+              </div>
+            </q-form>
+          </template>
+          <p class="q-mt-lg text-caption">
+            {{
+              $t(
+                'accountRecovery.browser_preview_encrypted_local_storage_does_not',
+              )
+            }}
+          </p>
+        </section>
+      </q-page></q-page-container
     >
   </div>
 </template>

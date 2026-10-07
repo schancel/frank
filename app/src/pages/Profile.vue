@@ -170,8 +170,7 @@ export default defineComponent({
         (currentProfile.bio ?? '') === (this.bio ?? '') &&
         (currentProfile.avatar ?? '') === (this.avatar ?? '') &&
         (currentProfile.accountType ?? 0) === (this.accountType ?? 0) &&
-        (currentProfile.botRole ?? undefined) ===
-          (this.botRole ?? undefined) &&
+        (currentProfile.botRole ?? undefined) === (this.botRole ?? undefined) &&
         currentLinksJson === newLinksJson &&
         (currentInbox.acceptancePrice ?? 0) === (this.acceptancePrice ?? 0)
       )

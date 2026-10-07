@@ -14,26 +14,30 @@ export class AppMultiChainWalletResolver implements MultiChainWalletResolver {
     this.solanaWallet = wallet
   }
 
-  async getWalletForChain(chainIdentifier: string): Promise<unknown | undefined> {
+  async getWalletForChain(
+    chainIdentifier: string,
+  ): Promise<unknown | undefined> {
     const entry = getChainRegistryEntry(chainIdentifier)
     const family =
       entry?.family ??
       (chainIdentifier.startsWith('monad') || chainIdentifier.startsWith('evm')
         ? 'evm'
         : chainIdentifier.startsWith('xec') ||
-            chainIdentifier.startsWith('ecash') ||
-            chainIdentifier === 'lotus'
-          ? 'bitcoin'
-          : chainIdentifier.startsWith('solana')
-            ? 'solana'
-            : undefined)
+          chainIdentifier.startsWith('ecash') ||
+          chainIdentifier === 'lotus'
+        ? 'bitcoin'
+        : chainIdentifier.startsWith('solana')
+        ? 'solana'
+        : undefined)
 
     switch (family) {
       case 'evm': {
         try {
           return useMonadWallet()
         } catch {
-          return (await accountSession.getWallet().catch(() => undefined)) as unknown
+          return (await accountSession
+            .getWallet()
+            .catch(() => undefined)) as unknown
         }
       }
       case 'bitcoin': {

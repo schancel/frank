@@ -9,7 +9,17 @@ import { deflateSync } from 'zlib'
 
 import { MonadProfileFields } from '@frank/wallet/monad-identity'
 
-export type BotKey = 'blackjack' | 'raffle' | 'vendor' | 'qwen' | 'faucet'
+export type BotKey =
+  | 'blackjack'
+  | 'raffle'
+  | 'vendor'
+  | 'qwen'
+  | 'faucet'
+  | 'lobby'
+  | 'rps'
+  | 'dice'
+  | 'liars-dice'
+  | 'poker'
 
 export interface BotProfileSpec {
   key: BotKey
@@ -63,6 +73,46 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
     identityEnv: 'FAUCET_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/faucet-bot-identity.json',
     accent: [40, 160, 220],
+  },
+  {
+    key: 'lobby',
+    name: 'Lobby',
+    bio: 'Community group chat rooms. Send /join to enter #general, /rooms to list rooms, /help for commands.',
+    identityEnv: 'LOBBY_BOT_IDENTITY_JSON',
+    identityDefaultPath: '/tmp/lobby-bot-identity.json',
+    accent: [30, 140, 220],
+  },
+  {
+    key: 'rps',
+    name: 'Rock Paper Scissors',
+    bio: 'Provably fair Rock Paper Scissors game. Challenge the dealer or play against other peers.',
+    identityEnv: 'RPS_BOT_IDENTITY_JSON',
+    identityDefaultPath: '/tmp/rps-bot-identity.json',
+    accent: [220, 100, 30],
+  },
+  {
+    key: 'dice',
+    name: 'Satoshi Dice',
+    bio: 'Provably fair 16-bit crypto dice game. Choose your win chance and roll.',
+    identityEnv: 'DICE_BOT_IDENTITY_JSON',
+    identityDefaultPath: '/tmp/dice-bot-identity.json',
+    accent: [180, 50, 180],
+  },
+  {
+    key: 'liars-dice',
+    name: "Liar's Dice (Perudo)",
+    bio: "Multiplayer cryptographic Liar's Dice (Perudo) table game with on-chain escrow.",
+    identityEnv: 'LIARS_DICE_BOT_IDENTITY_JSON',
+    identityDefaultPath: '/tmp/liars-dice-bot-identity.json',
+    accent: [40, 180, 120],
+  },
+  {
+    key: 'poker',
+    name: "Texas Hold'em Poker",
+    bio: "Multiplayer Texas Hold'em mental cards poker table with on-chain escrow.",
+    identityEnv: 'POKER_BOT_IDENTITY_JSON',
+    identityDefaultPath: '/tmp/poker-bot-identity.json',
+    accent: [180, 40, 40],
   },
 ]
 

@@ -100,6 +100,7 @@ import { MessageItem, WalletSyncItem } from "@frank/cashweb/types/messages";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
 import { resolveChainIdentifier, PROTOCOL_CHAINS } from "./chains-registry";
+import { applyWalletSyncItem } from "../sync-dispatcher";
 
 import {
   createMonadWalletMaterial,
@@ -1101,7 +1102,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         for (const item of items) {
           if (item.type === "wallet-sync" || item.type === "payment-transfer") {
             try {
-              wallet.processSyncTransaction?.(item as WalletSyncItem);
+              applyWalletSyncItem(wallet, item as WalletSyncItem);
             } catch (err) {
               console.warn("Failed to process received wallet-sync item:", err);
             }
@@ -1253,14 +1254,19 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       const consolidator = new EvmLegacyConsolidator({
         provider: monadWallet.provider,
         getFundingAccounts: () => collectWalletFundingAccounts(monadWallet),
-        chainId: config.chainId,
+        chainIdentifier,
         transactionBuilder,
-        onSyncTransaction: async (syncItem: WalletSyncItem) => {
-          monadWallet.processSyncTransaction?.(syncItem);
+        onSyncTransaction: async (syncItem) => {
+          applyWalletSyncItem(wallet, syncItem);
           try {
-            await monadWallet.sendSelfDirectMessage?.([syncItem]);
+            await directMessages.send({
+              wallet,
+              recipient: toChainAddress(wallet.identity.address.raw),
+              items: [syncItem],
+              stampValue: 0n,
+            });
           } catch (err) {
-            console.warn("sendLegacy: could not broadcast self-send sync item:", err);
+            console.warn("could not broadcast self-send sync item:", err);
           }
         },
       });
@@ -2017,7 +2023,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               const consolidator = new EvmLegacyConsolidator({
                 provider,
                 getFundingAccounts: () => collectWalletFundingAccounts(wallet),
-                chainId: config.chainId,
+                chainIdentifier,
                 transactionBuilder,
               });
               return consolidator.getUnresolvedLegacySend();
@@ -2026,14 +2032,22 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               const consolidator = new EvmLegacyConsolidator({
                 provider,
                 getFundingAccounts: () => collectWalletFundingAccounts(wallet),
-                chainId: config.chainId,
+                chainIdentifier,
                 transactionBuilder,
                 onSyncTransaction: async (syncItem: WalletSyncItem) => {
-                  wallet.processSyncTransaction?.(syncItem);
+                  applyWalletSyncItem(wallet, syncItem);
                   try {
-                    await wallet.sendSelfDirectMessage?.([syncItem]);
+                    await directMessages.send({
+                      wallet,
+                      recipient: toChainAddress(wallet.identity.address.raw),
+                      items: [syncItem],
+                      stampValue: 0n,
+                    });
                   } catch (err) {
-                    console.warn("resumeLegacySend: could not broadcast self-send sync item:", err);
+                    console.warn(
+                      "resumeLegacySend: could not broadcast self-send sync item:",
+                      err
+                    );
                   }
                 },
               });
@@ -2050,24 +2064,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             forumBurnAddress: config.stampBurnAddress,
             forumChainId: BigInt(config.chainId),
             cborNetwork: forumPolicy.network,
-            processSyncTransaction(item: WalletSyncItem) {
-              const poolRes = pool.processSyncTransaction(item);
-              const invRes = (wallet as any).inventory?.processSyncTransaction(item);
-              return {
-                affectedIndices: poolRes?.affectedIndices,
-                affectedAccounts: invRes?.affectedAccounts,
-              };
-            },
-            async sendSelfDirectMessage(items: MessageItem[]) {
-              if (directMessages.send) {
-                return directMessages.send({
-                  wallet,
-                  recipient: toChainAddress(wallet.identity.address.raw),
-                  items,
-                  stampValue: 0n,
-                });
-              }
-            },
             close() {
               if (closing !== undefined) return closing;
               closedWallets.add(wallet);

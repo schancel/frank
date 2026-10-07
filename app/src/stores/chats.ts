@@ -42,6 +42,7 @@ import {
   MonadStampTerminalError,
 } from '@frank/wallet/monad-stamp-client'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
+import { applyWalletSyncItem } from '@frank/wallet/sync-dispatcher'
 import type {
   Message,
   MessageWrapper,
@@ -51,6 +52,7 @@ import type {
   TextItem,
   ImageItem,
   StealthItem,
+  WalletSyncItem,
 } from '@frank/cashweb/types/messages'
 import {
   isSafeRelayTimestamp,
@@ -2840,7 +2842,9 @@ export const useChatStore = defineStore('chats', {
                 void accountSession
                   ?.getWallet?.()
                   .then(w => {
-                    ;(w as any)?.processSyncTransaction?.(item)
+                    if (w) {
+                      applyWalletSyncItem(w, item as WalletSyncItem)
+                    }
                   })
                   .catch(() => {})
               } catch {

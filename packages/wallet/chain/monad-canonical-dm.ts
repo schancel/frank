@@ -64,7 +64,10 @@ import type {
   ChannelUpdateItem,
   MessageItem,
   StealthItem,
+  WalletSyncItem,
 } from '@frank/cashweb/types/messages'
+import { applyWalletSyncItem } from '../sync-dispatcher'
+export { applyWalletSyncItem } from '../sync-dispatcher'
 import type {
   ChainAddress,
   DirectMessageAttemptStatus,
@@ -805,8 +808,13 @@ function processSyncItemIfPresent(
   item: unknown,
 ) {
   try {
-    const liveWallet = wallet as MonadChainWalletHandle
-    liveWallet.processSyncTransaction?.(item as any)
+    const syncItem = item as WalletSyncItem
+    if (
+      syncItem &&
+      (syncItem.type === 'wallet-sync' || syncItem.type === 'payment-transfer')
+    ) {
+      applyWalletSyncItem(wallet, syncItem)
+    }
   } catch {
     // ignore
   }

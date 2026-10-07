@@ -81,16 +81,34 @@
             </q-item>
           </q-card-section>
         </q-slide-transition>
-        <q-card-actions align="right">
-          <q-btn label="Cancel" color="negative" @click="cancel" />
+        <q-card-actions align="between">
           <q-btn
-            :disable="!canAdd"
-            label="Add"
+            flat
+            no-caps
+            icon="qr_code_2"
             color="primary"
-            @click="addContact()"
+            :label="$t('newContactDialog.showMyQr')"
+            data-test="add-contact-show-my-qr"
+            @click="showMyQrDialog = true"
           />
+          <div>
+            <q-btn
+              label="Cancel"
+              color="negative"
+              flat
+              class="q-mr-sm"
+              @click="cancel"
+            />
+            <q-btn
+              :disable="!canAdd"
+              label="Add"
+              color="primary"
+              @click="addContact()"
+            />
+          </div>
         </q-card-actions>
       </q-card>
+      <identity-qr-dialog v-model="showMyQrDialog" />
     </q-page>
   </q-page-container>
 </template>
@@ -118,6 +136,8 @@ import {
   fetchContactProfile,
   type ContactLookupFailure,
 } from 'src/utils/directory-peer'
+import IdentityQrDialog from 'src/components/dialogs/IdentityQrDialog.vue'
+
 type ChainAddress = Parameters<typeof activeChain.fetchProfile>[0]
 
 type AcceptedLookup = {
@@ -126,10 +146,14 @@ type AcceptedLookup = {
 }
 
 export default defineComponent({
+  components: {
+    IdentityQrDialog,
+  },
   data() {
     return {
       address: '',
       acceptedLookup: null as AcceptedLookup | null,
+      showMyQrDialog: false,
       // Bumped on every address change; a lookup may only publish a result while its own
       // generation is still the latest, which is the single staleness mechanism.
       lookupGeneration: 0,

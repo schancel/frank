@@ -161,4 +161,16 @@ describe('ContactsPanel navigation', () => {
       '0x1111111111111111111111111111111111111111',
     )
   })
+
+  it('clicking My QR button opens IdentityQrDialog', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const qrBtn = wrapper.find('[data-test="panel-my-qr"]')
+    expect(qrBtn.exists()).toBe(true)
+
+    expect((wrapper.vm as any).showMyQrDialog).toBe(false)
+    await qrBtn.trigger('click')
+    expect((wrapper.vm as any).showMyQrDialog).toBe(true)
+  })
 })

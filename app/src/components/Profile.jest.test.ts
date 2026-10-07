@@ -7,10 +7,23 @@ const defaultStubs = {
     template: '<div><slot name="before" /><slot name="after" /></div>',
   },
   'q-tabs': { template: '<div><slot /></div>' },
-  'q-tab': { template: '<div />' },
-  'q-tab-panels': { template: '<div><slot /></div>' },
-  'q-tab-panel': { template: '<div><slot /></div>' },
-  'q-input': { template: '<input />' },
+  'q-tab': {
+    props: ['name'],
+    template: '<div :data-tab="name"><slot /></div>',
+  },
+  'q-tab-panels': {
+    props: ['modelValue'],
+    template: '<div data-test="tab-panels"><slot /></div>',
+  },
+  'q-tab-panel': {
+    props: ['name'],
+    template: '<div :data-panel="name"><slot /></div>',
+  },
+  'q-input': {
+    props: ['modelValue'],
+    template:
+      '<div><input :value="modelValue" /><slot name="append" /><slot name="prepend" /></div>',
+  },
   'q-toolbar': { template: '<div><slot /></div>' },
   'q-toolbar-title': { template: '<div><slot /></div>' },
   'q-file': { template: '<input type="file" />' },
@@ -18,6 +31,12 @@ const defaultStubs = {
   'q-img': { template: '<img />' },
   'q-select': { template: '<div><slot /></div>' },
   'q-icon': { template: '<i />' },
+  'q-card': { template: '<div><slot /></div>' },
+  'q-skeleton': { template: '<div />' },
+  'qrcode-vue': {
+    props: ['value'],
+    template: '<div data-test="mock-qrcode" :data-value="value" />',
+  },
 }
 
 describe('Profile.vue component avatar handling', () => {
@@ -209,5 +228,45 @@ describe('Profile.vue component avatar handling', () => {
     expect(wrapper.findAll('[data-test="profile-link-row"]').length).toBe(1)
     expect((wrapper.vm as any).internalLinks.length).toBe(1)
     expect((wrapper.vm as any).internalLinks[0].type).toBe('github')
+  })
+
+  describe('Identity & QR code tab', () => {
+    it('renders identity tab and quick QR button', async () => {
+      const wrapper = mount(ProfileComponent, {
+        props: {
+          name: 'Shammah',
+          username: 'shammah',
+          avatar: 'data:image/webp;base64,AVATAR',
+          identityAddress: '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3',
+        },
+        global: {
+          mocks: {
+            $t: (key: string) => key,
+          },
+          stubs: defaultStubs,
+        },
+      })
+
+      expect(wrapper.find('[data-test="profile-tab-identity"]').exists()).toBe(
+        true,
+      )
+      expect(
+        wrapper.find('[data-test="profile-panel-identity"]').exists(),
+      ).toBe(true)
+
+      const quickBtn = wrapper.find('[data-test="profile-quick-qr-btn"]')
+      expect(quickBtn.exists()).toBe(true)
+
+      // Clicking quick QR button switches tab to identity
+      await quickBtn.trigger('click')
+      expect((wrapper.vm as any).tab).toBe('identity')
+
+      // Identity panel contains QR code with the identity address
+      const qr = wrapper.find('[data-test="profile-identity-qr"]')
+      expect(qr.exists()).toBe(true)
+      expect(qr.attributes('data-value')).toBe(
+        '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3',
+      )
+    })
   })
 })

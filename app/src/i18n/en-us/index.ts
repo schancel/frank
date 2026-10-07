@@ -628,6 +628,7 @@ export default {
     found: 'Contact found: {name}',
     ownAddress:
       "This is your own address. You can't add yourself as a contact.",
+    showMyQr: 'Show My QR Code',
   },
   newTopicDialog: {
     newTopic: 'Add Topic',
@@ -716,6 +717,7 @@ export default {
     contacts: 'Contacts',
     search: 'Search...',
     close: 'Close',
+    myQrCode: 'My Identity QR Code',
   },
   contactItem: {
     address: 'Address',
@@ -773,6 +775,7 @@ export default {
     linkTypeTelegram: 'Telegram',
     linkTypeDiscord: 'Discord',
     linkTypeOther: 'Other',
+    unnamed: 'Unnamed',
   },
   clearHistoryDialog: {
     cancel: 'Cancel',
@@ -801,6 +804,21 @@ export default {
     pushingProfile: 'Pushing new Profile...',
     profile: 'Profile',
     savedNotification: 'Profile updated',
+    identityQr: 'Identity & QR',
+    viewIdentityQr: 'Share / Friend QR',
+    identityHeading: 'Your Frank Identity',
+    identitySubheading:
+      'Share this QR code or address with friends so they can add you to their contacts and send encrypted messages.',
+    identityAddressLabel: 'Identity Address (for messaging & contacts)',
+    identityExplanation:
+      'This canonical address is published to the directory relay. Friends add this address to start end-to-end encrypted direct chats with you.',
+    receiveVsIdentityTitle: 'Identity Address vs Receive Address',
+    receiveVsIdentityBody:
+      'Your Identity Address is used for contacts, messaging, and forum profile display. To receive funds, tokens, or gas, use your Receive Address.',
+    receiveAddressHint:
+      'Need to receive coins or tokens instead? Your Receive Address is managed in your Wallet.',
+    goToWallet: 'Go to Wallet',
+    scanPrompt: 'Scan to add as a contact on Frank',
   },
   wipeWallet: {
     warning: 'Delete all relay messages?',

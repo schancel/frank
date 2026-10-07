@@ -200,6 +200,11 @@ async fn put(
     if !crate::directory_runtime::valid_key(&network, &subject) {
         return error(RuntimeError::Invalid);
     }
+    if let Some(fed) = runtime.federation() {
+        if fed.check_inbound_federation(&headers).await.is_err() {
+            return error(RuntimeError::Invalid);
+        }
+    }
     // Publishing is free, so a key this relay has never seen is charged to its source, and only
     // once the entry is known to be signed by that key: a forgery costs its sender nothing here
     // and cannot use up anyone's allowance.
@@ -233,20 +238,33 @@ async fn put(
 /// The relay-wide tuple an account embeds in its own entry.
 async fn info(Extension(routes): Extension<Arc<Routes>>) -> Response {
     let info = routes.runtime.info();
-    (
-        [(header::CACHE_CONTROL, "no-store")],
-        Json(serde_json::json!({
-            "network": info.network,
-            "relayId": hex::encode(&info.binding.relay_id),
-            "endpoint": info.binding.endpoint,
-            "relayKey": hex::encode(&info.binding.identity.key_bytes),
-            "bindingExpiry": info.binding_expiry_ns(),
-            // Whether this relay accepts a message for a recipient whose entry names another
-            // relay and forwards it there. While false such a message is answered as undeliverable.
-            "forwarding": false,
-        })),
-    )
-        .into_response()
+    let mut val = serde_json::json!({
+        "network": info.network,
+        "relayId": hex::encode(&info.binding.relay_id),
+        "endpoint": info.binding.endpoint,
+        "relayKey": hex::encode(&info.binding.identity.key_bytes),
+        "bindingExpiry": info.binding_expiry_ns(),
+        // Whether this relay accepts a message for a recipient whose entry names another
+        // relay and forwards it there. While false such a message is answered as undeliverable.
+        "forwarding": false,
+    });
+    if let Some(fed) = routes.runtime.federation() {
+        if let Some(coord) = fed.cluster_coordinator() {
+            if let Ok(lock) = coord.try_lock() {
+                if let Some(cid) = lock.cluster_id() {
+                    val["clusterId"] = serde_json::Value::String(cid.to_string());
+                }
+                if let Some(auth) = lock.cluster_authority_pubkey() {
+                    val["clusterAuthorityPubkey"] = serde_json::Value::String(hex::encode(auth));
+                }
+                if let Some(desc) = lock.my_descriptor() {
+                    val["clusterName"] = serde_json::Value::String(desc.cluster_name.clone());
+                    val["clusterDescriptor"] = serde_json::to_value(desc).unwrap_or_default();
+                }
+            }
+        }
+    }
+    ([(header::CACHE_CONTROL, "no-store")], Json(val)).into_response()
 }
 /// Most accounts one listing of new accounts returns.
 const NEW_ACCOUNTS_PAGE: usize = 100;

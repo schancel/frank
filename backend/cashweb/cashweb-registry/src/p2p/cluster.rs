@@ -4,7 +4,7 @@
 //! (intra-cluster self-peering) and to deduplicate connections to foreign clusters so that a relay
 //! connects to at most 1–2 nodes of any given remote cluster (anti-swarm).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bitcoinsuite_core::{
     ecc::{Ecc, PubKey, SecKey},
@@ -22,24 +22,62 @@ pub const CLUSTER_ATTESTATION_DOMAIN_PREFIX: &[u8] = b"FRANK_CLUSTER_ATTESTATION
 /// Default maximum active peer connections allowed to nodes sharing the same cluster authority.
 pub const DEFAULT_MAX_PEERS_PER_CLUSTER: usize = 1;
 
-mod serde_bytes_33 {
-    use serde::{Deserialize, Deserializer, Serializer};
+pub(crate) mod serde_bytes_33 {
+    use serde::{Deserializer, Serializer};
 
-    pub(super) fn serialize<S>(bytes: &[u8; 33], serializer: S) -> Result<S::Ok, S::Error>
+    pub(crate) fn serialize<S>(bytes: &[u8; 33], serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        serializer.serialize_bytes(bytes)
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&hex::encode(bytes))
+        } else {
+            serializer.serialize_bytes(bytes)
+        }
     }
 
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 33], D::Error>
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 33], D::Error>
     where
         D: Deserializer<'de>,
     {
-        let slice: &[u8] = Deserialize::deserialize(deserializer)?;
-        slice
-            .try_into()
-            .map_err(|_| serde::de::Error::custom("expected 33 bytes for compressed pubkey"))
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = [u8; 33];
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a 33-byte compressed pubkey (hex string or byte sequence)")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                let bytes = hex::decode(v).map_err(E::custom)?;
+                bytes
+                    .try_into()
+                    .map_err(|_| E::custom("expected 33 bytes for compressed pubkey"))
+            }
+
+            fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+                v.try_into()
+                    .map_err(|_| E::custom("expected 33 bytes for compressed pubkey"))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut arr = [0u8; 33];
+                for i in 0..33 {
+                    arr[i] = seq.next_element()?.ok_or_else(|| {
+                        serde::de::Error::custom("expected 33 elements in sequence")
+                    })?;
+                }
+                if seq.next_element::<u8>()?.is_some() {
+                    return Err(serde::de::Error::custom("expected exactly 33 elements"));
+                }
+                Ok(arr)
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
     }
 }
 
@@ -70,6 +108,26 @@ pub enum ClusterError {
     #[invalid_client_input()]
     #[error("Cluster attestation domain mismatch: expected {0}, got {1}")]
     DomainMismatch(String, String),
+
+    /// Cluster descriptor has no public endpoints.
+    #[invalid_client_input()]
+    #[error("Cluster descriptor has no public endpoints")]
+    EmptyEndpoints,
+
+    /// Candidate peer IP is private or loopback, which is rejected in clustered mode.
+    #[invalid_client_input()]
+    #[error("Candidate peer IP {0} is private or loopback, rejected in clustered mode")]
+    PrivateIpRejected(String),
+
+    /// Outbound bundle forwarding job is already claimed by another cluster worker.
+    #[invalid_client_input()]
+    #[error("Outbound bundle forwarding {0} already claimed by another cluster worker")]
+    AlreadyClaimed(String),
+
+    /// Outbound bundle forwarding failed.
+    #[invalid_client_input()]
+    #[error("Outbound bundle forwarding failed: {0}")]
+    ForwardingFailed(String),
 }
 
 /// Signed cluster authority attestation proving that a node belongs to a given cluster.
@@ -167,11 +225,61 @@ impl NodeClusterAttestation {
     }
 }
 
+/// Returns true if the URL points to a loopback, private, link-local, or unqualified local network address.
+pub fn is_private_or_loopback_url(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(name)) => {
+            let lower = name.to_ascii_lowercase();
+            if lower == "localhost"
+                || lower.ends_with(".localhost")
+                || lower == "local"
+                || lower.ends_with(".local")
+                || lower == "internal"
+                || lower.ends_with(".internal")
+            {
+                return true;
+            }
+            !lower.contains('.')
+        }
+        Some(url::Host::Ipv4(ip)) => {
+            ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+        }
+        Some(url::Host::Ipv6(ip)) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || (ip.segments()[0] & 0xfe00) == 0xfc00 // ULA fc00::/7
+                || (ip.segments()[0] & 0xffc0) == 0xfe80 // Link-local fe80::/10
+                || ip.to_ipv4_mapped().is_some_and(|ipv4| {
+                    ipv4.is_loopback()
+                        || ipv4.is_private()
+                        || ipv4.is_link_local()
+                        || ipv4.is_unspecified()
+                        || ipv4.is_broadcast()
+                })
+        }
+        None => true,
+    }
+}
+
 /// Coordinator enforcing anti-self-peering and foreign cluster anti-swarm deduplication.
 #[derive(Debug, Clone)]
 pub struct ClusterPeeringCoordinator {
     /// Local cluster's attestation (if running in clustered mode).
     my_attestation: Option<NodeClusterAttestation>,
+    /// Local cluster's unified relay descriptor.
+    my_descriptor: Option<crate::p2p::descriptor::ClusterRelayDescriptor>,
+    /// Cluster UUID.
+    cluster_id: Option<Uuid>,
+    /// Cluster Domain Authority public key.
+    cluster_authority_pubkey: Option<[u8; 33]>,
+    /// Known intra-cluster node public keys.
+    known_node_pubkeys: HashSet<[u8; 33]>,
+    /// Whether clustered mode is active.
+    is_clustered: bool,
     /// Maximum permitted active peers connected to the same foreign cluster authority.
     max_peers_per_cluster: usize,
     /// Active foreign cluster peers count indexed by cluster authority public key.
@@ -184,11 +292,90 @@ impl ClusterPeeringCoordinator {
         my_attestation: Option<NodeClusterAttestation>,
         max_peers_per_cluster: usize,
     ) -> Self {
+        let (cluster_id, cluster_authority_pubkey, known_node_pubkeys, is_clustered) =
+            if let Some(att) = &my_attestation {
+                let mut set = HashSet::new();
+                set.insert(att.node_pubkey);
+                (
+                    Some(att.cluster_id),
+                    Some(att.cluster_authority_pubkey),
+                    set,
+                    true,
+                )
+            } else {
+                (None, None, HashSet::new(), false)
+            };
         Self {
             my_attestation,
+            my_descriptor: None,
+            cluster_id,
+            cluster_authority_pubkey,
+            known_node_pubkeys,
+            is_clustered,
             max_peers_per_cluster: max_peers_per_cluster.max(1),
             active_peers_by_cluster: HashMap::new(),
         }
+    }
+
+    /// Create a clustered coordinator configured with a cluster relay descriptor.
+    pub fn new_clustered(
+        descriptor: crate::p2p::descriptor::ClusterRelayDescriptor,
+        my_attestation: Option<NodeClusterAttestation>,
+        max_peers_per_cluster: usize,
+    ) -> Self {
+        let mut coord = Self::new(my_attestation, max_peers_per_cluster);
+        coord = coord.with_descriptor(descriptor);
+        coord
+    }
+
+    /// Set or update the cluster relay descriptor.
+    pub fn with_descriptor(
+        mut self,
+        descriptor: crate::p2p::descriptor::ClusterRelayDescriptor,
+    ) -> Self {
+        self.cluster_id = Some(descriptor.cluster_id);
+        self.cluster_authority_pubkey = Some(descriptor.authority_pubkey);
+        self.is_clustered = true;
+        self.my_descriptor = Some(descriptor);
+        self
+    }
+
+    /// Set explicit cluster identity (cluster UUID and authority pubkey).
+    pub fn with_cluster_identity(mut self, cluster_id: Uuid, authority_pubkey: [u8; 33]) -> Self {
+        self.cluster_id = Some(cluster_id);
+        self.cluster_authority_pubkey = Some(authority_pubkey);
+        self.is_clustered = true;
+        self
+    }
+
+    /// Add a known node public key belonging to this cluster.
+    pub fn add_known_node_pubkey(&mut self, node_pubkey: [u8; 33]) {
+        self.known_node_pubkeys.insert(node_pubkey);
+    }
+
+    /// Set whether clustered mode is active.
+    pub fn set_clustered(&mut self, is_clustered: bool) {
+        self.is_clustered = is_clustered;
+    }
+
+    /// Whether the node is operating in clustered mode.
+    pub fn is_clustered(&self) -> bool {
+        self.is_clustered
+    }
+
+    /// Local cluster's unified relay descriptor.
+    pub fn my_descriptor(&self) -> Option<&crate::p2p::descriptor::ClusterRelayDescriptor> {
+        self.my_descriptor.as_ref()
+    }
+
+    /// Cluster UUID.
+    pub fn cluster_id(&self) -> Option<Uuid> {
+        self.cluster_id
+    }
+
+    /// Cluster Domain Authority public key.
+    pub fn cluster_authority_pubkey(&self) -> Option<[u8; 33]> {
+        self.cluster_authority_pubkey
     }
 
     /// Local node's cluster attestation.
@@ -209,11 +396,109 @@ impl ClusterPeeringCoordinator {
             .unwrap_or(0)
     }
 
+    /// Check whether candidate credentials match this cluster's identity (intra-cluster self-peering).
+    pub fn is_self_peering(
+        &self,
+        candidate_authority: Option<&[u8; 33]>,
+        candidate_cluster_id: Option<&Uuid>,
+        candidate_node_pubkey: Option<&[u8; 33]>,
+    ) -> bool {
+        if let Some(auth) = candidate_authority {
+            if let Some(my_auth) = &self.cluster_authority_pubkey {
+                if auth == my_auth {
+                    return true;
+                }
+            }
+        }
+        if let Some(cid) = candidate_cluster_id {
+            if let Some(my_cid) = &self.cluster_id {
+                if cid == my_cid {
+                    return true;
+                }
+            }
+        }
+        if let Some(npk) = candidate_node_pubkey {
+            if self.known_node_pubkeys.contains(npk) {
+                return true;
+            }
+            if let Some(my_att) = &self.my_attestation {
+                if *npk == my_att.node_pubkey {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Validate a candidate peer's endpoint URL against private/loopback restrictions in clustered mode.
+    pub fn validate_peer_url(&self, url: &url::Url) -> Result<(), ClusterError> {
+        if self.is_clustered && is_private_or_loopback_url(url) {
+            return Err(ClusterError::PrivateIpRejected(url.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Validate a peer candidate before establishing peering or crawling.
+    pub fn validate_peer_candidate(
+        &self,
+        candidate_url: Option<&url::Url>,
+        candidate_authority: Option<&[u8; 33]>,
+        candidate_cluster_id: Option<&Uuid>,
+        candidate_node_pubkey: Option<&[u8; 33]>,
+    ) -> Result<(), ClusterError> {
+        if let Some(url) = candidate_url {
+            self.validate_peer_url(url)?;
+        }
+        if self.is_self_peering(
+            candidate_authority,
+            candidate_cluster_id,
+            candidate_node_pubkey,
+        ) {
+            return Err(ClusterError::SelfPeeringRejected);
+        }
+        if let Some(auth) = candidate_authority {
+            if self.count_peers_for_cluster(auth) >= self.max_peers_per_cluster {
+                return Err(ClusterError::ClusterAlreadyConnected);
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate inbound federation request headers to reject intra-cluster self-peering.
+    pub fn validate_inbound_federation(
+        &self,
+        headers: &axum::http::HeaderMap,
+    ) -> Result<(), ClusterError> {
+        let cluster_id = headers
+            .get("x-frank-cluster-id")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| Uuid::parse_str(s).ok());
+        let cluster_authority = headers
+            .get("x-frank-cluster-authority")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| hex::decode(s).ok())
+            .and_then(|b| <[u8; 33]>::try_from(b).ok());
+        let node_pubkey = headers
+            .get("x-frank-node-pubkey")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| hex::decode(s).ok())
+            .and_then(|b| <[u8; 33]>::try_from(b).ok());
+
+        if self.is_self_peering(
+            cluster_authority.as_ref(),
+            cluster_id.as_ref(),
+            node_pubkey.as_ref(),
+        ) {
+            return Err(ClusterError::SelfPeeringRejected);
+        }
+        Ok(())
+    }
+
     /// Validate a candidate peer's cluster attestation during handshake.
     ///
     /// Checks:
     /// 1. Expiration and signature validity.
-    /// 2. Anti-self-peering: peer must not share our cluster authority pubkey or cluster UUID.
+    /// 2. Anti-self-peering: peer must not share our cluster authority pubkey, cluster UUID, or node pubkey.
     /// 3. Anti-swarm: peer's cluster must not already have reached `max_peers_per_cluster`.
     pub fn validate_peer_attestation(
         &self,
@@ -224,12 +509,12 @@ impl ClusterPeeringCoordinator {
         peer_attestation.verify(now_seconds)?;
 
         // 2. Intra-cluster self-peering rejection
-        if let Some(my) = &self.my_attestation {
-            if peer_attestation.cluster_authority_pubkey == my.cluster_authority_pubkey
-                || peer_attestation.cluster_id == my.cluster_id
-            {
-                return Err(ClusterError::SelfPeeringRejected);
-            }
+        if self.is_self_peering(
+            Some(&peer_attestation.cluster_authority_pubkey),
+            Some(&peer_attestation.cluster_id),
+            Some(&peer_attestation.node_pubkey),
+        ) {
+            return Err(ClusterError::SelfPeeringRejected);
         }
 
         // 3. Foreign cluster deduplication (anti-swarm)

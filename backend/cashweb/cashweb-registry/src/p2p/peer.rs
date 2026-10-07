@@ -480,18 +480,14 @@ mod tests {
         })?;
 
         // Metadata originates from peer
-        let relay_info = RelayInfo {
-            origin: url.clone(),
-        };
+        let relay_info = RelayInfo::new(url.clone());
         let relay_action = peer
             .relay_metadata_to(&relay_info, &request, &signed_metadata, own_origin, &client)
             .await;
         assert_eq!(relay_action, RelayAction::SkippedOrigin);
 
         // Peer already knows payload from previous relay
-        let relay_info = RelayInfo {
-            origin: "http://anywhere.com".parse()?,
-        };
+        let relay_info = RelayInfo::new("http://anywhere.com".parse()?);
         let relay_action = peer
             .relay_metadata_to(&relay_info, &request, &signed_metadata, own_origin, &client)
             .await;
@@ -516,9 +512,7 @@ mod tests {
 
         // New peer, returns HTTP error
         let peer = Peer::new(url.clone());
-        let relay_info = RelayInfo {
-            origin: "http://anywhere.com".parse()?,
-        };
+        let relay_info = RelayInfo::new("http://anywhere.com".parse()?);
         let invalid_request = PutMetadataRequest {
             address: INVALID_ADDRESS.parse()?,
             header_map: HeaderMap::new(),

@@ -50,6 +50,7 @@ pub struct Federation {
     /// Keys and addresses peers recently did not know.
     unknown: Mutex<HashMap<String, Instant>>,
     announcements: Arc<tokio::sync::Semaphore>,
+    coordinator: Option<Arc<tokio::sync::Mutex<crate::p2p::cluster::ClusterPeeringCoordinator>>>,
 }
 
 fn now_ms() -> i64 {
@@ -91,8 +92,36 @@ fn public_endpoint(endpoint: &str) -> Option<Url> {
 impl Federation {
     /// `peers` are the base URLs of the relays this one copies entries with.
     pub fn new(peers: Vec<Url>, forwarding: bool) -> Self {
+        Self::new_with_coordinator(peers, forwarding, None)
+    }
+
+    /// Construct `Federation` with an optional cluster peering coordinator.
+    pub fn new_with_coordinator(
+        peers: Vec<Url>,
+        forwarding: bool,
+        coordinator: Option<
+            Arc<tokio::sync::Mutex<crate::p2p::cluster::ClusterPeeringCoordinator>>,
+        >,
+    ) -> Self {
+        let filtered_peers = if let Some(coord) = &coordinator {
+            if let Ok(lock) = coord.try_lock() {
+                if lock.is_clustered() {
+                    peers
+                        .into_iter()
+                        .filter(|p| !crate::p2p::cluster::is_private_or_loopback_url(p))
+                        .collect()
+                } else {
+                    peers
+                }
+            } else {
+                peers
+            }
+        } else {
+            peers
+        };
+
         Self {
-            peers,
+            peers: filtered_peers,
             forwarding,
             client: reqwest::Client::builder()
                 .timeout(REQUEST_TIMEOUT)
@@ -101,7 +130,41 @@ impl Federation {
             endpoints: Mutex::new(HashMap::new()),
             unknown: Mutex::new(HashMap::new()),
             announcements: Arc::new(tokio::sync::Semaphore::new(8)),
+            coordinator,
         }
+    }
+
+    /// Set the cluster coordinator.
+    pub fn set_cluster_coordinator(
+        &mut self,
+        coordinator: Arc<tokio::sync::Mutex<crate::p2p::cluster::ClusterPeeringCoordinator>>,
+    ) {
+        if let Ok(lock) = coordinator.try_lock() {
+            if lock.is_clustered() {
+                self.peers
+                    .retain(|p| !crate::p2p::cluster::is_private_or_loopback_url(p));
+            }
+        }
+        self.coordinator = Some(coordinator);
+    }
+
+    /// Optional cluster coordinator.
+    pub fn cluster_coordinator(
+        &self,
+    ) -> Option<&Arc<tokio::sync::Mutex<crate::p2p::cluster::ClusterPeeringCoordinator>>> {
+        self.coordinator.as_ref()
+    }
+
+    /// Check whether an inbound federation request violates anti-self-peering rules.
+    pub async fn check_inbound_federation(
+        &self,
+        headers: &axum::http::HeaderMap,
+    ) -> Result<(), crate::p2p::cluster::ClusterError> {
+        if let Some(coord) = &self.coordinator {
+            let lock = coord.lock().await;
+            lock.validate_inbound_federation(headers)?;
+        }
+        Ok(())
     }
     /// Whether this relay accepts messages for recipients on other relays.
     pub fn forwarding(&self) -> bool {
@@ -271,15 +334,46 @@ impl Federation {
     pub async fn sync(self: &Arc<Self>, runtime: &DirectoryRuntime) {
         let network = runtime.info().network.clone();
         for peer in &self.peers {
+            if let Some(coord) = &self.coordinator {
+                let lock = coord.lock().await;
+                if lock.validate_peer_url(peer).is_err() {
+                    continue;
+                }
+            }
             if let Some(response) = self.fetch(join(peer, "/relay/v1/info")).await {
                 let info = Self::body(response, 16 * 1024)
                     .await
                     .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-                if let Some(endpoint) = info.as_ref().and_then(|info| info["endpoint"].as_str()) {
-                    self.endpoints
-                        .lock()
-                        .unwrap()
-                        .insert(endpoint.to_owned(), peer.clone());
+                if let Some(info) = &info {
+                    if let Some(coord) = &self.coordinator {
+                        let lock = coord.lock().await;
+                        let peer_cluster_id = info["clusterId"]
+                            .as_str()
+                            .and_then(|s| uuid::Uuid::parse_str(s).ok());
+                        let peer_authority = info["clusterAuthorityPubkey"]
+                            .as_str()
+                            .and_then(|s| hex::decode(s).ok())
+                            .and_then(|b| <[u8; 33]>::try_from(b).ok());
+                        let peer_node_key = info["relayKey"]
+                            .as_str()
+                            .and_then(|s| hex::decode(s).ok())
+                            .and_then(|b| <[u8; 33]>::try_from(b).ok());
+
+                        if lock.is_self_peering(
+                            peer_authority.as_ref(),
+                            peer_cluster_id.as_ref(),
+                            peer_node_key.as_ref(),
+                        ) {
+                            // Intra-cluster self-peering suppression: do not peer or sync with siblings
+                            continue;
+                        }
+                    }
+                    if let Some(endpoint) = info["endpoint"].as_str() {
+                        self.endpoints
+                            .lock()
+                            .unwrap()
+                            .insert(endpoint.to_owned(), peer.clone());
+                    }
                 }
             }
             let mut after: Option<String> = None;
@@ -530,5 +624,85 @@ mod tests {
         }
         assert!(public_endpoint("https://relay.example.org").is_some());
         assert!(public_endpoint("https://203.0.113.9:8443").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_federation_anti_self_peering_and_private_ip_isolation() {
+        use crate::p2p::cluster::{ClusterError, ClusterPeeringCoordinator};
+        use crate::p2p::descriptor::ClusterRelayDescriptor;
+        use axum::http::{HeaderMap, HeaderValue};
+        use bitcoinsuite_core::ecc::Ecc;
+        use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
+        use rand::RngCore;
+        use uuid::Uuid;
+
+        let ecc = EccSecp256k1::default();
+        let mut rng = rand::thread_rng();
+        let mut key_bytes = [0u8; 32];
+        rng.fill_bytes(&mut key_bytes);
+        let auth_sec = ecc.seckey_from_array(key_bytes).unwrap();
+        let auth_pub = ecc.derive_pubkey(&auth_sec).array();
+        let cluster_id = Uuid::new_v4();
+
+        let descriptor = ClusterRelayDescriptor::sign(
+            &auth_sec,
+            auth_pub,
+            cluster_id,
+            "my-cluster.org".to_string(),
+            vec![Url::parse("https://my-relay.org").unwrap()],
+            1700086400,
+        );
+
+        let coordinator = Arc::new(tokio::sync::Mutex::new(
+            ClusterPeeringCoordinator::new_clustered(descriptor, None, 1),
+        ));
+
+        // Clustered federation filters out private and loopback configured peers
+        let input_peers = vec![
+            Url::parse("https://127.0.0.1:8443").unwrap(),
+            Url::parse("http://localhost:8080").unwrap(),
+            Url::parse("https://10.1.2.3").unwrap(),
+            Url::parse("https://peer.example.org").unwrap(),
+        ];
+
+        let federation =
+            Federation::new_with_coordinator(input_peers, false, Some(coordinator.clone()));
+
+        assert_eq!(federation.peers.len(), 1);
+        assert_eq!(federation.peers[0].as_str(), "https://peer.example.org/");
+
+        // Inbound federation self-peering rejection
+        let mut self_headers = HeaderMap::new();
+        self_headers.insert(
+            "x-frank-cluster-id",
+            HeaderValue::from_str(&cluster_id.to_string()).unwrap(),
+        );
+        self_headers.insert(
+            "x-frank-cluster-authority",
+            HeaderValue::from_str(&hex::encode(auth_pub)).unwrap(),
+        );
+
+        assert_eq!(
+            federation.check_inbound_federation(&self_headers).await,
+            Err(ClusterError::SelfPeeringRejected)
+        );
+
+        // Inbound federation from foreign cluster
+        let foreign_cluster_id = Uuid::new_v4();
+        let foreign_auth_pub = [0x05; 33];
+        let mut foreign_headers = HeaderMap::new();
+        foreign_headers.insert(
+            "x-frank-cluster-id",
+            HeaderValue::from_str(&foreign_cluster_id.to_string()).unwrap(),
+        );
+        foreign_headers.insert(
+            "x-frank-cluster-authority",
+            HeaderValue::from_str(&hex::encode(foreign_auth_pub)).unwrap(),
+        );
+
+        assert!(federation
+            .check_inbound_federation(&foreign_headers)
+            .await
+            .is_ok());
     }
 }

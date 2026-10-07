@@ -154,6 +154,16 @@ jest.mock('../components/forum/ForumMessage.vue', () => ({
   template: '<div />',
 }))
 jest.mock('../utils/markdown', () => ({ renderMarkdown: () => '' }))
+const mockCompressPostImage = jest.fn(async (_file: File) => ({
+  dataUrl: 'data:image/webp;base64,QUJD',
+  width: 400,
+  height: 300,
+  bytes: 1000,
+}))
+jest.mock('src/utils/post-editor', () => ({
+  ...jest.requireActual('src/utils/post-editor'),
+  compressPostImage: (file: File) => mockCompressPostImage(file),
+}))
 
 let createMemoryHistory: typeof import('vue-router').createMemoryHistory
 let createRouter: typeof import('vue-router').createRouter
@@ -192,6 +202,26 @@ const messages: Record<string, string> = {
   'chat.stampPreparationFunding': 'FUNDING {completed}/{total} {feeReserve}',
   'chat.stampPreparationReady': 'READY',
   'stampPreparation.postedRefreshFailed': 'POSTED_REFRESH_FAILED',
+  'forum.editor.toolbar': 'Formatting tools',
+  'forum.editor.bold': 'Bold',
+  'forum.editor.italic': 'Italic',
+  'forum.editor.heading': 'Heading',
+  'forum.editor.quote': 'Quote',
+  'forum.editor.code': 'Code',
+  'forum.editor.bullet': 'Bullet list',
+  'forum.editor.link': 'Link',
+  'forum.editor.attachImage': 'Attach Image',
+  'forum.editor.invalidImageType': 'INVALID_IMAGE_TYPE',
+  'forum.editor.imageTooLarge': 'IMAGE_TOO_LARGE',
+  'forum.editor.imageError': 'IMAGE_ERROR',
+  'a11y.formatBold': 'Format bold',
+  'a11y.formatItalic': 'Format italic',
+  'a11y.formatHeading': 'Format heading',
+  'a11y.formatQuote': 'Format quote',
+  'a11y.formatCode': 'Format code',
+  'a11y.formatBullet': 'Format bullet list',
+  'a11y.formatLink': 'Insert link',
+  'a11y.attachPostImage': 'Attach image to post',
 }
 const $t = (key: string, params: Record<string, unknown> = {}) =>
   (messages[key] ?? key).replace(/\{(\w+)\}/g, (_m, n) => String(params[n]))
@@ -1490,5 +1520,271 @@ describe('CreatePost topic options (ticket #368)', () => {
 
   it('narrows to matches once text is typed, offering the typed text first', () => {
     expect(optionsFor('ne')).toEqual(['ne', 'news'])
+  })
+})
+
+describe('CreatePost markdown editor and image attachment (#1073)', () => {
+  beforeAll(() => {
+    jest.setTimeout(5000)
+  })
+
+  afterAll(() => {
+    jest.setTimeout(1000)
+  })
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+    mockCompressPostImage.mockResolvedValue({
+      dataUrl: 'data:image/webp;base64,QUJD',
+      width: 400,
+      height: 300,
+      bytes: 1000,
+    })
+  })
+
+  it('renders formatting toolbar with accessible labels and tooltips', () => {
+    const { wrapper } = mountPage()
+    const toolbar = wrapper.find('[role="toolbar"]')
+    expect(toolbar.exists()).toBe(true)
+    expect(toolbar.attributes('aria-label')).toBe('Formatting tools')
+
+    const buttons = [
+      { testId: 'format-bold', label: 'Format bold' },
+      { testId: 'format-italic', label: 'Format italic' },
+      { testId: 'format-heading', label: 'Format heading' },
+      { testId: 'format-quote', label: 'Format quote' },
+      { testId: 'format-code', label: 'Format code' },
+      { testId: 'format-bullet', label: 'Format bullet list' },
+      { testId: 'format-link', label: 'Insert link' },
+      { testId: 'attach-post-image', label: 'Attach image to post' },
+    ]
+
+    for (const { testId, label } of buttons) {
+      const btn = wrapper.find(`[data-test="${testId}"]`)
+      expect(btn.exists()).toBe(true)
+      expect(btn.attributes('aria-label')).toBe(label)
+    }
+  })
+
+  it('applies formatting when clicking toolbar buttons on empty message', async () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+
+    await wrapper.find('[data-test="format-bold"]').trigger('click')
+    expect(vm.message).toBe('**bold text**')
+
+    vm.message = ''
+    await wrapper.find('[data-test="format-italic"]').trigger('click')
+    expect(vm.message).toBe('*italic text*')
+
+    vm.message = ''
+    await wrapper.find('[data-test="format-heading"]').trigger('click')
+    expect(vm.message).toBe('### Heading')
+
+    vm.message = ''
+    await wrapper.find('[data-test="format-quote"]').trigger('click')
+    expect(vm.message).toBe('> Quote')
+
+    vm.message = ''
+    await wrapper.find('[data-test="format-code"]').trigger('click')
+    expect(vm.message).toBe('`code`')
+
+    vm.message = ''
+    await wrapper.find('[data-test="format-bullet"]').trigger('click')
+    expect(vm.message).toBe('- List item')
+
+    vm.message = ''
+    await wrapper.find('[data-test="format-link"]').trigger('click')
+    expect(vm.message).toBe('[link text](https://)')
+  })
+
+  it('formats selected text and restores selection range when textarea is available', async () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+    vm.message = 'Hello world from forum'
+
+    const textarea = document.createElement('textarea')
+    textarea.value = vm.message
+    textarea.selectionStart = 6
+    textarea.selectionEnd = 11 // "world"
+    const focusSpy = jest.spyOn(textarea, 'focus')
+    const rangeSpy = jest.spyOn(textarea, 'setSelectionRange')
+    jest.spyOn(vm, 'getTextareaElement').mockReturnValue(textarea)
+
+    await wrapper.find('[data-test="format-bold"]').trigger('click')
+    expect(vm.message).toBe('Hello **world** from forum')
+
+    await flushPromises()
+    expect(focusSpy).toHaveBeenCalled()
+    expect(rangeSpy).toHaveBeenCalledWith(8, 13)
+  })
+
+  it('getTextareaElement resolves textarea across various ref structures', () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+
+    // undefined ref
+    vm.$.refs.messageInput = undefined
+    expect(vm.getTextareaElement()).toBeNull()
+
+    // real textarea
+    const textarea = document.createElement('textarea')
+    vm.$.refs.messageInput = textarea
+    expect(vm.getTextareaElement()).toBe(textarea)
+
+    // nativeEl property
+    vm.$.refs.messageInput = { nativeEl: textarea }
+    expect(vm.getTextareaElement()).toBe(textarea)
+
+    // $el.querySelector
+    const container = document.createElement('div')
+    container.appendChild(textarea)
+    vm.$.refs.messageInput = { $el: container }
+    expect(vm.getTextareaElement()).toBe(textarea)
+  })
+
+  it('attaches image file via file input and inserts markdown image tag', async () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+    vm.message = 'Some text'
+
+    const file = new File(['fake image bytes'], 'screenshot.png', {
+      type: 'image/png',
+    })
+    const event = {
+      target: { files: [file] },
+    } as unknown as Event
+
+    await vm.onImageFileSelected(event)
+    await flushPromises()
+
+    expect(mockCompressPostImage).toHaveBeenCalledWith(file)
+    expect(vm.message).toBe(
+      'Some text\n![screenshot](data:image/webp;base64,QUJD)\n',
+    )
+    expect(vm.attachingImage).toBe(false)
+  })
+
+  it('triggers file input click when attach button is clicked', async () => {
+    const { wrapper } = mountPage()
+    const input = wrapper.find<HTMLInputElement>(
+      '[data-test="post-image-input"]',
+    ).element
+    const clickSpy = jest.spyOn(input, 'click')
+
+    await wrapper.find('[data-test="attach-post-image"]').trigger('click')
+    expect(clickSpy).toHaveBeenCalled()
+  })
+
+  it('handles image paste from clipboard', async () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+
+    const file = new File(['paste bytes'], 'clipboard.jpg', {
+      type: 'image/jpeg',
+    })
+    const preventDefault = jest.fn()
+    const event = {
+      preventDefault,
+      clipboardData: {
+        items: [
+          {
+            type: 'image/jpeg',
+            getAsFile: () => file,
+          },
+        ],
+      },
+    } as unknown as ClipboardEvent
+
+    await vm.onMessagePaste(event)
+    await flushPromises()
+
+    expect(preventDefault).toHaveBeenCalled()
+    expect(mockCompressPostImage).toHaveBeenCalledWith(file)
+    expect(vm.message).toBe('![clipboard](data:image/webp;base64,QUJD)\n')
+  })
+
+  it('ignores non-image paste events', async () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+
+    const preventDefault = jest.fn()
+    const event = {
+      preventDefault,
+      clipboardData: {
+        items: [
+          {
+            type: 'text/plain',
+            getAsFile: () => null,
+          },
+        ],
+      },
+    } as unknown as ClipboardEvent
+
+    await vm.onMessagePaste(event)
+    expect(preventDefault).not.toHaveBeenCalled()
+    expect(mockCompressPostImage).not.toHaveBeenCalled()
+  })
+
+  it('handles image drop onto textarea', async () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+
+    const file = new File(['drop bytes'], 'photo.webp', {
+      type: 'image/webp',
+    })
+    const preventDefault = jest.fn()
+    const event = {
+      preventDefault,
+      dataTransfer: {
+        files: [file],
+      },
+    } as unknown as DragEvent
+
+    await vm.onMessageDrop(event)
+    await flushPromises()
+
+    expect(preventDefault).toHaveBeenCalled()
+    expect(mockCompressPostImage).toHaveBeenCalledWith(file)
+    expect(vm.message).toBe('![photo](data:image/webp;base64,QUJD)\n')
+  })
+
+  it('notifies error when non-image file is attached', async () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+
+    const file = new File(['text'], 'notes.txt', { type: 'text/plain' })
+    await vm.attachImageFile(file)
+
+    expect(errorNotify).toHaveBeenCalledWith('INVALID_IMAGE_TYPE')
+    expect(mockCompressPostImage).not.toHaveBeenCalled()
+  })
+
+  it('notifies error when compressed image exceeds maximum size', async () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+    mockCompressPostImage.mockRejectedValueOnce(
+      new Error('Compressed image size exceeds maximum allowed size of 120 KB'),
+    )
+
+    const file = new File(['huge image'], 'huge.png', { type: 'image/png' })
+    await vm.attachImageFile(file)
+    await flushPromises()
+
+    expect(errorNotify).toHaveBeenCalledWith('IMAGE_TOO_LARGE')
+    expect(vm.attachingImage).toBe(false)
+  })
+
+  it('notifies error when compression fails unexpectedly', async () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+    mockCompressPostImage.mockRejectedValueOnce(new Error('Canvas failure'))
+
+    const file = new File(['image'], 'pic.png', { type: 'image/png' })
+    await vm.attachImageFile(file)
+    await flushPromises()
+
+    expect(errorNotify).toHaveBeenCalledWith('IMAGE_ERROR')
+    expect(vm.attachingImage).toBe(false)
   })
 })

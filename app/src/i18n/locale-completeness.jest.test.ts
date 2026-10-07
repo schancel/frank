@@ -48,6 +48,7 @@ const SAME_IN_FRENCH = new Set([
   'profile.linkTypeDiscord',
   'about.appName',
   'about.badgeMonad',
+  'forum.editor.code',
 ])
 
 const placeholders = (text: string) =>

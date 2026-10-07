@@ -21,6 +21,23 @@ export default {
     allTopics: 'Tous les sujets',
     filteredBy: 'Filtré par sujet',
     clearTopicFilter: 'Effacer le filtre',
+    editor: {
+      toolbar: 'Outils de mise en forme',
+      bold: 'Gras',
+      italic: 'Italique',
+      heading: 'Titre',
+      quote: 'Citation',
+      code: 'Code',
+      bullet: 'Liste à puces',
+      link: 'Lien',
+      attachImage: 'Attacher une image',
+      imageProcessing: 'Traitement de l’image…',
+      imageTooLarge:
+        'L’image est trop volumineuse pour le message (doit être inférieure à 120 Ko après compression)',
+      imageError: 'Échec du traitement de la pièce jointe',
+      invalidImageType:
+        'Veuillez sélectionner un fichier image valide (PNG, JPEG, WebP, GIF)',
+    },
   },
   agree: "D'accord",
   chat: {
@@ -252,6 +269,14 @@ export default {
     openInExplorer: "Ouvrir la transaction dans l'explorateur de blocs",
     copyTxHash: 'Copier le hash de transaction',
     backToForum: 'Retour au forum',
+    formatBold: 'Formater en gras',
+    formatItalic: 'Formater en italique',
+    formatHeading: 'Formater en titre',
+    formatQuote: 'Formater en citation',
+    formatCode: 'Formater en code',
+    formatBullet: 'Formater en liste à puces',
+    formatLink: 'Insérer un lien',
+    attachPostImage: 'Attacher une image au message',
   },
   leftDrawer: {
     noForums: 'Aucun forum découvert pour le moment.',

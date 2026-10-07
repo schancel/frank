@@ -9,14 +9,26 @@
  */
 import { createPinia, setActivePinia } from 'pinia'
 
+const documentListeners: Record<string, () => void> = {}
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-;(global as any).document = { hasFocus: () => true }
+;(global as any).document = {
+  hasFocus: () => true,
+  hidden: false,
+  addEventListener: (event: string, cb: () => void) => {
+    documentListeners[event] = cb
+  },
+  removeEventListener: (event: string) => {
+    delete documentListeners[event]
+  },
+}
 
 import axios from 'axios'
 import { useMailboxStatusStore } from '../stores/mailbox-status'
 import {
+  BACKGROUND_DIRECT_MESSAGE_POLL_INTERVAL_MS,
   DEFAULT_DIRECT_MESSAGE_POLL_INTERVAL_MS,
   MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS,
+  MIN_DIRECT_MESSAGE_POLL_INTERVAL_MS,
   startDirectMessagePolling,
 } from './pinia-chain-adapter'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
@@ -431,6 +443,92 @@ describe('direct-message polling vs the relay challenge cap', () => {
       await jest.advanceTimersByTimeAsync(10_000)
       expect(status.state).toBe('unreachable')
       expect(status.retryInMs).toBe(7000)
+      polling.stop()
+    })
+  })
+
+  describe('energy optimization and visibility lifecycle', () => {
+    beforeEach(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(global as any).document.hidden = false
+    })
+
+    it('floors poll delay at MIN_DIRECT_MESSAGE_POLL_INTERVAL_MS (2500ms) on slow fetches', async () => {
+      const { relay, wallet } = setup({ maxUsedChallenges: 30 })
+      let first = true
+      // Delay only the initial request by 6000ms so the first poll takes exactly 6000ms elapsed
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockedAxios.mockImplementation(async (config: any) => {
+        if (first) {
+          first = false
+          await new Promise(r => setTimeout(r, 6000))
+        }
+        return relay.http({
+          method: config.method,
+          url: config.url,
+          params: config.params,
+          headers: config.headers,
+        })
+      })
+
+      const polling = startDirectMessagePolling({ wallet, intervalMs: 7000 })
+      // Initial poll takes 6000ms.
+      await jest.advanceTimersByTimeAsync(6000)
+      const challengesAfterPoll1 = count(relay, 'challenge')
+      expect(challengesAfterPoll1).toBeGreaterThanOrEqual(1)
+
+      // In steady state: 7000 - 6000 = 1000ms, but floored at MIN (2500ms).
+      // Advance 2400ms: poll 2 should NOT have started yet
+      await jest.advanceTimersByTimeAsync(2400)
+      expect(count(relay, 'challenge')).toBe(challengesAfterPoll1)
+
+      // Advance 200ms (total 2600ms): poll 2 initiates
+      await jest.advanceTimersByTimeAsync(200)
+      expect(count(relay, 'challenge')).toBeGreaterThan(challengesAfterPoll1)
+
+      polling.stop()
+    })
+
+    it('relaxes polling to at least BACKGROUND_DIRECT_MESSAGE_POLL_INTERVAL_MS (30s) when hidden', async () => {
+      const { relay, wallet } = setup({ maxUsedChallenges: 30 })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(global as any).document.hidden = true
+
+      const polling = startDirectMessagePolling({ wallet, intervalMs: 7000 })
+      await jest.advanceTimersByTimeAsync(100) // Initial poll completes immediately
+      expect(count(relay, 'challenge')).toBe(1)
+
+      // Advance 25s: should NOT poll while hidden
+      await jest.advanceTimersByTimeAsync(25_000)
+      expect(count(relay, 'challenge')).toBe(1)
+
+      // Advance 6s (total >30s): background poll fires
+      await jest.advanceTimersByTimeAsync(6000)
+      expect(count(relay, 'challenge')).toBe(2)
+
+      polling.stop()
+    })
+
+    it('wakes up immediately when document becomes visible', async () => {
+      const { relay, wallet } = setup({ maxUsedChallenges: 30 })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(global as any).document.hidden = true
+
+      const polling = startDirectMessagePolling({ wallet, intervalMs: 7000 })
+      await jest.advanceTimersByTimeAsync(100)
+      expect(count(relay, 'challenge')).toBe(1)
+
+      // In background for 10s
+      await jest.advanceTimersByTimeAsync(10_000)
+      expect(count(relay, 'challenge')).toBe(1)
+
+      // Tab becomes visible: trigger listener
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(global as any).document.hidden = false
+      documentListeners['visibilitychange']?.()
+      await jest.advanceTimersByTimeAsync(100)
+      expect(count(relay, 'challenge')).toBe(2)
+
       polling.stop()
     })
   })

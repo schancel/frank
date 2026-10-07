@@ -58,6 +58,12 @@ import {
  * range. Configurable via `MONAD_DM_POLL_INTERVAL_MS` (see `src/boot/monad-direct-messages.ts`). */
 export const DEFAULT_DIRECT_MESSAGE_POLL_INTERVAL_MS = 7000
 
+/** Minimum interval between direct-message polls to prevent tight spin loops. */
+export const MIN_DIRECT_MESSAGE_POLL_INTERVAL_MS = 2500
+
+/** Background polling interval for direct messages when tab is hidden. */
+export const BACKGROUND_DIRECT_MESSAGE_POLL_INTERVAL_MS = 30_000
+
 /** Longest pause between polls while the relay has no mailbox (404): progressive backoff from
  * the poll interval, doubling, capped here. */
 export const MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS = 60_000
@@ -412,12 +418,38 @@ export function startDirectMessagePolling({
       }
     } finally {
       // Steady state keeps a fixed cadence (interval measured start to start); relay-requested
-      // pauses are honoured in full.
-      const delay = steady
-        ? Math.max(0, nextDelayMs - (Date.now() - startedAt))
+      // pauses are honoured in full. Floored at minFloor to prevent 0ms spin loops.
+      const elapsed = Date.now() - startedAt
+      const minFloor = Math.min(MIN_DIRECT_MESSAGE_POLL_INTERVAL_MS, intervalMs)
+      let delay = steady
+        ? Math.max(minFloor, nextDelayMs - elapsed)
         : nextDelayMs
+
+      // If document is backgrounded/hidden, relax polling cadence to save battery/CPU.
+      if (typeof document !== 'undefined' && document.hidden) {
+        delay = Math.max(delay, BACKGROUND_DIRECT_MESSAGE_POLL_INTERVAL_MS)
+      }
+
       if (!stopped) timer = setTimeout(() => void poll(), delay)
     }
+  }
+
+  const onVisibilityChange = () => {
+    if (stopped) return
+    if (typeof document !== 'undefined' && !document.hidden) {
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        timer = undefined
+      }
+      void poll()
+    }
+  }
+
+  if (
+    typeof document !== 'undefined' &&
+    typeof document.addEventListener === 'function'
+  ) {
+    document.addEventListener('visibilitychange', onVisibilityChange)
   }
 
   let unsubscribeStream: (() => void) | undefined
@@ -448,6 +480,12 @@ export function startDirectMessagePolling({
       // A stopped poller (e.g. the wallet was switched) must not leave its last problem on screen.
       mailboxStatus.setOk()
       if (timer !== undefined) clearTimeout(timer)
+      if (
+        typeof document !== 'undefined' &&
+        typeof document.removeEventListener === 'function'
+      ) {
+        document.removeEventListener('visibilitychange', onVisibilityChange)
+      }
     },
   }
 }

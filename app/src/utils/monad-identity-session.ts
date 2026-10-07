@@ -424,7 +424,7 @@ export async function startMessaging(): Promise<void> {
       retryTimer = undefined
       if (!live && d.session.state.status === 'ready') void startMessaging()
     },
-    failure ? d.retryDelayMs(failures) : 0,
+    failure ? d.retryDelayMs(failures) : 50,
   )
 }
 

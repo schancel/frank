@@ -117,6 +117,26 @@ export const useTopicStore = defineStore('topics', {
     setEntries(topic: string, messages: ForumMessage[], until: number) {
       const topicState = this.ensureTopic(topic)
       const snapshot = forumSnapshot(messages)
+
+      const currentMessages = topicState.messages
+      if (
+        currentMessages &&
+        currentMessages.length === snapshot.messages.length &&
+        currentMessages.every((m, i) => {
+          const s = snapshot.messages[i]
+          return (
+            m.payloadDigest === s.payloadDigest &&
+            m.poster === s.poster &&
+            m.voteWeightWei === s.voteWeightWei &&
+            m.replies?.length === s.replies?.length &&
+            m.timestamp === s.timestamp
+          )
+        })
+      ) {
+        topicState.lastUpdate = until
+        return
+      }
+
       const other = Object.fromEntries(
         Object.entries(this.messageIndex).filter(
           ([, row]) => row?.topic !== topic,

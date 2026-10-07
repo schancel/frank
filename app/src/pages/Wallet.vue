@@ -4,33 +4,23 @@
       <q-card
         flat
         class="col column full-width bg-transparent"
-        style="max-width: 600px; margin: 0 auto"
+        style="width: 100%; margin: 0 auto"
       >
         <q-card-section>
           <div class="text-h6 row items-center" data-testid="wallet-name">
-            <span>
+            <span data-testid="wallet-name-text">
               {{
                 getCustomName(selectedWallet) ||
                 (selectedWallet === 'ecash'
-                  ? isTestnet
-                    ? $t('walletPanel.ecashTestnet')
-                    : $t('walletPanel.ecash')
+                  ? $t('walletPanel.ecash')
                   : selectedWallet === 'solana'
-                  ? isTestnet
-                    ? $t('walletPanel.solanaTestnet')
-                    : $t('walletPanel.solana')
+                  ? $t('walletPanel.solana')
                   : selectedWallet === 'tempo'
-                  ? isTestnet
-                    ? $t('walletPanel.tempoTestnet')
-                    : $t('walletPanel.tempo')
+                  ? $t('walletPanel.tempo')
                   : selectedWallet === 'ethereum'
-                  ? isTestnet
-                    ? $t('walletPanel.ethereumTestnet')
-                    : $t('walletPanel.ethereum')
+                  ? $t('walletPanel.ethereum')
                   : selectedWallet === 'hyperliquid'
-                  ? isTestnet
-                    ? $t('walletPanel.hyperliquidTestnet')
-                    : $t('walletPanel.hyperliquid')
+                  ? $t('walletPanel.hyperliquid')
                   : $t('walletPanel.mainWallet'))
               }}
             </span>
@@ -237,6 +227,10 @@ export default defineComponent({
     const { getCustomName } = useWalletNames()
 
     const selectedWallet = computed<string>(() => {
+      const parts = (route?.path || '').toLowerCase().split('/').filter(Boolean)
+      if (parts[0] === 'wallet' && parts[1]) {
+        return parts[1]
+      }
       const walletParam = (route?.params?.wallet as string)?.toLowerCase()
       if (walletParam) return walletParam
       const chainParam = (route?.params?.chain as string)?.toLowerCase()
@@ -318,9 +312,7 @@ export default defineComponent({
                     )
             }
           } else {
-            const address = await accountSession.getChainAddress(
-              chain as 'ecash' | 'solana',
-            )
+            const address = await accountSession.getChainAddress(chain)
             if (current) displayAddress.value = address
           }
         } catch (err) {

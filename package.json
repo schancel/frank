@@ -28,7 +28,8 @@
     "test:integration": "TSX_TSCONFIG_PATH=packages/cli/tsconfig.json node --import tsx test/integration/system-harness.ts",
     "docs:dev": "yarn workspace @frank/docs dev",
     "docs:build": "yarn workspace @frank/docs build",
-    "docs:preview": "yarn workspace @frank/docs preview"
+    "docs:preview": "yarn workspace @frank/docs preview",
+    "docs:dist": "DOCS_BASE=/docs/ yarn docs:build && mkdir -p app/public/docs && cp -R packages/docs/.vitepress/dist/* app/public/docs/"
   },
   "devDependencies": {
     "@types/bluebird": "^3.5.42",

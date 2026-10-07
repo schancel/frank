@@ -40,11 +40,25 @@ topic-vote-submission = {
 }
 
 ; Type 9 schema 2/min-reader 2 uses the same outer field IDs as topic-post.
-; Exact schema 2 permits only declared keys/kind 1. Compatible later schemas
+; Exact schema 2 permits only declared keys/kind 1 and kind 2. Compatible later schemas
 ; retain optional unknown fields and bounded unsupported-entry placeholders.
 forum-content = { 0: timestamp, 1: [1*64 forum-entry], * uint => frank-value }
 forum-entry = known-forum-entry / future-forum-entry
-known-forum-entry = { 0: 1, ? 1: tstr, ? 2: tstr, ? 3: tstr, * uint => frank-value }
+known-forum-entry = forum-post-entry / forum-game-entry
+forum-post-entry = { 0: 1, ? 1: tstr, ? 2: tstr, ? 3: tstr, * uint => frank-value }
+forum-game-entry = {
+  0: 2,
+  1: tstr .size (1..64),   ; gameType (e.g. "poker", "liars-dice", "rps", "blackjack")
+  2: tstr .size (1..128),  ; tableId
+  3: tstr .size (1..128),  ; hostAddress
+  ? 4: tstr .size (0..64), ; buyInAmount
+  ? 5: uint .le 1000,      ; currentPlayers
+  ? 6: uint .le 1000,      ; maxPlayers
+  ? 7: tstr .size (0..128),; botAddress
+  ? 8: tstr .size (0..512),; title
+  ? 9: tstr,               ; message / rules
+  * uint => frank-value,
+}
 future-forum-entry = { 0: uint, * uint => frank-value }
 forum-u64 = 0..18446744073709551615
 forum-epoch = bstr .size 16

@@ -155,5 +155,81 @@ describe('canonical observation model', () => {
     expect(model.poster).toBe(identity.address.raw)
     expect(model.poster).not.toBe(burnWallet.address)
   })
+
+  it('projects Kind 2 game entries with structured fields', async () => {
+    const post = encodeForumPost({
+      network: policy.network,
+      topic: 'games',
+      authored: { seconds: 1n, nanoseconds: 0 },
+      entries: [
+        {
+          kind: 'game',
+          gameType: 'poker',
+          tableId: 'poker-table-888',
+          hostAddress: '0xAlice111111111111111111111111111111111111',
+          buyInAmount: '500 chips',
+          currentPlayers: 3,
+          maxPlayers: 8,
+          botAddress: '0xBot22222222222222222222222222222222222222',
+          title: 'Texas Holdem Tournament',
+          message: 'Tournament starting soon',
+        },
+      ],
+    })
+    const p = validateFrame(post, defaultContext())
+    if (p.kind !== 'parsed') throw Error('post')
+    const wallet = new Wallet('0x' + '22'.repeat(32)),
+      hash = contentHash(p)
+    const raw = await wallet.signTransaction({
+      type: 2,
+      chainId: policy.chainId,
+      nonce: 10,
+      to: policy.burnAddress,
+      value: 1000000n,
+      gasLimit: 21000,
+      maxFeePerGas: 1,
+      maxPriorityFeePerGas: 1,
+      data: topicBurnCalldata('up', topicVoteCommitment(policy.network, hash)),
+    })
+    const tx = (await import('ethers')).Transaction.from(raw)
+    const bytes = encodeForumReadFrame(
+      12,
+      new Map<number, Encodable>([
+        [0, policy.network],
+        [1, post],
+        [2, getBytes(wallet.address)],
+        [3, getBytes(raw)],
+        [4, getBytes(tx.hash!)],
+        [5, time(10n)],
+        [6, 0],
+        [7, 0],
+        [
+          8,
+          new Map<number, Encodable>([
+            [0, false],
+            [1, getBytes('0x' + (1000000n).toString(16).padStart(64, '0'))],
+          ]),
+        ],
+        [9, 1n],
+        [10, new Uint8Array(16).fill(1)],
+      ]),
+    )
+    const viewParsed = validateFrame(bytes, defaultContext())
+    if (viewParsed.kind !== 'parsed') throw Error('view')
+    const model = projectForumView(viewParsed, policy)
+    expect(model.entries).toHaveLength(1)
+    expect(model.entries[0]).toEqual({
+      kind: 'game',
+      gameType: 'poker',
+      tableId: 'poker-table-888',
+      hostAddress: '0xAlice111111111111111111111111111111111111',
+      buyInAmount: '500 chips',
+      currentPlayers: 3,
+      maxPlayers: 8,
+      botAddress: '0xBot22222222222222222222222222222222222222',
+      title: 'Texas Holdem Tournament',
+      message: 'Tournament starting soon',
+    })
+  })
 })
 

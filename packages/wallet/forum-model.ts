@@ -9,12 +9,27 @@ import {
 } from '@frank/codec'
 import type { ParsedFrame } from '@frank/codec'
 
-export interface ForumMessageEntry {
-  kind: 'post'
+export interface ForumGameMessageEntry {
+  kind: 'game'
+  gameType: string
+  tableId: string
+  hostAddress: string
+  buyInAmount?: string
+  currentPlayers?: number
+  maxPlayers?: number
+  botAddress?: string
   title?: string
-  url?: string
   message?: string
 }
+
+export type ForumMessageEntry =
+  | {
+      kind: 'post'
+      title?: string
+      url?: string
+      message?: string
+    }
+  | ForumGameMessageEntry
 export interface ForumMessage {
   poster: string
   topic: string
@@ -99,15 +114,35 @@ export function projectForumView(
     voteWeightWei: magnitude.toString(),
     entries: post.content.entries
       .filter(
-        (entry): entry is Extract<typeof entry, { kind: 'post' }> =>
-          entry.kind === 'post',
+        (
+          entry,
+        ): entry is Extract<
+          typeof entry,
+          { kind: 'post' } | { kind: 'game' }
+        > => entry.kind === 'post' || entry.kind === 'game',
       )
-      .map(({ title, url, message }) => ({
-        kind: 'post',
-        title,
-        url,
-        message,
-      })),
+      .map(entry => {
+        if (entry.kind === 'post') {
+          return {
+            kind: 'post' as const,
+            title: entry.title,
+            url: entry.url,
+            message: entry.message,
+          }
+        }
+        return {
+          kind: 'game' as const,
+          gameType: entry.gameType,
+          tableId: entry.tableId,
+          hostAddress: entry.hostAddress,
+          buyInAmount: entry.buyInAmount,
+          currentPlayers: entry.currentPlayers,
+          maxPlayers: entry.maxPlayers,
+          botAddress: entry.botAddress,
+          title: entry.title,
+          message: entry.message,
+        }
+      }),
     payloadDigest: toHex(hash),
     parentDigest: post.parentHash && toHex(post.parentHash),
     timestamp: Number.isNaN(displayed.getTime())

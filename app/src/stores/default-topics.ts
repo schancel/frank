@@ -9,4 +9,5 @@ export const DEFAULT_TOPIC_NAMES: readonly string[] = [
   'trading',
   'memes',
   'help',
+  'games',
 ]

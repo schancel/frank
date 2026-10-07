@@ -1,6 +1,7 @@
 import {
   formatGameAnnouncementMarkdown,
   buildGameAnnouncementEntry,
+  buildLegacyGameAnnouncementEntry,
   announceTableToTopic,
   DEFAULT_GAMES_TOPIC,
   type GameTableDetails,
@@ -62,13 +63,32 @@ describe("Game Table Announcements for Topic Discovery", () => {
       expect(payload.actionLink).toBe("/chat/0x2222222222222222222222222222222222222222?join=table1234abcd");
     });
 
-    it("builds a ForumMessageEntry with kind post, title, and action url", () => {
+    it("builds a ForumMessageEntry with kind game, table details, and markdown fallback", () => {
       const entry = buildGameAnnouncementEntry(sampleLiarsDiceDetails);
 
+      expect(entry.kind).toBe("game");
+      if (entry.kind === "game") {
+        expect(entry.gameType).toBe("liars-dice");
+        expect(entry.tableId).toBe("dice9876efgh");
+        expect(entry.hostAddress).toBe("0x3333333333333333333333333333333333333333");
+        expect(entry.buyInAmount).toBe("0.1 MON");
+        expect(entry.currentPlayers).toBe(1);
+        expect(entry.maxPlayers).toBe(6);
+        expect(entry.botAddress).toBe("0x4444444444444444444444444444444444444444");
+        expect(entry.title).toBe("🎮 [Liar's Dice] Table #dice9876efgh (1/6 players)");
+        expect(entry.message).toContain("🎮 **Liar's Dice Table Created!**");
+      }
+    });
+
+    it("builds a legacy ForumMessageEntry with kind post, title, and action url", () => {
+      const entry = buildLegacyGameAnnouncementEntry(sampleLiarsDiceDetails);
+
       expect(entry.kind).toBe("post");
-      expect(entry.title).toBe("🎮 [Liar's Dice] Table #dice9876efgh (1/6 players)");
-      expect(entry.url).toBe("/chat/0x4444444444444444444444444444444444444444?join=dice9876efgh");
-      expect(entry.message).toContain("🎮 **Liar's Dice Table Created!**");
+      if (entry.kind === "post") {
+        expect(entry.title).toBe("🎮 [Liar's Dice] Table #dice9876efgh (1/6 players)");
+        expect(entry.url).toBe("/chat/0x4444444444444444444444444444444444444444?join=dice9876efgh");
+        expect(entry.message).toContain("🎮 **Liar's Dice Table Created!**");
+      }
     });
   });
 
@@ -91,9 +111,10 @@ describe("Game Table Announcements for Topic Discovery", () => {
         topic: "games",
         entries: [
           expect.objectContaining({
-            kind: "post",
+            kind: "game",
+            tableId: samplePokerDetails.tableId,
+            gameType: "poker",
             title: expect.stringContaining("Texas Hold'em Poker"),
-            url: samplePokerDetails.actionLink,
           }),
         ],
       });
@@ -116,7 +137,7 @@ describe("Game Table Announcements for Topic Discovery", () => {
 
       expect(mockPost).toHaveBeenCalledWith({
         topic: "arcade",
-        entries: [expect.objectContaining({ kind: "post" })],
+        entries: [expect.objectContaining({ kind: "game" })],
       });
       expect(result.payloadDigest).toBe("0xhashPost");
     });

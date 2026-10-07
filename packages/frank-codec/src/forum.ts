@@ -39,12 +39,32 @@ function checked(frame: Uint8Array): ParsedFrame {
   return result
 }
 
+export type ForumPostContentEntry =
+  | {
+      kind?: 'post'
+      title?: string
+      url?: string
+      message?: string
+    }
+  | {
+      kind: 'game'
+      gameType: string
+      tableId: string
+      hostAddress: string
+      buyInAmount?: string
+      currentPlayers?: number
+      maxPlayers?: number
+      botAddress?: string
+      title?: string
+      message?: string
+    }
+
 export interface ForumPostFields {
   network: string
   topic: string
   parentHash?: Uint8Array
   authored: Timestamp
-  entries: readonly { title?: string; url?: string; message?: string }[]
+  entries: readonly ForumPostContentEntry[]
   from?: AccountRef | Uint8Array
   signature?: Uint8Array
 }
@@ -52,13 +72,40 @@ export interface ForumPostFields {
 /** Encodes the canonical CBOR body of a schema-2 topic post (authored timestamp + entries). */
 export function encodeForumPostContent(
   authored: Timestamp,
-  entries: readonly { title?: string; url?: string; message?: string }[],
+  entries: readonly ForumPostContentEntry[],
 ): Uint8Array {
   const content = new Map<number, Encodable>([
     [0, time(authored)],
     [
       1,
       entries.map(entry => {
+        if (entry.kind === 'game') {
+          const m = new Map<number, Encodable>([
+            [0, 2],
+            [1, entry.gameType],
+            [2, entry.tableId],
+            [3, entry.hostAddress],
+          ])
+          if (entry.buyInAmount !== undefined && entry.buyInAmount !== '') {
+            m.set(4, entry.buyInAmount)
+          }
+          if (entry.currentPlayers !== undefined) {
+            m.set(5, BigInt(entry.currentPlayers))
+          }
+          if (entry.maxPlayers !== undefined) {
+            m.set(6, BigInt(entry.maxPlayers))
+          }
+          if (entry.botAddress !== undefined && entry.botAddress !== '') {
+            m.set(7, entry.botAddress)
+          }
+          if (entry.title !== undefined && entry.title !== '') {
+            m.set(8, entry.title)
+          }
+          if (entry.message !== undefined && entry.message !== '') {
+            m.set(9, entry.message)
+          }
+          return m
+        }
         const m = new Map<number, Encodable>([[0, 1]])
         for (const [key, value] of [
           [1, entry.title],
@@ -71,6 +118,24 @@ export function encodeForumPostContent(
     ],
   ])
   return encodeCanonical(content)
+}
+
+/** Encodes a single kind-2 game announcement into canonical CBOR post content. */
+export function encodeForumGameContent(
+  authored: Timestamp,
+  game: {
+    gameType: string
+    tableId: string
+    hostAddress: string
+    buyInAmount?: string
+    currentPlayers?: number
+    maxPlayers?: number
+    botAddress?: string
+    title?: string
+    message?: string
+  },
+): Uint8Array {
+  return encodeForumPostContent(authored, [{ kind: 'game', ...game }])
 }
 
 /** Explicit schema-2 writer. The historical opaque-body writer remains schema 1. */

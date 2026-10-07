@@ -5,7 +5,20 @@ export type TextPost = {
   message?: string
 }
 
-export type ForumMessageEntry = TextPost
+export type ForumGameEntry = {
+  kind: 'game'
+  gameType: string
+  tableId: string
+  hostAddress: string
+  buyInAmount?: string
+  currentPlayers?: number
+  maxPlayers?: number
+  botAddress?: string
+  title?: string
+  message?: string
+}
+
+export type ForumMessageEntry = TextPost | ForumGameEntry
 
 export type ForumMessage = {
   /// Lotus address of poster

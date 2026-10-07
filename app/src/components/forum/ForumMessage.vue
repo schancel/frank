@@ -47,11 +47,12 @@
       <div class="col column q-pa-none post-main-content">
         <template
           v-for="(entry, index) in message.entries.filter(
-            entry => entry.kind === 'post',
+            entry => entry.kind === 'post' || entry.kind === 'game',
           )"
           :key="index"
         >
           <div
+            v-if="entry.kind === 'post'"
             class="row items-center no-wrap justify-between q-px-md q-pt-sm q-pb-xs"
           >
             <div class="col-grow post-title-wrap">
@@ -86,9 +87,46 @@
           </div>
           <div
             class="q-px-md q-pt-xs q-pb-sm col-grow post-body"
-            v-if="renderBody"
+            v-if="entry.kind === 'post' && renderBody"
           >
             <div
+              class="mdstyle text-body2"
+              v-html="markedMessage(entry.message)"
+            />
+            <game-announcement-card
+              v-if="getAnnouncement(entry)"
+              :announcement="getAnnouncement(entry)!"
+            />
+          </div>
+
+          <div
+            v-if="entry.kind === 'game'"
+            class="row items-center no-wrap justify-between q-px-md q-pt-sm q-pb-xs"
+          >
+            <div class="col-grow post-title-wrap">
+              <span class="text-subtitle1 text-weight-bold">
+                {{ entry.title || getAnnouncement(entry)?.gameName || 'Game Table' }}
+              </span>
+            </div>
+            <q-chip
+              v-if="message.topic"
+              outline
+              dense
+              size="sm"
+              color="primary"
+              class="topic-chip cursor-pointer q-ml-sm"
+              clickable
+              @click.prevent="$emit('set-topic', message.topic)"
+            >
+              #{{ message.topic }}
+            </q-chip>
+          </div>
+          <div
+            class="q-px-md q-pt-xs q-pb-sm col-grow post-body"
+            v-if="entry.kind === 'game' && renderBody"
+          >
+            <div
+              v-if="entry.message"
               class="mdstyle text-body2"
               v-html="markedMessage(entry.message)"
             />

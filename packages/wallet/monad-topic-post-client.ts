@@ -9,7 +9,7 @@ import {
   topicPostSignatureDigest,
 } from '@frank/codec'
 import type { AccountRef } from '@frank/codec'
-import type { ForumMessageEntry } from '@frank/cashweb/types/forum'
+import type { ForumMessageEntry } from './forum-model'
 import type { MonadAccountTxSigner, MonadTxOverrides } from './monad-account-tx'
 import type { AcquireLeaseWhenAvailableOptions } from './monad-account-lease'
 import type { MonadWalletHandle } from './monad-wallet-handle'
@@ -94,7 +94,11 @@ export class MonadTopicPostClient {
     assertForumAmount(params.voteWeightWei)
     if (params.direction !== 'up')
       throw new Error('A Forum post requires an up burn')
-    if (params.entries.some(entry => entry.kind !== 'post'))
+    if (
+      params.entries.some(
+        entry => entry.kind !== 'post' && entry.kind !== 'game',
+      )
+    )
       throw new Error('Unsupported Forum entry kind')
     const ms = params.timestampMs ?? Date.now()
     if (!Number.isSafeInteger(ms))

@@ -259,6 +259,20 @@ interface TopicPostCommon {
   unknownFields: UnknownFields
 }
 
+export interface ForumGameEntry {
+  kind: 'game'
+  gameType: string
+  tableId: string
+  hostAddress: string
+  buyInAmount?: string
+  currentPlayers?: number
+  maxPlayers?: number
+  botAddress?: string
+  title?: string
+  message?: string
+  unknownFields: UnknownFields
+}
+
 export type ForumEntry =
   | {
       kind: 'post'
@@ -267,6 +281,7 @@ export type ForumEntry =
       message?: string
       unknownFields: UnknownFields
     }
+  | ForumGameEntry
   | {
       kind: 'unsupported'
       kindId: bigint

@@ -36,8 +36,52 @@ export function parseGameAnnouncement(
 ): ParsedGameAnnouncement | null {
   if (!entry) return null
 
-  const rawText = entry.message || ''
-  const title = entry.title || ''
+  // 0. Check for native CBOR Kind 2 entry
+  if (entry.kind === 'game') {
+    const defaultGameName =
+      entry.gameType === 'poker'
+        ? "Texas Hold'em Poker"
+        : entry.gameType === 'liars-dice'
+        ? "Liar's Dice"
+        : entry.gameType === 'blackjack'
+        ? 'Blackjack'
+        : entry.gameType === 'rps'
+        ? 'Rock Paper Scissors'
+        : entry.gameType || 'Game Table'
+
+    let gameName = defaultGameName
+    if (entry.title) {
+      const match = entry.title.match(/\[([^\]]+)\]/)
+      if (match) {
+        gameName = match[1].trim()
+      } else if (!entry.gameType || entry.gameType === 'game') {
+        gameName = entry.title
+      }
+    }
+
+    const botAddress = entry.botAddress || message?.poster
+    const actionLink = botAddress
+      ? `/chat/${botAddress}?join=${entry.tableId}`
+      : entry.hostAddress
+      ? `/chat/${entry.hostAddress}`
+      : undefined
+
+    return {
+      gameName,
+      gameType: entry.gameType,
+      tableId: entry.tableId,
+      hostAddress: entry.hostAddress || message?.poster || '',
+      buyInAmount: entry.buyInAmount,
+      currentPlayers: entry.currentPlayers,
+      maxPlayers: entry.maxPlayers,
+      botAddress,
+      actionLink,
+      callToAction: 'Join Table',
+    }
+  }
+
+  const rawText = (entry as { message?: string }).message || ''
+  const title = (entry as { title?: string }).title || ''
 
   // 1. Check for embedded machine-readable JSON comment
   const jsonMatch = rawText.match(/<!--\s*GAME_ANNOUNCEMENT:\s*({.*?})\s*-->/s)
